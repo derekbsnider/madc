@@ -1152,6 +1152,44 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 		by_id[r.type_id] = sdd;
 	}
 
+	// Pass 1b: reconstruct derived types (pointer / reference / const) into by_id.
+	// A record's ref0 is its operand's freeze-time typeid — a primitive
+	// (madc_type_from_id) or another record (by_id, populated by pass 1). A fixpoint
+	// converges operand-before-derived, so a chain (T**, const T*) and a
+	// self-referential pointer (Node *next — its operand aggregate is already
+	// allocated in pass 1) both resolve. Same swizzle discipline as a member/base id.
+	bool dprog = true;
+	while (dprog) {
+		dprog = false;
+		for (size_t i = 0; i < _type_records.size(); ++i) {
+			const cir_forest_type_record &r = _type_records[i];
+			if (r.kind != CIR_TYPEK_POINTER && r.kind != CIR_TYPEK_REFERENCE
+			    && r.kind != CIR_TYPEK_CONST)
+				continue;
+			if (!r.type_id || by_id.count(r.type_id))
+				continue;
+			DataDef *operand = NULL;
+			if (r.ref0 < MADC_TYPEID_PRIMITIVE_END)
+				operand = madc_type_from_id(r.ref0);
+			else {
+				std::map<uint32_t, DataDef *>::iterator it = by_id.find(r.ref0);
+				if (it != by_id.end()) operand = it->second;
+			}
+			if (!operand)
+				continue;		// operand not ready this round (or ever)
+			DataDef *d;
+			if (r.kind == CIR_TYPEK_REFERENCE)
+				d = new DataDefREF(*operand);
+			else if (r.kind == CIR_TYPEK_CONST)
+				d = new DataDefCONST(*operand);
+			else
+				d = new DataDefPTR(*operand);
+			_mat_storage.push_back(d);
+			by_id[r.type_id] = d;
+			dprog = true;
+		}
+	}
+
 	// Pass 2: fill each struct's members VERBATIM (offset / count / access /
 	// origin / bitfield loaded as stored — no finalize, no re-derivation),
 	// swizzling each member's type id -> DataDef* (primitive via

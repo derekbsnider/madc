@@ -155,7 +155,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // eight (tokens / decl index / PP exports / edges) plus the two container-
 // global segments (branch macros, canonical order). The version feeds the
 // context hash, so v1 readers reject v2 containers and vice versa.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 8 };	// v8: an INLINE method carries its body location (body_unit/body_idx + CIR_METHF_HAS_BODY) so load reconnects the method to its Tree-1 func-def subtree (copied into the consumer's Tree-2 on use, like a template instantiation); a LIBRARY method has no func-def in the AST -> declaration-only + emit_symbol (unchanged); v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 9 };	// v9: derived-type records (CIR_TYPEK_POINTER/REFERENCE/CONST, ref0 = operand typeid) so a pointer/reference/const member (or method param/return, or typedef underlying) serializes as a table entry + swizzles back on load, instead of bailing the whole aggregate; v8: an INLINE method carries its body location (body_unit/body_idx + CIR_METHF_HAS_BODY) so load reconnects the method to its Tree-1 func-def subtree (copied into the consumer's Tree-2 on use, like a template instantiation); a LIBRARY method has no func-def in the AST -> declaration-only + emit_symbol (unchanged); v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
@@ -250,11 +250,18 @@ enum : uint32_t { CIR_FOREST_PP_VARIADIC = 1u << 8 };
 // context hash like the primitive slots).
 enum : uint32_t
 {
-	CIR_TYPEK_OTHER   = 0,	// opaque: name-only (no reconstructable content)
-	CIR_TYPEK_TYPEDEF = 1,	// alias -> ref0 = underlying typeid
-	CIR_TYPEK_STRUCT  = 2,	// DataDefSTRUCT: members[]
-	CIR_TYPEK_UNION   = 3,	// DataDefSTRUCT union_layout: members[]
-	CIR_TYPEK_CLASS   = 4	// DataDefCLASS: members[] + bases[] (+ vtable meta)
+	CIR_TYPEK_OTHER     = 0,	// opaque: name-only (no reconstructable content)
+	CIR_TYPEK_TYPEDEF   = 1,	// alias -> ref0 = underlying typeid
+	CIR_TYPEK_STRUCT    = 2,	// DataDefSTRUCT: members[]
+	CIR_TYPEK_UNION     = 3,	// DataDefSTRUCT union_layout: members[]
+	CIR_TYPEK_CLASS     = 4,	// DataDefCLASS: members[] + bases[] (+ vtable meta)
+	// Derived types — the SAME "table entry, pointer field as an id, swizzle on
+	// load" shape as a typedef: ref0 = the operand's typeid, no member/base payload.
+	// Load reconstructs via new DataDefPTR/REF/CONST(operand) in a fixpoint
+	// (operand-before-derived; handles chains T** and self-referential Node*).
+	CIR_TYPEK_POINTER   = 5,	// DataDefPTR:   ref0 = pointee typeid
+	CIR_TYPEK_REFERENCE = 6,	// DataDefREF:   ref0 = referee typeid
+	CIR_TYPEK_CONST     = 7		// DataDefCONST: ref0 = unqualified typeid
 };
 
 // Verbatim-layout flags on a type record (loaded as-is; no re-derivation).

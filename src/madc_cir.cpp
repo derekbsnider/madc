@@ -756,25 +756,86 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 // The container stays Program-blind; this is the Program->payload bridge (the same
 // seam as cir_forest_fill_pack_payloads). Names intern into the ACTIVE pool that
 // cir_forest_write serializes.
+// Ensure `dd` — a type reached as a member / method-param / method-return /
+// typedef-underlying of a serialized aggregate — will RESOLVE on load, recording a
+// derived-type record (pointer / reference / const) for it if needed, transitively.
+// A pinned primitive (incl. void*/char*/int*) resolves via madc_type_from_id; an
+// already-`recorded` aggregate (or `self`, the aggregate being recorded right now,
+// so a self-referential `Node *next` works) resolves via the load swizzle map; a
+// derived type gets its OWN record (kind + ref0 = operand typeid, no member payload)
+// after its operand is ensured — the SAME "serialize the table entry, pointer field
+// as an id, swizzle on load" discipline as a typedef record, one mechanism widened
+// (NOT a parallel format). Returns false — the caller then bails/skips — when the
+// type is an UNRECORDED aggregate (the outer fixpoint retries it) or an opaque type
+// with no reconstructable content. Any derived record emitted for a type whose
+// aggregate later bails is a harmless orphan (deduped by `recorded`, unreferenced on
+// load); records are order-independent (load reconstructs derived types in a
+// fixpoint), so emitting mid-serialize is safe.
+static bool cir_forest_record_derived(DataDef *dd, DataDef *self,
+				      madc::dis::intern_table &pool,
+				      std::set<DataDef *> &recorded,
+				      cir_frozen_forest &f)
+{
+	if (!dd)
+		return false;
+	uint32_t tid = madc_type_id_for(dd);
+	if (!tid)
+		return false;
+	if (tid < MADC_TYPEID_PRIMITIVE_END)	// pinned primitive (void*/char*/int* included)
+		return true;
+	if (dd == self || recorded.count(dd))	// self-reference, or already has a record
+		return true;
+
+	// A derived type over an operand. DataDefREF IS-A DataDefPTR, so test the
+	// reference first; anything that is none of these is an unrecorded aggregate
+	// (fixpoint retries) or opaque (not serializable here).
+	uint32_t kind;
+	DataDef *operand;
+	if (DataDefREF *rf = dynamic_cast<DataDefREF *>(dd)) {
+		kind = CIR_TYPEK_REFERENCE; operand = rf->base_type;
+	} else if (DataDefPTR *pt = dynamic_cast<DataDefPTR *>(dd)) {
+		kind = CIR_TYPEK_POINTER;   operand = pt->base_type;
+	} else if (DataDefCONST *cs = dynamic_cast<DataDefCONST *>(dd)) {
+		kind = CIR_TYPEK_CONST;     operand = cs->base_type;
+	} else {
+		return false;
+	}
+	if (!operand || !cir_forest_record_derived(operand, self, pool, recorded, f))
+		return false;			// operand not (yet) serializable
+
+	cir_forest_type_record r;
+	memset(&r, 0, sizeof(r));
+	r.type_id = tid;
+	r.kind    = kind;
+	r.name_id = pool.intern(dd->name);
+	r.ref0    = madc_type_id_for(operand);
+	f.type_records.push_back(r);
+	recorded.insert(dd);
+	return true;
+}
+
 // Serialize sdd's data members into `payload` as VERBATIM cir_forest_type_member
 // records (offset / count / access / origin / bitfield are the parser's computed
-// values, loaded as-is on the far side). A member type rides as a typeid: a
-// pinned primitive, or an aggregate already in `recorded`. Returns false (leaving
-// `payload` partial, which the caller discards) if any member type is not yet
-// serializable — so the caller skips the whole aggregate rather than mis-linking.
-// Shared by the struct and class paths.
+// values, loaded as-is on the far side). A member type rides as a typeid: a pinned
+// primitive, an aggregate already in `recorded`, or a derived type (pointer /
+// reference / const) recorded on demand by cir_forest_record_derived. Returns false
+// (leaving `payload` partial, which the caller discards) if any member type is not
+// yet serializable — so the caller skips the whole aggregate rather than mis-linking.
+// Shared by the struct and class paths; `self` is the aggregate being recorded (for
+// a self-referential pointer) and `f` receives any derived records.
 static bool cir_forest_serialize_members(DataDefSTRUCT *sdd,
 					 madc::dis::intern_table &pool,
-					 const std::set<DataDef *> &recorded,
+					 std::set<DataDef *> &recorded,
+					 cir_frozen_forest &f,
 					 std::vector<uint32_t> &payload)
 {
 	for (size_t m = 0; m < sdd->members.size(); ++m) {
 		DataDef *mdd = sdd->members[m].second;
 		if (!mdd)
 			return false;
-		uint32_t mtid = madc_type_id_for(mdd);
-		if (!(mtid && (mtid < MADC_TYPEID_PRIMITIVE_END || recorded.count(mdd))))
+		if (!cir_forest_record_derived(mdd, sdd, pool, recorded, f))
 			return false;
+		uint32_t mtid = madc_type_id_for(mdd);
 		cir_forest_type_member tm;
 		memset(&tm, 0, sizeof(tm));
 		tm.name_id = pool.intern(sdd->members[m].first);
@@ -844,16 +905,16 @@ static bool cir_forest_serialize_bases(DataDefCLASS *cdd,
 // class. All serialized classes are non-polymorphic (the freeze bails on a vtable),
 // so every method here is non-virtual.
 static void cir_forest_append_methods(DataDefCLASS *cdd, madc::dis::intern_table &pool,
-				      const std::set<DataDef *> &recorded,
+				      std::set<DataDef *> &recorded,
 				      cir_frozen_forest &f,
 				      uint32_t &method_begin, uint32_t &method_count)
 {
 	static const size_t MSTRIDE = sizeof(cir_forest_type_method) / sizeof(uint32_t);
+	// A param / return type resolves like a member: primitive, recorded aggregate,
+	// or a derived type recorded on demand (self = cdd, for a method taking/returning
+	// its own class by pointer/reference).
 	auto serializable = [&](DataDef *dd) -> bool {
-		if (!dd)
-			return false;
-		uint32_t t = madc_type_id_for(dd);
-		return t && (t < MADC_TYPEID_PRIMITIVE_END || recorded.count(dd));
+		return cir_forest_record_derived(dd, cdd, pool, recorded, f);
 	};
 	std::vector<cir_forest_type_method> recs;
 	std::vector<std::vector<uint32_t> > params;	// explicit param typeids per method
@@ -939,7 +1000,7 @@ static bool cir_forest_record_aggregate(DataDefSTRUCT *sdd, DataDefCLASS *cdd,
 	if (cdd && !cir_forest_serialize_bases(cdd, recorded, bpayload))
 		return false;
 	std::vector<uint32_t> payload;
-	if (!cir_forest_serialize_members(sdd, pool, recorded, payload))
+	if (!cir_forest_serialize_members(sdd, pool, recorded, f, payload))
 		return false;
 
 	cir_forest_type_record r;
@@ -1047,9 +1108,9 @@ static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
 	DataDef *underlying = &(*dti)->definition;
 	if (!underlying)
 	    continue;
-	uint32_t uid = madc_type_id_for(underlying);
-	if (!(uid && (uid < MADC_TYPEID_PRIMITIVE_END || recorded.count(underlying))))
+	if (!cir_forest_record_derived(underlying, NULL, pool, recorded, f))
 	    continue;			// underlying not resolvable on load — skip
+	uint32_t uid = madc_type_id_for(underlying);
 	cir_forest_type_record r;
 	memset(&r, 0, sizeof(r));
 	r.kind    = CIR_TYPEK_TYPEDEF;

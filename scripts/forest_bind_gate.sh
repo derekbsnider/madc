@@ -279,5 +279,43 @@ int main() { Chain c; c.n = 4; printf("chain=%d\n", c.first()); return 0; }
 EOF
 run_case fwd "chain=41"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd grove headers bound (no re-parse), output == live == g++"
+# --- case: ptr (pointer-member serialization) — a struct whose members are all
+#     NON-pinned pointers: a scalar pointer (double*), a pointer to a SIBLING
+#     aggregate (struct Point*), and a SELF-referential pointer (struct Node*).
+#     None is a pinned pointer slot (void*/char*/int*), so before v9 the freeze
+#     bailed on the first such member and dropped the whole struct — a bound member
+#     access then failed "Unidentified member". v9 records each as a derived-type
+#     record (CIR_TYPEK_POINTER, ref0 = pointee typeid) and the load fixpoint
+#     reconstructs them (the self-reference resolves because Node is allocated
+#     before its self-pointer). Proves pointer members bind cross-process, the
+#     primitive the std::string / std::vector corpus classes were blocked on.
+cat > tmp/fbgate_ptr.h <<'EOF'
+#ifndef FBGATE_PTR_H
+#define FBGATE_PTR_H
+struct Point { int x; int y; };
+struct Node { int v; double *dp; struct Node *next; struct Point *pp; };
+#endif
+EOF
+cat > tmp/fbgate_ptr_producer.cpp <<'EOF'
+#include <fbgate_ptr.h>
+int main() { struct Node n; n.v = 0; n.dp = 0; n.next = 0; n.pp = 0; return n.v; }
+EOF
+cat > tmp/fbgate_ptr_consumer.cpp <<'EOF'
+#include <fbgate_ptr.h>
+#include <cstdio>
+int main()
+{
+    struct Point p; p.x = 3; p.y = 4;
+    struct Node a, b;
+    double d = 2.5;
+    a.v = 10; a.dp = &d; a.next = &b; a.pp = &p;
+    b.v = 20; b.dp = 0; b.next = 0; b.pp = 0;
+    printf("v=%d dv=%.1f nv=%d px=%d sz=%zu\n",
+           a.v, *a.dp, a.next->v, a.pp->x, sizeof(struct Node));
+    return 0;
+}
+EOF
+run_case ptr "v=10 dv=2.5 nv=20 px=3 sz=32"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr grove headers bound (no re-parse), output == live == g++"
 exit 0

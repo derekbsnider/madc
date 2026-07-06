@@ -220,9 +220,11 @@ to `main`**; current bind emits them as `import`s (bodies missing) → link fail
 - **External / system methods** (the corpus, e.g. `std::string::size`): even in
   PARSE mode these carry `emit_symbol` (a real libstdc++ Itanium symbol) and NO
   body — the call links to the `.so`. So a loaded decl-only FuncDef + `emit_symbol`
-  ALREADY matches parse. Correct as landed. What's still missing is serializing the
-  corpus classes AT ALL — blocked on **pointer-member serialization** (std::string/
-  vector have pointer members; the member pass currently bails). Task #10.
+  ALREADY matches parse. Correct as landed. **Pointer-member serialization LANDED
+  (format v9, 2026-07-06, task #10)** — see the block below — so a corpus class's
+  pointer members (`std::string`/`std::vector` internals) now serialize; what remains
+  for the corpus is exercising their ctors / dtors / template instantiations end to
+  end (a follow-on that builds ON this primitive, not a blocker for it).
 - **Inline user methods** (e.g. `Counter::get`): in PARSE mode these produce a
   full func-def-WITH-BODY in the consumer's one module. **✅ LANDED (v8, 2026-07-05):**
   the save now records each method's Tree-1 body location and the load reconnects it,
@@ -264,6 +266,37 @@ end to end, with NO re-parse / NO separate module / NO new machinery beyond the 
   default (a silent miscompile). Gates: `forest_bind_gate` `method` (`get=15`) + `fwd`
   (`chain=41`, forward/mutual ref) both **MIR byte-identical to live**; `test_cir_freeze`
   18/296; fulltest green.
+
+**✅ LANDED — POINTER-member serialization (format v9, 2026-07-06, task #10).** A
+member / method-param / method-return / typedef-underlying type that is a pointer,
+reference, or const-qualified type is a `DataDefPTR` / `DataDefREF` / `DataDefCONST`
+over an operand. Before v9 the member pass BAILED on any such type that was not a
+pinned pointer slot (`void*`/`char*`/`int*`), dropping the WHOLE aggregate — a bound
+member access then failed `Unidentified member`. v9 serializes each as its OWN table
+entry — a derived-type record `CIR_TYPEK_POINTER` / `REFERENCE` / `CONST` with `ref0`
+= the operand's typeid and no member payload — the SAME "table entry, pointer field
+as an id, swizzle on load" shape as a typedef record (one mechanism widened, NOT a
+parallel format).
+- **SAVE** (`cir_forest_record_derived`, madc_cir.cpp): on a member/param/return/
+  underlying type that is neither a pinned primitive nor an already-`recorded`
+  aggregate, record the derived type transitively (recurse to its operand first; a
+  self-referential `Node *next` is allowed because the enclosing aggregate counts as
+  recordable), deduped globally by `recorded`. An unrecorded aggregate still bails →
+  the outer fixpoint retries (unchanged). This replaces the old inline
+  primitive-or-recorded check in `cir_forest_serialize_members` and the method
+  param/return `serializable` lambda.
+- **LOAD** (`materialize_types` pass 1b): a fixpoint reconstructs each derived record
+  via `new DataDefPTR/REF/CONST(operand)`, operand-before-derived — so chains
+  (`T**`, `const T*`) and self-references resolve (the self-pointer's `base_type` IS
+  the aggregate allocated in pass 1). Members/params/typedef-underlying then swizzle
+  through `by_id` exactly as before.
+- The normal compile path is UNTOUCHED — every changed function is reachable only via
+  `--freeze` / `--forest-bind` — so the gcc-torture failset is byte-identical by
+  construction (verified: 50 names, 0 timeouts).
+- Gates: `forest_bind_gate` `ptr` case (self-ref + sibling-aggregate + scalar
+  `double*`; `v=10 dv=2.5 nv=20 px=3 sz=32` == live == g++, and `MADC_DUMP_MIR`
+  byte-identical to live); `test_cir_freeze` 19/310 (a self-reference reconstructs to
+  the SAME object: `selfp->base_type == node`); fulltest green.
 
 NOTE (freeze fidelity, orthogonal): the `struct`-keyword-with-base `sizeof` bug was
 FIXED (`6f008d0c`) — see the memory. Residual: exact vbase-diamond member offsets vs
