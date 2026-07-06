@@ -152,22 +152,40 @@ That flat-POD substrate is the long-term endgame, NOT this slice.)
   lists the scalar global with `CIR_GLOBALF_SCALAR_INIT` + `init_value == 64`); fulltest exit-0 / all
   ratchets+oracles GREEN; flush is a no-op on a live compile → normal path untouched, torture
   byte-identical by construction. RESULT: the bound-`<string>` "only in LIVE" data set dropped 3 → 1.
-- **NEXT — TWO residual whole-`<string>`-TU byte-identity gaps (down from v13's three).** The
-  bound-`<string>` `MADC_DUMP_MIR` "only in LIVE" set is now just **(1b) `in_place`** (a `bss 1` data
-  item) — and **CORRECTED BY GROUND TRUTH (probe, 2026-07-06): `in_place` is NOT a defaulted-ctor gap.**
-  Live `in_place_t` has `has_user_ctor=1, ctors=1` (a REAL empty-body nullary ctor: `defaulted=0
-  declonly=0 emitsym=''`), identical to `piecewise_construct_t`/`allocator_arg_t`. But `in_place` emits
-  via `try_implicit_copy_construct` (`args=1`, `class_trivially_copyable`) as a 1-byte self-copy — **NO
-  ctor call, NO ctor body.** The producer value-inits `in_place` (`{}`) so its ctor body is never emitted
-  → not in `funcdef_locs` → v12 can't serialize it (and it isn't needed). The faithful fix is NOT
-  serializing a ctor; it needs `in_place`'s **`{}` initializer FORM** serialized (shared root with the
-  piecewise/allocator init-SHAPE divergence: v13's `decl=NULL` default-ctor synthesis constructs directly
-  on the global, while live builds a stack temp then copies). Real slice (task #22) = serialize file-scope
-  global INITIALIZER forms. **(2) synth-dtor set/order** — bind synthesizes trivial `X___dtor` bodies for
-  MANY restored classes (`_Save_errno`, `__new_allocator_*`, `allocator_*`, wide-char `basic_string_*`)
-  that live's parse never emits (task #20). The `strbind` gate stays runtime-correctness (+ the v14 scalar
-  slice check) until both close; then it can assert whole-TU byte-identity. Reducers staged:
-  `tmp/cs_producer.cpp` / `tmp/cs_consumer.cpp`.
+- **v15 LANDED (2026-07-06, task #20) — serialize a class's OWN dtor even when it has neither an
+  external `emit_symbol` NOR a producer-emitted body; kills the synth-dtor overshoot.** GROUND TRUTH
+  (Pass-1.6 probe): the "only in BIND" set was 11 spurious trivial `X___dtor` func-defs
+  (`_Save_errno`, `__new_allocator_*`, `allocator_*`, wide-char `basic_string_char16/32_t`) — and the
+  discriminator was NOT struct_map membership (bind's set is a SUBSET of live's) but the `user_dtor`
+  predicate: LIVE has `class_own_dtor` non-NULL (a `~` method_map key) → Pass 1.6 synthesizes NO
+  `Cls___dtor`; BIND had it NULL → Pass 1.6 synthesized a spurious trivial dtor. Root cause: v12's
+  is_special skip (`emit_symbol.empty() && !has_body`) dropped a class's inline dtor the *producer*
+  never emitted (unreferenced) — so the restored class looked dtor-less. Fix (freeze-side, one line):
+  do NOT skip a **dtor** in that state — serialize it DECLARATION-ONLY (`CIR_METHF_DTOR`, no body, no
+  symbol); load re-keys `method_map` with the `~` tag → `class_own_dtor` finds it → no synth, matching
+  live; it is emitted by no pass (declaration_only + unreferenced), also matching live. Ctors/operators
+  in the same state still skip (a ctor's `{}`/trivial construction is the separate #22 concern; 145
+  skipped ctors/ops verified untouched). Format bumped **v14 → v15** (no layout change — the freeze
+  CONTENT changed, so a stale v14 container lacking these dtor records would re-introduce the overshoot).
+  RESULT: the bound-`<string>` func + export sets now MATCH live EXACTLY (29 == 29, zero either
+  direction); the only remaining "only in LIVE" item is the `in_place` data item (#22). Gated:
+  `forest_bind_gate` 11/11 (strbind now ALSO asserts NO spurious `_Save_errno___dtor`); `test_cir_freeze`
+  25/390; fulltest exit-0 / all ratchets+oracles+self-exe GREEN; freeze-only reach (cir_forest_append_methods
+  runs only under `--freeze`) → normal path untouched, torture byte-identical by construction.
+- **NEXT — ONE residual whole-`<string>`-TU byte-identity gap (down from v14's two; #20 closed it).** The
+  bound-`<string>` `MADC_DUMP_MIR` "only in LIVE" set is now just the **`in_place` data item (task #22)** —
+  and **CORRECTED BY GROUND TRUTH (probe, 2026-07-06): `in_place` is NOT a defaulted-ctor gap.** Live
+  `in_place_t` has `has_user_ctor=1, ctors=1` (a REAL empty-body nullary ctor: `defaulted=0 declonly=0
+  emitsym=''`), identical to `piecewise_construct_t`/`allocator_arg_t`. But `in_place` emits via
+  `try_implicit_copy_construct` (`args=1`, `class_trivially_copyable`) as a 1-byte self-copy — **NO ctor
+  call, NO ctor body.** The producer value-inits `in_place` (`{}`) so its ctor body is never emitted → not
+  in `funcdef_locs` → v12 can't serialize it (and it isn't needed). The faithful fix is NOT serializing a
+  ctor; it needs `in_place`'s **`{}` initializer FORM** serialized (shared root with the piecewise/allocator
+  init-SHAPE divergence: v13's `decl=NULL` default-ctor synthesis constructs directly on the global, while
+  live builds a stack temp then copies). Real slice (task #22) = serialize file-scope global INITIALIZER
+  forms. The `strbind` gate stays runtime-correctness (+ the v14 scalar-slice + v15 no-overshoot checks)
+  until #22 closes; then it can assert whole-TU byte-identity. Reducers staged: `tmp/cs_producer.cpp` /
+  `tmp/cs_consumer.cpp`.
 - **Polymorphic classes stay a SEPARATE, explicit boundary** (not folded in): the `_pmr_`
   `basic_string` variant is blocked by the polymorphic `std::pmr::memory_resource` (vtable).
   Serializing vtable/typeinfo is its own slice — a coherent subsystem, not a reactive drop.
@@ -177,10 +195,10 @@ Do the systematic complete-field pass (serialize the whole object, not a subset)
 at a time down the diagnostic's list, each gated byte-identical. No re-parse, no separate
 module, no re-derivation, no parallel format. **A2 (`3e2499ed`), A1 (`14642e78`), v12
 (`e30acb5b`, ctor/dtor/operator serialization + dtor funcdef_map registration), v13
-(class-typed file-scope globals + `__madc_global_init`), and v14 (scalar-const global init
-values) all committed LOCAL — NOT yet pushed** (the pre-v12 5-commit backlog + v12 + v13 + v14
-= 8 unpushed). **Next session: read THIS file + the memory
-`feedback_forest_load_never_reparse` IN FULL first, as always.**
+(class-typed file-scope globals + `__madc_global_init`), v14 (`115db29d`, scalar-const global
+init values), and v15 (dtor-completeness / synth-dtor overshoot fix) all committed LOCAL — NOT
+yet pushed** (the pre-v12 5-commit backlog + v12 + v13 + v14 + v15 = 9 unpushed). **Next session:
+read THIS file + the memory `feedback_forest_load_never_reparse` IN FULL first, as always.**
 
 ---
 

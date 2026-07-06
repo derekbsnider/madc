@@ -438,8 +438,19 @@ if ! grep -Eq "hardware_destructive_interference_size:[[:space:]]+u64[[:space:]]
     rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
     fail "[strbind] bound <string> did NOT emit scalar-const global hardware_destructive_interference_size=64 (v14 regressed)"
 fi
+# Synth-dtor overshoot (#20): a live compile registers each restored class's own dtor
+# (class_own_dtor non-NULL) and synthesizes NO Cls___dtor for it. When the freeze
+# dropped a bodyless/symbolless inline dtor, the restored class looked dtor-less and
+# bind synthesized a spurious trivial dtor a live compile never emits (e.g.
+# _Save_errno___dtor — the consumer never touches _Save_errno). Serializing the dtor
+# declaration-only fixed it. Assert the overshoot stays gone: bind must NOT emit a
+# _Save_errno___dtor func-def (a class the consumer does not use).
+if grep -Eq "^_Save_errno___dtor:[[:space:]]+func" "$strbind_mir"; then
+    rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
+    fail "[strbind] bound <string> emitted a spurious _Save_errno___dtor (synth-dtor overshoot #20 regressed)"
+fi
 rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
-echo "forest_bind_gate: [strbind] OK — std::string bound from <string> grove (no re-parse); construct+assign+size+destroy + scalar-const globals emitted, output == live == g++"
+echo "forest_bind_gate: [strbind] OK — std::string bound from <string> grove (no re-parse); construct+assign+size+destroy + scalar globals emitted + no synth-dtor overshoot, output == live == g++"
 
 echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind grove headers bound (no re-parse), output == live == g++"
 exit 0

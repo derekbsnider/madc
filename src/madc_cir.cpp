@@ -1008,11 +1008,26 @@ static void cir_forest_append_methods(DataDefCLASS *cdd, madc::dis::intern_table
 		if (fd->is_member_template || !fd->template_param_names.empty())
 			continue;
 		if (is_special) {
-			// A ctor/dtor/operator binds by its concrete Itanium emit_symbol
-			// (LIBRARY) or an inline body; without either it is a
-			// defaulted/uninstantiated special member — cleanly lacks.
+			// A ctor/operator binds by its concrete Itanium emit_symbol (LIBRARY)
+			// or an inline body; without either it is a defaulted/uninstantiated
+			// special member — cleanly lacks (a ctor's {}-init / trivial construction
+			// is a separate concern).
+			//
+			// A DTOR is different: its EXISTENCE is load-bearing even when it has
+			// neither symbol nor body. A live parse registers a class's own dtor
+			// (class_own_dtor non-NULL via the "~" method_map key), so Pass 1.6
+			// does NOT synthesize a Cls___dtor for it. Drop the dtor from the freeze
+			// and the restored class looks dtor-less → bind SYNTHESIZES a spurious
+			// trivial Cls___dtor that a live compile never emits (the whole-<string>-TU
+			// "only in BIND" overshoot). So serialize the dtor DECLARATION-ONLY (no
+			// emit_symbol, no body): load re-keys method_map with the "~" tag →
+			// class_own_dtor finds it → no synth dtor, matching live. It is emitted by
+			// no pass (declaration_only + unreferenced), also matching live. (An inline
+			// dtor the producer didn't emit that a consumer DOES destruct is the
+			// general producer-must-emit-inline-bodies gap, orthogonal to this — and
+			// loud, not silent.)
 			bool has_body = f.funcdef_locs.find(mv->name) != f.funcdef_locs.end();
-			if (fd->emit_symbol.empty() && !has_body)
+			if (fd->emit_symbol.empty() && !has_body && !is_dtor)
 				continue;
 		} else if (disp.empty()) {
 			continue;			// a plain method with no display: skip
