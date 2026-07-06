@@ -91,16 +91,23 @@ That flat-POD substrate is the long-term endgame, NOT this slice.)
   Gated: fulltest 680/0/0/16; `forest_bind_gate` 10/10; `test_cir_freeze` **22/347** (new A1 case:
   `std::string` materializes as a namespaced typedef whose underlying is the basic_string<char> product).
 - **NEXT — corpus ctors/dtors + method linking (the full `std::string` BIND).** Type-name
-  serialization is now COMPLETE (A2 = product records; A1 = the `std::string` alias). The gap to
-  an end-to-end bound `std::string s; … s.size()`: declaring `std::string s;` needs its **ctor +
-  dtor** (live puts a `__attribute__((cleanup(_ZNSt…D1Ev)))` on the var — a mangled-direct libstdc++
-  call), and `s.size()` needs its **method** to link. LIBRARY methods link via `emit_symbol` (3d,
-  already correct) — the slice is making a BOUND consumer emit the same ctor/dtor/method calls +
-  cleanup attr as live, byte-identical, WITHOUT re-parsing the header. This is the first slice that
-  is bind-testable end to end for the corpus (so it earns a real `forest_bind_gate` case, not just a
-  materialize unit test). Probe: freeze `<string>`, `--forest-bind` a `std::string` consumer, diff
-  `MADC_DUMP_MIR` vs live. Use the `-v --freeze` freeze-completeness diagnostic to find any remaining
-  dropped members.
+  serialization is now COMPLETE (A2 = product records; A1 = the `std::string` alias). **REPRODUCED
+  (2026-07-06, evidence-backed):** freeze `<string>` (`tmp/cs_producer.cpp`), `--forest-bind` a
+  `std::string s; s="hello"; s.size()` consumer → the TYPE resolves (A1+A2 work) but bind FAILS with
+  `cir error: no matching constructor for call to 'basic_string_char_std__char_traits_char__std__allocator_char_()'`.
+  Live compiles + runs the identical consumer (`len=5`). So the gap is CTORS/DTORS/METHODS, exactly
+  as slice 3d deferred: `cir_forest_append_methods` (madc_cir.cpp ~line 980) SKIPS
+  `disp == cdd->name` (ctor), `disp[0]=='~'` (dtor), and `operator…` — so the product carries NO
+  ctor/dtor. Declaring `std::string s;` selects the default ctor → not found → the untranslatable
+  node. **The slice:** serialize the ctors/dtors (LIBRARY methods → `emit_symbol` mangled Itanium
+  names like `…C1Ev`/`…D1Ev`, the 3d machinery ALREADY handles the symbol+decl; the change is to
+  STOP skipping them and mark the method KIND so load attaches each to the class's ctor/dtor slot,
+  not just `method_map`), then make the BOUND consumer's ctor-selection + dtor-`cleanup` attr emit
+  the SAME MIR as live. Design carefully: how the CIR builder selects a ctor for `std::string s;`
+  and where it reads the class's ctor/dtor set; the `__attribute__((cleanup(…D1Ev)))` on the var.
+  FIRST end-to-end bind-testable corpus slice → it earns a REAL `forest_bind_gate` case (freeze
+  `<string>`, bind a `std::string` consumer, `MADC_DUMP_MIR` byte-identical to live), not just a
+  materialize unit test. Reducers staged in `tmp/cs_producer.cpp` / `tmp/cs_consumer.cpp`.
 - **Polymorphic classes stay a SEPARATE, explicit boundary** (not folded in): the `_pmr_`
   `basic_string` variant is blocked by the polymorphic `std::pmr::memory_resource` (vtable).
   Serializing vtable/typeinfo is its own slice — a coherent subsystem, not a reactive drop.
