@@ -1264,11 +1264,37 @@ static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
 		std::map<uint32_t, size_t>::iterator ri = rec_by_id.find(tid);
 		if (ri == rec_by_id.end())
 		    continue;			// type not serialized (e.g. skipped class)
+		uint32_t rkind = f.type_records[ri->second].kind;
+		uint32_t rname = f.type_records[ri->second].name_id;
+		if (pool.intern(it->first) != rname) {
+		    // A namespaced ALIAS whose key differs from the aggregate's record
+		    // name (e.g. std::string -> basic_string<char,…>, std::wstring, …):
+		    // emit a NAMESPACED typedef record so a bound `std::string` resolves
+		    // to the recorded product. On load materialize_types produces a
+		    // typedef CirRestoredType (ns set, underlying = the product via
+		    // ref0) and forest_restore_decls registers namespace_datatype_map[ns]
+		    // [alias]. Live emits NO `typedef … string;` — the product name is
+		    // used directly — so this restores the parse-time NAME resolution, not
+		    // a C typedef. Only aggregate targets (struct/union/class carry a
+		    // type_id, so ri only finds those) get an alias; ref0 swizzles back to
+		    // the product on load. This is the v10 namespace-stamp mechanism
+		    // widened from "stamp the product's own record" to "also emit the
+		    // product's namespaced aliases", NOT a parallel format.
+		    if (rkind == CIR_TYPEK_STRUCT || rkind == CIR_TYPEK_UNION
+		     || rkind == CIR_TYPEK_CLASS) {
+			cir_forest_type_record tr;
+			memset(&tr, 0, sizeof(tr));
+			tr.kind         = CIR_TYPEK_TYPEDEF;
+			tr.name_id      = pool.intern(it->first);
+			tr.namespace_id = pool.intern(ns);
+			tr.ref0         = tid;		// the recorded aggregate's id
+			f.type_records.push_back(tr);
+		    }
+		    continue;			// key != record name: emitted as an alias (above)
+		}
 		cir_forest_type_record &r = f.type_records[ri->second];
 		if (r.namespace_id)
 		    continue;			// first defining namespace wins
-		if (pool.intern(it->first) != r.name_id)
-		    continue;			// key != record name (aliased/mangled): follow-on
 		r.namespace_id = pool.intern(ns);
 	    }
 	    return false;

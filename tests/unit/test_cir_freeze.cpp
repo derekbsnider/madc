@@ -1482,3 +1482,61 @@ TEST_CASE("Phase 6 A2: std::string's scalar-alias size_type members no longer ba
 	}
 	CHECK(saw_scalar_alias);
 }
+
+// Phase 6 A1: std::string is a NAMESPACED alias (namespace_datatype_map["std"]
+// ["string"]) for the basic_string<char,...> product. The v10 namespace walk
+// STAMPED a product's own record with its defining namespace but SKIPPED an alias
+// whose key != the record name (std::string's key "string" != the product's
+// mangled record name). A1 turns that skip into an EMIT: a namespaced typedef
+// record (name="string", ns="std", ref0=product id). materialize_types then
+// produces a typedef CirRestoredType with ns="std" and underlying = the recorded
+// product, so forest_restore_decls can register namespace_datatype_map["std"]
+// ["string"] and a bound `std::string` resolves to it. (Live emits NO
+// `typedef ... string;` — the product name is used directly — so this restores
+// the parse-time NAME resolution, not a C typedef; the full bind needs the
+// method-linking slice, so A1 is gated here at the materialize level, like A2.)
+TEST_CASE("Phase 6 A1: std::string materializes as a namespaced typedef -> the basic_string<char> product") {
+	std::string main_path = std::string("/tmp/madc_p6a1_main_")
+			      + std::to_string((long)getpid()) + ".cpp";
+	std::string snap_path = std::string("/tmp/madc_p6a1_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include <string>\n"
+		      "int main() { std::string s; return (int)s.size(); }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	const std::vector<CirRestoredType> &types = forest.materialize_types();
+
+	// The `std::string` typedef materializes: kind TYPEDEF, ns "std", and its
+	// underlying is the recorded basic_string<char,...> product (a real aggregate).
+	const CirRestoredType *str_alias = NULL;
+	for (size_t i = 0; i < types.size(); ++i)
+		if (types[i].kind == CIR_TYPEK_TYPEDEF && types[i].name
+		    && !strcmp(types[i].name, "string")
+		    && types[i].ns && !strcmp(types[i].ns, "std"))
+			str_alias = &types[i];
+	REQUIRE(str_alias != nullptr);
+	REQUIRE(str_alias->underlying != nullptr);
+	// The underlying is the char basic_string product (matches the A2 aggregate).
+	CHECK(str_alias->underlying->name
+	      == "basic_string_char_std__char_traits_char__std__allocator_char_");
+}
