@@ -855,9 +855,7 @@ static bool cir_forest_serialize_members(DataDefSTRUCT *sdd,
 			tm.bf_storage_offset = (uint32_t)bf.storage_offset;
 			tm.bf_storage_size   = (uint32_t)bf.storage_size;
 		}
-		const uint32_t *w = (const uint32_t *)&tm;
-		for (size_t k = 0; k < sizeof(tm) / sizeof(uint32_t); ++k)
-			payload.push_back(w[k]);
+		madc::dis::pod_append(payload, tm);
 	}
 	return true;
 }
@@ -883,9 +881,7 @@ static bool cir_forest_serialize_bases(DataDefCLASS *cdd,
 		tb.offset       = (uint32_t)bs.offset;
 		tb.flags        = bs.is_primary ? 2u : 0u;	// is_virtual bailed above
 		tb.access       = bs.access;
-		const uint32_t *w = (const uint32_t *)&tb;
-		for (size_t k = 0; k < sizeof(tb) / sizeof(uint32_t); ++k)
-			bpayload.push_back(w[k]);
+		madc::dis::pod_append(bpayload, tb);
 	}
 	return true;
 }
@@ -909,7 +905,7 @@ static void cir_forest_append_methods(DataDefCLASS *cdd, madc::dis::intern_table
 				      cir_frozen_forest &f,
 				      uint32_t &method_begin, uint32_t &method_count)
 {
-	static const size_t MSTRIDE = sizeof(cir_forest_type_method) / sizeof(uint32_t);
+	const size_t MSTRIDE = madc::dis::pod_words<cir_forest_type_method>();
 	// A param / return type resolves like a member: primitive, recorded aggregate,
 	// or a derived type recorded on demand (self = cdd, for a method taking/returning
 	// its own class by pointer/reference).
@@ -982,11 +978,8 @@ static void cir_forest_append_methods(DataDefCLASS *cdd, madc::dis::intern_table
 		recs[i].param_begin = off;
 		off += (uint32_t)params[i].size();
 	}
-	for (size_t i = 0; i < recs.size(); ++i) {
-		const uint32_t *w = (const uint32_t *)&recs[i];
-		for (size_t k = 0; k < MSTRIDE; ++k)
-			f.type_payload.push_back(w[k]);
-	}
+	for (size_t i = 0; i < recs.size(); ++i)
+		madc::dis::pod_append(f.type_payload, recs[i]);
 	for (size_t i = 0; i < params.size(); ++i)
 		f.type_payload.insert(f.type_payload.end(), params[i].begin(), params[i].end());
 }

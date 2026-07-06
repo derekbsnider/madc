@@ -67,6 +67,25 @@ C++ first, C shim last, script binding via embedded header:
 
 ## Step 1 (near-term, the helper-sharing refactor) — the entry point
 
+**✅ LANDED (2026-07-06).** `include/madcdis/pod_record.h` — the first public
+`madc::dis` serialization primitive: `pod_words<T>()` (record stride in uint32
+words), `pod_append(buf, rec) -> off` (append a POD record's words, return its
+start word offset), `pod_read(buf, off, out) -> bool` (bounds-checked read at a
+word offset). Header-only templates, DataDef-agnostic, `static_assert` that the
+record is a whole number of uint32 words. The forest save side
+(`cir_forest_serialize_members` / `_bases` / `_append_methods`, madc_cir.cpp) and
+load side (the member / base / method reads in `CirFrozenForest::materialize_types`,
+cir_freeze.cpp) now go through it — the hand-rolled copy loop + offset/bounds
+arithmetic is gone. The madc-side `type_id → DataDef*` swizzle is extracted as
+`forest_swizzle_type` (a file-static in cir_freeze.cpp, DataDef-aware, NOT a `dis`
+export), replacing the ~6 inline `primitive-or-by_id` lookups (pass-1b operand,
+member type, base type, method return, method param, typedef underlying).
+Round-trip unit test: `tests/unit/test_pod_record.cpp`. Byte-identity held across
+every gate (see below) — the wire format is unchanged, so #13 builds on the shared
+primitive. `_record_derived` was noted here as a save site but records into the
+typed `type_records` vector (bulk-`memcpy`'d whole), not the flattened uint32
+payload, so it needs no per-record codec.
+
 The forest save/load repeats two **general, DataDef-agnostic** patterns that are
 the natural first `madc::dis` serialization primitive:
 

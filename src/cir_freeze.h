@@ -64,6 +64,7 @@
 #include "cir_node.h"
 #include "madcdis/intern_table.h"
 #include "madcdis/snapshot.h"
+#include "madcdis/pod_record.h"	// pod_append / pod_read / pod_words — the fixed-stride record codec
 
 // Consumer-defined segment kinds for the content-blind snapshot container
 // (a container may hold several logical payloads; the kind is the contract).

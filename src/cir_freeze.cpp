@@ -1118,14 +1118,29 @@ const char *CirFrozenForest::unit_name(uint32_t unit) const
 	return pool_cstr(_units[unit].unit_name_id, slen);
 }
 
+// Swizzle a serialized typeid back to its DataDef* on load: a pinned primitive
+// (id < MADC_TYPEID_PRIMITIVE_END) resolves process-invariantly via
+// madc_type_from_id; any other id is a forest record, found in by_id (populated
+// by materialize_types passes 1 / 1b). NULL if not (yet) resolvable. This is the
+// one place the "primitive-or-by_id" lookup lives — DataDef-aware, so it stays on
+// the madc side (not a madc::dis export), but shared across every member / base /
+// method / typedef reference the way pod_read is shared across every POD read.
+static DataDef *forest_swizzle_type(uint32_t tid,
+				    const std::map<uint32_t, DataDef *> &by_id)
+{
+	if (tid < MADC_TYPEID_PRIMITIVE_END)
+		return madc_type_from_id(tid);
+	std::map<uint32_t, DataDef *>::const_iterator it = by_id.find(tid);
+	return it != by_id.end() ? it->second : NULL;
+}
+
 const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 {
 	if (_types_materialized)
 		return _restored;
 	_types_materialized = true;
 
-	static const size_t MSTRIDE =
-		sizeof(cir_forest_type_member) / sizeof(uint32_t);
+	const size_t MSTRIDE = madc::dis::pod_words<cir_forest_type_member>();
 
 	// Pass 1: allocate a DataDef object per struct/union record BEFORE filling
 	// any, so member type ids (which may forward-reference a later record)
@@ -1168,13 +1183,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 				continue;
 			if (!r.type_id || by_id.count(r.type_id))
 				continue;
-			DataDef *operand = NULL;
-			if (r.ref0 < MADC_TYPEID_PRIMITIVE_END)
-				operand = madc_type_from_id(r.ref0);
-			else {
-				std::map<uint32_t, DataDef *>::iterator it = by_id.find(r.ref0);
-				if (it != by_id.end()) operand = it->second;
-			}
+			DataDef *operand = forest_swizzle_type(r.ref0, by_id);
 			if (!operand)
 				continue;		// operand not ready this round (or ever)
 			DataDef *d;
@@ -1208,16 +1217,9 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 		bool ok = true;
 		for (uint32_t m = 0; m < r.member_count; ++m) {
 			size_t base = (size_t)r.member_begin + (size_t)m * MSTRIDE;
-			if (base + MSTRIDE > _type_payload.size()) { ok = false; break; }
 			cir_forest_type_member tm;
-			memcpy(&tm, &_type_payload[base], sizeof(tm));
-			DataDef *mdd = NULL;
-			if (tm.type_id < MADC_TYPEID_PRIMITIVE_END)
-				mdd = madc_type_from_id(tm.type_id);
-			else {
-				std::map<uint32_t, DataDef *>::iterator it = by_id.find(tm.type_id);
-				if (it != by_id.end()) mdd = it->second;
-			}
+			if (!madc::dis::pod_read(_type_payload, base, tm)) { ok = false; break; }
+			DataDef *mdd = forest_swizzle_type(tm.type_id, by_id);
 			uint32_t mnlen = 0;
 			const char *mnm = pool_cstr(tm.name_id, mnlen);
 			if (!mdd || !mnm) { ok = false; break; }
@@ -1255,18 +1257,14 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 			cdd->has_user_dtor      = (r.flags & CIR_TYPEF_USER_DTOR) != 0;
 			cdd->has_vtable         = (r.flags & CIR_TYPEF_HAS_VTABLE) != 0;
 			cdd->has_vptr_slot      = (r.flags & CIR_TYPEF_HAS_VPTR) != 0;
-			static const size_t BSTRIDE =
-				sizeof(cir_forest_type_base) / sizeof(uint32_t);
+			const size_t BSTRIDE = madc::dis::pod_words<cir_forest_type_base>();
 			bool bok = true;
 			for (uint32_t b = 0; b < r.base_count; ++b) {
 				size_t bb = (size_t)r.base_begin + (size_t)b * BSTRIDE;
-				if (bb + BSTRIDE > _type_payload.size()) { bok = false; break; }
 				cir_forest_type_base tb;
-				memcpy(&tb, &_type_payload[bb], sizeof(tb));
-				std::map<uint32_t, DataDef *>::iterator bi =
-					by_id.find(tb.base_type_id);
-				DataDefCLASS *bc = bi != by_id.end()
-					? dynamic_cast<DataDefCLASS *>(bi->second) : NULL;
+				if (!madc::dis::pod_read(_type_payload, bb, tb)) { bok = false; break; }
+				DataDefCLASS *bc = dynamic_cast<DataDefCLASS *>(
+					forest_swizzle_type(tb.base_type_id, by_id));
 				if (!bc) { bok = false; break; }
 				BaseSpec bs;
 				bs.base       = bc;
@@ -1287,22 +1285,13 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 			// method's body rides the grove (emitted by the producer), an external
 			// method binds emit_symbol — so the FuncDef is declaration_only (the
 			// consumer emits no body; the call links to the grove def / real symbol).
-			static const size_t METHSTRIDE =
-				sizeof(cir_forest_type_method) / sizeof(uint32_t);
+			const size_t METHSTRIDE = madc::dis::pod_words<cir_forest_type_method>();
 			for (uint32_t mi = 0; mi < r.method_count; ++mi) {
 				size_t mb = (size_t)r.method_begin + (size_t)mi * METHSTRIDE;
-				if (mb + METHSTRIDE > _type_payload.size())
-					break;
 				cir_forest_type_method tm;
-				memcpy(&tm, &_type_payload[mb], sizeof(tm));
-				DataDef *ret = NULL;
-				if (tm.ret_type_id < MADC_TYPEID_PRIMITIVE_END)
-					ret = madc_type_from_id(tm.ret_type_id);
-				else {
-					std::map<uint32_t, DataDef *>::iterator it =
-						by_id.find(tm.ret_type_id);
-					if (it != by_id.end()) ret = it->second;
-				}
+				if (!madc::dis::pod_read(_type_payload, mb, tm))
+					break;
+				DataDef *ret = forest_swizzle_type(tm.ret_type_id, by_id);
 				uint32_t mnl = 0, mdl = 0;
 				const char *mnm = pool_cstr(tm.name_id, mnl);
 				const char *mdp = pool_cstr(tm.display_id, mdl);
@@ -1320,15 +1309,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 				for (uint32_t p = 0; p < tm.param_count; ++p) {
 					size_t pb = (size_t)tm.param_begin + p;
 					if (pb >= _type_payload.size()) { pok = false; break; }
-					uint32_t ptid = _type_payload[pb];
-					DataDef *pd = NULL;
-					if (ptid < MADC_TYPEID_PRIMITIVE_END)
-						pd = madc_type_from_id(ptid);
-					else {
-						std::map<uint32_t, DataDef *>::iterator it =
-							by_id.find(ptid);
-						if (it != by_id.end()) pd = it->second;
-					}
+					DataDef *pd = forest_swizzle_type(_type_payload[pb], by_id);
 					if (!pd) { pok = false; break; }
 					fd->parameters.push_back(pd);
 				}
@@ -1384,13 +1365,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 		const char *nm = pool_cstr(r.name_id, nlen);
 		if (!nm)
 			continue;
-		DataDef *underlying = NULL;
-		if (r.ref0 < MADC_TYPEID_PRIMITIVE_END)
-			underlying = madc_type_from_id(r.ref0);
-		else {
-			std::map<uint32_t, DataDef *>::iterator it = by_id.find(r.ref0);
-			if (it != by_id.end()) underlying = it->second;
-		}
+		DataDef *underlying = forest_swizzle_type(r.ref0, by_id);
 		if (!underlying)
 			continue;
 		uint32_t nslen = 0;
