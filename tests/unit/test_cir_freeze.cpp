@@ -1414,3 +1414,71 @@ TEST_CASE("Phase 6 slice 3d: a class's non-virtual methods reconstruct into meth
 	CHECK(af->has_forest_body);
 	CHECK(!af->declaration_only);
 }
+
+// Phase 6 A2: a member whose type is a SCALAR-primitive typedef alias given a
+// distinct PROJECT id at instantiation (std::string's size_type == unsigned long,
+// materialized fresh by tsubst rather than aliased to the pinned primitive) used to
+// make cir_forest_record_derived return false, dropping the WHOLE aggregate — so the
+// real std::string product basic_string<char,...> never materialized. A scalar emits
+// SOLELY from its rawtype (append_type_specs; verified: live emits `unsigned long`,
+// no `size_type` typedef), so it is byte-identical to the pinned primitive of that
+// rawtype; the freeze now serializes such a member as the pinned id
+// (forest_serialize_type_id) and load resolves it via madc_type_from_id with NO
+// record. This gates the fix on the REAL corpus target — a minimal .h can't
+// reproduce the distinct alias (madc resolves a directly-parsed typedef to the
+// primitive; only tsubst produces the fresh copy).
+TEST_CASE("Phase 6 A2: std::string's scalar-alias size_type members no longer bail the aggregate") {
+	std::string main_path = std::string("/tmp/madc_p6a2_main_")
+			      + std::to_string((long)getpid()) + ".cpp";
+	std::string snap_path = std::string("/tmp/madc_p6a2_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include <string>\n"
+		      "int main() { std::string s; return (int)s.size(); }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	// The real std::string product (char + std::allocator<char>, NOT the pmr or
+	// wide-char variants) now materializes — before A2 its size_type members made
+	// the aggregate bail, so it was never in the type records at all.
+	DataDefSTRUCT *str = NULL;
+	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	for (size_t i = 0; i < types.size(); ++i)
+		if (types[i].name && !strcmp(types[i].name,
+			"basic_string_char_std__char_traits_char__std__allocator_char_"))
+			str = dynamic_cast<DataDefSTRUCT *>(types[i].dd);
+	REQUIRE(str != nullptr);			// aggregate recorded + materialized
+
+	// Every member resolved (a dropped scalar-alias would leave a NULL type) and
+	// the size_type members resolve to an 8-byte integer (the pinned unsigned long).
+	REQUIRE(str->members.size() >= 2);
+	bool saw_scalar_alias = false;
+	for (size_t m = 0; m < str->members.size(); ++m) {
+		REQUIRE(str->members[m].second != nullptr);
+		if (str->members[m].first == "_M_string_length") {
+			DataDef *mt = str->members[m].second;
+			CHECK(mt->is_integer());
+			CHECK(mt->size == 8);
+			saw_scalar_alias = true;
+		}
+	}
+	CHECK(saw_scalar_alias);
+}

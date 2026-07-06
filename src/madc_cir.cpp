@@ -756,6 +756,57 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 // The container stays Program-blind; this is the Program->payload bridge (the same
 // seam as cir_forest_fill_pack_payloads). Names intern into the ACTIVE pool that
 // cir_forest_write serializes.
+// A btSimple scalar arithmetic type that is NOT one of the pinned primitive
+// DataDef objects — a class-scope typedef alias resolved at instantiation to a
+// fresh DataDef (e.g. std::string::size_type == unsigned long, given a distinct
+// PROJECT id) — is byte-identical to the pinned primitive of its rawtype:
+// append_type_specs emits a scalar SOLELY from rawtype() (verified: live emits
+// `unsigned long _M_string_length`, no `size_type` typedef in the C at all). So
+// serialize such a type as its pinned primitive id — it resolves on load via
+// madc_type_from_id with NO record, exactly like a real primitive member. Returns
+// that pinned slot, or 0 if dd is not a plain scalar-primitive alias. An enum
+// (named constants), SIMD vector, unresolved template param, or _Complex is a
+// DISTINCT concept with its own serialization — never fold it in here.
+static uint32_t forest_pinned_primitive_id(DataDef *dd)
+{
+	if (!dd || dd->basetype() != BaseType::btSimple)
+		return 0;
+	// A pointer/reference (DataDefREF IS-A DataDefPTR) or a const-qualified type
+	// inherits btSimple and reports is_integer()==true with the POINTEE's rawtype
+	// — it is NOT a scalar. Exclude it structurally (as cir_forest_record_derived
+	// does) so the derived-type record path handles it. Likewise an enum (named
+	// constants), SIMD vector, template param, or _Complex is its own concept.
+	if (dynamic_cast<DataDefPTR *>(dd) || dynamic_cast<DataDefCONST *>(dd)
+	    || dynamic_cast<DataDefENUM *>(dd) || dd->is_simd()
+	    || dd->is_template_param() || dd->is_complex())
+		return 0;
+	if (!(dd->is_integer() || dd->is_real()))
+		return 0;
+	for (uint32_t slot = 1; slot < MADC_TYPEID_PRIMITIVE_END; ++slot) {
+		DataDef *p = madc_primitive_for_slot(slot);
+		if (p && p->basetype() == BaseType::btSimple
+		      && p->rawtype() == dd->rawtype())
+			return slot;			// first (== canonical) match; emission is rawtype-driven
+	}
+	return 0;
+}
+
+// The typeid to SERIALIZE for a type reached as a member / operand / param /
+// return / typedef-underlying. A pinned primitive serializes as its own slot; a
+// scalar-primitive alias normalizes to the pinned slot of its rawtype (see
+// forest_pinned_primitive_id); everything else takes its real project/system id.
+// Load swizzles the pinned slot back via madc_type_from_id with no record.
+static uint32_t forest_serialize_type_id(DataDef *dd)
+{
+	if (!dd)
+		return MADC_TYPEID_INVALID;
+	if (dd->type_id && dd->type_id < MADC_TYPEID_PRIMITIVE_END)
+		return dd->type_id;		// already a pinned primitive — serialize as-is
+	if (uint32_t pinned = forest_pinned_primitive_id(dd))
+		return pinned;
+	return madc_type_id_for(dd);
+}
+
 // Ensure `dd` — a type reached as a member / method-param / method-return /
 // typedef-underlying of a serialized aggregate — will RESOLVE on load, recording a
 // derived-type record (pointer / reference / const) for it if needed, transitively.
@@ -778,6 +829,8 @@ static bool cir_forest_record_derived(DataDef *dd, DataDef *self,
 {
 	if (!dd)
 		return false;
+	if (forest_pinned_primitive_id(dd))	// scalar-primitive alias (size_type == unsigned long)
+		return true;			// resolves on load as the pinned primitive; no record
 	uint32_t tid = madc_type_id_for(dd);
 	if (!tid)
 		return false;
@@ -808,7 +861,7 @@ static bool cir_forest_record_derived(DataDef *dd, DataDef *self,
 	r.type_id = tid;
 	r.kind    = kind;
 	r.name_id = pool.intern(dd->name);
-	r.ref0    = madc_type_id_for(operand);
+	r.ref0    = forest_serialize_type_id(operand);
 	f.type_records.push_back(r);
 	recorded.insert(dd);
 	return true;
@@ -835,7 +888,7 @@ static bool cir_forest_serialize_members(DataDefSTRUCT *sdd,
 			return false;
 		if (!cir_forest_record_derived(mdd, sdd, pool, recorded, f))
 			return false;
-		uint32_t mtid = madc_type_id_for(mdd);
+		uint32_t mtid = forest_serialize_type_id(mdd);
 		cir_forest_type_member tm;
 		memset(&tm, 0, sizeof(tm));
 		tm.name_id = pool.intern(sdd->members[m].first);
@@ -939,7 +992,7 @@ static void cir_forest_append_methods(DataDefCLASS *cdd, madc::dis::intern_table
 		bool ok = true;
 		for (size_t p = p0; p < fd->parameters.size(); ++p) {
 			if (!serializable(fd->parameters[p])) { ok = false; break; }
-			pt.push_back(madc_type_id_for(fd->parameters[p]));
+			pt.push_back(forest_serialize_type_id(fd->parameters[p]));
 		}
 		if (!ok)
 			continue;
@@ -947,7 +1000,7 @@ static void cir_forest_append_methods(DataDefCLASS *cdd, madc::dis::intern_table
 		memset(&m, 0, sizeof(m));
 		m.name_id        = pool.intern(mv->name);
 		m.display_id     = pool.intern(disp);
-		m.ret_type_id    = madc_type_id_for(&fd->returns);
+		m.ret_type_id    = forest_serialize_type_id(&fd->returns);
 		m.emit_symbol_id = fd->emit_symbol.empty() ? 0 : pool.intern(fd->emit_symbol);
 		m.flags = (fd->is_const_method ? CIR_METHF_CONST : 0u)
 			| (fd->is_varargs ? CIR_METHF_VARARGS : 0u)
@@ -1153,6 +1206,7 @@ static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
 	    const char *k;
 	    if (!mdd) k = "NULL";
 	    else if (mdd->type_id && mdd->type_id < MADC_TYPEID_PRIMITIVE_END) k = "primitive";
+	    else if (forest_pinned_primitive_id(mdd)) k = "scalar-alias";
 	    else if (recorded.count(mdd)) k = "recorded";
 	    else if (dynamic_cast<DataDefREF *>(mdd)) k = "ref";
 	    else if (dynamic_cast<DataDefPTR *>(mdd)) k = "ptr";
@@ -1177,7 +1231,7 @@ static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
 	    continue;
 	if (!cir_forest_record_derived(underlying, NULL, pool, recorded, f))
 	    continue;			// underlying not resolvable on load — skip
-	uint32_t uid = madc_type_id_for(underlying);
+	uint32_t uid = forest_serialize_type_id(underlying);
 	cir_forest_type_record r;
 	memset(&r, 0, sizeof(r));
 	r.kind    = CIR_TYPEK_TYPEDEF;
