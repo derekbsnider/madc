@@ -427,8 +427,19 @@ if ! grep -aq "bound to grove unit.*string" "$strbind_vlog"; then
     rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog"
     fail "[strbind] consumer did NOT bind the <string> grove (live fall-through?)"
 fi
-rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog"
-echo "forest_bind_gate: [strbind] OK — std::string bound from <string> grove (no re-parse); construct+assign+size+destroy, output == live == g++"
+# v14: the bound <string> emits its scalar-const file-scope globals as data items,
+# byte-identically to live (`hardware_destructive_interference_size: u64 64`). This
+# is a whole-TU byte-identity SLICE (not the full TU, which still differs on
+# in_place's {} value-init + the synth-dtor set): assert the scalar global's value
+# is serialized + restored cross-process, not silently dropped.
+strbind_mir="tmp/fbgate_strbind_mir.log"
+MADC_DUMP_MIR=1 timeout 60 "$BIN" --forest-bind="$strbind_snap" "$strbind_cons" >/dev/null 2>"$strbind_mir"
+if ! grep -Eq "hardware_destructive_interference_size:[[:space:]]+u64[[:space:]]+64" "$strbind_mir"; then
+    rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
+    fail "[strbind] bound <string> did NOT emit scalar-const global hardware_destructive_interference_size=64 (v14 regressed)"
+fi
+rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
+echo "forest_bind_gate: [strbind] OK — std::string bound from <string> grove (no re-parse); construct+assign+size+destroy + scalar-const globals emitted, output == live == g++"
 
 echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind grove headers bound (no re-parse), output == live == g++"
 exit 0

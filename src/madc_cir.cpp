@@ -1361,15 +1361,53 @@ static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
 	    if (v->flags & vfEXTERN)
 		continue;		// a reference to a definition elsewhere
 	    DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(v->type);
-	    if (!cdd || !recorded.count(cdd))
-		continue;		// class-typed (v13) + recorded (swizzles on load)
+	    if (cdd) {
+		if (!recorded.count(cdd))
+		    continue;		// class-typed (v13) + recorded (swizzles on load)
+		if (!seen_globals.insert(v->name).second)
+		    continue;
+		cir_forest_global_record g;
+		memset(&g, 0, sizeof(g));
+		g.name_id = pool.intern(v->name);
+		g.type_id = forest_serialize_type_id(cdd);
+		g.flags   = v->flags;
+		f.globals.push_back(g);
+		continue;
+	    }
+	    // v14: a SCALAR-const file-scope global (e.g. hardware_*_interference_size
+	    // = 64). No ctor runs — its init is a compile-time constant baked into the
+	    // data segment (live emits `u64 64`), so serialize the VALUE. Only a global
+	    // that the live dkGlobalVar pass emits qualifies: it has a dkGlobalVar
+	    // TopDecl whose initializer folds to an integer literal. A function
+	    // (FuncDef-typed Variable), a non-foldable / non-integer initializer, or an
+	    // unresolvable type cleanly LACKS (same discipline as the class path).
+	    if (v->type->is_function())
+		continue;
+	    TokenDecl *td = NULL;
+	    for (auto &t : prog->top_decls)
+		if (t.kind == Program::DeclKind::dkGlobalVar && t.var == v) {
+		    td = t.decl;
+		    break;
+		}
+	    if (!td || !td->initialize)
+		continue;
+	    TokenBase *rhs = td->initialize;
+	    if (TokenAssign *as = dynamic_cast<TokenAssign *>(rhs))
+		rhs = as->right;
+	    if (!rhs || !rhs->is_constant() || rhs->id() != TokenID::tkInt)
+		continue;
+	    uint32_t sid = forest_serialize_type_id(v->type);
+	    if (!sid)
+		continue;
 	    if (!seen_globals.insert(v->name).second)
 		continue;
 	    cir_forest_global_record g;
 	    memset(&g, 0, sizeof(g));
-	    g.name_id = pool.intern(v->name);
-	    g.type_id = forest_serialize_type_id(cdd);
-	    g.flags   = v->flags;
+	    g.name_id    = pool.intern(v->name);
+	    g.type_id    = sid;
+	    g.flags      = v->flags;
+	    g.gflags     = CIR_GLOBALF_SCALAR_INIT;
+	    g.init_value = rhs->ival();
 	    f.globals.push_back(g);
 	}
     }

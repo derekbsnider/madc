@@ -1678,3 +1678,59 @@ TEST_CASE("Phase 6 v13: std::string's header file-scope globals restore with the
 	}
 	CHECK(saw_piecewise);
 }
+
+// Phase 6 v14: a header's file-scope SCALAR-const globals. Unlike a class global
+// (v13, default-ctor synthesized on load), a scalar global's init is a
+// compile-time constant with no ctor — live emits it as a data item (`u64 64`),
+// so its integer VALUE is serialized (CIR_GLOBALF_SCALAR_INIT + init_value) and
+// load rebuilds a `T name = value;` decl. <new>'s hardware_*_interference_size = 64
+// are exactly this. This gates the SAVE/LOAD at the forest level; the end-to-end
+// emit (a bound <string> consumer emits `hardware_*: u64 64`, byte-identically to
+// live) is the forest_bind_gate strbind case.
+TEST_CASE("Phase 6 v14: std::string's scalar-const file-scope globals restore with their init value") {
+	std::string main_path = std::string("/tmp/madc_p6v14_main_")
+			      + std::to_string((long)getpid()) + ".cpp";
+	std::string snap_path = std::string("/tmp/madc_p6v14_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include <string>\n"
+		      "int main() { std::string s; return (int)s.size(); }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	forest.materialize_types();
+	const std::vector<CirRestoredGlobal> &globals = forest.restored_globals();
+
+	// A scalar-const global carries CIR_GLOBALF_SCALAR_INIT + its integer value.
+	// hardware_destructive_interference_size = 64 (a 64-bit scalar in <new>).
+	bool saw_hw = false;
+	for (size_t i = 0; i < globals.size(); ++i) {
+		if (!(globals[i].gflags & CIR_GLOBALF_SCALAR_INIT))
+			continue;
+		REQUIRE(globals[i].name != nullptr);
+		REQUIRE(globals[i].type != nullptr);	// a pinned scalar, resolved
+		if (!strcmp(globals[i].name, "hardware_destructive_interference_size")) {
+			saw_hw = true;
+			CHECK(globals[i].init_value == 64);
+		}
+	}
+	CHECK(saw_hw);
+}

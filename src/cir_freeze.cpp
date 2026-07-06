@@ -1445,10 +1445,11 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 		_restored.push_back(rt);
 	}
 
-	// v13: restore file-scope global VARIABLE definitions — swizzle each record's
+	// v13/v14: restore file-scope global VARIABLE definitions — swizzle each record's
 	// type_id back to a DataDef* (reusing the same by_id map + primitive resolver).
 	// forest_restore_decls rebuilds a Variable + dkGlobalVar TopDecl from each, so
-	// the existing passes emit the global + queue its ctor into __madc_global_init.
+	// the existing passes emit the global + queue its ctor into __madc_global_init
+	// (class, v13) or emit its constant data item (scalar init_value, v14).
 	for (size_t i = 0; i < _globals.size(); ++i) {
 		const cir_forest_global_record &g = _globals[i];
 		uint32_t nlen = 0;
@@ -1457,9 +1458,11 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 		if (!nm || !ty)
 			continue;		// unresolved type -> bind cleanly lacks it
 		CirRestoredGlobal rg;
-		rg.name  = nm;
-		rg.type  = ty;
-		rg.flags = g.flags;
+		rg.name       = nm;
+		rg.type       = ty;
+		rg.flags      = g.flags;
+		rg.gflags     = g.gflags;	// v14: CIR_GLOBALF_SCALAR_INIT
+		rg.init_value = g.init_value;	// v14: scalar integer init
 		_restored_globals.push_back(rg);
 	}
 

@@ -12367,9 +12367,11 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	if ( !rg.name || !rg.type )
 	    continue;
 	PendingForestGlobal pg;
-	pg.name  = rg.name;
-	pg.type  = rg.type;
-	pg.flags = rg.flags;
+	pg.name       = rg.name;
+	pg.type       = rg.type;
+	pg.flags      = rg.flags;
+	pg.gflags     = rg.gflags;	// v14: CIR_GLOBALF_SCALAR_INIT
+	pg.init_value = rg.init_value;	// v14: scalar integer init
 	forest_pending_globals.push_back(pg);
     }
 }
@@ -12405,7 +12407,18 @@ void Program::flush_forest_pending_globals()
 	gtd.name = pg.name;
 	gtd.var  = gv;
 	gtd.dd   = pg.type;
-	gtd.decl = NULL;		// default-ctor synthesized (v12 ctors)
+	gtd.decl = NULL;		// class: default-ctor synthesized (v12 ctors)
+	// v14: a SCALAR-const global carries its compile-time integer init value. Give
+	// it a dkGlobalVar TokenDecl whose `initialize` is a bare integer literal — the
+	// same shape the dkGlobalVar emission pass (var_decl) consumes for a live
+	// `T name = value;` — so it emits `T name = value;` (a constant data item, no
+	// __madc_global_init entry), byte-identically to a live parse.
+	if ( pg.gflags & CIR_GLOBALF_SCALAR_INIT )
+	{
+	    TokenDecl *td = new TokenDecl(*gv);
+	    td->initialize = new TokenInt(pg.init_value);
+	    gtd.decl = td;
+	}
 	top_decls.push_back(gtd);
 	DBG(std::cout << "flush_forest_pending_globals: global " << pg.name
 	    << " (" << pg.type->name << ")" << std::endl);

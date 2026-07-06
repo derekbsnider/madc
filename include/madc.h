@@ -2733,7 +2733,7 @@ public:
     // (which live in tkProgram->variables + dkGlobalVar top_decls) are staged here
     // and flushed by flush_forest_pending_globals() once tkProgram is created. The
     // name/type/flags are the loaded CirRestoredGlobal fields (type owned by the forest).
-    struct PendingForestGlobal { std::string name; DataDef *type; uint32_t flags; };
+    struct PendingForestGlobal { std::string name; DataDef *type; uint32_t flags; uint32_t gflags; int64_t init_value; };
     std::vector<PendingForestGlobal> forest_pending_globals;
     void flush_forest_pending_globals();	// build Variable + dkGlobalVar TopDecl (post-tkProgram)
     std::vector<uint32_t> forest_chain;		// bound units, include order (bind-order record)

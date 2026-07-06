@@ -133,16 +133,41 @@ That flat-POD substrate is the long-term endgame, NOT this slice.)
   byte-identical unregressed); `test_cir_freeze` 24/375 (new v13 case: `restored_globals()` lists the
   tag globals, `piecewise_construct` : `piecewise_construct_t`); the flush is a no-op on a live compile
   (`forest_pending_globals` empty) → normal path untouched, torture byte-identical by construction.
-- **NEXT — three residual whole-`<string>`-TU byte-identity gaps (down from the v12 two).** The
-  bound-`<string>` `MADC_DUMP_MIR` "only in LIVE" set is now just: **(1a) SCALAR-const globals**
-  (`hardware_constructive/destructive_interference_size = 64`) — v13 covers only CLASS-typed globals;
-  a scalar needs its init VALUE serialized (a `cir_forest_global_record` init field, or reference the
-  init subtree). **(1b) `in_place`** — its type `in_place_t` has a bodyless DEFAULTED ctor v12 skipped,
-  so v13's guard cleanly lacks it; serializing a defaulted ctor so it constructs trivially is a v12
-  follow-on. **(2) synth-dtor set/order** — bind synthesizes trivial `X___dtor` bodies for MANY
-  restored classes (`_Save_errno`, `__new_allocator_*`, `allocator_*`, wide-char `basic_string_*`) that
-  live's parse never emits (task #20). The `strbind` gate stays runtime-correctness until all three
-  close; then it can assert byte-identity. Reducers staged: `tmp/cs_producer.cpp` / `tmp/cs_consumer.cpp`.
+- **v14 LANDED (2026-07-06) — restore a bound header's file-scope SCALAR-const global init VALUES.**
+  v13 covered only CLASS-typed globals (`decl=NULL`, default-ctor synthesized). A scalar-const global
+  (`hardware_constructive/destructive_interference_size = 64` in `<new>`) has NO ctor — its init is a
+  compile-time constant baked into the data segment (live emits `hardware_*: u64 64` + `export`), so v14
+  serializes the VALUE. `cir_forest_global_record` gains `gflags` (`CIR_GLOBALF_SCALAR_INIT`) + `int64_t
+  init_value`; the freeze collects a non-class, non-function file-scope global that has a `dkGlobalVar`
+  TopDecl whose initializer folds to an integer literal (a function / non-integer / non-foldable init /
+  unresolvable type cleanly LACKS). GROUND TRUTH probe: the ONLY such scalar candidates in `<string>`'s
+  closure are the 2 `hardware_*` — matches live's emitted set exactly, so NO "only in BIND" extras. Load
+  swizzles the type-id (a pinned scalar via `madc_type_from_id`) + carries `init_value` into
+  `restored_globals()`; `flush_forest_pending_globals()` builds a `dkGlobalVar` decl whose `initialize`
+  is a bare `TokenInt(init_value)` — the same shape `var_decl` consumes for a live `T name = value;` — so
+  the existing pass emits `hardware_*: u64 64` **byte-identically to live** (a constant data item, no
+  `__madc_global_init` entry). Gated: `forest_bind_gate` 11/11 (strbind now ALSO asserts the bound
+  `<string>` emits `hardware_destructive_interference_size: u64 64` cross-process — a whole-TU
+  byte-identity SLICE, not the whole TU); `test_cir_freeze` 25/390 (new v14 case: `restored_globals()`
+  lists the scalar global with `CIR_GLOBALF_SCALAR_INIT` + `init_value == 64`); fulltest exit-0 / all
+  ratchets+oracles GREEN; flush is a no-op on a live compile → normal path untouched, torture
+  byte-identical by construction. RESULT: the bound-`<string>` "only in LIVE" data set dropped 3 → 1.
+- **NEXT — TWO residual whole-`<string>`-TU byte-identity gaps (down from v13's three).** The
+  bound-`<string>` `MADC_DUMP_MIR` "only in LIVE" set is now just **(1b) `in_place`** (a `bss 1` data
+  item) — and **CORRECTED BY GROUND TRUTH (probe, 2026-07-06): `in_place` is NOT a defaulted-ctor gap.**
+  Live `in_place_t` has `has_user_ctor=1, ctors=1` (a REAL empty-body nullary ctor: `defaulted=0
+  declonly=0 emitsym=''`), identical to `piecewise_construct_t`/`allocator_arg_t`. But `in_place` emits
+  via `try_implicit_copy_construct` (`args=1`, `class_trivially_copyable`) as a 1-byte self-copy — **NO
+  ctor call, NO ctor body.** The producer value-inits `in_place` (`{}`) so its ctor body is never emitted
+  → not in `funcdef_locs` → v12 can't serialize it (and it isn't needed). The faithful fix is NOT
+  serializing a ctor; it needs `in_place`'s **`{}` initializer FORM** serialized (shared root with the
+  piecewise/allocator init-SHAPE divergence: v13's `decl=NULL` default-ctor synthesis constructs directly
+  on the global, while live builds a stack temp then copies). Real slice (task #22) = serialize file-scope
+  global INITIALIZER forms. **(2) synth-dtor set/order** — bind synthesizes trivial `X___dtor` bodies for
+  MANY restored classes (`_Save_errno`, `__new_allocator_*`, `allocator_*`, wide-char `basic_string_*`)
+  that live's parse never emits (task #20). The `strbind` gate stays runtime-correctness (+ the v14 scalar
+  slice check) until both close; then it can assert whole-TU byte-identity. Reducers staged:
+  `tmp/cs_producer.cpp` / `tmp/cs_consumer.cpp`.
 - **Polymorphic classes stay a SEPARATE, explicit boundary** (not folded in): the `_pmr_`
   `basic_string` variant is blocked by the polymorphic `std::pmr::memory_resource` (vtable).
   Serializing vtable/typeinfo is its own slice — a coherent subsystem, not a reactive drop.
@@ -151,9 +176,10 @@ That flat-POD substrate is the long-term endgame, NOT this slice.)
 Do the systematic complete-field pass (serialize the whole object, not a subset), one field
 at a time down the diagnostic's list, each gated byte-identical. No re-parse, no separate
 module, no re-derivation, no parallel format. **A2 (`3e2499ed`), A1 (`14642e78`), v12
-(`e30acb5b`, ctor/dtor/operator serialization + dtor funcdef_map registration), and v13
-(class-typed file-scope globals + `__madc_global_init`) all committed LOCAL — NOT yet pushed**
-(the pre-v12 5-commit backlog + v12 + v13). **Next session: read THIS file + the memory
+(`e30acb5b`, ctor/dtor/operator serialization + dtor funcdef_map registration), v13
+(class-typed file-scope globals + `__madc_global_init`), and v14 (scalar-const global init
+values) all committed LOCAL — NOT yet pushed** (the pre-v12 5-commit backlog + v12 + v13 + v14
+= 8 unpushed). **Next session: read THIS file + the memory
 `feedback_forest_load_never_reparse` IN FULL first, as always.**
 
 ---
