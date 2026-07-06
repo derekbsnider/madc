@@ -807,25 +807,44 @@ static uint32_t forest_serialize_type_id(DataDef *dd)
 	return madc_type_id_for(dd);
 }
 
-// B3 write-through (SLICE 1c): record a newly-created PROJECT pointer type into this Program's
-// arena, keyed by the pointer's own project-id slot. Reuses the ONE cross-ref policy
-// (forest_serialize_type_id) so there is no parallel encoder — the pointee is stored as its
-// serialized type_id (a pinned primitive as its pinned slot with no record of its own; a
-// project type as its project id, whose record a later slice fills). The live DataDefPTR keeps
-// base_type as its read-cache, so its ~97 read sites are UNCHANGED; only this write
-// dual-populates the record. Called from getPointerType iff forest_arena_enabled.
-void Program::forest_arena_record_ptr(DataDefPTR *ptr)
+// B3 write-through (SLICE 1c/1d): record a newly-created PROJECT unary derived type — pointer,
+// reference, or const — into this Program's arena, keyed by its own project-id slot. Dispatches
+// on the actual type for the record kind and reads the operand from base_type (DataDefREF is-a
+// DataDefPTR, so check it FIRST). Reuses the ONE cross-ref policy (forest_serialize_type_id) so
+// there is no parallel encoder — the operand is stored as its serialized type_id (a pinned
+// primitive as its pinned slot with no record of its own; a project type as its project id,
+// whose record a later slice fills). The live DataDef keeps base_type as its read-cache, so its
+// read sites are UNCHANGED; only this write dual-populates the record. Called from
+// getPointerType / getReferenceType / getConstType iff forest_arena_enabled.
+void Program::forest_arena_record_unary(DataDef *dd)
 {
-	if (!ptr)
+	if (!dd)
 		return;
-	uint32_t tid = type_id_for(ptr);		// project id for the new pointer (its arena slot)
+	uint32_t kind;
+	DataDef *operand;
+	if (DataDefREF *rf = dynamic_cast<DataDefREF *>(dd))		// REF is-a PTR: check first
+	{
+		kind = madc::dis::DK_REF;   operand = rf->base_type;
+	}
+	else if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd))
+	{
+		kind = madc::dis::DK_PTR;   operand = p->base_type;
+	}
+	else if (DataDefCONST *k = dynamic_cast<DataDefCONST *>(dd))
+	{
+		kind = madc::dis::DK_CONST; operand = k->base_type;
+	}
+	else
+		return;			// not a unary derived type — nothing for this method to record
+
+	uint32_t tid = type_id_for(dd);		// project id for the derived type (its arena slot)
 	madc::dis::defrec r;
 	memset(&r, 0, sizeof(r));
-	r.kind     = madc::dis::DK_PTR;
-	r.name_id  = forest_arena.strings.intern(ptr->name.c_str());
-	r.size     = (uint32_t)ptr->size;
-	r.datatype = (uint32_t)ptr->rawtype();
-	r.ref0     = forest_serialize_type_id(ptr->base_type);	// pointee, as a type-id
+	r.kind     = kind;
+	r.name_id  = forest_arena.strings.intern(dd->name.c_str());
+	r.size     = (uint32_t)dd->size;
+	r.datatype = (uint32_t)dd->rawtype();
+	r.ref0     = forest_serialize_type_id(operand);	// operand, as a type-id
 	forest_arena.set_def_at(tid, r);
 }
 

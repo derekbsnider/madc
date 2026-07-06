@@ -701,3 +701,43 @@ TEST_CASE("B3 arena: getPointerType write-through records a new project pointer 
 
 	delete prog;	// while widget is still in scope
 }
+
+// ---- SLICE 1d: the reference + const funnels write-through the same way (DK_REF / DK_CONST),
+//      via the generalized forest_arena_record_unary. Reads (is_reference/is_const/base_type)
+//      stay unchanged; only the record is dual-populated.
+TEST_CASE("B3 arena: getReferenceType / getConstType write-through (DK_REF / DK_CONST)")
+{
+	DataDefSTRUCT widget("Widget", 0);	// declared first → outlives `delete prog`
+	widget.finalize();
+
+	Program *prog = new Program();
+	prog->forest_arena_enabled = true;
+
+	// --- reference (Widget&) ---
+	DataDefREF *rf = prog->getReferenceType(&widget);
+	REQUIRE(rf != NULL);
+	CHECK(rf->is_reference());			// reads unchanged
+	CHECK(rf->base_type == &widget);
+	uint32_t rtid = prog->type_id_for(rf);
+	CHECK(arena_id_is_project(rtid));
+	defrec rr;
+	REQUIRE(prog->forest_arena.get_def_at(rtid, rr));
+	CHECK(rr.kind == DK_REF);
+	CHECK(rr.ref0 == prog->type_id_for(&widget));	// referee, by project id
+
+	// --- const (const Widget) ---
+	DataDefCONST *cst = prog->getConstType(&widget);
+	REQUIRE(cst != NULL);
+	CHECK(cst->is_const());				// reads unchanged
+	CHECK(cst->base_type == &widget);
+	uint32_t ctid = prog->type_id_for(cst);
+	CHECK(arena_id_is_project(ctid));
+	defrec cr;
+	REQUIRE(prog->forest_arena.get_def_at(ctid, cr));
+	CHECK(cr.kind == DK_CONST);
+	CHECK(cr.ref0 == prog->type_id_for(&widget));	// unqualified base, by project id
+
+	CHECK(rtid != ctid);				// distinct derived types get distinct slots
+
+	delete prog;	// while widget is still in scope
+}

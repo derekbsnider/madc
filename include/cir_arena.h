@@ -40,11 +40,12 @@
 // would interleave a nested aggregate's run with this one.
 //
 // The live-handle migration is underway: a DefArena lives on Program (Program::forest_arena),
-// and Program::getPointerType write-throughs a new project pointer type into it when
-// Program::forest_arena_enabled is set (SLICE 1c). That runtime flag — default off, so bin/madc
-// is unchanged — is the testable realization of the design's FEATURE_FOREST_ARENA guard (a
-// #ifdef could not be on-for-test / off-for-ship in the shared parser.o). test_cir_arena.cpp
-// exercises the schema round-trip AND the live write-through.
+// and the unary derived-type funnels — getPointerType / getReferenceType / getConstType —
+// write-through a new project pointer / reference / const record into it (via
+// Program::forest_arena_record_unary) when Program::forest_arena_enabled is set (SLICE 1c/1d).
+// That runtime flag — default off, so bin/madc is unchanged — is the testable realization of the
+// design's FEATURE_FOREST_ARENA guard (a #ifdef could not be on-for-test / off-for-ship in the
+// shared parser.o). test_cir_arena.cpp exercises the schema round-trip AND the live write-through.
 
 #include <cstdint>
 #include <cstring>

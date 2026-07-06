@@ -13434,7 +13434,7 @@ DataDefPTR *Program::getPointerType(DataDef *base)
     // record (the well-known pinned pointer globals above return early — never recorded, they
     // resolve by pinned id). Off by default → no change to bin/madc.
     if ( forest_arena_enabled )
-	forest_arena_record_ptr(ptr);
+	forest_arena_record_unary(ptr);
     DBG(std::cout << "getPointerType() created " << ptr->name << " for base " << base->name << std::endl);
     return ptr;
 }
@@ -13452,6 +13452,10 @@ DataDefREF *Program::getReferenceType(DataDef *base)
 
     DataDefREF *ref = new DataDefREF(*base);
     ref_type_cache[base] = ref;
+    // B3 write-through (the reference-collapse early return above never reaches here — an
+    // existing reference is not re-recorded). Off by default → no change to bin/madc.
+    if ( forest_arena_enabled )
+	forest_arena_record_unary(ref);
     DBG(std::cout << "getReferenceType() created reference to " << base->name << std::endl);
     return ref;
 }
@@ -13468,6 +13472,10 @@ DataDefCONST *Program::getConstType(DataDef *base)
 
     DataDefCONST *cst = new DataDefCONST(*base);
     const_type_cache[base] = cst;
+    // B3 write-through (the const-idempotency early return above never reaches here — an
+    // existing const type is not re-recorded). Off by default → no change to bin/madc.
+    if ( forest_arena_enabled )
+	forest_arena_record_unary(cst);
     DBG(std::cout << "getConstType() created const " << base->name << std::endl);
     return cst;
 }

@@ -72,12 +72,19 @@ method in madc_cir.cpp so there is NO parallel encoder); the pointer keeps `base
 bin/madc and the units, so a compile guard could not be on-for-test/off-for-ship in one build (owner-approved
 deviation). Gate: test_cir_arena 7 cases/170 assertions (new write-through case asserts reads-unchanged +
 record-populated at the ptr's project-id slot, ref0=pointee id); fulltest 680/0/0/16 + all forest gates
-byte-identical to live (flag off = zero change, byte-identical by construction). **NEXT (SLICE 1d+):** extend
-the write-through to the other creation funnels — getReferenceType (DK_REF) / getConstType (DK_CONST), then the
-aggregate builders (TokenSTRUCT/CLASS::parse → DK_STRUCT/CLASS), then FuncDef via a new FuncDefBuilder (DK_FUNC,
-the one class with no builder funnel) — rolling out the ~548-site conversion incrementally + gated; a later slice
-flips READS onto the record + deletes the per-category freeze. develop @ 168bbf9c + f0b21e0e + this commit, ahead
-of origin, NOT pushed.**
+byte-identical to live (flag off = zero change, byte-identical by construction).
+**SLICE 1d DONE (2026-07-06):** the other two unary derived-type funnels now write-through too —
+`getReferenceType` → `DK_REF` and `getConstType` → `DK_CONST`. `forest_arena_record_ptr` was generalized to
+`forest_arena_record_unary(DataDef*)`, which dispatches on the actual type (REF checked before PTR, since REF
+is-a PTR) for the record kind + reads the operand from `base_type` — one method, one policy, still reusing
+`forest_serialize_type_id`. The collapse/idempotency early-returns in getReferenceType/getConstType never reach
+the write, so an existing ref/const is not re-recorded. Gate: test_cir_arena 8 cases/185 assertions (new
+REF/CONST case: reads-unchanged [is_reference/is_const/base_type] + DK_REF/DK_CONST records at distinct
+project-id slots, ref0 = operand id); fulltest 680/0/0/16 + all forest gates byte-identical to live; no new
+warnings. **NEXT (SLICE 1e+, the high-touch stretch):** the aggregate builders (TokenSTRUCT/CLASS::parse →
+DK_STRUCT/CLASS) and FuncDef via a new FuncDefBuilder (DK_FUNC, the one class with no builder funnel) — the bulk
+of the ~548-site conversion, concentrated in the 6 hot functions; then flip READS onto the record + delete the
+per-category freeze. develop @ 168bbf9c + f0b21e0e + 70d08752 + this commit, ahead of origin, NOT pushed.**
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 

@@ -1618,7 +1618,10 @@ public:
     // record, until a later slice flips reads onto it. See feedback_forest_load_never_reparse.
     madc::dis::DefArena forest_arena;
     bool forest_arena_enabled = false;
-    void forest_arena_record_ptr(DataDefPTR *ptr);	// write-through: record a new project pointer type
+    // write-through: record a newly-created unary derived type (pointer / reference / const)
+    // into forest_arena, keyed by its project-id slot. Dispatches on the actual type for the
+    // record kind (DK_PTR / DK_REF / DK_CONST) and reads the operand from its base_type.
+    void forest_arena_record_unary(DataDef *dd);
     // Captured `template<typename T> class Name {...}` definitions for
     // Borland-model instantiation: name -> {type params, the class-body token
     // range}. `Name<ConcreteT>` clones+substitutes+re-parses it as a concrete
