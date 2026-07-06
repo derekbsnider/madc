@@ -27,6 +27,7 @@
 #include "madcdis/id_table.h"		// madc::dis::id_table — segmented stable-id registry
 #include "madcdis/value_pool.h"		// madc::dis::value_pool — >64-bit value handles
 #include "madc_typeid.h"		// MADC_TYPEID_PROJECT_BASE (the project segment base)
+#include "cir_arena.h"		// madc::dis::DefArena — B3 arena-native DataDef storage
 
 class Method;
 class Program;
@@ -1606,6 +1607,18 @@ public:
     madc::dis::id_table<DataDef> project_types{MADC_TYPEID_PROJECT_BASE};
     uint32_t type_id_for(DataDef *dd);	// THE lazy-stamp chokepoint
     DataDef *type_from_id(uint32_t id);	// segment-dispatching reverse lookup
+    // B3 arena-native DataDef storage (docs/plans/2026-07-06-forest-b3-record-layout-DESIGN.md).
+    // The write-through target for the DataDef migration: as a project type is created it also
+    // populates a flat POD record here (keyed by its project-id slot), so SAVE becomes a dump
+    // and LOAD an mmap. `forest_arena_enabled` gates population (default off = zero change; the
+    // migration flips it on, tests flip it on) — the runtime realization of the design's
+    // FEATURE_FOREST_ARENA guard, chosen over a #ifdef because parser.o is SHARED between
+    // bin/madc and the unit tests (a compile guard could not be on-for-test / off-for-ship in
+    // one build). Reads still go through the live DataDef fields; only writes dual-populate the
+    // record, until a later slice flips reads onto it. See feedback_forest_load_never_reparse.
+    madc::dis::DefArena forest_arena;
+    bool forest_arena_enabled = false;
+    void forest_arena_record_ptr(DataDefPTR *ptr);	// write-through: record a new project pointer type
     // Captured `template<typename T> class Name {...}` definitions for
     // Borland-model instantiation: name -> {type params, the class-body token
     // range}. `Name<ConcreteT>` clones+substitutes+re-parses it as a concrete

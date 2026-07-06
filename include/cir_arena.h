@@ -39,8 +39,12 @@
 // and only THEN append its own run. Capturing begin=payload.size() before a loop that recurses
 // would interleave a nested aggregate's run with this one.
 //
-// Inert until the live-handle migration wires it in (guarded by FEATURE_FOREST_ARENA at the
-// call sites); only test_cir_arena.cpp exercises it today.
+// The live-handle migration is underway: a DefArena lives on Program (Program::forest_arena),
+// and Program::getPointerType write-throughs a new project pointer type into it when
+// Program::forest_arena_enabled is set (SLICE 1c). That runtime flag — default off, so bin/madc
+// is unchanged — is the testable realization of the design's FEATURE_FOREST_ARENA guard (a
+// #ifdef could not be on-for-test / off-for-ship in the shared parser.o). test_cir_arena.cpp
+// exercises the schema round-trip AND the live write-through.
 
 #include <cstdint>
 #include <cstring>

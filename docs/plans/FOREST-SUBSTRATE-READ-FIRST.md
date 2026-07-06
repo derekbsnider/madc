@@ -62,11 +62,22 @@ on load via madc_type_from_id to the process global; `int` is a pinned-id ref, n
 correction, now enforced by an `assert_no_primitive_records` gate). test_cir_arena.cpp models the policy through
 the PUBLIC chokepoints (madc_type_id_for/madc_type_from_id + a local project id_table bound as the active table,
 as parser.cpp:9260 anticipates for tests); 6 cases / 157 assertions GREEN, full unit suite GREEN. Zero production
-code touched. **SLICE 1b/1c (NEXT, NOT started):** (b) DefArena on Program (exists during parse) — route the
-~137 dynamic `new DataDefX` sites through it, statics stay plain; (c) first conversion = a dynamic DataDefPTR
-(write-through: base_type read-cache stays → its ~97 reads UNCHANGED; record carries pointee type_id),
-FEATURE_FOREST_ARENA-gated + a reads-unchanged/record-populated test. Remaining cost = the ~548-site conversion
-(real work, incremental + gated). develop @ 168bbf9c + this commit, ahead of origin, NOT pushed.**
+code touched. **SLICE 1b/1c DONE (2026-07-06):** `Program` now carries a `DefArena forest_arena` + a runtime
+`forest_arena_enabled` flag (default OFF → bin/madc unchanged), and `Program::getPointerType` — the single
+memoized funnel where a NEW project `DataDefPTR` is born (parser.cpp:13431; the well-known void*/char*/int*
+globals return early as pinned, never recorded) — write-throughs a `DK_PTR` record when the flag is on. The
+write reuses the ONE cross-ref policy (`forest_serialize_type_id`, exposed via a `Program::forest_arena_record_ptr`
+method in madc_cir.cpp so there is NO parallel encoder); the pointer keeps `base_type` as its read-cache so its
+~97 reads are UNCHANGED. **The guard is a RUNTIME flag, NOT the doc's #ifdef** — parser.o is shared between
+bin/madc and the units, so a compile guard could not be on-for-test/off-for-ship in one build (owner-approved
+deviation). Gate: test_cir_arena 7 cases/170 assertions (new write-through case asserts reads-unchanged +
+record-populated at the ptr's project-id slot, ref0=pointee id); fulltest 680/0/0/16 + all forest gates
+byte-identical to live (flag off = zero change, byte-identical by construction). **NEXT (SLICE 1d+):** extend
+the write-through to the other creation funnels — getReferenceType (DK_REF) / getConstType (DK_CONST), then the
+aggregate builders (TokenSTRUCT/CLASS::parse → DK_STRUCT/CLASS), then FuncDef via a new FuncDefBuilder (DK_FUNC,
+the one class with no builder funnel) — rolling out the ~548-site conversion incrementally + gated; a later slice
+flips READS onto the record + deletes the per-category freeze. develop @ 168bbf9c + f0b21e0e + this commit, ahead
+of origin, NOT pushed.**
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 

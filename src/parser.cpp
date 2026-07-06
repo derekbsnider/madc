@@ -13430,6 +13430,11 @@ DataDefPTR *Program::getPointerType(DataDef *base)
     // create and cache a new pointer DataDef
     DataDefPTR *ptr = new DataDefPTR(*base);
     ptr_type_cache[base] = ptr;
+    // B3 write-through: a dynamically-born (project) pointer type also populates its arena
+    // record (the well-known pinned pointer globals above return early — never recorded, they
+    // resolve by pinned id). Off by default → no change to bin/madc.
+    if ( forest_arena_enabled )
+	forest_arena_record_ptr(ptr);
     DBG(std::cout << "getPointerType() created " << ptr->name << " for base " << base->name << std::endl);
     return ptr;
 }

@@ -660,3 +660,44 @@ TEST_CASE("B3 arena: REAL byte round-trip through the snapshot container (not a 
 	delete mv;
 	delete fd;
 }
+
+// ---- SLICE 1c: the live write-through. getPointerType is the single memoized funnel where a
+//      NEW project DataDefPTR is born; with forest_arena_enabled it also populates the arena
+//      record, WITHOUT disturbing the pointer's read interface (base_type stays the read-cache).
+TEST_CASE("B3 arena: getPointerType write-through records a new project pointer (reads unchanged)")
+{
+	// widget declared FIRST so it outlives `delete prog` (prog.project_types holds &widget).
+	DataDefSTRUCT widget("Widget", 0);
+	widget.finalize();
+
+	Program *prog = new Program();
+	prog->forest_arena_enabled = true;
+
+	// A project (non-well-known) base: getPointerType must CREATE a new DataDefPTR (not a
+	// cached / pinned-global return like int*/char*), so the write-through fires.
+	DataDefPTR *p = prog->getPointerType(&widget);
+	REQUIRE(p != NULL);
+
+	// --- reads are UNCHANGED (base_type stays the live read-cache) ---
+	CHECK(p->is_pointer());
+	CHECK(p->base_type == &widget);
+	CHECK(p->rawtype() == widget.rawtype());
+	CHECK(p->size == 8);
+
+	// --- the arena record is populated at the pointer's own project-id slot ---
+	uint32_t ptid = prog->type_id_for(p);
+	CHECK(arena_id_is_project(ptid));
+	defrec r;
+	REQUIRE(prog->forest_arena.get_def_at(ptid, r));
+	CHECK(r.kind == DK_PTR);
+	CHECK(std::string(prog->forest_arena.strings.c_str(r.name_id)) == p->name);	// "Widget*"
+	CHECK(r.size == 8);
+	CHECK(r.ref0 == prog->type_id_for(&widget));	// pointee stored as its (project) type-id
+	CHECK(arena_id_is_project(r.ref0));
+
+	// idempotent: a second call returns the SAME cached pointer (no duplicate write-through).
+	DataDefPTR *p2 = prog->getPointerType(&widget);
+	CHECK(p2 == p);
+
+	delete prog;	// while widget is still in scope
+}
