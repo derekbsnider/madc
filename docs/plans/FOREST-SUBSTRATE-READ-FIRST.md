@@ -12,6 +12,35 @@ this campaign happened.**
 
 ---
 
+## RESUME HERE — current state & open threads (2026-07-06)
+
+**Landed + pushed on `develop`:** v8 inline method bodies (`0599f3ec`), v9
+pointer/reference/const members (`968f4a29`), v10 namespace-qualified types
+(`4a656bbd`). Each is a "one mechanism widened" extension of the type-table
+serialization; all gated byte-identical (`MADC_DUMP_MIR` == live, torture 50-name).
+
+**Two open threads — BOTH serve the SAVE/LOAD model; neither may drift from it:**
+- **#13 — corpus (`std::string`/`std::vector`) template-instantiation restoration.**
+  The DIRECT save/load continuation (§5): `std::string` is a `std` typedef for
+  `basic_string<char,…>`, a template-instantiation product (`<` in key/name) the
+  v10 slice deliberately skips. #13 = serialize the instantiation product + its
+  `std::` typedef + ctor/dtor emission + mangled-direct library linking. **Primary course.**
+- **#14 — madcdis export surface / helper-sharing refactor**
+  (`docs/plans/2026-07-06-madcdis-export-surface.md`). Extract the forest's POD
+  save/load boilerplate into a PUBLIC, DataDef-agnostic `madc::dis` primitive, and
+  export the built substrate (`intern_table`/`id_table`/`value_pool`/`snapshot`)
+  through libmadc + the madc language. This SERVES save/load — the helpers ARE the
+  save/load machinery, factored for reuse — and its guardrail is **byte-identity**:
+  if any byte-level gate moves, the refactor changed the format → revert.
+
+**COURSE-RETURN (anti-drift):** the SAVE/LOAD state model governs everything (§0,
+§1, §7). #14 is a bounded refactor **gated by byte-identity — it cannot change the
+saved/loaded state**; after #14, return to #13. Neither thread may introduce a
+re-parse, a separate module, re-derivation, or a parallel format. **Next session:
+read THIS file + the memory `feedback_forest_load_never_reparse` IN FULL first, as always.**
+
+---
+
 ## 0. The five things that, if you get them wrong, you will cause damage
 
 1. **madc NEVER LOWERS.** There is no lowering pass. The `cir_node` tree is the
