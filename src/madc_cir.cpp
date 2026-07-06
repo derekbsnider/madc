@@ -1130,6 +1130,41 @@ static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
 	}
     }
 
+    // Freeze-completeness diagnostic (-v): any complete, non-polymorphic class the
+    // fixpoint could NOT record, and the first blocking base/member — the "what is
+    // the freeze dropping and why" probe for the systematic complete-field pass. A
+    // bound program referencing such a type would get a loud lookup miss, never a
+    // silent wrong answer.
+    DBG(for (size_t i = 0; i < classes.size(); ++i) {
+	if (recorded.count(classes[i]))
+	    continue;
+	DataDefCLASS *c = classes[i];
+	fprintf(stderr, "forest freeze: UNRECORDED %s (%zu members, %zu bases)\n",
+		c->name.c_str(), c->members.size(), c->bases.size());
+	for (size_t b = 0; b < c->bases.size(); ++b) {
+	    BaseSpec &bs = c->bases[b];
+	    if (bs.is_virtual)
+		fprintf(stderr, "    VIRTUAL base: %s\n", bs.base ? bs.base->name.c_str() : "?");
+	    else if (bs.base && !recorded.count(bs.base))
+		fprintf(stderr, "    base not recorded: %s\n", bs.base->name.c_str());
+	}
+	for (size_t m = 0; m < c->members.size(); ++m) {
+	    DataDef *mdd = c->members[m].second;
+	    const char *k;
+	    if (!mdd) k = "NULL";
+	    else if (mdd->type_id && mdd->type_id < MADC_TYPEID_PRIMITIVE_END) k = "primitive";
+	    else if (recorded.count(mdd)) k = "recorded";
+	    else if (dynamic_cast<DataDefREF *>(mdd)) k = "ref";
+	    else if (dynamic_cast<DataDefPTR *>(mdd)) k = "ptr";
+	    else if (dynamic_cast<DataDefCONST *>(mdd)) k = "const";
+	    else if (dynamic_cast<DataDefCLASS *>(mdd)) k = "CLASS-unrecorded";
+	    else if (dynamic_cast<DataDefSTRUCT *>(mdd)) k = "STRUCT-unrecorded";
+	    else k = "OTHER (array/enum/func/…)";
+	    fprintf(stderr, "    member[%zu] '%s' : %s  [%s]\n", m,
+		    c->members[m].first.c_str(), mdd ? mdd->name.c_str() : "", k);
+	}
+    });
+
     // File-scope typedefs -> alias records (ref0 = the underlying type's id).
     for (std::set<std::string>::const_iterator it = prog->user_typedef_names.begin();
 	 it != prog->user_typedef_names.end(); ++it) {
