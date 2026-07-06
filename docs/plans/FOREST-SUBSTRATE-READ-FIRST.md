@@ -19,23 +19,32 @@ pointer/reference/const members (`968f4a29`), v10 namespace-qualified types
 (`4a656bbd`). Each is a "one mechanism widened" extension of the type-table
 serialization; all gated byte-identical (`MADC_DUMP_MIR` == live, torture 50-name).
 
-**Two open threads — BOTH serve the SAVE/LOAD model; neither may drift from it:**
-- **#13 — corpus (`std::string`/`std::vector`) template-instantiation restoration.**
-  The DIRECT save/load continuation (§5): `std::string` is a `std` typedef for
-  `basic_string<char,…>`, a template-instantiation product (`<` in key/name) the
-  v10 slice deliberately skips. #13 = serialize the instantiation product + its
-  `std::` typedef + ctor/dtor emission + mangled-direct library linking. **Primary course.**
-- **#14 — madcdis export surface / helper-sharing refactor**
-  (`docs/plans/2026-07-06-madcdis-export-surface.md`). Extract the forest's POD
-  save/load boilerplate into a PUBLIC, DataDef-agnostic `madc::dis` primitive, and
-  export the built substrate (`intern_table`/`id_table`/`value_pool`/`snapshot`)
-  through libmadc + the madc language. This SERVES save/load — the helpers ARE the
-  save/load machinery, factored for reuse — and its guardrail is **byte-identity**:
-  if any byte-level gate moves, the refactor changed the format → revert.
+**#14 helper-sharing refactor + libmadc export — DONE (banked, pushed):**
+- **Step 1 (`dc06a92b`)** — the forest save/load POD boilerplate is now the PUBLIC
+  `madc::dis::pod_record` codec (`include/madcdis/pod_record.h`:
+  `pod_words`/`pod_append`/`pod_read`), and the load-side typeid→`DataDef*` swizzle
+  is one `forest_swizzle_type` helper. Byte-identical (9/9 `forest_bind_gate`, torture
+  by construction).
+- **Step 2a (`2e690830`)** — `include/libmadc/dis.h`, the curated public **C++** surface
+  a host includes to reach the substrate (pod_record / intern_table / id_table / value_pool
+  / snapshot); round-trip test `tests/unit/test_libmadc_dis.cpp`. "Reusable via libmadc" ✓.
+- **Follow-ons (NOT started, recorded in the export-surface plan):** 2b C-host `extern "C"`
+  shim (speculative — no C consumer yet; keep it thin+late per cpp-first-api). 2c script-facing
+  export is **BLOCKED on a pre-existing parser bug** — a `.mad` can't `#include` any substrate
+  header until madc parses `<cstdint>`'s `using ::int_fast8_t;` (a separate PARSER track,
+  parked; do NOT fold it into forest work). Owner decision (2026-07-06): bank 2a, return to #13.
 
-**COURSE-RETURN (anti-drift):** the SAVE/LOAD state model governs everything (§0,
-§1, §7). #14 is a bounded refactor **gated by byte-identity — it cannot change the
-saved/loaded state**; after #14, return to #13. Neither thread may introduce a
+**ACTIVE THREAD — #13 (the primary SAVE/LOAD course):** corpus
+(`std::string`/`std::vector`) template-instantiation restoration. `std::string` is a
+`std` typedef for `basic_string<char,…>`, a template-instantiation product (`<` in
+key/name) the v10 slice deliberately skips. #13 = serialize the instantiation product
++ its `std::` typedef + ctor/dtor emission + mangled-direct library linking — the DIRECT
+save/load continuation (§5), building ON namespace (v10) + pointer-member (v9) + the
+shared `pod_record` codec (#14 step 1).
+
+**COURSE-RETURN (anti-drift):** the SAVE/LOAD state model governs everything (§0, §1,
+§7). #14's helper refactor was gated by byte-identity (it could not change saved state);
+its libmadc export is additive. We are now BACK on #13. No thread may introduce a
 re-parse, a separate module, re-derivation, or a parallel format. **Next session:
 read THIS file + the memory `feedback_forest_load_never_reparse` IN FULL first, as always.**
 

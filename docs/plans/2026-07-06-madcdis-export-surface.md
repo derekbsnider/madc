@@ -1,6 +1,7 @@
 # madcdis Export Surface — make the substrate reusable through libmadc and the madc language
 
-**Date:** 2026-07-06 · **Status:** design (implementation not started) · **Owner-directed.**
+**Date:** 2026-07-06 · **Status:** Step 1 + Step 2a LANDED; 2b deferred, 2c blocked
+(see below); owner banked 2a and returned to #13. · **Owner-directed.**
 
 Sibling of `docs/plans/madcdis-plan.md` (the umbrella substrate plan) and
 `docs/plans/2026-06-12-type-table-value-abi-design.md` (the value/type-id ABI).
@@ -130,12 +131,27 @@ the per-kind code but is NOT a `dis` export.
      (interning, id add/get, snapshot build/open/read); templates (`id_table<T>`,
      `pod_*<T>`) stay header-only C++ (a C host instantiates nothing — it uses the
      concrete shim entry points). Wrappers over the 2a C++ layer, no new logic.
-   - **2c (after) — the script-facing embedded header.** `include/madc/` header,
-     declaration-only C++ in `namespace madc::dis`, resolving mangled-direct to host
-     symbols (the `<ns_madc>` discipline) for non-template primitives; templated
-     primitives are exposed as their real header (the script instantiates them), the
-     one place the `dis` export is a header not a mangled-direct decl. `.mad`
-     round-trip test.
+   - **2c (BLOCKED) — the script-facing embedded header.** `include/madc/` header for
+     scripts. Finding (2026-07-06, probe): mangled-direct CANNOT be the whole mechanism
+     — `nm` shows only `snapshot_*` methods and out-of-line helpers are strong exported
+     symbols; `intern_table`/`value_pool` inline methods and `id_table<T>`/`pod_*<T>`
+     templates exist in libmadc only when ODR-used, so a script can't resolve them
+     mangled-direct. The script must therefore parse the substrate header AS its real
+     definitions (madc is a C++ dialect — it instantiates/inlines them itself, as it does
+     libstdc++ templates). **But that is blocked:** a `.mad` `#include` of any substrate
+     header transitively pulls `<cstdint>`, and madc's front-end fails to parse
+     `<cstdint>`'s `using ::int_fast8_t;` (`'int_fast8_t' is not a declaration in '::'`) —
+     a pre-existing, parked PARSER-track bug, not substrate work. 2c waits on that fix
+     (and likely further `<cXXX>` gaps behind it). Do NOT fold the parser fix into forest
+     work.
+
+**OWNER DECISION (2026-07-06):** Step 1 + 2a delivered the bounded, valuable half —
+the save/load code shares one public `madc::dis` codec, and the substrate is a
+documented, tested public C++ surface ("reusable via libmadc"). 2b is speculative
+(no C consumer) and 2c is blocked on an out-of-scope parser bug, so both are follow-ons.
+**Bank 2a; return to #13** (the primary save/load course, per
+`FOREST-SUBSTRATE-READ-FIRST.md`'s course-return). Revisit 2c after the `<cstdint>`
+parser gap is fixed on its own track; build 2b when a C host actually needs it.
 3. **madc-language ergonomics:** a script can intern strings, build an id table,
    write/read a snapshot container — the "save/load state" primitives users asked
    for, now first-class.
