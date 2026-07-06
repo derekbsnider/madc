@@ -449,6 +449,17 @@ if grep -Eq "^_Save_errno___dtor:[[:space:]]+func" "$strbind_mir"; then
     rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
     fail "[strbind] bound <string> emitted a spurious _Save_errno___dtor (synth-dtor overshoot #20 regressed)"
 fi
+# v16: the in_place global (an empty tag class with a `T x{}` value-init) used to be
+# DROPPED — the flush ctors.empty() guard skipped it (its ctor was never serialized),
+# so bind emitted neither `in_place: bss` nor `export in_place`, unlike live. v16
+# serializes the class-global INITIALIZER FORM (VALUE_INIT/COPY_TEMP) + DataDefCLASS::
+# nvsize, and stops pushing restored classes as dkStruct TopDecls (so their struct defs
+# emit via Pass 0.5's class_member_list — with the empty-class `char __pad0[1]` — like
+# live), so in_place restores + __madc_global_init's body is byte-identical to live.
+if ! grep -Eq "^in_place:[[:space:]]+bss" "$strbind_mir"; then
+	rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
+	fail "[strbind] bound <string> did NOT restore the in_place global var (v16 regressed)"
+fi
 rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
 echo "forest_bind_gate: [strbind] OK — std::string bound from <string> grove (no re-parse); construct+assign+size+destroy + scalar globals emitted + no synth-dtor overshoot, output == live == g++"
 

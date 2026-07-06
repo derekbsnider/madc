@@ -1734,3 +1734,69 @@ TEST_CASE("Phase 6 v14: std::string's scalar-const file-scope globals restore wi
 	}
 	CHECK(saw_hw);
 }
+
+// Phase 6 v16: a header's file-scope CLASS-typed globals carry their INITIALIZER
+// FORM so a bound consumer's __madc_global_init emits byte-identically to a live
+// parse. v13 stored no form (flush set decl=NULL -> a direct-on-global default
+// ctor); live runs the class-instance init path: `T x = T()` builds a stack temp
+// then copies it in (COPY_TEMP), `T x{}` is a trivially-copyable self-copy
+// (VALUE_INIT, needs no ctor -> in_place binds even with an empty restored ctor
+// set). v16 also serializes DataDefCLASS::nvsize (left behind before v16 -> a
+// restored empty class defaulted nvsize=0, so its temp alloca + struct-copy were
+// 0-sized). <bits/...>'s in_place = `in_place_t in_place{}` (VALUE_INIT) and
+// piecewise_construct = `piecewise_construct_t()` (COPY_TEMP) are exactly these.
+TEST_CASE("Phase 6 v16: class-typed file-scope globals restore their init form + nvsize") {
+	std::string main_path = std::string("/tmp/madc_p6v16_main_")
+			      + std::to_string((long)getpid()) + ".cpp";
+	std::string snap_path = std::string("/tmp/madc_p6v16_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include <string>\n"
+		      "int main() { std::string s; return (int)s.size(); }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	forest.materialize_types();
+	const std::vector<CirRestoredGlobal> &globals = forest.restored_globals();
+
+	// in_place is a value-init (`in_place_t in_place{}`); piecewise_construct is a
+	// copy-from-default-temporary (`= piecewise_construct_t()`). Both are empty tag
+	// classes, so their restored class must carry a nonzero nvsize (verbatim).
+	bool saw_in_place = false, saw_piecewise = false;
+	for (size_t i = 0; i < globals.size(); ++i) {
+		if (globals[i].name == nullptr || globals[i].type == nullptr)
+			continue;
+		DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(globals[i].type);
+		if (!strcmp(globals[i].name, "in_place")) {
+			saw_in_place = true;
+			CHECK((globals[i].gflags & CIR_GLOBALF_CLASS_VALUE_INIT) != 0);
+			REQUIRE(c != nullptr);
+			CHECK(c->nvsize > 0);		// v16: nvsize serialized (was 0)
+		} else if (!strcmp(globals[i].name, "piecewise_construct")) {
+			saw_piecewise = true;
+			CHECK((globals[i].gflags & CIR_GLOBALF_CLASS_COPY_TEMP) != 0);
+			REQUIRE(c != nullptr);
+			CHECK(c->nvsize > 0);
+		}
+	}
+	CHECK(saw_in_place);
+	CHECK(saw_piecewise);
+}

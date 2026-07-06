@@ -1152,10 +1152,12 @@ static bool cir_forest_record_aggregate(DataDefSTRUCT *sdd, DataDefCLASS *cdd,
 		       | (sdd->is_anonymous ? CIR_TYPEF_ANON : 0u)
 		       | (sdd->reverse_scalar_storage ? CIR_TYPEF_REVERSE : 0u)
 		       | (sdd->has_anon_aggregate ? CIR_TYPEF_HAS_ANONAGG : 0u);
-	if (cdd)
+	if (cdd) {
 		r.flags |= (cdd->from_system_header ? CIR_TYPEF_SYSHDR : 0u)
 			 | (cdd->has_user_ctor ? CIR_TYPEF_USER_CTOR : 0u)
 			 | (cdd->has_user_dtor ? CIR_TYPEF_USER_DTOR : 0u);
+		r.nvsize = (uint32_t)cdd->nvsize;	// v16: non-virtual size, verbatim
+	}
 	r.member_begin = (uint32_t)f.type_payload.size();
 	r.member_count = (uint32_t)sdd->members.size();
 	f.type_payload.insert(f.type_payload.end(), payload.begin(), payload.end());
@@ -1386,6 +1388,30 @@ static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
 		g.name_id = pool.intern(v->name);
 		g.type_id = forest_serialize_type_id(cdd);
 		g.flags   = v->flags;
+		// v16: classify the header's initializer FORM so the load rebuilds a
+		// TokenDecl whose emission is byte-identical to a live parse (v13 stored
+		// NO form -> flush set decl=NULL -> collect_global_ctors' built-in path
+		// default-constructed DIRECTLY on the global; a live parse builds a stack
+		// temp for `T x = T()` or a trivially-copyable self-copy for `T x{}`).
+		// Inspect the dkGlobalVar TopDecl's assign RHS structurally (no
+		// name-keying): a functional-construction temporary `T()` with NO args ->
+		// COPY_TEMP; the variable itself (value-init `T x{}`) -> VALUE_INIT. Any
+		// other/absent form leaves gflags 0 -> v13's default-ctor synthesis.
+		for (auto &t : prog->top_decls) {
+			if (t.kind != Program::DeclKind::dkGlobalVar || t.var != v)
+				continue;
+			TokenBase *rhs = t.decl ? t.decl->initialize : NULL;
+			if (TokenAssign *as = dynamic_cast<TokenAssign *>(rhs))
+				rhs = as->right;
+			if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(rhs)) {
+				if (ot->ctor_args.empty())
+					g.gflags = CIR_GLOBALF_CLASS_COPY_TEMP;
+			} else if (TokenVar *tv = dynamic_cast<TokenVar *>(rhs)) {
+				if (&tv->var == v)	// value-init RHS is the variable itself
+					g.gflags = CIR_GLOBALF_CLASS_VALUE_INIT;
+			}
+			break;
+		}
 		f.globals.push_back(g);
 		continue;
 	    }

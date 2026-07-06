@@ -12301,9 +12301,18 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    // A class resolves both as a C++ type name (`Derived x;`) and as a tag
 	    // (`struct Derived`); its members + bases were already reconnected in
 	    // materialize_types. Register struct_map + datatype_map like the live C++
-	    // aggregate path and push a dkStruct TopDecl — the CIR builder emits the
-	    // class as a flat struct from its inheritance-flattened member list,
-	    // exactly as a live parse does. Data layout only; method-call dispatch
+	    // aggregate path. Do NOT push a dkStruct TopDecl: a live parse keeps CLASSES
+	    // in struct_map ONLY (TokenCLASS::parse never adds them to top_decls, unlike
+	    // plain structs) — the CIR builder emits them in Pass 0.5 (the struct_map
+	    // walk) via class_struct_def -> class_member_list, which lays out the vptr,
+	    // flattened members, and the empty-class `char __pad0[1]` tail pad. Pushing a
+	    // dkStruct TopDecl instead emitted the class EARLY in Pass 0 via the plain
+	    // struct_def path (no __pad0), marking emitted_structs so Pass 0.5 skipped it
+	    // — so an empty tag class (in_place_t/piecewise_construct_t/…) bound as
+	    // `struct X {}` (c2mir size 0) instead of live's `struct X { char __pad0[1]; }`
+	    // (size 1), and its `T x{}` / `T x = T()` global init emitted no stack temp
+	    // (alloca 0) and no copy. Leaving it to Pass 0.5 makes bind's struct-def
+	    // emission identical to a live parse. Data layout only; method-call dispatch
 	    // (binding to real Itanium symbols) is the follow-on.
 	    DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(rt.dd);
 	    if ( !cdd )
@@ -12311,11 +12320,6 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    struct_map[name] = cdd;
 	    TokenDataType *tdt = new TokenDataType(rt.name, *cdd);
 	    datatype_map[name] = tdt;
-	    TopDecl td;
-	    td.kind = DeclKind::dkStruct;
-	    td.name = name;
-	    td.dd = cdd;
-	    top_decls.push_back(td);
 	    register_in_namespace(rt.ns, name, cdd, tdt);
 	    // The destructor is referenced ONLY through the scope-exit cleanup attribute
 	    // (never a direct call), so — unlike ctors/methods, which the call site
@@ -12397,7 +12401,8 @@ void Program::flush_forest_pending_globals()
 	// rather than emit an untranslatable node — serializing a defaulted ctor so it
 	// constructs trivially is a v12 follow-on.
 	if ( DataDefCLASS *pc = dynamic_cast<DataDefCLASS *>(pg.type) )
-	    if ( pc->has_user_ctor && pc->ctors.empty() )
+	    if ( pc->has_user_ctor && pc->ctors.empty()
+		     && !(pg.gflags & CIR_GLOBALF_CLASS_VALUE_INIT) )
 		continue;
 	Variable *gv = new Variable(pg.name, *pg.type, 1, NULL, /*alloc=*/false);
 	gv->flags = pg.flags;
@@ -12418,6 +12423,28 @@ void Program::flush_forest_pending_globals()
 	    TokenDecl *td = new TokenDecl(*gv);
 	    td->initialize = new TokenInt(pg.init_value);
 	    gtd.decl = td;
+	}
+	// v16: reconstruct the header's class-global INITIALIZER FORM so the
+	// existing collect_global_ctors -> global_ctor_call -> class_ctor_call
+	// path emits byte-identically to a live parse (v13's decl=NULL made
+	// the built-in path default-construct DIRECTLY on the global; a live
+	// parse builds a stack temp for `T x = T()` or a trivially-copyable
+	// self-copy for `T x{}`). The assign's RHS is the whole signal
+	// global_ctor_call reads: VALUE_INIT -> the variable itself (self-copy,
+	// needs NO ctor: why in_place binds); COPY_TEMP -> a `T()` functional-
+	// construction temporary (constructed via the default ctor, copied in).
+	else if ( pg.gflags
+		& (CIR_GLOBALF_CLASS_VALUE_INIT | CIR_GLOBALF_CLASS_COPY_TEMP) )
+	{
+		TokenDecl *td = new TokenDecl(*gv);
+		TokenAssign *as = new TokenAssign();
+		as->left = new TokenVar(*gv);
+		if ( pg.gflags & CIR_GLOBALF_CLASS_COPY_TEMP )
+			as->right = new TokenObjTemp(dynamic_cast<DataDefCLASS *>(pg.type));
+		else
+			as->right = new TokenVar(*gv);	// value-init: self-copy
+		td->initialize = as;
+		gtd.decl = td;
 	}
 	top_decls.push_back(gtd);
 	DBG(std::cout << "flush_forest_pending_globals: global " << pg.name

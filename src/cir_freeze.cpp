@@ -1302,6 +1302,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 		// offset/access/is_primary load as stored (no compute_layout re-run).
 		if (DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(sdd)) {
 			cdd->class_align        = r.align ? r.align : 1;
+			cdd->nvsize             = r.nvsize;	// v16: non-virtual size (temp alloca + struct-copy size)
 			cdd->from_system_header = (r.flags & CIR_TYPEF_SYSHDR) != 0;
 			cdd->has_user_ctor      = (r.flags & CIR_TYPEF_USER_CTOR) != 0;
 			cdd->has_user_dtor      = (r.flags & CIR_TYPEF_USER_DTOR) != 0;

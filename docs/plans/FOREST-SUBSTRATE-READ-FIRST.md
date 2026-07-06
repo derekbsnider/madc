@@ -172,20 +172,49 @@ That flat-POD substrate is the long-term endgame, NOT this slice.)
   `forest_bind_gate` 11/11 (strbind now ALSO asserts NO spurious `_Save_errno___dtor`); `test_cir_freeze`
   25/390; fulltest exit-0 / all ratchets+oracles+self-exe GREEN; freeze-only reach (cir_forest_append_methods
   runs only under `--freeze`) → normal path untouched, torture byte-identical by construction.
-- **NEXT — ONE residual whole-`<string>`-TU byte-identity gap (down from v14's two; #20 closed it).** The
-  bound-`<string>` `MADC_DUMP_MIR` "only in LIVE" set is now just the **`in_place` data item (task #22)** —
-  and **CORRECTED BY GROUND TRUTH (probe, 2026-07-06): `in_place` is NOT a defaulted-ctor gap.** Live
-  `in_place_t` has `has_user_ctor=1, ctors=1` (a REAL empty-body nullary ctor: `defaulted=0 declonly=0
-  emitsym=''`), identical to `piecewise_construct_t`/`allocator_arg_t`. But `in_place` emits via
-  `try_implicit_copy_construct` (`args=1`, `class_trivially_copyable`) as a 1-byte self-copy — **NO ctor
-  call, NO ctor body.** The producer value-inits `in_place` (`{}`) so its ctor body is never emitted → not
-  in `funcdef_locs` → v12 can't serialize it (and it isn't needed). The faithful fix is NOT serializing a
-  ctor; it needs `in_place`'s **`{}` initializer FORM** serialized (shared root with the piecewise/allocator
-  init-SHAPE divergence: v13's `decl=NULL` default-ctor synthesis constructs directly on the global, while
-  live builds a stack temp then copies). Real slice (task #22) = serialize file-scope global INITIALIZER
-  forms. The `strbind` gate stays runtime-correctness (+ the v14 scalar-slice + v15 no-overshoot checks)
-  until #22 closes; then it can assert whole-TU byte-identity. Reducers staged: `tmp/cs_producer.cpp` /
-  `tmp/cs_consumer.cpp`.
+- **v16 LANDED (2026-07-06, task #22) — serialize file-scope CLASS-global INITIALIZER FORMS + `nvsize`, and
+  stop emitting restored classes via the wrong struct-def path.** GROUND TRUTH (layered probes overturned
+  the stale "just restore in_place" framing — the gap was FOUR sub-bugs, all fixed):
+  1. **Init form** (`cir_forest_global_record.gflags` gains `CIR_GLOBALF_CLASS_VALUE_INIT` / `CLASS_COPY_TEMP`):
+     the freeze inspects each class-global's parsed `TokenDecl` and records whether its RHS is a `TokenObjTemp`
+     (`T x = T()` → COPY_TEMP, stack-temp+ctor+copy) or a self-`TokenVar` (`T x{}` value-init → VALUE_INIT,
+     trivially-copyable self-copy via `try_implicit_copy_construct`, needs NO ctor). Flush rebuilds the matching
+     `TokenAssign` RHS so `global_ctor_call` emits byte-identically to live. v13's `decl=NULL` had made the
+     built-in path default-construct DIRECTLY on the global; live builds a temp/self-copy. **`in_place` binds
+     for free** (VALUE_INIT bypasses the flush `ctors.empty()` guard — a self-copy needs no serialized ctor).
+  2. **`nvsize`** (added to `cir_forest_type_record`, restored verbatim): a functional-construction temp's
+     alloca + the struct-copy are sized by `DataDefCLASS::nvsize`; it was never serialized (restored 0), so an
+     empty tag class's global init emitted alloca 0 + no copy.
+  3. **THE BIG ONE — struct-def emission path:** `forest_restore_decls` pushed restored CLASSES as `dkStruct`
+     TopDecls, so bind emitted them EARLY via Pass 0's plain `struct_def` (no empty-class `char __pad0[1]`,
+     c2mir sizes the struct 0) and marked `emitted_structs`, SHADOWING Pass 0.5's `class_member_list`. A live
+     parse keeps classes in `struct_map` ONLY (never `top_decls`). Fix: don't push the `dkStruct` TopDecl for
+     a class → Pass 0.5 emits it via `class_member_list` (with `__pad0`, vptr, flattened members) EXACTLY like
+     live. (`class_member_list` ran 0× in bind before this, 423× in live.) This was pre-existing (every bound
+     empty system class was affected); v16's temp+copy just exposed it.
+  RESULT: `in_place` restored (`bss` + `export`), the whole `__madc_global_init` body + all struct defs now
+  **byte-identical to live**; the whole-`<string>`-TU `MADC_DUMP_MIR` diff dropped **147 → 103** lines.
+  Gated: `forest_bind_gate` 11/11 (strbind now ALSO asserts `in_place: bss` restored); `test_cir_freeze`
+  **26/403** (new v16 case: `in_place`→VALUE_INIT, `piecewise_construct`→COPY_TEMP, restored class `nvsize>0`);
+  fulltest exit-0 / all ratchets+oracles+self-exe GREEN; freeze/bind-only reach + the flush is a no-op on a
+  live compile → normal path untouched, torture byte-identical by construction. Format bumped **v15 → v16**
+  (the record grew a `uint32_t nvsize` + the gflags carry the new form bits — a stale v15 container would
+  re-introduce the direct-construct shape + drop in_place).
+- **NEXT — the residual whole-`<string>`-TU gap is now PRE-EXISTING emission ORDER + a local-name nuance
+  (task #23), NOT globals.** The remaining 103 diff lines are dominated by TWO pre-existing divergences
+  (VERIFIED at the v15 baseline — my v16 did NOT introduce them; the v15 diff was 147 lines and already
+  contained both, just masked because the strbind gate asserted func/export SETS, which are order-independent):
+  1. **Function-emission ORDER**: ~6 trivial tag ctors + allocator dtors
+     (`allocator_arg_t__allocator_arg_t`, `piecewise_construct_t__piecewise_construct_t`,
+     `__new_allocator_char16/32_t___dtor`, `allocator_char16/32_t___dtor`) emit BEFORE `main` in bind, AFTER
+     `main` in live → cascades into `protoN` renumbering + every `call protoN` reference. This is a bind vs
+     live emission-pass ORDER divergence (which deferred/late list these land in), independent of #22's global
+     work — investigate the late ctor/dtor emission passes (Pass 1.5/1.6/1.9x) and where `main` is appended.
+  2. **`i_5` vs `I_5`**: main's `(int)s.size()` result local names differ (a signedness/type nuance in how the
+     bound `size()` return / the cast resolves) — a method-return-type restore nuance in the consumer's own code.
+  Closing #23 (both) would make the whole `<string>` TU byte-identical. Reducers staged: `tmp/cs_producer.cpp`
+  / `tmp/cs_consumer.cpp`. The `strbind` gate stays runtime-correctness + the v14 scalar-slice + v15
+  no-overshoot + v16 in_place-restored checks until #23 closes, then it can assert whole-TU byte-identity.
 - **Polymorphic classes stay a SEPARATE, explicit boundary** (not folded in): the `_pmr_`
   `basic_string` variant is blocked by the polymorphic `std::pmr::memory_resource` (vtable).
   Serializing vtable/typeinfo is its own slice — a coherent subsystem, not a reactive drop.
@@ -195,10 +224,12 @@ Do the systematic complete-field pass (serialize the whole object, not a subset)
 at a time down the diagnostic's list, each gated byte-identical. No re-parse, no separate
 module, no re-derivation, no parallel format. **A2 (`3e2499ed`), A1 (`14642e78`), v12
 (`e30acb5b`, ctor/dtor/operator serialization + dtor funcdef_map registration), v13
-(class-typed file-scope globals + `__madc_global_init`), v14 (`115db29d`, scalar-const global
-init values), and v15 (dtor-completeness / synth-dtor overshoot fix) all committed LOCAL — NOT
-yet pushed** (the pre-v12 5-commit backlog + v12 + v13 + v14 + v15 = 9 unpushed). **Next session:
-read THIS file + the memory `feedback_forest_load_never_reparse` IN FULL first, as always.**
+(`47409b35`, class-typed file-scope globals + `__madc_global_init`), v14 (`115db29d`,
+scalar-const global init values), and v15 (`cb651109`, dtor-completeness / synth-dtor
+overshoot fix) are ALL COMMITTED AND PUSHED** — `develop` is at `cb651109`, in sync with
+`origin/develop` (0 ahead; verified 2026-07-06). The prior "9 unpushed" note is RESOLVED.
+**Next session: read THIS file + the memory `feedback_forest_load_never_reparse` IN FULL
+first, as always.**
 
 ---
 
