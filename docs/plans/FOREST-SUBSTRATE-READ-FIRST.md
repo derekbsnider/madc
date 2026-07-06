@@ -75,13 +75,32 @@ That flat-POD substrate is the long-term endgame, NOT this slice.)
   by construction. Gated: `basic_string<char>` now RECORDS (UNRECORDED 34→30); fulltest
   680/0/0/16; `forest_bind_gate` 10/10; `test_cir_freeze` **21/339** (new A2 case freezes real
   `<string>`, asserts basic_string<char> materializes, every member resolved, size_type→8-byte int).
-- **NEXT — A1 (emit the namespaced `std::string` typedef):** the v10 namespace walk in
-  `cir_forest_fill_type_records` SKIPS aliases where the ns key ≠ the record name (`std::string`
-  is a `std` typedef for the `<`-bearing `basic_string<char,…>` product, so key≠name) — turn
-  that skip into an EMIT so a bound `std::string` resolves to the now-recorded product. Then
-  corpus **ctors/dtors + method linking** (LIBRARY methods link via `emit_symbol` (3d), already
-  correct; exercise construction/destruction/`.size()` end to end). Use the `-v --freeze`
-  freeze-completeness diagnostic as the probe.
+- **A1 LANDED (`14642e78`, save-side only):** the v10 namespace walk in
+  `cir_forest_fill_type_records` SKIPPED an alias whose ns key ≠ the record name — `std::string`
+  is exactly that (`namespace_datatype_map["std"]["string"]` → the `basic_string<char,…>` product;
+  key "string" ≠ the product's mangled record name). A1 turns the skip into an EMIT: for a
+  namespaced alias to a RECORDED aggregate, emit a namespaced `CIR_TYPEK_TYPEDEF` record
+  (name=alias, namespace_id=ns, ref0=product id). materialize_types Pass 3 (already ns-aware) →
+  a typedef CirRestoredType (ns set, underlying = product); `forest_restore_decls` (already
+  ns-aware) registers `namespace_datatype_map[ns][alias]`. GENERIC (every namespaced alias to a
+  recorded aggregate: string/wstring/u16string/u32string/string_view/…, never keyed on a name).
+  **Ground truth:** live emits NO `typedef … string;` — the variable is declared with the PRODUCT
+  name and `std::string` is a parse-time NAME alias only — so this restores name resolution, not
+  a C typedef. (`sizeof(std::string)` failing in live = a separate pre-existing expression-path
+  limitation, NOT forest.) Save-side only (freeze reach) → torture byte-identical by construction.
+  Gated: fulltest 680/0/0/16; `forest_bind_gate` 10/10; `test_cir_freeze` **22/347** (new A1 case:
+  `std::string` materializes as a namespaced typedef whose underlying is the basic_string<char> product).
+- **NEXT — corpus ctors/dtors + method linking (the full `std::string` BIND).** Type-name
+  serialization is now COMPLETE (A2 = product records; A1 = the `std::string` alias). The gap to
+  an end-to-end bound `std::string s; … s.size()`: declaring `std::string s;` needs its **ctor +
+  dtor** (live puts a `__attribute__((cleanup(_ZNSt…D1Ev)))` on the var — a mangled-direct libstdc++
+  call), and `s.size()` needs its **method** to link. LIBRARY methods link via `emit_symbol` (3d,
+  already correct) — the slice is making a BOUND consumer emit the same ctor/dtor/method calls +
+  cleanup attr as live, byte-identical, WITHOUT re-parsing the header. This is the first slice that
+  is bind-testable end to end for the corpus (so it earns a real `forest_bind_gate` case, not just a
+  materialize unit test). Probe: freeze `<string>`, `--forest-bind` a `std::string` consumer, diff
+  `MADC_DUMP_MIR` vs live. Use the `-v --freeze` freeze-completeness diagnostic to find any remaining
+  dropped members.
 - **Polymorphic classes stay a SEPARATE, explicit boundary** (not folded in): the `_pmr_`
   `basic_string` variant is blocked by the polymorphic `std::pmr::memory_resource` (vtable).
   Serializing vtable/typeinfo is its own slice — a coherent subsystem, not a reactive drop.
