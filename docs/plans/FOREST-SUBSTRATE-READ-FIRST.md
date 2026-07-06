@@ -226,10 +226,11 @@ module, no re-derivation, no parallel format. **A2 (`3e2499ed`), A1 (`14642e78`)
 (`e30acb5b`, ctor/dtor/operator serialization + dtor funcdef_map registration), v13
 (`47409b35`, class-typed file-scope globals + `__madc_global_init`), v14 (`115db29d`,
 scalar-const global init values), and v15 (`cb651109`, dtor-completeness / synth-dtor
-overshoot fix) are ALL COMMITTED AND PUSHED** — `develop` is at `cb651109`, in sync with
-`origin/develop` (0 ahead; verified 2026-07-06). The prior "9 unpushed" note is RESOLVED.
-**Next session: read THIS file + the memory `feedback_forest_load_never_reparse` IN FULL
-first, as always.**
+overshoot fix) are COMMITTED AND PUSHED (everything through v15 is on `origin/develop`).
+**v16 (`21dc0c81`, class-global init-forms + nvsize + Pass-0.5 struct-def-path fix, task
+#22) is COMMITTED LOCAL — NOT yet pushed** (verified 2026-07-06). To see the unpushed
+commit(s): `git log --oneline origin/develop..develop`. **Next session: read THIS file +
+the memory `feedback_forest_load_never_reparse` IN FULL first, as always.**
 
 ---
 
