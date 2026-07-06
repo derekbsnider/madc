@@ -58,15 +58,30 @@ That flat-POD substrate is the long-term endgame, NOT this slice.)
 - **Freeze-completeness diagnostic LANDED (`e1beda7d`):** `madc -v --freeze=…` lists every
   complete non-poly class the fixpoint could NOT record + the blocking base/member (with a
   per-member type classification). The "what is the freeze dropping and why" probe — USE IT.
-- **NEXT — A2 (the diagnosed gap):** the real `std::string` product `basic_string<char,…,allocator<char>>`
-  still bails because member types that are **typedef aliases** (`size_type` → classified
-  `OTHER`, not primitive/struct/ptr/ref/const) make `cir_forest_record_derived` return false →
-  the whole product bails. Fix: handle typedef-alias member types (resolve to the underlying,
-  OR record as `CIR_TYPEK_TYPEDEF`). **Design Q:** byte-identity — does the live path emit the
-  member as `size_type` or `unsigned long`? (decides resolve-vs-record). After A2 the product
-  serializes → then **A1** (emit the namespaced `std::string` typedef — the v10 namespace walk
-  currently SKIPS aliases where key≠record-name; turn that skip into an EMIT) → then corpus
-  ctors/dtors + method linking.
+- **A2 LANDED (`3e2499ed`, save-side only):** a member / operand / method-param / return /
+  typedef-underlying whose type is a btSimple SCALAR-primitive typedef alias materialized
+  fresh by tsubst (the real `std::string`'s `size_type` == `unsigned long`, given a distinct
+  PROJECT id) used to make `cir_forest_record_derived` bail → the whole `basic_string<char>`
+  product dropped. **Design Q settled by GROUND TRUTH** (not guessed): `bin/madc --emit=c11`
+  emits `unsigned long _M_string_length;` with NO `size_type` typedef in the C at all —
+  `append_type_specs` renders a scalar SOLELY from `rawtype()` — so a scalar alias is
+  byte-identical to the pinned primitive of its rawtype. FIX = resolve-to-underlying (minimal
+  machinery): `forest_pinned_primitive_id` maps such an alias to its pinned slot,
+  `forest_serialize_type_id` serializes members/operands/params/returns/typedef-underlyings
+  through it, load resolves it via `madc_type_from_id` UNCHANGED (no record). Pointers/refs
+  (DataDefPTR inherits btSimple + is_integer over the POINTEE rawtype — a real bug caught
+  mid-impl), const, enum, SIMD, template-param, _Complex are excluded structurally (each its
+  own concept/slice). Normal compile path UNTOUCHED (freeze-only reach) → torture byte-identical
+  by construction. Gated: `basic_string<char>` now RECORDS (UNRECORDED 34→30); fulltest
+  680/0/0/16; `forest_bind_gate` 10/10; `test_cir_freeze` **21/339** (new A2 case freezes real
+  `<string>`, asserts basic_string<char> materializes, every member resolved, size_type→8-byte int).
+- **NEXT — A1 (emit the namespaced `std::string` typedef):** the v10 namespace walk in
+  `cir_forest_fill_type_records` SKIPS aliases where the ns key ≠ the record name (`std::string`
+  is a `std` typedef for the `<`-bearing `basic_string<char,…>` product, so key≠name) — turn
+  that skip into an EMIT so a bound `std::string` resolves to the now-recorded product. Then
+  corpus **ctors/dtors + method linking** (LIBRARY methods link via `emit_symbol` (3d), already
+  correct; exercise construction/destruction/`.size()` end to end). Use the `-v --freeze`
+  freeze-completeness diagnostic as the probe.
 - **Polymorphic classes stay a SEPARATE, explicit boundary** (not folded in): the `_pmr_`
   `basic_string` variant is blocked by the polymorphic `std::pmr::memory_resource` (vtable).
   Serializing vtable/typeinfo is its own slice — a coherent subsystem, not a reactive drop.
@@ -74,9 +89,9 @@ That flat-POD substrate is the long-term endgame, NOT this slice.)
 **COURSE-RETURN (anti-drift):** the SAVE/LOAD state model governs everything (§0, §1, §7).
 Do the systematic complete-field pass (serialize the whole object, not a subset), one field
 at a time down the diagnostic's list, each gated byte-identical. No re-parse, no separate
-module, no re-derivation, no parallel format. **Two commits (`c43d4556`, `e1beda7d`) plus the
-doc/memory updates are being pushed with this handoff.** **Next session: read THIS file + the
-memory `feedback_forest_load_never_reparse` IN FULL first, as always.**
+module, no re-derivation, no parallel format. **A2 committed local (`3e2499ed`) — NOT yet
+pushed.** **Next session: read THIS file + the memory `feedback_forest_load_never_reparse`
+IN FULL first, as always.**
 
 ---
 
