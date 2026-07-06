@@ -946,13 +946,18 @@ static bool cir_forest_serialize_bases(DataDefCLASS *cdd,
 // success sdd is inserted into `recorded`.
 // Append cdd's non-virtual method DECLARATIONS to f.type_payload — the fixed-stride
 // records first, then each method's explicit-param typeids — and report the slice
-// via method_begin/method_count. Slice 1 covers PLAIN named methods only: ctors /
-// dtors / operators / template methods are skipped (individually, not bailing the
-// class), as is any method whose return or an explicit param is not a serializable
-// typeid (a primitive or an already-recorded aggregate). The hidden __this (param 0
-// of a non-static method) is NOT written — load rebuilds it as a pointer to the
-// class. All serialized classes are non-polymorphic (the freeze bails on a vtable),
-// so every method here is non-virtual.
+// via method_begin/method_count. Covers plain named methods, operators, and (v12)
+// the class's ctors + dtor, so a bound class default-constructs, assigns, and
+// destroys exactly as a parsed one. A method's KIND is classified structurally, not
+// by name: a ctor is a member of cdd->ctors (select_ctor_overload's set); the dtor
+// is the class_own_dtor var (the "~"-prefixed method_map key whose Variable is also
+// in methods — class-name-independent); an operator's display begins "operator".
+// A ctor/dtor/operator with no concrete emit_symbol AND no inline body is a
+// defaulted/uninstantiated special member or a template — skipped individually (not
+// bailing the class), as is any method whose return or an explicit param is not a
+// serializable typeid. The hidden __this (param 0 of a non-static method) is NOT
+// written — load rebuilds it as a pointer to the class. All serialized classes are
+// non-polymorphic (the freeze bails on a vtable), so every method here is non-virtual.
 static void cir_forest_append_methods(DataDefCLASS *cdd, madc::dis::intern_table &pool,
 				      std::set<DataDef *> &recorded,
 				      cir_frozen_forest &f,
@@ -965,6 +970,24 @@ static void cir_forest_append_methods(DataDefCLASS *cdd, madc::dis::intern_table
 	auto serializable = [&](DataDef *dd) -> bool {
 		return cir_forest_record_derived(dd, cdd, pool, recorded, f);
 	};
+	// Ctor set (structural signal for CIR_METHF_CTOR) + the dtor var and its
+	// "~"-prefixed method_map key (exactly class_own_dtor's signal): the dtor's own
+	// method_display_name is empty, so the key is serialized in display_id and load
+	// re-keys method_map with it, letting the cleanup attribute find the D1 symbol.
+	std::set<Variable *> ctor_set(cdd->ctors.begin(), cdd->ctors.end());
+	Variable *dtor_var = NULL;
+	std::string dtor_key;
+	for (std::map<std::string, Variable *>::const_iterator kv = cdd->method_map.begin();
+	     kv != cdd->method_map.end(); ++kv) {
+		if (kv->first.empty() || kv->first[0] != '~' || !kv->second)
+			continue;
+		if (std::find(cdd->methods.begin(), cdd->methods.end(), kv->second)
+		    != cdd->methods.end()) {
+			dtor_var = kv->second;
+			dtor_key = kv->first;
+			break;
+		}
+	}
 	std::vector<cir_forest_type_method> recs;
 	std::vector<std::vector<uint32_t> > params;	// explicit param typeids per method
 	for (size_t i = 0; i < cdd->methods.size(); ++i) {
@@ -975,13 +998,25 @@ static void cir_forest_append_methods(DataDefCLASS *cdd, madc::dis::intern_table
 		if (!fd)
 			continue;
 		const std::string &disp = fd->method_display_name;
-		if (disp.empty())
-			continue;
-		if (disp == cdd->name || disp[0] == '~'
-		    || disp.compare(0, 8, "operator") == 0)
-			continue;			// ctor / dtor / operator: later slice
+		// KIND (structural, name-independent).
+		bool is_ctor = ctor_set.count(mv) != 0;
+		bool is_dtor = (mv == dtor_var);
+		bool is_operator = (!disp.empty() && disp.compare(0, 8, "operator") == 0);
+		bool is_special = is_ctor || is_dtor || is_operator;
+		// Template methods (incl. template ctors/operators) instantiate no library
+		// symbol here — later slice, skip individually.
 		if (fd->is_member_template || !fd->template_param_names.empty())
-			continue;			// template method: later slice
+			continue;
+		if (is_special) {
+			// A ctor/dtor/operator binds by its concrete Itanium emit_symbol
+			// (LIBRARY) or an inline body; without either it is a
+			// defaulted/uninstantiated special member — cleanly lacks.
+			bool has_body = f.funcdef_locs.find(mv->name) != f.funcdef_locs.end();
+			if (fd->emit_symbol.empty() && !has_body)
+				continue;
+		} else if (disp.empty()) {
+			continue;			// a plain method with no display: skip
+		}
 		bool is_static = (mv->flags & vfSTATIC) != 0;
 		if (!is_static && fd->parameters.empty())
 			continue;			// no __this slot -> malformed, skip
@@ -999,13 +1034,20 @@ static void cir_forest_append_methods(DataDefCLASS *cdd, madc::dis::intern_table
 		cir_forest_type_method m;
 		memset(&m, 0, sizeof(m));
 		m.name_id        = pool.intern(mv->name);
-		m.display_id     = pool.intern(disp);
+		// display_id is the method_map KEY: method_display_name for a plain
+		// method/operator (== its key); the "~" tag for the dtor (its own display
+		// is empty); nothing for a concrete ctor (0 — resolves via cdd->ctors, not
+		// by name).
+		std::string dispkey = is_dtor ? dtor_key : (is_ctor ? std::string() : disp);
+		m.display_id     = dispkey.empty() ? 0 : pool.intern(dispkey);
 		m.ret_type_id    = forest_serialize_type_id(&fd->returns);
 		m.emit_symbol_id = fd->emit_symbol.empty() ? 0 : pool.intern(fd->emit_symbol);
 		m.flags = (fd->is_const_method ? CIR_METHF_CONST : 0u)
 			| (fd->is_varargs ? CIR_METHF_VARARGS : 0u)
 			| (fd->is_void_params ? CIR_METHF_VOIDPARAMS : 0u)
-			| (is_static ? CIR_METHF_STATIC : 0u);
+			| (is_static ? CIR_METHF_STATIC : 0u)
+			| (is_ctor ? CIR_METHF_CTOR : 0u)
+			| (is_dtor ? CIR_METHF_DTOR : 0u);
 		m.param_count = (uint32_t)pt.size();
 		// INLINE vs LIBRARY: if the AST holds a func-def for this method's mangled
 		// symbol, its body is Tree-1 content — record where so bind copies it into

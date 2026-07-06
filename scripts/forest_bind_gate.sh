@@ -376,5 +376,59 @@ int main()
 EOF
 run_case anon "t=7 b0=D b1=C sz=12"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon grove headers bound (no re-parse), output == live == g++"
+# --- case: strbind (v12 corpus — the FIRST std:: library class bound end-to-end) ---
+#     Freeze the REAL system <string>, then bind it while compiling a consumer that
+#     default-CONSTRUCTS a std::string, ASSIGNS a C-string to it, SIZES it, and (at
+#     scope exit) DESTROYS it. Before v12 the freeze skipped the class's ctors/dtor/
+#     operators, so binding `std::string s;` failed "no matching constructor"; v12
+#     serializes them (CIR_METHF_CTOR/DTOR) so cdd->ctors, the "~" dtor method_map
+#     key, and operator= are restored, and the restored dtor is registered in
+#     funcdef_map so the scope-exit cleanup declares it `void`. This is a RUNTIME-
+#     CORRECTNESS gate (output == live == g++), NOT byte-identity: the whole <string>
+#     TU is not yet MIR-identical (bind lacks the header's inline global vars +
+#     __madc_global_init, and synthesizes trivial dtors live doesn't emit — both
+#     separate whole-TU-emission slices). What it proves: a corpus class BINDS from
+#     the forest (no re-parse) and the bound program constructs/assigns/sizes/destroys
+#     correctly, cross-process.
+strbind_prod="tmp/fbgate_strbind_producer.cpp"
+strbind_cons="tmp/fbgate_strbind_consumer.cpp"
+strbind_snap="tmp/fbgate_strbind.msnap"
+strbind_gcc="tmp/fbgate_strbind_gcc"
+strbind_vlog="tmp/fbgate_strbind_v.log"
+cat > "$strbind_prod" <<'EOF'
+#include <string>
+int main() { std::string s; s = "hi"; return (int)s.size(); }
+EOF
+cat > "$strbind_cons" <<'EOF'
+#include <string>
+#include <cstdio>
+int main() { std::string s; s = "hello"; printf("len=%d\n", (int)s.size()); return 0; }
+EOF
+if ! timeout 180 "$BIN" --freeze="$strbind_snap" "$strbind_prod" >/dev/null 2>&1; then
+    fail "[strbind] --freeze <string> FAILED"
+fi
+[ -f "$strbind_snap" ] || fail "[strbind] --freeze produced no container"
+strbind_live=$(timeout 60 "$BIN" "$strbind_cons" 2>/dev/null)
+[ "$strbind_live" = "len=5" ] || fail "[strbind] live-parse output '$strbind_live' != 'len=5'"
+if command -v g++ >/dev/null 2>&1; then
+    if timeout 120 g++ "$strbind_cons" -o "$strbind_gcc" >/dev/null 2>&1; then
+        strbind_gcc_out=$("$strbind_gcc" 2>/dev/null)
+        [ "$strbind_gcc_out" = "len=5" ] || fail "[strbind] g++ output '$strbind_gcc_out' != 'len=5'"
+    else
+        fail "[strbind] g++ compile FAILED"
+    fi
+fi
+strbind_bind=$(timeout 60 "$BIN" --forest-bind="$strbind_snap" "$strbind_cons" 2>/dev/null)
+[ "$strbind_bind" = "len=5" ] || fail "[strbind] bind output '$strbind_bind' != 'len=5' (== live == g++)"
+# Prove <string> actually BOUND from the container (no silent live fall-through).
+# The -v dump carries NUL bytes, so grep -a (treat as text) on a file.
+timeout 60 "$BIN" -v --forest-bind="$strbind_snap" "$strbind_cons" >"$strbind_vlog" 2>&1
+if ! grep -aq "bound to grove unit.*string" "$strbind_vlog"; then
+    rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog"
+    fail "[strbind] consumer did NOT bind the <string> grove (live fall-through?)"
+fi
+rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog"
+echo "forest_bind_gate: [strbind] OK — std::string bound from <string> grove (no re-parse); construct+assign+size+destroy, output == live == g++"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind grove headers bound (no re-parse), output == live == g++"
 exit 0

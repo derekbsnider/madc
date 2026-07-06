@@ -156,7 +156,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // eight (tokens / decl index / PP exports / edges) plus the two container-
 // global segments (branch macros, canonical order). The version feeds the
 // context hash, so v1 readers reject v2 containers and vice versa.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 11 };	// v11: serialize a non-polymorphic aggregate's COMPLETE state — anonymous_aggregates (re-nested nameless sub-aggregates, so a struct with an anon union/struct member binds with the right layout) + the layout scalars pack/tag_explicit_align/is_anonymous/reverse_scalar_storage/has_anon_aggregate — instead of a hand-picked field subset; v10: a type record carries its defining namespace (namespace_id) so load restores a namespaced type into namespace_map + namespace_datatype_map (a bound `N::P` / `std::X` resolves), not just the flat maps; v9: derived-type records (CIR_TYPEK_POINTER/REFERENCE/CONST, ref0 = operand typeid) so a pointer/reference/const member (or method param/return, or typedef underlying) serializes as a table entry + swizzles back on load, instead of bailing the whole aggregate; v8: an INLINE method carries its body location (body_unit/body_idx + CIR_METHF_HAS_BODY) so load reconnects the method to its Tree-1 func-def subtree (copied into the consumer's Tree-2 on use, like a template instantiation); a LIBRARY method has no func-def in the AST -> declaration-only + emit_symbol (unchanged); v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 12 };	// v12: serialize a class's ctors/dtor/operators (CIR_METHF_CTOR/DTOR) instead of skipping them, so load rebuilds cdd->ctors (default-construction resolves) + the "~" dtor method_map key (scope-exit cleanup resolves the D1 symbol) + operator= overloads — a std::string consumer now BINDS and RUNS correctly (constructs, assigns, sizes, destroys; output == live == g++). Whole-<string>-TU MIR byte-identity is NOT yet reached (two separate whole-TU-emission gaps: header global-var defs + __madc_global_init are not serialized; the bind synth-dtor set exceeds live's reachable set) — each its own follow-on slice; v11: serialize a non-polymorphic aggregate's COMPLETE state — anonymous_aggregates (re-nested nameless sub-aggregates, so a struct with an anon union/struct member binds with the right layout) + the layout scalars pack/tag_explicit_align/is_anonymous/reverse_scalar_storage/has_anon_aggregate — instead of a hand-picked field subset; v10: a type record carries its defining namespace (namespace_id) so load restores a namespaced type into namespace_map + namespace_datatype_map (a bound `N::P` / `std::X` resolves), not just the flat maps; v9: derived-type records (CIR_TYPEK_POINTER/REFERENCE/CONST, ref0 = operand typeid) so a pointer/reference/const member (or method param/return, or typedef underlying) serializes as a table entry + swizzles back on load, instead of bailing the whole aggregate; v8: an INLINE method carries its body location (body_unit/body_idx + CIR_METHF_HAS_BODY) so load reconnects the method to its Tree-1 func-def subtree (copied into the consumer's Tree-2 on use, like a template instantiation); a LIBRARY method has no func-def in the AST -> declaration-only + emit_symbol (unchanged); v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
@@ -358,10 +358,19 @@ enum : uint32_t
 	CIR_METHF_VARARGS    = 1u << 1,	// FuncDef::is_varargs
 	CIR_METHF_VOIDPARAMS = 1u << 2,	// FuncDef::is_void_params (explicit `(void)`)
 	CIR_METHF_STATIC     = 1u << 3,	// static member (no hidden __this)
-	CIR_METHF_HAS_BODY   = 1u << 4	// INLINE method: body_unit/body_idx locate its
+	CIR_METHF_HAS_BODY   = 1u << 4,	// INLINE method: body_unit/body_idx locate its
 					// Tree-1 func-def subtree in the AST (copied into
 					// the consumer's Tree-2 on use). Absent => LIBRARY
 					// method (body in a .so): declaration-only + emit_symbol.
+	CIR_METHF_CTOR       = 1u << 5,	// constructor: load ALSO attaches it to cdd->ctors
+					// (select_ctor_overload reads that set). A concrete
+					// ctor has no method_map key (display_id 0) — it
+					// resolves by ctor overload, not by name.
+	CIR_METHF_DTOR       = 1u << 6	// destructor: display_id carries the "~"-prefixed
+					// method_map key class_own_dtor scans for (the
+					// FuncDef's own method_display_name is empty and is
+					// used ONLY as that key), so the cleanup attribute
+					// resolves the dtor symbol on the bound class.
 };
 
 // A non-virtual class method DECLARATION in the type_payload stream (fixed 7-u32

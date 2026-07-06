@@ -90,24 +90,43 @@ That flat-POD substrate is the long-term endgame, NOT this slice.)
   limitation, NOT forest.) Save-side only (freeze reach) → torture byte-identical by construction.
   Gated: fulltest 680/0/0/16; `forest_bind_gate` 10/10; `test_cir_freeze` **22/347** (new A1 case:
   `std::string` materializes as a namespaced typedef whose underlying is the basic_string<char> product).
-- **NEXT — corpus ctors/dtors + method linking (the full `std::string` BIND).** Type-name
-  serialization is now COMPLETE (A2 = product records; A1 = the `std::string` alias). **REPRODUCED
-  (2026-07-06, evidence-backed):** freeze `<string>` (`tmp/cs_producer.cpp`), `--forest-bind` a
-  `std::string s; s="hello"; s.size()` consumer → the TYPE resolves (A1+A2 work) but bind FAILS with
-  `cir error: no matching constructor for call to 'basic_string_char_std__char_traits_char__std__allocator_char_()'`.
-  Live compiles + runs the identical consumer (`len=5`). So the gap is CTORS/DTORS/METHODS, exactly
-  as slice 3d deferred: `cir_forest_append_methods` (madc_cir.cpp ~line 980) SKIPS
-  `disp == cdd->name` (ctor), `disp[0]=='~'` (dtor), and `operator…` — so the product carries NO
-  ctor/dtor. Declaring `std::string s;` selects the default ctor → not found → the untranslatable
-  node. **The slice:** serialize the ctors/dtors (LIBRARY methods → `emit_symbol` mangled Itanium
-  names like `…C1Ev`/`…D1Ev`, the 3d machinery ALREADY handles the symbol+decl; the change is to
-  STOP skipping them and mark the method KIND so load attaches each to the class's ctor/dtor slot,
-  not just `method_map`), then make the BOUND consumer's ctor-selection + dtor-`cleanup` attr emit
-  the SAME MIR as live. Design carefully: how the CIR builder selects a ctor for `std::string s;`
-  and where it reads the class's ctor/dtor set; the `__attribute__((cleanup(…D1Ev)))` on the var.
-  FIRST end-to-end bind-testable corpus slice → it earns a REAL `forest_bind_gate` case (freeze
-  `<string>`, bind a `std::string` consumer, `MADC_DUMP_MIR` byte-identical to live), not just a
-  materialize unit test. Reducers staged in `tmp/cs_producer.cpp` / `tmp/cs_consumer.cpp`.
+- **v12 LANDED (2026-07-06) — the FIRST corpus class BINDS end-to-end: `std::string`.** The freeze
+  SKIPPED a class's ctors (`disp==cdd->name`/empty-disp), dtor (`disp[0]=='~'`), and operators, so a
+  restored `basic_string<char>` had an EMPTY `cdd->ctors` → binding `std::string s;` failed
+  `no matching constructor`. v12 classifies each method STRUCTURALLY (ctor = member of `cdd->ctors`;
+  dtor = the `class_own_dtor` var — a `~` `method_map` key whose Variable is in `methods`; operator =
+  display begins `operator`), and serializes the LIBRARY ones (concrete `emit_symbol` like
+  `…C1Ev`/`…D1Ev`/`…aSEPKc`) with `CIR_METHF_CTOR`/`CIR_METHF_DTOR`. LOAD (`materialize_types`)
+  attaches a `CIR_METHF_CTOR` method to `cdd->ctors` (allows empty display), the dtor's `~`-key to
+  `method_map` (its own `method_display_name` is empty — the key rides `display_id`), operators to
+  `method_map[display]` — so `select_ctor_overload`, `class_own_dtor`, and assignment resolution all
+  see parse-equivalent state. One more load-fidelity gap fixed: the dtor is referenced ONLY via the
+  scope-exit `cleanup` attribute (never a direct call), so its extern proto comes solely from the
+  Pass-0.75 sweep over `funcdef_map`; a parsed dtor is in `funcdef_map`, a restored one was not, so
+  the cleanup referenced an UNDECLARED symbol → c2mir defaulted it to `int()` (spurious return slot).
+  `forest_restore_decls` now registers the restored dtor in `funcdef_map` keyed by its `emit_symbol`
+  → the dtor is declared `void`, the call has no return slot, `main` matches live (13 locals).
+  **RESULT:** freeze `<string>`, `--forest-bind` a `std::string s; s="hello"; s.size()` consumer →
+  constructs + assigns + sizes + destroys, output `len=5` == live == g++, cross-process, genuinely
+  bound (`#include <string> bound to grove unit 46`), NO re-parse. Gated: `forest_bind_gate`
+  **11/11** (new `strbind` RUNTIME-CORRECTNESS case); `test_cir_freeze` **23/359** (new v12 case:
+  restored `basic_string<char>` has a default ctor in `ctors`, a `class_own_dtor`-discoverable dtor
+  with a D1 symbol, and `operator=`); fulltest green; single-class byte-identity gates unregressed;
+  freeze/bind-only reach → torture byte-identical by construction.
+- **NEXT — whole-`<string>`-TU MIR byte-identity (two SEPARATE, pre-existing gaps, NOT ctor/dtor).**
+  v12 makes `std::string` RUN correctly; the whole-TU `MADC_DUMP_MIR` is NOT yet byte-identical to a
+  live parse, blocked by two independent whole-TU-EMISSION gaps that surfaced only now that bind
+  reaches MIR emission (both measured 2026-07-06 on `tmp/cs_*.cpp`): **(1) global-variable defs +
+  `__madc_global_init`** — live emits the header's inline globals (`in_place`, `piecewise_construct`,
+  `allocator_arg`, `ignore`, `hardware_*_interference_size`, the empty-tag `…_t__…_t` dtors) and a
+  `call __madc_global_init` in `main`; the forest serializes TYPES, not global VARIABLE definitions,
+  so bind emits neither (harmless for a `std::string` consumer — it uses none — but a real gap: a
+  consumer that USED a header global would miss its init). **(2) synth-dtor set/order** — bind
+  synthesizes trivial `X___dtor` bodies for MANY restored classes (`_Save_errno`, `__new_allocator_*`,
+  `allocator_*`, wide-char `basic_string_*`) that live's parse never emits. Each is its own slice
+  (serialize + restore global-var defs with init order; make the bind synth-dtor emission match
+  live's reachable set). The `strbind` gate stays runtime-correctness until BOTH close; then it can
+  assert byte-identity. Reducers staged: `tmp/cs_producer.cpp` / `tmp/cs_consumer.cpp`.
 - **Polymorphic classes stay a SEPARATE, explicit boundary** (not folded in): the `_pmr_`
   `basic_string` variant is blocked by the polymorphic `std::pmr::memory_resource` (vtable).
   Serializing vtable/typeinfo is its own slice — a coherent subsystem, not a reactive drop.
@@ -115,9 +134,10 @@ That flat-POD substrate is the long-term endgame, NOT this slice.)
 **COURSE-RETURN (anti-drift):** the SAVE/LOAD state model governs everything (§0, §1, §7).
 Do the systematic complete-field pass (serialize the whole object, not a subset), one field
 at a time down the diagnostic's list, each gated byte-identical. No re-parse, no separate
-module, no re-derivation, no parallel format. **A2 committed local (`3e2499ed`) — NOT yet
-pushed.** **Next session: read THIS file + the memory `feedback_forest_load_never_reparse`
-IN FULL first, as always.**
+module, no re-derivation, no parallel format. **A2 (`3e2499ed`), A1 (`14642e78`), v12
+(ctor/dtor/operator serialization + dtor funcdef_map registration) all committed LOCAL — NOT
+yet pushed** (the pre-v12 5-commit backlog + the v12 commit). **Next session: read THIS file +
+the memory `feedback_forest_load_never_reparse` IN FULL first, as always.**
 
 ---
 

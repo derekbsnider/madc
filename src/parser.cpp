@@ -12317,6 +12317,33 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    td.dd = cdd;
 	    top_decls.push_back(td);
 	    register_in_namespace(rt.ns, name, cdd, tdt);
+	    // The destructor is referenced ONLY through the scope-exit cleanup attribute
+	    // (never a direct call), so — unlike ctors/methods, which the call site
+	    // declares — its extern proto comes solely from the Pass-0.75 sweep over
+	    // funcdef_map. A live parse's dtor is IN funcdef_map (parseFunction registers
+	    // it); a restored one was not, so the cleanup referenced an UNDECLARED symbol
+	    // and c2mir defaulted it to `int()` (a spurious return slot in the call).
+	    // Register it here keyed by its emit_symbol — the symbol referenced_funcs
+	    // carries and Pass 0.75 matches when no Variable backs the entry — so the
+	    // dtor is declared `void D1(struct T *)`, exactly as a parsed one. (The dtor
+	    // is found structurally, as class_own_dtor does: a "~" method_map key whose
+	    // Variable is also in methods.)
+	    for (std::map<std::string, Variable *>::const_iterator kv = cdd->method_map.begin();
+		 kv != cdd->method_map.end(); ++kv)
+	    {
+		if ( kv->first.empty() || kv->first[0] != '~' || !kv->second )
+		    continue;
+		bool in_methods = false;
+		for ( size_t mi = 0; mi < cdd->methods.size() && !in_methods; ++mi )
+		    if ( cdd->methods[mi] == kv->second ) in_methods = true;
+		if ( !in_methods )
+		    continue;
+		FuncDef *dfd = dynamic_cast<FuncDef *>(kv->second->type);
+		if ( dfd && !dfd->emit_symbol.empty()
+		     && funcdef_map.find(dfd->emit_symbol) == funcdef_map.end() )
+		    funcdef_map[dfd->emit_symbol] = dfd;
+		break;
+	    }
 	    DBG(std::cout << "forest_restore_decls: class " << name << " ("
 		<< cdd->members.size() << " members, " << cdd->bases.size()
 		<< " bases, " << cdd->methods.size() << " methods)" << std::endl);

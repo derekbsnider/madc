@@ -1307,13 +1307,17 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 				continue;		// unresolvable base -> bind cleanly lacks it
 			cdd->base_class = cdd->bases.empty() ? NULL : cdd->bases[0].base;
 
-			// Methods (Phase 6 3d): rebuild each non-virtual method DECLARATION as
-			// a FuncDef + Variable and attach to method_map/methods, so a member
+			// Methods (Phase 6 3d/v12): rebuild each non-virtual method DECLARATION
+			// as a FuncDef + Variable and attach to method_map/methods, so a member
 			// call resolves. The hidden __this (param 0 of a non-static method) is
 			// rebuilt as a pointer to this class. Bodies are NOT here — an inline
 			// method's body rides the grove (emitted by the producer), an external
 			// method binds emit_symbol — so the FuncDef is declaration_only (the
 			// consumer emits no body; the call links to the grove def / real symbol).
+			// v12: a CIR_METHF_CTOR method ALSO joins cdd->ctors (so default/overload
+			// construction resolves) and a CIR_METHF_DTOR method's display_id is the
+			// "~" method_map key class_own_dtor scans for (its own display is empty);
+			// a concrete ctor has no key (display_id 0) — no method_map entry.
 			const size_t METHSTRIDE = madc::dis::pod_words<cir_forest_type_method>();
 			for (uint32_t mi = 0; mi < r.method_count; ++mi) {
 				size_t mb = (size_t)r.method_begin + (size_t)mi * METHSTRIDE;
@@ -1323,8 +1327,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 				DataDef *ret = forest_swizzle_type(tm.ret_type_id, by_id);
 				uint32_t mnl = 0, mdl = 0;
 				const char *mnm = pool_cstr(tm.name_id, mnl);
-				const char *mdp = pool_cstr(tm.display_id, mdl);
-				if (!ret || !mnm || !mdp)
+				// display_id 0 => no method_map key (a concrete ctor); otherwise the
+				// key (plain method / operator display, or the dtor's "~" tag).
+				const char *mdp = tm.display_id ? pool_cstr(tm.display_id, mdl) : NULL;
+				if (!ret || !mnm)
 					continue;
 				bool m_static = (tm.flags & CIR_METHF_STATIC) != 0;
 				FuncDef *fd = new FuncDef(*ret);
@@ -1344,7 +1350,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 				}
 				if (!pok)
 					continue;	// unserializable param -> method cleanly lacks
-				fd->method_display_name = std::string(mdp, mdl);
+				std::string dispname = mdp ? std::string(mdp, mdl) : std::string();
+				fd->method_display_name = dispname;
 				if (tm.emit_symbol_id) {
 					uint32_t el = 0;
 					const char *es = pool_cstr(tm.emit_symbol_id, el);
@@ -1372,7 +1379,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 					mv->flags |= vfSTATIC;
 				_mat_vars.push_back(mv);
 				cdd->methods.push_back(mv);
-				cdd->method_map[fd->method_display_name] = mv;
+				if (!dispname.empty())
+					cdd->method_map[dispname] = mv;
+				if (tm.flags & CIR_METHF_CTOR)
+					cdd->ctors.push_back(mv);
 			}
 		}
 		// A nameless anonymous sub-aggregate stays in by_id (so the enclosing

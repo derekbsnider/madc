@@ -1540,3 +1540,84 @@ TEST_CASE("Phase 6 A1: std::string materializes as a namespaced typedef -> the b
 	CHECK(str_alias->underlying->name
 	      == "basic_string_char_std__char_traits_char__std__allocator_char_");
 }
+
+// Phase 6 v12: the freeze used to SKIP a class's ctors (disp==name / empty-disp),
+// dtor (disp[0]=='~'), and operators, so a restored std::string had an EMPTY ctors
+// set — binding `std::string s;` failed "no matching constructor". v12 classifies
+// each method structurally (ctor = member of cdd->ctors; dtor = the class_own_dtor
+// var, a "~" method_map key in methods; operator = display begins "operator") and
+// serializes the LIBRARY ones (concrete emit_symbol) with CIR_METHF_CTOR/DTOR. This
+// asserts the RESTORED basic_string<char>'s state matches parse: a default ctor in
+// cdd->ctors, a dtor discoverable exactly as class_own_dtor does (both with real
+// Itanium emit_symbols), and operator= in method_map. (The end-to-end bind — a
+// std::string consumer constructs/assigns/sizes/destroys, output == live == g++ —
+// is the forest_bind_gate `strbind` case; here we gate the restored type state.)
+TEST_CASE("Phase 6 v12: std::string's ctors + dtor + operator= reconstruct into the class's slots") {
+	std::string main_path = std::string("/tmp/madc_p6v12_main_")
+			      + std::to_string((long)getpid()) + ".cpp";
+	std::string snap_path = std::string("/tmp/madc_p6v12_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include <string>\n"
+		      "int main() { std::string s; s = \"hi\"; return (int)s.size(); }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	DataDefCLASS *str = NULL;
+	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	for (size_t i = 0; i < types.size(); ++i)
+		if (types[i].name && !strcmp(types[i].name,
+			"basic_string_char_std__char_traits_char__std__allocator_char_"))
+			str = dynamic_cast<DataDefCLASS *>(types[i].dd);
+	REQUIRE(str != nullptr);
+
+	// A default ctor (only the hidden __this required) is in cdd->ctors, and every
+	// ctor is a LIBRARY method bound to a real Itanium symbol (no madc body).
+	bool saw_default_ctor = false;
+	for (size_t i = 0; i < str->ctors.size(); ++i) {
+		FuncDef *cf = str->ctors[i] ? dynamic_cast<FuncDef *>(str->ctors[i]->type) : NULL;
+		if (!cf) continue;
+		if (cf->required_param_count() <= 1)	// only __this required
+			saw_default_ctor = true;
+	}
+	REQUIRE(!str->ctors.empty());
+	CHECK(saw_default_ctor);
+
+	// The dtor is discoverable exactly as CirBuilder::class_own_dtor does — a "~"
+	// method_map key whose Variable is also in methods — and carries its D1 symbol.
+	Variable *dtor = NULL;
+	for (std::map<std::string, Variable *>::const_iterator kv = str->method_map.begin();
+	     kv != str->method_map.end(); ++kv) {
+		if (kv->first.empty() || kv->first[0] != '~' || !kv->second)
+			continue;
+		bool in_methods = false;
+		for (size_t mi = 0; mi < str->methods.size() && !in_methods; ++mi)
+			if (str->methods[mi] == kv->second) in_methods = true;
+		if (in_methods) { dtor = kv->second; break; }
+	}
+	REQUIRE(dtor != nullptr);
+	FuncDef *dfd = dynamic_cast<FuncDef *>(dtor->type);
+	REQUIRE(dfd != nullptr);
+	CHECK(!dfd->emit_symbol.empty());
+
+	// operator= is restored into method_map (assignment resolution reads it).
+	CHECK(str->method_map.find("operator=") != str->method_map.end());
+}
