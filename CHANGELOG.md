@@ -4,6 +4,27 @@
 
 ### Data-substrate Track B — the embedded header forest
 
+- **Widening slice 2 (format v20) — template-NAME state serializes; a bound
+  `<vector>` consumer runs.** The corpus blocker ("use of undeclared identifier
+  'vector'": the instantiation PRODUCT was in the arena, the template NAME was
+  not) closed by serializing the parser's pattern maps VERBATIM — the seven
+  template maps' definitions as params/flags/ns + their captured TOKEN runs in
+  the `.madh` record form (live keeps patterns as tokens, so bind holding the
+  same tokens IS state parity). Five more loaded-state gaps fell with it:
+  `canonical_cpp_spelling` restore (template arg-spelling identity — the
+  instantiation-key memo), the class-scope name maps (`type_aliases` /
+  static member types / integral static-const values), the producer's
+  instantiated `__mti` / `__ns_*__oN` DEFINITIONS (bodied free functions with
+  forest bodies riding the materialize_and_lower fixpoint; a producer root
+  like `main` cleanly lacks), a serialized EXTERN-DECL INDEX (loaded bodies'
+  pre-built runtime/library calls load the producer's own declaration node —
+  the setjmp / operator-new pointer-truncation SIGSEGV class), and namespaced
+  aliases to pinned primitives (`std::size_t`). The exact-match consumer binds
+  and runs `sum=7` == live == g++ with func/export/import SETS byte-identical
+  to live (whole-TU byte-identity — a proto/label numbering-order residual —
+  is the follow-on). New gate case [vecbind] (13/13); a NEW-specialization
+  consumer (`vector<long>`) advances into body instantiation and is the next
+  measured slice.
 - **B3 ARENA FLIP (Chunks A/1/2/3, format v18) — the DefArena IS the type-graph
   serialization.** SAVE = dump the parse-populated arena (write-throughs at the
   type-completion funnels + a freeze-time refresh/completion pass); LOAD =

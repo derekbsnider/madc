@@ -240,30 +240,73 @@ registration). RESULT: rich consumer (append/operator+=/c_str/length) binds `len
 whole-TU MIR BYTE-IDENTICAL — even against the MINIMAL producer (method DECLARATIONS are usage-independent in
 the freeze). Gate case **[strops]** locks it (12/12); #23 unit case asserts Method(owner_class) + the shared
 Variable (29/485). Torture by construction (bind/restore-only reach).
-**NEXT — WIDENING SLICE 2 (the corpus blocker, MEASURED): serialize TEMPLATE-NAME state so `<vector>` binds.**
-Ground truth: a bound `std::vector<int>` consumer fails at PARSE — "use of undeclared identifier 'vector'" —
-even for the producer's exact instantiation (the vector_int32_t_std__allocator_int32_t_ PRODUCT class is in
-the arena; the template NAME is not). Live state = `Program::template_map` (bare name → TemplateDef variants)
-+ `partial_spec_map` + `fn_template_map` + `var_template_map`; a `TemplateDef` (madc.h:1641) = typeparams +
-defaults (TokenBase* runs) + is_type/is_pack + class_name + **body = cloned TOKEN vector** (Borland model:
-instantiation clones+substitutes the saved tokens; each concrete class is parsed ONCE — the parse-once law's
-allowed only-parse) + defining_namespace + owner_class + spec_pattern/constraint token runs. FAITHFUL widening
-= serialize those TOKEN vectors (the .madh token record form ALREADY EXISTS from B4a) + params/flags/ns per
-TemplateDef, restore into the four maps, and let the UNCHANGED live instantiation machinery run — an
-exact-match consumer hits the memoized product; a NEW specialization instantiates through the same path. This
-is NOT the retired B4b decl-re-parse drift: live itself keeps patterns as tokens; bind holding the same tokens
-IS state parity. Scope check before building: instantiate_template_use's memo lookup must find the restored
-PRODUCTS (registered under their instantiation names); member-template patterns
-(register_skipped_class_template_function) + DF_IS_MEMBER_TEMPLATE restore ride the same slice or the one
-after. THEN: (3) polymorphic classes (vtable/typeinfo — <iostream>); (4) beyond-v6 method coverage +
-inline free-function BODIES (freeze-time completeness: the container only holds bodies the producer's
-translate lowered — a producer-independent freeze must force-materialize deferred bodies, invariant 4);
-(5) the user-header-origin note (eager path emits only the REFERENCED subset of bound user-class methods;
-live emits every parsed non-system fn as a root — unobserved divergence); (6) ~411 write-throughs retiring
-`cir_forest_arena_refresh`; (7) enums. Diagnostics: `tmp/or_probe.cpp` (gitignored, v18+ API — per-class
-arena METHOD records with flags/body/symbol; build: g++ -I include -I /workspace/mir -I /workspace/mir/c2mir
-tmp/or_probe.cpp -Wl,--whole-archive lib/libmadc.a -Wl,--no-whole-archive /workspace/mir/libmir.a -rdynamic
--ldl -lz -lm -lpthread); `tmp/b23w_*` = the widening reducers/measurements (str rich + vec).
+**WIDENING SLICE 2 DONE @ `43c3a611` (2026-07-07, gated green): TEMPLATE-NAME state serializes — a bound
+`<vector>` consumer RUNS (format v20).** The measured corpus blocker ("use of undeclared identifier
+'vector'": the PRODUCT was in the arena, the NAME was not) closed by serializing the parser's pattern
+maps VERBATIM — template_map / partial_spec_map / template_alias_map / fn_template_map /
+fn_template_decl_map / var_template_map / concept_map: per def the params (name/is_type/is_pack/
+per-param default token runs), flags, ns, owner class (type-id) + the captured TOKEN runs
+(body/decl/init/target/constraint/per-slot spec patterns) in the B4a .madh record form
+(madc_pch::serialize_token_seq); segments 15/16/17; each run re-stamps its origin FILE at restore
+(intern_file → _parse_file provenance: from_system_header classification, lazy-body deferral, error
+attribution — the .madh form keeps line/col per token, the file rides the run descriptor).
+forest_restore_decls restores the maps pre-consumer-parse by DIRECT map insert (the records ARE the
+maps' final state — no register_template merge replay). SIX loaded-state gaps fell, each found by
+RUNNING the consumer and fixed at the deepest layer:
+(1) the maps themselves; (2) `canonical_cpp_spelling` never restored → template ARG-SPELLING identity
+broke the instantiation-key memo (consumer key "vector_int32_t_allocator_int32_t_" ≠ product
+"vector_int32_t_std__allocator_int32_t_" → duplicate re-instantiation, then "_Destroy undeclared") —
+restored from defrec.canon_id at materialize; (3) class-scope NAME MAPS never in the arena —
+type_aliases (resolve_class_type_alias: `typename _Alloc::value_type`), static_member_types,
+static_member_const_values (the integral_constant `X<T>::value` fold) — new aliasrec/constvalrec runs
+on DK_CLASS, recorded at the aggregate hook + refresh, loaded verbatim; (4) the producer's INSTANTIATED
+DEFINITIONS (static member-template `__mti`, namespace fn-template `__ns_*__oN` — funcdef_map entries
+whose LOADED callers reference their symbols): RC2's walk now records BODIED entries (DF_WAS_BODIED),
+`cir_forest_arena_complete` stamps a forest body ONLY for SYSTEM-header-unit func-defs (a producer root
+like main stays body-less → cleanly lacks — never restores into a consumer), and restored bodied free
+fns ride the SAME m&l fixpoint as bound methods (forest_lazy includes them; instance-method __mti
+already rode the class path); (5) loaded bodies' calls are PRE-BUILT — no lowering site declares their
+runtime/library callees → c2mir implicit-int → truncated pointers (the setjmp + operator-new ext32
+SIGSEGVs). Fix = a new EXTERN-DECL INDEX (segment 18: every top-level extern decl's symbol → frozen
+(unit,idx), built next to funcdef_locs); bind loads the producer's OWN decl node into the existing
+m_output_externs flush when a loaded-body callee has no in-TU definition AND no funcdef_map source
+(funcdef-sourced symbols keep riding Pass 0.75 — the #23 sorted-position byte-identity mechanism);
+fallback = `CirBuilder::ensure_runtime_extern_for` (the fixed compiler-runtime ABI table, live
+lowering-site signatures); (6) namespaced aliases to PINNED primitives (std::size_t / std::ptrdiff_t =
+project-side scalar alias DataDefs from c++config's `namespace std { typedef … }`) skipped by the ns
+walk — it used madc_type_id_for instead of THE policy (forest_serialize_type_id, whose A2 rule resolves
+scalar aliases to pinned slots) → now emits namespaced DK_TYPEDEF alias records (ref0 = pinned id).
+RESULT: the exact-match consumer binds + runs `sum=7` == live == g++, func/export/import SETS
+byte-identical to live; residual whole-TU diff = proto/label NUMBERING order + one __madc_objtmp
+counter offset (the strbind-before-#23 divergence class). Format v19→v20 (UNIT_BASE 16→24; the version
+pin rejects older containers, so the move is safe). Gates: forest_bind_gate **13/13** (NEW [vecbind]
+output + item-SET identity; strbind/strops whole-TU byte-identity UNREGRESSED); test_cir_freeze
+**30/525** (new v20 template-state case; RC2 case comment updated for the bodied-fn widening);
+test_cir_arena 11/316; fulltest **680/0/0/16 exit 0** (+ selfexe + oracles); torture byte-identical BY
+CONSTRUCTION (every changed path reachable only via --freeze/--forest-bind/forest_arena_enabled — no
+normal-path reshape).
+**NEXT — WIDENING SLICE 3 (measured): NEW-SPECIALIZATION instantiation from restored tokens.** A
+`vector<long>` consumer (tmp/b23w_vec_newspec.cpp, expect `t=42 n=2`) now resolves the template name,
+memo-misses correctly (a genuinely new product), instantiates from the restored tokens, resolves
+`typedef std::size_t size_type;` (gap 6), and fails DEEPER: "Expecting member name in class definition"
+in the __new_allocator body region (new_allocator.h:130-ish). The remaining tail = restored-token
+instantiation completeness — likely: attribute/decl forms in restored bodies, member-template PATTERN
+restore (FuncDef::member_template_decl tokens + DF_IS_MEMBER_TEMPLATE methods restored AS patterns,
+register_skipped_class_template_function state), namespace_fn_overload_sets placeholders + __oN counter
+continuity (a consumer's own fn-template instantiation must not collide with restored __oN symbols).
+Measure-first discipline: run the newspec reducer, fix the next loaded-state gap, repeat; gate = newspec
+output == live == g++. THEN the reordered backlog: whole-TU byte-identity for vecbind (proto/label
+NUMBERING order — investigate the m_output_externs flush position + proto creation order vs live);
+(3) polymorphic classes (vtable/typeinfo — <iostream>); (4) beyond-v6 method coverage + inline
+free-function BODIES (freeze-time completeness: force-materialize deferred bodies, invariant 4);
+(5) the user-header-origin note (eager path emits only the REFERENCED subset of bound user-class
+methods; live emits every parsed non-system fn as a root — unobserved divergence); (6) ~411
+write-throughs retiring `cir_forest_arena_refresh`; (7) enums. Diagnostics: `tmp/tmpl_probe.cpp`
+(gitignored — dumps restored template records + restored-type ns view by name filter; same build line
+as or_probe); `tmp/or_probe.cpp` (v18+ API — per-class arena METHOD records; build: g++ -I include
+-I /workspace/mir -I /workspace/mir/c2mir tmp/or_probe.cpp -Wl,--whole-archive lib/libmadc.a
+-Wl,--no-whole-archive /workspace/mir/libmir.a -rdynamic -ldl -lz -lm -lpthread); `tmp/b23w_*` = the
+widening reducers (str rich + vec exact + vec newspec).
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 
