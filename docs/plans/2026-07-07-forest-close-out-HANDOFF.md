@@ -126,12 +126,22 @@ every other madc track for five weeks. This document is the execution order; the
    RESULT: polymorphic classes DO restore (ios_base__failure with base +
    methods), BUT the core trio — ios_base / basic_ios<char> /
    basic_ostream<char> — is STILL dropped by the member-chain fixpoint, so
-   `cout` stays undeclared. NEXT STEP: instrument the closure rejection (a DBG
-   naming the first unresolvable member/base per dropped aggregate — mirror
-   the freeze-completeness diagnostic), REGENERATE the snapshot first
-   (suspects: locale members, _Callback_list/_Words internals, fn-ptr member
-   types), burn the blocking member family down, THEN the extern-global
-   category (step 3). freeze+bind every `tests/*.mad` (scripted, capped, ONE
+   `cout` stays undeclared. **THE BLOCKER IS MEASURED (the new permanent
+   `materialize closure: DROPPED <name> (member <m>)` -v diagnostic, the
+   load-side twin of the freeze-completeness probe): ONE member family —
+   FUNCTION-POINTER members — blocks the whole hierarchy.** ios_base drops on
+   `_M_callbacks` (`_Callback_list*` whose `_M_fn` is a fn-ptr), and
+   basic_ios/basic_ostream/basic_istream/basic_iostream all drop on the same
+   chain; also `__jmp_buf_tag.__jmpbuf`, pthread cleanup structs (`__routine`),
+   `_IO_cookie_io_functions_t.read`. Fn-ptr TYPES have no arena write-through:
+   the getPointerType funnel records object pointees, but a pointer whose
+   pointee is a FuncDef has no record → forest_serialize_type_id fails → the
+   member chain fails. FIX SHAPE (state into the substrate, machinery exists):
+   serialize a fn-ptr type as DK_PTR with ref0 = a DK_FUNC record of the
+   signature (forest_arena_record_func already encodes FuncDefs); find where
+   fn-ptr member DataDefs are born (the DataDefFUNCTIONptr/fn-ptr funnel) and
+   write-through there; load-side arena_chain_ok + swizzle then resolve it
+   like every derived type. THEN the extern-global category (step 3). freeze+bind every `tests/*.mad` (scripted, capped, ONE
    run); classify remaining failures by state family; burn down by class, not
    per test.
 4. **PHASE 4 PACK + DEFAULT-ON:** corpus freeze driver (stdlib closure under

@@ -1397,6 +1397,47 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		}
 	}
 
+	// Permanent -v diagnostic (the load-side twin of the freeze-completeness
+	// probe): name every candidate aggregate the closure DROPPED and the
+	// first blocking member / base / anon group — "what is the LOADED state
+	// missing" is always a measurement, never a guess.
+	DBG(for (size_t i = 0; i < agg_ids.size(); ++i) {
+		uint32_t tid = agg_ids[i];
+		if (recordable.count(tid))
+			continue;
+		madc::dis::defrec r;
+		if (!a.get_def_at(tid, r))
+			continue;
+		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
+		std::string why = "?";
+		for (uint32_t m = 0; m < r.members_count; ++m) {
+			madc::dis::memberrec mr;
+			if (!a.get_payload(r.members_begin, m, mr)
+			    || !arena_chain_ok(a, mr.type_id, tid, recordable)) {
+				const char *mn = mr.name_id ? a.c_str(mr.name_id) : "?";
+				why = std::string("member ") + (mn ? mn : "?");
+				break;
+			}
+		}
+		if (why == "?" && r.kind == madc::dis::DK_CLASS)
+			for (uint32_t b = 0; b < r.bases_count; ++b) {
+				madc::dis::baserec br;
+				if (!a.get_payload(r.bases_begin, b, br)
+				    || !recordable.count(br.base_id)) {
+					madc::dis::defrec bd;
+					const char *bn =
+						a.get_def_at(br.base_id, bd) && bd.name_id
+						? a.c_str(bd.name_id) : "?";
+					why = std::string("base ") + (bn ? bn : "?");
+					break;
+				}
+			}
+		if (why == "?")
+			why = "anon group";
+		std::cout << "materialize closure: DROPPED " << (nm ? nm : "?")
+			  << " (" << why << ")" << std::endl;
+	});
+
 	// Pass 1: allocate a DataDef per recordable aggregate, so forward member /
 	// base ids resolve in pass 2.
 	std::map<uint32_t, DataDef *> by_id;
