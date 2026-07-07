@@ -12244,6 +12244,19 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // parser.cpp ~22689).
     const std::vector<CirRestoredType> &types = forest.materialize_types();
 
+    // B3 flip Chunk 2 oracle: with MADC_ARENA_ORACLE set, ALSO reconstruct the
+    // type graph from the dumped DefArena and assert it agrees with the v6
+    // reconstruct above on every consumer-visible surface. A divergence prints
+    // ARENA-ORACLE lines and kills the run LOUDLY — a gate consuming this bind
+    // then fails on output. Temporary scaffolding: deleted at Chunk 3 when the
+    // arena reconstruct REPLACES materialize_types.
+    if ( getenv("MADC_ARENA_ORACLE") && !forest.arena_oracle_check() )
+    {
+	fprintf(stderr, "madc: MADC_ARENA_ORACLE divergence — the arena restore "
+		"does not match the v6 restore (see ARENA-ORACLE lines)\n");
+	exit(86);
+    }
+
     // A namespaced type (rt.ns != "") also registers into namespace_map[ns] +
     // namespace_datatype_map[ns][name] — matching the live path (parser.cpp ~3367),
     // where the SAME TokenDataType object goes into both the flat and namespace
@@ -23606,6 +23619,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		pgm.nextToken(); // consume '}'
 		inner->is_complete = true; // a `{ ... }` body was parsed
 		inner->finalize();
+		// B3 arena write-through: a nested DATA-ONLY aggregate (named
+		// `struct T {...} t;` or anonymous-typed `struct {...} m;`) completes
+		// HERE and never reaches the TokenSTRUCT/TokenCLASS registration hooks
+		// (a method-bearing nested type delegates to TokenCLASS and records
+		// there), so this lambda's tail is its completion point.
+		if ( pgm.forest_arena_enabled )
+		    pgm.forest_arena_record_aggregate(inner);
 	    };
 	    if ( stag && stag->id() == TokenID::tkOpBrc )
 	    {
@@ -36158,6 +36178,15 @@ DataDefCLASS *Program::promote_struct_base_to_class(const std::string &name,
 	    namespace_datatype_map[current_namespace()][sdd->name] =
 		datatype_map[sdd->name];
     }
+    // The slice-assign above carried the struct's type_id onto the promoted
+    // class: ONE type identity, a replacement object. Repoint the id table so
+    // madc_type_from_id resolves the REGISTERED object (not the superseded
+    // struct), and write-through the arena record — promotion is a
+    // post-completion mutation of the aggregate.
+    if ( cls->type_id )
+	project_types.set(cls->type_id, cls);
+    if ( forest_arena_enabled )
+	forest_arena_record_aggregate(cls);
     return cls;
 }
 

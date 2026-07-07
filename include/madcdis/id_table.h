@@ -33,6 +33,9 @@
 // THE INTERFACE (the contract id_table variants in the catalog honor):
 //   uint32_t add(T *obj)       -> assigns base + size(), appends, returns the id
 //   T       *get(uint32_t id)  -> object for id, or NULL if id < base / past end
+//   bool     set(uint32_t id, T *obj) -> repoint an ASSIGNED id to a new object
+//                                 (one identity, a replacement object — e.g. the
+//                                 struct->class promotion); false if id not ours
 //   uint32_t base()            -> the segment base this table assigns ids from
 //   size_t   size()            -> number of objects registered
 //
@@ -68,6 +71,22 @@ public:
 	    return (T *)0;
 	uint32_t idx = id - _base;
 	return idx < _objs.size() ? _objs[idx] : (T *)0;
+    }
+
+    // Repoint an already-assigned id to a replacement object — ONE identity, a
+    // new object (the struct-promoted-to-class case: the promotion copies the
+    // type_id onto the fresh DataDefCLASS, so the id must resolve to it, not to
+    // the superseded struct). Ids are still never removed or renumbered. False
+    // for an id this table never assigned.
+    bool set(uint32_t id, T *obj)
+    {
+	if ( id < _base )
+	    return false;
+	uint32_t idx = id - _base;
+	if ( idx >= _objs.size() )
+	    return false;
+	_objs[idx] = obj;
+	return true;
     }
 
     uint32_t base() const { return _base; }

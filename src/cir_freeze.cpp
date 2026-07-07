@@ -1531,6 +1531,714 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 	return _restored;
 }
 
+// ---------------------------------------------------------------------------
+// B3 flip Chunk 2 — reconstruct the type graph from the dumped DefArena.
+//
+// Mirrors materialize_types pass for pass, but the source of truth is the
+// arena (defrec/memberrec/baserec/methodrec/anonrec/paramrec + its own intern
+// pool) instead of the v6 record stream. The v6 freeze FILTERED at save time
+// (its fixpoint recorded an aggregate only when every member/base type was
+// serializable; it skipped polymorphic / vbase / union-layout classes,
+// template methods, and symbol-less non-dtor specials). The arena stores
+// EVERYTHING the parse produced, so the SAME selection runs here at LOAD time
+// — otherwise the flip would silently widen bind behavior mid-replacement.
+// Widening to the arena's full fidelity is a post-flip step, gated against
+// LIVE, never against v6.
+// ---------------------------------------------------------------------------
+
+// A member / param / return / typedef-underlying type-id resolves iff its
+// derived chain (pointer / reference / const ref0 links) bottoms out in a
+// pinned primitive or a recordable aggregate — `self` allowed, the
+// self-referential `Node *next` case. Mirrors cir_forest_record_derived's
+// save-side test (an enum / func / other kind fails, exactly as v6 bails).
+static bool arena_chain_ok(const madc::dis::FrozenDefArena &a, uint32_t tid,
+			   uint32_t self_id, const std::set<uint32_t> &recordable)
+{
+	for (int depth = 0; depth < 64; ++depth) {
+		if (!tid)
+			return false;
+		if (madc::dis::arena_id_is_pinned(tid))
+			return true;
+		madc::dis::defrec r;
+		if (!a.get_def_at(tid, r))
+			return false;
+		switch (r.kind) {
+		case madc::dis::DK_PTR:
+		case madc::dis::DK_REF:
+		case madc::dis::DK_CONST:
+			tid = r.ref0;
+			continue;
+		case madc::dis::DK_STRUCT:
+		case madc::dis::DK_UNION:
+		case madc::dis::DK_CLASS:
+			return tid == self_id || recordable.count(tid) != 0;
+		default:
+			return false;
+		}
+	}
+	return false;
+}
+
+// Swizzle an arena type-id to the reconstructed DataDef*: a pinned primitive
+// resolves process-invariantly; anything else must be in by_id (aggregates
+// from pass 1, derived types from pass 1b).
+static DataDef *arena_swizzle(uint32_t tid,
+			      const std::map<uint32_t, DataDef *> &by_id)
+{
+	if (tid && tid < MADC_TYPEID_PRIMITIVE_END)
+		return madc_type_from_id(tid);
+	std::map<uint32_t, DataDef *>::const_iterator it = by_id.find(tid);
+	return it != by_id.end() ? it->second : NULL;
+}
+
+bool CirFrozenForest::materialize_from_arena(std::vector<CirRestoredType> &out)
+{
+	const madc::dis::FrozenDefArena &a = _arena;
+	uint32_t nslots = a.def_slots();
+	if (!nslots)
+		return false;
+
+	// Recordability closure — the v6 save-side fixpoint reproduced at load as
+	// a pure analysis over the records: an aggregate is recordable iff every
+	// member's type chain resolves (self allowed), every base is recordable
+	// (base-before-derived) and non-virtual, and every anonymous sub-aggregate
+	// is recordable. Classes v6 never records — polymorphic (vtable / vptr
+	// slot), union-layout, or virtual-base-carrying — are excluded up front;
+	// their dependents then cleanly lack, exactly like the v6 fixpoint.
+	std::vector<uint32_t> agg_ids;		// slot order == id-stamp order
+	for (uint32_t s = 0; s < nslots; ++s) {
+		uint32_t tid = madc::dis::arena_id_of(s);
+		madc::dis::defrec r;
+		if (!a.get_def_at(tid, r))
+			continue;
+		if (r.kind != madc::dis::DK_STRUCT && r.kind != madc::dis::DK_UNION
+		    && r.kind != madc::dis::DK_CLASS)
+			continue;
+		if (!(r.flags & madc::dis::DF_IS_COMPLETE))
+			continue;
+		if (r.kind == madc::dis::DK_CLASS) {
+			if (r.flags & (madc::dis::DF_HAS_VTABLE | madc::dis::DF_HAS_VPTR_SLOT))
+				continue;
+			if (r.flags & madc::dis::DF_UNION_LAYOUT)
+				continue;
+			bool vbase = false;
+			for (uint32_t b = 0; b < r.bases_count && !vbase; ++b) {
+				madc::dis::baserec br;
+				if (!a.get_payload(r.bases_begin, b, br)
+				    || (br.flags & madc::dis::BSF_VIRTUAL))
+					vbase = true;
+			}
+			if (vbase)
+				continue;
+		}
+		agg_ids.push_back(tid);
+	}
+	std::set<uint32_t> recordable;
+	bool cprog = true;
+	while (cprog) {
+		cprog = false;
+		for (size_t i = 0; i < agg_ids.size(); ++i) {
+			uint32_t tid = agg_ids[i];
+			if (recordable.count(tid))
+				continue;
+			madc::dis::defrec r;
+			if (!a.get_def_at(tid, r))
+				continue;
+			bool ok = true;
+			for (uint32_t m = 0; ok && m < r.members_count; ++m) {
+				madc::dis::memberrec mr;
+				if (!a.get_payload(r.members_begin, m, mr)
+				    || !arena_chain_ok(a, mr.type_id, tid, recordable))
+					ok = false;
+			}
+			if (ok && r.kind == madc::dis::DK_CLASS) {
+				for (uint32_t b = 0; ok && b < r.bases_count; ++b) {
+					madc::dis::baserec br;
+					if (!a.get_payload(r.bases_begin, b, br)
+					    || !recordable.count(br.base_id))
+						ok = false;
+				}
+			}
+			for (uint32_t g = 0; ok && g < r.anon_count; ++g) {
+				madc::dis::anonrec ar;
+				if (!a.get_payload(r.anon_begin, g, ar)
+				    || !recordable.count(ar.sub_type_id))
+					ok = false;
+			}
+			if (ok) {
+				recordable.insert(tid);
+				cprog = true;
+			}
+		}
+	}
+
+	// Pass 1: allocate a DataDef per recordable aggregate, so forward member /
+	// base ids resolve in pass 2.
+	std::map<uint32_t, DataDef *> by_id;
+	for (size_t i = 0; i < agg_ids.size(); ++i) {
+		uint32_t tid = agg_ids[i];
+		if (!recordable.count(tid))
+			continue;
+		madc::dis::defrec r;
+		if (!a.get_def_at(tid, r))
+			continue;
+		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
+		if (!nm || !*nm)
+			continue;
+		DataDefSTRUCT *sdd;
+		if (r.kind == madc::dis::DK_CLASS)
+			sdd = new DataDefCLASS(std::string(nm), r.size,
+					       DataType::dtRESERVED);
+		else {
+			sdd = new DataDefSTRUCT(std::string(nm), r.size);
+			sdd->union_layout = (r.flags & madc::dis::DF_UNION_LAYOUT) != 0;
+		}
+		_mat_storage.push_back(sdd);
+		by_id[tid] = sdd;
+	}
+
+	// Pass 1b: derived types (pointer / reference / const), operand-before-
+	// derived fixpoint — chains and the self-referential pointer resolve.
+	bool dprog = true;
+	while (dprog) {
+		dprog = false;
+		for (uint32_t s = 0; s < nslots; ++s) {
+			uint32_t tid = madc::dis::arena_id_of(s);
+			if (by_id.count(tid))
+				continue;
+			madc::dis::defrec r;
+			if (!a.get_def_at(tid, r))
+				continue;
+			if (r.kind != madc::dis::DK_PTR && r.kind != madc::dis::DK_REF
+			    && r.kind != madc::dis::DK_CONST)
+				continue;
+			DataDef *operand = arena_swizzle(r.ref0, by_id);
+			if (!operand)
+				continue;	// not ready this round (or dropped aggregate)
+			DataDef *d;
+			if (r.kind == madc::dis::DK_REF)
+				d = new DataDefREF(*operand);
+			else if (r.kind == madc::dis::DK_CONST)
+				d = new DataDefCONST(*operand);
+			else
+				d = new DataDefPTR(*operand);
+			_mat_storage.push_back(d);
+			by_id[tid] = d;
+			dprog = true;
+		}
+	}
+
+	// Pass 2: fill each aggregate VERBATIM — the same field discipline as
+	// materialize_types (offsets / counts / access / origin / bitfields as
+	// stored, no finalize, no re-derivation) — then class extras + methods
+	// under the v6 selection rules.
+	for (size_t i = 0; i < agg_ids.size(); ++i) {
+		uint32_t tid = agg_ids[i];
+		std::map<uint32_t, DataDef *>::iterator ai = by_id.find(tid);
+		if (ai == by_id.end())
+			continue;
+		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(ai->second);
+		if (!sdd)
+			continue;
+		madc::dis::defrec r;
+		if (!a.get_def_at(tid, r))
+			continue;
+		bool ok = true;
+		for (uint32_t m = 0; m < r.members_count; ++m) {
+			madc::dis::memberrec mr;
+			if (!a.get_payload(r.members_begin, m, mr)) { ok = false; break; }
+			DataDef *mdd = arena_swizzle(mr.type_id, by_id);
+			const char *mnm = mr.name_id ? a.c_str(mr.name_id) : NULL;
+			if (!mdd || !mnm) { ok = false; break; }
+			sdd->members.push_back(memberpair_t(std::string(mnm), mdd));
+			sdd->member_offsets.push_back(mr.offset);
+			sdd->member_counts.push_back(mr.count ? mr.count : 1);
+			// v6 parity: array flag derives from count (not the stored bit).
+			sdd->member_array_flags.push_back(mr.count > 1);
+			sdd->member_access.push_back(mr.access);
+			sdd->member_origin.push_back((int)mr.origin);
+			DataDefSTRUCT::BitFieldInfo bf;
+			if (mr.bf_flags & 1u) {
+				bf.is_bitfield     = true;
+				bf.is_unsigned     = (mr.bf_flags & 2u) != 0;
+				bf.reverse_storage = (mr.bf_flags & 4u) != 0;
+				bf.bit_offset      = mr.bf_bit_offset;
+				bf.bit_width       = mr.bf_bit_width;
+				bf.storage_offset  = mr.bf_storage_offset;
+				bf.storage_size    = mr.bf_storage_size;
+			}
+			sdd->member_bitfields.push_back(bf);
+		}
+		if (!ok)
+			continue;		// defensive: the closure should have dropped it
+		sdd->size        = r.size;
+		sdd->max_align   = r.max_align ? r.max_align : 1;
+		sdd->is_complete = true;
+		sdd->pack                   = r.pack;
+		sdd->tag_explicit_align     = r.tag_explicit_align;
+		sdd->is_anonymous           = (r.flags & madc::dis::DF_IS_ANONYMOUS) != 0;
+		sdd->reverse_scalar_storage = (r.flags & madc::dis::DF_REVERSE_SCALAR) != 0;
+		sdd->has_anon_aggregate     = (r.flags & madc::dis::DF_HAS_ANON_AGG) != 0;
+		for (uint32_t g = 0; g < r.anon_count; ++g) {
+			madc::dis::anonrec ar;
+			if (!a.get_payload(r.anon_begin, g, ar))
+				break;
+			DataDefSTRUCT *subs = dynamic_cast<DataDefSTRUCT *>(
+				arena_swizzle(ar.sub_type_id, by_id));
+			if (!subs)
+				continue;
+			sdd->anonymous_aggregates.push_back(
+				DataDefSTRUCT::AnonymousAggregateInfo(
+					ar.first_member, ar.member_count, subs,
+					ar.offset));
+		}
+		sdd->type_id = 0;		// re-stamp in the consuming Program
+
+		if (DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(sdd)) {
+			// v6 restores class_align = max_align = the saved alignment();
+			// the arena stores the raw fields. The consumer-visible
+			// alignment() agrees either way (class_align wins when set).
+			cdd->class_align        = r.class_align ? r.class_align : 1;
+			cdd->nvsize             = r.nvsize;
+			cdd->from_system_header = (r.flags & madc::dis::DF_FROM_SYSTEM_HDR) != 0;
+			cdd->has_user_ctor      = (r.flags & madc::dis::DF_HAS_USER_CTOR) != 0;
+			cdd->has_user_dtor      = (r.flags & madc::dis::DF_HAS_USER_DTOR) != 0;
+			bool bok = true;
+			for (uint32_t b = 0; b < r.bases_count; ++b) {
+				madc::dis::baserec br;
+				if (!a.get_payload(r.bases_begin, b, br)) { bok = false; break; }
+				DataDefCLASS *bc = dynamic_cast<DataDefCLASS *>(
+					arena_swizzle(br.base_id, by_id));
+				if (!bc) { bok = false; break; }
+				BaseSpec bs;
+				bs.base       = bc;
+				bs.offset     = br.offset;
+				bs.is_virtual = (br.flags & madc::dis::BSF_VIRTUAL) != 0;
+				bs.is_primary = (br.flags & madc::dis::BSF_PRIMARY) != 0;
+				bs.access     = br.flags >> madc::dis::BSF_ACCESS_SHIFT;
+				cdd->bases.push_back(bs);
+			}
+			if (!bok)
+				continue;
+			cdd->base_class = cdd->bases.empty() ? NULL : cdd->bases[0].base;
+
+			// Methods: the arena run holds EVERY parsed method; apply the
+			// v6 save-side selection here so the restored surface matches
+			// (template methods, symbol-less non-dtor specials, display-
+			// less plain methods, and unresolvable signatures all lack).
+			for (uint32_t mi = 0; mi < r.methods_count; ++mi) {
+				madc::dis::methodrec md;
+				if (!a.get_payload(r.methods_begin, mi, md))
+					break;
+				if (!md.name_id)
+					continue;
+				madc::dis::defrec fr;
+				if (!madc::dis::arena_id_is_project(md.func_id)
+				    || !a.get_def_at(md.func_id, fr)
+				    || fr.kind != madc::dis::DK_FUNC)
+					continue;
+				if (fr.flags & madc::dis::DF_IS_MEMBER_TEMPLATE)
+					continue;
+				bool is_ctor  = (md.flags & madc::dis::MF_CTOR) != 0;
+				bool is_dtor  = (md.flags & madc::dis::MF_DTOR) != 0;
+				bool m_static = (md.flags & madc::dis::MF_STATIC) != 0;
+				const char *dispkey =
+					md.disp_key_id ? a.c_str(md.disp_key_id) : NULL;
+				bool is_operator = dispkey
+					&& !strncmp(dispkey, "operator", 8);
+				bool has_body =
+					(fr.flags & madc::dis::DF_HAS_FOREST_BODY) != 0;
+				if (is_ctor || is_dtor || is_operator) {
+					if (!fr.emit_symbol_id && !has_body && !is_dtor)
+						continue;
+				} else if (!dispkey || !*dispkey) {
+					continue;
+				}
+				if (!m_static && !fr.params_count)
+					continue;	// no __this slot: malformed
+				DataDef *ret = arena_swizzle(fr.ref0, by_id);
+				if (!ret)
+					continue;
+				FuncDef *fd = new FuncDef(*ret);
+				_mat_storage.push_back(fd);
+				if (!m_static) {
+					// v6 parity: rebuild __this fresh (a pointer to
+					// this class); the stored param 0 flips in at the
+					// post-flip widening, not here.
+					DataDefPTR *thisp = new DataDefPTR(*cdd);
+					_mat_storage.push_back(thisp);
+					fd->parameters.push_back(thisp);
+				}
+				bool pok = true;
+				for (uint32_t p = m_static ? 0u : 1u;
+				     p < fr.params_count; ++p) {
+					madc::dis::paramrec pr;
+					if (!a.get_payload(fr.params_begin, p, pr)) {
+						pok = false; break;
+					}
+					DataDef *pd = arena_swizzle(pr.type_id, by_id);
+					if (!pd) { pok = false; break; }
+					fd->parameters.push_back(pd);
+				}
+				if (!pok)
+					continue;
+				std::string dispname =
+					dispkey ? std::string(dispkey) : std::string();
+				fd->method_display_name = dispname;	// v6 parity: the KEY rides here
+				if (fr.emit_symbol_id)
+					if (const char *es = a.c_str(fr.emit_symbol_id))
+						fd->emit_symbol = es;
+				fd->is_const_method =
+					(fr.flags & madc::dis::DF_IS_CONST_METHOD) != 0;
+				fd->is_varargs =
+					(fr.flags & madc::dis::DF_IS_VARARGS) != 0;
+				fd->is_void_params =
+					(fr.flags & madc::dis::DF_IS_VOID_PARAMS) != 0;
+				if (has_body) {
+					fd->has_forest_body  = true;
+					fd->forest_body_unit = fr.body_unit;
+					fd->forest_body_idx  = fr.body_idx;
+					fd->declaration_only = false;
+				} else {
+					fd->declaration_only = true;
+				}
+				const char *mnm = a.c_str(md.name_id);
+				Variable *mv = new Variable(std::string(mnm ? mnm : ""),
+							    *fd, 1, NULL, false);
+				if (m_static)
+					mv->flags |= vfSTATIC;
+				_mat_vars.push_back(mv);
+				cdd->methods.push_back(mv);
+				if (!dispname.empty())
+					cdd->method_map[dispname] = mv;
+				if (is_ctor)
+					cdd->ctors.push_back(mv);
+			}
+		}
+		if (r.flags & madc::dis::DF_IS_ANONYMOUS)
+			continue;	// nameless sub-aggregate: never surfaced standalone
+		CirRestoredType rt;
+		rt.name       = a.c_str(r.name_id);
+		rt.kind       = r.kind == madc::dis::DK_CLASS ? CIR_TYPEK_CLASS
+			      : (r.kind == madc::dis::DK_UNION ? CIR_TYPEK_UNION
+							       : CIR_TYPEK_STRUCT);
+		rt.dd         = sdd;
+		rt.underlying = NULL;
+		rt.ns         = r.ns_id ? a.c_str(r.ns_id) : NULL;
+		out.push_back(rt);
+	}
+
+	// Pass 3: DK_TYPEDEF records (flat + namespaced aliases, at their
+	// synthetic slots) -> (name, ns, underlying).
+	for (uint32_t s = 0; s < nslots; ++s) {
+		madc::dis::defrec r;
+		if (!a.get_def_at(madc::dis::arena_id_of(s), r)
+		    || r.kind != madc::dis::DK_TYPEDEF)
+			continue;
+		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
+		if (!nm || !*nm)
+			continue;
+		DataDef *underlying = arena_swizzle(r.ref0, by_id);
+		if (!underlying)
+			continue;
+		CirRestoredType rt;
+		rt.name       = nm;
+		rt.kind       = CIR_TYPEK_TYPEDEF;
+		rt.dd         = NULL;
+		rt.underlying = underlying;
+		rt.ns         = r.ns_id ? a.c_str(r.ns_id) : NULL;
+		out.push_back(rt);
+	}
+	return true;
+}
+
+// --- Chunk 2 oracle -------------------------------------------------------
+// Assert the arena reconstruct agrees with the v6 reconstruct on every
+// consumer-visible surface. The arena may legitimately restore MORE than v6
+// (its records are unfiltered at save, e.g. mutually-pointer-recursive structs
+// v6's ordered fixpoint drops) — extras are allowed; every v6 entry must exist
+// in the arena view and deep-agree. Each divergence prints one
+// "ARENA-ORACLE:" line to stderr; silence = agreement.
+
+static const char *oracle_kind_name(uint32_t kind)
+{
+	switch (kind) {
+	case CIR_TYPEK_STRUCT:  return "struct";
+	case CIR_TYPEK_UNION:   return "union";
+	case CIR_TYPEK_CLASS:   return "class";
+	case CIR_TYPEK_TYPEDEF: return "typedef";
+	default:                return "?";
+	}
+}
+
+static std::string oracle_key(const CirRestoredType &rt)
+{
+	std::string k = rt.ns ? std::string(rt.ns) + "::" : std::string();
+	k += rt.name ? rt.name : "";
+	k += "|";
+	k += oracle_kind_name(rt.kind);
+	return k;
+}
+
+// Consumer-visible type-shape equality for a member / param / return /
+// underlying reference: name + rawtype + size, derived kinds matching and
+// recursing on the operand. Aggregate contents are compared per-entry, so
+// identity here is by name. Depth-capped (pointer cycles).
+static bool oracle_shape_eq(DataDef *x, DataDef *y, std::string &why, int depth)
+{
+	if (x == y)
+		return true;			// same pinned primitive global
+	if (!x || !y) { why = "null-vs-nonnull type"; return false; }
+	if (depth > 8)
+		return true;
+	if (x->name != y->name) {
+		why = "type '" + x->name + "' vs '" + y->name + "'";
+		return false;
+	}
+	if (x->rawtype() != y->rawtype()) { why = "rawtype of '" + x->name + "'"; return false; }
+	if (x->size != y->size) { why = "size of '" + x->name + "'"; return false; }
+	DataDefREF   *xr = dynamic_cast<DataDefREF *>(x),   *yr = dynamic_cast<DataDefREF *>(y);
+	DataDefPTR   *xp = dynamic_cast<DataDefPTR *>(x),   *yp = dynamic_cast<DataDefPTR *>(y);
+	DataDefCONST *xc = dynamic_cast<DataDefCONST *>(x), *yc = dynamic_cast<DataDefCONST *>(y);
+	if (!!xr != !!yr || !!xp != !!yp || !!xc != !!yc) {
+		why = "derived kind of '" + x->name + "'";
+		return false;
+	}
+	if (xp && yp)
+		return oracle_shape_eq(xp->base_type, yp->base_type, why, depth + 1);
+	if (xc && yc)
+		return oracle_shape_eq(xc->base_type, yc->base_type, why, depth + 1);
+	return true;
+}
+
+#define ORACLE_DIVERGE(...) do { \
+	fprintf(stderr, "ARENA-ORACLE: " __VA_ARGS__); \
+	fputc('\n', stderr); \
+	ok = false; \
+} while (0)
+
+// Compare one v6-restored aggregate against its arena twin. Reports every
+// divergence (not just the first) so one gate run inventories the whole gap.
+static bool oracle_compare_aggregate(const std::string &key,
+				     DataDefSTRUCT *v, DataDefSTRUCT *w)
+{
+	bool ok = true;
+	std::string why;
+	if (v->size != w->size)
+		ORACLE_DIVERGE("%s: size %zu vs %zu", key.c_str(), v->size, w->size);
+	if (v->alignment() != w->alignment())
+		ORACLE_DIVERGE("%s: alignment %zu vs %zu", key.c_str(),
+			       v->alignment(), w->alignment());
+	if (v->union_layout != w->union_layout)
+		ORACLE_DIVERGE("%s: union_layout", key.c_str());
+	if (v->pack != w->pack)
+		ORACLE_DIVERGE("%s: pack %zu vs %zu", key.c_str(), v->pack, w->pack);
+	if (v->tag_explicit_align != w->tag_explicit_align)
+		ORACLE_DIVERGE("%s: tag_explicit_align", key.c_str());
+	if (v->is_anonymous != w->is_anonymous)
+		ORACLE_DIVERGE("%s: is_anonymous", key.c_str());
+	if (v->reverse_scalar_storage != w->reverse_scalar_storage)
+		ORACLE_DIVERGE("%s: reverse_scalar_storage", key.c_str());
+	if (v->has_anon_aggregate != w->has_anon_aggregate)
+		ORACLE_DIVERGE("%s: has_anon_aggregate", key.c_str());
+	if (v->members.size() != w->members.size()) {
+		ORACLE_DIVERGE("%s: member count %zu vs %zu", key.c_str(),
+			       v->members.size(), w->members.size());
+		return ok;		// per-member compare needs equal counts
+	}
+	for (size_t m = 0; m < v->members.size(); ++m) {
+		if (v->members[m].first != w->members[m].first) {
+			ORACLE_DIVERGE("%s: member[%zu] name '%s' vs '%s'", key.c_str(), m,
+				       v->members[m].first.c_str(),
+				       w->members[m].first.c_str());
+			continue;
+		}
+		const char *mn = v->members[m].first.c_str();
+		if (v->member_offsets[m] != w->member_offsets[m])
+			ORACLE_DIVERGE("%s.%s: offset %zu vs %zu", key.c_str(), mn,
+				       v->member_offsets[m], w->member_offsets[m]);
+		if (v->member_counts[m] != w->member_counts[m])
+			ORACLE_DIVERGE("%s.%s: count", key.c_str(), mn);
+		if (v->member_array_flags[m] != w->member_array_flags[m])
+			ORACLE_DIVERGE("%s.%s: array flag", key.c_str(), mn);
+		if (v->member_access[m] != w->member_access[m])
+			ORACLE_DIVERGE("%s.%s: access", key.c_str(), mn);
+		if (v->member_origin[m] != w->member_origin[m])
+			ORACLE_DIVERGE("%s.%s: origin", key.c_str(), mn);
+		const DataDefSTRUCT::BitFieldInfo &vb = v->member_bitfields[m];
+		const DataDefSTRUCT::BitFieldInfo &wb = w->member_bitfields[m];
+		if (vb.is_bitfield != wb.is_bitfield || vb.is_unsigned != wb.is_unsigned
+		    || vb.reverse_storage != wb.reverse_storage
+		    || vb.bit_offset != wb.bit_offset || vb.bit_width != wb.bit_width
+		    || vb.storage_offset != wb.storage_offset
+		    || vb.storage_size != wb.storage_size)
+			ORACLE_DIVERGE("%s.%s: bitfield info", key.c_str(), mn);
+		if (!oracle_shape_eq(v->members[m].second, w->members[m].second,
+				     why, 0))
+			ORACLE_DIVERGE("%s.%s: %s", key.c_str(), mn, why.c_str());
+	}
+	if (v->anonymous_aggregates.size() != w->anonymous_aggregates.size())
+		ORACLE_DIVERGE("%s: anon group count %zu vs %zu", key.c_str(),
+			       v->anonymous_aggregates.size(),
+			       w->anonymous_aggregates.size());
+	else for (size_t g = 0; g < v->anonymous_aggregates.size(); ++g) {
+		const DataDefSTRUCT::AnonymousAggregateInfo &va =
+			v->anonymous_aggregates[g];
+		const DataDefSTRUCT::AnonymousAggregateInfo &wa =
+			w->anonymous_aggregates[g];
+		if (va.first_member != wa.first_member
+		    || va.member_count != wa.member_count || va.offset != wa.offset)
+			ORACLE_DIVERGE("%s: anon group[%zu] extent", key.c_str(), g);
+		if (va.aggregate && wa.aggregate
+		    && va.aggregate->name != wa.aggregate->name)
+			ORACLE_DIVERGE("%s: anon group[%zu] sub '%s' vs '%s'",
+				       key.c_str(), g, va.aggregate->name.c_str(),
+				       wa.aggregate->name.c_str());
+	}
+
+	DataDefCLASS *vc = dynamic_cast<DataDefCLASS *>(v);
+	DataDefCLASS *wc = dynamic_cast<DataDefCLASS *>(w);
+	if (!!vc != !!wc) {
+		ORACLE_DIVERGE("%s: class-ness", key.c_str());
+		return ok;
+	}
+	if (!vc)
+		return ok;
+	if (vc->nvsize != wc->nvsize)
+		ORACLE_DIVERGE("%s: nvsize %zu vs %zu", key.c_str(), vc->nvsize, wc->nvsize);
+	if (vc->from_system_header != wc->from_system_header)
+		ORACLE_DIVERGE("%s: from_system_header", key.c_str());
+	if (vc->has_user_ctor != wc->has_user_ctor)
+		ORACLE_DIVERGE("%s: has_user_ctor", key.c_str());
+	if (vc->has_user_dtor != wc->has_user_dtor)
+		ORACLE_DIVERGE("%s: has_user_dtor", key.c_str());
+	if (vc->bases.size() != wc->bases.size())
+		ORACLE_DIVERGE("%s: base count %zu vs %zu", key.c_str(),
+			       vc->bases.size(), wc->bases.size());
+	else for (size_t b = 0; b < vc->bases.size(); ++b) {
+		const BaseSpec &vb = vc->bases[b];
+		const BaseSpec &wb = wc->bases[b];
+		if ((vb.base ? vb.base->name : std::string())
+		    != (wb.base ? wb.base->name : std::string())
+		    || vb.offset != wb.offset || vb.is_virtual != wb.is_virtual
+		    || vb.is_primary != wb.is_primary || vb.access != wb.access)
+			ORACLE_DIVERGE("%s: base[%zu]", key.c_str(), b);
+	}
+	// Every v6 method must exist in the arena restore and deep-agree. The
+	// arena legitimately restores MORE methods than v6 — its type records are
+	// an unfiltered superset, so a method v6 dropped only because its return /
+	// param type was outside v6's coverage survives here (LIVE has it too; the
+	// flip gates judge that against live) — those are a non-fatal NOTE.
+	std::map<std::string, Variable *> vm, wm;
+	for (size_t i = 0; i < vc->methods.size(); ++i)
+		if (vc->methods[i]) vm[vc->methods[i]->name] = vc->methods[i];
+	for (size_t i = 0; i < wc->methods.size(); ++i)
+		if (wc->methods[i]) wm[wc->methods[i]->name] = wc->methods[i];
+	for (std::map<std::string, Variable *>::iterator it = wm.begin();
+	     it != wm.end(); ++it)
+		if (!vm.count(it->first))
+			fprintf(stderr, "ARENA-ORACLE-NOTE: %s: method %s beyond "
+				"v6 coverage\n", key.c_str(), it->first.c_str());
+	std::set<Variable *> vctors(vc->ctors.begin(), vc->ctors.end());
+	std::set<Variable *> wctors(wc->ctors.begin(), wc->ctors.end());
+	for (std::map<std::string, Variable *>::iterator it = vm.begin();
+	     it != vm.end(); ++it) {
+		std::map<std::string, Variable *>::iterator wt = wm.find(it->first);
+		if (wt == wm.end()) {
+			ORACLE_DIVERGE("%s: method %s only in V6", key.c_str(),
+				       it->first.c_str());
+			continue;
+		}
+		Variable *vv = it->second, *ww = wt->second;
+		const char *mn = it->first.c_str();
+		FuncDef *vf = dynamic_cast<FuncDef *>(vv->type);
+		FuncDef *wf = dynamic_cast<FuncDef *>(ww->type);
+		if (!vf || !wf) {
+			ORACLE_DIVERGE("%s: method %s FuncDef missing", key.c_str(), mn);
+			continue;
+		}
+		if ((vv->flags & vfSTATIC) != (ww->flags & vfSTATIC))
+			ORACLE_DIVERGE("%s: method %s static", key.c_str(), mn);
+		if (vf->method_display_name != wf->method_display_name)
+			ORACLE_DIVERGE("%s: method %s display '%s' vs '%s'", key.c_str(),
+				       mn, vf->method_display_name.c_str(),
+				       wf->method_display_name.c_str());
+		if (vf->emit_symbol != wf->emit_symbol)
+			ORACLE_DIVERGE("%s: method %s emit_symbol '%s' vs '%s'",
+				       key.c_str(), mn, vf->emit_symbol.c_str(),
+				       wf->emit_symbol.c_str());
+		if (vf->declaration_only != wf->declaration_only)
+			ORACLE_DIVERGE("%s: method %s declaration_only", key.c_str(), mn);
+		if (vf->has_forest_body != wf->has_forest_body
+		    || (vf->has_forest_body
+			&& (vf->forest_body_unit != wf->forest_body_unit
+			    || vf->forest_body_idx != wf->forest_body_idx)))
+			ORACLE_DIVERGE("%s: method %s body location", key.c_str(), mn);
+		if (vf->is_const_method != wf->is_const_method
+		    || vf->is_varargs != wf->is_varargs
+		    || vf->is_void_params != wf->is_void_params)
+			ORACLE_DIVERGE("%s: method %s signature flags", key.c_str(), mn);
+		if (vctors.count(vv) != wctors.count(ww))
+			ORACLE_DIVERGE("%s: method %s ctor membership", key.c_str(), mn);
+		if (vf->parameters.size() != wf->parameters.size()) {
+			ORACLE_DIVERGE("%s: method %s param count %zu vs %zu",
+				       key.c_str(), mn, vf->parameters.size(),
+				       wf->parameters.size());
+			continue;
+		}
+		for (size_t p = 0; p < vf->parameters.size(); ++p)
+			if (!oracle_shape_eq(vf->parameters[p], wf->parameters[p],
+					     why, 0))
+				ORACLE_DIVERGE("%s: method %s param[%zu]: %s",
+					       key.c_str(), mn, p, why.c_str());
+		if (!oracle_shape_eq(&vf->returns, &wf->returns, why, 0))
+			ORACLE_DIVERGE("%s: method %s return: %s", key.c_str(), mn,
+				       why.c_str());
+	}
+	return ok;
+}
+
+bool CirFrozenForest::arena_oracle_check()
+{
+	materialize_types();
+	std::vector<CirRestoredType> av;
+	bool ok = true;
+	if (!materialize_from_arena(av)) {
+		ORACLE_DIVERGE("container carries no arena");
+		return false;
+	}
+	std::map<std::string, const CirRestoredType *> amap;
+	for (size_t i = 0; i < av.size(); ++i)
+		amap[oracle_key(av[i])] = &av[i];
+	std::string why;
+	for (size_t i = 0; i < _restored.size(); ++i) {
+		const CirRestoredType &vr = _restored[i];
+		std::string key = oracle_key(vr);
+		std::map<std::string, const CirRestoredType *>::iterator it =
+			amap.find(key);
+		if (it == amap.end()) {
+			ORACLE_DIVERGE("%s: MISSING from arena restore", key.c_str());
+			continue;
+		}
+		const CirRestoredType &wr = *it->second;
+		if (vr.kind == CIR_TYPEK_TYPEDEF) {
+			if (!oracle_shape_eq(vr.underlying, wr.underlying, why, 0))
+				ORACLE_DIVERGE("%s: underlying: %s", key.c_str(),
+					       why.c_str());
+			continue;
+		}
+		DataDefSTRUCT *v = dynamic_cast<DataDefSTRUCT *>(vr.dd);
+		DataDefSTRUCT *w = dynamic_cast<DataDefSTRUCT *>(wr.dd);
+		if (!v || !w) {
+			ORACLE_DIVERGE("%s: restored object missing", key.c_str());
+			continue;
+		}
+		if (!oracle_compare_aggregate(key, v, w))
+			ok = false;
+	}
+	return ok;
+}
+
 const char *CirFrozenForest::type_name_for(uint32_t type_id) const
 {
 	std::map<uint32_t, const char *>::const_iterator it = _type_names.find(type_id);

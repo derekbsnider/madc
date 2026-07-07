@@ -30,6 +30,13 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 
+# B3 flip Chunk 2: every bind below ALSO reconstructs the type graph from the
+# dumped DefArena and asserts it agrees with the v6 reconstruct (the in-process
+# oracle in forest_restore_decls). A divergence exits 86 -> the case's output
+# mismatch fails the gate. Temporary scaffolding: removed at Chunk 3 when the
+# arena reconstruct replaces the v6 path.
+export MADC_ARENA_ORACLE=1
+
 mkdir -p tmp
 
 fail() { echo "forest_bind_gate: $1"; exit 1; }

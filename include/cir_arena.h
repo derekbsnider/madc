@@ -103,6 +103,9 @@ enum DefFlags : uint32_t {
 	DF_DECLARATION_ONLY  = 1u << 12,
 	DF_IS_CONST_METHOD   = 1u << 13,	// FuncDef::is_const_method
 	DF_HAS_FOREST_BODY   = 1u << 14,	// INLINE method: body_unit/body_idx locate its Tree-1 def
+	DF_IS_MEMBER_TEMPLATE = 1u << 15,	// FuncDef::is_member_template / template_param_names
+						// non-empty — a template method instantiates no
+						// concrete symbol; load skips it (the v6 rule)
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live

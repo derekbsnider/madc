@@ -1818,13 +1818,20 @@ TEST_CASE("B3 flip chunk 1: the dumped arena carries typedefs, namespace ids, an
 		std::ofstream inc(inc_path.c_str());
 		inc << "typedef unsigned long myword_t;\n"
 		       "namespace N { struct P { int x; int y; }; }\n"
-		       "class Counter { public: int c; int get() { return c; } };\n";
+		       "class Counter { public: int c; int get() { return c; } };\n"
+		       // A plain struct USED AS A BASE is promoted to a fresh
+		       // DataDefCLASS sharing the struct's type_id — the id table
+		       // repoints to the promoted object, so the arena records it
+		       // as a CLASS (the iterator-tag shape the oracle caught).
+		       "struct PBase { int pb; };\n"
+		       "class PDeriv : public PBase { public: int pd; };\n";
 	}
 	{
 		std::ofstream mn(main_path.c_str());
 		mn << "#include \"" << inc_path << "\"\n"
 		      "int main() { Counter k; k.c = 3; N::P p; p.x = 1;\n"
-		      "             myword_t w = 2; return k.get() + p.x + (int)w; }\n";
+		      "             PDeriv d; d.pd = 4;\n"
+		      "             myword_t w = 2; return k.get() + p.x + d.pd + (int)w; }\n";
 	}
 
 	{
@@ -1899,4 +1906,13 @@ TEST_CASE("B3 flip chunk 1: the dumped arena carries typedefs, namespace ids, an
 		saw_inline_get = true;
 	}
 	CHECK(saw_inline_get);
+
+	// Chunk 2: the arena reconstruct (materialize_from_arena) agrees with the
+	// v6 reconstruct on every consumer-visible surface — the SAME production
+	// oracle every forest_bind gate case now runs, incl. the promoted
+	// struct-as-base (PBase -> class) and the DK_TYPEDEF / ns / body fidelity.
+	std::vector<CirRestoredType> av;
+	REQUIRE(forest.materialize_from_arena(av));
+	CHECK(av.size() >= forest.materialize_types().size());
+	CHECK(forest.arena_oracle_check());
 }

@@ -1104,6 +1104,8 @@ void Program::forest_arena_record_func(FuncDef *fd)
 	if (fd->is_void_params)   r.flags |= madc::dis::DF_IS_VOID_PARAMS;
 	if (fd->declaration_only) r.flags |= madc::dis::DF_DECLARATION_ONLY;
 	if (fd->is_const_method)  r.flags |= madc::dis::DF_IS_CONST_METHOD;
+	if (fd->is_member_template || !fd->template_param_names.empty())
+		r.flags |= madc::dis::DF_IS_MEMBER_TEMPLATE;	// load skips it (the v6 rule)
 	// FuncDef-intrinsic method metadata available at parse time (emit_symbol / display name).
 	// The INLINE-body location (body_unit/body_idx + DF_HAS_FOREST_BODY) is FREEZE-time info
 	// (it indexes the partitioned grove), stamped by a freeze-time fixup — not here.
@@ -1908,6 +1910,39 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 	}
 }
 
+// B3 flip (Chunk 2): RE-RECORD every live project aggregate into the arena at
+// freeze time. The parse-time write-throughs capture an aggregate at its
+// COMPLETION hook, but state keeps mutating afterwards — a method's emit_symbol
+// materializes at instantiation/use, a method Variable can rebind its FuncDef,
+// and a struct later used as a base is PROMOTED to a fresh DataDefCLASS that
+// never passes a hook (the arena oracle surfaced all three on real <string>).
+// Until the remaining B3 mutation sites write through (the ~411-site rollout),
+// the freeze-time state is captured by re-recording from the LIVE objects —
+// the SAME encoders, no parallel format. A superseded record is overwritten in
+// place; its old payload runs become dead words in the dump (size, not
+// correctness). The walk runs to a fixpoint because recording can stamp fresh
+// project ids (an aggregate first reached as a cross-ref).
+static void cir_forest_arena_refresh(Program *prog)
+{
+	if (!prog || !prog->forest_arena_enabled || !madc_active_project_types)
+		return;
+	uint32_t base = madc_active_project_types->base();
+	uint32_t done = 0;
+	for (;;) {
+		uint32_t n = (uint32_t)madc_active_project_types->size();
+		if (done >= n)
+			break;
+		for (uint32_t i = done; i < n; ++i) {
+			DataDef *dd = madc_active_project_types->get(base + i);
+			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
+			if (!sdd || !sdd->is_complete)
+				continue;
+			prog->forest_arena_record_aggregate(sdd);
+		}
+		done = n;
+	}
+}
+
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append)
 {
@@ -1937,6 +1972,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		f.libs = prog->loaded_lib_paths;
 		cir_forest_fill_pack_payloads(prog, f);	// grove payload v2 (B4a)
 		cir_forest_fill_type_records(prog, f);	// Phase 6: complete type-table serialization
+		cir_forest_arena_refresh(prog);		// Chunk 2: re-record live aggregates (post-completion mutations)
 		f.arena = prog->forest_arena;		// B3 flip SAVE side: dump the parse-populated arena alongside the v6 records
 		cir_forest_arena_complete(prog, f);	// Chunk 1: freeze-time fidelity (inline bodies / typedefs / ns)
 		PchCompression codec = PchCompression::Zlib;

@@ -715,6 +715,20 @@ public:
 	// container was frozen without the arena). Chunk 2's materialize_from_arena
 	// reads this; until then it is the oracle surface verifying the SAVE dump.
 	const madc::dis::FrozenDefArena &arena() const { return _arena; }
+	// B3 flip Chunk 2: reconstruct the type graph from the dumped DefArena —
+	// mirrors materialize_types' passes but reads defrec/memberrec/baserec/
+	// methodrec/anonrec/paramrec, applying at LOAD time the same selection rules
+	// the v6 freeze applied at SAVE time (recordability closure; skip polymorphic
+	// / vbase / union-layout classes, template methods, symbol-less non-dtor
+	// specials) so the restored surface is BEHAVIOR-IDENTICAL to the v6 path —
+	// the flip is a mechanical replacement; faithful widening comes after it,
+	// gated against live. Objects are forest-owned (same storage as v6's). False
+	// when the container carries no arena.
+	bool materialize_from_arena(std::vector<CirRestoredType> &out);
+	// B3 flip Chunk 2 oracle (MADC_ARENA_ORACLE=1): assert the arena reconstruct
+	// agrees with the v6 reconstruct on every consumer-visible surface; each
+	// divergence prints an "ARENA-ORACLE:" line to stderr. True = agreement.
+	bool arena_oracle_check();
 	// Container string pool lookup (name_id -> C string; NULL if invalid).
 	const char *pool_str(uint32_t id) const
 	{ uint32_t len; return pool_cstr(id, len); }
