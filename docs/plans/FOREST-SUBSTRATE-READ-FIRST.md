@@ -138,13 +138,30 @@ enum underlying too — both sides cleanly lack). GLOBALS stay OUT (CIR_GLOBALS 
 the flip replaces ONLY CIR_TYPE_RECORDS/PAYLOAD). Gate: test_cir_arena 11/316 (anon case), test_cir_freeze
 27/423 (chunk-1 freeze+open case), fulltest 680/0/0/16 exit 0, all 11 forest_bind cases + selfexe + oracles
 GREEN, no new warnings; torture byte-identical by construction (freeze/flag-only reach).
-**NEXT = CHUNK 2 (the arena's FIRST real bind signal):** `materialize_from_arena()` mirroring
-`materialize_types` (cir_freeze.cpp:1177-1473) but reading defrec/memberrec/methodrec/anonrec/paramrec from
-`forest.arena()`, run IN PARALLEL with the existing path as an env-gated ORACLE (e.g. `MADC_ARENA_ORACLE=1`)
-asserting the two `_restored` lists agree across all 11 forest_bind gates — everything so far is unit + regression
-green only; the arena has never driven a bind. **THEN CHUNK 3 (flip + delete):** switch `forest_restore_decls` to
-the arena reconstruct, DELETE `cir_forest_fill_type_records` + `materialize_types` (~588 LOC) + the
-CIR_TYPE_RECORDS/PAYLOAD segments; `#23` type-graph byte-identity closes by construction.
+**CHUNK 2 COMPLETE @ `f3d5a2eb` (2026-07-07, gated green incl. torture): the arena passed its FIRST real
+bind proof.** `CirFrozenForest::materialize_from_arena()` reconstructs the type graph from the arena, applying
+the v6 SAVE-side selection at LOAD (recordability closure with self-allowed member chains + base-before-derived;
+polymorphic/vptr/union-layout-class excluded; per-method rules incl. the new `DF_IS_MEMBER_TEMPLATE` flag) so the
+restored surface is behavior-identical to v6 — widening past v6 is post-flip, gated vs LIVE. `arena_oracle_check()`
+deep-compares the two restored surfaces (v6-only entries + field divergences FATAL; arena-beyond-v6 methods a
+NOTE — legitimate coverage superset); env-gated in `forest_restore_decls` (`MADC_ARENA_ORACLE`, exit 86 loud) and
+**exported permanently in `forest_bind_gate.sh`** so fulltest cross-checks all 11 cases until Chunk 3. The oracle's
+first strbind run found 364 divergences → 0 via two real fixes: (1) STALE-AT-COMPLETION records (emit_symbols
+materialize at instantiation/use; Variables rebind FuncDefs) → `cir_forest_arena_refresh` RE-RECORDS every live
+project aggregate at freeze with the same encoders (interim until the ~411 mutation sites write through);
+(2) **struct→class PROMOTION left the id table resolving the SUPERSEDED struct** (a live `madc_type_from_id` bug
+beyond the forest — iterator tags recorded DK_STRUCT, derived classes dropped) → `id_table::set(id,obj)` + the
+promotion repoints the table + write-throughs the promoted class. Also: nested DATA-ONLY aggregates write-through
+at the `parse_nested_aggregate_body` tail (their one completion point). Gate: forest_bind 11/11 GREEN under the
+oracle (strbind 0 divergences / 31 beyond-v6 notes); test_cir_freeze 27/426; fulltest 680/0/0/16 exit 0;
+**torture failset BYTE-IDENTICAL (50 names, 0 timeouts) — required: the promotion repoint touches the normal path**.
+**NEXT = CHUNK 3 (flip + delete):** switch `forest_restore_decls` to `materialize_from_arena`, DELETE
+`cir_forest_fill_type_records` + `materialize_types` (~588 LOC) + the CIR_TYPE_RECORDS/PAYLOAD segments + the
+oracle scaffolding; `#23` type-graph byte-identity closes by construction. Chunk-3 watchpoints: `_restored`
+ORDER feeds registration/TopDecl/emission order (arena slot order = id-stamp order ≈ parse decl order — the RC1
+fix, but verify MADC_DUMP_MIR vs live); `type_name_for` closure + `--run-frozen` still read the v6 records today;
+duplicate name keys (superseded pre-promotion records surface as harmless extras under the oracle but must not
+double-register at flip).
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 
