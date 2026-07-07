@@ -354,16 +354,34 @@ path beside the eager one — make the one restore path demand-keyed.
 **OWNER'S BAR for "working": real tests run on the forest** (e.g.
 `bin/madc --freeze=tmp/sub.msnap tests/testsubscript.mad` then
 `bin/madc --forest-bind=tmp/sub.msnap tests/testsubscript.mad` == live == .expect). HONEST
-SCOREBOARD (2026-07-07 end of day): vector/string consumers work INCLUDING new specializations
-(gates 14/14); `<map>` FAILS — **the next measured gap: an EXACT-MATCH `<map>` bind dies with
-"Expecting a type argument to pair<>"** (reducer: freeze+bind the SAME file
-tmp/s4_map_prod.cpp — `std::map<int,int>` + iterator loop; also 2 c2mir check errors after:
-"invalid type argument of unary *" / "incomplete struct or union"). Exact-match failing means
-map's template surface (pair / _Rb_tree: likely partial-spec selection, member-alias or
-default-arg state on the restored patterns) has a restore gap of the SAME class we cleared for
-vector — burn it down with the same batch discipline (fix shape: state INTO the substrate,
-never a new record family; build once per batch, reducer-iterate, full gates ONCE at the end).
-`<iostream>` = the polymorphic-classes boundary (vtable/typeinfo serialization), still fenced.
+SCOREBOARD (2026-07-07 second sitting): **`<map>` GREEN (format v22)** — exact-match bind AND
+a new `map<long,long>` specialization run == live == g++ (gates **[mapbind] + [mapnewspec]**,
+16/16; strbind/strops whole-TU byte-identity UNREGRESSED). The map burn-down closed as NINE
+loaded-state fixes across two sittings: the first four (@b2903b72: class-scope flush re-run,
+local_emit_name invariant, incomplete-empty `_Tuple_impl_1`, funcdef_files origin
+classification) + the v22 batch: (5) member-template methodrecs restore VERBATIM — decl-only
+placeholders at their saved __oN ranks + the bodied instantiations (`pair(...)__o7`,
+`tuple __o3`) the v6 rule dropped (cir_freeze.cpp — the "freeze-side missing bodies"
+hypothesis was WRONG; or_probe showed body=1 in the save); (6) the CIR_TMPLK_MEMBER flush
+HYDRATES the restored placeholder (funcdef_map[record key]) via the extracted
+`stamp_member_template_pattern` — the ONE token-derivation shared with
+register_skipped_class_template_function — instead of re-running the registration, which
+re-MINTED a rank-shifted colliding placeholder family; the full re-run stays as the
+missing-placeholder fallback; (7) `cir_collect_cleanup_attr_fns` collects
+`__attribute__((cleanup(F)))` refs at the TWO forest materialization sites (a loaded body
+never runs the live lowering site that registers a scope-local's dtor — `_Auto_node___dtor`;
+live collector untouched → torture by construction); (8) `cir_forest_global_record.ns_id`
+(v22) — a fresh instantiation resolves `std::piecewise_construct` by QUALIFIED name through
+namespace_map[ns][name], which the flush now reproduces (save side reverse-walks
+namespace_map); (9) the reducer oracle itself — madc does NOT propagate main's return as the
+exit code, so reducers must PRINT (`sum=42`), never assert rc. KNOWN NUANCE (measured, not
+blocking): the fresh map<long,long> instantiation binds pair(...)__o7's REFERENCE params to
+the derived node pointer directly where live materializes a base-ptr conversion temp — 2
+benign c2mir pointer warnings on the newspec bind only (stdout == live == g++; live
+warning-free); fix = restored-method param-type fidelity at the construction site (same
+residual class as vec's proto/label numbering).
+`<iostream>` = the polymorphic-classes boundary (vtable/typeinfo serialization), still fenced —
+THE next execution-order item (close-out handoff item 2).
 THEN: the /usr/include corpus freeze driver + append-to-binary default path + measure the
 real-workload win (--project SMAUG 51-TU). Backlog unchanged: vec whole-TU byte-identity
 (proto/label numbering), free-fn bodies, user-header note, ~411 write-throughs.

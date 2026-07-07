@@ -2761,7 +2761,7 @@ public:
     // (which live in tkProgram->variables + dkGlobalVar top_decls) are staged here
     // and flushed by flush_forest_pending_globals() once tkProgram is created. The
     // name/type/flags are the loaded CirRestoredGlobal fields (type owned by the forest).
-    struct PendingForestGlobal { std::string name; DataDef *type; uint32_t flags; uint32_t gflags; int64_t init_value; };
+    struct PendingForestGlobal { std::string name; std::string ns; DataDef *type; uint32_t flags; uint32_t gflags; int64_t init_value; };
     std::vector<PendingForestGlobal> forest_pending_globals;
     // RC2: free-function declarations restored from a bound header. Same deferral
     // as the globals — the Variable lives in tkProgram scope, so registration
@@ -2778,12 +2778,16 @@ public:
     };
     std::vector<PendingForestFunc> forest_pending_funcs;
     // v21: body-bearing MEMBER function templates restored from a bound header
-    // (CIR_TMPLK_MEMBER records). The flush re-runs the live registration
-    // (register_skipped_class_template_function) over the restored tokens, so
-    // every derived field reproduces by the one production path; registration
-    // needs tkProgram (addFunction / unique_overload_symbol), hence the stage.
+    // (CIR_TMPLK_MEMBER records). The flush HYDRATES the restored placeholder
+    // FuncDef (funcdef_map[key], restored verbatim from its methodrec at its
+    // saved __oN rank) with the pattern fields the live registration derives
+    // from the tokens; only when the placeholder did not restore does it fall
+    // back to the full re-run (register_skipped_class_template_function, which
+    // mints a fresh rank). Registration needs tkProgram, hence the stage.
     struct PendingForestMemberTmpl {
 	DataDefCLASS *owner;
+	std::string key;			// the placeholder's funcdef_map symbol (the record key)
+	std::string disp;			// live method_display_name (the declarator name)
 	std::vector<TokenBase *> tokens;	// decl + params + body (sans template<> header)
 	std::vector<std::string> typeparams;
 	std::vector<bool> is_pack;

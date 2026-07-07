@@ -1177,4 +1177,9 @@ const char *cir_first_error_msg(node_t tree);
 // so the translate_module drain materializes their deferred-lazy definitions.
 void cir_collect_call_callees(node_t tree, std::set<std::string> &out);
 
+// Collect every __attribute__((cleanup(F))) function symbol in the tree.
+// FOREST materialization sites only (a loaded body is pre-built — the live
+// lowering site that registers F as referenced never runs for it).
+void cir_collect_cleanup_attr_fns(node_t tree, std::set<std::string> &out);
+
 #endif // __CIR_BUILDER_H

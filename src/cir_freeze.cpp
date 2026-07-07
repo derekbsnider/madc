@@ -1592,8 +1592,15 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 
 			// Methods: the arena run holds EVERY parsed method; apply the
 			// v6 save-side selection here so the restored surface matches
-			// (template methods, symbol-less non-dtor specials, display-
-			// less plain methods, and unresolvable signatures all lack).
+			// (symbol-less non-dtor specials, display-less plain methods,
+			// and unresolvable signatures all lack). MEMBER-TEMPLATE
+			// records restore VERBATIM: the decl-only placeholders at
+			// their saved __oN ranks (live registers each pattern as one —
+			// register_skipped_class_template_function; the flush hydrates
+			// the pattern fields from the CIR_TMPLK_MEMBER tokens) and the
+			// bodied instantiations (a loaded _Rb_tree body calls
+			// pair(...)__oN directly — without the def the MIR link dies
+			// on an undefined import).
 			for (uint32_t mi = 0; mi < r.methods_count; ++mi) {
 				madc::dis::methodrec md;
 				if (!a.get_payload(r.methods_begin, mi, md))
@@ -1605,8 +1612,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				    || !a.get_def_at(md.func_id, fr)
 				    || fr.kind != madc::dis::DK_FUNC)
 					continue;
-				if (fr.flags & madc::dis::DF_IS_MEMBER_TEMPLATE)
-					continue;
+				bool is_mtmpl = (fr.flags & madc::dis::DF_IS_MEMBER_TEMPLATE) != 0;
 				bool is_ctor  = (md.flags & madc::dis::MF_CTOR) != 0;
 				bool is_dtor  = (md.flags & madc::dis::MF_DTOR) != 0;
 				bool m_static = (md.flags & madc::dis::MF_STATIC) != 0;
@@ -1617,7 +1623,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				bool has_body =
 					(fr.flags & madc::dis::DF_HAS_FOREST_BODY) != 0;
 				if (is_ctor || is_dtor || is_operator) {
-					if (!fr.emit_symbol_id && !has_body && !is_dtor)
+					if (!fr.emit_symbol_id && !has_body && !is_dtor
+					    && !is_mtmpl)
 						continue;
 				} else if (!dispkey || !*dispkey) {
 					continue;
@@ -1662,6 +1669,11 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					(fr.flags & madc::dis::DF_IS_VARARGS) != 0;
 				fd->is_void_params =
 					(fr.flags & madc::dis::DF_IS_VOID_PARAMS) != 0;
+				// A member-template record keeps live's flag; the flush
+				// hydrates the pattern fields (param names, spellings,
+				// retained decl tokens) from its CIR_TMPLK_MEMBER twin,
+				// keyed by this funcdef symbol.
+				fd->is_member_template = is_mtmpl;
 				if (has_body) {
 					fd->has_forest_body  = true;
 					fd->forest_body_unit = fr.body_unit;
@@ -1924,6 +1936,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		rg.type       = ty;
 		rg.flags      = g.flags;
 		rg.gflags     = g.gflags;
+		uint32_t nslen = 0;
+		rg.ns         = g.ns_id ? pool_cstr(g.ns_id, nslen) : NULL;	// v22
 		rg.init_value = g.init_value;
 		_restored_globals.push_back(rg);
 	}

@@ -18461,6 +18461,10 @@ node_t CirBuilder::translate_module(Program *prog)
 				node_t bn = body->as_node();
 				std::set<std::string> callees;
 				cir_collect_call_callees(bn, callees);
+				// A dtor referenced ONLY via a scope-local's cleanup
+				// attribute (live registers it at the lowering site,
+				// which a pre-built loaded body never runs).
+				cir_collect_cleanup_attr_fns(bn, callees);
 				for (std::set<std::string>::iterator ci = callees.begin();
 				     ci != callees.end(); ++ci) {
 					// A callee with NO in-TU definition source (not a
@@ -19054,6 +19058,8 @@ node_t CirBuilder::translate_module(Program *prog)
 				continue;
 			std::set<std::string> callees;
 			cir_collect_call_callees(body->as_node(), callees);
+			// Sibling bound dtors referenced only via cleanup attrs.
+			cir_collect_cleanup_attr_fns(body->as_node(), callees);
 			for (std::set<std::string>::iterator ci = callees.begin();
 			     ci != callees.end(); ++ci)
 				if (bound_methods.count(*ci) && !emit_set.count(*ci))
@@ -19237,5 +19243,37 @@ void cir_collect_call_callees(node_t n, std::set<std::string> &out)
 			node_t op = c2mir_node_op(n, i);
 			if (!op) break;
 			cir_collect_call_callees(op, out);
+		}
+}
+
+// Collect the function named by every __attribute__((cleanup(F))) in the tree
+// (N_ATTR: op0 = id("cleanup"), op1 = arg list holding the N_ID). A LOADED
+// forest body is pre-built: the lowering site that attached the cleanup on the
+// live path (obj_storage_decl and peers) also inserted F into referenced_funcs
+// there — a loaded body never runs it, so a dtor referenced ONLY by cleanup
+// (e.g. a scope-local's `__attribute__((cleanup(X___dtor)))`) would never
+// materialize its own forest body and MIR-link would report an undefined
+// import. Forest materialization sites call this BESIDE the call collector;
+// live translation paths do not (their lowering sites already register F).
+void cir_collect_cleanup_attr_fns(node_t n, std::set<std::string> &out)
+{
+	if (!n) return;
+	if (n->code == N_ATTR) {
+		node_t aname = c2mir_node_op(n, 0);
+		if (aname && aname->code == N_ID && aname->u.s.s
+		    && !strcmp(aname->u.s.s, "cleanup")) {
+			node_t args = c2mir_node_op(n, 1);
+			if (args)
+				for (node_t x = c2mir_node_first_op(args); x;
+				     x = c2mir_node_next_op(x))
+					if (x->code == N_ID && x->u.s.s)
+						out.insert(x->u.s.s);
+		}
+	}
+	if (n->code > N_ID)
+		for (int i = 0; ; i++) {
+			node_t op = c2mir_node_op(n, i);
+			if (!op) break;
+			cir_collect_cleanup_attr_fns(op, out);
 		}
 }

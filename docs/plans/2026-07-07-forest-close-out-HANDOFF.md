@@ -35,24 +35,40 @@ every other madc track for five weeks. This document is the execution order; the
   TU **byte-identical** to live (#23). New-specialization instantiation from
   restored tokens **works** (`vector<long>` from a `vector<int>` producer,
   `t=42 n=2` == live == g++, gate `[vecnewspec]`, 14/14).
-- **`<map>` — 4 of 5 gaps FIXED (wip @b2903b72, bind gate 14/14 green):** the
-  flush re-runs member-template registration INSIDE the owner's class scope
-  (class_scope_stack — `pair<iterator,bool>` return resolution); restored
-  disambiguated overloads reproduce live's local_emit_name invariant (`_un` /
-  `__oN` — a bound `++it` had emitted an undefined canonical symbol); an
-  incomplete EMPTY aggregate (tuple's `_Tuple_impl_1` recursion tail) records
-  and restores verbatim (payload-less shape only; is_complete verbatim);
-  funcdef_files classifies a bodied def by its ORIGIN token's file, not its
-  unit. **THE ONE REMAINING map GAP (measured):** 3 undefined MIR imports —
-  pair/tuple member-template CTOR instantiations + `_Auto_node` dtor — bodies
-  that materialize in a compile phase the freeze's translate never runs, so
-  they have NO func-def in the partition. Run
-  `bin/madc -v --freeze=... tmp/s4_map_prod.cpp 2>&1 | grep 'arena_complete 1b'`
-  — the permanent diagnostic lists all 154 such symbols. FIX = the banner's
-  invariant-4 item: FORCE-MATERIALIZE deferred bodies at freeze (the freeze's
-  translate must run the same late instantiation passes a compile runs) so the
-  partition is complete. This also serves the whole-corpus freeze: a save must
-  not depend on which bodies the producer's own main happened to ODR-use.
+- **`<map>` — GREEN (v22, 2026-07-07 second sitting): exact-match bind AND a
+  new `map<long,long>` specialization run == live == g++ (gates `[mapbind]` +
+  `[mapnewspec]`).** The first sitting's 4 fixes (wip @b2903b72: class-scope
+  flush re-run; local_emit_name invariant; incomplete-empty `_Tuple_impl_1`;
+  funcdef_files origin classification) + the v22 batch. **The "freeze-time
+  body completeness" hypothesis was WRONG** — the snapshot already carried
+  every needed body (or_probe showed `__o7` with `body=1`); all three
+  undefined imports were LOAD-side:
+  1. `cir_freeze.cpp` dropped every DF_IS_MEMBER_TEMPLATE methodrec ("the v6
+     rule") — so the bodied instantiations (pair/tuple ctor `__oN`) AND the
+     decl-only placeholders never restored; now VERBATIM at their saved ranks.
+  2. The CIR_TMPLK_MEMBER flush re-ran register_skipped_class_template_function,
+     re-MINTING a rank-shifted placeholder family (`__o6/__o7/...` collided
+     with the restored ranks). Now it HYDRATES the restored placeholder
+     (funcdef_map[record key]) via the extracted stamp_member_template_pattern
+     — the ONE derivation shared with the live registration; full re-run stays
+     as the missing-placeholder fallback.
+  3. `_Auto_node`'s dtor is referenced ONLY via a scope-local's cleanup
+     attribute inside a LOADED body — live registers the dtor at the lowering
+     site a pre-built body never runs. `cir_collect_cleanup_attr_fns` now
+     collects cleanup refs at the two FOREST materialization sites (live
+     collector untouched — torture byte-identical by construction).
+  4. (newspec) `'piecewise_construct' is not a member of namespace 'std'` —
+     the restored global lacked its NAMESPACE binding; v22 records ns_id on
+     cir_forest_global_record and the flush reproduces live's
+     namespace_map[ns][name] registration. Format v21→v22.
+  The 1b "has NO func-def in the partition" diagnostic remains useful but the
+  151 listed symbols are mostly never-ODR-used funcdef entries that cleanly
+  lack — NOT the map blocker. KNOWN NUANCE (measured, not blocking): a fresh
+  map<long,long> instantiation binds pair(...)__o7's reference params to the
+  derived node pointer without live's materialized base-ptr conversion temp —
+  2 benign c2mir pointer warnings on the newspec bind (stdout == live == g++;
+  live is warning-free). Same residual class as vec's proto/label numbering;
+  fix = restored-method param-type fidelity at the construction site.
 - **`<iostream>` FAILS — polymorphic classes** (the load selection still
   excludes DF_HAS_VTABLE/vptr/vbase classes — the v6 rule). Closing it =
   serialize/restore vtable + typeinfo + virtual-dispatch state from the arena

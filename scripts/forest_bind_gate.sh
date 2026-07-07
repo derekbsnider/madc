@@ -648,5 +648,79 @@ vec_ns_bind=$(timeout 120 "$BIN" --forest-bind="$vec_snap" "$vec_ns_cons" 2>/dev
 rm -f "$vec_snap" "$vec_ns_cons" "$vec_ns_gcc"
 echo "forest_bind_gate: [vecnewspec] OK — NEW specialization (vector<long>) instantiated from restored tokens, output == live == g++"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind + strops + vecbind + vecnewspec grove headers bound (no re-parse), output == live == g++"
+# --- case: mapbind (exact-match <map> bind: the v22 map burn-down) ---
+# A bound <map> consumer exercises the state families vector never touched:
+# member-template ctor PLACEHOLDERS restored verbatim at their saved __oN ranks
+# (the CIR_TMPLK_MEMBER flush HYDRATES them instead of re-minting a shifted
+# family), bodied member-template INSTANTIATIONS (pair(...)__oN — loaded
+# _Rb_tree bodies call them directly), a dtor referenced ONLY via a
+# scope-local's cleanup attribute inside a LOADED body (_Auto_node's __z —
+# cir_collect_cleanup_attr_fns), and class-scope name resolution through
+# restored type_aliases (pair<iterator,bool>). Freeze + bind the SAME file.
+map_src="tmp/fbgate_map_src.cpp"
+map_snap="tmp/fbgate_map.msnap"
+map_gcc="tmp/fbgate_map_gcc"
+map_vlog="tmp/fbgate_map_v.log"
+cat > "$map_src" <<'EOF'
+#include <map>
+#include <cstdio>
+int main() { std::map<int,int> m; m[1] = 41; m[2] = 1; int s = 0; for (std::map<int,int>::iterator it = m.begin(); it != m.end(); ++it) s += it->second; printf("sum=%d\n", s); return 0; }
+EOF
+map_live=$(timeout 120 "$BIN" "$map_src" 2>/dev/null)
+[ "$map_live" = "sum=42" ] || fail "[mapbind] live-parse output '$map_live' != 'sum=42'"
+if command -v g++ >/dev/null 2>&1; then
+    if timeout 120 g++ "$map_src" -o "$map_gcc" >/dev/null 2>&1; then
+        map_gcc_out=$("$map_gcc" 2>/dev/null)
+        [ "$map_gcc_out" = "sum=42" ] || fail "[mapbind] g++ output '$map_gcc_out' != 'sum=42'"
+    else
+        fail "[mapbind] g++ compile FAILED"
+    fi
+fi
+if ! timeout 300 "$BIN" --freeze="$map_snap" "$map_src" >/dev/null 2>&1; then
+    fail "[mapbind] --freeze <map> FAILED"
+fi
+[ -f "$map_snap" ] || fail "[mapbind] --freeze produced no container"
+map_bind=$(timeout 120 "$BIN" --forest-bind="$map_snap" "$map_src" 2>/dev/null)
+[ "$map_bind" = "sum=42" ] || fail "[mapbind] bind output '$map_bind' != 'sum=42' (== live == g++; member-template method restore / cleanup-attr callee collection regressed?)"
+# Prove <map> actually BOUND from the container (no silent live fall-through).
+timeout 120 "$BIN" -v --forest-bind="$map_snap" "$map_src" >"$map_vlog" 2>&1
+if ! grep -aq "bound to grove unit.*map" "$map_vlog"; then
+    rm -f "$map_snap" "$map_gcc" "$map_vlog"
+    fail "[mapbind] consumer did NOT bind the <map> grove (live fall-through?)"
+fi
+rm -f "$map_vlog"
+echo "forest_bind_gate: [mapbind] OK — exact-match <map> bind (member-template ranks + bodies, cleanup-attr dtor), output == live == g++"
+
+# --- case: mapnewspec (new map specialization from restored tokens) ---
+# map<long,long> from a map<int,int> producer: a fresh _Rb_tree instantiation
+# resolves std::piecewise_construct by QUALIFIED name through the restored
+# global's v22 namespace binding (namespace_map[ns][name]), and instantiates
+# through the hydrated member-template patterns. KNOWN NUANCE (recorded in the
+# close-out handoff): the fresh instantiation binds pair(...)__o7's reference
+# params to a derived-node pointer without live's materialized base-ptr
+# conversion temp (2 benign c2mir pointer warnings on stderr; stdout — the
+# gate's oracle — matches live == g++).
+map_ns_cons="tmp/fbgate_map_ns_consumer.cpp"
+map_ns_gcc="tmp/fbgate_map_ns_gcc"
+cat > "$map_ns_cons" <<'EOF'
+#include <map>
+#include <cstdio>
+int main() { std::map<long,long> m; m[10] = 40; m[20] = 2; long s = 0; for (std::map<long,long>::iterator it = m.begin(); it != m.end(); ++it) s += it->second; printf("t=%ld n=%d\n", s, (int)m.size()); return 0; }
+EOF
+map_ns_live=$(timeout 120 "$BIN" "$map_ns_cons" 2>/dev/null)
+[ "$map_ns_live" = "t=42 n=2" ] || fail "[mapnewspec] live-parse output '$map_ns_live' != 't=42 n=2'"
+if command -v g++ >/dev/null 2>&1; then
+    if timeout 120 g++ "$map_ns_cons" -o "$map_ns_gcc" >/dev/null 2>&1; then
+        map_ns_gcc_out=$("$map_ns_gcc" 2>/dev/null)
+        [ "$map_ns_gcc_out" = "t=42 n=2" ] || fail "[mapnewspec] g++ output '$map_ns_gcc_out' != 't=42 n=2'"
+    else
+        fail "[mapnewspec] g++ compile FAILED"
+    fi
+fi
+map_ns_bind=$(timeout 180 "$BIN" --forest-bind="$map_snap" "$map_ns_cons" 2>/dev/null)
+[ "$map_ns_bind" = "t=42 n=2" ] || fail "[mapnewspec] bind output '$map_ns_bind' != 't=42 n=2' (== live == g++; global ns binding / member-template hydration regressed?)"
+rm -f "$map_snap" "$map_src" "$map_gcc" "$map_ns_cons" "$map_ns_gcc"
+echo "forest_bind_gate: [mapnewspec] OK — NEW specialization (map<long,long>) instantiated from restored state, output == live == g++"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec grove headers bound (no re-parse), output == live == g++"
 exit 0

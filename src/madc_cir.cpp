@@ -1188,6 +1188,21 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	return;
     madc::dis::intern_table &pool = *TokenBase::_active_strpool;
     std::set<std::string> seen_globals;
+    // v22: the namespace a header declared the global in. Live's var-decl inside
+    // `namespace std {}` registers namespace_map["std"][name] = the SAME Variable
+    // that sits in tkProgram->variables; a consumer's fresh instantiation resolves
+    // the tag by QUALIFIED name through that binding, so record it (reverse walk —
+    // the v10 namespace discipline; first match wins, live has one owner per tag).
+    auto global_ns_id = [&](Variable *gv) -> uint32_t {
+	for (auto &nskv : prog->namespace_map) {
+	    if (nskv.first.empty())
+		continue;
+	    variable_map_t::iterator ni = nskv.second.find(gv->name);
+	    if (ni != nskv.second.end() && ni->second == gv)
+		return pool.intern(nskv.first);
+	}
+	return 0;
+    };
     for (Variable *v : prog->tkProgram->variables) {
 	if (!v || !v->type)
 	    continue;
@@ -1208,6 +1223,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    g.name_id = pool.intern(v->name);
 	    g.type_id = ctid;
 	    g.flags   = v->flags;
+	    g.ns_id   = global_ns_id(v);
 	    // v16: classify the header's initializer FORM so the load rebuilds a
 	    // TokenDecl whose emission is byte-identical to a live parse (v13 stored
 	    // NO form -> flush set decl=NULL -> collect_global_ctors' built-in path
@@ -1268,6 +1284,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	g.type_id    = sid;
 	g.flags      = v->flags;
 	g.gflags     = CIR_GLOBALF_SCALAR_INIT;
+	g.ns_id      = global_ns_id(v);
 	g.init_value = rhs->ival();
 	f.globals.push_back(g);
     }

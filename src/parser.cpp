@@ -12431,6 +12431,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    continue;
 	PendingForestGlobal pg;
 	pg.name       = rg.name;
+	pg.ns         = rg.ns ? rg.ns : "";	// v22: defining namespace
 	pg.type       = rg.type;
 	pg.flags      = rg.flags;
 	pg.gflags     = rg.gflags;	// v14: CIR_GLOBALF_SCALAR_INIT
@@ -12622,16 +12623,19 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	case CIR_TMPLK_MEMBER:
 	{
 	    // A body-bearing member function template of a restored class.
-	    // Stage the restored tokens + params; the post-tkProgram flush
-	    // re-runs the live registration (register_skipped_class_template_
-	    // function) so the pattern FuncDef, its Variable, and the class
-	    // attachment reproduce exactly as a live header parse leaves them.
-	    // An owner the load dropped cleanly lacks.
+	    // Stage the restored tokens + params keyed by the placeholder's
+	    // funcdef_map symbol (the record key); the post-tkProgram flush
+	    // hydrates the verbatim-restored placeholder with the pattern
+	    // fields — or falls back to the full live registration
+	    // (register_skipped_class_template_function) when the placeholder
+	    // did not restore. An owner the load dropped cleanly lacks.
 	    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(rt.owner);
 	    if ( !owner )
 		break;
 	    PendingForestMemberTmpl pm;
 	    pm.owner = owner;
+	    pm.key   = rt.key  ? rt.key  : "";
+	    pm.disp  = rt.name ? rt.name : "";
 	    restore_run(rt.body, pm.tokens);
 	    if ( pm.tokens.empty() )
 		break;
@@ -12651,8 +12655,14 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	<< " template pattern(s) restored" << std::endl);
 }
 
-// v21: the flush re-runs the LIVE member-template registration over restored
-// tokens (defined later in this TU; forward-declared for the flush).
+// v21: the flush hydrates a verbatim-restored member-template placeholder with
+// its pattern fields, falling back to the full LIVE registration when the
+// placeholder did not restore (both defined later in this TU; forward-declared
+// for the flush).
+static void stamp_member_template_pattern(
+	DataDefCLASS *owner, FuncDef *fd, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams,
+	const std::vector<bool> &typeparam_is_pack, const std::string &name);
 static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
@@ -12758,16 +12768,32 @@ void Program::flush_forest_pending_globals()
 	    << (pf.fd->is_varargs ? ", varargs" : "") << ")" << std::endl);
     }
     forest_pending_funcs.clear();
-    // v21: restored MEMBER function templates — re-run the live registration
-    // over the restored tokens (the serialized state IS the registration's
-    // input; running the one production path reproduces the pattern FuncDef,
-    // its Variable, the class attachment, and the __oN symbol continuity
-    // exactly as the producer's parse did).
+    // v21: restored MEMBER function templates. The placeholder FuncDef itself
+    // restored VERBATIM from its methodrec (its saved __oN rank — registered
+    // by the pending-funcs flush above), so the normal path HYDRATES its
+    // pattern fields from the record's tokens; re-running the registration
+    // here would mint a SECOND, rank-shifted placeholder family and the
+    // loaded bodies' calls into the restored ranks would die as undefined
+    // imports. Only a placeholder the load dropped falls back to the full
+    // live registration (fresh-surface robustness — same one production path).
     for ( size_t i = 0; i < forest_pending_member_tmpls.size(); ++i )
     {
 	PendingForestMemberTmpl &pm = forest_pending_member_tmpls[i];
 	if ( !pm.owner || pm.tokens.empty() )
 	    continue;
+	funcdef_map_iter fit = pm.key.empty() ? funcdef_map.end()
+					      : funcdef_map.find(pm.key);
+	if ( fit != funcdef_map.end() && fit->second
+	  && fit->second->is_member_template )
+	{
+	    stamp_member_template_pattern(pm.owner, fit->second, pm.tokens,
+					  pm.typeparams, pm.is_pack, pm.disp);
+	    DBG(std::cout << "flush_forest_pending_globals: member template of "
+		<< pm.owner->name << " hydrated placeholder " << pm.key
+		<< " (" << pm.typeparams.size() << " param(s), "
+		<< pm.tokens.size() << " tokens)" << std::endl);
+	    continue;
+	}
 	std::vector<bool> saved_pack = last_skipped_template_typeparam_is_pack;
 	last_skipped_template_typeparam_is_pack = pm.is_pack;
 	// Live ran this registration INSIDE the owner's class body — the
@@ -12804,6 +12830,15 @@ void Program::flush_forest_pending_globals()
 	Variable *gv = new Variable(pg.name, *pg.type, 1, NULL, /*alloc=*/false);
 	gv->flags = pg.flags;
 	tkProgram->variables.push_back(gv);
+	// v22: live's var-decl inside `namespace N {}` registers the SAME Variable
+	// in namespace_map[N][name] — the binding a consumer's fresh instantiation
+	// resolves a QUALIFIED tag reference (std::piecewise_construct) through.
+	if ( !pg.ns.empty() )
+	{
+	    variable_map_t &gns = namespace_map[pg.ns];
+	    if ( gns.find(pg.name) == gns.end() )
+		gns[pg.name] = gv;
+	}
 	TopDecl gtd;
 	gtd.kind = DeclKind::dkGlobalVar;
 	gtd.name = pg.name;
@@ -36293,6 +36328,92 @@ DataDef *Program::resolve_decltype_call_return(
 					     inner_args, ret_ref, depth + 1);
 }
 
+// Stamp the PATTERN state a member function template carries on its FuncDef —
+// display name, template params/pack-ness, signature spellings, the dependent
+// return-type token range, and (for a body-bearing pattern) the retained decl
+// tokens + owner. The ONE derivation, shared by the live registration
+// (register_skipped_class_template_function) and the forest flush's hydration
+// of a verbatim-restored placeholder (flush_forest_pending_globals).
+static void stamp_member_template_pattern(
+	DataDefCLASS *owner, FuncDef *fd, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams,
+	const std::vector<bool> &typeparam_is_pack, const std::string &name)
+{
+    if ( !fd )
+	return;
+    fd->method_display_name = name;
+    fd->is_member_template = true;
+    fd->template_param_names = typeparams;
+    // Preserve pack-ness (parallel to the typeparams; the live path passes the
+    // skipped-template parse's global, the flush the record's pack bits).
+    if ( typeparam_is_pack.size() == typeparams.size() )
+	fd->template_param_is_pack = typeparam_is_pack;
+    std::string ret_spelling;
+    std::vector<std::string> param_spellings;
+    size_t name_idx = skipped_template_function_declarator_name_index(tokens,
+								      NULL);
+    size_t lparen = skipped_template_function_param_lparen(tokens, name_idx);
+    if ( name_idx < tokens.size() && lparen < tokens.size()
+      && tokens[lparen]
+      && tokens[lparen]->id() == TokenID::tkOpBrk
+      && skipped_template_function_signature_spellings(
+	    tokens, name_idx, lparen, ret_spelling, param_spellings) )
+    {
+	fd->template_return_spelling = ret_spelling;
+	fd->template_param_spellings = param_spellings;
+	// Retain the DEPENDENT return-type token range [rs, name_idx) — the
+	// tokens before the declarator name, past any leading specifiers —
+	// so a body-less call site can resolve the concrete return type by
+	// substituting the deduced args (resolve_member_template_call_return_type).
+	static const char *_ret_specs[] = { "static", "constexpr", "inline",
+	    "virtual", "friend", "extern", "typename", "const", "volatile" };
+	size_t rs = 0;
+	while ( rs < name_idx && tokens[rs] )
+	{
+	    TokenBase *st = tokens[rs];
+	    TokenID sid = st->id();
+	    // Specifier KEYWORD tokens (static/const/extern/volatile/friend are
+	    // keyword IDs, not identifiers) — skip them so the return-type range
+	    // starts at the actual type.
+	    bool is_spec = sid == TokenID::tkSTATIC || sid == TokenID::tkCONST
+			|| sid == TokenID::tkEXTERN || sid == TokenID::tkVOLATILE
+			|| sid == TokenID::tkFRIEND;
+	    if ( !is_spec && is_contextual_identifier_token(st) )
+	    {
+		std::string sn = contextual_identifier_name(st);
+		for ( const char *s : _ret_specs )
+		    if ( sn == s ) { is_spec = true; break; }
+	    }
+	    if ( !is_spec )
+		break;
+	    ++rs;
+	}
+	fd->member_template_return_tokens.clear();
+	for ( size_t i = rs; i < name_idx; ++i )
+	    fd->member_template_return_tokens.push_back(
+		tokens[i] ? tokens[i]->clone() : NULL);
+    }
+    // Retain the body of a body-bearing member function template so an ODR-use
+    // call site can instantiate it locally (instantiate_member_fn_template_for_call)
+    // when the owner is a madc-LOCAL class libstdc++ does not export. Both STATIC
+    // and INSTANCE (this-taking) member templates qualify: a static one
+    // instantiates as a free function, an instance one as a METHOD of the owner
+    // (the clang/gcc model — static-ness is just a flag). Bodyless declarations
+    // stay on the existing mangled-direct paths.
+    bool has_body = false;
+    for ( size_t i = 0; i < tokens.size(); ++i )
+	if ( tokens[i] && tokens[i]->id() == TokenID::tkOpBrc )
+	{ has_body = true; break; }
+    if ( has_body )
+    {
+	fd->member_template_owner = owner;
+	fd->member_template_decl.clear();
+	for ( size_t i = 0; i < tokens.size(); ++i )
+	    fd->member_template_decl.push_back(tokens[i] ? tokens[i]->clone()
+							 : NULL);
+    }
+}
+
 static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
@@ -36324,58 +36445,9 @@ static void register_skipped_class_template_function(
     {
 	fd->is_varargs = true;
 	fd->declaration_only = true;
-	fd->method_display_name = name;
-	fd->is_member_template = true;
-	fd->template_param_names = typeparams;
-	// Preserve pack-ness (parallel global set by the skipped-template parse
-	// alongside last_skipped_template_typeparams, which `typeparams` mirrors).
-	if ( pgm.last_skipped_template_typeparam_is_pack.size() == typeparams.size() )
-	    fd->template_param_is_pack = pgm.last_skipped_template_typeparam_is_pack;
-	std::string ret_spelling;
-	std::vector<std::string> param_spellings;
-	size_t name_idx = skipped_template_function_declarator_name_index(tokens,
-									  NULL);
-	size_t lparen = skipped_template_function_param_lparen(tokens, name_idx);
-	if ( name_idx < tokens.size() && lparen < tokens.size()
-	  && tokens[lparen]
-	  && tokens[lparen]->id() == TokenID::tkOpBrk
-	  && skipped_template_function_signature_spellings(
-		tokens, name_idx, lparen, ret_spelling, param_spellings) )
-	{
-	    fd->template_return_spelling = ret_spelling;
-	    fd->template_param_spellings = param_spellings;
-	    // Retain the DEPENDENT return-type token range [rs, name_idx) — the
-	    // tokens before the declarator name, past any leading specifiers —
-	    // so a body-less call site can resolve the concrete return type by
-	    // substituting the deduced args (resolve_member_template_call_return_type).
-	    static const char *_ret_specs[] = { "static", "constexpr", "inline",
-		"virtual", "friend", "extern", "typename", "const", "volatile" };
-	    size_t rs = 0;
-	    while ( rs < name_idx && tokens[rs] )
-	    {
-		TokenBase *st = tokens[rs];
-		TokenID sid = st->id();
-		// Specifier KEYWORD tokens (static/const/extern/volatile/friend are
-		// keyword IDs, not identifiers) — skip them so the return-type range
-		// starts at the actual type.
-		bool is_spec = sid == TokenID::tkSTATIC || sid == TokenID::tkCONST
-			    || sid == TokenID::tkEXTERN || sid == TokenID::tkVOLATILE
-			    || sid == TokenID::tkFRIEND;
-		if ( !is_spec && is_contextual_identifier_token(st) )
-		{
-		    std::string sn = contextual_identifier_name(st);
-		    for ( const char *s : _ret_specs )
-			if ( sn == s ) { is_spec = true; break; }
-		}
-		if ( !is_spec )
-		    break;
-		++rs;
-	    }
-	    fd->member_template_return_tokens.clear();
-	    for ( size_t i = rs; i < name_idx; ++i )
-		fd->member_template_return_tokens.push_back(
-		    tokens[i] ? tokens[i]->clone() : NULL);
-	}
+	stamp_member_template_pattern(owner, fd, tokens, typeparams,
+				      pgm.last_skipped_template_typeparam_is_pack,
+				      name);
     }
 #if MADC_DEBUG_FNTPL
     {
@@ -36434,29 +36506,8 @@ static void register_skipped_class_template_function(
 	    owner->ctors.push_back(var);
 	owner->has_user_ctor = true;
     }
-
-    // Retain the body of a body-bearing member function template so an ODR-use
-    // call site can instantiate it locally (instantiate_member_fn_template_for_call)
-    // when the owner is a madc-LOCAL class libstdc++ does not export. Both STATIC
-    // and INSTANCE (this-taking) member templates qualify: a static one
-    // instantiates as a free function, an instance one as a METHOD of the owner
-    // (the clang/gcc model — static-ness is just a flag). Bodyless declarations
-    // stay on the existing mangled-direct paths.
-    if ( fd )
-    {
-	bool has_body = false;
-	for ( size_t i = 0; i < tokens.size(); ++i )
-	    if ( tokens[i] && tokens[i]->id() == TokenID::tkOpBrc )
-	    { has_body = true; break; }
-	if ( has_body )
-	{
-	    fd->member_template_owner = owner;
-	    fd->member_template_decl.clear();
-	    for ( size_t i = 0; i < tokens.size(); ++i )
-		fd->member_template_decl.push_back(tokens[i] ? tokens[i]->clone()
-							     : NULL);
-	}
-    }
+    // (Body retention for a body-bearing pattern — member_template_owner +
+    // member_template_decl — is stamped by stamp_member_template_pattern above.)
 }
 
 std::vector<TokenBase *> Program::collect_template_class_prefix()
