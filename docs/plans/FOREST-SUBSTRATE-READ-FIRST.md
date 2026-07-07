@@ -157,11 +157,30 @@ oracle (strbind 0 divergences / 31 beyond-v6 notes); test_cir_freeze 27/426; ful
 **torture failset BYTE-IDENTICAL (50 names, 0 timeouts) — required: the promotion repoint touches the normal path**.
 **NEXT = CHUNK 3 (flip + delete):** switch `forest_restore_decls` to `materialize_from_arena`, DELETE
 `cir_forest_fill_type_records` + `materialize_types` (~588 LOC) + the CIR_TYPE_RECORDS/PAYLOAD segments + the
-oracle scaffolding; `#23` type-graph byte-identity closes by construction. Chunk-3 watchpoints: `_restored`
-ORDER feeds registration/TopDecl/emission order (arena slot order = id-stamp order ≈ parse decl order — the RC1
-fix, but verify MADC_DUMP_MIR vs live); `type_name_for` closure + `--run-frozen` still read the v6 records today;
-duplicate name keys (superseded pre-promotion records surface as harmless extras under the oracle but must not
-double-register at flip).
+oracle scaffolding (the `MADC_ARENA_ORACLE` hook in parser.cpp, `arena_oracle_check` + comparator in
+cir_freeze.cpp, the export in forest_bind_gate.sh); `#23` type-graph byte-identity closes by construction.
+**Chunk-3 TRAPS (verified in code, easy to lose):**
+1. **GLOBALS swizzle is INSIDE materialize_types** — `_restored_globals` is built at its tail, swizzling each
+   `cir_forest_global_record.type_id` through the V6 `by_id` map. Globals stay on the CIR_GLOBALS segment at the
+   flip, so the swizzle must REHOME: swizzle globals through the ARENA reconstruct's `by_id` inside
+   `materialize_from_arena` (same pinned-or-map dispatch). Deleting materialize_types without this silently
+   drops every restored global (v13/v14/v16 regress; strbind catches it).
+2. `_restored` ORDER feeds registration → TopDecl → emission order. v6 order = plain structs (top_decls def
+   order), then classes (struct_map-alpha fixpoint), then typedefs; arena order = slot order (id-stamp ≈ parse
+   decl order — the RC1 fix) then typedefs. The flip CHANGES today's bind emission order — judge against LIVE
+   (MADC_DUMP_MIR), re-measure the strbind whole-TU diff (expected to SHRINK toward closing #23-RC1).
+3. `type_name_for` (the typeid→name closure) derives from the v6 `_type_records` at open, and `cir_forest_write`
+   completes name-only `CIR_TYPEK_OTHER` records from the live table — re-derive the closure from arena records
+   (defrec.name_id) before deleting the v6 stream; `--run-frozen` must stay green (forest_selfexe_gate).
+4. Superseded records must not double-register: a pre-promotion DK_STRUCT overwritten in place is gone, but a
+   pre-promotion record at a DIFFERENT tid (never repointed — old freezes; or an old-object re-record) would
+   surface the same NAME twice; registration must dedupe by name with the LAST/registered object winning
+   (mirror v6's "resolve the REGISTERED type" discipline).
+5. The inline-body EMIT path (`translate_module` reachability fixpoint) reads `has_forest_body`/`forest_body_unit/idx`
+   off the restored FuncDefs — materialize_from_arena already sets these (oracle-verified byte-equal), so no
+   emit-side change is expected; the `method`/`fwd` gates prove it.
+Session diagnostics: `tmp/or_probe.cpp` (gitignored) opens a container and dumps arena records + both restore
+views for a name filter — reusable for Chunk-3 debugging.
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 
