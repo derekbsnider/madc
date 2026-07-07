@@ -905,6 +905,16 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		m.offset = (uint32_t)(i < sdd->member_offsets.size() ? sdd->member_offsets[i] : 0);
 		m.count  = (uint32_t)(i < sdd->member_counts.size() ? sdd->member_counts[i] : 1);
 		m.flags  = (i < sdd->member_array_flags.size() && sdd->member_array_flags[i]) ? 1u : 0u;
+		m.access = i < sdd->member_access.size() ? sdd->member_access[i] : 0u;
+		m.origin = i < sdd->member_origin.size() ? (int32_t)sdd->member_origin[i] : -1;
+		if (i < sdd->member_bitfields.size() && sdd->member_bitfields[i].is_bitfield) {
+			const DataDefSTRUCT::BitFieldInfo &bf = sdd->member_bitfields[i];
+			m.bf_flags = 1u | (bf.is_unsigned ? 2u : 0u) | (bf.reverse_storage ? 4u : 0u);
+			m.bf_bit_offset     = (uint32_t)bf.bit_offset;
+			m.bf_bit_width      = (uint32_t)bf.bit_width;
+			m.bf_storage_offset = (uint32_t)bf.storage_offset;
+			m.bf_storage_size   = (uint32_t)bf.storage_size;
+		}
 		forest_arena.add_payload(m);
 	}
 
@@ -948,14 +958,42 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 			if (FuncDef *mfd = dynamic_cast<FuncDef *>(mt))
 				forest_arena_record_func(mfd);
 		}
+		// Class-membership classification (structural, name-independent — mirrors
+		// cir_forest_append_methods): a ctor is in cdd->ctors; the dtor is the "~"
+		// method_map key whose Variable is in methods; static via vfSTATIC.
+		std::set<Variable *> ctor_set(cdd->ctors.begin(), cdd->ctors.end());
+		Variable *dtor_var = NULL;
+		std::string dtor_key;
+		for (std::map<std::string, Variable *>::const_iterator kv = cdd->method_map.begin();
+		     kv != cdd->method_map.end(); ++kv) {
+			if (kv->first.empty() || kv->first[0] != '~' || !kv->second)
+				continue;
+			if (std::find(cdd->methods.begin(), cdd->methods.end(), kv->second)
+			    != cdd->methods.end()) {
+				dtor_var = kv->second; dtor_key = kv->first; break;
+			}
+		}
 		r.methods_begin = (uint32_t)forest_arena.payload.size();
 		r.methods_count = (uint32_t)cdd->methods.size();
 		for (size_t i = 0; i < cdd->methods.size(); ++i) {
+			Variable *mv = cdd->methods[i];
 			madc::dis::methodrec md;
 			memset(&md, 0, sizeof(md));
-			md.name_id = cdd->methods[i]
-				   ? forest_arena.strings.intern(cdd->methods[i]->name.c_str()) : 0u;
+			md.name_id = mv ? forest_arena.strings.intern(mv->name.c_str()) : 0u;
 			md.func_id = fid[i];
+			bool is_ctor   = mv && ctor_set.count(mv) != 0;
+			bool is_dtor   = mv && mv == dtor_var;
+			bool is_static = mv && (mv->flags & vfSTATIC) != 0;
+			md.flags = (is_ctor ? madc::dis::MF_CTOR : 0u)
+				 | (is_dtor ? madc::dis::MF_DTOR : 0u)
+				 | (is_static ? madc::dis::MF_STATIC : 0u);
+			// method_map KEY: the "~" tag for the dtor; method_display_name for a plain
+			// method/operator; empty for a concrete ctor (resolves via cdd->ctors, not by name).
+			FuncDef *mfd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+			std::string key = is_dtor ? dtor_key
+					: (is_ctor ? std::string()
+					   : (mfd ? mfd->method_display_name : std::string()));
+			md.disp_key_id = key.empty() ? 0u : forest_arena.strings.intern(key.c_str());
 			forest_arena.add_payload(md);
 		}
 
@@ -1032,6 +1070,14 @@ void Program::forest_arena_record_func(FuncDef *fd)
 	if (fd->is_varargs)       r.flags |= madc::dis::DF_IS_VARARGS;
 	if (fd->is_void_params)   r.flags |= madc::dis::DF_IS_VOID_PARAMS;
 	if (fd->declaration_only) r.flags |= madc::dis::DF_DECLARATION_ONLY;
+	if (fd->is_const_method)  r.flags |= madc::dis::DF_IS_CONST_METHOD;
+	// FuncDef-intrinsic method metadata available at parse time (emit_symbol / display name).
+	// The INLINE-body location (body_unit/body_idx + DF_HAS_FOREST_BODY) is FREEZE-time info
+	// (it indexes the partitioned grove), stamped by a freeze-time fixup — not here.
+	r.emit_symbol_id = fd->emit_symbol.empty()
+			 ? 0u : forest_arena.strings.intern(fd->emit_symbol.c_str());
+	r.disp_id        = fd->method_display_name.empty()
+			 ? 0u : forest_arena.strings.intern(fd->method_display_name.c_str());
 	r.params_begin = (uint32_t)forest_arena.payload.size();
 	r.params_count = (uint32_t)fd->parameters.size();
 	for (size_t p = 0; p < fd->parameters.size(); ++p) {
@@ -1723,6 +1769,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		f.libs = prog->loaded_lib_paths;
 		cir_forest_fill_pack_payloads(prog, f);	// grove payload v2 (B4a)
 		cir_forest_fill_type_records(prog, f);	// Phase 6: complete type-table serialization
+		f.arena = prog->forest_arena;		// B3 flip SAVE side: dump the parse-populated arena alongside the v6 records
 		PchCompression codec = PchCompression::Zlib;
 #ifdef HAVE_ZSTD
 		codec = PchCompression::Zstd;

@@ -80,6 +80,7 @@ enum DefKind : uint32_t {
 	DK_FPTR,
 	DK_MEMBERPTR,
 	DK_CARRAY,
+	DK_TYPEDEF,	// ref0 = underlying type-id (a named alias; ns_id gives its namespace)
 };
 
 // Kind-independent flag bits on a defrec (grows as the schema completes — a new bool is a
@@ -100,6 +101,17 @@ enum DefFlags : uint32_t {
 	DF_IS_VARARGS        = 1u << 10,
 	DF_IS_VOID_PARAMS    = 1u << 11,
 	DF_DECLARATION_ONLY  = 1u << 12,
+	DF_IS_CONST_METHOD   = 1u << 13,	// FuncDef::is_const_method
+	DF_HAS_FOREST_BODY   = 1u << 14,	// INLINE method: body_unit/body_idx locate its Tree-1 def
+};
+
+// Per-method flag bits (methodrec.flags) — the class-membership classification the live
+// path derives structurally (ctor set / "~" dtor key / static). Return + params + the
+// FuncDef-intrinsic flags live on the referenced DK_FUNC defrec.
+enum MethodFlags : uint32_t {
+	MF_CTOR   = 1u << 0,	// joins DataDefCLASS::ctors on load
+	MF_DTOR   = 1u << 1,	// the class_own_dtor ("~") method_map key
+	MF_STATIC = 1u << 2,	// no hidden __this
 };
 
 // Per-base flag bits (baserec.flags).
@@ -148,17 +160,33 @@ struct defrec {
 	// func params:
 	uint32_t params_begin;	// paramrec run
 	uint32_t params_count;
+	// FUNC (DK_FUNC) method fidelity — the FuncDef-intrinsic state materialize reads:
+	uint32_t emit_symbol_id;	// FuncDef::emit_symbol intern id (0 = none; LIBRARY link symbol)
+	uint32_t disp_id;		// FuncDef::method_display_name intern id (0 = none)
+	uint32_t body_unit;		// INLINE body location (valid iff DF_HAS_FOREST_BODY)
+	uint32_t body_idx;
+	// struct/class anonymous sub-aggregate groups (flattened anon union/struct):
+	uint32_t anon_begin;	// anonrec run
+	uint32_t anon_count;
 };
 
-// One member of a STRUCT/CLASS (bitfield/vbase-index fields fold in as the schema
-// completes). uint32 words only.
+// One member of a STRUCT/CLASS — the complete per-member state materialize reads
+// (offset/count/access/origin/bitfield loaded VERBATIM). uint32 words only.
 struct memberrec {
 	uint32_t name_id;	// memberpair_t.first
 	uint32_t type_id;	// memberpair_t.second, as a type-id (pinned or project)
 	uint32_t typedef_id;	// memberpair_t.typedef_name (0 = none)
 	uint32_t offset;	// member_offsets[i]
 	uint32_t count;		// member_counts[i]
-	uint32_t flags;		// bit0 = array_flag; access in bits 1-2; (grows)
+	uint32_t flags;		// bit0 = array_flag (grows)
+	uint32_t access;	// member_access[i] (vf* access bits)
+	int32_t  origin;	// member_origin[i] — owning base index, or -1 for an own member
+	// bitfield (member_bitfields[i]); bf_flags bit0=is_bitfield, bit1=is_unsigned, bit2=reverse_storage
+	uint32_t bf_flags;
+	uint32_t bf_bit_offset;
+	uint32_t bf_bit_width;
+	uint32_t bf_storage_offset;
+	uint32_t bf_storage_size;
 };
 
 // A direct base (DataDefCLASS::bases -> BaseSpec).
@@ -168,11 +196,25 @@ struct baserec {
 	uint32_t flags;		// BaseFlags (is_virtual | is_primary | access<<8)
 };
 
-// A method (DataDefCLASS::methods -> Variable* wrapping a FuncDef*).
+// A method (DataDefCLASS::methods -> Variable* wrapping a FuncDef*). Return + params +
+// the FuncDef-intrinsic flags (const/varargs/void-params/decl-only/body) live on the
+// referenced DK_FUNC defrec (func_id); this rec carries the class-membership state.
 struct methodrec {
 	uint32_t name_id;	// Variable::name (the mangled call symbol)
 	uint32_t func_id;	// the method's FuncDef, as a type-id (DK_FUNC record)
-	uint32_t flags;		// reserved (const/static/virtual — grows)
+	uint32_t flags;		// MethodFlags (MF_CTOR | MF_DTOR | MF_STATIC)
+	uint32_t disp_key_id;	// method_map KEY intern id (== method_display_name for a plain
+				// method/operator; the "~" tag for the dtor; 0 for a concrete ctor)
+};
+
+// A flattened anonymous sub-aggregate group (DataDefSTRUCT::AnonymousAggregateInfo): the
+// nameless union/struct's members are already in the parent's member run; this relinks the
+// grouping + names the sub-aggregate by type-id so emission re-nests the overlap.
+struct anonrec {
+	uint32_t first_member;	// index into the parent's member run
+	uint32_t member_count;
+	uint32_t offset;
+	uint32_t sub_type_id;	// the nameless sub-aggregate, as a type-id
 };
 
 // A flattened virtual-base offset (the pointer-KEYED map, sorted by class_id).

@@ -517,6 +517,25 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 		     f.globals.data(),
 		     f.globals.size() * sizeof(cir_forest_global_record), codec))
 		return false;
+	// B3 flip (SAVE side): the DefArena dump — defrec[] + payload u32[] + the arena's OWN
+	// intern strings (distinct seg-ids, INTERN_* kinds). Populated during parse from
+	// Program::forest_arena. Additive: bind still reads the v6 type records above until the
+	// load-side reconstruct lands, so a zero-length arena (arena never enabled) is harmless.
+	if (!add_seg(w, CIR_FOREST_SEG_ARENA_DEFS, SNAP_KIND_CIR_ARENA_DEFS,
+		     f.arena.defs.data(),
+		     f.arena.defs.size() * sizeof(uint32_t), codec)
+	    || !add_seg(w, CIR_FOREST_SEG_ARENA_PAYLOAD, SNAP_KIND_CIR_ARENA_PAYLOAD,
+			f.arena.payload.data(),
+			f.arena.payload.size() * sizeof(uint32_t), codec)
+	    || !add_seg(w, CIR_FOREST_SEG_ARENA_STR_BYTES, madc::dis::SNAP_KIND_INTERN_BYTES,
+			f.arena.strings.bytes_data(), f.arena.strings.bytes_size(), codec)
+	    || !add_seg(w, CIR_FOREST_SEG_ARENA_STR_ENTRIES, madc::dis::SNAP_KIND_INTERN_ENTRIES,
+			f.arena.strings.entries_data(),
+			f.arena.strings.entries_size() * sizeof(madc::dis::intern_table::Entry), codec)
+	    || !add_seg(w, CIR_FOREST_SEG_ARENA_STR_BUCKETS, madc::dis::SNAP_KIND_INTERN_BUCKETS,
+			f.arena.strings.buckets_data(),
+			f.arena.strings.buckets_size() * sizeof(uint32_t), codec))
+		return false;
 	// v2 container-global payloads (zero-length when the freeze recorded
 	// nothing — a module-only freeze).
 	if (!add_seg(w, CIR_FOREST_SEG_BRANCH_MACROS, SNAP_KIND_CIR_BRANCH_MACROS,
