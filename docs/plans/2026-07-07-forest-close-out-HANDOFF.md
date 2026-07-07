@@ -98,7 +98,40 @@ every other madc track for five weeks. This document is the execution order; the
    (madc_cir.cpp ~1196), so extern-global references are their own (small)
    restore category. Burn down with the map discipline: reducer-iterate,
    fix = state into the substrate, gates ONCE per batch.
-3. **REAL-TEST SOAK:** freeze+bind every `tests/*.mad` (scripted, capped, ONE
+   **IMPLEMENTATION MAP (traced 2026-07-07 — the save side is ALREADY COMPLETE;
+   the load is mechanical):** the aggregate encoder (madc_cir.cpp ~929-1041)
+   records own_block_off, the vbase run (vbaserec: class_id/offset, sorted),
+   and the vgroup run (vgrouprec: owner_id/this_offset/slot-name-id run/
+   addr_point — mirrors DataDefCLASS::VtableGroup datadef.h:895 exactly).
+   LOAD work: (1) drop the vtable/vptr/vbase exclusions in the closure builder
+   (cir_freeze.cpp ~1354-1367; keep DF_UNION_LAYOUT fenced); (2) pass-2 class
+   restore adds own_block_off + has_vtable/has_vptr_slot (from flags) +
+   cdd->vbase_offset[swizzled class]=offset + rebuilt vtable_groups (slot names
+   from the pool) — base-before-derived ordering already covers virtual bases;
+   (3) the extern-global category: a vfEXTERN class-typed global records as a
+   reference (new CIR_GLOBALF_EXTERN_REF gflag bit, still v22 — v22 shipped
+   this session, no container predates it), and the flush rebuilds live's
+   extern-cout Variable shape (MEASURE live's cout Variable first: flags +
+   storage_alias_name/Itanium binding — do not guess); (4) reducer to `7` ==
+   live == g++, gate [iobind], batch gates once. For `cout << 7` the calls are
+   non-virtual mangled-direct into libstdc++ (operator<<(int), endl) — madc-
+   generated virtual DISPATCH is NOT on the reducer's path; vgroups/vbases are
+   restored for state fidelity, not exercised by this reducer.
+   **PROGRESS (2026-07-07 tail of session — steps 1+2 LANDED, gated):** the
+   closure fence is dropped (vtable/vptr/vbase classes admitted; union-layout
+   stays fenced) and pass 2 restores has_vtable/has_vptr_slot/own_block_off +
+   vbase_offset + vtable_groups (get_word for slot-id runs). Gated: bind gate
+   16/16 (strbind/strops whole-TU byte-identity UNREGRESSED — the widening
+   reaches every bind case), test_cir_freeze 31/546, test_cir_arena 11/316.
+   RESULT: polymorphic classes DO restore (ios_base__failure with base +
+   methods), BUT the core trio — ios_base / basic_ios<char> /
+   basic_ostream<char> — is STILL dropped by the member-chain fixpoint, so
+   `cout` stays undeclared. NEXT STEP: instrument the closure rejection (a DBG
+   naming the first unresolvable member/base per dropped aggregate — mirror
+   the freeze-completeness diagnostic), REGENERATE the snapshot first
+   (suspects: locale members, _Callback_list/_Words internals, fn-ptr member
+   types), burn the blocking member family down, THEN the extern-global
+   category (step 3). freeze+bind every `tests/*.mad` (scripted, capped, ONE
    run); classify remaining failures by state family; burn down by class, not
    per test.
 4. **PHASE 4 PACK + DEFAULT-ON:** corpus freeze driver (stdlib closure under

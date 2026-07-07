@@ -1331,10 +1331,12 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// Recordability closure — the v6 save-side fixpoint reproduced at load as
 	// a pure analysis over the records: an aggregate is recordable iff every
 	// member's type chain resolves (self allowed), every base is recordable
-	// (base-before-derived) and non-virtual, and every anonymous sub-aggregate
-	// is recordable. Classes v6 never records — polymorphic (vtable / vptr
-	// slot), union-layout, or virtual-base-carrying — are excluded up front;
-	// their dependents then cleanly lack, exactly like the v6 fixpoint.
+	// (base-before-derived) and every anonymous sub-aggregate is recordable.
+	// v22 (iostream): POLYMORPHIC classes (vtable / vptr slot) and
+	// virtual-base-carrying classes are ADMITTED — the records carry the full
+	// vtable state (own_block_off, vbaserec runs, vgrouprec runs) and pass 2
+	// restores it verbatim. Union-layout classes stay fenced (their own
+	// follow-on), and their dependents cleanly lack, like the v6 fixpoint.
 	std::vector<uint32_t> agg_ids;		// slot order == id-stamp order
 	for (uint32_t s = 0; s < nslots; ++s) {
 		uint32_t tid = madc::dis::arena_id_of(s);
@@ -1351,21 +1353,9 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		if (!(r.flags & madc::dis::DF_IS_COMPLETE)
 		    && (r.members_count || r.bases_count))
 			continue;
-		if (r.kind == madc::dis::DK_CLASS) {
-			if (r.flags & (madc::dis::DF_HAS_VTABLE | madc::dis::DF_HAS_VPTR_SLOT))
-				continue;
-			if (r.flags & madc::dis::DF_UNION_LAYOUT)
-				continue;
-			bool vbase = false;
-			for (uint32_t b = 0; b < r.bases_count && !vbase; ++b) {
-				madc::dis::baserec br;
-				if (!a.get_payload(r.bases_begin, b, br)
-				    || (br.flags & madc::dis::BSF_VIRTUAL))
-					vbase = true;
-			}
-			if (vbase)
-				continue;
-		}
+		if (r.kind == madc::dis::DK_CLASS
+		    && (r.flags & madc::dis::DF_UNION_LAYOUT))
+			continue;
 		agg_ids.push_back(tid);
 	}
 	std::set<uint32_t> recordable;
@@ -1571,6 +1561,41 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			cdd->from_system_header = (r.flags & madc::dis::DF_FROM_SYSTEM_HDR) != 0;
 			cdd->has_user_ctor      = (r.flags & madc::dis::DF_HAS_USER_CTOR) != 0;
 			cdd->has_user_dtor      = (r.flags & madc::dis::DF_HAS_USER_DTOR) != 0;
+			// v22 (iostream): the polymorphic-class state, verbatim from
+			// the runs the aggregate encoder writes (own_block_off +
+			// vbaserec (class_id,offset) + vgrouprec incl. the slot-name
+			// id run) — the vgroup owner / vbase classes swizzle through
+			// the same by_id as every other cross-ref.
+			cdd->has_vtable    = (r.flags & madc::dis::DF_HAS_VTABLE) != 0;
+			cdd->has_vptr_slot = (r.flags & madc::dis::DF_HAS_VPTR_SLOT) != 0;
+			cdd->own_block_off = r.own_block_off;
+			for (uint32_t vb = 0; vb < r.vbase_count; ++vb) {
+				madc::dis::vbaserec vr;
+				if (!a.get_payload(r.vbase_begin, vb, vr))
+					break;
+				DataDefCLASS *vbc = dynamic_cast<DataDefCLASS *>(
+					arena_swizzle(vr.class_id, by_id));
+				if (vbc)
+					cdd->vbase_offset[vbc] = vr.offset;
+			}
+			for (uint32_t vg = 0; vg < r.vgroup_count; ++vg) {
+				madc::dis::vgrouprec gr;
+				if (!a.get_payload(r.vgroup_begin, vg, gr))
+					break;
+				DataDefCLASS::VtableGroup g;
+				g.owner = dynamic_cast<DataDefCLASS *>(
+					arena_swizzle(gr.owner_id, by_id));
+				g.this_offset = gr.this_offset;
+				g.addr_point  = gr.addr_point;
+				for (uint32_t sl = 0; sl < gr.slots_count; ++sl) {
+					uint32_t nid = 0;
+					if (!a.get_word(gr.slots_begin, sl, nid))
+						break;
+					const char *sn = a.c_str(nid);
+					g.slots.push_back(sn ? sn : "");
+				}
+				cdd->vtable_groups.push_back(g);
+			}
 			bool bok = true;
 			for (uint32_t b = 0; b < r.bases_count; ++b) {
 				madc::dis::baserec br;
