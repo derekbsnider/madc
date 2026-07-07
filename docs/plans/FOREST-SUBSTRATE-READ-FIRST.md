@@ -106,11 +106,26 @@ real parse); fulltest **680/0/0/16** exit 0; ALL forest gates byte-identical to 
 flag off ⇒ byte-identical by construction); no new warnings. GOTCHA banked in memory: a plain `int` member serializes as
 the PINNED int32 slot (9), NOT `MADC_TYPEID_INT` (5) — assert pinned/shared/no-record, never a slot number.
 
-**NEXT (SLICE 1f) — PLAN READY:** see `docs/plans/2026-07-06-forest-b3-slice-1e-aggregate-writethrough-PLAN.md` §6.
-1f = FuncDef → `DK_FUNC` via a new FuncDefBuilder (the one class with no builder funnel; the method `func_id`
-cross-refs 1e already emits fill in here). Then a later slice flips READS onto the record + deletes the per-category
-freeze (`materialize_types` + `cir_forest_fill_type_records` + the 3 delete-segments) — `#23` whole-TU byte-identity
-closes by construction. develop @ `3352f059` == origin (1e is uncommitted local work on top).
+**SLICE 1f (methods) DONE (2026-07-07, gated green): `Program::forest_arena_record_func(FuncDef*)`** records a
+method's FuncDef as its own `DK_FUNC` record (ref0=return type-id, params run incl. the hidden __this stored
+VERBATIM; is_varargs/is_void_params/declaration_only flags). Called from `forest_arena_record_aggregate`'s method
+RESOLVE loop (before the methodrec run's begin is captured, so param runs don't interleave) — closes the
+`methodrec.func_id` forward-ref 1e left. Gate: test_cir_arena **10/280**; fulltest **680/0/0/16**; forest gates
+byte-identical; no warnings.
+
+**SCOPE CORRECTION (2026-07-07, owner pushed back on over-slicing): FREE FUNCTIONS are NOT needed for flip PARITY.**
+The current hand-serializer never serialized free functions (that IS the RC2 gap), so the flip only has to match
+types + methods + globals + typedefs + namespaces; free functions are a cheap POST-flip addition. So 1f = methods;
+do not chase `parseFunction`'s completion hook pre-flip.
+
+**NEXT = THE FLIP (the payoff — completion, not more prep slices).** The parse-time write-throughs (1c/1d/1e/1f)
+already populate `forest_arena`. The flip: at `--freeze` enable `forest_arena_enabled` so the parse fills the arena,
+then **dump `forest_arena`** (defs/payload/intern segments) instead of running `cir_forest_fill_type_records`; on
+LOAD **reconstruct DataDefs from the `FrozenDefArena`** instead of `materialize_types`; **DELETE both (~588 LOC) +
+the `CIR_TYPE_RECORDS`/`CIR_TYPE_PAYLOAD` segments**. The decl/global/namespace restore (`forest_restore_decls`,
+small) stays and registers the reconstructed DataDefs by name. Remaining arena-coverage gaps for parity: enums,
+anonymous sub-aggregates, `ns_id` on records. `#23` type-graph byte-identity closes by construction.
+develop @ `e596ef83` (1e committed); 1f is uncommitted local work on top.
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 

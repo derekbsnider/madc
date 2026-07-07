@@ -935,13 +935,19 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 			forest_arena.add_payload(b);
 		}
 
-		// --- methods (resolve each method's FuncDef type-id first; its DK_FUNC record
-		//     is populated in slice 1f — a forward id ref is fine, arena is id-addressed) ---
+		// --- methods (resolve each method's FuncDef type-id AND record its DK_FUNC
+		//     record now — slice 1f-a. Both happen in this RESOLVE loop, BEFORE the
+		//     methodrec run's begin is captured, so recording a method's param run
+		//     (which appends to payload) cannot interleave the aggregate's own
+		//     contiguous methodrec run. This closes the func_id forward-ref the
+		//     methodrec would otherwise leave for a later slice. ---
 		std::vector<uint32_t> fid(cdd->methods.size());
-		for (size_t i = 0; i < cdd->methods.size(); ++i)
-			fid[i] = (cdd->methods[i] && cdd->methods[i]->type)
-			       ? forest_serialize_type_id(cdd->methods[i]->type)
-			       : (uint32_t)MADC_TYPEID_INVALID;
+		for (size_t i = 0; i < cdd->methods.size(); ++i) {
+			DataDef *mt = cdd->methods[i] ? cdd->methods[i]->type : NULL;
+			fid[i] = mt ? forest_serialize_type_id(mt) : (uint32_t)MADC_TYPEID_INVALID;
+			if (FuncDef *mfd = dynamic_cast<FuncDef *>(mt))
+				forest_arena_record_func(mfd);
+		}
 		r.methods_begin = (uint32_t)forest_arena.payload.size();
 		r.methods_count = (uint32_t)cdd->methods.size();
 		for (size_t i = 0; i < cdd->methods.size(); ++i) {
@@ -994,6 +1000,50 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 			forest_arena.add_payload(vgs[g]);
 	}
 
+	forest_arena.set_def_at(tid, r);
+}
+
+// B3 write-through (SLICE 1f): record a FuncDef as a DK_FUNC record at its project-id slot —
+// ref0 = the return type-id, a params run of paramrec (type-id + const flag + cpp-spelling), and
+// the signature flags. Reuses the ONE forest_serialize_type_id policy for the return + every
+// parameter type (no parallel encoder). Stores the parameters VERBATIM, INCLUDING a method's hidden
+// __this (param 0): the record mirrors the live FuncDef's complete signature, and the eventual
+// read-flip reconstructs the same list — B3's store-complete-state model, distinct from the freeze's
+// rebuild-__this-on-load. Called from forest_arena_record_aggregate for each class method (1f-a,
+// which closes the methodrec.func_id forward-ref); free functions route through it at their own
+// parse-completion in a follow-on. Resolve-first: param type-ids resolve into a local vector before
+// the paramrec run is appended (forest_serialize_type_id touches no payload, so this is not strictly
+// required here, but it keeps the one payload discipline uniform).
+void Program::forest_arena_record_func(FuncDef *fd)
+{
+	if (!fd)
+		return;
+	uint32_t tid = type_id_for(fd);		// project id for the FuncDef == its arena slot
+
+	std::vector<uint32_t> pt(fd->parameters.size());
+	for (size_t p = 0; p < fd->parameters.size(); ++p)
+		pt[p] = forest_serialize_type_id(fd->parameters[p]);
+
+	madc::dis::defrec r;
+	memset(&r, 0, sizeof(r));
+	r.kind    = madc::dis::DK_FUNC;
+	r.name_id = fd->name.empty() ? 0u : forest_arena.strings.intern(fd->name.c_str());
+	r.ref0    = forest_serialize_type_id(&fd->returns);	// return type, as a type-id
+	if (fd->is_varargs)       r.flags |= madc::dis::DF_IS_VARARGS;
+	if (fd->is_void_params)   r.flags |= madc::dis::DF_IS_VOID_PARAMS;
+	if (fd->declaration_only) r.flags |= madc::dis::DF_DECLARATION_ONLY;
+	r.params_begin = (uint32_t)forest_arena.payload.size();
+	r.params_count = (uint32_t)fd->parameters.size();
+	for (size_t p = 0; p < fd->parameters.size(); ++p) {
+		madc::dis::paramrec pr;
+		memset(&pr, 0, sizeof(pr));
+		pr.type_id         = pt[p];
+		pr.flags           = (p < fd->const_params.size() && fd->const_params[p]) ? 1u : 0u;
+		pr.cpp_spelling_id = (p < fd->param_cpp_spellings.size()
+				      && !fd->param_cpp_spellings[p].empty())
+				   ? forest_arena.strings.intern(fd->param_cpp_spellings[p].c_str()) : 0u;
+		forest_arena.add_payload(pr);
+	}
 	forest_arena.set_def_at(tid, r);
 }
 

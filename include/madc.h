@@ -1628,6 +1628,12 @@ public:
     // type-id (the referent records itself at ITS completion; the id-addressed arena tolerates a
     // forward slot ref). Reads stay on the live DataDef; only this write dual-populates the record.
     void forest_arena_record_aggregate(DataDefSTRUCT *sdd);
+    // write-through: record a FuncDef (DK_FUNC) into forest_arena at its project-id slot —
+    // ref0 = return type-id, a params run of paramrec (type-id + const/spelling), and the
+    // is_varargs/is_void_params/declaration_only flags. Called for each class method from the
+    // aggregate recorder (slice 1f-a, closing the methodrec.func_id forward-ref); free functions
+    // route through it at their parse completion in a follow-on.
+    void forest_arena_record_func(FuncDef *fd);
     // Captured `template<typename T> class Name {...}` definitions for
     // Borland-model instantiation: name -> {type params, the class-body token
     // range}. `Name<ConcreteT>` clones+substitutes+re-parses it as a concrete

@@ -862,3 +862,61 @@ TEST_CASE("B3 arena: aggregate write-through records DK_STRUCT/DK_CLASS from a r
 
 	delete prog;
 }
+
+// ---- SLICE 1f-a: a class method's FuncDef is now recorded as its OWN DK_FUNC record (return +
+//      params run), closing the methodrec.func_id forward-ref that 1e left open. Driven by a real
+//      parse: every method's func_id now resolves to a DK_FUNC record; a method with an explicit
+//      parameter carries __this (param 0) + that parameter.
+TEST_CASE("B3 arena: method FuncDef records resolve to DK_FUNC (return + params) via a real parse")
+{
+	Program *prog = new Program();
+	prog->forest_arena_enabled = true;
+
+	const char *src =
+		"class Widget { public: int w; int get() { return w; } int add(int k) { return w + k; } };\n"
+		"int main() { Widget wd; return wd.get() + wd.add(2); }\n";
+	TokenProgram *tp = prog->tokenize_buffer(src, "arena_1f.mad");
+	REQUIRE(tp != NULL);
+	REQUIRE(prog->parse(tp));
+
+	datadef_map_iter wit = prog->struct_map.find("Widget");
+	REQUIRE(wit != prog->struct_map.end());
+	DataDefCLASS *widget = dynamic_cast<DataDefCLASS *>(wit->second);
+	REQUIRE(widget != NULL);
+	uint32_t wtid = prog->type_id_for(widget);
+	defrec wr;
+	REQUIRE(prog->forest_arena.get_def_at(wtid, wr));
+	REQUIRE(wr.methods_count >= 2);		// get + add (plus any implicit members)
+
+	// Every method whose func_id is a project id now resolves to a DK_FUNC record (1f-a closed
+	// the forward-ref). At least one method carries an explicit (non-__this) parameter: add(int k).
+	int func_records = 0, with_explicit_param = 0;
+	for (uint32_t i = 0; i < wr.methods_count; ++i) {
+		methodrec md;
+		REQUIRE(prog->forest_arena.get_payload(wr.methods_begin, i, md));
+		if (!arena_id_is_project(md.func_id))
+			continue;
+		defrec fr;
+		REQUIRE(prog->forest_arena.get_def_at(md.func_id, fr));
+		CHECK(fr.kind == DK_FUNC);
+		++func_records;
+		// return type-id resolves as a pinned primitive (int/void), a project type, or invalid
+		bool ret_ok = arena_id_is_pinned(fr.ref0) || arena_id_is_project(fr.ref0)
+			    || fr.ref0 == (uint32_t)MADC_TYPEID_INVALID;
+		CHECK(ret_ok);
+		if (fr.params_count >= 1) {
+			// param 0 of a non-static method is the hidden __this = a pointer to the
+			// class (a project DK_PTR recorded by the unary write-through).
+			paramrec p0;
+			REQUIRE(prog->forest_arena.get_payload(fr.params_begin, 0, p0));
+			CHECK(arena_id_is_project(p0.type_id));
+		}
+		if (fr.params_count >= 2)		// __this + an explicit param
+			++with_explicit_param;
+	}
+	CHECK(func_records >= 2);
+	CHECK(with_explicit_param >= 1);	// add(int k)
+
+	assert_no_primitive_records(prog->forest_arena);
+	delete prog;
+}
