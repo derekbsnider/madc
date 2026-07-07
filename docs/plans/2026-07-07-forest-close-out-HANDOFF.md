@@ -161,18 +161,29 @@ every other madc track for five weeks. This document is the execution order; the
    **OWNER'S BAR STATUS (tests/testsubscript.mad, freeze+bind whole test):
    ONE measured family left — DEFAULT ARGUMENTS on restored method params.**
    `string greet = "hello"` selects basic_string(const char*, const _Alloc&
-   = _Alloc()) — live's FuncDef carries param_defaults (per-param default
-   EXPRESSION tokens, madc.h ~136; required_param_count drives arity and the
-   call site synthesizes the omitted arg from the tokens). The arena's
-   paramrec has no default state. DESIGN (state into the substrate): the
-   DefArena grows a TOKEN-BYTES blob (dumped/mapped like its strings pool);
-   paramrec gains a default-run reference (off/len/count/file_id) serialized
-   with madc_pch::serialize_token_seq (the .madh codec the v20 pattern runs
-   use); the methodrec restore carries the run descriptor on the pending
-   func and the FLUSH (parser side — spelling pool + intern_file live there)
-   deserializes into fd->param_defaults. The snapshot already holds the full
-   202-method basic_string surface with Itanium ctor symbols (or_probe) —
-   defaults are the only missing selection/synthesis state.
+   = _Alloc()) — live's FuncDef carries param_defaults, and BOTH the arity
+   gate (required_param_count) and the call site read it (parser.cpp
+   ~14697/~14947 push fd->param_defaults[i] STRAIGHT into the call's args).
+   The arena's paramrec has no default state.
+   **DESIGN REFINEMENT (traced): param_defaults[i] is a PARSED EXPRESSION
+   TREE** — parseFunction's default branch (parser.cpp ~38977) runs
+   `param_default = parseExpression(nextToken(), true)` — NOT lexed tokens,
+   so the .madh flat-token codec cannot serialize it directly. The faithful
+   shape (mirrors how template typeparam_defaults are token VECTORS):
+   (1) parseFunction's `tkAssign` default branch ALSO captures the default's
+   RAW SOURCE TOKEN RANGE (clone the tokens parseExpression consumes —
+   stream-position tap) into a parallel `param_default_tokens` vector;
+   (2) the DefArena grows a TOKEN-BYTES blob (dumped/mapped like its strings
+   pool; new arena segment) and paramrec gains a default-run reference
+   (off/len/count/file_id, .madh codec);
+   (3) record_func serializes param_default_tokens;
+   (4) the methodrec restore carries the run descriptors to the pending-func
+   FLUSH (parser side — spelling pool + intern_file live there), which
+   deserializes the tokens and re-runs parseExpression over them — the ONE
+   live derivation, the register_skipped/stamp_member_template precedent.
+   The snapshot already holds the full 202-method basic_string surface with
+   Itanium ctor symbols (or_probe) — defaults are the only missing
+   selection/synthesis state on the bar test's path.
    **PROGRESS 1 (2026-07-07 — steps 1+2 LANDED, gated):** the
    closure fence is dropped (vtable/vptr/vbase classes admitted; union-layout
    stays fenced) and pass 2 restores has_vtable/has_vptr_slot/own_block_off +
