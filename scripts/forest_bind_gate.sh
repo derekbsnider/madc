@@ -722,5 +722,46 @@ map_ns_bind=$(timeout 180 "$BIN" --forest-bind="$map_snap" "$map_ns_cons" 2>/dev
 rm -f "$map_snap" "$map_src" "$map_gcc" "$map_ns_cons" "$map_ns_gcc"
 echo "forest_bind_gate: [mapnewspec] OK — NEW specialization (map<long,long>) instantiated from restored state, output == live == g++"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec grove headers bound (no re-parse), output == live == g++"
+# --- case: iobind (<iostream>: polymorphic classes + extern-ref globals) ---
+# `std::cout << 7 << std::endl` from a bound forest: vtable-carrying classes
+# restore (greatest-fixpoint closure admits the basic_ios<->basic_ostream
+# pointer cycle; DK_FPTR fn-ptr member records resolve _Callback_list), cout
+# restores as a CIR_GLOBALF_EXTERN_REF (vfEXTERN Variable + Itanium
+# _ZSt4cout alias + `extern` TopDecl), and the W2 manipulator surface
+# (free_operator_overloads) re-derives from the restored patterns so endl
+# binds mangled-direct (_ZSt4endl...) instead of the placeholder symbol.
+io_src="tmp/fbgate_io_src.cpp"
+io_snap="tmp/fbgate_io.msnap"
+io_gcc="tmp/fbgate_io_gcc"
+io_vlog="tmp/fbgate_io_v.log"
+cat > "$io_src" <<'EOF'
+#include <iostream>
+int main() { std::cout << 7 << std::endl; return 0; }
+EOF
+io_live=$(timeout 180 "$BIN" "$io_src" 2>/dev/null)
+[ "$io_live" = "7" ] || fail "[iobind] live-parse output '$io_live' != '7'"
+if command -v g++ >/dev/null 2>&1; then
+    if timeout 120 g++ "$io_src" -o "$io_gcc" >/dev/null 2>&1; then
+        io_gcc_out=$("$io_gcc" 2>/dev/null)
+        [ "$io_gcc_out" = "7" ] || fail "[iobind] g++ output '$io_gcc_out' != '7'"
+    else
+        fail "[iobind] g++ compile FAILED"
+    fi
+fi
+if ! timeout 600 "$BIN" --freeze="$io_snap" "$io_src" >/dev/null 2>&1; then
+    fail "[iobind] --freeze <iostream> FAILED"
+fi
+[ -f "$io_snap" ] || fail "[iobind] --freeze produced no container"
+io_bind=$(timeout 180 "$BIN" --forest-bind="$io_snap" "$io_src" 2>/dev/null)
+[ "$io_bind" = "7" ] || fail "[iobind] bind output '$io_bind' != '7' (== live == g++; polymorphic-class / extern-ref / manipulator restore regressed?)"
+# Prove <iostream> actually BOUND from the container (no silent live fall-through).
+timeout 180 "$BIN" -v --forest-bind="$io_snap" "$io_src" >"$io_vlog" 2>&1
+if ! grep -aq "bound to grove unit.*iostream" "$io_vlog"; then
+    rm -f "$io_snap" "$io_gcc" "$io_vlog"
+    fail "[iobind] consumer did NOT bind the <iostream> grove (live fall-through?)"
+fi
+rm -f "$io_snap" "$io_src" "$io_gcc" "$io_vlog"
+echo "forest_bind_gate: [iobind] OK — <iostream> bound (polymorphic classes + extern-ref cout + mangled-direct endl), output == live == g++"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind grove headers bound (no re-parse), output == live == g++"
 exit 0

@@ -142,6 +142,37 @@ every other madc track for five weeks. This document is the execution order; the
    INSTRUMENT try_instantiate's failure path (MADC_DEBUG_FNTPL exists) and
    compare live-vs-bind -v at the endl call site. Reducer: tmp/s5_io.cpp +
    tmp/s5_io.msnap (re-freeze after save-side changes).
+   **PROGRESS 3 — [iobind] GREEN: `std::cout << 7 << std::endl` binds and
+   prints 7 == live == g++.** The endl gap was NOT deduction: live lowers
+   `os << endl` through the W2 MANIPULATOR path (cir_builder
+   try_free_operator_call ~10792), which reads
+   Program::free_operator_overloads — string signature tables
+   register_skipped_namespace_template_function derives at header parse
+   (capture_free_operator_overload / capture_free_manipulator_overload /
+   capture_free_function_overload, parser.cpp ~31796-32133) — state the
+   restore never reproduced. FIX: recapture_free_overload_surfaces re-runs
+   the SAME captures over each restored namespace FN/FN_DECL pattern's
+   tokens (NamespaceScope guard; owner-classed patterns skip, as live).
+   ALSO: restored NAMESPACED typedef records no longer write the FLAT
+   datatype_map (live's record_typedef never does) — once the closure
+   admitted polymorphic classes, std::pmr::string's alias record clobbered
+   datatype_map["string"] and the bar test built the polymorphic_allocator
+   variant.
+   **OWNER'S BAR STATUS (tests/testsubscript.mad, freeze+bind whole test):
+   ONE measured family left — DEFAULT ARGUMENTS on restored method params.**
+   `string greet = "hello"` selects basic_string(const char*, const _Alloc&
+   = _Alloc()) — live's FuncDef carries param_defaults (per-param default
+   EXPRESSION tokens, madc.h ~136; required_param_count drives arity and the
+   call site synthesizes the omitted arg from the tokens). The arena's
+   paramrec has no default state. DESIGN (state into the substrate): the
+   DefArena grows a TOKEN-BYTES blob (dumped/mapped like its strings pool);
+   paramrec gains a default-run reference (off/len/count/file_id) serialized
+   with madc_pch::serialize_token_seq (the .madh codec the v20 pattern runs
+   use); the methodrec restore carries the run descriptor on the pending
+   func and the FLUSH (parser side — spelling pool + intern_file live there)
+   deserializes into fd->param_defaults. The snapshot already holds the full
+   202-method basic_string surface with Itanium ctor symbols (or_probe) —
+   defaults are the only missing selection/synthesis state.
    **PROGRESS 1 (2026-07-07 — steps 1+2 LANDED, gated):** the
    closure fence is dropped (vtable/vptr/vbase classes admitted; union-layout
    stays fenced) and pass 2 restores has_vtable/has_vptr_slot/own_block_off +

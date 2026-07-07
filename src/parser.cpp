@@ -12223,6 +12223,16 @@ DataDef *Program::lazy_resolve_type(const std::string &name)
     return dd;
 }
 
+// v22 (iostream W2): re-run the free-overload SIGNATURE captures over a
+// restored namespace fn-template pattern — the string tables
+// (free_operator_overloads / free_function_overloads) live's
+// register_skipped_namespace_template_function derives from the same tokens
+// the v20 pattern records serialize. Defined after the capture functions;
+// forward-declared for the restore switch.
+static void recapture_free_overload_surfaces(Program &pgm,
+	const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams, const std::string &ns);
+
 // Phase 6 (forest = serialized Tree-1; design 2026-07-05): reconstruct the
 // parser's symbol tables from a loaded forest's typed decl records — the
 // "parser-resume" that makes bind a LOAD, never a re-parse. Slice 1b handles
@@ -12301,7 +12311,16 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    if ( !rt.underlying )
 		continue;
 	    TokenDataType *tdt = new TokenDataType(rt.name, *rt.underlying);
-	    datatype_map[name] = tdt;
+	    // Live parity (record_typedef, ~23382): a NAMESPACED alias registers
+	    // ONLY in namespace_datatype_map — never the flat map. The old
+	    // unconditional flat write let the LAST same-named alias win
+	    // globally: once the v22 closure admitted polymorphic classes,
+	    // std::pmr::string's record clobbered datatype_map["string"] and an
+	    // unqualified `string s` (under `using namespace std`) built the
+	    // polymorphic_allocator variant ("no matching constructor" on the
+	    // owner's bar test).
+	    if ( !rt.ns || !*rt.ns )
+		datatype_map[name] = tdt;
 	    user_typedef_names.insert(name);
 	    TopDecl td;
 	    td.kind = DeclKind::dkTypedef;
@@ -12310,7 +12329,9 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    td.tdt = tdt;
 	    top_decls.push_back(td);
 	    register_in_namespace(rt.ns, name, rt.underlying, tdt);
-	    DBG(std::cout << "forest_restore_decls: typedef " << name << std::endl);
+	    DBG(std::cout << "forest_restore_decls: typedef " << name
+		<< (rt.ns && *rt.ns ? std::string(" (ns ") + rt.ns + ")" : "")
+		<< std::endl);
 	}
 	else if ( rt.kind == CIR_TYPEK_ENUM )
 	{
@@ -12570,6 +12591,17 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		fn_template_map[key].push_back(fd);
 	    else
 		fn_template_decl_map[key].push_back(fd);
+	    // v22 (iostream W2): every restored NAMESPACE pattern came through
+	    // register_skipped_namespace_template_function on the producer,
+	    // which ALSO derived the free-overload signature tables
+	    // (free_operator_overloads: `os << x`; the manipulator shape:
+	    // `os << endl` -> mangled-direct endl(&os); free_function_overloads:
+	    // std::getline). Re-run the same captures over the restored tokens
+	    // — the one live derivation, no parallel format. Owner-classed
+	    // (member) patterns never captured on live; neither here.
+	    if ( !fd.ns.empty() && !fd.owner_class && !fd.decl.empty() )
+		recapture_free_overload_surfaces(*this, fd.decl, fd.typeparams,
+						 fd.ns);
 	    break;
 	}
 	case CIR_TMPLK_VAR:
@@ -32196,6 +32228,28 @@ static void register_skipped_namespace_template_function(
 	    ovset.push_back(e);
 	}
     }
+}
+
+// v22 (iostream W2): the forest restore's twin of the capture trio above —
+// re-run the free-overload SIGNATURE derivations over a RESTORED pattern's
+// tokens, inside the pattern's namespace (the captures read
+// current_namespace()). Mirrors register_skipped_namespace_template_function
+// exactly: an operator capture is terminal; otherwise manipulator + function
+// captures run. The registration side (placeholder Variable, ovset seed) is
+// the flush's job — this reproduces only the string tables.
+static void recapture_free_overload_surfaces(Program &pgm,
+	const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams, const std::string &ns)
+{
+    if ( ns.empty() || tokens.empty() )
+	return;
+    Program::NamespaceScope guard(pgm, ns);
+    if ( capture_free_operator_overload(pgm, tokens, typeparams) )
+	return;
+    capture_free_manipulator_overload(pgm, tokens, typeparams);
+    std::string name = skipped_template_function_declarator_name(tokens);
+    if ( !name.empty() )
+	capture_free_function_overload(pgm, tokens, typeparams, name);
 }
 
 // Deduce which template parameter a parameter SPELLING names, and what the
