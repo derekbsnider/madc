@@ -226,15 +226,44 @@ live's actual mechanism (parseFunction tail parser.cpp:38662; Pass 0.75 cir_buil
 byte-identity assert; selfexe; test_cir_freeze 29/480 (new #23 method-registration case); test_cir_arena
 11/316; **torture failset byte-identical (1572/32/18, 0 timeouts, 50 names — verified by RUN: fix (b) reshaped
 a normal-path loop, empty-map no-op on a live compile)**.
-**NEXT (post-flip backlog, in priority order):** (1) widening past the v6 selection (polymorphic classes,
-template methods, beyond-v6 method coverage, inline free-function BODIES) gated vs LIVE — fold in the
-user-header-origin note: the eager path emits only the REFERENCED subset of bound user-class methods while a
-live parse emits every parsed non-system function as a root (an unreferenced-user-inline-method divergence,
-unobserved by current gates); (2) converting the remaining ~411 mutation sites to true write-throughs,
-retiring `cir_forest_arena_refresh`; (3) enums. Diagnostics: `tmp/or_probe.cpp` (gitignored, REWRITTEN this
-session for the v18+ arena API — dumps per-class arena METHOD records with flags/body/symbol for a name
-filter; g++ build line at its head comment pattern: link `-Wl,--whole-archive lib/libmadc.a` +
-`/workspace/mir/libmir.a`); `tmp/b23_*.{dump,diff,c,log}` hold the #23 closing measurements.
+**WIDENING SLICE 1 DONE @ `18b9bf74` (2026-07-07, gated green): restored-method OVERLOAD fidelity.**
+Measurement-first (rich-<string> + <vector> reducers, live vs bind, rich vs poor producer): a bound
+`s.append("!!")` (9 parsed append overloads) mis-picked `append(initializer_list<char>)` → "no matching
+constructor for 'initializer_list_char(char*)'" — SAME on rich/poor producer → LOAD-side. ROOT CAUSE (the #23
+state family): `DataDefCLASS::findMethodOverload` (parser.cpp:9009) derives the hidden-__this skip from the
+method Variable's `Method::owner_class`; restored methods carried data==NULL → every overload ranked at the
+wrong arity → ranked scan empty → fell back to the LAST method_map slot (the initializer_list overload). FIX
+(state layer only): materialize_from_arena attaches `Method(owner_class=cdd)` to every restored method
+Variable (parseFunction-tail parity), and the flush REUSES the class's Variable at tkProgram scope
+(`PendingForestFunc.mvar`; live keeps ONE shared Variable — TokenCLASS::parse re-finds parseFunction's
+registration). RESULT: rich consumer (append/operator+=/c_str/length) binds `len=13 c0=h` == live == g++ with
+whole-TU MIR BYTE-IDENTICAL — even against the MINIMAL producer (method DECLARATIONS are usage-independent in
+the freeze). Gate case **[strops]** locks it (12/12); #23 unit case asserts Method(owner_class) + the shared
+Variable (29/485). Torture by construction (bind/restore-only reach).
+**NEXT — WIDENING SLICE 2 (the corpus blocker, MEASURED): serialize TEMPLATE-NAME state so `<vector>` binds.**
+Ground truth: a bound `std::vector<int>` consumer fails at PARSE — "use of undeclared identifier 'vector'" —
+even for the producer's exact instantiation (the vector_int32_t_std__allocator_int32_t_ PRODUCT class is in
+the arena; the template NAME is not). Live state = `Program::template_map` (bare name → TemplateDef variants)
++ `partial_spec_map` + `fn_template_map` + `var_template_map`; a `TemplateDef` (madc.h:1641) = typeparams +
+defaults (TokenBase* runs) + is_type/is_pack + class_name + **body = cloned TOKEN vector** (Borland model:
+instantiation clones+substitutes the saved tokens; each concrete class is parsed ONCE — the parse-once law's
+allowed only-parse) + defining_namespace + owner_class + spec_pattern/constraint token runs. FAITHFUL widening
+= serialize those TOKEN vectors (the .madh token record form ALREADY EXISTS from B4a) + params/flags/ns per
+TemplateDef, restore into the four maps, and let the UNCHANGED live instantiation machinery run — an
+exact-match consumer hits the memoized product; a NEW specialization instantiates through the same path. This
+is NOT the retired B4b decl-re-parse drift: live itself keeps patterns as tokens; bind holding the same tokens
+IS state parity. Scope check before building: instantiate_template_use's memo lookup must find the restored
+PRODUCTS (registered under their instantiation names); member-template patterns
+(register_skipped_class_template_function) + DF_IS_MEMBER_TEMPLATE restore ride the same slice or the one
+after. THEN: (3) polymorphic classes (vtable/typeinfo — <iostream>); (4) beyond-v6 method coverage +
+inline free-function BODIES (freeze-time completeness: the container only holds bodies the producer's
+translate lowered — a producer-independent freeze must force-materialize deferred bodies, invariant 4);
+(5) the user-header-origin note (eager path emits only the REFERENCED subset of bound user-class methods;
+live emits every parsed non-system fn as a root — unobserved divergence); (6) ~411 write-throughs retiring
+`cir_forest_arena_refresh`; (7) enums. Diagnostics: `tmp/or_probe.cpp` (gitignored, v18+ API — per-class
+arena METHOD records with flags/body/symbol; build: g++ -I include -I /workspace/mir -I /workspace/mir/c2mir
+tmp/or_probe.cpp -Wl,--whole-archive lib/libmadc.a -Wl,--no-whole-archive /workspace/mir/libmir.a -rdynamic
+-ldl -lz -lm -lpthread); `tmp/b23w_*` = the widening reducers/measurements (str rich + vec).
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 

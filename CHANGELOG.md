@@ -19,6 +19,18 @@
   whole-`<string>`-TU func/export/data SETS are byte-identical between a bound
   and a live compile; the residual dump diff is the late-pass ctor/dtor
   emission order.
+- **Widening slice 1 — restored-method overload fidelity.** A bound
+  `s.append("!!")` mis-resolved to `append(initializer_list<char>)`:
+  `findMethodOverload` derives the hidden-`__this` skip from the method
+  Variable's `Method::owner_class`, and restored methods carried
+  `data==NULL`, breaking overload arity ranking. The restore now attaches
+  `Method(owner_class)` at materialization and the flush shares the ONE
+  Variable with tkProgram scope (live parity with parseFunction's tail).
+  A rich `<string>` consumer (append/operator+=/c_str) binds with a
+  whole-TU MIR dump byte-identical to live — even against a minimal
+  producer. New gate case [strops] (12/12). Next widening slice
+  (measured): `<vector>` needs template-NAME state serialized
+  (TemplateDef token bodies) — design in the READ-FIRST banner.
 - **#23 CLOSED — a bound `<string>` consumer's whole-TU MIR dump is
   byte-identical to a live parse (diff 122 → 0), asserted by the strbind
   gate.** Two loaded-state-equals-parsed-state fixes: (a) every restored class
