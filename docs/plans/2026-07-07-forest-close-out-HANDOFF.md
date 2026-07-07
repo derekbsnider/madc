@@ -85,6 +85,19 @@ every other madc track for five weeks. This document is the execution order; the
    vtable-carrying classes; reducer = freeze/bind
    `#include <iostream> int main(){ std::cout << 7 << std::endl; }`; gate case
    `[iobind]`. Success flips `tests/testsubscript.mad` (owner's bar test).
+   **MEASURED STARTING POINT (2026-07-07, reducer tmp/s5_io.cpp + tmp/s5_io.msnap):**
+   the FREEZE already handles the whole 185-unit `<iostream>` corpus (34,236
+   records); the bind fails at parse with `use of undeclared identifier 'cout'`.
+   Two known state families behind it: (a) `ostream`/`ios_base` etc. are
+   DF_HAS_VTABLE classes — the load selection (cir_freeze.cpp materialize, the
+   v6 polymorphic exclusion) fences them; the arena records ALREADY carry
+   vgroups/vbase offsets, so the work is load-side selection + whatever
+   emission-side vtable/typeinfo state a live parse holds; (b) `std::cout` is a
+   vfEXTERN global (a reference to the libstdc++ object, NOT a header-defined
+   definition) — `cir_forest_fill_globals` explicitly skips vfEXTERN
+   (madc_cir.cpp ~1196), so extern-global references are their own (small)
+   restore category. Burn down with the map discipline: reducer-iterate,
+   fix = state into the substrate, gates ONCE per batch.
 3. **REAL-TEST SOAK:** freeze+bind every `tests/*.mad` (scripted, capped, ONE
    run); classify remaining failures by state family; burn down by class, not
    per test.
