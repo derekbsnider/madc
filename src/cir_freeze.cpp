@@ -1511,6 +1511,16 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 							    *fd, 1, NULL, false);
 				if (m_static)
 					mv->flags |= vfSTATIC;
+				// Live parity (parseFunction's tail): every method
+				// Variable carries a Method whose owner_class is the
+				// class. findMethodOverload derives the hidden-__this
+				// skip from it — with data==NULL every restored
+				// overload ranked at the wrong arity and resolution
+				// fell to the LAST method_map slot (the
+				// append(initializer_list<char>) mispick).
+				Method *mm = new Method(*mv);
+				mm->owner_class = cdd;
+				mv->data = (void *)mm;
 				_mat_vars.push_back(mv);
 				cdd->methods.push_back(mv);
 				if (!dispname.empty())

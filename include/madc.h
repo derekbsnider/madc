@@ -2770,8 +2770,11 @@ public:
     struct PendingForestFunc {
 	std::string name;
 	FuncDef *fd;
-	DataDefCLASS *owner;	// non-NULL: a restored class METHOD (Method::owner_class)
-	PendingForestFunc() : fd(NULL), owner(NULL) {}
+	Variable *mvar;		// non-NULL: a restored class METHOD — the class's own
+				// Variable (live keeps ONE object shared by tkProgram
+				// scope and methods/method_map; its Method(owner_class)
+				// is attached at materialization)
+	PendingForestFunc() : fd(NULL), mvar(NULL) {}
     };
     std::vector<PendingForestFunc> forest_pending_funcs;
     void flush_forest_pending_globals();	// build Variable + dkGlobalVar TopDecl (post-tkProgram); also registers pending free functions

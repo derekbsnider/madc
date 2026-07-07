@@ -486,5 +486,57 @@ fi
 rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir" "$strbind_live_mir"
 echo "forest_bind_gate: [strbind] OK — std::string bound from <string> grove (no re-parse); whole-TU MIR byte-identical to live (#23), output == live == g++"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind grove headers bound (no re-parse), output == live == g++"
+# --- case: strops (widening: restored-method OVERLOAD fidelity) ---
+# A consumer exercising an overload SET on a bound class: append has 9 parsed
+# overloads (const string&, const char*, initializer_list<char>, ...).
+# findMethodOverload derives the hidden-__this skip from the method Variable's
+# Method::owner_class — restored methods carried data==NULL, so every overload
+# ranked at the wrong arity and resolution fell to the LAST method_map slot:
+# s.append("!!") mis-picked append(initializer_list<char>) and failed
+# "no matching constructor for call to 'initializer_list_char(char*)'".
+# The restore now attaches Method(owner_class) at materialization (live parity
+# with parseFunction's tail) and the flush shares the ONE Variable with
+# tkProgram scope, exactly like a live parse.
+strops_prod="tmp/fbgate_strops_producer.cpp"
+strops_cons="tmp/fbgate_strops_consumer.cpp"
+strops_snap="tmp/fbgate_strops.msnap"
+strops_gcc="tmp/fbgate_strops_gcc"
+cat > "$strops_prod" <<'EOF'
+#include <string>
+int main() { std::string s; s = "hi"; s += "!"; s.append("xy"); return (int)s.size() + (int)s.length(); }
+EOF
+cat > "$strops_cons" <<'EOF'
+#include <string>
+#include <cstdio>
+int main() { std::string s; s = "hello"; s += " world"; s.append("!!"); printf("len=%d c0=%c\n", (int)s.length(), s.c_str()[0]); return 0; }
+EOF
+if ! timeout 180 "$BIN" --freeze="$strops_snap" "$strops_prod" >/dev/null 2>&1; then
+    fail "[strops] --freeze <string> FAILED"
+fi
+[ -f "$strops_snap" ] || fail "[strops] --freeze produced no container"
+strops_live=$(timeout 60 "$BIN" "$strops_cons" 2>/dev/null)
+[ "$strops_live" = "len=13 c0=h" ] || fail "[strops] live-parse output '$strops_live' != 'len=13 c0=h'"
+if command -v g++ >/dev/null 2>&1; then
+    if timeout 120 g++ "$strops_cons" -o "$strops_gcc" >/dev/null 2>&1; then
+        strops_gcc_out=$("$strops_gcc" 2>/dev/null)
+        [ "$strops_gcc_out" = "len=13 c0=h" ] || fail "[strops] g++ output '$strops_gcc_out' != 'len=13 c0=h'"
+    else
+        fail "[strops] g++ compile FAILED"
+    fi
+fi
+strops_bind=$(timeout 60 "$BIN" --forest-bind="$strops_snap" "$strops_cons" 2>/dev/null)
+[ "$strops_bind" = "len=13 c0=h" ] || fail "[strops] bind output '$strops_bind' != 'len=13 c0=h' (== live == g++; overload fidelity regressed?)"
+strops_live_mir="tmp/fbgate_strops_live_mir.log"
+strops_bind_mir="tmp/fbgate_strops_bind_mir.log"
+MADC_DUMP_MIR=1 timeout 60 "$BIN" "$strops_cons" >/dev/null 2>"$strops_live_mir"
+MADC_DUMP_MIR=1 timeout 60 "$BIN" --forest-bind="$strops_snap" "$strops_cons" >/dev/null 2>"$strops_bind_mir"
+if ! diff -q "$strops_live_mir" "$strops_bind_mir" >/dev/null 2>&1; then
+    diff "$strops_live_mir" "$strops_bind_mir" | head -40 >&2
+    rm -f "$strops_snap" "$strops_gcc" "$strops_live_mir" "$strops_bind_mir"
+    fail "[strops] bound <string> overload-set MIR dump is NOT byte-identical to live (divergence above)"
+fi
+rm -f "$strops_snap" "$strops_gcc" "$strops_live_mir" "$strops_bind_mir"
+echo "forest_bind_gate: [strops] OK — overload set (append/operator+=/c_str) resolves on a bound class; whole-TU MIR byte-identical to live, output == live == g++"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind + strops grove headers bound (no re-parse), output == live == g++"
 exit 0

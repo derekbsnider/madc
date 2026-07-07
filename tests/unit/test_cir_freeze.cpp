@@ -2164,4 +2164,21 @@ TEST_CASE("#23: restored class methods register as funcdef_map[method-id] + prog
 	CHECK(owner->name == "Counter");
 	CHECK(progB->struct_map.count("Counter") == 1);
 	CHECK(progB->struct_map["Counter"] == owner);
+
+	// Live keeps ONE Variable shared by tkProgram scope and the class's
+	// methods/method_map (TokenCLASS::parse re-finds parseFunction's
+	// registration) — the flush must reuse the class's Variable, not mint a
+	// duplicate. And EVERY restored method Variable carries its
+	// Method(owner_class) — findMethodOverload derives the hidden-__this
+	// skip from it (data==NULL broke overload arity ranking: the
+	// append(initializer_list<char>) mispick).
+	bool shared = false;
+	for ( size_t mi = 0; mi < owner->methods.size(); ++mi ) {
+		Variable *mv = owner->methods[mi];
+		if ( !mv ) continue;
+		REQUIRE(mv->data != nullptr);
+		CHECK(((Method *)mv->data)->owner_class == owner);
+		if ( mv == gv ) shared = true;
+	}
+	CHECK(shared);
 }

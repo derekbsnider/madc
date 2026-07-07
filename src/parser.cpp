@@ -12371,9 +12371,9 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		if ( !mfd || mv->name.empty() )
 		    continue;
 		PendingForestFunc pf;
-		pf.name  = mv->name;
-		pf.fd    = mfd;
-		pf.owner = cdd;
+		pf.name = mv->name;
+		pf.fd   = mfd;
+		pf.mvar = mv;
 		forest_pending_funcs.push_back(pf);
 	    }
 	    DBG(std::cout << "forest_restore_decls: class " << name << " ("
@@ -12454,12 +12454,21 @@ void Program::flush_forest_pending_globals()
 	if ( findVariable(pf.name) )
 	    continue;
 	funcdef_map[pf.name] = pf.fd;
-	Variable *fv = addVariable(NULL, *pf.fd, pf.name);
-	Method *fm = new Method(*fv);
-	fm->owner_class = pf.owner;	// NULL for a free function, the class for a method
-	fv->data = (void *)fm;
+	if ( pf.mvar )
+	{
+	    // A restored class METHOD: live keeps ONE Variable (parseFunction's)
+	    // shared by tkProgram scope and the class's methods/method_map, and
+	    // its Method(owner_class) was attached at materialization — reuse the
+	    // class's Variable rather than minting a duplicate.
+	    tkProgram->variables.push_back(pf.mvar);
+	}
+	else
+	{
+	    Variable *fv = addVariable(NULL, *pf.fd, pf.name);
+	    fv->data = (void *)new Method(*fv);
+	}
 	DBG(std::cout << "flush_forest_pending_globals: "
-	    << (pf.owner ? "method " : "free function ") << pf.name
+	    << (pf.mvar ? "method " : "free function ") << pf.name
 	    << " (" << pf.fd->parameters.size() << " params"
 	    << (pf.fd->is_varargs ? ", varargs" : "") << ")" << std::endl);
     }
