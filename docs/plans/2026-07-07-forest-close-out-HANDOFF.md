@@ -35,13 +35,24 @@ every other madc track for five weeks. This document is the execution order; the
   TU **byte-identical** to live (#23). New-specialization instantiation from
   restored tokens **works** (`vector<long>` from a `vector<int>` producer,
   `t=42 n=2` == live == g++, gate `[vecnewspec]`, 14/14).
-- **`<map>` FAILS — the CURRENT gap:** exact-match bind of
-  `tmp/s4_map_prod.cpp` (freeze then bind the SAME file) dies
-  `Expecting a type argument to pair<>` (+ downstream c2mir
-  `invalid type argument of unary *` / `incomplete struct`). Same class of gap
-  as the six burned down for vector on 2026-07-07 — parser state not yet in
-  the save file. Suspects: partial-spec selection / member-alias /
-  template-default-arg state on the restored `pair`/`_Rb_tree` patterns.
+- **`<map>` — 4 of 5 gaps FIXED (wip @b2903b72, bind gate 14/14 green):** the
+  flush re-runs member-template registration INSIDE the owner's class scope
+  (class_scope_stack — `pair<iterator,bool>` return resolution); restored
+  disambiguated overloads reproduce live's local_emit_name invariant (`_un` /
+  `__oN` — a bound `++it` had emitted an undefined canonical symbol); an
+  incomplete EMPTY aggregate (tuple's `_Tuple_impl_1` recursion tail) records
+  and restores verbatim (payload-less shape only; is_complete verbatim);
+  funcdef_files classifies a bodied def by its ORIGIN token's file, not its
+  unit. **THE ONE REMAINING map GAP (measured):** 3 undefined MIR imports —
+  pair/tuple member-template CTOR instantiations + `_Auto_node` dtor — bodies
+  that materialize in a compile phase the freeze's translate never runs, so
+  they have NO func-def in the partition. Run
+  `bin/madc -v --freeze=... tmp/s4_map_prod.cpp 2>&1 | grep 'arena_complete 1b'`
+  — the permanent diagnostic lists all 154 such symbols. FIX = the banner's
+  invariant-4 item: FORCE-MATERIALIZE deferred bodies at freeze (the freeze's
+  translate must run the same late instantiation passes a compile runs) so the
+  partition is complete. This also serves the whole-corpus freeze: a save must
+  not depend on which bodies the producer's own main happened to ODR-use.
 - **`<iostream>` FAILS — polymorphic classes** (the load selection still
   excludes DF_HAS_VTABLE/vptr/vbase classes — the v6 rule). Closing it =
   serialize/restore vtable + typeinfo + virtual-dispatch state from the arena
