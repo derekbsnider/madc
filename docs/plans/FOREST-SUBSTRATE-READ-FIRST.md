@@ -81,10 +81,15 @@ is-a PTR) for the record kind + reads the operand from `base_type` — one metho
 the write, so an existing ref/const is not re-recorded. Gate: test_cir_arena 8 cases/185 assertions (new
 REF/CONST case: reads-unchanged [is_reference/is_const/base_type] + DK_REF/DK_CONST records at distinct
 project-id slots, ref0 = operand id); fulltest 680/0/0/16 + all forest gates byte-identical to live; no new
-warnings. **NEXT (SLICE 1e+, the high-touch stretch):** the aggregate builders (TokenSTRUCT/CLASS::parse →
-DK_STRUCT/CLASS) and FuncDef via a new FuncDefBuilder (DK_FUNC, the one class with no builder funnel) — the bulk
-of the ~548-site conversion, concentrated in the 6 hot functions; then flip READS onto the record + delete the
-per-category freeze. develop @ 168bbf9c + f0b21e0e + 70d08752 + this commit, ahead of origin, NOT pushed.**
+warnings. **1a–1d PUSHED (origin/develop @ `5baf2c0f`, 2026-07-06):** the whole unary derived-type tier
+(PTR/REF/CONST) is banked off-machine. **NEXT (SLICE 1e+, the high-touch stretch) — PLAN READY:** see
+`docs/plans/2026-07-06-forest-b3-slice-1e-aggregate-writethrough-PLAN.md`. 1e = aggregate write-through
+(TokenSTRUCT::parse after finalize @parser.cpp:23982; TokenCLASS::parse after the layout trio @27134–27136 →
+`DK_STRUCT`/`DK_CLASS` via a new `Program::forest_arena_record_aggregate`, PER-AGGREGATE + NON-recursive, cross-refs
+by type-id, mirroring test_cir_arena's `arena_ensure` + reusing `forest_serialize_type_id`). 1f = FuncDef → `DK_FUNC`
+via a new FuncDefBuilder (the one class with no builder funnel). Then a later slice flips READS onto the record +
+deletes the per-category freeze (`materialize_types` + `cir_forest_fill_type_records` + the 3 delete-segments) —
+`#23` whole-TU byte-identity closes by construction. develop @ `5baf2c0f` == origin.**
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 
