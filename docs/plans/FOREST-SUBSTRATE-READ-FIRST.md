@@ -118,9 +118,9 @@ The current hand-serializer never serialized free functions (that IS the RC2 gap
 types + methods + globals + typedefs + namespaces; free functions are a cheap POST-flip addition. So 1f = methods;
 do not chase `parseFunction`'s completion hook pre-flip.
 
-**THE FLIP — IN PROGRESS on branch `feature/forest-b3-flip-claude` (cut from develop @ `eb5fb6db`, which
-carries 1e+1f; develop's 1e/1f are UNPUSHED — origin/develop @ `3352f059`).** Three big chunks (owner: completion,
-not more micro-slices). **Chunk A (SAVE dump) DONE @ `5f0032ff`:** `--freeze` enables the arena, format v17 dumps
+**THE FLIP — ✅ COMPLETE on branch `feature/forest-b3-flip-claude` (cut from develop @ `eb5fb6db`, which
+carries 1e+1f; develop's 1e/1f are UNPUSHED — origin/develop @ `3352f059`; the whole flip branch is UNPUSHED).**
+Three big chunks, all landed (owner: completion, not more micro-slices). **Chunk A (SAVE dump) DONE @ `5f0032ff`:** `--freeze` enables the arena, format v17 dumps
 arena segments 10-14 alongside the v6 records (additive; bind still reads v6 → byte-identical). **Chunk 1
 (freeze fidelity) COMPLETE @ `0c8d6d46` (2026-07-07, gated green):** the arena now reaches `materialize_types`
 fidelity — (a) member origin/access/bitfield + method emit_symbol/display/ctor-dtor-static classification
@@ -155,32 +155,44 @@ promotion repoints the table + write-throughs the promoted class. Also: nested D
 at the `parse_nested_aggregate_body` tail (their one completion point). Gate: forest_bind 11/11 GREEN under the
 oracle (strbind 0 divergences / 31 beyond-v6 notes); test_cir_freeze 27/426; fulltest 680/0/0/16 exit 0;
 **torture failset BYTE-IDENTICAL (50 names, 0 timeouts) — required: the promotion repoint touches the normal path**.
-**NEXT = CHUNK 3 (flip + delete):** switch `forest_restore_decls` to `materialize_from_arena`, DELETE
-`cir_forest_fill_type_records` + `materialize_types` (~588 LOC) + the CIR_TYPE_RECORDS/PAYLOAD segments + the
-oracle scaffolding (the `MADC_ARENA_ORACLE` hook in parser.cpp, `arena_oracle_check` + comparator in
-cir_freeze.cpp, the export in forest_bind_gate.sh); `#23` type-graph byte-identity closes by construction.
-**Chunk-3 TRAPS (verified in code, easy to lose):**
-1. **GLOBALS swizzle is INSIDE materialize_types** — `_restored_globals` is built at its tail, swizzling each
-   `cir_forest_global_record.type_id` through the V6 `by_id` map. Globals stay on the CIR_GLOBALS segment at the
-   flip, so the swizzle must REHOME: swizzle globals through the ARENA reconstruct's `by_id` inside
-   `materialize_from_arena` (same pinned-or-map dispatch). Deleting materialize_types without this silently
-   drops every restored global (v13/v14/v16 regress; strbind catches it).
-2. `_restored` ORDER feeds registration → TopDecl → emission order. v6 order = plain structs (top_decls def
-   order), then classes (struct_map-alpha fixpoint), then typedefs; arena order = slot order (id-stamp ≈ parse
-   decl order — the RC1 fix) then typedefs. The flip CHANGES today's bind emission order — judge against LIVE
-   (MADC_DUMP_MIR), re-measure the strbind whole-TU diff (expected to SHRINK toward closing #23-RC1).
-3. `type_name_for` (the typeid→name closure) derives from the v6 `_type_records` at open, and `cir_forest_write`
-   completes name-only `CIR_TYPEK_OTHER` records from the live table — re-derive the closure from arena records
-   (defrec.name_id) before deleting the v6 stream; `--run-frozen` must stay green (forest_selfexe_gate).
-4. Superseded records must not double-register: a pre-promotion DK_STRUCT overwritten in place is gone, but a
-   pre-promotion record at a DIFFERENT tid (never repointed — old freezes; or an old-object re-record) would
-   surface the same NAME twice; registration must dedupe by name with the LAST/registered object winning
-   (mirror v6's "resolve the REGISTERED type" discipline).
-5. The inline-body EMIT path (`translate_module` reachability fixpoint) reads `has_forest_body`/`forest_body_unit/idx`
-   off the restored FuncDefs — materialize_from_arena already sets these (oracle-verified byte-equal), so no
-   emit-side change is expected; the `method`/`fwd` gates prove it.
-Session diagnostics: `tmp/or_probe.cpp` (gitignored) opens a container and dumps arena records + both restore
-views for a name filter — reusable for Chunk-3 debugging.
+**CHUNK 3 (flip + delete) COMPLETE @ `7a74a0b5` (2026-07-07, gated green incl. torture): THE FLIP IS DONE —
+the arena IS the type graph, format v18.** `forest_restore_decls` consumes `materialize_from_arena()` (now
+idempotent/lazy: fills `_restored` + `_restored_globals` under the `_types_materialized` guard); DELETED =
+`cir_forest_fill_type_records` + `materialize_types` + the whole v6 record family (`cir_forest_type_record/
+member/base/method/anon`, `CIR_METHF_*`/`CIR_TYPEF_*`, the derived/members/bases/methods/aggregate encoders) +
+the CIR_TYPE_RECORDS/PAYLOAD segments (ids 5/8 RETIRED, never reuse) + ALL oracle scaffolding (the
+`MADC_ARENA_ORACLE` hook, `arena_oracle_check` + comparator, the gate export). Net **-1,291 LOC**. All 5 traps
+were handled as documented: (1) globals swizzle rehomed to the tail of materialize_from_arena through the ARENA
+by_id; (2) order = arena slot order, judged vs LIVE (below); (3) `type_name_for` re-derives from arena
+defrec.name_id at open (selfexe green); (4) registration dedupes by ns::name per KIND-FAMILY — tags
+(struct/union/class one space, pre-promotion STRUCT dedupes against its CLASS successor) separate from typedefs
+(`typedef struct X X;` keeps both), LAST wins; (5) inline-body emit path untouched (method/fwd gates prove it).
+EXTRAS the flip surfaced: the v13/v14/v16 globals COLLECTION was extracted from the deleted fill into its own
+`cir_forest_fill_globals` (save side; class-recorded predicate = arena `has_def`, the load-side selection still
+makes a dropped class's global cleanly lack); `madc_cir_freeze` now REQUIRES `forest_arena_enabled` (loud error
+— a flag-off freeze would dump a type-less container), which exposed that **--freeze-run never set the flag**
+(madc.cpp gated on freeze_path only) — fixed; every test_cir_freeze freezing case now parses with the flag on,
+the name-closure case moved onto the production freeze path, the chunk-1 case tail asserts the arena RESTORE
+surfaces. GATES: fulltest 680/0/0/16 exit 0 (all forest oracles green); forest_bind 11/11 ARENA-ONLY (strbind
+runtime-correct incl. scalar globals + in_place + no synth-dtor overshoot, output == live == g++); selfexe
+green; test_cir_arena 11/316; test_cir_freeze 27/442; **torture failset BYTE-IDENTICAL (50 names, 1572/32/18,
+0 timeouts)**; no new warnings.
+**#23 HONEST STATUS after the flip:** the whole-`<string>`-TU func/export/data **SETS are byte-identical to
+live** (zero missing/extra either direction — the type-graph half of #23 closed by construction). The residual
+whole-TU `MADC_DUMP_MIR` diff is 126 lines, TWO known causes, both PRE-EXISTING and post-flip scope:
+(a) the late-pass emission ORDER of ~6 trivial tag ctors/allocator dtors relative to `main` (+ the protoN
+renumber cascade it drags) — a bind-vs-live emission-PASS divergence (Pass 1.5/1.6/1.9x late lists), NOT a
+type-registration-order issue (the arena's decl-order registration is in); (b) **RC2 free-function decls** —
+bind's `printf` proto is the dlsym implicit-variadic fallback (`i64, ...`) vs live's real `i32(const char*,...)`
+(the funcdef_map/free-function record kind, the planned post-flip addition — also a latent signed-int
+correctness bug per embedded-headers.md, so it is the FIRST post-flip item).
+**NEXT (post-flip backlog, in priority order):** (1) RC2 — free-function records (funcdef_map serialization; a
+new arena DK record kind or methodrec-like run; closes the printf proto + the signed-int latency + most of the
+remaining #23 diff); (2) the late-pass ctor/dtor emission-order divergence (bind vs live pass behavior);
+(3) widening past the v6 selection (polymorphic classes, template methods, beyond-v6 method coverage) gated vs
+LIVE; (4) converting the remaining ~411 mutation sites to true write-throughs, retiring
+`cir_forest_arena_refresh`; (5) enums. Diagnostics: `tmp/or_probe.cpp` (gitignored) dumps arena records + the
+restore view for a name filter; `tmp/c3_str.diff` / `tmp/c3_{live,bind}.dump` hold the #23 residual measurement.
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 
