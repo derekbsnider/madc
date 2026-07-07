@@ -4,6 +4,26 @@
 
 ### Data-substrate Track B — the embedded header forest
 
+- **NEW-SPECIALIZATION instantiation from restored save-state WORKS (format
+  v21, two commits, 2026-07-07).** A consumer instantiates a specialization
+  the producer never built — `vector<long>` bound to a `vector<int>` producer
+  snapshot runs `t=42 n=2` == live == g++ (gate case [vecnewspec], 14/14).
+  Six loaded-state gaps burned down in one day: the `.madh` token codec
+  degraded `friend` + every version-gated reserved keyword to identifiers
+  (missing `tkFRIEND` / `tkCPPKEYWORD` reconstruction — masked for years by
+  the include-replay's keyword re-promotion); the skipped-ns-fn-template
+  PLACEHOLDER surface (`__ns_std__Destroy` funcdef + namespace binding +
+  overload-set seed); MEMBER function templates (pattern tokens + owner —
+  the flush re-runs the live registration over restored tokens); ENUMS
+  (`DK_ENUM` + scoped enumerator values; `std::align_val_t`); OUT-OF-LINE
+  member definitions of class templates (the eighth pattern map —
+  vector.tcc's `_M_realloc_insert`); and restored concrete declarations'
+  overload-set entries + Itanium `storage_alias_name` binding (aligned
+  `operator new` ranks to the 2-arg overload; `std::__throw_bad_alloc` →
+  `_ZSt17__throw_bad_allocv`). Course correction recorded in the READ-FIRST
+  banner: no more bespoke record families — every future gap moves its state
+  INTO the substrate (the GCC-PCH dump model); next step is measuring the
+  real-workload compile win before any further coverage.
 - **Widening slice 2 (format v20) — template-NAME state serializes; a bound
   `<vector>` consumer runs.** The corpus blocker ("use of undeclared identifier
   'vector'": the instantiation PRODUCT was in the arena, the template NAME was
