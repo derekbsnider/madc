@@ -2767,7 +2767,12 @@ public:
     // as the globals — the Variable lives in tkProgram scope, so registration
     // (funcdef_map + addVariable + Method, the parseFunction prototype shape)
     // waits for the post-tkProgram flush. The FuncDef is owned by the forest.
-    struct PendingForestFunc { std::string name; FuncDef *fd; };
+    struct PendingForestFunc {
+	std::string name;
+	FuncDef *fd;
+	DataDefCLASS *owner;	// non-NULL: a restored class METHOD (Method::owner_class)
+	PendingForestFunc() : fd(NULL), owner(NULL) {}
+    };
     std::vector<PendingForestFunc> forest_pending_funcs;
     void flush_forest_pending_globals();	// build Variable + dkGlobalVar TopDecl (post-tkProgram); also registers pending free functions
     std::vector<uint32_t> forest_chain;		// bound units, include order (bind-order record)

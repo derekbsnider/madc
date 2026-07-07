@@ -469,8 +469,22 @@ if ! grep -Eq "proto[[:space:]]+i32, u64:U0_p0, \.\.\." "$strbind_mir"; then
     rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
     fail "[strbind] bound printf did NOT get its typed proto (free-function restore / RC2 regressed)"
 fi
-rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
-echo "forest_bind_gate: [strbind] OK — std::string bound from <string> grove (no re-parse); construct+assign+size+destroy + scalar globals + typed printf proto + no synth-dtor overshoot, output == live == g++"
+# #23 CLOSED: the WHOLE bound-<string> TU is byte-identical to a live parse.
+# Requires (a) restored methods registered as funcdef_map[method-id] + program
+# Variable (parseFunction's tail) so Pass 0.75 emits the ctor/dtor typed protos
+# at live's sorted positions, and (b) SYSTEM-header forest bodies materializing
+# inside the materialize_and_lower fixpoint (the loaded equivalent of a deferred
+# lazy body) so the late tag-ctor/allocator-dtor definitions land AFTER main in
+# fixpoint order, exactly like live. Any MIR-dump divergence is a regression.
+strbind_live_mir="tmp/fbgate_strbind_live_mir.log"
+MADC_DUMP_MIR=1 timeout 60 "$BIN" "$strbind_cons" >/dev/null 2>"$strbind_live_mir"
+if ! diff -q "$strbind_live_mir" "$strbind_mir" >/dev/null 2>&1; then
+    diff "$strbind_live_mir" "$strbind_mir" | head -40 >&2
+    rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir" "$strbind_live_mir"
+    fail "[strbind] bound <string> MIR dump is NOT byte-identical to live (#23 regressed; divergence above)"
+fi
+rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir" "$strbind_live_mir"
+echo "forest_bind_gate: [strbind] OK — std::string bound from <string> grove (no re-parse); whole-TU MIR byte-identical to live (#23), output == live == g++"
 
 echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind grove headers bound (no re-parse), output == live == g++"
 exit 0

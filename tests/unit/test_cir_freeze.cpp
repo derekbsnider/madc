@@ -2079,3 +2079,89 @@ TEST_CASE("RC2: free-function prototypes freeze into the arena and restore") {
 	CHECK(!saw_inline);
 	CHECK(!saw_main);
 }
+
+// ---------------------------------------------------------------------------
+// #23: a restored class's METHODS register into the program exactly as
+// parseFunction's prototype tail leaves them — funcdef_map[method-id] + a
+// program-scope Variable whose data is a Method with owner_class set. That is
+// what lets Pass 0.75 emit the ctor/dtor typed extern protos at the same
+// sorted funcdef_map positions as a live parse (the dtor's scope-exit cleanup
+// reference has no other declaration source), closing the last import/export
+// and proto divergences of the whole-TU byte-identity gate.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("#23: restored class methods register as funcdef_map[method-id] + program Variable") {
+	std::string inc_path = std::string("/tmp/madc_b23_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_b23_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string cons_path = std::string("/tmp/madc_b23_cons_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_b23_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "class Counter { public: int n;\n"
+		       "    int get() { return n; }\n"
+		       "    void add(int x) { n += x; } };\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { Counter c; c.n = 0; return c.get(); }\n";
+	}
+	{
+		std::ofstream cn(cons_path.c_str());
+		cn << "int main() { return 0; }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	// A FRESH Program initialized by a trivial tokenize (strpool + tkProgram),
+	// then restore + flush. (In the real flow the restore runs DURING the
+	// consumer's tokenize — at #include time, before the end-of-tokenize
+	// flush; here the flush is invoked explicitly after staging.)
+	std::shared_ptr<Program> progB = std::make_shared<Program>();
+	TokenProgram *tpB = progB->tokenize(cons_path.c_str());
+	REQUIRE(tpB != nullptr);
+	std::remove(cons_path.c_str());
+	progB->forest_restore_decls(forest);
+	progB->flush_forest_pending_globals();
+
+	// funcdef_map holds each method under its live method-id key.
+	REQUIRE(progB->funcdef_map.count("Counter__get") == 1);
+	REQUIRE(progB->funcdef_map.count("Counter__add") == 1);
+	FuncDef *gf = progB->funcdef_map["Counter__get"];
+	REQUIRE(gf != nullptr);
+	REQUIRE(gf->parameters.size() == 1);		// the hidden __this
+	CHECK(gf->parameters[0]->is_pointer());
+
+	// The program-scope Variable + Method(owner_class) parseFunction leaves.
+	Variable *gv = progB->findVariable("Counter__get");
+	REQUIRE(gv != nullptr);
+	REQUIRE(gv->data != nullptr);
+	Method *gm = (Method *)gv->data;
+	DataDefCLASS *owner = gm->owner_class;
+	REQUIRE(owner != nullptr);
+	CHECK(owner->name == "Counter");
+	CHECK(progB->struct_map.count("Counter") == 1);
+	CHECK(progB->struct_map["Counter"] == owner);
+}

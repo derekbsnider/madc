@@ -18143,6 +18143,55 @@ node_t CirBuilder::translate_module(Program *prog)
 		else
 			roots.push_back(tf);
 	}
+	// FOREST (bound grove) inline-method bodies, split by ORIGIN to mirror a
+	// live parse exactly:
+	//  - a USER-header class's methods are roots in a live parse (translated
+	//    eagerly, defined before main): the eager emission block before Pass 2
+	//    (below) keeps handling those, unchanged.
+	//  - a SYSTEM-header class's method body is DEFERRED in a live parse
+	//    (deferred_lazy_bodies) and materializes on first ODR-use inside the
+	//    materialize_and_lower fixpoint, so its definition lands AFTER the
+	//    roots (main), in fixpoint order. A restored method carrying a forest
+	//    body (has_forest_body) is the LOADED equivalent of that deferred
+	//    body — forest_lazy routes it through the SAME fixpoint stage, so
+	//    placement and order match live by mechanism, not by hand-ordering.
+	std::map<std::string, FuncDef *> forest_lazy;
+	if (prog->bind_forest && !prog->forest_chain.empty()) {
+		prog->bind_forest->set_c2m(c2m);	// safe: parse-time bind materializes no node segment
+		for (auto &kv : prog->struct_map) {
+			DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(kv.second);
+			if (!cdd || !cdd->from_system_header)
+				continue;
+			for (Variable *mv : cdd->methods) {
+				FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+				if (fd && fd->has_forest_body && !mv->name.empty())
+					forest_lazy[mv->name] = fd;
+			}
+		}
+	}
+	std::set<std::string> forest_lazy_emitted;
+	struct ForestLazyProto { size_t anchor; std::string sym; node_t proto; };
+	std::vector<ForestLazyProto> forest_lazy_protos;
+	// Forward prototype copied from a loaded forest def's own return-spec (op0)
+	// and declarator (op1) — real param names, no re-derivation. NOT cosmetic:
+	// it declares the function BEFORE its definition, so a forward / mutual /
+	// early reference sees a real declaration, not an implicit-int default
+	// (silent miscompile). Shared by the lazy stage and the eager block below.
+	auto forest_fwd_proto = [&](node_t bn) -> node_t {
+		node_t rspec = c2mir_node_op(bn, 0);
+		node_t decl  = c2mir_node_op(bn, 1);
+		if (!rspec || !decl)
+			return NULL;
+		node_t proto = simple(N_SPEC_DECL);
+		append(proto, node1(N_SHARE,
+			copy_cir_subtree(CIR_NODE(rspec))->as_node()));
+		append(proto, copy_cir_subtree(CIR_NODE(decl))->as_node());
+		append(proto, ignore());
+		append(proto, ignore());
+		append(proto, ignore());
+		return proto;
+	};
+
 	for (TokenFunc *tf : roots) {
 		node_t fd = func_def(tf);
 		if (fd) func_def_nodes.push_back(fd);
@@ -18277,6 +18326,37 @@ node_t CirBuilder::translate_module(Program *prog)
 				m_materialized_lib_syms.insert(ntf->var.name);
 				if (tf_fd)
 					m_materialized_lib_syms.insert(key);
+				grew = true;
+			}
+			// FOREST lazy bodies: the restored equivalent of a deferred
+			// lazy body. Materialize the SAVED def on first ODR-use — the
+			// same fixpoint stage a live parse materializes + lowers the
+			// deferred body — and register the body's callees exactly as
+			// translating it live would have (the saved lowered body's
+			// N_CALLs are pre-built, invisible to referenced_funcs).
+			for (auto &kv : forest_lazy) {
+				if (forest_lazy_emitted.count(kv.first)) continue;
+				if (!referenced_funcs.count(kv.first)) continue;
+				forest_lazy_emitted.insert(kv.first);
+				FuncDef *ffd = kv.second;
+				cir_node *body = prog->bind_forest->node_for(
+					ffd->forest_body_unit, ffd->forest_body_idx);	// memoized
+				if (!body) continue;
+				node_t bn = body->as_node();
+				std::set<std::string> callees;
+				cir_collect_call_callees(bn, callees);
+				for (std::set<std::string>::iterator ci = callees.begin();
+				     ci != callees.end(); ++ci)
+					referenced_funcs.insert(*ci);
+				node_t proto = forest_fwd_proto(bn);
+				if (proto) {
+					ForestLazyProto fp;
+					fp.anchor = materialized_funcs.size();
+					fp.sym    = kv.first;
+					fp.proto  = proto;
+					forest_lazy_protos.push_back(fp);
+				}
+				func_def_nodes.push_back(bn);
 				grew = true;
 			}
 			for (auto &kv : lib_funcs) {
@@ -18674,7 +18754,22 @@ node_t CirBuilder::translate_module(Program *prog)
 	//     the `funcs` snapshot Pass 1 iterates. Record their symbols so the
 	//     extern flush below skips any conflicting void* duplicate (same reason
 	//     as proto_func_syms above — a typed proto is canonical).
-	for (TokenFunc *tf : materialized_funcs) {
+	//     Forest lazy bodies materialized by the same fixpoint get their
+	//     forward protos here too, interleaved in MATERIALIZATION order
+	//     (each proto's anchor = materialized_funcs.size() when its body
+	//     materialized), exactly where a live parse's func_proto for the
+	//     equivalently-deferred TokenFunc would land.
+	size_t flp = 0;
+	auto flush_forest_lazy_protos = [&](size_t anchor) {
+		for (; flp < forest_lazy_protos.size()
+		       && forest_lazy_protos[flp].anchor <= anchor; ++flp) {
+			append(top_list, forest_lazy_protos[flp].proto);
+			typed_proto_syms.insert(forest_lazy_protos[flp].sym);
+		}
+	};
+	for (size_t mi = 0; mi < materialized_funcs.size(); ++mi) {
+		flush_forest_lazy_protos(mi);
+		TokenFunc *tf = materialized_funcs[mi];
 		node_t proto = func_proto(tf);
 		if (proto) {
 			append(top_list, proto);
@@ -18682,6 +18777,7 @@ node_t CirBuilder::translate_module(Program *prog)
 				typed_proto_syms.insert(tf->var.name);
 		}
 	}
+	flush_forest_lazy_protos((size_t)-1);
 	// (b) Externs registered (need_output_extern) during fixpoint body
 	//     translation after Pass 0.8 ran. Skip any symbol that ALSO got a typed
 	//     forward proto (Pass 0.75 / Pass 1 / materialized) — emitting both is a
@@ -18770,12 +18866,16 @@ node_t CirBuilder::translate_module(Program *prog)
 	// header-before-.cpp source order.
 	if (prog && prog->bind_forest && !prog->forest_chain.empty()) {
 		prog->bind_forest->set_c2m(c2m);	// safe: parse-time bind materializes no node segment
-		// Map every bound INLINE method's symbol -> its FuncDef (body is Tree-1).
+		// Map every bound USER-header INLINE method's symbol -> its FuncDef
+		// (body is Tree-1). SYSTEM-header methods are excluded: those are the
+		// loaded equivalent of deferred lazy bodies and already materialized
+		// inside the materialize_and_lower fixpoint (forest_lazy above), so
+		// their definitions land after the roots exactly as a live parse's.
 		std::map<std::string, FuncDef *> bound_methods;
 		for (std::map<std::string, DataDef *>::iterator si = prog->struct_map.begin();
 		     si != prog->struct_map.end(); ++si) {
 			DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(si->second);
-			if (!cdd)
+			if (!cdd || cdd->from_system_header)
 				continue;
 			for (size_t mi = 0; mi < cdd->methods.size(); ++mi) {
 				Variable *mv = cdd->methods[mi];
@@ -18836,24 +18936,10 @@ node_t CirBuilder::translate_module(Program *prog)
 				node_t bn = body->as_node();
 				forest_bodies.push_back(bn);
 				// Forward prototype, exactly as a live compile emits for a
-				// TU-defined function: SPEC_DECL[ SHARE[return-spec], declarator,
-				// ignore x3 ], built by copying the loaded def's own return-spec
-				// (op0) and declarator (op1) — real param names, no re-derivation.
-				// NOT cosmetic: it declares the method BEFORE its definition, so a
-				// forward / mutual reference among methods (or an early use) sees a
-				// real declaration, not an implicit-int default (silent miscompile).
-				node_t rspec = c2mir_node_op(bn, 0);
-				node_t decl  = c2mir_node_op(bn, 1);
-				if (rspec && decl) {
-					node_t proto = simple(N_SPEC_DECL);
-					append(proto, node1(N_SHARE,
-						copy_cir_subtree(CIR_NODE(rspec))->as_node()));
-					append(proto, copy_cir_subtree(CIR_NODE(decl))->as_node());
-					append(proto, ignore());
-					append(proto, ignore());
-					append(proto, ignore());
+				// TU-defined function (see forest_fwd_proto).
+				node_t proto = forest_fwd_proto(bn);
+				if (proto)
 					forest_protos.push_back(proto);
-				}
 			}
 		}
 		// Prototypes ahead of all definitions (matching the live proto pass), then

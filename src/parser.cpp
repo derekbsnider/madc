@@ -12351,32 +12351,30 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    TokenDataType *tdt = new TokenDataType(rt.name, *cdd);
 	    datatype_map[name] = tdt;
 	    register_in_namespace(rt.ns, name, cdd, tdt);
-	    // The destructor is referenced ONLY through the scope-exit cleanup attribute
-	    // (never a direct call), so — unlike ctors/methods, which the call site
-	    // declares — its extern proto comes solely from the Pass-0.75 sweep over
-	    // funcdef_map. A live parse's dtor is IN funcdef_map (parseFunction registers
-	    // it); a restored one was not, so the cleanup referenced an UNDECLARED symbol
-	    // and c2mir defaulted it to `int()` (a spurious return slot in the call).
-	    // Register it here keyed by its emit_symbol — the symbol referenced_funcs
-	    // carries and Pass 0.75 matches when no Variable backs the entry — so the
-	    // dtor is declared `void D1(struct T *)`, exactly as a parsed one. (The dtor
-	    // is found structurally, as class_own_dtor does: a "~" method_map key whose
-	    // Variable is also in methods.)
-	    for (std::map<std::string, Variable *>::const_iterator kv = cdd->method_map.begin();
-		 kv != cdd->method_map.end(); ++kv)
+	    // Stage every restored METHOD for program registration, exactly as a
+	    // live parse leaves it: parseFunction registers each method (ctor,
+	    // dtor, operator, plain — keyed by its method-id, the Variable name
+	    // recorded at freeze) as funcdef_map[id] + a program-scope Variable
+	    // whose data is a Method with owner_class set. Pass 0.75 resolves the
+	    // entry through the Variable (func_emit_name -> emit_symbol) and emits
+	    // the typed extern proto for each REFERENCED one — the ctor's
+	    // `extern void C1(struct T *p0)` and the dtor's `extern void
+	    // D1(struct T *p0)` at the same sorted funcdef_map position as live
+	    // (the dtor's cleanup reference has no other declaration source).
+	    // Registration needs tkProgram, so it rides the same post-tkProgram
+	    // flush as the free functions. (Supersedes the v12 dtor-only
+	    // registration keyed by emit_symbol — a key a live parse never has.)
+	    for ( size_t mi = 0; mi < cdd->methods.size(); ++mi )
 	    {
-		if ( kv->first.empty() || kv->first[0] != '~' || !kv->second )
+		Variable *mv = cdd->methods[mi];
+		FuncDef *mfd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+		if ( !mfd || mv->name.empty() )
 		    continue;
-		bool in_methods = false;
-		for ( size_t mi = 0; mi < cdd->methods.size() && !in_methods; ++mi )
-		    if ( cdd->methods[mi] == kv->second ) in_methods = true;
-		if ( !in_methods )
-		    continue;
-		FuncDef *dfd = dynamic_cast<FuncDef *>(kv->second->type);
-		if ( dfd && !dfd->emit_symbol.empty()
-		     && funcdef_map.find(dfd->emit_symbol) == funcdef_map.end() )
-		    funcdef_map[dfd->emit_symbol] = dfd;
-		break;
+		PendingForestFunc pf;
+		pf.name  = mv->name;
+		pf.fd    = mfd;
+		pf.owner = cdd;
+		forest_pending_funcs.push_back(pf);
 	    }
 	    DBG(std::cout << "forest_restore_decls: class " << name << " ("
 		<< cdd->members.size() << " members, " << cdd->bases.size()
@@ -12437,12 +12435,13 @@ void Program::flush_forest_pending_globals()
 	 || (forest_pending_globals.empty() && forest_pending_funcs.empty()) )
 	return;
 
-    // RC2: register the staged free-function declarations exactly as
-    // parseFunction's prototype tail does — funcdef_map[name] + a program-scope
-    // Variable whose data is a Method. The flush runs at the end of tokenize(),
-    // BEFORE the consumer parses, so a call site resolves the real signature
-    // (never the dlsym implicit-variadic fallback) and Pass 0.75 emits the real
-    // extern proto — the same pre-consumer state a live header parse leaves.
+    // RC2 + #23: register the staged free-function AND method declarations
+    // exactly as parseFunction's prototype tail does — funcdef_map[name] + a
+    // program-scope Variable whose data is a Method (owner_class set for a
+    // method). The flush runs at the end of tokenize(), BEFORE the consumer
+    // parses, so a call site resolves the real signature (never the dlsym
+    // implicit-variadic fallback) and Pass 0.75 emits the real extern proto —
+    // the same pre-consumer state a live header parse leaves.
     // A name already present (an embedded-header registration, or a second
     // flush) is skipped — first registration wins, as on the live path.
     for ( size_t i = 0; i < forest_pending_funcs.size(); ++i )
@@ -12456,8 +12455,11 @@ void Program::flush_forest_pending_globals()
 	    continue;
 	funcdef_map[pf.name] = pf.fd;
 	Variable *fv = addVariable(NULL, *pf.fd, pf.name);
-	fv->data = (void *)new Method(*fv);
-	DBG(std::cout << "flush_forest_pending_globals: free function " << pf.name
+	Method *fm = new Method(*fv);
+	fm->owner_class = pf.owner;	// NULL for a free function, the class for a method
+	fv->data = (void *)fm;
+	DBG(std::cout << "flush_forest_pending_globals: "
+	    << (pf.owner ? "method " : "free function ") << pf.name
 	    << " (" << pf.fd->parameters.size() << " params"
 	    << (pf.fd->is_varargs ? ", varargs" : "") << ")" << std::endl);
     }
