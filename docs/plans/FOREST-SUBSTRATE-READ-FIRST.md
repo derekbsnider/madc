@@ -118,14 +118,33 @@ The current hand-serializer never serialized free functions (that IS the RC2 gap
 types + methods + globals + typedefs + namespaces; free functions are a cheap POST-flip addition. So 1f = methods;
 do not chase `parseFunction`'s completion hook pre-flip.
 
-**NEXT = THE FLIP (the payoff — completion, not more prep slices).** The parse-time write-throughs (1c/1d/1e/1f)
-already populate `forest_arena`. The flip: at `--freeze` enable `forest_arena_enabled` so the parse fills the arena,
-then **dump `forest_arena`** (defs/payload/intern segments) instead of running `cir_forest_fill_type_records`; on
-LOAD **reconstruct DataDefs from the `FrozenDefArena`** instead of `materialize_types`; **DELETE both (~588 LOC) +
-the `CIR_TYPE_RECORDS`/`CIR_TYPE_PAYLOAD` segments**. The decl/global/namespace restore (`forest_restore_decls`,
-small) stays and registers the reconstructed DataDefs by name. Remaining arena-coverage gaps for parity: enums,
-anonymous sub-aggregates, `ns_id` on records. `#23` type-graph byte-identity closes by construction.
-develop @ `e596ef83` (1e committed); 1f is uncommitted local work on top.
+**THE FLIP — IN PROGRESS on branch `feature/forest-b3-flip-claude` (cut from develop @ `eb5fb6db`, which
+carries 1e+1f; develop's 1e/1f are UNPUSHED — origin/develop @ `3352f059`).** Three big chunks (owner: completion,
+not more micro-slices). **Chunk A (SAVE dump) DONE @ `5f0032ff`:** `--freeze` enables the arena, format v17 dumps
+arena segments 10-14 alongside the v6 records (additive; bind still reads v6 → byte-identical). **Chunk 1
+(freeze fidelity) COMPLETE @ `0c8d6d46` (2026-07-07, gated green):** the arena now reaches `materialize_types`
+fidelity — (a) member origin/access/bitfield + method emit_symbol/display/ctor-dtor-static classification
+(landed in `5f0032ff`); (b) ANON sub-aggregates: `forest_arena_record_aggregate` records each nameless
+sub-aggregate as its own def at the PARENT's completion (it has no hook of its own) + relinks the grouping via
+the parent's `anonrec` run; (c) a freeze-time completion pass (`cir_forest_arena_complete`, madc_cir.cpp, on the
+staged `f.arena` copy) stamps what parse-time write-throughs cannot see: INLINE body locations from
+`f.funcdef_locs` (DF_HAS_FOREST_BODY + body_unit/idx on the DK_FUNC), FLAT `user_typedef_names` → DK_TYPEDEF
+records at SYNTHETIC slots past the live table + arena high-water (resolve ALL ids BEFORE any append — lazy
+stamping; a live-id collision would masquerade), and the namespace reverse-walk (ns_id stamp when key==record
+name; namespaced-alias DK_TYPEDEF otherwise; `<`-keys skipped); (d) the FIRST arena reader —
+`CirFrozenForest::open` binds a `FrozenDefArena` from segs 10-14 (`forest.arena()` accessor), so the Chunk-A
+bytes are finally VERIFIED by a reader. ENUMS are NOT needed for flip parity (the v6 typedef walk skips an
+enum underlying too — both sides cleanly lack). GLOBALS stay OUT (CIR_GLOBALS + `forest_restore_decls` stay;
+the flip replaces ONLY CIR_TYPE_RECORDS/PAYLOAD). Gate: test_cir_arena 11/316 (anon case), test_cir_freeze
+27/423 (chunk-1 freeze+open case), fulltest 680/0/0/16 exit 0, all 11 forest_bind cases + selfexe + oracles
+GREEN, no new warnings; torture byte-identical by construction (freeze/flag-only reach).
+**NEXT = CHUNK 2 (the arena's FIRST real bind signal):** `materialize_from_arena()` mirroring
+`materialize_types` (cir_freeze.cpp:1177-1473) but reading defrec/memberrec/methodrec/anonrec/paramrec from
+`forest.arena()`, run IN PARALLEL with the existing path as an env-gated ORACLE (e.g. `MADC_ARENA_ORACLE=1`)
+asserting the two `_restored` lists agree across all 11 forest_bind gates — everything so far is unit + regression
+green only; the arena has never driven a bind. **THEN CHUNK 3 (flip + delete):** switch `forest_restore_decls` to
+the arena reconstruct, DELETE `cir_forest_fill_type_records` + `materialize_types` (~588 LOC) + the
+CIR_TYPE_RECORDS/PAYLOAD segments; `#23` type-graph byte-identity closes by construction.
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 
