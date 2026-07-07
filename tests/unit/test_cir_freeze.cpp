@@ -615,6 +615,7 @@ TEST_CASE("B3: the context-hash pin rejects a mismatched container") {
 }
 
 TEST_CASE("B3: the directory round-trips libs and the typeid->name closure") {
+	// Libs ride the directory: a hand-staged (type-less) container is enough.
 	MIR_context_t mir_ctx = MIR_init();
 	c2mir_init(mir_ctx);
 	c2m_ctx_t c2m = cir_init(mir_ctx);
@@ -623,14 +624,7 @@ TEST_CASE("B3: the directory round-trips libs and the typeid->name closure") {
 		CirBuilder b(c2m);
 		freeze_test_bind_substrate();
 
-		// A project-segment type stamped on a node makes the closure
-		// non-empty (primitives are pinned and not serialized).
-		static DataDef dd_custom("frozen_custom_t", 4, DataType::dtINT);
 		node_t root = b.node1(N_EXPR_SIZEOF, b.integer(9));
-		CIR_NODE(root)->set_datadef(&dd_custom);
-		uint32_t tid = CIR_NODE(root)->datadef_id;
-		REQUIRE(tid >= MADC_TYPEID_PROJECT_BASE);
-
 		cir_frozen_forest f;
 		REQUIRE(cir_freeze_forest(CIR_NODE(root), "<dir_test>", f));
 		f.libs.push_back("libm.so.6");
@@ -642,13 +636,46 @@ TEST_CASE("B3: the directory round-trips libs and the typeid->name closure") {
 
 		REQUIRE(forest.libs().size() == 1);
 		CHECK(forest.libs()[0] == "libm.so.6");
-		REQUIRE(forest.type_name_for(tid) != nullptr);
-		CHECK(std::string(forest.type_name_for(tid)) == "frozen_custom_t");
-		CHECK(forest.type_name_for(0x7fffffffu) == nullptr);
 	}
 	cir_finish(c2m);
 	c2mir_finish(mir_ctx);
 	MIR_finish(mir_ctx);
+
+	// The typeid->name closure derives from the ARENA records (v18), so it
+	// needs a production freeze: parse a project type with the arena on, note
+	// its live project id (== its arena slot id), freeze, open, resolve.
+	std::string main_path = std::string("/tmp/madc_b3dir_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_b3dir_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "struct frozen_custom_t { int x; };\n"
+		      "int main() { struct frozen_custom_t v; v.x = 1; return v.x; }\n";
+	}
+	std::shared_ptr<Program> prog = std::make_shared<Program>();
+	prog->pack_recording = true;		// as --freeze sets (madc.cpp)
+	prog->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
+	TokenProgram *tp = prog->tokenize(main_path.c_str());
+	REQUIRE(tp != nullptr);
+	REQUIRE(prog->parse(tp));
+	datadef_map_iter smi = prog->struct_map.find("frozen_custom_t");
+	REQUIRE(smi != prog->struct_map.end());
+	uint32_t tid = madc_type_id_for(smi->second);
+	REQUIRE(tid >= MADC_TYPEID_PROJECT_BASE);
+	REQUIRE(madc_cir_freeze(prog.get(), main_path.c_str(),
+				snap_path.c_str(), /*append=*/false) == 0);
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+	REQUIRE(forest.type_name_for(tid) != nullptr);
+	CHECK(std::string(forest.type_name_for(tid)) == "frozen_custom_t");
+	CHECK(forest.type_name_for(0x7fffffffu) == nullptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -689,6 +716,7 @@ TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edg
 
 	std::shared_ptr<Program> prog = std::make_shared<Program>();
 	prog->pack_recording = true;	// what --freeze sets before tokenize
+	prog->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 	TokenProgram *tp = prog->tokenize(main_path.c_str());
 	REQUIRE(tp != nullptr);
 	REQUIRE(prog->parse(tp));
@@ -823,6 +851,7 @@ TEST_CASE("Phase 6 slice 1: a file-scope typedef serializes as a decl record; "
 
 	std::shared_ptr<Program> prog = std::make_shared<Program>();
 	prog->pack_recording = true;
+	prog->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 	TokenProgram *tp = prog->tokenize(main_path.c_str());
 	REQUIRE(tp != nullptr);
 	REQUIRE(prog->parse(tp));
@@ -844,11 +873,11 @@ TEST_CASE("Phase 6 slice 1: a file-scope typedef serializes as a decl record; "
 	CirFrozenForest forest;
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
-	// The serialized type table carries the typedef; materialize_types swizzles
+	// The serialized type table carries the typedef; materialize_from_arena swizzles
 	// its underlying back to the SAME primitive DataDef the live parse aliased
 	// (a pinned primitive id resolves cross-process with no Program in hand).
 	bool saw_myint = false;
-	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 	for (size_t i = 0; i < types.size(); ++i) {
 		if (!types[i].name || strcmp(types[i].name, "myint"))
 			continue;
@@ -885,6 +914,7 @@ TEST_CASE("Phase 6 slice 1b: forest_restore_decls makes a fresh parser resolve a
 	{
 		std::shared_ptr<Program> progA = std::make_shared<Program>();
 		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
@@ -905,7 +935,7 @@ TEST_CASE("Phase 6 slice 1b: forest_restore_decls makes a fresh parser resolve a
 	// the underlying id back to the DataDef*; idempotent — the restore below
 	// reuses this same cached result).
 	DataDef *expected = nullptr;
-	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 	for (size_t i = 0; i < types.size(); ++i)
 		if (types[i].name && !strcmp(types[i].name, "myint"))
 			expected = types[i].underlying;
@@ -952,6 +982,7 @@ TEST_CASE("Phase 6 slice 3a: forest_restore_decls reconstructs a header struct "
 	{
 		std::shared_ptr<Program> progA = std::make_shared<Program>();
 		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
@@ -968,10 +999,10 @@ TEST_CASE("Phase 6 slice 3a: forest_restore_decls reconstructs a header struct "
 	CirFrozenForest forest;
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
-	// The serialized type table carries Point as a STRUCT record; materialize_types
+	// The serialized type table carries Point as a STRUCT record; materialize_from_arena
 	// swizzles it back to a complete DataDefSTRUCT (members + verbatim layout).
 	bool found = false;
-	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 	for (size_t i = 0; i < types.size(); ++i) {
 		if (!types[i].name || strcmp(types[i].name, "Point"))
 			continue;
@@ -1013,7 +1044,7 @@ TEST_CASE("Phase 6 slice 3a: forest_restore_decls reconstructs a header struct "
 // self-referential struct Node*, and a pointer to a sibling struct Point*) survives
 // the freeze. Before v9 the member pass bailed on the first non-pinned pointer and
 // dropped the whole aggregate. Now each pointer type serializes as a derived-type
-// record (CIR_TYPEK_POINTER, ref0 = pointee typeid) and materialize_types' load
+// record (CIR_TYPEK_POINTER, ref0 = pointee typeid) and materialize_from_arena' load
 // fixpoint reconstructs it — the self-reference resolves because Node is allocated
 // before its self-pointer, so the reconstructed pointer's base_type IS Node.
 TEST_CASE("Phase 6 v9: a struct's pointer members reconstruct via derived-type records") {
@@ -1036,6 +1067,7 @@ TEST_CASE("Phase 6 v9: a struct's pointer members reconstruct via derived-type r
 	{
 		std::shared_ptr<Program> progA = std::make_shared<Program>();
 		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
@@ -1053,7 +1085,7 @@ TEST_CASE("Phase 6 v9: a struct's pointer members reconstruct via derived-type r
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	DataDefSTRUCT *node = NULL;
-	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 	for (size_t i = 0; i < types.size(); ++i)
 		if (types[i].name && !strcmp(types[i].name, "Node"))
 			node = dynamic_cast<DataDefSTRUCT *>(types[i].dd);
@@ -1073,7 +1105,7 @@ TEST_CASE("Phase 6 v9: a struct's pointer members reconstruct via derived-type r
 
 // Phase 6 v10: a struct defined inside a user namespace serializes its defining
 // namespace (reverse-walked from namespace_datatype_map at freeze) so
-// materialize_types reports rt.ns, and forest_restore_decls registers it into
+// materialize_from_arena reports rt.ns, and forest_restore_decls registers it into
 // namespace_map + namespace_datatype_map — a bound `N::P` then resolves (before v10
 // only the flat maps were restored, so it failed "Unknown namespace 'N'").
 TEST_CASE("Phase 6 v10: a namespaced struct restores into the namespace maps") {
@@ -1097,6 +1129,7 @@ TEST_CASE("Phase 6 v10: a namespaced struct restores into the namespace maps") {
 	{
 		std::shared_ptr<Program> progA = std::make_shared<Program>();
 		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
@@ -1113,9 +1146,9 @@ TEST_CASE("Phase 6 v10: a namespaced struct restores into the namespace maps") {
 	CirFrozenForest forest;
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
-	// materialize_types reports P's defining namespace as "N".
+	// materialize_from_arena reports P's defining namespace as "N".
 	bool found = false;
-	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 	for (size_t i = 0; i < types.size(); ++i) {
 		if (!types[i].name || strcmp(types[i].name, "P"))
 			continue;
@@ -1171,6 +1204,7 @@ TEST_CASE("Phase 6: named + unnamed-gap bitfield structs reconstruct verbatim") 
 	{
 		std::shared_ptr<Program> progA = std::make_shared<Program>();
 		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
@@ -1190,7 +1224,7 @@ TEST_CASE("Phase 6: named + unnamed-gap bitfield structs reconstruct verbatim") 
 	// Both structs serialize now: verbatim member offsets carry the unnamed-gap
 	// struct's real bit layout (b lands at bit 5, past the 3-bit a + 2-bit gap).
 	bool saw_flags = false, saw_gap = false;
-	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 	for (size_t i = 0; i < types.size(); ++i) {
 		if (types[i].kind != CIR_TYPEK_STRUCT) continue;
 		if (types[i].name && !strcmp(types[i].name, "Flags")) saw_flags = true;
@@ -1237,7 +1271,7 @@ TEST_CASE("Phase 6: named + unnamed-gap bitfield structs reconstruct verbatim") 
 
 // Phase 6 slice 3c: a non-polymorphic class serializes as a CLASS record —
 // members verbatim (inheritance-flattened) + bases (subobject offsets) + flags +
-// size/align — and materialize_types + forest_restore_decls reconstruct a
+// size/align — and materialize_from_arena + forest_restore_decls reconstruct a
 // complete DataDefCLASS with NO header parse: each base id swizzles back to the
 // loaded base object, and layout loads VERBATIM (no compute_layout re-run).
 // Multiple inheritance exercises a nonzero base subobject offset (B at +4).
@@ -1267,6 +1301,7 @@ TEST_CASE("Phase 6 slice 3c: forest_restore_decls reconstructs a header class "
 	{
 		std::shared_ptr<Program> progA = std::make_shared<Program>();
 		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
@@ -1283,11 +1318,11 @@ TEST_CASE("Phase 6 slice 3c: forest_restore_decls reconstructs a header class "
 	CirFrozenForest forest;
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
-	// C serializes as a CLASS record; materialize_types swizzles it to a complete
+	// C serializes as a CLASS record; materialize_from_arena swizzles it to a complete
 	// DataDefCLASS whose bases point at the loaded A / B objects, at verbatim
 	// offsets (A@0, B@4), with the inheritance-flattened member set (a, b, c).
 	bool found = false;
-	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 	for (size_t i = 0; i < types.size(); ++i) {
 		if (!types[i].name || strcmp(types[i].name, "C"))
 			continue;
@@ -1335,7 +1370,7 @@ TEST_CASE("Phase 6 slice 3c: forest_restore_decls reconstructs a header class "
 
 // Phase 6 slice 3d + v8: a non-virtual class method serializes as a method record
 // (name / display / return / explicit-params / emit_symbol / flags) and
-// materialize_types rebuilds a FuncDef + Variable into the class's method_map —
+// materialize_from_arena rebuilds a FuncDef + Variable into the class's method_map —
 // the hidden __this (param 0 of a non-static method) rebuilt as a pointer to the
 // class. This makes a member call RESOLVE. v8: an INLINE method (body only in the
 // header, no .so) also records its Tree-1 body location (has_forest_body, NOT
@@ -1363,6 +1398,7 @@ TEST_CASE("Phase 6 slice 3d: a class's non-virtual methods reconstruct into meth
 	{
 		std::shared_ptr<Program> progA = std::make_shared<Program>();
 		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
@@ -1380,7 +1416,7 @@ TEST_CASE("Phase 6 slice 3d: a class's non-virtual methods reconstruct into meth
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	DataDefCLASS *cd = NULL;
-	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 	for (size_t i = 0; i < types.size(); ++i)
 		if (types[i].name && !strcmp(types[i].name, "Counter"))
 			cd = dynamic_cast<DataDefCLASS *>(types[i].dd);
@@ -1418,7 +1454,7 @@ TEST_CASE("Phase 6 slice 3d: a class's non-virtual methods reconstruct into meth
 // Phase 6 A2: a member whose type is a SCALAR-primitive typedef alias given a
 // distinct PROJECT id at instantiation (std::string's size_type == unsigned long,
 // materialized fresh by tsubst rather than aliased to the pinned primitive) used to
-// make cir_forest_record_derived return false, dropping the WHOLE aggregate — so the
+// make the freeze's derived-type check fail, dropping the WHOLE aggregate — so the
 // real std::string product basic_string<char,...> never materialized. A scalar emits
 // SOLELY from its rawtype (append_type_specs; verified: live emits `unsigned long`,
 // no `size_type` typedef), so it is byte-identical to the pinned primitive of that
@@ -1441,6 +1477,7 @@ TEST_CASE("Phase 6 A2: std::string's scalar-alias size_type members no longer ba
 	{
 		std::shared_ptr<Program> progA = std::make_shared<Program>();
 		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
@@ -1460,7 +1497,7 @@ TEST_CASE("Phase 6 A2: std::string's scalar-alias size_type members no longer ba
 	// wide-char variants) now materializes — before A2 its size_type members made
 	// the aggregate bail, so it was never in the type records at all.
 	DataDefSTRUCT *str = NULL;
-	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 	for (size_t i = 0; i < types.size(); ++i)
 		if (types[i].name && !strcmp(types[i].name,
 			"basic_string_char_std__char_traits_char__std__allocator_char_"))
@@ -1488,7 +1525,7 @@ TEST_CASE("Phase 6 A2: std::string's scalar-alias size_type members no longer ba
 // STAMPED a product's own record with its defining namespace but SKIPPED an alias
 // whose key != the record name (std::string's key "string" != the product's
 // mangled record name). A1 turns that skip into an EMIT: a namespaced typedef
-// record (name="string", ns="std", ref0=product id). materialize_types then
+// record (name="string", ns="std", ref0=product id). materialize_from_arena then
 // produces a typedef CirRestoredType with ns="std" and underlying = the recorded
 // product, so forest_restore_decls can register namespace_datatype_map["std"]
 // ["string"] and a bound `std::string` resolves to it. (Live emits NO
@@ -1509,6 +1546,7 @@ TEST_CASE("Phase 6 A1: std::string materializes as a namespaced typedef -> the b
 	{
 		std::shared_ptr<Program> progA = std::make_shared<Program>();
 		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
@@ -1524,7 +1562,7 @@ TEST_CASE("Phase 6 A1: std::string materializes as a namespaced typedef -> the b
 	CirFrozenForest forest;
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
-	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 
 	// The `std::string` typedef materializes: kind TYPEDEF, ns "std", and its
 	// underlying is the recorded basic_string<char,...> product (a real aggregate).
@@ -1566,6 +1604,7 @@ TEST_CASE("Phase 6 v12: std::string's ctors + dtor + operator= reconstruct into 
 	{
 		std::shared_ptr<Program> progA = std::make_shared<Program>();
 		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
@@ -1582,7 +1621,7 @@ TEST_CASE("Phase 6 v12: std::string's ctors + dtor + operator= reconstruct into 
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	DataDefCLASS *str = NULL;
-	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 	for (size_t i = 0; i < types.size(); ++i)
 		if (types[i].name && !strcmp(types[i].name,
 			"basic_string_char_std__char_traits_char__std__allocator_char_"))
@@ -1626,7 +1665,7 @@ TEST_CASE("Phase 6 v12: std::string's ctors + dtor + operator= reconstruct into 
 // serializes TYPES; a header's inline globals (in_place, piecewise_construct,
 // allocator_arg, ignore, …) are a separate category, so binding <string> used to
 // omit them and the __madc_global_init that runs their ctors. v13 serializes each
-// CLASS-typed file-scope global (cir_forest_global_record) and materialize_types
+// CLASS-typed file-scope global (cir_forest_global_record) and materialize_from_arena
 // swizzles its type back to a DataDef*, so restored_globals() lists them; the bind
 // layer rebuilds each into tkProgram->variables + a dkGlobalVar TopDecl and the
 // existing passes emit the global + __madc_global_init. This gates the SAVE/LOAD
@@ -1646,6 +1685,7 @@ TEST_CASE("Phase 6 v13: std::string's header file-scope globals restore with the
 	{
 		std::shared_ptr<Program> progA = std::make_shared<Program>();
 		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
@@ -1661,7 +1701,7 @@ TEST_CASE("Phase 6 v13: std::string's header file-scope globals restore with the
 	CirFrozenForest forest;
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
-	forest.materialize_types();		// builds the restored-globals view
+	forest.materialize_from_arena();		// builds the restored-globals view
 	const std::vector<CirRestoredGlobal> &globals = forest.restored_globals();
 	REQUIRE(!globals.empty());
 
@@ -1701,6 +1741,7 @@ TEST_CASE("Phase 6 v14: std::string's scalar-const file-scope globals restore wi
 	{
 		std::shared_ptr<Program> progA = std::make_shared<Program>();
 		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
@@ -1716,7 +1757,7 @@ TEST_CASE("Phase 6 v14: std::string's scalar-const file-scope globals restore wi
 	CirFrozenForest forest;
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
-	forest.materialize_types();
+	forest.materialize_from_arena();
 	const std::vector<CirRestoredGlobal> &globals = forest.restored_globals();
 
 	// A scalar-const global carries CIR_GLOBALF_SCALAR_INIT + its integer value.
@@ -1759,6 +1800,7 @@ TEST_CASE("Phase 6 v16: class-typed file-scope globals restore their init form +
 	{
 		std::shared_ptr<Program> progA = std::make_shared<Program>();
 		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;	// B3 (v18): the arena IS the type-graph dump
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
@@ -1774,7 +1816,7 @@ TEST_CASE("Phase 6 v16: class-typed file-scope globals restore their init form +
 	CirFrozenForest forest;
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
-	forest.materialize_types();
+	forest.materialize_from_arena();
 	const std::vector<CirRestoredGlobal> &globals = forest.restored_globals();
 
 	// in_place is a value-init (`in_place_t in_place{}`); piecewise_construct is a
@@ -1907,12 +1949,44 @@ TEST_CASE("B3 flip chunk 1: the dumped arena carries typedefs, namespace ids, an
 	}
 	CHECK(saw_inline_get);
 
-	// Chunk 2: the arena reconstruct (materialize_from_arena) agrees with the
-	// v6 reconstruct on every consumer-visible surface — the SAME production
-	// oracle every forest_bind gate case now runs, incl. the promoted
-	// struct-as-base (PBase -> class) and the DK_TYPEDEF / ns / body fidelity.
-	std::vector<CirRestoredType> av;
-	REQUIRE(forest.materialize_from_arena(av));
-	CHECK(av.size() >= forest.materialize_types().size());
-	CHECK(forest.arena_oracle_check());
+	// v18: the arena reconstruct IS the load path — it must surface the
+	// typedef, the namespaced struct, the class with its inline method, and
+	// the promoted struct-as-base (PBase -> class) to forest_restore_decls.
+	const std::vector<CirRestoredType> &av = forest.materialize_from_arena();
+	bool r_typedef = false, r_ns = false, r_counter = false, r_pderiv = false;
+	for (size_t i = 0; i < av.size(); ++i) {
+		if (!av[i].name)
+			continue;
+		std::string nm(av[i].name);
+		if (av[i].kind == CIR_TYPEK_TYPEDEF && nm == "myword_t"
+		    && av[i].underlying)
+			r_typedef = true;
+		if (av[i].kind == CIR_TYPEK_STRUCT && nm == "P"
+		    && av[i].ns && std::string(av[i].ns) == "N")
+			r_ns = true;
+		if (av[i].kind == CIR_TYPEK_CLASS && nm == "Counter") {
+			r_counter = true;
+			DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(av[i].dd);
+			REQUIRE(cdd != nullptr);
+			std::map<std::string, Variable *>::iterator gi =
+				cdd->method_map.find("get");
+			REQUIRE(gi != cdd->method_map.end());
+			FuncDef *gfd = dynamic_cast<FuncDef *>(gi->second->type);
+			REQUIRE(gfd != nullptr);
+			CHECK(gfd->has_forest_body);	// inline body reconnected
+			CHECK(!gfd->declaration_only);
+		}
+		if (av[i].kind == CIR_TYPEK_CLASS && nm == "PDeriv") {
+			r_pderiv = true;
+			DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(av[i].dd);
+			REQUIRE(cdd != nullptr);
+			REQUIRE(cdd->bases.size() == 1);
+			REQUIRE(cdd->bases[0].base != nullptr);
+			CHECK(cdd->bases[0].base->name == "PBase");	// promoted base restored
+		}
+	}
+	CHECK(r_typedef);
+	CHECK(r_ns);
+	CHECK(r_counter);
+	CHECK(r_pderiv);
 }

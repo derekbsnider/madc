@@ -830,10 +830,9 @@ int main(int argc, char **argv)
 	if ( dump_source )
 	    prog->keep_trivia = true;   // preserve whitespace/comments for round-trip
 	if ( freeze_path )
-	{
 	    prog->pack_recording = true;   // B4a: record grove payload v2 during lex+parse
-	    prog->forest_arena_enabled = true; // B3 flip: populate forest_arena during parse so freeze can dump it
-	}
+	if ( freeze_path || freeze_run )
+	    prog->forest_arena_enabled = true; // B3: populate forest_arena during parse — the arena IS the type-graph dump (v18)
 	struct timeval _tk0, _tk1;     // --show-stats: tokenize (read+lex) wall time
 	gettimeofday(&_tk0, NULL);
 	if ( !(tp=prog->tokenize(argv[filearg])) )

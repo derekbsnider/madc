@@ -12232,29 +12232,38 @@ DataDef *Program::lazy_resolve_type(const std::string &name)
 // via its string content (container pool -> this Program's pool), not by pool id.
 void Program::forest_restore_decls(CirFrozenForest &forest)
 {
-    // Phase 6: LOAD the serialized type table (do NOT re-derive). materialize_types
-    // allocates the DataDef objects (forest-owned) and swizzles every member type
-    // id back to a DataDef* with layout loaded VERBATIM (offsets/bitfields as
-    // frozen — no finalize / no re-parse). Here we only reconnect the parser's
-    // symbol tables to those already-complete objects, in the same shape a live
-    // parse would leave them: a struct/union goes into struct_map + a
+    // Phase 6 / B3 (v18): LOAD the serialized type graph (do NOT re-derive).
+    // materialize_from_arena reconstructs the DataDef objects (forest-owned)
+    // from the dumped DefArena, swizzling every member type id back to a
+    // DataDef* with layout loaded VERBATIM (offsets/bitfields as frozen — no
+    // finalize / no re-parse). Here we only reconnect the parser's symbol
+    // tables to those already-complete objects, in the same shape a live parse
+    // would leave them: a struct/union goes into struct_map + a
     // dkStruct/dkUnion TopDecl (so cir_builder Pass-0 emits it); a typedef goes
     // into datatype_map + user_typedef_names + a dkTypedef TopDecl (so the alias
     // node reaches c2mir, exactly as record_typedef does on the live path,
     // parser.cpp ~22689).
-    const std::vector<CirRestoredType> &types = forest.materialize_types();
+    const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 
-    // B3 flip Chunk 2 oracle: with MADC_ARENA_ORACLE set, ALSO reconstruct the
-    // type graph from the dumped DefArena and assert it agrees with the v6
-    // reconstruct above on every consumer-visible surface. A divergence prints
-    // ARENA-ORACLE lines and kills the run LOUDLY — a gate consuming this bind
-    // then fails on output. Temporary scaffolding: deleted at Chunk 3 when the
-    // arena reconstruct REPLACES materialize_types.
-    if ( getenv("MADC_ARENA_ORACLE") && !forest.arena_oracle_check() )
+    // The arena walk is slot-keyed, so a superseded record can surface the same
+    // NAME twice — e.g. a pre-promotion struct left at a different tid than the
+    // promoted class that replaced it in the live table. A live parse's maps
+    // are name-keyed (the REGISTERED, i.e. last, object wins), so dedupe by
+    // name before registering — keeping the LAST entry — and never leave a
+    // stale TopDecl behind. Tags (struct/union/class share one name space, so
+    // a pre-promotion STRUCT dedupes against its CLASS successor) partition
+    // separately from typedefs (`typedef struct X X;` keeps both entries).
+    std::map<std::string, size_t> last_tag, last_alias;
+    for ( size_t i = 0; i < types.size(); ++i )
     {
-	fprintf(stderr, "madc: MADC_ARENA_ORACLE divergence — the arena restore "
-		"does not match the v6 restore (see ARENA-ORACLE lines)\n");
-	exit(86);
+	if ( !types[i].name || !*types[i].name )
+	    continue;
+	std::string k = types[i].ns ? std::string(types[i].ns) + "::" + types[i].name
+				    : std::string(types[i].name);
+	if ( types[i].kind == CIR_TYPEK_TYPEDEF )
+	    last_alias[k] = i;
+	else
+	    last_tag[k] = i;
     }
 
     // A namespaced type (rt.ns != "") also registers into namespace_map[ns] +
@@ -12278,6 +12287,14 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	if ( !rt.name || !*rt.name )
 	    continue;
 	std::string name(rt.name);
+	{
+	    std::string k = rt.ns ? std::string(rt.ns) + "::" + name : name;
+	    const std::map<std::string, size_t> &fam =
+		rt.kind == CIR_TYPEK_TYPEDEF ? last_alias : last_tag;
+	    std::map<std::string, size_t>::const_iterator li = fam.find(k);
+	    if ( li != fam.end() && li->second != i )
+		continue;		// a later record supersedes this one
+	}
 	if ( rt.kind == CIR_TYPEK_TYPEDEF )
 	{
 	    if ( !rt.underlying )
@@ -12313,7 +12330,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	{
 	    // A class resolves both as a C++ type name (`Derived x;`) and as a tag
 	    // (`struct Derived`); its members + bases were already reconnected in
-	    // materialize_types. Register struct_map + datatype_map like the live C++
+	    // materialize_from_arena. Register struct_map + datatype_map like the live C++
 	    // aggregate path. Do NOT push a dkStruct TopDecl: a live parse keeps CLASSES
 	    // in struct_map ONLY (TokenCLASS::parse never adds them to top_decls, unlike
 	    // plain structs) — the CIR builder emits them in Pass 0.5 (the struct_map

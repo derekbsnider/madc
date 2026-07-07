@@ -734,28 +734,6 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
     }
 }
 
-// Serialize the project type table into f.type_records + f.type_payload (Phase 6;
-// 2026-06-12 type-table design §6.4 "forest type-refs serialize as ids + table
-// segments"). Each file-scope typedef, each named struct/union, and each named
-// non-polymorphic class becomes ONE cir_forest_type_record; the aggregate's data
-// members ride the type_payload stream as VERBATIM cir_forest_type_member records
-// (offset / count / access / origin / bitfield are the values the parser already
-// computed, loaded as-is on the far side), and a class's direct bases ride it as
-// cir_forest_type_base records (subobject offset / access / is_primary, verbatim).
-// Because layout is loaded, never re-derived, unnamed-bitfield gaps, #pragma pack,
-// reverse storage, and base subobject offsets all survive for free. Pointer fields
-// are ids: a member/base type is a typeid (a pinned primitive slot, or the
-// aggregate's own record id) swizzled back to DataDef* at load. top_decls is
-// definition order, so a value-member or base aggregate is recorded before the
-// aggregate that uses it. A class is skipped WHOLE — bind then cleanly lacks it (a
-// loud error at the use site) rather than mis-linking — when it carries state this
-// slice does not yet serialize: a vtable (polymorphic), a union layout, a virtual
-// or not-yet-recorded base, or a member of an unserializable type (pointer / fnptr
-// / anon aggregate). Binding a class's methods to their real Itanium symbols is a
-// follow-on; this slice covers the data layout (the type), not method dispatch.
-// The container stays Program-blind; this is the Program->payload bridge (the same
-// seam as cir_forest_fill_pack_payloads). Names intern into the ACTIVE pool that
-// cir_forest_write serializes.
 // A btSimple scalar arithmetic type that is NOT one of the pinned primitive
 // DataDef objects — a class-scope typedef alias resolved at instantiation to a
 // fresh DataDef (e.g. std::string::size_type == unsigned long, given a distinct
@@ -773,8 +751,8 @@ static uint32_t forest_pinned_primitive_id(DataDef *dd)
 		return 0;
 	// A pointer/reference (DataDefREF IS-A DataDefPTR) or a const-qualified type
 	// inherits btSimple and reports is_integer()==true with the POINTEE's rawtype
-	// — it is NOT a scalar. Exclude it structurally (as cir_forest_record_derived
-	// does) so the derived-type record path handles it. Likewise an enum (named
+	// — it is NOT a scalar. Exclude it structurally so the derived-type
+	// record path (DK_PTR/DK_REF/DK_CONST) handles it. Likewise an enum (named
 	// constants), SIMD vector, template param, or _Complex is its own concept.
 	if (dynamic_cast<DataDefPTR *>(dd) || dynamic_cast<DataDefCONST *>(dd)
 	    || dynamic_cast<DataDefENUM *>(dd) || dd->is_simd()
@@ -984,8 +962,8 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 			if (FuncDef *mfd = dynamic_cast<FuncDef *>(mt))
 				forest_arena_record_func(mfd);
 		}
-		// Class-membership classification (structural, name-independent — mirrors
-		// cir_forest_append_methods): a ctor is in cdd->ctors; the dtor is the "~"
+		// Class-membership classification (structural, name-independent — the
+		// v6 freeze's rule): a ctor is in cdd->ctors; the dtor is the "~"
 		// method_map key whose Variable is in methods; static via vfSTATIC.
 		std::set<Variable *> ctor_set(cdd->ctors.begin(), cdd->ctors.end());
 		Variable *dtor_var = NULL;
@@ -1128,658 +1106,115 @@ void Program::forest_arena_record_func(FuncDef *fd)
 	forest_arena.set_def_at(tid, r);
 }
 
-// Ensure `dd` — a type reached as a member / method-param / method-return /
-// typedef-underlying of a serialized aggregate — will RESOLVE on load, recording a
-// derived-type record (pointer / reference / const) for it if needed, transitively.
-// A pinned primitive (incl. void*/char*/int*) resolves via madc_type_from_id; an
-// already-`recorded` aggregate (or `self`, the aggregate being recorded right now,
-// so a self-referential `Node *next` works) resolves via the load swizzle map; a
-// derived type gets its OWN record (kind + ref0 = operand typeid, no member payload)
-// after its operand is ensured — the SAME "serialize the table entry, pointer field
-// as an id, swizzle on load" discipline as a typedef record, one mechanism widened
-// (NOT a parallel format). Returns false — the caller then bails/skips — when the
-// type is an UNRECORDED aggregate (the outer fixpoint retries it) or an opaque type
-// with no reconstructable content. Any derived record emitted for a type whose
-// aggregate later bails is a harmless orphan (deduped by `recorded`, unreferenced on
-// load); records are order-independent (load reconstructs derived types in a
-// fixpoint), so emitting mid-serialize is safe.
-static bool cir_forest_record_derived(DataDef *dd, DataDef *self,
-				      madc::dis::intern_table &pool,
-				      std::set<DataDef *> &recorded,
-				      cir_frozen_forest &f)
+// File-scope global VARIABLE definitions (v13/v14/v16) — the CIR_GLOBALS
+// segment, which survives the v18 flip (the arena replaced only the type-graph
+// records). A header's file-scope globals are a separate category from types,
+// so binding <string> used to omit its inline globals (in_place,
+// piecewise_construct, ...) and the __madc_global_init that runs their ctors.
+// Serialize each file-scope CLASS-typed global (same predicate as
+// collect_global_ctors: not a non-static local, not extern) whose class has an
+// arena record — load swizzles the type-id through the arena reconstruct, and
+// a class the load-side selection drops makes its global cleanly LACK, exactly
+// as the retired v6 save-side filter did. No initializer is stored for a class
+// global: collect_global_ctors synthesizes the default ctor from the class's
+// restored ctor set (v12); the initializer FORM rides gflags (v16) and a
+// scalar-const's VALUE rides init_value (v14). Dedup by name (a global appears
+// once). Names intern into the ACTIVE pool that cir_forest_write serializes.
+static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 {
-	if (!dd)
-		return false;
-	if (forest_pinned_primitive_id(dd))	// scalar-primitive alias (size_type == unsigned long)
-		return true;			// resolves on load as the pinned primitive; no record
-	uint32_t tid = madc_type_id_for(dd);
-	if (!tid)
-		return false;
-	if (tid < MADC_TYPEID_PRIMITIVE_END)	// pinned primitive (void*/char*/int* included)
-		return true;
-	if (dd == self || recorded.count(dd))	// self-reference, or already has a record
-		return true;
-
-	// A derived type over an operand. DataDefREF IS-A DataDefPTR, so test the
-	// reference first; anything that is none of these is an unrecorded aggregate
-	// (fixpoint retries) or opaque (not serializable here).
-	uint32_t kind;
-	DataDef *operand;
-	if (DataDefREF *rf = dynamic_cast<DataDefREF *>(dd)) {
-		kind = CIR_TYPEK_REFERENCE; operand = rf->base_type;
-	} else if (DataDefPTR *pt = dynamic_cast<DataDefPTR *>(dd)) {
-		kind = CIR_TYPEK_POINTER;   operand = pt->base_type;
-	} else if (DataDefCONST *cs = dynamic_cast<DataDefCONST *>(dd)) {
-		kind = CIR_TYPEK_CONST;     operand = cs->base_type;
-	} else {
-		return false;
-	}
-	if (!operand || !cir_forest_record_derived(operand, self, pool, recorded, f))
-		return false;			// operand not (yet) serializable
-
-	cir_forest_type_record r;
-	memset(&r, 0, sizeof(r));
-	r.type_id = tid;
-	r.kind    = kind;
-	r.name_id = pool.intern(dd->name);
-	r.ref0    = forest_serialize_type_id(operand);
-	f.type_records.push_back(r);
-	recorded.insert(dd);
-	return true;
-}
-
-// Serialize sdd's data members into `payload` as VERBATIM cir_forest_type_member
-// records (offset / count / access / origin / bitfield are the parser's computed
-// values, loaded as-is on the far side). A member type rides as a typeid: a pinned
-// primitive, an aggregate already in `recorded`, or a derived type (pointer /
-// reference / const) recorded on demand by cir_forest_record_derived. Returns false
-// (leaving `payload` partial, which the caller discards) if any member type is not
-// yet serializable — so the caller skips the whole aggregate rather than mis-linking.
-// Shared by the struct and class paths; `self` is the aggregate being recorded (for
-// a self-referential pointer) and `f` receives any derived records.
-static bool cir_forest_serialize_members(DataDefSTRUCT *sdd,
-					 madc::dis::intern_table &pool,
-					 std::set<DataDef *> &recorded,
-					 cir_frozen_forest &f,
-					 std::vector<uint32_t> &payload)
-{
-	for (size_t m = 0; m < sdd->members.size(); ++m) {
-		DataDef *mdd = sdd->members[m].second;
-		if (!mdd)
-			return false;
-		if (!cir_forest_record_derived(mdd, sdd, pool, recorded, f))
-			return false;
-		uint32_t mtid = forest_serialize_type_id(mdd);
-		cir_forest_type_member tm;
-		memset(&tm, 0, sizeof(tm));
-		tm.name_id = pool.intern(sdd->members[m].first);
-		tm.type_id = mtid;
-		tm.offset  = (uint32_t)(m < sdd->member_offsets.size() ? sdd->member_offsets[m] : 0);
-		tm.count   = (uint32_t)(m < sdd->member_counts.size() ? sdd->member_counts[m] : 1);
-		if (tm.count == 0) tm.count = 1;
-		tm.access  = m < sdd->member_access.size() ? sdd->member_access[m] : 0u;
-		tm.origin  = m < sdd->member_origin.size() ? (int32_t)sdd->member_origin[m] : -1;
-		if (m < sdd->member_bitfields.size()
-		    && sdd->member_bitfields[m].is_bitfield) {
-			const DataDefSTRUCT::BitFieldInfo &bf = sdd->member_bitfields[m];
-			tm.bf_flags = 1u | (bf.is_unsigned ? 2u : 0u)
-				    | (bf.reverse_storage ? 4u : 0u);
-			tm.bf_bit_offset     = (uint32_t)bf.bit_offset;
-			tm.bf_bit_width      = (uint32_t)bf.bit_width;
-			tm.bf_storage_offset = (uint32_t)bf.storage_offset;
-			tm.bf_storage_size   = (uint32_t)bf.storage_size;
-		}
-		madc::dis::pod_append(payload, tm);
-	}
-	return true;
-}
-
-// Serialize a class's direct bases into `bpayload` as VERBATIM cir_forest_type_base
-// records (subobject offset / access / is_primary). Returns false when the class
-// carries base state this slice does not serialize — a virtual base, or a base not
-// yet in `recorded` — so the caller skips the whole class.
-static bool cir_forest_serialize_bases(DataDefCLASS *cdd,
-				       const std::set<DataDef *> &recorded,
-				       std::vector<uint32_t> &bpayload)
-{
-	for (size_t b = 0; b < cdd->bases.size(); ++b) {
-		const BaseSpec &bs = cdd->bases[b];
-		if (bs.is_virtual || !bs.base)
-			return false;
-		uint32_t bid = madc_type_id_for(bs.base);
-		if (!(bid && recorded.count(bs.base)))
-			return false;
-		cir_forest_type_base tb;
-		memset(&tb, 0, sizeof(tb));
-		tb.base_type_id = bid;
-		tb.offset       = (uint32_t)bs.offset;
-		tb.flags        = bs.is_primary ? 2u : 0u;	// is_virtual bailed above
-		tb.access       = bs.access;
-		madc::dis::pod_append(bpayload, tb);
-	}
-	return true;
-}
-
-// Build ONE cir_forest_type_record for aggregate sdd (cdd == sdd for a class, NULL
-// for a plain struct/union) and append it + its member/base payload to f. Returns
-// false WITHOUT touching f when a member (or, for a class, a base) type is not yet
-// recorded — the caller retries it in a later fixpoint round, or skips it. On
-// success sdd is inserted into `recorded`.
-// Append cdd's non-virtual method DECLARATIONS to f.type_payload — the fixed-stride
-// records first, then each method's explicit-param typeids — and report the slice
-// via method_begin/method_count. Covers plain named methods, operators, and (v12)
-// the class's ctors + dtor, so a bound class default-constructs, assigns, and
-// destroys exactly as a parsed one. A method's KIND is classified structurally, not
-// by name: a ctor is a member of cdd->ctors (select_ctor_overload's set); the dtor
-// is the class_own_dtor var (the "~"-prefixed method_map key whose Variable is also
-// in methods — class-name-independent); an operator's display begins "operator".
-// A ctor/dtor/operator with no concrete emit_symbol AND no inline body is a
-// defaulted/uninstantiated special member or a template — skipped individually (not
-// bailing the class), as is any method whose return or an explicit param is not a
-// serializable typeid. The hidden __this (param 0 of a non-static method) is NOT
-// written — load rebuilds it as a pointer to the class. All serialized classes are
-// non-polymorphic (the freeze bails on a vtable), so every method here is non-virtual.
-static void cir_forest_append_methods(DataDefCLASS *cdd, madc::dis::intern_table &pool,
-				      std::set<DataDef *> &recorded,
-				      cir_frozen_forest &f,
-				      uint32_t &method_begin, uint32_t &method_count)
-{
-	const size_t MSTRIDE = madc::dis::pod_words<cir_forest_type_method>();
-	// A param / return type resolves like a member: primitive, recorded aggregate,
-	// or a derived type recorded on demand (self = cdd, for a method taking/returning
-	// its own class by pointer/reference).
-	auto serializable = [&](DataDef *dd) -> bool {
-		return cir_forest_record_derived(dd, cdd, pool, recorded, f);
-	};
-	// Ctor set (structural signal for CIR_METHF_CTOR) + the dtor var and its
-	// "~"-prefixed method_map key (exactly class_own_dtor's signal): the dtor's own
-	// method_display_name is empty, so the key is serialized in display_id and load
-	// re-keys method_map with it, letting the cleanup attribute find the D1 symbol.
-	std::set<Variable *> ctor_set(cdd->ctors.begin(), cdd->ctors.end());
-	Variable *dtor_var = NULL;
-	std::string dtor_key;
-	for (std::map<std::string, Variable *>::const_iterator kv = cdd->method_map.begin();
-	     kv != cdd->method_map.end(); ++kv) {
-		if (kv->first.empty() || kv->first[0] != '~' || !kv->second)
-			continue;
-		if (std::find(cdd->methods.begin(), cdd->methods.end(), kv->second)
-		    != cdd->methods.end()) {
-			dtor_var = kv->second;
-			dtor_key = kv->first;
-			break;
-		}
-	}
-	std::vector<cir_forest_type_method> recs;
-	std::vector<std::vector<uint32_t> > params;	// explicit param typeids per method
-	for (size_t i = 0; i < cdd->methods.size(); ++i) {
-		Variable *mv = cdd->methods[i];
-		if (!mv)
-			continue;
-		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
-		if (!fd)
-			continue;
-		const std::string &disp = fd->method_display_name;
-		// KIND (structural, name-independent).
-		bool is_ctor = ctor_set.count(mv) != 0;
-		bool is_dtor = (mv == dtor_var);
-		bool is_operator = (!disp.empty() && disp.compare(0, 8, "operator") == 0);
-		bool is_special = is_ctor || is_dtor || is_operator;
-		// Template methods (incl. template ctors/operators) instantiate no library
-		// symbol here — later slice, skip individually.
-		if (fd->is_member_template || !fd->template_param_names.empty())
-			continue;
-		if (is_special) {
-			// A ctor/operator binds by its concrete Itanium emit_symbol (LIBRARY)
-			// or an inline body; without either it is a defaulted/uninstantiated
-			// special member — cleanly lacks (a ctor's {}-init / trivial construction
-			// is a separate concern).
-			//
-			// A DTOR is different: its EXISTENCE is load-bearing even when it has
-			// neither symbol nor body. A live parse registers a class's own dtor
-			// (class_own_dtor non-NULL via the "~" method_map key), so Pass 1.6
-			// does NOT synthesize a Cls___dtor for it. Drop the dtor from the freeze
-			// and the restored class looks dtor-less → bind SYNTHESIZES a spurious
-			// trivial Cls___dtor that a live compile never emits (the whole-<string>-TU
-			// "only in BIND" overshoot). So serialize the dtor DECLARATION-ONLY (no
-			// emit_symbol, no body): load re-keys method_map with the "~" tag →
-			// class_own_dtor finds it → no synth dtor, matching live. It is emitted by
-			// no pass (declaration_only + unreferenced), also matching live. (An inline
-			// dtor the producer didn't emit that a consumer DOES destruct is the
-			// general producer-must-emit-inline-bodies gap, orthogonal to this — and
-			// loud, not silent.)
-			bool has_body = f.funcdef_locs.find(mv->name) != f.funcdef_locs.end();
-			if (fd->emit_symbol.empty() && !has_body && !is_dtor)
-				continue;
-		} else if (disp.empty()) {
-			continue;			// a plain method with no display: skip
-		}
-		bool is_static = (mv->flags & vfSTATIC) != 0;
-		if (!is_static && fd->parameters.empty())
-			continue;			// no __this slot -> malformed, skip
-		if (!serializable(&fd->returns))
-			continue;
-		size_t p0 = is_static ? 0 : 1;		// skip the hidden __this
-		std::vector<uint32_t> pt;
-		bool ok = true;
-		for (size_t p = p0; p < fd->parameters.size(); ++p) {
-			if (!serializable(fd->parameters[p])) { ok = false; break; }
-			pt.push_back(forest_serialize_type_id(fd->parameters[p]));
-		}
-		if (!ok)
-			continue;
-		cir_forest_type_method m;
-		memset(&m, 0, sizeof(m));
-		m.name_id        = pool.intern(mv->name);
-		// display_id is the method_map KEY: method_display_name for a plain
-		// method/operator (== its key); the "~" tag for the dtor (its own display
-		// is empty); nothing for a concrete ctor (0 — resolves via cdd->ctors, not
-		// by name).
-		std::string dispkey = is_dtor ? dtor_key : (is_ctor ? std::string() : disp);
-		m.display_id     = dispkey.empty() ? 0 : pool.intern(dispkey);
-		m.ret_type_id    = forest_serialize_type_id(&fd->returns);
-		m.emit_symbol_id = fd->emit_symbol.empty() ? 0 : pool.intern(fd->emit_symbol);
-		m.flags = (fd->is_const_method ? CIR_METHF_CONST : 0u)
-			| (fd->is_varargs ? CIR_METHF_VARARGS : 0u)
-			| (fd->is_void_params ? CIR_METHF_VOIDPARAMS : 0u)
-			| (is_static ? CIR_METHF_STATIC : 0u)
-			| (is_ctor ? CIR_METHF_CTOR : 0u)
-			| (is_dtor ? CIR_METHF_DTOR : 0u);
-		m.param_count = (uint32_t)pt.size();
-		// INLINE vs LIBRARY: if the AST holds a func-def for this method's mangled
-		// symbol, its body is Tree-1 content — record where so bind copies it into
-		// the consumer's Tree-2 on use. No func-def => LIBRARY method (body in a
-		// .so): leave body location zero, load keeps it declaration-only.
-		std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator bl =
-			f.funcdef_locs.find(mv->name);
-		if (bl != f.funcdef_locs.end()) {
-			m.flags |= CIR_METHF_HAS_BODY;
-			m.body_unit = bl->second.first;
-			m.body_idx  = bl->second.second;
-		}
-		recs.push_back(m);
-		params.push_back(pt);
-	}
-	method_begin = (uint32_t)f.type_payload.size();
-	method_count = (uint32_t)recs.size();
-	// Records first, then the param runs; each record's param_begin is the ABSOLUTE
-	// type_payload offset of its run (records occupy method_begin .. param_base).
-	uint32_t param_base = method_begin + method_count * (uint32_t)MSTRIDE;
-	uint32_t off = param_base;
-	for (size_t i = 0; i < recs.size(); ++i) {
-		recs[i].param_begin = off;
-		off += (uint32_t)params[i].size();
-	}
-	for (size_t i = 0; i < recs.size(); ++i)
-		madc::dis::pod_append(f.type_payload, recs[i]);
-	for (size_t i = 0; i < params.size(); ++i)
-		f.type_payload.insert(f.type_payload.end(), params[i].begin(), params[i].end());
-}
-
-static bool cir_forest_record_aggregate(DataDefSTRUCT *sdd, DataDefCLASS *cdd,
-					madc::dis::intern_table &pool,
-					std::set<DataDef *> &recorded,
-					cir_frozen_forest &f)
-{
-	std::vector<uint32_t> bpayload;
-	if (cdd && !cir_forest_serialize_bases(cdd, recorded, bpayload))
-		return false;
-	std::vector<uint32_t> payload;
-	if (!cir_forest_serialize_members(sdd, pool, recorded, f, payload))
-		return false;
-
-	// Anonymous aggregate groups: addAnonymousAggregate flattened each anon
-	// union/struct's members into `sdd` for name lookup AND kept this grouping so
-	// emission can re-nest a real `union{..}`/`struct{..}` (without it c2mir
-	// re-lays-out the flat members and the overlap is lost — a silent miscompile).
-	// Record each nameless sub-aggregate ON DEMAND (like a derived-type operand),
-	// then a cir_forest_type_anon per group referencing it by id. Done BEFORE the
-	// parent's payload slices are laid out, so recording a sub-aggregate (which
-	// appends to f.type_payload/type_records) leaves the parent's *_begin offsets
-	// contiguous. A sub-aggregate that is not (yet) serializable bails the parent
-	// -> the outer fixpoint retries it, exactly like a not-yet-recorded member.
-	std::vector<uint32_t> apayload;
-	for (size_t i = 0; i < sdd->anonymous_aggregates.size(); ++i) {
-		const DataDefSTRUCT::AnonymousAggregateInfo &ag =
-			sdd->anonymous_aggregates[i];
-		if (!ag.aggregate || ag.aggregate == sdd || ag.member_count == 0)
-			continue;		// self / empty: emission skips these too
-		DataDefSTRUCT *sub = const_cast<DataDefSTRUCT *>(ag.aggregate);
-		if (!recorded.count(sub)
-		    && !cir_forest_record_aggregate(sub, dynamic_cast<DataDefCLASS *>(sub),
-						    pool, recorded, f))
-			return false;		// sub-aggregate not serializable -> retry in fixpoint
-		cir_forest_type_anon ta;
-		memset(&ta, 0, sizeof(ta));
-		ta.first_member      = (uint32_t)ag.first_member;
-		ta.member_count      = (uint32_t)ag.member_count;
-		ta.offset            = (uint32_t)ag.offset;
-		ta.aggregate_type_id = madc_type_id_for(sub);
-		madc::dis::pod_append(apayload, ta);
-	}
-
-	cir_forest_type_record r;
-	memset(&r, 0, sizeof(r));
-	r.type_id      = madc_type_id_for(sdd);	// this aggregate's serialization identity
-	r.kind         = cdd ? CIR_TYPEK_CLASS
-			     : (sdd->union_layout ? CIR_TYPEK_UNION : CIR_TYPEK_STRUCT);
-	r.name_id      = pool.intern(sdd->name);
-	r.spelling_id  = sdd->canonical_cpp_spelling.empty()
-		       ? 0 : pool.intern(sdd->canonical_cpp_spelling);
-	r.size         = (uint32_t)sdd->size;
-	r.align        = (uint32_t)sdd->alignment();
-	r.pack         = (uint32_t)sdd->pack;
-	r.tag_align    = (uint32_t)sdd->tag_explicit_align;
-	r.flags        = (sdd->union_layout ? CIR_TYPEF_UNION : 0u) | CIR_TYPEF_COMPLETE
-		       | (sdd->is_anonymous ? CIR_TYPEF_ANON : 0u)
-		       | (sdd->reverse_scalar_storage ? CIR_TYPEF_REVERSE : 0u)
-		       | (sdd->has_anon_aggregate ? CIR_TYPEF_HAS_ANONAGG : 0u);
-	if (cdd) {
-		r.flags |= (cdd->from_system_header ? CIR_TYPEF_SYSHDR : 0u)
-			 | (cdd->has_user_ctor ? CIR_TYPEF_USER_CTOR : 0u)
-			 | (cdd->has_user_dtor ? CIR_TYPEF_USER_DTOR : 0u);
-		r.nvsize = (uint32_t)cdd->nvsize;	// v16: non-virtual size, verbatim
-	}
-	r.member_begin = (uint32_t)f.type_payload.size();
-	r.member_count = (uint32_t)sdd->members.size();
-	f.type_payload.insert(f.type_payload.end(), payload.begin(), payload.end());
-	if (cdd) {
-		r.base_begin = (uint32_t)f.type_payload.size();
-		r.base_count = (uint32_t)cdd->bases.size();
-		f.type_payload.insert(f.type_payload.end(), bpayload.begin(), bpayload.end());
-		cir_forest_append_methods(cdd, pool, recorded, f,
-					  r.method_begin, r.method_count);
-	}
-	r.anon_begin = (uint32_t)f.type_payload.size();
-	r.anon_count = (uint32_t)(apayload.size()
-				  / madc::dis::pod_words<cir_forest_type_anon>());
-	f.type_payload.insert(f.type_payload.end(), apayload.begin(), apayload.end());
-	f.type_records.push_back(r);
-	recorded.insert(sdd);
-	return true;
-}
-
-static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
-{
-    if (!prog || !TokenBase::_active_strpool)
+    if (!prog || !TokenBase::_active_strpool || !prog->tkProgram)
 	return;
     madc::dis::intern_table &pool = *TokenBase::_active_strpool;
-
-    // Aggregates that have a record (so a member ref to one resolves on load). A
-    // member type is serializable iff it is a pinned primitive or is in here;
-    // populated in definition order, so a by-value member aggregate is present
-    // before the struct that uses it.
-    std::set<DataDef *> recorded;
-
-    for (size_t i = 0; i < prog->top_decls.size(); ++i) {
-	const Program::TopDecl &td = prog->top_decls[i];
-	if (td.kind != Program::DeclKind::dkStruct
-	    && td.kind != Program::DeclKind::dkUnion)
+    std::set<std::string> seen_globals;
+    for (Variable *v : prog->tkProgram->variables) {
+	if (!v || !v->type)
 	    continue;
-	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(td.dd);
-	// A struct USED AS A BASE is promoted to a DataDefCLASS and struct_map is
-	// repointed while this TopDecl still holds the pre-promotion object. Resolve
-	// the REGISTERED type; a class is left to pass 2 (TokenCLASS::parse registers
-	// classes in struct_map only, NOT in top_decls).
-	datadef_map_iter smi = prog->struct_map.find(td.name);
-	if (smi != prog->struct_map.end())
-		if (DataDefSTRUCT *reg = dynamic_cast<DataDefSTRUCT *>(smi->second))
-			sdd = reg;
-	if (!sdd || !sdd->is_complete)
-	    continue;
-	if (dynamic_cast<DataDefCLASS *>(sdd))
-	    continue;			// class: pass 2 (struct_map fixpoint)
-	if (recorded.count(sdd))
-	    continue;
-	cir_forest_record_aggregate(sdd, NULL, pool, recorded, f);
-    }
-
-    // Pass 2 — CLASSES from struct_map (their only registry). id-stamping order is
-    // NOT definition order, so a single linear pass could visit a derived class
-    // before its base; a fixpoint records a class only once its bases + member
-    // types are recorded, converging base-before-derived. A class carrying state
-    // this slice does not serialize (a vtable / polymorphic, a union layout, or a
-    // virtual base) is skipped WHOLE — bind cleanly lacks it (a loud error at the
-    // use site) rather than mis-linking.
-    std::vector<DataDefCLASS *> classes;
-    std::set<DataDefCLASS *> seen;
-    for (datadef_map_iter it = prog->struct_map.begin();
-	 it != prog->struct_map.end(); ++it) {
-	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(it->second);
-	if (!cdd || !cdd->is_complete)
-	    continue;
-	if (cdd->union_layout || cdd->has_vtable || cdd->has_vptr_slot)
-	    continue;
-	if (seen.insert(cdd).second)		// dedup name aliases -> one object
-	    classes.push_back(cdd);
-    }
-    bool progress = true;
-    while (progress) {
-	progress = false;
-	for (size_t i = 0; i < classes.size(); ++i) {
-	    if (recorded.count(classes[i]))
-		continue;
-	    if (cir_forest_record_aggregate(classes[i], classes[i], pool, recorded, f))
-		progress = true;
-	}
-    }
-
-    // Freeze-completeness diagnostic (-v): any complete, non-polymorphic class the
-    // fixpoint could NOT record, and the first blocking base/member — the "what is
-    // the freeze dropping and why" probe for the systematic complete-field pass. A
-    // bound program referencing such a type would get a loud lookup miss, never a
-    // silent wrong answer.
-    DBG(for (size_t i = 0; i < classes.size(); ++i) {
-	if (recorded.count(classes[i]))
-	    continue;
-	DataDefCLASS *c = classes[i];
-	fprintf(stderr, "forest freeze: UNRECORDED %s (%zu members, %zu bases)\n",
-		c->name.c_str(), c->members.size(), c->bases.size());
-	for (size_t b = 0; b < c->bases.size(); ++b) {
-	    BaseSpec &bs = c->bases[b];
-	    if (bs.is_virtual)
-		fprintf(stderr, "    VIRTUAL base: %s\n", bs.base ? bs.base->name.c_str() : "?");
-	    else if (bs.base && !recorded.count(bs.base))
-		fprintf(stderr, "    base not recorded: %s\n", bs.base->name.c_str());
-	}
-	for (size_t m = 0; m < c->members.size(); ++m) {
-	    DataDef *mdd = c->members[m].second;
-	    const char *k;
-	    if (!mdd) k = "NULL";
-	    else if (mdd->type_id && mdd->type_id < MADC_TYPEID_PRIMITIVE_END) k = "primitive";
-	    else if (forest_pinned_primitive_id(mdd)) k = "scalar-alias";
-	    else if (recorded.count(mdd)) k = "recorded";
-	    else if (dynamic_cast<DataDefREF *>(mdd)) k = "ref";
-	    else if (dynamic_cast<DataDefPTR *>(mdd)) k = "ptr";
-	    else if (dynamic_cast<DataDefCONST *>(mdd)) k = "const";
-	    else if (dynamic_cast<DataDefCLASS *>(mdd)) k = "CLASS-unrecorded";
-	    else if (dynamic_cast<DataDefSTRUCT *>(mdd)) k = "STRUCT-unrecorded";
-	    else k = "OTHER (array/enum/func/…)";
-	    fprintf(stderr, "    member[%zu] '%s' : %s  [%s]\n", m,
-		    c->members[m].first.c_str(), mdd ? mdd->name.c_str() : "", k);
-	}
-    });
-
-    // File-scope typedefs -> alias records (ref0 = the underlying type's id).
-    for (std::set<std::string>::const_iterator it = prog->user_typedef_names.begin();
-	 it != prog->user_typedef_names.end(); ++it) {
-	const std::string &name = *it;
-	flat_datatype_map_iter dti = prog->datatype_map.find(name);
-	if (dti == prog->datatype_map.end() || !*dti)
-	    continue;
-	DataDef *underlying = &(*dti)->definition;
-	if (!underlying)
-	    continue;
-	if (!cir_forest_record_derived(underlying, NULL, pool, recorded, f))
-	    continue;			// underlying not resolvable on load — skip
-	uint32_t uid = forest_serialize_type_id(underlying);
-	cir_forest_type_record r;
-	memset(&r, 0, sizeof(r));
-	r.kind    = CIR_TYPEK_TYPEDEF;
-	r.name_id = pool.intern(name);
-	r.ref0    = uid;
-	f.type_records.push_back(r);
-    }
-
-    // Namespace membership: a type's defining namespace lives ONLY in
-    // namespace_datatype_map's KEY (no DataDef field carries it), so stamp each
-    // record's namespace_id by reverse-walking that map — the verbatim source of
-    // truth. A non-template entry's key IS the record name (sdd->name), so load can
-    // register namespace_datatype_map[ns][name] using the record name. Guard:
-    // stamp only when the ns key interns to the SAME id as the record name (the
-    // non-template guarantee) — a template instantiation product (key/name carries
-    // '<', or an aliased key) is skipped, a follow-on. First defining namespace wins
-    // (map iteration is deterministic).
-    std::map<uint32_t, size_t> rec_by_id;
-    for (size_t i = 0; i < f.type_records.size(); ++i)
-	if (f.type_records[i].type_id)
-	    rec_by_id[f.type_records[i].type_id] = i;
-    prog->namespace_datatype_map.for_each(
-	[&](const char *ns, datatype_map_t &m) -> bool {
-	    if (!ns || !*ns)
-		return false;
-	    for (datatype_map_iter it = m.begin(); it != m.end(); ++it) {
-		if (it->first.find('<') != std::string::npos || !it->second)
-		    continue;			// template product / empty: follow-on
-		uint32_t tid = madc_type_id_for(&it->second->definition);
-		std::map<uint32_t, size_t>::iterator ri = rec_by_id.find(tid);
-		if (ri == rec_by_id.end())
-		    continue;			// type not serialized (e.g. skipped class)
-		uint32_t rkind = f.type_records[ri->second].kind;
-		uint32_t rname = f.type_records[ri->second].name_id;
-		if (pool.intern(it->first) != rname) {
-		    // A namespaced ALIAS whose key differs from the aggregate's record
-		    // name (e.g. std::string -> basic_string<char,…>, std::wstring, …):
-		    // emit a NAMESPACED typedef record so a bound `std::string` resolves
-		    // to the recorded product. On load materialize_types produces a
-		    // typedef CirRestoredType (ns set, underlying = the product via
-		    // ref0) and forest_restore_decls registers namespace_datatype_map[ns]
-		    // [alias]. Live emits NO `typedef … string;` — the product name is
-		    // used directly — so this restores the parse-time NAME resolution, not
-		    // a C typedef. Only aggregate targets (struct/union/class carry a
-		    // type_id, so ri only finds those) get an alias; ref0 swizzles back to
-		    // the product on load. This is the v10 namespace-stamp mechanism
-		    // widened from "stamp the product's own record" to "also emit the
-		    // product's namespaced aliases", NOT a parallel format.
-		    if (rkind == CIR_TYPEK_STRUCT || rkind == CIR_TYPEK_UNION
-		     || rkind == CIR_TYPEK_CLASS) {
-			cir_forest_type_record tr;
-			memset(&tr, 0, sizeof(tr));
-			tr.kind         = CIR_TYPEK_TYPEDEF;
-			tr.name_id      = pool.intern(it->first);
-			tr.namespace_id = pool.intern(ns);
-			tr.ref0         = tid;		// the recorded aggregate's id
-			f.type_records.push_back(tr);
-		    }
-		    continue;			// key != record name: emitted as an alias (above)
-		}
-		cir_forest_type_record &r = f.type_records[ri->second];
-		if (r.namespace_id)
-		    continue;			// first defining namespace wins
-		r.namespace_id = pool.intern(ns);
-	    }
-	    return false;
-	});
-
-    // File-scope global VARIABLE definitions (v13). The forest serializes types;
-    // a header's file-scope globals are a separate category, so binding <string>
-    // used to omit its inline globals (in_place, piecewise_construct, …) and the
-    // __madc_global_init that runs their ctors. Serialize each file-scope
-    // CLASS-typed global (same predicate as collect_global_ctors: not a non-static
-    // local, not extern) whose class is RECORDED (so its type_id swizzles on load).
-    // No initializer is stored: on load collect_global_ctors synthesizes the
-    // default ctor from the class's restored ctor set (v12). A scalar-const global
-    // (its init value) is a follow-on. Dedup by name (a global appears once).
-    if (prog->tkProgram) {
-	std::set<std::string> seen_globals;
-	for (Variable *v : prog->tkProgram->variables) {
-	    if (!v || !v->type)
-		continue;
-	    if ((v->flags & vfLOCAL) && !(v->flags & vfSTATIC))
-		continue;		// a non-static local is not file-scope
-	    if (v->flags & vfEXTERN)
-		continue;		// a reference to a definition elsewhere
-	    DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(v->type);
-	    if (cdd) {
-		if (!recorded.count(cdd))
-		    continue;		// class-typed (v13) + recorded (swizzles on load)
-		if (!seen_globals.insert(v->name).second)
-		    continue;
-		cir_forest_global_record g;
-		memset(&g, 0, sizeof(g));
-		g.name_id = pool.intern(v->name);
-		g.type_id = forest_serialize_type_id(cdd);
-		g.flags   = v->flags;
-		// v16: classify the header's initializer FORM so the load rebuilds a
-		// TokenDecl whose emission is byte-identical to a live parse (v13 stored
-		// NO form -> flush set decl=NULL -> collect_global_ctors' built-in path
-		// default-constructed DIRECTLY on the global; a live parse builds a stack
-		// temp for `T x = T()` or a trivially-copyable self-copy for `T x{}`).
-		// Inspect the dkGlobalVar TopDecl's assign RHS structurally (no
-		// name-keying): a functional-construction temporary `T()` with NO args ->
-		// COPY_TEMP; the variable itself (value-init `T x{}`) -> VALUE_INIT. Any
-		// other/absent form leaves gflags 0 -> v13's default-ctor synthesis.
-		for (auto &t : prog->top_decls) {
-			if (t.kind != Program::DeclKind::dkGlobalVar || t.var != v)
-				continue;
-			TokenBase *rhs = t.decl ? t.decl->initialize : NULL;
-			if (TokenAssign *as = dynamic_cast<TokenAssign *>(rhs))
-				rhs = as->right;
-			if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(rhs)) {
-				if (ot->ctor_args.empty())
-					g.gflags = CIR_GLOBALF_CLASS_COPY_TEMP;
-			} else if (TokenVar *tv = dynamic_cast<TokenVar *>(rhs)) {
-				if (&tv->var == v)	// value-init RHS is the variable itself
-					g.gflags = CIR_GLOBALF_CLASS_VALUE_INIT;
-			}
-			break;
-		}
-		f.globals.push_back(g);
-		continue;
-	    }
-	    // v14: a SCALAR-const file-scope global (e.g. hardware_*_interference_size
-	    // = 64). No ctor runs — its init is a compile-time constant baked into the
-	    // data segment (live emits `u64 64`), so serialize the VALUE. Only a global
-	    // that the live dkGlobalVar pass emits qualifies: it has a dkGlobalVar
-	    // TopDecl whose initializer folds to an integer literal. A function
-	    // (FuncDef-typed Variable), a non-foldable / non-integer initializer, or an
-	    // unresolvable type cleanly LACKS (same discipline as the class path).
-	    if (v->type->is_function())
-		continue;
-	    TokenDecl *td = NULL;
-	    for (auto &t : prog->top_decls)
-		if (t.kind == Program::DeclKind::dkGlobalVar && t.var == v) {
-		    td = t.decl;
-		    break;
-		}
-	    if (!td || !td->initialize)
-		continue;
-	    TokenBase *rhs = td->initialize;
-	    if (TokenAssign *as = dynamic_cast<TokenAssign *>(rhs))
-		rhs = as->right;
-	    if (!rhs || !rhs->is_constant() || rhs->id() != TokenID::tkInt)
-		continue;
-	    uint32_t sid = forest_serialize_type_id(v->type);
-	    if (!sid)
-		continue;
+	if ((v->flags & vfLOCAL) && !(v->flags & vfSTATIC))
+	    continue;		// a non-static local is not file-scope
+	if (v->flags & vfEXTERN)
+	    continue;		// a reference to a definition elsewhere
+	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(v->type);
+	if (cdd) {
+	    uint32_t ctid = forest_serialize_type_id(cdd);
+	    if (!madc::dis::arena_id_is_project(ctid)
+		|| !prog->forest_arena.has_def(ctid))
+		continue;	// class not in the arena -> its global cleanly lacks
 	    if (!seen_globals.insert(v->name).second)
 		continue;
 	    cir_forest_global_record g;
 	    memset(&g, 0, sizeof(g));
-	    g.name_id    = pool.intern(v->name);
-	    g.type_id    = sid;
-	    g.flags      = v->flags;
-	    g.gflags     = CIR_GLOBALF_SCALAR_INIT;
-	    g.init_value = rhs->ival();
+	    g.name_id = pool.intern(v->name);
+	    g.type_id = ctid;
+	    g.flags   = v->flags;
+	    // v16: classify the header's initializer FORM so the load rebuilds a
+	    // TokenDecl whose emission is byte-identical to a live parse (v13 stored
+	    // NO form -> flush set decl=NULL -> collect_global_ctors' built-in path
+	    // default-constructed DIRECTLY on the global; a live parse builds a stack
+	    // temp for `T x = T()` or a trivially-copyable self-copy for `T x{}`).
+	    // Inspect the dkGlobalVar TopDecl's assign RHS structurally (no
+	    // name-keying): a functional-construction temporary `T()` with NO args ->
+	    // COPY_TEMP; the variable itself (value-init `T x{}`) -> VALUE_INIT. Any
+	    // other/absent form leaves gflags 0 -> v13's default-ctor synthesis.
+	    for (auto &t : prog->top_decls) {
+		if (t.kind != Program::DeclKind::dkGlobalVar || t.var != v)
+			continue;
+		TokenBase *rhs = t.decl ? t.decl->initialize : NULL;
+		if (TokenAssign *as = dynamic_cast<TokenAssign *>(rhs))
+			rhs = as->right;
+		if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(rhs)) {
+			if (ot->ctor_args.empty())
+				g.gflags = CIR_GLOBALF_CLASS_COPY_TEMP;
+		} else if (TokenVar *tv = dynamic_cast<TokenVar *>(rhs)) {
+			if (&tv->var == v)	// value-init RHS is the variable itself
+				g.gflags = CIR_GLOBALF_CLASS_VALUE_INIT;
+		}
+		break;
+	    }
 	    f.globals.push_back(g);
+	    continue;
 	}
+	// v14: a SCALAR-const file-scope global (e.g. hardware_*_interference_size
+	// = 64). No ctor runs — its init is a compile-time constant baked into the
+	// data segment (live emits `u64 64`), so serialize the VALUE. Only a global
+	// that the live dkGlobalVar pass emits qualifies: it has a dkGlobalVar
+	// TopDecl whose initializer folds to an integer literal. A function
+	// (FuncDef-typed Variable), a non-foldable / non-integer initializer, or an
+	// unresolvable type cleanly LACKS (same discipline as the class path).
+	if (v->type->is_function())
+	    continue;
+	TokenDecl *td = NULL;
+	for (auto &t : prog->top_decls)
+	    if (t.kind == Program::DeclKind::dkGlobalVar && t.var == v) {
+		td = t.decl;
+		break;
+	    }
+	if (!td || !td->initialize)
+	    continue;
+	TokenBase *rhs = td->initialize;
+	if (TokenAssign *as = dynamic_cast<TokenAssign *>(rhs))
+	    rhs = as->right;
+	if (!rhs || !rhs->is_constant() || rhs->id() != TokenID::tkInt)
+	    continue;
+	uint32_t sid = forest_serialize_type_id(v->type);
+	if (!sid)
+	    continue;
+	if (!seen_globals.insert(v->name).second)
+	    continue;
+	cir_forest_global_record g;
+	memset(&g, 0, sizeof(g));
+	g.name_id    = pool.intern(v->name);
+	g.type_id    = sid;
+	g.flags      = v->flags;
+	g.gflags     = CIR_GLOBALF_SCALAR_INIT;
+	g.init_value = rhs->ival();
+	f.globals.push_back(g);
     }
 }
 
-// B3 flip (Chunk 1): freeze-time COMPLETION of the arena copy staged in f.arena.
-// Three fidelity categories live in freeze-time or name-keyed state the parse-time
-// write-throughs cannot see, so they are stamped here — mirroring the v6 walks
-// (cir_forest_fill_type_records / cir_forest_append_methods) this pass replaces at
-// the flip:
+// B3: freeze-time COMPLETION of the arena copy staged in f.arena. Three
+// fidelity categories live in freeze-time or name-keyed state the parse-time
+// write-throughs cannot see, so they are stamped here (the retired v6 walks
+// used to gather the same three at freeze time):
 //   1. INLINE method body locations: f.funcdef_locs (mangled symbol -> unit/idx)
 //      exists only AFTER grove partitioning. A class methodrec whose symbol has a
 //      func-def in the AST is INLINE -> its DK_FUNC record gets DF_HAS_FOREST_BODY
@@ -1802,7 +1237,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		return;
 	madc::dis::DefArena &a = f.arena;
 
-	// 1. Inline-body locations (mirrors cir_forest_append_methods' funcdef_locs use).
+	// 1. Inline-body locations (from the freeze-built funcdef_locs index).
 	uint32_t nslots = a.def_slots();
 	for (uint32_t s = 0; s < nslots; ++s) {
 		madc::dis::defrec r;
@@ -1946,6 +1381,17 @@ static void cir_forest_arena_refresh(Program *prog)
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append)
 {
+    // The type graph rides the parse-populated DefArena (v18): a Program that
+    // parsed with forest_arena_enabled OFF would freeze a type-less container
+    // that binds nothing — fail loudly instead of dumping silent data loss.
+    // (--freeze / --freeze-run set the flag before tokenize; a unit test must
+    // do the same.)
+    if (!prog || !prog->forest_arena_enabled) {
+	fprintf(stderr, "%s: freeze requires forest_arena_enabled before parse "
+		"(the DefArena is the type-graph serialization)\n", source_name);
+	return -1;
+    }
+
     // Translate needs the c2mir contexts but never compiles: the frozen tree
     // must be PRE-check (c2mir's do_context writes attr scratch into any tree
     // it compiles; post-check trees are single-use).
@@ -1971,10 +1417,10 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 	    } else {
 		f.libs = prog->loaded_lib_paths;
 		cir_forest_fill_pack_payloads(prog, f);	// grove payload v2 (B4a)
-		cir_forest_fill_type_records(prog, f);	// Phase 6: complete type-table serialization
-		cir_forest_arena_refresh(prog);		// Chunk 2: re-record live aggregates (post-completion mutations)
-		f.arena = prog->forest_arena;		// B3 flip SAVE side: dump the parse-populated arena alongside the v6 records
-		cir_forest_arena_complete(prog, f);	// Chunk 1: freeze-time fidelity (inline bodies / typedefs / ns)
+		cir_forest_arena_refresh(prog);		// re-record live aggregates (post-completion mutations)
+		f.arena = prog->forest_arena;		// B3 (v18): the arena dump IS the type-graph serialization
+		cir_forest_arena_complete(prog, f);	// freeze-time fidelity (inline bodies / typedefs / ns)
+		cir_forest_fill_globals(prog, f);	// file-scope globals (CIR_GLOBALS; ids swizzle via the arena)
 		PchCompression codec = PchCompression::Zlib;
 #ifdef HAVE_ZSTD
 		codec = PchCompression::Zstd;
