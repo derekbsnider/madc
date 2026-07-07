@@ -117,7 +117,32 @@ every other madc track for five weeks. This document is the execution order; the
    non-virtual mangled-direct into libstdc++ (operator<<(int), endl) — madc-
    generated virtual DISPATCH is NOT on the reducer's path; vgroups/vbases are
    restored for state fidelity, not exercised by this reducer.
-   **PROGRESS (2026-07-07 tail of session — steps 1+2 LANDED, gated):** the
+   **PROGRESS 2 (@77e5d5ba, gated 16/16 + units): cout RESOLVES + COMPILES —
+   ONE import left (__ns_std_endl).** Three more families landed: DK_FPTR
+   fn-ptr records (forest_arena_record_fptr at the member/param/return resolve
+   loops; pass-1b rebuilds the declaration-only target signature);
+   GREATEST-fixpoint closure (start all candidates, iteratively REMOVE — the
+   additive fixpoint could never admit the basic_ios⇄basic_ostream pointer
+   cycle via _M_tie); CIR_GLOBALF_EXTERN_REF globals (cout: vfEXTERN Variable
+   verbatim + namespace_cpp_variable_symbol Itanium alias + nsmap binding +
+   dkGlobalVar TopDecl → `extern ostream _ZSt4cout`). REMAINING (measured):
+   bind emits a call to the PLACEHOLDER symbol __ns_std_endl where live
+   instantiates endl<char> and calls _ZSt4endl... mangled-direct. The
+   fn_template_map["std::endl"] pattern IS restored (tmpl_probe: kind=4,
+   36 body tokens) and the placeholder record carries DECLARATION_ONLY|
+   IS_FREE_FUNC; the instantiation entry
+   (instantiate_namespace_fn_template_for_call, parser.cpp ~34670, hooked at
+   the TokenCallFunc sites 10405/14589) gates on fd->namespace_name +
+   function_display_name + the fn_template_map key, then
+   try_instantiate_namespace_fn_template DEDUCES from the args — so the
+   failure is inside deduction (suspect: deducing basic_ostream<_CharT,
+   _Traits>& against the RESTORED basic_ostream_char product — template
+   identity state: canonical_cpp_spelling / template_map linkage on the
+   restored class) OR the placeholder fd's display/ns fields at flush.
+   INSTRUMENT try_instantiate's failure path (MADC_DEBUG_FNTPL exists) and
+   compare live-vs-bind -v at the endl call site. Reducer: tmp/s5_io.cpp +
+   tmp/s5_io.msnap (re-freeze after save-side changes).
+   **PROGRESS 1 (2026-07-07 — steps 1+2 LANDED, gated):** the
    closure fence is dropped (vtable/vptr/vbase classes admitted; union-layout
    stays fenced) and pass 2 restores has_vtable/has_vptr_slot/own_block_off +
    vbase_offset + vtable_groups (get_word for slot-id runs). Gated: bind gate
