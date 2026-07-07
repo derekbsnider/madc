@@ -334,13 +334,27 @@ aligned `operator new(size, align_val_t)` ranks to __o2; storage_alias_name via
 namespace_cpp_function_symbol + param_cpp_spellings restored from paramrec — __throw_bad_alloc →
 _ZSt17__throw_bad_allocv). Measured burn-down: friend-keyword codec → placeholder → __destroy →
 align_val_t → too-many-arguments → _M_realloc_insert import → __throw_* imports → GREEN.
-**NEXT (the owner's decision point — measure before more coverage):** wire/measure the real-
-workload compile-time win (the --project SMAUG build, the 51-TU corpus) with the forest binding
-what it covers and live-parsing the rest. Coverage backlog only if the measurement demands:
-vec whole-TU byte-identity (proto/label NUMBERING order), polymorphic classes (<iostream>),
-beyond-v6 coverage + free-fn bodies, user-header note, ~411 write-throughs retiring
-cir_forest_arena_refresh. Fix shape for any new gap: move the state into the substrate (the
-course correction above) — never a new bespoke record family.
+**🏛️ PRODUCT SHAPE (owner, 2026-07-07): freeze the ENTIRE /usr/include forest ONCE and append
+it to the END of the madc binary** (the machinery exists: B3 append-to-binary + /proc/self/exe
+loader + forest_selfexe_gate) — then EVERY compile binds every system header with zero flags.
+The per-file `--freeze`/`--forest-bind` flow is the TEST HARNESS for that product, not the
+product. What stands between here and it is COVERAGE, measured on real tests.
+**OWNER'S BAR for "working": real tests run on the forest** (e.g.
+`bin/madc --freeze=tmp/sub.msnap tests/testsubscript.mad` then
+`bin/madc --forest-bind=tmp/sub.msnap tests/testsubscript.mad` == live == .expect). HONEST
+SCOREBOARD (2026-07-07 end of day): vector/string consumers work INCLUDING new specializations
+(gates 14/14); `<map>` FAILS — **the next measured gap: an EXACT-MATCH `<map>` bind dies with
+"Expecting a type argument to pair<>"** (reducer: freeze+bind the SAME file
+tmp/s4_map_prod.cpp — `std::map<int,int>` + iterator loop; also 2 c2mir check errors after:
+"invalid type argument of unary *" / "incomplete struct or union"). Exact-match failing means
+map's template surface (pair / _Rb_tree: likely partial-spec selection, member-alias or
+default-arg state on the restored patterns) has a restore gap of the SAME class we cleared for
+vector — burn it down with the same batch discipline (fix shape: state INTO the substrate,
+never a new record family; build once per batch, reducer-iterate, full gates ONCE at the end).
+`<iostream>` = the polymorphic-classes boundary (vtable/typeinfo serialization), still fenced.
+THEN: the /usr/include corpus freeze driver + append-to-binary default path + measure the
+real-workload win (--project SMAUG 51-TU). Backlog unchanged: vec whole-TU byte-identity
+(proto/label numbering), free-fn bodies, user-header note, ~411 write-throughs.
 Diagnostics: `tmp/tmpl_probe.cpp` (gitignored — dumps restored template records + restored-type ns
 view by name filter; same build line as or_probe); `tmp/or_probe.cpp` (v18+ API — per-class arena
 METHOD records; build: g++ -I include -I /workspace/mir -I /workspace/mir/c2mir tmp/or_probe.cpp
