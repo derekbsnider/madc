@@ -8,6 +8,38 @@ every other madc track for five weeks. This document is the execution order; the
 
 ---
 
+## ⏯ RESUME HERE (post-compaction state, 2026-07-07 end of third sitting)
+
+- **Git:** develop == origin/develop **@d55dba3b**, tree clean except untracked
+  `mir-debug-support.md` (NOT ours — never stage, never `git add -A`).
+- **DONE today:** item 1 MAP GREEN (v22, @e32f040b) → item 2 IOSTREAM GREEN
+  (**[iobind]**, @ebfd30da) — bind gate **17/17**, test_cir_freeze 31/548,
+  test_cir_arena 11/316, fulltest 680/0/0/16, all pushed. Container track +
+  the polymorphic boundary are CLOSED; details in the PROGRESS 1/2/3 notes
+  under execution-order item 2 below.
+- **THE IMMEDIATE NEXT TASK — implement the DEFAULT-ARGUMENTS family** (the
+  ONE measured gap between here and the owner's bar test,
+  `tests/testsubscript.mad` freeze+bind == live == `.expect`). The full design
+  is in item 2's "OWNER'S BAR STATUS" note: capture each param default's RAW
+  SOURCE TOKEN RANGE in parseFunction's `tkAssign` branch (~parser.cpp 38977,
+  parallel `param_default_tokens`), grow the DefArena a token-bytes blob +
+  paramrec default-run reference (.madh codec), serialize in record_func,
+  deserialize + re-run parseExpression at the pending-funcs FLUSH. Reducer:
+  `tmp/sub.msnap` + `tests/testsubscript.mad` (current failure: "no matching
+  constructor for basic_string...(char*)" ×3 — arity gate needs
+  required_param_count, call site needs the synthesized `_Alloc()` arg).
+- **THEN (strict order):** [subbind] owner's-bar gate case → item 3 real-test
+  soak → item 4 corpus pack + append-to-binary default-on → item 5 lazy
+  defrost → item 6 measure + stamp the 06-22 plan CLOSED.
+- **Discipline:** batch fixes, reducer-iterate, full gates ONCE per batch;
+  state INTO the substrate (no new bespoke record families); loaded state ==
+  parsed state (re-run the ONE live derivation over restored state when side
+  effects are needed); no `&&` shell chains; `ulimit`+`timeout` every run; ONE
+  heavy job at a time; commit `-F` with the standard trailers; push every
+  green batch.
+
+---
+
 ## DEFINITION OF DONE (the plan's own bars — when these hold, the plan CLOSES)
 
 1. **Phase-3 gate (from the plan, verbatim):** real `<iostream>` / `<string>` /
@@ -69,7 +101,13 @@ every other madc track for five weeks. This document is the execution order; the
   2 benign c2mir pointer warnings on the newspec bind (stdout == live == g++;
   live is warning-free). Same residual class as vec's proto/label numbering;
   fix = restored-method param-type fidelity at the construction site.
-- **`<iostream>` FAILS — polymorphic classes** (the load selection still
+- **`<iostream>` GREEN (third sitting, [iobind] @ebfd30da — supersedes the
+  paragraph below, kept for the original framing):** the load selection no
+  longer excludes polymorphic classes; see item 2's PROGRESS 1/2/3 notes for
+  the five families that closed it (fn-ptr DK_FPTR records, greatest-fixpoint
+  closure, extern-ref globals, W2 overload-surface recapture, namespaced-
+  typedef flat-map fix).
+- ~~`<iostream>` FAILS — polymorphic classes~~ (the load selection still
   excludes DF_HAS_VTABLE/vptr/vbase classes — the v6 rule). Closing it =
   serialize/restore vtable + typeinfo + virtual-dispatch state from the arena
   records (the records already store vgroups/vbase offsets; the LOAD selection
