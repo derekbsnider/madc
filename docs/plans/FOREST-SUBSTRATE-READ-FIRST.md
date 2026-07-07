@@ -118,8 +118,8 @@ The current hand-serializer never serialized free functions (that IS the RC2 gap
 types + methods + globals + typedefs + namespaces; free functions are a cheap POST-flip addition. So 1f = methods;
 do not chase `parseFunction`'s completion hook pre-flip.
 
-**THE FLIP — ✅ COMPLETE on branch `feature/forest-b3-flip-claude` (cut from develop @ `eb5fb6db`, which
-carries 1e+1f; develop's 1e/1f are UNPUSHED — origin/develop @ `3352f059`; the whole flip branch is UNPUSHED).**
+**THE FLIP — ✅ COMPLETE, MERGED TO develop AND PUSHED (origin/develop @ `704fc6f0`, 2026-07-07;
+fast-forward of `feature/forest-b3-flip-claude`, which carried 1e+1f + Chunks A/1/2/3).**
 Three big chunks, all landed (owner: completion, not more micro-slices). **Chunk A (SAVE dump) DONE @ `5f0032ff`:** `--freeze` enables the arena, format v17 dumps
 arena segments 10-14 alongside the v6 records (additive; bind still reads v6 → byte-identical). **Chunk 1
 (freeze fidelity) COMPLETE @ `0c8d6d46` (2026-07-07, gated green):** the arena now reaches `materialize_types`
