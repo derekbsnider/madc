@@ -848,6 +848,155 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	forest_arena.set_def_at(tid, r);
 }
 
+// B3 write-through (SLICE 1e): record a COMPLETED project aggregate — struct, union, or class
+// — into this Program's arena at its own project-id slot. Called ONCE at the aggregate's
+// completion point (TokenSTRUCT::parse after registration; TokenCLASS::parse after the layout
+// trio) iff forest_arena_enabled. Per-aggregate + NON-recursive: unlike test_cir_arena's
+// arena_ensure spike (which recursively encodes children to prove the schema), production
+// stores every cross-ref (member / base / method-FuncDef / vbase / vgroup-owner type) as a
+// SERIALIZED type-id via the ONE forest_serialize_type_id policy — the referent records ITSELF
+// when ITS parse completes, and the id-addressed arena tolerates a cross-ref to a not-yet-written
+// slot (a method's DK_FUNC record, e.g., is filled by slice 1f). So there is no recursion and no
+// `seen` set here. The resolve-first payload discipline still holds trivially: forest_serialize_type_id
+// appends NOTHING to forest_arena.payload (it only stamps/returns an id), so no cross-ref can
+// interleave a run — but each run's child ids are still resolved into a local vector before the
+// run is appended, mirroring the spike. The live DataDef keeps its fields as the read-cache, so
+// reads are UNCHANGED; only this write dual-populates the record. Field coverage mirrors the
+// freeze's cir_forest_record_aggregate; the name-keyed maps + anonymous sub-aggregates are
+// follow-on coverage (the structural graph lands first).
+void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
+{
+	if (!sdd)
+		return;
+	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(sdd);
+	uint32_t tid = type_id_for(sdd);	// project id (binds the active table) == arena slot
+
+	madc::dis::defrec r;
+	memset(&r, 0, sizeof(r));
+	r.kind     = cdd ? madc::dis::DK_CLASS
+			 : (sdd->union_layout ? madc::dis::DK_UNION : madc::dis::DK_STRUCT);
+	r.name_id  = forest_arena.strings.intern(sdd->name.c_str());
+	r.canon_id = sdd->canonical_cpp_spelling.empty()
+		   ? 0u : forest_arena.strings.intern(sdd->canonical_cpp_spelling.c_str());
+	r.size     = (uint32_t)sdd->size;
+	r.datatype = (uint32_t)sdd->rawtype();
+	r.pack               = (uint32_t)sdd->pack;
+	r.max_align          = (uint32_t)sdd->max_align;
+	r.tag_explicit_align = (uint32_t)sdd->tag_explicit_align;
+	if (sdd->union_layout)           r.flags |= madc::dis::DF_UNION_LAYOUT;
+	if (sdd->is_complete)            r.flags |= madc::dis::DF_IS_COMPLETE;
+	if (sdd->is_anonymous)           r.flags |= madc::dis::DF_IS_ANONYMOUS;
+	if (sdd->reverse_scalar_storage) r.flags |= madc::dis::DF_REVERSE_SCALAR;
+	if (sdd->has_anon_aggregate)     r.flags |= madc::dis::DF_HAS_ANON_AGG;
+
+	// --- members (resolve every member type-id first; then the contiguous run) ---
+	std::vector<uint32_t> mt(sdd->members.size());
+	for (size_t i = 0; i < sdd->members.size(); ++i)
+		mt[i] = forest_serialize_type_id(sdd->members[i].second);
+	r.members_begin = (uint32_t)forest_arena.payload.size();
+	r.members_count = (uint32_t)sdd->members.size();
+	for (size_t i = 0; i < sdd->members.size(); ++i) {
+		madc::dis::memberrec m;
+		memset(&m, 0, sizeof(m));
+		m.name_id    = forest_arena.strings.intern(sdd->members[i].first.c_str());
+		m.type_id    = mt[i];
+		m.typedef_id = sdd->members[i].typedef_name.empty()
+			     ? 0u : forest_arena.strings.intern(sdd->members[i].typedef_name.c_str());
+		m.offset = (uint32_t)(i < sdd->member_offsets.size() ? sdd->member_offsets[i] : 0);
+		m.count  = (uint32_t)(i < sdd->member_counts.size() ? sdd->member_counts[i] : 1);
+		m.flags  = (i < sdd->member_array_flags.size() && sdd->member_array_flags[i]) ? 1u : 0u;
+		forest_arena.add_payload(m);
+	}
+
+	if (cdd) {
+		r.nvsize        = (uint32_t)cdd->nvsize;
+		r.class_align   = (uint32_t)cdd->class_align;
+		r.own_block_off = (uint32_t)cdd->own_block_off;
+		if (cdd->has_vtable)         r.flags |= madc::dis::DF_HAS_VTABLE;
+		if (cdd->has_vptr_slot)      r.flags |= madc::dis::DF_HAS_VPTR_SLOT;
+		if (cdd->from_system_header) r.flags |= madc::dis::DF_FROM_SYSTEM_HDR;
+		if (cdd->has_user_ctor)      r.flags |= madc::dis::DF_HAS_USER_CTOR;
+		if (cdd->has_user_dtor)      r.flags |= madc::dis::DF_HAS_USER_DTOR;
+
+		// --- bases (resolve base type-ids first) ---
+		std::vector<uint32_t> bid(cdd->bases.size());
+		for (size_t i = 0; i < cdd->bases.size(); ++i)
+			bid[i] = forest_serialize_type_id(cdd->bases[i].base);
+		r.bases_begin = (uint32_t)forest_arena.payload.size();
+		r.bases_count = (uint32_t)cdd->bases.size();
+		for (size_t i = 0; i < cdd->bases.size(); ++i) {
+			madc::dis::baserec b;
+			memset(&b, 0, sizeof(b));
+			b.base_id = bid[i];
+			b.offset  = (uint32_t)cdd->bases[i].offset;
+			b.flags   = (cdd->bases[i].is_virtual ? madc::dis::BSF_VIRTUAL : 0u)
+				  | (cdd->bases[i].is_primary ? madc::dis::BSF_PRIMARY : 0u)
+				  | ((uint32_t)cdd->bases[i].access << madc::dis::BSF_ACCESS_SHIFT);
+			forest_arena.add_payload(b);
+		}
+
+		// --- methods (resolve each method's FuncDef type-id first; its DK_FUNC record
+		//     is populated in slice 1f — a forward id ref is fine, arena is id-addressed) ---
+		std::vector<uint32_t> fid(cdd->methods.size());
+		for (size_t i = 0; i < cdd->methods.size(); ++i)
+			fid[i] = (cdd->methods[i] && cdd->methods[i]->type)
+			       ? forest_serialize_type_id(cdd->methods[i]->type)
+			       : (uint32_t)MADC_TYPEID_INVALID;
+		r.methods_begin = (uint32_t)forest_arena.payload.size();
+		r.methods_count = (uint32_t)cdd->methods.size();
+		for (size_t i = 0; i < cdd->methods.size(); ++i) {
+			madc::dis::methodrec md;
+			memset(&md, 0, sizeof(md));
+			md.name_id = cdd->methods[i]
+				   ? forest_arena.strings.intern(cdd->methods[i]->name.c_str()) : 0u;
+			md.func_id = fid[i];
+			forest_arena.add_payload(md);
+		}
+
+		// --- vbase_offset: flatten the pointer-KEYED map -> a sorted (class_id,offset) run ---
+		std::vector<std::pair<uint32_t, uint32_t> > vb;
+		for (std::map<DataDefCLASS *, size_t>::const_iterator vi = cdd->vbase_offset.begin();
+		     vi != cdd->vbase_offset.end(); ++vi)
+			vb.push_back(std::make_pair(forest_serialize_type_id(vi->first),
+						    (uint32_t)vi->second));
+		std::sort(vb.begin(), vb.end());
+		r.vbase_begin = (uint32_t)forest_arena.payload.size();
+		r.vbase_count = (uint32_t)vb.size();
+		for (size_t i = 0; i < vb.size(); ++i) {
+			madc::dis::vbaserec vr;
+			memset(&vr, 0, sizeof(vr));
+			vr.class_id = vb[i].first;
+			vr.offset   = vb[i].second;
+			forest_arena.add_payload(vr);
+		}
+
+		// --- vtable_groups: nested vector -> two-level slice. Resolve owners first; append
+		//     each group's slot-id run (recording slots_begin); THEN the vgrouprec run. ---
+		std::vector<uint32_t> owners(cdd->vtable_groups.size());
+		for (size_t g = 0; g < cdd->vtable_groups.size(); ++g)
+			owners[g] = forest_serialize_type_id(cdd->vtable_groups[g].owner);
+		std::vector<madc::dis::vgrouprec> vgs(cdd->vtable_groups.size());
+		for (size_t g = 0; g < cdd->vtable_groups.size(); ++g) {
+			const DataDefCLASS::VtableGroup &vg = cdd->vtable_groups[g];
+			uint32_t sbegin = (uint32_t)forest_arena.payload.size();
+			for (size_t k = 0; k < vg.slots.size(); ++k)
+				forest_arena.add_word(forest_arena.strings.intern(vg.slots[k].c_str()));
+			memset(&vgs[g], 0, sizeof(vgs[g]));
+			vgs[g].owner_id    = owners[g];
+			vgs[g].this_offset = (uint32_t)vg.this_offset;
+			vgs[g].slots_begin = sbegin;
+			vgs[g].slots_count = (uint32_t)vg.slots.size();
+			vgs[g].addr_point  = (uint32_t)vg.addr_point;
+		}
+		r.vgroup_begin = (uint32_t)forest_arena.payload.size();
+		r.vgroup_count = (uint32_t)vgs.size();
+		for (size_t g = 0; g < vgs.size(); ++g)
+			forest_arena.add_payload(vgs[g]);
+	}
+
+	forest_arena.set_def_at(tid, r);
+}
+
 // Ensure `dd` — a type reached as a member / method-param / method-return /
 // typedef-underlying of a serialized aggregate — will RESOLVE on load, recording a
 // derived-type record (pointer / reference / const) for it if needed, transitively.

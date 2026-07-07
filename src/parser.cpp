@@ -24069,6 +24069,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    DBG(cout << "TokenSTRUCT::parse() registered struct " << tag_store_key << " size=" << dds->size << endl);
 	}
 	register_cpp_aggregate_name(tag->spelling(), dds);
+	// B3 SLICE 1e: dual-populate the arena record for the FINAL registered aggregate
+	// (dds is the self-registered / forward-completed / newly-registered object here,
+	// post-promotion — the object that persists in struct_map). Reads stay on dds.
+	if ( pgm.forest_arena_enabled )
+	    pgm.forest_arena_record_aggregate(dds);
     }
 
     // NOTE: the struct/union definition is recorded in top_decls only for
@@ -27141,6 +27146,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			     // "not yet instantiated", so instantiate_template_use's cache
 			     // never hits and re-instantiates it on every reference.
     DBG(cout << "TokenCLASS::parse() finalized layout, size now " << ddc->size << endl);
+
+    // B3 SLICE 1e: dual-populate the arena record now that the layout trio has run —
+    // members/offsets, bases, vbase_offset, and vtable_groups are all final (methods
+    // recorded as they stand; late friend-operator / defaulted-comparison additions are
+    // follow-on). One hook, one call. Reads stay on ddc. Fires only for a live parse that
+    // has opted in (default off = bin/madc unchanged, freeze byte-identical).
+    if ( pgm.forest_arena_enabled )
+	pgm.forest_arena_record_aggregate(ddc);
 
     // Lazy member-function-body instantiation ([temp.inst]): for a system-header
     // class (typically a template instantiation), DON'T parse member bodies now —

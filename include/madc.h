@@ -1622,6 +1622,12 @@ public:
     // into forest_arena, keyed by its project-id slot. Dispatches on the actual type for the
     // record kind (DK_PTR / DK_REF / DK_CONST) and reads the operand from its base_type.
     void forest_arena_record_unary(DataDef *dd);
+    // write-through: record a completed aggregate (struct / union / class) into forest_arena,
+    // keyed by its project-id slot, at its parse-completion point. Per-aggregate + NON-recursive:
+    // every cross-ref (member / base / method / vbase / vgroup-owner type) is a SERIALIZED
+    // type-id (the referent records itself at ITS completion; the id-addressed arena tolerates a
+    // forward slot ref). Reads stay on the live DataDef; only this write dual-populates the record.
+    void forest_arena_record_aggregate(DataDefSTRUCT *sdd);
     // Captured `template<typename T> class Name {...}` definitions for
     // Borland-model instantiation: name -> {type params, the class-body token
     // range}. `Name<ConcreteT>` clones+substitutes+re-parses it as a concrete

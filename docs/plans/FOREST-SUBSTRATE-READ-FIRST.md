@@ -12,7 +12,7 @@ this campaign happened.**
 
 ---
 
-## RESUME HERE — current state & open threads (2026-07-06)
+## RESUME HERE — current state & open threads (2026-07-07)
 
 **🏛️ DIRECTION CHANGED 2026-07-06 — B3 ARENA REARCHITECTURE (owner GO). READ FIRST:
 `docs/plans/2026-07-06-forest-arena-native-scoping.md` (decision + measured sizes) and
@@ -82,14 +82,35 @@ the write, so an existing ref/const is not re-recorded. Gate: test_cir_arena 8 c
 REF/CONST case: reads-unchanged [is_reference/is_const/base_type] + DK_REF/DK_CONST records at distinct
 project-id slots, ref0 = operand id); fulltest 680/0/0/16 + all forest gates byte-identical to live; no new
 warnings. **1a–1d PUSHED (origin/develop @ `5baf2c0f`, 2026-07-06):** the whole unary derived-type tier
-(PTR/REF/CONST) is banked off-machine. **NEXT (SLICE 1e+, the high-touch stretch) — PLAN READY:** see
-`docs/plans/2026-07-06-forest-b3-slice-1e-aggregate-writethrough-PLAN.md`. 1e = aggregate write-through
-(TokenSTRUCT::parse after finalize @parser.cpp:23982; TokenCLASS::parse after the layout trio @27134–27136 →
-`DK_STRUCT`/`DK_CLASS` via a new `Program::forest_arena_record_aggregate`, PER-AGGREGATE + NON-recursive, cross-refs
-by type-id, mirroring test_cir_arena's `arena_ensure` + reusing `forest_serialize_type_id`). 1f = FuncDef → `DK_FUNC`
-via a new FuncDefBuilder (the one class with no builder funnel). Then a later slice flips READS onto the record +
-deletes the per-category freeze (`materialize_types` + `cir_forest_fill_type_records` + the 3 delete-segments) —
-`#23` whole-TU byte-identity closes by construction. develop @ `5baf2c0f` == origin.**
+(PTR/REF/CONST) is banked off-machine.
+
+**SLICE 1e DONE (2026-07-07, first HIGH-TOUCH write-through — gated green, NOT yet committed, awaiting owner commit
+go-ahead): aggregate write-through (`DK_STRUCT` / `DK_UNION` / `DK_CLASS`).** New `Program::forest_arena_record_aggregate(
+DataDefSTRUCT*)` (madc_cir.cpp): PER-AGGREGATE + NON-recursive — every cross-ref (member / base / method-FuncDef / vbase /
+vgroup-owner type) is a SERIALIZED type-id via the ONE `forest_serialize_type_id` policy (the referent records ITSELF at
+its own completion; the id-addressed arena tolerates a forward slot ref — a method's `DK_FUNC` record fills in at 1f).
+Resolve-first holds trivially (`forest_serialize_type_id` appends nothing to `forest_arena.payload`). Records header +
+layout scalars + members run; for a class also nvsize/class_align/own_block_off + flags + bases + methods + vbase_offset
+(pointer-keyed map → sorted `(class_id,offset)` run) + vtable_groups (nested → two-level `vgrouprec`+slot-id slice) —
+field coverage mirroring the freeze's `cir_forest_record_aggregate`, run discipline mirroring test_cir_arena's
+`arena_ensure`. **HOOKS (ground-truth-traced — the plan's literal lines were refined):** STRUCT = after registration
+@**parser.cpp:24072** (`register_cpp_aggregate_name`), NOT at the 23982 finalize — the forward-completion branch
+(24033-24061) DELETEs the finalized `dds` and swaps in `existing`, so at 24072 `dds` is the FINAL registered object in
+all three branches AND post struct→class promotion. CLASS = after the layout trio + `is_complete` @**parser.cpp:27143**
+(members were pushed to `ddc->methods` during the body loop, before 27134, so present at the hook). Both gated
+`if (pgm.forest_arena_enabled)`. FOLLOW-ON (scoped out): nested-inline DATA-ONLY named structs
+(`parse_nested_aggregate_body` @23608), anonymous aggregates, name-keyed maps. GATE: test_cir_arena **9/245** (new
+PARSE-DRIVEN case, tokenize_buffer+parse struct+2 classes with the flag on, asserting DK_STRUCT/DK_CLASS records + member
+offsets + base cross-ref resolving to Base's record + `methods_count>=1` + the no-primitive-records invariant through a
+real parse); fulltest **680/0/0/16** exit 0; ALL forest gates byte-identical to live (11 `forest_bind` cases + selfexe;
+flag off ⇒ byte-identical by construction); no new warnings. GOTCHA banked in memory: a plain `int` member serializes as
+the PINNED int32 slot (9), NOT `MADC_TYPEID_INT` (5) — assert pinned/shared/no-record, never a slot number.
+
+**NEXT (SLICE 1f) — PLAN READY:** see `docs/plans/2026-07-06-forest-b3-slice-1e-aggregate-writethrough-PLAN.md` §6.
+1f = FuncDef → `DK_FUNC` via a new FuncDefBuilder (the one class with no builder funnel; the method `func_id`
+cross-refs 1e already emits fill in here). Then a later slice flips READS onto the record + deletes the per-category
+freeze (`materialize_types` + `cir_forest_fill_type_records` + the 3 delete-segments) — `#23` whole-TU byte-identity
+closes by construction. develop @ `3352f059` == origin (1e is uncommitted local work on top).
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 

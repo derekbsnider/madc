@@ -741,3 +741,124 @@ TEST_CASE("B3 arena: getReferenceType / getConstType write-through (DK_REF / DK_
 
 	delete prog;	// while widget is still in scope
 }
+
+// ---- SLICE 1e: the AGGREGATE write-through, driven by a REAL parse (the honest test of the
+//      HOOKS, not just the encoder). tokenize+parse a program defining a struct + two classes
+//      (a base and a derived-with-member-and-method) with forest_arena_enabled; then assert the
+//      arena carries a DK_STRUCT + DK_CLASS record at each aggregate's project-id slot, with the
+//      member/base/method runs populated and cross-refs = the operands' type-ids. The forest
+//      gates cover the flag-OFF byte-identity; this covers the flag-ON population end to end.
+TEST_CASE("B3 arena: aggregate write-through records DK_STRUCT/DK_CLASS from a real parse")
+{
+	Program *prog = new Program();
+	prog->forest_arena_enabled = true;	// opt in BEFORE parse so the hooks fire
+
+	const char *src =
+		"struct Point { int x; int y; };\n"
+		"class Base { public: int bb; };\n"
+		"class Widget : public Base { public: int w; int get() { return w; } };\n"
+		"int main() { Point p; Widget wd; return p.x + wd.w + wd.get(); }\n";
+	TokenProgram *tp = prog->tokenize_buffer(src, "arena_1e.mad");
+	REQUIRE(tp != NULL);
+	REQUIRE(prog->parse(tp));
+
+	// --- Point: a plain struct (no object member) -> DK_STRUCT with 2 int members ---
+	datadef_map_iter pit = prog->struct_map.find("Point");
+	REQUIRE(pit != prog->struct_map.end());
+	DataDefSTRUCT *pt = dynamic_cast<DataDefSTRUCT *>(pit->second);
+	REQUIRE(pt != NULL);
+	uint32_t ptid = prog->type_id_for(pt);
+	CHECK(arena_id_is_project(ptid));
+	defrec pr;
+	REQUIRE(prog->forest_arena.get_def_at(ptid, pr));
+	CHECK(pr.kind == DK_STRUCT);
+	CHECK(std::string(prog->forest_arena.strings.c_str(pr.name_id)) == "Point");
+	CHECK(pr.size == pt->size);
+	REQUIRE(pr.members_count == 2);
+	memberrec mx, my;
+	REQUIRE(prog->forest_arena.get_payload(pr.members_begin, 0, mx));
+	REQUIRE(prog->forest_arena.get_payload(pr.members_begin, 1, my));
+	CHECK(std::string(prog->forest_arena.strings.c_str(mx.name_id)) == "x");
+	CHECK(std::string(prog->forest_arena.strings.c_str(my.name_id)) == "y");
+	CHECK(mx.offset == 0);
+	CHECK(my.offset == 4);
+	// `int` resolves to a PINNED primitive slot (int32 == slot 9, not the generic int slot);
+	// assert the spine invariant — pinned, shared, resolvable, and NEVER recorded — rather
+	// than a specific slot number.
+	CHECK(arena_id_is_pinned(mx.type_id));
+	CHECK(mx.type_id == my.type_id);			// both members share the one primitive
+	DataDef *int_prim = madc_type_from_id(mx.type_id);	// resolves to the process global
+	CHECK(int_prim != NULL);
+	CHECK(prog->forest_arena.has_def(mx.type_id) == false);	// a pinned primitive has NO record
+
+	// --- Base: a class -> DK_CLASS carrying member "bb" ---
+	datadef_map_iter bit = prog->struct_map.find("Base");
+	REQUIRE(bit != prog->struct_map.end());
+	DataDefCLASS *base = dynamic_cast<DataDefCLASS *>(bit->second);
+	REQUIRE(base != NULL);
+	uint32_t btid = prog->type_id_for(base);
+	CHECK(arena_id_is_project(btid));
+	defrec br;
+	REQUIRE(prog->forest_arena.get_def_at(btid, br));
+	CHECK(br.kind == DK_CLASS);
+	CHECK(std::string(prog->forest_arena.strings.c_str(br.name_id)) == "Base");
+	bool base_has_bb = false;
+	for (uint32_t i = 0; i < br.members_count; ++i) {
+		memberrec m;
+		REQUIRE(prog->forest_arena.get_payload(br.members_begin, i, m));
+		if (std::string(prog->forest_arena.strings.c_str(m.name_id)) == "bb")
+			base_has_bb = true;
+	}
+	CHECK(base_has_bb);
+
+	// --- Widget: DK_CLASS with a base (-> Base's type-id), a member "w", and >=1 method ---
+	datadef_map_iter wit = prog->struct_map.find("Widget");
+	REQUIRE(wit != prog->struct_map.end());
+	DataDefCLASS *widget = dynamic_cast<DataDefCLASS *>(wit->second);
+	REQUIRE(widget != NULL);
+	uint32_t wtid = prog->type_id_for(widget);
+	CHECK(arena_id_is_project(wtid));
+	defrec wr;
+	REQUIRE(prog->forest_arena.get_def_at(wtid, wr));
+	CHECK(wr.kind == DK_CLASS);
+	CHECK(std::string(prog->forest_arena.strings.c_str(wr.name_id)) == "Widget");
+
+	// base cross-ref is Base's PROJECT type-id, and Base's own record resolves through it
+	REQUIRE(wr.bases_count == 1);
+	baserec wb;
+	REQUIRE(prog->forest_arena.get_payload(wr.bases_begin, 0, wb));
+	CHECK(arena_id_is_project(wb.base_id));
+	CHECK(wb.base_id == btid);				// same Base object the class inherits
+	defrec base_via_ref;
+	REQUIRE(prog->forest_arena.get_def_at(wb.base_id, base_via_ref));
+	CHECK(base_via_ref.kind == DK_CLASS);
+	CHECK(std::string(prog->forest_arena.strings.c_str(base_via_ref.name_id)) == "Base");
+
+	// member "w" is present (own member; inherited members may also be flattened in)
+	bool widget_has_w = false;
+	for (uint32_t i = 0; i < wr.members_count; ++i) {
+		memberrec m;
+		REQUIRE(prog->forest_arena.get_payload(wr.members_begin, i, m));
+		if (std::string(prog->forest_arena.strings.c_str(m.name_id)) == "w")
+			widget_has_w = true;
+	}
+	CHECK(widget_has_w);
+
+	// >=1 method recorded; each method's func_id is a cross-ref type-id (the DK_FUNC record
+	// itself is filled by slice 1f, so a forward/unwritten slot is fine here).
+	REQUIRE(wr.methods_count >= 1);
+	for (uint32_t i = 0; i < wr.methods_count; ++i) {
+		methodrec md;
+		REQUIRE(prog->forest_arena.get_payload(wr.methods_begin, i, md));
+		CHECK(md.name_id != 0);
+		bool func_ref_ok = (md.func_id == (uint32_t)MADC_TYPEID_INVALID)
+				 || arena_id_is_project(md.func_id)
+				 || arena_id_is_pinned(md.func_id);
+		CHECK(func_ref_ok);
+	}
+
+	// no primitive was ever recorded (the type-id spine invariant holds through a real parse)
+	assert_no_primitive_records(prog->forest_arena);
+
+	delete prog;
+}
