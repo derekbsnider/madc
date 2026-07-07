@@ -277,7 +277,9 @@ enum : uint32_t
 	CIR_TYPEK_TYPEDEF   = 1,	// alias: underlying carries the target DataDef*
 	CIR_TYPEK_STRUCT    = 2,	// DataDefSTRUCT
 	CIR_TYPEK_UNION     = 3,	// DataDefSTRUCT union_layout
-	CIR_TYPEK_CLASS     = 4		// DataDefCLASS
+	CIR_TYPEK_CLASS     = 4,	// DataDefCLASS
+	CIR_TYPEK_ENUM      = 5		// DataDefENUM (v21; scoped enumerators ride
+					// CirRestoredType::enumerators)
 };
 
 // A file-scope global VARIABLE definition (v13; container-global, fixed 3-u32
@@ -323,16 +325,29 @@ enum : uint32_t {
 	CIR_TMPLK_FN      = 4,	// Program::fn_template_map
 	CIR_TMPLK_FN_DECL = 5,	// Program::fn_template_decl_map (body-less decls)
 	CIR_TMPLK_VAR     = 6,	// Program::var_template_map
-	CIR_TMPLK_CONCEPT = 7	// Program::concept_map
+	CIR_TMPLK_CONCEPT = 7,	// Program::concept_map
+	CIR_TMPLK_MEMBER  = 8,	// a class's body-bearing MEMBER function template
+				// (FuncDef::member_template_decl + owner) — restored
+				// by re-running the live registration
+				// (register_skipped_class_template_function) over the
+				// restored tokens at flush time
+	CIR_TMPLK_OUTOFLINE = 9	// Program::out_of_line_member_defs — an out-of-line
+				// member DEFINITION of a class template
+				// (vector.tcc's `template<..> RET vector<..>::f(..){..}`,
+				// e.g. _M_realloc_insert). Key = "ns::Class"; OUTER
+				// (class) params first, INNER (member-template) params
+				// flagged CIR_TMPLP_IS_INNER; body run = the decl tokens.
 };
 enum : uint32_t {
 	CIR_TMPLF_HAS_NON_TYPE_PARAMS = 1u << 0,	// TemplateDef/AliasDef/FnTemplateDef
 	CIR_TMPLF_IS_PARTIAL_SPEC     = 1u << 1,	// TemplateDef::is_partial_specialization
-	CIR_TMPLF_INSTANCE_METHOD     = 1u << 2		// FnTemplateDef::instance_method
+	CIR_TMPLF_INSTANCE_METHOD     = 1u << 2,	// FnTemplateDef::instance_method
+	CIR_TMPLF_OOL_MEMBER_TMPL     = 1u << 3		// OutOfLineMemberDef::is_member_template
 };
 enum : uint32_t {	// cir_forest_template_param::pflags
 	CIR_TMPLP_IS_TYPE = 1u << 0,
-	CIR_TMPLP_IS_PACK = 1u << 1
+	CIR_TMPLP_IS_PACK = 1u << 1,
+	CIR_TMPLP_IS_INNER = 1u << 2	// OUTOFLINE: a MEMBER-template (inner) param
 };
 struct cir_forest_template_param
 {
@@ -533,10 +548,15 @@ struct CirRestoredType
 {
 	const char *name;
 	uint32_t    kind;		// CIR_TYPEK_*
-	DataDef    *dd;			// struct/class object (NULL for a pure typedef)
+	DataDef    *dd;			// struct/class/enum object (NULL for a pure typedef)
 	DataDef    *underlying;		// typedef target (else NULL)
 	const char *ns;			// defining namespace (NULL/"" = global); load
 					// registers the type into that namespace's maps
+	// v21 (CIR_TYPEK_ENUM): the scoped enumerators (name, value) — load
+	// rebuilds each as a constant Variable in the tag's pseudo-namespace,
+	// exactly as TokenENUM::parse leaves them. Empty for other kinds and
+	// for an enumerator-less opaque enum (std::align_val_t).
+	std::vector<std::pair<const char *, int64_t> > enumerators;
 };
 
 // A restored file-scope global variable (v13): its type swizzled back to a

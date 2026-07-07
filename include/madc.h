@@ -2777,6 +2777,19 @@ public:
 	PendingForestFunc() : fd(NULL), mvar(NULL) {}
     };
     std::vector<PendingForestFunc> forest_pending_funcs;
+    // v21: body-bearing MEMBER function templates restored from a bound header
+    // (CIR_TMPLK_MEMBER records). The flush re-runs the live registration
+    // (register_skipped_class_template_function) over the restored tokens, so
+    // every derived field reproduces by the one production path; registration
+    // needs tkProgram (addFunction / unique_overload_symbol), hence the stage.
+    struct PendingForestMemberTmpl {
+	DataDefCLASS *owner;
+	std::vector<TokenBase *> tokens;	// decl + params + body (sans template<> header)
+	std::vector<std::string> typeparams;
+	std::vector<bool> is_pack;
+	PendingForestMemberTmpl() : owner(NULL) {}
+    };
+    std::vector<PendingForestMemberTmpl> forest_pending_member_tmpls;
     void flush_forest_pending_globals();	// build Variable + dkGlobalVar TopDecl (post-tkProgram); also registers pending free functions
     std::vector<uint32_t> forest_chain;		// bound units, include order (bind-order record)
     std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune

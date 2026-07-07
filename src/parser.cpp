@@ -12312,6 +12312,36 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    register_in_namespace(rt.ns, name, rt.underlying, tdt);
 	    DBG(std::cout << "forest_restore_decls: typedef " << name << std::endl);
 	}
+	else if ( rt.kind == CIR_TYPEK_ENUM )
+	{
+	    // v21: an enum tag registers exactly as TokenENUM::parse leaves it —
+	    // datatype_map[tag] (+ the namespace maps when namespaced), and each
+	    // SCOPED enumerator as a constant Variable in the tag's
+	    // pseudo-namespace (key = ns::Tag inside a namespace, else Tag).
+	    // No TopDecl: an enum is a parse-time name/value surface, not an
+	    // emitted C aggregate (live pushes none either).
+	    if ( !rt.dd || datatype_map.find(name) != datatype_map.end() )
+		continue;
+	    TokenDataType *tdt = new TokenDataType(rt.name, *rt.dd);
+	    datatype_map[name] = tdt;
+	    register_in_namespace(rt.ns, name, rt.dd, tdt);
+	    if ( !rt.enumerators.empty() )
+	    {
+		std::string pk = (rt.ns && *rt.ns)
+			       ? std::string(rt.ns) + "::" + name : name;
+		variable_map_t &scope_ns = namespace_map[pk];
+		for ( size_t e = 0; e < rt.enumerators.size(); ++e )
+		{
+		    Variable *evar = new Variable(rt.enumerators[e].first,
+						  *rt.dd, 1, NULL, true);
+		    evar->set(rt.enumerators[e].second);
+		    evar->makeconstant();
+		    scope_ns[rt.enumerators[e].first] = evar;
+		}
+	    }
+	    DBG(std::cout << "forest_restore_decls: enum " << name << " ("
+		<< rt.enumerators.size() << " enumerators)" << std::endl);
+	}
 	else if ( rt.kind == CIR_TYPEK_STRUCT || rt.kind == CIR_TYPEK_UNION )
 	{
 	    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(rt.dd);
@@ -12564,6 +12594,55 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    concept_map[key] = cd;
 	    break;
 	}
+	case CIR_TMPLK_OUTOFLINE:
+	{
+	    // An out-of-line member definition of a class template (vector.tcc's
+	    // _M_realloc_insert). Direct map insert — the records ARE the live
+	    // map's final state; the class-template instantiation machinery
+	    // consumes out_of_line_member_defs unchanged.
+	    OutOfLineMemberDef d;
+	    d.member_name = rt.name ? rt.name : "";
+	    d.is_member_template = (rt.flags & CIR_TMPLF_OOL_MEMBER_TMPL) != 0;
+	    for ( size_t p = 0; p < rt.params.size(); ++p )
+	    {
+		if ( rt.params[p].second & CIR_TMPLP_IS_INNER )
+		{
+		    d.inner_typeparams.push_back(rt.params[p].first);
+		    d.inner_is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+		    d.inner_is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
+		}
+		else
+		    d.typeparams.push_back(rt.params[p].first);
+	    }
+	    restore_run(rt.body, d.decl);
+	    if ( !d.decl.empty() && !d.member_name.empty() )
+		out_of_line_member_defs[key].push_back(d);
+	    break;
+	}
+	case CIR_TMPLK_MEMBER:
+	{
+	    // A body-bearing member function template of a restored class.
+	    // Stage the restored tokens + params; the post-tkProgram flush
+	    // re-runs the live registration (register_skipped_class_template_
+	    // function) so the pattern FuncDef, its Variable, and the class
+	    // attachment reproduce exactly as a live header parse leaves them.
+	    // An owner the load dropped cleanly lacks.
+	    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(rt.owner);
+	    if ( !owner )
+		break;
+	    PendingForestMemberTmpl pm;
+	    pm.owner = owner;
+	    restore_run(rt.body, pm.tokens);
+	    if ( pm.tokens.empty() )
+		break;
+	    for ( size_t p = 0; p < rt.params.size(); ++p )
+	    {
+		pm.typeparams.push_back(rt.params[p].first);
+		pm.is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+	    }
+	    forest_pending_member_tmpls.push_back(pm);
+	    break;
+	}
 	default:
 	    break;
 	}
@@ -12571,6 +12650,13 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     DBG(std::cout << "forest_restore_decls: " << tmpls.size()
 	<< " template pattern(s) restored" << std::endl);
 }
+
+// v21: the flush re-runs the LIVE member-template registration over restored
+// tokens (defined later in this TU; forward-declared for the flush).
+static void register_skipped_class_template_function(
+	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams,
+	uint32_t access_flags, const std::string &ctor_source_name);
 
 // Flush the staged forest globals into tkProgram->variables + dkGlobalVar TopDecls
 // once tkProgram exists (called at the end of tokenize()). Idempotent per name:
@@ -12612,39 +12698,57 @@ void Program::flush_forest_pending_globals()
 	{
 	    Variable *fv = addVariable(NULL, *pf.fd, pf.name);
 	    fv->data = (void *)new Method(*fv);
-	    // v21: a restored skipped-ns-fn-template PLACEHOLDER (declaration-
-	    // only + display + ns — __ns_std__Destroy) reproduces the live
-	    // registration-site state (register_skipped_namespace_template_
-	    // function): a first-wins namespace_map[ns][display] binding — the
-	    // resolution chokepoint a qualified `std::_Destroy(...)` call reads —
-	    // and the overload-set placeholder seed when a body-bearing pattern
-	    // was retained for ns::display (the restored fn_template_map is
-	    // populated before this flush, so the seed condition is the live one
-	    // evaluated on restored state, never a name special-case).
-	    if ( pf.fd->declaration_only
-	      && !pf.fd->function_display_name.empty()
-	      && !pf.fd->namespace_name.empty() )
+	    // v21: a restored free function with a SOURCE IDENTITY (display name
+	    // + namespace) reproduces the live registration-site state.
+	    // A skipped-ns-fn-template PLACEHOLDER (declaration-only, a
+	    // body-bearing pattern retained in the restored fn_template_map —
+	    // __ns_std__Destroy) gets the first-wins namespace_map[ns][display]
+	    // binding (the resolution chokepoint a qualified `std::_Destroy(...)`
+	    // call reads) and the "\x01" overload-set seed. Every OTHER
+	    // display-bearing entry — the <new> allocation-operator overloads
+	    // (ns is GLOBAL/"", key "::operatornew"), concrete namespace
+	    // overloads, restored __oN instantiations — gets a concrete
+	    // overload-set entry, so resolved_call_funcdef ranks a 2-arg
+	    // aligned `operator new(size, align_val_t)` to operatornew__o2
+	    // instead of falling back to the 1-param base ("too many
+	    // arguments"). Ranking reads the FuncDef's parameters, so no
+	    // param spelling is needed; live conditions on restored state,
+	    // never a name special-case.
+	    if ( !pf.fd->function_display_name.empty() )
 	    {
-		variable_map_t &nsmap = namespace_map[pf.fd->namespace_name];
-		if ( nsmap.find(pf.fd->function_display_name) == nsmap.end() )
-		    nsmap[pf.fd->function_display_name] = fv;
 		std::string ovkey = pf.fd->namespace_name + "::"
 				  + pf.fd->function_display_name;
-		if ( fn_template_map.find(ovkey) != fn_template_map.end() )
+		if ( !pf.fd->namespace_name.empty() )
 		{
-		    std::vector<NamespaceFnOverload> &ovset =
-			namespace_fn_overload_sets[ovkey];
-		    bool seeded = false;
-		    for ( size_t oi = 0; oi < ovset.size(); ++oi )
-			if ( ovset[oi].var == fv )
-			    seeded = true;
-		    if ( !seeded )
-		    {
-			NamespaceFnOverload e;
+		    variable_map_t &nsmap = namespace_map[pf.fd->namespace_name];
+		    if ( nsmap.find(pf.fd->function_display_name) == nsmap.end() )
+			nsmap[pf.fd->function_display_name] = fv;
+		}
+		bool tmpl_placeholder = pf.fd->declaration_only
+		    && !pf.fd->namespace_name.empty()
+		    && fn_template_map.find(ovkey) != fn_template_map.end();
+		// A CONCRETE declaration-only C++ namespace function binds its
+		// external Itanium symbol via the Variable's storage_alias_name
+		// (parseFunction's tail, e.g. std::__throw_bad_alloc ->
+		// _ZSt17__throw_bad_allocv) — reproduce it; a placeholder never
+		// gets one on the live path.
+		if ( !tmpl_placeholder && pf.fd->declaration_only
+		  && !pf.fd->namespace_name.empty() )
+		    fv->storage_alias_name = namespace_cpp_function_symbol(
+			pf.fd->namespace_name, pf.fd->function_display_name, pf.fd);
+		std::vector<NamespaceFnOverload> &ovset =
+		    namespace_fn_overload_sets[ovkey];
+		bool known = false;
+		for ( size_t oi = 0; oi < ovset.size(); ++oi )
+		    if ( ovset[oi].var == fv )
+			known = true;
+		if ( !known )
+		{
+		    NamespaceFnOverload e;
+		    if ( tmpl_placeholder )
 			e.param_spelling = "\x01fn-template-placeholder";
-			e.var = fv;
-			ovset.push_back(e);
-		    }
+		    e.var = fv;
+		    ovset.push_back(e);
 		}
 	    }
 	}
@@ -12654,6 +12758,26 @@ void Program::flush_forest_pending_globals()
 	    << (pf.fd->is_varargs ? ", varargs" : "") << ")" << std::endl);
     }
     forest_pending_funcs.clear();
+    // v21: restored MEMBER function templates — re-run the live registration
+    // over the restored tokens (the serialized state IS the registration's
+    // input; running the one production path reproduces the pattern FuncDef,
+    // its Variable, the class attachment, and the __oN symbol continuity
+    // exactly as the producer's parse did).
+    for ( size_t i = 0; i < forest_pending_member_tmpls.size(); ++i )
+    {
+	PendingForestMemberTmpl &pm = forest_pending_member_tmpls[i];
+	if ( !pm.owner || pm.tokens.empty() )
+	    continue;
+	std::vector<bool> saved_pack = last_skipped_template_typeparam_is_pack;
+	last_skipped_template_typeparam_is_pack = pm.is_pack;
+	register_skipped_class_template_function(*this, pm.owner, pm.tokens,
+						 pm.typeparams, 0, std::string());
+	last_skipped_template_typeparam_is_pack = saved_pack;
+	DBG(std::cout << "flush_forest_pending_globals: member template of "
+	    << pm.owner->name << " (" << pm.typeparams.size()
+	    << " param(s), " << pm.tokens.size() << " tokens)" << std::endl);
+    }
+    forest_pending_member_tmpls.clear();
     for ( size_t i = 0; i < forest_pending_globals.size(); ++i )
     {
 	const PendingForestGlobal &pg = forest_pending_globals[i];

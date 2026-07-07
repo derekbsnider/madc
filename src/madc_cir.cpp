@@ -1443,6 +1443,86 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	     ci->second.defining_namespace, std::string(), NULL, 0,
 	     ci->second.typeparams, no_bools, no_bools,
 	     no_multi, no_toks, ci->second.constraint, no_multi);
+
+    // v21: body-bearing MEMBER function templates — the pattern state
+    // register_skipped_class_template_function leaves on a class's FuncDef
+    // (_Destroy_aux::__destroy, allocator_traits::construct, ...). The record
+    // carries the owner + params + the retained decl tokens (declarator +
+    // params + body, sans template<> header); load re-runs the SAME live
+    // registration over the restored tokens, so every derived field
+    // (return-token range, spellings, static/instance, ctor-hood) reproduces
+    // by the one production path. An owner not in the arena cleanly lacks.
+    for (funcdef_map_iter fi = prog->funcdef_map.begin();
+	 fi != prog->funcdef_map.end(); ++fi) {
+	FuncDef *fd = fi->second;
+	if (!fd || !fd->is_member_template || fd->member_template_decl.empty())
+	    continue;
+	DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
+	if (!owner)
+	    continue;
+	DataDefPTR *p0 = fd->parameters.empty()
+		       ? NULL : dynamic_cast<DataDefPTR *>(fd->parameters[0]);
+	bool instance = p0 && p0->base_type == owner;
+	emit(CIR_TMPLK_MEMBER, fi->first.c_str(), fd->method_display_name,
+	     std::string(), std::string(), owner,
+	     instance ? CIR_TMPLF_INSTANCE_METHOD : 0,
+	     fd->template_param_names, fd->template_param_is_type,
+	     fd->template_param_is_pack, no_multi,
+	     fd->member_template_decl, no_toks, no_multi);
+    }
+
+    // v21: out-of-line member DEFINITIONS of class templates (vector.tcc's
+    // `template<..> RET vector<..>::_M_realloc_insert(..){..}`) — the eighth
+    // pattern map. OUTER (class) params first, INNER (member-template) params
+    // flagged CIR_TMPLP_IS_INNER — a dedicated writer because the shared emit
+    // has one param list; the record/run layout is identical (body run +
+    // constraint run + one default run per param, so the generic reader
+    // applies).
+    for (std::map<std::string, std::vector<Program::OutOfLineMemberDef> >::iterator
+	     oi = prog->out_of_line_member_defs.begin();
+	 oi != prog->out_of_line_member_defs.end(); ++oi) {
+	for (size_t di = 0; di < oi->second.size(); ++di) {
+	    Program::OutOfLineMemberDef &d = oi->second[di];
+	    cir_forest_template_record r;
+	    memset(&r, 0, sizeof(r));
+	    r.kind    = CIR_TMPLK_OUTOFLINE;
+	    r.key_id  = pool.intern(oi->first);
+	    r.name_id = d.member_name.empty() ? 0 : pool.intern(d.member_name);
+	    r.flags   = d.is_member_template ? CIR_TMPLF_OOL_MEMBER_TMPL : 0;
+	    size_t total = d.typeparams.size() + d.inner_typeparams.size();
+	    std::vector<cir_forest_token_run> runs;
+	    runs.push_back(run_of(d.decl));
+	    runs.push_back(run_of(std::vector<TokenBase *>()));
+	    for (size_t i = 0; i < total; ++i)
+		runs.push_back(run_of(std::vector<TokenBase *>()));
+	    r.param_count = (uint32_t)total;
+	    r.spec_count  = 0;
+	    bool first = true;
+	    for (size_t i = 0; i < total; ++i) {
+		cir_forest_template_param p;
+		if (i < d.typeparams.size()) {
+		    p.name_id = pool.intern(d.typeparams[i]);
+		    p.pflags  = CIR_TMPLP_IS_TYPE;
+		} else {
+		    size_t j = i - d.typeparams.size();
+		    p.name_id = pool.intern(d.inner_typeparams[j]);
+		    p.pflags  = CIR_TMPLP_IS_INNER;
+		    if (j >= d.inner_is_type.size() || d.inner_is_type[j])
+			p.pflags |= CIR_TMPLP_IS_TYPE;
+		    if (j < d.inner_is_pack.size() && d.inner_is_pack[j])
+			p.pflags |= CIR_TMPLP_IS_PACK;
+		}
+		uint32_t off = madc::dis::pod_append(f.template_payload, p);
+		if (first) { r.param_begin = off; first = false; }
+	    }
+	    first = true;
+	    for (size_t i = 0; i < runs.size(); ++i) {
+		uint32_t off = madc::dis::pod_append(f.template_payload, runs[i]);
+		if (first) { r.run_begin = off; first = false; }
+	    }
+	    f.templates.push_back(r);
+	}
+    }
 }
 
 // B3: freeze-time COMPLETION of the arena copy staged in f.arena. Three
@@ -1668,6 +1748,62 @@ static void cir_forest_arena_refresh(Program *prog)
 		}
 		done = n;
 	}
+
+	// v21: ENUM types — a live parse leaves each C++ enum tag as a
+	// DataDefENUM in datatype_map (the namespace membership is stamped by
+	// the completion walk like any named record) and its SCOPED enumerators
+	// as constant Variables in the tag's pseudo-namespace
+	// (namespace_map["ns::Tag"] — TokenENUM::parse). Record the type as
+	// DK_ENUM at its project slot; the enumerators ride a constvalrec run;
+	// the pseudo-namespace key derives from canonical_cpp_spelling exactly
+	// as the live registration built it.
+	prog->datatype_map.for_each([&](const char *key, TokenDataType *&tdt) -> bool {
+		if (!tdt)
+			return false;
+		DataDefENUM *edd = dynamic_cast<DataDefENUM *>(&tdt->definition);
+		if (!edd || edd->name != key)
+			return false;	// an alias entry records at its tag only
+		uint32_t tid = madc_type_id_for(edd);
+		if (!madc::dis::arena_id_is_project(tid)
+		    || prog->forest_arena.has_def(tid))
+			return false;
+		madc::dis::defrec r;
+		memset(&r, 0, sizeof(r));
+		r.kind    = madc::dis::DK_ENUM;
+		r.name_id = prog->forest_arena.strings.intern(edd->name.c_str());
+		r.canon_id = edd->canonical_cpp_spelling.empty() ? 0u
+			   : prog->forest_arena.strings.intern(
+				edd->canonical_cpp_spelling.c_str());
+		r.size    = (uint32_t)edd->size;
+		// Scoped enumerators: the pseudo-namespace key is the canonical
+		// spelling when namespaced (std::__cmp_cat::_Ord), else the tag.
+		const std::string &pk = edd->canonical_cpp_spelling.empty()
+				      ? edd->name : edd->canonical_cpp_spelling;
+		std::map<std::string, variable_map_t>::iterator ni =
+			prog->namespace_map.find(pk);
+		std::vector<madc::dis::constvalrec> evs;
+		if (ni != prog->namespace_map.end())
+			for (variable_map_iter vi = ni->second.begin();
+			     vi != ni->second.end(); ++vi) {
+				Variable *ev = vi->second;
+				if (!ev || !ev->is_constant())
+					continue;
+				madc::dis::constvalrec cv;
+				memset(&cv, 0, sizeof(cv));
+				cv.name_id = prog->forest_arena.strings.intern(
+					vi->first.c_str());
+				uint64_t uv = (uint64_t)ev->get<int64_t>();
+				cv.val_lo = (uint32_t)(uv & 0xffffffffu);
+				cv.val_hi = (uint32_t)(uv >> 32);
+				evs.push_back(cv);
+			}
+		r.constval_begin = (uint32_t)prog->forest_arena.payload.size();
+		r.constval_count = (uint32_t)evs.size();
+		for (size_t e = 0; e < evs.size(); ++e)
+			prog->forest_arena.add_payload(evs[e]);
+		prog->forest_arena.set_def_at(tid, r);
+		return false;
+	});
 
 	// RC2: FREE FUNCTIONS — record each file-scope free function (the
 	// funcdef_map surface a live header parse leaves behind) as its own

@@ -1286,6 +1286,8 @@ static bool arena_chain_ok(const madc::dis::FrozenDefArena &a, uint32_t tid,
 		case madc::dis::DK_UNION:
 		case madc::dis::DK_CLASS:
 			return tid == self_id || recordable.count(tid) != 0;
+		case madc::dis::DK_ENUM:
+			return true;	// v21: enums materialize in pass 1a (leaves)
 		default:
 			return false;
 		}
@@ -1413,6 +1415,28 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		}
 		_mat_storage.push_back(sdd);
 		by_id[tid] = sdd;
+	}
+
+	// Pass 1a (v21): ENUM types — leaves of the type graph, allocated before
+	// the derived fixpoint so pointer/const chains over an enum resolve.
+	// Size + canonical spelling load verbatim (a scoped `: size_t` enum is 8
+	// bytes, not the ctor's int default).
+	for (uint32_t s = 0; s < nslots; ++s) {
+		uint32_t tid = madc::dis::arena_id_of(s);
+		madc::dis::defrec r;
+		if (!a.get_def_at(tid, r) || r.kind != madc::dis::DK_ENUM)
+			continue;
+		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
+		if (!nm || !*nm)
+			continue;
+		DataDefENUM *edd = new DataDefENUM(std::string(nm));
+		if (r.size)
+			edd->size = r.size;
+		if (r.canon_id)
+			if (const char *cn = a.c_str(r.canon_id))
+				edd->canonical_cpp_spelling = cn;
+		_mat_storage.push_back(edd);
+		by_id[tid] = edd;
 	}
 
 	// Pass 1b: derived types (pointer / reference / const), operand-before-
@@ -1725,6 +1749,41 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		_restored.push_back(rt);
 	}
 
+	// Pass 3b (v21): DK_ENUM records -> (name, ns, dd, enumerators). The
+	// DataDefENUM was allocated in pass 1a; the scoped enumerator values ride
+	// the record's constvalrec run and rebuild as constant Variables in the
+	// tag's pseudo-namespace on the parser side.
+	for (uint32_t s = 0; s < nslots; ++s) {
+		uint32_t tid = madc::dis::arena_id_of(s);
+		madc::dis::defrec r;
+		if (!a.get_def_at(tid, r) || r.kind != madc::dis::DK_ENUM)
+			continue;
+		std::map<uint32_t, DataDef *>::iterator ei = by_id.find(tid);
+		if (ei == by_id.end())
+			continue;
+		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
+		if (!nm || !*nm)
+			continue;
+		CirRestoredType rt;
+		rt.name       = nm;
+		rt.kind       = CIR_TYPEK_ENUM;
+		rt.dd         = ei->second;
+		rt.underlying = NULL;
+		rt.ns         = r.ns_id ? a.c_str(r.ns_id) : NULL;
+		for (uint32_t c = 0; c < r.constval_count; ++c) {
+			madc::dis::constvalrec cv;
+			if (!a.get_payload(r.constval_begin, c, cv))
+				break;
+			const char *en = cv.name_id ? a.c_str(cv.name_id) : NULL;
+			if (!en || !*en)
+				continue;
+			int64_t val = (int64_t)(((uint64_t)cv.val_hi << 32)
+					      | (uint64_t)cv.val_lo);
+			rt.enumerators.push_back(std::make_pair(en, val));
+		}
+		_restored.push_back(rt);
+	}
+
 	// RC2: restore file-scope FREE-FUNCTION declarations — every DK_FUNC
 	// flagged DF_IS_FREE_FUNC reconstructs as a declaration-only FuncDef
 	// (return + ALL params swizzled through the same by_id; a free function
@@ -1768,6 +1827,12 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			DataDef *pd = arena_swizzle(pr.type_id, by_id);
 			if (!pd) { pok = false; break; }
 			fd->parameters.push_back(pd);
+			// v21: the C++ param spelling rides the record — the
+			// Itanium mangle of a declaration-only ns function
+			// (storage_alias_name at flush) reads it.
+			const char *ps = pr.cpp_spelling_id
+				       ? a.c_str(pr.cpp_spelling_id) : NULL;
+			fd->param_cpp_spellings.push_back(ps ? ps : "");
 		}
 		if (!pok)
 			continue;

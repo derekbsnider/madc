@@ -615,8 +615,38 @@ if [ "$vec_sets_diverge" != "0" ]; then
     rm -f "$vec_snap" "$vec_gcc" "$vec_vlog" "$vec_live_mir" "$vec_bind_mir"
     fail "[vecbind] bound <vector> item sets diverge from live (see above)"
 fi
-rm -f "$vec_snap" "$vec_gcc" "$vec_vlog" "$vec_live_mir" "$vec_bind_mir"
+rm -f "$vec_gcc" "$vec_vlog" "$vec_live_mir" "$vec_bind_mir"
 echo "forest_bind_gate: [vecbind] OK — std::vector<int> bound from <vector> grove (template-name state restored, no re-parse); func/export/import sets == live, output == live == g++"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind + strops + vecbind grove headers bound (no re-parse), output == live == g++"
+# --- case: vecnewspec (new-specialization instantiation from restored tokens) ---
+# The consumer instantiates a specialization the producer NEVER built
+# (vector<long> from a vector<int> producer): template-name resolution, the
+# ns-fn-template placeholder chain (std::_Destroy), member-template patterns
+# (_Destroy_aux::__destroy), enums (std::align_val_t), out-of-line member
+# definitions (vector.tcc _M_realloc_insert), overload-set ranking (aligned
+# operator new) and Itanium-bound throw helpers all run from restored state.
+# Reuses the vecbind producer snapshot ($vec_snap — freeze once, bind twice).
+vec_ns_cons="tmp/fbgate_vec_ns_consumer.cpp"
+vec_ns_gcc="tmp/fbgate_vec_ns_gcc"
+cat > "$vec_ns_cons" <<'EOF'
+#include <vector>
+#include <cstdio>
+int main() { std::vector<long> w; w.push_back(40); w.push_back(2); long t = 0; for (int i = 0; i < (int)w.size(); i++) t += w[i]; printf("t=%ld n=%d\n", t, (int)w.size()); return 0; }
+EOF
+vec_ns_live=$(timeout 120 "$BIN" "$vec_ns_cons" 2>/dev/null)
+[ "$vec_ns_live" = "t=42 n=2" ] || fail "[vecnewspec] live-parse output '$vec_ns_live' != 't=42 n=2'"
+if command -v g++ >/dev/null 2>&1; then
+    if timeout 120 g++ "$vec_ns_cons" -o "$vec_ns_gcc" >/dev/null 2>&1; then
+        vec_ns_gcc_out=$("$vec_ns_gcc" 2>/dev/null)
+        [ "$vec_ns_gcc_out" = "t=42 n=2" ] || fail "[vecnewspec] g++ output '$vec_ns_gcc_out' != 't=42 n=2'"
+    else
+        fail "[vecnewspec] g++ compile FAILED"
+    fi
+fi
+vec_ns_bind=$(timeout 120 "$BIN" --forest-bind="$vec_snap" "$vec_ns_cons" 2>/dev/null)
+[ "$vec_ns_bind" = "t=42 n=2" ] || fail "[vecnewspec] bind output '$vec_ns_bind' != 't=42 n=2' (== live == g++; new-spec instantiation from restored tokens regressed?)"
+rm -f "$vec_snap" "$vec_ns_cons" "$vec_ns_gcc"
+echo "forest_bind_gate: [vecnewspec] OK — NEW specialization (vector<long>) instantiated from restored tokens, output == live == g++"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind + strops + vecbind + vecnewspec grove headers bound (no re-parse), output == live == g++"
 exit 0

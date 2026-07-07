@@ -285,28 +285,67 @@ output + item-SET identity; strbind/strops whole-TU byte-identity UNREGRESSED); 
 test_cir_arena 11/316; fulltest **680/0/0/16 exit 0** (+ selfexe + oracles); torture byte-identical BY
 CONSTRUCTION (every changed path reachable only via --freeze/--forest-bind/forest_arena_enabled — no
 normal-path reshape).
-**NEXT — WIDENING SLICE 3 (measured): NEW-SPECIALIZATION instantiation from restored tokens.** A
-`vector<long>` consumer (tmp/b23w_vec_newspec.cpp, expect `t=42 n=2`) now resolves the template name,
-memo-misses correctly (a genuinely new product), instantiates from the restored tokens, resolves
-`typedef std::size_t size_type;` (gap 6), and fails DEEPER: "Expecting member name in class definition"
-in the __new_allocator body region (new_allocator.h:130-ish). The remaining tail = restored-token
-instantiation completeness — likely: attribute/decl forms in restored bodies, member-template PATTERN
-restore (FuncDef::member_template_decl tokens + DF_IS_MEMBER_TEMPLATE methods restored AS patterns,
-register_skipped_class_template_function state), namespace_fn_overload_sets placeholders + __oN counter
-continuity (a consumer's own fn-template instantiation must not collide with restored __oN symbols).
-Measure-first discipline: run the newspec reducer, fix the next loaded-state gap, repeat; gate = newspec
-output == live == g++. THEN the reordered backlog: whole-TU byte-identity for vecbind (proto/label
-NUMBERING order — investigate the m_output_externs flush position + proto creation order vs live);
-(3) polymorphic classes (vtable/typeinfo — <iostream>); (4) beyond-v6 method coverage + inline
-free-function BODIES (freeze-time completeness: force-materialize deferred bodies, invariant 4);
-(5) the user-header-origin note (eager path emits only the REFERENCED subset of bound user-class
-methods; live emits every parsed non-system fn as a root — unobserved divergence); (6) ~411
-write-throughs retiring `cir_forest_arena_refresh`; (7) enums. Diagnostics: `tmp/tmpl_probe.cpp`
-(gitignored — dumps restored template records + restored-type ns view by name filter; same build line
-as or_probe); `tmp/or_probe.cpp` (v18+ API — per-class arena METHOD records; build: g++ -I include
--I /workspace/mir -I /workspace/mir/c2mir tmp/or_probe.cpp -Wl,--whole-archive lib/libmadc.a
--Wl,--no-whole-archive /workspace/mir/libmir.a -rdynamic -ldl -lz -lm -lpthread); `tmp/b23w_*` = the
-widening reducers (str rich + vec exact + vec newspec).
+**WIDENING SLICE 3 PART 1 DONE @ `32783aa6` (2026-07-07, gated green, format v21): token-codec
+keyword fidelity + the skipped-ns-fn-template PLACEHOLDER surface.** Measured from the newspec
+reducer (tmp/b23w_vec_newspec.cpp — vector<long> from a vector<int> producer). Two loaded-state
+gaps fell: (1) **.madh token-codec keyword degradation** (src/pch.cpp) — deserialize_tokens had no
+tkFRIEND case and CANNOT rebuild tkCPPKEYWORD by id alone (one shared ID; the spelling is the
+identity), so `friend` + every version-gated reserved keyword (virtual/explicit/public/…) came back
+as plain TokenIdent. The whole-stream .madh include path masked it for years (its replay re-promotes
+via keyword_map); the v20 pattern runs load verbatim and hit it — a restored allocator<T> body's
+in-class `friend` operator== read as a member name ("Expecting member name in class definition",
+file misattributed to the consumer / line = allocator.h's). Fixed IN THE CODEC (both consumers).
+(2) **the placeholder surface**: v20 restored fn_template_map["std::_Destroy"] PATTERNS but not the
+resolution chokepoint a live parse leaves — register_skipped_namespace_template_function's
+placeholder (funcdef_map["__ns_std__Destroy"], declaration-only + function_display_name +
+namespace_name), the namespace_map["std"]["_Destroy"] binding the qualified call site reads, and the
+namespace_fn_overload_sets seed (also keeps instantiations minting fresh __oN — base-symbol
+continuity). SAVE: the RC2 walk records declaration-only+display entries; DF_IS_FREE_FUNC records
+carry disp_id=function_display_name + ns_id=namespace_name; record_func serializes
+inline_builtin_kind + the identity-return deduce pattern (defrec +3 words: builtin_kind_id /
+tret_name_id / tret_arg_index + DF_TRET_* flags — the bodied __oN restores were dropping these too).
+LOAD: materialize reads them verbatim; the flush reproduces the registration-site state (first-wins
+ns binding + seed iff restored fn_template_map retains ns::display — live conditions on restored
+state). Gates: bind gate 13/13 (strbind/strops whole-TU byte-identity UNREGRESSED with the wider
+funcdef population), test_cir_freeze 31/546 (new v21 case), test_cir_arena 11/316, fulltest exit 0;
+torture by construction (codec reached only via .madh/forest loads; flush no-op on live compile).
+**🏛️ COURSE CORRECTION (owner, 2026-07-07, BINDING): NO MORE BESPOKE RECORD FAMILIES.** The
+v19→v20→v21 pattern — a new hand-serialized segment/record family + format bump per newly-discovered
+parser map — is the WRONG SHAPE (the Clang-PCH enumerate-everything treadmill; unbounded). The
+elegant model is the one already chosen at B3: **state lives in the arena/substrate; SAVE = dump,
+LOAD = mmap; anything stored there serializes for free, by construction** (the GCC-PCH model). From
+now on EVERY remaining loaded-state gap is fixed by moving that state INTO the substrate (arena
+records / intern pool / TokenRec-style flat storage), NOT by adding record kind #9. This also
+retires the "phases/slices" proliferation: the remaining work is ONE bounded conversion of the
+finite set of Program/DataDef/FuncDef containers a header parse populates.
+**NEW-SPECIALIZATION INSTANTIATION WORKS (2026-07-07, same day, second commit): the newspec
+reducer is GREEN — `vector<long>` from a `vector<int>` producer runs `t=42 n=2` == live == g++.**
+Four more save-file regions (the emulator model: state the save did not yet include), all landed
+in one batch, no machinery changed: (1) MEMBER function templates (CIR_TMPLK_MEMBER — pattern
+tokens + owner + params; the flush re-runs register_skipped_class_template_function over the
+restored tokens, so every derived field reproduces by the one production path); (2) ENUMS
+(DK_ENUM in the DefArena + constvalrec enumerator runs; datatype_map + ns registration + scoped
+enumerators as constant Variables; enum-typed members/pointers now pass the arena chain test);
+(3) OUT-OF-LINE member definitions of class templates (CIR_TMPLK_OUTOFLINE — the EIGHTH pattern
+map, out_of_line_member_defs, vector.tcc's _M_realloc_insert; outer+inner params in one table
+split by CIR_TMPLP_IS_INNER; direct map insert); (4) restored concrete declarations' OVERLOAD-SET
+entries + Itanium binding (namespace_fn_overload_sets entry per display-bearing restored fn —
+aligned `operator new(size, align_val_t)` ranks to __o2; storage_alias_name via
+namespace_cpp_function_symbol + param_cpp_spellings restored from paramrec — __throw_bad_alloc →
+_ZSt17__throw_bad_allocv). Measured burn-down: friend-keyword codec → placeholder → __destroy →
+align_val_t → too-many-arguments → _M_realloc_insert import → __throw_* imports → GREEN.
+**NEXT (the owner's decision point — measure before more coverage):** wire/measure the real-
+workload compile-time win (the --project SMAUG build, the 51-TU corpus) with the forest binding
+what it covers and live-parsing the rest. Coverage backlog only if the measurement demands:
+vec whole-TU byte-identity (proto/label NUMBERING order), polymorphic classes (<iostream>),
+beyond-v6 coverage + free-fn bodies, user-header note, ~411 write-throughs retiring
+cir_forest_arena_refresh. Fix shape for any new gap: move the state into the substrate (the
+course correction above) — never a new bespoke record family.
+Diagnostics: `tmp/tmpl_probe.cpp` (gitignored — dumps restored template records + restored-type ns
+view by name filter; same build line as or_probe); `tmp/or_probe.cpp` (v18+ API — per-class arena
+METHOD records; build: g++ -I include -I /workspace/mir -I /workspace/mir/c2mir tmp/or_probe.cpp
+-Wl,--whole-archive lib/libmadc.a -Wl,--no-whole-archive /workspace/mir/libmir.a -rdynamic -ldl -lz
+-lm -lpthread); `tmp/b23w_*` = the widening reducers (str rich + vec exact + vec newspec).
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 
