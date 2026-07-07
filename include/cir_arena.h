@@ -106,6 +106,11 @@ enum DefFlags : uint32_t {
 	DF_IS_MEMBER_TEMPLATE = 1u << 15,	// FuncDef::is_member_template / template_param_names
 						// non-empty — a template method instantiates no
 						// concrete symbol; load skips it (the v6 rule)
+	DF_IS_FREE_FUNC      = 1u << 16,	// RC2: a file-scope FREE function (not a class
+						// method) — name_id is its funcdef_map key / call
+						// name; load restores funcdef_map + a program-scope
+						// Variable so a bound call resolves the real
+						// signature instead of the dlsym variadic fallback
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live

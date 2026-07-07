@@ -12408,6 +12408,24 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	pg.init_value = rg.init_value;	// v14: scalar integer init
 	forest_pending_globals.push_back(pg);
     }
+
+    // RC2: stage the bound header's file-scope FREE-FUNCTION declarations. A live
+    // parse leaves each prototype as funcdef_map[name] + a program-scope Variable
+    // whose data is a Method (parseFunction's declaration tail) — the Variable
+    // needs tkProgram, so registration defers to the same post-tkProgram flush as
+    // the globals. Restoring the real signature is what keeps a bound call off
+    // the dlsym implicit-variadic fallback (a signed-int return read as a 64-bit
+    // long is a real miscompile — the bsearch_skill_exact class of bug).
+    const std::vector<CirRestoredFunc> &funcs = forest.restored_funcs();
+    for ( size_t i = 0; i < funcs.size(); ++i )
+    {
+	if ( !funcs[i].name || !*funcs[i].name || !funcs[i].fd )
+	    continue;
+	PendingForestFunc pf;
+	pf.name = funcs[i].name;
+	pf.fd   = funcs[i].fd;
+	forest_pending_funcs.push_back(pf);
+    }
 }
 
 // Flush the staged forest globals into tkProgram->variables + dkGlobalVar TopDecls
@@ -12415,8 +12433,35 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 // a global already present (a user redeclaration, or a second flush) is skipped.
 void Program::flush_forest_pending_globals()
 {
-    if ( !tkProgram || forest_pending_globals.empty() )
+    if ( !tkProgram
+	 || (forest_pending_globals.empty() && forest_pending_funcs.empty()) )
 	return;
+
+    // RC2: register the staged free-function declarations exactly as
+    // parseFunction's prototype tail does — funcdef_map[name] + a program-scope
+    // Variable whose data is a Method. The flush runs at the end of tokenize(),
+    // BEFORE the consumer parses, so a call site resolves the real signature
+    // (never the dlsym implicit-variadic fallback) and Pass 0.75 emits the real
+    // extern proto — the same pre-consumer state a live header parse leaves.
+    // A name already present (an embedded-header registration, or a second
+    // flush) is skipped — first registration wins, as on the live path.
+    for ( size_t i = 0; i < forest_pending_funcs.size(); ++i )
+    {
+	const PendingForestFunc &pf = forest_pending_funcs[i];
+	if ( !pf.fd || pf.name.empty() )
+	    continue;
+	if ( funcdef_map.find(pf.name) != funcdef_map.end() )
+	    continue;
+	if ( findVariable(pf.name) )
+	    continue;
+	funcdef_map[pf.name] = pf.fd;
+	Variable *fv = addVariable(NULL, *pf.fd, pf.name);
+	fv->data = (void *)new Method(*fv);
+	DBG(std::cout << "flush_forest_pending_globals: free function " << pf.name
+	    << " (" << pf.fd->parameters.size() << " params"
+	    << (pf.fd->is_varargs ? ", varargs" : "") << ")" << std::endl);
+    }
+    forest_pending_funcs.clear();
     for ( size_t i = 0; i < forest_pending_globals.size(); ++i )
     {
 	const PendingForestGlobal &pg = forest_pending_globals[i];

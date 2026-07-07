@@ -1376,6 +1376,42 @@ static void cir_forest_arena_refresh(Program *prog)
 		}
 		done = n;
 	}
+
+	// RC2: FREE FUNCTIONS — record each file-scope free-function DECLARATION
+	// (the funcdef_map surface a live header parse leaves behind) as its own
+	// DK_FUNC, flagged DF_IS_FREE_FUNC with name_id = the funcdef_map key (the
+	// call name). Same interim freeze-time capture as the aggregates above
+	// (a parseFunction write-through is part of the ~411-site rollout).
+	// Runs AFTER the aggregate fixpoint so every METHOD FuncDef already has
+	// its DK_FUNC record (recorded via its class) and is skipped structurally
+	// by has_def. Selection mirrors what the flip restores elsewhere:
+	// prototypes only (a bodied function — including the producer's own
+	// main() — is slice-2 territory alongside the inline-method body model),
+	// no tracked C++ overload symbols (function_display_name set), no
+	// templates. A skipped function keeps today's behavior (dlsym fallback).
+	for (funcdef_map_iter it = prog->funcdef_map.begin();
+	     it != prog->funcdef_map.end(); ++it) {
+		FuncDef *fd = it->second;
+		if (!fd || it->first.empty())
+			continue;
+		if (!fd->declaration_only)
+			continue;
+		if (!fd->function_display_name.empty())
+			continue;
+		if (fd->is_member_template || !fd->template_param_names.empty())
+			continue;
+		uint32_t tid = madc_type_id_for(fd);
+		if (!madc::dis::arena_id_is_project(tid)
+		    || prog->forest_arena.has_def(tid))
+			continue;	// already recorded = a class's method
+		prog->forest_arena_record_func(fd);
+		madc::dis::defrec r;
+		if (!prog->forest_arena.get_def_at(tid, r))
+			continue;
+		r.name_id = prog->forest_arena.strings.intern(it->first.c_str());
+		r.flags  |= madc::dis::DF_IS_FREE_FUNC;
+		prog->forest_arena.set_def_at(tid, r);
+	}
 }
 
 int madc_cir_freeze(Program *prog, const char *source_name,

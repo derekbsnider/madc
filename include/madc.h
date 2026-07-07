@@ -2763,7 +2763,13 @@ public:
     // name/type/flags are the loaded CirRestoredGlobal fields (type owned by the forest).
     struct PendingForestGlobal { std::string name; DataDef *type; uint32_t flags; uint32_t gflags; int64_t init_value; };
     std::vector<PendingForestGlobal> forest_pending_globals;
-    void flush_forest_pending_globals();	// build Variable + dkGlobalVar TopDecl (post-tkProgram)
+    // RC2: free-function declarations restored from a bound header. Same deferral
+    // as the globals — the Variable lives in tkProgram scope, so registration
+    // (funcdef_map + addVariable + Method, the parseFunction prototype shape)
+    // waits for the post-tkProgram flush. The FuncDef is owned by the forest.
+    struct PendingForestFunc { std::string name; FuncDef *fd; };
+    std::vector<PendingForestFunc> forest_pending_funcs;
+    void flush_forest_pending_globals();	// build Variable + dkGlobalVar TopDecl (post-tkProgram); also registers pending free functions
     std::vector<uint32_t> forest_chain;		// bound units, include order (bind-order record)
     std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune
     std::set<uint32_t> forest_bind_walking;	// units on the in-flight bind recursion (cycle break)

@@ -460,8 +460,17 @@ if ! grep -Eq "^in_place:[[:space:]]+bss" "$strbind_mir"; then
 	rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
 	fail "[strbind] bound <string> did NOT restore the in_place global var (v16 regressed)"
 fi
+# RC2: a bound header restores its free-function DECLARATIONS, so the consumer's
+# printf call resolves the real `int printf(const char *, ...)` signature and its
+# extern proto emits TYPED (i32 return + typed pointer first param) exactly like
+# live — never the dlsym implicit-variadic fallback (`i64, ...`), which mis-reads
+# a signed-int return as a 64-bit long (the bsearch_skill_exact bug class).
+if ! grep -Eq "proto[[:space:]]+i32, u64:U0_p0, \.\.\." "$strbind_mir"; then
+    rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
+    fail "[strbind] bound printf did NOT get its typed proto (free-function restore / RC2 regressed)"
+fi
 rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
-echo "forest_bind_gate: [strbind] OK — std::string bound from <string> grove (no re-parse); construct+assign+size+destroy + scalar globals emitted + no synth-dtor overshoot, output == live == g++"
+echo "forest_bind_gate: [strbind] OK — std::string bound from <string> grove (no re-parse); construct+assign+size+destroy + scalar globals + typed printf proto + no synth-dtor overshoot, output == live == g++"
 
 echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind grove headers bound (no re-parse), output == live == g++"
 exit 0

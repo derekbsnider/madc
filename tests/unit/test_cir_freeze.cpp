@@ -1990,3 +1990,92 @@ TEST_CASE("B3 flip chunk 1: the dumped arena carries typedefs, namespace ids, an
 	CHECK(r_counter);
 	CHECK(r_pderiv);
 }
+
+// ---------------------------------------------------------------------------
+// RC2: file-scope FREE-FUNCTION declarations freeze into the arena (DK_FUNC +
+// DF_IS_FREE_FUNC, name = the funcdef_map key) and restore as declaration-only
+// FuncDefs — so a bound call resolves the real signature (typed extern proto)
+// instead of the dlsym implicit-variadic fallback. Slice 1 = prototypes only:
+// a BODIED function (an inline helper, or the producer's own main) must NOT
+// restore — the inline free-function body model is the follow-on.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("RC2: free-function prototypes freeze into the arena and restore") {
+	std::string inc_path = std::string("/tmp/madc_rc2_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_rc2_main_")
+			      + std::to_string((long)getpid()) + ".cpp";
+	std::string snap_path = std::string("/tmp/madc_rc2_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "int rc2_vprobe(const char *fmt, ...);\n"
+		       "unsigned long rc2_len(const char *s);\n"
+		       "static inline int rc2_inline(int v) { return v + 1; }\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { return rc2_inline(0); }\n";
+	}
+
+	std::shared_ptr<Program> prog = std::make_shared<Program>();
+	prog->pack_recording = true;		// as --freeze sets (madc.cpp)
+	prog->forest_arena_enabled = true;	// B3 (v18+): the arena IS the type-graph dump
+	TokenProgram *tp = prog->tokenize(main_path.c_str());
+	REQUIRE(tp != nullptr);
+	REQUIRE(prog->parse(tp));
+	REQUIRE(madc_cir_freeze(prog.get(), main_path.c_str(),
+				snap_path.c_str(), /*append=*/false) == 0);
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+	forest.materialize_from_arena();
+
+	const std::vector<CirRestoredFunc> &fns = forest.restored_funcs();
+	const CirRestoredFunc *vprobe = NULL, *len = NULL;
+	bool saw_inline = false, saw_main = false;
+	for (size_t i = 0; i < fns.size(); ++i) {
+		if (!fns[i].name)
+			continue;
+		std::string nm(fns[i].name);
+		if (nm == "rc2_vprobe") vprobe = &fns[i];
+		if (nm == "rc2_len")    len = &fns[i];
+		if (nm == "rc2_inline") saw_inline = true;
+		if (nm == "main")       saw_main = true;
+	}
+	// The two prototypes restore with their REAL signatures.
+	REQUIRE(vprobe != NULL);
+	REQUIRE(vprobe->fd != NULL);
+	CHECK(vprobe->fd->declaration_only);
+	CHECK(vprobe->fd->is_varargs);
+	// The live parse stores [const char*, hidden ddINT64 __va_args slot] for a
+	// `(const char *, ...)` prototype — the restore reproduces that verbatim.
+	REQUIRE(vprobe->fd->parameters.size() == 2);
+	{
+		bool p0_ptr = vprobe->fd->parameters[0]
+			   && vprobe->fd->parameters[0]->is_pointer();
+		CHECK(p0_ptr);
+		bool p1_va = vprobe->fd->parameters[1]
+			  && vprobe->fd->parameters[1]->size == 8;
+		CHECK(p1_va);
+		// int return — 4-byte integer, NOT the fallback's 64-bit long.
+		CHECK(vprobe->fd->return_value_type().size == 4);
+	}
+	REQUIRE(len != NULL);
+	REQUIRE(len->fd != NULL);
+	CHECK(len->fd->declaration_only);
+	CHECK(!len->fd->is_varargs);
+	REQUIRE(len->fd->parameters.size() == 1);
+	CHECK(len->fd->return_value_type().size == 8);
+	// BODIED functions never restore in slice 1 (declaration_only filter):
+	// not the header's inline helper, not the producer's own main().
+	CHECK(!saw_inline);
+	CHECK(!saw_main);
+}

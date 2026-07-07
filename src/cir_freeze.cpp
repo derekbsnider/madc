@@ -1554,6 +1554,55 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		_restored.push_back(rt);
 	}
 
+	// RC2: restore file-scope FREE-FUNCTION declarations — every DK_FUNC
+	// flagged DF_IS_FREE_FUNC reconstructs as a declaration-only FuncDef
+	// (return + ALL params swizzled through the same by_id; a free function
+	// has no hidden __this, so the params run is consumed whole). A signature
+	// the arena cannot resolve cleanly LACKS — the bound call then keeps
+	// today's dlsym-fallback behavior, exactly like every partial-restore
+	// case. Bodied / template / overload-symbol functions were filtered at
+	// record time (slice 1 = prototypes; inline free-function bodies are the
+	// follow-on alongside the inline-method body model).
+	for (uint32_t s = 0; s < nslots; ++s) {
+		madc::dis::defrec r;
+		if (!a.get_def_at(madc::dis::arena_id_of(s), r)
+		    || r.kind != madc::dis::DK_FUNC
+		    || !(r.flags & madc::dis::DF_IS_FREE_FUNC))
+			continue;
+		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
+		if (!nm || !*nm)
+			continue;
+		if (r.flags & madc::dis::DF_HAS_FOREST_BODY)
+			continue;	// slice-1 safety: prototypes only
+		DataDef *ret = arena_swizzle(r.ref0, by_id);
+		if (!ret)
+			continue;
+		FuncDef *fd = new FuncDef(*ret);
+		_mat_storage.push_back(fd);
+		bool pok = true;
+		for (uint32_t p = 0; p < r.params_count; ++p) {
+			madc::dis::paramrec pr;
+			if (!a.get_payload(r.params_begin, p, pr)) {
+				pok = false; break;
+			}
+			DataDef *pd = arena_swizzle(pr.type_id, by_id);
+			if (!pd) { pok = false; break; }
+			fd->parameters.push_back(pd);
+		}
+		if (!pok)
+			continue;
+		if (r.emit_symbol_id)
+			if (const char *es = a.c_str(r.emit_symbol_id))
+				fd->emit_symbol = es;
+		fd->is_varargs       = (r.flags & madc::dis::DF_IS_VARARGS) != 0;
+		fd->is_void_params   = (r.flags & madc::dis::DF_IS_VOID_PARAMS) != 0;
+		fd->declaration_only = true;
+		CirRestoredFunc rf;
+		rf.name = nm;
+		rf.fd   = fd;
+		_restored_funcs.push_back(rf);
+	}
+
 	// v13/v14: restore file-scope global VARIABLE definitions — swizzle each
 	// record's type_id back to a DataDef* through the arena reconstruct (the
 	// same pinned-or-by_id dispatch as a member / base / param reference; the
