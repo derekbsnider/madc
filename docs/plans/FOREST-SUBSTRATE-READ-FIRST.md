@@ -339,6 +339,18 @@ it to the END of the madc binary** (the machinery exists: B3 append-to-binary + 
 loader + forest_selfexe_gate) — then EVERY compile binds every system header with zero flags.
 The per-file `--freeze`/`--forest-bind` flow is the TEST HARNESS for that product, not the
 product. What stands between here and it is COVERAGE, measured on real tests.
+**LAZY DEFROST (NOT new — THE STANDING PLAN, re-surfaced here because sessions kept
+re-deriving it: `docs/plans/2026-06-22-embedded-header-forest-execution-plan.md` + the
+2026-06-13 embedded-AST design are the source): the whole forest is frozen/embedded, but only
+what a compile NEEDS is loaded and defrosted.** The substrate already supports this by design
+(mmap pages fault in on touch; records are id/name-indexed; the decl index maps names → records
+— forest_index_oracle covers registered lookups), and per-#include unit binding is already
+demand-driven. The gap: today's forest_restore_decls defrosts the WHOLE container's state
+EAGERLY on first bind (all types/templates/funcdefs/globals) — right for a per-test snapshot,
+wrong for the whole corpus. For the product, materialization must become LOOKUP-DRIVEN
+(defrost a class/template/function when its name resolves or its unit binds — resolve-on-touch
+at the symbol-table edge, the same model as the cir_node thaw). Do NOT build a parallel lazy
+path beside the eager one — make the one restore path demand-keyed.
 **OWNER'S BAR for "working": real tests run on the forest** (e.g.
 `bin/madc --freeze=tmp/sub.msnap tests/testsubscript.mad` then
 `bin/madc --forest-bind=tmp/sub.msnap tests/testsubscript.mad` == live == .expect). HONEST
