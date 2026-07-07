@@ -186,13 +186,27 @@ type-registration-order issue (the arena's decl-order registration is in); (b) *
 bind's `printf` proto is the dlsym implicit-variadic fallback (`i64, ...`) vs live's real `i32(const char*,...)`
 (the funcdef_map/free-function record kind, the planned post-flip addition — also a latent signed-int
 correctness bug per embedded-headers.md, so it is the FIRST post-flip item).
-**NEXT (post-flip backlog, in priority order):** (1) RC2 — free-function records (funcdef_map serialization; a
-new arena DK record kind or methodrec-like run; closes the printf proto + the signed-int latency + most of the
-remaining #23 diff); (2) the late-pass ctor/dtor emission-order divergence (bind vs live pass behavior);
-(3) widening past the v6 selection (polymorphic classes, template methods, beyond-v6 method coverage) gated vs
-LIVE; (4) converting the remaining ~411 mutation sites to true write-throughs, retiring
-`cir_forest_arena_refresh`; (5) enums. Diagnostics: `tmp/or_probe.cpp` (gitignored) dumps arena records + the
-restore view for a name filter; `tmp/c3_str.diff` / `tmp/c3_{live,bind}.dump` hold the #23 residual measurement.
+**RC2 COMPLETE @ `30041aca` (2026-07-07, gated green, pushed): free-function DECLARATIONS serialize +
+restore (format v19).** SAVE = `cir_forest_arena_refresh` walks funcdef_map AFTER the aggregate fixpoint
+(methods skip via has_def), records each prototype via forest_arena_record_func + stamps DF_IS_FREE_FUNC +
+name_id = the funcdef_map key; slice-1 selection skips bodied fns (incl. the producer's main), overload
+symbols (function_display_name set), templates — skipped = today's dlsym behavior. LOAD =
+materialize_from_arena reconstructs each as a declaration-only FuncDef (ALL params — no __this; unresolvable
+sig cleanly lacks) into `restored_funcs()`; forest_restore_decls stages, `flush_forest_pending_globals`
+registers pre-consumer-parse exactly as parseFunction's prototype tail (funcdef_map + addVariable + Method).
+RESULT: bound printf emits live's typed `proto i32, u64:U0_p0, ...` (was the dlsym `i64, ...` fallback — the
+signed-int miscompile class); whole-TU diff 126→122, func/export/data SETS still byte-identical. GOTCHA
+banked: a `(T, ...)` prototype's live FuncDef carries a hidden ddINT64 `__va_args` slot as an EXTRA param —
+restore verbatim, assert 2 params not 1. Gates: fulltest 680/0/0/16; bind 11/11 (strbind now asserts the
+typed printf proto); selfexe; test_cir_freeze 28/463; torture by construction (freeze/bind-only reach).
+**NEXT (post-flip backlog, in priority order):** (1) the late-pass ctor/dtor emission-order divergence (bind
+vs live pass behavior — Pass 1.5/1.6/1.9x late lists relative to `main` + the protoN renumber cascade; also a
+dtor-proto param-name nuance `U0_p0` vs `U0___this`) — closes #23 fully, then the strbind gate can assert
+whole-TU byte-identity; (2) widening past the v6 selection (polymorphic classes, template methods, beyond-v6
+method coverage, inline free-function BODIES) gated vs LIVE; (3) converting the remaining ~411 mutation sites
+to true write-throughs, retiring `cir_forest_arena_refresh`; (4) enums. Diagnostics: `tmp/or_probe.cpp`
+(gitignored) dumps arena records + the restore view for a name filter; `tmp/rc2_str.diff` /
+`tmp/rc2_{live,bind}.dump` hold the current #23 residual measurement.
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 

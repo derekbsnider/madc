@@ -4,6 +4,29 @@
 
 ### Data-substrate Track B — the embedded header forest
 
+- **B3 ARENA FLIP (Chunks A/1/2/3, format v18) — the DefArena IS the type-graph
+  serialization.** SAVE = dump the parse-populated arena (write-throughs at the
+  type-completion funnels + a freeze-time refresh/completion pass); LOAD =
+  `materialize_from_arena` reconstructs the DataDef graph applying the retired
+  v6 save-side selection at load. The v6 hand-serializer
+  (`cir_forest_fill_type_records` + `materialize_types` + the
+  `cir_forest_type_*` record family + the CIR_TYPE_RECORDS/PAYLOAD segments +
+  the transition oracle) is DELETED — net −1,291 LOC; a new DataDef field now
+  serializes by adding it to one POD record. Fixed along the way: struct→class
+  promotion left the live id table resolving the superseded struct
+  (`id_table::set` + repoint); `--freeze-run` never enabled the arena
+  (`madc_cir_freeze` now fails loudly on a flag-off freeze). Task #23: the
+  whole-`<string>`-TU func/export/data SETS are byte-identical between a bound
+  and a live compile; the residual dump diff is the late-pass ctor/dtor
+  emission order.
+- **RC2 (format v19) — free-function declarations serialize + restore.** A
+  bound header's file-scope prototypes (`int printf(const char *, ...)` et al.)
+  now restore as `funcdef_map` + program-scope Variables before the consumer
+  parses, so a bound call resolves the real signature and emits live's typed
+  extern proto — never the dlsym implicit-variadic fallback (`i64, ...`), which
+  mis-read a signed-`int` return as a 64-bit long (the `bsearch_skill_exact`
+  bug class). Gates: fulltest 680/0/0/16; forest_bind_gate 11/11 (strbind now
+  asserts the typed printf proto); torture failset byte-identical.
 - **B4a — grove payload v2 + pack-time recording + oracles + build modes**
   (forest Phase 4 slice a): the format + pack side of forest-default mode;
   no consumption yet (suite-neutral). The frozen container gains grove
