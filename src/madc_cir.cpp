@@ -896,8 +896,14 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 
 	// --- members (resolve every member type-id first; then the contiguous run) ---
 	std::vector<uint32_t> mt(sdd->members.size());
-	for (size_t i = 0; i < sdd->members.size(); ++i)
+	for (size_t i = 0; i < sdd->members.size(); ++i) {
 		mt[i] = forest_serialize_type_id(sdd->members[i].second);
+		// v22: a fn-ptr member type (ios_base's _Callback_list::_M_fn) has
+		// no completion funnel of its own — record it (+ its target
+		// signature) here, BEFORE this record's runs begin, so the nested
+		// DK_FUNC param run stays contiguous.
+		forest_arena_record_fptr(sdd->members[i].second);
+	}
 	r.members_begin = (uint32_t)forest_arena.payload.size();
 	r.members_count = (uint32_t)sdd->members.size();
 	for (size_t i = 0; i < sdd->members.size(); ++i) {
@@ -1118,8 +1124,13 @@ void Program::forest_arena_record_func(FuncDef *fd)
 	uint32_t tid = type_id_for(fd);		// project id for the FuncDef == its arena slot
 
 	std::vector<uint32_t> pt(fd->parameters.size());
-	for (size_t p = 0; p < fd->parameters.size(); ++p)
+	for (size_t p = 0; p < fd->parameters.size(); ++p) {
 		pt[p] = forest_serialize_type_id(fd->parameters[p]);
+		// v22: a fn-ptr param records itself + its target signature BEFORE
+		// this record's param run begins (contiguity preserved).
+		forest_arena_record_fptr(fd->parameters[p]);
+	}
+	forest_arena_record_fptr(&fd->returns);		// v22: fn-ptr return type
 
 	madc::dis::defrec r;
 	memset(&r, 0, sizeof(r));
@@ -1168,6 +1179,57 @@ void Program::forest_arena_record_func(FuncDef *fd)
 	forest_arena.set_def_at(tid, r);
 }
 
+// v22 (iostream): record a FUNCTION-POINTER type reached through a member /
+// param / return cross-ref. DataDefFPTR has no completion funnel (born at ~10
+// declarator sites), so the recording rides the cross-ref resolve loops: walk
+// the unary chain (ptr/ref/const read-caches) to the FPTR, write its DK_FPTR
+// record (ref0 = the target FuncDef's DK_FUNC record, encoded by the ONE
+// forest_arena_record_func) at its own project slot. The defrec is written
+// BEFORE the target recurses, so a self-referential signature terminates; the
+// has_def guards make the whole walk idempotent. Without this, every fn-ptr
+// member's chain fails at load and the aggregate is dropped — ios_base (and
+// with it the whole iostream hierarchy) fell on _Callback_list::_M_fn.
+void Program::forest_arena_record_fptr(DataDef *dd)
+{
+	if (!forest_arena_enabled)
+		return;
+	for (int depth = 0; dd && depth < 16; ++depth) {
+		if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(dd)) {
+			uint32_t tid = type_id_for(fp);
+			if (!madc::dis::arena_id_is_project(tid)
+			    || forest_arena.has_def(tid))
+				return;
+			madc::dis::defrec r;
+			memset(&r, 0, sizeof(r));
+			r.kind     = madc::dis::DK_FPTR;
+			r.name_id  = forest_arena.strings.intern(fp->name.c_str());
+			r.size     = (uint32_t)fp->size;
+			r.datatype = (uint32_t)fp->rawtype();
+			if (fp->ptr_syntax)
+				r.flags |= madc::dis::DF_FPTR_PTR_SYNTAX;
+			forest_arena.set_def_at(tid, r);	// self-ref guard: write first
+			if (fp->target) {
+				r.ref0 = forest_serialize_type_id(fp->target);
+				forest_arena.set_def_at(tid, r);
+				if (madc::dis::arena_id_is_project(r.ref0)
+				    && !forest_arena.has_def(r.ref0))
+					forest_arena_record_func(fp->target);
+			}
+			return;
+		}
+		// REF is-a PTR; both (and CONST) expose the operand as base_type.
+		if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) {
+			dd = p->base_type;
+			continue;
+		}
+		if (DataDefCONST *k = dynamic_cast<DataDefCONST *>(dd)) {
+			dd = k->base_type;
+			continue;
+		}
+		return;			// chain ended without an FPTR
+	}
+}
+
 // File-scope global VARIABLE definitions (v13/v14/v16) — the CIR_GLOBALS
 // segment, which survives the v18 flip (the arena replaced only the type-graph
 // records). A header's file-scope globals are a separate category from types,
@@ -1208,8 +1270,31 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    continue;
 	if ((v->flags & vfLOCAL) && !(v->flags & vfSTATIC))
 	    continue;		// a non-static local is not file-scope
-	if (v->flags & vfEXTERN)
-	    continue;		// a reference to a definition elsewhere
+	if (v->flags & vfEXTERN) {
+	    // v22: an `extern T name;` REFERENCE to a library-defined object
+	    // (std::cout — the iostream reducer's last gap). Record it so the
+	    // flush rebuilds live's registration (vfEXTERN Variable + Itanium
+	    // storage alias + namespace binding); no init, no ctor, no storage.
+	    // A type not in the arena cleanly lacks, like every other global.
+	    DataDefCLASS *xc = dynamic_cast<DataDefCLASS *>(v->type);
+	    if (!xc)
+		continue;
+	    uint32_t xtid = forest_serialize_type_id(xc);
+	    if (!madc::dis::arena_id_is_project(xtid)
+		|| !prog->forest_arena.has_def(xtid))
+		continue;
+	    if (!seen_globals.insert(v->name).second)
+		continue;
+	    cir_forest_global_record g;
+	    memset(&g, 0, sizeof(g));
+	    g.name_id = pool.intern(v->name);
+	    g.type_id = xtid;
+	    g.flags   = v->flags;	// vfEXTERN rides verbatim
+	    g.gflags  = CIR_GLOBALF_EXTERN_REF;
+	    g.ns_id   = global_ns_id(v);
+	    f.globals.push_back(g);
+	    continue;
+	}
 	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(v->type);
 	if (cdd) {
 	    uint32_t ctid = forest_serialize_type_id(cdd);

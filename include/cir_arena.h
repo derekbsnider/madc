@@ -77,7 +77,7 @@ enum DefKind : uint32_t {
 	DK_FUNC,	// FuncDef: ref0 = return type-id, params_* slice
 	DK_VAR,		// Variable: ref0 = type type-id (later increment)
 	DK_SIMD,
-	DK_FPTR,
+	DK_FPTR,	// v22: DataDefFPTR — ref0 = the target FuncDef's DK_FUNC record
 	DK_MEMBERPTR,
 	DK_CARRAY,
 	DK_TYPEDEF,	// ref0 = underlying type-id (a named alias; ns_id gives its namespace)
@@ -120,6 +120,9 @@ enum DefFlags : uint32_t {
 						// never restore into a consumer).
 	DF_TRET_FROM_POINTER = 1u << 18,	// v21: FuncDef::template_return_deduce_from_pointer
 	DF_TRET_REF          = 1u << 19,	// v21: FuncDef::template_return_ref
+
+	DF_FPTR_PTR_SYNTAX   = 1u << 20,	// v22: DataDefFPTR::ptr_syntax (explicit `(*)` form
+						// vs a Form-1 function typedef)
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live

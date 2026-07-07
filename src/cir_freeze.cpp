@@ -1298,6 +1298,9 @@ static bool arena_chain_ok(const madc::dis::FrozenDefArena &a, uint32_t tid,
 			return tid == self_id || recordable.count(tid) != 0;
 		case madc::dis::DK_ENUM:
 			return true;	// v21: enums materialize in pass 1a (leaves)
+		case madc::dis::DK_FPTR:
+			return true;	// v22: fn-ptrs materialize in pass 1b (the
+					// target signature never gates member layout)
 		default:
 			return false;
 		}
@@ -1358,17 +1361,30 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			continue;
 		agg_ids.push_back(tid);
 	}
-	std::set<uint32_t> recordable;
-	bool cprog = true;
-	while (cprog) {
-		cprog = false;
+	// GREATEST fixpoint (v22): start from ALL candidates and iteratively
+	// REMOVE any aggregate with an unresolvable member / base / anon group
+	// until stable. The old additive (least) fixpoint could not admit a
+	// POINTER CYCLE — basic_ios<char> holds a basic_ostream<char>* member
+	// (_M_tie) while basic_ostream derives from basic_ios, so neither could
+	// ever be inserted first and the whole iostream hierarchy dropped. A
+	// through-pointer reference only needs its target IN the surviving set
+	// (pass 1 allocates every survivor before pass 1b resolves the pointer),
+	// exactly the C incomplete-type rule; a failure still cascades to its
+	// dependents through the removal rounds.
+	std::set<uint32_t> recordable(agg_ids.begin(), agg_ids.end());
+	bool removed = true;
+	while (removed) {
+		removed = false;
 		for (size_t i = 0; i < agg_ids.size(); ++i) {
 			uint32_t tid = agg_ids[i];
-			if (recordable.count(tid))
+			if (!recordable.count(tid))
 				continue;
 			madc::dis::defrec r;
-			if (!a.get_def_at(tid, r))
+			if (!a.get_def_at(tid, r)) {
+				recordable.erase(tid);
+				removed = true;
 				continue;
+			}
 			bool ok = true;
 			for (uint32_t m = 0; ok && m < r.members_count; ++m) {
 				madc::dis::memberrec mr;
@@ -1390,9 +1406,9 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				    || !recordable.count(ar.sub_type_id))
 					ok = false;
 			}
-			if (ok) {
-				recordable.insert(tid);
-				cprog = true;
+			if (!ok) {
+				recordable.erase(tid);
+				removed = true;
 			}
 		}
 	}
@@ -1485,8 +1501,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		by_id[tid] = edd;
 	}
 
-	// Pass 1b: derived types (pointer / reference / const), operand-before-
-	// derived fixpoint — chains and the self-referential pointer resolve.
+	// Pass 1b: derived types (pointer / reference / const / fn-ptr), operand-
+	// before-derived fixpoint — chains and the self-referential pointer resolve.
 	bool dprog = true;
 	while (dprog) {
 		dprog = false;
@@ -1497,6 +1513,56 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			madc::dis::defrec r;
 			if (!a.get_def_at(tid, r))
 				continue;
+			// v22: a DK_FPTR rebuilds its target signature (a
+			// declaration-only FuncDef from the DK_FUNC record — return
+			// + params through the same swizzle) then DataDefFPTR.
+			// A signature type not ready this round retries; one that
+			// never resolves cleanly lacks (its dependents drop with
+			// the closure diagnostic naming the member).
+			if (r.kind == madc::dis::DK_FPTR) {
+				madc::dis::defrec fr;
+				if (!r.ref0 || !madc::dis::arena_id_is_project(r.ref0)
+				    || !a.get_def_at(r.ref0, fr)
+				    || fr.kind != madc::dis::DK_FUNC)
+					continue;
+				DataDef *ret = arena_swizzle(fr.ref0, by_id);
+				if (!ret)
+					continue;	// not ready this round
+				bool pok = true;
+				std::vector<DataDef *> ps(fr.params_count);
+				for (uint32_t p = 0; p < fr.params_count; ++p) {
+					madc::dis::paramrec pr;
+					if (!a.get_payload(fr.params_begin, p, pr)
+					    || !(ps[p] = arena_swizzle(pr.type_id, by_id))) {
+						pok = false;
+						break;
+					}
+				}
+				if (!pok)
+					continue;	// not ready this round
+				FuncDef *tfd = new FuncDef(*ret);
+				_mat_storage.push_back(tfd);
+				for (uint32_t p = 0; p < fr.params_count; ++p)
+					tfd->parameters.push_back(ps[p]);
+				tfd->is_varargs =
+					(fr.flags & madc::dis::DF_IS_VARARGS) != 0;
+				tfd->is_void_params =
+					(fr.flags & madc::dis::DF_IS_VOID_PARAMS) != 0;
+				tfd->declaration_only = true;
+				if (fr.name_id)
+					if (const char *fn = a.c_str(fr.name_id))
+						tfd->name = fn;
+				DataDefFPTR *fpd = new DataDefFPTR(tfd);
+				fpd->ptr_syntax =
+					(r.flags & madc::dis::DF_FPTR_PTR_SYNTAX) != 0;
+				if (r.name_id)
+					if (const char *nn = a.c_str(r.name_id))
+						fpd->name = nn;
+				_mat_storage.push_back(fpd);
+				by_id[tid] = fpd;
+				dprog = true;
+				continue;
+			}
 			if (r.kind != madc::dis::DK_PTR && r.kind != madc::dis::DK_REF
 			    && r.kind != madc::dis::DK_CONST)
 				continue;

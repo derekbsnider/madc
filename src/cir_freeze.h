@@ -299,8 +299,12 @@ enum : uint32_t {
 	CIR_GLOBALF_SCALAR_INIT      = 1u << 0,	// init_value holds a scalar integer initializer (v14)
 	CIR_GLOBALF_CLASS_VALUE_INIT = 1u << 1,	// v16: class value-init `T x{}` -> a trivially-copyable
 						// self-copy via try_implicit_copy_construct (NO ctor needed)
-	CIR_GLOBALF_CLASS_COPY_TEMP  = 1u << 2	// v16: class copy-init `T x = T()` -> construct a default
+	CIR_GLOBALF_CLASS_COPY_TEMP  = 1u << 2,	// v16: class copy-init `T x = T()` -> construct a default
 						// temporary (needs the class's default ctor) and copy it in
+	CIR_GLOBALF_EXTERN_REF       = 1u << 3	// v22: `extern T name;` REFERENCE to a library-defined
+						// object (std::cout) — no storage, no ctor; the flush
+						// rebuilds live's vfEXTERN Variable + Itanium
+						// storage_alias_name (namespace_cpp_variable_symbol)
 };
 struct cir_forest_global_record
 {

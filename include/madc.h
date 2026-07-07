@@ -1634,6 +1634,13 @@ public:
     // aggregate recorder (slice 1f-a, closing the methodrec.func_id forward-ref); free functions
     // route through it at their parse completion in a follow-on.
     void forest_arena_record_func(FuncDef *fd);
+    // write-through (v22): record a FUNCTION-POINTER type reached through a member / param /
+    // return cross-ref. DataDefFPTR has no single birth funnel (born at ~10 declarator sites),
+    // so the recording rides the cross-ref sites: walks the unary chain (ptr/ref/const
+    // read-caches) to the FPTR, writes its DK_FPTR record (ref0 = the target FuncDef's DK_FUNC
+    // record, encoded by forest_arena_record_func) at its own project slot. Idempotent via
+    // has_def; the target's own fptr-typed params/return recurse, bounded by the same guard.
+    void forest_arena_record_fptr(DataDef *dd);
     // Captured `template<typename T> class Name {...}` definitions for
     // Borland-model instantiation: name -> {type params, the class-body token
     // range}. `Name<ConcreteT>` clones+substitutes+re-parses it as a concrete

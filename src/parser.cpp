@@ -12815,6 +12815,40 @@ void Program::flush_forest_pending_globals()
 	const PendingForestGlobal &pg = forest_pending_globals[i];
 	if ( !pg.type || findVariable(pg.name) )
 	    continue;			// unresolved / already present
+	// v22: an `extern T name;` REFERENCE to a library-defined object
+	// (std::cout). Rebuild live's registration exactly (parser.cpp var-decl
+	// tail): a vfEXTERN Variable (flags verbatim), the Itanium storage
+	// alias via the ONE live derivation (namespace_cpp_variable_symbol),
+	// and the namespace binding. NO TopDecl and NO ctor — the object lives
+	// in the library; emission is reference-driven, as live.
+	if ( pg.gflags & CIR_GLOBALF_EXTERN_REF )
+	{
+	    Variable *xv = new Variable(pg.name, *pg.type, 1, NULL, /*alloc=*/false);
+	    xv->flags = pg.flags;
+	    if ( !pg.ns.empty() )
+	    {
+		xv->storage_alias_name =
+		    namespace_cpp_variable_symbol(pg.ns, pg.name);
+		variable_map_t &xns = namespace_map[pg.ns];
+		if ( xns.find(pg.name) == xns.end() )
+		    xns[pg.name] = xv;
+	    }
+	    tkProgram->variables.push_back(xv);
+	    // Live's parseDeclaration pushes the dkGlobalVar TopDecl for the
+	    // extern too — the storage pass renders it as `extern T <alias>`
+	    // (vfEXTERN: no storage, no init) so the reference resolves.
+	    TopDecl xtd;
+	    xtd.kind = DeclKind::dkGlobalVar;
+	    xtd.name = pg.name;
+	    xtd.var  = xv;
+	    xtd.dd   = pg.type;
+	    xtd.decl = NULL;
+	    top_decls.push_back(xtd);
+	    DBG(std::cout << "flush_forest_pending_globals: extern ref "
+		<< (pg.ns.empty() ? pg.name : pg.ns + "::" + pg.name)
+		<< " -> " << xv->storage_alias_name << std::endl);
+	    continue;
+	}
 	// A class that declares a ctor but whose ctor set restored EMPTY cannot be
 	// default-constructed at emit time (collect_global_ctors -> class_ctor_call ->
 	// "no matching constructor"). That happens when v12 skipped the class's only
