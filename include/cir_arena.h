@@ -111,6 +111,13 @@ enum DefFlags : uint32_t {
 						// name; load restores funcdef_map + a program-scope
 						// Variable so a bound call resolves the real
 						// signature instead of the dlsym variadic fallback
+	DF_WAS_BODIED        = 1u << 17,	// v20: the free function had a BODY at freeze
+						// (an instantiated __mti / __ns_*__oN definition, or
+						// a producer root like main). Load restores it ONLY
+						// when a forest body location was stamped
+						// (DF_HAS_FOREST_BODY, system-header origin) —
+						// otherwise it cleanly lacks (a producer root must
+						// never restore into a consumer).
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live
@@ -176,6 +183,31 @@ struct defrec {
 	// struct/class anonymous sub-aggregate groups (flattened anon union/struct):
 	uint32_t anon_begin;	// anonrec run
 	uint32_t anon_count;
+	// class-scope name maps (v20, widening slice 2): the lookups class-member
+	// TYPE resolution + template machinery read — type_aliases (typedef/using
+	// aliases: `typename _Alloc::value_type`), static_member_types, and
+	// static_member_const_values (`X<T>::value`, the integral_constant fold).
+	uint32_t alias_begin;	// aliasrec run (DataDefCLASS::type_aliases)
+	uint32_t alias_count;
+	uint32_t statty_begin;	// aliasrec run (DataDefCLASS::static_member_types)
+	uint32_t statty_count;
+	uint32_t constval_begin; // constvalrec run (DataDefCLASS::static_member_const_values)
+	uint32_t constval_count;
+};
+
+// A class-scope name -> type binding (type_aliases / static_member_types).
+struct aliasrec {
+	uint32_t name_id;	// the alias / member name
+	uint32_t type_id;	// its type (pinned or project)
+};
+
+// An integral static-const data member's compile-time value
+// (DataDefCLASS::static_member_const_values — the std::integral_constant
+// pattern; `X::value` reads the real value, not a placeholder).
+struct constvalrec {
+	uint32_t name_id;
+	uint32_t val_lo;	// int64_t, split into two words
+	uint32_t val_hi;
 };
 
 // One member of a STRUCT/CLASS — the complete per-member state materialize reads

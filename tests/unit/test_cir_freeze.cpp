@@ -2074,8 +2074,11 @@ TEST_CASE("RC2: free-function prototypes freeze into the arena and restore") {
 	CHECK(!len->fd->is_varargs);
 	REQUIRE(len->fd->parameters.size() == 1);
 	CHECK(len->fd->return_value_type().size == 8);
-	// BODIED functions never restore in slice 1 (declaration_only filter):
-	// not the header's inline helper, not the producer's own main().
+	// A BODIED function restores ONLY when its definition landed in a
+	// SYSTEM-header unit (an instantiated __mti / __ns_*__oN definition
+	// with a forest body — v20). This header is under /tmp, not a system
+	// include dir, so its inline helper cleanly lacks; the producer's own
+	// main() (a user-file root) must NEVER restore into a consumer.
 	CHECK(!saw_inline);
 	CHECK(!saw_main);
 }
@@ -2181,4 +2184,137 @@ TEST_CASE("#23: restored class methods register as funcdef_map[method-id] + prog
 		if ( mv == gv ) shared = true;
 	}
 	CHECK(shared);
+}
+
+// ---------------------------------------------------------------------------
+// v20 (widening slice 2): the parser's TEMPLATE-NAME state — the pattern maps,
+// each definition's captured TOKEN runs (.madh record form) + params/flags/ns
+// — serializes at freeze and restores into a fresh Program's maps, so a bound
+// consumer resolves the template name ("use of undeclared identifier 'vector'"
+// was the corpus blocker: the instantiation PRODUCT was in the arena, the NAME
+// was not) and the UNCHANGED live instantiation machinery runs.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and restores") {
+	std::string inc_path = std::string("/tmp/madc_v20t_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_v20t_main_")
+			      + std::to_string((long)getpid()) + ".cpp";
+	std::string cons_path = std::string("/tmp/madc_v20t_cons_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_v20t_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "template<typename T, typename U = T> struct W2Box {\n"
+		       "    T v; U u;\n"
+		       "    T get() { return v; }\n"
+		       "};\n"
+		       "template<typename T> struct W2Box<T*, T*> { T *p; };\n"
+		       "template<typename T> using W2Same = W2Box<T, T>;\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { W2Box<int> b; b.v = 3; b.u = 4; return b.get(); }\n";
+	}
+	{
+		std::ofstream cn(cons_path.c_str());
+		cn << "int main() { return 0; }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+	forest.materialize_from_arena();
+
+	// The metadata view: the primary (with its per-param default run), the
+	// partial spec (with per-slot pattern runs), and the alias template.
+	const std::vector<CirRestoredTemplate> &ts = forest.restored_templates();
+	const CirRestoredTemplate *primary = NULL, *partial = NULL, *alias = NULL;
+	for (size_t i = 0; i < ts.size(); ++i) {
+		if (!ts[i].key) continue;
+		std::string k(ts[i].key);
+		if (k == "W2Box" && ts[i].kind == CIR_TMPLK_CLASS)   primary = &ts[i];
+		if (k == "W2Box" && ts[i].kind == CIR_TMPLK_PARTIAL) partial = &ts[i];
+		if (k == "W2Same" && ts[i].kind == CIR_TMPLK_ALIAS)  alias = &ts[i];
+	}
+	REQUIRE(primary != NULL);
+	REQUIRE(primary->params.size() == 2);
+	CHECK(std::string(primary->params[0].first) == "T");
+	CHECK((primary->params[0].second & CIR_TMPLP_IS_TYPE) != 0);
+	CHECK(primary->body.count > 0);			// the captured class body
+	REQUIRE(primary->defaults.size() == 2);
+	CHECK(primary->defaults[0].count == 0);		// T has no default
+	CHECK(primary->defaults[1].count > 0);		// U = T
+	{
+		bool has_file = primary->body.file != NULL
+			     && std::string(primary->body.file) == inc_path;
+		CHECK(has_file);			// token provenance (origin file)
+	}
+	REQUIRE(partial != NULL);
+	CHECK((partial->flags & CIR_TMPLF_IS_PARTIAL_SPEC) != 0);
+	CHECK(partial->spec.size() == 2);		// one pattern run per arg slot
+	CHECK(partial->body.count > 0);
+	REQUIRE(alias != NULL);
+	CHECK(alias->body.count > 0);			// the alias TARGET tokens
+
+	// RESTORE into a fresh Program: the maps hold parse-equivalent state and
+	// the live selection machinery (find_template / template_with_body /
+	// find_template_alias) reads it unchanged.
+	std::shared_ptr<Program> progB = std::make_shared<Program>();
+	TokenProgram *tpB = progB->tokenize(cons_path.c_str());
+	REQUIRE(tpB != nullptr);
+	std::remove(cons_path.c_str());
+	progB->forest_restore_decls(forest);
+
+	Program::TemplateDef *td = progB->find_template("W2Box");
+	REQUIRE(td != nullptr);
+	REQUIRE(td->typeparams.size() == 2);
+	CHECK(td->typeparams[0] == "T");
+	CHECK(td->typeparams[1] == "U");
+	CHECK(td->typeparam_is_type[0]);
+	CHECK(!td->body.empty());
+	REQUIRE(td->typeparam_defaults.size() == 2);
+	CHECK(td->typeparam_defaults[0].empty());
+	CHECK(!td->typeparam_defaults[1].empty());
+	CHECK(progB->template_with_body("W2Box") != nullptr);
+	{
+		// Restored body tokens carry the header's file (provenance drives
+		// from_system_header classification + error attribution at
+		// instantiation) and non-zero line numbers (.madh keeps line/col).
+		TokenBase *bt0 = NULL;
+		for (TokenBase *t : td->body)
+			if (t) { bt0 = t; break; }
+		REQUIRE(bt0 != NULL);
+		bool file_ok = bt0->file && std::string(bt0->file) == inc_path;
+		CHECK(file_ok);
+		CHECK(bt0->line > 0);
+	}
+	CHECK(progB->partial_spec_map.count("W2Box") == 1);
+	{
+		std::vector<Program::TemplateDef> *psv =
+			progB->partial_spec_map.find("W2Box");
+		REQUIRE(psv != nullptr);
+		REQUIRE(psv->size() == 1);
+		CHECK((*psv)[0].is_partial_specialization);
+		CHECK((*psv)[0].spec_pattern.size() == 2);
+	}
+	CHECK(progB->template_alias_map.count("W2Same") == 1);
+	std::remove(inc_path.c_str());
 }

@@ -681,6 +681,16 @@ public:
 	void need_output_extern_unprototyped(const char *symbol, bool ret_ptr,
 				const std::vector<c2mir_node_code_t> &ret_specs
 					= std::vector<c2mir_node_code_t>());
+	// v20 (forest bind): declare the extern for a COMPILER-RUNTIME symbol a
+	// LOADED forest body references (__madc_* exception/cleanup runtime,
+	// setjmp, malloc/calloc/free, __madc_vla_free) with the SAME signature
+	// the live lowering site declares — a loaded body is the producer's
+	// lowered output, so its runtime calls arrive pre-built and never pass
+	// through the lowering site that would have declared them. Returns true
+	// when `sym` is such a runtime symbol. This is the compiler's OWN fixed
+	// runtime ABI set (the extern-C compiler-machinery category), not a
+	// user-name special case.
+	bool ensure_runtime_extern_for(const std::string &sym);
 	// Map a builtin print-fn name to its madc_* runtime symbol ("" if not one).
 	static const char *builtin_output_runtime(const std::string &name);
 

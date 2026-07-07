@@ -5741,6 +5741,86 @@ void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
 	m_output_externs[symbol] = proto;
 }
 
+// v20 (forest bind): the compiler-runtime extern table for LOADED forest
+// bodies. Each entry mirrors the signature its live lowering site declares
+// (the try/throw/cleanup lowering, operator new/delete, VLA cleanup) — a
+// loaded body carries the producer's pre-built N_CALLs to these symbols, so
+// the consumer's lowering never reaches the site that would declare them,
+// and c2mir would default each to an implicit int() (truncated pointers —
+// the setjmp/__madc_try_push SIGSEGV class). need_output_extern dedupes, so
+// re-declaring one the consumer's own lowering already declared is a no-op.
+bool CirBuilder::ensure_runtime_extern_for(const std::string &sym)
+{
+	if (sym == "__madc_try_push") {
+		need_output_extern("__madc_try_push", true, { { {N_VOID}, true } });
+		return true;
+	}
+	if (sym == "setjmp") {
+		need_output_extern("setjmp", false, { { {N_VOID}, true } }, { N_INT });
+		return true;
+	}
+	if (sym == "__madc_cleanup_top") {
+		need_output_extern("__madc_cleanup_top", true, {});
+		return true;
+	}
+	if (sym == "__madc_cleanup_discard_to") {
+		need_output_extern("__madc_cleanup_discard_to", false, { { {N_VOID}, true } });
+		return true;
+	}
+	if (sym == "__madc_try_pop") {
+		need_output_extern("__madc_try_pop", false, {});
+		return true;
+	}
+	if (sym == "__madc_exception_type") {
+		need_output_extern("__madc_exception_type", false, {}, { N_INT });
+		return true;
+	}
+	if (sym == "__madc_exception_clear") {
+		need_output_extern("__madc_exception_clear", false, {});
+		return true;
+	}
+	if (sym == "__madc_rethrow") {
+		need_output_extern("__madc_rethrow", false, {});
+		return true;
+	}
+	if (sym == "__madc_cleanup_push_dtor") {
+		need_output_extern("__madc_cleanup_push_dtor", false,
+				   { { {N_VOID}, true }, { {N_VOID}, true } });
+		return true;
+	}
+	if (sym == "__madc_throw_int") {
+		need_output_extern("__madc_throw_int", false, { { {N_LONG}, false } });
+		return true;
+	}
+	if (sym == "__madc_throw_double") {
+		need_output_extern("__madc_throw_double", false, { { {N_DOUBLE}, false } });
+		return true;
+	}
+	if (sym == "__madc_throw_cstr") {
+		need_output_extern("__madc_throw_cstr", false, { { {N_CHAR}, true } });
+		return true;
+	}
+	if (sym == "__madc_vla_free") {
+		need_output_extern("__madc_vla_free", false, { { {N_VOID}, true } });
+		return true;
+	}
+	if (sym == "malloc") {
+		need_output_extern("malloc", true, { { {N_UNSIGNED, N_LONG}, false } });
+		return true;
+	}
+	if (sym == "calloc") {
+		need_output_extern("calloc", true,
+			{ { {N_UNSIGNED, N_LONG}, false },
+			  { {N_UNSIGNED, N_LONG}, false } });
+		return true;
+	}
+	if (sym == "free") {
+		need_output_extern("free", false, { { {N_VOID}, true } });
+		return true;
+	}
+	return false;
+}
+
 void CirBuilder::need_output_extern_unprototyped(
 	const char *symbol, bool ret_ptr,
 	const std::vector<c2mir_node_code_t> &ret_specs)
@@ -18156,17 +18236,53 @@ node_t CirBuilder::translate_module(Program *prog)
 	//    body — forest_lazy routes it through the SAME fixpoint stage, so
 	//    placement and order match live by mechanism, not by hand-ordering.
 	std::map<std::string, FuncDef *> forest_lazy;
+	std::set<std::string> forest_funcdef_syms;
 	if (prog->bind_forest && !prog->forest_chain.empty()) {
 		prog->bind_forest->set_c2m(c2m);	// safe: parse-time bind materializes no node segment
+		std::set<FuncDef *> forest_method_fds;
 		for (auto &kv : prog->struct_map) {
 			DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(kv.second);
-			if (!cdd || !cdd->from_system_header)
+			if (!cdd)
 				continue;
 			for (Variable *mv : cdd->methods) {
 				FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
-				if (fd && fd->has_forest_body && !mv->name.empty())
+				if (!fd)
+					continue;
+				forest_method_fds.insert(fd);
+				if (cdd->from_system_header && fd->has_forest_body
+				    && !mv->name.empty())
 					forest_lazy[mv->name] = fd;
 			}
+		}
+		// v20: restored FREE functions carrying a forest body — the
+		// producer's instantiated definitions (static member-template
+		// __mti, namespace fn-template __ns_*__oN). Their loaded callers
+		// reference the symbol, so they ride the SAME fixpoint stage as a
+		// bound system-header method (live defines them after main in
+		// fixpoint order too — they materialize on ODR-use at lowering).
+		// Class methods are excluded (their split — lazy for system,
+		// eager for user headers — is handled above / below).
+		for (auto &kv : prog->funcdef_map) {
+			FuncDef *fd = kv.second;
+			if (fd && fd->has_forest_body && !kv.first.empty()
+			    && !forest_method_fds.count(fd))
+				forest_lazy[kv.first] = fd;
+		}
+		// Symbols with a funcdef_map declaration source: those keep riding
+		// Pass 0.75's referenced sweep (typed protos at live's sorted map
+		// positions — the #23 byte-identity mechanism), NEVER the loaded-
+		// extern path below (a second decl at a different position would
+		// diverge from live).
+		for (auto &kv : prog->funcdef_map) {
+			FuncDef *fd = kv.second;
+			if (!fd || kv.first.empty())
+				continue;
+			forest_funcdef_syms.insert(kv.first);
+			Variable *fvar = prog->tkProgram
+				? prog->tkProgram->findVariable(prog->strpool, kv.first)
+				: NULL;
+			if (fvar)
+				forest_funcdef_syms.insert(func_emit_name(*fvar, fd));
 		}
 	}
 	std::set<std::string> forest_lazy_emitted;
@@ -18346,8 +18462,38 @@ node_t CirBuilder::translate_module(Program *prog)
 				std::set<std::string> callees;
 				cir_collect_call_callees(bn, callees);
 				for (std::set<std::string>::iterator ci = callees.begin();
-				     ci != callees.end(); ++ci)
+				     ci != callees.end(); ++ci) {
+					// A callee with NO in-TU definition source (not a
+					// bound lazy body, not a deferred/lib body) whose
+					// declaration only ever came from a LOWERING site
+					// (operator new/delete manglings, dlsym-fallback
+					// libc fns, the __madc_* runtime) never gets that
+					// declaration here — the loaded body's calls are
+					// pre-built — and c2mir would implicit-int it
+					// (truncated pointers: the setjmp / operator-new
+					// ext32 SIGSEGV class). LOAD the producer's own
+					// extern decl node for it (verbatim state); the
+					// existing m_output_externs flush places + dedupes
+					// it exactly like a live-lowered extern. Fallback:
+					// the compiler-runtime table (same live shapes).
+					if (!forest_lazy.count(*ci)
+					    && !lib_funcs.count(*ci)
+					    && !prog->deferred_lazy_bodies.count(*ci)
+					    && !forest_funcdef_syms.count(*ci)
+					    && !m_output_externs.count(*ci)) {
+						uint32_t xu = 0, xi = 0;
+						if (prog->bind_forest->extern_loc_for(*ci, xu, xi)) {
+							cir_node *xd = prog->bind_forest->node_for(xu, xi);
+							if (xd) {
+								m_output_externs[*ci] = xd->as_node();
+								continue;
+							}
+						}
+						if (ensure_runtime_extern_for(*ci))
+							continue;
+					}
 					referenced_funcs.insert(*ci);
+				}
 				node_t proto = forest_fwd_proto(bn);
 				if (proto) {
 					ForestLazyProto fp;

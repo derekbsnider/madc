@@ -538,5 +538,85 @@ fi
 rm -f "$strops_snap" "$strops_gcc" "$strops_live_mir" "$strops_bind_mir"
 echo "forest_bind_gate: [strops] OK — overload set (append/operator+=/c_str) resolves on a bound class; whole-TU MIR byte-identical to live, output == live == g++"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind + strops grove headers bound (no re-parse), output == live == g++"
+# --- case: vecbind (widening slice 2: template-NAME state) ---
+# The corpus blocker: a bound <vector> consumer failed at PARSE — "use of
+# undeclared identifier 'vector'" — because the instantiation PRODUCT class was
+# in the arena but the template NAME was not. v20 serializes the parser's
+# template pattern maps (TemplateDef token bodies in the .madh record form +
+# params/flags/ns), the class-scope name maps (type_aliases / static member
+# types / const values), canonical_cpp_spelling (arg-spelling identity — the
+# instantiation-key memo), the producer's instantiated __mti / __ns_*__oN
+# DEFINITIONS (bodied free functions with forest bodies riding the m&l
+# fixpoint), and the extern-decl index (loaded bodies' runtime/library callee
+# declarations load VERBATIM). An exact-match consumer memo-hits the restored
+# product and runs correctly. Output-correctness + item-SET identity gate;
+# whole-TU byte-identity (the residual is proto/label numbering order) is the
+# follow-on, like strbind before #23.
+vec_prod="tmp/fbgate_vec_producer.cpp"
+vec_cons="tmp/fbgate_vec_consumer.cpp"
+vec_snap="tmp/fbgate_vec.msnap"
+vec_gcc="tmp/fbgate_vec_gcc"
+vec_vlog="tmp/fbgate_vec_v.log"
+cat > "$vec_prod" <<'EOF'
+#include <vector>
+int main() { std::vector<int> v; v.push_back(7); return v[0] + (int)v.size(); }
+EOF
+cat > "$vec_cons" <<'EOF'
+#include <vector>
+#include <cstdio>
+int main() { std::vector<int> v; v.push_back(3); v.push_back(4); int s = 0; for (int i = 0; i < (int)v.size(); i++) s += v[i]; printf("sum=%d\n", s); return 0; }
+EOF
+if ! timeout 300 "$BIN" --freeze="$vec_snap" "$vec_prod" >/dev/null 2>&1; then
+    fail "[vecbind] --freeze <vector> FAILED"
+fi
+[ -f "$vec_snap" ] || fail "[vecbind] --freeze produced no container"
+vec_live=$(timeout 120 "$BIN" "$vec_cons" 2>/dev/null)
+[ "$vec_live" = "sum=7" ] || fail "[vecbind] live-parse output '$vec_live' != 'sum=7'"
+if command -v g++ >/dev/null 2>&1; then
+    if timeout 120 g++ "$vec_cons" -o "$vec_gcc" >/dev/null 2>&1; then
+        vec_gcc_out=$("$vec_gcc" 2>/dev/null)
+        [ "$vec_gcc_out" = "sum=7" ] || fail "[vecbind] g++ output '$vec_gcc_out' != 'sum=7'"
+    else
+        fail "[vecbind] g++ compile FAILED"
+    fi
+fi
+vec_bind=$(timeout 120 "$BIN" --forest-bind="$vec_snap" "$vec_cons" 2>/dev/null)
+[ "$vec_bind" = "sum=7" ] || fail "[vecbind] bind output '$vec_bind' != 'sum=7' (== live == g++; template-name restore regressed?)"
+# Prove <vector> actually BOUND from the container (no silent live fall-through).
+timeout 120 "$BIN" -v --forest-bind="$vec_snap" "$vec_cons" >"$vec_vlog" 2>&1
+if ! grep -aq "bound to grove unit.*vector" "$vec_vlog"; then
+    rm -f "$vec_snap" "$vec_gcc" "$vec_vlog"
+    fail "[vecbind] consumer did NOT bind the <vector> grove (live fall-through?)"
+fi
+# Item-SET identity vs live: every func/export/import present in live must be
+# present in bind and vice versa (emission ORDER may still differ — the
+# whole-TU byte-identity follow-on; a SET divergence is a real regression:
+# a missing __mti/__ns_*__oN definition, a dropped method, a spurious synth).
+vec_live_mir="tmp/fbgate_vec_live_mir.log"
+vec_bind_mir="tmp/fbgate_vec_bind_mir.log"
+MADC_DUMP_MIR=1 timeout 120 "$BIN" "$vec_cons" >/dev/null 2>"$vec_live_mir"
+MADC_DUMP_MIR=1 timeout 120 "$BIN" --forest-bind="$vec_snap" "$vec_cons" >/dev/null 2>"$vec_bind_mir"
+vec_sets_diverge=0
+for vkind in "func" "export" "import"; do
+    if [ "$vkind" = "func" ]; then
+        vec_live_set=$(grep -aE "^[A-Za-z_][A-Za-z0-9_.$]*:[[:space:]]+func" "$vec_live_mir" | cut -d: -f1 | sort -u)
+        vec_bind_set=$(grep -aE "^[A-Za-z_][A-Za-z0-9_.$]*:[[:space:]]+func" "$vec_bind_mir" | cut -d: -f1 | sort -u)
+    else
+        vec_live_set=$(grep -aE "^[[:space:]]+$vkind[[:space:]]" "$vec_live_mir" | awk '{print $2}' | sort -u)
+        vec_bind_set=$(grep -aE "^[[:space:]]+$vkind[[:space:]]" "$vec_bind_mir" | awk '{print $2}' | sort -u)
+    fi
+    if [ "$vec_live_set" != "$vec_bind_set" ]; then
+        echo "[vecbind] $vkind SET diverges (live vs bind):" >&2
+        diff <(echo "$vec_live_set") <(echo "$vec_bind_set") | head -20 >&2
+        vec_sets_diverge=1
+    fi
+done
+if [ "$vec_sets_diverge" != "0" ]; then
+    rm -f "$vec_snap" "$vec_gcc" "$vec_vlog" "$vec_live_mir" "$vec_bind_mir"
+    fail "[vecbind] bound <vector> item sets diverge from live (see above)"
+fi
+rm -f "$vec_snap" "$vec_gcc" "$vec_vlog" "$vec_live_mir" "$vec_bind_mir"
+echo "forest_bind_gate: [vecbind] OK — std::vector<int> bound from <vector> grove (template-name state restored, no re-parse); func/export/import sets == live, output == live == g++"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind + strops + vecbind grove headers bound (no re-parse), output == live == g++"
 exit 0

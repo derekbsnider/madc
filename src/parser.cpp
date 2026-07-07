@@ -49,6 +49,7 @@
 #include "madc_mangle.h"
 #include "ns_common.h"
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest decl records (forest_restore_decls)
+#include "madc_pch.h"	// v20: restored template token runs deserialize from the .madh record form
 
 using namespace std;
 
@@ -12424,6 +12425,151 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	pf.fd   = funcs[i].fd;
 	forest_pending_funcs.push_back(pf);
     }
+
+    // v20 (widening slice 2): restore the TEMPLATE-NAME state — the pattern
+    // maps a live parse of the header leaves behind. Live keeps each captured
+    // pattern as cloned TOKENS (the Borland model), so restoring the same
+    // tokens into the same maps IS state parity: the consumer's UNCHANGED
+    // instantiation machinery then runs — `std::vector<int>` finds the
+    // template name, and its exact-match use memo-hits the restored product
+    // (datatype_map[registered_mangled]) while a new specialization
+    // instantiates from the restored body tokens. Registration is a direct
+    // map insert (the serialized records ARE the live maps' final state — a
+    // register_template() replay would re-apply its merge logic). This runs
+    // at lexer time: the template maps and the spelling pool are live, and
+    // no tkProgram is needed. Each run's tokens re-stamp their origin file
+    // (intern_file) so instantiation provenance — _parse_file ->
+    // from_system_header classification, lazy-body deferral, and error
+    // attribution — matches a live capture (the .madh record form keeps
+    // line/column per token; the file rides the run descriptor).
+    const std::vector<CirRestoredTemplate> &tmpls = forest.restored_templates();
+    auto restore_run = [&](const CirRestoredTemplateRun &run,
+			   std::vector<TokenBase *> &out) {
+	out.clear();
+	if ( !run.bytes || !run.count )
+	    return;
+	std::deque<TokenBase *> toks;
+	if ( !madc_pch::deserialize_tokens(run.bytes, run.len, run.count, toks) )
+	    return;
+	const char *fn = run.file ? intern_file(run.file) : NULL;
+	for ( TokenBase *t : toks )
+	{
+	    if ( !t )
+		continue;
+	    t->file = fn;
+	    out.push_back(t);
+	}
+    };
+    for ( size_t i = 0; i < tmpls.size(); ++i )
+    {
+	const CirRestoredTemplate &rt = tmpls[i];
+	std::string key(rt.key);
+	switch ( rt.kind )
+	{
+	case CIR_TMPLK_CLASS:
+	case CIR_TMPLK_PARTIAL:
+	{
+	    TemplateDef td;
+	    td.class_name = rt.name ? rt.name : "";
+	    td.defining_namespace = rt.ns ? rt.ns : "";
+	    td.owner_class = rt.owner;
+	    td.has_non_type_params = (rt.flags & CIR_TMPLF_HAS_NON_TYPE_PARAMS) != 0;
+	    td.is_partial_specialization = (rt.flags & CIR_TMPLF_IS_PARTIAL_SPEC) != 0;
+	    for ( size_t p = 0; p < rt.params.size(); ++p )
+	    {
+		td.typeparams.push_back(rt.params[p].first);
+		td.typeparam_is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
+		td.typeparam_is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+		td.typeparam_defaults.push_back(std::vector<TokenBase *>());
+		if ( p < rt.defaults.size() )
+		    restore_run(rt.defaults[p], td.typeparam_defaults.back());
+	    }
+	    restore_run(rt.body, td.body);
+	    restore_run(rt.constraint, td.constraint);
+	    for ( size_t sp = 0; sp < rt.spec.size(); ++sp )
+	    {
+		td.spec_pattern.push_back(std::vector<TokenBase *>());
+		restore_run(rt.spec[sp], td.spec_pattern.back());
+	    }
+	    if ( rt.kind == CIR_TMPLK_CLASS )
+		template_map[key].push_back(td);
+	    else
+		partial_spec_map[key].push_back(td);
+	    break;
+	}
+	case CIR_TMPLK_ALIAS:
+	{
+	    TemplateAliasDef ad;
+	    ad.alias_name = rt.name ? rt.name : "";
+	    ad.defining_namespace = rt.ns ? rt.ns : "";
+	    ad.owner_class = rt.owner;
+	    ad.has_non_type_params = (rt.flags & CIR_TMPLF_HAS_NON_TYPE_PARAMS) != 0;
+	    for ( size_t p = 0; p < rt.params.size(); ++p )
+	    {
+		ad.typeparams.push_back(rt.params[p].first);
+		ad.typeparam_is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
+		ad.typeparam_is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+		ad.typeparam_defaults.push_back(std::vector<TokenBase *>());
+		if ( p < rt.defaults.size() )
+		    restore_run(rt.defaults[p], ad.typeparam_defaults.back());
+	    }
+	    restore_run(rt.body, ad.target);
+	    template_alias_map[key].push_back(ad);
+	    break;
+	}
+	case CIR_TMPLK_FN:
+	case CIR_TMPLK_FN_DECL:
+	{
+	    FnTemplateDef fd;
+	    fd.ns = rt.ns ? rt.ns : "";
+	    fd.inline_builtin_kind = rt.extra ? rt.extra : "";
+	    fd.owner_class = rt.owner;
+	    fd.instance_method = (rt.flags & CIR_TMPLF_INSTANCE_METHOD) != 0;
+	    for ( size_t p = 0; p < rt.params.size(); ++p )
+	    {
+		fd.typeparams.push_back(rt.params[p].first);
+		fd.typeparam_is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
+		fd.typeparam_is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+		fd.typeparam_defaults.push_back(std::vector<TokenBase *>());
+		if ( p < rt.defaults.size() )
+		    restore_run(rt.defaults[p], fd.typeparam_defaults.back());
+	    }
+	    restore_run(rt.body, fd.decl);
+	    if ( rt.kind == CIR_TMPLK_FN )
+		fn_template_map[key].push_back(fd);
+	    else
+		fn_template_decl_map[key].push_back(fd);
+	    break;
+	}
+	case CIR_TMPLK_VAR:
+	{
+	    VarTemplateDef vd;
+	    vd.defining_namespace = rt.ns ? rt.ns : "";
+	    for ( size_t p = 0; p < rt.params.size(); ++p )
+	    {
+		vd.typeparams.push_back(rt.params[p].first);
+		vd.typeparam_is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+	    }
+	    restore_run(rt.body, vd.init);
+	    var_template_map[key] = vd;
+	    break;
+	}
+	case CIR_TMPLK_CONCEPT:
+	{
+	    ConceptDef cd;
+	    cd.defining_namespace = rt.ns ? rt.ns : "";
+	    for ( size_t p = 0; p < rt.params.size(); ++p )
+		cd.typeparams.push_back(rt.params[p].first);
+	    restore_run(rt.constraint, cd.constraint);
+	    concept_map[key] = cd;
+	    break;
+	}
+	default:
+	    break;
+	}
+    }
+    DBG(std::cout << "forest_restore_decls: " << tmpls.size()
+	<< " template pattern(s) restored" << std::endl);
 }
 
 // Flush the staged forest globals into tkProgram->variables + dkGlobalVar TopDecls

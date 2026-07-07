@@ -91,7 +91,16 @@ enum : uint32_t
 	// --- B3 flip: the DefArena dump (madc::dis::defrec[] + payload u32[]); its intern
 	// strings reuse SNAP_KIND_INTERN_* under distinct arena seg-ids. SAVE side first. ---
 	SNAP_KIND_CIR_ARENA_DEFS    = madc::dis::SNAP_KIND_CONSUMER + 14, // container-global: madc::dis::defrec[] (arena, id-addressed)
-	SNAP_KIND_CIR_ARENA_PAYLOAD = madc::dis::SNAP_KIND_CONSUMER + 15  // container-global: uint32 arena payload stream
+	SNAP_KIND_CIR_ARENA_PAYLOAD = madc::dis::SNAP_KIND_CONSUMER + 15, // container-global: uint32 arena payload stream
+	// --- v20 (widening slice 2): template-NAME state — the parser's template
+	// pattern maps (template_map / partial_spec_map / template_alias_map /
+	// fn_template_map / fn_template_decl_map / var_template_map / concept_map).
+	// Live keeps each pattern as captured TOKENS (the Borland model), so the
+	// state serializes as token runs in the .madh record form + POD metadata. ---
+	SNAP_KIND_CIR_TEMPLATES        = madc::dis::SNAP_KIND_CONSUMER + 16, // container-global: cir_forest_template_record[]
+	SNAP_KIND_CIR_TEMPLATE_PAYLOAD = madc::dis::SNAP_KIND_CONSUMER + 17, // container-global: uint32 stream (params + token-run descriptors)
+	SNAP_KIND_CIR_TEMPLATE_TOKENS  = madc::dis::SNAP_KIND_CONSUMER + 18, // container-global: raw token bytes (.madh record form)
+	SNAP_KIND_CIR_EXTERN_LOCS      = madc::dis::SNAP_KIND_CONSUMER + 19  // container-global: cir_forest_extern_loc[] (extern decl index)
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -162,7 +171,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // eight (tokens / decl index / PP exports / edges) plus the two container-
 // global segments (branch macros, canonical order). The version feeds the
 // context hash, so v1 readers reject v2 containers and vice versa.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 19 };	// v19: RC2 — the arena additionally carries file-scope FREE-FUNCTION declarations (DK_FUNC records flagged DF_IS_FREE_FUNC, name_id = the funcdef_map key), restored on bind as funcdef_map entries + program-scope Variables so a bound call resolves the real signature and its extern proto emits with the real return/param types instead of the dlsym implicit-variadic fallback (i64,... — a signed-int return read as a 64-bit long, the bsearch_skill_exact bug class). No layout change — bumped because the freeze CONTENT grew (a stale v18 container lacks the records and would silently keep the fallback). v18: THE FLIP (B3 Chunk 3) — the DefArena dump (segments 10-14) IS the type-graph serialization; the v6 hand-serialized type records (segments 5/8: cir_forest_type_record[] + the member/base/method u32 payload stream) are RETIRED and no longer written or read. Load reconstructs the DataDef graph from the arena (materialize_from_arena, applying the v6 save-side selection at load), the typeid->name closure derives from arena defrec.name_id, and globals (segment 9, unchanged) swizzle through the arena reconstruct. A v17 container still carries the v6 segments a v18 reader would ignore — rejected by the version pin like every older format. v17: additionally dump the B3 DefArena (defrec[] + payload u32[] + its intern strings) as arena segments 10-14 alongside the v6 type records — the flip's SAVE side; not yet read on load (bind still uses the v6 type records), so this is additive, but the version is bumped because the container CONTENT grew. v16: serialize a bound header's file-scope CLASS-typed global INITIALIZER FORM (cir_forest_global_record.gflags gains CIR_GLOBALF_CLASS_VALUE_INIT / CIR_GLOBALF_CLASS_COPY_TEMP) so load reconstructs a TokenDecl whose emission is byte-identical to a live parse. v13 stored no form -> flush set decl=NULL -> collect_global_ctors' built-in path default-constructed DIRECTLY on the global; a live parse instead runs the class-instance init path: `T x = T()` builds a stack temp via the default ctor then copies it in (COPY_TEMP), while `T x{}` is a trivially-copyable self-copy via try_implicit_copy_construct (VALUE_INIT — needs NO ctor, so in_place, whose ctor was never serialized, binds anyway instead of being dropped by the ctors.empty() guard). v16 ALSO serializes DataDefCLASS::nvsize (the non-virtual size, left behind before v16 — a restored class defaulted nvsize=0): a functional-construction temporary's alloca AND the struct-copy in try_implicit_copy_construct are sized by nvsize, so an empty tag class restored with nvsize=0 emitted its `T x{}` / `T x = T()` global init with NO stack temp (alloca 0) and NO copy loop, unlike live. Together these close the LAST whole-<string>-TU MADC_DUMP_MIR gap (the in_place data item + the piecewise/allocator init-SHAPE divergence, which the top-level item-set diff hid inside __madc_global_init's body). The cir_forest_type_record grew a uint32_t (nvsize) vs v15 (a stale v15 container lacks the form flags -> would re-introduce the direct-construct shape + drop in_place). v15: serialize a class's OWN destructor even when it has neither an external emit_symbol NOR an inline body the producer emitted (a bodyless/unreferenced inline dtor) — declaration-only (CIR_METHF_DTOR, no body). A live parse registers such a dtor (class_own_dtor non-NULL) so Pass 1.6 synthesizes NO Cls___dtor; dropping it from the freeze made the restored class look dtor-less, so a --forest-bind consumer SYNTHESIZED a spurious trivial Cls___dtor that a live compile never emits (the whole-<string>-TU "only in BIND" overshoot: _Save_errno/__new_allocator_*/allocator_*/wide-char basic_string dtors). No layout change vs v14 — bumped because the freeze CONTENT changed (a stale v14 container lacks these dtor records → would re-introduce the overshoot). v14: serialize a bound header's file-scope SCALAR-const global VARIABLE definitions (cir_forest_global_record gains gflags + init_value): a scalar global's init is a compile-time constant (no ctor), so its integer value is stored and load rebuilds a `T name = value;` dkGlobalVar decl — a --forest-bind consumer of <string> now emits its scalar tag globals (hardware_constructive/destructive_interference_size = 64) as data items, byte-identically to live (in_place's {} value-init remains a follow-on: it uses try_implicit_copy_construct, not a ctor); v13: serialize a bound header's file-scope CLASS-typed global VARIABLE definitions (cir_forest_global_record) so load rebuilds them into tkProgram->variables + dkGlobalVar TopDecls and the existing passes emit them + synthesize __madc_global_init (the default ctors come from the v12 ctor set) — a --forest-bind consumer of <string> now emits its inline tag globals (piecewise_construct/allocator_arg) + global-init, as a live parse does; v12: serialize a class's ctors/dtor/operators (CIR_METHF_CTOR/DTOR) instead of skipping them, so load rebuilds cdd->ctors (default-construction resolves) + the "~" dtor method_map key (scope-exit cleanup resolves the D1 symbol) + operator= overloads — a std::string consumer now BINDS and RUNS correctly (constructs, assigns, sizes, destroys; output == live == g++). Whole-<string>-TU MIR byte-identity is NOT yet reached (two separate whole-TU-emission gaps: header global-var defs + __madc_global_init are not serialized; the bind synth-dtor set exceeds live's reachable set) — each its own follow-on slice; v11: serialize a non-polymorphic aggregate's COMPLETE state — anonymous_aggregates (re-nested nameless sub-aggregates, so a struct with an anon union/struct member binds with the right layout) + the layout scalars pack/tag_explicit_align/is_anonymous/reverse_scalar_storage/has_anon_aggregate — instead of a hand-picked field subset; v10: a type record carries its defining namespace (namespace_id) so load restores a namespaced type into namespace_map + namespace_datatype_map (a bound `N::P` / `std::X` resolves), not just the flat maps; v9: derived-type records (CIR_TYPEK_POINTER/REFERENCE/CONST, ref0 = operand typeid) so a pointer/reference/const member (or method param/return, or typedef underlying) serializes as a table entry + swizzles back on load, instead of bailing the whole aggregate; v8: an INLINE method carries its body location (body_unit/body_idx + CIR_METHF_HAS_BODY) so load reconnects the method to its Tree-1 func-def subtree (copied into the consumer's Tree-2 on use, like a template instantiation); a LIBRARY method has no func-def in the AST -> declaration-only + emit_symbol (unchanged); v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 20 };	// v20: WIDENING SLICE 2 — serialize the parser's TEMPLATE-NAME state (template_map / partial_spec_map / template_alias_map / fn_template_map / fn_template_decl_map / var_template_map / concept_map) so a bound header's template names RESOLVE in the consumer ("use of undeclared identifier 'vector'": the instantiation PRODUCT class was in the arena but the template NAME was not). Each captured pattern serializes VERBATIM as its live state: params (name / is_type / is_pack / per-param default token runs), flags, defining namespace, owner class (type-id, swizzled at load), and the captured TOKEN runs (body / decl / init / target / constraint / per-slot spec patterns) in the SAME .madh token record form the B4a unit token slices use (madc_pch::serialize_token_seq) — live itself keeps patterns as tokens (the Borland model), so bind holding the same tokens IS state parity, NOT the retired B4b re-parse drift. Load restores the maps before the consumer parses; an exact-match use then memo-hits the restored product (datatype_map[registered_mangled]) and a NEW specialization instantiates through the UNCHANGED live machinery. Three new container-global segments (15/16/17: records / u32 param+run payload / raw token bytes); CIR_FOREST_SEG_UNIT_BASE moved 16 -> 24 to make room (the version pin rejects every older container, so the move is safe). v19: RC2 — the arena additionally carries file-scope FREE-FUNCTION declarations (DK_FUNC records flagged DF_IS_FREE_FUNC, name_id = the funcdef_map key), restored on bind as funcdef_map entries + program-scope Variables so a bound call resolves the real signature and its extern proto emits with the real return/param types instead of the dlsym implicit-variadic fallback (i64,... — a signed-int return read as a 64-bit long, the bsearch_skill_exact bug class). No layout change — bumped because the freeze CONTENT grew (a stale v18 container lacks the records and would silently keep the fallback). v18: THE FLIP (B3 Chunk 3) — the DefArena dump (segments 10-14) IS the type-graph serialization; the v6 hand-serialized type records (segments 5/8: cir_forest_type_record[] + the member/base/method u32 payload stream) are RETIRED and no longer written or read. Load reconstructs the DataDef graph from the arena (materialize_from_arena, applying the v6 save-side selection at load), the typeid->name closure derives from arena defrec.name_id, and globals (segment 9, unchanged) swizzle through the arena reconstruct. A v17 container still carries the v6 segments a v18 reader would ignore — rejected by the version pin like every older format. v17: additionally dump the B3 DefArena (defrec[] + payload u32[] + its intern strings) as arena segments 10-14 alongside the v6 type records — the flip's SAVE side; not yet read on load (bind still uses the v6 type records), so this is additive, but the version is bumped because the container CONTENT grew. v16: serialize a bound header's file-scope CLASS-typed global INITIALIZER FORM (cir_forest_global_record.gflags gains CIR_GLOBALF_CLASS_VALUE_INIT / CIR_GLOBALF_CLASS_COPY_TEMP) so load reconstructs a TokenDecl whose emission is byte-identical to a live parse. v13 stored no form -> flush set decl=NULL -> collect_global_ctors' built-in path default-constructed DIRECTLY on the global; a live parse instead runs the class-instance init path: `T x = T()` builds a stack temp via the default ctor then copies it in (COPY_TEMP), while `T x{}` is a trivially-copyable self-copy via try_implicit_copy_construct (VALUE_INIT — needs NO ctor, so in_place, whose ctor was never serialized, binds anyway instead of being dropped by the ctors.empty() guard). v16 ALSO serializes DataDefCLASS::nvsize (the non-virtual size, left behind before v16 — a restored class defaulted nvsize=0): a functional-construction temporary's alloca AND the struct-copy in try_implicit_copy_construct are sized by nvsize, so an empty tag class restored with nvsize=0 emitted its `T x{}` / `T x = T()` global init with NO stack temp (alloca 0) and NO copy loop, unlike live. Together these close the LAST whole-<string>-TU MADC_DUMP_MIR gap (the in_place data item + the piecewise/allocator init-SHAPE divergence, which the top-level item-set diff hid inside __madc_global_init's body). The cir_forest_type_record grew a uint32_t (nvsize) vs v15 (a stale v15 container lacks the form flags -> would re-introduce the direct-construct shape + drop in_place). v15: serialize a class's OWN destructor even when it has neither an external emit_symbol NOR an inline body the producer emitted (a bodyless/unreferenced inline dtor) — declaration-only (CIR_METHF_DTOR, no body). A live parse registers such a dtor (class_own_dtor non-NULL) so Pass 1.6 synthesizes NO Cls___dtor; dropping it from the freeze made the restored class look dtor-less, so a --forest-bind consumer SYNTHESIZED a spurious trivial Cls___dtor that a live compile never emits (the whole-<string>-TU "only in BIND" overshoot: _Save_errno/__new_allocator_*/allocator_*/wide-char basic_string dtors). No layout change vs v14 — bumped because the freeze CONTENT changed (a stale v14 container lacks these dtor records → would re-introduce the overshoot). v14: serialize a bound header's file-scope SCALAR-const global VARIABLE definitions (cir_forest_global_record gains gflags + init_value): a scalar global's init is a compile-time constant (no ctor), so its integer value is stored and load rebuilds a `T name = value;` dkGlobalVar decl — a --forest-bind consumer of <string> now emits its scalar tag globals (hardware_constructive/destructive_interference_size = 64) as data items, byte-identically to live (in_place's {} value-init remains a follow-on: it uses try_implicit_copy_construct, not a ctor); v13: serialize a bound header's file-scope CLASS-typed global VARIABLE definitions (cir_forest_global_record) so load rebuilds them into tkProgram->variables + dkGlobalVar TopDecls and the existing passes emit them + synthesize __madc_global_init (the default ctors come from the v12 ctor set) — a --forest-bind consumer of <string> now emits its inline tag globals (piecewise_construct/allocator_arg) + global-init, as a live parse does; v12: serialize a class's ctors/dtor/operators (CIR_METHF_CTOR/DTOR) instead of skipping them, so load rebuilds cdd->ctors (default-construction resolves) + the "~" dtor method_map key (scope-exit cleanup resolves the D1 symbol) + operator= overloads — a std::string consumer now BINDS and RUNS correctly (constructs, assigns, sizes, destroys; output == live == g++). Whole-<string>-TU MIR byte-identity is NOT yet reached (two separate whole-TU-emission gaps: header global-var defs + __madc_global_init are not serialized; the bind synth-dtor set exceeds live's reachable set) — each its own follow-on slice; v11: serialize a non-polymorphic aggregate's COMPLETE state — anonymous_aggregates (re-nested nameless sub-aggregates, so a struct with an anon union/struct member binds with the right layout) + the layout scalars pack/tag_explicit_align/is_anonymous/reverse_scalar_storage/has_anon_aggregate — instead of a hand-picked field subset; v10: a type record carries its defining namespace (namespace_id) so load restores a namespaced type into namespace_map + namespace_datatype_map (a bound `N::P` / `std::X` resolves), not just the flat maps; v9: derived-type records (CIR_TYPEK_POINTER/REFERENCE/CONST, ref0 = operand typeid) so a pointer/reference/const member (or method param/return, or typedef underlying) serializes as a table entry + swizzles back on load, instead of bailing the whole aggregate; v8: an INLINE method carries its body location (body_unit/body_idx + CIR_METHF_HAS_BODY) so load reconnects the method to its Tree-1 func-def subtree (copied into the consumer's Tree-2 on use, like a template instantiation); a LIBRARY method has no func-def in the AST -> declaration-only + emit_symbol (unchanged); v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
@@ -186,7 +195,13 @@ enum : uint32_t
 	CIR_FOREST_SEG_ARENA_STR_BYTES   = 12,	// arena intern bytes   (SNAP_KIND_INTERN_BYTES)
 	CIR_FOREST_SEG_ARENA_STR_ENTRIES = 13,	// arena intern entries (SNAP_KIND_INTERN_ENTRIES)
 	CIR_FOREST_SEG_ARENA_STR_BUCKETS = 14,	// arena intern buckets (SNAP_KIND_INTERN_BUCKETS)
-	CIR_FOREST_SEG_UNIT_BASE     = 16,
+	// v20 (widening slice 2): template-NAME state. Absent = zero-length (a
+	// template-less freeze). UNIT_BASE moved 16 -> 24 in the same bump.
+	CIR_FOREST_SEG_TEMPLATES        = 15,	// cir_forest_template_record[]
+	CIR_FOREST_SEG_TEMPLATE_PAYLOAD = 16,	// uint32 stream: cir_forest_template_param[] + cir_forest_token_run[] slices
+	CIR_FOREST_SEG_TEMPLATE_TOKENS  = 17,	// raw token bytes (.madh record form; runs carry byte offsets)
+	CIR_FOREST_SEG_EXTERN_LOCS      = 18,	// cir_forest_extern_loc[] (extern decl index, v20)
+	CIR_FOREST_SEG_UNIT_BASE     = 24,
 	CIR_FOREST_SEGS_PER_UNIT     = 8	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
 						// +6 pp exports, +7 edges (v2 slots may be
@@ -295,6 +310,87 @@ struct cir_forest_global_record
 	int64_t  init_value;	// scalar integer init (valid iff CIR_GLOBALF_SCALAR_INIT) — v14
 };
 
+// --- v20 (widening slice 2): template-NAME state records -------------------
+// One record per (map key, definition) pair across the parser's template
+// pattern maps, serialized VERBATIM from the live map state at freeze. The
+// captured token vectors ride the .madh token record form (serialize_token_seq)
+// in the TEMPLATE_TOKENS segment; params + token-run descriptors ride the u32
+// TEMPLATE_PAYLOAD stream (pod_append, the arena payload discipline).
+enum : uint32_t {
+	CIR_TMPLK_CLASS   = 1,	// Program::template_map (primary class templates)
+	CIR_TMPLK_PARTIAL = 2,	// Program::partial_spec_map
+	CIR_TMPLK_ALIAS   = 3,	// Program::template_alias_map
+	CIR_TMPLK_FN      = 4,	// Program::fn_template_map
+	CIR_TMPLK_FN_DECL = 5,	// Program::fn_template_decl_map (body-less decls)
+	CIR_TMPLK_VAR     = 6,	// Program::var_template_map
+	CIR_TMPLK_CONCEPT = 7	// Program::concept_map
+};
+enum : uint32_t {
+	CIR_TMPLF_HAS_NON_TYPE_PARAMS = 1u << 0,	// TemplateDef/AliasDef/FnTemplateDef
+	CIR_TMPLF_IS_PARTIAL_SPEC     = 1u << 1,	// TemplateDef::is_partial_specialization
+	CIR_TMPLF_INSTANCE_METHOD     = 1u << 2		// FnTemplateDef::instance_method
+};
+enum : uint32_t {	// cir_forest_template_param::pflags
+	CIR_TMPLP_IS_TYPE = 1u << 0,
+	CIR_TMPLP_IS_PACK = 1u << 1
+};
+struct cir_forest_template_param
+{
+	uint32_t name_id;	// the type parameter's name (e.g. "_Tp")
+	uint32_t pflags;	// CIR_TMPLP_*
+};
+// One captured token sequence: `tok_count` .madh-form records at byte offset
+// `tok_off` (`tok_bytes` long) in the TEMPLATE_TOKENS segment. `file_id` is the
+// sequence's origin file (its first token's), restored onto every token so
+// instantiation provenance (_parse_file -> from_system_header classification,
+// lazy-body deferral, error attribution) matches a live capture. The .madh
+// record form keeps line/column per token but not file — one file per run is
+// faithful in practice (a captured pattern's tokens come from one header).
+struct cir_forest_token_run
+{
+	uint32_t tok_off;
+	uint32_t tok_bytes;
+	uint32_t tok_count;
+	uint32_t file_id;	// 0 = none recorded
+};
+// The record's token runs are CONTIGUOUS cir_forest_token_run entries at
+// `run_begin` (a u32 word offset in TEMPLATE_PAYLOAD), positional:
+//   run[0]                       body (TemplateDef::body / FnTemplateDef::decl /
+//                                VarTemplateDef::init / TemplateAliasDef::target)
+//   run[1]                       constraint (TemplateDef / ConceptDef)
+//   run[2 .. 2+param_count)      per-param default argument tokens
+//   run[2+param_count ..
+//        2+param_count+spec_count)  per-arg-slot partial-spec pattern tokens
+// An absent sequence is a zero-count run. Total runs = 2 + param_count + spec_count.
+struct cir_forest_template_record
+{
+	uint32_t kind;		// CIR_TMPLK_*
+	uint32_t key_id;	// the map key (bare name, or "ns::name" for fn/var/concept maps)
+	uint32_t name_id;	// TemplateDef::class_name / TemplateAliasDef::alias_name (0 = n/a)
+	uint32_t ns_id;		// defining_namespace / FnTemplateDef::ns (0 = global)
+	uint32_t extra_id;	// FnTemplateDef::inline_builtin_kind (0 = none)
+	uint32_t owner_type_id;	// owner_class as a serialized type-id (0 = none)
+	uint32_t flags;		// CIR_TMPLF_*
+	uint32_t param_begin;	// u32 word offset of cir_forest_template_param[param_count]
+	uint32_t param_count;
+	uint32_t run_begin;	// u32 word offset of the positional token-run table
+	uint32_t spec_count;	// partial-spec pattern slots (0 for a primary)
+};
+
+// v20: one indexed top-level EXTERN declaration — the producer's typed (or
+// deliberately-unprototyped) extern decl for a symbol its lowering emitted
+// (operator new/delete manglings, libc fns resolved via the dlsym fallback,
+// the __madc_* runtime). A LOADED forest body carries pre-built calls to such
+// symbols; the consumer loads the producer's OWN declaration node (verbatim
+// state — never re-derives the signature) when one of them surfaces as a
+// loaded-body callee with no in-TU definition.
+struct cir_forest_extern_loc
+{
+	uint32_t name_id;	// the declared symbol (container pool)
+	uint32_t unit;		// the N_SPEC_DECL's frozen location
+	uint32_t idx;
+};
+
 // Source-position side-car record (parallel to the unit's records; cold —
 // consumed for diagnostics, separate from the hot record segment).
 struct cir_frozen_pos
@@ -332,6 +428,12 @@ struct cir_frozen_forest
 	std::vector<uint32_t>        canon_order;	// unit indices, canonical include order
 	// --- v13 (container-global): file-scope global VARIABLE definitions ---
 	std::vector<cir_forest_global_record> globals;
+	// --- v20 (container-global): template-NAME state (widening slice 2) ---
+	std::vector<cir_forest_template_record> templates;
+	std::vector<uint32_t> template_payload;		// params + token-run descriptors (pod_append)
+	std::vector<uint8_t>  template_tokens;		// .madh token record form (serialize_token_seq)
+	// --- v20 (container-global): top-level extern-decl index (symbol -> loc) ---
+	std::vector<cir_forest_extern_loc> extern_locs;
 	// --- B3 (v18; container-global): the DefArena dump — THE type-graph
 	// serialization. Populated in madc_cir_freeze from Program::forest_arena
 	// (filled during parse by the write-throughs, refreshed + completed at
@@ -421,6 +523,8 @@ public:
 class DataDef;	// defined in datadef.h; cir_freeze.cpp (the only .cpp that
 		// materializes DataDefs) includes datadef.h before this header.
 class Variable;	// datatokens.h; cir_freeze.cpp reconstructs method Variables (Phase 6 3d)
+class DataDefCLASS;	// datadef.h; v20 restored-template owner-class swizzle
+class FuncDef;		// datadef.h; RC2 restored free-function declarations
 
 // One entry the bind layer registers into the parser's symbol tables. `dd` is a
 // materialized struct/class DataDef (forest-owned); a typedef carries `underlying`
@@ -459,6 +563,38 @@ struct CirRestoredFunc
 {
 	const char *name;		// the funcdef_map key == the call name
 	FuncDef    *fd;			// reconstructed declaration (forest-owned)
+};
+
+// v20 (widening slice 2): one restored template pattern — the metadata view
+// over a cir_forest_template_record with names resolved against the container
+// pool, the owner class swizzled to its materialized DataDefCLASS*, and each
+// token run exposed as a (bytes, len, count, file) span into the loaded
+// TEMPLATE_TOKENS segment. forest_restore_decls (parser side, where the
+// active string pool + Program::intern_file live) deserializes the runs via
+// madc_pch::deserialize_tokens and registers the rebuilt definition into the
+// matching live map — token materialization deliberately does NOT happen
+// here (TokenIdent construction needs the active spelling pool).
+struct CirRestoredTemplateRun
+{
+	const uint8_t *bytes;		// NULL/0-count = absent sequence
+	uint32_t       len;
+	uint32_t       count;
+	const char    *file;		// origin file for token provenance (NULL = none)
+};
+struct CirRestoredTemplate
+{
+	uint32_t    kind;		// CIR_TMPLK_*
+	const char *key;		// the map key
+	const char *name;		// class_name / alias_name (NULL = n/a)
+	const char *ns;			// defining namespace (NULL/"" = global)
+	const char *extra;		// FnTemplateDef::inline_builtin_kind (NULL = none)
+	DataDefCLASS *owner;		// swizzled owner class (NULL = none)
+	uint32_t    flags;		// CIR_TMPLF_*
+	std::vector<std::pair<const char *, uint32_t> > params;	// (name, CIR_TMPLP_*)
+	CirRestoredTemplateRun body;
+	CirRestoredTemplateRun constraint;
+	std::vector<CirRestoredTemplateRun> defaults;	// parallel to params
+	std::vector<CirRestoredTemplateRun> spec;	// per partial-spec arg slot
 };
 
 // A loaded forest: validates the pin + directory + string pool once, then
@@ -502,6 +638,15 @@ class CirFrozenForest
 	// RC2: restored free-function declarations, built by materialize_from_arena
 	// from the DF_IS_FREE_FUNC DK_FUNC records.
 	std::vector<CirRestoredFunc> _restored_funcs;
+	// v20 container-global: template-NAME state. Records + payload + token
+	// bytes load at open(); _restored_templates (names resolved, owner
+	// swizzled, runs exposed as spans) is built by materialize_from_arena.
+	std::vector<cir_forest_template_record> _templates;
+	std::vector<uint32_t> _template_payload;
+	std::vector<uint8_t>  _template_tokens;
+	std::vector<CirRestoredTemplate> _restored_templates;
+	// v20 container-global: extern-decl index (symbol -> frozen location).
+	std::map<std::string, std::pair<uint32_t, uint32_t> > _extern_by_name;
 	// v18 container-global: the B3 DefArena dump (segments 10-14) — THE type-graph
 	// serialization — bound read-only at open: in place when a segment is
 	// uncompressed, else into the owned buffers. A type-less freeze binds an
@@ -585,6 +730,24 @@ public:
 	// materialize_from_arena() — call it first.
 	const std::vector<CirRestoredFunc> &restored_funcs() const
 	{ return _restored_funcs; }
+	// v20: the restored template-NAME state (metadata + token-run spans).
+	// Valid after materialize_from_arena() — call it first.
+	const std::vector<CirRestoredTemplate> &restored_templates() const
+	{ return _restored_templates; }
+	// v20: the frozen location of the producer's top-level extern decl for
+	// `sym` (false = none indexed). The bind layer loads the decl node via
+	// node_for when a loaded body references the symbol.
+	bool extern_loc_for(const std::string &sym,
+			    uint32_t &unit, uint32_t &idx) const
+	{
+		std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator
+			it = _extern_by_name.find(sym);
+		if (it == _extern_by_name.end())
+			return false;
+		unit = it->second.first;
+		idx  = it->second.second;
+		return true;
+	}
 	// The read-only view over the dumped B3 DefArena (an empty view on a
 	// type-less freeze).
 	const madc::dis::FrozenDefArena &arena() const { return _arena; }

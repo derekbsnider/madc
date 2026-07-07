@@ -37,6 +37,7 @@
 #include "cir_builder.h"
 #include "cir_emit_c.h"
 #include "cir_freeze.h"
+#include "madc_pch.h"	// v20: template token runs ride the .madh record form
 
 extern "C" {
 #include "c2mir/c2mir_api.h"
@@ -1040,6 +1041,53 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		r.vgroup_count = (uint32_t)vgs.size();
 		for (size_t g = 0; g < vgs.size(); ++g)
 			forest_arena.add_payload(vgs[g]);
+
+		// --- class-scope name maps (v20): type aliases, static member types,
+		//     static-const values. Resolve every type-id FIRST (lazy stamping
+		//     appends nothing to payload, but keep the discipline uniform),
+		//     then append each run contiguously. ---
+		std::vector<std::pair<uint32_t, uint32_t> > als;
+		for (std::map<std::string, DataDef *>::const_iterator ai = cdd->type_aliases.begin();
+		     ai != cdd->type_aliases.end(); ++ai)
+			als.push_back(std::make_pair(
+				forest_arena.strings.intern(ai->first.c_str()),
+				ai->second ? forest_serialize_type_id(ai->second) : 0u));
+		r.alias_begin = (uint32_t)forest_arena.payload.size();
+		r.alias_count = (uint32_t)als.size();
+		for (size_t i = 0; i < als.size(); ++i) {
+			madc::dis::aliasrec ar;
+			memset(&ar, 0, sizeof(ar));
+			ar.name_id = als[i].first;
+			ar.type_id = als[i].second;
+			forest_arena.add_payload(ar);
+		}
+		std::vector<std::pair<uint32_t, uint32_t> > sts;
+		for (std::map<std::string, DataDef *>::const_iterator si = cdd->static_member_types.begin();
+		     si != cdd->static_member_types.end(); ++si)
+			sts.push_back(std::make_pair(
+				forest_arena.strings.intern(si->first.c_str()),
+				si->second ? forest_serialize_type_id(si->second) : 0u));
+		r.statty_begin = (uint32_t)forest_arena.payload.size();
+		r.statty_count = (uint32_t)sts.size();
+		for (size_t i = 0; i < sts.size(); ++i) {
+			madc::dis::aliasrec ar;
+			memset(&ar, 0, sizeof(ar));
+			ar.name_id = sts[i].first;
+			ar.type_id = sts[i].second;
+			forest_arena.add_payload(ar);
+		}
+		r.constval_begin = (uint32_t)forest_arena.payload.size();
+		r.constval_count = (uint32_t)cdd->static_member_const_values.size();
+		for (std::map<std::string, int64_t>::const_iterator ci =
+			 cdd->static_member_const_values.begin();
+		     ci != cdd->static_member_const_values.end(); ++ci) {
+			madc::dis::constvalrec cr;
+			memset(&cr, 0, sizeof(cr));
+			cr.name_id = forest_arena.strings.intern(ci->first.c_str());
+			cr.val_lo  = (uint32_t)((uint64_t)ci->second & 0xffffffffu);
+			cr.val_hi  = (uint32_t)((uint64_t)ci->second >> 32);
+			forest_arena.add_payload(cr);
+		}
 	}
 
 	// --- anonymous sub-aggregate run (entries collected above, before any run of
@@ -1211,6 +1259,178 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
     }
 }
 
+// v20 (widening slice 2): serialize the parser's TEMPLATE-NAME state — the
+// template pattern maps — VERBATIM. Live keeps each captured pattern as cloned
+// TOKENS (the Borland model: instantiation clones + substitutes the saved
+// tokens), so the state serializes as .madh-form token runs
+// (madc_pch::serialize_token_seq — the B4a record form) + POD metadata (params /
+// flags / namespace / owner type-id). Load restores the maps before the
+// consumer parses; the UNCHANGED live instantiation machinery then runs — an
+// exact-match use memo-hits the restored product, a new specialization
+// instantiates through the same path. A pattern whose owner class is not in the
+// arena cleanly lacks at load (same discipline as a dropped class's global).
+static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
+{
+    if (!prog || !TokenBase::_active_strpool)
+	return;
+    madc::dis::intern_table &pool = *TokenBase::_active_strpool;
+
+    // One captured token sequence -> a token-run descriptor + its bytes in
+    // f.template_tokens. file_id = the sequence's first token's origin file
+    // (instantiate_template_use points _parse_file at exactly that token, so
+    // one file per run reproduces the live provenance).
+    auto run_of = [&](const std::vector<TokenBase *> &toks) -> cir_forest_token_run {
+	cir_forest_token_run r;
+	r.tok_off = (uint32_t)f.template_tokens.size();
+	r.tok_bytes = 0;
+	r.tok_count = 0;
+	r.file_id = 0;
+	if (toks.empty())
+	    return r;
+	std::vector<uint8_t> bytes;
+	if (!madc_pch::serialize_token_seq(toks, bytes))
+	    return r;
+	uint32_t cnt = 0;
+	for (TokenBase *t : toks)
+	    if (t)
+		++cnt;
+	for (TokenBase *t : toks)
+	    if (t && t->file) {
+		r.file_id = pool.intern(t->file);
+		break;
+	    }
+	r.tok_bytes = (uint32_t)bytes.size();
+	r.tok_count = cnt;
+	f.template_tokens.insert(f.template_tokens.end(), bytes.begin(), bytes.end());
+	return r;
+    };
+
+    // Emit one record: params first, then the positional run table
+    // (body, constraint, per-param defaults, per-slot spec patterns) — both as
+    // contiguous pod_append slices into f.template_payload.
+    auto emit = [&](uint32_t kind, const char *key, const std::string &name,
+		    const std::string &ns, const std::string &extra,
+		    DataDefCLASS *owner, uint32_t flags,
+		    const std::vector<std::string> &typeparams,
+		    const std::vector<bool> &is_type,
+		    const std::vector<bool> &is_pack,
+		    const std::vector<std::vector<TokenBase *> > &defaults,
+		    const std::vector<TokenBase *> &body,
+		    const std::vector<TokenBase *> &constraint,
+		    const std::vector<std::vector<TokenBase *> > &spec) {
+	cir_forest_template_record r;
+	memset(&r, 0, sizeof(r));
+	r.kind    = kind;
+	r.key_id  = pool.intern(key);
+	r.name_id = name.empty() ? 0 : pool.intern(name);
+	r.ns_id   = ns.empty() ? 0 : pool.intern(ns);
+	r.extra_id = extra.empty() ? 0 : pool.intern(extra);
+	r.owner_type_id = owner ? forest_serialize_type_id(owner) : 0;
+	r.flags   = flags;
+	// Serialize every run's TOKEN BYTES before appending any payload words,
+	// then lay the params + run table down contiguously (resolve-first).
+	std::vector<cir_forest_token_run> runs;
+	runs.push_back(run_of(body));
+	runs.push_back(run_of(constraint));
+	for (size_t i = 0; i < typeparams.size(); ++i)
+	    runs.push_back(i < defaults.size() ? run_of(defaults[i])
+					       : run_of(std::vector<TokenBase *>()));
+	for (size_t i = 0; i < spec.size(); ++i)
+	    runs.push_back(run_of(spec[i]));
+	r.param_count = (uint32_t)typeparams.size();
+	r.spec_count  = (uint32_t)spec.size();
+	bool first = true;
+	for (size_t i = 0; i < typeparams.size(); ++i) {
+	    cir_forest_template_param p;
+	    p.name_id = pool.intern(typeparams[i]);
+	    p.pflags  = 0;
+	    if (i < is_type.size() && is_type[i])
+		p.pflags |= CIR_TMPLP_IS_TYPE;
+	    if (i < is_pack.size() && is_pack[i])
+		p.pflags |= CIR_TMPLP_IS_PACK;
+	    uint32_t off = madc::dis::pod_append(f.template_payload, p);
+	    if (first) {
+		r.param_begin = off;
+		first = false;
+	    }
+	}
+	first = true;
+	for (size_t i = 0; i < runs.size(); ++i) {
+	    uint32_t off = madc::dis::pod_append(f.template_payload, runs[i]);
+	    if (first) {
+		r.run_begin = off;
+		first = false;
+	    }
+	}
+	f.templates.push_back(r);
+    };
+
+    static const std::vector<std::vector<TokenBase *> > no_multi;
+    static const std::vector<TokenBase *> no_toks;
+    static const std::vector<bool> no_bools;
+
+    prog->template_map.for_each([&](const char *key, std::vector<Program::TemplateDef> &v) {
+	for (Program::TemplateDef &td : v)
+	    emit(CIR_TMPLK_CLASS, key, td.class_name, td.defining_namespace,
+		 std::string(), td.owner_class,
+		 (td.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0)
+		 | (td.is_partial_specialization ? CIR_TMPLF_IS_PARTIAL_SPEC : 0),
+		 td.typeparams, td.typeparam_is_type, td.typeparam_is_pack,
+		 td.typeparam_defaults, td.body, td.constraint, td.spec_pattern);
+	return false;
+    });
+    prog->partial_spec_map.for_each([&](const char *key, std::vector<Program::TemplateDef> &v) {
+	for (Program::TemplateDef &td : v)
+	    emit(CIR_TMPLK_PARTIAL, key, td.class_name, td.defining_namespace,
+		 std::string(), td.owner_class,
+		 (td.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0)
+		 | (td.is_partial_specialization ? CIR_TMPLF_IS_PARTIAL_SPEC : 0),
+		 td.typeparams, td.typeparam_is_type, td.typeparam_is_pack,
+		 td.typeparam_defaults, td.body, td.constraint, td.spec_pattern);
+	return false;
+    });
+    prog->template_alias_map.for_each([&](const char *key, std::vector<Program::TemplateAliasDef> &v) {
+	for (Program::TemplateAliasDef &ad : v)
+	    emit(CIR_TMPLK_ALIAS, key, ad.alias_name, ad.defining_namespace,
+		 std::string(), ad.owner_class,
+		 ad.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0,
+		 ad.typeparams, ad.typeparam_is_type, ad.typeparam_is_pack,
+		 ad.typeparam_defaults, ad.target, no_toks, no_multi);
+	return false;
+    });
+    prog->fn_template_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {
+	for (Program::FnTemplateDef &fd : v)
+	    emit(CIR_TMPLK_FN, key, std::string(), fd.ns, fd.inline_builtin_kind,
+		 fd.owner_class,
+		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
+		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
+		 fd.typeparam_defaults, fd.decl, no_toks, no_multi);
+	return false;
+    });
+    prog->fn_template_decl_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {
+	for (Program::FnTemplateDef &fd : v)
+	    emit(CIR_TMPLK_FN_DECL, key, std::string(), fd.ns, fd.inline_builtin_kind,
+		 fd.owner_class,
+		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
+		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
+		 fd.typeparam_defaults, fd.decl, no_toks, no_multi);
+	return false;
+    });
+    prog->var_template_map.for_each([&](const char *key, Program::VarTemplateDef &vd) {
+	emit(CIR_TMPLK_VAR, key, std::string(), vd.defining_namespace,
+	     std::string(), NULL, 0,
+	     vd.typeparams, no_bools, vd.typeparam_is_pack,
+	     no_multi, vd.init, no_toks, no_multi);
+	return false;
+    });
+    for (std::map<std::string, Program::ConceptDef>::iterator ci =
+	     prog->concept_map.begin(); ci != prog->concept_map.end(); ++ci)
+	emit(CIR_TMPLK_CONCEPT, ci->first.c_str(), std::string(),
+	     ci->second.defining_namespace, std::string(), NULL, 0,
+	     ci->second.typeparams, no_bools, no_bools,
+	     no_multi, no_toks, ci->second.constraint, no_multi);
+}
+
 // B3: freeze-time COMPLETION of the arena copy staged in f.arena. Three
 // fidelity categories live in freeze-time or name-keyed state the parse-time
 // write-throughs cannot see, so they are stamped here (the retired v6 walks
@@ -1264,6 +1484,41 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		}
 	}
 
+	// 1b (v20): BODIED free-function body locations — the producer's
+	// instantiated definitions (static member-template __mti, namespace
+	// fn-template __ns_*__oN). Stamp a body ONLY when the func-def landed in
+	// a SYSTEM-header unit (its tokens carry the template's real origin): a
+	// producer ROOT (main, user-file functions) stays body-less and its
+	// DF_WAS_BODIED record cleanly lacks at load — a consumer must never
+	// inherit the producer's roots.
+	if (TokenBase::_active_strpool) {
+		madc::dis::intern_table &pool = *TokenBase::_active_strpool;
+		for (uint32_t s = 0; s < nslots; ++s) {
+			uint32_t tid = madc::dis::arena_id_of(s);
+			madc::dis::defrec r;
+			if (!a.get_def_at(tid, r)
+			    || r.kind != madc::dis::DK_FUNC
+			    || !(r.flags & madc::dis::DF_IS_FREE_FUNC)
+			    || !(r.flags & madc::dis::DF_WAS_BODIED)
+			    || (r.flags & madc::dis::DF_HAS_FOREST_BODY))
+				continue;
+			std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator
+				bl = f.funcdef_locs.find(a.strings.str(r.name_id));
+			if (bl == f.funcdef_locs.end())
+				continue;
+			uint32_t unit = bl->second.first;
+			if (unit >= f.units.size())
+				continue;
+			const char *un = pool.c_str(f.units[unit].unit_name_id);
+			if (!un || !prog->is_system_header_path(un))
+				continue;
+			r.flags    |= madc::dis::DF_HAS_FOREST_BODY;
+			r.body_unit = unit;
+			r.body_idx  = bl->second.second;
+			a.set_def_at(tid, r);
+		}
+	}
+
 	// 2+3 phase A: RESOLVE ids for every pending typedef/alias record first.
 	// Resolution can stamp a fresh live project id (madc_type_id_for is lazy), and
 	// the synthetic slots must start PAST the last live id — a collision would make
@@ -1298,7 +1553,30 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		for (datatype_map_iter it = m.begin(); it != m.end(); ++it) {
 			if (it->first.find('<') != std::string::npos || !it->second)
 				continue;		// template product / empty: follow-on
-			uint32_t tid = madc_type_id_for(&it->second->definition);
+			// The ONE cross-ref policy (forest_serialize_type_id): a
+			// btSimple scalar alias (std::size_t — a project-side copy
+			// of unsigned long, the A2 class) resolves to its PINNED
+			// slot; aggregates/derived keep their project id.
+			uint32_t tid = forest_serialize_type_id(&it->second->definition);
+			DBG(std::cout << "cir_forest_arena_complete: ns entry " << ns
+				      << "::" << it->first << " tid=" << tid
+				      << (madc::dis::arena_id_is_pinned(tid) ? " pinned"
+					  : (madc::dis::arena_id_is_project(tid)
+					     ? " project" : " other")) << std::endl);
+			// v20: a namespaced alias to a PINNED primitive (std::size_t
+			// -> unsigned long, std::ptrdiff_t -> long, …) has no arena
+			// record to stamp — emit the namespaced DK_TYPEDEF alias
+			// directly (ref0 = the pinned id; load resolves it via
+			// madc_type_from_id). Left out, a restored-template body
+			// instantiation fails at `typedef std::size_t size_type;`.
+			if (madc::dis::arena_id_is_pinned(tid)) {
+				arena_alias p;
+				p.name_id = a.strings.intern(it->first);
+				p.ns_id   = a.strings.intern(ns);
+				p.ref0    = tid;
+				aliases.push_back(p);
+				continue;
+			}
 			madc::dis::defrec r;
 			if (!madc::dis::arena_id_is_project(tid) || !a.get_def_at(tid, r)
 			    || r.kind == madc::dis::DK_NONE)
@@ -1377,26 +1655,29 @@ static void cir_forest_arena_refresh(Program *prog)
 		done = n;
 	}
 
-	// RC2: FREE FUNCTIONS — record each file-scope free-function DECLARATION
-	// (the funcdef_map surface a live header parse leaves behind) as its own
+	// RC2: FREE FUNCTIONS — record each file-scope free function (the
+	// funcdef_map surface a live header parse leaves behind) as its own
 	// DK_FUNC, flagged DF_IS_FREE_FUNC with name_id = the funcdef_map key (the
 	// call name). Same interim freeze-time capture as the aggregates above
 	// (a parseFunction write-through is part of the ~411-site rollout).
 	// Runs AFTER the aggregate fixpoint so every METHOD FuncDef already has
 	// its DK_FUNC record (recorded via its class) and is skipped structurally
-	// by has_def. Selection mirrors what the flip restores elsewhere:
-	// prototypes only (a bodied function — including the producer's own
-	// main() — is slice-2 territory alongside the inline-method body model),
-	// no tracked C++ overload symbols (function_display_name set), no
-	// templates. A skipped function keeps today's behavior (dlsym fallback).
+	// by has_def. Selection: prototypes without a tracked C++ overload name
+	// (the RC2 slice-1 set, unchanged), PLUS (v20) every BODIED function —
+	// flagged DF_WAS_BODIED. A bodied entry is an instantiated definition the
+	// producer's lowering created (a static member-template __mti, a namespace
+	// fn-template __ns_*__oN) whose loaded callers reference its symbol, OR a
+	// producer root like main(): cir_forest_arena_complete stamps a forest
+	// body location ONLY for the system-header-origin ones, and load restores
+	// ONLY those (a bodied record without a body location cleanly lacks — a
+	// producer root never restores into a consumer). Templates / member-
+	// template PATTERNS still skip (a pattern is not a concrete symbol).
 	for (funcdef_map_iter it = prog->funcdef_map.begin();
 	     it != prog->funcdef_map.end(); ++it) {
 		FuncDef *fd = it->second;
 		if (!fd || it->first.empty())
 			continue;
-		if (!fd->declaration_only)
-			continue;
-		if (!fd->function_display_name.empty())
+		if (fd->declaration_only && !fd->function_display_name.empty())
 			continue;
 		if (fd->is_member_template || !fd->template_param_names.empty())
 			continue;
@@ -1410,6 +1691,8 @@ static void cir_forest_arena_refresh(Program *prog)
 			continue;
 		r.name_id = prog->forest_arena.strings.intern(it->first.c_str());
 		r.flags  |= madc::dis::DF_IS_FREE_FUNC;
+		if (!fd->declaration_only)
+			r.flags |= madc::dis::DF_WAS_BODIED;
 		prog->forest_arena.set_def_at(tid, r);
 	}
 }
@@ -1457,6 +1740,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		f.arena = prog->forest_arena;		// B3 (v18): the arena dump IS the type-graph serialization
 		cir_forest_arena_complete(prog, f);	// freeze-time fidelity (inline bodies / typedefs / ns)
 		cir_forest_fill_globals(prog, f);	// file-scope globals (CIR_GLOBALS; ids swizzle via the arena)
+		cir_forest_fill_templates(prog, f);	// v20: template-NAME state (pattern maps, token runs)
 		PchCompression codec = PchCompression::Zlib;
 #ifdef HAVE_ZSTD
 		codec = PchCompression::Zstd;

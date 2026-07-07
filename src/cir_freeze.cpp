@@ -317,6 +317,46 @@ static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 		out.funcdef_locs[id->u.s.s] =
 			std::make_pair(it->second.unit, it->second.idx);
 	}
+
+	// v20: index every top-level EXTERN declaration's symbol -> (unit, idx).
+	// These are the typed (or deliberately unprototyped) extern decls the
+	// producer's lowering emitted (need_output_extern: operator new/delete
+	// manglings, dlsym-fallback libc fns, the __madc_* runtime). A LOADED
+	// body's pre-built call to such a symbol never passes the lowering site
+	// that would declare it, so bind loads the producer's OWN decl node —
+	// verbatim state, never a re-derived signature.
+	if (TokenBase::_active_strpool) {
+		madc::dis::intern_table &pool = *TokenBase::_active_strpool;
+		std::set<std::string> seen_externs;
+		for (std::map<cir_node *, cir_freeze_loc>::iterator it = where.begin();
+		     it != where.end(); ++it) {
+			node_t sd = it->first->as_node();
+			if (sd->code != N_SPEC_DECL)
+				continue;
+			node_t share = c2mir_node_first_op(sd);	// op0: N_SHARE(spec list)
+			node_t specs = share && share->code == N_SHARE
+				     ? c2mir_node_first_op(share) : share;
+			bool is_extern = false;
+			for (node_t s = specs ? c2mir_node_first_op(specs) : NULL;
+			     s; s = c2mir_node_next_op(s))
+				if (s->code == N_EXTERN) { is_extern = true; break; }
+			if (!is_extern)
+				continue;
+			node_t decl = share ? c2mir_node_next_op(share) : NULL;
+			if (!decl || decl->code != N_DECL)
+				continue;
+			node_t id = c2mir_node_first_op(decl);
+			if (!id || id->code != N_ID || !id->u.s.s)
+				continue;
+			if (!seen_externs.insert(id->u.s.s).second)
+				continue;	// first decl wins (dedup)
+			cir_forest_extern_loc xl;
+			xl.name_id = pool.intern(id->u.s.s);
+			xl.unit    = it->second.unit;
+			xl.idx     = it->second.idx;
+			out.extern_locs.push_back(xl);
+		}
+	}
 	return true;
 }
 
@@ -492,6 +532,20 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	    || !add_seg(w, CIR_FOREST_SEG_ARENA_STR_BUCKETS, madc::dis::SNAP_KIND_INTERN_BUCKETS,
 			f.arena.strings.buckets_data(),
 			f.arena.strings.buckets_size() * sizeof(uint32_t), codec))
+		return false;
+	// v20 container-global: template-NAME state (zero-length when the freeze
+	// recorded no template patterns).
+	if (!add_seg(w, CIR_FOREST_SEG_TEMPLATES, SNAP_KIND_CIR_TEMPLATES,
+		     f.templates.data(),
+		     f.templates.size() * sizeof(cir_forest_template_record), codec)
+	    || !add_seg(w, CIR_FOREST_SEG_TEMPLATE_PAYLOAD, SNAP_KIND_CIR_TEMPLATE_PAYLOAD,
+			f.template_payload.data(),
+			f.template_payload.size() * sizeof(uint32_t), codec)
+	    || !add_seg(w, CIR_FOREST_SEG_TEMPLATE_TOKENS, SNAP_KIND_CIR_TEMPLATE_TOKENS,
+			f.template_tokens.data(), f.template_tokens.size(), codec)
+	    || !add_seg(w, CIR_FOREST_SEG_EXTERN_LOCS, SNAP_KIND_CIR_EXTERN_LOCS,
+			f.extern_locs.data(),
+			f.extern_locs.size() * sizeof(cir_forest_extern_loc), codec))
 		return false;
 	// v2 container-global payloads (zero-length when the freeze recorded
 	// nothing — a module-only freeze).
@@ -923,6 +977,65 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m)
 		_globals.resize(d.size() / sizeof(cir_forest_global_record));
 		if (!d.empty())
 			memcpy(_globals.data(), d.data(), d.size());
+	}
+	// v20 container-global: template-NAME state (records + u32 payload + token
+	// bytes; zero-length = a template-less freeze). materialize_from_arena
+	// resolves names / swizzles owner ids into _restored_templates; the token
+	// runs deserialize on the parser side (forest_restore_decls).
+	if (const madc::dis::snapshot_segment *ts =
+		_reader.find(CIR_FOREST_SEG_TEMPLATES)) {
+		std::vector<uint8_t> d;
+		if (ts->kind != SNAP_KIND_CIR_TEMPLATES
+		    || !_reader.read_segment(*ts, d)
+		    || d.size() % sizeof(cir_forest_template_record)) {
+			fprintf(stderr, "madc: forest template table corrupt\n");
+			return false;
+		}
+		_templates.resize(d.size() / sizeof(cir_forest_template_record));
+		if (!d.empty())
+			memcpy(_templates.data(), d.data(), d.size());
+	}
+	if (const madc::dis::snapshot_segment *tp =
+		_reader.find(CIR_FOREST_SEG_TEMPLATE_PAYLOAD)) {
+		std::vector<uint8_t> d;
+		if (tp->kind != SNAP_KIND_CIR_TEMPLATE_PAYLOAD
+		    || !_reader.read_segment(*tp, d) || d.size() % sizeof(uint32_t)) {
+			fprintf(stderr, "madc: forest template payload corrupt\n");
+			return false;
+		}
+		_template_payload.resize(d.size() / sizeof(uint32_t));
+		if (!d.empty())
+			memcpy(_template_payload.data(), d.data(), d.size());
+	}
+	if (const madc::dis::snapshot_segment *tt =
+		_reader.find(CIR_FOREST_SEG_TEMPLATE_TOKENS)) {
+		if (tt->kind != SNAP_KIND_CIR_TEMPLATE_TOKENS
+		    || !_reader.read_segment(*tt, _template_tokens)) {
+			fprintf(stderr, "madc: forest template tokens corrupt\n");
+			return false;
+		}
+	}
+	// v20 container-global: the extern-decl index (symbol -> frozen loc).
+	if (const madc::dis::snapshot_segment *xs =
+		_reader.find(CIR_FOREST_SEG_EXTERN_LOCS)) {
+		std::vector<uint8_t> d;
+		if (xs->kind != SNAP_KIND_CIR_EXTERN_LOCS
+		    || !_reader.read_segment(*xs, d)
+		    || d.size() % sizeof(cir_forest_extern_loc)) {
+			fprintf(stderr, "madc: forest extern index corrupt\n");
+			return false;
+		}
+		size_t n = d.size() / sizeof(cir_forest_extern_loc);
+		for (size_t i = 0; i < n; ++i) {
+			cir_forest_extern_loc xl;
+			memcpy(&xl, d.data() + i * sizeof(xl), sizeof(xl));
+			uint32_t nlen = 0;
+			const char *nm = pool_cstr(xl.name_id, nlen);
+			if (!nm || !nlen)
+				continue;
+			_extern_by_name[std::string(nm, nlen)] =
+				std::make_pair(xl.unit, xl.idx);
+		}
 	}
 	// v18 container-global: the B3 DefArena dump — THE type-graph serialization.
 	// Bind the five arena segments read-only (defrec/payload uint32 spans + the
@@ -1378,6 +1491,16 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		sdd->size        = r.size;
 		sdd->max_align   = r.max_align ? r.max_align : 1;
 		sdd->is_complete = true;
+		// v20: canonical C++ spelling — template ARG-SPELLING identity.
+		// template_type_arg_spelling reads it to build an instantiation's
+		// key fragment ("std::allocator<int32_t>" -> std__allocator_...);
+		// left empty, a restored product's spelling fell back to its bare
+		// name, the consumer's key diverged from the producer's, and the
+		// memo MISSED — the consumer re-instantiated a duplicate product
+		// under the wrong name instead of reusing the restored one.
+		if (r.canon_id)
+			if (const char *cs = a.c_str(r.canon_id))
+				sdd->canonical_cpp_spelling = cs;
 		sdd->pack                   = r.pack;
 		sdd->tag_explicit_align     = r.tag_explicit_align;
 		sdd->is_anonymous           = (r.flags & madc::dis::DF_IS_ANONYMOUS) != 0;
@@ -1528,6 +1651,44 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				if (is_ctor)
 					cdd->ctors.push_back(mv);
 			}
+
+			// v20 (widening slice 2): class-scope name maps — type
+			// aliases (`typename _Alloc::value_type` resolution reads
+			// type_aliases), static member types, and integral
+			// static-const values (`X<T>::value`, the integral_constant
+			// fold). Loaded VERBATIM; an entry whose type did not
+			// restore cleanly lacks (same per-entry discipline as a
+			// method with an unresolvable signature).
+			for (uint32_t ai = 0; ai < r.alias_count; ++ai) {
+				madc::dis::aliasrec ar;
+				if (!a.get_payload(r.alias_begin, ai, ar))
+					break;
+				const char *an = ar.name_id ? a.c_str(ar.name_id) : NULL;
+				DataDef *ad = arena_swizzle(ar.type_id, by_id);
+				if (!an || !*an || !ad)
+					continue;
+				cdd->type_aliases[an] = ad;
+			}
+			for (uint32_t si = 0; si < r.statty_count; ++si) {
+				madc::dis::aliasrec ar;
+				if (!a.get_payload(r.statty_begin, si, ar))
+					break;
+				const char *an = ar.name_id ? a.c_str(ar.name_id) : NULL;
+				DataDef *ad = arena_swizzle(ar.type_id, by_id);
+				if (!an || !*an || !ad)
+					continue;
+				cdd->static_member_types[an] = ad;
+			}
+			for (uint32_t ci = 0; ci < r.constval_count; ++ci) {
+				madc::dis::constvalrec cr;
+				if (!a.get_payload(r.constval_begin, ci, cr))
+					break;
+				const char *an = cr.name_id ? a.c_str(cr.name_id) : NULL;
+				if (!an || !*an)
+					continue;
+				cdd->static_member_const_values[an] =
+					(int64_t)(((uint64_t)cr.val_hi << 32) | cr.val_lo);
+			}
 		}
 		if (r.flags & madc::dis::DF_IS_ANONYMOUS)
 			continue;	// nameless sub-aggregate: never surfaced standalone
@@ -1582,8 +1743,16 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
 		if (!nm || !*nm)
 			continue;
-		if (r.flags & madc::dis::DF_HAS_FOREST_BODY)
-			continue;	// slice-1 safety: prototypes only
+		// v20: a BODIED free function (an instantiated __mti / __ns_*__oN
+		// definition) restores WITH its forest body — the loaded method
+		// bodies call its symbol, and the m&l fixpoint materializes the
+		// definition exactly like a bound method's. One that got NO body
+		// location (a producer root like main, or a non-system origin)
+		// cleanly lacks — a consumer never inherits the producer's roots.
+		bool was_bodied = (r.flags & madc::dis::DF_WAS_BODIED) != 0;
+		bool has_body   = (r.flags & madc::dis::DF_HAS_FOREST_BODY) != 0;
+		if (was_bodied && !has_body)
+			continue;
 		DataDef *ret = arena_swizzle(r.ref0, by_id);
 		if (!ret)
 			continue;
@@ -1606,7 +1775,14 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				fd->emit_symbol = es;
 		fd->is_varargs       = (r.flags & madc::dis::DF_IS_VARARGS) != 0;
 		fd->is_void_params   = (r.flags & madc::dis::DF_IS_VOID_PARAMS) != 0;
-		fd->declaration_only = true;
+		if (has_body) {
+			fd->has_forest_body  = true;
+			fd->forest_body_unit = r.body_unit;
+			fd->forest_body_idx  = r.body_idx;
+			fd->declaration_only = false;
+		} else {
+			fd->declaration_only = true;
+		}
 		CirRestoredFunc rf;
 		rf.name = nm;
 		rf.fd   = fd;
@@ -1634,6 +1810,89 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		rg.gflags     = g.gflags;
 		rg.init_value = g.init_value;
 		_restored_globals.push_back(rg);
+	}
+
+	// v20 (widening slice 2): build the restored TEMPLATE-NAME view — names
+	// resolved against the container pool, the owner class swizzled through
+	// the same by_id, each token run exposed as a span into the loaded
+	// TEMPLATE_TOKENS bytes. Token materialization happens on the parser side
+	// (forest_restore_decls), where the active spelling pool + intern_file
+	// live. A record whose owner class did not restore cleanly LACKS (a
+	// member-template pattern without its class cannot instantiate anyway).
+	{
+		auto run_at = [&](uint32_t word_off) -> CirRestoredTemplateRun {
+			CirRestoredTemplateRun rr;
+			rr.bytes = NULL;
+			rr.len = 0;
+			rr.count = 0;
+			rr.file = NULL;
+			cir_forest_token_run tr;
+			if (!madc::dis::pod_read(_template_payload, word_off, tr))
+				return rr;
+			if (tr.tok_count
+			    && (size_t)tr.tok_off + tr.tok_bytes <= _template_tokens.size()) {
+				rr.bytes = _template_tokens.data() + tr.tok_off;
+				rr.len   = tr.tok_bytes;
+				rr.count = tr.tok_count;
+			}
+			if (tr.file_id) {
+				uint32_t flen = 0;
+				rr.file = pool_cstr(tr.file_id, flen);
+			}
+			return rr;
+		};
+		const size_t pw = madc::dis::pod_words<cir_forest_template_param>();
+		const size_t rw = madc::dis::pod_words<cir_forest_token_run>();
+		for (size_t i = 0; i < _templates.size(); ++i) {
+			const cir_forest_template_record &t = _templates[i];
+			uint32_t klen = 0;
+			const char *key = pool_cstr(t.key_id, klen);
+			if (!key || !*key)
+				continue;
+			CirRestoredTemplate rt;
+			rt.kind  = t.kind;
+			rt.key   = key;
+			rt.name  = t.name_id ? pool_str(t.name_id) : NULL;
+			rt.ns    = t.ns_id ? pool_str(t.ns_id) : NULL;
+			rt.extra = t.extra_id ? pool_str(t.extra_id) : NULL;
+			rt.owner = NULL;
+			rt.flags = t.flags;
+			if (t.owner_type_id) {
+				DataDefCLASS *oc = dynamic_cast<DataDefCLASS *>(
+					arena_swizzle(t.owner_type_id, by_id));
+				if (!oc)
+					continue;	// owner did not restore -> cleanly lack
+				rt.owner = oc;
+			}
+			bool ok = true;
+			for (uint32_t p = 0; p < t.param_count; ++p) {
+				cir_forest_template_param pr;
+				if (!madc::dis::pod_read(_template_payload,
+							 t.param_begin + p * pw, pr)) {
+					ok = false; break;
+				}
+				uint32_t plen = 0;
+				const char *pn = pool_cstr(pr.name_id, plen);
+				if (!pn) { ok = false; break; }
+				rt.params.push_back(std::make_pair(pn, pr.pflags));
+			}
+			if (!ok)
+				continue;
+			// Positional run table: body, constraint, per-param
+			// defaults, per-slot spec patterns.
+			uint32_t ro = t.run_begin;
+			rt.body       = run_at(ro); ro += (uint32_t)rw;
+			rt.constraint = run_at(ro); ro += (uint32_t)rw;
+			for (uint32_t p = 0; p < t.param_count; ++p) {
+				rt.defaults.push_back(run_at(ro));
+				ro += (uint32_t)rw;
+			}
+			for (uint32_t sp = 0; sp < t.spec_count; ++sp) {
+				rt.spec.push_back(run_at(ro));
+				ro += (uint32_t)rw;
+			}
+			_restored_templates.push_back(rt);
+		}
 	}
 
 	return _restored;
