@@ -920,3 +920,73 @@ TEST_CASE("B3 arena: method FuncDef records resolve to DK_FUNC (return + params)
 	assert_no_primitive_records(prog->forest_arena);
 	delete prog;
 }
+
+// ---- CHUNK 1 (flip fidelity): ANONYMOUS sub-aggregate population. addAnonymousAggregate
+//      flattens a nameless union/struct's members into the parent DURING the body parse, so
+//      the sub-aggregate never reaches a registration hook of its own — the parent's
+//      completion write-through must (a) record the SUB as its own def and (b) relink the
+//      grouping via the parent's anonrec run (without it a bound anon union's overlap is
+//      lost — the v11 silent miscompile). Uses the forest_bind_gate anon case's shape.
+TEST_CASE("B3 arena: an anonymous union records its own def + the parent's anonrec run")
+{
+	Program *prog = new Program();
+	prog->forest_arena_enabled = true;
+
+	const char *src =
+		"struct S { int tag; union { int i; char buf[8]; }; };\n"
+		"int main() { S s; s.tag = 7; s.i = 5; return s.buf[0]; }\n";
+	TokenProgram *tp = prog->tokenize_buffer(src, "arena_anon.mad");
+	REQUIRE(tp != NULL);
+	REQUIRE(prog->parse(tp));
+
+	datadef_map_iter sit = prog->struct_map.find("S");
+	REQUIRE(sit != prog->struct_map.end());
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(sit->second);
+	REQUIRE(sdd != NULL);
+	REQUIRE(sdd->anonymous_aggregates.size() == 1);	// the live grouping the arena mirrors
+
+	uint32_t stid = prog->type_id_for(sdd);
+	defrec sr;
+	REQUIRE(prog->forest_arena.get_def_at(stid, sr));
+	CHECK(sr.kind == DK_STRUCT);
+	bool has_anon_flag = (sr.flags & DF_HAS_ANON_AGG) != 0;
+	CHECK(has_anon_flag);
+	REQUIRE(sr.anon_count == 1);
+
+	// The anonrec mirrors the live AnonymousAggregateInfo verbatim.
+	anonrec ar;
+	REQUIRE(prog->forest_arena.get_payload(sr.anon_begin, 0, ar));
+	CHECK(ar.first_member == sdd->anonymous_aggregates[0].first_member);
+	CHECK(ar.member_count == sdd->anonymous_aggregates[0].member_count);
+	CHECK(ar.member_count == 2);			// i + buf
+	CHECK(ar.offset == sdd->anonymous_aggregates[0].offset);
+
+	// The grouped members overlap at the union's base offset in the PARENT's member run.
+	REQUIRE(ar.first_member + ar.member_count <= sr.members_count);
+	memberrec mi, mb;
+	REQUIRE(prog->forest_arena.get_payload(sr.members_begin, ar.first_member, mi));
+	REQUIRE(prog->forest_arena.get_payload(sr.members_begin, ar.first_member + 1, mb));
+	CHECK(std::string(prog->forest_arena.strings.c_str(mi.name_id)) == "i");
+	CHECK(std::string(prog->forest_arena.strings.c_str(mb.name_id)) == "buf");
+	CHECK(mi.offset == ar.offset);
+	CHECK(mb.offset == ar.offset);			// union overlap, not sequential layout
+
+	// The nameless sub-aggregate has its OWN record: a DK_UNION with the same 2 members
+	// (offsets 0-based within the union), reached through the anonrec cross-ref.
+	REQUIRE(arena_id_is_project(ar.sub_type_id));
+	defrec ur;
+	REQUIRE(prog->forest_arena.get_def_at(ar.sub_type_id, ur));
+	CHECK(ur.kind == DK_UNION);
+	bool sub_union_layout = (ur.flags & DF_UNION_LAYOUT) != 0;
+	CHECK(sub_union_layout);
+	bool sub_anonymous = (ur.flags & DF_IS_ANONYMOUS) != 0;
+	CHECK(sub_anonymous);
+	REQUIRE(ur.members_count == 2);
+	memberrec ui;
+	REQUIRE(prog->forest_arena.get_payload(ur.members_begin, 0, ui));
+	CHECK(std::string(prog->forest_arena.strings.c_str(ui.name_id)) == "i");
+	CHECK(ui.offset == 0);
+
+	assert_no_primitive_records(prog->forest_arena);
+	delete prog;
+}

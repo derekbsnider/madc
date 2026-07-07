@@ -1800,3 +1800,103 @@ TEST_CASE("Phase 6 v16: class-typed file-scope globals restore their init form +
 	CHECK(saw_in_place);
 	CHECK(saw_piecewise);
 }
+
+// B3 flip Chunk 1: the dumped DefArena reaches freeze-time fidelity — DK_TYPEDEF
+// records (flat + namespaced-alias), ns_id stamping, and INLINE method body
+// locations — and the container's arena segments bind back readably (the FIRST
+// reader over the Chunk-A dump; until now the dumped bytes were unverified).
+// Freeze exactly as --freeze does (pack_recording + forest_arena_enabled), open,
+// and read the FrozenDefArena directly.
+TEST_CASE("B3 flip chunk 1: the dumped arena carries typedefs, namespace ids, and inline body locations") {
+	std::string inc_path = std::string("/tmp/madc_b3c1_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_b3c1_main_")
+			      + std::to_string((long)getpid()) + ".cpp";
+	std::string snap_path = std::string("/tmp/madc_b3c1_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "typedef unsigned long myword_t;\n"
+		       "namespace N { struct P { int x; int y; }; }\n"
+		       "class Counter { public: int c; int get() { return c; } };\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { Counter k; k.c = 3; N::P p; p.x = 1;\n"
+		      "             myword_t w = 2; return k.get() + p.x + (int)w; }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;		// as --freeze sets (madc.cpp)
+		progA->forest_arena_enabled = true;	// B3: populate forest_arena during parse
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	const madc::dis::FrozenDefArena &a = forest.arena();
+	REQUIRE(a.def_slots() > 0);		// the arena segments bound (non-empty view)
+
+	// One scan; collect the three fidelity surfaces.
+	bool saw_typedef = false;		// DK_TYPEDEF "myword_t" -> a pinned scalar
+	bool saw_ns = false;			// P's own record stamped ns_id == "N"
+	uint32_t counter_id = 0;
+	madc::dis::defrec counter_rec;
+	memset(&counter_rec, 0, sizeof(counter_rec));
+	for (uint32_t s = 0; s < a.def_slots(); ++s) {
+		uint32_t tid = madc::dis::arena_id_of(s);
+		madc::dis::defrec r;
+		if (!a.get_def_at(tid, r) || r.kind == madc::dis::DK_NONE)
+			continue;
+		const char *nm = r.name_id ? a.c_str(r.name_id) : "";
+		if (r.kind == madc::dis::DK_TYPEDEF && !strcmp(nm, "myword_t")) {
+			saw_typedef = true;
+			CHECK(madc::dis::arena_id_is_pinned(r.ref0));	// unsigned long -> pinned slot
+			CHECK(r.ns_id == 0);				// flat (global) typedef
+		}
+		if (r.kind == madc::dis::DK_STRUCT && !strcmp(nm, "P")) {
+			saw_ns = true;
+			REQUIRE(r.ns_id != 0);
+			CHECK(std::string(a.c_str(r.ns_id)) == "N");
+		}
+		if (r.kind == madc::dis::DK_CLASS && !strcmp(nm, "Counter")) {
+			counter_id = tid;
+			counter_rec = r;
+		}
+	}
+	CHECK(saw_typedef);
+	CHECK(saw_ns);
+
+	// Counter::get is INLINE (its func-def is in the frozen AST) -> its DK_FUNC
+	// record carries DF_HAS_FOREST_BODY + a body location inside the grove.
+	REQUIRE(counter_id != 0);
+	bool saw_inline_get = false;
+	for (uint32_t i = 0; i < counter_rec.methods_count; ++i) {
+		madc::dis::methodrec md;
+		REQUIRE(a.get_payload(counter_rec.methods_begin, i, md));
+		if (!md.disp_key_id || strcmp(a.c_str(md.disp_key_id), "get"))
+			continue;
+		REQUIRE(madc::dis::arena_id_is_project(md.func_id));
+		madc::dis::defrec fr;
+		REQUIRE(a.get_def_at(md.func_id, fr));
+		CHECK(fr.kind == madc::dis::DK_FUNC);
+		bool has_body = (fr.flags & madc::dis::DF_HAS_FOREST_BODY) != 0;
+		CHECK(has_body);
+		CHECK(fr.body_unit < forest.unit_count());
+		saw_inline_get = true;
+	}
+	CHECK(saw_inline_get);
+}

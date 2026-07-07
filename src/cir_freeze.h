@@ -640,6 +640,12 @@ class CirFrozenForest
 	// _restored_globals (type-ids swizzled to DataDef*) is built by materialize_types.
 	std::vector<cir_forest_global_record> _globals;
 	std::vector<CirRestoredGlobal> _restored_globals;
+	// v17 container-global: the B3 DefArena dump (segments 10-14), bound read-only
+	// at open — in place when a segment is uncompressed, else into the owned
+	// buffers. An arena-less freeze binds an empty view (zero-length segments).
+	madc::dis::FrozenDefArena _arena;
+	std::vector<uint8_t> _arena_defs, _arena_payload;
+	std::vector<uint8_t> _arena_sbytes, _arena_sentries, _arena_sbuckets;
 	bool _types_materialized;
 	// Shared v2 segment reader: decompress unit slot `slot` into `out`
 	// (raw bytes). False on absent/malformed.
@@ -705,6 +711,10 @@ public:
 	// types, reusing the same freeze-id -> DataDef* map).
 	const std::vector<CirRestoredGlobal> &restored_globals() const
 	{ return _restored_globals; }
+	// v17: the read-only view over the dumped B3 DefArena (an empty view when the
+	// container was frozen without the arena). Chunk 2's materialize_from_arena
+	// reads this; until then it is the oracle surface verifying the SAVE dump.
+	const madc::dis::FrozenDefArena &arena() const { return _arena; }
 	// Container string pool lookup (name_id -> C string; NULL if invalid).
 	const char *pool_str(uint32_t id) const
 	{ uint32_t len; return pool_cstr(id, len); }

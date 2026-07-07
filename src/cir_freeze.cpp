@@ -1006,6 +1006,48 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m)
 		if (!d.empty())
 			memcpy(_globals.data(), d.data(), d.size());
 	}
+	// v17 container-global: the B3 DefArena dump — bind the five arena segments
+	// read-only (defrec/payload uint32 spans + the arena's OWN intern blocks; the
+	// container 16-aligns payloads, satisfying the uint32/Entry casts). A freeze
+	// whose arena was never enabled dumps zero-length segments -> the view stays
+	// empty; a malformed set is rejected like the other v6+ container globals.
+	{
+		size_t nd = 0, np = 0, nb = 0, ne = 0, nk = 0;
+		const uint8_t *pd = forest_pool_block(_reader, CIR_FOREST_SEG_ARENA_DEFS,
+						      SNAP_KIND_CIR_ARENA_DEFS,
+						      _arena_defs, nd);
+		const uint8_t *pp = forest_pool_block(_reader, CIR_FOREST_SEG_ARENA_PAYLOAD,
+						      SNAP_KIND_CIR_ARENA_PAYLOAD,
+						      _arena_payload, np);
+		const uint8_t *ab = forest_pool_block(_reader, CIR_FOREST_SEG_ARENA_STR_BYTES,
+						      madc::dis::SNAP_KIND_INTERN_BYTES,
+						      _arena_sbytes, nb);
+		const uint8_t *ae = forest_pool_block(_reader, CIR_FOREST_SEG_ARENA_STR_ENTRIES,
+						      madc::dis::SNAP_KIND_INTERN_ENTRIES,
+						      _arena_sentries, ne);
+		const uint8_t *ak = forest_pool_block(_reader, CIR_FOREST_SEG_ARENA_STR_BUCKETS,
+						      madc::dis::SNAP_KIND_INTERN_BUCKETS,
+						      _arena_sbuckets, nk);
+		if (!ak)
+			nk = 0;	// buckets are derivable; never bind NULL with a count
+		if (pd && pp && ab && ae && nd
+		    && !(nd % sizeof(uint32_t)) && !(np % sizeof(uint32_t))
+		    && !(ne % sizeof(madc::dis::intern_table::Entry))
+		    && !(nk % sizeof(uint32_t))) {
+			_arena.bind_defs((const uint32_t *)pd, nd / sizeof(uint32_t));
+			_arena.bind_payload((const uint32_t *)pp, np / sizeof(uint32_t));
+			_arena.strings.bind((const char *)ab, nb,
+					    (const madc::dis::intern_table::Entry *)ae,
+					    ne / sizeof(madc::dis::intern_table::Entry),
+					    (const uint32_t *)ak,
+					    nk / sizeof(uint32_t));
+			if (!_arena.strings.valid()) {
+				fprintf(stderr, "madc: forest arena string pool"
+					" failed validation\n");
+				return false;
+			}
+		}
+	}
 
 	// v2 container-global payloads (zero-length segments = empty).
 	if (const madc::dis::snapshot_segment *bs =

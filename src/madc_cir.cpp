@@ -889,6 +889,32 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 	if (sdd->reverse_scalar_storage) r.flags |= madc::dis::DF_REVERSE_SCALAR;
 	if (sdd->has_anon_aggregate)     r.flags |= madc::dis::DF_HAS_ANON_AGG;
 
+	// --- anonymous sub-aggregate groups (ensure each nameless sub-aggregate's OWN
+	//     record first: addAnonymousAggregate flattens it into the parent DURING the
+	//     body parse, so it never reaches a registration/layout hook of its own — the
+	//     parent's completion IS its completion point. The recursive call appends the
+	//     SUB's runs to payload BEFORE any of this record's runs are captured, so every
+	//     run stays contiguous. The anonrec run itself is appended with the other runs
+	//     below; without it a bound anon union's overlap is lost (silent miscompile —
+	//     the v11 lesson). ---
+	std::vector<madc::dis::anonrec> arun;
+	for (size_t i = 0; i < sdd->anonymous_aggregates.size(); ++i) {
+		const DataDefSTRUCT::AnonymousAggregateInfo &ag = sdd->anonymous_aggregates[i];
+		if (!ag.aggregate || ag.aggregate == sdd || ag.member_count == 0)
+			continue;		// self / empty: emission skips these too
+		DataDefSTRUCT *sub = const_cast<DataDefSTRUCT *>(ag.aggregate);
+		uint32_t sub_id = forest_serialize_type_id(sub);
+		if (madc::dis::arena_id_is_project(sub_id) && !forest_arena.has_def(sub_id))
+			forest_arena_record_aggregate(sub);
+		madc::dis::anonrec ar;
+		memset(&ar, 0, sizeof(ar));
+		ar.first_member = (uint32_t)ag.first_member;
+		ar.member_count = (uint32_t)ag.member_count;
+		ar.offset       = (uint32_t)ag.offset;
+		ar.sub_type_id  = sub_id;
+		arun.push_back(ar);
+	}
+
 	// --- members (resolve every member type-id first; then the contiguous run) ---
 	std::vector<uint32_t> mt(sdd->members.size());
 	for (size_t i = 0; i < sdd->members.size(); ++i)
@@ -1037,6 +1063,13 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		for (size_t g = 0; g < vgs.size(); ++g)
 			forest_arena.add_payload(vgs[g]);
 	}
+
+	// --- anonymous sub-aggregate run (entries collected above, before any run of
+	//     this record was captured — the recursive sub-record calls appended payload) ---
+	r.anon_begin = (uint32_t)forest_arena.payload.size();
+	r.anon_count = (uint32_t)arun.size();
+	for (size_t i = 0; i < arun.size(); ++i)
+		forest_arena.add_payload(arun[i]);
 
 	forest_arena.set_def_at(tid, r);
 }
@@ -1740,6 +1773,141 @@ static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
     }
 }
 
+// B3 flip (Chunk 1): freeze-time COMPLETION of the arena copy staged in f.arena.
+// Three fidelity categories live in freeze-time or name-keyed state the parse-time
+// write-throughs cannot see, so they are stamped here — mirroring the v6 walks
+// (cir_forest_fill_type_records / cir_forest_append_methods) this pass replaces at
+// the flip:
+//   1. INLINE method body locations: f.funcdef_locs (mangled symbol -> unit/idx)
+//      exists only AFTER grove partitioning. A class methodrec whose symbol has a
+//      func-def in the AST is INLINE -> its DK_FUNC record gets DF_HAS_FOREST_BODY
+//      + body_unit/body_idx; absent = LIBRARY (declaration-only + emit_symbol).
+//   2. FLAT file-scope typedefs: user_typedef_names maps a NAME to an underlying
+//      type — no DataDef of its own, hence no project slot — so each becomes a
+//      DK_TYPEDEF record at a SYNTHETIC slot past the live table (nothing
+//      cross-references a typedef BY id; the record is name/ns-keyed content).
+//      An underlying the arena cannot resolve (e.g. an enum, its own follow-on
+//      kind) cleanly lacks, exactly as the v6 walk skips it.
+//   3. Namespace membership: a type's defining namespace lives ONLY in
+//      namespace_datatype_map's KEY. Stamp ns_id on the type's own record when the
+//      key IS the record name (the non-template guarantee); a namespaced ALIAS to a
+//      recorded aggregate (std::string -> the basic_string<char,...> product) emits
+//      a namespaced DK_TYPEDEF record instead. A '<'-bearing template-product key
+//      is skipped (the v10 follow-on, unchanged).
+static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
+{
+	if (!prog || !prog->forest_arena_enabled)
+		return;
+	madc::dis::DefArena &a = f.arena;
+
+	// 1. Inline-body locations (mirrors cir_forest_append_methods' funcdef_locs use).
+	uint32_t nslots = a.def_slots();
+	for (uint32_t s = 0; s < nslots; ++s) {
+		madc::dis::defrec r;
+		if (!a.get_def_at(madc::dis::arena_id_of(s), r)
+		    || r.kind != madc::dis::DK_CLASS)
+			continue;
+		for (uint32_t i = 0; i < r.methods_count; ++i) {
+			madc::dis::methodrec md;
+			if (!a.get_payload(r.methods_begin, i, md) || !md.name_id)
+				continue;
+			std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator
+				bl = f.funcdef_locs.find(a.strings.str(md.name_id));
+			if (bl == f.funcdef_locs.end())
+				continue;
+			madc::dis::defrec fr;
+			if (!madc::dis::arena_id_is_project(md.func_id)
+			    || !a.get_def_at(md.func_id, fr)
+			    || fr.kind != madc::dis::DK_FUNC)
+				continue;
+			fr.flags    |= madc::dis::DF_HAS_FOREST_BODY;
+			fr.body_unit = bl->second.first;
+			fr.body_idx  = bl->second.second;
+			a.set_def_at(md.func_id, fr);
+		}
+	}
+
+	// 2+3 phase A: RESOLVE ids for every pending typedef/alias record first.
+	// Resolution can stamp a fresh live project id (madc_type_id_for is lazy), and
+	// the synthetic slots must start PAST the last live id — a collision would make
+	// a typedef record masquerade as that live type's record — so nothing is
+	// appended until every resolution is done.
+	struct arena_alias { uint32_t name_id, ns_id, ref0; };
+	std::vector<arena_alias> aliases;
+
+	for (std::set<std::string>::const_iterator it = prog->user_typedef_names.begin();
+	     it != prog->user_typedef_names.end(); ++it) {
+		flat_datatype_map_iter dti = prog->datatype_map.find(*it);
+		if (dti == prog->datatype_map.end() || !*dti)
+			continue;
+		DataDef *underlying = &(*dti)->definition;
+		if (!underlying)
+			continue;
+		uint32_t uid = forest_serialize_type_id(underlying);
+		if (!(madc::dis::arena_id_is_pinned(uid)
+		      || (madc::dis::arena_id_is_project(uid) && a.has_def(uid))))
+			continue;	// underlying not resolvable from the arena — cleanly lack
+		arena_alias p;
+		p.name_id = a.strings.intern(*it);
+		p.ns_id   = 0;
+		p.ref0    = uid;
+		aliases.push_back(p);
+	}
+
+	prog->namespace_datatype_map.for_each(
+	    [&](const char *ns, datatype_map_t &m) -> bool {
+		if (!ns || !*ns)
+			return false;
+		for (datatype_map_iter it = m.begin(); it != m.end(); ++it) {
+			if (it->first.find('<') != std::string::npos || !it->second)
+				continue;		// template product / empty: follow-on
+			uint32_t tid = madc_type_id_for(&it->second->definition);
+			madc::dis::defrec r;
+			if (!madc::dis::arena_id_is_project(tid) || !a.get_def_at(tid, r)
+			    || r.kind == madc::dis::DK_NONE)
+				continue;		// type not in the arena (follow-on kind)
+			uint32_t key_id = a.strings.intern(it->first);
+			if (key_id != r.name_id) {
+				// A namespaced ALIAS whose key differs from the aggregate's
+				// record name: emit a namespaced DK_TYPEDEF (name=alias, ns,
+				// ref0=product) so a bound `std::string` resolves to the product.
+				if (r.kind == madc::dis::DK_STRUCT
+				    || r.kind == madc::dis::DK_UNION
+				    || r.kind == madc::dis::DK_CLASS) {
+					arena_alias p;
+					p.name_id = key_id;
+					p.ns_id   = a.strings.intern(ns);
+					p.ref0    = tid;
+					aliases.push_back(p);
+				}
+				continue;
+			}
+			if (r.ns_id)
+				continue;		// first defining namespace wins
+			r.ns_id = a.strings.intern(ns);
+			a.set_def_at(tid, r);
+		}
+		return false;
+	    });
+
+	// 2+3 phase B: append the collected alias records at synthetic slots past both
+	// the live project table and the arena's own high-water slot.
+	uint32_t next = MADC_TYPEID_PROJECT_BASE
+		      + (uint32_t)(madc_active_project_types
+				   ? madc_active_project_types->size() : 0);
+	if (madc::dis::arena_id_of(a.def_slots()) > next)
+		next = madc::dis::arena_id_of(a.def_slots());
+	for (size_t i = 0; i < aliases.size(); ++i, ++next) {
+		madc::dis::defrec r;
+		memset(&r, 0, sizeof(r));
+		r.kind    = madc::dis::DK_TYPEDEF;
+		r.name_id = aliases[i].name_id;
+		r.ns_id   = aliases[i].ns_id;
+		r.ref0    = aliases[i].ref0;
+		a.set_def_at(next, r);
+	}
+}
+
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append)
 {
@@ -1770,6 +1938,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		cir_forest_fill_pack_payloads(prog, f);	// grove payload v2 (B4a)
 		cir_forest_fill_type_records(prog, f);	// Phase 6: complete type-table serialization
 		f.arena = prog->forest_arena;		// B3 flip SAVE side: dump the parse-populated arena alongside the v6 records
+		cir_forest_arena_complete(prog, f);	// Chunk 1: freeze-time fidelity (inline bodies / typedefs / ns)
 		PchCompression codec = PchCompression::Zlib;
 #ifdef HAVE_ZSTD
 		codec = PchCompression::Zstd;
