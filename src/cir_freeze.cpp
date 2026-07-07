@@ -316,6 +316,16 @@ static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 			continue;
 		out.funcdef_locs[id->u.s.s] =
 			std::make_pair(it->second.unit, it->second.idx);
+		// v21: the def's OWN source file (origin token) — an instantiated
+		// definition lands in the main-file unit but its tokens carry the
+		// template's header origin; body stamping classifies by this.
+		const char *deffile = NULL;
+		if (it->first->origin_id) {
+			TokenBase *tb = madc_token_for_slot(it->first->origin_id);
+			if (tb && tb->file)
+				deffile = tb->file;
+		}
+		out.funcdef_files[id->u.s.s] = deffile;
 	}
 
 	// v20: index every top-level EXTERN declaration's symbol -> (unit, idx).
@@ -1334,7 +1344,12 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		if (r.kind != madc::dis::DK_STRUCT && r.kind != madc::dis::DK_UNION
 		    && r.kind != madc::dis::DK_CLASS)
 			continue;
-		if (!(r.flags & madc::dis::DF_IS_COMPLETE))
+		// v21: an INCOMPLETE record restores only in the payload-less empty
+		// shape (a synthesized recursion tail like _Tuple_impl<N> — live
+		// registers, inherits from, and emits it without completing it).
+		// Anything half-parsed WITH members/bases stays dropped.
+		if (!(r.flags & madc::dis::DF_IS_COMPLETE)
+		    && (r.members_count || r.bases_count))
 			continue;
 		if (r.kind == madc::dis::DK_CLASS) {
 			if (r.flags & (madc::dis::DF_HAS_VTABLE | madc::dis::DF_HAS_VPTR_SLOT))
@@ -1514,7 +1529,9 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			continue;		// defensive: the closure should have dropped it
 		sdd->size        = r.size;
 		sdd->max_align   = r.max_align ? r.max_align : 1;
-		sdd->is_complete = true;
+		// Verbatim: a restored empty recursion tail stays INCOMPLETE,
+		// exactly as live leaves it (everything else here is complete).
+		sdd->is_complete = (r.flags & madc::dis::DF_IS_COMPLETE) != 0;
 		// v20: canonical C++ spelling — template ARG-SPELLING identity.
 		// template_type_arg_spelling reads it to build an instantiation's
 		// key fragment ("std::allocator<int32_t>" -> std__allocator_...);
@@ -1654,6 +1671,16 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					fd->declaration_only = true;
 				}
 				const char *mnm = a.c_str(md.name_id);
+				// Live's overload-disambiguation invariant: a method whose
+				// registered symbol was disambiguated away from the canonical
+				// ClassName__display scheme (the `_un` unary peer, `__oN`
+				// type-overloads) carries that symbol on local_emit_name — the
+				// call emitter (call_emit_symbol) reads it. Without it a bound
+				// `++it` emitted the canonical ClassName__operator++ (an
+				// undefined symbol) instead of the restored _un definition.
+				if (mnm && !dispname.empty()
+				    && std::string(mnm) != cdd->name + "__" + dispname)
+					fd->local_emit_name = mnm;
 				Variable *mv = new Variable(std::string(mnm ? mnm : ""),
 							    *fd, 1, NULL, false);
 				if (m_static)

@@ -12770,8 +12770,14 @@ void Program::flush_forest_pending_globals()
 	    continue;
 	std::vector<bool> saved_pack = last_skipped_template_typeparam_is_pack;
 	last_skipped_template_typeparam_is_pack = pm.is_pack;
+	// Live ran this registration INSIDE the owner's class body — the
+	// return-type resolution reads class-scope names (`iterator`,
+	// `pair<iterator,bool>`) through class_scope_stack + the owner's
+	// (restored) type_aliases. Reproduce that scope context.
+	class_scope_stack.push_back(pm.owner);
 	register_skipped_class_template_function(*this, pm.owner, pm.tokens,
 						 pm.typeparams, 0, std::string());
+	class_scope_stack.pop_back();
 	last_skipped_template_typeparam_is_pack = saved_pack;
 	DBG(std::cout << "flush_forest_pending_globals: member template of "
 	    << pm.owner->name << " (" << pm.typeparams.size()

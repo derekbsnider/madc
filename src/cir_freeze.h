@@ -459,6 +459,11 @@ struct cir_frozen_forest
 	// looks a method's mangled symbol up here to record where its INLINE body lives
 	// (a symbol with no func-def in the AST is a LIBRARY method: no body location).
 	std::map<std::string, std::pair<uint32_t, uint32_t> > funcdef_locs;
+	// v21: each func-def's OWN source file (its origin token's file) — an
+	// INSTANTIATED definition physically lands in the main-file unit but its
+	// tokens carry the template's header origin; the body-stamping rule
+	// classifies by this, falling back to the unit name (v20) when absent.
+	std::map<std::string, const char *> funcdef_files;
 };
 
 // The context-hash pin: madc version + record/position layout + the c2mir

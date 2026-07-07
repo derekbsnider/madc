@@ -1596,16 +1596,45 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 			    || !(r.flags & madc::dis::DF_WAS_BODIED)
 			    || (r.flags & madc::dis::DF_HAS_FOREST_BODY))
 				continue;
+			std::string fsym = a.strings.str(r.name_id);
 			std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator
-				bl = f.funcdef_locs.find(a.strings.str(r.name_id));
-			if (bl == f.funcdef_locs.end())
+				bl = f.funcdef_locs.find(fsym);
+			if (bl == f.funcdef_locs.end()) {
+				DBG(std::cout << "arena_complete 1b: bodied " << fsym
+					      << " has NO func-def in the partition"
+					      << std::endl);
 				continue;
+			}
 			uint32_t unit = bl->second.first;
 			if (unit >= f.units.size())
 				continue;
-			const char *un = pool.c_str(f.units[unit].unit_name_id);
-			if (!un || !prog->is_system_header_path(un))
+			// System origin = the def's OWN source file (v21 — an
+			// instantiated pair/tuple ctor lands in the main-file unit
+			// but its tokens carry the header origin), else the unit
+			// name (v20). A producer root (main, user-file fns) matches
+			// neither and cleanly lacks.
+			bool system_origin = false;
+			std::map<std::string, const char *>::const_iterator
+				ff = f.funcdef_files.find(fsym);
+			if (ff != f.funcdef_files.end() && ff->second
+			    && prog->is_system_header_path(ff->second))
+				system_origin = true;
+			if (!system_origin) {
+				const char *un = pool.c_str(f.units[unit].unit_name_id);
+				if (un && prog->is_system_header_path(un))
+					system_origin = true;
+			}
+			if (!system_origin) {
+				DBG(std::cout << "arena_complete 1b: bodied " << fsym
+					      << " NOT system (file="
+					      << (ff != f.funcdef_files.end() && ff->second
+						  ? ff->second : "-")
+					      << " unit="
+					      << (pool.c_str(f.units[unit].unit_name_id)
+						  ? pool.c_str(f.units[unit].unit_name_id) : "-")
+					      << ")" << std::endl);
 				continue;
+			}
 			r.flags    |= madc::dis::DF_HAS_FOREST_BODY;
 			r.body_unit = unit;
 			r.body_idx  = bl->second.second;
@@ -1742,8 +1771,18 @@ static void cir_forest_arena_refresh(Program *prog)
 		for (uint32_t i = done; i < n; ++i) {
 			DataDef *dd = madc_active_project_types->get(base + i);
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
-			if (!sdd || !sdd->is_complete)
+			if (!sdd)
 				continue;
+			// v21: an INCOMPLETE aggregate is live state too when it has
+			// no member/base payload to mistrust — the synthesized empty
+			// tail of a recursion (tuple's _Tuple_impl<N>) is registered,
+			// inherited from, and emitted by live without ever completing.
+			// Dropping it dropped every class derived from it.
+			if (!sdd->is_complete) {
+				DataDefCLASS *icdd = dynamic_cast<DataDefCLASS *>(sdd);
+				if (!sdd->members.empty() || (icdd && !icdd->bases.empty()))
+					continue;
+			}
 			prog->forest_arena_record_aggregate(sdd);
 		}
 		done = n;
