@@ -2318,3 +2318,103 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 	CHECK(progB->template_alias_map.count("W2Same") == 1);
 	std::remove(inc_path.c_str());
 }
+
+// ---------------------------------------------------------------------------
+// v21 (widening slice 3, part 1): the skipped-namespace-fn-template PLACEHOLDER
+// surface. A live parse of `namespace std { template<...> void _Destroy(...) }`
+// leaves a declaration-only placeholder FuncDef (__ns_std__Destroy) in
+// funcdef_map, a namespace_map[ns][display] binding — the resolution chokepoint
+// a qualified `std::_Destroy(...)` call reads — and a placeholder seed in
+// namespace_fn_overload_sets (so instantiations always mint fresh __oN
+// symbols). v20 restored the pattern TOKENS but not this surface, so a NEW
+// specialization in a consumer failed with "use of undeclared identifier".
+// ---------------------------------------------------------------------------
+
+TEST_CASE("v21: skipped-ns-fn-template placeholder restores with its namespace binding + overload seed") {
+	std::string inc_path = std::string("/tmp/madc_v21p_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_v21p_main_")
+			      + std::to_string((long)getpid()) + ".cpp";
+	std::string cons_path = std::string("/tmp/madc_v21p_cons_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_v21p_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "namespace w3 {\n"
+		       "template<typename T> T w3pick(T a, T b) { return a < b ? a : b; }\n"
+		       "}\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { return 0; }\n";
+	}
+	{
+		std::ofstream cn(cons_path.c_str());
+		cn << "int main() { return 0; }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		// The live registration surface this case must round-trip.
+		REQUIRE(progA->funcdef_map.count("__ns_w3_w3pick") == 1);
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+	forest.materialize_from_arena();
+
+	// The placeholder restores verbatim: declaration-only, with the source
+	// identity (display + namespace) the live registration set.
+	const std::vector<CirRestoredFunc> &fns = forest.restored_funcs();
+	const CirRestoredFunc *ph = NULL;
+	for (size_t i = 0; i < fns.size(); ++i)
+		if (fns[i].name && std::string(fns[i].name) == "__ns_w3_w3pick")
+			ph = &fns[i];
+	REQUIRE(ph != NULL);
+	REQUIRE(ph->fd != NULL);
+	CHECK(ph->fd->declaration_only);
+	CHECK(ph->fd->function_display_name == "w3pick");
+	CHECK(ph->fd->namespace_name == "w3");
+
+	// A fresh Program: restore + flush reproduce the registration-site state.
+	std::shared_ptr<Program> progB = std::make_shared<Program>();
+	TokenProgram *tpB = progB->tokenize(cons_path.c_str());
+	REQUIRE(tpB != nullptr);
+	std::remove(cons_path.c_str());
+	progB->forest_restore_decls(forest);
+	progB->flush_forest_pending_globals();
+
+	REQUIRE(progB->funcdef_map.count("__ns_w3_w3pick") == 1);
+	Variable *pv = progB->findVariable("__ns_w3_w3pick");
+	REQUIRE(pv != nullptr);
+	// The namespace binding — what a qualified `w3::w3pick(...)` call reads.
+	variable_map_t &nsmap = progB->namespace_map["w3"];
+	REQUIRE(nsmap.find("w3pick") != nsmap.end());
+	CHECK(nsmap["w3pick"] == pv);
+	// The overload-set placeholder seed (the retained body-bearing pattern is
+	// in the restored fn_template_map, so the live seed condition holds).
+	CHECK(progB->fn_template_map.count("w3::w3pick") == 1);
+	REQUIRE(progB->namespace_fn_overload_sets.count("w3::w3pick") == 1);
+	{
+		std::vector<Program::NamespaceFnOverload> &ovset =
+			progB->namespace_fn_overload_sets["w3::w3pick"];
+		REQUIRE(ovset.size() == 1);
+		CHECK(ovset[0].param_spelling == "\x01fn-template-placeholder");
+		CHECK(ovset[0].var == pv);
+	}
+	std::remove(inc_path.c_str());
+}

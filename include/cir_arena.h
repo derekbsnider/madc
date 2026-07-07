@@ -118,6 +118,8 @@ enum DefFlags : uint32_t {
 						// (DF_HAS_FOREST_BODY, system-header origin) —
 						// otherwise it cleanly lacks (a producer root must
 						// never restore into a consumer).
+	DF_TRET_FROM_POINTER = 1u << 18,	// v21: FuncDef::template_return_deduce_from_pointer
+	DF_TRET_REF          = 1u << 19,	// v21: FuncDef::template_return_ref
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live
@@ -193,6 +195,17 @@ struct defrec {
 	uint32_t statty_count;
 	uint32_t constval_begin; // constvalrec run (DataDefCLASS::static_member_const_values)
 	uint32_t constval_count;
+	// FUNC (DK_FUNC) free-function fidelity (v21, widening slice 3): the
+	// remaining FuncDef-intrinsic state a skipped-ns-fn-template PLACEHOLDER
+	// (__ns_std__Destroy) and an instantiated __oN definition carry —
+	// inline_builtin_kind ("addressof"/"destroy"/"forward") and the
+	// identity-return deduce pattern (template_return_param_name +
+	// arg index; the two bools ride DF_TRET_* flags). On a DF_IS_FREE_FUNC
+	// record, disp_id holds FuncDef::function_display_name (a free fn's
+	// method_display_name is always empty) and ns_id holds namespace_name.
+	uint32_t builtin_kind_id;	// intern id of inline_builtin_kind (0 = none)
+	uint32_t tret_name_id;		// intern id of template_return_param_name (0 = none)
+	uint32_t tret_arg_index;	// template_return_deduce_arg_index
 };
 
 // A class-scope name -> type binding (type_aliases / static_member_types).

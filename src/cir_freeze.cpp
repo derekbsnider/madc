@@ -1731,9 +1731,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// has no hidden __this, so the params run is consumed whole). A signature
 	// the arena cannot resolve cleanly LACKS — the bound call then keeps
 	// today's dlsym-fallback behavior, exactly like every partial-restore
-	// case. Bodied / template / overload-symbol functions were filtered at
-	// record time (slice 1 = prototypes; inline free-function bodies are the
-	// follow-on alongside the inline-method body model).
+	// case. Template / member-template PATTERNS were filtered at record time;
+	// v21 additionally restores the skipped-ns-fn-template PLACEHOLDERS
+	// (declaration-only + function_display_name + namespace_name — the
+	// resolution chokepoint a qualified `std::_Destroy(...)` call needs).
 	for (uint32_t s = 0; s < nslots; ++s) {
 		madc::dis::defrec r;
 		if (!a.get_def_at(madc::dis::arena_id_of(s), r)
@@ -1775,6 +1776,29 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				fd->emit_symbol = es;
 		fd->is_varargs       = (r.flags & madc::dis::DF_IS_VARARGS) != 0;
 		fd->is_void_params   = (r.flags & madc::dis::DF_IS_VOID_PARAMS) != 0;
+		// v21: the free-function source identity + FuncDef-intrinsic
+		// template state the live registration sets. On a DF_IS_FREE_FUNC
+		// record disp_id carries function_display_name; ns_id carries
+		// namespace_name. A skipped-ns-fn-template placeholder needs these
+		// for its namespace_map binding + overload-set seed (flush side);
+		// an instantiated __oN definition carries them in live state too.
+		if (r.disp_id)
+			if (const char *dn = a.c_str(r.disp_id))
+				fd->function_display_name = dn;
+		if (r.ns_id)
+			if (const char *nn = a.c_str(r.ns_id))
+				fd->namespace_name = nn;
+		if (r.builtin_kind_id)
+			if (const char *bk = a.c_str(r.builtin_kind_id))
+				fd->inline_builtin_kind = bk;
+		if (r.tret_name_id)
+			if (const char *tn = a.c_str(r.tret_name_id))
+				fd->template_return_param_name = tn;
+		fd->template_return_deduce_arg_index   = (int)r.tret_arg_index;
+		fd->template_return_deduce_from_pointer =
+			(r.flags & madc::dis::DF_TRET_FROM_POINTER) != 0;
+		fd->template_return_ref =
+			(r.flags & madc::dis::DF_TRET_REF) != 0;
 		if (has_body) {
 			fd->has_forest_body  = true;
 			fd->forest_body_unit = r.body_unit;

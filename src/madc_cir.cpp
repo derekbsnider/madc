@@ -1139,6 +1139,20 @@ void Program::forest_arena_record_func(FuncDef *fd)
 			 ? 0u : forest_arena.strings.intern(fd->emit_symbol.c_str());
 	r.disp_id        = fd->method_display_name.empty()
 			 ? 0u : forest_arena.strings.intern(fd->method_display_name.c_str());
+	// v21: FuncDef-intrinsic free-function state — inline_builtin_kind
+	// ("addressof"/"destroy"/"forward") and the identity-return deduce
+	// pattern record_skipped_template_return_pattern derives (std::move/
+	// forward/declval — the call's return is the deduced arg type). All
+	// empty/0 on a plain method; loaded verbatim by the free-fn restore.
+	r.builtin_kind_id = fd->inline_builtin_kind.empty()
+			  ? 0u : forest_arena.strings.intern(fd->inline_builtin_kind.c_str());
+	r.tret_name_id    = fd->template_return_param_name.empty()
+			  ? 0u : forest_arena.strings.intern(fd->template_return_param_name.c_str());
+	r.tret_arg_index  = (uint32_t)fd->template_return_deduce_arg_index;
+	if (fd->template_return_deduce_from_pointer)
+		r.flags |= madc::dis::DF_TRET_FROM_POINTER;
+	if (fd->template_return_ref)
+		r.flags |= madc::dis::DF_TRET_REF;
 	r.params_begin = (uint32_t)forest_arena.payload.size();
 	r.params_count = (uint32_t)fd->parameters.size();
 	for (size_t p = 0; p < fd->parameters.size(); ++p) {
@@ -1662,22 +1676,21 @@ static void cir_forest_arena_refresh(Program *prog)
 	// (a parseFunction write-through is part of the ~411-site rollout).
 	// Runs AFTER the aggregate fixpoint so every METHOD FuncDef already has
 	// its DK_FUNC record (recorded via its class) and is skipped structurally
-	// by has_def. Selection: prototypes without a tracked C++ overload name
-	// (the RC2 slice-1 set, unchanged), PLUS (v20) every BODIED function —
-	// flagged DF_WAS_BODIED. A bodied entry is an instantiated definition the
-	// producer's lowering created (a static member-template __mti, a namespace
-	// fn-template __ns_*__oN) whose loaded callers reference its symbol, OR a
-	// producer root like main(): cir_forest_arena_complete stamps a forest
+	// by has_def. Selection: every funcdef_map entry — prototypes (RC2),
+	// BODIED functions (v20, flagged DF_WAS_BODIED: an instantiated __mti /
+	// __ns_*__oN definition whose loaded callers reference its symbol, or a
+	// producer root like main — cir_forest_arena_complete stamps a forest
 	// body location ONLY for the system-header-origin ones, and load restores
-	// ONLY those (a bodied record without a body location cleanly lacks — a
-	// producer root never restores into a consumer). Templates / member-
-	// template PATTERNS still skip (a pattern is not a concrete symbol).
+	// ONLY those; a bodied record without a body location cleanly lacks),
+	// PLUS (v21) declaration-only entries WITH a function_display_name — the
+	// skipped-ns-fn-template PLACEHOLDERS (__ns_std__Destroy) that are the
+	// resolution chokepoint for a qualified `std::_Destroy(...)` call in a
+	// NEW-specialization instantiation. Templates / member-template PATTERNS
+	// still skip (a pattern is not a concrete symbol).
 	for (funcdef_map_iter it = prog->funcdef_map.begin();
 	     it != prog->funcdef_map.end(); ++it) {
 		FuncDef *fd = it->second;
 		if (!fd || it->first.empty())
-			continue;
-		if (fd->declaration_only && !fd->function_display_name.empty())
 			continue;
 		if (fd->is_member_template || !fd->template_param_names.empty())
 			continue;
@@ -1693,6 +1706,19 @@ static void cir_forest_arena_refresh(Program *prog)
 		r.flags  |= madc::dis::DF_IS_FREE_FUNC;
 		if (!fd->declaration_only)
 			r.flags |= madc::dis::DF_WAS_BODIED;
+		// v21: the free-function source identity the live registration
+		// sets — a skipped-ns-fn-template PLACEHOLDER (__ns_std__Destroy,
+		// declaration-only + display + ns) and an instantiated __oN
+		// definition both carry it; load rebuilds the placeholder's
+		// namespace_map binding + overload-set seed from these.
+		// (method_display_name is empty on a free FuncDef, so disp_id is
+		// free to carry function_display_name on a DF_IS_FREE_FUNC record.)
+		if (!fd->function_display_name.empty())
+			r.disp_id = prog->forest_arena.strings.intern(
+				fd->function_display_name.c_str());
+		if (!fd->namespace_name.empty())
+			r.ns_id = prog->forest_arena.strings.intern(
+				fd->namespace_name.c_str());
 		prog->forest_arena.set_def_at(tid, r);
 	}
 }

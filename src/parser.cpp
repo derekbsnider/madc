@@ -12612,6 +12612,41 @@ void Program::flush_forest_pending_globals()
 	{
 	    Variable *fv = addVariable(NULL, *pf.fd, pf.name);
 	    fv->data = (void *)new Method(*fv);
+	    // v21: a restored skipped-ns-fn-template PLACEHOLDER (declaration-
+	    // only + display + ns — __ns_std__Destroy) reproduces the live
+	    // registration-site state (register_skipped_namespace_template_
+	    // function): a first-wins namespace_map[ns][display] binding — the
+	    // resolution chokepoint a qualified `std::_Destroy(...)` call reads —
+	    // and the overload-set placeholder seed when a body-bearing pattern
+	    // was retained for ns::display (the restored fn_template_map is
+	    // populated before this flush, so the seed condition is the live one
+	    // evaluated on restored state, never a name special-case).
+	    if ( pf.fd->declaration_only
+	      && !pf.fd->function_display_name.empty()
+	      && !pf.fd->namespace_name.empty() )
+	    {
+		variable_map_t &nsmap = namespace_map[pf.fd->namespace_name];
+		if ( nsmap.find(pf.fd->function_display_name) == nsmap.end() )
+		    nsmap[pf.fd->function_display_name] = fv;
+		std::string ovkey = pf.fd->namespace_name + "::"
+				  + pf.fd->function_display_name;
+		if ( fn_template_map.find(ovkey) != fn_template_map.end() )
+		{
+		    std::vector<NamespaceFnOverload> &ovset =
+			namespace_fn_overload_sets[ovkey];
+		    bool seeded = false;
+		    for ( size_t oi = 0; oi < ovset.size(); ++oi )
+			if ( ovset[oi].var == fv )
+			    seeded = true;
+		    if ( !seeded )
+		    {
+			NamespaceFnOverload e;
+			e.param_spelling = "\x01fn-template-placeholder";
+			e.var = fv;
+			ovset.push_back(e);
+		    }
+		}
+	    }
 	}
 	DBG(std::cout << "flush_forest_pending_globals: "
 	    << (pf.mvar ? "method " : "free function ") << pf.name

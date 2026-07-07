@@ -244,6 +244,7 @@ TokenBase *token_from_id(TokenID ti)
     case TokenID::tkDELETE: return new TokenDELETE();
     case TokenID::tkDynamicCast: return new TokenDynamicCast();
     case TokenID::tkTypeid: return new TokenTypeid();
+    case TokenID::tkFRIEND: return new TokenFRIEND();
     default: return NULL;
     }
 }
@@ -459,6 +460,10 @@ bool deserialize_tokens(const uint8_t *data, size_t len,
 		    if ( DataDef *dd = builtin_datadef_from_spelling(s) )
 			tb = new TokenDataType(s.c_str(), *dd);
 		}
+		// A version-gated reserved keyword shares one TokenID; the
+		// spelling IS its identity, so token_from_id cannot rebuild it.
+		if ( !tb && ti == TokenID::tkCPPKEYWORD )
+		    tb = new TokenCppKeyword(s);
 		if ( !tb )
 		    tb = token_from_id(ti);
 		if ( !tb )
