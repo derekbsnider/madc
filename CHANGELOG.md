@@ -19,6 +19,20 @@
   whole-`<string>`-TU func/export/data SETS are byte-identical between a bound
   and a live compile; the residual dump diff is the late-pass ctor/dtor
   emission order.
+- **#23 CLOSED — a bound `<string>` consumer's whole-TU MIR dump is
+  byte-identical to a live parse (diff 122 → 0), asserted by the strbind
+  gate.** Two loaded-state-equals-parsed-state fixes: (a) every restored class
+  METHOD now registers exactly as parseFunction's prototype tail leaves it —
+  `funcdef_map[method-id]` + a program-scope Variable + `Method(owner_class)`
+  — so Pass 0.75 emits the ctor/dtor typed extern protos at live's sorted
+  positions (the v12 emit_symbol-keyed dtor registration, a key live never
+  has, is deleted); (b) a SYSTEM-header forest body now materializes inside
+  the `materialize_and_lower` fixpoint on first ODR-use — the loaded
+  equivalent of a live parse's deferred lazy body — so the late tag-ctor /
+  allocator-dtor definitions land AFTER `main` in fixpoint order; USER-header
+  classes keep the eager roots-shaped path. Gates: fulltest 680/0/0/16;
+  forest_bind_gate 11/11 incl. the new whole-TU byte-identity assert;
+  test_cir_freeze 29/480; torture failset byte-identical (verified by run).
 - **RC2 (format v19) — free-function declarations serialize + restore.** A
   bound header's file-scope prototypes (`int printf(const char *, ...)` et al.)
   now restore as `funcdef_map` + program-scope Variables before the consumer

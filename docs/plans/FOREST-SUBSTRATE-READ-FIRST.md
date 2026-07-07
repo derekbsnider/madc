@@ -199,14 +199,42 @@ signed-int miscompile class); whole-TU diff 126→122, func/export/data SETS sti
 banked: a `(T, ...)` prototype's live FuncDef carries a hidden ddINT64 `__va_args` slot as an EXTRA param —
 restore verbatim, assert 2 params not 1. Gates: fulltest 680/0/0/16; bind 11/11 (strbind now asserts the
 typed printf proto); selfexe; test_cir_freeze 28/463; torture by construction (freeze/bind-only reach).
-**NEXT (post-flip backlog, in priority order):** (1) the late-pass ctor/dtor emission-order divergence (bind
-vs live pass behavior — Pass 1.5/1.6/1.9x late lists relative to `main` + the protoN renumber cascade; also a
-dtor-proto param-name nuance `U0_p0` vs `U0___this`) — closes #23 fully, then the strbind gate can assert
-whole-TU byte-identity; (2) widening past the v6 selection (polymorphic classes, template methods, beyond-v6
-method coverage, inline free-function BODIES) gated vs LIVE; (3) converting the remaining ~411 mutation sites
-to true write-throughs, retiring `cir_forest_arena_refresh`; (4) enums. Diagnostics: `tmp/or_probe.cpp`
-(gitignored) dumps arena records + the restore view for a name filter; `tmp/rc2_str.diff` /
-`tmp/rc2_{live,bind}.dump` hold the current #23 residual measurement.
+**#23 CLOSED @ `28d39e6b` (2026-07-07, gated green incl. torture): the whole bound-<string> TU MIR dump is
+BYTE-IDENTICAL to a live parse (diff 122 → 0), and the strbind gate now ASSERTS it (whole-TU diff — the
+set-asserts are now subsets of the catch-all).** One state gap, three symptoms, fixed by making LOADED state
+equal PARSED state — never by hand-ordering output: (a) **restored METHOD registration** — a live parseFunction
+registers EVERY method as funcdef_map[method-id] + a program-scope Variable + Method(owner_class); the restore
+only registered dtors keyed by emit_symbol (a key live never has — DELETED). Now every restored method stages
+through `forest_pending_funcs` (extended with the owner class) and the post-tkProgram flush registers it like
+parseFunction's tail → Pass 0.75 emits the ctor/dtor typed extern protos at live's SORTED funcdef_map positions
+(C1Ev was the void*-extern `u64:p` proto + misplaced imports/exports; the "dtor-proto param-name nuance" was
+pure proto-creation-order cascade, not a content bug; aSEPKc/size stay void*-externs on BOTH sides because
+symbol-bound member calls never enter referenced_funcs — proven by live emitting no defs for them). (b)
+**SYSTEM-header forest bodies ride the materialize_and_lower fixpoint** (cir_builder.cpp `forest_lazy`): a live
+parse DEFERS a system-header inline body (deferred_lazy_bodies) and materializes it on first ODR-use inside the
+fixpoint — so the ~6 trivial tag ctors/allocator dtors define AFTER main in fixpoint order (first m&l run =
+global-ctor-referenced tag ctors; Pass-1.9 re-run round 1 = synth-dtor-referenced allocator dtors, round 2 =
+their __new_allocator base dtors). The forest inline-body path had emitted ALL bound bodies eagerly before main
+in struct_map order — correct ONLY for USER-header classes (live roots), which KEEP the eager path unchanged
+(split on `DataDef::from_system_header`; method/fwd byte-identity gates unregressed). Materialization =
+`node_for` (LOAD, no re-parse) + `cir_collect_call_callees` → referenced_funcs (what translating the body live
+would register); forward protos flush at Pass 1.95(a) interleaved in materialization order; one shared
+`forest_fwd_proto` helper serves both paths. MEASUREMENT DISCIPLINE that cracked it: fresh live/bind MIR +
+`--emit=c11` dumps at HEAD first (the v16-era "before main in bind" framing was NOT trusted), then reading
+live's actual mechanism (parseFunction tail parser.cpp:38662; Pass 0.75 cir_builder.cpp:18320; the m&l fixpoint
+:18177) before any edit. Gates: fulltest 680/0/0/16 exit 0; bind gate 11/11 incl. the NEW whole-TU
+byte-identity assert; selfexe; test_cir_freeze 29/480 (new #23 method-registration case); test_cir_arena
+11/316; **torture failset byte-identical (1572/32/18, 0 timeouts, 50 names — verified by RUN: fix (b) reshaped
+a normal-path loop, empty-map no-op on a live compile)**.
+**NEXT (post-flip backlog, in priority order):** (1) widening past the v6 selection (polymorphic classes,
+template methods, beyond-v6 method coverage, inline free-function BODIES) gated vs LIVE — fold in the
+user-header-origin note: the eager path emits only the REFERENCED subset of bound user-class methods while a
+live parse emits every parsed non-system function as a root (an unreferenced-user-inline-method divergence,
+unobserved by current gates); (2) converting the remaining ~411 mutation sites to true write-throughs,
+retiring `cir_forest_arena_refresh`; (3) enums. Diagnostics: `tmp/or_probe.cpp` (gitignored, REWRITTEN this
+session for the v18+ arena API — dumps per-class arena METHOD records with flags/body/symbol for a name
+filter; g++ build line at its head comment pattern: link `-Wl,--whole-archive lib/libmadc.a` +
+`/workspace/mir/libmir.a`); `tmp/b23_*.{dump,diff,c,log}` hold the #23 closing measurements.
 
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 
