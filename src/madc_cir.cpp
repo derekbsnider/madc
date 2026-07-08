@@ -1505,11 +1505,41 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		td = t.decl;
 		break;
 	    }
-	if (!td || !td->initialize)
+	if (!td)
 	    continue;
+	// An UNINITIALIZED file-scope definition (`int REQ;` — a plain-C
+	// tentative definition; also plain struct/array globals): live emits
+	// a bss item (var_decl with no initializer), no ctor, no value.
+	// Record the form; the flush leaves the rebuilt decl's initialize
+	// NULL so the same passes emit the same bss item.
+	if (!td->initialize) {
+	    uint32_t usid = forest_serialize_type_id(v->type);
+	    if (!usid)
+		continue;
+	    if (!seen_globals.insert(v->name).second)
+		continue;
+	    cir_forest_global_record g;
+	    memset(&g, 0, sizeof(g));
+	    g.name_id = pool.intern(v->name);
+	    g.type_id = usid;
+	    g.flags   = v->flags;
+	    g.gflags  = CIR_GLOBALF_SCALAR_UNINIT;
+	    if (prog->forest_is_tu_root_file(td->file))
+		g.gflags |= CIR_GLOBALF_TU_ROOT;
+	    g.ns_id   = global_ns_id(v);
+	    f.globals.push_back(g);
+	    continue;
+	}
 	TokenBase *rhs = td->initialize;
 	if (TokenAssign *as = dynamic_cast<TokenAssign *>(rhs))
 	    rhs = as->right;
+	// A constant CAST of an integer literal unwraps to the literal:
+	// `char *last_log = NULL;` is `((void *)0)` after the NULL macro —
+	// TokenCast(void*, TokenInt(0)) — and live emits the same scalar
+	// data item a bare 0 does (`last_log: u64 0`). Any non-literal cast
+	// operand still fails the tkInt check below and cleanly lacks.
+	if (TokenCast *tc = dynamic_cast<TokenCast *>(rhs))
+	    rhs = tc->expr;
 	if (!rhs || !rhs->is_constant() || rhs->id() != TokenID::tkInt)
 	    continue;
 	uint32_t sid = forest_serialize_type_id(v->type);

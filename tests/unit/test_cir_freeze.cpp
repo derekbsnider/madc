@@ -2819,3 +2819,78 @@ TEST_CASE("tagless-typedef struct: the alias restores as a struct_map tag too") 
 	CHECK(jsi->second == jarr->element_type);
 	CHECK(dynamic_cast<DataDefSTRUCT *>(jsi->second) != nullptr);
 }
+
+// A header's file-scope NULL-initialized pointer global (`char *last = NULL;`
+// — NULL is `((void *)0)`, a TokenCast over the literal, which the v14
+// bare-tkInt check dropped) and an UNINITIALIZED tentative definition
+// (`int REQ;` — no initializer at all) both restore: the cast unwraps to its
+// literal (SCALAR_INIT, value 0), the tentative definition records the
+// SCALAR_UNINIT form (flush leaves the rebuilt decl's initialize NULL ->
+// live's bss item). smaug_requests_mud.mah's last_log/last_who_arg + REQ.
+TEST_CASE("NULL-init pointer + uninitialized file-scope globals restore") {
+	std::string inc_path = std::string("/tmp/madc_gnull_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_gnull_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_gnull_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "#include <stddef.h>\n"
+		       "char *g_last = NULL;\n"
+		       "int g_req;\n"
+		       "int g_calls = 7;\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { return 0; }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	forest.materialize_from_arena();
+	const std::vector<CirRestoredGlobal> &globals = forest.restored_globals();
+
+	bool saw_last = false, saw_req = false, saw_calls = false;
+	for (size_t i = 0; i < globals.size(); ++i) {
+		if (!globals[i].name)
+			continue;
+		if (!strcmp(globals[i].name, "g_last")) {
+			saw_last = true;
+			CHECK((globals[i].gflags & CIR_GLOBALF_SCALAR_INIT) != 0);
+			CHECK(globals[i].init_value == 0);
+			REQUIRE(globals[i].type != nullptr);
+			CHECK(globals[i].type->is_pointer());
+		} else if (!strcmp(globals[i].name, "g_req")) {
+			saw_req = true;
+			CHECK((globals[i].gflags & CIR_GLOBALF_SCALAR_UNINIT) != 0);
+			CHECK((globals[i].gflags & CIR_GLOBALF_SCALAR_INIT) == 0);
+		} else if (!strcmp(globals[i].name, "g_calls")) {
+			saw_calls = true;
+			CHECK((globals[i].gflags & CIR_GLOBALF_SCALAR_INIT) != 0);
+			CHECK(globals[i].init_value == 7);
+		}
+	}
+	CHECK(saw_last);
+	CHECK(saw_req);
+	CHECK(saw_calls);
+}

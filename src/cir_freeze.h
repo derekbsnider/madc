@@ -330,6 +330,13 @@ enum : uint32_t {
 						// flush rebuilds the live registration exactly.
 						// Provenance rides Program::forest_enum_const_origin
 						// (the funcdef_files precedent).
+	,
+	CIR_GLOBALF_SCALAR_UNINIT    = 1u << 7	// an UNINITIALIZED file-scope definition (`int REQ;`,
+						// a plain-C tentative definition — also plain
+						// struct/array globals): live emits a bss item via
+						// var_decl with NO initializer, so the flush leaves
+						// the rebuilt TokenDecl's initialize NULL. No
+						// init_value. (smaug_requests_source's REQ.)
 };
 struct cir_forest_global_record
 {
