@@ -8,7 +8,58 @@ every other madc track for five weeks. This document is the execution order; the
 
 ---
 
-## ⏯ RESUME HERE (fifth sitting, 2026-07-08 — v25 family burn-down in flight)
+## ⏯ RESUME HERE (seventh sitting, 2026-07-08 — soak-first + burn-down)
+
+- **Git:** develop == origin/develop **@110148a4** — TWO pushed seventh-sitting
+  batches (below). Soak-first CONFIRMED the sixth-sitting state at **662/674**:
+  piece (a) flipped testincludenext but REGRESSED testmacroargsspace
+  (header-DECLARED root-DEFINED fn → double definition) — fixed in batch 4.
+- **Batch 4 @5fe7b093 (PUSHED, gates 18/18 + units + fulltest 680/0/0/16 exit 0):**
+  1. **TOKEN-SHAPE PARITY (the REAL fd_set family — the "TokenSTRUCT fallback
+     map" hypothesis was DISPROVEN by the reducer):** the lexer PROMOTES flat
+     datatype_map names to TokenDataType at TOKENIZE time (getToken ~4978);
+     live's tokenize fully precedes parse, so user-header types NEVER shape
+     the root's tokens — but the eager bind-restore wrote datatype_map
+     MID-tokenize, so `struct fd_set` died at the TAG position and
+     teststringparam's `char *string` param at 22:34 (the v24 class-token-
+     demotion mechanism on legitimately-restored include-origin names).
+     FIX: restored flat datatype_map writes STAGE (forest_pending_datatypes)
+     and apply at the post-tokenize flush; ns/struct/template maps stay eager
+     (lexer-invisible). FLIPS testfdsetfromsystime + teststringparam.
+  2. **DF_TYPEDEF_TAG_ALIAS (bit 25):** struct/class-KEYWORD typedefs also
+     register the alias as a TAG live (struct_map writes at 24055/25002/28146;
+     the plain TokenTYPEDEF path never does) — save stamps from the producer's
+     own map state (CArray walks to its element for `typedef struct tag X[N]`),
+     restore reproduces the struct_map write. Needed WITH (1) for fd_set.
+  3. **6b DEFBODY BODY-ORIGIN FENCE:** piece (a) fenced only on the DK_FUNC's
+     TU_ROOT (decl provenance = the header for a header-declared root-defined
+     fn); now ALSO fences on the BODY tokens' origin (the v25 1b rule).
+     FIXES the testmacroargsspace regression.
+- **Batch 5 @110148a4 (PUSHED, same gates):** the smaug pair = TWO v14 gaps in
+  cir_forest_fill_globals' scalar tail (reducer tmp/sg_main.c): `char *last_log
+  = NULL;` (RHS = TokenCast(void*,0) — now unwraps to its literal) and `int
+  REQ;` (UNINITIALIZED tentative definition — new CIR_GLOBALF_SCALAR_UNINIT
+  form, bit 7; flush leaves initialize NULL → live's bss item; covers plain
+  struct/array globals too). FLIPS testsmaug_requests + smaug_requests_source.
+- **RECLASSIFIED OUT of the forest worklist: teststructinit** — its BIND_DIFF
+  is a PRE-EXISTING LIVE bug (string member in a struct initializer list
+  prints garbage live too: `m = (, <garbage>, <garbage>)`; the test has no
+  .expect so fulltest masks it; the soak compares two garbage runs). Fix
+  belongs to the gcc-parity track, not forest.
+- **RE-SOAK CONFIRMED 667/674 (99.0%) after batch 5.** REMAINING (7 non-OK):
+  testforeachheaderbody (m&l over-materialization, reducer tmp/fe_red2.cpp +
+  tmp/fe_hdr.h) · teststructinit (live bug, above) · testproject×5 +
+  testfreezerun (item-4 class: the --project driver NEVER calls
+  madc_cir_freeze — only the extern decl at madc_project.cpp:40; design the
+  multi-TU freeze shape AT item 4, don't guess early).
+- **Sub-bar note:** user-header bodied-fn reducers (sg_main) show proto/label
+  ORDER + declaration-source divergence vs live in MADC_DUMP_MIR — the known
+  post-flip residual class; rc+stdout is the family bar (whole-TU byte-identity
+  stays gated on strbind/strops).
+
+---
+
+## Prior sitting log (fifth sitting, 2026-07-08 — v25 family burn-down)
 
 - **Git:** develop == origin/develop **@c10e7557** — THREE pushed v25 batches:
   @ddd13b01 (families a+b+c), @ad8e3697 (family d + quoted-include binding),
