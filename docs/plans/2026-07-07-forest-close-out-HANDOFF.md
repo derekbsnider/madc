@@ -29,11 +29,50 @@ every other madc track for five weeks. This document is the execution order; the
   live + every `.expect` line + bound-to-grove; strbind/strops whole-TU
   byte-identity UNREGRESSED), test_cir_freeze 32/569 (new v23 case),
   test_cir_arena 11/316, fulltest exit 0.
-- **THE IMMEDIATE NEXT TASK — item 3, REAL-TEST SOAK:** freeze+bind every
-  `tests/*.mad` (scripted, capped, ONE run); classify remaining failures by
-  STATE FAMILY (never per-test); burn down by class with the map/io/default
-  discipline. Then item 4 corpus pack + append-to-binary default-on → item 5
-  lazy defrost → item 6 measure + stamp the 06-22 plan CLOSED.
+- **ITEM 3 SOAK — RUN + CLASSIFIED (2026-07-08, `scripts/forest_soak.sh`,
+  ONE capped pass: live oracle → freeze → bind, rc+stdout compared):
+  407 OK / 258 BIND_RC / 5 FREEZE_FAIL / 4 BIND_DIFF / 22 skips-by-design.**
+  The failures collapse into FIVE state families (results: tmp/soak/results.tsv):
+  1. **OWN-TU-ORIGIN LEAK — the dominant family (~250 of 267 non-OK).** The
+     per-file harness snapshot carries the PRODUCER'S OWN user-code state
+     (its classes/structs/typedefs/enums/globals), and the eager
+     whole-container restore installs it into the consumer BEFORE the
+     consumer's own code parses. Symptoms unify: "Struct 'X' already defined"
+     (79); `class Foo` demoted to identifier (72 — the restored own-class
+     made `Foo` lex as a DATATYPE token, so parseStatement's
+     class-as-identifier heuristic fired); "Expecting '{' or identifier
+     after struct" (43) + typedef/enum grammar errors (24) — same
+     token-promotion desync; ~4 BIND_DIFFs (teststringglobal: own global
+     restored default-constructed, the consumer's initializing decl skipped
+     by the findVariable guard). Reducer: tmp/s6_class.cpp (freeze+bind:
+     `#include <iostream>` + `class Foo{}` → "undeclared identifier
+     'class'"). NOTE: the PRODUCT container (frozen /usr/include only)
+     cannot leak user state — this family is the HARNESS's per-TU snapshot
+     leaking through the restore. THE FIX (live parity for both shapes):
+     restore installs ONLY system-header-origin state — one origin bit
+     stamped uniformly at save (DF_FROM_SYSTEM_HDR already exists on
+     aggregates; extend the stamp to DK_TYPEDEF/DK_ENUM records, globals
+     gflags, template records, free-fn records — derive from the defining
+     file's provenance) + ONE restore-side fence. Format v23→v24. Lazy
+     defrost does NOT structurally fix this (a redefinition check is itself
+     a lookup and would defrost the colliding record) — the fence is
+     prerequisite hygiene for items 4/5.
+  2. **Borrowed-language namespace registration (5):** `Unknown namespace
+     'perl'/'python'/'ruby'/'rust'` (+ prefer directive) — binding the
+     embedded `<ns_*>` headers skips the live registration side effect;
+     re-run the ONE live registration over restored state.
+  3. **std member re-exports (3):** `'to_string'/'abort' is not a member of
+     namespace 'std'` — `using ::abort;`-style namespace re-export state +
+     to_string overload sets not yet in the substrate.
+  4. **Enum-constant macro visibility (1):** testdirent's DT_REG (glibc
+     `enum { DT_REG=8 } + #define DT_REG DT_REG`).
+  5. **--project × --freeze produces no container (5, FREEZE_FAIL rc=0):**
+     testproject* — the multi-TU driver never reaches the freeze writer.
+     Matters for item 4's default-on path (a --project compile must bind
+     the embedded corpus too).
+- **THEN:** burn down family 1 (the fence, v24) → re-soak → families 2-4 →
+  item 4 corpus pack + append-to-binary default-on → item 5 lazy defrost →
+  item 6 measure + stamp the 06-22 plan CLOSED.
 - **Discipline:** batch fixes, reducer-iterate, full gates ONCE per batch;
   state INTO the substrate (no new bespoke record families); loaded state ==
   parsed state (re-run the ONE live derivation over restored state when side
