@@ -18291,6 +18291,26 @@ node_t CirBuilder::translate_module(Program *prog)
 		}
 	}
 	std::set<std::string> forest_lazy_emitted;
+	// Symbols that receive a TYPED forward prototype (Pass 0.75 below, Pass 1,
+	// and the materialized-func protos). A void* extern from need_output_extern
+	// for the SAME symbol — e.g. a mangled-direct `_ZNSaIcEC1ERKS_(void*,void*)`
+	// ctor call emitted inside an instantiated body, while allocator<char>'s
+	// copy-ctor is also a referenced FuncDef getting a typed
+	// `(struct allocator_char*,...)` proto — is a CONFLICTING redeclaration that
+	// c2mir/gcc reject ("incompatible argument type" / "conflicting types"). The
+	// typed proto is canonical; the m_output_externs flushes skip these symbols.
+	// (Declared here, above materialize_and_lower, so the loaded-body callee
+	// stage can consult it after Pass 0.75 has run.)
+	std::set<std::string> typed_proto_syms;
+	// Pass 0.75 is a ONE-shot referenced-only sweep. Before it runs, a
+	// funcdef-sourced loaded-body callee is left to it (the #23 sorted-position
+	// byte-identity mechanism). AFTER it has run, a callee first referenced by
+	// a LATE-materialized loaded body (second m&l fixpoint) gets no proto from
+	// it — the guard below must then key on what 0.75 ACTUALLY emitted
+	// (typed_proto_syms), or the callee stays undeclared and c2mir
+	// implicit-ints it (basic_string _M_construct__mti's _ZNK..._M_dataEv:
+	// "subscripted value is neither array nor pointer").
+	bool pass075_done = false;
 	struct ForestLazyProto { size_t anchor; std::string sym; node_t proto; };
 	std::vector<ForestLazyProto> forest_lazy_protos;
 	// Forward prototype copied from a loaded forest def's own return-spec (op0)
@@ -18513,7 +18533,9 @@ node_t CirBuilder::translate_module(Program *prog)
 					if (!forest_lazy.count(*ci)
 					    && !lib_funcs.count(*ci)
 					    && !prog->deferred_lazy_bodies.count(*ci)
-					    && !forest_funcdef_syms.count(*ci)
+					    && (pass075_done
+						? !typed_proto_syms.count(*ci)
+						: !forest_funcdef_syms.count(*ci))
 					    && !m_output_externs.count(*ci)) {
 						uint32_t xu = 0, xi = 0;
 						if (prog->bind_forest->extern_loc_for(*ci, xu, xi)) {
@@ -18565,15 +18587,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	// symbols (c_str/size protocol, dtors) are seen by the Pass-1.9 fixpoint.
 	synth_call_shims(prog, roots, func_def_nodes);
 
-	// Symbols that receive a TYPED forward prototype (Pass 0.75 below, Pass 1,
-	// and the materialized-func protos). A void* extern from need_output_extern
-	// for the SAME symbol — e.g. a mangled-direct `_ZNSaIcEC1ERKS_(void*,void*)`
-	// ctor call emitted inside an instantiated body, while allocator<char>'s
-	// copy-ctor is also a referenced FuncDef getting a typed
-	// `(struct allocator_char*,...)` proto — is a CONFLICTING redeclaration that
-	// c2mir/gcc reject ("incompatible argument type" / "conflicting types"). The
-	// typed proto is canonical; the m_output_externs flushes skip these symbols.
-	std::set<std::string> typed_proto_syms;
+	// (typed_proto_syms is declared above materialize_and_lower — see there.)
 
 	// Pass 0.75: Extern function prototypes — referenced-only (matches c2m,
 	// which only declares what #include pulled in).
@@ -18698,6 +18712,10 @@ node_t CirBuilder::translate_module(Program *prog)
 		append(top_list, proto);
 		typed_proto_syms.insert(symbol);
 	}
+	// From here on, a funcdef-sourced loaded-body callee first referenced by
+	// a LATE materialization can no longer ride this pass — the m&l callee
+	// stage switches to typed_proto_syms (see the flag's declaration).
+	pass075_done = true;
 
 	// Pass 0.78: extern declarations for referenced libc globals.
 	// stderr/stdout/stdin (and any future lazily-registered libc global) are

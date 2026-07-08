@@ -1868,6 +1868,19 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				if (mnm && !dispname.empty()
 				    && std::string(mnm) != cdd->name + "__" + dispname)
 					fd->local_emit_name = mnm;
+				// A CTOR has no display name; its canonical scheme is
+				// ClassName__ClassName (ctor_call_symbol's default). Live
+				// stamps a rank-disambiguated ctor's registered symbol
+				// (__oN) on local_emit_name at the ctor registration site,
+				// and the FuncDef-only ctor emitters (ctor_call_symbol —
+				// the shim/global/default-construct paths hold no Variable)
+				// read it. Without it a bound shim's converting-ctor call
+				// degraded to the canonical symbol — naming whichever ctor
+				// holds the canonical rank (basic_string's __sv_wrapper
+				// ctor) instead of the selected char* overload.
+				else if (mnm && dispname.empty() && is_ctor
+				    && std::string(mnm) != cdd->name + "__" + cdd->name)
+					fd->local_emit_name = mnm;
 				Variable *mv = new Variable(std::string(mnm ? mnm : ""),
 							    *fd, 1, NULL, false);
 				if (m_static)
