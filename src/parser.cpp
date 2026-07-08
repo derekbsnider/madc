@@ -12527,6 +12527,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	PendingForestFunc pf;
 	pf.name = funcs[i].name;
 	pf.fd   = funcs[i].fd;
+	pf.mparams = funcs[i].mparams;	// v26 piece (a): named params for the Method
 	forest_pending_funcs.push_back(pf);
     }
 
@@ -12791,7 +12792,19 @@ void Program::flush_forest_pending_globals()
 	else
 	{
 	    Variable *fv = addVariable(NULL, *pf.fd, pf.name);
-	    fv->data = (void *)new Method(*fv);
+	    Method *fm = new Method(*fv);
+	    fv->data = (void *)fm;
+	    // v26 piece (a): the fn's NAMED parameter Variables (live parity
+	    // with parseFunction's param loop) — the scope a deferred free-fn
+	    // body's re-parse resolves its parameters against
+	    // (parse_deferred_function_body sets code->method).
+	    for ( size_t mp = 0; mp < pf.mparams.size(); ++mp )
+	    {
+		Variable *pv = new Variable(std::string(pf.mparams[mp].first),
+					    *pf.mparams[mp].second, 1, NULL, false);
+		pv->flags |= vfPARAM | vfLOCAL;
+		fm->parameters.push_back(pv);
+	    }
 	    // v21: a restored free function with a SOURCE IDENTITY (display name
 	    // + namespace) reproduces the live registration-site state.
 	    // A skipped-ns-fn-template PLACEHOLDER (declaration-only, a
@@ -25487,6 +25500,15 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	    current_namespace().c_str());
 #endif
     std::string body_namespace = current_namespace();
+    // v26 piece (a): an OWNERLESS deferred body (a restored FREE function's —
+    // std::abs) parsed inside its defining namespace on the live path; the
+    // FuncDef's namespace_name carries it (restored ns_id).
+    if ( !body.method->owner_class )
+    {
+	if ( FuncDef *ffd = dynamic_cast<FuncDef *>(body.var->type) )
+	    if ( !ffd->namespace_name.empty() )
+		body_namespace = ffd->namespace_name;
+    }
     if ( body.method->owner_class )
     {
 	std::string method_namespace =
@@ -38628,6 +38650,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->param_typedef_names = src->param_typedef_names;
     f->param_defaults = src->param_defaults;
     f->param_default_tokens = src->param_default_tokens;
+    f->forest_body_tokens = src->forest_body_tokens;
     f->template_return_param_name = src->template_return_param_name;
     f->template_return_deduce_arg_index = src->template_return_deduce_arg_index;
     f->template_return_deduce_from_pointer = src->template_return_deduce_from_pointer;
@@ -40186,7 +40209,21 @@ paramdecl:
 	pushToken(new TokenClBrc());
     }
     DBG(cout << "parseFunction() calling parseCompound()" << endl);
+    // v26 piece (a): capture a FREE function's raw body span (the tokens
+    // parseCompound consumes, closing brace included — the exact
+    // parse_deferred_function_body::body_tokens shape) so an include-origin
+    // bodied fn the producer never calls (std::abs — no TRANSLATED def in the
+    // frozen AST) can serialize its body as an ownerless DK_DEFBODY run.
+    // Methods keep their own deferral/capture machinery; a tsubst-skipped
+    // body has no real span to capture.
+    DefCapState body_cap;
+    bool body_capturing = forest_arena_enabled && !owner_class
+			&& !func->tsubst_body_skipped
+			&& func->forest_body_tokens.empty()
+			&& param_default_capture_begin(body_cap);
     TokenCpnd *tc = dynamic_cast<TokenCpnd *>(parseCompound());
+    if ( body_capturing )
+	param_default_capture_end(body_cap, func->forest_body_tokens);
 
     tf->method = method;
     tf->parent = tc->parent;

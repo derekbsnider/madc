@@ -142,6 +142,14 @@ public:
     // forest_arena_enabled (a --freeze parse); index-aligned with
     // param_defaults when non-empty, and possibly SHORTER (bounds-check reads).
     std::vector<std::vector<class TokenBase *>> param_default_tokens;
+    // RAW SOURCE TOKENS of a FREE function's parsed body (`stmts... }`,
+    // the parseCompound span incl. the closing brace — the exact shape
+    // parse_deferred_function_body::body_tokens re-parses). Forest SAVE state
+    // (v26 piece a): the frozen AST holds only TRANSLATED defs, so a bodied
+    // include-origin free fn the producer never called (std::abs) serializes
+    // its body as an ownerless DK_DEFBODY token run instead. Captured ONLY
+    // when forest_arena_enabled and owner_class == NULL.
+    std::vector<class TokenBase *> forest_body_tokens;
     // Number of leading parameters that have NO default — the minimum arg count a
     // call must supply. Equals parameters.size() when no parameter has a default.
     size_t required_param_count() const
@@ -2833,6 +2841,10 @@ public:
 				// Variable (live keeps ONE object shared by tkProgram
 				// scope and methods/method_map; its Method(owner_class)
 				// is attached at materialization)
+	// v26 piece (a): the fn's NAMED parameters (restored aliasrec run) —
+	// the flush fills the new Method's parameters from these so a deferred
+	// free-fn body's re-parse resolves its parameter names.
+	std::vector<std::pair<const char *, DataDef *> > mparams;
 	PendingForestFunc() : fd(NULL), mvar(NULL) {}
     };
     std::vector<PendingForestFunc> forest_pending_funcs;

@@ -107,7 +107,28 @@ every other madc track for five weeks. This document is the execution order; the
     over-materialized graph. Fix = the loaded-body callee-closure
     overshoot, NOT type identity. Reducer: tmp/fe_red2.cpp (quoted
     header, fn-ptr param `void (*fn)(std::string)`, call through it).
-  2. **Piece (a), still open — DESIGN NOW FULLY TRACED (sixth sitting):**
+  2. **Piece (a) — IMPLEMENTED IN-TREE, UNBUILT/UNGATED (sixth sitting;
+     if resuming after compaction: `git status` shows the 6-file diff —
+     BUILD IT, run the testincludenext reducer, then gates):** the six
+     edits: (1) FuncDef::forest_body_tokens + capture around
+     parseCompound (parser.cpp ~40195, DefCapState, gated
+     forest_arena_enabled && !owner_class && !tsubst_body_skipped;
+     clone_funcdef_with_return copies the field); (2) cir_arena.h
+     DF_FUNC_DEF_TOKENS = 1u<<24; (3) madc_cir.cpp arena_complete phase
+     6b: ownerless DK_DEFBODY (ref0=0, non-full, run[0]=body) per
+     funcdef_map entry with forest_body_tokens whose DK_FUNC record is
+     !HAS_FOREST_BODY/!TU_ROOT, + stamps DF_FUNC_DEF_TOKENS on the
+     DK_FUNC; (4) cir_freeze.cpp: the was_bodied&&!has_body declaration
+     drop lifts when the flag is set; CirRestoredFunc grows mparams
+     (aliasrec names — free-fn records already carry them, probed
+     __ns_std_abs aliases=1 __i); (5) parser.cpp flush: PendingForestFunc
+     carries mparams → the new Method's parameters (live param-loop
+     parity); the EXISTING v26 DEFBODY flush plants the ownerless entry
+     (findVariable(key) = the just-registered free-fn Variable) and the
+     EXISTING m&l fixpoint (referenced_funcs ∋ key) materializes it;
+     (6) parse_deferred_function_body: ownerless body_namespace =
+     fd->namespace_name. ORIGINAL DESIGN NOTES (superseded by the
+     implementation, kept for the trace):**
      UNREFERENCED bodied FREE fns (std::abs — records flags 0x30000 =
      IS_FREE_FUNC|WAS_BODIED, no body stamp; the `was_bodied && !has_body`
      exclusion at cir_freeze.cpp:2137 drops even the DECLARATION → "'abs'

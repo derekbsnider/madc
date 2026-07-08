@@ -168,6 +168,12 @@ enum DefFlags : uint32_t {
 						// TokenTEMPLATE::parse) — the restore reproduces
 						// the flat datatype_map + struct_map writes too,
 						// not just the namespace map
+	DF_FUNC_DEF_TOKENS   = 1u << 24,	// v26 piece (a): this WAS_BODIED free fn (no
+						// TRANSLATED def -> no DF_HAS_FOREST_BODY) has an
+						// ownerless DK_DEFBODY twin carrying its raw body
+						// tokens — the declaration restores (the
+						// was_bodied&&!has_body drop lifts) and the
+						// deferred body materializes on first ODR-use
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live

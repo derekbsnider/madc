@@ -663,6 +663,11 @@ struct CirRestoredFunc
 {
 	const char *name;		// the funcdef_map key == the call name
 	FuncDef    *fd;			// reconstructed declaration (forest-owned)
+	// v26 piece (a): the fn's NAMED parameters (the aliasrec run on its
+	// DK_FUNC record) — the flush fills Method::parameters from these so a
+	// deferred body's re-parse resolves its parameter names (the scope
+	// parse_deferred_function_body's code->method provides).
+	std::vector<std::pair<const char *, DataDef *> > mparams;
 };
 
 // v20 (widening slice 2): one restored template pattern — the metadata view

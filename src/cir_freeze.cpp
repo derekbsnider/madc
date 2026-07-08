@@ -2134,7 +2134,12 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		// cleanly lacks — a consumer never inherits the producer's roots.
 		bool was_bodied = (r.flags & madc::dis::DF_WAS_BODIED) != 0;
 		bool has_body   = (r.flags & madc::dis::DF_HAS_FOREST_BODY) != 0;
-		if (was_bodied && !has_body)
+		// v26 piece (a): a bodied fn with NO translated def but WITH a
+		// captured raw-body run (an ownerless DK_DEFBODY twin) restores
+		// its DECLARATION — the flush plants the deferred body and the
+		// m&l fixpoint materializes it on first ODR-use.
+		if (was_bodied && !has_body
+		    && !(r.flags & madc::dis::DF_FUNC_DEF_TOKENS))
 			continue;
 		DataDef *ret = arena_swizzle(r.ref0, by_id);
 		if (!ret)
@@ -2209,6 +2214,20 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		CirRestoredFunc rf;
 		rf.name = nm;
 		rf.fd   = fd;
+		// v26 piece (a): the fn's NAMED parameters (aliasrec run) — the
+		// flush fills Method::parameters so a deferred body's re-parse
+		// resolves its parameter names.
+		for (uint32_t ai = 0; ai < r.alias_count; ++ai) {
+			madc::dis::aliasrec ar;
+			if (!a.get_payload(r.alias_begin, ai, ar) || !ar.name_id)
+				continue;
+			const char *pn = a.c_str(ar.name_id);
+			DataDef *ptp = ar.type_id
+				     ? arena_swizzle(ar.type_id, by_id) : NULL;
+			if (!pn || !*pn || !ptp)
+				continue;
+			rf.mparams.push_back(std::make_pair(pn, ptp));
+		}
 		_restored_funcs.push_back(rf);
 		if (!def_runs.empty()) {
 			CirRestoredFuncDefaults rd;

@@ -2174,6 +2174,71 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 				a.payload.push_back(runs[sx][w]);
 		a.set_def_at(next++, r);
 	}
+
+	// 6b (v26 piece a): UNREFERENCED bodied FREE functions — an
+	// include-origin fn the producer parsed but never called (std::abs's
+	// overloads) has NO TRANSLATED def in the frozen AST, so its RC2
+	// record was WAS_BODIED without a body stamp and the restore dropped
+	// even the DECLARATION ("'abs' is not a member of namespace 'std'").
+	// parseFunction captured the raw body span (forest_body_tokens, the
+	// parse_deferred_function_body::body_tokens shape); serialize it as an
+	// OWNERLESS DK_DEFBODY (ref0=0, non-full) and stamp the DK_FUNC record
+	// DF_FUNC_DEF_TOKENS so the declaration restores — the flush plants
+	// the deferred entry and the m&l fixpoint materializes the body on
+	// first ODR-use through the ONE live derivation.
+	for (funcdef_map_t::const_iterator fi = prog->funcdef_map.begin();
+	     fi != prog->funcdef_map.end(); ++fi) {
+		FuncDef *fd = fi->second;
+		if (!fd || fd->forest_body_tokens.empty() || fi->first.empty())
+			continue;
+		uint32_t ftid = madc_type_id_for(fd);
+		madc::dis::defrec fr;
+		if (!madc::dis::arena_id_is_project(ftid)
+		    || !a.get_def_at(ftid, fr)
+		    || fr.kind != madc::dis::DK_FUNC)
+			continue;	// no restored declaration -> no body to plant
+		if (fr.flags & (madc::dis::DF_HAS_FOREST_BODY
+				| madc::dis::DF_TU_ROOT_ORIGIN
+				| madc::dis::DF_FUNC_DEF_TOKENS))
+			continue;	// translated / fenced / already stamped
+		std::vector<uint8_t> bytes;
+		if (!madc_pch::serialize_token_seq(fd->forest_body_tokens, bytes)
+		    || bytes.empty())
+			continue;
+		uint32_t cnt = 0;
+		for (TokenBase *t : fd->forest_body_tokens)
+			if (t)
+				++cnt;
+		madc::dis::defrec r;
+		memset(&r, 0, sizeof(r));
+		r.kind      = madc::dis::DK_DEFBODY;
+		r.name_id   = a.strings.intern(fi->first.c_str());
+		r.ref0      = 0;	// ownerless: a FREE function's body
+		const char *bfile = NULL;
+		int bline = 0, bcol = 0;
+		for (TokenBase *t : fd->forest_body_tokens)
+			if (t && t->file) {
+				bfile = t->file;
+				bline = t->line;
+				bcol  = t->column;
+				break;
+			}
+		r.disp_id   = bfile ? a.strings.intern(bfile) : 0;
+		r.body_unit = (uint32_t)bline;
+		r.body_idx  = (uint32_t)bcol;
+		r.params_begin = (uint32_t)a.payload.size();
+		r.params_count = 4;
+		uint32_t brun[4] = { a.add_tokbytes(bytes), (uint32_t)bytes.size(),
+				     cnt, r.disp_id };
+		for (int w = 0; w < 4; ++w)
+			a.payload.push_back(brun[w]);
+		for (int sx = 1; sx < 4; ++sx)
+			for (int w = 0; w < 4; ++w)
+				a.payload.push_back(0u);
+		a.set_def_at(next++, r);
+		fr.flags |= madc::dis::DF_FUNC_DEF_TOKENS;
+		a.set_def_at(ftid, fr);
+	}
 }
 
 // B3 flip (Chunk 2): RE-RECORD every live project aggregate into the arena at
