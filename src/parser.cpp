@@ -12248,6 +12248,9 @@ static void recapture_free_overload_surfaces(Program &pgm,
 // later slices), and the alias registers exactly as record_typedef would —
 // datatype_map (+ namespace_datatype_map for a scoped alias). The name crosses
 // via its string content (container pool -> this Program's pool), not by pool id.
+// Defined beside new_anon_struct (below): advance the anonymous-tag gensym.
+void madc_anon_tag_counter_at_least(size_t n);
+
 void Program::forest_restore_decls(CirFrozenForest &forest)
 {
     // Phase 6 / B3 (v18): LOAD the serialized type graph (do NOT re-derive).
@@ -12262,6 +12265,31 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // node reaches c2mir, exactly as record_typedef does on the live path,
     // parser.cpp ~22689).
     const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
+
+    // v25: advance the anonymous-tag gensym PAST every restored `__anon_N` —
+    // exactly where a live parse of the same headers would have left the
+    // counter — so the consumer's own anonymous aggregates never mint a name
+    // that collides with a restored tag of a different kind.
+    {
+	const madc::dis::FrozenDefArena &fa = forest.arena();
+	size_t max_anon = 0;
+	for ( uint32_t s = 0; s < fa.def_slots(); ++s )
+	{
+	    madc::dis::defrec r;
+	    if ( !fa.get_def_at(madc::dis::arena_id_of(s), r)
+	      || r.kind == madc::dis::DK_NONE || !r.name_id )
+		continue;
+	    const char *nm = fa.c_str(r.name_id);
+	    if ( !nm || strncmp(nm, "__anon_", 7) != 0 )
+		continue;
+	    char *end = NULL;
+	    unsigned long n = strtoul(nm + 7, &end, 10);
+	    if ( end && *end == '\0' && n > max_anon )
+		max_anon = (size_t)n;
+	}
+	if ( max_anon )
+	    madc_anon_tag_counter_at_least(max_anon);
+    }
 
     // The arena walk is slot-keyed, so a superseded record can surface the same
     // NAME twice — e.g. a pre-promotion struct left at a different tid than the
@@ -23292,9 +23320,21 @@ TokenBase *TokenPREFER::parse(Program &pgm)
 // degraded to an incomplete `struct anonymous` reference. A unique `__anon_N`
 // name keeps each distinct AND emittable; is_anonymous marks it for the inline
 // declarator paths that must NOT forward-reference it across translation.
+static size_t anon_tag_counter = 0;
+
+// v25 (forest): a bound container's restored anonymous aggregates keep their
+// SAVED `__anon_N` names; the consumer's own parse must mint PAST them —
+// exactly where a live parse of the same headers would have left the counter
+// — or a fresh `__anon_1` collides with a restored tag of a different kind
+// ("kind of tag __anon_1 is unmatched with previous declaration").
+void madc_anon_tag_counter_at_least(size_t n)
+{
+    if ( n > anon_tag_counter )
+	anon_tag_counter = n;
+}
+
 static DataDefSTRUCT *new_anon_struct(size_t size = 0)
 {
-    static size_t anon_tag_counter = 0;
     DataDefSTRUCT *dds = new DataDefSTRUCT(
 	std::string("__anon_") + std::to_string(++anon_tag_counter), size);
     dds->is_anonymous = true;
