@@ -45,8 +45,22 @@ every other madc track for five weeks. This document is the execution order; the
      `typedef struct {...} div_t;` records its anon aggregate (the tagged
      hook never fired); embedded-header include FLAGS re-run at the bind
      site (lazy stdin/stdout registration).
+- **SIXTH-SITTING SCOREBOARD (2026-07-08): THREE pushed batches —
+  @66ff0927 (v26 batch 2: flat-alias + capture-over-replay, below),
+  @ac59411e (v26 batch 3: plain/anon-enum ENUMERATOR constants,
+  CIR_GLOBALF_CONST_SCALAR — item 2 below CLOSED, testdirent +
+  testsockaddr flipped). Soak after batch 2: 655→660 OK (97.9%; the
+  batch also flipped testfstream/testloop at the soak's rc+stdout bar —
+  their `_Traits` stderr noise remains sub-bar, see REMAINING). Every
+  batch gated: bind gate 18/18, unit suites, fulltest 680/0/0/16 exit 0.
+  Remaining non-OK after batch 3 (expect 662/674 = 98.2%, re-soak to
+  confirm): testincludenext (piece a, design traced below),
+  testforeachheaderbody (fixpoint over-materialization),
+  testfdsetfromsystime + teststringparam (parse desyncs), teststructinit
+  (BIND_DIFF), testsmaug_requests (last_log) + smaug_requests_source (14
+  c2mir checks), testproject×5 FREEZE_FAIL + testfreezerun (item-4).**
 - **v26 BATCH 2 (sixth sitting, 2026-07-08 — the DEFBODY residual's REAL
-  roots, both landed; commit pending gates):** the "__n undeclared"
+  roots, both landed, PUSHED @66ff0927):** the "__n undeclared"
   residual was NOT a DEFBODY/owner gap. The prior "owner class has no
   arena record" probe had hit a STALE container (the reducer-loop
   last-freeze-wins tripwire — it is IN the tripwire list); at HEAD
@@ -93,17 +107,36 @@ every other madc track for five weeks. This document is the execution order; the
     over-materialized graph. Fix = the loaded-body callee-closure
     overshoot, NOT type identity. Reducer: tmp/fe_red2.cpp (quoted
     header, fn-ptr param `void (*fn)(std::string)`, call through it).
-  2. **Piece (a), still open:** UNREFERENCED bodied FREE fns (std::abs's
-     long/double overloads — records probed, flags 0x30000, no body
-     stamp; the frozen AST has only TRANSLATED defs). Design: under
-     forest_arena_enabled, parseFunction captures the DEFINITION's raw
-     token range for include-origin fns (the v23 cursor tap); record_func
-     serializes it; load stages an ownerless DEFBODY; the deferred
-     materialization needs a small ownerless arm (NamespaceScope +
-     parseFunction, no owner). ⚠ the "force-emit all lib fns at freeze"
-     idea is DEAD (--freeze-run compiles the same frozen tree → dead-body
-     import risk; dead-lowering errors would fail freezes).
-     Fixes testincludenext (std::abs).
+  2. **Piece (a), still open — DESIGN NOW FULLY TRACED (sixth sitting):**
+     UNREFERENCED bodied FREE fns (std::abs — records flags 0x30000 =
+     IS_FREE_FUNC|WAS_BODIED, no body stamp; the `was_bodied && !has_body`
+     exclusion at cir_freeze.cpp:2137 drops even the DECLARATION → "'abs'
+     is not a member of namespace 'std'"). The traced shape:
+     (i) CAPTURE: parseFunction's ENTRY is at `(` — exactly the token
+     shape parse_deferred_lazy_body's full_definition arm re-parses
+     (it pushes definition_tokens then calls parseFunction, 25692-25714).
+     So begin a DefCapState at parseFunction entry (owner_class==NULL &&
+     forest_arena_enabled), end it where the DEFINITION path completes
+     (the body-brace branch), into a new FuncDef field (forest_def_tokens
+     = `(params) { body }`). Prototype paths never call end — dropped.
+     (ii) RECORD: ride the DK_FUNC record per-kind-reuse — body_unit/
+     body_idx + carray_count_lo/hi are FREE on a !has_body DK_FUNC =
+     4 words for (off/bytes/count/file_id); flag DF_FUNC_DEF_TOKENS.
+     (iii) LOAD: at the 2137 exclusion, a WAS_BODIED&&!has_body record
+     WITH the flag restores its DECLARATION (existing path, declaration_
+     only) + stages the run; the flush ALSO plants deferred_lazy_bodies
+     [key] (full_definition, owner NULL, var = the registered Variable).
+     (iv) MATERIALIZE: parse_deferred_lazy_body's full arm needs an
+     OWNERLESS variant: owner==NULL allowed when the var's FuncDef has
+     namespace_name (restored ns_id) — NamespaceScope(fd->namespace_name)
+     + parseFunction(mfd->return_value_type(), fd->function_display_name
+     [e.g. "abs"], NULL). parseFunction's repeat-declaration path then
+     binds the definition to the ALREADY-REGISTERED overload rank (the
+     restored __oN — param-type matching picks the slot, live's proto-
+     then-definition shape). VERIFY: which trigger materializes deferred
+     entries for a FREE fn on ODR-use (methods key on emit_symbol; check
+     the v26 DEFBODY m&l trigger covers funcdef-keyed free fns).
+     ⚠ force-emit-at-freeze stays DEAD. Fixes testincludenext (std::abs).
   2. **ANONYMOUS ENUMs — ✅ CLOSED (v26 batch 3, family h):** a plain enum's
      enumerators are parse-time constants (addVariable+set+makeconstant, NO
      TopDecl) that glibc's extern "C" wrapping stamped vfEXTERN — so the
