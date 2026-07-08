@@ -1659,7 +1659,7 @@ public:
     // is_varargs/is_void_params/declaration_only flags. Called for each class method from the
     // aggregate recorder (slice 1f-a, closing the methodrec.func_id forward-ref); free functions
     // route through it at their parse completion in a follow-on.
-    void forest_arena_record_func(FuncDef *fd);
+    void forest_arena_record_func(FuncDef *fd, class Method *mth = NULL);
     // write-through (v22): record a FUNCTION-POINTER type reached through a member / param /
     // return cross-ref. DataDefFPTR has no single birth funnel (born at ~10 declarator sites),
     // so the recording rides the cross-ref sites: walks the unary chain (ptr/ref/const

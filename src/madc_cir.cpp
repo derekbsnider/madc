@@ -994,7 +994,9 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 			DataDef *mt = cdd->methods[i] ? cdd->methods[i]->type : NULL;
 			fid[i] = mt ? forest_serialize_type_id(mt) : (uint32_t)MADC_TYPEID_INVALID;
 			if (FuncDef *mfd = dynamic_cast<FuncDef *>(mt))
-				forest_arena_record_func(mfd);
+				forest_arena_record_func(mfd,
+					cdd->methods[i]->data
+					    ? (Method *)cdd->methods[i]->data : NULL);
 		}
 		// Class-membership classification (structural, name-independent — the
 		// v6 freeze's rule): a ctor is in cdd->ctors; the dtor is the "~"
@@ -1144,7 +1146,7 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 // parse-completion in a follow-on. Resolve-first: param type-ids resolve into a local vector before
 // the paramrec run is appended (forest_serialize_type_id touches no payload, so this is not strictly
 // required here, but it keeps the one payload discipline uniform).
-void Program::forest_arena_record_func(FuncDef *fd)
+void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 {
 	if (!fd)
 		return;
@@ -1230,6 +1232,26 @@ void Program::forest_arena_record_func(FuncDef *fd)
 	r.params_count = (uint32_t)fd->parameters.size();
 	for (size_t p = 0; p < prs.size(); ++p)
 		forest_arena.add_payload(prs[p]);
+	// v26: the Method's NAMED parameter Variables (the scope a deferred
+	// body's re-parse resolves `__n` against — parseFunction's
+	// temp_param_method shape). Rides the CLASS-only alias slice fields,
+	// unused on a DK_FUNC record: aliasrec { name_id, type_id } per param.
+	if (mth && !mth->parameters.empty()) {
+		r.alias_begin = (uint32_t)forest_arena.payload.size();
+		r.alias_count = (uint32_t)mth->parameters.size();
+		for (size_t p = 0; p < mth->parameters.size(); ++p) {
+			Variable *pv = mth->parameters[p];
+			madc::dis::aliasrec ar;
+			memset(&ar, 0, sizeof(ar));
+			if (pv) {
+				ar.name_id = forest_arena.strings.intern(
+					pv->name.c_str());
+				ar.type_id = pv->type
+					   ? forest_serialize_type_id(pv->type) : 0;
+			}
+			forest_arena.add_payload(ar);
+		}
+	}
 	forest_arena.set_def_at(tid, r);
 }
 
@@ -2034,6 +2056,74 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 			}
 		}
 	}
+
+	// 6 (v26): DEFERRED METHOD BODIES — a system-header method body the
+	// producer never ODR-used (live materializes it from TOKENS via
+	// parse_deferred_lazy_body on first use; the frozen AST has no func-def
+	// for it, so without this record the consumer's first use dies as an
+	// undefined MIR import — basic_string's copy ctor, __gnu_cxx
+	// char_traits compare). Serialize each map entry's four token vectors
+	// as tokbytes runs + the owner class + full_definition + position; the
+	// flush rebuilds the entry (var = the restored method Variable) so the
+	// EXISTING m&l fixpoint re-runs the one live derivation on use.
+	for (std::map<std::string, Program::DeferredFunctionBody>::const_iterator
+	     di = prog->deferred_lazy_bodies.begin();
+	     di != prog->deferred_lazy_bodies.end(); ++di) {
+		const Program::DeferredFunctionBody &b = di->second;
+		if (di->first.empty())
+			continue;
+		// The forest holds #include state only (v24): a root-file class's
+		// deferred body never restores into a consumer.
+		if (b.file && prog->forest_is_tu_root_file(b.file))
+			continue;
+		const std::vector<TokenBase *> *seqs[4] = {
+			&b.body_tokens, &b.definition_tokens,
+			&b.trailing_ret_tokens, &b.ctor_init_tokens
+		};
+		uint32_t runs[4][4];	// off / bytes / count / file_id
+		memset(runs, 0, sizeof(runs));
+		bool any = false;
+		for (int sx = 0; sx < 4; ++sx) {
+			if (seqs[sx]->empty())
+				continue;
+			std::vector<uint8_t> bytes;
+			if (!madc_pch::serialize_token_seq(*seqs[sx], bytes)
+			    || bytes.empty())
+				continue;
+			uint32_t cnt = 0;
+			for (TokenBase *t : *seqs[sx])
+				if (t)
+					++cnt;
+			runs[sx][0] = a.add_tokbytes(bytes);
+			runs[sx][1] = (uint32_t)bytes.size();
+			runs[sx][2] = cnt;
+			for (TokenBase *t : *seqs[sx])
+				if (t && t->file) {
+					runs[sx][3] = a.strings.intern(t->file);
+					break;
+				}
+			any = true;
+		}
+		if (!any)
+			continue;
+		DataDefCLASS *owner = b.method ? b.method->owner_class : NULL;
+		madc::dis::defrec r;
+		memset(&r, 0, sizeof(r));
+		r.kind      = madc::dis::DK_DEFBODY;
+		r.name_id   = a.strings.intern(di->first.c_str());
+		r.ref0      = owner ? forest_serialize_type_id(owner) : 0;
+		r.disp_id   = b.file ? a.strings.intern(b.file) : 0;
+		r.body_unit = (uint32_t)b.line;
+		r.body_idx  = (uint32_t)b.column;
+		if (b.full_definition)
+			r.flags |= madc::dis::DF_DEFBODY_FULL_DEFINITION;
+		r.params_begin = (uint32_t)a.payload.size();
+		r.params_count = 4;
+		for (int sx = 0; sx < 4; ++sx)
+			for (int w = 0; w < 4; ++w)
+				a.payload.push_back(runs[sx][w]);
+		a.set_def_at(next++, r);
+	}
 }
 
 // B3 flip (Chunk 2): RE-RECORD every live project aggregate into the arena at
@@ -2167,7 +2257,16 @@ static void cir_forest_arena_refresh(Program *prog)
 		if (!madc::dis::arena_id_is_project(tid)
 		    || prog->forest_arena.has_def(tid))
 			continue;	// already recorded = a class's method
-		prog->forest_arena_record_func(fd);
+		{
+			// v26: pass the fn's Method (its NAMED param scope) when the
+			// program Variable carries one — a future deferred re-parse
+			// resolves param names against it.
+			Variable *fnv = prog->tkProgram
+				? prog->tkProgram->findVariable(prog->strpool, it->first)
+				: NULL;
+			prog->forest_arena_record_func(fd,
+				fnv && fnv->data ? (Method *)fnv->data : NULL);
+		}
 		madc::dis::defrec r;
 		if (!prog->forest_arena.get_def_at(tid, r))
 			continue;

@@ -13114,6 +13114,63 @@ void Program::flush_forest_pending_globals()
 						  : mirror_order[i].first)
 		<< std::endl);
 	}
+	// v26: restored DEFERRED METHOD BODIES — rebuild each
+	// deferred_lazy_bodies entry VERBATIM (var = the restored method
+	// Variable registered by the pending-funcs flush above), so the
+	// existing materialize-and-lower fixpoint re-runs the ONE live
+	// derivation (parse_deferred_lazy_body) on first ODR-use. A body
+	// whose method did not restore cleanly lacks.
+	const std::vector<CirRestoredDeferredBody> &dbs =
+	    bind_forest->restored_defbodies();
+	for ( size_t i = 0; i < dbs.size(); ++i )
+	{
+	    const CirRestoredDeferredBody &db = dbs[i];
+	    if ( !db.key || !*db.key || deferred_lazy_bodies.count(db.key) )
+		continue;
+	    Variable *v = findVariable(db.key);
+	    if ( !v || !v->data )
+		continue;
+	    DeferredFunctionBody b;
+	    b.var = v;
+	    b.method = (Method *)v->data;
+	    b.full_definition = db.full_definition;
+	    b.file = db.file ? intern_file(db.file) : NULL;
+	    b.line = db.line;
+	    b.column = db.column;
+	    std::vector<TokenBase *> *outs[4] = {
+		&b.body_tokens, &b.definition_tokens,
+		&b.trailing_ret_tokens, &b.ctor_init_tokens
+	    };
+	    bool ok = true;
+	    for ( int sx = 0; sx < 4 && ok; ++sx )
+	    {
+		const CirRestoredTemplateRun &run = db.runs[sx];
+		if ( !run.bytes || !run.count )
+		    continue;
+		std::deque<TokenBase *> toks;
+		if ( !madc_pch::deserialize_tokens(run.bytes, run.len,
+						   run.count, toks) )
+		{
+		    ok = false;
+		    break;
+		}
+		const char *fn = run.file ? intern_file(run.file) : NULL;
+		for ( TokenBase *t : toks )
+		{
+		    if ( !t )
+			continue;
+		    t->file = fn;
+		    outs[sx]->push_back(t);
+		}
+	    }
+	    if ( !ok || (b.body_tokens.empty() && b.definition_tokens.empty()) )
+		continue;
+	    deferred_lazy_bodies[db.key] = b;
+	    DBG(std::cout << "flush_forest_pending_globals: deferred body "
+		<< db.key << " (" << b.definition_tokens.size() << "+"
+		<< b.body_tokens.size() << " tokens"
+		<< (db.full_definition ? ", full" : "") << ")" << std::endl);
+	}
     }
 
     // v23: rebuild each restored FuncDef's param_defaults from its captured

@@ -45,34 +45,45 @@ every other madc track for five weeks. This document is the execution order; the
      `typedef struct {...} div_t;` records its anon aggregate (the tagged
      hook never fired); embedded-header include FLAGS re-run at the bind
      site (lazy stdin/stdout registration).
-- **THE IMMEDIATE NEXT TASK — in order:**
-  1. **FREEZE COMPLETENESS (§0.3) — the biggest remaining mechanism.
-     ⚠ DESIGN CORRECTED (the earlier "force-emit all lib fns at freeze
-     translate" idea is DEAD: --freeze-run re-execs and COMPILES the same
-     frozen tree, so dead bodies risk unresolvable imports at the run-frozen
-     link, and a never-exercised body's lowering errors would fail the
-     freeze — the DCE comment at cir_builder.cpp ~18207 warns exactly this).
-     THE SAFE UNIFIED MECHANISM — token-run deferral for BOTH gaps:**
-     (a) UNREFERENCED bodied FREE fns (std::abs's long/double overloads:
-     records probed present, flags 0x30000, no body stamp — the frozen AST
-     has only TRANSLATED defs): under forest_arena_enabled, parseFunction
-     captures the DEFINITION's raw token range (the v23 cursor tap, '{'
-     through matching '}') for include-origin fns; record_func serializes
-     it on the DK_FUNC record (defrec grows a body-tokens run — bump v26).
-     (b) Program::deferred_lazy_bodies (METHOD bodies never ODR-used —
-     symbol → DeferredFunctionBody, definition_tokens already CAPTURED
-     tokens, madc.h ~2393): serialize the map's runs the same way.
-     LOAD: a DF_WAS_BODIED record without a forest body but WITH a token
-     run restores declaration-only + stages the run; the FLUSH rebuilds
-     deferred_lazy_bodies[sym] (var = the restored Variable/Method) so the
-     EXISTING m&l fixpoint materializes on first ODR-use via
-     parse_deferred_lazy_body (parser.cpp ~25543 — push definition_tokens +
-     parseFunction under owner scope + NamespaceScope; free fns need a
-     small ownerless arm of the same derivation). No dead code is ever
-     emitted; bind == live by the same lazy mechanism. Expected:
-     testincludenext (std::abs), testheaderstringops +
-     teststrplusbody_realhdr (__gnu_cxx char_traits compare imports),
-     testforeachheaderbody (basic_string copy-ctor import).
+- **THE IMMEDIATE NEXT TASK — FINISH THE v26 DEFBODY SLICE (piece b is
+  LANDED-WIP in the last commit; the residual is measured):**
+  1. **STATE (v26 WIP commit):** DK_DEFBODY records serialize
+     Program::deferred_lazy_bodies (4 token runs in arena tokbytes, owner
+     id, full_definition, position; per-kind defrec reuse — v25→v26);
+     load collects CirRestoredDeferredBody (owner-swizzle fence); the
+     flush rebuilds each map entry with var = the restored method Variable
+     — the EXISTING m&l fixpoint then re-runs parse_deferred_lazy_body on
+     first ODR-use. 1,710 entries stage on the testheaderstringops
+     container. Method NAMED param Variables also serialize (aliasrec
+     {name,type} runs riding the CLASS-only alias fields on DK_FUNC;
+     record_func takes an optional Method*) and the method restore
+     populates Method::parameters — the scope the non-full deferred
+     re-parse resolves params against.
+     **MEASURED RESIDUAL:** `__gnu_cxx__char_traits_char__compare`'s
+     re-parse still fails `__n` undeclared (misattributed to the consumer
+     line — the tripwire). Probed: the OWNER class
+     `__gnu_cxx__char_traits_char` (the base-template product behind
+     std::char_traits<char>) has NO arena record AT ALL, and no DK_FUNC
+     records exist for its methods — so (i) trace where the bind flush's
+     findVariable(key) even got a Variable+Method for that symbol,
+     (ii) make a method DEFBODY require a RESOLVABLE owner (ref0==0
+     currently slips the owner fence), and (iii) close the owner-class
+     recording gap (why does the __gnu_cxx::char_traits<char> product
+     never record? — likely the same class as other base-template
+     products). Reducers: testheaderstringops / teststrplusbody_realhdr
+     (`__n`/`__p`), testforeachheaderbody (now an argument-type mismatch
+     in a materialized basic_string ctor — one layer further).
+  2. **Piece (a), still open:** UNREFERENCED bodied FREE fns (std::abs's
+     long/double overloads — records probed, flags 0x30000, no body
+     stamp; the frozen AST has only TRANSLATED defs). Design: under
+     forest_arena_enabled, parseFunction captures the DEFINITION's raw
+     token range for include-origin fns (the v23 cursor tap); record_func
+     serializes it; load stages an ownerless DEFBODY; the deferred
+     materialization needs a small ownerless arm (NamespaceScope +
+     parseFunction, no owner). ⚠ the "force-emit all lib fns at freeze"
+     idea is DEAD (--freeze-run compiles the same frozen tree → dead-body
+     import risk; dead-lowering errors would fail freezes).
+     Fixes testincludenext (std::abs).
   2. **ANONYMOUS ENUMs never record** (family h): glibc's
      `enum { DT_REG=8 } + #define DT_REG DT_REG` — the PP macro restores but
      the enumerator constant doesn't (bind -v shows the header re-echo and

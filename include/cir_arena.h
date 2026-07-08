@@ -95,6 +95,23 @@ enum DefKind : uint32_t {
 			// the visible name, disp_id = the imported fn's funcdef_map key.
 			// The flush rebinds namespace_map[ns][name] to the restored fn's
 			// Variable — the exact live registration the using-decl performs.
+	DK_DEFBODY,	// v26: one Program::deferred_lazy_bodies entry — a method body the
+			// producer never ODR-used (live materializes it from TOKENS via
+			// parse_deferred_lazy_body on first use; the frozen AST has no
+			// func-def for it). Per-kind field reuse (no layout growth):
+			//   name_id      = the map key (== the method Variable's name)
+			//   ref0         = the owner class's type-id (0 = none)
+			//   disp_id      = origin FILE intern id (0 = none)
+			//   body_unit    = line, body_idx = column
+			//   flags        = DF_DEFBODY_FULL_DEFINITION when full_definition
+			//   params_begin = word offset of FOUR token-run descriptors in the
+			//                  arena payload (off/bytes/count/file_id each, in
+			//                  DeferredFunctionBody field order: body /
+			//                  definition / trailing_ret / ctor_init)
+			//   params_count = 4
+			// The flush rebuilds the entry (var = the restored method
+			// Variable) so the EXISTING materialize-and-lower fixpoint
+			// re-runs the one live derivation on first ODR-use.
 };
 
 // Kind-independent flag bits on a defrec (grows as the schema completes — a new bool is a
@@ -138,6 +155,7 @@ enum DefFlags : uint32_t {
 	DF_FPTR_PTR_SYNTAX   = 1u << 20,	// v22: DataDefFPTR::ptr_syntax (explicit `(*)` form
 						// vs a Form-1 function typedef)
 
+	DF_DEFBODY_FULL_DEFINITION = 1u << 22,	// v26: DeferredFunctionBody::full_definition
 	DF_TU_ROOT_ORIGIN    = 1u << 21,	// v24: defined in the TU's ROOT file (the program
 						// itself, not an #include) — the record stays in
 						// the arena for --run-frozen's typeid->name

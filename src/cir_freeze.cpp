@@ -1882,6 +1882,29 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				Method *mm = new Method(*mv);
 				mm->owner_class = cdd;
 				mv->data = (void *)mm;
+				// v26: the Method's NAMED parameter Variables (the
+				// aliasrec run on the DK_FUNC record — live parity
+				// with parseFunction's temp_param_method scope). A
+				// deferred body's re-parse resolves `__n` against
+				// these; a run with an unresolvable type cleanly
+				// leaves that slot out.
+				for (uint32_t ai = 0; ai < fr.alias_count; ++ai) {
+					madc::dis::aliasrec ar;
+					if (!a.get_payload(fr.alias_begin, ai, ar)
+					    || !ar.name_id)
+						continue;
+					const char *pn = a.c_str(ar.name_id);
+					DataDef *ptp = ar.type_id
+						     ? arena_swizzle(ar.type_id, by_id)
+						     : NULL;
+					if (!pn || !*pn || !ptp)
+						continue;
+					Variable *pv = new Variable(std::string(pn),
+								    *ptp, 1, NULL, false);
+					pv->flags |= vfPARAM | vfLOCAL;
+					_mat_vars.push_back(pv);
+					mm->parameters.push_back(pv);
+				}
 				_mat_vars.push_back(mv);
 				cdd->methods.push_back(mv);
 				if (!dispname.empty())
@@ -2004,6 +2027,40 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			b.key  = r.disp_id ? a.c_str(r.disp_id) : NULL;
 			if (b.ns && *b.ns && b.name && *b.name && b.key && *b.key)
 				_restored_nsbinds.push_back(b);
+		} else if (r.kind == madc::dis::DK_DEFBODY) {
+			// v26: a deferred method body — four token runs (word
+			// quads: off/bytes/count/file_id) at params_begin.
+			if (r.params_count != 4 || !r.name_id)
+				continue;
+			CirRestoredDeferredBody d;
+			d.key   = a.c_str(r.name_id);
+			d.owner = NULL;
+			if (r.ref0) {
+				DataDef *od = arena_swizzle(r.ref0, by_id);
+				d.owner = od ? dynamic_cast<DataDefCLASS *>(od) : NULL;
+				if (!d.owner)
+					continue;	// owner dropped -> body cleanly lacks
+			}
+			d.file   = r.disp_id ? a.c_str(r.disp_id) : NULL;
+			d.line   = (int)r.body_unit;
+			d.column = (int)r.body_idx;
+			d.full_definition =
+				(r.flags & madc::dis::DF_DEFBODY_FULL_DEFINITION) != 0;
+			bool ok = d.key && *d.key;
+			for (int sx = 0; ok && sx < 4; ++sx) {
+				uint32_t off = r.params_begin + (uint32_t)sx * 4u;
+				if (off + 4 > a.payload_words) { ok = false; break; }
+				CirRestoredTemplateRun &run = d.runs[sx];
+				run.bytes = NULL;
+				run.len   = a.payload[off + 1];
+				run.count = a.payload[off + 2];
+				run.file  = a.payload[off + 3]
+					  ? a.c_str(a.payload[off + 3]) : NULL;
+				if (run.count)
+					run.bytes = a.tok_run(a.payload[off], run.len);
+			}
+			if (ok)
+				_restored_defbodies.push_back(d);
 		}
 	}
 
