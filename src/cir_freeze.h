@@ -594,6 +594,11 @@ struct CirRestoredType
 	DataDef    *underlying;		// typedef target (else NULL)
 	const char *ns;			// defining namespace (NULL/"" = global); load
 					// registers the type into that namespace's maps
+	bool        flat_alias;		// v26 (CIR_TYPEK_TYPEDEF): the producer's FLAT
+					// datatype_map also held this key -> same
+					// definition (the explicit-specialization
+					// alias_key surface) — the restore reproduces
+					// the flat datatype_map + struct_map writes
 	// v21 (CIR_TYPEK_ENUM): the scoped enumerators (name, value) — load
 	// rebuilds each as a constant Variable in the tag's pseudo-namespace,
 	// exactly as TokenENUM::parse leaves them. Empty for other kinds and

@@ -1961,6 +1961,21 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 					p.flags   = prog->forest_is_tu_root_file(
 							it->second->file)
 						  ? (uint32_t)madc::dis::DF_TU_ROOT_ORIGIN : 0u;
+					// v26: an explicit-specialization alias (the
+					// alias_key surface, TokenTEMPLATE::parse) ALSO
+					// lives in the producer's FLAT datatype_map under
+					// the same key -> same definition — the use-site
+					// instantiation cache reads the flat map, so the
+					// restore must reproduce that write (a pmr-style
+					// namespaced typedef has no flat twin and must
+					// NOT — the [iobind] clobber class).
+					flat_datatype_map_iter fdi =
+						prog->datatype_map.find(it->first);
+					if (fdi != prog->datatype_map.end() && *fdi
+					    && &(*fdi)->definition
+						== &it->second->definition)
+						p.flags |= (uint32_t)
+						    madc::dis::DF_TYPEDEF_FLAT_ALIAS;
 					aliases.push_back(p);
 				}
 				continue;

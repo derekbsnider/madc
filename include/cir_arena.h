@@ -161,6 +161,13 @@ enum DefFlags : uint32_t {
 						// the arena for --run-frozen's typeid->name
 						// closure, but the FOREST/bind restore fences it
 						// out (the forest holds #include state ONLY)
+	DF_TYPEDEF_FLAT_ALIAS = 1u << 23,	// v26: a namespaced DK_TYPEDEF alias key the
+						// producer's FLAT datatype_map ALSO holds under
+						// the same key -> same definition (the explicit-
+						// specialization alias_key surface,
+						// TokenTEMPLATE::parse) — the restore reproduces
+						// the flat datatype_map + struct_map writes too,
+						// not just the namespace map
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live

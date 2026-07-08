@@ -9988,10 +9988,11 @@ std::string Program::peek_param_list_spelling()
     // parameter-list tokens, then REWIND the cursor (savepos/restore) so the
     // upcoming parseFunction sees the stream untouched. v25: this used to
     // consume-then-pushToken the whole list, which left the param parse
-    // draining the pushback LIFO — silently disabling the forest default-arg
-    // cursor tap (param_default_capture_begin requires an empty pushback), so
-    // NO C++ namespace free function ever serialized its defaults (stod's
-    // `size_t* __idx = 0` — the arity gate then rejected a 1-arg bound call).
+    // draining the pushback LIFO — silently disabling the then-buffer-only
+    // forest default-arg cursor tap, so NO C++ namespace free function ever
+    // serialized its defaults (stod's `size_t* __idx = 0` — the arity gate
+    // then rejected a 1-arg bound call). v26 widened the tap over pushback
+    // consumption too, but the rewind stays: it is the honest stream shape.
     TokenStream::Pos peek_saved = tokens.savepos();
     int depth = 1;
     std::string spelling;
@@ -12356,6 +12357,18 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    // owner's bar test).
 	    if ( !rt.ns || !*rt.ns )
 		datatype_map[name] = tdt;
+	    // v26: an explicit-specialization alias (live's alias_key block in
+	    // TokenTEMPLATE::parse, ~38118) ALSO writes the FLAT datatype_map +
+	    // struct_map — instantiate_template_use's cache check reads the flat
+	    // map, so without these keys a consumer misses the cached
+	    // specialization and re-instantiates the PRIMARY over it
+	    // (std::char_traits<char> built the __gnu_cxx base product).
+	    else if ( rt.flat_alias )
+	    {
+		datatype_map[name] = tdt;
+		if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(rt.underlying) )
+		    struct_map[name] = sdd;
+	    }
 	    user_typedef_names.insert(name);
 	    TopDecl td;
 	    td.kind = DeclKind::dkTypedef;
@@ -38633,31 +38646,68 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
 // parseExpression consumed-then-pushed-back is compensated by shrinking the
 // range, and any other pushback residue skips the capture (the default then
 // cleanly lacks in the record — never a wrong range).
-bool Program::param_default_capture_begin(size_t &cap_begin)
+bool Program::param_default_capture_begin(DefCapState &st)
 {
-    if ( !forest_arena_enabled || tokens.pushback_size() )
+    if ( !forest_arena_enabled )
 	return false;
-    cap_begin = tokens.cursor();
+    st.cap_begin = tokens.cursor();
+    st.pb = tokens.pushback_ref();
     return true;
 }
 
-void Program::param_default_capture_end(size_t cap_begin,
+void Program::param_default_capture_end(const DefCapState &st,
 					std::vector<TokenBase *> &out)
 {
     out.clear();
+    size_t p0 = st.pb.size();
+    size_t p1 = tokens.pushback_size();
     size_t cap_end = tokens.cursor();
-    // A consumed-then-pushed-back stop token sits at the pushback front AND at
-    // the buffer tail of the range — exclude it from the capture.
-    if ( tokens.pushback_size() == 1 && cap_end > cap_begin
-      && tokens.front() == tokens.buf_at(cap_end - 1) )
-	--cap_end;
-    else if ( tokens.pushback_size() )
+    if ( p1 > p0 )
     {
-	DBG(std::cout << "param_default_capture: pushback residue ("
-	    << tokens.pushback_size() << "), capture skipped" << std::endl);
+	// Growth over the begin depth: the pure-buffer shape's single
+	// consumed-then-pushed-back stop token (it sits at the pushback front
+	// AND at the buffer tail of the range); anything else is residue.
+	if ( p0 == 0 && p1 == 1 && cap_end > st.cap_begin
+	  && tokens.front() == tokens.buf_at(cap_end - 1) )
+	    --cap_end;
+	else
+	{
+	    DBG(std::cout << "param_default_capture: pushback residue ("
+		<< p1 << " vs " << p0 << "), capture skipped" << std::endl);
+	    return;
+	}
+    }
+    else if ( p1 > 0 && tokens.front() != st.pb[p1 - 1] )
+    {
+	// The remaining pushback top is not the snapshot entry at that depth —
+	// a rewrite happened; the popped-entry reconstruction below would lie.
+	// (A stop token consumed FROM the pushback and pushed straight back
+	// lands on its own snapshot slot, so it passes here and is correctly
+	// left out of the consumed count.)
+	DBG(std::cout << "param_default_capture: pushback rewrite, "
+	    "capture skipped" << std::endl);
 	return;
     }
-    for ( size_t i = cap_begin; i < cap_end; ++i )
+    else if ( p1 > 0 && cap_end != st.cap_begin )
+    {
+	// Buffer consumption while snapshot pushback remains: an interleave
+	// this reconstruction cannot order.
+	DBG(std::cout << "param_default_capture: interleaved consumption, "
+	    "capture skipped" << std::endl);
+	return;
+    }
+    // The consumed pushback entries — st.pb[p0-1] down to st.pb[p1] — in
+    // logical (pop) order (v26: a template-instantiation replay feeds
+    // parseFunction from the injection LIFO, so an instantiated method's
+    // default lives here, not in the buffer)...
+    for ( size_t i = p0; i > p1; --i )
+    {
+	TokenBase *t = st.pb[i - 1];
+	out.push_back(t ? t->clone() : NULL);
+    }
+    // ...then the consumed buffer range (nonempty only when the pushback fully
+    // drained or began empty — the v23 shape).
+    for ( size_t i = st.cap_begin; i < cap_end; ++i )
     {
 	TokenBase *t = tokens.buf_at(i);
 	out.push_back(t ? t->clone() : NULL);
@@ -39124,11 +39174,11 @@ grabnt:
 	    // then fall into paramdecl with nt at the ',' / ')'.
 	    pid = "__anon_param_" + std::to_string(anon_param_index++);
 	    {
-		size_t cap_begin = 0;
-		bool capturing = param_default_capture_begin(cap_begin);
+		DefCapState cap;
+		bool capturing = param_default_capture_begin(cap);
 		param_default = parseExpression(nextToken(), true);
 		if ( capturing )
-		    param_default_capture_end(cap_begin, param_default_src);
+		    param_default_capture_end(cap, param_default_src);
 	    }
 	    nt = nextToken();   // the ',' or ')' that ends this parameter
 	    goto paramdecl;
@@ -39366,11 +39416,11 @@ finish_param_declarator:
 	// it; arity matching uses FuncDef::required_param_count().
 	if ( nt && nt->id() == TokenID::tkAssign )
 	{
-	    size_t cap_begin = 0;
-	    bool capturing = param_default_capture_begin(cap_begin);
+	    DefCapState cap;
+	    bool capturing = param_default_capture_begin(cap);
 	    param_default = parseExpression(nextToken(), true);
 	    if ( capturing )
-		param_default_capture_end(cap_begin, param_default_src);
+		param_default_capture_end(cap, param_default_src);
 	    nt = nextToken();   // the ',' or ')' that ends this parameter
 	}
 
@@ -41404,8 +41454,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // the args list's raw source token run (v25 forest SAVE state — the
 	    // parsed trees cannot serialize; the flush re-runs this loop over the
 	    // captured tokens). Same cursor tap as the v23 param defaults.
-	    size_t ctor_cap_begin = 0;
-	    bool ctor_capturing = param_default_capture_begin(ctor_cap_begin);
+	    DefCapState ctor_cap;
+	    bool ctor_capturing = param_default_capture_begin(ctor_cap);
 	    while ( peekToken() && peekToken()->id() != TokenID::tkClBrk )
 	    {
 		TokenBase *arg = parseExpression(nextToken(), true);
@@ -41414,7 +41464,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    nextToken(); // consume ','
 	    }
 	    if ( ctor_capturing && !td->ctor_args.empty() )
-		param_default_capture_end(ctor_cap_begin, td->ctor_arg_src);
+		param_default_capture_end(ctor_cap, td->ctor_arg_src);
 	    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
 		Throw(tb) << "Expected ')' after constructor arguments" << flush;
 	    nextToken(); // consume ')'

@@ -1301,6 +1301,10 @@ public:
     //    logical front like operator[]). --
     size_t cursor() const { return _cursor; }
     size_t pushback_size() const { return _pushback.size(); }
+    // Read-only view of the injection LIFO (bottom..top) — the v26 default-arg
+    // capture snapshots it at begin so tokens consumed FROM the pushback (a
+    // template-instantiation replay) can be reconstructed as popped entries.
+    const std::vector<TokenBase *> &pushback_ref() const { return _pushback; }
     TokenBase *buf_at(size_t i) const
     {
 	return i < _buf.size() ? madc_token_for_slot(_buf[i]) : NULL;
@@ -2833,13 +2837,18 @@ public:
     };
     std::vector<PendingForestFunc> forest_pending_funcs;
     // Forest default-arg RAW-TOKEN capture (parseFunction's `= expr` param
-    // branches). begin() returns true and stamps the stream cursor when the
-    // upcoming parseExpression's consumed range is capturable (arena recording
-    // on + no injected tokens pending); end() clones the consumed buffer range
-    // — compensating a pushed-back stop token — into `out`. The clones ride
+    // branches). begin() returns true and snapshots the stream position (buffer
+    // cursor + a copy of the pushback LIFO) when arena recording is on; end()
+    // clones the consumed run — the popped pushback entries (a template-
+    // instantiation replay feeds parseFunction from the injection LIFO — the
+    // v26 widening; before it, every instantiated method's default silently
+    // failed to capture) followed by the consumed buffer range, compensating a
+    // consumed-then-pushed-back stop token — into `out`. The clones ride
     // FuncDef::param_default_tokens into the DK_FUNC record's paramrec runs.
-    bool param_default_capture_begin(size_t &cap_begin);
-    void param_default_capture_end(size_t cap_begin, std::vector<TokenBase *> &out);
+    struct DefCapState { size_t cap_begin; std::vector<TokenBase *> pb; };
+    bool param_default_capture_begin(DefCapState &st);
+    void param_default_capture_end(const DefCapState &st,
+				   std::vector<TokenBase *> &out);
     // v21: body-bearing MEMBER function templates restored from a bound header
     // (CIR_TMPLK_MEMBER records). The flush HYDRATES the restored placeholder
     // FuncDef (funcdef_map[key], restored verbatim from its methodrec at its

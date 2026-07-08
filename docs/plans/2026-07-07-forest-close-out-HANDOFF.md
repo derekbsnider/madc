@@ -45,34 +45,54 @@ every other madc track for five weeks. This document is the execution order; the
      `typedef struct {...} div_t;` records its anon aggregate (the tagged
      hook never fired); embedded-header include FLAGS re-run at the bind
      site (lazy stdin/stdout registration).
-- **THE IMMEDIATE NEXT TASK — FINISH THE v26 DEFBODY SLICE (piece b is
-  LANDED-WIP in the last commit; the residual is measured):**
-  1. **STATE (v26 WIP commit):** DK_DEFBODY records serialize
-     Program::deferred_lazy_bodies (4 token runs in arena tokbytes, owner
-     id, full_definition, position; per-kind defrec reuse — v25→v26);
-     load collects CirRestoredDeferredBody (owner-swizzle fence); the
-     flush rebuilds each map entry with var = the restored method Variable
-     — the EXISTING m&l fixpoint then re-runs parse_deferred_lazy_body on
-     first ODR-use. 1,710 entries stage on the testheaderstringops
-     container. Method NAMED param Variables also serialize (aliasrec
-     {name,type} runs riding the CLASS-only alias fields on DK_FUNC;
-     record_func takes an optional Method*) and the method restore
-     populates Method::parameters — the scope the non-full deferred
-     re-parse resolves params against.
-     **MEASURED RESIDUAL:** `__gnu_cxx__char_traits_char__compare`'s
-     re-parse still fails `__n` undeclared (misattributed to the consumer
-     line — the tripwire). Probed: the OWNER class
-     `__gnu_cxx__char_traits_char` (the base-template product behind
-     std::char_traits<char>) has NO arena record AT ALL, and no DK_FUNC
-     records exist for its methods — so (i) trace where the bind flush's
-     findVariable(key) even got a Variable+Method for that symbol,
-     (ii) make a method DEFBODY require a RESOLVABLE owner (ref0==0
-     currently slips the owner fence), and (iii) close the owner-class
-     recording gap (why does the __gnu_cxx::char_traits<char> product
-     never record? — likely the same class as other base-template
-     products). Reducers: testheaderstringops / teststrplusbody_realhdr
-     (`__n`/`__p`), testforeachheaderbody (now an argument-type mismatch
-     in a materialized basic_string ctor — one layer further).
+- **v26 BATCH 2 (sixth sitting, 2026-07-08 — the DEFBODY residual's REAL
+  roots, both landed; commit pending gates):** the "__n undeclared"
+  residual was NOT a DEFBODY/owner gap. The prior "owner class has no
+  arena record" probe had hit a STALE container (the reducer-loop
+  last-freeze-wins tripwire — it is IN the tripwire list); at HEAD
+  `__gnu_cxx__char_traits_char` records fine (DK_CLASS, 14 methodrecs,
+  DEFBODY owners resolve). The real chain, traced live-vs-bind:
+  1. **EXPLICIT-SPEC FLAT-ALIAS KEYS (DF_TYPEDEF_FLAT_ALIAS, landed).**
+     Live's spec registration (TokenTEMPLATE::parse alias_key block
+     ~38118) writes the QUALIFIED key (std__char_traits_char) into the
+     FLAT datatype_map + struct_map + ns map — all to the ONE product
+     under the legacy bare key (char_traits_char). The arena already
+     carried the namespaced DK_TYPEDEF alias; the restore wrote only the
+     ns map ([iobind] clobber fix) — but instantiate_template_use's
+     CACHE CHECK reads the FLAT map (parser.cpp:3955), so a bound
+     consumer missed the cached specialization and re-instantiated the
+     PRIMARY (`std__char_traits_char : public __gnu_cxx::char_traits`),
+     whose inherited compare materialized a __gnu_cxx deferred body live
+     never touches → the misattributed `__n`. SAVE stamps the flag when
+     the producer's flat map holds same-key→same-definition (pmr-style
+     ns typedefs have no flat twin — the clobber class stays fixed);
+     LOAD reproduces the three writes. FLIPS testheaderstringops +
+     teststrplusbody_realhdr.
+  2. **DEFAULT-ARG CAPTURE OVER INSTANTIATION REPLAY (DefCapState,
+     landed).** param_default_capture_begin required an EMPTY pushback —
+     but instantiation replays the substituted class body THROUGH the
+     pushback, so EVERY instantiated method's default silently failed to
+     capture (basic_ofstream::open: param_defaults live, NO def-run in
+     the arena → bound `open(fname)` failed the concrete overloads'
+     arity gate → instantiated the C++17 _Path member template → "too
+     few arguments"). Capture now snapshots {cursor, pushback} at begin
+     and reconstructs the consumed run = popped snapshot entries +
+     consumed buffer range (stop-token lands back on its own snapshot
+     slot → structurally excluded; rewrite/interleave → skip, cleanly
+     lacks). FLIPS testdefer.
+  **REMAINING (measured at this state):**
+  - testfstream/testloop: ADVANCED (hard parse fail → recovered noise +
+    output): residual `Unknown class scope
+    'basic_istream_char___gnu_cxx__char_traits_char_'` ×3 on stderr — a
+    _Traits identity gap still building a __gnu_cxx-spelled product for
+    an out-of-line istream member scope. Same identity family, one
+    layer deeper. Reducer: testfstream with its .flags.
+  - testforeachheaderbody: bind's m&l fixpoint materializes basic_string
+    ctor chains live never references (the __sv_wrapper delegating ctor
+    → C1EPKcmRKS3_) → c2mir struct-param check error on a call in that
+    over-materialized graph. Fix = the loaded-body callee-closure
+    overshoot, NOT type identity. Reducer: tmp/fe_red2.cpp (quoted
+    header, fn-ptr param `void (*fn)(std::string)`, call through it).
   2. **Piece (a), still open:** UNREFERENCED bodied FREE fns (std::abs's
      long/double overloads — records probed, flags 0x30000, no body
      stamp; the frozen AST has only TRANSLATED defs). Design: under

@@ -1979,6 +1979,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		rt.dd         = sdd;
 		rt.underlying = NULL;
 		rt.ns         = r.ns_id ? a.c_str(r.ns_id) : NULL;
+		rt.flat_alias = false;
 		_restored.push_back(rt);
 	}
 
@@ -2003,6 +2004,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		rt.dd         = NULL;
 		rt.underlying = underlying;
 		rt.ns         = r.ns_id ? a.c_str(r.ns_id) : NULL;
+		rt.flat_alias =
+			(r.flags & madc::dis::DF_TYPEDEF_FLAT_ALIAS) != 0;
 		_restored.push_back(rt);
 	}
 
@@ -2087,6 +2090,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		rt.dd         = ei->second;
 		rt.underlying = NULL;
 		rt.ns         = r.ns_id ? a.c_str(r.ns_id) : NULL;
+		rt.flat_alias = false;
 		for (uint32_t c = 0; c < r.constval_count; ++c) {
 			madc::dis::constvalrec cv;
 			if (!a.get_payload(r.constval_begin, c, cv))
