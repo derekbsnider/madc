@@ -867,6 +867,19 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 	if (sdd->is_anonymous)           r.flags |= madc::dis::DF_IS_ANONYMOUS;
 	if (sdd->reverse_scalar_storage) r.flags |= madc::dis::DF_REVERSE_SCALAR;
 	if (sdd->has_anon_aggregate)     r.flags |= madc::dis::DF_HAS_ANON_AGG;
+	// v24 TU-root origin: the parse-time write-through runs at the aggregate's
+	// COMPLETION, where _parse_file IS the defining file (an instantiation
+	// product's cloned tokens carry the pattern header's file, so products
+	// classify include-origin). A RE-record (the freeze-time refresh, the
+	// struct->class promotion — both tid-keyed) PRESERVES the first stamp:
+	// _parse_file is stale by then.
+	{
+		madc::dis::defrec old;
+		if (forest_arena.get_def_at(tid, old) && old.kind != madc::dis::DK_NONE)
+			r.flags |= old.flags & madc::dis::DF_TU_ROOT_ORIGIN;
+		else if (forest_is_tu_root_file(TokenBase::_parse_file))
+			r.flags |= madc::dis::DF_TU_ROOT_ORIGIN;
+	}
 
 	// --- anonymous sub-aggregate groups (ensure each nameless sub-aggregate's OWN
 	//     record first: addAnonymousAggregate flattens it into the parent DURING the
@@ -1292,6 +1305,16 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	}
 	return 0;
     };
+    // v24: a global DECLARED in the TU's root file (the program's own globals)
+    // is fenced from the bind restore. Provenance = its dkGlobalVar TopDecl's
+    // decl token; a global without one classifies include-origin (conservative:
+    // it keeps restoring, like the header tag globals).
+    auto global_tu_root = [&](Variable *gv) -> bool {
+	for (auto &t : prog->top_decls)
+	    if (t.kind == Program::DeclKind::dkGlobalVar && t.var == gv)
+		return t.decl && prog->forest_is_tu_root_file(t.decl->file);
+	return false;
+    };
     for (Variable *v : prog->tkProgram->variables) {
 	if (!v || !v->type)
 	    continue;
@@ -1318,6 +1341,8 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    g.type_id = xtid;
 	    g.flags   = v->flags;	// vfEXTERN rides verbatim
 	    g.gflags  = CIR_GLOBALF_EXTERN_REF;
+	    if (global_tu_root(v))
+		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
 	    f.globals.push_back(g);
 	    continue;
@@ -1335,6 +1360,8 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    g.name_id = pool.intern(v->name);
 	    g.type_id = ctid;
 	    g.flags   = v->flags;
+	    if (global_tu_root(v))
+		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
 	    // v16: classify the header's initializer FORM so the load rebuilds a
 	    // TokenDecl whose emission is byte-identical to a live parse (v13 stored
@@ -1353,10 +1380,10 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 			rhs = as->right;
 		if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(rhs)) {
 			if (ot->ctor_args.empty())
-				g.gflags = CIR_GLOBALF_CLASS_COPY_TEMP;
+				g.gflags |= CIR_GLOBALF_CLASS_COPY_TEMP;
 		} else if (TokenVar *tv = dynamic_cast<TokenVar *>(rhs)) {
 			if (&tv->var == v)	// value-init RHS is the variable itself
-				g.gflags = CIR_GLOBALF_CLASS_VALUE_INIT;
+				g.gflags |= CIR_GLOBALF_CLASS_VALUE_INIT;
 		}
 		break;
 	    }
@@ -1396,6 +1423,8 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	g.type_id    = sid;
 	g.flags      = v->flags;
 	g.gflags     = CIR_GLOBALF_SCALAR_INIT;
+	if (td && prog->forest_is_tu_root_file(td->file))
+	    g.gflags |= CIR_GLOBALF_TU_ROOT;
 	g.ns_id      = global_ns_id(v);
 	g.init_value = rhs->ival();
 	f.globals.push_back(g);
@@ -1470,6 +1499,15 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	r.extra_id = extra.empty() ? 0 : pool.intern(extra);
 	r.owner_type_id = owner ? forest_serialize_type_id(owner) : 0;
 	r.flags   = flags;
+	// v24: a pattern CAPTURED in the TU's root file (the program's own
+	// templates) is fenced from the bind restore. Provenance = the first
+	// body/decl token carrying a file.
+	for (TokenBase *t : body)
+		if (t && t->file) {
+			if (prog->forest_is_tu_root_file(t->file))
+				r.flags |= CIR_TMPLF_TU_ROOT;
+			break;
+		}
 	// Serialize every run's TOKEN BYTES before appending any payload words,
 	// then lay the params + run table down contiguously (resolve-first).
 	std::vector<cir_forest_token_run> runs;
@@ -1776,7 +1814,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 	// the synthetic slots must start PAST the last live id — a collision would make
 	// a typedef record masquerade as that live type's record — so nothing is
 	// appended until every resolution is done.
-	struct arena_alias { uint32_t name_id, ns_id, ref0; };
+	struct arena_alias { uint32_t name_id, ns_id, ref0, flags; };
 	std::vector<arena_alias> aliases;
 
 	for (std::set<std::string>::const_iterator it = prog->user_typedef_names.begin();
@@ -1795,6 +1833,10 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		p.name_id = a.strings.intern(*it);
 		p.ns_id   = 0;
 		p.ref0    = uid;
+		// v24: a typedef declared in the TU's root file is fenced from the
+		// bind restore (provenance = the registered token's file).
+		p.flags   = prog->forest_is_tu_root_file((*dti)->file)
+			  ? (uint32_t)madc::dis::DF_TU_ROOT_ORIGIN : 0u;
 		aliases.push_back(p);
 	}
 
@@ -1826,6 +1868,8 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 				p.name_id = a.strings.intern(it->first);
 				p.ns_id   = a.strings.intern(ns);
 				p.ref0    = tid;
+				p.flags   = prog->forest_is_tu_root_file(it->second->file)
+					  ? (uint32_t)madc::dis::DF_TU_ROOT_ORIGIN : 0u;
 				aliases.push_back(p);
 				continue;
 			}
@@ -1845,6 +1889,9 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 					p.name_id = key_id;
 					p.ns_id   = a.strings.intern(ns);
 					p.ref0    = tid;
+					p.flags   = prog->forest_is_tu_root_file(
+							it->second->file)
+						  ? (uint32_t)madc::dis::DF_TU_ROOT_ORIGIN : 0u;
 					aliases.push_back(p);
 				}
 				continue;
@@ -1871,6 +1918,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		r.name_id = aliases[i].name_id;
 		r.ns_id   = aliases[i].ns_id;
 		r.ref0    = aliases[i].ref0;
+		r.flags   = aliases[i].flags;	// v24: TU-root fence bit
 		a.set_def_at(next, r);
 	}
 }
@@ -1938,6 +1986,10 @@ static void cir_forest_arena_refresh(Program *prog)
 		madc::dis::defrec r;
 		memset(&r, 0, sizeof(r));
 		r.kind    = madc::dis::DK_ENUM;
+		// v24: an enum tag defined in the TU's root file is fenced from
+		// the bind restore (provenance = its registered token's file).
+		if (prog->forest_is_tu_root_file(tdt->file))
+			r.flags |= madc::dis::DF_TU_ROOT_ORIGIN;
 		r.name_id = prog->forest_arena.strings.intern(edd->name.c_str());
 		r.canon_id = edd->canonical_cpp_spelling.empty() ? 0u
 			   : prog->forest_arena.strings.intern(
@@ -2010,6 +2062,10 @@ static void cir_forest_arena_refresh(Program *prog)
 		r.flags  |= madc::dis::DF_IS_FREE_FUNC;
 		if (!fd->declaration_only)
 			r.flags |= madc::dis::DF_WAS_BODIED;
+		// v24: a free function DECLARED in the TU's root file (the
+		// program's own prototypes) is fenced from the bind restore.
+		if (prog->forest_is_tu_root_file(fd->decl_file))
+			r.flags |= madc::dis::DF_TU_ROOT_ORIGIN;
 		// v21: the free-function source identity the live registration
 		// sets — a skipped-ns-fn-template PLACEHOLDER (__ns_std__Destroy,
 		// declaration-only + display + ns) and an instantiated __oN

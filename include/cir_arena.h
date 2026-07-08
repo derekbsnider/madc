@@ -123,6 +123,12 @@ enum DefFlags : uint32_t {
 
 	DF_FPTR_PTR_SYNTAX   = 1u << 20,	// v22: DataDefFPTR::ptr_syntax (explicit `(*)` form
 						// vs a Form-1 function typedef)
+
+	DF_TU_ROOT_ORIGIN    = 1u << 21,	// v24: defined in the TU's ROOT file (the program
+						// itself, not an #include) — the record stays in
+						// the arena for --run-frozen's typeid->name
+						// closure, but the FOREST/bind restore fences it
+						// out (the forest holds #include state ONLY)
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live

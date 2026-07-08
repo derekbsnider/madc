@@ -2781,6 +2781,17 @@ public:
     // default path is one predicted branch; flag OFF = byte-identical behavior.
     bool forest_bind_enabled = false;	// --forest-bind[=path]
     std::string forest_bind_path;	// container source; empty = /proc/self/exe blob
+    // v24: the TU's ROOT source file (set by tokenize/tokenize_buffer). The
+    // forest holds the #include files' state ONLY — never the program's — so
+    // the freeze stamps every record whose defining file IS the root
+    // (DF_TU_ROOT_ORIGIN / CIR_GLOBALF_TU_ROOT / CIR_TMPLF_TU_ROOT) and the
+    // bind restore fences those out. The records stay in the arena for
+    // --run-frozen's cross-process typeid->name closure.
+    std::string forest_root_file;
+    bool forest_is_tu_root_file(const char *f) const
+    {
+	return f && *f && !forest_root_file.empty() && forest_root_file == f;
+    }
     CirFrozenForest *bind_forest = NULL;	// lazily opened on first system include
     bool bind_forest_tried = false;	// one-shot open attempt (success or fail)
     bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)

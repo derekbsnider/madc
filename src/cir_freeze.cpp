@@ -1877,8 +1877,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					cdd->ctors.push_back(mv);
 				// v23: stage the method's default-arg token runs for
 				// the flush (parseExpression re-runs inside the
-				// owner's class + namespace scope).
-				if (!def_runs.empty()) {
+				// owner's class + namespace scope). v24: not for the
+				// program's own (fenced) classes — they never register.
+				if (!def_runs.empty()
+				    && !(r.flags & madc::dis::DF_TU_ROOT_ORIGIN)) {
 					CirRestoredFuncDefaults rd;
 					rd.fd    = fd;
 					rd.owner = cdd;
@@ -1928,6 +1930,11 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		}
 		if (r.flags & madc::dis::DF_IS_ANONYMOUS)
 			continue;	// nameless sub-aggregate: never surfaced standalone
+		if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
+			continue;	// v24: the program's own type — the forest holds
+					// #include state only; the consumer parses it fresh
+					// (the object stays in by_id for cross-refs +
+					// run-frozen's closure)
 		CirRestoredType rt;
 		rt.name       = a.c_str(r.name_id);
 		rt.kind       = r.kind == madc::dis::DK_CLASS ? CIR_TYPEK_CLASS
@@ -1946,6 +1953,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		if (!a.get_def_at(madc::dis::arena_id_of(s), r)
 		    || r.kind != madc::dis::DK_TYPEDEF)
 			continue;
+		if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
+			continue;	// v24: the program's own typedef — fenced
 		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
 		if (!nm || !*nm)
 			continue;
@@ -1970,6 +1979,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r) || r.kind != madc::dis::DK_ENUM)
 			continue;
+		if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
+			continue;	// v24: the program's own enum — fenced
 		std::map<uint32_t, DataDef *>::iterator ei = by_id.find(tid);
 		if (ei == by_id.end())
 			continue;
@@ -2012,6 +2023,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		    || r.kind != madc::dis::DK_FUNC
 		    || !(r.flags & madc::dis::DF_IS_FREE_FUNC))
 			continue;
+		if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
+			continue;	// v24: the program's own prototype — fenced
 		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
 		if (!nm || !*nm)
 			continue;
@@ -2118,6 +2131,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// or emit its constant data item (scalar init_value).
 	for (size_t i = 0; i < _globals.size(); ++i) {
 		const cir_forest_global_record &g = _globals[i];
+		if (g.gflags & CIR_GLOBALF_TU_ROOT)
+			continue;		// v24: the program's own global — fenced
 		uint32_t nlen = 0;
 		const char *nm = pool_cstr(g.name_id, nlen);
 		DataDef *ty = arena_swizzle(g.type_id, by_id);
@@ -2167,6 +2182,16 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		const size_t rw = madc::dis::pod_words<cir_forest_token_run>();
 		for (size_t i = 0; i < _templates.size(); ++i) {
 			const cir_forest_template_record &t = _templates[i];
+			if (t.flags & CIR_TMPLF_TU_ROOT)
+				continue;	// v24: the program's own pattern — fenced
+			// v24: a pattern owned by a FENCED class (a member template
+			// of the program's own class) rides its owner's fence.
+			if (t.owner_type_id) {
+				madc::dis::defrec od;
+				if (a.get_def_at(t.owner_type_id, od)
+				    && (od.flags & madc::dis::DF_TU_ROOT_ORIGIN))
+					continue;
+			}
 			uint32_t klen = 0;
 			const char *key = pool_cstr(t.key_id, klen);
 			if (!key || !*key)

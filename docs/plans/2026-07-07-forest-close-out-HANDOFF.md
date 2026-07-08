@@ -46,16 +46,22 @@ every other madc track for five weeks. This document is the execution order; the
      restored default-constructed, the consumer's initializing decl skipped
      by the findVariable guard). Reducer: tmp/s6_class.cpp (freeze+bind:
      `#include <iostream>` + `class Foo{}` → "undeclared identifier
-     'class'"). NOTE: the PRODUCT container (frozen /usr/include only)
-     cannot leak user state — this family is the HARNESS's per-TU snapshot
-     leaking through the restore. THE FIX (live parity for both shapes):
-     restore installs ONLY system-header-origin state — one origin bit
-     stamped uniformly at save (DF_FROM_SYSTEM_HDR already exists on
-     aggregates; extend the stamp to DK_TYPEDEF/DK_ENUM records, globals
-     gflags, template records, free-fn records — derive from the defining
-     file's provenance) + ONE restore-side fence. Format v23→v24. Lazy
-     defrost does NOT structurally fix this (a redefinition check is itself
-     a lookup and would defrost the colliding record) — the fence is
+     'class'"). **🏛️ OWNER CORRECTION (2026-07-08, BINDING): the freeze's
+     FOREST surface holds the #include files' state ONLY — NEVER the
+     program's.** The discriminator is NOT system-vs-user (the bind gates
+     deliberately freeze+bind USER headers, and testinclude binds its
+     included helper): it is **TU-ROOT-origin vs #include-origin** — state
+     DEFINED IN THE ROOT FILE (the program) never restores; state from any
+     INCLUDED file does. THE FIX (v24): one TU-ROOT origin bit stamped at
+     save (write-throughs run at parse completion where _parse_file IS the
+     defining file; refresh preserves the stamp; typedef/global/template
+     collectors derive from their token provenance) + ONE fence at every
+     bind-restore surface (types/enums/typedefs registration, globals,
+     free fns, templates, param-defaults). The program's records STAY in
+     the arena — --run-frozen's cross-process typeid→name closure reads
+     them — they are fenced only from the FOREST/bind view. Lazy defrost
+     does NOT structurally fix this (a redefinition check is itself a
+     lookup and would defrost the colliding record) — the fence is
      prerequisite hygiene for items 4/5.
   2. **Borrowed-language namespace registration (5):** `Unknown namespace
      'perl'/'python'/'ruby'/'rust'` (+ prefer directive) — binding the
@@ -70,9 +76,40 @@ every other madc track for five weeks. This document is the execution order; the
      testproject* — the multi-TU driver never reaches the freeze writer.
      Matters for item 4's default-on path (a --project compile must bind
      the embedded corpus too).
-- **THEN:** burn down family 1 (the fence, v24) → re-soak → families 2-4 →
-  item 4 corpus pack + append-to-binary default-on → item 5 lazy defrost →
-  item 6 measure + stamp the 06-22 plan CLOSED.
+- **FAMILY 1 CLOSED (v24 TU-ROOT FENCE, 2026-07-08): re-soak 407 → 623 OK**
+  (45 BIND_RC + 5 FREEZE_FAIL + 1 BIND_DIFF remain = 93% of runnable tests
+  green). Reducer tmp/s6_class.cpp + testcommaincrement/teststringglobal/
+  testctor all flipped. Gates: bind gate 18/18, test_cir_freeze 32/569,
+  test_cir_arena 11/316 (fulltest run recorded in the commit).
+- **REMAINING FAMILIES (from tmp/soak/results.tsv, burn down in this order):**
+  a. **va_list (9 tests):** `use of undeclared identifier 'va_list'` —
+     <stdarg.h> is a bucket-1 compiler header; its typedef registration side
+     effect doesn't survive a bind.
+  b. **partial_ordering() (7):** "no matching constructor for call to
+     'partial_ordering()'" — <compare>'s value-init; the v12 bodyless
+     DEFAULTED-ctor serialization gap class.
+  c. **Borrowed-language namespaces (10):** Unknown namespace perl/python/
+     ruby/rust (+prefer) + their fns (explode/array_push on madc/php tests) —
+     binding <ns_*> embedded headers skips the live registration side effect.
+  d. **std surface (5):** to_string/stod/abort — `using ::abort;` re-exports
+     + <string> conversion-fn overload sets.
+  e. **make_preferred / Unidentified member on basic_string (3):**
+     testdefer/testfstream/testloop — a namespaced-alias identity nuance
+     (path-ish alias resolving to basic_string).
+  f. **MIR repeated-item / undefined import (4):** testsmaug_requests ×2
+     (bug_calls), testincludeonce (greet_once_count — include-once semantics
+     across freeze+bind), testheaderstringops (__gnu_cxx char_traits compare).
+  g. **c2mir check errors (3):** testmemclralignwide, teststringplus,
+     teststrplusbody_realhdr.
+  h. **Enum-constant macros (2):** DT_REG (dirent), SOCK_STREAM (socket) —
+     glibc `enum + #define X X` visibility.
+  i. **Misc parse (2):** testfdsetfromsystime (struct grammar),
+     teststringparam; + teststructinit (the 1 BIND_DIFF).
+  j. **--project × --freeze (5, FREEZE_FAIL):** the multi-TU driver never
+     reaches the freeze writer — item-4 concern, not a bind-state family.
+- **THEN:** burn down families a→i by class → item 4 corpus pack +
+  append-to-binary default-on → item 5 lazy defrost → item 6 measure + stamp
+  the 06-22 plan CLOSED.
 - **Discipline:** batch fixes, reducer-iterate, full gates ONCE per batch;
   state INTO the substrate (no new bespoke record families); loaded state ==
   parsed state (re-run the ONE live derivation over restored state when side

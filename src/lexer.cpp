@@ -6040,6 +6040,8 @@ TokenProgram *Program::tokenize(const char *fname)
 
     _tokenizer_init();
 
+    forest_root_file = fname;	// v24: the program's own file — its state
+				// never enters the forest's bind surface
     source.fname(fname);
     {
 	ReadTimer _rt(_read_seconds);
@@ -6115,6 +6117,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 
     _tokenizer_init();
 
+    forest_root_file = fname;	// v24 (see tokenize)
     source.fname(fname);
     { ReadTimer _rt(_read_seconds); source.str(source_text); }
     _input_bytes += source_text.size();	// --show-stats: load_buffer main-source bytes
