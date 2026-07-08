@@ -321,6 +321,15 @@ enum : uint32_t {
 						// rebuild TokenDecl::ctor_args, so global_ctor_call
 						// selects the real ctor overload with the real args
 						// (default-construction has no matching ctor here)
+	,
+	CIR_GLOBALF_CONST_SCALAR     = 1u << 6	// v26: a parse-time CONSTANT scalar with NO TopDecl —
+						// a plain / anonymous enum's ENUMERATOR (TokenENUM's
+						// global branch: addVariable + set + makeconstant;
+						// references FOLD at parse, no storage, live emits
+						// none). init_value holds the folded value; the
+						// flush rebuilds the live registration exactly.
+						// Provenance rides Program::forest_enum_const_origin
+						// (the funcdef_files precedent).
 };
 struct cir_forest_global_record
 {

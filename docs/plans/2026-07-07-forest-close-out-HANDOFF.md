@@ -104,11 +104,15 @@ every other madc track for five weeks. This document is the execution order; the
      idea is DEAD (--freeze-run compiles the same frozen tree → dead-body
      import risk; dead-lowering errors would fail freezes).
      Fixes testincludenext (std::abs).
-  2. **ANONYMOUS ENUMs never record** (family h): glibc's
-     `enum { DT_REG=8 } + #define DT_REG DT_REG` — the PP macro restores but
-     the enumerator constant doesn't (bind -v shows the header re-echo and
-     `enum __socket_type (0 enumerators)`). testdirent (DT_DIR import),
-     testsockaddr (SOCK_STREAM import). Reducer: freeze+bind testdirent.mad.
+  2. **ANONYMOUS ENUMs — ✅ CLOSED (v26 batch 3, family h):** a plain enum's
+     enumerators are parse-time constants (addVariable+set+makeconstant, NO
+     TopDecl) that glibc's extern "C" wrapping stamped vfEXTERN — so the
+     fill's EXTERN_REF branch restored them as extern DATA imports
+     (SOCK_STREAM/DT_REG undefined). Now: TokenENUM's global branch stamps
+     forest_enum_const_origin[name]=file (the funcdef_files precedent); the
+     fill records CIR_GLOBALF_CONST_SCALAR (checked BEFORE the vfEXTERN
+     branch, flags verbatim, TU-root fence from the origin file); the flush
+     rebuilds the live registration. testdirent + testsockaddr FLIPPED.
   3. Remaining classified singles: make_preferred trio (testdefer/testfstream/
      testloop — path-ish alias overload selection on basic_string);
      testfdsetfromsystime + teststringparam (parse desyncs); teststructinit

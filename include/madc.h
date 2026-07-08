@@ -2836,6 +2836,13 @@ public:
 	PendingForestFunc() : fd(NULL), mvar(NULL) {}
     };
     std::vector<PendingForestFunc> forest_pending_funcs;
+    // v26: origin file of each plain/anonymous-enum ENUMERATOR constant
+    // (TokenENUM's global branch — the constants live in tkProgram->variables
+    // with no TopDecl and no back-link to the enum tag). Stamped at the one
+    // live registration under forest_arena_enabled; the freeze reads it to
+    // serialize the constant (CIR_GLOBALF_CONST_SCALAR) and classify its
+    // TU-root fence.
+    std::map<std::string, const char *> forest_enum_const_origin;
     // Forest default-arg RAW-TOKEN capture (parseFunction's `= expr` param
     // branches). begin() returns true and snapshots the stream position (buffer
     // cursor + a copy of the pushback LIFO) when arena recording is on; end()

@@ -12933,6 +12933,25 @@ void Program::flush_forest_pending_globals()
 		<< " -> " << xv->storage_alias_name << std::endl);
 	    continue;
 	}
+	// v26: a parse-time CONSTANT scalar (a plain / anonymous enum's
+	// enumerator — TokenENUM's global branch). Rebuild the live
+	// registration exactly: a constant Variable holding the folded value.
+	// References FOLD at parse, so NO TopDecl and NO storage (live emits
+	// none). Without this a bound <dirent.h> consumer's DT_REG compiled
+	// as an undefined MIR import.
+	if ( pg.gflags & CIR_GLOBALF_CONST_SCALAR )
+	{
+	    Variable *ev = addVariable(NULL, *pg.type, pg.name, 1, NULL, true);
+	    ev->set(pg.init_value);
+	    ev->makeconstant();
+	    // Live's exact flags (an extern "C" block stamps vfEXTERN on the
+	    // constant too — carried verbatim so downstream passes see the
+	    // parsed state).
+	    ev->flags = pg.flags;
+	    DBG(std::cout << "flush_forest_pending_globals: enum const "
+		<< pg.name << " = " << pg.init_value << std::endl);
+	    continue;
+	}
 	// A class that declares a ctor but whose ctor set restored EMPTY cannot be
 	// default-constructed at emit time (collect_global_ctors -> class_ctor_call ->
 	// "no matching constructor"). That happens when v12 skipped the class's only
@@ -29691,7 +29710,8 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	if ( tn->id() == TokenID::tkComma ) { pgm.nextToken(); continue; }
 	if ( !is_contextual_identifier_token(tn) )
 	    pgm.Throw(tn) << "Expecting identifier in enum" << flush;
-	std::string name = contextual_identifier_name(pgm.nextToken());
+	TokenBase *ntok = pgm.nextToken();
+	std::string name = contextual_identifier_name(ntok);
 
 	// check for = explicit value
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
@@ -29733,6 +29753,17 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    Variable *evar = pgm.addVariable(NULL, ddINT, name, 1, NULL, true);
 	    evar->set(val);
 	    evar->makeconstant();
+	    // v26 forest SAVE state: the constant has no TopDecl and no link
+	    // back to the enum tag, so stamp its origin file here — the one
+	    // live registration — for the freeze's serialization + TU-root
+	    // fence (CIR_GLOBALF_CONST_SCALAR).
+	    if ( pgm.forest_arena_enabled )
+	    {
+		pgm.forest_enum_const_origin[name] = ntok ? ntok->file : NULL;
+		DBG(std::cout << "TokenENUM::parse() stamped origin for "
+		    << name << " (" << (ntok && ntok->file ? ntok->file : "?")
+		    << ")" << std::endl);
+	    }
 	    DBG(std::cout << "TokenENUM::parse() " << name << " = " << val << std::endl);
 	}
 	val++;

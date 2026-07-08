@@ -1356,6 +1356,41 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    continue;
 	if ((v->flags & vfLOCAL) && !(v->flags & vfSTATIC))
 	    continue;		// a non-static local is not file-scope
+	// v26: a parse-time CONSTANT scalar — a plain / anonymous enum's
+	// ENUMERATOR (TokenENUM's global branch: addVariable + set +
+	// makeconstant; references FOLD at parse, no TopDecl, no storage,
+	// live emits none). Checked BEFORE the vfEXTERN branch: glibc wraps
+	// headers in extern "C" (__BEGIN_DECLS), so parsing_extern_decl
+	// stamps vfEXTERN on these constants — an EXTERN_REF record restored
+	// them as unresolved data imports (SOCK_STREAM / DT_REG "undefined
+	// MIR import"). The one live registration stamps the origin into
+	// forest_enum_const_origin; a name not in it is not enum-born.
+	if (v->is_constant()) {
+	    std::map<std::string, const char *>::const_iterator eo =
+		prog->forest_enum_const_origin.find(v->name);
+	    if (eo != prog->forest_enum_const_origin.end()) {
+		uint32_t esid = forest_serialize_type_id(v->type);
+		if (!esid || !seen_globals.insert(v->name).second)
+			continue;
+		cir_forest_global_record g;
+		memset(&g, 0, sizeof(g));
+		g.name_id    = pool.intern(v->name);
+		g.type_id    = esid;
+		g.flags      = v->flags;	// vfEXTERN/vfCONSTANT verbatim
+		g.gflags     = CIR_GLOBALF_CONST_SCALAR;
+		if (eo->second && prog->forest_is_tu_root_file(eo->second))
+			g.gflags |= CIR_GLOBALF_TU_ROOT;
+		g.ns_id      = global_ns_id(v);
+		g.init_value = v->get<int64_t>();
+		DBG(std::cout << "cir_forest_fill_globals: enum const "
+			  << v->name << " = " << g.init_value
+			  << ((g.gflags & CIR_GLOBALF_TU_ROOT)
+			      ? " (TU-root)" : "")
+			  << std::endl);
+		f.globals.push_back(g);
+		continue;
+	    }
+	}
 	if (v->flags & vfEXTERN) {
 	    // v22: an `extern T name;` REFERENCE to a library-defined object
 	    // (std::cout — the iostream reducer's last gap). Record it so the
