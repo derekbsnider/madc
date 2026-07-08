@@ -1888,6 +1888,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				// retained decl tokens) from its CIR_TMPLK_MEMBER twin,
 				// keyed by this funcdef symbol.
 				fd->is_member_template = is_mtmpl;
+				// v27: the captured body's parse context (see the
+				// free-fn arm) — a DEFBODY re-run reproduces it.
+				fd->forest_body_in_instantiation =
+					(fr.flags & madc::dis::DF_BODY_IN_INSTANTIATION) != 0;
 				if (has_body) {
 					fd->has_forest_body  = true;
 					fd->forest_body_unit = fr.body_unit;
@@ -2264,6 +2268,21 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			fd->forest_body_unit = r.body_unit;
 			fd->forest_body_idx  = r.body_idx;
 			fd->declaration_only = false;
+		} else if (r.flags & madc::dis::DF_FUNC_DEF_TOKENS) {
+			// v26 piece (a): the body arrives via the ownerless
+			// DK_DEFBODY entry the flush plants — live's
+			// bodied-DEFERRED state (parseFunction parsed a body;
+			// materialization waits for first ODR-use). NOT
+			// declaration-only: the flush's Itanium
+			// storage_alias_name stamp applies only to concrete
+			// declaration-only ns fns, and stamping it here made a
+			// bound call go MANGLED-DIRECT to a header-inline fn
+			// with no .so export (std::stod → undefined MIR
+			// import) instead of materializing the DEFBODY.
+			fd->declaration_only = false;
+			// v27: reproduce the body's original parse context.
+			fd->forest_body_in_instantiation =
+				(r.flags & madc::dis::DF_BODY_IN_INSTANTIATION) != 0;
 		} else {
 			fd->declaration_only = true;
 		}

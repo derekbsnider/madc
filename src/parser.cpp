@@ -25533,6 +25533,22 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     std::string saved_func = cur_func_name;
     std::string saved_canon = instantiating_canonical_spelling;
     cur_func_name = body.var->name;
+    // v27 forest capture: an IN-CLASS inline body parses HERE (at class
+    // close), never through parseFunction's parseCompound — so the piece-(a)
+    // capture must ride this path too, or a function-LOCAL class's ctor/dtor
+    // inside an instantiated body (__stoa__o2's _Save_errno) has no body
+    // source at freeze and a consumer's reuse of the restored class dies as
+    // an undefined import. The tokens are already the DEFBODY shape; the
+    // mem-initializer list rides its own run (slot 3).
+    if ( forest_arena_enabled && !body.body_tokens.empty() )
+	if ( FuncDef *cfd0 = dynamic_cast<FuncDef *>(body.var->type) )
+	    if ( cfd0->forest_body_tokens.empty() )
+	    {
+		cfd0->forest_body_tokens = body.body_tokens;
+		cfd0->forest_ctor_init_tokens = body.ctor_init_tokens;
+		cfd0->forest_body_in_instantiation =
+		    fn_template_instantiation_depth > 0;
+	    }
 #ifdef MADC_DEBUG_NS_RESOLVE
     fprintf(stderr, "[deferred-body] var=%s owner=%s spelling='%s' ns-derived='%s' cur-ns='%s'\n",
 	    body.var->name.c_str(),
@@ -25590,6 +25606,16 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	    class_scope_stack.push_back(chain[i]);
 	pushed_scope_count = chain.size();
     }
+    // v27: reproduce the captured body's PARSE CONTEXT. An instantiated __oN
+    // definition (__stoa__o2) parsed at fn_template_instantiation_depth > 0
+    // live — where the local-class reuse allowance (TokenCLASS::parse,
+    // `struct _Save_errno`) lives — so its DEFBODY re-run must too, or the
+    // restored complete local class throws "already defined" at depth 0.
+    bool inst_ctx = false;
+    if ( FuncDef *cfd = dynamic_cast<FuncDef *>(body.var->type) )
+	inst_ctx = cfd->forest_body_in_instantiation;
+    if ( inst_ctx )
+	++fn_template_instantiation_depth;
     try
     {
 	for ( std::vector<TokenBase *>::reverse_iterator it = body.body_tokens.rbegin();
@@ -25709,12 +25735,16 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     }
     catch(...)
     {
+	if ( inst_ctx )
+	    --fn_template_instantiation_depth;
 	for ( size_t i = 0; i < pushed_scope_count && !class_scope_stack.empty(); ++i )
 	    class_scope_stack.pop_back();
 	cur_func_name = saved_func;
 	instantiating_canonical_spelling = saved_canon;
 	throw;
     }
+    if ( inst_ctx )
+	--fn_template_instantiation_depth;
     for ( size_t i = 0; i < pushed_scope_count && !class_scope_stack.empty(); ++i )
 	class_scope_stack.pop_back();
     cur_func_name = saved_func;
@@ -38693,6 +38723,8 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->param_defaults = src->param_defaults;
     f->param_default_tokens = src->param_default_tokens;
     f->forest_body_tokens = src->forest_body_tokens;
+    f->forest_ctor_init_tokens = src->forest_ctor_init_tokens;
+    f->forest_body_in_instantiation = src->forest_body_in_instantiation;
     f->template_return_param_name = src->template_return_param_name;
     f->template_return_deduce_arg_index = src->template_return_deduce_arg_index;
     f->template_return_deduce_from_pointer = src->template_return_deduce_from_pointer;
@@ -40251,21 +40283,33 @@ paramdecl:
 	pushToken(new TokenClBrc());
     }
     DBG(cout << "parseFunction() calling parseCompound()" << endl);
-    // v26 piece (a): capture a FREE function's raw body span (the tokens
+    // v26 piece (a): capture a bodied function's raw body span (the tokens
     // parseCompound consumes, closing brace included — the exact
     // parse_deferred_function_body::body_tokens shape) so an include-origin
-    // bodied fn the producer never calls (std::abs — no TRANSLATED def in the
-    // frozen AST) can serialize its body as an ownerless DK_DEFBODY run.
-    // Methods keep their own deferral/capture machinery; a tsubst-skipped
-    // body has no real span to capture.
+    // bodied fn the producer never CALLS (std::abs — no TRANSLATED def in
+    // the frozen AST) can serialize its body as a DK_DEFBODY run. v27 widens
+    // the capture to METHODS parsed eagerly through here (a function-LOCAL
+    // class's ctor/dtor inside an instantiated body — __stoa__o2's
+    // _Save_errno — has no deferral entry and no translated def, so its body
+    // was LOST at freeze and a consumer's reuse of the restored class died
+    // as an undefined import). Deferred system-header method bodies never
+    // reach this parseCompound, so they are not double-captured; a
+    // tsubst-skipped body has no real span to capture.
     DefCapState body_cap;
-    bool body_capturing = forest_arena_enabled && !owner_class
+    bool body_capturing = forest_arena_enabled
 			&& !func->tsubst_body_skipped
 			&& func->forest_body_tokens.empty()
 			&& param_default_capture_begin(body_cap);
     TokenCpnd *tc = dynamic_cast<TokenCpnd *>(parseCompound());
     if ( body_capturing )
+    {
 	param_default_capture_end(body_cap, func->forest_body_tokens);
+	// The parse CONTEXT is captured state too: an instantiated __oN's
+	// body parses at fn_template_instantiation_depth > 0 (where the
+	// local-class reuse allowance lives) — the DEFBODY re-run must
+	// reproduce it or `struct _Save_errno` re-defines at depth 0.
+	func->forest_body_in_instantiation = fn_template_instantiation_depth > 0;
+    }
 
     tf->method = method;
     tf->parent = tc->parent;

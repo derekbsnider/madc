@@ -2297,11 +2297,36 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 				     cnt, r.disp_id };
 		for (int w = 0; w < 4; ++w)
 			a.payload.push_back(brun[w]);
-		for (int sx = 1; sx < 4; ++sx)
+		// Slot 1 (definition) + slot 2 (trailing-ret) stay empty; a
+		// ctor's MEM-INITIALIZER-LIST rides slot 3 (the flush's
+		// ctor_init_tokens slot) when the class-close capture saw one.
+		std::vector<uint8_t> ibytes;
+		uint32_t icnt = 0;
+		if (!fd->forest_ctor_init_tokens.empty()
+		    && madc_pch::serialize_token_seq(fd->forest_ctor_init_tokens,
+						     ibytes) && !ibytes.empty())
+			for (TokenBase *t : fd->forest_ctor_init_tokens)
+				if (t)
+					++icnt;
+		for (int sx = 1; sx < 4; ++sx) {
+			if (sx == 3 && icnt) {
+				uint32_t irun[4] = { a.add_tokbytes(ibytes),
+						     (uint32_t)ibytes.size(),
+						     icnt, r.disp_id };
+				for (int w = 0; w < 4; ++w)
+					a.payload.push_back(irun[w]);
+				continue;
+			}
 			for (int w = 0; w < 4; ++w)
 				a.payload.push_back(0u);
+		}
 		a.set_def_at(next++, r);
 		fr.flags |= madc::dis::DF_FUNC_DEF_TOKENS;
+		// v27: the body's PARSE CONTEXT rides the DK_FUNC — an
+		// instantiated __oN definition was parsed at
+		// fn_template_instantiation_depth > 0 and its re-run must be.
+		if (fd->forest_body_in_instantiation)
+			fr.flags |= madc::dis::DF_BODY_IN_INSTANTIATION;
 		a.set_def_at(ftid, fr);
 	}
 }

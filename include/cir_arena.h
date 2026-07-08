@@ -182,6 +182,14 @@ enum DefFlags : uint32_t {
 						// as a tag so `struct X` resolves; the plain
 						// TokenTYPEDEF path never does) — the restore
 						// reproduces the struct_map write
+	DF_BODY_IN_INSTANTIATION = 1u << 26,	// v27: the captured DEFBODY tokens were parsed
+						// inside a fn-template INSTANTIATION
+						// (fn_template_instantiation_depth > 0 — an
+						// instantiated __oN definition, __stoa__o2); the
+						// ownerless DEFBODY re-run reproduces that
+						// context so the local-class reuse allowance
+						// (TokenCLASS::parse, `struct _Save_errno`)
+						// applies exactly as live
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live

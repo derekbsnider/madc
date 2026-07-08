@@ -150,6 +150,17 @@ public:
     // its body as an ownerless DK_DEFBODY token run instead. Captured ONLY
     // when forest_arena_enabled and owner_class == NULL.
     std::vector<class TokenBase *> forest_body_tokens;
+    // A ctor's MEM-INITIALIZER-LIST tokens, captured beside the body span
+    // when the body came through parse_deferred_function_body (in-class
+    // inline bodies parse at class close — they never reach parseFunction's
+    // parseCompound). Rides DK_DEFBODY run slot 3 (ctor_init_tokens).
+    std::vector<class TokenBase *> forest_ctor_init_tokens;
+    // The captured body's PARSE CONTEXT: true when it was parsed inside a
+    // function-template instantiation (fn_template_instantiation_depth > 0
+    // at capture — an instantiated __oN definition like __stoa__o2). The
+    // ownerless DEFBODY re-run reproduces that context so instantiation
+    // allowances (the local-class reuse at TokenCLASS::parse) apply as live.
+    bool forest_body_in_instantiation = false;
     // Number of leading parameters that have NO default — the minimum arg count a
     // call must supply. Equals parameters.size() when no parameter has a default.
     size_t required_param_count() const
