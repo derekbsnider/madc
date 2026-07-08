@@ -10,13 +10,14 @@ every other madc track for five weeks. This document is the execution order; the
 
 ## ⏯ RESUME HERE (fifth sitting, 2026-07-08 — v25 family burn-down in flight)
 
-- **Git:** develop == origin/develop **@ddd13b01** (v25 batch 1 pushed); a
-  SECOND v25 batch (families d + quoted-include binding, ~8 mechanisms) is
-  IN THE WORKING TREE gated through bind gate 18/18 + test_cir_freeze 34/646 +
-  test_cir_arena 11/316, awaiting its fulltest exit + re-soak + commit.
+- **Git:** develop == origin/develop **@c10e7557** — THREE pushed v25 batches:
+  @ddd13b01 (families a+b+c), @ad8e3697 (family d + quoted-include binding),
+  @c10e7557 (anon-gensym fixup: restore bumps the `__anon_N` counter past the
+  container's max — the tagless-record change had made a consumer's fresh anon
+  collide with a restored tag, 4 soak regressions, all reflipped GREEN).
   Untracked `mir-debug-support.md` is NOT ours — never stage, never `git add -A`.
-- **DONE this sitting (soak 623 → 648 OK at @ddd13b01; the uncommitted batch
-  adds ≥6 more):**
+- **DONE this sitting (soak 623 → 648 OK at @ddd13b01 → 655 OK at @c10e7557 =
+  97.2% of the 674 runnable; 13 BIND_RC + 5 FREEZE_FAIL + 1 BIND_DIFF left):**
   1. **@ddd13b01 (v25, format bump, PUSHED) — families a+b+c:** (a) DK_CARRAY
      array-type records (va_list, 9 tests — the typedef's underlying
      `struct tag[1]` had no record kind); (b) ctor-ARG raw-token runs on
@@ -45,27 +46,33 @@ every other madc track for five weeks. This document is the execution order; the
      hook never fired); embedded-header include FLAGS re-run at the bind
      site (lazy stdin/stdout registration).
 - **THE IMMEDIATE NEXT TASK — in order:**
-  1. Wait for fulltest exit → commit batch 2 (`git commit -F` with trailers)
-     → push → re-soak (`bash scripts/forest_soak.sh`) → update this block
-     with the new OK count.
-  2. **DEFERRED-LAZY-BODY serialization** — the biggest remaining family
-     mechanism: a system-header inline fn the producer never ODR-used has NO
-     func-def in the frozen AST; live materializes it on use from
-     Program::deferred_lazy_bodies (symbol → DeferredFunctionBody: 4 token
-     vectors + var/method + file/line/col, madc.h ~2393). Serialize the map
-     (the v20/v23 token-run form, arena tokbytes) + rebind var to the
-     restored Variable at flush. Expected to fix: testincludenext (std::abs
-     — resolution AND body), testheaderstringops (__gnu_cxx char_traits
-     compare undefined import), testforeachheaderbody (basic_string copy-ctor
-     import), likely teststringplus/teststrplusbody_realhdr c2mir checks.
+  1. **FREEZE COMPLETENESS (§0.3) — the biggest remaining mechanism, TWO
+     pieces, both traced:** (a) the frozen AST contains only TRANSLATED
+     (ODR-used) function defs — an UNREFERENCED bodied fn (std::abs's
+     long/double overloads: records probed present, flags 0x30000, no body
+     stamp) has no func-def, so the record drops at load. Under a FREEZE
+     translate, emit EVERY include-origin bodied fn into the tree
+     (lib_funcs' referenced_funcs gate, cir_builder.cpp ~18512); bind still
+     materializes on reference only (forest_lazy) so output == live.
+     (b) serialize Program::deferred_lazy_bodies (METHOD bodies never
+     ODR-used — symbol → DeferredFunctionBody, 4 token vectors, madc.h
+     ~2393; live materializes via parse_deferred_lazy_body, parser.cpp
+     ~25543 — push definition_tokens + parseFunction under owner scope =
+     the ONE derivation to re-run); flush rebuilds entries with var = the
+     restored method Variable. Expected: testincludenext (std::abs),
+     testheaderstringops + teststrplusbody_realhdr (__gnu_cxx char_traits
+     compare imports), testforeachheaderbody (basic_string copy-ctor import).
+  2. **ANONYMOUS ENUMs never record** (family h): glibc's
+     `enum { DT_REG=8 } + #define DT_REG DT_REG` — the PP macro restores but
+     the enumerator constant doesn't (bind -v shows the header re-echo and
+     `enum __socket_type (0 enumerators)`). testdirent (DT_DIR import),
+     testsockaddr (SOCK_STREAM import). Reducer: freeze+bind testdirent.mad.
   3. Remaining classified singles: make_preferred trio (testdefer/testfstream/
      testloop — path-ish alias overload selection on basic_string);
-     DT_REG/SOCK_STREAM (glibc `enum { DT_REG=8 } + #define DT_REG DT_REG` —
-     enum-constant macro visibility); testfdsetfromsystime + teststringparam
-     (parse desyncs); teststructinit (BIND_DIFF); testsmaug_requests
-     (last_log); smaug_requests_source + testmemclralignwide (c2mir checks);
-     testfreezerun (freeze-inside-bind unit-count line — item-4 class, like
-     testproject×freeze FREEZE_FAIL 5).
+     testfdsetfromsystime + teststringparam (parse desyncs); teststructinit
+     (BIND_DIFF); testsmaug_requests (last_log); smaug_requests_source (14) +
+     testmemclralignwide (2) c2mir checks; testproject×freeze FREEZE_FAIL 5 +
+     testfreezerun freeze-under-bind (item-4 class).
 - **AFTER the families:** item 4 corpus pack + append-to-binary default-on
   (watch: --project × --freeze writes no container; freeze-under-bind counts
   differ) → item 5 lazy defrost → item 6 measure + stamp the 06-22 plan CLOSED.
