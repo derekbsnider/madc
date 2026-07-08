@@ -46,7 +46,39 @@ every other madc track for five weeks. This document is the execution order; the
   prints garbage live too: `m = (, <garbage>, <garbage>)`; the test has no
   .expect so fulltest masks it; the soak compares two garbage runs). Fix
   belongs to the gcc-parity track, not forest.
-- **RE-SOAK CONFIRMED 667/674 (99.0%) after batch 5.** REMAINING (7 non-OK):
+- **BATCH 6 @7af7eee7 (PUSHED, gates 18/18 + units + fulltest 680/0/0/16 exit 0):
+  family (c) CLOSED — testforeachheaderbody binds == live. SOAK CONFIRMED
+  668/674 (99.1%): EVERY BIND-STATE FAMILY IS NOW CLOSED.** The remaining 6
+  non-OK are NOT bind-state: testproject×5 (item-4 class) + teststructinit
+  (live bug). Two roots, both measured (probes tmp/ctor_probe.cpp +
+  tmp/or_probe.cpp proved the ARENA faithful — ranks/params/defaults all
+  correct; the gaps were LOAD/EMIT-side):
+  1. **Restored CTOR local_emit_name (cir_freeze.cpp ~1871):** the
+     disambiguation restore gated on a non-empty DISPLAY name — ctors have
+     none — so every __oN-ranked ctor lost the symbol live stamps on
+     local_emit_name; FuncDef-only emitters (ctor_call_symbol: shim/global/
+     default-construct paths) degraded to the canonical Class__Class symbol —
+     naming whichever ctor HOLDS the canonical rank (basic_string's
+     __sv_wrapper delegating ctor) → its DEFBODY materialized + char* passed
+     to a struct param. The ctor arm now mirrors the method arm (compare
+     against Class__Class).
+  2. **Late-referenced funcdef-sourced callees (cir_builder.cpp, m&l callee
+     guard):** Pass 0.75 is a ONE-shot referenced-only proto sweep; a callee
+     first referenced by a LATE-materialized loaded body (second m&l round —
+     _M_construct__mti's _ZNK..._M_dataEv) arrives after it, and the
+     forest_funcdef_syms guard still blocked the producer-extern load → the
+     call implicit-int'd ("subscripted value is neither array nor pointer").
+     The guard now keys on what 0.75 ACTUALLY emitted (typed_proto_syms,
+     hoisted above the m&l lambda; pass075_done flag). Pre-0.75 behavior
+     byte-identical; bind-only reach (forest_lazy empty on a live compile).
+- **NEXT SITTING = ITEM 4 (corpus pack + append-to-binary default-on).**
+  Design the multi-TU freeze shape THERE (the --project driver never calls
+  madc_cir_freeze — only the extern decl at madc_project.cpp:40); then item 5
+  lazy defrost → item 6 measure + stamp the 06-22 plan CLOSED.
+
+### Sitting-7 detail (superseded interim states kept below)
+
+- **RE-SOAK after batch 5: 667/674.** REMAINING then (7 non-OK):
   testforeachheaderbody (m&l over-materialization, reducer tmp/fe_red2.cpp +
   tmp/fe_hdr.h) · teststructinit (live bug, above) · testproject×5 +
   testfreezerun (item-4 class: the --project driver NEVER calls
