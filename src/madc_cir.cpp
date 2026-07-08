@@ -2513,6 +2513,8 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		fprintf(stderr, "%s: forest freeze failed\n", source_name);
 	    } else {
 		f.libs = prog->loaded_lib_paths;
+		f.language_std = madc_forest_config_word(prog);	// v27 producer-config gate
+		f.defines_hash = madc_forest_defines_hash(prog);
 		cir_forest_fill_pack_payloads(prog, f);	// grove payload v2 (B4a)
 		cir_forest_arena_refresh(prog);		// re-record live aggregates (post-completion mutations)
 		f.arena = prog->forest_arena;		// B3 (v18): the arena dump IS the type-graph serialization
@@ -2703,7 +2705,8 @@ static bool is_c_source_file(const std::string &path)
 }
 
 int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
-			 int user_argc, char **user_argv)
+			 int user_argc, char **user_argv,
+			 bool forest_bind, const std::string &forest_bind_path)
 {
 	if (manifest.tus.empty()) {
 		fprintf(stderr, "madc_project_execute: empty manifest\n");
@@ -2725,6 +2728,11 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	for (const ProjectTU &tu : manifest.tus) {
 		std::unique_ptr<Program> prog = engine.create_program();
 		prog->colors = true;
+		// Each TU binds the one embedded/standalone forest (compiles
+		// BIND; only the build-time pack freezes). ensure_bind_forest()
+		// falls through to live parse when no container is present.
+		prog->forest_bind_enabled = forest_bind;
+		prog->forest_bind_path = forest_bind_path;
 		for (const std::string &inc : tu.include_dirs)
 			prog->add_include_dir(inc);
 		for (const std::string &d : tu.defines)

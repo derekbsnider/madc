@@ -30,7 +30,14 @@ class MadcEngine;
 
 // Engine: build+link+JIT-run the manifest. Returns the program's exit code,
 // or -1 on a build/link error. Defined in madc_cir.cpp.
+// forest_bind: each TU binds grove-backed system #includes from the frozen
+// container (forest_bind_path, or the blob appended to this executable when
+// empty) — the compile-mode default, with silent live fall-through when no
+// container is present. false = force live parse (--no-forest-bind, the A/B
+// measurement lever).
 int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
-			 int user_argc, char **user_argv);
+			 int user_argc, char **user_argv,
+			 bool forest_bind = true,
+			 const std::string &forest_bind_path = std::string());
 
 #endif

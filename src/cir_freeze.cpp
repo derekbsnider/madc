@@ -94,6 +94,31 @@ uint64_t madc_cir_context_hash()
 	return cached;
 }
 
+// v27 producer-config gate: the ONE derivation shared by freeze (stamp) and
+// bind (compare). A container parsed under one language standard / -D set
+// must never bind into a compile under another — header CONTENT differs (C
+// vs C++ surface, __STRICT_ANSI__, feature macros). Per-compile state, so it
+// cannot ride the process-invariant context hash above.
+uint32_t madc_forest_config_word(const Program *prog)
+{
+	return (uint32_t)prog->language_std
+	     | ((uint32_t)(prog->gnu_dialect ? 1 : 0) << 16);
+}
+
+uint32_t madc_forest_defines_hash(const Program *prog)
+{
+	if (prog->cli_defines.empty())
+		return 0;
+	uint32_t h = 2166136261u;	// FNV-1a over "NAME=VALUE\n" in CLI order
+	for (const auto &d : prog->cli_defines) {
+		for (char c : d.first)  { h ^= (uint8_t)c; h *= 16777619u; }
+		h ^= (uint8_t)'=';        h *= 16777619u;
+		for (char c : d.second) { h ^= (uint8_t)c; h *= 16777619u; }
+		h ^= (uint8_t)'\n';       h *= 16777619u;
+	}
+	return h ? h : 1;	// 0 is reserved for "no defines"
+}
+
 // ---------------------------------------------------------------------------
 // Freeze
 // ---------------------------------------------------------------------------
@@ -481,6 +506,8 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	hdr.root_unit  = f.root_unit;
 	hdr.root_idx   = f.root_idx;
 	hdr.lib_count  = (uint32_t)f.libs.size();
+	hdr.language_std = f.language_std;	// v27 producer-config gate
+	hdr.defines_hash = f.defines_hash;
 	std::vector<uint8_t> dir(sizeof(hdr));
 	memcpy(dir.data(), &hdr, sizeof(hdr));
 	for (size_t u = 0; u < f.units.size(); ++u) {
@@ -888,7 +915,8 @@ static const uint8_t *forest_pool_block(const madc::dis::snapshot_reader &r,
 	return own.data();
 }
 
-bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m)
+bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m,
+			   bool quiet_missing)
 {
 	_c2m = c2m;
 	if (!TokenBase::_active_strpool) {
@@ -896,7 +924,8 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m)
 		return false;
 	}
 	if (!_reader.open(image, len)) {
-		fprintf(stderr, "madc: no forest container found\n");
+		if (!quiet_missing)
+			fprintf(stderr, "madc: no forest container found\n");
 		return false;
 	}
 	if (_reader.context_hash() != madc_cir_context_hash()) {
@@ -927,6 +956,8 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m)
 	_units.resize(hdr.unit_count);
 	memcpy(_units.data(), dir.data() + sizeof(hdr),
 	       hdr.unit_count * sizeof(cir_forest_dir_unit));
+	_language_std = hdr.language_std;	// v27 producer config (bind gate)
+	_defines_hash = hdr.defines_hash;
 
 	// The container's own string pool (A1 frozen view).
 	size_t nbytes = 0, nentries = 0, nbuckets = 0;
@@ -1780,13 +1811,21 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					&& !strncmp(dispkey, "operator", 8);
 				bool has_body =
 					(fr.flags & madc::dis::DF_HAS_FOREST_BODY) != 0;
-				if (is_ctor || is_dtor || is_operator) {
-					if (!fr.emit_symbol_id && !has_body && !is_dtor
-					    && !is_mtmpl)
-						continue;
-				} else if (!dispkey || !*dispkey) {
+				// v27 (the never-ODR-used-producer shape): a symbol-less
+				// body-less ctor/operator was SKIPPED here (the v12 rule;
+				// v15 lifted it for dtors only). A producer that never
+				// uses the class leaves EVERY inline special member in
+				// that state — the body rides the v26 DK_DEFBODY token
+				// family instead — so the skip emptied cdd->ctors and a
+				// consumer's first construction died NO-MATCH. Live
+				// registers every parsed method declaration
+				// (parseFunction's tail) with the body deferred; the
+				// restore now does the same. Members with neither a
+				// special-member classification nor a display key still
+				// skip — they have no live registration surface.
+				if (!is_ctor && !is_dtor && !is_operator
+				    && (!dispkey || !*dispkey))
 					continue;
-				}
 				if (!m_static && !fr.params_count)
 					continue;	// no __this slot: malformed
 				DataDef *ret = arena_swizzle(fr.ref0, by_id);

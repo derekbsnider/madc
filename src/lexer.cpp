@@ -1788,9 +1788,23 @@ CirFrozenForest *Program::ensure_bind_forest()
 	return NULL;
     }
     CirFrozenForest *f = new CirFrozenForest();
-    if ( !f->open(image, image_len, /*c2m=*/NULL) )
+    if ( !f->open(image, image_len, /*c2m=*/NULL, /*quiet_missing=*/true) )
     {
-	// open() already printed the reason (pin mismatch / corrupt directory).
+	// open() printed real corruption / pin mismatch; a blob-less binary
+	// (the default-on probe of /proc/self/exe) fell through silently.
+	delete f;
+	return NULL;
+    }
+    // v27 producer-config gate: header CONTENT depends on the language
+    // standard (C vs C++ surface, __STRICT_ANSI__) and the -D set, so a
+    // container parsed under a different config must not bind — fall through
+    // silently to live parse (the packed-binary default relies on this: a C
+    // compile resolves the same real glibc paths a C++ corpus carries).
+    if ( f->language_std() != madc_forest_config_word(this)
+      || f->defines_hash() != madc_forest_defines_hash(this) )
+    {
+	DBG(std::cout << "forest-bind: producer config mismatch (std/defines)"
+	    << " — live parse" << std::endl);
 	delete f;
 	return NULL;
     }

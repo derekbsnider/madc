@@ -437,9 +437,14 @@ static void print_usage(const char *prog)
 "  --dump-forest[=<file>]  print a container's directory + grove payloads\n"
 "                          (decl index, PP exports, edges, branch macros,\n"
 "                          canonical order); no value = this executable's blob\n"
-"  --forest-bind[=<file>]  (experimental) bind grove-backed system #includes\n"
-"                          from a frozen container instead of live-parsing;\n"
-"                          no value = the blob appended to this executable\n"
+"  --forest-bind[=<file>]  bind grove-backed system #includes from a frozen\n"
+"                          container instead of live-parsing; no value = the\n"
+"                          blob appended to this executable. This is the\n"
+"                          DEFAULT for compiles (silent live fall-through\n"
+"                          when no blob is appended); freeze modes live-parse\n"
+"                          unless it is passed explicitly\n"
+"  --no-forest-bind        force live parse (overrides the default and an\n"
+"                          explicit --forest-bind; the A/B measurement lever)\n"
 "  --dump-registered       parse, then print the registered name maps\n"
 "                          (forest index-parity oracle input; no run)\n"
 "  -dM                     preprocess, then print the effective macro table\n"
@@ -498,6 +503,7 @@ int main(int argc, char **argv)
     const char *dump_forest_path = NULL;  // NULL = the blob appended to this executable
     bool dump_registered = false;         // --dump-registered: post-parse name maps (oracle side B)
     bool dump_macro_table = false;        // -dM: effective macro table after lex (gcc -dM -E analogue)
+    bool no_forest_bind = false;          // --no-forest-bind: force live parse (overrides the default and --forest-bind)
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -629,6 +635,11 @@ int main(int argc, char **argv)
             prog->forest_bind_enabled = true;
             prog->forest_bind_path = argv[i] + 14;
             filearg = i + 1;
+        } else if (strcmp(argv[i], "--no-forest-bind") == 0) {
+            // Force live parse: overrides both the packed-binary default and
+            // an explicit --forest-bind (the A/B lever for measurement).
+            no_forest_bind = true;
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-registered") == 0) {
             dump_registered = true;
             filearg = i + 1;
@@ -697,6 +708,20 @@ int main(int argc, char **argv)
             ++filearg;   // remaining positionals become the program's argv
         }
     }
+
+    // Embedded-forest default (Phase 4): with no explicit forest flag, bind
+    // system #includes from the blob appended to this executable —
+    // ensure_bind_forest() falls through silently to live parse when no blob
+    // is appended or the context pin mismatches. Freeze modes are excluded:
+    // a freeze PRODUCES forest state from a live parse; binding while
+    // freezing stays an explicit test-harness request, never the default.
+    if ( no_forest_bind )
+    {
+        prog->forest_bind_enabled = false;
+        prog->forest_bind_path.clear();
+    }
+    else if ( !prog->forest_bind_enabled && !freeze_path && !freeze_run )
+        prog->forest_bind_enabled = true;
 
     // -l<name>: dlopen each requested library (RTLD_GLOBAL) so the import
     // resolver (dlsym(RTLD_DEFAULT, ...)) finds its symbols at link time. Done
@@ -821,7 +846,9 @@ int main(int argc, char **argv)
 	// Remaining positionals (filearg..argc) become the program's argv.
 	int run_argc = argc - filearg;
 	char **run_argv = argv + filearg;
-	int rc = madc_project_execute(engine, manifest, run_argc, run_argv);
+	int rc = madc_project_execute(engine, manifest, run_argc, run_argv,
+				      prog->forest_bind_enabled,
+				      prog->forest_bind_path);
 	return (rc < 0) ? 1 : rc;
     }
 

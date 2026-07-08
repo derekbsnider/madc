@@ -21,8 +21,13 @@
 # Options:
 #   --exe   Also compile each test to a native executable and run it.
 #           Failures are reported as "FAIL(exe): ..." separately.
+#
+# MADC_BIN (env): the madc binary to test (default bin/madc). Generic
+# runner capability — lets the suite run against e.g. a forest-packed
+# copy (tmp/madc_packed) without touching the tree's binary.
 RUN_EXE=0
 BACKEND_FLAG=""
+MADC="${MADC_BIN:-bin/madc}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --exe) RUN_EXE=1; shift ;;
@@ -75,9 +80,9 @@ for t in tests/*.mad; do
         # Compile-error test: capture stderr — the diagnostics ARE the
         # expected output.
         if [ -f "$input_file" ]; then
-            out=$(timeout "$tmo" bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>&1)
+            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>&1)
         else
-            out=$(timeout "$tmo" bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
+            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
         fi
         rc=$?
         ok=1
@@ -98,9 +103,9 @@ for t in tests/*.mad; do
         fi
     else
         if [ -f "$input_file" ]; then
-            out=$(timeout "$tmo" bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>/dev/null)
+            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>/dev/null)
         else
-            out=$(timeout "$tmo" bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>/dev/null)
+            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>/dev/null)
         fi
         rc=$?
 
@@ -138,7 +143,7 @@ for t in tests/*.mad; do
     # EXE pass: compile to native and run
     if [ $RUN_EXE -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ]; then
         exe_path="/tmp/madc_test_exe_${base}"
-        if bin/madc "${flags[@]}" -o "$exe_path" "$t" >/dev/null 2>&1; then
+        if "$MADC" "${flags[@]}" -o "$exe_path" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
                 exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
