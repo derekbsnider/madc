@@ -45,20 +45,36 @@ every other madc track for five weeks. This document is the execution order; the
      `typedef struct {...} div_t;` records its anon aggregate (the tagged
      hook never fired); embedded-header include FLAGS re-run at the bind
      site (lazy stdin/stdout registration).
-- **SIXTH-SITTING SCOREBOARD (2026-07-08): THREE pushed batches —
+- **SIXTH-SITTING SCOREBOARD (2026-07-08): FOUR pushed code batches —
   @66ff0927 (v26 batch 2: flat-alias + capture-over-replay, below),
   @ac59411e (v26 batch 3: plain/anon-enum ENUMERATOR constants,
-  CIR_GLOBALF_CONST_SCALAR — item 2 below CLOSED, testdirent +
-  testsockaddr flipped). Soak after batch 2: 655→660 OK (97.9%; the
-  batch also flipped testfstream/testloop at the soak's rc+stdout bar —
-  their `_Traits` stderr noise remains sub-bar, see REMAINING). Every
-  batch gated: bind gate 18/18, unit suites, fulltest 680/0/0/16 exit 0.
-  Remaining non-OK after batch 3 (expect 662/674 = 98.2%, re-soak to
-  confirm): testincludenext (piece a, design traced below),
-  testforeachheaderbody (fixpoint over-materialization),
-  testfdsetfromsystime + teststringparam (parse desyncs), teststructinit
-  (BIND_DIFF), testsmaug_requests (last_log) + smaug_requests_source (14
-  c2mir checks), testproject×5 FREEZE_FAIL + testfreezerun (item-4).**
+  CIR_GLOBALF_CONST_SCALAR — testdirent + testsockaddr flipped),
+  @82e44acd (piece (a): unreferenced bodied FREE-fn bodies as ownerless
+  DK_DEFBODY runs — testincludenext flipped; item 2 below records the
+  implementation). Soak after batch 2: 655→660; after batch 3 CONFIRMED
+  662/674 (98.2%); after piece (a) expect 663 (NOT yet re-soaked —
+  seventh sitting: soak FIRST). Every batch gated: bind gate 18/18,
+  unit suites, fulltest 680/0/0/16 exit 0.
+  **REMAINING non-OK (~11) in burn-down order:**
+  a. testfdsetfromsystime: `struct fd_set readfds;` — fd_set is a
+     TAGLESS-typedef struct (`typedef struct {...} fd_set;`); live's
+     TokenSTRUCT `struct`-keyword path falls back to the TYPEDEF when
+     no tag exists; the restored state misses whatever map that
+     fallback reads (trace live's TokenSTRUCT::parse fallback first).
+  b. teststringparam (22:34 "Expecting identifier after type") — parse
+     desync, untraced.
+  c. testforeachheaderbody: bind's m&l fixpoint OVER-materializes
+     basic_string ctor chains live never references (__sv_wrapper
+     delegating ctor → C1EPKcmRKS3_ extern; c2mir struct-param check,
+     left=__sv_wrapper right=nil). Reducer tmp/fe_red2.cpp (quoted hdr
+     + fn-ptr `void (*fn)(std::string)` param + call through it).
+     Related sub-bar: testfstream/testloop stderr noise `Unknown class
+     scope basic_istream_char___gnu_cxx__char_traits_char_` (a _Traits
+     identity gap one layer past the batch-2 flat-alias fix).
+  d. teststructinit (BIND_DIFF); testsmaug_requests (last_log);
+     smaug_requests_source (14 c2mir checks).
+  e. testproject×5 FREEZE_FAIL + testfreezerun freeze-under-bind —
+     the item-4 class (--project × --freeze writes no container).**
 - **v26 BATCH 2 (sixth sitting, 2026-07-08 — the DEFBODY residual's REAL
   roots, both landed, PUSHED @66ff0927):** the "__n undeclared"
   residual was NOT a DEFBODY/owner gap. The prior "owner class has no
