@@ -84,6 +84,17 @@ enum DefKind : uint32_t {
 			// count_expr set — is never recorded; it is function-local
 			// state, not header state, and cleanly lacks)
 	DK_TYPEDEF,	// ref0 = underlying type-id (a named alias; ns_id gives its namespace)
+	DK_NSLINK,	// v25: an INLINE-namespace link (Program::inline_namespace_children):
+			// ns_id = parent namespace (0 = global), name_id = the inline child's
+			// full name ("std::__cxx11"). The flush re-runs the ONE live
+			// derivation (mirror_inline_namespace_into_parent) over restored
+			// state, so std::__cxx11-defined names (stod, to_string) resolve
+			// as members of std, exactly as a live parse leaves them.
+	DK_NSBIND,	// v25: a USING-DECLARATION function import (`namespace std {
+			// using ::abort; }`): ns_id = the importing namespace, name_id =
+			// the visible name, disp_id = the imported fn's funcdef_map key.
+			// The flush rebinds namespace_map[ns][name] to the restored fn's
+			// Variable — the exact live registration the using-decl performs.
 };
 
 // Kind-independent flag bits on a defrec (grows as the schema completes — a new bool is a

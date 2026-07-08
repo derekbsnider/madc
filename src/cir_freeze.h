@@ -622,6 +622,22 @@ struct CirRestoredGlobal
 	const char    *ctor_file;	// origin file (NULL = none)
 };
 
+// v25: restored namespace-surface state. An NSLINK is an inline-namespace
+// parent -> child link (the flush re-runs mirror_inline_namespace_into_parent
+// over restored state); an NSBIND is a using-declaration function import
+// (namespace_map[ns][name] -> the fn registered under funcdef key).
+struct CirRestoredNsLink
+{
+	const char *parent;		// NULL/"" = global
+	const char *child;		// the inline namespace's full name
+};
+struct CirRestoredNsBind
+{
+	const char *ns;			// the importing namespace
+	const char *name;		// the visible name
+	const char *key;		// the imported fn's funcdef_map key
+};
+
 // A restored file-scope FREE-FUNCTION declaration (RC2): the reconstructed
 // FuncDef (forest-owned, declaration-only) under its call name.
 // forest_restore_decls registers funcdef_map[name] + a program-scope Variable
@@ -724,6 +740,8 @@ class CirFrozenForest
 	// materialize_from_arena.
 	std::vector<cir_forest_global_record> _globals;
 	std::vector<CirRestoredGlobal> _restored_globals;
+	std::vector<CirRestoredNsLink> _restored_nslinks;	// v25: inline-ns links
+	std::vector<CirRestoredNsBind> _restored_nsbinds;	// v25: using-decl fn imports
 	// RC2: restored free-function declarations, built by materialize_from_arena
 	// from the DF_IS_FREE_FUNC DK_FUNC records.
 	std::vector<CirRestoredFunc> _restored_funcs;
@@ -820,6 +838,10 @@ public:
 	// alongside the types, reusing the same arena-id -> DataDef* map).
 	const std::vector<CirRestoredGlobal> &restored_globals() const
 	{ return _restored_globals; }
+	const std::vector<CirRestoredNsLink> &restored_nslinks() const
+	{ return _restored_nslinks; }		// v25
+	const std::vector<CirRestoredNsBind> &restored_nsbinds() const
+	{ return _restored_nsbinds; }		// v25
 	// RC2: the restored free-function declarations. Valid after
 	// materialize_from_arena() — call it first.
 	const std::vector<CirRestoredFunc> &restored_funcs() const

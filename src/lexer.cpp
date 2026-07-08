@@ -3023,6 +3023,20 @@ TokenBase *Program::_getToken()
 				    << "> bound to grove unit " << fu << " ("
 				    << bind_forest->unit_name(fu) << ")" << std::endl);
 				forest_bind_include((uint32_t)fu);
+				// v25: the embedded-header include FLAG is a live
+				// tokenize-time side effect (_parser_init's lazy_map
+				// registration: stdin/stdout/stderr, cout/cin). A
+				// grove unit whose name IS the bare embedded-header
+				// name was tokenized from the embedded text at
+				// freeze — re-run the one live side effect. A
+				// REAL-header unit (path name) never marks, exactly
+				// like the live filesystem branch.
+				{
+				    const char *un = bind_forest->unit_name(fu);
+				    if ( un && incfile == un
+				      && find_embedded_header(incfile) )
+					mark_embedded_include_flag(incfile);
+				}
 				if ( !forest_decls_restored )
 				{
 				    forest_restore_decls(*bind_forest);

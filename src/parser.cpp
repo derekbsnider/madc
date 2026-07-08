@@ -9984,10 +9984,15 @@ static std::string overload_token_spelling(TokenBase *t)
 
 std::string Program::peek_param_list_spelling()
 {
-    // The parser sits just after the declarator's '('. Record the balanced
-    // parameter-list tokens, then push them back (LIFO deque) so the upcoming
-    // parseFunction sees the stream untouched.
-    std::vector<TokenBase *> recorded;
+    // The parser sits just after the declarator's '('. Walk the balanced
+    // parameter-list tokens, then REWIND the cursor (savepos/restore) so the
+    // upcoming parseFunction sees the stream untouched. v25: this used to
+    // consume-then-pushToken the whole list, which left the param parse
+    // draining the pushback LIFO — silently disabling the forest default-arg
+    // cursor tap (param_default_capture_begin requires an empty pushback), so
+    // NO C++ namespace free function ever serialized its defaults (stod's
+    // `size_t* __idx = 0` — the arity gate then rejected a 1-arg bound call).
+    TokenStream::Pos peek_saved = tokens.savepos();
     int depth = 1;
     std::string spelling;
     while ( depth > 0 )
@@ -9995,7 +10000,6 @@ std::string Program::peek_param_list_spelling()
 	TokenBase *t = nextToken();
 	if ( !t )
 	    break;
-	recorded.push_back(t);
 	if ( t->id() == TokenID::tkOpBrk )
 	    depth++;
 	else if ( t->id() == TokenID::tkClBrk && --depth == 0 )
@@ -10021,8 +10025,7 @@ std::string Program::peek_param_list_spelling()
 		tok_sp = al->name;
 	spelling += tok_sp.empty() ? overload_token_spelling(t) : tok_sp;
     }
-    for ( size_t i = recorded.size(); i-- > 0; )
-	pushToken(recorded[i]);
+    tokens.restore(peek_saved);
     return spelling;
 }
 
@@ -13018,6 +13021,72 @@ void Program::flush_forest_pending_globals()
 	    << " (" << pg.type->name << ")" << std::endl);
     }
     forest_pending_globals.clear();
+
+    // v25: restored NAMESPACE-SURFACE state — after every fn/global above is
+    // registered, so the bindings resolve their targets.
+    if ( bind_forest )
+    {
+	// Using-declaration fn imports (`namespace std { using ::abort; }`):
+	// rebind namespace_map[ns][name] to the restored fn's program-scope
+	// Variable — the exact registration the live using-decl performs. A
+	// fenced/unrestored target cleanly lacks; first-wins matches live.
+	const std::vector<CirRestoredNsBind> &binds = bind_forest->restored_nsbinds();
+	for ( size_t i = 0; i < binds.size(); ++i )
+	{
+	    const CirRestoredNsBind &b = binds[i];
+	    Variable *v = findVariable(b.key);
+	    if ( !v || !v->type || !v->type->is_function() )
+		continue;
+	    variable_map_t &m = namespace_map[b.ns];
+	    if ( m.find(b.name) == m.end() )
+	    {
+		m[b.name] = v;
+		DBG(std::cout << "flush_forest_pending_globals: ns import "
+		    << b.ns << "::" << b.name << " -> " << b.key << std::endl);
+	    }
+	}
+	// Inline-namespace links: restore inline_namespace_children VERBATIM,
+	// then RE-RUN the one live derivation (mirror_inline_namespace_into_
+	// parent) deepest-child-first — std::__cxx11's members (stod,
+	// to_string) become members of std, exactly as each live block close
+	// leaves them. Idempotent: the mirror inserts first-wins.
+	const std::vector<CirRestoredNsLink> &links = bind_forest->restored_nslinks();
+	std::vector<std::pair<std::string, std::string> > mirror_order;
+	for ( size_t i = 0; i < links.size(); ++i )
+	{
+	    std::string parent = links[i].parent ? links[i].parent : "";
+	    std::string child(links[i].child);
+	    std::vector<std::string> &kids = inline_namespace_children[parent];
+	    bool have = false;
+	    for ( size_t k = 0; k < kids.size(); ++k )
+		if ( kids[k] == child )
+		{
+		    have = true;
+		    break;
+		}
+	    if ( !have )
+		kids.push_back(child);
+	    // Insert deepest-child-first (descending name length — a nested
+	    // inline ns has the longer qualified name), so the mirror replay
+	    // runs innermost-close-first like the live parse.
+	    size_t at = 0;
+	    while ( at < mirror_order.size()
+		 && mirror_order[at].second.size() >= child.size() )
+		++at;
+	    mirror_order.insert(mirror_order.begin() + at,
+				std::make_pair(parent, child));
+	}
+	for ( size_t i = 0; i < mirror_order.size(); ++i )
+	{
+	    mirror_inline_namespace_into_parent(mirror_order[i].first,
+						mirror_order[i].second);
+	    DBG(std::cout << "flush_forest_pending_globals: inline-ns mirror "
+		<< mirror_order[i].second << " -> "
+		<< (mirror_order[i].first.empty() ? "(global)"
+						  : mirror_order[i].first)
+		<< std::endl);
+	}
+    }
 
     // v23: rebuild each restored FuncDef's param_defaults from its captured
     // raw-token runs. param_defaults[i] is a PARSED EXPRESSION TREE on the
@@ -24740,6 +24809,16 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	// post-promotion — the object that persists in struct_map). Reads stay on dds.
 	if ( pgm.forest_arena_enabled )
 	    pgm.forest_arena_record_aggregate(dds);
+    }
+    else if ( pgm.forest_arena_enabled )
+    {
+	// v25: a TAGLESS body (`typedef struct { int quot, rem; } div_t;` —
+	// glibc's div_t/ldiv_t shape) never passes the tagged hook above, so
+	// its typedef's underlying had no record and the alias cleanly lacked
+	// ("'div_t' is not a member of namespace 'std'"). Record it here (its
+	// __anon_N name + DF_IS_ANONYMOUS keep it off standalone registration
+	// at restore — the typedef record is what surfaces it).
+	pgm.forest_arena_record_aggregate(dds);
     }
 
     // NOTE: the struct/union definition is recorded in top_decls only for

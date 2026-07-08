@@ -1340,12 +1340,13 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    // flush rebuilds live's registration (vfEXTERN Variable + Itanium
 	    // storage alias + namespace binding); no init, no ctor, no storage.
 	    // A type not in the arena cleanly lacks, like every other global.
-	    DataDefCLASS *xc = dynamic_cast<DataDefCLASS *>(v->type);
-	    if (!xc)
-		continue;
-	    uint32_t xtid = forest_serialize_type_id(xc);
-	    if (!madc::dis::arena_id_is_project(xtid)
-		|| !prog->forest_arena.has_def(xtid))
+	    // v25: ANY resolvable extern type — a real header's `extern FILE
+	    // *stdout;` is a POINTER extern the old class-only guard dropped
+	    // (bound real <stdio.h>: "use of undeclared identifier 'stdout'").
+	    uint32_t xtid = forest_serialize_type_id(v->type);
+	    if (!(madc::dis::arena_id_is_pinned(xtid)
+		  || (madc::dis::arena_id_is_project(xtid)
+		      && prog->forest_arena.has_def(xtid))))
 		continue;
 	    if (!seen_globals.insert(v->name).second)
 		continue;
@@ -1966,6 +1967,72 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		r.ref0    = aliases[i].ref0;
 		r.flags   = aliases[i].flags;	// v24: TU-root fence bit
 		a.set_def_at(next, r);
+	}
+
+	// 4 (v25): INLINE-namespace links — `namespace std { inline namespace
+	// __cxx11 { ... } }` makes the child's members visible in the parent via
+	// mirror_inline_namespace_into_parent at each block close. The link map
+	// (Program::inline_namespace_children) is parse-time state with no
+	// DataDef; serialize it so the flush can RE-RUN the one live mirror over
+	// restored state (stod / to_string are std::__cxx11 members a consumer
+	// resolves as members of std).
+	for (std::map<std::string, std::vector<std::string> >::const_iterator
+	     li = prog->inline_namespace_children.begin();
+	     li != prog->inline_namespace_children.end(); ++li) {
+		for (size_t c = 0; c < li->second.size(); ++c, ++next) {
+			madc::dis::defrec r;
+			memset(&r, 0, sizeof(r));
+			r.kind    = madc::dis::DK_NSLINK;
+			r.ns_id   = li->first.empty()
+				  ? 0u : a.strings.intern(li->first.c_str());
+			r.name_id = a.strings.intern(li->second[c].c_str());
+			a.set_def_at(next, r);
+		}
+	}
+
+	// 5 (v25): USING-DECLARATION function imports — `namespace std {
+	// using ::abort; }` binds namespace_map["std"]["abort"] to the GLOBAL
+	// fn's Variable; that binding is the only record of the import. Reverse-
+	// walk namespace_map for fn entries that are NOT the defining
+	// registration (ns == namespace_name && name == display — the flush
+	// already reproduces those) and record (ns, name, funcdef key); a
+	// mirrored inline-ns entry records redundantly and rebinds the same
+	// Variable first-wins at flush (harmless). A TU-root target's record is
+	// fenced at restore, so its bind cleanly lacks.
+	{
+		std::map<FuncDef *, std::string> fd_keys;
+		for (funcdef_map_iter fit = prog->funcdef_map.begin();
+		     fit != prog->funcdef_map.end(); ++fit)
+			if (fit->second)
+				fd_keys[fit->second] = fit->first;
+		for (namespace_map_t::iterator ni = prog->namespace_map.begin();
+		     ni != prog->namespace_map.end(); ++ni) {
+			if (ni->first.empty())
+				continue;
+			for (variable_map_iter vi = ni->second.begin();
+			     vi != ni->second.end(); ++vi) {
+				Variable *v = vi->second;
+				if (!v || !v->type || !v->type->is_function())
+					continue;
+				FuncDef *fd = dynamic_cast<FuncDef *>(v->type);
+				if (!fd)
+					continue;
+				if (fd->namespace_name == ni->first
+				    && fd->function_display_name == vi->first)
+					continue;	// the defining registration
+				std::map<FuncDef *, std::string>::const_iterator
+					ki = fd_keys.find(fd);
+				if (ki == fd_keys.end())
+					continue;
+				madc::dis::defrec r;
+				memset(&r, 0, sizeof(r));
+				r.kind    = madc::dis::DK_NSBIND;
+				r.ns_id   = a.strings.intern(ni->first.c_str());
+				r.name_id = a.strings.intern(vi->first.c_str());
+				r.disp_id = a.strings.intern(ki->second.c_str());
+				a.set_def_at(next++, r);
+			}
+		}
 	}
 }
 

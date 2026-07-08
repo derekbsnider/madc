@@ -8,39 +8,67 @@ every other madc track for five weeks. This document is the execution order; the
 
 ---
 
-## ⏯ RESUME HERE (post-compaction state, 2026-07-08 end of fourth sitting)
+## ⏯ RESUME HERE (fifth sitting, 2026-07-08 — v25 family burn-down in flight)
 
-- **Git:** develop == origin/develop **@eafb7ead**, tree clean except untracked
-  `mir-debug-support.md` (NOT ours — never stage, never `git add -A`).
-- **DONE this sitting, all pushed + gated (bind gate 18/18, test_cir_freeze
-  32/569, test_cir_arena 11/316, fulltest 680/0/0/16 exit 0 — run TWICE, once
-  per feature batch):**
-  1. **@95fad30c — v23 DEFAULT ARGUMENTS: THE OWNER'S BAR IS GREEN**
-     (`tests/testsubscript.mad` freeze+bind == live byte-identical == `.expect`;
-     gate case **[subbind]** locks it). Mechanism in the v23 bullet below.
-  2. **@16363a02 — item-3 REAL-TEST SOAK harness** (`scripts/forest_soak.sh`:
-     ONE capped pass over every tests/*.mad, LIVE run as oracle, rc+stdout
-     compared) + first measurement classified.
-  3. **@eafb7ead — v24 TU-ROOT ORIGIN FENCE (owner correction, BINDING: the
-     forest holds the #INCLUDE files' state ONLY — never the program's;
-     discriminator = root-vs-include, NOT system-vs-user): soak 407 → 623 OK
-     (93% of runnable).** Mechanism in the family-1 bullet below.
-- **THE IMMEDIATE NEXT TASK — burn down the 9 remaining soak families, in the
-  "REMAINING FAMILIES" order below (a → i; biggest first batches):**
-  (a) **va_list (9 tests)** — `use of undeclared identifier 'va_list'` on
-  bind; <stdarg.h> is a bucket-1 embedded compiler header, so its typedef's
-  registration side effect is skipped when the header BINDS instead of
-  tokenizing. HYPOTHESIS (unverified — trace live first per the discipline):
-  either a lazy_map/_include_* lexer flag or the embedded-header parse
-  registers va_list; find the ONE live registration and re-run it over
-  restored state (the recapture_free_overload_surfaces precedent). Reducer:
-  `bin/madc --freeze=S tests/testvarargs.mad` then `--forest-bind=S
-  tests/testvarargs.mad` vs live. Re-soak after each family batch
-  (`bash scripts/forest_soak.sh`, results in tmp/soak/results.tsv); full
-  gates ONCE per batch.
+- **Git:** develop == origin/develop **@ddd13b01** (v25 batch 1 pushed); a
+  SECOND v25 batch (families d + quoted-include binding, ~8 mechanisms) is
+  IN THE WORKING TREE gated through bind gate 18/18 + test_cir_freeze 34/646 +
+  test_cir_arena 11/316, awaiting its fulltest exit + re-soak + commit.
+  Untracked `mir-debug-support.md` is NOT ours — never stage, never `git add -A`.
+- **DONE this sitting (soak 623 → 648 OK at @ddd13b01; the uncommitted batch
+  adds ≥6 more):**
+  1. **@ddd13b01 (v25, format bump, PUSHED) — families a+b+c:** (a) DK_CARRAY
+     array-type records (va_list, 9 tests — the typedef's underlying
+     `struct tag[1]` had no record kind); (b) ctor-ARG raw-token runs on
+     global records (partial_ordering constants, 7 — the v23 token-run
+     mechanism; CIR_GLOBALF_CTOR_ARG_TOKENS; flush re-runs the args-list
+     parse in the defining ns); (c) 1b body stamp = ROOT-vs-INCLUDE on the
+     BODY's origin (funcdef_files) — embedded <ns_*> wrappers + user-header
+     helpers restore (10 tests + testincludeonce); plus parseFunction now
+     stamps decl_file on the DEFINITION path (bodied fns had NULL → the
+     producer's OWN fns leaked as duplicate items), and QUOTED includes now
+     BIND to the grove by resolved path (they always re-parsed BESIDE
+     restored state → "Repeated item declaration").
+  2. **UNCOMMITTED batch (family d + misc, all reducer-green):** inline-ns
+     links serialize (DK_NSLINK) + flush re-runs
+     mirror_inline_namespace_into_parent (std::__cxx11 members — stod,
+     to_string — resolve in std); using-decl fn imports (DK_NSBIND —
+     `using ::abort;`); peek_param_list_spelling now REWINDS (savepos) instead
+     of consume+pushback — the pushback disabled the v23 default-arg capture
+     for EVERY C++ namespace free fn (stod's `size_t* __idx = 0` → arity
+     gate); loaded-body CALL-ARG fn references (`__stoa(strtod,...)` — bare
+     decayed N_ID in the args N_LIST) load the producer's extern decl;
+     object_returning_call_class classifies has_forest_body fns as
+     madc-emitted retbuf ABI (to_string's 1-arg no-retbuf call); EXTERN_REF
+     globals widened to non-class types (extern FILE *stdout); TAGLESS
+     `typedef struct {...} div_t;` records its anon aggregate (the tagged
+     hook never fired); embedded-header include FLAGS re-run at the bind
+     site (lazy stdin/stdout registration).
+- **THE IMMEDIATE NEXT TASK — in order:**
+  1. Wait for fulltest exit → commit batch 2 (`git commit -F` with trailers)
+     → push → re-soak (`bash scripts/forest_soak.sh`) → update this block
+     with the new OK count.
+  2. **DEFERRED-LAZY-BODY serialization** — the biggest remaining family
+     mechanism: a system-header inline fn the producer never ODR-used has NO
+     func-def in the frozen AST; live materializes it on use from
+     Program::deferred_lazy_bodies (symbol → DeferredFunctionBody: 4 token
+     vectors + var/method + file/line/col, madc.h ~2393). Serialize the map
+     (the v20/v23 token-run form, arena tokbytes) + rebind var to the
+     restored Variable at flush. Expected to fix: testincludenext (std::abs
+     — resolution AND body), testheaderstringops (__gnu_cxx char_traits
+     compare undefined import), testforeachheaderbody (basic_string copy-ctor
+     import), likely teststringplus/teststrplusbody_realhdr c2mir checks.
+  3. Remaining classified singles: make_preferred trio (testdefer/testfstream/
+     testloop — path-ish alias overload selection on basic_string);
+     DT_REG/SOCK_STREAM (glibc `enum { DT_REG=8 } + #define DT_REG DT_REG` —
+     enum-constant macro visibility); testfdsetfromsystime + teststringparam
+     (parse desyncs); teststructinit (BIND_DIFF); testsmaug_requests
+     (last_log); smaug_requests_source + testmemclralignwide (c2mir checks);
+     testfreezerun (freeze-inside-bind unit-count line — item-4 class, like
+     testproject×freeze FREEZE_FAIL 5).
 - **AFTER the families:** item 4 corpus pack + append-to-binary default-on
-  (watch family j: --project × --freeze writes no container) → item 5 lazy
-  defrost → item 6 measure + stamp the 06-22 plan CLOSED.
+  (watch: --project × --freeze writes no container; freeze-under-bind counts
+  differ) → item 5 lazy defrost → item 6 measure + stamp the 06-22 plan CLOSED.
 - **Discipline:** unchanged (see DISCIPLINE section): batch, reducer-iterate,
   gates ONCE per batch; state INTO the substrate, loaded == parsed, re-run the
   ONE live derivation; no `&&` chains; `ulimit`+`timeout` every run; ONE heavy

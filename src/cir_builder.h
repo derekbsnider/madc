@@ -1181,5 +1181,6 @@ void cir_collect_call_callees(node_t tree, std::set<std::string> &out);
 // FOREST materialization sites only (a loaded body is pre-built — the live
 // lowering site that registers F as referenced never runs for it).
 void cir_collect_cleanup_attr_fns(node_t tree, std::set<std::string> &out);
+void cir_collect_addr_fn_refs(node_t tree, std::set<std::string> &out);	// v25
 
 #endif // __CIR_BUILDER_H

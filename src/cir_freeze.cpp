@@ -1983,6 +1983,30 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		_restored.push_back(rt);
 	}
 
+	// Pass 3a (v25): namespace-surface records — inline-namespace links
+	// (NSLINK: the flush re-runs the live mirror) and using-declaration fn
+	// imports (NSBIND: the flush rebinds namespace_map[ns][name] to the
+	// restored fn's Variable).
+	for (uint32_t s = 0; s < nslots; ++s) {
+		madc::dis::defrec r;
+		if (!a.get_def_at(madc::dis::arena_id_of(s), r))
+			continue;
+		if (r.kind == madc::dis::DK_NSLINK) {
+			CirRestoredNsLink l;
+			l.parent = r.ns_id ? a.c_str(r.ns_id) : NULL;
+			l.child  = r.name_id ? a.c_str(r.name_id) : NULL;
+			if (l.child && *l.child)
+				_restored_nslinks.push_back(l);
+		} else if (r.kind == madc::dis::DK_NSBIND) {
+			CirRestoredNsBind b;
+			b.ns   = r.ns_id ? a.c_str(r.ns_id) : NULL;
+			b.name = r.name_id ? a.c_str(r.name_id) : NULL;
+			b.key  = r.disp_id ? a.c_str(r.disp_id) : NULL;
+			if (b.ns && *b.ns && b.name && *b.name && b.key && *b.key)
+				_restored_nsbinds.push_back(b);
+		}
+	}
+
 	// Pass 3b (v21): DK_ENUM records -> (name, ns, dd, enumerators). The
 	// DataDefENUM was allocated in pass 1a; the scoped enumerator values ride
 	// the record's constvalrec run and rebuild as constant Variables in the

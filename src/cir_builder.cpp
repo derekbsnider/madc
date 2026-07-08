@@ -4199,9 +4199,14 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 	// definition (retbuf ABI) once referenced — classify it that way both
 	// BEFORE materialization (still in deferred_lazy_bodies) and AFTER
 	// (m_materialized_lib_syms; the deferred entry is erased on parse).
+	// v25: a restored FOREST body (has_forest_body) is the LOADED
+	// equivalent of a deferred lazy body — same madc-emitted retbuf ABI
+	// (a bound to_string(42) was emitted 1-arg, no retbuf: "too few
+	// arguments" + "lvalue required" at the copy-init).
 	if (!(m_user_func_names && m_user_func_names->count(sym) > 0)
 	    && !m_materialized_lib_syms.count(sym)
-	    && !(m_prog && m_prog->has_deferred_lazy_body(sym)))
+	    && !(m_prog && m_prog->has_deferred_lazy_body(sym))
+	    && !fd->has_forest_body)
 		return NULL;
 	return cdd;
 }
@@ -18465,6 +18470,31 @@ node_t CirBuilder::translate_module(Program *prog)
 				// attribute (live registers it at the lowering site,
 				// which a pre-built loaded body never runs).
 				cir_collect_cleanup_attr_fns(bn, callees);
+				// v25: a fn referenced as a CALL ARGUMENT in the loaded
+				// body (`__stoa(strtod, ...)` — decayed bare N_ID, or
+				// `&f`). Live's argument lowering declares it via
+				// need_output_extern; reproduce that shape by loading
+				// the producer's OWN extern decl from the index (a
+				// local/param name misses the index and is ignored).
+				{
+					std::set<std::string> arg_refs;
+					cir_collect_addr_fn_refs(bn, arg_refs);
+					for (std::set<std::string>::iterator ai =
+					     arg_refs.begin(); ai != arg_refs.end(); ++ai) {
+						if (m_output_externs.count(*ai))
+							continue;
+						uint32_t xu = 0, xi = 0;
+						if (!prog->bind_forest->extern_loc_for(*ai, xu, xi))
+							continue;
+						cir_node *xd = prog->bind_forest->node_for(xu, xi);
+						if (xd) {
+							m_output_externs[*ai] = xd->as_node();
+							DBG(std::cout << "forest arg-ref extern: "
+							    << *ai << " (from " << kv.first
+							    << ")" << std::endl);
+						}
+					}
+				}
 				for (std::set<std::string>::iterator ci = callees.begin();
 				     ci != callees.end(); ++ci) {
 					// A callee with NO in-TU definition source (not a
@@ -19243,6 +19273,43 @@ void cir_collect_call_callees(node_t n, std::set<std::string> &out)
 			node_t op = c2mir_node_op(n, i);
 			if (!op) break;
 			cir_collect_call_callees(op, out);
+		}
+}
+
+// v25: collect every identifier passed AS A CALL ARGUMENT (bare N_ID after
+// function-to-pointer decay, or `&f` N_ADDR-over-N_ID) in a LOADED forest
+// body. libstdc++'s stod/stof/stol pass `&std::strtod` as a converter
+// argument to __gnu_cxx::__stoa — a function REFERENCE, not a call, so the
+// call collector above misses it and the pre-built body compiles against an
+// undeclared identifier. The forest materialization site resolves each
+// through the producer's EXTERN-DECL INDEX (live's need_output_extern shape
+// for an argument reference — the byte-identical decl); a local/param name
+// simply misses the index and is ignored. Live translation paths do NOT
+// call this (their argument lowering emits the extern at the lowering site).
+void cir_collect_addr_fn_refs(node_t n, std::set<std::string> &out)
+{
+	if (!n) return;
+	if (n->code == N_CALL) {
+		// op0 = callee (the call collector's subject); op1 = the args LIST.
+		node_t callee = c2mir_node_first_op(n);
+		node_t args = callee ? c2mir_node_next_op(callee) : NULL;
+		if (args && args->code == N_LIST)
+			for (node_t x = c2mir_node_first_op(args); x;
+			     x = c2mir_node_next_op(x)) {
+				if (x->code == N_ID && x->u.s.s)
+					out.insert(x->u.s.s);
+				else if (x->code == N_ADDR) {
+					node_t a = c2mir_node_first_op(x);
+					if (a && a->code == N_ID && a->u.s.s)
+						out.insert(a->u.s.s);
+				}
+			}
+	}
+	if (n->code > N_ID)
+		for (int i = 0; ; i++) {
+			node_t op = c2mir_node_op(n, i);
+			if (!op) break;
+			cir_collect_addr_fn_refs(op, out);
 		}
 }
 
