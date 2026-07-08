@@ -1941,6 +1941,26 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		// bind restore (provenance = the registered token's file).
 		p.flags   = prog->forest_is_tu_root_file((*dti)->file)
 			  ? (uint32_t)madc::dis::DF_TU_ROOT_ORIGIN : 0u;
+		// A struct/class-KEYWORD typedef (`typedef struct [tag] {...} X;` /
+		// `typedef struct tag X;`) ALSO registers the alias as a tag —
+		// struct_map[X] = the aggregate — so `struct X` resolves (the
+		// tagless glibc fd_set/div_t shape). The plain TokenTYPEDEF path
+		// never writes struct_map, so the producer's own map state is the
+		// discriminator (same key -> same definition, the
+		// DF_TYPEDEF_FLAT_ALIAS precedent); the restore reproduces the write.
+		// The no-body array form `typedef struct tag X[N];` maps the key to
+		// the tag's STRUCT while the alias definition is the CARRAY (parser
+		// ~24055 gates on !is_pointer only) — same-definition check walks
+		// the array element to match it.
+		{
+			DataDef *tag_dd = underlying;
+			if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(underlying))
+				tag_dd = ca->element_type;
+			datadef_map_iter smi = prog->struct_map.find(*it);
+			if (smi != prog->struct_map.end() && tag_dd
+			    && smi->second == tag_dd)
+				p.flags |= (uint32_t)madc::dis::DF_TYPEDEF_TAG_ALIAS;
+		}
 		aliases.push_back(p);
 	}
 
@@ -2201,6 +2221,30 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 				| madc::dis::DF_TU_ROOT_ORIGIN
 				| madc::dis::DF_FUNC_DEF_TOKENS))
 			continue;	// translated / fenced / already stamped
+		// The BODY's own origin fences too (the 1b body-stamp rule):
+		// a header-DECLARED fn DEFINED in the TU root (testmacroargsspace's
+		// `char *get_hint args((int level));` proto + root body) has an
+		// include-origin DK_FUNC (decl_file = the header) but a ROOT-origin
+		// body — the forest holds #include state only, and the consumer
+		// parses the root definition itself (a restored body would define
+		// it twice: "Repeated item declaration"). Unknown origin = fenced.
+		const char *bfile = NULL;
+		int bline = 0, bcol = 0;
+		for (TokenBase *t : fd->forest_body_tokens)
+			if (t && t->file) {
+				bfile = t->file;
+				bline = t->line;
+				bcol  = t->column;
+				break;
+			}
+		if (!bfile || prog->forest_is_tu_root_file(bfile)) {
+			DBG(std::cout << "arena_complete 6b: bodied " << fi->first
+				      << " body origin "
+				      << (bfile ? bfile : "(unknown)")
+				      << " is TU-root/unknown (no DEFBODY)"
+				      << std::endl);
+			continue;
+		}
 		std::vector<uint8_t> bytes;
 		if (!madc_pch::serialize_token_seq(fd->forest_body_tokens, bytes)
 		    || bytes.empty())
@@ -2214,15 +2258,6 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		r.kind      = madc::dis::DK_DEFBODY;
 		r.name_id   = a.strings.intern(fi->first.c_str());
 		r.ref0      = 0;	// ownerless: a FREE function's body
-		const char *bfile = NULL;
-		int bline = 0, bcol = 0;
-		for (TokenBase *t : fd->forest_body_tokens)
-			if (t && t->file) {
-				bfile = t->file;
-				bline = t->line;
-				bcol  = t->column;
-				break;
-			}
 		r.disp_id   = bfile ? a.strings.intern(bfile) : 0;
 		r.body_unit = (uint32_t)bline;
 		r.body_idx  = (uint32_t)bcol;

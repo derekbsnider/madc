@@ -2830,6 +2830,19 @@ public:
 				ctor_file(NULL) {}
     };
     std::vector<PendingForestGlobal> forest_pending_globals;
+    // Restored FLAT datatype_map registrations (typedef/enum/class names from a
+    // bound header). The lexer PROMOTES any identifier found in the flat
+    // datatype_map to a TokenDataType at TOKENIZE time (getToken ~4978), and in
+    // a live compile tokenize fully precedes parse — no user-header type ever
+    // influences the root's token shapes. An EAGER restore write (mid-tokenize,
+    // during #include handling) gave the consumer's remaining tokens a shape
+    // live never produces (`struct fd_set` — the restored typedef promoted the
+    // tag position to a datatype token → "Expecting '{' or identifier after
+    // struct"). Stage the writes here; the post-tokenize flush applies them in
+    // restore order (last wins, the live registration semantics) before parse.
+    // Namespace/struct/template maps stay eager — the lexer never reads them.
+    std::vector<std::pair<std::string, TokenDataType *> > forest_pending_datatypes;
+    std::set<std::string> forest_pending_datatype_names;	// staged-key guard
     // RC2: free-function declarations restored from a bound header. Same deferral
     // as the globals — the Variable lives in tkProgram scope, so registration
     // (funcdef_map + addVariable + Method, the parseFunction prototype shape)

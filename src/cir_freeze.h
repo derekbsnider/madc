@@ -608,6 +608,11 @@ struct CirRestoredType
 					// definition (the explicit-specialization
 					// alias_key surface) — the restore reproduces
 					// the flat datatype_map + struct_map writes
+	bool        tag_alias;		// CIR_TYPEK_TYPEDEF: the producer's struct_map
+					// also held this key -> same definition (a
+					// struct/class-KEYWORD typedef registers the
+					// alias as a tag) — the restore reproduces the
+					// struct_map write so `struct X` resolves
 	// v21 (CIR_TYPEK_ENUM): the scoped enumerators (name, value) — load
 	// rebuilds each as a constant Variable in the tag's pseudo-namespace,
 	// exactly as TokenENUM::parse leaves them. Empty for other kinds and

@@ -950,7 +950,11 @@ TEST_CASE("Phase 6 slice 1b: forest_restore_decls makes a fresh parser resolve a
 	CHECK(progB->datatype_map.find("myint") == progB->datatype_map.end());
 
 	// RESTORE from the forest — no header parse — then it resolves.
+	// (Production order: restore stages the flat datatype registrations —
+	// they must not promote token shapes mid-tokenize — and the tokenize
+	// tail's flush applies them; the harness calls both explicitly.)
 	progB->forest_restore_decls(forest);
+	progB->flush_forest_pending_globals();
 	flat_datatype_map_iter mit = progB->datatype_map.find("myint");
 	REQUIRE(mit != progB->datatype_map.end());
 	CHECK(&(*mit)->definition == expected);
@@ -1354,6 +1358,7 @@ TEST_CASE("Phase 6 slice 3c: forest_restore_decls reconstructs a header class "
 	// type name (datatype_map) and a tag (struct_map), 3 members, 2 bases,
 	// base_class == the first base, and the same verbatim layout a live parse gives.
 	progB->forest_restore_decls(forest);
+	progB->flush_forest_pending_globals();	// applies staged datatype_map writes
 	datadef_map_iter cit = progB->struct_map.find("C");
 	REQUIRE(cit != progB->struct_map.end());
 	DataDefCLASS *cd = dynamic_cast<DataDefCLASS *>(cit->second);
@@ -2577,6 +2582,7 @@ TEST_CASE("v25: an array-typed typedef (va_list shape) freezes as DK_CARRAY and 
 	std::remove(cons_path.c_str());
 	CHECK(progB->datatype_map.find("myva") == progB->datatype_map.end());
 	progB->forest_restore_decls(forest);
+	progB->flush_forest_pending_globals();	// applies staged datatype_map writes
 
 	flat_datatype_map_iter mit = progB->datatype_map.find("myva");
 	REQUIRE(mit != progB->datatype_map.end());
@@ -2701,4 +2707,115 @@ TEST_CASE("v25: a ctor-syntax header global restores its ctor ARGUMENTS as parse
 			CHECK(td.decl->ctor_args[0]->id() == live_arg_id);
 		}
 	REQUIRE(decl_found);
+}
+
+// A struct/class-KEYWORD typedef (`typedef struct {...} X;` — the tagless
+// glibc fd_set/div_t shape, or `typedef struct tag X;`) ALSO registers the
+// alias as a TAG in the producer (struct_map[X] = the aggregate,
+// TokenSTRUCT::parse ~24055/~25002) so `struct X v;` resolves. The plain
+// TokenTYPEDEF path never writes struct_map. The save stamps
+// DF_TYPEDEF_TAG_ALIAS from the producer's own map state (same key -> same
+// definition); the restore reproduces the struct_map write — and must NOT
+// invent one for a plain alias.
+TEST_CASE("tagless-typedef struct: the alias restores as a struct_map tag too") {
+	std::string inc_path = std::string("/tmp/madc_taga_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_taga_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string cons_path = std::string("/tmp/madc_taga_cons_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_taga_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		// fdset_like = the tagless shape (struct-keyword typedef -> tag
+		// alias); fl2 = a PLAIN typedef of it (never a tag in live);
+		// jb = the no-body ARRAY form (`typedef struct tag X[N];`, the
+		// jmp_buf shape) whose tag key maps the ELEMENT struct.
+		inc << "typedef struct { long bits[2]; } fdset_like;\n"
+		       "typedef fdset_like fl2;\n"
+		       "struct jbtag { int depth; };\n"
+		       "typedef struct jbtag jb[1];\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { struct fdset_like v; fl2 w; jb b; return 0; }\n";
+	}
+	{
+		std::ofstream cn(cons_path.c_str());
+		cn << "int main() { return 0; }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		// The LIVE premise: the struct-keyword alias is a tag, the plain
+		// alias is not.
+		flat_datatype_map_iter li = progA->datatype_map.find("fdset_like");
+		REQUIRE(li != progA->datatype_map.end());
+		datadef_map_iter si = progA->struct_map.find("fdset_like");
+		REQUIRE(si != progA->struct_map.end());
+		CHECK(si->second == &(*li)->definition);
+		CHECK(progA->struct_map.find("fl2") == progA->struct_map.end());
+		// The array form's live premise: the alias key maps the ELEMENT
+		// struct while the datatype is the CARRAY.
+		flat_datatype_map_iter ji = progA->datatype_map.find("jb");
+		REQUIRE(ji != progA->datatype_map.end());
+		REQUIRE(dynamic_cast<DataDefCArray *>(&(*ji)->definition) != nullptr);
+		datadef_map_iter jsi = progA->struct_map.find("jb");
+		REQUIRE(jsi != progA->struct_map.end());
+		CHECK(jsi->second == dynamic_cast<DataDefCArray *>(
+			&(*ji)->definition)->element_type);
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	// A FRESH Program that never parses the header.
+	std::shared_ptr<Program> progB = std::make_shared<Program>();
+	TokenProgram *tpB = progB->tokenize(cons_path.c_str());
+	REQUIRE(tpB != nullptr);
+	std::remove(cons_path.c_str());
+	CHECK(progB->struct_map.find("fdset_like") == progB->struct_map.end());
+	progB->forest_restore_decls(forest);
+	progB->flush_forest_pending_globals();	// applies staged datatype_map writes
+
+	// Loaded == parsed: datatype_map AND struct_map hold the alias, both
+	// resolving to the SAME restored aggregate (live's 25002 write).
+	flat_datatype_map_iter mit = progB->datatype_map.find("fdset_like");
+	REQUIRE(mit != progB->datatype_map.end());
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(&(*mit)->definition);
+	REQUIRE(sdd != nullptr);
+	CHECK(sdd->members.size() == 1);
+	datadef_map_iter sit = progB->struct_map.find("fdset_like");
+	REQUIRE(sit != progB->struct_map.end());
+	CHECK(sit->second == sdd);
+	// The PLAIN alias restores as a datatype only — no invented tag.
+	flat_datatype_map_iter pit = progB->datatype_map.find("fl2");
+	REQUIRE(pit != progB->datatype_map.end());
+	CHECK(&(*pit)->definition == sdd);
+	CHECK(progB->struct_map.find("fl2") == progB->struct_map.end());
+	// The no-body ARRAY form: datatype_map[jb] = the CARRAY, struct_map[jb]
+	// = the ELEMENT struct (live's ~24055 write through the array walk).
+	flat_datatype_map_iter jit = progB->datatype_map.find("jb");
+	REQUIRE(jit != progB->datatype_map.end());
+	DataDefCArray *jarr = dynamic_cast<DataDefCArray *>(&(*jit)->definition);
+	REQUIRE(jarr != nullptr);
+	datadef_map_iter jsi = progB->struct_map.find("jb");
+	REQUIRE(jsi != progB->struct_map.end());
+	CHECK(jsi->second == jarr->element_type);
+	CHECK(dynamic_cast<DataDefSTRUCT *>(jsi->second) != nullptr);
 }

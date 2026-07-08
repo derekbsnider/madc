@@ -12356,7 +12356,30 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    // polymorphic_allocator variant ("no matching constructor" on the
 	    // owner's bar test).
 	    if ( !rt.ns || !*rt.ns )
-		datatype_map[name] = tdt;
+	    {
+		// STAGED (not an eager map write): the lexer promotes flat
+		// datatype_map names at tokenize time, which live never sees
+		// for user-header types — see forest_pending_datatypes.
+		forest_pending_datatypes.push_back(std::make_pair(name, tdt));
+		forest_pending_datatype_names.insert(name);
+		// A struct/class-KEYWORD typedef (`typedef struct [tag] {...} X;`
+		// / `typedef struct tag X;`) ALSO registered the alias as a tag in
+		// the producer — struct_map[X] = the aggregate (TokenSTRUCT::parse
+		// ~24055/~25002; the tagless glibc fd_set/div_t shape) — so a bound
+		// `struct X v;` resolves the tag. Stamped at save from the
+		// producer's own map state; the plain TokenTYPEDEF path never
+		// writes struct_map and never stamps. The no-body array form
+		// (`typedef struct tag X[N];`) keyed the tag's STRUCT — walk the
+		// array element, mirroring the save-side check.
+		if ( rt.tag_alias )
+		{
+		    DataDef *tag_dd = rt.underlying;
+		    if ( DataDefCArray *ca = dynamic_cast<DataDefCArray *>(tag_dd) )
+			tag_dd = ca->element_type;
+		    if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(tag_dd) )
+			struct_map[name] = sdd;
+		}
+	    }
 	    // v26: an explicit-specialization alias (live's alias_key block in
 	    // TokenTEMPLATE::parse, ~38118) ALSO writes the FLAT datatype_map +
 	    // struct_map — instantiate_template_use's cache check reads the flat
@@ -12365,7 +12388,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    // (std::char_traits<char> built the __gnu_cxx base product).
 	    else if ( rt.flat_alias )
 	    {
-		datatype_map[name] = tdt;
+		forest_pending_datatypes.push_back(std::make_pair(name, tdt));
+		forest_pending_datatype_names.insert(name);
 		if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(rt.underlying) )
 		    struct_map[name] = sdd;
 	    }
@@ -12389,10 +12413,12 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    // pseudo-namespace (key = ns::Tag inside a namespace, else Tag).
 	    // No TopDecl: an enum is a parse-time name/value surface, not an
 	    // emitted C aggregate (live pushes none either).
-	    if ( !rt.dd || datatype_map.find(name) != datatype_map.end() )
+	    if ( !rt.dd || datatype_map.find(name) != datatype_map.end()
+	      || forest_pending_datatype_names.count(name) )
 		continue;
 	    TokenDataType *tdt = new TokenDataType(rt.name, *rt.dd);
-	    datatype_map[name] = tdt;
+	    forest_pending_datatypes.push_back(std::make_pair(name, tdt));
+	    forest_pending_datatype_names.insert(name);
 	    register_in_namespace(rt.ns, name, rt.dd, tdt);
 	    if ( !rt.enumerators.empty() )
 	    {
@@ -12449,7 +12475,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		continue;
 	    struct_map[name] = cdd;
 	    TokenDataType *tdt = new TokenDataType(rt.name, *cdd);
-	    datatype_map[name] = tdt;
+	    forest_pending_datatypes.push_back(std::make_pair(name, tdt));
+	    forest_pending_datatype_names.insert(name);
 	    register_in_namespace(rt.ns, name, cdd, tdt);
 	    // Stage every restored METHOD for program registration, exactly as a
 	    // live parse leaves it: parseFunction registers each method (ctor,
@@ -12759,8 +12786,23 @@ static void register_skipped_class_template_function(
 void Program::flush_forest_pending_globals()
 {
     if ( !tkProgram
-	 || (forest_pending_globals.empty() && forest_pending_funcs.empty()) )
+	 || (forest_pending_globals.empty() && forest_pending_funcs.empty()
+	     && forest_pending_datatypes.empty()) )
 	return;
+
+    // Staged FLAT datatype_map registrations FIRST (typedef/enum/class names
+    // from the bound headers): tokenize is over, so the writes can no longer
+    // promote the consumer's token shapes (the live-parity reason they were
+    // staged — see forest_pending_datatypes), and every later flush step
+    // (default-arg / ctor-arg re-parses, template hydration) resolves type
+    // names against the complete map exactly as the eager write provided.
+    // Applied in restore order — a later same-named alias wins, the live
+    // registration semantics.
+    for ( size_t i = 0; i < forest_pending_datatypes.size(); ++i )
+	datatype_map[forest_pending_datatypes[i].first] =
+	    forest_pending_datatypes[i].second;
+    forest_pending_datatypes.clear();
+    forest_pending_datatype_names.clear();
 
     // RC2 + #23: register the staged free-function AND method declarations
     // exactly as parseFunction's prototype tail does — funcdef_map[name] + a

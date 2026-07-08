@@ -174,6 +174,14 @@ enum DefFlags : uint32_t {
 						// tokens — the declaration restores (the
 						// was_bodied&&!has_body drop lifts) and the
 						// deferred body materializes on first ODR-use
+	DF_TYPEDEF_TAG_ALIAS = 1u << 25,	// a FLAT DK_TYPEDEF alias the producer's
+						// struct_map ALSO holds under the same key ->
+						// same definition (the struct/class-KEYWORD
+						// typedef forms: `typedef struct [tag] {...} X;`
+						// / `typedef struct tag X;` register the alias
+						// as a tag so `struct X` resolves; the plain
+						// TokenTYPEDEF path never does) — the restore
+						// reproduces the struct_map write
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live
