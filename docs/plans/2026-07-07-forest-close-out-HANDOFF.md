@@ -8,10 +8,52 @@ every other madc track for five weeks. This document is the execution order; the
 
 ---
 
-## ⏯ RESUME HERE (2026-07-08: THE OWNER'S BAR IS GREEN)
+## ⏯ RESUME HERE (post-compaction state, 2026-07-08 end of fourth sitting)
 
-- **DONE (fourth sitting, 2026-07-08): DEFAULT ARGUMENTS (format v23) —
-  [subbind] GREEN.** `bin/madc --freeze=S tests/testsubscript.mad` then
+- **Git:** develop == origin/develop **@eafb7ead**, tree clean except untracked
+  `mir-debug-support.md` (NOT ours — never stage, never `git add -A`).
+- **DONE this sitting, all pushed + gated (bind gate 18/18, test_cir_freeze
+  32/569, test_cir_arena 11/316, fulltest 680/0/0/16 exit 0 — run TWICE, once
+  per feature batch):**
+  1. **@95fad30c — v23 DEFAULT ARGUMENTS: THE OWNER'S BAR IS GREEN**
+     (`tests/testsubscript.mad` freeze+bind == live byte-identical == `.expect`;
+     gate case **[subbind]** locks it). Mechanism in the v23 bullet below.
+  2. **@16363a02 — item-3 REAL-TEST SOAK harness** (`scripts/forest_soak.sh`:
+     ONE capped pass over every tests/*.mad, LIVE run as oracle, rc+stdout
+     compared) + first measurement classified.
+  3. **@eafb7ead — v24 TU-ROOT ORIGIN FENCE (owner correction, BINDING: the
+     forest holds the #INCLUDE files' state ONLY — never the program's;
+     discriminator = root-vs-include, NOT system-vs-user): soak 407 → 623 OK
+     (93% of runnable).** Mechanism in the family-1 bullet below.
+- **THE IMMEDIATE NEXT TASK — burn down the 9 remaining soak families, in the
+  "REMAINING FAMILIES" order below (a → i; biggest first batches):**
+  (a) **va_list (9 tests)** — `use of undeclared identifier 'va_list'` on
+  bind; <stdarg.h> is a bucket-1 embedded compiler header, so its typedef's
+  registration side effect is skipped when the header BINDS instead of
+  tokenizing. HYPOTHESIS (unverified — trace live first per the discipline):
+  either a lazy_map/_include_* lexer flag or the embedded-header parse
+  registers va_list; find the ONE live registration and re-run it over
+  restored state (the recapture_free_overload_surfaces precedent). Reducer:
+  `bin/madc --freeze=S tests/testvarargs.mad` then `--forest-bind=S
+  tests/testvarargs.mad` vs live. Re-soak after each family batch
+  (`bash scripts/forest_soak.sh`, results in tmp/soak/results.tsv); full
+  gates ONCE per batch.
+- **AFTER the families:** item 4 corpus pack + append-to-binary default-on
+  (watch family j: --project × --freeze writes no container) → item 5 lazy
+  defrost → item 6 measure + stamp the 06-22 plan CLOSED.
+- **Discipline:** unchanged (see DISCIPLINE section): batch, reducer-iterate,
+  gates ONCE per batch; state INTO the substrate, loaded == parsed, re-run the
+  ONE live derivation; no `&&` chains; `ulimit`+`timeout` every run; ONE heavy
+  job at a time (never rebuild during fulltest — and never claim fulltest
+  green before its EXIT CODE lands); commit `-F` with trailers; push every
+  green batch. After compaction: read THIS doc + the READ-FIRST banner IN
+  FULL before the first edit.
+
+---
+
+### Sitting-4 detail (mechanisms, superseded framings kept below)
+
+- **v23 DEFAULT ARGUMENTS ([subbind] GREEN).** `bin/madc --freeze=S tests/testsubscript.mad` then
   `--forest-bind=S tests/testsubscript.mad` == live (byte-identical output)
   == `.expect`. Mechanism: parseFunction's `= expr` branches capture the raw
   source token range parseExpression consumes (TokenStream cursor tap, gated
