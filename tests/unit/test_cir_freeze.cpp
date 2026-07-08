@@ -2074,12 +2074,12 @@ TEST_CASE("RC2: free-function prototypes freeze into the arena and restore") {
 	CHECK(!len->fd->is_varargs);
 	REQUIRE(len->fd->parameters.size() == 1);
 	CHECK(len->fd->return_value_type().size == 8);
-	// A BODIED function restores ONLY when its definition landed in a
-	// SYSTEM-header unit (an instantiated __mti / __ns_*__oN definition
-	// with a forest body — v20). This header is under /tmp, not a system
-	// include dir, so its inline helper cleanly lacks; the producer's own
-	// main() (a user-file root) must NEVER restore into a consumer.
-	CHECK(!saw_inline);
+	// v25 (root-vs-include, the v24 discriminator): a BODIED function
+	// restores whenever its definition came from an INCLUDED file — system,
+	// user, or embedded header alike (the <ns_*> wrappers, testinclude's
+	// helper). This header's inline helper therefore RESTORES; the
+	// producer's own main() (the TU root) must NEVER restore into a consumer.
+	CHECK(saw_inline);
 	CHECK(!saw_main);
 }
 
@@ -2511,4 +2511,194 @@ TEST_CASE("v23: method param DEFAULT ARGUMENTS freeze as token runs and restore 
 	CHECK(rf->param_defaults[3]->ival() == 5);	// K resolved in owner scope
 	// The arity gate — a 1-arg call (`a.add(1)`) is legal, as live.
 	CHECK(rf->required_param_count() == 2);		// __this + x
+}
+
+// v25: an ARRAY-typed typedef (the va_list shape — `typedef struct tag {...}
+// name[1];`) freezes as a DK_CARRAY derived record (ref0 = element, folded
+// count) and restores VERBATIM: the typedef resolves and its underlying is a
+// DataDefCArray over the restored struct. Before v25 the array type had no
+// arena record, so the typedef "cleanly lacked" and a bound <stdarg.h> had no
+// va_list (soak family a).
+TEST_CASE("v25: an array-typed typedef (va_list shape) freezes as DK_CARRAY and restores") {
+	std::string inc_path = std::string("/tmp/madc_v25a_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_v25a_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string cons_path = std::string("/tmp/madc_v25a_cons_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_v25a_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		// myva = the va_list shape; grid = a multi-dim fold (2*3 -> one
+		// record with count 6) over a PINNED element (int).
+		inc << "typedef struct __va_tag { unsigned int gp; unsigned int fp;\n"
+		       "    void *oa; void *rsa; } myva[1];\n"
+		       "typedef int grid[2][3];\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { myva ap; grid g; return 0; }\n";
+	}
+	{
+		std::ofstream cn(cons_path.c_str());
+		cn << "int main() { return 0; }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		// The LIVE typedef's underlying is the array type.
+		flat_datatype_map_iter li = progA->datatype_map.find("myva");
+		REQUIRE(li != progA->datatype_map.end());
+		REQUIRE(dynamic_cast<DataDefCArray *>(&(*li)->definition) != nullptr);
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	// A FRESH Program that never parses the header.
+	std::shared_ptr<Program> progB = std::make_shared<Program>();
+	TokenProgram *tpB = progB->tokenize(cons_path.c_str());
+	REQUIRE(tpB != nullptr);
+	std::remove(cons_path.c_str());
+	CHECK(progB->datatype_map.find("myva") == progB->datatype_map.end());
+	progB->forest_restore_decls(forest);
+
+	flat_datatype_map_iter mit = progB->datatype_map.find("myva");
+	REQUIRE(mit != progB->datatype_map.end());
+	DataDefCArray *va = dynamic_cast<DataDefCArray *>(&(*mit)->definition);
+	REQUIRE(va != nullptr);
+	CHECK(va->count == 1);
+	CHECK(va->count_expr == nullptr);
+	CHECK(va->size == 24);				// the 24-byte tag struct
+	DataDefSTRUCT *tag = dynamic_cast<DataDefSTRUCT *>(va->element_type);
+	REQUIRE(tag != nullptr);
+	CHECK(tag->members.size() == 4);
+
+	flat_datatype_map_iter git = progB->datatype_map.find("grid");
+	REQUIRE(git != progB->datatype_map.end());
+	DataDefCArray *gr = dynamic_cast<DataDefCArray *>(&(*git)->definition);
+	REQUIRE(gr != nullptr);
+	CHECK(gr->count == 6);				// dims folded (2*3), as live
+	REQUIRE(gr->element_type != nullptr);
+	// The element swizzles back as a pinned 4-byte integer (a plain `int`
+	// serializes via its pinned rawtype slot — assert shape, not slot).
+	CHECK(gr->element_type->size == 4);
+	CHECK(gr->element_type->is_integer());
+	CHECK(gr->size == 24);				// 6 * sizeof(int)
+	CHECK(progB->user_typedef_names.count("myva") == 1);
+}
+
+// v25: a ctor-syntax file-scope global `T name(args);` (the <compare> ordering
+// constants' out-of-class static member definition shape) serializes its args
+// list as a RAW TOKEN run (CIR_GLOBALF_CTOR_ARG_TOKENS) and the flush re-runs
+// the live args-list parse over it — the rebuilt TokenDecl::ctor_args carries
+// the real argument, so global_ctor_call selects the real ctor overload
+// instead of a no-matching default construction.
+TEST_CASE("v25: a ctor-syntax header global restores its ctor ARGUMENTS as parsed trees") {
+	std::string inc_path = std::string("/tmp/madc_v25b_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_v25b_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string cons_path = std::string("/tmp/madc_v25b_cons_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_v25b_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		// The <compare> shape reduced: a class whose ONLY ctor takes an
+		// argument, plus a file-scope constant constructed with one.
+		inc << "class Tagv { public: int v; Tagv(int x) { v = x; } };\n"
+		       "Tagv t_less(-1);\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { return t_less.v; }\n";
+	}
+	{
+		std::ofstream cn(cons_path.c_str());
+		cn << "int main() { return 0; }\n";
+	}
+
+	TokenID live_arg_id = TokenID::tkBase;	// live's parsed ctor-arg node kind
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		// The LIVE decl carries one parsed ctor arg + the captured raw run.
+		bool live_found = false;
+		for (const Program::TopDecl &td : progA->top_decls)
+			if (td.kind == Program::DeclKind::dkGlobalVar
+			    && td.name == "t_less" && td.decl) {
+				live_found = true;
+				REQUIRE(td.decl->ctor_args.size() == 1);
+				REQUIRE(td.decl->ctor_args[0] != nullptr);
+				live_arg_id = td.decl->ctor_args[0]->id();
+				CHECK(td.decl->ctor_arg_src.size() == 2);	// `-` `1`
+			}
+		REQUIRE(live_found);
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	std::shared_ptr<Program> progB = std::make_shared<Program>();
+	TokenProgram *tpB = progB->tokenize(cons_path.c_str());
+	REQUIRE(tpB != nullptr);
+	std::remove(cons_path.c_str());
+	progB->forest_restore_decls(forest);
+	progB->flush_forest_pending_globals();
+
+	// The restored global carries the args-token run (restored_globals fills
+	// lazily inside forest_restore_decls' materialization).
+	bool found = false;
+	for (const CirRestoredGlobal &rg : forest.restored_globals())
+		if (rg.name && !strcmp(rg.name, "t_less")) {
+			found = true;
+			CHECK((rg.gflags & CIR_GLOBALF_CTOR_ARG_TOKENS) != 0);
+			CHECK(rg.ctor_bytes != nullptr);
+			CHECK(rg.ctor_count >= 1);	// `-1` (one or two tokens)
+		}
+	REQUIRE(found);
+
+	// The flush rebuilt the dkGlobalVar TopDecl with the PARSED ctor args —
+	// the state global_ctor_call reads. Loaded == parsed: the rebuilt arg is
+	// the SAME node kind live's parse produced (the -1 emits correctly end to
+	// end — the bind-vs-live output equality rides the reducer/soak gates).
+	bool decl_found = false;
+	for (const Program::TopDecl &td : progB->top_decls)
+		if (td.kind == Program::DeclKind::dkGlobalVar && td.name == "t_less") {
+			decl_found = true;
+			REQUIRE(td.decl != nullptr);
+			REQUIRE(td.decl->ctor_args.size() == 1);
+			REQUIRE(td.decl->ctor_args[0] != nullptr);
+			CHECK(td.decl->ctor_args[0]->id() == live_arg_id);
+		}
+	REQUIRE(decl_found);
 }

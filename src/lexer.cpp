@@ -3125,6 +3125,32 @@ TokenBase *Program::_getToken()
 		    std::string full_path = is_include_next
 			? resolve_include_next_path(incfile)
 			: resolve_include_path(incfile, is_system);
+		    // Phase 6 (--forest-bind), v25: a grove-backed QUOTED /
+		    // filesystem include BINDS instead of tokenizing, exactly like
+		    // the angle branch above — the forest holds EVERY #include's
+		    // state (v24 root-vs-include discriminator: user headers
+		    // restore), so a live re-parse BESIDE the restored state would
+		    // double-define its contents ("Repeated item declaration").
+		    // Keyed on the RESOLVED path (the name the freeze tokenized
+		    // the unit under). #include_next keeps its positional walk.
+		    if ( forest_bind_enabled && !is_include_next
+		      && !full_path.empty() )
+		    {
+			int fu = forest_unit_for_include(full_path);
+			if ( fu >= 0 )
+			{
+			    DBG(std::cout << "#include \"" << full_path
+				<< "\" bound to grove unit " << fu << " ("
+				<< bind_forest->unit_name(fu) << ")" << std::endl);
+			    forest_bind_include((uint32_t)fu);
+			    if ( !forest_decls_restored )
+			    {
+				forest_restore_decls(*bind_forest);
+				forest_decls_restored = true;
+			    }
+			    return getToken();
+			}
+		    }
 		    if ( !should_tokenize_include(full_path) )
 		    {
 			pack_record_edge(full_path);	// B4a: edge survives the dedup skip

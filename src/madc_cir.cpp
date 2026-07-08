@@ -801,6 +801,7 @@ void Program::forest_arena_record_unary(DataDef *dd)
 		return;
 	uint32_t kind;
 	DataDef *operand;
+	uint64_t carray_count = 0;
 	if (DataDefREF *rf = dynamic_cast<DataDefREF *>(dd))		// REF is-a PTR: check first
 	{
 		kind = madc::dis::DK_REF;   operand = rf->base_type;
@@ -813,6 +814,17 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	{
 		kind = madc::dis::DK_CONST; operand = k->base_type;
 	}
+	else if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd))
+	{
+		// v25: a fixed-size C array type (va_list's `struct tag[1]`
+		// typedef underlying) is one more unary derived type over its
+		// element. A runtime-sized array (count_expr — a function-local
+		// VLA shape) is not header state and is never recorded.
+		if (ca->has_runtime_size())
+			return;
+		kind = madc::dis::DK_CARRAY; operand = ca->element_type;
+		carray_count = (uint64_t)ca->count;
+	}
 	else
 		return;			// not a unary derived type — nothing for this method to record
 
@@ -824,6 +836,8 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	r.size     = (uint32_t)dd->size;
 	r.datatype = (uint32_t)dd->rawtype();
 	r.ref0     = forest_serialize_type_id(operand);	// operand, as a type-id
+	r.carray_count_lo = (uint32_t)(carray_count & 0xffffffffu);
+	r.carray_count_hi = (uint32_t)(carray_count >> 32);
 	forest_arena.set_def_at(tid, r);
 }
 
@@ -1375,6 +1389,34 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    for (auto &t : prog->top_decls) {
 		if (t.kind != Program::DeclKind::dkGlobalVar || t.var != v)
 			continue;
+		// v25: ctor-syntax initializer `T name(args);` (the <compare>
+		// ordering constants) — serialize the args list's raw-token run
+		// (captured at parse under forest_arena_enabled) into the arena
+		// tokbytes; the flush re-runs the live args-list parse over it.
+		// Uncaptured args (empty run) leave gflags 0 -> the v13
+		// default-ctor synthesis, today's behavior.
+		if (t.decl && !t.decl->ctor_args.empty()
+		    && !t.decl->ctor_arg_src.empty()) {
+			std::vector<uint8_t> bytes;
+			if (madc_pch::serialize_token_seq(t.decl->ctor_arg_src, bytes)
+			    && !bytes.empty()) {
+				uint32_t cnt = 0;
+				for (TokenBase *ct : t.decl->ctor_arg_src)
+					if (ct)
+						++cnt;
+				g.ctor_tok_off   = f.arena.add_tokbytes(bytes);
+				g.ctor_tok_bytes = (uint32_t)bytes.size();
+				g.ctor_tok_count = cnt;
+				for (TokenBase *ct : t.decl->ctor_arg_src)
+					if (ct && ct->file) {
+						g.ctor_file_id =
+						    f.arena.strings.intern(ct->file);
+						break;
+					}
+				g.gflags |= CIR_GLOBALF_CTOR_ARG_TOKENS;
+			}
+			break;
+		}
 		TokenBase *rhs = t.decl ? t.decl->initialize : NULL;
 		if (TokenAssign *as = dynamic_cast<TokenAssign *>(rhs))
 			rhs = as->right;
@@ -1745,13 +1787,19 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		}
 	}
 
-	// 1b (v20): BODIED free-function body locations — the producer's
-	// instantiated definitions (static member-template __mti, namespace
-	// fn-template __ns_*__oN). Stamp a body ONLY when the func-def landed in
-	// a SYSTEM-header unit (its tokens carry the template's real origin): a
-	// producer ROOT (main, user-file functions) stays body-less and its
-	// DF_WAS_BODIED record cleanly lacks at load — a consumer must never
-	// inherit the producer's roots.
+	// 1b (v20, discriminator revised v25): BODIED free-function body
+	// locations — header-defined function definitions (embedded <ns_*>
+	// namespace wrappers, user-header helpers, instantiated __mti /
+	// __ns_*__oN definitions). The stamp fences by the v24 discriminator —
+	// ROOT-vs-INCLUDE — on the body's OWN origin (funcdef_files: the def's
+	// origin-token file; an instantiated definition lands in the main-file
+	// unit but its tokens carry the header origin), falling back to the
+	// unit name. A producer ROOT definition (main, program fns) stays
+	// body-less — a consumer never inherits the producer's roots — and an
+	// unknown origin conservatively stays body-less too. (The old
+	// is_system_header_path predicate dropped EMBEDDED headers' bodied
+	// wrappers — `perl::chop`'s "ns_perl" pseudo-path — and every
+	// user-header helper.)
 	if (TokenBase::_active_strpool) {
 		madc::dis::intern_table &pool = *TokenBase::_active_strpool;
 		for (uint32_t s = 0; s < nslots; ++s) {
@@ -1775,31 +1823,29 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 			uint32_t unit = bl->second.first;
 			if (unit >= f.units.size())
 				continue;
-			// System origin = the def's OWN source file (v21 — an
-			// instantiated pair/tuple ctor lands in the main-file unit
-			// but its tokens carry the header origin), else the unit
-			// name (v20). A producer root (main, user-file fns) matches
-			// neither and cleanly lacks.
-			bool system_origin = false;
+			// A record whose DECLARATION provenance is already the TU
+			// root (decl_file — precise when set) is fenced at restore
+			// anyway; never stamp it.
+			if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN) {
+				DBG(std::cout << "arena_complete 1b: bodied " << fsym
+					      << " is TU-root origin (no body stamp)"
+					      << std::endl);
+				continue;
+			}
+			// BODY origin: the def's own file, else the unit name.
+			const char *body_file = NULL;
 			std::map<std::string, const char *>::const_iterator
 				ff = f.funcdef_files.find(fsym);
-			if (ff != f.funcdef_files.end() && ff->second
-			    && prog->is_system_header_path(ff->second))
-				system_origin = true;
-			if (!system_origin) {
-				const char *un = pool.c_str(f.units[unit].unit_name_id);
-				if (un && prog->is_system_header_path(un))
-					system_origin = true;
-			}
-			if (!system_origin) {
+			if (ff != f.funcdef_files.end() && ff->second)
+				body_file = ff->second;
+			if (!body_file)
+				body_file = pool.c_str(f.units[unit].unit_name_id);
+			if (!body_file || prog->forest_is_tu_root_file(body_file)) {
 				DBG(std::cout << "arena_complete 1b: bodied " << fsym
-					      << " NOT system (file="
-					      << (ff != f.funcdef_files.end() && ff->second
-						  ? ff->second : "-")
-					      << " unit="
-					      << (pool.c_str(f.units[unit].unit_name_id)
-						  ? pool.c_str(f.units[unit].unit_name_id) : "-")
-					      << ")" << std::endl);
+					      << " body origin "
+					      << (body_file ? body_file : "(unknown)")
+					      << " is TU-root/unknown (no body stamp)"
+					      << std::endl);
 				continue;
 			}
 			r.flags    |= madc::dis::DF_HAS_FOREST_BODY;

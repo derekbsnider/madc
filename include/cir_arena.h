@@ -79,7 +79,10 @@ enum DefKind : uint32_t {
 	DK_SIMD,
 	DK_FPTR,	// v22: DataDefFPTR — ref0 = the target FuncDef's DK_FUNC record
 	DK_MEMBERPTR,
-	DK_CARRAY,
+	DK_CARRAY,	// v25: DataDefCArray — ref0 = element type-id; carray_count_lo/hi
+			// hold the FOLDED element count (a runtime-sized array —
+			// count_expr set — is never recorded; it is function-local
+			// state, not header state, and cleanly lacks)
 	DK_TYPEDEF,	// ref0 = underlying type-id (a named alias; ns_id gives its namespace)
 };
 
@@ -215,6 +218,10 @@ struct defrec {
 	uint32_t builtin_kind_id;	// intern id of inline_builtin_kind (0 = none)
 	uint32_t tret_name_id;		// intern id of template_return_param_name (0 = none)
 	uint32_t tret_arg_index;	// template_return_deduce_arg_index
+	// CARRAY (DK_CARRAY, v25): DataDefCArray::count (carray_dim_t is 64-bit),
+	// split into two words like constvalrec's value.
+	uint32_t carray_count_lo;
+	uint32_t carray_count_hi;
 };
 
 // A class-scope name -> type binding (type_aliases / static_member_types).

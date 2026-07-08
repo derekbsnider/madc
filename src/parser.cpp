@@ -8724,7 +8724,11 @@ DataDef *Program::parse_typedef_array_suffix(DataDef *base_dd,
 	else
 	    alias_count *= (size_t)n;
     }
-    return new DataDefCArray(*base_dd, alias_name, alias_count, alias_count_expr);
+    DataDefCArray *arr_dd = new DataDefCArray(*base_dd, alias_name, alias_count,
+					      alias_count_expr);
+    if ( forest_arena_enabled )
+	forest_arena_record_unary(arr_dd);	// v25: DK_CARRAY write-through
+    return arr_dd;
 }
 
 DataDefVOID ddVOID;
@@ -12457,6 +12461,10 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	pg.flags      = rg.flags;
 	pg.gflags     = rg.gflags;	// v14: CIR_GLOBALF_SCALAR_INIT
 	pg.init_value = rg.init_value;	// v14: scalar integer init
+	pg.ctor_bytes = rg.ctor_bytes;	// v25: ctor-args raw-token run
+	pg.ctor_len   = rg.ctor_len;
+	pg.ctor_count = rg.ctor_count;
+	pg.ctor_file  = rg.ctor_file;
 	forest_pending_globals.push_back(pg);
     }
 
@@ -12943,6 +12951,67 @@ void Program::flush_forest_pending_globals()
 			as->right = new TokenVar(*gv);	// value-init: self-copy
 		td->initialize = as;
 		gtd.decl = td;
+	}
+	// v25: ctor-syntax initializer `T name(args);` — the <compare> ordering
+	// constants' out-of-class static member definitions. Rebuild
+	// TokenDecl::ctor_args by re-running the LIVE args-list parse
+	// (parseDeclaration's ctor-call loop) over the restored raw tokens, inside
+	// the defining namespace — global_ctor_call then recovers the args and
+	// select_ctor_overload picks the real overload, as a live parse does
+	// (default-construction has no matching ctor for these classes).
+	else if ( (pg.gflags & CIR_GLOBALF_CTOR_ARG_TOKENS)
+		&& pg.ctor_bytes && pg.ctor_count )
+	{
+	    std::deque<TokenBase *> ctoks;
+	    if ( madc_pch::deserialize_tokens(pg.ctor_bytes, pg.ctor_len,
+					      pg.ctor_count, ctoks) )
+	    {
+		const char *fn = pg.ctor_file ? intern_file(pg.ctor_file) : NULL;
+		std::vector<TokenBase *> seq;
+		for ( TokenBase *t : ctoks )
+		{
+		    if ( !t )
+			continue;
+		    t->file = fn;
+		    seq.push_back(t);
+		}
+		if ( !seq.empty() )
+		{
+		    // The live args loop stops at ')': plant it as the stop token.
+		    seq.push_back(new TokenClBrk());
+		    TokenStream::State saved = tokens.swap_in(seq);
+		    TokenBase *saved_cur = _cur_token;
+		    TokenBase *saved_prv = _prv_token;
+		    _cur_token = NULL;
+		    _prv_token = NULL;
+		    TokenDecl *td = new TokenDecl(*gv);
+		    auto parse_args = [&]() {
+			while ( peekToken() && peekToken()->id() != TokenID::tkClBrk )
+			{
+			    TokenBase *arg = parseExpression(nextToken(), true);
+			    td->ctor_args.push_back(arg);
+			    if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+				nextToken(); // consume ','
+			}
+		    };
+		    if ( !pg.ns.empty() )
+		    {
+			// Live parsed inside `namespace NS {}` — the args
+			// (__cmp_cat::Ord::less) resolve through the chain.
+			NamespaceScope nsg(*this, pg.ns);
+			parse_args();
+		    }
+		    else
+			parse_args();
+		    _cur_token = saved_cur;
+		    _prv_token = saved_prv;
+		    tokens = saved;
+		    gtd.decl = td;
+		    DBG(std::cout << "flush_forest_pending_globals: ctor args for "
+			<< pg.name << " (" << td->ctor_args.size() << " arg(s), "
+			<< pg.ctor_count << " tokens)" << std::endl);
+		}
+	    }
 	}
 	top_decls.push_back(gtd);
 	DBG(std::cout << "flush_forest_pending_globals: global " << pg.name
@@ -29062,6 +29131,8 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 		alias_count *= (size_t)n;
 	}
 	base_dd = new DataDefCArray(*base_dd, alias, alias_count, alias_count_expr);
+	if ( pgm.forest_arena_enabled )
+	    pgm.forest_arena_record_unary(base_dd);	// v25: DK_CARRAY write-through
     }
 
     // register in datatype_map
@@ -39704,6 +39775,14 @@ paramdecl:
 	Throw(nt) << "Expecting brace after function declaration" << flush;
     }
 
+    // The DEFINING file, for a bodied definition. The prototype paths above
+    // stamp decl_file from their ';' token; this path never did, so every
+    // bodied fn (incl. the program's own) classified include-origin at the
+    // forest's v24 TU-root fence and a producer-root definition leaked into
+    // consumers as a duplicate item (v25).
+    if ( !func->decl_file )
+	func->decl_file = nt->file;
+
     if ( owner_class )
 	method->owner_class = owner_class;
 
@@ -41145,7 +41224,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    td->file = tb->file;
 	    td->line = tb->line;
 	    td->column = tb->column;
-	    // Parse constructor arguments
+	    // Parse constructor arguments. Under a --freeze parse, ALSO capture
+	    // the args list's raw source token run (v25 forest SAVE state — the
+	    // parsed trees cannot serialize; the flush re-runs this loop over the
+	    // captured tokens). Same cursor tap as the v23 param defaults.
+	    size_t ctor_cap_begin = 0;
+	    bool ctor_capturing = param_default_capture_begin(ctor_cap_begin);
 	    while ( peekToken() && peekToken()->id() != TokenID::tkClBrk )
 	    {
 		TokenBase *arg = parseExpression(nextToken(), true);
@@ -41153,6 +41237,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		if ( peekToken() && peekToken()->id() == TokenID::tkComma )
 		    nextToken(); // consume ','
 	    }
+	    if ( ctor_capturing && !td->ctor_args.empty() )
+		param_default_capture_end(ctor_cap_begin, td->ctor_arg_src);
 	    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
 		Throw(tb) << "Expected ')' after constructor arguments" << flush;
 	    nextToken(); // consume ')'

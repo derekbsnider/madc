@@ -318,7 +318,8 @@ static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 			std::make_pair(it->second.unit, it->second.idx);
 		// v21: the def's OWN source file (origin token) — an instantiated
 		// definition lands in the main-file unit but its tokens carry the
-		// template's header origin; body stamping classifies by this.
+		// template's header origin; body stamping fences by this (v25:
+		// root-vs-include, the v24 discriminator).
 		const char *deffile = NULL;
 		if (it->first->origin_id) {
 			TokenBase *tb = madc_token_for_slot(it->first->origin_id);
@@ -1303,6 +1304,7 @@ static bool arena_chain_ok(const madc::dis::FrozenDefArena &a, uint32_t tid,
 		case madc::dis::DK_PTR:
 		case madc::dis::DK_REF:
 		case madc::dis::DK_CONST:
+		case madc::dis::DK_CARRAY:	// v25: element chain, like the other unaries
 			tid = r.ref0;
 			continue;
 		case madc::dis::DK_STRUCT:
@@ -1577,7 +1579,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				continue;
 			}
 			if (r.kind != madc::dis::DK_PTR && r.kind != madc::dis::DK_REF
-			    && r.kind != madc::dis::DK_CONST)
+			    && r.kind != madc::dis::DK_CONST
+			    && r.kind != madc::dis::DK_CARRAY)
 				continue;
 			DataDef *operand = arena_swizzle(r.ref0, by_id);
 			if (!operand)
@@ -1587,6 +1590,16 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				d = new DataDefREF(*operand);
 			else if (r.kind == madc::dis::DK_CONST)
 				d = new DataDefCONST(*operand);
+			else if (r.kind == madc::dis::DK_CARRAY) {
+				// v25: rebuild the fixed-size array VERBATIM (name +
+				// folded count; a runtime-sized array is never recorded).
+				uint64_t cnt = (uint64_t)r.carray_count_lo
+					     | ((uint64_t)r.carray_count_hi << 32);
+				const char *an = r.name_id ? a.c_str(r.name_id) : NULL;
+				d = new DataDefCArray(*operand,
+						      an ? std::string(an) : operand->name,
+						      (size_t)cnt, NULL);
+			}
 			else
 				d = new DataDefPTR(*operand);
 			_mat_storage.push_back(d);
@@ -2146,6 +2159,17 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		uint32_t nslen = 0;
 		rg.ns         = g.ns_id ? pool_cstr(g.ns_id, nslen) : NULL;	// v22
 		rg.init_value = g.init_value;
+		// v25: the ctor-args raw-token run (arena tokbytes span).
+		rg.ctor_bytes = NULL;
+		rg.ctor_len   = 0;
+		rg.ctor_count = 0;
+		rg.ctor_file  = NULL;
+		if ((g.gflags & CIR_GLOBALF_CTOR_ARG_TOKENS) && g.ctor_tok_count) {
+			rg.ctor_bytes = a.tok_run(g.ctor_tok_off, g.ctor_tok_bytes);
+			rg.ctor_len   = g.ctor_tok_bytes;
+			rg.ctor_count = g.ctor_tok_count;
+			rg.ctor_file  = g.ctor_file_id ? a.c_str(g.ctor_file_id) : NULL;
+		}
 		_restored_globals.push_back(rg);
 	}
 

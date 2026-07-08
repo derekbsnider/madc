@@ -447,6 +447,11 @@ public:
     TokenBase *initialize;
     std::vector<TokenBase *> init_list; // brace-enclosed initializer for fixed-size arrays
     std::vector<TokenBase *> ctor_args; // constructor arguments for class-typed vars
+    // v25 forest SAVE state: the ctor-args list's RAW SOURCE TOKEN run (cloned,
+    // commas included), captured only during a --freeze parse (the cursor tap,
+    // like FuncDef::param_default_tokens). The parsed ctor_args trees cannot
+    // serialize; the flush re-runs the args-list parse over these tokens.
+    std::vector<TokenBase *> ctor_arg_src;
     bool has_brace_init;               // true when `= { ... }` syntax was used
     bool is_const_decl;                // true when declared with `const` qualifier
     // True when this declaration carried a constant initializer that the parser
@@ -2800,7 +2805,18 @@ public:
     // (which live in tkProgram->variables + dkGlobalVar top_decls) are staged here
     // and flushed by flush_forest_pending_globals() once tkProgram is created. The
     // name/type/flags are the loaded CirRestoredGlobal fields (type owned by the forest).
-    struct PendingForestGlobal { std::string name; std::string ns; DataDef *type; uint32_t flags; uint32_t gflags; int64_t init_value; };
+    struct PendingForestGlobal {
+	std::string name; std::string ns; DataDef *type;
+	uint32_t flags; uint32_t gflags; int64_t init_value;
+	// v25: the ctor-args raw-token run (CIR_GLOBALF_CTOR_ARG_TOKENS) — a
+	// span into the bound forest's arena tokbytes; the flush re-runs the
+	// args-list parse over it to rebuild TokenDecl::ctor_args.
+	const uint8_t *ctor_bytes; uint32_t ctor_len, ctor_count;
+	const char *ctor_file;
+	PendingForestGlobal() : type(NULL), flags(0), gflags(0), init_value(0),
+				ctor_bytes(NULL), ctor_len(0), ctor_count(0),
+				ctor_file(NULL) {}
+    };
     std::vector<PendingForestGlobal> forest_pending_globals;
     // RC2: free-function declarations restored from a bound header. Same deferral
     // as the globals — the Variable lives in tkProgram scope, so registration
