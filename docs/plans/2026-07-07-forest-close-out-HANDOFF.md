@@ -8,7 +8,75 @@ every other madc track for five weeks. This document is the execution order; the
 
 ---
 
-## ⏯ RESUME HERE (seventh sitting, 2026-07-08 — soak-first + burn-down)
+## ⏯ RESUME HERE (eighth sitting, 2026-07-08 — ITEM 4 LANDED: default-on embedded forest)
+
+- **Git:** develop == origin/develop **@a1da0687** — TWO pushed eighth-sitting
+  batches, each gated fulltest 680/0/0/16 exit 0 + bind gate 18/18
+  (strbind/strops whole-TU byte-identity UNREGRESSED) + selfexe + oracles.
+- **ITEM 4 @561cce34 (format v27): THE PRODUCT MOMENT — a packed madc binary
+  compiles with ZERO flags by binding system #includes from its own appended
+  forest.** Pack = `scripts/forest_pack.sh` (19-header list v2, +algorithm —
+  the B4a blocker is GONE; cstdint/cmath/iomanip still live-parse blockers,
+  parser track) → 240 units / 45,085 records appended. PROOFS: zero-flag
+  `<iostream>`/`<string>` consumer binds (units 71/48) == live == g++;
+  owner's-bar testsubscript.mad packed == live == .expect, no flags; C-mode
+  (`--std=gnu17`) correctly REFUSES the C++ corpus and live-parses; `-dM`
+  parity except ONE glibc-internal tombstone
+  (__GLIBC_INTERNAL_STARTING_HEADER_IMPLEMENTATION — PP-export undef-replay
+  nit); **2.2× end-to-end** (622ms vs 1358ms, eager restore still in place).
+  The wiring: default-on bind from /proc/self/exe when no forest flag
+  (SILENT fall-through when blob-less/pin-mismatch — open() quiet_missing);
+  freeze modes excluded from the default (pure producers; re-pack stays
+  clean); `--no-forest-bind` = the item-6 A/B lever; `--project` TUs bind
+  (madc_project_execute params — compiles BIND, only the build-time pack
+  freezes; NO multi-TU freeze writer needed, the item-4 design question
+  DISSOLVED). v27 = producer-config gate: dir header records
+  LanguageStd|gnu_dialect<<16 + -D fold (madc_forest_config_word/
+  _defines_hash, ONE derivation both sides); mismatch = silent live parse —
+  REQUIRED: a C++ corpus carries real glibc paths a C compile's resolved
+  #include would match. PLUS the first corpus-shape bug: the v12-era load
+  skip dropped symbol-less body-less ctors/operators — a NEVER-ODR-USED
+  producer (the corpus!) leaves EVERY inline special member in that state
+  (bodies ride DEFBODY) → cdd->ctors empty → NO-MATCH on first construction
+  (probe: nctors=0). Live registers every parsed method declaration; the
+  restore now does too. Reducer: tmp/nouse_prod.cpp + tmp/nouse_cons.cpp.
+- **BATCH 2 @a1da0687 — the stod chain (reducer tmp/stod1.cpp → d=3.14 ==
+  live == g++ against the corpus), three stacked never-used-producer gaps:**
+  (1) a DEFBODY-backed restored fn is NOT declaration_only — the flush's
+  Itanium alias stamp sent bound calls MANGLED-DIRECT to header-inline fns
+  with no .so export (stod undefined import); (2) DF_BODY_IN_INSTANTIATION
+  (bit 26): an instantiated __oN body (__stoa__o2) parses at
+  fn_template_instantiation_depth>0 live (the local-class reuse allowance,
+  `struct _Save_errno`) — capture stamps the context,
+  parse_deferred_function_body brackets the depth on the re-run; (3)
+  IN-CLASS inline bodies parse at CLASS CLOSE (parse_deferred_function_body)
+  — piece (a)'s parseFunction capture never saw them → a local class's
+  ctor/dtor bodies were LOST at freeze (undefined ___Save_errno___dtor__2);
+  capture now rides the class-close path, ctor mem-init list = DK_DEFBODY
+  run slot 3, parseFunction gate widened to methods.
+- **PACKED-SUITE SCORE (MADC_BIN=tmp/madc_packed, runner override landed):
+  673/680.** The 7, classified: **4 = the item-5 class** (eager
+  whole-container restore leaks never-bound units' state: testgnuattributemode
+  + testmemclralignwide repeated int16_t; teststaticconstsibling own
+  `struct ios` vs restored corpus class; testservent pthread_attr_t token
+  promotion) — lazy defrost IS the structural fix, these are its driver
+  tests. **3 = materialization residuals:** teststod + teststdstringconv now
+  compile but stoi("42") THROWS out_of_range at runtime (static-member-const
+  VALUE fidelity — __numeric_traits<int>::__min/__max — a NEW family, next
+  target); testmultiret __ns_std_minmax placeholder never materializes.
+- **NEXT SITTING:** the stoi value-fidelity family + minmax → **item 5 lazy
+  defrost** (demand-keyed restore on the ONE path; 4 driver tests above; the
+  user asked "is it lazy?" — unit binding + node records + bodies YES,
+  declaration surface NO, that's item 5) → item 6 measure (--no-forest-bind
+  = the A/B lever; SMAUG 51-TU --project) + stamp the 06-22 plan CLOSED.
+- **GOTCHAS:** re-freeze tmp containers after ANY save-side change
+  (stale-container tripwire — burned once today via or_probe on a pre-fix
+  container); re-PACK tmp/madc_packed after every rebuild (binary+blob both
+  stale); `grep -c error` matches `madc_error.o` — grep `error:`.
+
+---
+
+## Prior sitting (seventh, 2026-07-08 — soak-first + burn-down)
 
 - **Git:** develop == origin/develop **@110148a4** — TWO pushed seventh-sitting
   batches (below). Soak-first CONFIRMED the sixth-sitting state at **662/674**:
