@@ -543,6 +543,11 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 			f.arena.strings.buckets_data(),
 			f.arena.strings.buckets_size() * sizeof(uint32_t), codec))
 		return false;
+	// v23: the arena's raw token-byte block (param-default expression runs,
+	// .madh record form; zero-length when no defaults were captured).
+	if (!add_seg(w, CIR_FOREST_SEG_ARENA_TOKBYTES, SNAP_KIND_CIR_ARENA_TOKBYTES,
+		     f.arena.tokbytes.data(), f.arena.tokbytes.size(), codec))
+		return false;
 	// v20 container-global: template-NAME state (zero-length when the freeze
 	// recorded no template patterns).
 	if (!add_seg(w, CIR_FOREST_SEG_TEMPLATES, SNAP_KIND_CIR_TEMPLATES,
@@ -1075,6 +1080,14 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m)
 						      _arena_sbuckets, nk);
 		if (!ak)
 			nk = 0;	// buckets are derivable; never bind NULL with a count
+		// v23: the param-default token-byte block (absent/zero-length on a
+		// defaults-less freeze — the runs then cleanly lack).
+		size_t ntk = 0;
+		const uint8_t *tk = forest_pool_block(_reader, CIR_FOREST_SEG_ARENA_TOKBYTES,
+						      SNAP_KIND_CIR_ARENA_TOKBYTES,
+						      _arena_tokbytes, ntk);
+		if (tk && ntk)
+			_arena.bind_tokbytes(tk, ntk);
 		if (pd && pp && ab && ae && nd
 		    && !(nd % sizeof(uint32_t)) && !(np % sizeof(uint32_t))
 		    && !(ne % sizeof(madc::dis::intern_table::Entry))
@@ -1777,6 +1790,12 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					fd->parameters.push_back(thisp);
 				}
 				bool pok = true;
+				// v23: a param's default-argument token run rides its
+				// paramrec (def_tok_*) — collect (index, run) pairs for
+				// the flush's parseExpression re-run. Index space ==
+				// the stored/restored parameter slot (incl. __this).
+				std::vector<std::pair<uint32_t, CirRestoredTemplateRun> >
+					def_runs;
 				for (uint32_t p = m_static ? 0u : 1u;
 				     p < fr.params_count; ++p) {
 					madc::dis::paramrec pr;
@@ -1786,6 +1805,17 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					DataDef *pd = arena_swizzle(pr.type_id, by_id);
 					if (!pd) { pok = false; break; }
 					fd->parameters.push_back(pd);
+					const uint8_t *db =
+						a.tok_run(pr.def_tok_off, pr.def_tok_bytes);
+					if (db && pr.def_tok_count) {
+						CirRestoredTemplateRun run;
+						run.bytes = db;
+						run.len   = pr.def_tok_bytes;
+						run.count = pr.def_tok_count;
+						run.file  = pr.def_file_id
+							  ? a.c_str(pr.def_file_id) : NULL;
+						def_runs.push_back(std::make_pair(p, run));
+					}
 				}
 				if (!pok)
 					continue;
@@ -1845,6 +1875,17 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					cdd->method_map[dispname] = mv;
 				if (is_ctor)
 					cdd->ctors.push_back(mv);
+				// v23: stage the method's default-arg token runs for
+				// the flush (parseExpression re-runs inside the
+				// owner's class + namespace scope).
+				if (!def_runs.empty()) {
+					CirRestoredFuncDefaults rd;
+					rd.fd    = fd;
+					rd.owner = cdd;
+					rd.ns    = r.ns_id ? a.c_str(r.ns_id) : NULL;
+					rd.runs.swap(def_runs);
+					_restored_param_defaults.push_back(rd);
+				}
 			}
 
 			// v20 (widening slice 2): class-scope name maps — type
@@ -1990,6 +2031,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		FuncDef *fd = new FuncDef(*ret);
 		_mat_storage.push_back(fd);
 		bool pok = true;
+		// v23: default-arg token runs (see the method loop above).
+		std::vector<std::pair<uint32_t, CirRestoredTemplateRun> > def_runs;
 		for (uint32_t p = 0; p < r.params_count; ++p) {
 			madc::dis::paramrec pr;
 			if (!a.get_payload(r.params_begin, p, pr)) {
@@ -2004,6 +2047,15 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			const char *ps = pr.cpp_spelling_id
 				       ? a.c_str(pr.cpp_spelling_id) : NULL;
 			fd->param_cpp_spellings.push_back(ps ? ps : "");
+			const uint8_t *db = a.tok_run(pr.def_tok_off, pr.def_tok_bytes);
+			if (db && pr.def_tok_count) {
+				CirRestoredTemplateRun run;
+				run.bytes = db;
+				run.len   = pr.def_tok_bytes;
+				run.count = pr.def_tok_count;
+				run.file  = pr.def_file_id ? a.c_str(pr.def_file_id) : NULL;
+				def_runs.push_back(std::make_pair(p, run));
+			}
 		}
 		if (!pok)
 			continue;
@@ -2047,6 +2099,14 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		rf.name = nm;
 		rf.fd   = fd;
 		_restored_funcs.push_back(rf);
+		if (!def_runs.empty()) {
+			CirRestoredFuncDefaults rd;
+			rd.fd    = fd;
+			rd.owner = NULL;
+			rd.ns    = r.ns_id ? a.c_str(r.ns_id) : NULL;
+			rd.runs.swap(def_runs);
+			_restored_param_defaults.push_back(rd);
+		}
 	}
 
 	// v13/v14: restore file-scope global VARIABLE definitions — swizzle each

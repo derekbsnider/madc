@@ -1164,18 +1164,45 @@ void Program::forest_arena_record_func(FuncDef *fd)
 		r.flags |= madc::dis::DF_TRET_FROM_POINTER;
 	if (fd->template_return_ref)
 		r.flags |= madc::dis::DF_TRET_REF;
-	r.params_begin = (uint32_t)forest_arena.payload.size();
-	r.params_count = (uint32_t)fd->parameters.size();
+	// v23: serialize each param's DEFAULT-argument token run (raw source
+	// tokens, .madh record form) into the arena tokbytes block BEFORE the
+	// paramrec run is appended (tokbytes is a separate block, but resolve-
+	// first keeps the one payload discipline uniform). The parsed tree
+	// (param_defaults[i]) is load-side state — the flush re-derives it by
+	// re-running parseExpression over these tokens.
+	std::vector<madc::dis::paramrec> prs(fd->parameters.size());
 	for (size_t p = 0; p < fd->parameters.size(); ++p) {
-		madc::dis::paramrec pr;
+		madc::dis::paramrec &pr = prs[p];
 		memset(&pr, 0, sizeof(pr));
 		pr.type_id         = pt[p];
 		pr.flags           = (p < fd->const_params.size() && fd->const_params[p]) ? 1u : 0u;
 		pr.cpp_spelling_id = (p < fd->param_cpp_spellings.size()
 				      && !fd->param_cpp_spellings[p].empty())
 				   ? forest_arena.strings.intern(fd->param_cpp_spellings[p].c_str()) : 0u;
-		forest_arena.add_payload(pr);
+		if (p < fd->param_default_tokens.size()
+		    && !fd->param_default_tokens[p].empty()) {
+			const std::vector<TokenBase *> &toks = fd->param_default_tokens[p];
+			std::vector<uint8_t> bytes;
+			if (madc_pch::serialize_token_seq(toks, bytes) && !bytes.empty()) {
+				uint32_t cnt = 0;
+				for (TokenBase *t : toks)
+					if (t)
+						++cnt;
+				pr.def_tok_off   = forest_arena.add_tokbytes(bytes);
+				pr.def_tok_bytes = (uint32_t)bytes.size();
+				pr.def_tok_count = cnt;
+				for (TokenBase *t : toks)
+					if (t && t->file) {
+						pr.def_file_id = forest_arena.strings.intern(t->file);
+						break;
+					}
+			}
+		}
 	}
+	r.params_begin = (uint32_t)forest_arena.payload.size();
+	r.params_count = (uint32_t)fd->parameters.size();
+	for (size_t p = 0; p < prs.size(); ++p)
+		forest_arena.add_payload(prs[p]);
 	forest_arena.set_def_at(tid, r);
 }
 

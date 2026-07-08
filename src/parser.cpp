@@ -12949,6 +12949,98 @@ void Program::flush_forest_pending_globals()
 	    << " (" << pg.type->name << ")" << std::endl);
     }
     forest_pending_globals.clear();
+
+    // v23: rebuild each restored FuncDef's param_defaults from its captured
+    // raw-token runs. param_defaults[i] is a PARSED EXPRESSION TREE on the
+    // live side (parseFunction runs `parseExpression(nextToken(), true)` on
+    // the `= expr` branch) — BOTH the arity gate (required_param_count) and
+    // the call-site default fill read it, so without it a bound
+    // `string greet = "hello"` finds no matching 2-param ctor. The restore
+    // carries the RAW SOURCE TOKENS; here the SAME derivation re-runs over
+    // them — deserialized into a sub-stream (swap_in) ending in the live stop
+    // token `)`, inside the owner's class scope (class-static names like npos
+    // resolve as they did in the live parse). Runs LAST in the flush so every
+    // restored type / global / function the expression may reference is
+    // already registered. A run that fails to deserialize cleanly lacks; a
+    // parse error stays LOUD (loaded state failing to re-derive live state is
+    // a fidelity bug, never masked).
+    if ( bind_forest )
+    {
+	const std::vector<CirRestoredFuncDefaults> &fdefs =
+	    bind_forest->restored_param_defaults();
+	for ( size_t i = 0; i < fdefs.size(); ++i )
+	{
+	    const CirRestoredFuncDefaults &rd = fdefs[i];
+	    if ( !rd.fd || !rd.fd->param_defaults.empty() )
+		continue;			// second flush: already rebuilt
+	    rd.fd->param_defaults.assign(rd.fd->parameters.size(), NULL);
+	    for ( size_t rix = 0; rix < rd.runs.size(); ++rix )
+	    {
+		uint32_t pidx = rd.runs[rix].first;
+		const CirRestoredTemplateRun &run = rd.runs[rix].second;
+		if ( pidx >= rd.fd->parameters.size() || !run.bytes || !run.count )
+		    continue;
+		std::deque<TokenBase *> toks;
+		if ( !madc_pch::deserialize_tokens(run.bytes, run.len, run.count, toks) )
+		    continue;
+		const char *fn = run.file ? intern_file(run.file) : NULL;
+		std::vector<TokenBase *> seq;
+		for ( TokenBase *t : toks )
+		{
+		    if ( !t )
+			continue;
+		    t->file = fn;
+		    seq.push_back(t);
+		}
+		if ( seq.empty() )
+		    continue;
+		// The live parse stopped at the parameter list's ',' / ')' —
+		// plant the ')' as the sub-stream's stop token.
+		seq.push_back(new TokenClBrk());
+		TokenStream::State saved = tokens.swap_in(seq);
+		TokenBase *saved_cur = _cur_token;
+		TokenBase *saved_prv = _prv_token;
+		_cur_token = NULL;	// a leading unary op judges as unary,
+		_prv_token = NULL;	// exactly as after the live `=`
+		// Live parses a default inside parseFunction's param-scope
+		// COMPOUND (pushCompound + method->owner_class): the identifier
+		// arm resolves a class-static (`= _S_max_align`) through
+		// compounds.top()->method->owner_class. Reproduce that scope,
+		// plus the class body's class_scope_stack frame.
+		Variable temp_fn(rd.fd->name, *rd.fd, 1, NULL, false);
+		Method temp_method(temp_fn);
+		temp_method.owner_class = rd.owner;
+		pushCompound();
+		TokenCpnd *pscope = compounds.empty() ? NULL : compounds.top();
+		if ( pscope )
+		    pscope->method = &temp_method;
+		if ( rd.owner )
+		    class_scope_stack.push_back(rd.owner);
+		// Live also parsed inside `namespace NS {}` — unqualified names
+		// (io_errc) resolve through the namespace chain.
+		TokenBase *expr;
+		if ( rd.ns && *rd.ns )
+		{
+		    NamespaceScope nsg(*this, rd.ns);
+		    expr = parseExpression(nextToken(), true);
+		}
+		else
+		    expr = parseExpression(nextToken(), true);
+		if ( rd.owner )
+		    class_scope_stack.pop_back();
+		if ( pscope && !compounds.empty() && compounds.top() == pscope )
+		    popCompound();
+		_cur_token = saved_cur;
+		_prv_token = saved_prv;
+		tokens = saved;
+		rd.fd->param_defaults[pidx] = expr;
+		DBG(std::cout << "flush_forest_pending_globals: default arg "
+		    << (rd.owner ? rd.owner->name + "::" : std::string())
+		    << rd.fd->name << " param " << pidx << " ("
+		    << run.count << " tokens)" << std::endl);
+	    }
+	}
+    }
 }
 
 void Program::add_namespaces()
@@ -38244,6 +38336,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->param_cpp_spellings = src->param_cpp_spellings;
     f->param_typedef_names = src->param_typedef_names;
     f->param_defaults = src->param_defaults;
+    f->param_default_tokens = src->param_default_tokens;
     f->template_return_param_name = src->template_return_param_name;
     f->template_return_deduce_arg_index = src->template_return_deduce_arg_index;
     f->template_return_deduce_from_pointer = src->template_return_deduce_from_pointer;
@@ -38281,6 +38374,47 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->pure_virtual = src->pure_virtual;
     f->is_const_method = src->is_const_method;
     return f;
+}
+
+// Forest default-arg RAW-TOKEN capture (SAVE state, v23). parseFunction's
+// `= expr` branches run `parseExpression(nextToken(), true)` over the live
+// stream; the parsed TREE (param_defaults[i]) cannot serialize, but the token
+// RANGE it consumed can — consumed buffer tokens stay in TokenStream::_buf, so
+// [cursor-before, cursor-after) IS the raw source range. Capture is gated on
+// forest_arena_enabled (a --freeze parse) and requires an empty pushback LIFO
+// at begin (an injected token has no buffer position); at end, a stop token
+// parseExpression consumed-then-pushed-back is compensated by shrinking the
+// range, and any other pushback residue skips the capture (the default then
+// cleanly lacks in the record — never a wrong range).
+bool Program::param_default_capture_begin(size_t &cap_begin)
+{
+    if ( !forest_arena_enabled || tokens.pushback_size() )
+	return false;
+    cap_begin = tokens.cursor();
+    return true;
+}
+
+void Program::param_default_capture_end(size_t cap_begin,
+					std::vector<TokenBase *> &out)
+{
+    out.clear();
+    size_t cap_end = tokens.cursor();
+    // A consumed-then-pushed-back stop token sits at the pushback front AND at
+    // the buffer tail of the range — exclude it from the capture.
+    if ( tokens.pushback_size() == 1 && cap_end > cap_begin
+      && tokens.front() == tokens.buf_at(cap_end - 1) )
+	--cap_end;
+    else if ( tokens.pushback_size() )
+    {
+	DBG(std::cout << "param_default_capture: pushback residue ("
+	    << tokens.pushback_size() << "), capture skipped" << std::endl);
+	return;
+    }
+    for ( size_t i = cap_begin; i < cap_end; ++i )
+    {
+	TokenBase *t = tokens.buf_at(i);
+	out.push_back(t ? t->clone() : NULL);
+    }
 }
 
 // parse a function definition, can be a forward declaration, or function definition
@@ -38538,6 +38672,9 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	// Declared at loop top so the gotos into `paramdecl:` do not cross its
 	// initialization; the `= expr` is parsed just before `paramdecl:` below.
 	TokenBase *param_default = NULL;
+	// Its RAW SOURCE TOKENS (forest SAVE state, v23) — cloned from the range
+	// parseExpression consumes; empty when no default / capture off.
+	std::vector<TokenBase *> param_default_src;
 	bool param_has_const = false;
 	// Pointee/top-level const that PRECEDES the base type. This is the const
 	// Itanium mangles (PKc, RK...), as opposed to a trailing `char * const`
@@ -38739,7 +38876,13 @@ grabnt:
 	    // never reaches it, so parse the default here (same stop-token rule)
 	    // then fall into paramdecl with nt at the ',' / ')'.
 	    pid = "__anon_param_" + std::to_string(anon_param_index++);
-	    param_default = parseExpression(nextToken(), true);
+	    {
+		size_t cap_begin = 0;
+		bool capturing = param_default_capture_begin(cap_begin);
+		param_default = parseExpression(nextToken(), true);
+		if ( capturing )
+		    param_default_capture_end(cap_begin, param_default_src);
+	    }
 	    nt = nextToken();   // the ',' or ')' that ends this parameter
 	    goto paramdecl;
 	}
@@ -38976,7 +39119,11 @@ finish_param_declarator:
 	// it; arity matching uses FuncDef::required_param_count().
 	if ( nt && nt->id() == TokenID::tkAssign )
 	{
+	    size_t cap_begin = 0;
+	    bool capturing = param_default_capture_begin(cap_begin);
 	    param_default = parseExpression(nextToken(), true);
+	    if ( capturing )
+		param_default_capture_end(cap_begin, param_default_src);
 	    nt = nextToken();   // the ',' or ')' that ends this parameter
 	}
 
@@ -39055,6 +39202,14 @@ paramdecl:
 		// Record this parameter's default-argument expression (NULL = none),
 		// index-aligned with the parameter just pushed above.
 		func->param_defaults.push_back(param_default);
+		// Its raw source tokens (forest SAVE state): resize-to-align first
+		// so the hidden-slot NULL pushes (__this/__retbuf/__va_args) need no
+		// mirror site — the run lands at this default's param_defaults index.
+		if ( !param_default_src.empty() )
+		{
+		    func->param_default_tokens.resize(func->param_defaults.size() - 1);
+		    func->param_default_tokens.push_back(param_default_src);
+		}
 		DBG(std::cout << "Added new parameter declaration type: " << dd.name << " size: "
 		    << dd.size << " name: " << pid << " ptr: " << &dd << std::endl);
 	    }

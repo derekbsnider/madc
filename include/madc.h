@@ -134,6 +134,14 @@ public:
     // arity matching treats the function as callable with [required..total] args
     // (required = count of params with no default).
     std::vector<class TokenBase *> param_defaults;
+    // RAW SOURCE TOKENS of each default expression — the exact token range
+    // parseExpression consumed to build param_defaults[i], cloned at capture.
+    // Forest SAVE state (a parsed TokenBase tree cannot serialize; the tokens
+    // can, and the load re-runs the ONE live derivation — parseExpression —
+    // over them at the pending-funcs flush). Captured ONLY when
+    // forest_arena_enabled (a --freeze parse); index-aligned with
+    // param_defaults when non-empty, and possibly SHORTER (bounds-check reads).
+    std::vector<std::vector<class TokenBase *>> param_default_tokens;
     // Number of leading parameters that have NO default — the minimum arg count a
     // call must supply. Equals parameters.size() when no parameter has a default.
     size_t required_param_count() const
@@ -1278,6 +1286,19 @@ public:
 	size_t pb = _pushback.size();
 	if ( i < pb ) return _pushback[pb - 1 - i];
 	return madc_token_for_slot(_buf[_cursor + (i - pb)]);
+    }
+
+    // -- consumed-range introspection (forest default-arg capture): consumed
+    //    buffer tokens stay in _buf, so [cursor-before, cursor-after) of a
+    //    sub-parse IS the raw source token range it consumed — provided the
+    //    pushback LIFO is empty at both ends (an injected token is not a
+    //    buffer position). buf_at() indexes the BUFFER directly (not the
+    //    logical front like operator[]). --
+    size_t cursor() const { return _cursor; }
+    size_t pushback_size() const { return _pushback.size(); }
+    TokenBase *buf_at(size_t i) const
+    {
+	return i < _buf.size() ? madc_token_for_slot(_buf[i]) : NULL;
     }
 
     // -- backtrack: save/restore is {cursor, pushback} — NEVER the buffer --
@@ -2784,6 +2805,14 @@ public:
 	PendingForestFunc() : fd(NULL), mvar(NULL) {}
     };
     std::vector<PendingForestFunc> forest_pending_funcs;
+    // Forest default-arg RAW-TOKEN capture (parseFunction's `= expr` param
+    // branches). begin() returns true and stamps the stream cursor when the
+    // upcoming parseExpression's consumed range is capturable (arena recording
+    // on + no injected tokens pending); end() clones the consumed buffer range
+    // — compensating a pushed-back stop token — into `out`. The clones ride
+    // FuncDef::param_default_tokens into the DK_FUNC record's paramrec runs.
+    bool param_default_capture_begin(size_t &cap_begin);
+    void param_default_capture_end(size_t cap_begin, std::vector<TokenBase *> &out);
     // v21: body-bearing MEMBER function templates restored from a bound header
     // (CIR_TMPLK_MEMBER records). The flush HYDRATES the restored placeholder
     // FuncDef (funcdef_map[key], restored verbatim from its methodrec at its

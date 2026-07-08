@@ -763,5 +763,39 @@ fi
 rm -f "$io_snap" "$io_src" "$io_gcc" "$io_vlog"
 echo "forest_bind_gate: [iobind] OK — <iostream> bound (polymorphic classes + extern-ref cout + mangled-direct endl), output == live == g++"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind grove headers bound (no re-parse), output == live == g++"
+# --- case: subbind (THE OWNER'S BAR: a REAL integration test on the forest) ---
+# tests/testsubscript.mad (string/array subscripting, <string> + <map> whole)
+# freeze+bind == live == its .expect fixture. The last family that flipped it:
+# v23 DEFAULT ARGUMENTS — a restored method's `= _Alloc()` / `= npos` /
+# `= io_errc::stream` re-derives param_defaults from the captured raw-token
+# runs (paramrec.def_tok_*), re-run through parseExpression at the flush
+# inside the owner's class + namespace scope. Without it `string greet =
+# "hello"` found no matching basic_string ctor.
+sub_snap="tmp/fbgate_sub.msnap"
+sub_vlog="tmp/fbgate_sub_v.log"
+sub_test="tests/testsubscript.mad"
+[ -f "$sub_test" ] || fail "[subbind] tests/testsubscript.mad missing"
+sub_live=$(timeout 180 "$BIN" "$sub_test" 2>/dev/null)
+[ -n "$sub_live" ] || fail "[subbind] live-parse produced no output"
+if ! timeout 600 "$BIN" --freeze="$sub_snap" "$sub_test" >/dev/null 2>&1; then
+    fail "[subbind] --freeze testsubscript.mad FAILED"
+fi
+[ -f "$sub_snap" ] || fail "[subbind] --freeze produced no container"
+sub_bind=$(timeout 180 "$BIN" --forest-bind="$sub_snap" "$sub_test" 2>/dev/null)
+[ "$sub_bind" = "$sub_live" ] || fail "[subbind] bind output differs from live (default-arg / restored-method state regressed?)"
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    printf '%s\n' "$sub_bind" | grep -qF -- "$line" \
+        || fail "[subbind] expected line missing from bind output: $line"
+done < tests/testsubscript.expect
+# Prove the headers actually BOUND from the container (no silent live fall-through).
+timeout 180 "$BIN" -v --forest-bind="$sub_snap" "$sub_test" >"$sub_vlog" 2>&1
+if ! grep -aq "bound to grove unit" "$sub_vlog"; then
+    rm -f "$sub_snap" "$sub_vlog"
+    fail "[subbind] consumer did NOT bind the grove (live fall-through?)"
+fi
+rm -f "$sub_snap" "$sub_vlog"
+echo "forest_bind_gate: [subbind] OK — OWNER'S BAR: tests/testsubscript.mad freeze+bind == live == .expect (default arguments restored)"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + subbind grove headers bound (no re-parse), output == live == g++"
 exit 0

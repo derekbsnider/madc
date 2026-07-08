@@ -8,29 +8,32 @@ every other madc track for five weeks. This document is the execution order; the
 
 ---
 
-## ⏯ RESUME HERE (post-compaction state, 2026-07-07 end of third sitting)
+## ⏯ RESUME HERE (2026-07-08: THE OWNER'S BAR IS GREEN)
 
-- **Git:** develop == origin/develop **@d55dba3b**, tree clean except untracked
-  `mir-debug-support.md` (NOT ours — never stage, never `git add -A`).
-- **DONE today:** item 1 MAP GREEN (v22, @e32f040b) → item 2 IOSTREAM GREEN
-  (**[iobind]**, @ebfd30da) — bind gate **17/17**, test_cir_freeze 31/548,
-  test_cir_arena 11/316, fulltest 680/0/0/16, all pushed. Container track +
-  the polymorphic boundary are CLOSED; details in the PROGRESS 1/2/3 notes
-  under execution-order item 2 below.
-- **THE IMMEDIATE NEXT TASK — implement the DEFAULT-ARGUMENTS family** (the
-  ONE measured gap between here and the owner's bar test,
-  `tests/testsubscript.mad` freeze+bind == live == `.expect`). The full design
-  is in item 2's "OWNER'S BAR STATUS" note: capture each param default's RAW
-  SOURCE TOKEN RANGE in parseFunction's `tkAssign` branch (~parser.cpp 38977,
-  parallel `param_default_tokens`), grow the DefArena a token-bytes blob +
-  paramrec default-run reference (.madh codec), serialize in record_func,
-  deserialize + re-run parseExpression at the pending-funcs FLUSH. Reducer:
-  `tmp/sub.msnap` + `tests/testsubscript.mad` (current failure: "no matching
-  constructor for basic_string...(char*)" ×3 — arity gate needs
-  required_param_count, call site needs the synthesized `_Alloc()` arg).
-- **THEN (strict order):** [subbind] owner's-bar gate case → item 3 real-test
-  soak → item 4 corpus pack + append-to-binary default-on → item 5 lazy
-  defrost → item 6 measure + stamp the 06-22 plan CLOSED.
+- **DONE (fourth sitting, 2026-07-08): DEFAULT ARGUMENTS (format v23) —
+  [subbind] GREEN.** `bin/madc --freeze=S tests/testsubscript.mad` then
+  `--forest-bind=S tests/testsubscript.mad` == live (byte-identical output)
+  == `.expect`. Mechanism: parseFunction's `= expr` branches capture the raw
+  source token range parseExpression consumes (TokenStream cursor tap, gated
+  on forest_arena_enabled) into `FuncDef::param_default_tokens`; record_func
+  serializes each run (.madh form) into the NEW arena tokbytes block (segment
+  19) with a paramrec default-run reference (def_tok_off/bytes/count/file_id
+  — layout change, v22→v23); the restore collects (index, run) pairs per
+  FuncDef (`restored_param_defaults()`, owner + defining ns carried); the
+  flush's LAST pass re-runs parseExpression over each run inside the
+  reproduced live scope — parseFunction's param COMPOUND
+  (method->owner_class → `= _S_max_align`), class_scope_stack, and
+  NamespaceScope (`= io_errc::stream`). Both scope gaps were found by RUNNING
+  the bar reducer (measured burn-down, not guessed).
+- **Gates:** forest_bind_gate **18/18** (new **[subbind]** asserts bind ==
+  live + every `.expect` line + bound-to-grove; strbind/strops whole-TU
+  byte-identity UNREGRESSED), test_cir_freeze 32/569 (new v23 case),
+  test_cir_arena 11/316, fulltest exit 0.
+- **THE IMMEDIATE NEXT TASK — item 3, REAL-TEST SOAK:** freeze+bind every
+  `tests/*.mad` (scripted, capped, ONE run); classify remaining failures by
+  STATE FAMILY (never per-test); burn down by class with the map/io/default
+  discipline. Then item 4 corpus pack + append-to-binary default-on → item 5
+  lazy defrost → item 6 measure + stamp the 06-22 plan CLOSED.
 - **Discipline:** batch fixes, reducer-iterate, full gates ONCE per batch;
   state INTO the substrate (no new bespoke record families); loaded state ==
   parsed state (re-run the ONE live derivation over restored state when side
@@ -196,8 +199,10 @@ every other madc track for five weeks. This document is the execution order; the
    admitted polymorphic classes, std::pmr::string's alias record clobbered
    datatype_map["string"] and the bar test built the polymorphic_allocator
    variant.
-   **OWNER'S BAR STATUS (tests/testsubscript.mad, freeze+bind whole test):
-   ONE measured family left — DEFAULT ARGUMENTS on restored method params.**
+   **OWNER'S BAR STATUS — ✅ CLOSED 2026-07-08 (v23, gate [subbind] 18/18):
+   the default-arguments family below LANDED; see the RESUME block at the top
+   for the mechanism + gates. Original framing kept:**
+   ~~ONE measured family left — DEFAULT ARGUMENTS on restored method params.~~
    `string greet = "hello"` selects basic_string(const char*, const _Alloc&
    = _Alloc()) — live's FuncDef carries param_defaults, and BOTH the arity
    gate (required_param_count) and the call site read it (parser.cpp

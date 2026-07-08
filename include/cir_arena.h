@@ -294,6 +294,16 @@ struct paramrec {
 	uint32_t type_id;	// the parameter type, as a type-id
 	uint32_t flags;		// bit0 = const_param (grows)
 	uint32_t cpp_spelling_id;	// param_cpp_spellings[i] (0 = render from type)
+	// v23: the parameter's DEFAULT-ARGUMENT expression, as its RAW SOURCE
+	// TOKEN run (FuncDef::param_default_tokens[i], .madh record form) in the
+	// arena's tokbytes block. param_defaults[i] is a PARSED TREE the codec
+	// cannot carry; the load re-runs parseExpression over these tokens at
+	// the pending-funcs flush — the one live derivation. 0 bytes = no
+	// default. def_file_id interns the run's origin file (arena strings).
+	uint32_t def_tok_off;	// BYTE offset into DefArena::tokbytes
+	uint32_t def_tok_bytes;	// byte length (0 = no default captured)
+	uint32_t def_tok_count;	// token count in the run
+	uint32_t def_file_id;	// origin-file intern id (0 = none)
 };
 
 // Type-id segment predicates (the spine). A cross-ref stored in a defrec is one of:
@@ -319,6 +329,9 @@ public:
 	intern_table          strings;	// every identifier / spelling
 	std::vector<uint32_t> defs;	// defrec[] addressed by project-id slot (id - PROJECT_BASE)
 	std::vector<uint32_t> payload;	// memberrec/baserec/methodrec/vbaserec/vgrouprec/paramrec + slot-id runs
+	std::vector<uint8_t>  tokbytes;	// v23: raw token runs (.madh record form) —
+					// param-default expressions; runs referenced
+					// by BYTE offset from paramrec.def_tok_off
 
 	static uint32_t def_stride() { return (uint32_t)pod_words<defrec>(); }
 	uint32_t def_slots() const { return (uint32_t)(defs.size() / def_stride()); }
@@ -353,6 +366,13 @@ public:
 	template <typename T> bool get_payload(uint32_t begin, uint32_t i, T &out) const {
 		return pod_read(payload, begin + (size_t)i * pod_words<T>(), out);
 	}
+	// Append a raw token-byte run (returns its BYTE offset in tokbytes).
+	uint32_t add_tokbytes(const std::vector<uint8_t> &bytes)
+	{
+		uint32_t off = (uint32_t)tokbytes.size();
+		tokbytes.insert(tokbytes.end(), bytes.begin(), bytes.end());
+		return off;
+	}
 	// Raw uint32 (a vtable-group slot id).
 	uint32_t add_word(uint32_t w) { uint32_t off = (uint32_t)payload.size(); payload.push_back(w); return off; }
 	bool get_word(uint32_t begin, uint32_t i, uint32_t &out) const {
@@ -375,11 +395,20 @@ public:
 	frozen_intern_table  strings;
 	const uint32_t      *defs;         size_t defs_words;
 	const uint32_t      *payload;      size_t payload_words;
+	const uint8_t       *tokbytes;     size_t tokbytes_len;	// v23 (may be absent: 0)
 
-	FrozenDefArena() : defs(0), defs_words(0), payload(0), payload_words(0) {}
+	FrozenDefArena() : defs(0), defs_words(0), payload(0), payload_words(0),
+			   tokbytes(0), tokbytes_len(0) {}
 
 	void bind_defs(const uint32_t *p, size_t words)    { defs = p; defs_words = words; }
 	void bind_payload(const uint32_t *p, size_t words) { payload = p; payload_words = words; }
+	void bind_tokbytes(const uint8_t *p, size_t len)   { tokbytes = p; tokbytes_len = len; }
+	// A token run's bytes (paramrec.def_tok_off/def_tok_bytes); NULL if out of range.
+	const uint8_t *tok_run(uint32_t off, uint32_t len) const
+	{
+		if ( !tokbytes || !len || (size_t)off + len > tokbytes_len ) return NULL;
+		return tokbytes + off;
+	}
 
 	uint32_t def_slots() const { return (uint32_t)(defs_words / DefArena::def_stride()); }
 

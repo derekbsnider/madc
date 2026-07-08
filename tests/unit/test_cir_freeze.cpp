@@ -2418,3 +2418,97 @@ TEST_CASE("v21: skipped-ns-fn-template placeholder restores with its namespace b
 	}
 	std::remove(inc_path.c_str());
 }
+
+// ---------------------------------------------------------------------------
+// v23: DEFAULT ARGUMENTS — a parameter's default expression is a PARSED TREE
+// on the live FuncDef (param_defaults[i], built by parseExpression at
+// parseFunction's `= expr` branch), which both the arity gate
+// (required_param_count) and the call-site default fill read. The freeze
+// captures the default's RAW SOURCE TOKENS (param_default_tokens -> the
+// paramrec def_tok_* run in the arena tokbytes block) and the pending-funcs
+// flush re-runs parseExpression over them inside the owner's class scope —
+// so a bound `string greet = "hello"` selects basic_string(const char*,
+// const _Alloc& = _Alloc()) exactly as live does.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("v23: method param DEFAULT ARGUMENTS freeze as token runs and restore as parsed trees") {
+	std::string inc_path = std::string("/tmp/madc_v23d_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_v23d_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string cons_path = std::string("/tmp/madc_v23d_cons_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_v23d_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		// y = literal default; z = a CLASS-STATIC const default (K) —
+		// the flush must resolve it through the reproduced owner scope
+		// (the live parse ran inside parseFunction's param compound,
+		// whose method->owner_class feeds the identifier arm).
+		inc << "class Adder { public: static const int K = 5; int n;\n"
+		       "    int add(int x, int y = 7, int z = K)"
+		       " { return x + y + z + n; } };\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { Adder a; a.n = 0; return a.add(1); }\n";
+	}
+	{
+		std::ofstream cn(cons_path.c_str());
+		cn << "int main() { return 0; }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		progA->forest_arena_enabled = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		// The LIVE FuncDef captured the raw token runs (capture is gated
+		// on forest_arena_enabled).
+		REQUIRE(progA->funcdef_map.count("Adder__add") == 1);
+		FuncDef *lf = progA->funcdef_map["Adder__add"];
+		REQUIRE(lf->param_default_tokens.size() >= 4);
+		CHECK(lf->param_default_tokens[2].size() == 1);	// `7`
+		CHECK(lf->param_default_tokens[3].size() == 1);	// `K`
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	std::shared_ptr<Program> progB = std::make_shared<Program>();
+	progB->bind_forest = &forest;	// the flush reads restored_param_defaults
+	TokenProgram *tpB = progB->tokenize(cons_path.c_str());
+	REQUIRE(tpB != nullptr);
+	std::remove(cons_path.c_str());
+	progB->forest_restore_decls(forest);
+	progB->flush_forest_pending_globals();
+	progB->bind_forest = NULL;	// forest is stack-local; detach before dtors
+
+	REQUIRE(progB->funcdef_map.count("Adder__add") == 1);
+	FuncDef *rf = progB->funcdef_map["Adder__add"];
+	REQUIRE(rf != nullptr);
+	REQUIRE(rf->parameters.size() == 4);		// __this, x, y, z
+	// param_defaults rebuilt index-aligned: hidden __this + x are NULL,
+	// y and z carry parsed expression trees.
+	REQUIRE(rf->param_defaults.size() == 4);
+	CHECK(rf->param_defaults[0] == nullptr);
+	CHECK(rf->param_defaults[1] == nullptr);
+	REQUIRE(rf->param_defaults[2] != nullptr);
+	REQUIRE(rf->param_defaults[3] != nullptr);
+	CHECK(rf->param_defaults[2]->ival() == 7);
+	CHECK(rf->param_defaults[3]->ival() == 5);	// K resolved in owner scope
+	// The arity gate — a 1-arg call (`a.add(1)`) is legal, as live.
+	CHECK(rf->required_param_count() == 2);		// __this + x
+}
