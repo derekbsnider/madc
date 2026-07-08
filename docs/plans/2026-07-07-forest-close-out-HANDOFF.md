@@ -46,22 +46,33 @@ every other madc track for five weeks. This document is the execution order; the
      hook never fired); embedded-header include FLAGS re-run at the bind
      site (lazy stdin/stdout registration).
 - **THE IMMEDIATE NEXT TASK — in order:**
-  1. **FREEZE COMPLETENESS (§0.3) — the biggest remaining mechanism, TWO
-     pieces, both traced:** (a) the frozen AST contains only TRANSLATED
-     (ODR-used) function defs — an UNREFERENCED bodied fn (std::abs's
-     long/double overloads: records probed present, flags 0x30000, no body
-     stamp) has no func-def, so the record drops at load. Under a FREEZE
-     translate, emit EVERY include-origin bodied fn into the tree
-     (lib_funcs' referenced_funcs gate, cir_builder.cpp ~18512); bind still
-     materializes on reference only (forest_lazy) so output == live.
-     (b) serialize Program::deferred_lazy_bodies (METHOD bodies never
-     ODR-used — symbol → DeferredFunctionBody, 4 token vectors, madc.h
-     ~2393; live materializes via parse_deferred_lazy_body, parser.cpp
-     ~25543 — push definition_tokens + parseFunction under owner scope =
-     the ONE derivation to re-run); flush rebuilds entries with var = the
-     restored method Variable. Expected: testincludenext (std::abs),
-     testheaderstringops + teststrplusbody_realhdr (__gnu_cxx char_traits
-     compare imports), testforeachheaderbody (basic_string copy-ctor import).
+  1. **FREEZE COMPLETENESS (§0.3) — the biggest remaining mechanism.
+     ⚠ DESIGN CORRECTED (the earlier "force-emit all lib fns at freeze
+     translate" idea is DEAD: --freeze-run re-execs and COMPILES the same
+     frozen tree, so dead bodies risk unresolvable imports at the run-frozen
+     link, and a never-exercised body's lowering errors would fail the
+     freeze — the DCE comment at cir_builder.cpp ~18207 warns exactly this).
+     THE SAFE UNIFIED MECHANISM — token-run deferral for BOTH gaps:**
+     (a) UNREFERENCED bodied FREE fns (std::abs's long/double overloads:
+     records probed present, flags 0x30000, no body stamp — the frozen AST
+     has only TRANSLATED defs): under forest_arena_enabled, parseFunction
+     captures the DEFINITION's raw token range (the v23 cursor tap, '{'
+     through matching '}') for include-origin fns; record_func serializes
+     it on the DK_FUNC record (defrec grows a body-tokens run — bump v26).
+     (b) Program::deferred_lazy_bodies (METHOD bodies never ODR-used —
+     symbol → DeferredFunctionBody, definition_tokens already CAPTURED
+     tokens, madc.h ~2393): serialize the map's runs the same way.
+     LOAD: a DF_WAS_BODIED record without a forest body but WITH a token
+     run restores declaration-only + stages the run; the FLUSH rebuilds
+     deferred_lazy_bodies[sym] (var = the restored Variable/Method) so the
+     EXISTING m&l fixpoint materializes on first ODR-use via
+     parse_deferred_lazy_body (parser.cpp ~25543 — push definition_tokens +
+     parseFunction under owner scope + NamespaceScope; free fns need a
+     small ownerless arm of the same derivation). No dead code is ever
+     emitted; bind == live by the same lazy mechanism. Expected:
+     testincludenext (std::abs), testheaderstringops +
+     teststrplusbody_realhdr (__gnu_cxx char_traits compare imports),
+     testforeachheaderbody (basic_string copy-ctor import).
   2. **ANONYMOUS ENUMs never record** (family h): glibc's
      `enum { DT_REG=8 } + #define DT_REG DT_REG` — the PP macro restores but
      the enumerator constant doesn't (bind -v shows the header re-echo and
