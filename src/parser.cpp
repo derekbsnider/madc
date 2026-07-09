@@ -1787,6 +1787,19 @@ DataDef *Program::resolve_named_datadef(const std::string &name)
     if ( bmi != datatype_map.end() )
 	return &(*bmi)->definition;
 
+    if ( DataDef *dd = resolve_builtin_type_spelling(name) )
+	return dd;
+
+    return lazy_resolve_type(name);
+}
+
+// The ONE builtin-spelling -> canonical-DataDef table. Every C/C++ source
+// spelling of a builtin scalar resolves to the SAME canonical object the
+// lexer's type-specifier path emits (`int` -> ddINT32), so identity-sensitive
+// consumers (template instantiation keys) converge on one name regardless of
+// how the type was spelled.
+DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
+{
     if ( name == "void" ) return &ddVOID;
     if ( name == "bool" || name == "_Bool" ) return &ddBOOL;
     if ( name == "char" ) return &ddCHAR;
@@ -1834,7 +1847,7 @@ DataDef *Program::resolve_named_datadef(const std::string &name)
     if ( name == "array" ) return &ddARRAY;
     if ( name == "auto" ) return &ddAUTO;
 
-    return lazy_resolve_type(name);
+    return NULL;
 }
 
 bool Program::typedef_alias_matches_datadef(const std::string &alias, DataDef *dd)
@@ -17993,6 +18006,25 @@ std::string Program::canonical_arg_key_fragment(
     int64_t v = 0;
     if ( fold_nontype_template_arg(argtoks, spelling, v) )
 	return sanitize_template_fragment(std::to_string(v));
+    // One key rule for BOTH registration and lookup (see
+    // template_instantiation_key_head): a BUILTIN type argument's fragment
+    // comes from the canonical DataDef the lexer's type-specifier path emits
+    // (`int` -> ddINT32 "int32_t"), so an explicit specialization written
+    // `__is_integer<int>` and a use site that spells the resolved type form
+    // the SAME key. Without this the spec registers under the raw source
+    // spelling ("int"), use sites look up the canonical one ("int32_t"), and
+    // the primary is silently instantiated instead
+    // (__numeric_traits_integer<int>::__max folding to ~0 broke std::stoi's
+    // range check). wchar_t/char16_t/char32_t keep their distinct C++
+    // spellings — the identical carve-out template_type_arg_spelling applies
+    // (they share integer storage but are distinct template-argument types).
+    if ( spelling != "wchar_t" && spelling != "char16_t"
+      && spelling != "char32_t" )
+	if ( DataDef *dd = resolve_builtin_type_spelling(spelling) )
+	{
+	    const std::string &cs = dd->canonical_cpp_spelling;
+	    return sanitize_template_fragment(cs.empty() ? dd->name : cs);
+	}
     return sanitize_template_fragment(spelling);
 }
 
@@ -38176,6 +38208,25 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		alias_key = registered_mangled;
 		mangled = legacy_mangled;
 		registered_mangled = legacy_registered;
+	    }
+	}
+
+	// Distinct C++ spellings that madc's type model collapses to one
+	// canonical type (`long` and `long long` -> int64_t, `double` and
+	// `long double` -> double) collapse their explicit specializations
+	// too: the FIRST parsed specialization defines the madc type; a later
+	// sibling spec for the same canonical key is a benign re-spelling,
+	// not a redefinition. Skip it (its body tokens are already collected
+	// and simply dropped).
+	{
+	    flat_datatype_map_iter ei = pgm.datatype_map.find(registered_mangled);
+	    if ( ei != pgm.datatype_map.end()
+	      && !is_incomplete_template_class_type((TokenDataType *)(*ei)) )
+	    {
+		DBG(std::cout << "template<> " << canon
+		    << " re-spells complete " << registered_mangled
+		    << " — first specialization wins" << std::endl);
+		return NULL;
 	    }
 	}
 
