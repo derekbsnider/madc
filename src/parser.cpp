@@ -13071,7 +13071,9 @@ void Program::flush_forest_pending_globals()
 	DBG(std::cout << "flush_forest_pending_globals: "
 	    << (pf.mvar ? "method " : "free function ") << pf.name
 	    << " (" << pf.fd->parameters.size() << " params"
-	    << (pf.fd->is_varargs ? ", varargs" : "") << ")" << std::endl);
+	    << (pf.fd->is_varargs ? ", varargs" : "") << ") fd=" << (void *)pf.fd
+	    << " mvar_fd=" << (void *)(pf.mvar ? pf.mvar->type : NULL)
+	    << std::endl);
     }
     forest_pending_funcs.clear();
     // v21: restored MEMBER function templates. The placeholder FuncDef itself
@@ -13097,7 +13099,11 @@ void Program::flush_forest_pending_globals()
 	    DBG(std::cout << "flush_forest_pending_globals: member template of "
 		<< pm.owner->name << " hydrated placeholder " << pm.key
 		<< " (" << pm.typeparams.size() << " param(s), "
-		<< pm.tokens.size() << " tokens)" << std::endl);
+		<< pm.tokens.size() << " tokens, decl="
+		<< fit->second->member_template_decl.size() << ", owner="
+		<< (fit->second->member_template_owner ? 1 : 0) << ", fd="
+		<< (void *)fit->second << ", cls=" << (void *)pm.owner
+		<< ")" << std::endl);
 	    continue;
 	}
 	std::vector<bool> saved_pack = last_skipped_template_typeparam_is_pack;
@@ -25812,6 +25818,8 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	inst_ctx = cfd->forest_body_in_instantiation;
     if ( inst_ctx )
 	++fn_template_instantiation_depth;
+    size_t saved_compounds = compounds.size();
+    size_t saved_class_scopes = class_scope_stack.size();
     try
     {
 	for ( std::vector<TokenBase *>::reverse_iterator it = body.body_tokens.rbegin();
@@ -25933,6 +25941,16 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     {
 	if ( inst_ctx )
 	    --fn_template_instantiation_depth;
+	// Full isolation on failure: a Throw mid-body leaves the compound /
+	// class-scope stacks pushed (this fn's own pushCompound + anything a
+	// nested parse pushed) — a LATER derive would then parse "inside" the
+	// dead function and register a function-LOCAL franken-name instead of
+	// the requested symbol. Restore to the entry depths, then the scopes
+	// THIS frame pushed before the try.
+	while ( compounds.size() > saved_compounds )
+	    compounds.pop();
+	while ( class_scope_stack.size() > saved_class_scopes )
+	    class_scope_stack.pop_back();
 	for ( size_t i = 0; i < pushed_scope_count && !class_scope_stack.empty(); ++i )
 	    class_scope_stack.pop_back();
 	cur_func_name = saved_func;
@@ -25963,6 +25981,23 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 {
     std::map<std::string, DeferredFunctionBody>::iterator it =
 	deferred_lazy_bodies.find(emit_symbol);
+    // Env-gated probe (MADC_MTI_PROBE=<substr>): every derive request for a
+    // matching deferred body, with the consuming parse context.
+    {
+	static const char *mtp = ::getenv("MADC_MTI_PROBE");
+	if ( mtp && *mtp && emit_symbol.find(mtp) != std::string::npos )
+	{
+	    bool have = it != deferred_lazy_bodies.end();
+	    Method *m = have ? it->second.method : NULL;
+	    fprintf(stderr, "MTIPROBE derive sym=%s found=%d in=%s full=%d"
+		    " var=%d method=%d owner=%d\n",
+		    emit_symbol.c_str(), have ? 1 : 0, cur_func_name.c_str(),
+		    have ? (int)it->second.full_definition : -1,
+		    have ? (it->second.var ? 1 : 0) : -1,
+		    have ? (m ? 1 : 0) : -1,
+		    (have && m) ? (m->owner_class ? 1 : 0) : -1);
+	}
+    }
     if ( it == deferred_lazy_bodies.end() )
 	return NULL;
     DeferredFunctionBody body = it->second; // copy out before erase
@@ -25979,6 +26014,8 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	std::string saved_func = cur_func_name;
 	std::string saved_canon = instantiating_canonical_spelling;
 	bool saved_ctor_init = parsing_defaulted_member_template_constructor;
+	size_t saved_compounds = compounds.size();
+	size_t saved_class_scopes = class_scope_stack.size();
 	for ( std::vector<TokenBase *>::reverse_iterator it2 =
 	      body.definition_tokens.rbegin();
 	      it2 != body.definition_tokens.rend(); ++it2 )
@@ -26011,6 +26048,22 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	    cur_func_name = saved_func;
 	    instantiating_canonical_spelling = saved_canon;
 	    parsing_defaulted_member_template_constructor = saved_ctor_init;
+	    // Full isolation on failure: a Throw mid-parseFunction leaves the
+	    // compound/class-scope stacks pushed — every LATER derive would
+	    // then parse "inside" the dead function and register its def
+	    // under a function-LOCAL franken-name (outer__sym__N) instead of
+	    // the requested symbol (the body silently lost to consumers).
+	    while ( compounds.size() > saved_compounds )
+		compounds.pop();
+	    while ( class_scope_stack.size() > saved_class_scopes )
+		class_scope_stack.pop_back();
+	    {
+		static const char *mtp = ::getenv("MADC_MTI_PROBE");
+		if ( mtp && *mtp
+		  && emit_symbol.find(mtp) != std::string::npos )
+		    fprintf(stderr, "MTIPROBE derive-threw sym=%s\n",
+			    emit_symbol.c_str());
+	    }
 	    throw;
 	}
 	tokens = saved_tokens;
@@ -26019,21 +26072,47 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	cur_func_name = saved_func;
 	instantiating_canonical_spelling = saved_canon;
 	parsing_defaulted_member_template_constructor = saved_ctor_init;
-	if ( pending_funcs.size() > before )
-	{
-	    TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs.back());
-	    if ( tf && body.file && (!tf->file || tf->line <= 0) )
-	    {
-		tf->file = body.file;
-		tf->line = body.line;
-		tf->column = body.column;
-	    }
-	}
     }
     else
 	parse_deferred_function_body(body);
-    if ( pending_funcs.size() > before )
-	return dynamic_cast<TokenFunc *>(pending_funcs.back());
+    // The re-parse can enqueue MORE functions (a body's nested instantiations
+    // land in pending_funcs too), so "the last pushed" is NOT necessarily this
+    // body's definition. Returning a stranger both mislabels the caller's
+    // registration AND silently loses this body: the erased map entry is never
+    // reverted (the caller saw non-NULL), yet the requested symbol gained no
+    // definition — a consumer's call then dies as an undefined MIR import.
+    // Return the TokenFunc parsed for THIS body's Variable; none means the
+    // re-parse failed or degraded to a declaration — report NULL so the
+    // caller's fallback (re-defer / error) runs.
+    for ( size_t pi = pending_funcs.size(); pi > before; --pi )
+    {
+	TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[pi - 1]);
+	if ( !tf || (&tf->var != body.var && tf->var.name != emit_symbol) )
+	    continue;
+	if ( body.file && (!tf->file || tf->line <= 0) )
+	{
+	    tf->file = body.file;
+	    tf->line = body.line;
+	    tf->column = body.column;
+	}
+	return tf;
+    }
+    // Env-gated probe (MADC_MTI_PROBE=<substr>): a scan MISS — the re-parse
+    // grew pending_funcs only with strangers (or not at all); list the delta.
+    {
+	static const char *mtp = ::getenv("MADC_MTI_PROBE");
+	if ( mtp && *mtp && emit_symbol.find(mtp) != std::string::npos )
+	{
+	    fprintf(stderr, "MTIPROBE derive-miss sym=%s grew=%zu\n",
+		    emit_symbol.c_str(), pending_funcs.size() - before);
+	    for ( size_t pi = before; pi < pending_funcs.size(); ++pi )
+	    {
+		TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[pi]);
+		fprintf(stderr, "MTIPROBE   delta[%zu]=%s\n", pi - before,
+			tf ? tf->var.name.c_str() : "(not a TokenFunc)");
+	    }
+	}
+    }
     return NULL;
 }
 
@@ -28366,9 +28445,25 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// lazy-on-call path.
 	if ( b.var && b.file && pgm.is_system_header_path(b.file)
 	  && pgm.fn_template_instantiation_depth == 0 )
+	{
+	    // Env-gated probe (MADC_MTI_PROBE=<substr>): deferred-body enqueue.
+	    static const char *_mti_probe = ::getenv("MADC_MTI_PROBE");
+	    if ( _mti_probe && *_mti_probe
+	      && b.var->name.find(_mti_probe) != std::string::npos )
+		fprintf(stderr, "MTIPROBE enqueue sym=%s file=%s\n",
+			b.var->name.c_str(), b.file);
 	    pgm.deferred_lazy_bodies[b.var->name] = b;
+	}
 	else
+	{
+	    static const char *_mti_probe = ::getenv("MADC_MTI_PROBE");
+	    if ( _mti_probe && *_mti_probe && b.var
+	      && b.var->name.find(_mti_probe) != std::string::npos )
+		fprintf(stderr, "MTIPROBE eager-body sym=%s file=%s depth=%d\n",
+			b.var->name.c_str(), b.file ? b.file : "(none)",
+			pgm.fn_template_instantiation_depth);
 	    pgm.parse_deferred_function_body(b);
+	}
     }
 
     // Allocate vtable if needed
@@ -36228,6 +36323,30 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     if ( dependent_parse_in_progress && call_involves_placeholder(tc) )
 	return NULL;
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+    // Env-gated probe (MADC_MTI_PROBE=<substr>): entry state + funcdef_map
+    // identity for the callee — the restored-placeholder routing diagnostic.
+    {
+	static const char *mtp = ::getenv("MADC_MTI_PROBE");
+	if ( mtp && *mtp && tc->var.name.find(mtp) != std::string::npos )
+	{
+	    funcdef_map_iter pfit = funcdef_map.find(tc->var.name);
+	    fprintf(stderr, "MTIPROBE var=%s fd=%p mt=%d decl=%zu owner=%p"
+		    " tparams=%zu map_fd=%p\n",
+		    tc->var.name.c_str(), (void *)fd,
+		    fd ? (int)fd->is_member_template : -1,
+		    fd ? fd->member_template_decl.size() : (size_t)0,
+		    fd ? (void *)fd->member_template_owner : NULL,
+		    fd ? fd->template_param_names.size() : (size_t)0,
+		    pfit != funcdef_map.end() ? (void *)pfit->second : NULL);
+	    const char *cls = ::getenv("MADC_MTI_PROBE_CLASS");
+	    if ( cls && *cls )
+	    {
+		datadef_map_t::iterator smi = struct_map.find(cls);
+		fprintf(stderr, "MTIPROBE struct_map[%s]=%p\n", cls,
+			smi != struct_map.end() ? (void *)smi->second : NULL);
+	    }
+	}
+    }
 #if MADC_DEBUG_FNTPL
     bool dbg_mti = false;
     {
@@ -38939,6 +39058,13 @@ static bool defaulted_member_parses_empty(DataDefCLASS *owner,
 static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
 {
     FuncDef *f = new FuncDef(new_ret);
+    // Env-gated probe (MADC_MTI_PROBE): member-template placeholder clones —
+    // the restored-placeholder routing diagnostic.
+    static const char *_mti_probe = ::getenv("MADC_MTI_PROBE");
+    if ( src->is_member_template && _mti_probe )
+	fprintf(stderr, "MTIPROBE clone src=%p f=%p disp=%s decl=%zu ret=%s\n",
+		(void *)src, (void *)f, src->method_display_name.c_str(),
+		src->member_template_decl.size(), new_ret.name.c_str());
     f->parameters = src->parameters;
     f->explicit_alignment = src->explicit_alignment;
     f->has_captures = src->has_captures;

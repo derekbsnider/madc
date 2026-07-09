@@ -2013,6 +2013,19 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		for (DataDef *pt : concrete_param_types)
 			mat.push_back(tsubst_overload_arg_type(pt));
 		Variable *winner = recv_class->findMethodOverload(mname, mat);
+		// Env-gated probe (MADC_MTI_PROBE=<substr>): receiver-class +
+		// winner identity for the restored-placeholder routing diagnostic.
+		{
+			static const char *mtp = ::getenv("MADC_MTI_PROBE");
+			if (mtp && *mtp
+			    && (recv_class->name + "__" + mname).find(mtp)
+			       != std::string::npos)
+				fprintf(stderr, "MTIPROBE recv=%s cls=%p winner=%p"
+					" wfd=%p\n",
+					recv_class->name.c_str(), (void *)recv_class,
+					(void *)winner,
+					winner ? (void *)winner->type : NULL);
+		}
 		if (!winner) {
 			for (Variable *mv : recv_class->methods) {
 				FuncDef *mfd = mv
@@ -18382,6 +18395,12 @@ node_t CirBuilder::translate_module(Program *prog)
 	// failed set is skipped on later rounds so the fixpoint converges.
 	// Referenced bodies keep today's semantics exactly (failures propagate).
 	std::set<std::string> drain_failed_syms;
+	// Pack-time drain: each tolerantly-materialized body's DEFBODY entry,
+	// kept so a LOWERING failure at the emission site below (error nodes /
+	// a Throw inside func_def) can restore it — the body then freezes as
+	// DK_DEFBODY (today's on-use derivation in consumers) instead of
+	// poisoning the whole tree (cir_report_errors rejects any error node).
+	std::map<std::string, Program::DeferredFunctionBody> drain_saved;
 	auto materialize_and_lower = [&]() {
 		for (bool grew = true; grew; ) {
 			grew = false;
@@ -18390,16 +18409,29 @@ node_t CirBuilder::translate_module(Program *prog)
 				for (auto &db : prog->deferred_lazy_bodies) {
 					if (lib_funcs.count(db.first))
 						continue;
+					// A pack-time failure is final for the whole freeze
+					// (referenced or drain-only) — retrying a re-inserted
+					// entry every round would never converge.
+					if (prog->pack_recording
+					    && drain_failed_syms.count(db.first))
+						continue;
 					if (referenced_funcs.count(db.first))
 						ready.push_back(std::make_pair(db.first, false));
-					else if (prog->pack_recording
-						 && !drain_failed_syms.count(db.first))
+					else if (prog->pack_recording)
 						ready.push_back(std::make_pair(db.first, true));
 				}
 				for (auto &rd : ready) {
 					const std::string &sym = rd.first;
 					TokenFunc *tf = NULL;
-					if (rd.second) {
+					// Under pack_recording EVERY materialization is
+					// error-tolerant, not just drain-only entries: the
+					// forced emission of drained bodies marks their
+					// callees referenced, so a callee's own deferred
+					// body takes this referenced path — a parse failure
+					// there must fall back to DEFBODY like any other
+					// pack-time gap, never kill the freeze. A normal
+					// compile keeps live semantics (failures propagate).
+					if (rd.second || prog->pack_recording) {
 						std::map<std::string, Program::DeferredFunctionBody>::iterator
 							dbi = prog->deferred_lazy_bodies.find(sym);
 						if (dbi == prog->deferred_lazy_bodies.end())
@@ -18415,6 +18447,7 @@ node_t CirBuilder::translate_module(Program *prog)
 							drain_failed_syms.insert(sym);
 							continue;
 						}
+						drain_saved[sym] = saved;
 					} else
 						tf = prog->parse_deferred_lazy_body(sym);
 					if (!tf) continue;
@@ -18430,6 +18463,34 @@ node_t CirBuilder::translate_module(Program *prog)
 					m_materialized_lib_syms.insert(tf->var.name);
 					if (tfd)
 						m_materialized_lib_syms.insert(func_emit_name(tf->var, tfd));
+					// Env-gated probe (MADC_MTI_PROBE=<substr>): each
+					// drain/materialize evaluation of a matching symbol.
+					{
+						static const char *mtp =
+							::getenv("MADC_MTI_PROBE");
+						if (mtp && *mtp && tf->var.name.find(mtp)
+						    != std::string::npos)
+							fprintf(stderr, "MTIPROBE drained"
+								" sym=%s key=%s drain=%d\n",
+								tf->var.name.c_str(),
+								tfd ? func_emit_name(tf->var, tfd).c_str()
+								    : tf->var.name.c_str(),
+								(int)rd.second);
+					}
+					// Pack-time drain: the evaluated body must EMIT —
+					// the freeze carries translated func-defs and the
+					// consumed DEFBODY no longer freezes, so an
+					// unreferenced surface entry point (a ctor no
+					// header body calls) would otherwise parse, drop
+					// at the lib_funcs reference gate below, and its
+					// body would be LOST from the corpus entirely
+					// (bound consumer: "import of undefined item").
+					if (rd.second) {
+						referenced_funcs.insert(sym);
+						if (tfd)
+							referenced_funcs.insert(
+								func_emit_name(tf->var, tfd));
+					}
 					grew = true;
 				}
 			}
@@ -18606,11 +18667,59 @@ node_t CirBuilder::translate_module(Program *prog)
 			for (auto &kv : lib_funcs) {
 				if (lib_emitted.count(kv.first)) continue;
 				TokenFunc *tf = kv.second;
-				if (!referenced_funcs.count(kv.first)
+				// Pack-time: EVERY evaluated body emits (that is the
+				// drain's point — consumers restore translated defs).
+				// The reference gate would silently drop a body whose
+				// DEFBODY entry a sibling's parse consumed recursively
+				// (derived via the on-use hook -> pending_funcs fold,
+				// never in the drain loop's forced-reference set) —
+				// lost from the corpus both ways.
+				if (!prog->pack_recording
+				    && !referenced_funcs.count(kv.first)
 				    && !referenced_funcs.count(tf->var.name))
 					continue;
 				lib_emitted.insert(kv.first);
-				node_t fd = func_def(tf);
+				// Pack-time: lowering failures (a Throw inside
+				// func_def, or error nodes from a tsubst bail /
+				// overload gap in a method nobody calls) DROP the def
+				// instead of poisoning the tree — cir_report_errors
+				// rejects any error node, so one bad body would kill
+				// the whole freeze. A drained body reverts to its
+				// DEFBODY entry (on-use derivation in consumers); an
+				// instantiation def (OOL / __mti, no deferred entry)
+				// just drops — the consumer's pattern-instantiation
+				// machinery is the standing fallback, exactly the
+				// pre-drain semantics.
+				node_t fd = NULL;
+				if (prog->pack_recording) {
+					try {
+						fd = func_def(tf);
+					} catch (...) {
+						fd = NULL;
+					}
+					if (fd && cir_tree_has_error(fd))
+						fd = NULL;
+					if (!fd) {
+						std::map<std::string,
+							 Program::DeferredFunctionBody>::iterator
+							dsi = drain_saved.find(tf->var.name);
+						if (dsi != drain_saved.end()) {
+							prog->deferred_lazy_bodies[dsi->first] =
+								dsi->second;
+							drain_failed_syms.insert(dsi->first);
+						}
+						// No silent caps: every pack-time drop is
+						// visible in the freeze log.
+						fprintf(stderr, "pack drop: %s (%s)\n",
+							tf->var.name.c_str(),
+							dsi != drain_saved.end()
+							? "reverted to DEFBODY"
+							: "consumer re-instantiates");
+						grew = true;
+						continue;
+					}
+				} else
+					fd = func_def(tf);
 				if (fd) func_def_nodes.push_back(fd);
 				grew = true;
 			}

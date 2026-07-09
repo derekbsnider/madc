@@ -341,6 +341,15 @@ static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 			continue;
 		out.funcdef_locs[id->u.s.s] =
 			std::make_pair(it->second.unit, it->second.idx);
+		// Env-gated probe (MADC_MTI_PROBE=<substr>): each partitioned
+		// func-def symbol indexed for body stamping.
+		{
+			static const char *mtp = ::getenv("MADC_MTI_PROBE");
+			if (mtp && *mtp && strstr(id->u.s.s, mtp))
+				fprintf(stderr, "MTIPROBE funcdef_loc sym=%s unit=%u"
+					" idx=%u\n",
+					id->u.s.s, it->second.unit, it->second.idx);
+		}
 		// v21: the def's OWN source file (origin token) — an instantiated
 		// definition lands in the main-file unit but its tokens carry the
 		// template's header origin; body stamping fences by this (v25:
@@ -1513,6 +1522,15 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
 		if (!nm || !*nm)
 			continue;
+		// Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every pass-1
+		// aggregate allocation for a matching name — the duplicate-record
+		// diagnostic (two tids for one name = producer identity split).
+		{
+			static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
+			if (mtp && *mtp && strstr(nm, mtp))
+				fprintf(stderr, "MTIPROBE pass1 name=%s tid=%u\n",
+					nm, tid);
+		}
 		DataDefSTRUCT *sdd;
 		if (r.kind == madc::dis::DK_CLASS)
 			sdd = new DataDefCLASS(std::string(nm), r.size,
@@ -1638,6 +1656,26 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			dprog = true;
 		}
 	}
+
+	// Method-identity sharing (using-decl imports): a methodrec whose
+	// Variable name is NOT prefixed by its class's own name is a BASE
+	// method imported via a using-declaration (__gnu_cxx::__alloc_traits's
+	// `using _Base_type::construct;`). Live pushes the base's Variable —
+	// the SAME object — into the importer's methods/method_map; building a
+	// fresh FuncDef per methodrec split that identity (the importer's copy
+	// missed the member-template pattern hydration, so a bound consumer's
+	// tsubst re-resolution routed to the un-hydrated shadow and bailed
+	// "calls un-emittable symbol"). Definers build first, keyed by the
+	// methodrec's DK_FUNC id (one live FuncDef == one id == one record);
+	// importers resolve to the shared object in a post-pass below.
+	std::map<uint32_t, Variable *> method_by_func_id;
+	struct PendingMethodImport {
+		DataDefCLASS *cdd;
+		uint32_t      func_id;
+		std::string   disp;
+		uint32_t      mflags;
+	};
+	std::vector<PendingMethodImport> pending_method_imports;
 
 	// Pass 2: fill each aggregate VERBATIM (offsets / counts / access /
 	// origin / bitfields as stored, no finalize, no re-derivation) — then
@@ -1807,6 +1845,25 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				bool m_static = (md.flags & madc::dis::MF_STATIC) != 0;
 				const char *dispkey =
 					md.disp_key_id ? a.c_str(md.disp_key_id) : NULL;
+				// Using-decl import: the Variable name always carries
+				// the DEFINING class's prefix (parseFunction's
+				// owner->name + "__" parse_id), so a foreign prefix
+				// here == a base method shared into this class. Stage
+				// it; the post-pass binds the definer's object.
+				{
+					const char *mnm0 = a.c_str(md.name_id);
+					if (mnm0 && *mnm0
+					    && strncmp(mnm0, (cdd->name + "__").c_str(),
+						       cdd->name.size() + 2) != 0) {
+						PendingMethodImport pi;
+						pi.cdd     = cdd;
+						pi.func_id = md.func_id;
+						pi.disp    = dispkey ? dispkey : "";
+						pi.mflags  = md.flags;
+						pending_method_imports.push_back(pi);
+						continue;
+					}
+				}
 				bool is_operator = dispkey
 					&& !strncmp(dispkey, "operator", 8);
 				bool has_body =
@@ -1926,6 +1983,25 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					fd->local_emit_name = mnm;
 				Variable *mv = new Variable(std::string(mnm ? mnm : ""),
 							    *fd, 1, NULL, false);
+				// Env-gated probe (MADC_MTI_PROBE=<substr>): every
+				// methodrec materialization of a matching symbol —
+				// the duplicate-class-copy diagnostic.
+				{
+					static const char *mtp = ::getenv("MADC_MTI_PROBE");
+					if (mtp && *mtp && mnm
+					    && strstr(mnm, mtp))
+						fprintf(stderr, "MTIPROBE matrec sym=%s"
+							" mv=%p fd=%p cls=%p(%s) mt=%d"
+							" body=%d unit=%u idx=%u"
+							" forest=%p\n",
+							mnm, (void *)mv, (void *)fd,
+							(void *)cdd, cdd->name.c_str(),
+							(int)is_mtmpl,
+							(int)fd->has_forest_body,
+							fd->forest_body_unit,
+							fd->forest_body_idx,
+							(void *)this);
+				}
 				if (m_static)
 					mv->flags |= vfSTATIC;
 				// Live parity (parseFunction's tail): every method
@@ -1963,6 +2039,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				}
 				_mat_vars.push_back(mv);
 				cdd->methods.push_back(mv);
+				method_by_func_id[md.func_id] = mv;
 				if (!dispname.empty())
 					cdd->method_map[dispname] = mv;
 				if (is_ctor)
@@ -2038,6 +2115,30 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		rt.flat_alias = false;
 		rt.tag_alias  = false;
 		_restored.push_back(rt);
+	}
+
+	// Post-pass: bind the staged using-decl method imports to the definer's
+	// built object — the live import handler's exact effect (the importer's
+	// methods + first-wins method_map display binding hold the SAME
+	// Variable as the base). A definer the selection rules dropped cleanly
+	// lacks, like every other unresolvable entry.
+	for (size_t i = 0; i < pending_method_imports.size(); ++i) {
+		PendingMethodImport &pi = pending_method_imports[i];
+		std::map<uint32_t, Variable *>::iterator mi =
+			method_by_func_id.find(pi.func_id);
+		if (mi == method_by_func_id.end() || !mi->second)
+			continue;
+		Variable *mv = mi->second;
+		bool present = false;
+		for (size_t j = 0; j < pi.cdd->methods.size(); ++j)
+			if (pi.cdd->methods[j] == mv) { present = true; break; }
+		if (!present)
+			pi.cdd->methods.push_back(mv);
+		if (!pi.disp.empty()
+		    && pi.cdd->method_map.find(pi.disp) == pi.cdd->method_map.end())
+			pi.cdd->method_map[pi.disp] = mv;
+		if (pi.mflags & madc::dis::MF_CTOR)
+			pi.cdd->ctors.push_back(mv);
 	}
 
 	// Pass 3: DK_TYPEDEF records (flat + namespaced aliases, at their

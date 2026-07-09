@@ -863,6 +863,14 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		return;
 	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(sdd);
 	uint32_t tid = type_id_for(sdd);	// project id (binds the active table) == arena slot
+	// Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every aggregate
+	// record write for a matching name — the duplicate-record diagnostic.
+	{
+		static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
+		if (mtp && *mtp && strstr(sdd->name.c_str(), mtp))
+			fprintf(stderr, "MTIPROBE recagg name=%s sdd=%p tid=%u\n",
+				sdd->name.c_str(), (void *)sdd, tid);
+	}
 
 	madc::dis::defrec r;
 	memset(&r, 0, sizeof(r));
@@ -2172,6 +2180,20 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		const Program::DeferredFunctionBody &b = di->second;
 		if (di->first.empty())
 			continue;
+		// Env-gated probe (MADC_MTI_PROBE=<substr>): DEFBODY freeze walk.
+		{
+			static const char *mtp = ::getenv("MADC_MTI_PROBE");
+			if (mtp && *mtp
+			    && di->first.find(mtp) != std::string::npos)
+				fprintf(stderr, "MTIPROBE defbody sym=%s file=%s"
+					" root=%d full=%d body=%zu def=%zu\n",
+					di->first.c_str(), b.file ? b.file : "(none)",
+					b.file ? (int)prog->forest_is_tu_root_file(b.file)
+					       : -1,
+					(int)b.full_definition,
+					b.body_tokens.size(),
+					b.definition_tokens.size());
+		}
 		// The forest holds #include state only (v24): a root-file class's
 		// deferred body never restores into a consumer.
 		if (b.file && prog->forest_is_tu_root_file(b.file))
