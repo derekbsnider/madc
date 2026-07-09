@@ -64,6 +64,41 @@ every other madc track for five weeks. This document is the execution order; the
   drivers above) → item 6 measure (--no-forest-bind A/B, SMAUG 51-TU
   --project, --show-stats) + stamp the 06-22 plan CLOSED. Then the recorded
   follow-ons (\_Ret collapse first).
+- **ITEM-5 DESIGN (recon done 2026-07-09, bank it — implement from here):**
+  - THE LEAK (all 4 drivers, reproduced): the tests include ONLY C headers
+    (stdio.h/netdb.h) whose real glibc paths ARE corpus units → the include
+    BINDS → first bind's `forest_restore_decls` registers the WHOLE
+    240-unit surface → stdint.h's int16_t/…, iostream's `ios` flat alias,
+    pthread types leak into TUs that never included them (repeated
+    declaration / already defined / token promotion).
+  - THE DEMAND KEY EXISTS: `forest_chain_set` (Program, lexer.cpp
+    forest_bind_include ~1843) = the exact transitive closure of BOUND
+    units (frozen include edges, DFS, cycle-safe). Complete at END of
+    tokenize (phase-split!) — so the correct filter point is the
+    POST-TOKENIZE FLUSH, where flat datatype writes are ALREADY staged
+    (seventh sitting, forest_pending_datatypes) and globals/funcs already
+    flush (flush_forest_pending_globals).
+  - THE NAME→UNIT MAP EXISTS: the B4a DECL INDEX (per-unit, per-kind
+    name entries — `--dump-forest` `declindex` lines), and
+    `forest_index_oracle` (in fulltest) ASSERTS it covers every registered
+    lookup (5121 names / 4081 lookups / 41 allowlisted) — it was built as
+    exactly this demand key. `defrec` has NO file/unit field (do NOT add
+    one — no format bump needed; the index is the provenance).
+  - IMPLEMENTATION SHAPE (one path, demand-keyed): (1) at flush time build
+    the permitted-name set = union of decl-index entries of units in
+    forest_chain_set (+ the oracle's allowlisted names unconditionally);
+    (2) MOVE the currently-eager registrations (ns/struct/template maps,
+    written mid-tokenize at first bind in forest_restore_decls) to the
+    same flush — they are lexer-invisible (seventh-sitting finding), parse
+    reads them only post-tokenize; (3) gate every family's registration
+    (types, typedefs, enums, templates ×8 pattern maps, funcdefs, globals,
+    overload sets, nslinks) on the permitted set; (4) `forest_restore_decls`
+    callers must also flush (memory gotcha) — 2 call sites lexer.cpp
+    ~3056/~3176.
+  - GATES: the 4 drivers flip; bind gate 18/18 byte-identity MUST hold
+    (single-header freezes bind everything they froze — closure == whole
+    container there, so filtering is an identity on those cases); fulltest;
+    packed suite expect 680/680.
 - **GOTCHAS:** tmp/pack.msnap + tmp/madc_packed2 are CURRENT at 1e96a128
   (re-frozen/re-packed after each fix — the spec-key change renames container
   records); tmp/madc_packed (old) is STALE — delete or ignore. Other latent
