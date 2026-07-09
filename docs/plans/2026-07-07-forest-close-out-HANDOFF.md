@@ -8,12 +8,27 @@ every other madc track for five weeks. This document is the execution order; the
 
 ---
 
-## ⏯ RESUME HERE (ninth sitting, 2026-07-09 — stoi VALUE FAMILY CLOSED @c2777b4d)
+## ⏯ RESUME HERE (ninth sitting, 2026-07-09 — stoi @c2777b4d + minmax @1e96a128 CLOSED; packed 676/680)
 
-- **Git:** develop == origin/develop **@c2777b4d** — ONE pushed batch, gated
-  fulltest 680/0/0/16 exit 0 (incl. bind gate 18/18 whole-TU byte-identity +
-  index/dm oracles) + packed suite (fresh tmp/madc_packed2) **673 → 675/680**.
-- **THE stoi RUNTIME FAMILY WAS NOT A FOREST BUG — a latent LIVE bug the bind
+- **Git:** develop == origin/develop **@1e96a128** — TWO pushed fix batches this
+  sitting, each gated fulltest 680/0/0/16 exit 0 (incl. bind gate 18/18
+  whole-TU byte-identity + oracles) + packed suite **673 → 675 → 676/680**.
+  BOTH families were latent LIVE bugs the forest bind exposed — fixed at the
+  deepest layer, not in the forest.
+- **MINMAX FAMILY @1e96a128 (testmultiret):** `using namespace std;` BEFORE a
+  global fn definition left the name bound to the single-Variable IMPORT alias
+  (storage_alias_name = __ns_std_minmax; global name index is first-wins), so
+  calls resolved to a std placeholder that never materializes — ORDER-dependent
+  ([namespace.udir]: directive members join unqualified lookup but do not HIDE
+  a real global declaration). parseFunction's reuse branch now RECLAIMS the
+  name for a plain global definition (clears storage_alias_name + data; the ns
+  member stays reachable via using_namespace_call_fallback + overload ranking).
+  Reducers tmp/mm3/mm4/mm5.cpp (mm5 = order-independence proof); testmultiret
+  3 2 7 42 live AND bound. The corpus's <algorithm> surface made this visible
+  in EVERY bound TU — that leak itself is item 5, unchanged.
+
+
+- **stoi FAMILY @c2777b4d — NOT A FOREST BUG, a latent LIVE bug the bind
   EXPOSED.** Root cause: explicit-specialization instantiation KEYS used the
   RAW source spelling (`template<> struct __is_integer<int>` → `..._int`)
   while use sites spell args through the canonical DataDef the lexer emits
@@ -33,7 +48,7 @@ every other madc track for five weeks. This document is the execution order; the
   already defined"). Reducers: tmp/nti_red.cpp (30-line forest-free mirror,
   folds g++-exact), tmp/stoi1/3/4.cpp + tmp/stod1.cpp all correct live AND
   bound. teststdstringconv flipped too (same family).
-- **NEW RECORDED FAMILY (next after minmax): live drops `__stoa<long, int>`'s
+- **RECORDED FOLLOW-ON (no failing test): live drops `__stoa<long, int>`'s
   explicit SECOND template arg** — `_Ret` collapses to the `_Ret = _TRet`
   default (emitted `__stoa__o2` returns int64_t, `is_same<_Ret,int>` =
   false_type). Live infidelity vs g++ AND a live≠bind divergence (bind's o10
@@ -41,16 +56,21 @@ every other madc track for five weeks. This document is the execution order; the
   (values fixed), but the divergence violates LOADED==PARSED in spirit; fix
   LIVE's explicit-template-arg handling for function templates, then the
   emitted-C shapes converge.
-- **PACKED-SUITE remaining 5 (all pre-classified):** 4 = the item-5
-  eager-restore drivers (testgnuattributemode, testmemclralignwide,
-  teststaticconstsibling, testservent) + testmultiret (`__ns_std_minmax`
-  placeholder never materializes).
-- **NEXT:** minmax placeholder → **item 5 lazy defrost** (demand-key the ONE
-  restore path; 4 drivers above) → item 6 measure (--no-forest-bind A/B,
-  SMAUG 51-TU --project, --show-stats) + stamp the 06-22 plan CLOSED.
-- **GOTCHAS:** tmp/pack.msnap + tmp/madc_packed2 are CURRENT at c2777b4d
-  (re-frozen/re-packed after the fix — the spec-key change renames container
-  records); tmp/madc_packed (old) is STALE — delete or ignore.
+- **PACKED-SUITE remaining 4 — ALL the item-5 eager-restore drivers**
+  (testgnuattributemode + testmemclralignwide repeated int16_t;
+  teststaticconstsibling own `struct ios` vs restored corpus class;
+  testservent pthread_attr_t token promotion). ONE structural fix.
+- **NEXT:** **item 5 lazy defrost** (demand-key the ONE restore path; 4
+  drivers above) → item 6 measure (--no-forest-bind A/B, SMAUG 51-TU
+  --project, --show-stats) + stamp the 06-22 plan CLOSED. Then the recorded
+  follow-ons (\_Ret collapse first).
+- **GOTCHAS:** tmp/pack.msnap + tmp/madc_packed2 are CURRENT at 1e96a128
+  (re-frozen/re-packed after each fix — the spec-key change renames container
+  records); tmp/madc_packed (old) is STALE — delete or ignore. Other latent
+  gaps found while probing (backlog, no failing tests): global-scope fn
+  templates don't register (namespace-wrapped do); qualified template-static
+  access (`NTI<int>::__min`) fails in NON-template bodies; cv-qualified
+  spec-arg key fragments still raw.
 
 ---
 
