@@ -857,6 +857,37 @@ void Program::forest_arena_record_unary(DataDef *dd)
 // reads are UNCHANGED; only this write dual-populates the record. Field coverage mirrors the
 // freeze's cir_forest_record_aggregate; the name-keyed maps + anonymous sub-aggregates are
 // follow-on coverage (the structural graph lands first).
+// See the declaration comments (madc.h): the structural markers for a
+// function-local class and its hoisted methods, shared by the aggregate
+// recorder, the DEFBODY writer, and the cir_builder pack-drop cascade.
+bool Program::method_var_is_local_class_hoist(Variable *v)
+{
+	if (!v || !v->data)
+		return false;
+	Method *m = static_cast<Method *>(v->data);
+	DataDefCLASS *cls = m->owner_class;
+	if (!cls || cls->name.empty())
+		return false;
+	return v->name.compare(0, cls->name.size() + 2,
+			       cls->name + "__") != 0;
+}
+
+bool Program::class_is_function_local(DataDefSTRUCT *sdd)
+{
+	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(sdd);
+	if (!cdd)
+		return false;
+	for (Variable *mv : cdd->methods) {
+		if (!mv || !mv->data)
+			continue;
+		if (static_cast<Method *>(mv->data)->owner_class != cdd)
+			continue;	// using-decl import: the definer owns it
+		if (method_var_is_local_class_hoist(mv))
+			return true;
+	}
+	return false;
+}
+
 void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 {
 	if (!sdd)
@@ -870,6 +901,23 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		if (mtp && *mtp && strstr(sdd->name.c_str(), mtp))
 			fprintf(stderr, "MTIPROBE recagg name=%s sdd=%p tid=%u\n",
 				sdd->name.c_str(), (void *)sdd, tid);
+	}
+	// A FUNCTION-LOCAL class (basic_string::_M_construct's `_Guard`,
+	// __stoa's `_Save_errno`) must not freeze: its methods have no
+	// consumer-visible home (hoisted names import-stage and drop at load),
+	// so a restored method-less shell would HIJACK the consumer's own
+	// derivation of the enclosing body (`no matching constructor` — the
+	// local class must be created fresh by that derive, as a live parse
+	// does). Kill any earlier record for the slot (parse-time write-through
+	// may have recorded it before the methods existed).
+	if (class_is_function_local(sdd)) {
+		madc::dis::defrec dead;
+		madc::dis::defrec old;
+		memset(&dead, 0, sizeof(dead));
+		if (forest_arena.get_def_at(tid, old)
+		    && old.kind != madc::dis::DK_NONE)
+			forest_arena.set_def_at(tid, dead);
+		return;
 	}
 
 	madc::dis::defrec r;
@@ -2197,6 +2245,11 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		// The forest holds #include state only (v24): a root-file class's
 		// deferred body never restores into a consumer.
 		if (b.file && prog->forest_is_tu_root_file(b.file))
+			continue;
+		// A function-local class's method body (hoisted name) has no
+		// restorable owner — the consumer's own derivation of the
+		// enclosing body creates the class and its bodies fresh.
+		if (b.var && Program::method_var_is_local_class_hoist(b.var))
 			continue;
 		const std::vector<TokenBase *> *seqs[4] = {
 			&b.body_tokens, &b.definition_tokens,

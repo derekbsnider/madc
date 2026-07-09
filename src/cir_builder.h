@@ -1060,6 +1060,12 @@ public:
 
 	// ---- Top-level module translation ----
 	node_t translate_module(Program *prog);
+	// Bind ctors/dtor/methods of externally-defined / extern-template classes
+	// to their exported Itanium symbols (dlsym-verified, fills only EMPTY
+	// emit_symbols). Runs early in translate_module; re-run at module end
+	// under pack_recording because the drain's body materialization clears
+	// the bindings the freeze must snapshot.
+	void bind_external_class_symbols(Program *prog);
 
 	// ---- Tree copy (two-tree / materialize-from-AST, Phase 1) ----
 	// Deep-copy a cir_node subtree into FRESH arena nodes — the `tsubst` core

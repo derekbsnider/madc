@@ -28461,7 +28461,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	      && b.var->name.find(_mti_probe) != std::string::npos )
 		fprintf(stderr, "MTIPROBE eager-body sym=%s file=%s depth=%d\n",
 			b.var->name.c_str(), b.file ? b.file : "(none)",
-			pgm.fn_template_instantiation_depth);
+			(int)pgm.fn_template_instantiation_depth);
 	    pgm.parse_deferred_function_body(b);
 	}
     }
