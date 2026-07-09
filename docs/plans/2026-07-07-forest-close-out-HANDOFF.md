@@ -8,6 +8,56 @@ every other madc track for five weeks. This document is the execution order; the
 
 ---
 
+## ⏯ RESUME HERE (ninth sitting cont., 2026-07-09 — ITEM 5 IN FLIGHT @69ea8c98: 4 drivers GREEN, 5 packed regressions to burn down)
+
+**READ THIS FIRST AFTER COMPACTION. The item-5 implementation IS COMMITTED AND
+PUSHED (@69ea8c98, fulltest 680/0/0/16 exit 0 + bind gate 18/18 byte-identity +
+oracles — develop == origin/develop, tree clean except untracked
+mir-debug-support.md, NEVER stage it).**
+
+- **WHAT LANDED (@69ea8c98):** forest_restore_decls moved from mid-tokenize
+  first-bind (both lexer.cpp bind sites ~3054/~3174) to the TOP of
+  flush_forest_pending_globals (parser.cpp) — forest_chain_set is complete
+  there. Every family filters through the B4a decl index:
+  `forest_declared_bound` map (name → any declaring unit ∈ closure) +
+  `forest_name_permitted(name, ns)` (qualified→bare→unindexed-passes) +
+  `forest_product_permitted(dd)` (instantiation products judged by their
+  canonical-spelling HEAD before '<'). Dropped owners skip their
+  param-default re-derivations. EMPTY closure = whole-container (unit
+  tests). PLUS restore-parity: STRUCT/UNION tags now stage the flat
+  datatype pair (tag-as-type, struct≡class) — fixes the same-name tag
+  typedef family (`typedef union pthread_attr_t pthread_attr_t;` has NO
+  typedef record live; reducer tmp/myu.h + tmp/myu_c.cpp `7 16`).
+- **PROVEN:** all 4 item-5 drivers GREEN bound to tmp/pack.msnap, byte-exact
+  vs .expect (gnuattributemode `1 2 4 8`; memclralignwide `ok`;
+  staticconstsibling `0 1 8 15`; servent full-diff rc=0);
+  stoi/stod/multiret/subscript unregressed bound.
+- **THE OPEN BURN-DOWN (packed suite 676 → 673/680): the filter OVER-DROPS
+  for 5 NEW failures — testflock, teststat, teststatret, teststructinterop,
+  testsmaug_requests (the struct-stat/glibc-struct family).** First move:
+  reducer from teststat (`#include <sys/stat.h>` + `struct stat st;
+  stat(path,&st)`) against tmp/pack.msnap (CURRENT at 69ea8c98, re-frozen).
+  Hypotheses to TEST, not assume: (a) a name those TUs need is judged
+  unbound (sys/stat.h in corpus? its unit's decl index entries?);
+  (b) the NEW struct-tag datatype staging collides with the tests' own
+  `struct stat` usage (tag staged as bare type may shadow/conflict with
+  a live-parsed declaration — check the apply-order last-wins semantics);
+  (c) an unindexed-name family that should have been dropped now stages
+  MORE datatypes than before (the struct branch staging is NEW state).
+  MADC debug: -v prints per-registration `forest_restore_decls:` lines;
+  `--dump-forest=tmp/pack.msnap | grep declindex` for name→unit.
+- **AFTER the burn-down:** re-pack (cp bin/madc tmp/madc_packed2 + bash
+  scripts/forest_pack.sh tmp/madc_packed2), packed suite target 680/680,
+  then item 6 measure (--no-forest-bind A/B on SMAUG 51-TU --project,
+  --show-stats) + stamp the 06-22 plan CLOSED. Then follow-ons (__stoa
+  _Ret collapse first — see prior block).
+- **GOTCHAS for the resume:** re-freeze tmp/pack.msnap after ANY save-side
+  change AND after rebuilds before bind tests; suites only after real code
+  changes; ONE heavy job at a time; commit -F heredoc with the two
+  trailers; NEVER git add -A.
+
+---
+
 ## ⏯ RESUME HERE (ninth sitting, 2026-07-09 — stoi @c2777b4d + minmax @1e96a128 CLOSED; packed 676/680)
 
 - **Git:** develop == origin/develop **@1e96a128** — TWO pushed fix batches this
