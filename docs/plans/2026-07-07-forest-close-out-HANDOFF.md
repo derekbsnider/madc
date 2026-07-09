@@ -8,7 +8,80 @@ every other madc track for five weeks. This document is the execution order; the
 
 ---
 
-## ⏯ RESUME HERE (ninth sitting cont., 2026-07-09 — ITEM 5 IN FLIGHT @69ea8c98: 4 drivers GREEN, 5 packed regressions to burn down)
+## ✅ CAMPAIGN CLOSED (tenth sitting, 2026-07-09 — items 5 + 6 DONE, the 06-22 plan is STAMPED CLOSED)
+
+**The embedded-header-forest execution plan is CLOSED.** Evidence per bar in
+`2026-06-22-embedded-header-forest-execution-plan.md` (header stamp + the
+CLOSE-OUT MEASUREMENT section). This handoff is now HISTORY + the follow-on
+registry — nothing below this block is live work.
+
+- **ITEM 5 CLOSED @2e6d8d2e (pushed):** the struct-stat over-drop family was a
+  filter-GRANULARITY bug, fixed at the filter: the freeze stamps a
+  globally-defined tag's ONE definition record with the namespace that merely
+  ALIASES it (madc_cir.cpp:2068 "first defining namespace wins" — ctime's
+  `using ::timespec` marks glibc's `struct timespec` record ns=std), so the
+  record carries TWO name surfaces with DIFFERENT declaring units.
+  forest_restore_decls now gates each independently: bare tag surface
+  (struct_map / flat staging / TopDecl) by the BARE name, namespace surface
+  (register_in_namespace, enumerator ns pseudo-scope) by the QUALIFIED name.
+  Strictly additive (ns_ok == the old verdict → old path); TYPEDEF alias
+  records keep the single qualified gate (their definitions ride separate
+  records; admitting via bare would duplicate TopDecls — std::size_t over
+  stddef.h's own record). Reducer tmp/stat1.cpp. Gates: fulltest 680/0/0/16
+  exit 0 + bind gate 18/18 + oracles; **PACKED SUITE 680/680 rc=0**
+  (zero-flag, MADC_BIN=tmp/madc_packed2, re-packed @2e6d8d2e).
+- **ITEM 6 DONE (the DoD number, recorded in the 06-22 plan):** corpus =
+  SMAUG's 21-system-header union frozen `--std=gnu17 -DSMAUG -DREGEX
+  -DREQUESTS` (142 units; tmp/smaug_forest_tu.c → tmp/smaug_c.msnap); build =
+  real MadSMAUG compile_commands.json (51 C TUs) to the deterministic boot
+  endpoint; A/B ×2 interleaved, outputs byte-identical modulo timestamps.
+  **End-to-end 20.15s → 16.68s (−17%); header-surface front end 0.160s →
+  0.038s (4.2×), input 638 KiB → 0.7 KiB, tokens 13,426 → 9; real-TU
+  (act_comm.c) front end −22%.** Measurement gotchas burned + fixed on the
+  way: (a) standalone freezes DON'T get the .c→gnu17 default (only
+  madc_project_execute does) — freeze with EXPLICIT `--std=gnu17` or the v27
+  config gate silently live-parses every TU; (b) manifest paths resolve
+  relative to the MANIFEST's location; (c) `--show-stats` is single-file-mode
+  only (the --project path returns before the stats block).
+- **NEW RECORDED FOLLOW-ON (no failing test): extern-array-global dims
+  fidelity.** `extern int *twod[4][6];` in a bound header restores as
+  `extern int *twod;` — live keeps the array shape on Variable::dims/count/
+  vfFIXEDARRAY (type stays the element type) and the global record freezes
+  only type_id, so the shape never serializes. Bisected: TU-local definition
+  masks it (live def wins); extern-only = the restore is the only type
+  source → c2mir "subscripted value is neither array nor pointer". Reducer
+  tmp/arr2d.h + tmp/arr2d_c.c (bind rc=1; --emit=c11 shows the dropped
+  dims). LATENT in the system corpus too (`extern char *tzname[2]` in bound
+  time.h — no suite test subscripts it). FIX DESIGN (state INTO the
+  substrate, no new family): at fill_globals wrap the element type-id in the
+  EXISTING v25 DK_CARRAY chain (one per dim, innermost first) when
+  v->dims is non-empty; at the flush unwrap DataDefCArray into element type
+  + dims + count + vfFIXEDARRAY, mirroring live's parseDeclaration model.
+  Content-only change → bump to v28 per the pin discipline. THIS UNLOCKS THE
+  PROJECT-HEADER (mud.h) CORPUS: mud.h freezes AND binds already (quoted
+  bind site; freeze with ABSOLUTE -I so resolved paths match), one TU probe
+  showed the remaining −53% of per-TU input riding on it
+  (tmp/smaug_mud_tu.c → tmp/smaug_mud.msnap, act_comm.c died only on
+  save_equipment).
+- **Follow-on queue (order per prior blocks):** (1) extern-array dims → v28 →
+  re-measure with the mud.h corpus; (2) __stoa _Ret collapse (live drops the
+  explicit 2nd template arg — live≠bind emitted-shape divergence); (3)
+  global-scope fn templates don't register; (4) qualified template-static
+  access in non-template bodies; (5) cv-qualified spec-arg key fragments raw;
+  (6) freeze-the-real-/usr/include product packaging (the owner's PRODUCT
+  bar: freeze ENTIRE /usr/include once + append; --freeze/--forest-bind stay
+  the test harness).
+- **GOTCHAS (permanent):** re-freeze tmp containers after ANY save-side change
+  AND after rebuilds; re-pack packed binaries after rebuilds; reducers must
+  PRINT and run with the ORIGINAL flags; grep `error:` not `error` (and
+  BEWARE: -v logs contain ANSI escapes — use `grep -a`, or greps silently
+  binary-skip); suites only after real code changes; ONE heavy job at a time;
+  never rebuild/relink while fulltest runs; commit `-F` heredoc with the two
+  trailers; NEVER `git add -A` (untracked mir-debug-support.md is not ours).
+
+---
+
+## ⏯ RESUME HERE (ninth sitting cont., 2026-07-09 — ITEM 5 IN FLIGHT @69ea8c98: 4 drivers GREEN, 5 packed regressions to burn down) — SUPERSEDED by the CLOSED block above
 
 **READ THIS FIRST AFTER COMPACTION. The item-5 implementation IS COMMITTED AND
 PUSHED (@69ea8c98, fulltest 680/0/0/16 exit 0 + bind gate 18/18 byte-identity +

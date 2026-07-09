@@ -1,7 +1,55 @@
 # Embedded Header Forest — Execution Plan (measurement-gated)
 
 **Date:** 2026-06-22
-**Status:** PLAN
+**Status:** **CLOSED 2026-07-09** — all Definition-of-Done bars met (see
+`2026-07-07-forest-close-out-HANDOFF.md` for the bar-by-bar evidence).
+Landed as container format **v27** on `develop` (close commit @2e6d8d2e):
+Phase-3 gate green (real `<iostream>`/`<string>`/`<vector>` freeze+bind ==
+live == g++, whole-TU MIR byte-identity, bind gate 18/18); owner's bar green
+(`testsubscript` freeze+bind == live == `.expect`); Phase 4 green (build-time
+pack appended to the binary, `scripts/forest_pack.sh`; a packed `madc`
+compiles zero-flag by binding from its own appended forest — full suite
+680/680 under `MADC_BIN=<packed>`); lazy defrost DONE (item 5: the ONE
+restore path demand-keyed by the B4a decl index × the TU's bound-include
+closure, per-name-surface gating); THE NUMBER recorded below (§ CLOSE-OUT
+MEASUREMENT): **SMAUG 51-TU `--project` build 20.15s → 16.68s (−17%)
+end-to-end with identical output; header-surface front end 4.2×; per-TU
+front end −22%** (C corpus, gnu17 + project defines). Prior single-TU
+C++-corpus number: 2.2× end-to-end. Remaining recorded follow-ons (no
+failing test) live in the close-out handoff: extern-array-global dims
+fidelity (unlocks the project-header/mud.h corpus), `__stoa` `_Ret`
+collapse, global-scope fn-template registration, qualified template-static
+access.
+
+---
+
+## CLOSE-OUT MEASUREMENT (2026-07-09, item 6 — the Definition-of-Done number)
+
+Setup: corpus = the 21-system-header union the SMAUG 1.8 sources include on
+Linux (`tmp/smaug_forest_tu.c`), frozen `--std=gnu17 -DSMAUG -DREGEX
+-DREQUESTS` (v27 producer-config gate matched) → 142 units / 8,143 records.
+Build = the real MadSMAUG `compile_commands.json` (51 C TUs), run to the
+deterministic boot endpoint (missing `commands.dat` data tree), A/B
+interleaved ×2, outputs byte-identical modulo log timestamps.
+
+| Measurement | live (`--no-forest-bind`) | forest-bind | win |
+|---|---|---|---|
+| 51-TU end-to-end wall (compile+link+JIT+boot) | 20.09s / 20.21s | 16.54s / 16.81s | **−3.5s, −17%** |
+| header-surface probe, in-process front end (`--show-stats`) | 0.160s | 0.038s | **4.2×** |
+| header-surface probe, input read | 638.3 KiB | 0.7 KiB | 918× |
+| header-surface probe, lexer tokens | 13,426 | 9 | 1,492× |
+| real TU (act_comm.c) lex+parse | 0.337s | 0.263s | **−22%** |
+| real TU input read | 712.0 KiB | 334.1 KiB | −53% |
+
+The per-TU residual (334 KiB) is the project's own `mud.h` + TU body.
+`mud.h` DOES freeze and bind as a unit (quoted-include bind site, absolute
+`-I` path parity), but its consumers hit the extern-array-global dims
+family (`extern OBJ_DATA *save_equipment[MAX_WEAR][MAX_LAYERS]` restores
+as a scalar pointer — `Variable::dims`/`count`/`vfFIXEDARRAY` never
+freeze; reducer `tmp/arr2d.h` + `tmp/arr2d_c.c`; fix design: serialize
+dims as the existing DK_CARRAY chain on the global record's `type_id`,
+unwrap at the flush — content-only, v28). That follow-on unlocks the
+project-header corpus and most of the remaining 53%.
 **Goal:** Make stdlib-heavy compiles **FAST** by loading a pre-parsed, embedded
 **AST forest** instead of re-parsing the libstdc++/glibc closure on every compile.
 **Fence:** This is the optimization pass that follows the current correctness work

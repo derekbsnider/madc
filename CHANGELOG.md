@@ -4,6 +4,29 @@
 
 ### Data-substrate Track B — the embedded header forest
 
+- **CAMPAIGN CLOSED (2026-07-09).** The 2026-06-22 embedded-header-forest
+  execution plan is stamped CLOSED — every Definition-of-Done bar met at
+  container format v27 (close commit @2e6d8d2e). **Item 5 (lazy defrost):**
+  the one decl-restore path is demand-keyed — registration filters to the
+  TU's bound-include closure via the B4a decl index at the post-tokenize
+  flush, with PER-NAME-SURFACE gating (the freeze stamps a globally-defined
+  tag's single record with a namespace that merely aliases it — ctime's
+  `using ::timespec` marks glibc's `struct timespec` record `ns=std` — so
+  the bare-tag and qualified surfaces answer to different declaring units
+  and gate independently). A packed `madc` binary compiles the FULL
+  integration suite zero-flag: **packed suite 680/680**, fulltest
+  680/0/0/16, bind gate 18/18 whole-TU MIR byte-identity. **Item 6 (the
+  number):** SMAUG 51-TU `--project` A/B against a gnu17 corpus of SMAUG's
+  21-header system surface — **end-to-end 20.15s → 16.68s (−17%)** with
+  byte-identical output; header-surface front end **4.2×** (input read
+  638 KiB → 0.7 KiB, lexer tokens 13,426 → 9); real-TU front end −22%.
+  Full method + table in the plan's CLOSE-OUT MEASUREMENT section.
+  Recorded follow-ons (no failing tests) live in the close-out handoff:
+  extern-array-global dims fidelity (unlocks the project-header/mud.h
+  corpus and most of the remaining per-TU win), `__stoa` `_Ret` collapse,
+  global-scope fn-template registration, qualified template-static access,
+  /usr/include product packaging.
+
 - **NEW-SPECIALIZATION instantiation from restored save-state WORKS (format
   v21, two commits, 2026-07-07).** A consumer instantiates a specialization
   the producer never built — `vector<long>` bound to a `vector<int>` producer
