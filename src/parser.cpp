@@ -12432,7 +12432,23 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    if ( li != fam.end() && li->second != i )
 		continue;		// a later record supersedes this one
 	}
-	if ( !forest_name_permitted(name, rt.ns) )
+	// A record carries up to TWO name surfaces, gated INDEPENDENTLY. The
+	// freeze stamps a globally-defined tag's ONE definition record with the
+	// namespace that ALIASES it (madc_cir "first defining namespace wins":
+	// ctime's `using ::timespec` marks glibc's `struct timespec` record
+	// ns=std) — so the qualified name (std::timespec, declared only by
+	// <ctime>) and the bare tag (timespec, declared by the bound
+	// struct_timespec.h) answer to DIFFERENT declaring units. Judging the
+	// whole record by the qualified form dropped the definition out from
+	// under a bound C header (teststat's st_mtim.tv_sec). ns_ok gates the
+	// namespace surface (register_in_namespace); flat_ok gates the bare
+	// surfaces (struct_map / flat datatype staging / TopDecl). TYPEDEF
+	// alias records keep the single qualified gate — their definitions
+	// ride separate records, so dropping the alias loses nothing.
+	bool ns_ok   = forest_name_permitted(name, rt.ns);
+	bool flat_ok = (rt.ns && *rt.ns && rt.kind != CIR_TYPEK_TYPEDEF)
+		     ? forest_name_permitted(name, NULL) : ns_ok;
+	if ( !ns_ok && !flat_ok )
 	    continue;			// declared only by unbound units
 	if ( !forest_product_permitted(rt.dd) )
 	    continue;			// instantiation product of an unbound template
@@ -12513,10 +12529,11 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    TokenDataType *tdt = new TokenDataType(rt.name, *rt.dd);
 	    forest_pending_datatypes.push_back(std::make_pair(name, tdt));
 	    forest_pending_datatype_names.insert(name);
-	    register_in_namespace(rt.ns, name, rt.dd, tdt);
+	    if ( ns_ok )
+		register_in_namespace(rt.ns, name, rt.dd, tdt);
 	    if ( !rt.enumerators.empty() )
 	    {
-		std::string pk = (rt.ns && *rt.ns)
+		std::string pk = (rt.ns && *rt.ns && ns_ok)
 			       ? std::string(rt.ns) + "::" + name : name;
 		variable_map_t &scope_ns = namespace_map[pk];
 		for ( size_t e = 0; e < rt.enumerators.size(); ++e )
@@ -12552,7 +12569,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    td.name = name;
 	    td.dd = sdd;
 	    top_decls.push_back(td);
-	    register_in_namespace(rt.ns, name, sdd, tdt);
+	    if ( ns_ok )
+		register_in_namespace(rt.ns, name, sdd, tdt);
 	    DBG(std::cout << "forest_restore_decls: struct " << name << " ("
 		<< sdd->members.size() << " members)" << std::endl);
 	}
@@ -12581,7 +12599,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    TokenDataType *tdt = new TokenDataType(rt.name, *cdd);
 	    forest_pending_datatypes.push_back(std::make_pair(name, tdt));
 	    forest_pending_datatype_names.insert(name);
-	    register_in_namespace(rt.ns, name, cdd, tdt);
+	    if ( ns_ok )
+		register_in_namespace(rt.ns, name, cdd, tdt);
 	    // Stage every restored METHOD for program registration, exactly as a
 	    // live parse leaves it: parseFunction registers each method (ctor,
 	    // dtor, operator, plain — keyed by its method-id, the Variable name
