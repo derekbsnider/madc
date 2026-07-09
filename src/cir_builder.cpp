@@ -18364,17 +18364,53 @@ node_t CirBuilder::translate_module(Program *prog)
 	// item". Drain anything appended past the entry-snapshot watermark
 	// (pf_drained, captured where `funcs` was collected) into lib_funcs each
 	// round.
+	//
+	// PACK-TIME DRAIN (rung 1, 2026-07-09 plan): under a grove-carrying freeze
+	// (prog->pack_recording) every deferred body is "ready", referenced or not —
+	// pack time is the once-ever place to evaluate the header surface, so
+	// consumers restore translated func-defs instead of re-deriving each body
+	// on first use (the 207-bodies-per-compile cost). Drain-only bodies get
+	// per-body error tolerance: a parse failure re-inserts the entry so it
+	// freezes as DK_DEFBODY (today's on-use derivation in consumers — a pack
+	// must never be blocked by a parser gap in a method nobody calls), and the
+	// failed set is skipped on later rounds so the fixpoint converges.
+	// Referenced bodies keep today's semantics exactly (failures propagate).
+	std::set<std::string> drain_failed_syms;
 	auto materialize_and_lower = [&]() {
 		for (bool grew = true; grew; ) {
 			grew = false;
 			if (!prog->deferred_lazy_bodies.empty()) {
-				std::vector<std::string> ready;
-				for (auto &db : prog->deferred_lazy_bodies)
-					if (!lib_funcs.count(db.first)
-					    && referenced_funcs.count(db.first))
-						ready.push_back(db.first);
-				for (auto &sym : ready) {
-					TokenFunc *tf = prog->parse_deferred_lazy_body(sym);
+				std::vector<std::pair<std::string, bool> > ready;
+				for (auto &db : prog->deferred_lazy_bodies) {
+					if (lib_funcs.count(db.first))
+						continue;
+					if (referenced_funcs.count(db.first))
+						ready.push_back(std::make_pair(db.first, false));
+					else if (prog->pack_recording
+						 && !drain_failed_syms.count(db.first))
+						ready.push_back(std::make_pair(db.first, true));
+				}
+				for (auto &rd : ready) {
+					const std::string &sym = rd.first;
+					TokenFunc *tf = NULL;
+					if (rd.second) {
+						std::map<std::string, Program::DeferredFunctionBody>::iterator
+							dbi = prog->deferred_lazy_bodies.find(sym);
+						if (dbi == prog->deferred_lazy_bodies.end())
+							continue;	// consumed by an earlier body this round
+						Program::DeferredFunctionBody saved = dbi->second;
+						try {
+							tf = prog->parse_deferred_lazy_body(sym);
+						} catch (...) {
+							tf = NULL;
+						}
+						if (!tf) {
+							prog->deferred_lazy_bodies[sym] = saved;
+							drain_failed_syms.insert(sym);
+							continue;
+						}
+					} else
+						tf = prog->parse_deferred_lazy_body(sym);
 					if (!tf) continue;
 					FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
 					lib_funcs[tfd ? func_emit_name(tf->var, tfd) : tf->var.name] = tf;

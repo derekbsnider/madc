@@ -27298,6 +27298,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	}
     };
 
+    // Exception hygiene: deferred_function_body_sink points at the STACK-LOCAL
+    // deferred_method_bodies above, and class_scope_stack holds ddc until the
+    // '}' — a Throw anywhere in the body parse must unwind BOTH, or the next
+    // parse enqueues into a dead frame / resolves against a phantom class
+    // scope. Harmless historically (the first parse error aborted the whole
+    // compile), fatal under the pack-time body drain, which tolerates a failed
+    // body and keeps parsing (rung 1, 2026-07-09 plan).
+    try {
 	while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 	{
 	skip_member_attributes();
@@ -28289,6 +28297,13 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     if ( !tn )
 	pgm.Throw << "Unexpected end of input in class definition" << flush;
     pgm.nextToken(); // consume '}'
+    } catch (...) {
+	// Unwind exactly what the normal path below unwinds, then propagate.
+	if ( !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() == ddc )
+	    pgm.class_scope_stack.pop_back();
+	pgm.deferred_function_body_sink = saved_deferred_sink;
+	throw;
+    }
     if ( !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() == ddc )
 	pgm.class_scope_stack.pop_back();
     pgm.deferred_function_body_sink = saved_deferred_sink;

@@ -2527,7 +2527,17 @@ int madc_cir_freeze(Program *prog, const char *source_name,
     if (!c2m) {
 	fprintf(stderr, "%s: cir_init failed\n", source_name);
     } else {
+	// Rung 1 (2026-07-09 plan): under a grove-carrying freeze the builder's
+	// m&l fixpoint DRAINS deferred_lazy_bodies (referenced or not) so the
+	// container carries translated func-defs, not DK_DEFBODY token runs.
+	// Report the drain so the left-deferred fallback count is visible.
+	size_t db_before = prog->deferred_lazy_bodies.size();
 	node_t tree = cir_translate_guarded(c2m, prog, source_name, builder);
+	size_t db_after = prog->deferred_lazy_bodies.size();
+	if (prog->pack_recording && db_before)
+	    fprintf(stderr, "%s: pack drain: %zu deferred bodies evaluated, "
+		    "%zu left deferred\n", source_name,
+		    db_before > db_after ? db_before - db_after : 0, db_after);
 	int nerr = tree ? cir_report_errors(stderr, tree) : 0;
 	if (tree && nerr) {
 	    fprintf(stderr, "%s: %d untranslatable node(s); not freezing\n",
