@@ -2251,6 +2251,20 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		// enclosing body creates the class and its bodies fresh.
 		if (b.var && Program::method_var_is_local_class_hoist(b.var))
 			continue;
+		// An instantiation-born FREE-function body (a namespace
+		// fn-template product the pack's own evaluation enqueued —
+		// __ns_std_uninitialized_copy__o2): its token-run derive needs
+		// the instantiation's template-param bindings, which the record
+		// does not carry ("Expecting a type argument to
+		// iterator_traits<>"). The consumer's home for these is
+		// RE-INSTANTIATION through the template machinery. Class-member
+		// products (owner_class set) keep their DEFBODY — the owner
+		// scope restores their derive context.
+		if (b.var && (!b.method || !b.method->owner_class)) {
+			FuncDef *vfd = dynamic_cast<FuncDef *>(b.var->type);
+			if (vfd && vfd->tsubst_source)
+				continue;
+		}
 		const std::vector<TokenBase *> *seqs[4] = {
 			&b.body_tokens, &b.definition_tokens,
 			&b.trailing_ret_tokens, &b.ctor_init_tokens
@@ -2315,6 +2329,12 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 	     fi != prog->funcdef_map.end(); ++fi) {
 		FuncDef *fd = fi->second;
 		if (!fd || fd->forest_body_tokens.empty() || fi->first.empty())
+			continue;
+		// Instantiation-born product (tsubst_source): its token-run
+		// derive needs the instantiation's template-param bindings,
+		// which no record carries — the consumer re-instantiates
+		// instead (same rule as the deferred-map walk above).
+		if (fd->tsubst_source)
 			continue;
 		uint32_t ftid = madc_type_id_for(fd);
 		madc::dis::defrec fr;

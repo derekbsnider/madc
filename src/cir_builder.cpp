@@ -19180,20 +19180,79 @@ node_t CirBuilder::translate_module(Program *prog)
 			cir_collect_call_callees(pack_defs[i].second, def_callees[i]);
 			cir_collect_cleanup_attr_fns(pack_defs[i].second, def_callees[i]);
 		}
-		// Un-carriable local-class methods that never reached the drop
-		// list (e.g. rolled back with a speculative pattern parse, or
-		// never drained) are still recognizable through their deferred
-		// entries.
-		auto callee_uncarriable = [&](const std::string &sym) -> bool {
+		// Symbol -> stash index, so a callee defined by a sibling stashed
+		// def counts as homed only while that sibling survives.
+		std::map<std::string, size_t> stash_idx;
+		for (size_t i = 0; i < pack_defs.size(); ++i) {
+			TokenFunc *stf = pack_defs[i].first;
+			stash_idx[stf->var.name] = i;
+			FuncDef *stfd = dynamic_cast<FuncDef *>(stf->var.type);
+			if (stfd)
+				stash_idx[func_emit_name(stf->var, stfd)] = i;
+		}
+		std::set<std::string> synth_dtor_syms;
+		for (auto &kv : prog->struct_map) {
+			DataDefCLASS *cdd = as_user_class(kv.second);
+			if (class_gets_synth_dtor(cdd))
+				synth_dtor_syms.insert(class_dtor_symbol(cdd));
+		}
+		std::vector<char> is_dropped(pack_defs.size(), 0);
+		std::map<std::string, bool> dlsym_memo;
+		// A callee is HOMED when a consumer can resolve it: a surviving
+		// sibling def, a (non-local-class) DEFBODY derived on use, a
+		// TU-root user fn, a synth dtor (Pass 1.6 emits it in consumers
+		// too), a c2mir builtin, a forest-carried body from a bound base
+		// (freeze-append), or a dlsym-resolvable external (libc /
+		// Itanium-mangled / __madc runtime). Anything else is a
+		// pack-context artifact — a rolled-back speculative
+		// instantiation (the __ns_std__Construct slot-1 husk), a
+		// local-class hoist — and freezing a call to it is an undefined
+		// import in every bound consumer, so the CALLER must drop (its
+		// DEFBODY revert / consumer re-instantiation covers it on use).
+		auto callee_homed = [&](const std::string &sym) -> bool {
 			if (pack_dropped.count(sym))
+				return false;
+			std::map<std::string, size_t>::iterator si =
+				stash_idx.find(sym);
+			if (si != stash_idx.end() && !is_dropped[si->second])
 				return true;
 			std::map<std::string, Program::DeferredFunctionBody>::iterator
 				di = prog->deferred_lazy_bodies.find(sym);
-			return di != prog->deferred_lazy_bodies.end()
-			    && Program::method_var_is_local_class_hoist(
-					di->second.var);
+			if (di != prog->deferred_lazy_bodies.end()) {
+				if (Program::method_var_is_local_class_hoist(
+						di->second.var))
+					return false;
+				// Instantiation-born free fn: its DEFBODY does
+				// not freeze (no template-param context to
+				// derive from) — mirror the DK_DEFBODY writer.
+				if (di->second.var
+				    && (!di->second.method
+					|| !di->second.method->owner_class)) {
+					FuncDef *dfd = dynamic_cast<FuncDef *>(
+						di->second.var->type);
+					if (dfd && dfd->tsubst_source)
+						return false;
+				}
+				return true;
+			}
+			if (user_func_names.count(sym))
+				return true;
+			if (synth_dtor_syms.count(sym))
+				return true;
+			if (is_c2mir_builtin_call_name(sym))
+				return true;
+			funcdef_map_t::iterator fi = prog->funcdef_map.find(sym);
+			if (fi != prog->funcdef_map.end() && fi->second
+			    && fi->second->has_forest_body)
+				return true;
+			std::map<std::string, bool>::iterator mi =
+				dlsym_memo.find(sym);
+			if (mi != dlsym_memo.end())
+				return mi->second;
+			bool avail = external_symbol_available(sym);
+			dlsym_memo[sym] = avail;
+			return avail;
 		};
-		std::vector<char> is_dropped(pack_defs.size(), 0);
 		for (bool changed = true; changed; ) {
 			changed = false;
 			for (size_t i = 0; i < pack_defs.size(); ++i) {
@@ -19203,7 +19262,7 @@ node_t CirBuilder::translate_module(Program *prog)
 				for (std::set<std::string>::iterator ci =
 				     def_callees[i].begin();
 				     ci != def_callees[i].end(); ++ci)
-					if (callee_uncarriable(*ci)) {
+					if (!callee_homed(*ci)) {
 						bad = true;
 						break;
 					}
@@ -19212,7 +19271,7 @@ node_t CirBuilder::translate_module(Program *prog)
 				is_dropped[i] = 1;
 				changed = true;
 				pack_record_drop(pack_defs[i].first,
-						 "calls dropped symbol; ",
+						 "calls unresolvable symbol; ",
 						 false);
 			}
 		}
