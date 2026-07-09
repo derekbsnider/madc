@@ -8,7 +8,53 @@ every other madc track for five weeks. This document is the execution order; the
 
 ---
 
-## ⏯ RESUME HERE (eighth sitting, 2026-07-08 — ITEM 4 LANDED: default-on embedded forest)
+## ⏯ RESUME HERE (ninth sitting, 2026-07-09 — stoi VALUE FAMILY CLOSED @c2777b4d)
+
+- **Git:** develop == origin/develop **@c2777b4d** — ONE pushed batch, gated
+  fulltest 680/0/0/16 exit 0 (incl. bind gate 18/18 whole-TU byte-identity +
+  index/dm oracles) + packed suite (fresh tmp/madc_packed2) **673 → 675/680**.
+- **THE stoi RUNTIME FAMILY WAS NOT A FOREST BUG — a latent LIVE bug the bind
+  EXPOSED.** Root cause: explicit-specialization instantiation KEYS used the
+  RAW source spelling (`template<> struct __is_integer<int>` → `..._int`)
+  while use sites spell args through the canonical DataDef the lexer emits
+  (`int` → ddINT32 → `..._int32_t`). Every libstdc++ spec keyed on a
+  builtin-INTEGER spelling was invisible → PRIMARY silently instantiated →
+  `__is_integer<int>::__value=0` → `__is_integer_nonstrict<int>::__width=0`
+  → `__numeric_traits_integer<int>{__digits=-1, __max=-1, __min=0}` → __stoa
+  range check rejects EVERYTHING. Bind exposed it because the bound TU
+  resolves `__stoa<long,int>`'s `_Ret=int` FAITHFULLY (true_type check
+  active); live collapses `_Ret`→long (false_type → check skipped → "works").
+  FIX @c2777b4d: builtin spelling→canonical-dd table extracted from
+  resolve_named_datadef into `resolve_builtin_type_spelling()` (ONE owner);
+  `canonical_arg_key_fragment` routes type spellings through it (wchar_t/
+  char16_t/char32_t carve-out preserved); PLUS first-spec-wins skip when two
+  C++ spellings collapse to one madc type (`long`/`long long`, `double`/
+  `long double` — a later sibling spec = benign re-spelling, was "Class
+  already defined"). Reducers: tmp/nti_red.cpp (30-line forest-free mirror,
+  folds g++-exact), tmp/stoi1/3/4.cpp + tmp/stod1.cpp all correct live AND
+  bound. teststdstringconv flipped too (same family).
+- **NEW RECORDED FAMILY (next after minmax): live drops `__stoa<long, int>`'s
+  explicit SECOND template arg** — `_Ret` collapses to the `_Ret = _TRet`
+  default (emitted `__stoa__o2` returns int64_t, `is_same<_Ret,int>` =
+  false_type). Live infidelity vs g++ AND a live≠bind divergence (bind's o10
+  gets int32_t + true_type — MORE faithful). Both now produce correct output
+  (values fixed), but the divergence violates LOADED==PARSED in spirit; fix
+  LIVE's explicit-template-arg handling for function templates, then the
+  emitted-C shapes converge.
+- **PACKED-SUITE remaining 5 (all pre-classified):** 4 = the item-5
+  eager-restore drivers (testgnuattributemode, testmemclralignwide,
+  teststaticconstsibling, testservent) + testmultiret (`__ns_std_minmax`
+  placeholder never materializes).
+- **NEXT:** minmax placeholder → **item 5 lazy defrost** (demand-key the ONE
+  restore path; 4 drivers above) → item 6 measure (--no-forest-bind A/B,
+  SMAUG 51-TU --project, --show-stats) + stamp the 06-22 plan CLOSED.
+- **GOTCHAS:** tmp/pack.msnap + tmp/madc_packed2 are CURRENT at c2777b4d
+  (re-frozen/re-packed after the fix — the spec-key change renames container
+  records); tmp/madc_packed (old) is STALE — delete or ignore.
+
+---
+
+## Prior sitting (eighth, 2026-07-08 — ITEM 4 LANDED: default-on embedded forest)
 
 - **Git:** develop == origin/develop **@a1da0687** — TWO pushed eighth-sitting
   batches, each gated fulltest 680/0/0/16 exit 0 + bind gate 18/18
