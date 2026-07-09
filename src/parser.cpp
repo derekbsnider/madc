@@ -12326,6 +12326,83 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    last_tag[k] = i;
     }
 
+    // Item 5 (lazy defrost): registration filters to the TU's bound-include
+    // closure. The B4a decl index is the demand key: a name DECLARED by some
+    // unit (source-level export; qualified + bare forms are both indexed)
+    // registers only when one of its declaring units is in forest_chain_set —
+    // exactly the surface a live parse of the TU's includes would declare.
+    // A name in NO unit's index is a DERIVED entity (instantiation product,
+    // __oN overload symbol, madc-internal — the forest_index_oracle allowlist
+    // classes) and registers unconditionally: its creating machinery only
+    // runs when its pattern/owner is reachable. An EMPTY closure (a direct
+    // restore with no bound includes — unit tests, non-include consumers)
+    // keeps the whole-container semantics.
+    std::map<std::string, bool> forest_declared_bound; // name -> a declaring unit is bound
+    const bool forest_closure_filter = !forest_chain_set.empty();
+    if ( forest_closure_filter )
+    {
+	std::vector<cir_forest_decl_entry> ents;
+	for ( uint32_t u = 0; u < forest.unit_count(); ++u )
+	{
+	    if ( !forest.unit_decl_index(u, ents) )
+		continue;
+	    bool bound = forest_chain_set.count(u) != 0;
+	    for ( size_t e = 0; e < ents.size(); ++e )
+	    {
+		const char *nm = forest.pool_str(ents[e].name_id);
+		if ( !nm || !*nm )
+		    continue;
+		std::map<std::string, bool>::iterator di =
+		    forest_declared_bound.find(nm);
+		if ( di == forest_declared_bound.end() )
+		    forest_declared_bound[nm] = bound;
+		else if ( bound )
+		    di->second = true;
+	    }
+	}
+    }
+    auto forest_name_permitted = [&](const std::string &nm,
+				     const char *ns) -> bool {
+	if ( !forest_closure_filter )
+	    return true;
+	if ( ns && *ns )
+	{
+	    std::map<std::string, bool>::const_iterator qi =
+		forest_declared_bound.find(std::string(ns) + "::" + nm);
+	    if ( qi != forest_declared_bound.end() )
+		return qi->second;
+	}
+	std::map<std::string, bool>::const_iterator bi =
+	    forest_declared_bound.find(nm);
+	if ( bi != forest_declared_bound.end() )
+	    return bi->second;
+	return true;	// unindexed = derived entity
+    };
+    // A template-INSTANTIATION product's mangled record name is never indexed,
+    // but its identity IS a template-id — its canonical spelling's head
+    // (`std::basic_ostream<char, ...>` -> `std::basic_ostream`) names the
+    // declaring template, which IS indexed. Judge the product by that head so
+    // <iostream>'s pre-instantiated stream products don't leak into a
+    // stdio-only TU (their secondary derivations — method default-args —
+    // reference names only their own closure declares).
+    auto forest_product_permitted = [&](DataDef *dd) -> bool {
+	if ( !forest_closure_filter || !dd
+	  || dd->canonical_cpp_spelling.empty() )
+	    return true;
+	const std::string &cs = dd->canonical_cpp_spelling;
+	size_t lt = cs.find('<');
+	if ( lt == std::string::npos )
+	    return true;
+	std::string head = cs.substr(0, lt);
+	while ( !head.empty() && head.back() == ' ' )
+	    head.pop_back();
+	std::map<std::string, bool>::const_iterator hi =
+	    forest_declared_bound.find(head);
+	if ( hi != forest_declared_bound.end() )
+	    return hi->second;
+	return true;
+    };
+
     // A namespaced type (rt.ns != "") also registers into namespace_map[ns] +
     // namespace_datatype_map[ns][name] — matching the live path (parser.cpp ~3367),
     // where the SAME TokenDataType object goes into both the flat and namespace
@@ -12355,6 +12432,10 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    if ( li != fam.end() && li->second != i )
 		continue;		// a later record supersedes this one
 	}
+	if ( !forest_name_permitted(name, rt.ns) )
+	    continue;			// declared only by unbound units
+	if ( !forest_product_permitted(rt.dd) )
+	    continue;			// instantiation product of an unbound template
 	if ( rt.kind == CIR_TYPEK_TYPEDEF )
 	{
 	    if ( !rt.underlying )
@@ -12456,12 +12537,22 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    if ( !sdd )
 		continue;
 	    struct_map[name] = sdd;
+	    // Live parity: a parsed tag is ALSO a bare type name (struct≡class
+	    // — `union myu {...};` makes `myu v;` resolve with no typedef), so
+	    // the restore stages the flat datatype registration exactly like
+	    // the class branch. Without it a same-named tag typedef
+	    // (`typedef union pthread_attr_t pthread_attr_t;` — which live
+	    // skips as already-resolvable, so NO typedef record exists) left
+	    // the bound name unresolvable (testservent's sigevent_t.h parse).
+	    TokenDataType *tdt = new TokenDataType(rt.name, *sdd);
+	    forest_pending_datatypes.push_back(std::make_pair(name, tdt));
+	    forest_pending_datatype_names.insert(name);
 	    TopDecl td;
 	    td.kind = sdd->union_layout ? DeclKind::dkUnion : DeclKind::dkStruct;
 	    td.name = name;
 	    td.dd = sdd;
 	    top_decls.push_back(td);
-	    register_in_namespace(rt.ns, name, sdd, NULL);
+	    register_in_namespace(rt.ns, name, sdd, tdt);
 	    DBG(std::cout << "forest_restore_decls: struct " << name << " ("
 		<< sdd->members.size() << " members)" << std::endl);
 	}
@@ -12538,6 +12629,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	const CirRestoredGlobal &rg = globals[i];
 	if ( !rg.name || !rg.type )
 	    continue;
+	if ( !forest_name_permitted(rg.name, rg.ns) )
+	    continue;			// declared only by unbound units
 	PendingForestGlobal pg;
 	pg.name       = rg.name;
 	pg.ns         = rg.ns ? rg.ns : "";	// v22: defining namespace
@@ -12564,6 +12657,21 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     {
 	if ( !funcs[i].name || !*funcs[i].name || !funcs[i].fd )
 	    continue;
+	// Closure filter: the funcdef_map key ("printf") is what the index
+	// tapped; a namespace public's __ns_* key falls back to its
+	// ns::display source form when the key itself is unindexed.
+	{
+	    FuncDef *ffd = funcs[i].fd;
+	    bool ok = forest_name_permitted(funcs[i].name, NULL);
+	    if ( ok && forest_closure_filter
+	      && !forest_declared_bound.count(funcs[i].name)
+	      && !ffd->namespace_name.empty()
+	      && !ffd->function_display_name.empty() )
+		ok = forest_name_permitted(ffd->function_display_name,
+					   ffd->namespace_name.c_str());
+	    if ( !ok )
+		continue;
+	}
 	PendingForestFunc pf;
 	pf.name = funcs[i].name;
 	pf.fd   = funcs[i].fd;
@@ -12609,6 +12717,19 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     {
 	const CirRestoredTemplate &rt = tmpls[i];
 	std::string key(rt.key);
+	// Closure filter: pattern-map keys are tapped verbatim (bare AND
+	// ns-qualified). A MEMBER pattern rides its owner class's fate: the
+	// class branch above never staged a dropped owner, and the key (a
+	// funcdef placeholder symbol) is derived — skip when the owner's
+	// name was filtered out.
+	if ( !forest_name_permitted(key, rt.ns) )
+	    continue;
+	if ( rt.kind == CIR_TMPLK_MEMBER && rt.owner )
+	{
+	    DataDefCLASS *ocls = dynamic_cast<DataDefCLASS *>(rt.owner);
+	    if ( ocls && !forest_name_permitted(ocls->name, NULL) )
+		continue;
+	}
 	switch ( rt.kind )
 	{
 	case CIR_TMPLK_CLASS:
@@ -12798,9 +12919,23 @@ static void register_skipped_class_template_function(
 // a global already present (a user redeclaration, or a second flush) is skipped.
 void Program::flush_forest_pending_globals()
 {
-    if ( !tkProgram
-	 || (forest_pending_globals.empty() && forest_pending_funcs.empty()
-	     && forest_pending_datatypes.empty()) )
+    if ( !tkProgram )
+	return;
+
+    // Item 5 (lazy defrost): the one-shot decl-record restore runs HERE — the
+    // first point after tokenize where forest_chain_set is COMPLETE (every
+    // #include has bound its unit closure) — so forest_restore_decls can
+    // filter registration to the TU's actual bound-include closure instead
+    // of defrosting the whole container's surface. It STAGES the pending
+    // datatypes/globals/funcs this flush then applies below.
+    if ( bind_forest && !forest_decls_restored && !forest_chain.empty() )
+    {
+	forest_restore_decls(*bind_forest);
+	forest_decls_restored = true;
+    }
+
+    if ( forest_pending_globals.empty() && forest_pending_funcs.empty()
+      && forest_pending_datatypes.empty() )
 	return;
 
     // Staged FLAT datatype_map registrations FIRST (typedef/enum/class names
@@ -13296,6 +13431,16 @@ void Program::flush_forest_pending_globals()
 	    const CirRestoredFuncDefaults &rd = fdefs[i];
 	    if ( !rd.fd || !rd.fd->param_defaults.empty() )
 		continue;			// second flush: already rebuilt
+	    // Item 5: a default re-parses in the owner's scope and may
+	    // reference names from ITS unit's closure — an owner the closure
+	    // filter dropped never registered, so its defaults must not
+	    // re-derive (live parity: that class was never parsed).
+	    if ( rd.owner )
+	    {
+		datadef_map_iter smi = struct_map.find(rd.owner->name);
+		if ( smi == struct_map.end() || smi->second != rd.owner )
+		    continue;
+	    }
 	    rd.fd->param_defaults.assign(rd.fd->parameters.size(), NULL);
 	    for ( size_t rix = 0; rix < rd.runs.size(); ++rix )
 	    {

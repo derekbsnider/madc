@@ -3051,11 +3051,12 @@ TokenBase *Program::_getToken()
 				      && find_embedded_header(incfile) )
 					mark_embedded_include_flag(incfile);
 				}
-				if ( !forest_decls_restored )
-				{
-				    forest_restore_decls(*bind_forest);
-				    forest_decls_restored = true;
-				}
+				// Item 5 (lazy defrost): the decl-record restore
+				// moved to flush_forest_pending_globals — the
+				// post-tokenize point where forest_chain_set is
+				// COMPLETE, so registration filters to the TU's
+				// actual bound-include closure (live parity: a
+				// header you never include declares nothing).
 				return getToken();
 			    }
 			}
@@ -3171,11 +3172,8 @@ TokenBase *Program::_getToken()
 				<< "\" bound to grove unit " << fu << " ("
 				<< bind_forest->unit_name(fu) << ")" << std::endl);
 			    forest_bind_include((uint32_t)fu);
-			    if ( !forest_decls_restored )
-			    {
-				forest_restore_decls(*bind_forest);
-				forest_decls_restored = true;
-			    }
+			    // Item 5: decl restore rides the post-tokenize
+			    // flush (see the system-include bind site).
 			    return getToken();
 			}
 		    }
