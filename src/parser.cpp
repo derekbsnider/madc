@@ -33501,13 +33501,24 @@ fail:
 // template parameter (a DataDefTemplateParam placeholder)? Peels ptr / ref / const
 // layers (DataDefREF is-a DataDefPTR). The g++ `dependent_type_p` analogue, scalar
 // scope — a class instantiated WITH a placeholder arg (Foo<T>) is not detected here
-// (those bodies are excluded by tsubst_eligible's template-id reject).
+// (those bodies are excluded by tsubst_eligible's template-id reject). An OPAQUE
+// dependent placeholder (materialize_opaque_class_type: `*T` -> `T__deref`,
+// dependent member types) IS dependent — g++'s TYPENAME_TYPE case. Without it, a
+// deref/member chain off a placeholder escapes the dependence gate and a pattern
+// body instantiates fn templates keyed on the opaque type (a bogus
+// `_Construct<_ForwardIterator__deref>` product that pollutes the overload set
+// and the inst memo).
 static bool datadef_involves_placeholder(DataDef *dd)
 {
     for ( int guard = 0; dd && guard < 8; ++guard )
     {
 	if ( dd->is_template_param() )
 	    return true;
+	{
+	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+	    if ( cls && cls->is_dependent_placeholder )
+		return true;
+	}
 	if ( DataDefCONST *c = dynamic_cast<DataDefCONST *>(dd) )
 	    { dd = c->base_type; continue; }
 	if ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd) )
@@ -33565,6 +33576,24 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     // dependent rather than baking the placeholder in. A non-dependent call is still
     // instantiated eagerly at definition time (g++ per-node dependence, NOT a global
     // defer-everything mode).
+#ifdef MADC_DBG_PACK
+    if ( key.find("_Destroy") != std::string::npos )
+    {
+	DBG_PACK("gate %s dep_parse=%d call_dep=%d in=%s\n", key.c_str(),
+		 (int)pgm.dependent_parse_in_progress,
+		 (int)call_involves_placeholder(tc),
+		 pgm.cur_func_name.c_str());
+	for ( size_t i = 0; i < tc->parameters.size(); ++i )
+	{
+	    TokenBase *p = tc->parameters[i];
+	    DataDef *pdd = p ? p->datadef() : NULL;
+	    DBG_PACK("  gate-arg[%zu] tok=%d dd='%s' dep=%d\n", i,
+		     p ? (int)p->id() : -1,
+		     pdd ? pdd->name.c_str() : "(null)",
+		     (int)is_type_dependent(p));
+	}
+    }
+#endif
     if ( pgm.dependent_parse_in_progress && call_involves_placeholder(tc) )
 	return false;
     DBG_PACK("try_inst %s args=%zu\n", key.c_str(), tc->parameters.size());
@@ -33665,6 +33694,12 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 #ifdef MADC_DBG_PACK
     for ( size_t i = 0; i < ov.param_spellings.size(); ++i )
 	DBG_PACK("  param[%zu] '%s'\n", i, ov.param_spellings[i].c_str());
+    for ( size_t i = 0; i < tc->parameters.size(); ++i )
+    {
+	DataDef *dbg_adp = pgm.operand_value_datadef(tc->parameters[i]);
+	DBG_PACK("  arg[%zu] '%s'\n", i,
+		 dbg_adp ? dbg_adp->name.c_str() : "(null)");
+    }
 #endif
     std::map<std::string, DataDef *> binding;
     bool pack_empty = false;	// the pack deduced to ZERO elements (elide it)
@@ -34173,6 +34208,11 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    t = nontype_tidpack_empty.begin(); t != nontype_tidpack_empty.end(); ++t )
 	inst_key += "#" + *t + "={}";
     inst_key += ">";
+    DBG_PACK("inst_key %s memo=%d vars=%d var_out=%d\n", inst_key.c_str(),
+	     (int)pgm.fn_template_instantiated.count(inst_key),
+	     (int)(pgm.fn_template_instantiated_vars.find(inst_key)
+		   != pgm.fn_template_instantiated_vars.end()),
+	     var_out ? 1 : 0);
     if ( pgm.fn_template_instantiated.count(inst_key) )
     {
 	Variable **vi =

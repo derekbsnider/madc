@@ -19259,20 +19259,23 @@ node_t CirBuilder::translate_module(Program *prog)
 				if (is_dropped[i])
 					continue;
 				bool bad = false;
+				std::string bad_sym;
 				for (std::set<std::string>::iterator ci =
 				     def_callees[i].begin();
 				     ci != def_callees[i].end(); ++ci)
 					if (!callee_homed(*ci)) {
 						bad = true;
+						bad_sym = *ci;
 						break;
 					}
 				if (!bad)
 					continue;
 				is_dropped[i] = 1;
 				changed = true;
+				std::string why = "calls unresolvable "
+						  + bad_sym + "; ";
 				pack_record_drop(pack_defs[i].first,
-						 "calls unresolvable symbol; ",
-						 false);
+						 why.c_str(), false);
 			}
 		}
 		for (size_t i = 0; i < pack_defs.size(); ++i)
