@@ -1969,6 +1969,36 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 				continue;
 			}
 		}
+		// g++ tsubst resolves a call's arguments FIRST (finish_call_expr
+		// re-runs on the substituted args, bottom-up): an argument that
+		// is itself a dependent call still carries its parse-time
+		// placeholder return type (ddINT64 — the deferred
+		// `__addressof(*__first)` inside stl_construct's range
+		// _Destroy), and deducing the outer template from that
+		// placeholder fails every overload (1-arg `std::_Destroy`
+		// matching no candidate → the call freezes on the base pattern
+		// symbol). Re-resolve the inner call for THIS substitution and
+		// type the argument by the winner's return; instantiation is
+		// inst_key-memoized, so the inner call's own N_ID rewrite later
+		// lands on the same product.
+		if (TokenCallFunc *inner = dynamic_cast<TokenCallFunc *>(p)) {
+			if (tsubst_call_can_rewrite_after_subst(inner)) {
+				bool inner_changed = false;
+				Variable *iw = resolve_copied_dependent_call(
+					inner, subst, &inner_changed, NULL, NULL);
+				FuncDef *iwfd = iw
+					? dynamic_cast<FuncDef *>(iw->type)
+					: NULL;
+				if (iwfd) {
+					DataDef *ret = &iwfd->return_value_type();
+					if (ret != p->datadef())
+						changed = true;
+					append_substituted_param(p, ret, *subst,
+						is_zero_integer_literal(p));
+					continue;
+				}
+			}
+		}
 		append_substituted_param(p, p ? p->datadef() : NULL, *subst,
 					 is_zero_integer_literal(p));
 	}
