@@ -39753,6 +39753,22 @@ paramdecl:
 
     if ( (var=tkProgram->findVariable(strpool, id)) )
     {
+	// A real GLOBAL definition reclaims a name a using-directive import
+	// claimed first ([namespace.udir]: directive members join unqualified
+	// lookup but do not HIDE a real global declaration — parse order must
+	// not matter). Without this, `using namespace std;` before a global
+	// `int minmax(int,int)` leaves the name bound to the import ALIAS
+	// (storage_alias_name = __ns_std_minmax), so calls resolve to a std
+	// placeholder that never materializes. Clear the alias linkage; the
+	// namespace member stays reachable via using_namespace_call_fallback
+	// and the namespace overload ranking.
+	FuncDef *prevfd = dynamic_cast<FuncDef *>(var->type);
+	if ( prevfd && !prevfd->namespace_name.empty()
+	  && !owner_class && current_namespace().empty() )
+	{
+	    var->storage_alias_name.clear();
+	    var->data = NULL;
+	}
 	var->type = func;
 	method = (Method *)var->data;
     }
