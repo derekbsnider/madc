@@ -16604,12 +16604,15 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			if (class_gets_synth_dtor(cdd))
 				synth_dtor_syms.insert(class_dtor_symbol(cdd));
 		}
+		const char *emit_probe = getenv("MADC_EMITTABLE_PROBE");	// TEMP diagnostic
 		auto emittable = [&](const std::string &s) -> bool {
-			if (is_c2mir_builtin_call_name(s)) return true;
-			if (m_prog->has_deferred_lazy_body(s)) return true;
-			if (external_symbol_available(s)) return true;
-			if (synth_dtor_syms.count(s)) return true;
-			for (TokenBase *pb : m_prog->pending_funcs) {
+			int why = 0;
+			bool ok = false;
+			if (is_c2mir_builtin_call_name(s)) { ok = true; why = 1; }
+			else if (m_prog->has_deferred_lazy_body(s)) { ok = true; why = 2; }
+			else if (external_symbol_available(s)) { ok = true; why = 3; }
+			else if (synth_dtor_syms.count(s)) { ok = true; why = 4; }
+			else for (TokenBase *pb : m_prog->pending_funcs) {
 				TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
 				FuncDef *tfd = tf ? dynamic_cast<FuncDef *>(tf->var.type)
 						  : NULL;
@@ -16618,9 +16621,12 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 				// body) is NOT a definition — matching it here is what
 				// false-passed __gnu_cxx::operator-. Require a real body.
 				if (tf && tfd && !tfd->declaration_only
-				    && func_emit_name(tf->var, tfd) == s) return true;
+				    && func_emit_name(tf->var, tfd) == s) { ok = true; why = 5; break; }
 			}
-			return false;
+			if (emit_probe && s.find(emit_probe) != std::string::npos)
+				fprintf(stderr, "EMITPROBE sym=%s ok=%d why=%d\n",
+					s.c_str(), (int)ok, why);
+			return ok;
 		};
 		for (const std::string &s : callees) {
 			if (!emittable(s)) {
