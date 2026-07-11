@@ -2780,6 +2780,16 @@ static void cir_forest_arena_refresh(Program *prog,
 	for (funcdef_map_iter it = prog->funcdef_map.begin();
 	     it != prog->funcdef_map.end(); ++it) {
 		FuncDef *fd = it->second;
+#ifdef MADC_DBG_PACK
+		bool rc2probe = it->first.find("stoi") != std::string::npos
+			     || it->first.find("_to_string") != std::string::npos;
+		if (rc2probe)
+			fprintf(stderr, "[RC2] key=%s fd=%p mt=%d tparams=%zu unc=%d\n",
+				it->first.c_str(), (void *)fd,
+				fd ? (int)fd->is_member_template : -1,
+				fd ? fd->template_param_names.size() : (size_t)0,
+				pack_uncarriable ? (int)pack_uncarriable->count(it->first) : -1);
+#endif
 		if (!fd || it->first.empty())
 			continue;
 		if (fd->is_member_template || !fd->template_param_names.empty())
@@ -2794,6 +2804,13 @@ static void cir_forest_arena_refresh(Program *prog,
 		if (pack_uncarriable && pack_uncarriable->count(it->first))
 			continue;
 		uint32_t tid = madc_type_id_for(fd);
+#ifdef MADC_DBG_PACK
+		if (rc2probe)
+			fprintf(stderr, "[RC2] key=%s tid=%u proj=%d has_def=%d\n",
+				it->first.c_str(), tid,
+				(int)madc::dis::arena_id_is_project(tid),
+				(int)prog->forest_arena.has_def(tid));
+#endif
 		if (!madc::dis::arena_id_is_project(tid)
 		    || prog->forest_arena.has_def(tid))
 			continue;	// already recorded = a class's method

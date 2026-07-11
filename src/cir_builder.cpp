@@ -18148,7 +18148,23 @@ void CirBuilder::pack_record_drop(TokenFunc *tf, const char *why,
 		m_prog->deferred_lazy_bodies[dsi->first] = dsi->second;
 		drain_failed_syms.insert(dsi->first);
 	}
-	if (always_unsafe || !reverted) {
+	// A SOURCE-DECLARED fn with no deferred entry to revert to (eager
+	// parse — std::stoi) is still consumer-derivable when parseFunction
+	// captured its raw body span at depth 0 (v26 piece (a)
+	// forest_body_tokens, tsubst_source NULL): the 6b ownerless-DEFBODY
+	// writer plants the span and the consumer materializes on first
+	// ODR-use — the std::abs carry. Only its body stamp is excluded
+	// (below). An instantiation-context body (forest_body_in_instantiation
+	// — an __i product / local-class hoist) stays un-carriable: its tokens
+	// spell pattern params, so the consumer must re-instantiate instead.
+	bool span_home = false;
+	if (!always_unsafe && !reverted) {
+		FuncDef *sfd = dynamic_cast<FuncDef *>(tf->var.type);
+		span_home = sfd && !sfd->forest_body_tokens.empty()
+			 && !sfd->tsubst_source
+			 && !sfd->forest_body_in_instantiation;
+	}
+	if ((always_unsafe || !reverted) && !span_home) {
 		pack_dropped.insert(tf->var.name);
 		FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
 		if (tfd)
@@ -18165,7 +18181,8 @@ void CirBuilder::pack_record_drop(TokenFunc *tf, const char *why,
 	fprintf(stderr, "pack drop: %s (%s%s)\n",
 		tf->var.name.c_str(), why,
 		reverted ? "reverted to DEFBODY"
-			 : "consumer re-instantiates");
+			 : span_home ? "reverted to body-span carry"
+				     : "consumer re-instantiates");
 }
 
 // A callee is HOMED when a consumer can resolve it: a surviving sibling def,
