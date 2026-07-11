@@ -18101,6 +18101,180 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 }
 
 // -----------------------------------------------------------------------
+// Pack-time drop / cascade / check-gate machinery (rung 1)
+// -----------------------------------------------------------------------
+
+// Drop a stashed pack def. A drop that reverts to its saved DEFBODY entry is
+// a consumer-derivable home (on-use derivation); otherwise the symbol is
+// marked un-carriable so pack_run_cascade drops its callers too. Every drop
+// is logged to the freeze log (no silent caps).
+void CirBuilder::pack_record_drop(TokenFunc *tf, const char *why,
+				  bool always_unsafe)
+{
+	std::map<std::string, Program::DeferredFunctionBody>::iterator
+		dsi = drain_saved.find(tf->var.name);
+	bool reverted = dsi != drain_saved.end();
+	if (reverted) {
+		m_prog->deferred_lazy_bodies[dsi->first] = dsi->second;
+		drain_failed_syms.insert(dsi->first);
+	}
+	if (always_unsafe || !reverted) {
+		pack_dropped.insert(tf->var.name);
+		FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
+		if (tfd)
+			pack_dropped.insert(func_emit_name(tf->var, tfd));
+	}
+	// Emission split (rung 1): the excluded def's node may still be
+	// TREE-resident for --run-frozen, so the freeze must never stamp
+	// DF_HAS_FOREST_BODY for it — a consumer restores the DEFBODY /
+	// re-instantiates instead (madc_cir_freeze erases these symbols from
+	// funcdef_locs before cir_forest_arena_complete).
+	pack_stamp_excluded.insert(tf->var.name);
+	if (FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type))
+		pack_stamp_excluded.insert(func_emit_name(tf->var, tfd));
+	fprintf(stderr, "pack drop: %s (%s%s)\n",
+		tf->var.name.c_str(), why,
+		reverted ? "reverted to DEFBODY"
+			 : "consumer re-instantiates");
+}
+
+// A callee is HOMED when a consumer can resolve it: a surviving sibling def,
+// a (non-local-class) DEFBODY derived on use, a TU-root user fn, a synth dtor
+// (Pass 1.6 emits it in consumers too), a c2mir builtin, a forest-carried
+// body from a bound base (freeze-append), or a dlsym-resolvable external
+// (libc / Itanium-mangled / __madc runtime). Anything else is a pack-context
+// artifact — a rolled-back speculative instantiation (the __ns_std__Construct
+// slot-1 husk), a local-class hoist — and freezing a call to it is an
+// undefined import in every bound consumer, so the CALLER must drop (its
+// DEFBODY revert / consumer re-instantiation covers it on use).
+bool CirBuilder::pack_callee_homed(const std::string &sym)
+{
+	if (pack_dropped.count(sym))
+		return false;
+	std::map<std::string, size_t>::iterator si = pack_stash_idx.find(sym);
+	if (si != pack_stash_idx.end() && !pack_is_dropped[si->second])
+		return true;
+	std::map<std::string, Program::DeferredFunctionBody>::iterator
+		di = m_prog->deferred_lazy_bodies.find(sym);
+	if (di != m_prog->deferred_lazy_bodies.end()) {
+		if (Program::method_var_is_local_class_hoist(di->second.var))
+			return false;
+		// Instantiation-born free fn: its DEFBODY does not freeze (no
+		// template-param context to derive from) — mirror the
+		// DK_DEFBODY writer.
+		if (di->second.var
+		    && (!di->second.method || !di->second.method->owner_class)) {
+			FuncDef *dfd = dynamic_cast<FuncDef *>(
+				di->second.var->type);
+			if (dfd && dfd->tsubst_source)
+				return false;
+		}
+		return true;
+	}
+	if (user_func_names.count(sym))
+		return true;
+	if (pack_synth_dtor_syms.count(sym))
+		return true;
+	if (is_c2mir_builtin_call_name(sym))
+		return true;
+	funcdef_map_t::iterator fi = m_prog->funcdef_map.find(sym);
+	if (fi != m_prog->funcdef_map.end() && fi->second
+	    && fi->second->has_forest_body)
+		return true;
+	std::map<std::string, bool>::iterator mi = pack_dlsym_memo.find(sym);
+	if (mi != pack_dlsym_memo.end())
+		return mi->second;
+	bool avail = external_symbol_available(sym);
+	pack_dlsym_memo[sym] = avail;
+	return avail;
+}
+
+// Drop every surviving stashed def that calls an un-homed symbol, to
+// fixpoint (a drop can un-home a sibling, so iterate until stable).
+void CirBuilder::pack_run_cascade()
+{
+	for (bool changed = true; changed; ) {
+		changed = false;
+		for (size_t i = 0; i < pack_defs.size(); ++i) {
+			if (pack_is_dropped[i])
+				continue;
+			bool bad = false;
+			std::string bad_sym;
+			for (std::set<std::string>::iterator ci =
+			     pack_def_callees[i].begin();
+			     ci != pack_def_callees[i].end(); ++ci)
+				if (!pack_callee_homed(*ci)) {
+					bad = true;
+					bad_sym = *ci;
+					break;
+				}
+			if (!bad)
+				continue;
+			pack_is_dropped[i] = 1;
+			changed = true;
+			std::string why = "calls unresolvable " + bad_sym + "; ";
+			pack_record_drop(pack_defs[i].first, why.c_str(), false);
+		}
+	}
+}
+
+// Post-translate arm of the pack-side c2mir check gate (rung 1, layer 4):
+// madc_cir_freeze runs c2mir_check_tree on a deep COPY of the pristine
+// translated tree; each defective top-level item lands here as its 0-based
+// child index in the module's list. Map each index to its stashed pack def
+// (identity — pack survivors ARE module children), drop it (DEFBODY revert
+// via pack_record_drop), re-run the callee cascade, then splice every def
+// dropped by this call out of the pristine tree so the freeze never
+// serializes it. Returns the number of defs dropped, or -1 when a defective
+// item is NOT a droppable pack def — a defect in the TU itself, which must
+// abort the freeze loudly rather than be silently swallowed.
+int CirBuilder::pack_gate_drop(node_t tree, const std::vector<int> &bad_items)
+{
+	node_t top_list = c2mir_node_op(tree, 0);
+	if (!top_list)
+		return -1;
+	// Identity map over ALL stashed defs (visible or consumer-excluded —
+	// the whole stash is tree-resident under the emission split).
+	std::map<node_t, size_t> def_by_node;
+	for (size_t i = 0; i < pack_defs.size(); ++i)
+		def_by_node[pack_defs[i].second] = i;
+	std::set<int> bad_set(bad_items.begin(), bad_items.end());
+	int index = 0, dropped = 0, bad_left = (int)bad_set.size();
+	std::vector<node_t> splice;
+	for (node_t n = c2mir_node_first_op(top_list);
+	     n && bad_left > 0; n = c2mir_node_next_op(n), ++index) {
+		if (!bad_set.count(index))
+			continue;
+		--bad_left;
+		std::map<node_t, size_t>::iterator di = def_by_node.find(n);
+		if (di == def_by_node.end()) {
+			fprintf(stderr, "pack check gate: defective top-level "
+				"item %d is not a drained def — TU defect\n",
+				index);
+			return -1;
+		}
+		pack_is_dropped[di->second] = 1;
+		pack_record_drop(pack_defs[di->second].first,
+				 "c2mir check errors; ", false);
+		splice.push_back(n);
+		++dropped;
+	}
+	if (bad_left > 0) {
+		fprintf(stderr, "pack check gate: %d defective item(s) beyond "
+			"the module's list\n", bad_left);
+		return -1;
+	}
+	// Only the check-DEFECTIVE defs leave the tree (their calls elsewhere
+	// stay link-safe: protos remain, and --run-frozen trap-binds any
+	// residual import). The cascade below only extends the CONSUMER
+	// exclusion set — visibility, not tree membership.
+	for (node_t n : splice)
+		c2mir_op_remove(top_list, n);
+	pack_run_cascade();
+	return dropped;
+}
+
+// -----------------------------------------------------------------------
 // Top-level module translation
 // -----------------------------------------------------------------------
 
@@ -18334,12 +18508,24 @@ node_t CirBuilder::translate_module(Program *prog)
 	// Collect user function names. Stored as a member too, so the body
 	// translation (below) can tell a madc-compiled function (whose by-value
 	// non-trivial object return madc lowers via the __retbuf ABI) from an
-	// external / native function with its own ABI.
-	std::set<std::string> user_func_names;
+	// external / native function with its own ABI. (user_func_names is a
+	// builder member — the pack check gate consults it after translate.)
+	user_func_names.clear();
 	for (TokenFunc *tf : funcs)
 		user_func_names.insert(tf->var.name);
 	m_user_func_names = &user_func_names;
 	m_materialized_lib_syms.clear();   // per-module, like m_user_func_names
+	// Pack drain / check-gate members (see cir_builder.h): per-module state.
+	drain_failed_syms.clear();
+	drain_saved.clear();
+	pack_defs.clear();
+	pack_def_callees.clear();
+	pack_is_dropped.clear();
+	pack_dropped.clear();
+	pack_stamp_excluded.clear();
+	pack_stash_idx.clear();
+	pack_synth_dtor_syms.clear();
+	pack_dlsym_memo.clear();
 
 	// Bind externally-provided class members to their real Itanium symbols
 	// BEFORE any construction is lowered (the global-ctor pass + the function
@@ -18529,51 +18715,32 @@ node_t CirBuilder::translate_module(Program *prog)
 	// must never be blocked by a parser gap in a method nobody calls), and the
 	// failed set is skipped on later rounds so the fixpoint converges.
 	// Referenced bodies keep today's semantics exactly (failures propagate).
-	std::set<std::string> drain_failed_syms;
+	// (drain_failed_syms is a builder member — the pack check gate keeps
+	// using it after translate returns.)
+	//
 	// Pack-time drain: each tolerantly-materialized body's DEFBODY entry,
-	// kept so a LOWERING failure at the emission site below (error nodes /
-	// a Throw inside func_def) can restore it — the body then freezes as
-	// DK_DEFBODY (today's on-use derivation in consumers) instead of
-	// poisoning the whole tree (cir_report_errors rejects any error node).
-	std::map<std::string, Program::DeferredFunctionBody> drain_saved;
+	// kept in the drain_saved member so a LOWERING failure at the emission
+	// site below (error nodes / a Throw inside func_def) — or a post-
+	// translate c2mir check failure caught by the pack check gate — can
+	// restore it: the body then freezes as DK_DEFBODY (today's on-use
+	// derivation in consumers) instead of poisoning the whole tree
+	// (cir_report_errors rejects any error node).
+	//
 	// Pack-time carriability: a LOCAL-CLASS METHOD (see
 	// Program::method_var_is_local_class_hoist — basic_string::
 	// _M_construct's `_Guard`, __stoa's `_Save_errno` / `_Range_chk`) has
 	// NO consumer-visible home in the corpus; the freeze also skips its
 	// class record and DEFBODY, so a consumer's own derivation of the
 	// enclosing body creates the local class fresh, as a live parse does.
-	// Pack-time defs are STASHED here instead of going straight to
-	// func_def_nodes: a frozen body whose callee has no consumer-side home
-	// (an un-carriable local-class method, or a dropped body that could
-	// NOT revert to DEFBODY) must itself drop — the consumer re-derives /
-	// re-instantiates it — so the final emit set is decided by a cascade
-	// AFTER the last fixpoint run. A drop that DID revert to DEFBODY is a
-	// consumer-derivable home (the on-use derivation), so callers of it
-	// stay frozen.
-	std::vector<std::pair<TokenFunc *, node_t> > pack_defs;
-	std::set<std::string> pack_dropped;
-	auto pack_record_drop = [&](TokenFunc *tf, const char *why,
-				    bool always_unsafe) {
-		std::map<std::string, Program::DeferredFunctionBody>::iterator
-			dsi = drain_saved.find(tf->var.name);
-		bool reverted = dsi != drain_saved.end();
-		if (reverted) {
-			prog->deferred_lazy_bodies[dsi->first] = dsi->second;
-			drain_failed_syms.insert(dsi->first);
-		}
-		if (always_unsafe || !reverted) {
-			pack_dropped.insert(tf->var.name);
-			FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
-			if (tfd)
-				pack_dropped.insert(func_emit_name(tf->var, tfd));
-		}
-		// No silent caps: every pack-time drop is visible in the
-		// freeze log.
-		fprintf(stderr, "pack drop: %s (%s%s)\n",
-			tf->var.name.c_str(), why,
-			reverted ? "reverted to DEFBODY"
-				 : "consumer re-instantiates");
-	};
+	// Pack-time defs are STASHED in the pack_defs member instead of going
+	// straight to func_def_nodes: a frozen body whose callee has no
+	// consumer-side home (an un-carriable local-class method, or a dropped
+	// body that could NOT revert to DEFBODY) must itself drop — the
+	// consumer re-derives / re-instantiates it — so the final emit set is
+	// decided by a cascade AFTER the last fixpoint run. A drop that DID
+	// revert to DEFBODY is a consumer-derivable home (the on-use
+	// derivation), so callers of it stay frozen. Drops are recorded via
+	// the pack_record_drop member (shared with the post-translate gate).
 	auto materialize_and_lower = [&]() {
 		for (bool grew = true; grew; ) {
 			grew = false;
@@ -18874,12 +19041,10 @@ node_t CirBuilder::translate_module(Program *prog)
 					uncarriable =
 						Program::method_var_is_local_class_hoist(
 							&tf->var);
-					if (!uncarriable) {
-						try {
-							fd = func_def(tf);
-						} catch (...) {
-							fd = NULL;
-						}
+					try {
+						fd = func_def(tf);
+					} catch (...) {
+						fd = NULL;
 					}
 					if (fd && cir_tree_has_error(fd))
 						fd = NULL;
@@ -18890,6 +19055,19 @@ node_t CirBuilder::translate_module(Program *prog)
 						grew = true;
 						continue;
 					}
+					// A LOCAL-CLASS METHOD def is
+					// tree-resident (--run-frozen compiles
+					// the pack's real lowered state) but
+					// consumer-INVISIBLE (no arena record /
+					// DEFBODY / body stamp — a consumer's
+					// own derivation of the enclosing body
+					// creates the local class fresh, as a
+					// live parse does). Record the
+					// exclusion; keep the def.
+					if (uncarriable)
+						pack_record_drop(tf,
+							"local-class method; ",
+							true);
 					pack_defs.push_back(
 						std::make_pair(tf, fd));
 				} else {
@@ -19266,123 +19444,62 @@ node_t CirBuilder::translate_module(Program *prog)
 	// aggregate dtor). Materialize + lower any now-ODR-used deferred body so it is
 	// DEFINED, not just referenced (else MIR-link "import of undefined item").
 	materialize_and_lower();
-	m_user_func_names = NULL;   // backing set is a translate_module local; don't dangle
+	m_user_func_names = NULL;   // stale across modules; the gate reads the member set
 
-	// Pack-time drop CASCADE: a stashed def whose lowered body calls a
-	// dropped symbol (an un-carriable local-class method, a lowering
-	// failure, or a body dropped by an earlier cascade round) must itself
-	// drop — its frozen call would be an undefined import in every bound
-	// consumer (the string ctor calling a dropped _M_construct __mti).
-	// Reverted DEFBODYs / consumer re-instantiation cover the dropped
-	// chain on use, exactly the pre-drain semantics. Survivors flush to
-	// func_def_nodes in materialization order.
+	// Pack-time consumer-visibility CASCADE. Two SEPARATE verdicts per
+	// stashed def (rung 1 emission split):
+	//   TREE membership — what --run-frozen compiles. EVERY successfully
+	//   lowered def stays in the tree (it is the pack process's real
+	//   lowered state); only the post-translate c2mir check gate splices
+	//   defective defs out.
+	//   CONSUMER visibility — what a bound consumer may restore. A def
+	//   whose lowered body calls a consumer-invisible symbol (an
+	//   un-carriable local-class method, a DEFBODY-reverted body, or a
+	//   body excluded by an earlier cascade round) must itself be
+	//   excluded — a restored body calling it would be an undefined
+	//   import in every bound consumer (the string ctor calling a
+	//   local-_Guard _M_construct __mti). Reverted DEFBODYs / consumer
+	//   re-instantiation cover the excluded chain on use, exactly the
+	//   pre-drain semantics; the freeze skips DF_HAS_FOREST_BODY stamps
+	//   for excluded symbols (pack_stamp_excluded). State + cascade live
+	//   in builder members (pack_run_cascade) so the check gate can drop
+	//   further defs and re-cascade on the same state.
 	if (prog->pack_recording && !pack_defs.empty()) {
-		std::vector<std::set<std::string> > def_callees(pack_defs.size());
+		pack_def_callees.resize(pack_defs.size());
 		for (size_t i = 0; i < pack_defs.size(); ++i) {
-			cir_collect_call_callees(pack_defs[i].second, def_callees[i]);
-			cir_collect_cleanup_attr_fns(pack_defs[i].second, def_callees[i]);
+			cir_collect_call_callees(pack_defs[i].second, pack_def_callees[i]);
+			cir_collect_cleanup_attr_fns(pack_defs[i].second, pack_def_callees[i]);
 		}
 		// Symbol -> stash index, so a callee defined by a sibling stashed
-		// def counts as homed only while that sibling survives.
-		std::map<std::string, size_t> stash_idx;
+		// def counts as consumer-homed only while that sibling is visible.
 		for (size_t i = 0; i < pack_defs.size(); ++i) {
 			TokenFunc *stf = pack_defs[i].first;
-			stash_idx[stf->var.name] = i;
+			pack_stash_idx[stf->var.name] = i;
 			FuncDef *stfd = dynamic_cast<FuncDef *>(stf->var.type);
 			if (stfd)
-				stash_idx[func_emit_name(stf->var, stfd)] = i;
+				pack_stash_idx[func_emit_name(stf->var, stfd)] = i;
 		}
-		std::set<std::string> synth_dtor_syms;
 		for (auto &kv : prog->struct_map) {
 			DataDefCLASS *cdd = as_user_class(kv.second);
 			if (class_gets_synth_dtor(cdd))
-				synth_dtor_syms.insert(class_dtor_symbol(cdd));
+				pack_synth_dtor_syms.insert(class_dtor_symbol(cdd));
 		}
-		std::vector<char> is_dropped(pack_defs.size(), 0);
-		std::map<std::string, bool> dlsym_memo;
-		// A callee is HOMED when a consumer can resolve it: a surviving
-		// sibling def, a (non-local-class) DEFBODY derived on use, a
-		// TU-root user fn, a synth dtor (Pass 1.6 emits it in consumers
-		// too), a c2mir builtin, a forest-carried body from a bound base
-		// (freeze-append), or a dlsym-resolvable external (libc /
-		// Itanium-mangled / __madc runtime). Anything else is a
-		// pack-context artifact — a rolled-back speculative
-		// instantiation (the __ns_std__Construct slot-1 husk), a
-		// local-class hoist — and freezing a call to it is an undefined
-		// import in every bound consumer, so the CALLER must drop (its
-		// DEFBODY revert / consumer re-instantiation covers it on use).
-		auto callee_homed = [&](const std::string &sym) -> bool {
-			if (pack_dropped.count(sym))
-				return false;
-			std::map<std::string, size_t>::iterator si =
-				stash_idx.find(sym);
-			if (si != stash_idx.end() && !is_dropped[si->second])
-				return true;
-			std::map<std::string, Program::DeferredFunctionBody>::iterator
-				di = prog->deferred_lazy_bodies.find(sym);
-			if (di != prog->deferred_lazy_bodies.end()) {
-				if (Program::method_var_is_local_class_hoist(
-						di->second.var))
-					return false;
-				// Instantiation-born free fn: its DEFBODY does
-				// not freeze (no template-param context to
-				// derive from) — mirror the DK_DEFBODY writer.
-				if (di->second.var
-				    && (!di->second.method
-					|| !di->second.method->owner_class)) {
-					FuncDef *dfd = dynamic_cast<FuncDef *>(
-						di->second.var->type);
-					if (dfd && dfd->tsubst_source)
-						return false;
-				}
-				return true;
-			}
-			if (user_func_names.count(sym))
-				return true;
-			if (synth_dtor_syms.count(sym))
-				return true;
-			if (is_c2mir_builtin_call_name(sym))
-				return true;
-			funcdef_map_t::iterator fi = prog->funcdef_map.find(sym);
-			if (fi != prog->funcdef_map.end() && fi->second
-			    && fi->second->has_forest_body)
-				return true;
-			std::map<std::string, bool>::iterator mi =
-				dlsym_memo.find(sym);
-			if (mi != dlsym_memo.end())
-				return mi->second;
-			bool avail = external_symbol_available(sym);
-			dlsym_memo[sym] = avail;
-			return avail;
-		};
-		for (bool changed = true; changed; ) {
-			changed = false;
-			for (size_t i = 0; i < pack_defs.size(); ++i) {
-				if (is_dropped[i])
-					continue;
-				bool bad = false;
-				std::string bad_sym;
-				for (std::set<std::string>::iterator ci =
-				     def_callees[i].begin();
-				     ci != def_callees[i].end(); ++ci)
-					if (!callee_homed(*ci)) {
-						bad = true;
-						bad_sym = *ci;
-						break;
-					}
-				if (!bad)
-					continue;
-				is_dropped[i] = 1;
-				changed = true;
-				std::string why = "calls unresolvable "
-						  + bad_sym + "; ";
-				pack_record_drop(pack_defs[i].first,
-						 why.c_str(), false);
-			}
+		// Seed: defs already excluded at stash time (local-class
+		// methods) are in pack_dropped — mark them so pack_callee_homed
+		// never counts them as a consumer-visible sibling.
+		pack_is_dropped.assign(pack_defs.size(), 0);
+		for (size_t i = 0; i < pack_defs.size(); ++i) {
+			TokenFunc *stf = pack_defs[i].first;
+			FuncDef *stfd = dynamic_cast<FuncDef *>(stf->var.type);
+			if (pack_dropped.count(stf->var.name)
+			    || (stfd && pack_dropped.count(
+					    func_emit_name(stf->var, stfd))))
+				pack_is_dropped[i] = 1;
 		}
+		pack_run_cascade();
+		// TREE flush: every lowered def, visible or not.
 		for (size_t i = 0; i < pack_defs.size(); ++i)
-			if (!is_dropped[i])
-				func_def_nodes.push_back(pack_defs[i].second);
+			func_def_nodes.push_back(pack_defs[i].second);
 	}
 
 	// Pass 1.95: late declarations — everything the fixpoint runs added after

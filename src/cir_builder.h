@@ -176,6 +176,38 @@ class CirBuilder {
 	// erases the materialized entry.
 	std::set<std::string> m_materialized_lib_syms;
 
+	// ---- Pack-time drain / check-gate state (rung 1) ----
+	// Hoisted from translate_module locals so the pack-side c2mir check gate
+	// (pack_gate_drop, driven by madc_cir_freeze AFTER translate returns) can
+	// drop check-defective drained defs, revert them to DEFBODY, and re-run
+	// the callee cascade post-hoc. All cleared at translate_module entry;
+	// meaningful only under prog->pack_recording.
+	std::set<std::string> drain_failed_syms;
+	std::map<std::string, Program::DeferredFunctionBody> drain_saved;
+	std::vector<std::pair<TokenFunc *, node_t> > pack_defs;
+	std::vector<std::set<std::string> > pack_def_callees;
+	std::vector<char> pack_is_dropped;
+	std::set<std::string> pack_dropped;
+	// Symbols whose tree-resident defs must NOT stamp DF_HAS_FOREST_BODY
+	// (consumer-excluded under the emission split): local-class methods,
+	// DEFBODY-reverted bodies, and cascade-excluded callers. Consumed by
+	// madc_cir_freeze (erased from funcdef_locs pre-arena_complete).
+	std::set<std::string> pack_stamp_excluded;
+	std::set<std::string> user_func_names;
+	std::map<std::string, size_t> pack_stash_idx;
+	std::set<std::string> pack_synth_dtor_syms;
+	std::map<std::string, bool> pack_dlsym_memo;
+	// Drop a stashed pack def: revert its DEFBODY (drain_saved) so consumers
+	// derive the body on use, else mark the symbol un-carriable so callers
+	// cascade-drop. Every drop is logged (no silent caps).
+	void pack_record_drop(TokenFunc *tf, const char *why, bool always_unsafe);
+	// TRUE when a bound consumer can resolve sym: a surviving sibling stash,
+	// a (non-local-class) DEFBODY derived on use, a TU-root user fn, a synth
+	// dtor, a c2mir builtin, a forest-carried body, or a dlsym external.
+	bool pack_callee_homed(const std::string &sym);
+	// Drop every stashed def calling an un-homed symbol, to fixpoint.
+	void pack_run_cascade();
+
 	// Top-level typedef aliases that COLLIDE: the same bare alias is registered
 	// by >1 namespace for DIFFERENT underlying struct tags (e.g. std::string and
 	// std::pmr::string both alias the bare name `string`). Flat C would then get
@@ -1065,6 +1097,18 @@ public:
 
 	// ---- Top-level module translation ----
 	node_t translate_module(Program *prog);
+	// Pack-side c2mir check gate, drop arm (rung 1, layer 4): called by
+	// madc_cir_freeze with the defective top-level child indices reported
+	// by c2mir_check_tree on a COPY of the pristine translated tree. Drops
+	// the matching stashed pack defs (DEFBODY revert), re-runs the callee
+	// cascade, and splices every newly-dropped def out of the tree.
+	// Returns defs dropped, or -1 when a defective item is not a droppable
+	// drained def (a TU defect — the freeze must abort loudly).
+	int pack_gate_drop(node_t tree, const std::vector<int> &bad_items);
+	// Consumer-excluded symbols (emission split): the freeze erases these
+	// from funcdef_locs so no DF_HAS_FOREST_BODY stamp points at them.
+	const std::set<std::string> &pack_stamp_exclusions() const
+		{ return pack_stamp_excluded; }
 	// Bind ctors/dtor/methods of externally-defined / extern-template classes
 	// to their exported Itanium symbols (dlsym-verified, fills only EMPTY
 	// emit_symbols). Runs early in translate_module; re-run at module end

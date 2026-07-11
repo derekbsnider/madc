@@ -136,6 +136,119 @@ static void cir_dump_undefined_imports(MIR_context_t ctx)
 }
 
 // -----------------------------------------------------------------------
+// --run-frozen lazy-link trap stubs (rung 1)
+// -----------------------------------------------------------------------
+//
+// A drained (pack_recording) frozen module is the TU plus the drained library
+// superset: bodies whose callees reverted to on-use derivation stay frozen for
+// consumer coverage, so whole-module compilation legitimately contains imports
+// with no in-module definition and no dlsym home (reverted/deferred DEFBODY
+// symbols; vtables of drain-only instantiation products). Only the EXECUTED
+// closure of main must resolve. --run-frozen therefore pre-binds each such
+// import to a trap stub that aborts loudly, naming the symbol, if it is ever
+// reached — standard lazy-binding semantics, never a silent cap. Bound
+// consumers are unaffected (they materialize only referenced defs and keep the
+// strict resolver).
+
+extern "C" void __madc_frozen_trap(const char *sym)
+{
+    fprintf(stderr, "madc: --run-frozen: reached unresolved drained-library "
+	    "symbol %s (outside the executed TU closure; a bound consumer "
+	    "derives it on use)\n", sym ? sym : "?");
+    abort();
+}
+
+extern "C" void __madc_frozen_trap_vslot(const char *sym)
+{
+    fprintf(stderr, "madc: --run-frozen: virtual call through unmaterialized "
+	    "vtable %s (drained-library class outside the executed TU "
+	    "closure)\n", sym ? sym : "?");
+    abort();
+}
+
+// TRUE for Itanium-ABI DATA symbols (vtable/typeinfo/guard) — these must
+// pre-bind as data (a table of trap slots), not as a callable stub, so a
+// virtual dispatch through them traps cleanly instead of executing code bytes.
+static bool itanium_data_symbol(const std::string &nm)
+{
+    return nm.compare(0, 4, "_ZTV") == 0 || nm.compare(0, 4, "_ZTI") == 0
+	|| nm.compare(0, 4, "_ZTS") == 0 || nm.compare(0, 4, "_ZGV") == 0;
+}
+
+static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
+{
+    std::set<std::string> defined;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	switch (it->item_type) {
+	case MIR_func_item: case MIR_data_item: case MIR_ref_data_item:
+	case MIR_lref_data_item: case MIR_expr_data_item: case MIR_bss_item:
+	    if (const char *nm = MIR_item_name(ctx, it)) defined.insert(nm);
+	    break;
+	default: break;
+	}
+    }
+    std::vector<std::string> undef;
+    std::set<std::string> seen;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
+	std::string nm = it->u.import_id;
+	if (defined.count(nm) || !seen.insert(nm).second) continue;
+	if (cir_import_resolver(nm.c_str())) continue;
+	undef.push_back(nm);
+    }
+    if (undef.empty()) return;
+    fprintf(stderr, "madc: --run-frozen: %zu unresolved drained-library "
+	    "import(s) bound to trap stubs (-v lists them)\n", undef.size());
+    DBG(for (const std::string &nm : undef)
+	    std::cerr << "  trap-bound: " << nm << std::endl);
+
+    MIR_new_module(ctx, "__madc_frozen_traps");
+    MIR_item_t trap_proto = MIR_new_proto(ctx, "__madc_frozen_trap__proto",
+					  0, NULL, 1, MIR_T_P, "sym");
+    MIR_item_t trap_imp = MIR_new_import(ctx, "__madc_frozen_trap");
+    MIR_item_t vslot_imp = MIR_new_import(ctx, "__madc_frozen_trap_vslot");
+    size_t nm_seq = 0;
+    // One trap function per symbol (both callable stubs and vtable slots) so
+    // a fired trap NAMES the symbol — the whole point of this diagnostic.
+    auto new_trap_fn = [&](const char *fn_name, const std::string &sym,
+			   MIR_item_t handler) -> MIR_item_t {
+	char nm_item[32];
+	snprintf(nm_item, sizeof(nm_item), "__madc_trapnm_%zu", nm_seq++);
+	MIR_item_t nm_data = MIR_new_string_data(
+	    ctx, nm_item, MIR_str_t{sym.size() + 1, sym.c_str()});
+	MIR_item_t f = MIR_new_func(ctx, fn_name, 0, NULL, 0);
+	MIR_append_insn(ctx, f,
+			MIR_new_call_insn(ctx, 3,
+					  MIR_new_ref_op(ctx, trap_proto),
+					  MIR_new_ref_op(ctx, handler),
+					  MIR_new_ref_op(ctx, nm_data)));
+	MIR_append_insn(ctx, f, MIR_new_ret_insn(ctx, 0));
+	MIR_finish_func(ctx);
+	return f;
+    };
+    for (const std::string &nm : undef) {
+	if (itanium_data_symbol(nm)) {
+	    // Data symbol (vtable/typeinfo): a table of pointers to a
+	    // per-symbol trap function, so a virtual dispatch through it
+	    // traps cleanly AND names the class.
+	    MIR_item_t vf = new_trap_fn((nm + ".__vtrap").c_str(), nm,
+					vslot_imp);
+	    MIR_new_export(ctx, nm.c_str());
+	    MIR_new_ref_data(ctx, nm.c_str(), vf, 0);
+	    for (int i = 1; i < 32; ++i)
+		MIR_new_ref_data(ctx, NULL, vf, 0);
+	    continue;
+	}
+	MIR_new_export(ctx, nm.c_str());
+	new_trap_fn(nm.c_str(), nm, trap_imp);
+    }
+    MIR_finish_module(ctx);
+    MIR_load_module(ctx, DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx)));
+}
+
+// -----------------------------------------------------------------------
 // MIR fatal-error containment
 // -----------------------------------------------------------------------
 //
@@ -496,6 +609,11 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
     }
     if (getenv("MADC_DUMP_MIR"))
 	MIR_output(ctx, stderr);
+
+    // Rung 1: a drained module carries library bodies outside the TU's
+    // executed closure — bind their unresolved imports to loud trap stubs
+    // (see cir_prebind_frozen_traps) so only genuinely-executed gaps fail.
+    cir_prebind_frozen_traps(ctx, mod);
 
     return load_and_link(module_name, /*prog=*/NULL);
 }
@@ -2631,6 +2749,15 @@ static void cir_forest_arena_refresh(Program *prog)
 	}
 }
 
+// c2mir_check_tree callback for the pack-side check gate: collect the
+// 0-based module-list index of each defective top-level item.
+static void pack_gate_note(node_t item, int index, unsigned n_errs, void *data)
+{
+    (void)item;
+    (void)n_errs;
+    ((std::vector<int> *)data)->push_back(index);
+}
+
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append)
 {
@@ -2670,10 +2797,64 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    "%zu left deferred\n", source_name,
 		    db_before > db_after ? db_before - db_after : 0, db_after);
 	int nerr = tree ? cir_report_errors(stderr, tree) : 0;
+	// Rung 1, layer 4 — pack-side c2mir check gate. The drain evaluates
+	// bodies live never compiles, so a defective drained lowering would
+	// freeze silently and only surface as a --run-frozen / consumer check
+	// error. Gate: run c2mir's checker (do_context) over a deep COPY of
+	// the pristine tree in a FRESH compile context (check mutates attrs
+	// and its symbol tables are not reentrant), map each defective
+	// top-level item back to its stashed pack def, revert it to DEFBODY
+	// (consumers derive on use — today's pre-drain semantics), cascade its
+	// callers, splice the dropped defs out of the pristine tree, and
+	// re-check until clean. A defective item that is NOT a drained def is
+	// a TU defect: abort the freeze loudly.
+	bool gate_ok = true;
+	if (tree && !nerr && prog->pack_recording && builder) {
+	    for (int round = 1; ; ++round) {
+		std::vector<int> bad;
+		int cerr = -1;
+		MIR_context_t cctx = MIR_init();
+		MIR_set_error_func(cctx, cir_mir_error);
+		c2mir_init(cctx);
+		c2m_ctx_t cc2m = cir_init(cctx, /*debug_p=*/false);
+		if (cc2m) {
+		    node_t copy = c2mir_copy_tree(cc2m, c2m, tree);
+		    if (copy)
+			cerr = c2mir_check_tree(cc2m, copy, pack_gate_note, &bad);
+		    cir_finish(cc2m);
+		}
+		c2mir_finish(cctx);
+		MIR_finish(cctx);
+		if (cerr < 0) {
+		    fprintf(stderr, "%s: pack check gate: cannot check the "
+			    "translated tree\n", source_name);
+		    gate_ok = false;
+		    break;
+		}
+		if (cerr == 0) {
+		    if (round > 1)
+			fprintf(stderr, "%s: pack check gate: clean after "
+				"%d drop round(s)\n", source_name, round - 1);
+		    break;
+		}
+		int nd = builder->pack_gate_drop(tree, bad);
+		if (nd <= 0) {
+		    fprintf(stderr, "%s: pack check gate: %d check error(s) "
+			    "not attributable to drained defs; not freezing\n",
+			    source_name, cerr);
+		    gate_ok = false;
+		    break;
+		}
+		fprintf(stderr, "%s: pack check gate round %d: %d check "
+			"error(s) across %zu def(s), dropped %d def(s) "
+			"(cascade included)\n",
+			source_name, round, cerr, bad.size(), nd);
+	    }
+	}
 	if (tree && nerr) {
 	    fprintf(stderr, "%s: %d untranslatable node(s); not freezing\n",
 		    source_name, nerr);
-	} else if (tree) {
+	} else if (tree && gate_ok) {
 	    cir_frozen_forest f;
 	    if (!cir_freeze_forest(CIR_NODE(tree), source_name, f)) {
 		fprintf(stderr, "%s: forest freeze failed\n", source_name);
@@ -2684,6 +2865,13 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		cir_forest_fill_pack_payloads(prog, f);	// grove payload v2 (B4a)
 		cir_forest_arena_refresh(prog);		// re-record live aggregates (post-completion mutations)
 		f.arena = prog->forest_arena;		// B3 (v18): the arena dump IS the type-graph serialization
+		// Emission split (rung 1): consumer-excluded defs (local-class
+		// methods, DEFBODY-reverted bodies, their cascade closure) are
+		// tree-resident for --run-frozen but must never stamp
+		// DF_HAS_FOREST_BODY — a consumer derives them on use.
+		if (builder)
+		    for (const std::string &sym : builder->pack_stamp_exclusions())
+			f.funcdef_locs.erase(sym);
 		cir_forest_arena_complete(prog, f);	// freeze-time fidelity (inline bodies / typedefs / ns)
 		cir_forest_fill_globals(prog, f);	// file-scope globals (CIR_GLOBALS; ids swizzle via the arena)
 		cir_forest_fill_templates(prog, f);	// v20: template-NAME state (pattern maps, token runs)
