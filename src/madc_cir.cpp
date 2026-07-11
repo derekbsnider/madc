@@ -2982,10 +2982,14 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 						  : NULL);	// freeze-time fidelity (inline bodies / typedefs / ns)
 		cir_forest_fill_globals(prog, f);	// file-scope globals (CIR_GLOBALS; ids swizzle via the arena)
 		cir_forest_fill_templates(prog, f);	// v20: template-NAME state (pattern maps, token runs)
-		PchCompression codec = PchCompression::Zlib;
-#ifdef HAVE_ZSTD
-		codec = PchCompression::Zstd;
-#endif
+		// RAW segments, deliberately: the reader binds uncompressed
+		// blocks IN PLACE from the image (zero-copy — the path the
+		// per-segment codec field exists for), while a compressed
+		// blob taxes EVERY consumer compile with inflate. Measured
+		// on testsubscript bound: zlib was 569M Ir, 10.7% of the
+		// whole run (callgrind, 2026-07-11). Container bytes are
+		// paid once at pack; consumer cycles are paid per compile.
+		PchCompression codec = PchCompression::None;
 		madc::dis::snapshot_writer w;
 		if (!cir_forest_write(f, w, codec)) {
 		    fprintf(stderr, "%s: forest container assembly failed\n",
