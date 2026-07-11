@@ -1724,6 +1724,14 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		// Verbatim: a restored empty recursion tail stays INCOMPLETE,
 		// exactly as live leaves it (everything else here is complete).
 		sdd->is_complete = (r.flags & madc::dis::DF_IS_COMPLETE) != 0;
+		// A spared CONCRETE forward tag re-stamps its placeholder-ness
+		// so the consumer's dependence classification matches a live
+		// parse (datadef_involves_placeholder reads it).
+		if (r.flags & madc::dis::DF_OPAQUE_TAG)
+			if (DataDefCLASS *tagc = dynamic_cast<DataDefCLASS *>(sdd)) {
+				tagc->is_dependent_placeholder = true;
+				tagc->opaque_concrete_tag = true;
+			}
 		// v20: canonical C++ spelling — template ARG-SPELLING identity.
 		// template_type_arg_spelling reads it to build an instantiation's
 		// key fragment ("std::allocator<int32_t>" -> std__allocator_...);

@@ -3400,6 +3400,7 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 
     DataDefCLASS *fwd = new DataDefCLASS(mangled, 0, DataType::dtRESERVED);
     fwd->is_dependent_placeholder = true;
+    stamp_opaque_mint_context(fwd);
     fwd->canonical_cpp_spelling = canon;
     struct_map[mangled] = fwd;
     // Keep the template-origin STRUCTURE (name + per-arg token runs) so tsubst
@@ -3606,10 +3607,24 @@ DataDefCLASS *Program::materialize_opaque_class_type(const std::string &name,
 
     DataDefCLASS *dep = new DataDefCLASS(name, 0, DataType::dtRESERVED);
     dep->is_dependent_placeholder = true;
+    stamp_opaque_mint_context(dep);
     dep->canonical_cpp_spelling = canonical.empty() ? name : canonical;
     struct_map[name] = dep;
     datatype_map[name] = new TokenDataType(name.c_str(), *dep);
     return dep;
+}
+
+void Program::stamp_opaque_mint_context(DataDefCLASS *dep)
+{
+    dep->opaque_concrete_tag = !dependent_parse_in_progress;
+    // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every opaque class
+    // mint with its context — the concrete-tag discriminator diagnostic.
+    static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
+    if ( mtp && *mtp && dep->name.find(mtp) != std::string::npos )
+	fprintf(stderr, "MTIPROBE opaque-mint name=%s dep_parse=%d concrete=%d"
+		" from=%p\n", dep->name.c_str(),
+		(int)dependent_parse_in_progress,
+		(int)dep->opaque_concrete_tag, __builtin_return_address(0));
 }
 
 DataDef *Program::dependent_deref_result_type(DataDef *dd)
@@ -4067,6 +4082,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	DataDefCLASS *fwd = new DataDefCLASS(registered_mangled, 0, DataType::dtRESERVED);
 	fwd->canonical_cpp_spelling = canon;
 	fwd->is_dependent_placeholder = true;
+	stamp_opaque_mint_context(fwd);
 	fwd->has_dependent_surface = true;
 	struct_map[registered_mangled] = fwd;
 	TokenDataType *tdt = new TokenDataType(registered_mangled.c_str(), *fwd);
@@ -4836,6 +4852,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 
 	DataDefCLASS *fwd = new DataDefCLASS(mangled, 0, DataType::dtRESERVED);
 	fwd->is_dependent_placeholder = true;
+	stamp_opaque_mint_context(fwd);
 	fwd->has_dependent_surface = true;
 	fwd->canonical_cpp_spelling = canon;
 	struct_map[mangled] = fwd;

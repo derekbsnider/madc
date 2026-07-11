@@ -182,6 +182,13 @@ enum DefFlags : uint32_t {
 						// as a tag so `struct X` resolves; the plain
 						// TokenTYPEDEF path never does) — the restore
 						// reproduces the struct_map write
+	DF_OPAQUE_TAG        = 1u << 27,	// a CONCRETE opaque forward tag (an empty-pack
+						// recursion tail like _Tuple_impl<1>, minted
+						// OUTSIDE a dependent parse): records in the v21
+						// empty-incomplete shape; the restore re-stamps
+						// is_dependent_placeholder + opaque_concrete_tag
+						// so the consumer's dependence classification
+						// matches a live parse (LOADED == parsed)
 	DF_BODY_IN_INSTANTIATION = 1u << 26,	// v27: the captured DEFBODY tokens were parsed
 						// inside a fn-template INSTANTIATION
 						// (fn_template_instantiation_depth > 0 — an

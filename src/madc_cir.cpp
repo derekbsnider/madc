@@ -311,6 +311,41 @@ extern "C" int madc_jit_symbolize(void *addr, char *out, unsigned long n)
 	return 0;
 }
 
+// Declarator symbol of a top-level func def / declaration (both are
+// (specs, declarator, ...)); NULL when the item has no named declarator.
+static const char *cir_top_item_symbol(node_t n)
+{
+    if (!n || (n->code != N_FUNC_DEF && n->code != N_SPEC_DECL))
+	return NULL;
+    node_t o = c2mir_node_first_op(n);
+    node_t d = o ? c2mir_node_next_op(o) : NULL;
+    node_t id = (d && d->code == N_DECL) ? c2mir_node_first_op(d) : NULL;
+    return (id && id->code == N_ID) ? id->u.s.s : NULL;
+}
+
+// c2mir_check_tree callback for the pack-side check gate: collect the
+// 0-based module-list index of each defective top-level item. The log line
+// lands directly after the item's error text in the freeze log, attributing
+// each printed error to its item (no silent caps; fires only on defects).
+static void pack_gate_note(node_t item, int index, unsigned n_errs, void *data)
+{
+    (void)item;
+    fprintf(stderr, "pack check gate: item %d: %u check error(s)\n",
+	    index, n_errs);
+    ((std::vector<int> *)data)->push_back(index);
+}
+
+// MADC_CHECK_ATTRIB diagnostic callback: name each defective item.
+static void check_attrib_note(node_t item, int index, unsigned n_errs,
+			      void *data)
+{
+    (void)data;
+    const char *sym = cir_top_item_symbol(item);
+    fprintf(stderr, "check-attrib: item %d (%s%s%s): %u error(s)\n", index,
+	    item ? c2mir_node_code_name((c2mir_node_code_t)item->code) : "?",
+	    sym ? " " : "", sym ? sym : "", n_errs);
+}
+
 // -----------------------------------------------------------------------
 // Full CIR pipeline: parse → translate → compile → JIT execute
 // -----------------------------------------------------------------------
@@ -431,6 +466,26 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 	delete builder;
 	out_stop = true;
 	return NULL;
+    }
+
+    // Env-gated (MADC_CHECK_ATTRIB=1): attribute check errors to top-level
+    // items before the real compile — the whole-tree check reports some
+    // errors (e.g. the incomplete-decl sweep) with no usable position. Runs
+    // the checker over a throwaway deep copy in a fresh context, so the real
+    // tree stays pristine for the compile below.
+    if (getenv("MADC_CHECK_ATTRIB")) {
+	MIR_context_t actx = MIR_init();
+	MIR_set_error_func(actx, cir_mir_error);
+	c2mir_init(actx);
+	c2m_ctx_t ac2m = cir_init(actx, /*debug_p=*/false);
+	if (ac2m) {
+	    node_t copy = c2mir_copy_tree(ac2m, c2m, tree);
+	    if (copy)
+		c2mir_check_tree(ac2m, copy, check_attrib_note, NULL);
+	    cir_finish(ac2m);
+	}
+	c2mir_finish(actx);
+	MIR_finish(actx);
     }
 
     auto _c2m_t0 = std::chrono::steady_clock::now();	// --show-stats: c2mir compile
@@ -912,7 +967,10 @@ static uint32_t forest_serialize_type_id(DataDef *dd)
 static bool forest_type_is_opaque_placeholder(DataDef *dd)
 {
 	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(dd);
-	return cdd && cdd->is_dependent_placeholder;
+	// A CONCRETE forward tag (opaque_concrete_tag — the empty-pack
+	// recursion tail) is legitimate live state and freezes in the v21
+	// empty shape; only pattern-context placeholders are pack artifacts.
+	return cdd && cdd->is_dependent_placeholder && !cdd->opaque_concrete_tag;
 }
 
 // B3 write-through (SLICE 1c/1d): record a newly-created PROJECT unary derived type — pointer,
@@ -1058,7 +1116,8 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 	// laundered opaque -> "no matching constructor"). Skip + kill exactly
 	// like the function-local arm; a consumer that genuinely needs the
 	// opaque re-synthesizes it on demand, as a live parse does.
-	if (cdd && cdd->is_dependent_placeholder) {
+	if (cdd && cdd->is_dependent_placeholder
+	    && !cdd->opaque_concrete_tag) {
 		madc::dis::defrec dead;
 		madc::dis::defrec old;
 		memset(&dead, 0, sizeof(dead));
@@ -1082,6 +1141,10 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 	r.tag_explicit_align = (uint32_t)sdd->tag_explicit_align;
 	if (sdd->union_layout)           r.flags |= madc::dis::DF_UNION_LAYOUT;
 	if (sdd->is_complete)            r.flags |= madc::dis::DF_IS_COMPLETE;
+	// Spared CONCRETE forward tag: carry the placeholder-ness so the
+	// restore re-stamps it (consumer dependence classification == live).
+	if (cdd && cdd->is_dependent_placeholder)
+		r.flags |= madc::dis::DF_OPAQUE_TAG;
 	if (sdd->is_anonymous)           r.flags |= madc::dis::DF_IS_ANONYMOUS;
 	if (sdd->reverse_scalar_storage) r.flags |= madc::dis::DF_REVERSE_SCALAR;
 	if (sdd->has_anon_aggregate)     r.flags |= madc::dis::DF_HAS_ANON_AGG;
@@ -2749,15 +2812,6 @@ static void cir_forest_arena_refresh(Program *prog)
 	}
 }
 
-// c2mir_check_tree callback for the pack-side check gate: collect the
-// 0-based module-list index of each defective top-level item.
-static void pack_gate_note(node_t item, int index, unsigned n_errs, void *data)
-{
-    (void)item;
-    (void)n_errs;
-    ((std::vector<int> *)data)->push_back(index);
-}
-
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append)
 {
@@ -2819,6 +2873,15 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		c2m_ctx_t cc2m = cir_init(cctx, /*debug_p=*/false);
 		if (cc2m) {
 		    node_t copy = c2mir_copy_tree(cc2m, c2m, tree);
+		    // Diagnostic (env-gated): dump original + copy for a
+		    // structural diff when the gate's verdict is suspected of
+		    // being a COPY artifact rather than a tree defect.
+		    if (copy && getenv("MADC_GATE_DUMP")) {
+			FILE *fo = fopen("tmp/gate_orig.dump", "w");
+			FILE *fc = fopen("tmp/gate_copy.dump", "w");
+			if (fo) { c2mir_dump_tree(c2m, fo, tree); fclose(fo); }
+			if (fc) { c2mir_dump_tree(cc2m, fc, copy); fclose(fc); }
+		    }
 		    if (copy)
 			cerr = c2mir_check_tree(cc2m, copy, pack_gate_note, &bad);
 		    cir_finish(cc2m);

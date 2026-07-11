@@ -18239,39 +18239,85 @@ int CirBuilder::pack_gate_drop(node_t tree, const std::vector<int> &bad_items)
 	for (size_t i = 0; i < pack_defs.size(); ++i)
 		def_by_node[pack_defs[i].second] = i;
 	std::set<int> bad_set(bad_items.begin(), bad_items.end());
-	int index = 0, dropped = 0, bad_left = (int)bad_set.size();
-	std::vector<node_t> splice;
+	std::set<node_t> splice;
+	int index = 0, bad_left = (int)bad_set.size();
+	// Drop def i: DEFBODY revert + consumer exclusion, splice its def node
+	// AND its Pass-1.95 forward proto — a defective def's proto carries the
+	// def's broken ABI shape and would keep conflicting with the Pass-0.75
+	// extern ("incompatible declarations") on every later round.
+	auto drop_def = [&](size_t i) {
+		TokenFunc *dtf = pack_defs[i].first;
+		if (!pack_is_dropped[i]) {
+			pack_is_dropped[i] = 1;
+			pack_record_drop(dtf, "c2mir check errors; ", false);
+		}
+		splice.insert(pack_defs[i].second);
+		std::map<std::string, node_t>::iterator pi =
+			pack_proto_nodes.find(dtf->var.name);
+		if (pi != pack_proto_nodes.end())
+			splice.insert(pi->second);
+		FuncDef *dfd = dynamic_cast<FuncDef *>(dtf->var.type);
+		if (dfd) {
+			pi = pack_proto_nodes.find(func_emit_name(dtf->var, dfd));
+			if (pi != pack_proto_nodes.end())
+				splice.insert(pi->second);
+		}
+	};
 	for (node_t n = c2mir_node_first_op(top_list);
 	     n && bad_left > 0; n = c2mir_node_next_op(n), ++index) {
 		if (!bad_set.count(index))
 			continue;
 		--bad_left;
 		std::map<node_t, size_t>::iterator di = def_by_node.find(n);
-		if (di == def_by_node.end()) {
-			fprintf(stderr, "pack check gate: defective top-level "
-				"item %d is not a drained def — TU defect\n",
-				index);
-			return -1;
+		if (di != def_by_node.end()) {
+			drop_def(di->second);
+			continue;
 		}
-		pack_is_dropped[di->second] = 1;
-		pack_record_drop(pack_defs[di->second].first,
-				 "c2mir check errors; ", false);
-		splice.push_back(n);
-		++dropped;
+		// Not a def: name the item — the declarator ID is the emit
+		// symbol for both func defs and declarations. A defective
+		// DECLARATION whose symbol maps to a stashed def is that def's
+		// forward proto (its broken ABI shape conflicting with the
+		// 0.75 extern) — attribute the defect to the DEF: drop it and
+		// splice this item alongside.
+		const char *sym = NULL;
+		if (n->code == N_FUNC_DEF || n->code == N_SPEC_DECL) {
+			node_t o = c2mir_node_first_op(n);
+			node_t d = o ? c2mir_node_next_op(o) : NULL;
+			node_t id = (d && d->code == N_DECL)
+				? c2mir_node_first_op(d) : NULL;
+			if (id && id->code == N_ID)
+				sym = id->u.s.s;
+		}
+		std::map<std::string, size_t>::iterator si =
+			sym ? pack_stash_idx.find(sym) : pack_stash_idx.end();
+		if (n->code == N_SPEC_DECL && si != pack_stash_idx.end()) {
+			drop_def(si->second);
+			splice.insert(n);
+			continue;
+		}
+		fprintf(stderr, "pack check gate: defective top-level "
+			"item %d (%s%s%s) is not a drained def — "
+			"TU defect\n", index,
+			c2mir_node_code_name((c2mir_node_code_t)n->code),
+			sym ? " " : "", sym ? sym : "");
+		cir_dump_nodes(stderr, n);
+		return -1;
 	}
 	if (bad_left > 0) {
 		fprintf(stderr, "pack check gate: %d defective item(s) beyond "
 			"the module's list\n", bad_left);
 		return -1;
 	}
-	// Only the check-DEFECTIVE defs leave the tree (their calls elsewhere
-	// stay link-safe: protos remain, and --run-frozen trap-binds any
-	// residual import). The cascade below only extends the CONSUMER
-	// exclusion set — visibility, not tree membership.
+	// Only check-DEFECTIVE defs (and their protos) leave the tree — their
+	// calls elsewhere stay link-safe: 0.75 decls remain, and --run-frozen
+	// trap-binds any residual import. The cascade below only extends the
+	// CONSUMER exclusion set — visibility, not tree membership.
 	for (node_t n : splice)
 		c2mir_op_remove(top_list, n);
 	pack_run_cascade();
-	return dropped;
+	// Progress = tree changed (a round may consist solely of splicing the
+	// conflicting proto of an already-dropped def; that still converges).
+	return (int)splice.size();
 }
 
 // -----------------------------------------------------------------------
@@ -18523,6 +18569,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	pack_is_dropped.clear();
 	pack_dropped.clear();
 	pack_stamp_excluded.clear();
+	pack_proto_nodes.clear();
 	pack_stash_idx.clear();
 	pack_synth_dtor_syms.clear();
 	pack_dlsym_memo.clear();
@@ -19531,8 +19578,15 @@ node_t CirBuilder::translate_module(Program *prog)
 		node_t proto = func_proto(tf);
 		if (proto) {
 			append(top_list, proto);
-			if (dynamic_cast<FuncDef *>(tf->var.type))
+			FuncDef *ptfd = dynamic_cast<FuncDef *>(tf->var.type);
+			if (ptfd)
 				typed_proto_syms.insert(tf->var.name);
+			if (prog->pack_recording) {
+				pack_proto_nodes[tf->var.name] = proto;
+				if (ptfd)
+					pack_proto_nodes[func_emit_name(tf->var,
+									ptfd)] = proto;
+			}
 		}
 	}
 	flush_forest_lazy_protos((size_t)-1);

@@ -3587,6 +3587,12 @@ public:
 						    const std::string &member_name);
     DataDefCLASS *materialize_opaque_class_type(const std::string &name,
 						const std::string &canonical);
+    // Stamp a freshly-minted opaque dependent shell/tag with its mint
+    // context: outside a dependent (pattern) parse the placeholder is a
+    // CONCRETE forward tag (e.g. the empty-pack recursion tail
+    // _Tuple_impl<1>) — legitimate frozen state (v21 empty shape), never
+    // a pack artifact the freeze kills.
+    void stamp_opaque_mint_context(DataDefCLASS *dep);
     DataDef *dependent_deref_result_type(DataDef *dd);
     void complete_pending_template_instantiations(const std::string &class_name);
     bool request_template_instantiation_completion(const std::string &mangled_name);

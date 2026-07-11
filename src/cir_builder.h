@@ -193,6 +193,11 @@ class CirBuilder {
 	// DEFBODY-reverted bodies, and cascade-excluded callers. Consumed by
 	// madc_cir_freeze (erased from funcdef_locs pre-arena_complete).
 	std::set<std::string> pack_stamp_excluded;
+	// Symbol -> the Pass-1.95 forward-proto node of a materialized body.
+	// When the check gate drops a def, its proto must leave the tree with
+	// it — a defective def's proto can carry the def's broken ABI shape and
+	// conflict with the Pass-0.75 extern ("incompatible declarations").
+	std::map<std::string, node_t> pack_proto_nodes;
 	std::set<std::string> user_func_names;
 	std::map<std::string, size_t> pack_stash_idx;
 	std::set<std::string> pack_synth_dtor_syms;
