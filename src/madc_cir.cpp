@@ -786,6 +786,17 @@ static uint32_t forest_serialize_type_id(DataDef *dd)
 	return madc_type_id_for(dd);
 }
 
+// An OPAQUE dependent placeholder never freezes (see the kill arm in
+// forest_arena_record_aggregate); an alias / static-member-type entry that
+// TARGETS one must not freeze either — its serialized tid has a killed
+// (DK_NONE) record, and a restored alias to that husk re-launders the
+// placeholder into the consumer's name resolution.
+static bool forest_type_is_opaque_placeholder(DataDef *dd)
+{
+	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(dd);
+	return cdd && cdd->is_dependent_placeholder;
+}
+
 // B3 write-through (SLICE 1c/1d): record a newly-created PROJECT unary derived type — pointer,
 // reference, or const — into this Program's arena, keyed by its own project-id slot. Dispatches
 // on the actual type for the record kind and reads the operand from base_type (DataDefREF is-a
@@ -911,6 +922,25 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 	// does). Kill any earlier record for the slot (parse-time write-through
 	// may have recorded it before the methods existed).
 	if (class_is_function_local(sdd)) {
+		madc::dis::defrec dead;
+		madc::dis::defrec old;
+		memset(&dead, 0, sizeof(dead));
+		if (forest_arena.get_def_at(tid, old)
+		    && old.kind != madc::dis::DK_NONE)
+			forest_arena.set_def_at(tid, dead);
+		return;
+	}
+	// An OPAQUE dependent placeholder (materialize_dependent_member_type /
+	// materialize_opaque_class_type: `char_traits_wchar_t__reference`,
+	// `X__deref`, dependent bases) is a pack-context artifact of a
+	// resolution that could not complete — not a real type. No DefFlags
+	// bit carries placeholder-ness, so a frozen record restores as an
+	// ORDINARY class the consumer's member-typedef/alias resolution can
+	// pick up (packed testforeach2: for_each's element typed as the
+	// laundered opaque -> "no matching constructor"). Skip + kill exactly
+	// like the function-local arm; a consumer that genuinely needs the
+	// opaque re-synthesizes it on demand, as a live parse does.
+	if (cdd && cdd->is_dependent_placeholder) {
 		madc::dis::defrec dead;
 		madc::dis::defrec old;
 		memset(&dead, 0, sizeof(dead));
@@ -1139,10 +1169,13 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		//     then append each run contiguously. ---
 		std::vector<std::pair<uint32_t, uint32_t> > als;
 		for (std::map<std::string, DataDef *>::const_iterator ai = cdd->type_aliases.begin();
-		     ai != cdd->type_aliases.end(); ++ai)
+		     ai != cdd->type_aliases.end(); ++ai) {
+			if (forest_type_is_opaque_placeholder(ai->second))
+				continue;
 			als.push_back(std::make_pair(
 				forest_arena.strings.intern(ai->first.c_str()),
 				ai->second ? forest_serialize_type_id(ai->second) : 0u));
+		}
 		r.alias_begin = (uint32_t)forest_arena.payload.size();
 		r.alias_count = (uint32_t)als.size();
 		for (size_t i = 0; i < als.size(); ++i) {
@@ -1154,10 +1187,13 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		}
 		std::vector<std::pair<uint32_t, uint32_t> > sts;
 		for (std::map<std::string, DataDef *>::const_iterator si = cdd->static_member_types.begin();
-		     si != cdd->static_member_types.end(); ++si)
+		     si != cdd->static_member_types.end(); ++si) {
+			if (forest_type_is_opaque_placeholder(si->second))
+				continue;
 			sts.push_back(std::make_pair(
 				forest_arena.strings.intern(si->first.c_str()),
 				si->second ? forest_serialize_type_id(si->second) : 0u));
+		}
 		r.statty_begin = (uint32_t)forest_arena.payload.size();
 		r.statty_count = (uint32_t)sts.size();
 		for (size_t i = 0; i < sts.size(); ++i) {

@@ -3531,6 +3531,18 @@ DataDefCLASS *Program::materialize_dependent_member_type(DataDefCLASS *owner,
     dep->canonical_cpp_spelling = owner_spelling + "::" + member_name;
     struct_map[dep_name] = dep;
     datatype_map[dep_name] = new TokenDataType(dep_name.c_str(), *dep);
+    // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every opaque
+    // dependent-member synthesis for a matching owner — the laundered-opaque
+    // diagnostic (which resolution path lands here, live vs bound).
+    {
+	static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
+	if ( mtp && *mtp && dep_name.find(mtp) != std::string::npos )
+	    fprintf(stderr, "MTIPROBE opaque-member owner=%s member=%s in=%s"
+		    " canon=%s from=%p\n", owner->name.c_str(),
+		    member_name.c_str(), cur_func_name.c_str(),
+		    instantiating_canonical_spelling.c_str(),
+		    __builtin_return_address(0));
+    }
     return dep;
 }
 
@@ -3966,6 +3978,18 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 
     // Already instantiated? Return a use-site clone of the cached type.
     flat_datatype_map_iter have = datatype_map.find(registered_mangled);
+    // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every template-use
+    // instantiation key + cache outcome for a matching name — the
+    // wrong-cache-hit / key-collision diagnostic.
+    {
+	static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
+	if ( mtp && *mtp && tname.find(mtp) != std::string::npos )
+	    fprintf(stderr, "MTIPROBE tmpl-use %s key=%s hit=%d -> %s\n",
+		    tname.c_str(), registered_mangled.c_str(),
+		    have != datatype_map.end() ? 1 : 0,
+		    have != datatype_map.end()
+			? (*have)->definition.name.c_str() : "(miss)");
+    }
     if ( have != datatype_map.end() )
     {
 	TokenDataType *cached = (TokenDataType *)(*have);

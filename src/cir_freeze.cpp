@@ -2074,6 +2074,19 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				DataDef *ad = arena_swizzle(ar.type_id, by_id);
 				if (!an || !*an || !ad)
 					continue;
+				// Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>):
+				// every restored class-scope type alias whose OWNER
+				// matches — the wrong-alias-target diagnostic.
+				{
+					static const char *mtp =
+						::getenv("MADC_MTI_PROBE_CLASS");
+					if (mtp && *mtp
+					    && cdd->name.find(mtp) != std::string::npos)
+						fprintf(stderr, "MTIPROBE restore-alias"
+							" owner=%s name=%s tid=%u -> %s\n",
+							cdd->name.c_str(), an,
+							ar.type_id, ad->name.c_str());
+				}
 				cdd->type_aliases[an] = ad;
 			}
 			for (uint32_t si = 0; si < r.statty_count; ++si) {
