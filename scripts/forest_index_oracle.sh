@@ -9,7 +9,11 @@
 #   side B = --dump-registered on the pack TU, minus the empty-TU baseline
 #            (builtins/predefines), minus madc's SYNTHETIC EMIT SCHEMES
 #            (Class__Class ctor doubling, ___dtor, __oN overload clones,
-#            __operator mangles — derived entities, never source lookups)
+#            __operator mangles, __i<spelling>_<fnv1a32> instantiation
+#            products incl. their local-class scions — see
+#            overload_spelling_symbol_suffix() in src/parser.cpp — derived
+#            entities, never source lookups: bind-time resolves the PATTERN
+#            from the index and MINTS the product symbol, same as live)
 #   gate   = (B - A) - scripts/forest_index_allowlist.txt  must be EMPTY
 set -e
 cd "$(dirname "$0")/.."
@@ -41,7 +45,7 @@ comm -23 tmp/forest_oracle_full.txt tmp/forest_oracle_base.txt \
 
 # Synthetic-scheme filter: drop madc's own emitted-name shapes (see header).
 comm -23 tmp/forest_oracle_b.txt tmp/forest_oracle_a.txt \
-    | grep -vE '___dtor$|__o[0-9]+$|__operator' \
+    | grep -vE '___dtor$|__o[0-9]+$|__operator|__i[[:alnum:]_]{0,61}_[0-9a-f]{8}(___|$)' \
     | awk '{n=$0; sub(/^.*::/,"",n); L=length(n);
             for (i=3;i<L-1;i++)
                 if (substr(n,i,2)=="__") {
