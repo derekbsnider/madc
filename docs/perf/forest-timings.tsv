@@ -10,3 +10,4 @@ date	commit	live_s	bound_s	live_derives	bound_derives	load1	note
 2026-07-09	2e6d8d2e	-	0.665	-	207	-	plan-baseline cold corpus (-O2 live was 1.006)
 2026-07-09	2e6d8d2e	-	0.399	-	0	-	plan-baseline warm diagnostic floor
 2026-07-11	749eee09	2.593	0.965	217	187	1.30	rung-1 close (@b635feea fix; dual-binary setup)
+2026-07-11	dfd085a2	2.633	0.913	217	187	2.44	raw forest codec (zlib inflate removed; @dfd085a2)
