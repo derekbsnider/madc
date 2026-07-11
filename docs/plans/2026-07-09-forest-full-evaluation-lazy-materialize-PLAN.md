@@ -165,3 +165,20 @@ close.
 log (parser gaps in bodies nobody calls — e.g. the spurious multi-return
 `extract` misparse, `__cerb` iostream internals, chained-arrow) each revert
 tolerantly; burning them down widens warm coverage and is rung-2+ fuel.
+
+## END TARGET (made explicit 2026-07-12, owner confirmed): ~0.1s
+
+0.399s is the floor of the CURRENT machinery only (it still pays whole-
+container materialization + whole-surface CIR emission). The architectural
+end state is "startup + user-product instantiation only" ≈ **~0.1s** on this
+hardware. Ladder from here (bound testsubscript -O2, trend rows in
+docs/perf/forest-timings.tsv):
+
+- 0.913 (now, @dfd085a2 — raw segments, zlib inflate removed, −20% Ir)
+- ≤0.665 — intern-flood fix (task #14): container-sid → live-sid remap so
+  restored names stamp name_sid O(1) instead of re-hashing 100+-char
+  mangled names (355k hashes / 935M Ir today; helps live too)
+- ~0.4 — rung 2 (closure-filtered materialization)
+- <0.399 — rung 3 (emit only referenced surface; bound cir 0.542 vs
+  TU-only fraction)
+- ~0.1 — rung 4 (instantiation speed) + startup residue (~0.05–0.15)
