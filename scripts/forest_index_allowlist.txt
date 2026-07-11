@@ -23,8 +23,6 @@ std::__cxx11::__xfer_bufptrs
 # Class 2 — madc-emitted internal symbols (compiler machinery, never a
 # source-level lookup).
 __madc_bswap64
-__ns___gnu_cxx___stoa__o2___Save_errno___Save_errno__1
-__ns___gnu_cxx___stoa__o2___Save_errno___dtor__2
 __ns_std_operator_as_as
 __ns_std_operator_nt_as
 #

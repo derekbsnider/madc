@@ -1125,6 +1125,54 @@ static DataDef *rebuild_dependent_shell(Program *prog, DataDefCLASS *shell,
 	return &real->definition;
 }
 
+// The structural dependent DERIVED case: an `X__deref` / `Owner__member`
+// opaque whose DependentDerivedOrigin was recorded at mint time re-derives
+// its CONCRETE type by substituting the SOURCE and re-running the
+// derivation (deref of a substituted pointer = its pointee; a member type
+// resolves on the substituted class). NULL = not re-derivable here (no
+// record, nothing substituted, source still dependent, or the concrete
+// derivation has no answer) — the caller keeps the opaque and its own bail
+// semantics. Without this, tsubst re-instantiated pattern callees FROM the
+// opaque as if it were a concrete type — the
+// `_Destroy<_ForwardIterator__deref>` no-op husk that silently swallowed
+// element destructors.
+static DataDef *rebuild_dependent_derived(Program *prog, DataDefCLASS *shell,
+	const std::map<DataDef *, DataDef *> &subst,
+	const std::vector<std::vector<DataDef *> > *packs,
+	const std::map<unsigned, DataDef *> *pack_params)
+{
+	std::map<DataDef *, Program::DependentDerivedOrigin>::const_iterator
+		oit = prog->dependent_derived_origin.find(shell);
+	if (oit == prog->dependent_derived_origin.end())
+		return NULL;
+	const Program::DependentDerivedOrigin &org = oit->second;
+	DataDef *src = subst_datadef(prog, org.source, subst, packs, pack_params);
+	if (!src || src == org.source)
+		return NULL;	// nothing substituted — still the pattern context
+	if (template_param_under_type_layers(src)
+	    || dependent_placeholder_under_type_layers(src))
+		return NULL;	// substitution left it dependent
+	// Unwrap const/ref down to the derivation operand.
+	for (int guard = 0; src && guard < 8; ++guard) {
+		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(src))
+			{ src = cd->base_type; continue; }
+		if (DataDefREF *rd = dynamic_cast<DataDefREF *>(src))
+			{ src = rd->base_type; continue; }
+		break;
+	}
+	if (org.kind == Program::DependentDerivedOrigin::Deref) {
+		// NOTE: DataDefREF derives from DataDefPTR — the ref unwrap
+		// above must run first or `T&` would "deref" to T's pointee.
+		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(src))
+			return pd->base_type;
+		return NULL;	// class-type deref (operator*) — not re-derived here
+	}
+	DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(src);
+	if (!cls)
+		return NULL;
+	return Program::class_member_type(cls, org.member);
+}
+
 static DataDef *subst_datadef(Program *prog, DataDef *dd,
 			      const std::map<DataDef *, DataDef *> &subst,
 			      const std::vector<std::vector<DataDef *> > *packs,
@@ -1173,6 +1221,9 @@ static DataDef *subst_datadef(Program *prog, DataDef *dd,
 		if (shell && shell->is_dependent_placeholder) {
 			DataDef *conc = rebuild_dependent_shell(
 				prog, shell, subst, packs, pack_params);
+			if (!conc)
+				conc = rebuild_dependent_derived(
+					prog, shell, subst, packs, pack_params);
 			if (conc)
 				return conc;
 		}
@@ -1892,6 +1943,14 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		if (!body_available && wfd && wfd->tsubst_source)
 			body_available = requeue_tsubst_instance_body(this, m_prog,
 								      *v, wfd);
+		// Forest-carried translated body (v8/v20): the m&l fixpoint
+		// materializes it on reference — same acceptance as tsubst
+		// emittable() arm 6 (the ROOT-6(e) lesson, mirrored here: a
+		// bound consumer's re-resolution picked a restored winner and
+		// bailed "system-header dependent call" although its saved
+		// body materializes fine).
+		if (!body_available && wfd && wfd->has_forest_body)
+			body_available = true;
 		return body_available;
 	};
 
@@ -1969,6 +2028,58 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 				continue;
 			}
 		}
+		// g++ tsubst resolves a call's arguments FIRST (finish_call_expr
+		// re-runs on the substituted args, bottom-up): an argument that
+		// is itself a dependent call still carries its parse-time
+		// placeholder return type (ddINT64 — the deferred
+		// `__addressof(*__first)` inside stl_construct's range
+		// _Destroy), and deducing the outer template from that
+		// placeholder fails every overload (1-arg `std::_Destroy`
+		// matching no candidate → the call freezes on the base pattern
+		// symbol). Re-resolve the inner call for THIS substitution and
+		// type the argument by the winner's return; instantiation is
+		// inst_key-memoized, so the inner call's own N_ID rewrite later
+		// lands on the same product.
+		if (TokenCallFunc *inner = dynamic_cast<TokenCallFunc *>(p)) {
+#ifdef MADC_DBG_PACK
+			if (!tsubst_call_can_rewrite_after_subst(inner)) {
+				FuncDef *ifd = dynamic_cast<FuncDef *>(
+					inner->var.type);
+				fprintf(stderr,
+					"inner-norewrite call=%s fd=%p disp='%s'"
+					" mdisp='%s' ns='%s'\n",
+					inner->var.name.c_str(), (void *)ifd,
+					ifd ? ifd->function_display_name.c_str() : "-",
+					ifd ? ifd->method_display_name.c_str() : "-",
+					ifd ? ifd->namespace_name.c_str() : "-");
+			}
+#endif
+			if (tsubst_call_can_rewrite_after_subst(inner)) {
+				bool inner_changed = false;
+				std::string inner_err;
+				Variable *iw = resolve_copied_dependent_call(
+					inner, subst, &inner_changed, NULL,
+					&inner_err);
+				FuncDef *iwfd = iw
+					? dynamic_cast<FuncDef *>(iw->type)
+					: NULL;
+#ifdef MADC_DBG_PACK
+				if (!iwfd)
+					fprintf(stderr, "inner-recurse-fail "
+						"call=%s err='%s'\n",
+						inner->var.name.c_str(),
+						inner_err.c_str());
+#endif
+				if (iwfd) {
+					DataDef *ret = &iwfd->return_value_type();
+					if (ret != p->datadef())
+						changed = true;
+					append_substituted_param(p, ret, *subst,
+						is_zero_integer_literal(p));
+					continue;
+				}
+			}
+		}
 		append_substituted_param(p, p ? p->datadef() : NULL, *subst,
 					 is_zero_integer_literal(p));
 	}
@@ -2013,6 +2124,19 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		for (DataDef *pt : concrete_param_types)
 			mat.push_back(tsubst_overload_arg_type(pt));
 		Variable *winner = recv_class->findMethodOverload(mname, mat);
+		// Env-gated probe (MADC_MTI_PROBE=<substr>): receiver-class +
+		// winner identity for the restored-placeholder routing diagnostic.
+		{
+			static const char *mtp = ::getenv("MADC_MTI_PROBE");
+			if (mtp && *mtp
+			    && (recv_class->name + "__" + mname).find(mtp)
+			       != std::string::npos)
+				fprintf(stderr, "MTIPROBE recv=%s cls=%p winner=%p"
+					" wfd=%p\n",
+					recv_class->name.c_str(), (void *)recv_class,
+					(void *)winner,
+					winner ? (void *)winner->type : NULL);
+		}
 		if (!winner) {
 			for (Variable *mv : recv_class->methods) {
 				FuncDef *mfd = mv
@@ -8358,9 +8482,30 @@ bool CirBuilder::class_needs_dtor(DataDefCLASS *cdd)
 {
 	if (!cdd) return false;
 	if (cdd->has_user_dtor) return true;
-	if (class_has_object_members(cdd)) return true;
-	if (cdd->base_class && class_needs_dtor(cdd->base_class)) return true;
-	return false;
+	std::map<DataDefCLASS *, bool>::iterator mi = m_needs_dtor_memo.find(cdd);
+	if (mi != m_needs_dtor_memo.end()) return mi->second;
+	// Transitive triviality ([class.dtor]): an object member forces a dtor
+	// only if the member's OWN class needs destruction. The old shallow
+	// any-class-member test minted no-op dtors for trivial wrappers
+	// (__normal_iterator, move_iterator, __uses_alloc0) that gcc never
+	// emits — and, because Pass 1.6 emission sweeps struct_map (state,
+	// not references), a bound grove (which holds MORE classes than a
+	// live parse of the same TU) emitted a different module than live
+	// (forest vecbind gate). Cycle guard: in-progress classes read as
+	// trivial (a by-value cycle is ill-formed anyway).
+	m_needs_dtor_memo[cdd] = false;
+	bool needs = false;
+	for (const auto &m : cdd->members) {
+		DataDefCLASS *mc = as_class_instance(m.second);
+		if (mc && class_needs_dtor(mc)) { needs = true; break; }
+	}
+	if (!needs && cdd->base_class && class_needs_dtor(cdd->base_class))
+		needs = true;
+	if (!needs)
+		for (const BaseSpec &b : cdd->bases)
+			if (b.base && class_needs_dtor(b.base)) { needs = true; break; }
+	m_needs_dtor_memo[cdd] = needs;
+	return needs;
 }
 
 Variable *CirBuilder::class_own_dtor(DataDefCLASS *cdd)
@@ -16604,12 +16749,40 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			if (class_gets_synth_dtor(cdd))
 				synth_dtor_syms.insert(class_dtor_symbol(cdd));
 		}
+		// v25 equivalence: a restored FOREST body (has_forest_body) is the
+		// LOADED form of a deferred lazy body — translate_module's
+		// forest_lazy / funcdef_map fixpoint stages materialize + emit it
+		// on reference, so it is a definition source exactly like the
+		// deferred arm. Collected with the SAME predicates those stages
+		// use, so only symbols that will actually emit are admitted.
+		std::set<std::string> forest_body_syms;
+		if (m_prog->bind_forest && !m_prog->forest_chain.empty()) {
+			for (auto &kv : m_prog->struct_map) {
+				DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(kv.second);
+				if (!cdd)
+					continue;
+				for (Variable *mv : cdd->methods) {
+					FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type)
+							 : NULL;
+					if (fd && fd->has_forest_body && !mv->name.empty())
+						forest_body_syms.insert(mv->name);
+				}
+			}
+			for (auto &kv : m_prog->funcdef_map)
+				if (kv.second && kv.second->has_forest_body
+				    && !kv.first.empty())
+					forest_body_syms.insert(kv.first);
+		}
+		const char *emit_probe = getenv("MADC_EMITTABLE_PROBE");	// TEMP diagnostic
 		auto emittable = [&](const std::string &s) -> bool {
-			if (is_c2mir_builtin_call_name(s)) return true;
-			if (m_prog->has_deferred_lazy_body(s)) return true;
-			if (external_symbol_available(s)) return true;
-			if (synth_dtor_syms.count(s)) return true;
-			for (TokenBase *pb : m_prog->pending_funcs) {
+			int why = 0;
+			bool ok = false;
+			if (is_c2mir_builtin_call_name(s)) { ok = true; why = 1; }
+			else if (m_prog->has_deferred_lazy_body(s)) { ok = true; why = 2; }
+			else if (external_symbol_available(s)) { ok = true; why = 3; }
+			else if (synth_dtor_syms.count(s)) { ok = true; why = 4; }
+			else if (forest_body_syms.count(s)) { ok = true; why = 6; }
+			else for (TokenBase *pb : m_prog->pending_funcs) {
 				TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
 				FuncDef *tfd = tf ? dynamic_cast<FuncDef *>(tf->var.type)
 						  : NULL;
@@ -16618,9 +16791,12 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 				// body) is NOT a definition — matching it here is what
 				// false-passed __gnu_cxx::operator-. Require a real body.
 				if (tf && tfd && !tfd->declaration_only
-				    && func_emit_name(tf->var, tfd) == s) return true;
+				    && func_emit_name(tf->var, tfd) == s) { ok = true; why = 5; break; }
 			}
-			return false;
+			if (emit_probe && s.find(emit_probe) != std::string::npos)
+				fprintf(stderr, "EMITPROBE sym=%s ok=%d why=%d\n",
+					s.c_str(), (int)ok, why);
+			return ok;
 		};
 		for (const std::string &s : callees) {
 			if (!emittable(s)) {
@@ -17849,6 +18025,348 @@ void CirBuilder::synth_host_trampolines(Program *prog,
 	}
 }
 
+// Bind the ctors + dtor + methods of EXTERNALLY-DEFINED (libstdc++-owned)
+// classes to their real Itanium symbols. libstdc++'s explicit instantiation
+// provides these out-of-line — exactly like the vtable/typeinfo (Pass 1.5)
+// and the gated dtor synthesis (Pass 1.6). madc must NOT synthesize a
+// member-wise ctor for such a class: it cannot reproduce the exact
+// base/vbase-construction + vptr-install + layout ABI (the synthesized
+// basic_ofstream ctor constructed basic_ios — a virtual base — with the wrong
+// overload -> c2mir "too few arguments"; g++ emits a single C1 call and lets
+// libstdc++ build the whole hierarchy, vbases and vptrs included). Setting
+// emit_symbol routes construction (ctor_call_symbol) and destruction
+// (class_dtor_symbol) to the real symbol AND suppresses the synthesized body +
+// vbase chaining (external = !emit_symbol.empty()). Data-driven
+// (is_externally_defined), never a namespace==std test (Rule #7).
+// Idempotent: binds only an EMPTY emit_symbol, and only when dlsym resolves
+// the mangled name — so translate_module can re-run it after the pack-time
+// drain (whose parseFunction re-parses cleared these bindings).
+void CirBuilder::bind_external_class_symbols(Program *prog)
+{
+	std::set<DataDefCLASS *> bound_ext;
+	for (auto &kv : prog->struct_map) {
+		DataDefCLASS *cdd = as_user_class(kv.second);
+		// Bind to libstdc++'s available exported symbols for (a) polymorphic
+		// library classes (is_externally_defined, vtable-owned), and (b)
+		// NON-polymorphic instantiations named by an `extern template`
+		// decl (basic_string<char>) — libstdc++ exports those members
+		// out-of-line too, but not every extern-template class exports every
+		// inline member (allocator<char>::deallocate is header-only). Probe
+		// the live symbol table before suppressing a header body.
+		if (!cdd || !(cdd->is_externally_defined()
+			   || cdd->is_extern_template_instantiated)) continue;
+		if (cdd->canonical_cpp_spelling.empty()) continue;
+		if (bound_ext.count(cdd)) continue;
+		bound_ext.insert(cdd);
+		const std::string &cls = cdd->canonical_cpp_spelling;
+		// CTOR binding only for TEMPLATE-INSTANTIATION classes (canonical
+		// spelling contains '<'): libstdc++ EXPLICITLY INSTANTIATES exactly
+		// the polymorphic template families (basic_ios/basic_ofstream/...,
+		// the locale facets), so their C1 ctors are exported out-of-line. A
+		// concrete polymorphic class like std::bad_alloc has an inline/defaulted
+		// ctor with NO exported _ZNSt9bad_allocC1Ev — binding it would dangle at
+		// link. (A wrong bind fails loudly at MIR-link, never silently.) Those
+		// concrete classes keep madc's vptr-init construction, which already
+		// works. The dtor is virtual (in the vtable) so it's exported for both.
+		bool ctor_exported = cls.find('<') != std::string::npos;
+		for (Variable *cv : ctor_exported ? cdd->ctors
+						  : std::vector<Variable *>()) {
+			FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+			if (!fd || !fd->emit_symbol.empty() || fd->is_member_template) continue;
+			// Param spellings EXCLUDING the hidden __this (slot 0), same as
+			// bind_declared_cpp_symbol — so PKc / St13_Ios_Openmode match the ABI.
+			std::vector<std::string> psp;
+			for (size_t i = 1; i < fd->param_cpp_spellings.size(); ++i)
+				psp.push_back(fd->param_cpp_spellings[i]);
+			std::string sym = itanium_mangle_ctor_sub(cls, psp);
+			if (external_symbol_available(sym))
+				fd->emit_symbol = sym;
+		}
+		if (Variable *dv = class_own_dtor(cdd)) {
+			FuncDef *dt = dynamic_cast<FuncDef *>(dv->type);
+			if (dt && dt->emit_symbol.empty()) {
+				std::string sym = itanium_mangle_dtor_sub(cls);
+				if (external_symbol_available(sym))
+					dt->emit_symbol = sym;
+			}
+		}
+		// Non-template methods/operators of an EXPLICITLY-INSTANTIATED class
+		// (cls has '<') are candidates for out-of-line libstdc++ exports. The
+		// explicit instantiation `extern template class basic_ostream<char>;`
+		// emits many non-template members, INCLUDING ones written `inline` in the
+		// header (e.g. operator<<(unsigned long) at <ostream>:172
+		// `{return _M_insert(__n);}`), but other extern-template classes still
+		// leave inline bodies only. Bind only symbols that dlsym can resolve.
+		// bind_declared_cpp_symbol only catches DECLARED-ONLY members
+		// (operator<<(int)); the inline ones reach here unbound, and emitting
+		// their bodies forwards into _M_insert<T> — a member TEMPLATE that the
+		// explicit instantiation does NOT export — which fails to lower. Bind them
+		// to the real member symbol so the call goes external and no body is
+		// emitted, exactly like the declared-only members. (member TEMPLATEs are
+		// skipped: not exported by the class instantiation.)
+		for (Variable *mv : ctor_exported ? cdd->methods
+						  : std::vector<Variable *>()) {
+			FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+			if (!fd || !fd->emit_symbol.empty() || fd->is_member_template)
+				continue;
+			if (fd->defaulted_or_deleted || fd->pure_virtual)
+				continue;
+			const std::string &dn = fd->method_display_name;
+			if (dn.empty() || dn[0] == '~')   // dtor handled above
+				continue;
+			std::vector<std::string> psp;
+			for (size_t i = 1; i < fd->param_cpp_spellings.size(); ++i)
+				psp.push_back(fd->param_cpp_spellings[i]);
+			std::string sym;
+			if (dn.compare(0, 8, "operator") == 0)
+				sym = itanium_mangle_operator_sub(
+					cls, dn.substr(8), psp, fd->is_const_method);
+			else
+				sym = itanium_mangle_member_sub(
+					cls, dn, psp, fd->is_const_method);
+			if (external_symbol_available(sym))
+				fd->emit_symbol = sym;
+		}
+	}
+}
+
+// -----------------------------------------------------------------------
+// Pack-time drop / cascade / check-gate machinery (rung 1)
+// -----------------------------------------------------------------------
+
+// Drop a stashed pack def. A drop that reverts to its saved DEFBODY entry is
+// a consumer-derivable home (on-use derivation); otherwise the symbol is
+// marked un-carriable so pack_run_cascade drops its callers too. Every drop
+// is logged to the freeze log (no silent caps).
+void CirBuilder::pack_record_drop(TokenFunc *tf, const char *why,
+				  bool always_unsafe)
+{
+	std::map<std::string, Program::DeferredFunctionBody>::iterator
+		dsi = drain_saved.find(tf->var.name);
+	bool reverted = dsi != drain_saved.end();
+	if (reverted) {
+		m_prog->deferred_lazy_bodies[dsi->first] = dsi->second;
+		drain_failed_syms.insert(dsi->first);
+	}
+	// A SOURCE-DECLARED fn with no deferred entry to revert to (eager
+	// parse — std::stoi) is still consumer-derivable when parseFunction
+	// captured its raw body span at depth 0 (v26 piece (a)
+	// forest_body_tokens, tsubst_source NULL): the 6b ownerless-DEFBODY
+	// writer plants the span and the consumer materializes on first
+	// ODR-use — the std::abs carry. Only its body stamp is excluded
+	// (below). An instantiation-context body (forest_body_in_instantiation
+	// — an __i product / local-class hoist) stays un-carriable: its tokens
+	// spell pattern params, so the consumer must re-instantiate instead.
+	bool span_home = false;
+	if (!always_unsafe && !reverted) {
+		FuncDef *sfd = dynamic_cast<FuncDef *>(tf->var.type);
+		span_home = sfd && !sfd->forest_body_tokens.empty()
+			 && !sfd->tsubst_source
+			 && !sfd->forest_body_in_instantiation;
+	}
+	if ((always_unsafe || !reverted) && !span_home) {
+		pack_dropped.insert(tf->var.name);
+		FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
+		if (tfd)
+			pack_dropped.insert(func_emit_name(tf->var, tfd));
+	}
+	// Emission split (rung 1): the excluded def's node may still be
+	// TREE-resident for --run-frozen, so the freeze must never stamp
+	// DF_HAS_FOREST_BODY for it — a consumer restores the DEFBODY /
+	// re-instantiates instead (madc_cir_freeze erases these symbols from
+	// funcdef_locs before cir_forest_arena_complete).
+	pack_stamp_excluded.insert(tf->var.name);
+	if (FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type))
+		pack_stamp_excluded.insert(func_emit_name(tf->var, tfd));
+	fprintf(stderr, "pack drop: %s (%s%s)\n",
+		tf->var.name.c_str(), why,
+		reverted ? "reverted to DEFBODY"
+			 : span_home ? "reverted to body-span carry"
+				     : "consumer re-instantiates");
+}
+
+// A callee is HOMED when a consumer can resolve it: a surviving sibling def,
+// a (non-local-class) DEFBODY derived on use, a TU-root user fn, a synth dtor
+// (Pass 1.6 emits it in consumers too), a c2mir builtin, a forest-carried
+// body from a bound base (freeze-append), or a dlsym-resolvable external
+// (libc / Itanium-mangled / __madc runtime). Anything else is a pack-context
+// artifact — a rolled-back speculative instantiation (the __ns_std__Construct
+// slot-1 husk), a local-class hoist — and freezing a call to it is an
+// undefined import in every bound consumer, so the CALLER must drop (its
+// DEFBODY revert / consumer re-instantiation covers it on use).
+bool CirBuilder::pack_callee_homed(const std::string &sym)
+{
+	if (pack_dropped.count(sym))
+		return false;
+	std::map<std::string, size_t>::iterator si = pack_stash_idx.find(sym);
+	if (si != pack_stash_idx.end() && !pack_is_dropped[si->second])
+		return true;
+	std::map<std::string, Program::DeferredFunctionBody>::iterator
+		di = m_prog->deferred_lazy_bodies.find(sym);
+	if (di != m_prog->deferred_lazy_bodies.end()) {
+		if (Program::method_var_is_local_class_hoist(di->second.var))
+			return false;
+		// Instantiation-born free fn: its DEFBODY does not freeze (no
+		// template-param context to derive from) — mirror the
+		// DK_DEFBODY writer.
+		if (di->second.var
+		    && (!di->second.method || !di->second.method->owner_class)) {
+			FuncDef *dfd = dynamic_cast<FuncDef *>(
+				di->second.var->type);
+			if (dfd && dfd->tsubst_source)
+				return false;
+		}
+		return true;
+	}
+	if (user_func_names.count(sym))
+		return true;
+	if (pack_synth_dtor_syms.count(sym))
+		return true;
+	if (is_c2mir_builtin_call_name(sym))
+		return true;
+	funcdef_map_t::iterator fi = m_prog->funcdef_map.find(sym);
+	if (fi != m_prog->funcdef_map.end() && fi->second
+	    && fi->second->has_forest_body)
+		return true;
+	std::map<std::string, bool>::iterator mi = pack_dlsym_memo.find(sym);
+	if (mi != pack_dlsym_memo.end())
+		return mi->second;
+	bool avail = external_symbol_available(sym);
+	pack_dlsym_memo[sym] = avail;
+	return avail;
+}
+
+// Drop every surviving stashed def that calls an un-homed symbol, to
+// fixpoint (a drop can un-home a sibling, so iterate until stable).
+void CirBuilder::pack_run_cascade()
+{
+	for (bool changed = true; changed; ) {
+		changed = false;
+		for (size_t i = 0; i < pack_defs.size(); ++i) {
+			if (pack_is_dropped[i])
+				continue;
+			bool bad = false;
+			std::string bad_sym;
+			for (std::set<std::string>::iterator ci =
+			     pack_def_callees[i].begin();
+			     ci != pack_def_callees[i].end(); ++ci)
+				if (!pack_callee_homed(*ci)) {
+					bad = true;
+					bad_sym = *ci;
+					break;
+				}
+			if (!bad)
+				continue;
+			pack_is_dropped[i] = 1;
+			changed = true;
+			std::string why = "calls unresolvable " + bad_sym + "; ";
+			pack_record_drop(pack_defs[i].first, why.c_str(), false);
+		}
+	}
+}
+
+// Post-translate arm of the pack-side c2mir check gate (rung 1, layer 4):
+// madc_cir_freeze runs c2mir_check_tree on a deep COPY of the pristine
+// translated tree; each defective top-level item lands here as its 0-based
+// child index in the module's list. Map each index to its stashed pack def
+// (identity — pack survivors ARE module children), drop it (DEFBODY revert
+// via pack_record_drop), re-run the callee cascade, then splice every def
+// dropped by this call out of the pristine tree so the freeze never
+// serializes it. Returns the number of defs dropped, or -1 when a defective
+// item is NOT a droppable pack def — a defect in the TU itself, which must
+// abort the freeze loudly rather than be silently swallowed.
+int CirBuilder::pack_gate_drop(node_t tree, const std::vector<int> &bad_items)
+{
+	node_t top_list = c2mir_node_op(tree, 0);
+	if (!top_list)
+		return -1;
+	// Identity map over ALL stashed defs (visible or consumer-excluded —
+	// the whole stash is tree-resident under the emission split).
+	std::map<node_t, size_t> def_by_node;
+	for (size_t i = 0; i < pack_defs.size(); ++i)
+		def_by_node[pack_defs[i].second] = i;
+	std::set<int> bad_set(bad_items.begin(), bad_items.end());
+	std::set<node_t> splice;
+	int index = 0, bad_left = (int)bad_set.size();
+	// Drop def i: DEFBODY revert + consumer exclusion, splice its def node
+	// AND its Pass-1.95 forward proto — a defective def's proto carries the
+	// def's broken ABI shape and would keep conflicting with the Pass-0.75
+	// extern ("incompatible declarations") on every later round.
+	auto drop_def = [&](size_t i) {
+		TokenFunc *dtf = pack_defs[i].first;
+		if (!pack_is_dropped[i]) {
+			pack_is_dropped[i] = 1;
+			pack_record_drop(dtf, "c2mir check errors; ", false);
+		}
+		splice.insert(pack_defs[i].second);
+		std::map<std::string, node_t>::iterator pi =
+			pack_proto_nodes.find(dtf->var.name);
+		if (pi != pack_proto_nodes.end())
+			splice.insert(pi->second);
+		FuncDef *dfd = dynamic_cast<FuncDef *>(dtf->var.type);
+		if (dfd) {
+			pi = pack_proto_nodes.find(func_emit_name(dtf->var, dfd));
+			if (pi != pack_proto_nodes.end())
+				splice.insert(pi->second);
+		}
+	};
+	for (node_t n = c2mir_node_first_op(top_list);
+	     n && bad_left > 0; n = c2mir_node_next_op(n), ++index) {
+		if (!bad_set.count(index))
+			continue;
+		--bad_left;
+		std::map<node_t, size_t>::iterator di = def_by_node.find(n);
+		if (di != def_by_node.end()) {
+			drop_def(di->second);
+			continue;
+		}
+		// Not a def: name the item — the declarator ID is the emit
+		// symbol for both func defs and declarations. A defective
+		// DECLARATION whose symbol maps to a stashed def is that def's
+		// forward proto (its broken ABI shape conflicting with the
+		// 0.75 extern) — attribute the defect to the DEF: drop it and
+		// splice this item alongside.
+		const char *sym = NULL;
+		if (n->code == N_FUNC_DEF || n->code == N_SPEC_DECL) {
+			node_t o = c2mir_node_first_op(n);
+			node_t d = o ? c2mir_node_next_op(o) : NULL;
+			node_t id = (d && d->code == N_DECL)
+				? c2mir_node_first_op(d) : NULL;
+			if (id && id->code == N_ID)
+				sym = id->u.s.s;
+		}
+		std::map<std::string, size_t>::iterator si =
+			sym ? pack_stash_idx.find(sym) : pack_stash_idx.end();
+		if (n->code == N_SPEC_DECL && si != pack_stash_idx.end()) {
+			drop_def(si->second);
+			splice.insert(n);
+			continue;
+		}
+		fprintf(stderr, "pack check gate: defective top-level "
+			"item %d (%s%s%s) is not a drained def — "
+			"TU defect\n", index,
+			c2mir_node_code_name((c2mir_node_code_t)n->code),
+			sym ? " " : "", sym ? sym : "");
+		cir_dump_nodes(stderr, n);
+		return -1;
+	}
+	if (bad_left > 0) {
+		fprintf(stderr, "pack check gate: %d defective item(s) beyond "
+			"the module's list\n", bad_left);
+		return -1;
+	}
+	// Only check-DEFECTIVE defs (and their protos) leave the tree — their
+	// calls elsewhere stay link-safe: 0.75 decls remain, and --run-frozen
+	// trap-binds any residual import. The cascade below only extends the
+	// CONSUMER exclusion set — visibility, not tree membership.
+	for (node_t n : splice)
+		c2mir_op_remove(top_list, n);
+	pack_run_cascade();
+	// Progress = tree changed (a round may consist solely of splicing the
+	// conflicting proto of an already-dropped def; that still converges).
+	return (int)splice.size();
+}
+
 // -----------------------------------------------------------------------
 // Top-level module translation
 // -----------------------------------------------------------------------
@@ -18083,114 +18601,30 @@ node_t CirBuilder::translate_module(Program *prog)
 	// Collect user function names. Stored as a member too, so the body
 	// translation (below) can tell a madc-compiled function (whose by-value
 	// non-trivial object return madc lowers via the __retbuf ABI) from an
-	// external / native function with its own ABI.
-	std::set<std::string> user_func_names;
+	// external / native function with its own ABI. (user_func_names is a
+	// builder member — the pack check gate consults it after translate.)
+	user_func_names.clear();
 	for (TokenFunc *tf : funcs)
 		user_func_names.insert(tf->var.name);
 	m_user_func_names = &user_func_names;
 	m_materialized_lib_syms.clear();   // per-module, like m_user_func_names
+	// Pack drain / check-gate members (see cir_builder.h): per-module state.
+	drain_failed_syms.clear();
+	drain_saved.clear();
+	pack_defs.clear();
+	pack_def_callees.clear();
+	pack_is_dropped.clear();
+	pack_dropped.clear();
+	pack_stamp_excluded.clear();
+	pack_proto_nodes.clear();
+	pack_stash_idx.clear();
+	pack_synth_dtor_syms.clear();
+	pack_dlsym_memo.clear();
 
-	// Bind the ctors + dtor of EXTERNALLY-DEFINED (libstdc++-owned) classes to
-	// their real Itanium C1 / D1 symbols, BEFORE any construction is lowered (the
-	// global-ctor pass + the function bodies below). libstdc++'s explicit
-	// instantiation provides these out-of-line — exactly like the vtable/typeinfo
-	// (Pass 1.5) and the gated dtor synthesis (Pass 1.6). madc must NOT synthesize a
-	// member-wise ctor for such a class: it cannot reproduce the exact
-	// base/vbase-construction + vptr-install + layout ABI (the synthesized
-	// basic_ofstream ctor constructed basic_ios — a virtual base — with the wrong
-	// overload -> c2mir "too few arguments"; g++ emits a single C1 call and lets
-	// libstdc++ build the whole hierarchy, vbases and vptrs included). Setting
-	// emit_symbol routes construction (ctor_call_symbol) and destruction
-	// (class_dtor_symbol) to the real symbol AND suppresses the synthesized body +
-	// vbase chaining (external = !emit_symbol.empty()). Data-driven
-	// (is_externally_defined), never a namespace==std test (Rule #7).
-	{
-		std::set<DataDefCLASS *> bound_ext;
-		for (auto &kv : prog->struct_map) {
-			DataDefCLASS *cdd = as_user_class(kv.second);
-			// Bind to libstdc++'s available exported symbols for (a) polymorphic
-			// library classes (is_externally_defined, vtable-owned), and (b)
-			// NON-polymorphic instantiations named by an `extern template`
-			// decl (basic_string<char>) — libstdc++ exports those members
-			// out-of-line too, but not every extern-template class exports every
-			// inline member (allocator<char>::deallocate is header-only). Probe
-			// the live symbol table before suppressing a header body.
-			if (!cdd || !(cdd->is_externally_defined()
-				   || cdd->is_extern_template_instantiated)) continue;
-			if (cdd->canonical_cpp_spelling.empty()) continue;
-			if (bound_ext.count(cdd)) continue;
-			bound_ext.insert(cdd);
-			const std::string &cls = cdd->canonical_cpp_spelling;
-			// CTOR binding only for TEMPLATE-INSTANTIATION classes (canonical
-			// spelling contains '<'): libstdc++ EXPLICITLY INSTANTIATES exactly
-			// the polymorphic template families (basic_ios/basic_ofstream/...,
-			// the locale facets), so their C1 ctors are exported out-of-line. A
-			// concrete polymorphic class like std::bad_alloc has an inline/defaulted
-			// ctor with NO exported _ZNSt9bad_allocC1Ev — binding it would dangle at
-			// link. (A wrong bind fails loudly at MIR-link, never silently.) Those
-			// concrete classes keep madc's vptr-init construction, which already
-			// works. The dtor is virtual (in the vtable) so it's exported for both.
-			bool ctor_exported = cls.find('<') != std::string::npos;
-			for (Variable *cv : ctor_exported ? cdd->ctors
-							  : std::vector<Variable *>()) {
-				FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
-				if (!fd || !fd->emit_symbol.empty() || fd->is_member_template) continue;
-				// Param spellings EXCLUDING the hidden __this (slot 0), same as
-				// bind_declared_cpp_symbol — so PKc / St13_Ios_Openmode match the ABI.
-				std::vector<std::string> psp;
-				for (size_t i = 1; i < fd->param_cpp_spellings.size(); ++i)
-					psp.push_back(fd->param_cpp_spellings[i]);
-				std::string sym = itanium_mangle_ctor_sub(cls, psp);
-				if (external_symbol_available(sym))
-					fd->emit_symbol = sym;
-			}
-			if (Variable *dv = class_own_dtor(cdd)) {
-				FuncDef *dt = dynamic_cast<FuncDef *>(dv->type);
-				if (dt && dt->emit_symbol.empty()) {
-					std::string sym = itanium_mangle_dtor_sub(cls);
-					if (external_symbol_available(sym))
-						dt->emit_symbol = sym;
-				}
-			}
-			// Non-template methods/operators of an EXPLICITLY-INSTANTIATED class
-			// (cls has '<') are candidates for out-of-line libstdc++ exports. The
-			// explicit instantiation `extern template class basic_ostream<char>;`
-			// emits many non-template members, INCLUDING ones written `inline` in the
-			// header (e.g. operator<<(unsigned long) at <ostream>:172
-			// `{return _M_insert(__n);}`), but other extern-template classes still
-			// leave inline bodies only. Bind only symbols that dlsym can resolve.
-			// bind_declared_cpp_symbol only catches DECLARED-ONLY members
-			// (operator<<(int)); the inline ones reach here unbound, and emitting
-			// their bodies forwards into _M_insert<T> — a member TEMPLATE that the
-			// explicit instantiation does NOT export — which fails to lower. Bind them
-			// to the real member symbol so the call goes external and no body is
-			// emitted, exactly like the declared-only members. (member TEMPLATEs are
-			// skipped: not exported by the class instantiation.)
-			for (Variable *mv : ctor_exported ? cdd->methods
-							  : std::vector<Variable *>()) {
-				FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
-				if (!fd || !fd->emit_symbol.empty() || fd->is_member_template)
-					continue;
-				if (fd->defaulted_or_deleted || fd->pure_virtual)
-					continue;
-				const std::string &dn = fd->method_display_name;
-				if (dn.empty() || dn[0] == '~')   // dtor handled above
-					continue;
-				std::vector<std::string> psp;
-				for (size_t i = 1; i < fd->param_cpp_spellings.size(); ++i)
-					psp.push_back(fd->param_cpp_spellings[i]);
-				std::string sym;
-				if (dn.compare(0, 8, "operator") == 0)
-					sym = itanium_mangle_operator_sub(
-						cls, dn.substr(8), psp, fd->is_const_method);
-				else
-					sym = itanium_mangle_member_sub(
-						cls, dn, psp, fd->is_const_method);
-				if (external_symbol_available(sym))
-					fd->emit_symbol = sym;
-			}
-		}
-	}
+	// Bind externally-provided class members to their real Itanium symbols
+	// BEFORE any construction is lowered (the global-ctor pass + the function
+	// bodies below). See bind_external_class_symbols.
+	bind_external_class_symbols(prog);
 
 	// File-scope class-instance globals: emit storage for any not already
 	// covered by the dkGlobalVar pass (built-ins like
@@ -18364,17 +18798,92 @@ node_t CirBuilder::translate_module(Program *prog)
 	// item". Drain anything appended past the entry-snapshot watermark
 	// (pf_drained, captured where `funcs` was collected) into lib_funcs each
 	// round.
+	//
+	// PACK-TIME DRAIN (rung 1, 2026-07-09 plan): under a grove-carrying freeze
+	// (prog->pack_recording) every deferred body is "ready", referenced or not —
+	// pack time is the once-ever place to evaluate the header surface, so
+	// consumers restore translated func-defs instead of re-deriving each body
+	// on first use (the 207-bodies-per-compile cost). Drain-only bodies get
+	// per-body error tolerance: a parse failure re-inserts the entry so it
+	// freezes as DK_DEFBODY (today's on-use derivation in consumers — a pack
+	// must never be blocked by a parser gap in a method nobody calls), and the
+	// failed set is skipped on later rounds so the fixpoint converges.
+	// Referenced bodies keep today's semantics exactly (failures propagate).
+	// (drain_failed_syms is a builder member — the pack check gate keeps
+	// using it after translate returns.)
+	//
+	// Pack-time drain: each tolerantly-materialized body's DEFBODY entry,
+	// kept in the drain_saved member so a LOWERING failure at the emission
+	// site below (error nodes / a Throw inside func_def) — or a post-
+	// translate c2mir check failure caught by the pack check gate — can
+	// restore it: the body then freezes as DK_DEFBODY (today's on-use
+	// derivation in consumers) instead of poisoning the whole tree
+	// (cir_report_errors rejects any error node).
+	//
+	// Pack-time carriability: a LOCAL-CLASS METHOD (see
+	// Program::method_var_is_local_class_hoist — basic_string::
+	// _M_construct's `_Guard`, __stoa's `_Save_errno` / `_Range_chk`) has
+	// NO consumer-visible home in the corpus; the freeze also skips its
+	// class record and DEFBODY, so a consumer's own derivation of the
+	// enclosing body creates the local class fresh, as a live parse does.
+	// Pack-time defs are STASHED in the pack_defs member instead of going
+	// straight to func_def_nodes: a frozen body whose callee has no
+	// consumer-side home (an un-carriable local-class method, or a dropped
+	// body that could NOT revert to DEFBODY) must itself drop — the
+	// consumer re-derives / re-instantiates it — so the final emit set is
+	// decided by a cascade AFTER the last fixpoint run. A drop that DID
+	// revert to DEFBODY is a consumer-derivable home (the on-use
+	// derivation), so callers of it stay frozen. Drops are recorded via
+	// the pack_record_drop member (shared with the post-translate gate).
 	auto materialize_and_lower = [&]() {
 		for (bool grew = true; grew; ) {
 			grew = false;
 			if (!prog->deferred_lazy_bodies.empty()) {
-				std::vector<std::string> ready;
-				for (auto &db : prog->deferred_lazy_bodies)
-					if (!lib_funcs.count(db.first)
-					    && referenced_funcs.count(db.first))
-						ready.push_back(db.first);
-				for (auto &sym : ready) {
-					TokenFunc *tf = prog->parse_deferred_lazy_body(sym);
+				std::vector<std::pair<std::string, bool> > ready;
+				for (auto &db : prog->deferred_lazy_bodies) {
+					if (lib_funcs.count(db.first))
+						continue;
+					// A pack-time failure is final for the whole freeze
+					// (referenced or drain-only) — retrying a re-inserted
+					// entry every round would never converge.
+					if (prog->pack_recording
+					    && drain_failed_syms.count(db.first))
+						continue;
+					if (referenced_funcs.count(db.first))
+						ready.push_back(std::make_pair(db.first, false));
+					else if (prog->pack_recording)
+						ready.push_back(std::make_pair(db.first, true));
+				}
+				for (auto &rd : ready) {
+					const std::string &sym = rd.first;
+					TokenFunc *tf = NULL;
+					// Under pack_recording EVERY materialization is
+					// error-tolerant, not just drain-only entries: the
+					// forced emission of drained bodies marks their
+					// callees referenced, so a callee's own deferred
+					// body takes this referenced path — a parse failure
+					// there must fall back to DEFBODY like any other
+					// pack-time gap, never kill the freeze. A normal
+					// compile keeps live semantics (failures propagate).
+					if (rd.second || prog->pack_recording) {
+						std::map<std::string, Program::DeferredFunctionBody>::iterator
+							dbi = prog->deferred_lazy_bodies.find(sym);
+						if (dbi == prog->deferred_lazy_bodies.end())
+							continue;	// consumed by an earlier body this round
+						Program::DeferredFunctionBody saved = dbi->second;
+						try {
+							tf = prog->parse_deferred_lazy_body(sym);
+						} catch (...) {
+							tf = NULL;
+						}
+						if (!tf) {
+							prog->deferred_lazy_bodies[sym] = saved;
+							drain_failed_syms.insert(sym);
+							continue;
+						}
+						drain_saved[sym] = saved;
+					} else
+						tf = prog->parse_deferred_lazy_body(sym);
 					if (!tf) continue;
 					FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
 					lib_funcs[tfd ? func_emit_name(tf->var, tfd) : tf->var.name] = tf;
@@ -18388,6 +18897,34 @@ node_t CirBuilder::translate_module(Program *prog)
 					m_materialized_lib_syms.insert(tf->var.name);
 					if (tfd)
 						m_materialized_lib_syms.insert(func_emit_name(tf->var, tfd));
+					// Env-gated probe (MADC_MTI_PROBE=<substr>): each
+					// drain/materialize evaluation of a matching symbol.
+					{
+						static const char *mtp =
+							::getenv("MADC_MTI_PROBE");
+						if (mtp && *mtp && tf->var.name.find(mtp)
+						    != std::string::npos)
+							fprintf(stderr, "MTIPROBE drained"
+								" sym=%s key=%s drain=%d\n",
+								tf->var.name.c_str(),
+								tfd ? func_emit_name(tf->var, tfd).c_str()
+								    : tf->var.name.c_str(),
+								(int)rd.second);
+					}
+					// Pack-time drain: the evaluated body must EMIT —
+					// the freeze carries translated func-defs and the
+					// consumed DEFBODY no longer freezes, so an
+					// unreferenced surface entry point (a ctor no
+					// header body calls) would otherwise parse, drop
+					// at the lib_funcs reference gate below, and its
+					// body would be LOST from the corpus entirely
+					// (bound consumer: "import of undefined item").
+					if (rd.second) {
+						referenced_funcs.insert(sym);
+						if (tfd)
+							referenced_funcs.insert(
+								func_emit_name(tf->var, tfd));
+					}
 					grew = true;
 				}
 			}
@@ -18564,12 +19101,73 @@ node_t CirBuilder::translate_module(Program *prog)
 			for (auto &kv : lib_funcs) {
 				if (lib_emitted.count(kv.first)) continue;
 				TokenFunc *tf = kv.second;
-				if (!referenced_funcs.count(kv.first)
+				// Pack-time: EVERY evaluated body emits (that is the
+				// drain's point — consumers restore translated defs).
+				// The reference gate would silently drop a body whose
+				// DEFBODY entry a sibling's parse consumed recursively
+				// (derived via the on-use hook -> pending_funcs fold,
+				// never in the drain loop's forced-reference set) —
+				// lost from the corpus both ways.
+				if (!prog->pack_recording
+				    && !referenced_funcs.count(kv.first)
 				    && !referenced_funcs.count(tf->var.name))
 					continue;
 				lib_emitted.insert(kv.first);
-				node_t fd = func_def(tf);
-				if (fd) func_def_nodes.push_back(fd);
+				// Pack-time: lowering failures (a Throw inside
+				// func_def, or error nodes from a tsubst bail /
+				// overload gap in a method nobody calls) DROP the def
+				// instead of poisoning the tree — cir_report_errors
+				// rejects any error node, so one bad body would kill
+				// the whole freeze. A drained body reverts to its
+				// DEFBODY entry (on-use derivation in consumers); an
+				// instantiation def (OOL / __mti, no deferred entry)
+				// just drops — the consumer's pattern-instantiation
+				// machinery is the standing fallback, exactly the
+				// pre-drain semantics. The same tolerance covers the
+				// carriability rule (var_is_local_class_method above):
+				// a local-class method body reverts to DEFBODY here;
+				// bodies CALLING dropped/un-carriable symbols drop in
+				// the post-fixpoint cascade so consumers re-derive
+				// them with their own local classes.
+				node_t fd = NULL;
+				bool uncarriable = false;
+				if (prog->pack_recording) {
+					uncarriable =
+						Program::method_var_is_local_class_hoist(
+							&tf->var);
+					try {
+						fd = func_def(tf);
+					} catch (...) {
+						fd = NULL;
+					}
+					if (fd && cir_tree_has_error(fd))
+						fd = NULL;
+					if (!fd) {
+						pack_record_drop(tf, uncarriable
+							? "local-class method; " : "",
+							uncarriable);
+						grew = true;
+						continue;
+					}
+					// A LOCAL-CLASS METHOD def is
+					// tree-resident (--run-frozen compiles
+					// the pack's real lowered state) but
+					// consumer-INVISIBLE (no arena record /
+					// DEFBODY / body stamp — a consumer's
+					// own derivation of the enclosing body
+					// creates the local class fresh, as a
+					// live parse does). Record the
+					// exclusion; keep the def.
+					if (uncarriable)
+						pack_record_drop(tf,
+							"local-class method; ",
+							true);
+					pack_defs.push_back(
+						std::make_pair(tf, fd));
+				} else {
+					fd = func_def(tf);
+					if (fd) func_def_nodes.push_back(fd);
+				}
 				grew = true;
 			}
 		}
@@ -18940,7 +19538,63 @@ node_t CirBuilder::translate_module(Program *prog)
 	// aggregate dtor). Materialize + lower any now-ODR-used deferred body so it is
 	// DEFINED, not just referenced (else MIR-link "import of undefined item").
 	materialize_and_lower();
-	m_user_func_names = NULL;   // backing set is a translate_module local; don't dangle
+	m_user_func_names = NULL;   // stale across modules; the gate reads the member set
+
+	// Pack-time consumer-visibility CASCADE. Two SEPARATE verdicts per
+	// stashed def (rung 1 emission split):
+	//   TREE membership — what --run-frozen compiles. EVERY successfully
+	//   lowered def stays in the tree (it is the pack process's real
+	//   lowered state); only the post-translate c2mir check gate splices
+	//   defective defs out.
+	//   CONSUMER visibility — what a bound consumer may restore. A def
+	//   whose lowered body calls a consumer-invisible symbol (an
+	//   un-carriable local-class method, a DEFBODY-reverted body, or a
+	//   body excluded by an earlier cascade round) must itself be
+	//   excluded — a restored body calling it would be an undefined
+	//   import in every bound consumer (the string ctor calling a
+	//   local-_Guard _M_construct __mti). Reverted DEFBODYs / consumer
+	//   re-instantiation cover the excluded chain on use, exactly the
+	//   pre-drain semantics; the freeze skips DF_HAS_FOREST_BODY stamps
+	//   for excluded symbols (pack_stamp_excluded). State + cascade live
+	//   in builder members (pack_run_cascade) so the check gate can drop
+	//   further defs and re-cascade on the same state.
+	if (prog->pack_recording && !pack_defs.empty()) {
+		pack_def_callees.resize(pack_defs.size());
+		for (size_t i = 0; i < pack_defs.size(); ++i) {
+			cir_collect_call_callees(pack_defs[i].second, pack_def_callees[i]);
+			cir_collect_cleanup_attr_fns(pack_defs[i].second, pack_def_callees[i]);
+		}
+		// Symbol -> stash index, so a callee defined by a sibling stashed
+		// def counts as consumer-homed only while that sibling is visible.
+		for (size_t i = 0; i < pack_defs.size(); ++i) {
+			TokenFunc *stf = pack_defs[i].first;
+			pack_stash_idx[stf->var.name] = i;
+			FuncDef *stfd = dynamic_cast<FuncDef *>(stf->var.type);
+			if (stfd)
+				pack_stash_idx[func_emit_name(stf->var, stfd)] = i;
+		}
+		for (auto &kv : prog->struct_map) {
+			DataDefCLASS *cdd = as_user_class(kv.second);
+			if (class_gets_synth_dtor(cdd))
+				pack_synth_dtor_syms.insert(class_dtor_symbol(cdd));
+		}
+		// Seed: defs already excluded at stash time (local-class
+		// methods) are in pack_dropped — mark them so pack_callee_homed
+		// never counts them as a consumer-visible sibling.
+		pack_is_dropped.assign(pack_defs.size(), 0);
+		for (size_t i = 0; i < pack_defs.size(); ++i) {
+			TokenFunc *stf = pack_defs[i].first;
+			FuncDef *stfd = dynamic_cast<FuncDef *>(stf->var.type);
+			if (pack_dropped.count(stf->var.name)
+			    || (stfd && pack_dropped.count(
+					    func_emit_name(stf->var, stfd))))
+				pack_is_dropped[i] = 1;
+		}
+		pack_run_cascade();
+		// TREE flush: every lowered def, visible or not.
+		for (size_t i = 0; i < pack_defs.size(); ++i)
+			func_def_nodes.push_back(pack_defs[i].second);
+	}
 
 	// Pass 1.95: late declarations — everything the fixpoint runs added after
 	// the early declaration passes had already emitted. Both lists land in
@@ -18971,8 +19625,15 @@ node_t CirBuilder::translate_module(Program *prog)
 		node_t proto = func_proto(tf);
 		if (proto) {
 			append(top_list, proto);
-			if (dynamic_cast<FuncDef *>(tf->var.type))
+			FuncDef *ptfd = dynamic_cast<FuncDef *>(tf->var.type);
+			if (ptfd)
 				typed_proto_syms.insert(tf->var.name);
+			if (prog->pack_recording) {
+				pack_proto_nodes[tf->var.name] = proto;
+				if (ptfd)
+					pack_proto_nodes[func_emit_name(tf->var,
+									ptfd)] = proto;
+			}
 		}
 	}
 	flush_forest_lazy_protos((size_t)-1);
@@ -19153,6 +19814,20 @@ node_t CirBuilder::translate_module(Program *prog)
 	// Pass 2: Function definitions (translated above).
 	for (node_t fd : func_def_nodes)
 		append(top_list, fd);
+
+	// Pack-time drain repair: materializing a deferred body (parseFunction)
+	// clears the method's emit_symbol + declaration_only — correct live
+	// on-use-derive semantics, but the pack drain materializes the WHOLE
+	// extern-template surface AFTER the binding pass above ran, and the
+	// freeze snapshots the post-translate state. Without this re-run a
+	// drained corpus restores operator<<(int) etc. with NO library binding,
+	// so a bound consumer references the internal symbol and emits the
+	// restored body where a live parse imports the exported symbol
+	// (_ZNSolsEi) — an emission-set parity break. Re-running the (idempotent,
+	// dlsym-verified) binding pass here restores the bindings the drain
+	// cleared; node building is complete, so only the frozen state changes.
+	if (prog->pack_recording)
+		bind_external_class_symbols(prog);
 
 	append(module, top_list);
 	return module;

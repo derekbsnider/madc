@@ -1665,6 +1665,39 @@ static std::string namespace_function_symbol(const std::string &ns_name,
     return sym;
 }
 
+// Deterministic, order-independent symbol suffix for a namespace-function
+// TEMPLATE-INSTANTIATION product, derived from the instantiated parameter-list
+// spelling (the overload's identity): live parse, pack drain, and bound
+// consumers mint the SAME symbol no matter which binding instantiates first.
+// The registration-order `__oN` bump made a packed body's callee symbol depend
+// on drain order, diverging from a live parse of the same TU (forest
+// LOADED == PARSED, vecbind gate). Head = sanitized spelling (human hint,
+// capped); tail = FNV-1a 32 hash of the raw spelling (the identity).
+static std::string overload_spelling_symbol_suffix(const std::string &spelling)
+{
+    std::string sfx = "__i";
+    for ( size_t i = 0; i < spelling.size() && sfx.size() < 64; ++i )
+    {
+	char c = spelling[i];
+	if ( isalnum((unsigned char)c) || c == '_' )
+	    sfx += c;
+	else if ( c == '*' )
+	    sfx += 'P';
+	else if ( c == '&' )
+	    sfx += 'R';
+	// other chars (spaces, <>, ::, commas) drop from the readable head
+    }
+    uint32_t h = 2166136261u;
+    for ( size_t i = 0; i < spelling.size(); ++i )
+    {
+	h ^= (unsigned char)spelling[i];
+	h *= 16777619u;
+    }
+    char buf[16];
+    snprintf(buf, sizeof(buf), "_%08x", h);
+    return sfx + buf;
+}
+
 static std::vector<std::string> namespace_qualifiers(const std::string &ns_name)
 {
     std::vector<std::string> out;
@@ -1879,6 +1912,14 @@ static DataDef *resolve_class_type_alias(DataDefCLASS *cls, const std::string &n
     if ( cls->enclosing_class )
 	return resolve_class_type_alias(cls->enclosing_class, name);
     return NULL;
+}
+
+// Public wrapper over the file-static class-scope member-type lookup —
+// consumed by the tsubst re-derivation of Owner__member dependent
+// placeholders (cir_builder rebuild_dependent_derived).
+DataDef *Program::class_member_type(DataDefCLASS *cls, const std::string &name)
+{
+    return resolve_class_type_alias(cls, name);
 }
 
 // Class-scope `using <Base>::<member>;` ([namespace.udecl]): import the base
@@ -3359,6 +3400,7 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 
     DataDefCLASS *fwd = new DataDefCLASS(mangled, 0, DataType::dtRESERVED);
     fwd->is_dependent_placeholder = true;
+    stamp_opaque_mint_context(fwd);
     fwd->canonical_cpp_spelling = canon;
     struct_map[mangled] = fwd;
     // Keep the template-origin STRUCTURE (name + per-arg token runs) so tsubst
@@ -3526,11 +3568,31 @@ DataDefCLASS *Program::materialize_dependent_member_type(DataDefCLASS *owner,
 
     DataDefCLASS *dep = new DataDefCLASS(dep_name, 0, DataType::dtRESERVED);
     dep->is_dependent_placeholder = true;
+    // Record the derivation so tsubst can re-derive the CONCRETE member type
+    // under an instance substitution (see DependentDerivedOrigin).
+    {
+	DependentDerivedOrigin &org = dependent_derived_origin[dep];
+	org.source = owner;
+	org.kind = DependentDerivedOrigin::MemberType;
+	org.member = member_name;
+    }
     std::string owner_spelling = owner->canonical_cpp_spelling.empty()
 			       ? owner->name : owner->canonical_cpp_spelling;
     dep->canonical_cpp_spelling = owner_spelling + "::" + member_name;
     struct_map[dep_name] = dep;
     datatype_map[dep_name] = new TokenDataType(dep_name.c_str(), *dep);
+    // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every opaque
+    // dependent-member synthesis for a matching owner — the laundered-opaque
+    // diagnostic (which resolution path lands here, live vs bound).
+    {
+	static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
+	if ( mtp && *mtp && dep_name.find(mtp) != std::string::npos )
+	    fprintf(stderr, "MTIPROBE opaque-member owner=%s member=%s in=%s"
+		    " canon=%s from=%p\n", owner->name.c_str(),
+		    member_name.c_str(), cur_func_name.c_str(),
+		    instantiating_canonical_spelling.c_str(),
+		    __builtin_return_address(0));
+    }
     return dep;
 }
 
@@ -3545,10 +3607,24 @@ DataDefCLASS *Program::materialize_opaque_class_type(const std::string &name,
 
     DataDefCLASS *dep = new DataDefCLASS(name, 0, DataType::dtRESERVED);
     dep->is_dependent_placeholder = true;
+    stamp_opaque_mint_context(dep);
     dep->canonical_cpp_spelling = canonical.empty() ? name : canonical;
     struct_map[name] = dep;
     datatype_map[name] = new TokenDataType(name.c_str(), *dep);
     return dep;
+}
+
+void Program::stamp_opaque_mint_context(DataDefCLASS *dep)
+{
+    dep->opaque_concrete_tag = !dependent_parse_in_progress;
+    // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every opaque class
+    // mint with its context — the concrete-tag discriminator diagnostic.
+    static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
+    if ( mtp && *mtp && dep->name.find(mtp) != std::string::npos )
+	fprintf(stderr, "MTIPROBE opaque-mint name=%s dep_parse=%d concrete=%d"
+		" from=%p\n", dep->name.c_str(),
+		(int)dependent_parse_in_progress,
+		(int)dep->opaque_concrete_tag, __builtin_return_address(0));
 }
 
 DataDef *Program::dependent_deref_result_type(DataDef *dd)
@@ -3561,8 +3637,18 @@ DataDef *Program::dependent_deref_result_type(DataDef *dd)
 	return NULL;
     std::string spelling = dd->canonical_cpp_spelling.empty()
 			 ? dd->name : dd->canonical_cpp_spelling;
-    return materialize_opaque_class_type(
+    DataDefCLASS *dep = materialize_opaque_class_type(
 	sanitize_template_fragment(dd->name + "__deref"), "*" + spelling);
+    // Record the derivation so tsubst can re-derive the CONCRETE deref type
+    // under an instance substitution (see DependentDerivedOrigin).
+    if ( dep && dep->is_dependent_placeholder
+      && !dependent_derived_origin.count(dep) )
+    {
+	DependentDerivedOrigin &org = dependent_derived_origin[dep];
+	org.source = dd;
+	org.kind = DependentDerivedOrigin::Deref;
+    }
+    return dep;
 }
 
 static void record_pending_template_instantiation(
@@ -3966,6 +4052,18 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 
     // Already instantiated? Return a use-site clone of the cached type.
     flat_datatype_map_iter have = datatype_map.find(registered_mangled);
+    // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every template-use
+    // instantiation key + cache outcome for a matching name — the
+    // wrong-cache-hit / key-collision diagnostic.
+    {
+	static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
+	if ( mtp && *mtp && tname.find(mtp) != std::string::npos )
+	    fprintf(stderr, "MTIPROBE tmpl-use %s key=%s hit=%d -> %s\n",
+		    tname.c_str(), registered_mangled.c_str(),
+		    have != datatype_map.end() ? 1 : 0,
+		    have != datatype_map.end()
+			? (*have)->definition.name.c_str() : "(miss)");
+    }
     if ( have != datatype_map.end() )
     {
 	TokenDataType *cached = (TokenDataType *)(*have);
@@ -3984,6 +4082,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	DataDefCLASS *fwd = new DataDefCLASS(registered_mangled, 0, DataType::dtRESERVED);
 	fwd->canonical_cpp_spelling = canon;
 	fwd->is_dependent_placeholder = true;
+	stamp_opaque_mint_context(fwd);
 	fwd->has_dependent_surface = true;
 	struct_map[registered_mangled] = fwd;
 	TokenDataType *tdt = new TokenDataType(registered_mangled.c_str(), *fwd);
@@ -4305,6 +4404,12 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // clear the function context, instantiate, then restore.
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(compounds, saved_compounds);
+    // The block-typedef shadow frames belong to the swapped-out compound
+    // context — swap them in lockstep or the fresh context's pop/push unwinds
+    // the CALLER's block-scope typedefs mid-body.
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	saved_typedef_shadows;
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::string saved_func = cur_func_name;
@@ -4389,6 +4494,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    class_scope_stack.pop_back();
 	std::swap(class_scope_stack, saved_class_scope_stack);
 	std::swap(compounds, saved_compounds);
+	// Unwind the fresh context's frames FIRST (a swallowed throw can leave
+	// them un-popped with their flat entries live), THEN restore the caller's.
+	unwind_block_typedef_shadows(0, "A-catch");
+	std::swap(block_typedef_shadows, saved_typedef_shadows);
 	cur_func_name = saved_func;
 	class_definition_only = saved_def_only;
 	parsing_cpp_struct_class = saved_cpp_struct_class;
@@ -4405,6 +4514,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::swap(compounds, saved_compounds);
+    unwind_block_typedef_shadows(0, "A-norm");
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
     cur_func_name = saved_func;
     class_definition_only = saved_def_only;
     parsing_cpp_struct_class = saved_cpp_struct_class;
@@ -4741,6 +4852,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 
 	DataDefCLASS *fwd = new DataDefCLASS(mangled, 0, DataType::dtRESERVED);
 	fwd->is_dependent_placeholder = true;
+	stamp_opaque_mint_context(fwd);
 	fwd->has_dependent_surface = true;
 	fwd->canonical_cpp_spelling = canon;
 	struct_map[mangled] = fwd;
@@ -5069,6 +5181,15 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
     DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(&owner_type->definition);
     if ( !owner )
 	return NULL;
+    // Env-gated probe (MADC_TYPENAME_PROBE=<substr of first name>): trace every
+    // owner hop of a `typename A::B::...` chain — the owner-swap diagnostic.
+    static const char *tnp = ::getenv("MADC_TYPENAME_PROBE");
+    bool tnp_on = tnp && *tnp && is_contextual_identifier_token(first)
+	       && contextual_identifier_name(first).find(tnp) != std::string::npos;
+    if ( tnp_on )
+	fprintf(stderr, "TNPROBE head %s -> %s incomplete=%d\n",
+		contextual_identifier_name(first).c_str(),
+		owner->name.c_str(), (int)is_incomplete_class_datadef(owner));
     if ( is_incomplete_class_datadef(owner) )
     {
 	request_template_instantiation_completion(owner->name);
@@ -5077,6 +5198,8 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	    owner = dynamic_cast<DataDefCLASS *>(&(*refreshed)->definition);
 	if ( !owner )
 	    return NULL;
+	if ( tnp_on )
+	    fprintf(stderr, "TNPROBE head-refresh -> %s\n", owner->name.c_str());
     }
 
     while ( peekToken() && peekToken()->id() == TokenID::tkNS )
@@ -5089,6 +5212,8 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 		owner = dynamic_cast<DataDefCLASS *>(&(*refreshed)->definition);
 	    if ( !owner )
 		return NULL;
+	    if ( tnp_on )
+		fprintf(stderr, "TNPROBE loop-refresh -> %s\n", owner->name.c_str());
 	}
 	nextToken(); // consume ::
 	TokenBase *member_tb = nextToken();
@@ -5098,6 +5223,9 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	    Throw(member_tb ? member_tb : typename_tb)
 		<< "Expecting member type after '::' in typename" << flush;
 	std::string member_name = contextual_identifier_name(member_tb);
+	if ( tnp_on )
+	    fprintf(stderr, "TNPROBE hop owner=%s member=%s\n",
+		    owner->name.c_str(), member_name.c_str());
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
 	    if ( TokenDataType *inst =
@@ -5115,6 +5243,9 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	}
 
 	DataDef *alias_dd = resolve_class_type_alias(owner, member_name);
+	if ( tnp_on )
+	    fprintf(stderr, "TNPROBE alias %s::%s -> %s\n", owner->name.c_str(),
+		    member_name.c_str(), alias_dd ? alias_dd->name.c_str() : "(null)");
 	if ( !alias_dd && class_allows_opaque_member_type(owner) )
 	    alias_dd = materialize_dependent_member_type(owner, member_name);
 	if ( !alias_dd )
@@ -13071,7 +13202,9 @@ void Program::flush_forest_pending_globals()
 	DBG(std::cout << "flush_forest_pending_globals: "
 	    << (pf.mvar ? "method " : "free function ") << pf.name
 	    << " (" << pf.fd->parameters.size() << " params"
-	    << (pf.fd->is_varargs ? ", varargs" : "") << ")" << std::endl);
+	    << (pf.fd->is_varargs ? ", varargs" : "") << ") fd=" << (void *)pf.fd
+	    << " mvar_fd=" << (void *)(pf.mvar ? pf.mvar->type : NULL)
+	    << std::endl);
     }
     forest_pending_funcs.clear();
     // v21: restored MEMBER function templates. The placeholder FuncDef itself
@@ -13097,7 +13230,11 @@ void Program::flush_forest_pending_globals()
 	    DBG(std::cout << "flush_forest_pending_globals: member template of "
 		<< pm.owner->name << " hydrated placeholder " << pm.key
 		<< " (" << pm.typeparams.size() << " param(s), "
-		<< pm.tokens.size() << " tokens)" << std::endl);
+		<< pm.tokens.size() << " tokens, decl="
+		<< fit->second->member_template_decl.size() << ", owner="
+		<< (fit->second->member_template_owner ? 1 : 0) << ", fd="
+		<< (void *)fit->second << ", cls=" << (void *)pm.owner
+		<< ")" << std::endl);
 	    continue;
 	}
 	std::vector<bool> saved_pack = last_skipped_template_typeparam_is_pack;
@@ -14749,6 +14886,9 @@ void Program::pushCompound()
 
     ++_braces;
 
+    // Heal shadow frames left deeper than the live compound stack (an exception
+    // path that popped compounds directly) before this block opens its own.
+    unwind_block_typedef_shadows(compounds.size(), "pushCompound");
     if ( compounds.empty() )
     {
 	DBG(std::cout << "pushCompound(" << _braces << ") function" << std::endl);
@@ -14770,6 +14910,68 @@ void Program::popCompound()
     --_braces;
     if ( !compounds.empty() )
 	compounds.pop();
+    unwind_block_typedef_shadows(compounds.size(), "popCompound");
+}
+
+// A BLOCK-scope typedef/alias registers in the flat datatype_map (that is how
+// in-block uses resolve), but its meaning must END with its block
+// ([basic.scope.block]). Record what the flat entry held before, per compound
+// frame; unwinding restores the outer meaning (or erases). Frames are created
+// lazily up to the current compound depth so the vector indexes align with
+// compound depth even when outer blocks declared no typedefs.
+// Env-gated probe (MADC_TYPEDEF_SHADOW_PROBE=<substr of alias>): every
+// scoped-typedef registration and unwind touching a matching alias.
+static const char *typedef_shadow_probe()
+{
+    static const char *p = ::getenv("MADC_TYPEDEF_SHADOW_PROBE");
+    return (p && *p) ? p : NULL;
+}
+
+void Program::register_scoped_typedef(const std::string &alias, TokenDataType *tdt)
+{
+    if ( !compounds.empty() )
+    {
+	while ( block_typedef_shadows.size() < compounds.size() )
+	    block_typedef_shadows.push_back(
+		std::vector<std::pair<std::string, TokenDataType *> >());
+	flat_datatype_map_iter prev = datatype_map.find(alias);
+	block_typedef_shadows.back().push_back(
+	    std::make_pair(alias, prev != datatype_map.end()
+				  ? *prev : (TokenDataType *)NULL));
+    }
+    if ( const char *sp = typedef_shadow_probe() )
+	if ( alias.find(sp) != std::string::npos )
+	    fprintf(stderr, "TDSHADOW reg %s = %s depth=%zu frames=%zu in=%s\n",
+		    alias.c_str(), tdt->definition.name.c_str(),
+		    compounds.size(), block_typedef_shadows.size(),
+		    cur_func_name.c_str());
+    datatype_map[alias] = tdt;
+}
+
+void Program::unwind_block_typedef_shadows(size_t depth, const char *site)
+{
+    while ( block_typedef_shadows.size() > depth )
+    {
+	std::vector<std::pair<std::string, TokenDataType *> > &frame =
+	    block_typedef_shadows.back();
+	for ( size_t i = frame.size(); i-- > 0; )
+	{
+	    if ( const char *sp = typedef_shadow_probe() )
+		if ( frame[i].first.find(sp) != std::string::npos )
+		    fprintf(stderr, "TDSHADOW unwind %s -> %s target=%zu"
+			    " frames=%zu site=%s in=%s\n", frame[i].first.c_str(),
+			    frame[i].second
+				? frame[i].second->definition.name.c_str()
+				: "(erase)",
+			    depth, block_typedef_shadows.size(),
+			    site, cur_func_name.c_str());
+	    if ( frame[i].second )
+		datatype_map[frame[i].first] = frame[i].second;
+	    else
+		datatype_map.erase(frame[i].first);
+	}
+	block_typedef_shadows.pop_back();
+    }
 }
 
 void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exStack)
@@ -23490,8 +23692,9 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		// current_namespace() set — real <bits/alloc_traits.h>
 		// __alloc_on_swap declares `using __pocs = ...;` locally and
 		// then constructs `__pocs()` in expression position).
+		// Scoped registration: the flat entry is restored at block exit.
 		if ( pgm.current_namespace().empty() || !pgm.compounds.empty() )
-		    pgm.datatype_map[alias_name] = alias_tdt;
+		    pgm.register_scoped_typedef(alias_name, alias_tdt);
 	    }
 	    // Namespace visibility is for NAMESPACE-scope aliases only — a
 	    // block-scope alias must not leak into the namespace type map.
@@ -24285,7 +24488,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		pgm.Throw(tn) << "Identifier already defined" << flush;
 	    }
 	    tdt = new TokenDataType(alias_name.c_str(), *alias_dd);
-	    pgm.datatype_map[alias_name] = tdt;
+	    pgm.register_scoped_typedef(alias_name, tdt);
 	    // also register tag in struct_map so "struct tag" works
 	    if ( !alias_dd->is_pointer() )
 	    {
@@ -25233,7 +25436,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	      && &(*bmi)->definition != alias_dd )
 		pgm.Throw(tn) << "Identifier '" << alias->spelling() << "' already defined" << flush;
 	    tdt = new TokenDataType(alias->spelling(), *alias_dd);
-	    pgm.datatype_map[alias->spelling()] = tdt;
+	    pgm.register_scoped_typedef(alias->spelling(), tdt);
 	    if ( alias_dd == dds )
 	    {
 		pgm.pack_tap_struct(alias->spelling());	// B4a tap
@@ -25812,6 +26015,8 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	inst_ctx = cfd->forest_body_in_instantiation;
     if ( inst_ctx )
 	++fn_template_instantiation_depth;
+    size_t saved_compounds = compounds.size();
+    size_t saved_class_scopes = class_scope_stack.size();
     try
     {
 	for ( std::vector<TokenBase *>::reverse_iterator it = body.body_tokens.rbegin();
@@ -25933,6 +26138,17 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     {
 	if ( inst_ctx )
 	    --fn_template_instantiation_depth;
+	// Full isolation on failure: a Throw mid-body leaves the compound /
+	// class-scope stacks pushed (this fn's own pushCompound + anything a
+	// nested parse pushed) — a LATER derive would then parse "inside" the
+	// dead function and register a function-LOCAL franken-name instead of
+	// the requested symbol. Restore to the entry depths, then the scopes
+	// THIS frame pushed before the try.
+	while ( compounds.size() > saved_compounds )
+	    compounds.pop();
+	unwind_block_typedef_shadows(compounds.size(), "derive-body-catch");
+	while ( class_scope_stack.size() > saved_class_scopes )
+	    class_scope_stack.pop_back();
 	for ( size_t i = 0; i < pushed_scope_count && !class_scope_stack.empty(); ++i )
 	    class_scope_stack.pop_back();
 	cur_func_name = saved_func;
@@ -25963,6 +26179,23 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 {
     std::map<std::string, DeferredFunctionBody>::iterator it =
 	deferred_lazy_bodies.find(emit_symbol);
+    // Env-gated probe (MADC_MTI_PROBE=<substr>): every derive request for a
+    // matching deferred body, with the consuming parse context.
+    {
+	static const char *mtp = ::getenv("MADC_MTI_PROBE");
+	if ( mtp && *mtp && emit_symbol.find(mtp) != std::string::npos )
+	{
+	    bool have = it != deferred_lazy_bodies.end();
+	    Method *m = have ? it->second.method : NULL;
+	    fprintf(stderr, "MTIPROBE derive sym=%s found=%d in=%s full=%d"
+		    " var=%d method=%d owner=%d\n",
+		    emit_symbol.c_str(), have ? 1 : 0, cur_func_name.c_str(),
+		    have ? (int)it->second.full_definition : -1,
+		    have ? (it->second.var ? 1 : 0) : -1,
+		    have ? (m ? 1 : 0) : -1,
+		    (have && m) ? (m->owner_class ? 1 : 0) : -1);
+	}
+    }
     if ( it == deferred_lazy_bodies.end() )
 	return NULL;
     DeferredFunctionBody body = it->second; // copy out before erase
@@ -25979,6 +26212,8 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	std::string saved_func = cur_func_name;
 	std::string saved_canon = instantiating_canonical_spelling;
 	bool saved_ctor_init = parsing_defaulted_member_template_constructor;
+	size_t saved_compounds = compounds.size();
+	size_t saved_class_scopes = class_scope_stack.size();
 	for ( std::vector<TokenBase *>::reverse_iterator it2 =
 	      body.definition_tokens.rbegin();
 	      it2 != body.definition_tokens.rend(); ++it2 )
@@ -26011,6 +26246,23 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	    cur_func_name = saved_func;
 	    instantiating_canonical_spelling = saved_canon;
 	    parsing_defaulted_member_template_constructor = saved_ctor_init;
+	    // Full isolation on failure: a Throw mid-parseFunction leaves the
+	    // compound/class-scope stacks pushed — every LATER derive would
+	    // then parse "inside" the dead function and register its def
+	    // under a function-LOCAL franken-name (outer__sym__N) instead of
+	    // the requested symbol (the body silently lost to consumers).
+	    while ( compounds.size() > saved_compounds )
+		compounds.pop();
+	    unwind_block_typedef_shadows(compounds.size(), "derive-lazy-catch");
+	    while ( class_scope_stack.size() > saved_class_scopes )
+		class_scope_stack.pop_back();
+	    {
+		static const char *mtp = ::getenv("MADC_MTI_PROBE");
+		if ( mtp && *mtp
+		  && emit_symbol.find(mtp) != std::string::npos )
+		    fprintf(stderr, "MTIPROBE derive-threw sym=%s\n",
+			    emit_symbol.c_str());
+	    }
 	    throw;
 	}
 	tokens = saved_tokens;
@@ -26019,21 +26271,47 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	cur_func_name = saved_func;
 	instantiating_canonical_spelling = saved_canon;
 	parsing_defaulted_member_template_constructor = saved_ctor_init;
-	if ( pending_funcs.size() > before )
-	{
-	    TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs.back());
-	    if ( tf && body.file && (!tf->file || tf->line <= 0) )
-	    {
-		tf->file = body.file;
-		tf->line = body.line;
-		tf->column = body.column;
-	    }
-	}
     }
     else
 	parse_deferred_function_body(body);
-    if ( pending_funcs.size() > before )
-	return dynamic_cast<TokenFunc *>(pending_funcs.back());
+    // The re-parse can enqueue MORE functions (a body's nested instantiations
+    // land in pending_funcs too), so "the last pushed" is NOT necessarily this
+    // body's definition. Returning a stranger both mislabels the caller's
+    // registration AND silently loses this body: the erased map entry is never
+    // reverted (the caller saw non-NULL), yet the requested symbol gained no
+    // definition — a consumer's call then dies as an undefined MIR import.
+    // Return the TokenFunc parsed for THIS body's Variable; none means the
+    // re-parse failed or degraded to a declaration — report NULL so the
+    // caller's fallback (re-defer / error) runs.
+    for ( size_t pi = pending_funcs.size(); pi > before; --pi )
+    {
+	TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[pi - 1]);
+	if ( !tf || (&tf->var != body.var && tf->var.name != emit_symbol) )
+	    continue;
+	if ( body.file && (!tf->file || tf->line <= 0) )
+	{
+	    tf->file = body.file;
+	    tf->line = body.line;
+	    tf->column = body.column;
+	}
+	return tf;
+    }
+    // Env-gated probe (MADC_MTI_PROBE=<substr>): a scan MISS — the re-parse
+    // grew pending_funcs only with strangers (or not at all); list the delta.
+    {
+	static const char *mtp = ::getenv("MADC_MTI_PROBE");
+	if ( mtp && *mtp && emit_symbol.find(mtp) != std::string::npos )
+	{
+	    fprintf(stderr, "MTIPROBE derive-miss sym=%s grew=%zu\n",
+		    emit_symbol.c_str(), pending_funcs.size() - before);
+	    for ( size_t pi = before; pi < pending_funcs.size(); ++pi )
+	    {
+		TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[pi]);
+		fprintf(stderr, "MTIPROBE   delta[%zu]=%s\n", pi - before,
+			tf ? tf->var.name.c_str() : "(not a TokenFunc)");
+	    }
+	}
+    }
     return NULL;
 }
 
@@ -26274,6 +26552,11 @@ static void parse_hoisted_friend_operator(Program &pgm,
 	pgm.pushToken(*it);
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(pgm.compounds, saved_compounds);
+    // Block-typedef shadow frames travel with the compound context (see
+    // instantiate_template_use) — swap in lockstep.
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	saved_typedef_shadows;
+    std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     // [class.friend]: a friend DEFINED inside the class has its names
@@ -26302,6 +26585,10 @@ static void parse_hoisted_friend_operator(Program &pgm,
 	pgm.nextToken();
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     std::swap(pgm.compounds, saved_compounds);
+    // Unwind the fresh context's frames FIRST (a swallowed throw leaves them
+    // un-popped with their flat entries live), THEN restore the caller's.
+    pgm.unwind_block_typedef_shadows(0, "friend-op");
+    std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
     pgm.cur_func_name = saved_func;
 }
 
@@ -27020,7 +27307,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    }
 	    tdt = new TokenDataType(alias->spelling(), *dmi->second);
 	    pgm.pack_tap_type(alias->spelling());	// B4a tap (typedef class alias)
-	    pgm.datatype_map[alias->spelling()] = tdt;
+	    pgm.register_scoped_typedef(alias->spelling(), tdt);
 	    return NULL;
 	}
 	tdt = new TokenDataType(tag->spelling(), *dmi->second);
@@ -27298,6 +27585,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	}
     };
 
+    // Exception hygiene: deferred_function_body_sink points at the STACK-LOCAL
+    // deferred_method_bodies above, and class_scope_stack holds ddc until the
+    // '}' — a Throw anywhere in the body parse must unwind BOTH, or the next
+    // parse enqueues into a dead frame / resolves against a phantom class
+    // scope. Harmless historically (the first parse error aborted the whole
+    // compile), fatal under the pack-time body drain, which tolerates a failed
+    // body and keeps parsing (rung 1, 2026-07-09 plan).
+    try {
 	while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 	{
 	skip_member_attributes();
@@ -28289,6 +28584,13 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     if ( !tn )
 	pgm.Throw << "Unexpected end of input in class definition" << flush;
     pgm.nextToken(); // consume '}'
+    } catch (...) {
+	// Unwind exactly what the normal path below unwinds, then propagate.
+	if ( !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() == ddc )
+	    pgm.class_scope_stack.pop_back();
+	pgm.deferred_function_body_sink = saved_deferred_sink;
+	throw;
+    }
     if ( !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() == ddc )
 	pgm.class_scope_stack.pop_back();
     pgm.deferred_function_body_sink = saved_deferred_sink;
@@ -28351,9 +28653,25 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// lazy-on-call path.
 	if ( b.var && b.file && pgm.is_system_header_path(b.file)
 	  && pgm.fn_template_instantiation_depth == 0 )
+	{
+	    // Env-gated probe (MADC_MTI_PROBE=<substr>): deferred-body enqueue.
+	    static const char *_mti_probe = ::getenv("MADC_MTI_PROBE");
+	    if ( _mti_probe && *_mti_probe
+	      && b.var->name.find(_mti_probe) != std::string::npos )
+		fprintf(stderr, "MTIPROBE enqueue sym=%s file=%s\n",
+			b.var->name.c_str(), b.file);
 	    pgm.deferred_lazy_bodies[b.var->name] = b;
+	}
 	else
+	{
+	    static const char *_mti_probe = ::getenv("MADC_MTI_PROBE");
+	    if ( _mti_probe && *_mti_probe && b.var
+	      && b.var->name.find(_mti_probe) != std::string::npos )
+		fprintf(stderr, "MTIPROBE eager-body sym=%s file=%s depth=%d\n",
+			b.var->name.c_str(), b.file ? b.file : "(none)",
+			(int)pgm.fn_template_instantiation_depth);
 	    pgm.parse_deferred_function_body(b);
+	}
     }
 
     // Allocate vtable if needed
@@ -28410,7 +28728,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	tdt = new TokenDataType(alias->spelling(), *ddc);
 	pgm.pack_tap_type(alias->spelling());	// B4a tap (typedef class {...} alias)
 	pgm.pack_tap_struct(alias->spelling());
-	pgm.datatype_map[alias->spelling()] = tdt;
+	pgm.register_scoped_typedef(alias->spelling(), tdt);
 	pgm.struct_map[alias->spelling()] = ddc;
 	return NULL;
     }
@@ -29389,7 +29707,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 		pgm.current_namespace() + "::" + alias;
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *enum_alias_dd);
 	if ( pgm.class_scope_stack.empty() )
-	    pgm.datatype_map[alias] = tdt;
+	    pgm.register_scoped_typedef(alias, tdt);
 	DBG(std::cout << "TokenTYPEDEF::parse() enum alias " << alias << " = int" << std::endl);
 
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
@@ -29521,7 +29839,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	fptr->ptr_syntax = true;   // Form 2: explicit `(*NAME)` — pointer typedef
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
 	if ( pgm.class_scope_stack.empty() )
-	    pgm.datatype_map[alias] = tdt;
+	    pgm.register_scoped_typedef(alias, tdt);
 	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 2): " << alias << std::endl);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
@@ -29586,7 +29904,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	fptr->ptr_syntax = false;  // Form 1: `typedef RET NAME(params)` — function typedef
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
 	if ( pgm.class_scope_stack.empty() )
-	    pgm.datatype_map[alias] = tdt;
+	    pgm.register_scoped_typedef(alias, tdt);
 	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 1): " << alias << std::endl);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
@@ -29659,7 +29977,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	pgm.template_completion_requested.insert(base_dd->name);
     TokenDataType *tdt = new TokenDataType(alias.c_str(), *base_dd);
     if ( pgm.class_scope_stack.empty() )
-	pgm.datatype_map[alias] = tdt;
+	pgm.register_scoped_typedef(alias, tdt);
     DBG(std::cout << "TokenTYPEDEF::parse() " << alias << " = " << base_dd->name << std::endl);
 
     // consume semicolon
@@ -33391,13 +33709,24 @@ fail:
 // template parameter (a DataDefTemplateParam placeholder)? Peels ptr / ref / const
 // layers (DataDefREF is-a DataDefPTR). The g++ `dependent_type_p` analogue, scalar
 // scope — a class instantiated WITH a placeholder arg (Foo<T>) is not detected here
-// (those bodies are excluded by tsubst_eligible's template-id reject).
+// (those bodies are excluded by tsubst_eligible's template-id reject). An OPAQUE
+// dependent placeholder (materialize_opaque_class_type: `*T` -> `T__deref`,
+// dependent member types) IS dependent — g++'s TYPENAME_TYPE case. Without it, a
+// deref/member chain off a placeholder escapes the dependence gate and a pattern
+// body instantiates fn templates keyed on the opaque type (a bogus
+// `_Construct<_ForwardIterator__deref>` product that pollutes the overload set
+// and the inst memo).
 static bool datadef_involves_placeholder(DataDef *dd)
 {
     for ( int guard = 0; dd && guard < 8; ++guard )
     {
 	if ( dd->is_template_param() )
 	    return true;
+	{
+	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+	    if ( cls && cls->is_dependent_placeholder )
+		return true;
+	}
 	if ( DataDefCONST *c = dynamic_cast<DataDefCONST *>(dd) )
 	    { dd = c->base_type; continue; }
 	if ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd) )
@@ -33442,7 +33771,8 @@ static bool call_involves_placeholder(TokenCallFunc *tc)
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc,
 	std::vector<DataDef *> *type_args_out = NULL,
-	std::vector<std::vector<DataDef *> > *type_arg_packs_out = NULL)
+	std::vector<std::vector<DataDef *> > *type_arg_packs_out = NULL,
+	Variable **var_out = NULL)
 {
     InstTimer _it(pgm);	// --show-stats: instantiation time
     if ( type_args_out )
@@ -33455,6 +33785,24 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     // dependent rather than baking the placeholder in. A non-dependent call is still
     // instantiated eagerly at definition time (g++ per-node dependence, NOT a global
     // defer-everything mode).
+#ifdef MADC_DBG_PACK
+    if ( key.find("_Destroy") != std::string::npos )
+    {
+	DBG_PACK("gate %s dep_parse=%d call_dep=%d in=%s\n", key.c_str(),
+		 (int)pgm.dependent_parse_in_progress,
+		 (int)call_involves_placeholder(tc),
+		 pgm.cur_func_name.c_str());
+	for ( size_t i = 0; i < tc->parameters.size(); ++i )
+	{
+	    TokenBase *p = tc->parameters[i];
+	    DataDef *pdd = p ? p->datadef() : NULL;
+	    DBG_PACK("  gate-arg[%zu] tok=%d dd='%s' dep=%d\n", i,
+		     p ? (int)p->id() : -1,
+		     pdd ? pdd->name.c_str() : "(null)",
+		     (int)is_type_dependent(p));
+	}
+    }
+#endif
     if ( pgm.dependent_parse_in_progress && call_involves_placeholder(tc) )
 	return false;
     DBG_PACK("try_inst %s args=%zu\n", key.c_str(), tc->parameters.size());
@@ -33555,6 +33903,12 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 #ifdef MADC_DBG_PACK
     for ( size_t i = 0; i < ov.param_spellings.size(); ++i )
 	DBG_PACK("  param[%zu] '%s'\n", i, ov.param_spellings[i].c_str());
+    for ( size_t i = 0; i < tc->parameters.size(); ++i )
+    {
+	DataDef *dbg_adp = pgm.operand_value_datadef(tc->parameters[i]);
+	DBG_PACK("  arg[%zu] '%s'\n", i,
+		 dbg_adp ? dbg_adp->name.c_str() : "(null)");
+    }
 #endif
     std::map<std::string, DataDef *> binding;
     bool pack_empty = false;	// the pack deduced to ZERO elements (elide it)
@@ -33799,7 +34153,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     }
 #endif
     return instantiate_fn_template_binding(pgm, ft, key, binding, pack_param,
-					    pack_empty, NULL, pack_elems, tid_packs,
+					    pack_empty, var_out, pack_elems, tid_packs,
 					    tid_pack_spellings, tid_packs_nontype,
 					    type_args_out, type_arg_packs_out);
 }
@@ -34044,7 +34398,12 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	return false;
     }
 
-    std::string inst_key = key + "<";
+    // Memo identity: a member-template instantiation's registration key is a
+    // per-request unique symbol (`__mti`/`__mti__oN`), so the memo must key on
+    // the caller-provided stable identity or identical bindings never collide
+    // (duplicate definitions per call shape — see FnTemplateDef::inst_identity).
+    std::string inst_key = (ft.inst_identity.empty() ? key : ft.inst_identity)
+			   + "<";
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
 	inst_key += (binding.count(ft.typeparams[i])
 		     ? binding[ft.typeparams[i]]->name : std::string()) + ",";
@@ -34063,6 +34422,11 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    t = nontype_tidpack_empty.begin(); t != nontype_tidpack_empty.end(); ++t )
 	inst_key += "#" + *t + "={}";
     inst_key += ">";
+    DBG_PACK("inst_key %s memo=%d vars=%d var_out=%d\n", inst_key.c_str(),
+	     (int)pgm.fn_template_instantiated.count(inst_key),
+	     (int)(pgm.fn_template_instantiated_vars.find(inst_key)
+		   != pgm.fn_template_instantiated_vars.end()),
+	     var_out ? 1 : 0);
     if ( pgm.fn_template_instantiated.count(inst_key) )
     {
 	Variable **vi =
@@ -34711,6 +35075,13 @@ static bool instantiate_fn_template_binding(Program &pgm,
 
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(pgm.compounds, saved_compounds);
+    // Block-typedef shadow frames travel with the compound context (see
+    // instantiate_template_use) — swap in lockstep, or the fresh context's
+    // function-level pushCompound heal unwinds the CALLER's block typedefs
+    // mid-body (the __relocate_object_a `__traits` erasure).
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	saved_typedef_shadows;
+    std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     // A MEMBER function template instantiates with its owner class in scope so
@@ -34788,6 +35159,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
 
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     std::swap(pgm.compounds, saved_compounds);
+    // Unwind the fresh context's frames FIRST (a swallowed throw leaves them
+    // un-popped with their flat entries live), THEN restore the caller's.
+    pgm.unwind_block_typedef_shadows(0, "fntpl-binding");
+    std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
     pgm.cur_func_name = saved_func;
     pgm.current_linkage = saved_linkage;
     pgm.unevaluated_operand_depth = saved_uneval;
@@ -34861,7 +35236,11 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		FuncDef *pfd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
 		if ( !tf || !pfd || pfd->declaration_only )
 		    continue;
-		if ( pfd->namespace_name + "::" + pfd->function_display_name != key )
+		// A member-template instantiation registers under the renamed
+		// declarator symbol (== key), not a ns::display_name pair —
+		// match either, so the binding memo can hand the instance back.
+		if ( tf->var.name != key
+		  && pfd->namespace_name + "::" + pfd->function_display_name != key )
 		    continue;
 		if ( !ft.inline_builtin_kind.empty() )
 		    pfd->inline_builtin_kind = ft.inline_builtin_kind;
@@ -36010,6 +36389,11 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     // one, hijacking it (testlocalclassraii undefined `__patN__..Guard` import).
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(compounds, saved_compounds);
+    // Block-typedef shadow frames travel with the compound context (see
+    // instantiate_template_use) — swap in lockstep.
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	saved_typedef_shadows;
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
 
     // Phase-5 slice 1: a CONSTRUCTOR pattern must parse its `: mem-init` span
     // into ctor_initializers instead of the skip loop discarding it (the
@@ -36039,6 +36423,10 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     catch ( ... ) { parsed_pattern = false; }
     dependent_pattern_ctor_inits = saved_pat_ctor_inits;
     std::swap(compounds, saved_compounds);
+    // Unwind the fresh context's frames FIRST (a swallowed throw leaves them
+    // un-popped with their flat entries live), THEN restore the caller's.
+    unwind_block_typedef_shadows(0, "B-pattern");
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
     // A poisoned parse (an unresolved dependent call SWALLOWED into a `0`
     // placeholder) produced a structurally-valid but semantically-wrong tree —
     // treat it exactly like a parse failure so tsubst never copies it.
@@ -36156,6 +36544,11 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
 	pushToken(*it);
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(compounds, saved_compounds);
+    // Block-typedef shadow frames travel with the compound context (see
+    // instantiate_template_use) — swap in lockstep.
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	saved_typedef_shadows;
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::string saved_func = cur_func_name;
@@ -36184,6 +36577,8 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
     catch ( ... ) { parsed = false; }
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::swap(compounds, saved_compounds);
+    unwind_block_typedef_shadows(0, "C-ool");
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
     cur_func_name = saved_func;
     class_definition_only = saved_def_only;
     parsing_cpp_struct_class = saved_cpp_struct_class;
@@ -36213,6 +36608,30 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     if ( dependent_parse_in_progress && call_involves_placeholder(tc) )
 	return NULL;
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+    // Env-gated probe (MADC_MTI_PROBE=<substr>): entry state + funcdef_map
+    // identity for the callee — the restored-placeholder routing diagnostic.
+    {
+	static const char *mtp = ::getenv("MADC_MTI_PROBE");
+	if ( mtp && *mtp && tc->var.name.find(mtp) != std::string::npos )
+	{
+	    funcdef_map_iter pfit = funcdef_map.find(tc->var.name);
+	    fprintf(stderr, "MTIPROBE var=%s fd=%p mt=%d decl=%zu owner=%p"
+		    " tparams=%zu map_fd=%p\n",
+		    tc->var.name.c_str(), (void *)fd,
+		    fd ? (int)fd->is_member_template : -1,
+		    fd ? fd->member_template_decl.size() : (size_t)0,
+		    fd ? (void *)fd->member_template_owner : NULL,
+		    fd ? fd->template_param_names.size() : (size_t)0,
+		    pfit != funcdef_map.end() ? (void *)pfit->second : NULL);
+	    const char *cls = ::getenv("MADC_MTI_PROBE_CLASS");
+	    if ( cls && *cls )
+	    {
+		datadef_map_t::iterator smi = struct_map.find(cls);
+		fprintf(stderr, "MTIPROBE struct_map[%s]=%p\n", cls,
+			smi != struct_map.end() ? (void *)smi->second : NULL);
+	    }
+	}
+    }
 #if MADC_DEBUG_FNTPL
     bool dbg_mti = false;
     {
@@ -36283,6 +36702,20 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     {
 	std::map<std::string, std::string>::iterator mi =
 	    member_fn_inst_names.find(shape_key);
+	// Env-gated probe (MADC_MTI_PROBE=<substr>): the shape-memo decision —
+	// the duplicate-instantiation diagnostic.
+	static const char *_mtp_shape = ::getenv("MADC_MTI_PROBE");
+	if ( _mtp_shape && *_mtp_shape
+	  && tc->var.name.find(_mtp_shape) != std::string::npos )
+	{
+	    Variable *piv = mi != member_fn_inst_names.end()
+			    ? findVariable(mi->second) : NULL;
+	    fprintf(stderr, "MTIPROBE shape=%s memo=%d inst=%s iv=%p ivfd=%d\n",
+		    shape_key.c_str(), (int)(mi != member_fn_inst_names.end()),
+		    mi != member_fn_inst_names.end() ? mi->second.c_str() : "-",
+		    (void *)piv,
+		    piv ? (int)(dynamic_cast<FuncDef *>(piv->type) != NULL) : -1);
+	}
 	if ( mi != member_fn_inst_names.end() )
 	{
 	    Variable *iv = findVariable(mi->second);
@@ -36386,10 +36819,20 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     std::string saved_skip_body = tsubst_skip_body_name;
     if ( fd->dependent_pattern )
 	tsubst_skip_body_name = inst_name;
+    // The instantiation memo keys on the placeholder's STABLE symbol (not the
+    // per-request `__mti__oN` registration name), so a second call SHAPE that
+    // resolves to an already-instantiated binding reuses that instance —
+    // one instantiation per (template, binding), the g++ model. The memo
+    // hands the existing instance back via inst_var; adopt its name below.
+    ft.inst_identity = tc->var.name + "__mti";
+    Variable *inst_var = NULL;
     bool ok = try_instantiate_namespace_fn_template(*this, ft, key, tc,
 						    &concrete_type_args,
-						    &concrete_type_arg_packs);
+						    &concrete_type_arg_packs,
+						    &inst_var);
     tsubst_skip_body_name = saved_skip_body;
+    if ( ok && inst_var && inst_var->name != inst_name )
+	inst_name = inst_var->name;	// binding-memo dedupe: reuse the instance
 #if MADC_DEBUG_FNTPL
     if ( dbg_mti )
 	std::cerr << "FNTPL mti try var=" << tc->var.name
@@ -36405,6 +36848,15 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // call rebuilds). The placeholder's local_emit_name alias stays FIRST-wins
     // for consumers that have no call token in hand.
     member_fn_inst_names[shape_key] = inst_name;
+    // Env-gated probe (MADC_MTI_PROBE=<substr>): the shape-memo store —
+    // pairs with the lookup probe above.
+    {
+	static const char *_mtp_store = ::getenv("MADC_MTI_PROBE");
+	if ( _mtp_store && *_mtp_store
+	  && tc->var.name.find(_mtp_store) != std::string::npos )
+	    fprintf(stderr, "MTIPROBE store shape=%s -> %s\n",
+		    shape_key.c_str(), inst_name.c_str());
+    }
     if ( fd->local_emit_name.empty() )
 	fd->local_emit_name = inst_name;
 #if MADC_DEBUG_FNTPL
@@ -38414,6 +38866,11 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 
 	std::stack<TokenCpnd *> saved_compounds;
 	std::swap(pgm.compounds, saved_compounds);
+	// Block-typedef shadow frames travel with the compound context (see
+	// instantiate_template_use) — swap in lockstep.
+	std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	    saved_typedef_shadows;
+	std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
 	std::vector<DataDefCLASS *> saved_class_scope_stack;
 	std::swap(pgm.class_scope_stack, saved_class_scope_stack);
 	std::string saved_func = pgm.cur_func_name;
@@ -38448,6 +38905,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		pgm.class_scope_stack.pop_back();
 	    std::swap(pgm.class_scope_stack, saved_class_scope_stack);
 	    std::swap(pgm.compounds, saved_compounds);
+	    pgm.unwind_block_typedef_shadows(0, "spec-catch");
+	    std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
 	    pgm.cur_func_name = saved_func;
 	    pgm.instantiating_canonical_spelling = saved_canon;
 	    pgm.instantiating_dependent_surface = saved_dependent_surface;
@@ -38461,6 +38920,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 
 	std::swap(pgm.class_scope_stack, saved_class_scope_stack);
 	std::swap(pgm.compounds, saved_compounds);
+	pgm.unwind_block_typedef_shadows(0, "spec-norm");
+	std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
 	pgm.cur_func_name = saved_func;
 	pgm.instantiating_canonical_spelling = saved_canon;
 	pgm.instantiating_dependent_surface = saved_dependent_surface;
@@ -38924,6 +39385,13 @@ static bool defaulted_member_parses_empty(DataDefCLASS *owner,
 static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
 {
     FuncDef *f = new FuncDef(new_ret);
+    // Env-gated probe (MADC_MTI_PROBE): member-template placeholder clones —
+    // the restored-placeholder routing diagnostic.
+    static const char *_mti_probe = ::getenv("MADC_MTI_PROBE");
+    if ( src->is_member_template && _mti_probe )
+	fprintf(stderr, "MTIPROBE clone src=%p f=%p disp=%s decl=%zu ret=%s\n",
+		(void *)src, (void *)f, src->method_display_name.c_str(),
+		src->member_template_decl.size(), new_ret.name.c_str());
     f->parameters = src->parameters;
     f->explicit_alignment = src->explicit_alignment;
     f->has_captures = src->has_captures;
@@ -42866,6 +43334,17 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    same = ovset[i].var;
 	    if ( same )
 		parse_id = same->name;
+	    else if ( fn_template_instantiation_depth > 0 )
+	    {
+		// A template-INSTANTIATION product gets an order-independent
+		// symbol derived from its instantiated parameter spelling —
+		// not a registration-order `__oN` slot — so a pack-drain
+		// instantiation and a live use-driven one mint the same name
+		// (forest LOADED == PARSED; the vecbind __niter_base skew).
+		parse_id += overload_spelling_symbol_suffix(ns_overload_spelling);
+		if ( findVariable(parse_id) )	// 32-bit hash collision guard
+		    parse_id = unique_overload_symbol(parse_id);
+	    }
 	    else if ( !ovset.empty() )
 		parse_id = unique_overload_symbol(parse_id);
 	}

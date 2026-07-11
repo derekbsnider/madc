@@ -136,6 +136,119 @@ static void cir_dump_undefined_imports(MIR_context_t ctx)
 }
 
 // -----------------------------------------------------------------------
+// --run-frozen lazy-link trap stubs (rung 1)
+// -----------------------------------------------------------------------
+//
+// A drained (pack_recording) frozen module is the TU plus the drained library
+// superset: bodies whose callees reverted to on-use derivation stay frozen for
+// consumer coverage, so whole-module compilation legitimately contains imports
+// with no in-module definition and no dlsym home (reverted/deferred DEFBODY
+// symbols; vtables of drain-only instantiation products). Only the EXECUTED
+// closure of main must resolve. --run-frozen therefore pre-binds each such
+// import to a trap stub that aborts loudly, naming the symbol, if it is ever
+// reached — standard lazy-binding semantics, never a silent cap. Bound
+// consumers are unaffected (they materialize only referenced defs and keep the
+// strict resolver).
+
+extern "C" void __madc_frozen_trap(const char *sym)
+{
+    fprintf(stderr, "madc: --run-frozen: reached unresolved drained-library "
+	    "symbol %s (outside the executed TU closure; a bound consumer "
+	    "derives it on use)\n", sym ? sym : "?");
+    abort();
+}
+
+extern "C" void __madc_frozen_trap_vslot(const char *sym)
+{
+    fprintf(stderr, "madc: --run-frozen: virtual call through unmaterialized "
+	    "vtable %s (drained-library class outside the executed TU "
+	    "closure)\n", sym ? sym : "?");
+    abort();
+}
+
+// TRUE for Itanium-ABI DATA symbols (vtable/typeinfo/guard) — these must
+// pre-bind as data (a table of trap slots), not as a callable stub, so a
+// virtual dispatch through them traps cleanly instead of executing code bytes.
+static bool itanium_data_symbol(const std::string &nm)
+{
+    return nm.compare(0, 4, "_ZTV") == 0 || nm.compare(0, 4, "_ZTI") == 0
+	|| nm.compare(0, 4, "_ZTS") == 0 || nm.compare(0, 4, "_ZGV") == 0;
+}
+
+static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
+{
+    std::set<std::string> defined;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	switch (it->item_type) {
+	case MIR_func_item: case MIR_data_item: case MIR_ref_data_item:
+	case MIR_lref_data_item: case MIR_expr_data_item: case MIR_bss_item:
+	    if (const char *nm = MIR_item_name(ctx, it)) defined.insert(nm);
+	    break;
+	default: break;
+	}
+    }
+    std::vector<std::string> undef;
+    std::set<std::string> seen;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
+	std::string nm = it->u.import_id;
+	if (defined.count(nm) || !seen.insert(nm).second) continue;
+	if (cir_import_resolver(nm.c_str())) continue;
+	undef.push_back(nm);
+    }
+    if (undef.empty()) return;
+    fprintf(stderr, "madc: --run-frozen: %zu unresolved drained-library "
+	    "import(s) bound to trap stubs (-v lists them)\n", undef.size());
+    DBG(for (const std::string &nm : undef)
+	    std::cerr << "  trap-bound: " << nm << std::endl);
+
+    MIR_new_module(ctx, "__madc_frozen_traps");
+    MIR_item_t trap_proto = MIR_new_proto(ctx, "__madc_frozen_trap__proto",
+					  0, NULL, 1, MIR_T_P, "sym");
+    MIR_item_t trap_imp = MIR_new_import(ctx, "__madc_frozen_trap");
+    MIR_item_t vslot_imp = MIR_new_import(ctx, "__madc_frozen_trap_vslot");
+    size_t nm_seq = 0;
+    // One trap function per symbol (both callable stubs and vtable slots) so
+    // a fired trap NAMES the symbol — the whole point of this diagnostic.
+    auto new_trap_fn = [&](const char *fn_name, const std::string &sym,
+			   MIR_item_t handler) -> MIR_item_t {
+	char nm_item[32];
+	snprintf(nm_item, sizeof(nm_item), "__madc_trapnm_%zu", nm_seq++);
+	MIR_item_t nm_data = MIR_new_string_data(
+	    ctx, nm_item, MIR_str_t{sym.size() + 1, sym.c_str()});
+	MIR_item_t f = MIR_new_func(ctx, fn_name, 0, NULL, 0);
+	MIR_append_insn(ctx, f,
+			MIR_new_call_insn(ctx, 3,
+					  MIR_new_ref_op(ctx, trap_proto),
+					  MIR_new_ref_op(ctx, handler),
+					  MIR_new_ref_op(ctx, nm_data)));
+	MIR_append_insn(ctx, f, MIR_new_ret_insn(ctx, 0));
+	MIR_finish_func(ctx);
+	return f;
+    };
+    for (const std::string &nm : undef) {
+	if (itanium_data_symbol(nm)) {
+	    // Data symbol (vtable/typeinfo): a table of pointers to a
+	    // per-symbol trap function, so a virtual dispatch through it
+	    // traps cleanly AND names the class.
+	    MIR_item_t vf = new_trap_fn((nm + ".__vtrap").c_str(), nm,
+					vslot_imp);
+	    MIR_new_export(ctx, nm.c_str());
+	    MIR_new_ref_data(ctx, nm.c_str(), vf, 0);
+	    for (int i = 1; i < 32; ++i)
+		MIR_new_ref_data(ctx, NULL, vf, 0);
+	    continue;
+	}
+	MIR_new_export(ctx, nm.c_str());
+	new_trap_fn(nm.c_str(), nm, trap_imp);
+    }
+    MIR_finish_module(ctx);
+    MIR_load_module(ctx, DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx)));
+}
+
+// -----------------------------------------------------------------------
 // MIR fatal-error containment
 // -----------------------------------------------------------------------
 //
@@ -196,6 +309,41 @@ extern "C" int madc_jit_symbolize(void *addr, char *out, unsigned long n)
 		}
 	}
 	return 0;
+}
+
+// Declarator symbol of a top-level func def / declaration (both are
+// (specs, declarator, ...)); NULL when the item has no named declarator.
+static const char *cir_top_item_symbol(node_t n)
+{
+    if (!n || (n->code != N_FUNC_DEF && n->code != N_SPEC_DECL))
+	return NULL;
+    node_t o = c2mir_node_first_op(n);
+    node_t d = o ? c2mir_node_next_op(o) : NULL;
+    node_t id = (d && d->code == N_DECL) ? c2mir_node_first_op(d) : NULL;
+    return (id && id->code == N_ID) ? id->u.s.s : NULL;
+}
+
+// c2mir_check_tree callback for the pack-side check gate: collect the
+// 0-based module-list index of each defective top-level item. The log line
+// lands directly after the item's error text in the freeze log, attributing
+// each printed error to its item (no silent caps; fires only on defects).
+static void pack_gate_note(node_t item, int index, unsigned n_errs, void *data)
+{
+    (void)item;
+    fprintf(stderr, "pack check gate: item %d: %u check error(s)\n",
+	    index, n_errs);
+    ((std::vector<int> *)data)->push_back(index);
+}
+
+// MADC_CHECK_ATTRIB diagnostic callback: name each defective item.
+static void check_attrib_note(node_t item, int index, unsigned n_errs,
+			      void *data)
+{
+    (void)data;
+    const char *sym = cir_top_item_symbol(item);
+    fprintf(stderr, "check-attrib: item %d (%s%s%s): %u error(s)\n", index,
+	    item ? c2mir_node_code_name((c2mir_node_code_t)item->code) : "?",
+	    sym ? " " : "", sym ? sym : "", n_errs);
 }
 
 // -----------------------------------------------------------------------
@@ -318,6 +466,26 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 	delete builder;
 	out_stop = true;
 	return NULL;
+    }
+
+    // Env-gated (MADC_CHECK_ATTRIB=1): attribute check errors to top-level
+    // items before the real compile — the whole-tree check reports some
+    // errors (e.g. the incomplete-decl sweep) with no usable position. Runs
+    // the checker over a throwaway deep copy in a fresh context, so the real
+    // tree stays pristine for the compile below.
+    if (getenv("MADC_CHECK_ATTRIB")) {
+	MIR_context_t actx = MIR_init();
+	MIR_set_error_func(actx, cir_mir_error);
+	c2mir_init(actx);
+	c2m_ctx_t ac2m = cir_init(actx, /*debug_p=*/false);
+	if (ac2m) {
+	    node_t copy = c2mir_copy_tree(ac2m, c2m, tree);
+	    if (copy)
+		c2mir_check_tree(ac2m, copy, check_attrib_note, NULL);
+	    cir_finish(ac2m);
+	}
+	c2mir_finish(actx);
+	MIR_finish(actx);
     }
 
     auto _c2m_t0 = std::chrono::steady_clock::now();	// --show-stats: c2mir compile
@@ -496,6 +664,11 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
     }
     if (getenv("MADC_DUMP_MIR"))
 	MIR_output(ctx, stderr);
+
+    // Rung 1: a drained module carries library bodies outside the TU's
+    // executed closure — bind their unresolved imports to loud trap stubs
+    // (see cir_prebind_frozen_traps) so only genuinely-executed gaps fail.
+    cir_prebind_frozen_traps(ctx, mod);
 
     return load_and_link(module_name, /*prog=*/NULL);
 }
@@ -786,6 +959,20 @@ static uint32_t forest_serialize_type_id(DataDef *dd)
 	return madc_type_id_for(dd);
 }
 
+// An OPAQUE dependent placeholder never freezes (see the kill arm in
+// forest_arena_record_aggregate); an alias / static-member-type entry that
+// TARGETS one must not freeze either — its serialized tid has a killed
+// (DK_NONE) record, and a restored alias to that husk re-launders the
+// placeholder into the consumer's name resolution.
+static bool forest_type_is_opaque_placeholder(DataDef *dd)
+{
+	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(dd);
+	// A CONCRETE forward tag (opaque_concrete_tag — the empty-pack
+	// recursion tail) is legitimate live state and freezes in the v21
+	// empty shape; only pattern-context placeholders are pack artifacts.
+	return cdd && cdd->is_dependent_placeholder && !cdd->opaque_concrete_tag;
+}
+
 // B3 write-through (SLICE 1c/1d): record a newly-created PROJECT unary derived type — pointer,
 // reference, or const — into this Program's arena, keyed by its own project-id slot. Dispatches
 // on the actual type for the record kind and reads the operand from base_type (DataDefREF is-a
@@ -857,12 +1044,88 @@ void Program::forest_arena_record_unary(DataDef *dd)
 // reads are UNCHANGED; only this write dual-populates the record. Field coverage mirrors the
 // freeze's cir_forest_record_aggregate; the name-keyed maps + anonymous sub-aggregates are
 // follow-on coverage (the structural graph lands first).
+// See the declaration comments (madc.h): the structural markers for a
+// function-local class and its hoisted methods, shared by the aggregate
+// recorder, the DEFBODY writer, and the cir_builder pack-drop cascade.
+bool Program::method_var_is_local_class_hoist(Variable *v)
+{
+	if (!v || !v->data)
+		return false;
+	Method *m = static_cast<Method *>(v->data);
+	DataDefCLASS *cls = m->owner_class;
+	if (!cls || cls->name.empty())
+		return false;
+	return v->name.compare(0, cls->name.size() + 2,
+			       cls->name + "__") != 0;
+}
+
+bool Program::class_is_function_local(DataDefSTRUCT *sdd)
+{
+	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(sdd);
+	if (!cdd)
+		return false;
+	for (Variable *mv : cdd->methods) {
+		if (!mv || !mv->data)
+			continue;
+		if (static_cast<Method *>(mv->data)->owner_class != cdd)
+			continue;	// using-decl import: the definer owns it
+		if (method_var_is_local_class_hoist(mv))
+			return true;
+	}
+	return false;
+}
+
 void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 {
 	if (!sdd)
 		return;
 	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(sdd);
 	uint32_t tid = type_id_for(sdd);	// project id (binds the active table) == arena slot
+	// Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every aggregate
+	// record write for a matching name — the duplicate-record diagnostic.
+	{
+		static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
+		if (mtp && *mtp && strstr(sdd->name.c_str(), mtp))
+			fprintf(stderr, "MTIPROBE recagg name=%s sdd=%p tid=%u\n",
+				sdd->name.c_str(), (void *)sdd, tid);
+	}
+	// A FUNCTION-LOCAL class (basic_string::_M_construct's `_Guard`,
+	// __stoa's `_Save_errno`) must not freeze: its methods have no
+	// consumer-visible home (hoisted names import-stage and drop at load),
+	// so a restored method-less shell would HIJACK the consumer's own
+	// derivation of the enclosing body (`no matching constructor` — the
+	// local class must be created fresh by that derive, as a live parse
+	// does). Kill any earlier record for the slot (parse-time write-through
+	// may have recorded it before the methods existed).
+	if (class_is_function_local(sdd)) {
+		madc::dis::defrec dead;
+		madc::dis::defrec old;
+		memset(&dead, 0, sizeof(dead));
+		if (forest_arena.get_def_at(tid, old)
+		    && old.kind != madc::dis::DK_NONE)
+			forest_arena.set_def_at(tid, dead);
+		return;
+	}
+	// An OPAQUE dependent placeholder (materialize_dependent_member_type /
+	// materialize_opaque_class_type: `char_traits_wchar_t__reference`,
+	// `X__deref`, dependent bases) is a pack-context artifact of a
+	// resolution that could not complete — not a real type. No DefFlags
+	// bit carries placeholder-ness, so a frozen record restores as an
+	// ORDINARY class the consumer's member-typedef/alias resolution can
+	// pick up (packed testforeach2: for_each's element typed as the
+	// laundered opaque -> "no matching constructor"). Skip + kill exactly
+	// like the function-local arm; a consumer that genuinely needs the
+	// opaque re-synthesizes it on demand, as a live parse does.
+	if (cdd && cdd->is_dependent_placeholder
+	    && !cdd->opaque_concrete_tag) {
+		madc::dis::defrec dead;
+		madc::dis::defrec old;
+		memset(&dead, 0, sizeof(dead));
+		if (forest_arena.get_def_at(tid, old)
+		    && old.kind != madc::dis::DK_NONE)
+			forest_arena.set_def_at(tid, dead);
+		return;
+	}
 
 	madc::dis::defrec r;
 	memset(&r, 0, sizeof(r));
@@ -878,6 +1141,10 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 	r.tag_explicit_align = (uint32_t)sdd->tag_explicit_align;
 	if (sdd->union_layout)           r.flags |= madc::dis::DF_UNION_LAYOUT;
 	if (sdd->is_complete)            r.flags |= madc::dis::DF_IS_COMPLETE;
+	// Spared CONCRETE forward tag: carry the placeholder-ness so the
+	// restore re-stamps it (consumer dependence classification == live).
+	if (cdd && cdd->is_dependent_placeholder)
+		r.flags |= madc::dis::DF_OPAQUE_TAG;
 	if (sdd->is_anonymous)           r.flags |= madc::dis::DF_IS_ANONYMOUS;
 	if (sdd->reverse_scalar_storage) r.flags |= madc::dis::DF_REVERSE_SCALAR;
 	if (sdd->has_anon_aggregate)     r.flags |= madc::dis::DF_HAS_ANON_AGG;
@@ -1083,10 +1350,13 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		//     then append each run contiguously. ---
 		std::vector<std::pair<uint32_t, uint32_t> > als;
 		for (std::map<std::string, DataDef *>::const_iterator ai = cdd->type_aliases.begin();
-		     ai != cdd->type_aliases.end(); ++ai)
+		     ai != cdd->type_aliases.end(); ++ai) {
+			if (forest_type_is_opaque_placeholder(ai->second))
+				continue;
 			als.push_back(std::make_pair(
 				forest_arena.strings.intern(ai->first.c_str()),
 				ai->second ? forest_serialize_type_id(ai->second) : 0u));
+		}
 		r.alias_begin = (uint32_t)forest_arena.payload.size();
 		r.alias_count = (uint32_t)als.size();
 		for (size_t i = 0; i < als.size(); ++i) {
@@ -1098,10 +1368,13 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		}
 		std::vector<std::pair<uint32_t, uint32_t> > sts;
 		for (std::map<std::string, DataDef *>::const_iterator si = cdd->static_member_types.begin();
-		     si != cdd->static_member_types.end(); ++si)
+		     si != cdd->static_member_types.end(); ++si) {
+			if (forest_type_is_opaque_placeholder(si->second))
+				continue;
 			sts.push_back(std::make_pair(
 				forest_arena.strings.intern(si->first.c_str()),
 				si->second ? forest_serialize_type_id(si->second) : 0u));
+		}
 		r.statty_begin = (uint32_t)forest_arena.payload.size();
 		r.statty_count = (uint32_t)sts.size();
 		for (size_t i = 0; i < sts.size(); ++i) {
@@ -1842,7 +2115,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 //      recorded aggregate (std::string -> the basic_string<char,...> product) emits
 //      a namespaced DK_TYPEDEF record instead. A '<'-bearing template-product key
 //      is skipped (the v10 follow-on, unchanged).
-static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
+static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
+				      const std::set<std::string> *pack_uncarriable)
 {
 	if (!prog || !prog->forest_arena_enabled)
 		return;
@@ -2172,10 +2446,43 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		const Program::DeferredFunctionBody &b = di->second;
 		if (di->first.empty())
 			continue;
+		// Env-gated probe (MADC_MTI_PROBE=<substr>): DEFBODY freeze walk.
+		{
+			static const char *mtp = ::getenv("MADC_MTI_PROBE");
+			if (mtp && *mtp
+			    && di->first.find(mtp) != std::string::npos)
+				fprintf(stderr, "MTIPROBE defbody sym=%s file=%s"
+					" root=%d full=%d body=%zu def=%zu\n",
+					di->first.c_str(), b.file ? b.file : "(none)",
+					b.file ? (int)prog->forest_is_tu_root_file(b.file)
+					       : -1,
+					(int)b.full_definition,
+					b.body_tokens.size(),
+					b.definition_tokens.size());
+		}
 		// The forest holds #include state only (v24): a root-file class's
 		// deferred body never restores into a consumer.
 		if (b.file && prog->forest_is_tu_root_file(b.file))
 			continue;
+		// A function-local class's method body (hoisted name) has no
+		// restorable owner — the consumer's own derivation of the
+		// enclosing body creates the class and its bodies fresh.
+		if (b.var && Program::method_var_is_local_class_hoist(b.var))
+			continue;
+		// An instantiation-born FREE-function body (a namespace
+		// fn-template product the pack's own evaluation enqueued —
+		// __ns_std_uninitialized_copy__o2): its token-run derive needs
+		// the instantiation's template-param bindings, which the record
+		// does not carry ("Expecting a type argument to
+		// iterator_traits<>"). The consumer's home for these is
+		// RE-INSTANTIATION through the template machinery. Class-member
+		// products (owner_class set) keep their DEFBODY — the owner
+		// scope restores their derive context.
+		if (b.var && (!b.method || !b.method->owner_class)) {
+			FuncDef *vfd = dynamic_cast<FuncDef *>(b.var->type);
+			if (vfd && vfd->tsubst_source)
+				continue;
+		}
 		const std::vector<TokenBase *> *seqs[4] = {
 			&b.body_tokens, &b.definition_tokens,
 			&b.trailing_ret_tokens, &b.ctor_init_tokens
@@ -2240,6 +2547,24 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 	     fi != prog->funcdef_map.end(); ++fi) {
 		FuncDef *fd = fi->second;
 		if (!fd || fd->forest_body_tokens.empty() || fi->first.empty())
+			continue;
+		// Instantiation-born product (tsubst_source): its token-run
+		// derive needs the instantiation's template-param bindings,
+		// which no record carries — the consumer re-instantiates
+		// instead (same rule as the deferred-map walk above).
+		if (fd->tsubst_source)
+			continue;
+		// Same rule via the pack's own verdict: an UN-CARRIABLE symbol
+		// (pack_dropped — a product whose def the cascade dropped
+		// without a DEFBODY revert, e.g. __ns_std__Destroy__i* whose
+		// tsubst_source is NULL) must not plant a body span either —
+		// its captured tokens spell PATTERN params (substitution lives
+		// in parser state, not tokens) and the consumer's derive dies
+		// ("Expecting a type argument to iterator_traits<>"). With no
+		// span AND no DF_FUNC_DEF_TOKENS stamp, the was_bodied
+		// declaration drop applies at load and the consumer's fresh
+		// use re-instantiates the pattern — live semantics.
+		if (pack_uncarriable && pack_uncarriable->count(fi->first))
 			continue;
 		uint32_t ftid = madc_type_id_for(fd);
 		madc::dis::defrec fr;
@@ -2343,7 +2668,8 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 // place; its old payload runs become dead words in the dump (size, not
 // correctness). The walk runs to a fixpoint because recording can stamp fresh
 // project ids (an aggregate first reached as a cross-ref).
-static void cir_forest_arena_refresh(Program *prog)
+static void cir_forest_arena_refresh(Program *prog,
+				     const std::set<std::string> *pack_uncarriable)
 {
 	if (!prog || !prog->forest_arena_enabled || !madc_active_project_types)
 		return;
@@ -2454,11 +2780,37 @@ static void cir_forest_arena_refresh(Program *prog)
 	for (funcdef_map_iter it = prog->funcdef_map.begin();
 	     it != prog->funcdef_map.end(); ++it) {
 		FuncDef *fd = it->second;
+#ifdef MADC_DBG_PACK
+		bool rc2probe = it->first.find("stoi") != std::string::npos
+			     || it->first.find("_to_string") != std::string::npos;
+		if (rc2probe)
+			fprintf(stderr, "[RC2] key=%s fd=%p mt=%d tparams=%zu unc=%d\n",
+				it->first.c_str(), (void *)fd,
+				fd ? (int)fd->is_member_template : -1,
+				fd ? fd->template_param_names.size() : (size_t)0,
+				pack_uncarriable ? (int)pack_uncarriable->count(it->first) : -1);
+#endif
 		if (!fd || it->first.empty())
 			continue;
 		if (fd->is_member_template || !fd->template_param_names.empty())
 			continue;
+		// UN-CARRIABLE pack product (pack_dropped): no record at all —
+		// a restored decl-only rank would SHADOW the pattern
+		// placeholder in the consumer's overload set (ranking picks
+		// the concrete-shaped rank, cannot instantiate it — mt=0,
+		// decl=0, tparams=0 — and falls back to the un-emittable BASE
+		// symbol). With no record, a fresh call routes to the pattern
+		// placeholder and instantiates — live semantics.
+		if (pack_uncarriable && pack_uncarriable->count(it->first))
+			continue;
 		uint32_t tid = madc_type_id_for(fd);
+#ifdef MADC_DBG_PACK
+		if (rc2probe)
+			fprintf(stderr, "[RC2] key=%s tid=%u proj=%d has_def=%d\n",
+				it->first.c_str(), tid,
+				(int)madc::dis::arena_id_is_project(tid),
+				(int)prog->forest_arena.has_def(tid));
+#endif
 		if (!madc::dis::arena_id_is_project(tid)
 		    || prog->forest_arena.has_def(tid))
 			continue;	// already recorded = a class's method
@@ -2527,12 +2879,85 @@ int madc_cir_freeze(Program *prog, const char *source_name,
     if (!c2m) {
 	fprintf(stderr, "%s: cir_init failed\n", source_name);
     } else {
+	// Rung 1 (2026-07-09 plan): under a grove-carrying freeze the builder's
+	// m&l fixpoint DRAINS deferred_lazy_bodies (referenced or not) so the
+	// container carries translated func-defs, not DK_DEFBODY token runs.
+	// Report the drain so the left-deferred fallback count is visible.
+	size_t db_before = prog->deferred_lazy_bodies.size();
 	node_t tree = cir_translate_guarded(c2m, prog, source_name, builder);
+	size_t db_after = prog->deferred_lazy_bodies.size();
+	if (prog->pack_recording && db_before)
+	    fprintf(stderr, "%s: pack drain: %zu deferred bodies evaluated, "
+		    "%zu left deferred\n", source_name,
+		    db_before > db_after ? db_before - db_after : 0, db_after);
 	int nerr = tree ? cir_report_errors(stderr, tree) : 0;
+	// Rung 1, layer 4 — pack-side c2mir check gate. The drain evaluates
+	// bodies live never compiles, so a defective drained lowering would
+	// freeze silently and only surface as a --run-frozen / consumer check
+	// error. Gate: run c2mir's checker (do_context) over a deep COPY of
+	// the pristine tree in a FRESH compile context (check mutates attrs
+	// and its symbol tables are not reentrant), map each defective
+	// top-level item back to its stashed pack def, revert it to DEFBODY
+	// (consumers derive on use — today's pre-drain semantics), cascade its
+	// callers, splice the dropped defs out of the pristine tree, and
+	// re-check until clean. A defective item that is NOT a drained def is
+	// a TU defect: abort the freeze loudly.
+	bool gate_ok = true;
+	if (tree && !nerr && prog->pack_recording && builder) {
+	    for (int round = 1; ; ++round) {
+		std::vector<int> bad;
+		int cerr = -1;
+		MIR_context_t cctx = MIR_init();
+		MIR_set_error_func(cctx, cir_mir_error);
+		c2mir_init(cctx);
+		c2m_ctx_t cc2m = cir_init(cctx, /*debug_p=*/false);
+		if (cc2m) {
+		    node_t copy = c2mir_copy_tree(cc2m, c2m, tree);
+		    // Diagnostic (env-gated): dump original + copy for a
+		    // structural diff when the gate's verdict is suspected of
+		    // being a COPY artifact rather than a tree defect.
+		    if (copy && getenv("MADC_GATE_DUMP")) {
+			FILE *fo = fopen("tmp/gate_orig.dump", "w");
+			FILE *fc = fopen("tmp/gate_copy.dump", "w");
+			if (fo) { c2mir_dump_tree(c2m, fo, tree); fclose(fo); }
+			if (fc) { c2mir_dump_tree(cc2m, fc, copy); fclose(fc); }
+		    }
+		    if (copy)
+			cerr = c2mir_check_tree(cc2m, copy, pack_gate_note, &bad);
+		    cir_finish(cc2m);
+		}
+		c2mir_finish(cctx);
+		MIR_finish(cctx);
+		if (cerr < 0) {
+		    fprintf(stderr, "%s: pack check gate: cannot check the "
+			    "translated tree\n", source_name);
+		    gate_ok = false;
+		    break;
+		}
+		if (cerr == 0) {
+		    if (round > 1)
+			fprintf(stderr, "%s: pack check gate: clean after "
+				"%d drop round(s)\n", source_name, round - 1);
+		    break;
+		}
+		int nd = builder->pack_gate_drop(tree, bad);
+		if (nd <= 0) {
+		    fprintf(stderr, "%s: pack check gate: %d check error(s) "
+			    "not attributable to drained defs; not freezing\n",
+			    source_name, cerr);
+		    gate_ok = false;
+		    break;
+		}
+		fprintf(stderr, "%s: pack check gate round %d: %d check "
+			"error(s) across %zu def(s), dropped %d def(s) "
+			"(cascade included)\n",
+			source_name, round, cerr, bad.size(), nd);
+	    }
+	}
 	if (tree && nerr) {
 	    fprintf(stderr, "%s: %d untranslatable node(s); not freezing\n",
 		    source_name, nerr);
-	} else if (tree) {
+	} else if (tree && gate_ok) {
 	    cir_frozen_forest f;
 	    if (!cir_freeze_forest(CIR_NODE(tree), source_name, f)) {
 		fprintf(stderr, "%s: forest freeze failed\n", source_name);
@@ -2541,9 +2966,20 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		f.language_std = madc_forest_config_word(prog);	// v27 producer-config gate
 		f.defines_hash = madc_forest_defines_hash(prog);
 		cir_forest_fill_pack_payloads(prog, f);	// grove payload v2 (B4a)
-		cir_forest_arena_refresh(prog);		// re-record live aggregates (post-completion mutations)
+		cir_forest_arena_refresh(prog,
+					 builder ? &builder->pack_uncarriable_syms()
+						 : NULL);	// re-record live aggregates (post-completion mutations)
 		f.arena = prog->forest_arena;		// B3 (v18): the arena dump IS the type-graph serialization
-		cir_forest_arena_complete(prog, f);	// freeze-time fidelity (inline bodies / typedefs / ns)
+		// Emission split (rung 1): consumer-excluded defs (local-class
+		// methods, DEFBODY-reverted bodies, their cascade closure) are
+		// tree-resident for --run-frozen but must never stamp
+		// DF_HAS_FOREST_BODY — a consumer derives them on use.
+		if (builder)
+		    for (const std::string &sym : builder->pack_stamp_exclusions())
+			f.funcdef_locs.erase(sym);
+		cir_forest_arena_complete(prog, f,
+					  builder ? &builder->pack_uncarriable_syms()
+						  : NULL);	// freeze-time fidelity (inline bodies / typedefs / ns)
 		cir_forest_fill_globals(prog, f);	// file-scope globals (CIR_GLOBALS; ids swizzle via the arena)
 		cir_forest_fill_templates(prog, f);	// v20: template-NAME state (pattern maps, token runs)
 		PchCompression codec = PchCompression::Zlib;

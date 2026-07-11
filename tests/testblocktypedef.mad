@@ -1,0 +1,28 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+// A BLOCK-scope typedef's meaning ends with its block ([basic.scope.block]).
+// poison()'s local `__tt` must not leak into the global type table and shadow
+// the CLASS-scope alias `__tt` inside holder<I>'s body — the leak made
+// `typename __tt::value_type` resolve against Wrong (live), and, transported
+// by the forest freeze, made __normal_iterator's __traits_type resolve to
+// char_traits<wchar_t> at bind (testforeach2's packed failure).
+template<class T> struct mytraits { typedef T value_type; };
+struct Wrong { };
+void poison()
+{
+    typedef Wrong __tt;
+    __tt w;
+}
+template<class I> struct holder {
+    typedef mytraits<I> __tt;
+    typedef typename __tt::value_type value_type;
+};
+int main()
+{
+    holder<int>::value_type v = 42;
+    poison();
+    if ( v == 42 )
+	printf("block typedef scoped OK\n");
+    return v == 42 ? 0 : 1;
+}

@@ -1,0 +1,12 @@
+# forest phase timing trend — one row per measurement (append-only).
+# live = bin/madc (develop -O0, live parse); bound = bin/madc-release (packed -O2, forest bind).
+# Medians of 5 on tests/testsubscript.mad; derives = consumer parse_deferred_lazy_body count.
+# load1 = 1-min loadavg at measurement (shared NAS — high load rows are confounded).
+# SEED (2026-07-09 plan baselines, pre-rung-1, -O2 binaries, quiet machine):
+# live -O2 wall 1.006s; cold-corpus bound 0.665s; fully-warmed diagnostic floor 0.399s;
+# cold-corpus derivations 207. Those used an -O2 LIVE binary, so they seed the
+# bound_s column only; the live_s column here tracks the -O0 dev binary.
+date	commit	live_s	bound_s	live_derives	bound_derives	load1	note
+2026-07-09	2e6d8d2e	-	0.665	-	207	-	plan-baseline cold corpus (-O2 live was 1.006)
+2026-07-09	2e6d8d2e	-	0.399	-	0	-	plan-baseline warm diagnostic floor
+2026-07-11	749eee09	2.593	0.965	217	187	1.30	rung-1 close (@b635feea fix; dual-binary setup)

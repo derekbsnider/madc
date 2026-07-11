@@ -1634,6 +1634,15 @@ public:
     madc::dis::intern_keyed_map<TokenBase *> cpp_operator_map;
     madc::dis::intern_table type_name_pool;	// dedicated dense pool for flat type-name keys
     flat_datatype_map_t datatype_map;	// TokenDataType map (interned, keyed via type_name_pool)
+    // Block-scope typedef shadow frames — one per live compound depth. Each
+    // entry records (alias, the flat datatype_map entry it shadowed, or NULL).
+    // register_scoped_typedef() records; unwind_block_typedef_shadows() restores
+    // at block exit so a local typedef's meaning ends with its block
+    // ([basic.scope.block]) instead of leaking into the flat map forever.
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	block_typedef_shadows;
+    void register_scoped_typedef(const std::string &alias, TokenDataType *tdt);
+    void unwind_block_typedef_shadows(size_t depth, const char *site = "?");
     // Dedicated dense pool for the template-name domain (template/partial-spec/
     // alias/var-template/fn-template map keys). Separate from strpool so each
     // intern_keyed_map's _slot array stays sized to the small template-name set,
@@ -1677,6 +1686,16 @@ public:
     // type-id (the referent records itself at ITS completion; the id-addressed arena tolerates a
     // forward slot ref). Reads stay on the live DataDef; only this write dual-populates the record.
     void forest_arena_record_aggregate(DataDefSTRUCT *sdd);
+    // A FUNCTION-LOCAL class's method: hoisted under its enclosing function's
+    // name, so the Variable's name is NOT prefixed by its owner class's name
+    // (a class-scoped method/ctor/dtor/__oN overload always is; a using-decl
+    // import is prefixed by its DEFINER, which IS its owner_class). The forest
+    // has no per-function local-class identity, so the freeze skips the class,
+    // its method DEFBODYs, and (pack cascade) bodies that call one.
+    static bool method_var_is_local_class_hoist(Variable *v);
+    // True when the class is a function-local class (any of its OWN methods is
+    // a local hoist) — the aggregate recorder and restore selection skip it.
+    static bool class_is_function_local(DataDefSTRUCT *sdd);
     // write-through: record a FuncDef (DK_FUNC) into forest_arena at its project-id slot —
     // ref0 = return type-id, a params run of paramrec (type-id + const/spelling), and the
     // is_varargs/is_void_params/declaration_only flags. Called for each class method from the
@@ -1949,9 +1968,17 @@ public:
 	// flag). False for free/namespace templates AND for STATIC member
 	// templates (those stay on the free-function parse).
 	bool instance_method;
+	// Identity base for the instantiation memo (fn_template_instantiated):
+	// when non-empty, the memo keys on THIS + "<binding>" instead of the
+	// registration key. A member-template instantiation registers under a
+	// per-request unique symbol (`__mti`, `__mti__oN`), so keying the memo
+	// on that name lets two call SHAPES that resolve to the SAME binding
+	// mint duplicate definitions — g++ has one instantiation per
+	// (template, binding). Set to the placeholder's stable symbol.
+	std::string inst_identity;
 	FnTemplateDef() : typeparams(), typeparam_defaults(), typeparam_is_type(),
 	    typeparam_is_pack(), decl(), ns(), inline_builtin_kind(),
-	    owner_class(NULL), instance_method(false) {}
+	    owner_class(NULL), instance_method(false), inst_identity() {}
     };
     madc::dis::intern_keyed_map<std::vector<FnTemplateDef>> fn_template_map; // keyed via template_name_pool (enumerated via for_each)
     // BODY-LESS free/namespace function template declarations (no `{ body }` to
@@ -2132,6 +2159,24 @@ public:
 	std::vector<std::vector<TokenBase *>> raw_arg_tokens;
     };
     std::map<DataDef *, DependentShellOrigin> dependent_shell_origin;
+    // Provenance for DERIVED dependent placeholders — the `X__deref` /
+    // `Owner__member` opaques minted by dependent_deref_result_type /
+    // materialize_dependent_member_type: the SOURCE type + derivation kind,
+    // so tsubst can RE-DERIVE the concrete type under an instance
+    // substitution (deref of `_ForwardIterator` re-derives to the element
+    // type once _ForwardIterator = elem*). Without it the opaque leaks into
+    // instantiation bindings as if it were concrete — the
+    // `_Destroy<_ForwardIterator__deref>` no-op husk that silently swallows
+    // element destructors. In-memory only; opaques never freeze.
+    struct DependentDerivedOrigin {
+	DataDef *source = NULL;
+	enum Kind { Deref, MemberType } kind = Deref;
+	std::string member;			// MemberType only
+    };
+    std::map<DataDef *, DependentDerivedOrigin> dependent_derived_origin;
+    // Thin public accessor over the class-scope member-type lookup
+    // (type_aliases + bases + enclosing walk) for the tsubst re-derivation.
+    static DataDef *class_member_type(DataDefCLASS *cls, const std::string &name);
     std::set<std::string> template_completion_requested;    // mangled template aliases that should be completed when body appears
     std::set<std::string> template_instantiated;           // mangled names done
     std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup
@@ -3542,6 +3587,12 @@ public:
 						    const std::string &member_name);
     DataDefCLASS *materialize_opaque_class_type(const std::string &name,
 						const std::string &canonical);
+    // Stamp a freshly-minted opaque dependent shell/tag with its mint
+    // context: outside a dependent (pattern) parse the placeholder is a
+    // CONCRETE forward tag (e.g. the empty-pack recursion tail
+    // _Tuple_impl<1>) — legitimate frozen state (v21 empty shape), never
+    // a pack artifact the freeze kills.
+    void stamp_opaque_mint_context(DataDefCLASS *dep);
     DataDef *dependent_deref_result_type(DataDef *dd);
     void complete_pending_template_instantiations(const std::string &class_name);
     bool request_template_instantiation_completion(const std::string &mangled_name);

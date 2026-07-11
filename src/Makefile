@@ -3,17 +3,22 @@
 CC ?= clang
 CXX ?= clang++
 # --- Build modes (B4a; docs/plans/2026-07-04-forest-default-mode-design.md §7)
-# make            -> develop: -O0. Optimize madc's *algorithms* first, and keep
-#                    the binary unoptimized so profiling/gdb attribution is
-#                    honest (the long-standing development contract).
-# make debug      -> -O0 -ggdb, unstripped.
-# make release    -> -O2 (the "last-lap switch" — B4 is that last lap), then
+# make            -> develop: -O0 -> bin/madc. Optimize madc's *algorithms*
+#                    first, and keep the binary unoptimized so profiling/gdb
+#                    attribution is honest (the long-standing dev contract).
+# make debug      -> -O0 -ggdb, unstripped -> bin/madc-debug.
+# make release    -> -O2 -> bin/madc-release (the "last-lap switch"), then
 #                    strip BEFORE the forest pack is appended (strip rewrites
 #                    the ELF image and discards trailing bytes; plain strip
 #                    keeps .dynsym, which the dlsym import resolver needs),
 #                    then pack + append + verify via scripts/forest_pack.sh.
-# Modes NEVER share objects: each compiles into its own obj/<mode>/ tree
-# (-MMD tracks headers, not flags — mixing -g/-O2/-O0 objects silently skews).
+#                    Packed suite: MADC_BIN=bin/madc-release scripts/run_tests.sh
+# Modes NEVER share objects OR the output binary: each compiles into its own
+# obj/<mode>/ tree and links its own bin/ name, so dev and packed-release
+# binaries coexist (-MMD tracks headers, not flags — mixing -g/-O2/-O0
+# objects silently skews; a shared bin path silently skips cross-mode
+# relinks). lib/libmadc.{a,so} stay one path — the .libmode stamp below
+# forces their relink on a mode switch.
 MODE ?= develop
 ifeq ($(MODE),release)
 MODE_OPTFLAGS = -O2
@@ -21,6 +26,18 @@ else ifeq ($(MODE),debug)
 MODE_OPTFLAGS = -O0 -ggdb
 else
 MODE_OPTFLAGS = -O0
+endif
+# Modes never share the OUTPUT BINARY either: each mode links its own name,
+# so `make release` (packed -O2) and `make` (develop -O0) coexist and can
+# never clobber each other. (Before this, all modes linked ../bin/madc and
+# make's timestamp logic silently SKIPPED the develop relink after a release
+# build — bin/madc stayed the packed release binary while claiming dev.)
+ifeq ($(MODE),release)
+BIN = ../bin/madc-release
+else ifeq ($(MODE),debug)
+BIN = ../bin/madc-debug
+else
+BIN = ../bin/madc
 endif
 CXXFLAGS ?= -std=c++11 -Wall $(MODE_OPTFLAGS)
 PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC
@@ -110,9 +127,9 @@ LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 # build when you are NOT about to run unit tests, pass BUILD_TESTS=0.
 BUILD_TESTS ?= 1
 ifeq ($(BUILD_TESTS),1)
-DEFAULT_TARGETS = $(LIBMADC_STATIC) ../bin/madc $(LIBMADC_SHARED) $(TESTBINS)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(BIN) $(LIBMADC_SHARED) $(TESTBINS)
 else
-DEFAULT_TARGETS = $(LIBMADC_STATIC) ../bin/madc $(LIBMADC_SHARED)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(BIN) $(LIBMADC_SHARED)
 endif
 
 all:
@@ -158,16 +175,16 @@ install-madcdat: libmadcdat
 endif
 
 debug:
-	$(MAKE) MODE=debug ../bin/madc
+	$(MAKE) MODE=debug ../bin/madc-debug
 
 # Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
 # the ELF and would destroy an already-appended forest blob). Pack failure =
 # build failure; the verify step proves the appended blob reads back (pin OK)
 # and survives the stripped binary's dlsym resolver path.
 release:
-	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc $(LIBMADC_SHARED)
-	strip ../bin/madc
-	cd .. && bash scripts/forest_pack.sh bin/madc
+	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc-release $(LIBMADC_SHARED)
+	strip ../bin/madc-release
+	cd .. && bash scripts/forest_pack.sh bin/madc-release
 
 clean:
 	rm -rf ../obj/develop ../obj/debug ../obj/release
@@ -233,17 +250,29 @@ WHOLE_ARCHIVE_END   = -Wl,--no-whole-archive
 $(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB)
 	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(LIBS)
 
-../bin/madc: $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB)
+$(BIN): $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB)
 	$(CXX) -o $@ $(OBJDIR)/madc.o $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
 
-$(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS)
+# lib/libmadc.{a,so} keep ONE path across modes, so make's timestamps alone
+# would silently leave the OTHER mode's libs in place after a mode switch
+# (the same skew per-mode obj trees prevent for objects). The stamp file
+# records which mode built the libs; switching modes recreates it (newer
+# than the libs), forcing a relink from the new mode's objects. The recipes
+# name their object lists explicitly so the stamp never enters the archive.
+LIBMODE_STAMP = $(LIBDIR)/.libmode-$(MODE)
+$(LIBMODE_STAMP):
+	@mkdir -p $(LIBDIR)
+	@rm -f $(LIBDIR)/.libmode-*
+	@touch $@
+
+$(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS) $(LIBMODE_STAMP)
 	mkdir -p $(LIBDIR)
 	rm -f $@
-	$(AR) $(ARFLAGS) $@ $^
+	$(AR) $(ARFLAGS) $@ $(LIBMADC_STATIC_OBJS)
 
-$(LIBMADC_SHARED): $(LIBMADC_OBJECTS)
+$(LIBMADC_SHARED): $(LIBMADC_OBJECTS) $(LIBMODE_STAMP)
 	mkdir -p $(LIBDIR)
-	$(CXX) -shared -Wl,-soname,libmadc.so.$(MADC_SOVERSION) -o $@ $^ $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
+	$(CXX) -shared -Wl,-soname,libmadc.so.$(MADC_SOVERSION) -o $@ $(LIBMADC_OBJECTS) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
 
 $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
 	mkdir -p $(LIBDIR)

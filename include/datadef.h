@@ -838,6 +838,12 @@ public:
     // class_align. Until then, fall back to the own-member alignment (max_align).
     virtual size_t alignment() const { return class_align ? class_align : DataDefSTRUCT::alignment(); }
     bool is_dependent_placeholder; // synthesized unresolved/dependent C++ type
+    // Placeholder minted OUTSIDE a dependent (pattern) parse — a CONCRETE
+    // forward tag (the empty-pack recursion tail _Tuple_impl<1>): live
+    // registers it, inherits from it, and emits it without completing, so it
+    // is legitimate frozen state; only pattern-context placeholders are
+    // pack artifacts the freeze kills.
+    bool opaque_concrete_tag;
     bool has_dependent_surface; // parsed class whose template args/bases still carry dependent lookup
     bool is_polymorphic() const { return has_vtable; }
     // True for a polymorphic class madc does NOT define: every owned method,
@@ -929,6 +935,7 @@ public:
 	  extern_ctor(NULL), extern_dtor(NULL), _dtor_ptr(NULL),
 	  enclosing_class(NULL), base_class(NULL), nvsize(0), own_block_off(0),
 	  has_vptr_slot(false), is_dependent_placeholder(false),
+	  opaque_concrete_tag(false),
 	  has_dependent_surface(false), vtable(NULL), has_vtable(false),
 	  from_system_header(false), is_extern_template_instantiated(false) {}
     virtual BaseType basetype() const { return BaseType::btClass; }

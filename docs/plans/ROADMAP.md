@@ -28,7 +28,20 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Version:** `0.33.0` (per `VERSION`) — released on `develop` (CIR backend);
+- **Version:** `0.34.0` (per `VERSION`) — released on `develop` (CIR backend);
+  the **pack-time drain** release: Phase 2 rung 1 of the embedded-header
+  forest (docs/plans/2026-07-09-forest-full-evaluation-lazy-materialize-PLAN.md)
+  is CLOSED. Deferred header bodies drain to fixpoint at pack time and freeze
+  fully evaluated, guarded by a pack-side c2mir check gate (fork
+  `c2mir_check_tree` @062dd97) with error-tolerant reverts (DEFBODY re-insert;
+  body-span carry for eager-parsed source fns — restored packed
+  `std::stoi`/`stod`); emission split + `--run-frozen` trap prebind preserve
+  whole-TU byte-identity. First fully-green fulltest of the drain era
+  (**681/0/0/16** + every ratchet + bind gate 18/18 + both oracles) and the
+  first-ever **packed suite 681/681**. Dual build outputs: `bin/madc`
+  (dev -O0) and `bin/madc-release` (packed -O2) coexist; timing trend in
+  `docs/perf/forest-timings.tsv` (bound 0.965s vs 1.006s -O2 live baseline
+  on testsubscript; corpus growth recovery = rung 2). v0.33.0 was
   the **parse-once** release: the template re-parse deprecation campaign
   (Phase 5) is COMPLETE. Every member-template instantiation — first or
   repeat — takes its body from tsubst over the one saved pattern tree (the

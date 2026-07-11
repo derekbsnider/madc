@@ -44,12 +44,12 @@
 # <owner>__<local> naming), every call resolves, zero c2mir warnings, all
 # outputs fixture-verified. A hit DROP from eliminating redundant instances
 # is progress here, not regression — fallbacks stay 0 everywhere.
-testset 11 0
-testmap 12 0
-testvector 17 0
-testsubscript 39 0
-testcontainerdtor 38 0
-testmadc_ns 38 0
+testset 10 0
+testmap 11 0
+testvector 15 0
+testsubscript 35 0
+testcontainerdtor 34 0
+testmadc_ns 34 0
 testlocalclassraii 1 0
 # Then the scalar-ref-param slice: the blanket reference-param guard deleted
 # (untyped N_DEREF types from the concrete shell decl) + is_size1_pointer no
@@ -75,3 +75,14 @@ testfstream 1 0
 teststdstringconv 1 0
 testifconstexpr 0 0
 testinvocable 0 0
+# Then the member-template instantiation IDENTITY memo (one instantiation per
+# (template, binding) — the g++ model; FnTemplateDef::inst_identity) + the
+# tsubst re-derivation of dependent-DERIVED placeholders (X__deref opaques
+# re-derive to the concrete element type under the instance substitution
+# instead of minting no-op husk instances like _Destroy<_ForwardIterator__
+# deref>): duplicate and husk instances are no longer created, so their
+# redundant tsubst copies vanish. Hit DROP from eliminating redundant
+# instances is progress (see the 4b-FLIP entry above) — fallbacks stay 0,
+# run_rc 0, outputs fixture-verified, warn census GREEN (the husk family WAS
+# the 7-warning red): set 11->10, map 12->11, vector 17->15, subscript
+# 39->35, containerdtor 38->34, madc_ns 38->34.
