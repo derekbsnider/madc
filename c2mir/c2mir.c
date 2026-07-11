@@ -19987,6 +19987,121 @@ void c2mir_dump_tree_checked (c2m_ctx_t c2m_ctx, FILE *f, node_t tree) {
   print_node (c2m_ctx, f, tree, 0, FALSE);
 }
 
+/* Deep-copy an externally-built AST from src_c2m's node space into dst_c2m's.
+   Node positions live in a PER-CONTEXT side array keyed by uid (node_positions),
+   so a cross-context copy must read each position from the source context and
+   restamp it in the destination — a single-context copy would index the wrong
+   array and destroy error attribution. The copy's nodes have fresh dst uids and
+   NULL attrs; leaf payloads are copied by value (interned string pointers stay
+   owned by the source context, which must outlive uses of the copy). */
+static node_t copy_tree_rec (c2m_ctx_t dst_c2m, c2m_ctx_t src_c2m, node_t n) {
+  node_t r, op;
+
+  r = new_node (dst_c2m, n->code);
+  set_node_pos (dst_c2m, r, get_node_pos (src_c2m, n));
+  if (ext_node_is_leaf (n)) {
+    r->u = n->u;
+  } else {
+    for (op = NL_HEAD (n->u.ops); op != NULL; op = NL_NEXT (op))
+      op_append (dst_c2m, r, copy_tree_rec (dst_c2m, src_c2m, op));
+  }
+  return r;
+}
+
+node_t c2mir_copy_tree (c2m_ctx_t dst_c2m, c2m_ctx_t src_c2m, node_t tree) {
+  if (dst_c2m == NULL || src_c2m == NULL || tree == NULL) return NULL;
+  return copy_tree_rec (dst_c2m, src_c2m, tree);
+}
+
+/* Remove a direct child from a composite node's op list (splice-out).
+   The child is detached, not destroyed. */
+void c2mir_op_remove (node_t n, node_t op) {
+  if (n == NULL || op == NULL || ext_node_is_leaf (n)) return;
+  NL_REMOVE (n->u.ops, op);
+}
+
+/* Run the context checker over an externally-built N_MODULE tree, attributing
+   check errors to the module's TOP-LEVEL items: the module's N_LIST children
+   are checked one by one with n_errors sampled around each (attribution by
+   construction, no message parsing), under the exact context_stack shape a
+   whole-tree check (module -> NULL, list -> module, item -> list) produces —
+   the compound-literal declaration walk reads that stack. do_context's
+   trailing incomplete-decl sweep runs after all items (an incomplete type may
+   be completed by a later item) and attributes each of its errors back to the
+   item whose check recorded the decl. cb fires once per defective item with
+   the item node, its 0-based index in the list, and its error count. Returns
+   the total number of new errors (0 = clean), or -1 on misuse. Mutates the
+   tree (attrs) and is NOT idempotent per context (symbols accumulate): check
+   a c2mir_copy_tree copy in a fresh compile context per round; never compile
+   or re-check the same tree. */
+int c2mir_check_tree (c2m_ctx_t c2m_ctx, node_t tree,
+                      void (*cb) (node_t top_item, int index, unsigned n_errs, void *data),
+                      void *data) {
+  check_ctx_t check_ctx;
+  MIR_alloc_t alloc;
+  VARR (int) * item_wm; /* per-item possible_incomplete_decls watermark */
+  node_t list, n;
+  unsigned before_all, before;
+  size_t i, n_items;
+  int index;
+
+  if (c2m_ctx == NULL || (check_ctx = c2m_ctx->check_ctx) == NULL || tree == NULL
+      || tree->code != N_MODULE)
+    return -1;
+  list = NL_HEAD (tree->u.ops);
+  if (list == NULL || list->code != N_LIST) return -1;
+  alloc = c2m_alloc (c2m_ctx);
+  before_all = n_errors;
+  VARR_TRUNC (node_t, call_nodes, 0);
+  VARR_TRUNC (node_t, possible_incomplete_decls, 0);
+  VARR_CREATE (int, item_wm, alloc, 64);
+  /* Unrolled check(module, NULL): its N_MODULE arm plus the N_LIST child's
+     loop, so each top-level item is a separate check call. */
+  VARR_PUSH (node_t, context_stack, NULL);
+  create_node_scope (c2m_ctx, tree);
+  top_scope = curr_scope;
+  VARR_PUSH (node_t, context_stack, tree);
+  index = 0;
+  for (n = NL_HEAD (list->u.ops); n != NULL; n = NL_NEXT (n), index++) {
+    VARR_PUSH (int, item_wm, (int) VARR_LENGTH (node_t, possible_incomplete_decls));
+    before = n_errors;
+    check (c2m_ctx, n, list);
+    if (n_errors > before && cb != NULL) cb (n, index, n_errors - before, data);
+  }
+  VARR_POP (node_t, context_stack);
+  finish_scope (c2m_ctx);
+  VARR_POP (node_t, context_stack);
+  /* do_context's trailing sweep, attributed via the per-item watermarks. */
+  n_items = (size_t) index;
+  {
+    size_t n_incomplete = VARR_LENGTH (node_t, possible_incomplete_decls);
+    size_t item = 0;
+    node_t item_node = NL_HEAD (list->u.ops);
+    unsigned item_errs = 0;
+
+    for (i = 0; i < n_incomplete; i++) {
+      node_t spec_decl;
+      decl_t decl;
+
+      while (item + 1 < n_items && (size_t) VARR_GET (int, item_wm, item + 1) <= i) {
+        if (item_errs > 0 && cb != NULL) cb (item_node, (int) item, item_errs, data);
+        item_errs = 0;
+        item++;
+        item_node = NL_NEXT (item_node);
+      }
+      spec_decl = VARR_GET (node_t, possible_incomplete_decls, i);
+      decl = spec_decl->attr;
+      before = n_errors;
+      if (incomplete_type_p (c2m_ctx, decl->decl_spec.type))
+        error (c2m_ctx, POS (spec_decl), "incomplete struct or union");
+      item_errs += n_errors - before;
+    }
+    if (item_errs > 0 && cb != NULL) cb (item_node, (int) item, item_errs, data);
+  }
+  VARR_DESTROY (int, item_wm);
+  return (int) (n_errors - before_all);
+}
+
 /* Local Variables:                */
 /* mode: c                         */
 /* page-delimiter: "/\\* New Page" */

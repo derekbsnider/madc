@@ -100,6 +100,25 @@ void c2mir_dump_tree (c2m_ctx_t c2m_ctx, FILE *f, node_t tree);
    matching `c2m -d`'s stage. Mutates the tree; do not compile it afterwards. */
 void c2mir_dump_tree_checked (c2m_ctx_t c2m_ctx, FILE *f, node_t tree);
 
+/* Deep-copy an externally-built AST from src_c2m into dst_c2m (fresh uids,
+   NULL attrs, positions restamped cross-context). Leaf string payloads stay
+   owned by the source context, which must outlive uses of the copy. */
+node_t c2mir_copy_tree (c2m_ctx_t dst_c2m, c2m_ctx_t src_c2m, node_t tree);
+
+/* Detach a direct child from a composite node's op list (splice-out). */
+void c2mir_op_remove (node_t n, node_t op);
+
+/* Run the context checker over an N_MODULE tree, attributing check errors to
+   the module's top-level items: cb fires once per defective item with the item
+   node, its 0-based index in the module's list, and its error count (the
+   trailing incomplete-decl sweep is attributed too). Returns total new errors
+   (0 = clean) or -1 on misuse. Mutates the tree and is not idempotent per
+   context — check a c2mir_copy_tree copy in a fresh compile context per round;
+   never compile or re-check the same tree. */
+int c2mir_check_tree (c2m_ctx_t c2m_ctx, node_t tree,
+                      void (*cb) (node_t top_item, int index, unsigned n_errs, void *data),
+                      void *data);
+
 #ifdef __cplusplus
 }
 #endif
