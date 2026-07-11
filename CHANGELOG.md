@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [v0.34.0] — 2026-07-11
+
+The pack-time drain release: the packed madc binary carries fully-evaluated
+header bodies (Phase 2 rung 1), runs the entire integration suite 681/681,
+and dev/-O2-packed binaries now coexist (`bin/madc` / `bin/madc-release`).
+
 ### Data-substrate Track B — the embedded header forest
 
 - **Phase 2 RUNG 1 CLOSED (2026-07-11) — pack-time deferred-body drain.**
