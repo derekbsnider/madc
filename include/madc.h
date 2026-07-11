@@ -1968,9 +1968,17 @@ public:
 	// flag). False for free/namespace templates AND for STATIC member
 	// templates (those stay on the free-function parse).
 	bool instance_method;
+	// Identity base for the instantiation memo (fn_template_instantiated):
+	// when non-empty, the memo keys on THIS + "<binding>" instead of the
+	// registration key. A member-template instantiation registers under a
+	// per-request unique symbol (`__mti`, `__mti__oN`), so keying the memo
+	// on that name lets two call SHAPES that resolve to the SAME binding
+	// mint duplicate definitions — g++ has one instantiation per
+	// (template, binding). Set to the placeholder's stable symbol.
+	std::string inst_identity;
 	FnTemplateDef() : typeparams(), typeparam_defaults(), typeparam_is_type(),
 	    typeparam_is_pack(), decl(), ns(), inline_builtin_kind(),
-	    owner_class(NULL), instance_method(false) {}
+	    owner_class(NULL), instance_method(false), inst_identity() {}
     };
     madc::dis::intern_keyed_map<std::vector<FnTemplateDef>> fn_template_map; // keyed via template_name_pool (enumerated via for_each)
     // BODY-LESS free/namespace function template declarations (no `{ body }` to

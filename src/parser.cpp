@@ -1665,6 +1665,39 @@ static std::string namespace_function_symbol(const std::string &ns_name,
     return sym;
 }
 
+// Deterministic, order-independent symbol suffix for a namespace-function
+// TEMPLATE-INSTANTIATION product, derived from the instantiated parameter-list
+// spelling (the overload's identity): live parse, pack drain, and bound
+// consumers mint the SAME symbol no matter which binding instantiates first.
+// The registration-order `__oN` bump made a packed body's callee symbol depend
+// on drain order, diverging from a live parse of the same TU (forest
+// LOADED == PARSED, vecbind gate). Head = sanitized spelling (human hint,
+// capped); tail = FNV-1a 32 hash of the raw spelling (the identity).
+static std::string overload_spelling_symbol_suffix(const std::string &spelling)
+{
+    std::string sfx = "__i";
+    for ( size_t i = 0; i < spelling.size() && sfx.size() < 64; ++i )
+    {
+	char c = spelling[i];
+	if ( isalnum((unsigned char)c) || c == '_' )
+	    sfx += c;
+	else if ( c == '*' )
+	    sfx += 'P';
+	else if ( c == '&' )
+	    sfx += 'R';
+	// other chars (spaces, <>, ::, commas) drop from the readable head
+    }
+    uint32_t h = 2166136261u;
+    for ( size_t i = 0; i < spelling.size(); ++i )
+    {
+	h ^= (unsigned char)spelling[i];
+	h *= 16777619u;
+    }
+    char buf[16];
+    snprintf(buf, sizeof(buf), "_%08x", h);
+    return sfx + buf;
+}
+
 static std::vector<std::string> namespace_qualifiers(const std::string &ns_name)
 {
     std::vector<std::string> out;
@@ -33695,7 +33728,8 @@ static bool call_involves_placeholder(TokenCallFunc *tc)
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc,
 	std::vector<DataDef *> *type_args_out = NULL,
-	std::vector<std::vector<DataDef *> > *type_arg_packs_out = NULL)
+	std::vector<std::vector<DataDef *> > *type_arg_packs_out = NULL,
+	Variable **var_out = NULL)
 {
     InstTimer _it(pgm);	// --show-stats: instantiation time
     if ( type_args_out )
@@ -34076,7 +34110,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     }
 #endif
     return instantiate_fn_template_binding(pgm, ft, key, binding, pack_param,
-					    pack_empty, NULL, pack_elems, tid_packs,
+					    pack_empty, var_out, pack_elems, tid_packs,
 					    tid_pack_spellings, tid_packs_nontype,
 					    type_args_out, type_arg_packs_out);
 }
@@ -34321,7 +34355,12 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	return false;
     }
 
-    std::string inst_key = key + "<";
+    // Memo identity: a member-template instantiation's registration key is a
+    // per-request unique symbol (`__mti`/`__mti__oN`), so the memo must key on
+    // the caller-provided stable identity or identical bindings never collide
+    // (duplicate definitions per call shape — see FnTemplateDef::inst_identity).
+    std::string inst_key = (ft.inst_identity.empty() ? key : ft.inst_identity)
+			   + "<";
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
 	inst_key += (binding.count(ft.typeparams[i])
 		     ? binding[ft.typeparams[i]]->name : std::string()) + ",";
@@ -35154,7 +35193,11 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		FuncDef *pfd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
 		if ( !tf || !pfd || pfd->declaration_only )
 		    continue;
-		if ( pfd->namespace_name + "::" + pfd->function_display_name != key )
+		// A member-template instantiation registers under the renamed
+		// declarator symbol (== key), not a ns::display_name pair —
+		// match either, so the binding memo can hand the instance back.
+		if ( tf->var.name != key
+		  && pfd->namespace_name + "::" + pfd->function_display_name != key )
 		    continue;
 		if ( !ft.inline_builtin_kind.empty() )
 		    pfd->inline_builtin_kind = ft.inline_builtin_kind;
@@ -36616,6 +36659,20 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     {
 	std::map<std::string, std::string>::iterator mi =
 	    member_fn_inst_names.find(shape_key);
+	// Env-gated probe (MADC_MTI_PROBE=<substr>): the shape-memo decision —
+	// the duplicate-instantiation diagnostic.
+	static const char *_mtp_shape = ::getenv("MADC_MTI_PROBE");
+	if ( _mtp_shape && *_mtp_shape
+	  && tc->var.name.find(_mtp_shape) != std::string::npos )
+	{
+	    Variable *piv = mi != member_fn_inst_names.end()
+			    ? findVariable(mi->second) : NULL;
+	    fprintf(stderr, "MTIPROBE shape=%s memo=%d inst=%s iv=%p ivfd=%d\n",
+		    shape_key.c_str(), (int)(mi != member_fn_inst_names.end()),
+		    mi != member_fn_inst_names.end() ? mi->second.c_str() : "-",
+		    (void *)piv,
+		    piv ? (int)(dynamic_cast<FuncDef *>(piv->type) != NULL) : -1);
+	}
 	if ( mi != member_fn_inst_names.end() )
 	{
 	    Variable *iv = findVariable(mi->second);
@@ -36719,10 +36776,20 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     std::string saved_skip_body = tsubst_skip_body_name;
     if ( fd->dependent_pattern )
 	tsubst_skip_body_name = inst_name;
+    // The instantiation memo keys on the placeholder's STABLE symbol (not the
+    // per-request `__mti__oN` registration name), so a second call SHAPE that
+    // resolves to an already-instantiated binding reuses that instance —
+    // one instantiation per (template, binding), the g++ model. The memo
+    // hands the existing instance back via inst_var; adopt its name below.
+    ft.inst_identity = tc->var.name + "__mti";
+    Variable *inst_var = NULL;
     bool ok = try_instantiate_namespace_fn_template(*this, ft, key, tc,
 						    &concrete_type_args,
-						    &concrete_type_arg_packs);
+						    &concrete_type_arg_packs,
+						    &inst_var);
     tsubst_skip_body_name = saved_skip_body;
+    if ( ok && inst_var && inst_var->name != inst_name )
+	inst_name = inst_var->name;	// binding-memo dedupe: reuse the instance
 #if MADC_DEBUG_FNTPL
     if ( dbg_mti )
 	std::cerr << "FNTPL mti try var=" << tc->var.name
@@ -36738,6 +36805,15 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // call rebuilds). The placeholder's local_emit_name alias stays FIRST-wins
     // for consumers that have no call token in hand.
     member_fn_inst_names[shape_key] = inst_name;
+    // Env-gated probe (MADC_MTI_PROBE=<substr>): the shape-memo store —
+    // pairs with the lookup probe above.
+    {
+	static const char *_mtp_store = ::getenv("MADC_MTI_PROBE");
+	if ( _mtp_store && *_mtp_store
+	  && tc->var.name.find(_mtp_store) != std::string::npos )
+	    fprintf(stderr, "MTIPROBE store shape=%s -> %s\n",
+		    shape_key.c_str(), inst_name.c_str());
+    }
     if ( fd->local_emit_name.empty() )
 	fd->local_emit_name = inst_name;
 #if MADC_DEBUG_FNTPL
@@ -43215,6 +43291,17 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    same = ovset[i].var;
 	    if ( same )
 		parse_id = same->name;
+	    else if ( fn_template_instantiation_depth > 0 )
+	    {
+		// A template-INSTANTIATION product gets an order-independent
+		// symbol derived from its instantiated parameter spelling —
+		// not a registration-order `__oN` slot — so a pack-drain
+		// instantiation and a live use-driven one mint the same name
+		// (forest LOADED == PARSED; the vecbind __niter_base skew).
+		parse_id += overload_spelling_symbol_suffix(ns_overload_spelling);
+		if ( findVariable(parse_id) )	// 32-bit hash collision guard
+		    parse_id = unique_overload_symbol(parse_id);
+	    }
 	    else if ( !ovset.empty() )
 		parse_id = unique_overload_symbol(parse_id);
 	}

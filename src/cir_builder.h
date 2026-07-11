@@ -933,9 +933,14 @@ public:
 	// constructor (the member access is `inst.member`, not `__this->member`).
 	void class_instance_member_ctors(const char *inst, DataDefCLASS *cdd,
 					 node_t items, TokenBase *origin);
-	// True when a class needs an (implicit) destructor: it has a user dtor,
-	// embedded object members, or a base class that needs one.
+	// True when a class needs an (implicit) destructor — the g++
+	// [class.dtor] TRANSITIVE test: a user dtor, an embedded object member
+	// whose class itself needs one, or a base that needs one. A class whose
+	// members are all trivially destructible is trivially destructible: no
+	// synth dtor is emitted and no cleanup attribute references one (gcc
+	// emits nothing for such classes either). Memoized per builder.
 	bool class_needs_dtor(DataDefCLASS *cdd);
+	std::map<DataDefCLASS *, bool> m_needs_dtor_memo;
 	// The class's OWN destructor method (the one it wrote itself), or NULL.
 	// Found name-independently: the method_map carries a "~"-prefixed key for
 	// every reachable dtor (own + inherited via the base-merge at parser.cpp

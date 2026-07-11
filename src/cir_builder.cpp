@@ -8401,9 +8401,30 @@ bool CirBuilder::class_needs_dtor(DataDefCLASS *cdd)
 {
 	if (!cdd) return false;
 	if (cdd->has_user_dtor) return true;
-	if (class_has_object_members(cdd)) return true;
-	if (cdd->base_class && class_needs_dtor(cdd->base_class)) return true;
-	return false;
+	std::map<DataDefCLASS *, bool>::iterator mi = m_needs_dtor_memo.find(cdd);
+	if (mi != m_needs_dtor_memo.end()) return mi->second;
+	// Transitive triviality ([class.dtor]): an object member forces a dtor
+	// only if the member's OWN class needs destruction. The old shallow
+	// any-class-member test minted no-op dtors for trivial wrappers
+	// (__normal_iterator, move_iterator, __uses_alloc0) that gcc never
+	// emits — and, because Pass 1.6 emission sweeps struct_map (state,
+	// not references), a bound grove (which holds MORE classes than a
+	// live parse of the same TU) emitted a different module than live
+	// (forest vecbind gate). Cycle guard: in-progress classes read as
+	// trivial (a by-value cycle is ill-formed anyway).
+	m_needs_dtor_memo[cdd] = false;
+	bool needs = false;
+	for (const auto &m : cdd->members) {
+		DataDefCLASS *mc = as_class_instance(m.second);
+		if (mc && class_needs_dtor(mc)) { needs = true; break; }
+	}
+	if (!needs && cdd->base_class && class_needs_dtor(cdd->base_class))
+		needs = true;
+	if (!needs)
+		for (const BaseSpec &b : cdd->bases)
+			if (b.base && class_needs_dtor(b.base)) { needs = true; break; }
+	m_needs_dtor_memo[cdd] = needs;
+	return needs;
 }
 
 Variable *CirBuilder::class_own_dtor(DataDefCLASS *cdd)
