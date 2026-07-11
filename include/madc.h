@@ -1634,6 +1634,15 @@ public:
     madc::dis::intern_keyed_map<TokenBase *> cpp_operator_map;
     madc::dis::intern_table type_name_pool;	// dedicated dense pool for flat type-name keys
     flat_datatype_map_t datatype_map;	// TokenDataType map (interned, keyed via type_name_pool)
+    // Block-scope typedef shadow frames — one per live compound depth. Each
+    // entry records (alias, the flat datatype_map entry it shadowed, or NULL).
+    // register_scoped_typedef() records; unwind_block_typedef_shadows() restores
+    // at block exit so a local typedef's meaning ends with its block
+    // ([basic.scope.block]) instead of leaking into the flat map forever.
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	block_typedef_shadows;
+    void register_scoped_typedef(const std::string &alias, TokenDataType *tdt);
+    void unwind_block_typedef_shadows(size_t depth, const char *site = "?");
     // Dedicated dense pool for the template-name domain (template/partial-spec/
     // alias/var-template/fn-template map keys). Separate from strpool so each
     // intern_keyed_map's _slot array stays sized to the small template-name set,

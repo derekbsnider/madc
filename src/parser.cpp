@@ -4329,6 +4329,12 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // clear the function context, instantiate, then restore.
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(compounds, saved_compounds);
+    // The block-typedef shadow frames belong to the swapped-out compound
+    // context — swap them in lockstep or the fresh context's pop/push unwinds
+    // the CALLER's block-scope typedefs mid-body.
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	saved_typedef_shadows;
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::string saved_func = cur_func_name;
@@ -4413,6 +4419,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    class_scope_stack.pop_back();
 	std::swap(class_scope_stack, saved_class_scope_stack);
 	std::swap(compounds, saved_compounds);
+	// Unwind the fresh context's frames FIRST (a swallowed throw can leave
+	// them un-popped with their flat entries live), THEN restore the caller's.
+	unwind_block_typedef_shadows(0, "A-catch");
+	std::swap(block_typedef_shadows, saved_typedef_shadows);
 	cur_func_name = saved_func;
 	class_definition_only = saved_def_only;
 	parsing_cpp_struct_class = saved_cpp_struct_class;
@@ -4429,6 +4439,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::swap(compounds, saved_compounds);
+    unwind_block_typedef_shadows(0, "A-norm");
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
     cur_func_name = saved_func;
     class_definition_only = saved_def_only;
     parsing_cpp_struct_class = saved_cpp_struct_class;
@@ -5093,6 +5105,15 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
     DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(&owner_type->definition);
     if ( !owner )
 	return NULL;
+    // Env-gated probe (MADC_TYPENAME_PROBE=<substr of first name>): trace every
+    // owner hop of a `typename A::B::...` chain — the owner-swap diagnostic.
+    static const char *tnp = ::getenv("MADC_TYPENAME_PROBE");
+    bool tnp_on = tnp && *tnp && is_contextual_identifier_token(first)
+	       && contextual_identifier_name(first).find(tnp) != std::string::npos;
+    if ( tnp_on )
+	fprintf(stderr, "TNPROBE head %s -> %s incomplete=%d\n",
+		contextual_identifier_name(first).c_str(),
+		owner->name.c_str(), (int)is_incomplete_class_datadef(owner));
     if ( is_incomplete_class_datadef(owner) )
     {
 	request_template_instantiation_completion(owner->name);
@@ -5101,6 +5122,8 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	    owner = dynamic_cast<DataDefCLASS *>(&(*refreshed)->definition);
 	if ( !owner )
 	    return NULL;
+	if ( tnp_on )
+	    fprintf(stderr, "TNPROBE head-refresh -> %s\n", owner->name.c_str());
     }
 
     while ( peekToken() && peekToken()->id() == TokenID::tkNS )
@@ -5113,6 +5136,8 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 		owner = dynamic_cast<DataDefCLASS *>(&(*refreshed)->definition);
 	    if ( !owner )
 		return NULL;
+	    if ( tnp_on )
+		fprintf(stderr, "TNPROBE loop-refresh -> %s\n", owner->name.c_str());
 	}
 	nextToken(); // consume ::
 	TokenBase *member_tb = nextToken();
@@ -5122,6 +5147,9 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	    Throw(member_tb ? member_tb : typename_tb)
 		<< "Expecting member type after '::' in typename" << flush;
 	std::string member_name = contextual_identifier_name(member_tb);
+	if ( tnp_on )
+	    fprintf(stderr, "TNPROBE hop owner=%s member=%s\n",
+		    owner->name.c_str(), member_name.c_str());
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
 	    if ( TokenDataType *inst =
@@ -5139,6 +5167,9 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	}
 
 	DataDef *alias_dd = resolve_class_type_alias(owner, member_name);
+	if ( tnp_on )
+	    fprintf(stderr, "TNPROBE alias %s::%s -> %s\n", owner->name.c_str(),
+		    member_name.c_str(), alias_dd ? alias_dd->name.c_str() : "(null)");
 	if ( !alias_dd && class_allows_opaque_member_type(owner) )
 	    alias_dd = materialize_dependent_member_type(owner, member_name);
 	if ( !alias_dd )
@@ -14779,6 +14810,9 @@ void Program::pushCompound()
 
     ++_braces;
 
+    // Heal shadow frames left deeper than the live compound stack (an exception
+    // path that popped compounds directly) before this block opens its own.
+    unwind_block_typedef_shadows(compounds.size(), "pushCompound");
     if ( compounds.empty() )
     {
 	DBG(std::cout << "pushCompound(" << _braces << ") function" << std::endl);
@@ -14800,6 +14834,68 @@ void Program::popCompound()
     --_braces;
     if ( !compounds.empty() )
 	compounds.pop();
+    unwind_block_typedef_shadows(compounds.size(), "popCompound");
+}
+
+// A BLOCK-scope typedef/alias registers in the flat datatype_map (that is how
+// in-block uses resolve), but its meaning must END with its block
+// ([basic.scope.block]). Record what the flat entry held before, per compound
+// frame; unwinding restores the outer meaning (or erases). Frames are created
+// lazily up to the current compound depth so the vector indexes align with
+// compound depth even when outer blocks declared no typedefs.
+// Env-gated probe (MADC_TYPEDEF_SHADOW_PROBE=<substr of alias>): every
+// scoped-typedef registration and unwind touching a matching alias.
+static const char *typedef_shadow_probe()
+{
+    static const char *p = ::getenv("MADC_TYPEDEF_SHADOW_PROBE");
+    return (p && *p) ? p : NULL;
+}
+
+void Program::register_scoped_typedef(const std::string &alias, TokenDataType *tdt)
+{
+    if ( !compounds.empty() )
+    {
+	while ( block_typedef_shadows.size() < compounds.size() )
+	    block_typedef_shadows.push_back(
+		std::vector<std::pair<std::string, TokenDataType *> >());
+	flat_datatype_map_iter prev = datatype_map.find(alias);
+	block_typedef_shadows.back().push_back(
+	    std::make_pair(alias, prev != datatype_map.end()
+				  ? *prev : (TokenDataType *)NULL));
+    }
+    if ( const char *sp = typedef_shadow_probe() )
+	if ( alias.find(sp) != std::string::npos )
+	    fprintf(stderr, "TDSHADOW reg %s = %s depth=%zu frames=%zu in=%s\n",
+		    alias.c_str(), tdt->definition.name.c_str(),
+		    compounds.size(), block_typedef_shadows.size(),
+		    cur_func_name.c_str());
+    datatype_map[alias] = tdt;
+}
+
+void Program::unwind_block_typedef_shadows(size_t depth, const char *site)
+{
+    while ( block_typedef_shadows.size() > depth )
+    {
+	std::vector<std::pair<std::string, TokenDataType *> > &frame =
+	    block_typedef_shadows.back();
+	for ( size_t i = frame.size(); i-- > 0; )
+	{
+	    if ( const char *sp = typedef_shadow_probe() )
+		if ( frame[i].first.find(sp) != std::string::npos )
+		    fprintf(stderr, "TDSHADOW unwind %s -> %s target=%zu"
+			    " frames=%zu site=%s in=%s\n", frame[i].first.c_str(),
+			    frame[i].second
+				? frame[i].second->definition.name.c_str()
+				: "(erase)",
+			    depth, block_typedef_shadows.size(),
+			    site, cur_func_name.c_str());
+	    if ( frame[i].second )
+		datatype_map[frame[i].first] = frame[i].second;
+	    else
+		datatype_map.erase(frame[i].first);
+	}
+	block_typedef_shadows.pop_back();
+    }
 }
 
 void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exStack)
@@ -23520,8 +23616,9 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		// current_namespace() set — real <bits/alloc_traits.h>
 		// __alloc_on_swap declares `using __pocs = ...;` locally and
 		// then constructs `__pocs()` in expression position).
+		// Scoped registration: the flat entry is restored at block exit.
 		if ( pgm.current_namespace().empty() || !pgm.compounds.empty() )
-		    pgm.datatype_map[alias_name] = alias_tdt;
+		    pgm.register_scoped_typedef(alias_name, alias_tdt);
 	    }
 	    // Namespace visibility is for NAMESPACE-scope aliases only — a
 	    // block-scope alias must not leak into the namespace type map.
@@ -24315,7 +24412,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		pgm.Throw(tn) << "Identifier already defined" << flush;
 	    }
 	    tdt = new TokenDataType(alias_name.c_str(), *alias_dd);
-	    pgm.datatype_map[alias_name] = tdt;
+	    pgm.register_scoped_typedef(alias_name, tdt);
 	    // also register tag in struct_map so "struct tag" works
 	    if ( !alias_dd->is_pointer() )
 	    {
@@ -25263,7 +25360,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	      && &(*bmi)->definition != alias_dd )
 		pgm.Throw(tn) << "Identifier '" << alias->spelling() << "' already defined" << flush;
 	    tdt = new TokenDataType(alias->spelling(), *alias_dd);
-	    pgm.datatype_map[alias->spelling()] = tdt;
+	    pgm.register_scoped_typedef(alias->spelling(), tdt);
 	    if ( alias_dd == dds )
 	    {
 		pgm.pack_tap_struct(alias->spelling());	// B4a tap
@@ -25973,6 +26070,7 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	// THIS frame pushed before the try.
 	while ( compounds.size() > saved_compounds )
 	    compounds.pop();
+	unwind_block_typedef_shadows(compounds.size(), "derive-body-catch");
 	while ( class_scope_stack.size() > saved_class_scopes )
 	    class_scope_stack.pop_back();
 	for ( size_t i = 0; i < pushed_scope_count && !class_scope_stack.empty(); ++i )
@@ -26079,6 +26177,7 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	    // the requested symbol (the body silently lost to consumers).
 	    while ( compounds.size() > saved_compounds )
 		compounds.pop();
+	    unwind_block_typedef_shadows(compounds.size(), "derive-lazy-catch");
 	    while ( class_scope_stack.size() > saved_class_scopes )
 		class_scope_stack.pop_back();
 	    {
@@ -26377,6 +26476,11 @@ static void parse_hoisted_friend_operator(Program &pgm,
 	pgm.pushToken(*it);
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(pgm.compounds, saved_compounds);
+    // Block-typedef shadow frames travel with the compound context (see
+    // instantiate_template_use) — swap in lockstep.
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	saved_typedef_shadows;
+    std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     // [class.friend]: a friend DEFINED inside the class has its names
@@ -26405,6 +26509,10 @@ static void parse_hoisted_friend_operator(Program &pgm,
 	pgm.nextToken();
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     std::swap(pgm.compounds, saved_compounds);
+    // Unwind the fresh context's frames FIRST (a swallowed throw leaves them
+    // un-popped with their flat entries live), THEN restore the caller's.
+    pgm.unwind_block_typedef_shadows(0, "friend-op");
+    std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
     pgm.cur_func_name = saved_func;
 }
 
@@ -27123,7 +27231,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    }
 	    tdt = new TokenDataType(alias->spelling(), *dmi->second);
 	    pgm.pack_tap_type(alias->spelling());	// B4a tap (typedef class alias)
-	    pgm.datatype_map[alias->spelling()] = tdt;
+	    pgm.register_scoped_typedef(alias->spelling(), tdt);
 	    return NULL;
 	}
 	tdt = new TokenDataType(tag->spelling(), *dmi->second);
@@ -28544,7 +28652,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	tdt = new TokenDataType(alias->spelling(), *ddc);
 	pgm.pack_tap_type(alias->spelling());	// B4a tap (typedef class {...} alias)
 	pgm.pack_tap_struct(alias->spelling());
-	pgm.datatype_map[alias->spelling()] = tdt;
+	pgm.register_scoped_typedef(alias->spelling(), tdt);
 	pgm.struct_map[alias->spelling()] = ddc;
 	return NULL;
     }
@@ -29523,7 +29631,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 		pgm.current_namespace() + "::" + alias;
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *enum_alias_dd);
 	if ( pgm.class_scope_stack.empty() )
-	    pgm.datatype_map[alias] = tdt;
+	    pgm.register_scoped_typedef(alias, tdt);
 	DBG(std::cout << "TokenTYPEDEF::parse() enum alias " << alias << " = int" << std::endl);
 
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
@@ -29655,7 +29763,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	fptr->ptr_syntax = true;   // Form 2: explicit `(*NAME)` — pointer typedef
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
 	if ( pgm.class_scope_stack.empty() )
-	    pgm.datatype_map[alias] = tdt;
+	    pgm.register_scoped_typedef(alias, tdt);
 	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 2): " << alias << std::endl);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
@@ -29720,7 +29828,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	fptr->ptr_syntax = false;  // Form 1: `typedef RET NAME(params)` — function typedef
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
 	if ( pgm.class_scope_stack.empty() )
-	    pgm.datatype_map[alias] = tdt;
+	    pgm.register_scoped_typedef(alias, tdt);
 	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 1): " << alias << std::endl);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
@@ -29793,7 +29901,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	pgm.template_completion_requested.insert(base_dd->name);
     TokenDataType *tdt = new TokenDataType(alias.c_str(), *base_dd);
     if ( pgm.class_scope_stack.empty() )
-	pgm.datatype_map[alias] = tdt;
+	pgm.register_scoped_typedef(alias, tdt);
     DBG(std::cout << "TokenTYPEDEF::parse() " << alias << " = " << base_dd->name << std::endl);
 
     // consume semicolon
@@ -34885,6 +34993,13 @@ static bool instantiate_fn_template_binding(Program &pgm,
 
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(pgm.compounds, saved_compounds);
+    // Block-typedef shadow frames travel with the compound context (see
+    // instantiate_template_use) — swap in lockstep, or the fresh context's
+    // function-level pushCompound heal unwinds the CALLER's block typedefs
+    // mid-body (the __relocate_object_a `__traits` erasure).
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	saved_typedef_shadows;
+    std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     // A MEMBER function template instantiates with its owner class in scope so
@@ -34962,6 +35077,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
 
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     std::swap(pgm.compounds, saved_compounds);
+    // Unwind the fresh context's frames FIRST (a swallowed throw leaves them
+    // un-popped with their flat entries live), THEN restore the caller's.
+    pgm.unwind_block_typedef_shadows(0, "fntpl-binding");
+    std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
     pgm.cur_func_name = saved_func;
     pgm.current_linkage = saved_linkage;
     pgm.unevaluated_operand_depth = saved_uneval;
@@ -36184,6 +36303,11 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     // one, hijacking it (testlocalclassraii undefined `__patN__..Guard` import).
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(compounds, saved_compounds);
+    // Block-typedef shadow frames travel with the compound context (see
+    // instantiate_template_use) — swap in lockstep.
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	saved_typedef_shadows;
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
 
     // Phase-5 slice 1: a CONSTRUCTOR pattern must parse its `: mem-init` span
     // into ctor_initializers instead of the skip loop discarding it (the
@@ -36213,6 +36337,10 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     catch ( ... ) { parsed_pattern = false; }
     dependent_pattern_ctor_inits = saved_pat_ctor_inits;
     std::swap(compounds, saved_compounds);
+    // Unwind the fresh context's frames FIRST (a swallowed throw leaves them
+    // un-popped with their flat entries live), THEN restore the caller's.
+    unwind_block_typedef_shadows(0, "B-pattern");
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
     // A poisoned parse (an unresolved dependent call SWALLOWED into a `0`
     // placeholder) produced a structurally-valid but semantically-wrong tree —
     // treat it exactly like a parse failure so tsubst never copies it.
@@ -36330,6 +36458,11 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
 	pushToken(*it);
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(compounds, saved_compounds);
+    // Block-typedef shadow frames travel with the compound context (see
+    // instantiate_template_use) — swap in lockstep.
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	saved_typedef_shadows;
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::string saved_func = cur_func_name;
@@ -36358,6 +36491,8 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
     catch ( ... ) { parsed = false; }
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::swap(compounds, saved_compounds);
+    unwind_block_typedef_shadows(0, "C-ool");
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
     cur_func_name = saved_func;
     class_definition_only = saved_def_only;
     parsing_cpp_struct_class = saved_cpp_struct_class;
@@ -38612,6 +38747,11 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 
 	std::stack<TokenCpnd *> saved_compounds;
 	std::swap(pgm.compounds, saved_compounds);
+	// Block-typedef shadow frames travel with the compound context (see
+	// instantiate_template_use) — swap in lockstep.
+	std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	    saved_typedef_shadows;
+	std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
 	std::vector<DataDefCLASS *> saved_class_scope_stack;
 	std::swap(pgm.class_scope_stack, saved_class_scope_stack);
 	std::string saved_func = pgm.cur_func_name;
@@ -38646,6 +38786,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		pgm.class_scope_stack.pop_back();
 	    std::swap(pgm.class_scope_stack, saved_class_scope_stack);
 	    std::swap(pgm.compounds, saved_compounds);
+	    pgm.unwind_block_typedef_shadows(0, "spec-catch");
+	    std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
 	    pgm.cur_func_name = saved_func;
 	    pgm.instantiating_canonical_spelling = saved_canon;
 	    pgm.instantiating_dependent_surface = saved_dependent_surface;
@@ -38659,6 +38801,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 
 	std::swap(pgm.class_scope_stack, saved_class_scope_stack);
 	std::swap(pgm.compounds, saved_compounds);
+	pgm.unwind_block_typedef_shadows(0, "spec-norm");
+	std::swap(pgm.block_typedef_shadows, saved_typedef_shadows);
 	pgm.cur_func_name = saved_func;
 	pgm.instantiating_canonical_spelling = saved_canon;
 	pgm.instantiating_dependent_surface = saved_dependent_surface;
