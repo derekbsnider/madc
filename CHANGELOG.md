@@ -4,6 +4,31 @@
 
 ### Data-substrate Track B — the embedded header forest
 
+- **Phase 2 RUNG 1 CLOSED (2026-07-11) — pack-time deferred-body drain.**
+  A `--freeze`/`--freeze-append` parse now drains every deferred body to
+  fixpoint and freezes the translated defs through the existing v22/v26
+  machinery, with error-tolerant reverts (no silent caps): a drain failure
+  re-inserts the DEFBODY; a cascade drop of an eager-parsed SOURCE fn
+  reverts to its captured body span (the std::abs carry — this restored
+  packed `std::stoi`/`stod`, the packed suite's last two failures); only
+  local-class methods and instantiation-context products stay
+  consumer-invisible (re-instantiated fresh, live semantics). Pack-side
+  c2mir CHECK GATE (fork `c2mir_check_tree`/`c2mir_copy_tree` @062dd977,
+  `MIR_COMMIT` bumped) validates every drained lowering at pack time and
+  drops defective defs by top-item attribution; `--run-frozen` prebinds
+  unresolved drained-library imports to named trap stubs. EMISSION SPLIT:
+  tree membership (what `--run-frozen` compiles) is decoupled from
+  consumer visibility (what stamps `DF_HAS_FOREST_BODY`), preserving
+  whole-TU byte-identity by construction. Exit gates all green at
+  @b635feea: **fulltest rc=0 (suite 681/0/0/16 + every ratchet + both
+  oracles — first fully-green fulltest of the rung-1 era), packed suite
+  681/681, bind gate 18/18** incl. the owner's bar (testsubscript
+  freeze+bind == live == .expect). Consumer-side body derivations on
+  testsubscript: 217 live → 187 bound; the fallback tail + corpus growth
+  (44,689 → six-figure records) are rung 2's target, as planned. The
+  forest_index_oracle also learned the `__i<spelling>_<fnv1a32>`
+  instantiation-mangle scheme (first oracle run since that scheme landed).
+
 - **CAMPAIGN CLOSED (2026-07-09).** The 2026-06-22 embedded-header-forest
   execution plan is stamped CLOSED — every Definition-of-Done bar met at
   container format v27 (close commit @2e6d8d2e). **Item 5 (lazy defrost):**

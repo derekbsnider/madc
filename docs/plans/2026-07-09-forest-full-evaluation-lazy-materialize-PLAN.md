@@ -126,3 +126,42 @@ vs bound; packed suite 680/680; bind gate 18/18; fulltest. Headline metric:
 bound testsubscript -O2 wall (baseline 0.665s; diagnostic floor with all
 products warm was 0.399s; target = startup + user-product instantiation
 only).
+
+## Rung 1 CLOSED — close-out measurement (2026-07-11)
+
+**Exit gates (all met, branch feature/forest-rung1-drain-claude @b635feea):**
+fulltest rc=0 — suite 681/0/0/16 + hardcoding + call-emit + warn census +
+tag-arith + tsubst flag-on + forest_selfexe + forest_bind 18/18 (incl. the
+owner's bar: testsubscript freeze+bind == live == .expect) + forest_index
+oracle + forest_dm oracle: the first fully-green fulltest of the rung-1
+era. Packed suite **681/681** (0 failed, 0 timed out) after the span-carry
+fix restored packed std::stoi/stod (teststod + teststdstringconv were the
+last two packed failures; root cause and fix in commit b635feea).
+
+**Phase re-measure (testsubscript; NAS load avg ~4–5.5 during measurement —
+absolute walls are confounded; same-load relative comparisons hold):**
+
+| metric                        | live      | bound (packed) |
+|-------------------------------|-----------|----------------|
+| -O0 wall (dev, 3-run range)   | 2.63–2.76s| 2.08s          |
+| -O2 wall (release, range)     | 1.29–1.62s| 1.23–1.34s     |
+| parse_deferred_lazy_body      | 217       | **187**        |
+| instantiate calls (-O0 stats) | —         | 3882 (0.682s)  |
+| cir build (-O0 stats)         | —         | 1.072s         |
+
+**Verdict vs plan targets:** the drain machinery is correct end-to-end
+(byte-identity everywhere), but the consumer-side derivation count moved
+207 → 187, not → 0: the drained corpus reverts a large fallback tail to
+DEFBODY/span carry (all logged per-freeze — ~32 span-carry reverts + the
+local-class/instantiation-product families in a <string> freeze), and the
+un-drained tail still derives on use. The -O2 bound wall did not reproduce
+the 0.665s baseline under load; the plan-anticipated corpus growth
+(44,689 → six-figure records, eagerly materialized) is the other headwind —
+**rung 2 (lazy materialization) is where that cost is recovered**, as
+planned. Headline re-measure should repeat on a quiet machine at rung-2
+close.
+
+**Residual (recorded, not blocking):** drain-failure families in the pack
+log (parser gaps in bodies nobody calls — e.g. the spurious multi-return
+`extract` misparse, `__cerb` iostream internals, chained-arrow) each revert
+tolerantly; burning them down widens warm coverage and is rung-2+ fuel.
