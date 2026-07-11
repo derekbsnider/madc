@@ -2159,6 +2159,24 @@ public:
 	std::vector<std::vector<TokenBase *>> raw_arg_tokens;
     };
     std::map<DataDef *, DependentShellOrigin> dependent_shell_origin;
+    // Provenance for DERIVED dependent placeholders — the `X__deref` /
+    // `Owner__member` opaques minted by dependent_deref_result_type /
+    // materialize_dependent_member_type: the SOURCE type + derivation kind,
+    // so tsubst can RE-DERIVE the concrete type under an instance
+    // substitution (deref of `_ForwardIterator` re-derives to the element
+    // type once _ForwardIterator = elem*). Without it the opaque leaks into
+    // instantiation bindings as if it were concrete — the
+    // `_Destroy<_ForwardIterator__deref>` no-op husk that silently swallows
+    // element destructors. In-memory only; opaques never freeze.
+    struct DependentDerivedOrigin {
+	DataDef *source = NULL;
+	enum Kind { Deref, MemberType } kind = Deref;
+	std::string member;			// MemberType only
+    };
+    std::map<DataDef *, DependentDerivedOrigin> dependent_derived_origin;
+    // Thin public accessor over the class-scope member-type lookup
+    // (type_aliases + bases + enclosing walk) for the tsubst re-derivation.
+    static DataDef *class_member_type(DataDefCLASS *cls, const std::string &name);
     std::set<std::string> template_completion_requested;    // mangled template aliases that should be completed when body appears
     std::set<std::string> template_instantiated;           // mangled names done
     std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup

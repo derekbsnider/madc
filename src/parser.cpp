@@ -1914,6 +1914,14 @@ static DataDef *resolve_class_type_alias(DataDefCLASS *cls, const std::string &n
     return NULL;
 }
 
+// Public wrapper over the file-static class-scope member-type lookup —
+// consumed by the tsubst re-derivation of Owner__member dependent
+// placeholders (cir_builder rebuild_dependent_derived).
+DataDef *Program::class_member_type(DataDefCLASS *cls, const std::string &name)
+{
+    return resolve_class_type_alias(cls, name);
+}
+
 // Class-scope `using <Base>::<member>;` ([namespace.udecl]): import the base
 // class's <member> overload(s) into THIS class's overload set so they compete
 // with the class's own same-name overloads (a using-declaration defeats name
@@ -3559,6 +3567,14 @@ DataDefCLASS *Program::materialize_dependent_member_type(DataDefCLASS *owner,
 
     DataDefCLASS *dep = new DataDefCLASS(dep_name, 0, DataType::dtRESERVED);
     dep->is_dependent_placeholder = true;
+    // Record the derivation so tsubst can re-derive the CONCRETE member type
+    // under an instance substitution (see DependentDerivedOrigin).
+    {
+	DependentDerivedOrigin &org = dependent_derived_origin[dep];
+	org.source = owner;
+	org.kind = DependentDerivedOrigin::MemberType;
+	org.member = member_name;
+    }
     std::string owner_spelling = owner->canonical_cpp_spelling.empty()
 			       ? owner->name : owner->canonical_cpp_spelling;
     dep->canonical_cpp_spelling = owner_spelling + "::" + member_name;
@@ -3606,8 +3622,18 @@ DataDef *Program::dependent_deref_result_type(DataDef *dd)
 	return NULL;
     std::string spelling = dd->canonical_cpp_spelling.empty()
 			 ? dd->name : dd->canonical_cpp_spelling;
-    return materialize_opaque_class_type(
+    DataDefCLASS *dep = materialize_opaque_class_type(
 	sanitize_template_fragment(dd->name + "__deref"), "*" + spelling);
+    // Record the derivation so tsubst can re-derive the CONCRETE deref type
+    // under an instance substitution (see DependentDerivedOrigin).
+    if ( dep && dep->is_dependent_placeholder
+      && !dependent_derived_origin.count(dep) )
+    {
+	DependentDerivedOrigin &org = dependent_derived_origin[dep];
+	org.source = dd;
+	org.kind = DependentDerivedOrigin::Deref;
+    }
+    return dep;
 }
 
 static void record_pending_template_instantiation(

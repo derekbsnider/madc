@@ -1125,6 +1125,54 @@ static DataDef *rebuild_dependent_shell(Program *prog, DataDefCLASS *shell,
 	return &real->definition;
 }
 
+// The structural dependent DERIVED case: an `X__deref` / `Owner__member`
+// opaque whose DependentDerivedOrigin was recorded at mint time re-derives
+// its CONCRETE type by substituting the SOURCE and re-running the
+// derivation (deref of a substituted pointer = its pointee; a member type
+// resolves on the substituted class). NULL = not re-derivable here (no
+// record, nothing substituted, source still dependent, or the concrete
+// derivation has no answer) — the caller keeps the opaque and its own bail
+// semantics. Without this, tsubst re-instantiated pattern callees FROM the
+// opaque as if it were a concrete type — the
+// `_Destroy<_ForwardIterator__deref>` no-op husk that silently swallowed
+// element destructors.
+static DataDef *rebuild_dependent_derived(Program *prog, DataDefCLASS *shell,
+	const std::map<DataDef *, DataDef *> &subst,
+	const std::vector<std::vector<DataDef *> > *packs,
+	const std::map<unsigned, DataDef *> *pack_params)
+{
+	std::map<DataDef *, Program::DependentDerivedOrigin>::const_iterator
+		oit = prog->dependent_derived_origin.find(shell);
+	if (oit == prog->dependent_derived_origin.end())
+		return NULL;
+	const Program::DependentDerivedOrigin &org = oit->second;
+	DataDef *src = subst_datadef(prog, org.source, subst, packs, pack_params);
+	if (!src || src == org.source)
+		return NULL;	// nothing substituted — still the pattern context
+	if (template_param_under_type_layers(src)
+	    || dependent_placeholder_under_type_layers(src))
+		return NULL;	// substitution left it dependent
+	// Unwrap const/ref down to the derivation operand.
+	for (int guard = 0; src && guard < 8; ++guard) {
+		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(src))
+			{ src = cd->base_type; continue; }
+		if (DataDefREF *rd = dynamic_cast<DataDefREF *>(src))
+			{ src = rd->base_type; continue; }
+		break;
+	}
+	if (org.kind == Program::DependentDerivedOrigin::Deref) {
+		// NOTE: DataDefREF derives from DataDefPTR — the ref unwrap
+		// above must run first or `T&` would "deref" to T's pointee.
+		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(src))
+			return pd->base_type;
+		return NULL;	// class-type deref (operator*) — not re-derived here
+	}
+	DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(src);
+	if (!cls)
+		return NULL;
+	return Program::class_member_type(cls, org.member);
+}
+
 static DataDef *subst_datadef(Program *prog, DataDef *dd,
 			      const std::map<DataDef *, DataDef *> &subst,
 			      const std::vector<std::vector<DataDef *> > *packs,
@@ -1173,6 +1221,9 @@ static DataDef *subst_datadef(Program *prog, DataDef *dd,
 		if (shell && shell->is_dependent_placeholder) {
 			DataDef *conc = rebuild_dependent_shell(
 				prog, shell, subst, packs, pack_params);
+			if (!conc)
+				conc = rebuild_dependent_derived(
+					prog, shell, subst, packs, pack_params);
 			if (conc)
 				return conc;
 		}
