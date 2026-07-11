@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- **perf(forest): raw container segments** — the pack no longer compresses
+  forest segments; the reader binds them zero-copy from the image. Bound
+  testsubscript: 5.31G → 4.25G instructions (−20%), 0.98s → 0.91s wall;
+  blob grows ~7MB → ~81MB (paid once at pack, not per compile). Perf
+  ladder to the ~0.1s end target stamped in the phase-2 plan.
+
 ## [v0.34.0] — 2026-07-11
 
 The pack-time drain release: the packed madc binary carries fully-evaluated
