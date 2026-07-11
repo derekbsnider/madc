@@ -1114,6 +1114,14 @@ public:
 	// from funcdef_locs so no DF_HAS_FOREST_BODY stamp points at them.
 	const std::set<std::string> &pack_stamp_exclusions() const
 		{ return pack_stamp_excluded; }
+	// UN-CARRIABLE symbols (pack_dropped): no consumer-side home of ANY
+	// kind — local-class hoists, rolled-back speculative instantiations,
+	// non-reverted drops. The 6b ownerless DEFBODY writer must not plant
+	// a body span for them either (a pattern-spelling span derives into
+	// "Expecting a type argument to iterator_traits<>" — the consumer
+	// RE-INSTANTIATES instead, its standing story).
+	const std::set<std::string> &pack_uncarriable_syms() const
+		{ return pack_dropped; }
 	// Bind ctors/dtor/methods of externally-defined / extern-template classes
 	// to their exported Itanium symbols (dlsym-verified, fills only EMPTY
 	// emit_symbols). Runs early in translate_module; re-run at module end

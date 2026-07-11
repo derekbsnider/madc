@@ -2115,7 +2115,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 //      recorded aggregate (std::string -> the basic_string<char,...> product) emits
 //      a namespaced DK_TYPEDEF record instead. A '<'-bearing template-product key
 //      is skipped (the v10 follow-on, unchanged).
-static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
+static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
+				      const std::set<std::string> *pack_uncarriable)
 {
 	if (!prog || !prog->forest_arena_enabled)
 		return;
@@ -2553,6 +2554,18 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 		// instead (same rule as the deferred-map walk above).
 		if (fd->tsubst_source)
 			continue;
+		// Same rule via the pack's own verdict: an UN-CARRIABLE symbol
+		// (pack_dropped — a product whose def the cascade dropped
+		// without a DEFBODY revert, e.g. __ns_std__Destroy__i* whose
+		// tsubst_source is NULL) must not plant a body span either —
+		// its captured tokens spell PATTERN params (substitution lives
+		// in parser state, not tokens) and the consumer's derive dies
+		// ("Expecting a type argument to iterator_traits<>"). With no
+		// span AND no DF_FUNC_DEF_TOKENS stamp, the was_bodied
+		// declaration drop applies at load and the consumer's fresh
+		// use re-instantiates the pattern — live semantics.
+		if (pack_uncarriable && pack_uncarriable->count(fi->first))
+			continue;
 		uint32_t ftid = madc_type_id_for(fd);
 		madc::dis::defrec fr;
 		if (!madc::dis::arena_id_is_project(ftid)
@@ -2655,7 +2668,8 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f)
 // place; its old payload runs become dead words in the dump (size, not
 // correctness). The walk runs to a fixpoint because recording can stamp fresh
 // project ids (an aggregate first reached as a cross-ref).
-static void cir_forest_arena_refresh(Program *prog)
+static void cir_forest_arena_refresh(Program *prog,
+				     const std::set<std::string> *pack_uncarriable)
 {
 	if (!prog || !prog->forest_arena_enabled || !madc_active_project_types)
 		return;
@@ -2769,6 +2783,15 @@ static void cir_forest_arena_refresh(Program *prog)
 		if (!fd || it->first.empty())
 			continue;
 		if (fd->is_member_template || !fd->template_param_names.empty())
+			continue;
+		// UN-CARRIABLE pack product (pack_dropped): no record at all —
+		// a restored decl-only rank would SHADOW the pattern
+		// placeholder in the consumer's overload set (ranking picks
+		// the concrete-shaped rank, cannot instantiate it — mt=0,
+		// decl=0, tparams=0 — and falls back to the un-emittable BASE
+		// symbol). With no record, a fresh call routes to the pattern
+		// placeholder and instantiates — live semantics.
+		if (pack_uncarriable && pack_uncarriable->count(it->first))
 			continue;
 		uint32_t tid = madc_type_id_for(fd);
 		if (!madc::dis::arena_id_is_project(tid)
@@ -2926,7 +2949,9 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		f.language_std = madc_forest_config_word(prog);	// v27 producer-config gate
 		f.defines_hash = madc_forest_defines_hash(prog);
 		cir_forest_fill_pack_payloads(prog, f);	// grove payload v2 (B4a)
-		cir_forest_arena_refresh(prog);		// re-record live aggregates (post-completion mutations)
+		cir_forest_arena_refresh(prog,
+					 builder ? &builder->pack_uncarriable_syms()
+						 : NULL);	// re-record live aggregates (post-completion mutations)
 		f.arena = prog->forest_arena;		// B3 (v18): the arena dump IS the type-graph serialization
 		// Emission split (rung 1): consumer-excluded defs (local-class
 		// methods, DEFBODY-reverted bodies, their cascade closure) are
@@ -2935,7 +2960,9 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		if (builder)
 		    for (const std::string &sym : builder->pack_stamp_exclusions())
 			f.funcdef_locs.erase(sym);
-		cir_forest_arena_complete(prog, f);	// freeze-time fidelity (inline bodies / typedefs / ns)
+		cir_forest_arena_complete(prog, f,
+					  builder ? &builder->pack_uncarriable_syms()
+						  : NULL);	// freeze-time fidelity (inline bodies / typedefs / ns)
 		cir_forest_fill_globals(prog, f);	// file-scope globals (CIR_GLOBALS; ids swizzle via the arena)
 		cir_forest_fill_templates(prog, f);	// v20: template-NAME state (pattern maps, token runs)
 		PchCompression codec = PchCompression::Zlib;
