@@ -2,8 +2,11 @@
 
 - Always use `make -C src` to build (not `make` from root)
 - Use `make -C src clean` then `make -C src` for a full rebuild
-- The binary lands at `bin/madc`
-- All object files go to `obj/`
+- The dev binary lands at `bin/madc` (-O0); `make -C src release` produces
+  the stripped, forest-packed `bin/madc-release` (-O2); `make -C src debug`
+  produces `bin/madc-debug`. Per-mode names — they never clobber each other.
+- Run the packed suite with `MADC_BIN=bin/madc-release bash scripts/run_tests.sh`
+- All object files go to `obj/` (per-mode subtrees)
 - When work is focused on core madc / libmadc / parser / compiler code and does not touch `madcdat` or shared storage-facing surfaces, prefer `./configure --enable-madcdat=no` first to shrink rebuild and unit-test scope.
 - Re-enable `madcdat` before final validation when the task touches `madcdat`, shared public headers, build wiring, or any surface that may affect storage/federation code.
 
