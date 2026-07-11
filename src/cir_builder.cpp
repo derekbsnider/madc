@@ -1943,6 +1943,14 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		if (!body_available && wfd && wfd->tsubst_source)
 			body_available = requeue_tsubst_instance_body(this, m_prog,
 								      *v, wfd);
+		// Forest-carried translated body (v8/v20): the m&l fixpoint
+		// materializes it on reference — same acceptance as tsubst
+		// emittable() arm 6 (the ROOT-6(e) lesson, mirrored here: a
+		// bound consumer's re-resolution picked a restored winner and
+		// bailed "system-header dependent call" although its saved
+		// body materializes fine).
+		if (!body_available && wfd && wfd->has_forest_body)
+			body_available = true;
 		return body_available;
 	};
 
@@ -2033,13 +2041,35 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		// inst_key-memoized, so the inner call's own N_ID rewrite later
 		// lands on the same product.
 		if (TokenCallFunc *inner = dynamic_cast<TokenCallFunc *>(p)) {
+#ifdef MADC_DBG_PACK
+			if (!tsubst_call_can_rewrite_after_subst(inner)) {
+				FuncDef *ifd = dynamic_cast<FuncDef *>(
+					inner->var.type);
+				fprintf(stderr,
+					"inner-norewrite call=%s fd=%p disp='%s'"
+					" mdisp='%s' ns='%s'\n",
+					inner->var.name.c_str(), (void *)ifd,
+					ifd ? ifd->function_display_name.c_str() : "-",
+					ifd ? ifd->method_display_name.c_str() : "-",
+					ifd ? ifd->namespace_name.c_str() : "-");
+			}
+#endif
 			if (tsubst_call_can_rewrite_after_subst(inner)) {
 				bool inner_changed = false;
+				std::string inner_err;
 				Variable *iw = resolve_copied_dependent_call(
-					inner, subst, &inner_changed, NULL, NULL);
+					inner, subst, &inner_changed, NULL,
+					&inner_err);
 				FuncDef *iwfd = iw
 					? dynamic_cast<FuncDef *>(iw->type)
 					: NULL;
+#ifdef MADC_DBG_PACK
+				if (!iwfd)
+					fprintf(stderr, "inner-recurse-fail "
+						"call=%s err='%s'\n",
+						inner->var.name.c_str(),
+						inner_err.c_str());
+#endif
 				if (iwfd) {
 					DataDef *ret = &iwfd->return_value_type();
 					if (ret != p->datadef())
