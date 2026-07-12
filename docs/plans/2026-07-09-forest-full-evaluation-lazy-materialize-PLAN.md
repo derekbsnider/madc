@@ -174,11 +174,46 @@ end state is "startup + user-product instantiation only" ≈ **~0.1s** on this
 hardware. Ladder from here (bound testsubscript -O2, trend rows in
 docs/perf/forest-timings.tsv):
 
-- 0.913 (now, @dfd085a2 — raw segments, zlib inflate removed, −20% Ir)
-- ≤0.665 — intern-flood fix (task #14): container-sid → live-sid remap so
-  restored names stamp name_sid O(1) instead of re-hashing 100+-char
-  mangled names (355k hashes / 935M Ir today; helps live too)
-- ~0.4 — rung 2 (closure-filtered materialization)
+- 0.913 (@dfd085a2 — raw segments, zlib inflate removed, −20% Ir)
+- 0.829 (@ceff5bf7 — task #14 LANDED, diagnosis corrected: the flood was
+  the stale-hit index force-rebuild (196,596 re-interns from 28 rebuilds
+  of a ~7k-entry scope), triggered by the one untracked Variable rename
+  (operator peer retag). Variable::rename() now zeroes name_sid; the
+  rebuild re-interns only zeroed entries. Hashing 853M→301M Ir; helps
+  live too (2.593→2.413). The queued "container-sid remap" design was
+  wrong — kept here as a record.)
+- ≤0.665 and onward to ~0.4 — rung 2 (closure-filtered materialization):
+  post-#14 profile is FLAT (breadth-bound) — the remaining gap is
+  whole-container materialize + register, exactly 2a's thesis.
 - <0.399 — rung 3 (emit only referenced surface; bound cir 0.542 vs
   TU-only fraction)
 - ~0.1 — rung 4 (instantiation speed) + startup residue (~0.05–0.15)
+
+## Rung 2a design (2026-07-12, recon done — implement next)
+
+Filter `materialize_from_arena` (cir_freeze.cpp:1378) by the SAME two
+demand predicates item 5 already applies at registration
+(parser.cpp:12471-12511), moved before DataDef construction:
+
+- **Demand key:** defrec has NO defining-unit field — the key is the
+  name-keyed B4a decl index, as at registration. Build the permitted set
+  as ARENA-pool ids to avoid per-record string hashing: for each decl-
+  index name (container pool) mark bound/unbound, resolving into the
+  arena's own frozen pool via `frozen_intern_table::find()` (one hash per
+  indexed name, ~5k). Name in NO unit's index = derived entity = keep.
+- **Products:** a `<`-bearing record is judged by its canonical-spelling
+  HEAD (defrec.canon_id), the forest_product_permitted rule, so
+  pre-instantiated products of unbound templates drop too.
+- **Cross-unit safety:** forest_chain_set is the TRANSITIVE unit-edge
+  closure (forest_bind_include is a post-order DFS over frozen edges), so
+  a bound record's references resolve inside the filtered set by
+  construction. Guard for residue: a chain-referenced but filter-excluded
+  record is ADMITTED (reference-pull during the recordability fixpoint) —
+  never cascade-drop a bound dependent because its referent was filtered.
+  2b's on-touch handles are NOT needed for this (only if 2a's numbers
+  disappoint).
+- **Empty closure** (direct restore, unit tests): keep whole-container
+  semantics, as registration does.
+- **Gates:** unchanged suite + bind 18/18 + both oracles; registration
+  filter stays (it consumes the same predicates — share the code, do not
+  duplicate: hoist the predicate construction so both call one helper).
