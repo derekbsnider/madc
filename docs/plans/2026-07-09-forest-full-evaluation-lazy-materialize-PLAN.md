@@ -346,3 +346,24 @@ demand predicates item 5 already applies at registration
 - **Gates:** unchanged suite + bind 18/18 + both oracles; registration
   filter stays (it consumes the same predicates — share the code, do not
   duplicate: hoist the predicate construction so both call one helper).
+
+### Post-rung-3 bound profile (2026-07-12, tmp/cg_r3.out, -g packed debug binary)
+
+Truncated 4.1B-Ir window (120s CPU cap; site counts comparable with the
+post-2a profile). Top sites are ALL registration/name machinery:
+
+| cluster | Ir | vs prior profile |
+|---|---|---|
+| intern hash_step + hash_bytes | ~300M | unchanged vs post-#14 |
+| set<string> Rb-tree insert/compare | ~306M | unchanged vs post-2a |
+| memcmp + string::compare | ~240M | unchanged |
+| malloc / free / memcpy | ~172M | unchanged |
+| despace_spelling | 45M | was 70M (shrank with emission) |
+| forest arena / unit_segment walk | ~100M | — |
+
+Confirms the rung-3 close-out finding: decl emission was not the bound
+wall. Next-cut candidates: (a) pool-sid → session-sid mapping at load
+(restored names already carry pool ids; re-hashing every string on load
+is re-deriving), (b) sid-keyed hot name sets (uid-is-the-spine), (c)
+rung 4 instantiation (MTI 217/187). (a)+(b) attack the profiled ~800M;
+(c) the post-window body work.
