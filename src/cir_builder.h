@@ -12,6 +12,7 @@
 #include "cir_node.h"
 #include <string>
 #include <set>
+#include <unordered_set>
 #include <map>
 #include <vector>
 #include <functional>
@@ -579,6 +580,27 @@ class CirBuilder {
 	// to translate_block; capability-gated per body.
 	node_t tsubst_method_body(class TokenFunc *tf, class FuncDef *fd,
 				  const char **reason_out = NULL);
+	// Memo of the emittable-symbol sets tsubst_method_body's callee gate
+	// consults (Pass-1.6 synth dtor symbols; forest-loaded body symbols).
+	// INCREMENTAL: each struct_map/funcdef_map entry is classified ONCE
+	// (tracked by pointer in the seen sets) because its verdict is stable
+	// during translation — registrations arrive COMPLETE (the builder-side
+	// struct_map insert finalizes layout first; MTI products register
+	// whole) and has_forest_body is stamped at restore, pre-translate. A
+	// size stamp is NOT enough here: struct_map grows between most tsubst
+	// calls (MTI class derivations), which would force a full ~1k-string
+	// rebuild per call — the 500M-Ir flood this memo exists to kill. A
+	// same-name re-registration keeps the old entry's symbols; that is
+	// name-derived (class_dtor_symbol), so the symbol survives replacement
+	// and a mismatch would fail LOUD at MIR link, never silently.
+	std::set<std::string> m_synth_dtor_syms_memo;
+	std::set<std::string> m_forest_body_syms_memo;
+	std::unordered_set<const void *> m_emit_sets_seen_classes;
+	size_t m_emit_sets_struct_count = 0;	// struct_map never erases: equal size = no walk
+	// funcdef_map's forest-body subset is restore-stamped (fixed before
+	// translation) and its nodes CAN be erased mid-translate, so it gets
+	// one walk per module instead of node-address seen tracking.
+	bool m_emit_sets_funcdefs_done = false;
 
 public:
 	CirBuilder(c2m_ctx_t c2m_ctx);
