@@ -134,6 +134,69 @@ Steps land individually gated: (1) collection only → byte-identical;
 on the bind gates; (3) filter on → cirfidelity + fulltest + bind 18/18 +
 packed suite + bench row.
 
+**FIRST CUT landed @ee8f0ac7 (post-build remove-in-place superseded
+defer-and-filter: build whole-surface as today, then c2mir_op_remove dead
+type decls before `append(module, top_list)`).** Removed 106 structs +
+174 typedefs on the LIVE headline TU; wall-marginal.
+
+**SECOND CUT — the UNIFIED referenced-surface filter (2026-07-12, this
+branch). Two first-cut root causes found by comparing a fresh bound emit
+against live:**
+
+1. **The first cut NEVER fired on the bound compile** — the binary whose
+   wall matters. Restored TopDecls carry no parse position (file=NULL →
+   classified root); Pass-0.5 class struct defs are never position-stamped
+   (root even LIVE — live's 106 removals were only the Pass-0-stamped
+   plain C structs/typedefs).
+2. **Type decls were the only conditional category.** Pass-1 protos for
+   dead library functions, Pass-1.45 dtor protos, Pass-1.5 vtables/
+   typeinfo, Pass-1.6/1.7/1.8 synth dtors (all swept per-class from
+   struct_map, unconditionally), the Pass-1a globals (8 stream externs
+   incl. the dead wide-char four, tag objects), and their
+   __madc_global_init ctor groups each SEED the harvest — any one of them
+   pins the dead class webs the type filter tried to remove.
+
+Ground truth (gcc-parity): g++'s whole TU for `#include <iostream>` +
+`cout << 42` is 58 lines — no tag globals, no hardware_* constants, no
+vtables, no dtor bodies. Referenced-only across EVERY category is g++'s
+COMDAT/ODR-use shape.
+
+Design as landed:
+- **Origin verdicts.** Live: TopDecl origin/file → is_system_header_path;
+  classes: the exact `from_system_header` flag (serialized, restored).
+  Bound: `forest_declared_system` (name → declared by a BOUND unit whose
+  header path is a system include, built beside forest_declared_bound in
+  forest_restore_decls) → new `TopDecl.forest_system` +
+  `PendingForestGlobal.system`; restored free-function bodies classify by
+  their `forest_body_unit`'s path. tmp/-grove binds stay non-system →
+  roots → gate corpora keep the whole surface, like live.
+- **One cond map (builder member m_cond_nodes), marked at the emission
+  sites, consumed by ONE fixpoint** replacing the type-only block: TYPE
+  nodes admit by tag (typedef-bearing also by identifier); every other
+  category (protos, output-externs, globals, vtables/typeinfo/thunks,
+  synth dtors, library/loaded bodies) admits iff its DECLARED SYMBOL is
+  referenced by admitted content. Roots (anything unmarked) seed the
+  harvest. A file-scope STATIC with dynamic init (the <iostream> __ioinit
+  model) is never conditional — internal linkage is observable per-TU.
+- **Ctor groups:** collect_global_ctors records each global's slice of
+  __madc_global_init statements (m_ctor_groups); a group never seeds the
+  harvest (it references its own global — every ctor'd global would
+  self-admit) and is admitted/pruned with its storage decl.
+- pack_recording stays EXEMPT (frozen corpus complete for arbitrary
+  consumers); live and bound filter identically → bind == live by
+  construction.
+
+Measured (testsubscript, before gates): LIVE emitted C 6079 → 3623 lines,
+struct defs 763 → 206, typedefs 131 → 88; BOUND 6893 → 4279 lines (the
+first cut left bound at the FULL 864-struct surface), structs 196,
+typedefs 133. Residual live/bind set diffs = the pre-existing live ⊃ bind
+instantiation-product gap (37/38 verified present before this change) +
+conservative root-keeps where a restored name is not in the B4a decl
+index (stdin/stdout macros → FILE web). Gate updated: the strbind
+consumer now REFERENCES hardware_destructive_interference_size and
+in_place so the v14/v16 restoration asserts stay meaningful under
+referenced-only emission.
+
 ### Rung 4 — instantiation speed (successor track, not this plan)
 
 User-named products' remaining cost = the front-end-performance track

@@ -2579,7 +2579,8 @@ public:
 	TokenBase *origin;	// per-occurrence source token (alias/tag/decl head); NULL → use file/line
 	TokenDecl *decl;	// for global vars: the TokenDecl carrying initializer (initialize/init_list); NULL → no init
 	bool struct_body;	// dkTypedef only: this combined `typedef struct Tag {...} Alias;` carries the tag's full body (it is the tag's definition point). A `typedef struct Tag *p;` referencing the tag is false.
-	TopDecl() : kind(DeclKind::dkStruct), dd(nullptr), tdt(nullptr), var(nullptr), file(nullptr), line(0), origin(nullptr), decl(nullptr), struct_body(false) {}
+	bool forest_system;	// restored from a bound forest unit whose header path is a system include; the emission-side system-origin verdict when file/origin are NULL (a restored decl carries no parse position)
+	TopDecl() : kind(DeclKind::dkStruct), dd(nullptr), tdt(nullptr), var(nullptr), file(nullptr), line(0), origin(nullptr), decl(nullptr), struct_body(false), forest_system(false) {}
     };
     std::vector<TopDecl> top_decls;
     // Host-callback registrations (libmadc register_function): the embedding
@@ -2881,9 +2882,10 @@ public:
 	// args-list parse over it to rebuild TokenDecl::ctor_args.
 	const uint8_t *ctor_bytes; uint32_t ctor_len, ctor_count;
 	const char *ctor_file;
+	bool system;		// declared by a system-header forest unit (TopDecl.forest_system for the flushed decl)
 	PendingForestGlobal() : type(NULL), flags(0), gflags(0), init_value(0),
 				ctor_bytes(NULL), ctor_len(0), ctor_count(0),
-				ctor_file(NULL) {}
+				ctor_file(NULL), system(false) {}
     };
     std::vector<PendingForestGlobal> forest_pending_globals;
     // Restored FLAT datatype_map registrations (typedef/enum/class names from a

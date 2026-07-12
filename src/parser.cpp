@@ -12432,6 +12432,14 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // predicate, two consumers (rung 2a moved the skip from "register fewer"
     // to "never build the DataDefs at all").
     std::unordered_map<std::string, bool> forest_declared_bound;
+    // Rung 3: the emission-side system-origin verdict for restored decls. A
+    // restored TopDecl carries no parse position, so the referenced-surface
+    // filter (translate_module) reads TopDecl.forest_system instead: true iff
+    // a BOUND unit whose header path is a system include declares the name —
+    // the same verdict a live parse's td.file would produce. A tmp/-grove
+    // bind (the forest_bind_gate corpora) stays non-system → root → whole
+    // surface, exactly like live.
+    std::unordered_map<std::string, bool> forest_declared_system;
     const bool forest_closure_filter = !forest_chain_set.empty();
     if ( forest_closure_filter )
     {
@@ -12441,6 +12449,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    if ( !forest.unit_decl_index(u, ents) )
 		continue;
 	    bool bound = forest_chain_set.count(u) != 0;
+	    const char *upath = forest.unit_name(u);
+	    bool sys = bound && upath && is_system_header_path(upath);
 	    for ( size_t e = 0; e < ents.size(); ++e )
 	    {
 		const char *nm = forest.pool_str(ents[e].name_id);
@@ -12452,6 +12462,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		    forest_declared_bound[nm] = bound;
 		else if ( bound )
 		    di->second = true;
+		if ( sys )
+		    forest_declared_system[nm] = true;
 	    }
 	}
 	CirMaterializeFilter mf;
@@ -12459,6 +12471,18 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	mf.declared_bound = forest_declared_bound;
 	forest.set_materialize_filter(std::move(mf));
     }
+
+    // Rung 3: the system-origin verdict lookup — qualified form first, then
+    // bare (a namespaced decl may be indexed only as "std::name"), the same
+    // discipline as forest_name_permitted / the rung-2a verdicts.
+    auto declared_system = [&](const char *ns, const std::string &name) -> bool {
+	if ( forest_declared_system.count(name) )
+	    return true;
+	if ( ns && *ns
+	  && forest_declared_system.count(std::string(ns) + "::" + name) )
+	    return true;
+	return false;
+    };
 
     const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 
@@ -12658,6 +12682,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    td.name = name;
 	    td.dd = rt.underlying;
 	    td.tdt = tdt;
+	    td.forest_system = declared_system(rt.ns, name);
 	    top_decls.push_back(td);
 	    register_in_namespace(rt.ns, name, rt.underlying, tdt);
 	    DBG(std::cout << "forest_restore_decls: typedef " << name
@@ -12717,6 +12742,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    td.kind = sdd->union_layout ? DeclKind::dkUnion : DeclKind::dkStruct;
 	    td.name = name;
 	    td.dd = sdd;
+	    td.forest_system = declared_system(rt.ns, name);
 	    top_decls.push_back(td);
 	    if ( ns_ok )
 		register_in_namespace(rt.ns, name, sdd, tdt);
@@ -12810,6 +12836,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	pg.ctor_len   = rg.ctor_len;
 	pg.ctor_count = rg.ctor_count;
 	pg.ctor_file  = rg.ctor_file;
+	pg.system     = declared_system(rg.ns, pg.name);
 	forest_pending_globals.push_back(pg);
     }
 
@@ -13304,6 +13331,7 @@ void Program::flush_forest_pending_globals()
 	    xtd.var  = xv;
 	    xtd.dd   = pg.type;
 	    xtd.decl = NULL;
+	    xtd.forest_system = pg.system;
 	    top_decls.push_back(xtd);
 	    DBG(std::cout << "flush_forest_pending_globals: extern ref "
 		<< (pg.ns.empty() ? pg.name : pg.ns + "::" + pg.name)
@@ -13359,6 +13387,7 @@ void Program::flush_forest_pending_globals()
 	gtd.var  = gv;
 	gtd.dd   = pg.type;
 	gtd.decl = NULL;		// class: default-ctor synthesized (v12 ctors)
+	gtd.forest_system = pg.system;
 	// v14: a SCALAR-const global carries its compile-time integer init value. Give
 	// it a dkGlobalVar TokenDecl whose `initialize` is a bare integer literal — the
 	// same shape the dkGlobalVar emission pass (var_decl) consumes for a live
