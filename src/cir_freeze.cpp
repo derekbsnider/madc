@@ -1517,10 +1517,24 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// judged by its HEAD (the declaring template's name). Tri-state so the
 	// free-function walk below can reproduce registration's display-name
 	// refinement (which applies only when the primary key is UNINDEXED).
-	std::unordered_map<uint64_t, int> verdict_memo;
-	auto name_verdict = [&](uint32_t name_id, uint32_t ns_id) -> int {
+	auto verdict_str = [&](const char *nm, const char *ns) -> int {
 		// +1 declared by a bound unit, -1 declared only by unbound units,
 		// 0 unindexed (derived entity)
+		if (!nm || !*nm)
+			return 0;
+		const std::unordered_map<std::string, bool> &db =
+			_mat_filter.declared_bound;
+		std::unordered_map<std::string, bool>::const_iterator it = db.end();
+		if (ns && *ns)
+			it = db.find(std::string(ns) + "::" + nm);
+		if (it == db.end())
+			it = db.find(nm);
+		if (it != db.end())
+			return it->second ? 1 : -1;
+		return 0;
+	};
+	std::unordered_map<uint64_t, int> verdict_memo;
+	auto name_verdict = [&](uint32_t name_id, uint32_t ns_id) -> int {
 		if (!name_id)
 			return 0;
 		uint64_t key = ((uint64_t)ns_id << 32) | name_id;
@@ -1528,23 +1542,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			verdict_memo.find(key);
 		if (mi != verdict_memo.end())
 			return mi->second;
-		int v = 0;
-		const char *nm = a.c_str(name_id);
-		if (nm && *nm) {
-			const std::unordered_map<std::string, bool> &db =
-				_mat_filter.declared_bound;
-			std::unordered_map<std::string, bool>::const_iterator it =
-				db.end();
-			if (ns_id) {
-				const char *ns = a.c_str(ns_id);
-				if (ns && *ns)
-					it = db.find(std::string(ns) + "::" + nm);
-			}
-			if (it == db.end())
-				it = db.find(nm);
-			if (it != db.end())
-				v = it->second ? 1 : -1;
-		}
+		int v = verdict_str(a.c_str(name_id),
+				    ns_id ? a.c_str(ns_id) : NULL);
 		verdict_memo[key] = v;
 		return v;
 	};
@@ -1552,7 +1551,17 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	auto record_kept = [&](const madc::dis::defrec &r) -> bool {
 		if (!_mat_filter.active)
 			return true;
-		if (name_verdict(r.name_id, r.ns_id) < 0)
+		// A record carries up to TWO name surfaces, judged INDEPENDENTLY
+		// (mirrors registration's ns_ok/flat_ok split, parser.cpp ~12597):
+		// the freeze stamps a globally-defined tag's ONE record with the
+		// namespace that ALIASES it (ctime's `using ::timespec` marks
+		// glibc's struct timespec ns=std), so the qualified and bare forms
+		// answer to DIFFERENT declaring units. The record survives if
+		// EITHER surface is permitted; registration then gates each
+		// surface separately.
+		bool ns_ok = name_verdict(r.name_id, r.ns_id) >= 0;
+		bool flat_ok = r.ns_id ? name_verdict(r.name_id, 0) >= 0 : ns_ok;
+		if (!ns_ok && !flat_ok)
 			return false;
 		if (!r.canon_id)
 			return true;
@@ -1598,6 +1607,60 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				admitted.insert(tid);
 				work.push_back(tid);
 			}
+		}
+		// Every OTHER kept restore surface seeds the chase too: pre-2a its
+		// referents always existed (whole-container materialization), and
+		// the producer's frozen trees bake in emission names whose shape
+		// depends on the full set — dropping std::pmr::string's target
+		// changed the consumer's colliding-alias typedef_emit_name choice
+		// out from under the frozen trees (packed-suite 8-test regression).
+		// Each surface is judged by ITS registration predicate: typedef
+		// aliases pull their ref0 chain, free functions their return +
+		// param chains, file-scope globals their type chain, template
+		// records their owner class.
+		for (uint32_t s = 0; s < nslots; ++s) {
+			madc::dis::defrec r;
+			if (!a.get_def_at(madc::dis::arena_id_of(s), r))
+				continue;
+			if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
+				continue;
+			if (r.kind == madc::dis::DK_TYPEDEF) {
+				if (name_verdict(r.name_id, r.ns_id) >= 0)
+					tq.push_back(r.ref0);
+			} else if (r.kind == madc::dis::DK_FUNC
+				   && (r.flags & madc::dis::DF_IS_FREE_FUNC)) {
+				int v = name_verdict(r.name_id, 0);
+				if (v == 0 && r.disp_id && r.ns_id)
+					v = name_verdict(r.disp_id, r.ns_id);
+				if (v < 0)
+					continue;
+				tq.push_back(r.ref0);
+				for (uint32_t p = 0; p < r.params_count; ++p) {
+					madc::dis::paramrec pr;
+					if (a.get_payload(r.params_begin, p, pr))
+						tq.push_back(pr.type_id);
+				}
+			}
+		}
+		for (size_t i = 0; i < _globals.size(); ++i) {
+			const cir_forest_global_record &g = _globals[i];
+			if (g.gflags & CIR_GLOBALF_TU_ROOT)
+				continue;
+			uint32_t nl = 0, sl = 0;
+			const char *nm = pool_cstr(g.name_id, nl);
+			const char *ns = g.ns_id ? pool_cstr(g.ns_id, sl) : NULL;
+			if (verdict_str(nm, ns) >= 0)
+				tq.push_back(g.type_id);
+		}
+		for (size_t i = 0; i < _templates.size(); ++i) {
+			const cir_forest_template_record &t = _templates[i];
+			if ((t.flags & CIR_TMPLF_TU_ROOT) || !t.owner_type_id)
+				continue;
+			uint32_t kl = 0, sl = 0;
+			const char *key = pool_cstr(t.key_id, kl);
+			const char *ns = t.ns_id ? pool_cstr(t.ns_id, sl) : NULL;
+			if (verdict_str(key, ns) >= 0)
+				tq.push_back(t.owner_type_id);
 		}
 		auto admit_agg = [&](uint32_t tid) {
 			if (recordable.count(tid) && !admitted.count(tid)) {
