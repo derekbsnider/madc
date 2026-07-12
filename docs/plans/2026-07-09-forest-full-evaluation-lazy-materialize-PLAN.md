@@ -458,3 +458,25 @@ full gate cycle. Remaining rung-4 surface after it: intern hashes
 ~330M (C/D/E), map<string> compare cluster ~200M, dynamic_cast 50M,
 forest arena/unit_segment walks ~140M, and the -O2 instantiate bucket
 itself (tsubst copy + deduction breadth).
+
+**✅ FIRST TARGET CLOSED (2026-07-12, merged to develop).** The recon
+undercounted the funnel: ~25 spelling writes (not 12) AND a second
+mutation channel — struct_map value REPOINTS at existing keys
+(fwd→completed, struct promotion), invisible to a size stamp. Fix
+shipped both funnels compile-enforced: `canonical_cpp_spelling` is a
+private field (const getter + `set_canonical_spelling()` bumping
+`DataDef::canonical_spelling_gen` only for already-swept dds), and
+`StructRegistry` unifies struct_map + the despaced index in one class
+(const-only reads, `set()` the sole write channel — the compiler
+flushed out a write the greps missed, cir_builder's tsubst clone
+registration). `find_despaced()` preserves the scan's
+first-hit-in-key-order answer exactly (smallest-map-key winner per
+despaced spelling). Mechanism profile-VERIFIED before benching (the
+lookup-churn lesson): despace_spelling 49,105 → 4,944 calls (−90%),
+317.3M → 27.5M Ir inclusive at call sites (windows 4.50B/4.39B);
+probe (bound) 87 lookups / 5 rebuilds / 5,229 sweeps over 988 entries.
+Wall (bench @0f97958b): **bound 0.572 → 0.561 (−2%), live 2.182 →
+2.151** (load 1.57). Honest finding: the −0.17s to the 0.399 floor
+does NOT live here — as the phase table said, it lives in the
+instantiate bucket + cir-build (intern hashes, map<string> compares,
+tsubst copy breadth). Those are the next rung-4 targets.

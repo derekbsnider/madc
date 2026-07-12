@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **perf(compile): despaced-canonical index — resolve_arg_spelling_datadef's
+  per-query struct_map scan removed** (@0f97958b, rung-4 first target).
+  Template-id spellings resolve via `StructRegistry::find_despaced`, an
+  incrementally maintained index serving the old linear scan's exact
+  first-hit-in-key-order answer. Both mutation channels of the cached
+  key are compile-enforced funnels: `DataDef::set_canonical_spelling()`
+  (private field; bumps a generation counter when an already-swept dd's
+  spelling is rewritten, e.g. fwd-class completion) and
+  `StructRegistry::set()` (struct_map is const-read-only otherwise;
+  value repoints at existing keys bump the gen — the channel a size
+  stamp cannot see). despace_spelling 49,105 → 4,944 calls (−90%),
+  317.3M → 27.5M Ir at the call sites; bound testsubscript -O2
+  0.572 → 0.561, live 2.182 → 2.151. Gates: fulltest 681/0/0/16,
+  tsubst ratchet, bind 18/18, packed suite 681/0, zero new warnings.
 - **perf(compile): lookup-churn slice — bound testsubscript 0.804 → 0.572
   (−29%), live 2.399 → 2.182 (−9%)** (@2fb72247). Deep caller-attribution
   recon overturned the "query-time hashing" framing: the profiled churn

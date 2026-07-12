@@ -17,3 +17,4 @@ date	commit	live_s	bound_s	live_derives	bound_derives	load1	note
 2026-07-12	ee8f0ac7	2.388	0.824	217	187	1.62	rung 3 first cut (types -102/-174; globals sub-slice pending)
 2026-07-12	c31ed67b	2.399	0.804	217	187	1.26	rung 3 second cut - unified referenced-surface filter @c31ed67b
 2026-07-12	4da065d7	2.182	0.572	217	187	1.20	lookup-churn: tsubst emit-set memo + var_index surgical repair
+2026-07-12	0f97958b	2.151	0.561	217	187	1.57	rung4: despaced-canonical index (funnel + StructRegistry)
