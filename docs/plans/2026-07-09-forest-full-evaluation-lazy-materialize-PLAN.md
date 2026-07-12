@@ -197,6 +197,29 @@ consumer now REFERENCES hardware_destructive_interference_size and
 in_place so the v14/v16 restoration asserts stay meaningful under
 referenced-only emission.
 
+**RUNG 3 CLOSED — merged to develop @154becbf (2026-07-12), bench row
+@9411221b.** Two gate-caught fixes after the first fulltest (strbind's
+new whole-TU MIR byte-identity assert was the only red): (1) the
+forest_declared_system lookup must be QUALIFIED-then-bare (std:: tag
+globals are indexed only as "std::X" — bind kept piecewise_construct/
+allocator_arg/ignore as roots while live filtered them); (2) a combined
+`typedef struct X {...} Y;` self-admitted through the any-id-in-subtree
+rule (common member ids like size_t are always referenced) — typedef
+admission is now by DECLARED ALIAS or tag only. Final numbers: live
+3393 lines / 169 structs / 60 typedefs, bound 3965 / 155 / 100. Gates:
+fulltest rc=0 (681/0/0/16, bind 18/18, oracles), cirfidelity rc=0
+(ASM-DIVERGEs = pre-existing __madc_shim_* host-adapter class), packed
+suite 681/0, bench bound 0.824 → **0.804** (clean, load 1.26).
+
+**HONEST LADDER FINDING:** the ≤0.665 wall step did NOT close with the
+emission surface — the wall moved only −2.4% while emitted decls dropped
+~60%. The remaining bound cost is REGISTRATION breadth + body compile +
+consumer-side derivations (MTI columns 217/187 unchanged), i.e. rung 4
+territory (instantiation speed / front-end-perf track) plus whatever a
+fresh bound callgrind now shows. Next sitting: profile the post-rung-3
+bound binary (with -g, remember the 120s CPU cap → compare site counts)
+before choosing the next cut.
+
 ### Rung 4 — instantiation speed (successor track, not this plan)
 
 User-named products' remaining cost = the front-end-performance track
