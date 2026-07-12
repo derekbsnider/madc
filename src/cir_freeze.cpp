@@ -1509,12 +1509,193 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			  << " (" << why << ")" << std::endl;
 	});
 
+	// Rung 2a (closure-filtered materialization): with a demand filter
+	// installed, only records the TU's bound-include closure declares build
+	// DataDefs. Verdicts mirror the item-5 registration filter EXACTLY
+	// (forest_restore_decls): qualified ns::name first, then bare name;
+	// unindexed = derived entity = keep; a `<`-bearing canonical spelling is
+	// judged by its HEAD (the declaring template's name). Tri-state so the
+	// free-function walk below can reproduce registration's display-name
+	// refinement (which applies only when the primary key is UNINDEXED).
+	std::unordered_map<uint64_t, int> verdict_memo;
+	auto name_verdict = [&](uint32_t name_id, uint32_t ns_id) -> int {
+		// +1 declared by a bound unit, -1 declared only by unbound units,
+		// 0 unindexed (derived entity)
+		if (!name_id)
+			return 0;
+		uint64_t key = ((uint64_t)ns_id << 32) | name_id;
+		std::unordered_map<uint64_t, int>::iterator mi =
+			verdict_memo.find(key);
+		if (mi != verdict_memo.end())
+			return mi->second;
+		int v = 0;
+		const char *nm = a.c_str(name_id);
+		if (nm && *nm) {
+			const std::unordered_map<std::string, bool> &db =
+				_mat_filter.declared_bound;
+			std::unordered_map<std::string, bool>::const_iterator it =
+				db.end();
+			if (ns_id) {
+				const char *ns = a.c_str(ns_id);
+				if (ns && *ns)
+					it = db.find(std::string(ns) + "::" + nm);
+			}
+			if (it == db.end())
+				it = db.find(nm);
+			if (it != db.end())
+				v = it->second ? 1 : -1;
+		}
+		verdict_memo[key] = v;
+		return v;
+	};
+	std::unordered_map<std::string, int> head_memo;
+	auto record_kept = [&](const madc::dis::defrec &r) -> bool {
+		if (!_mat_filter.active)
+			return true;
+		if (name_verdict(r.name_id, r.ns_id) < 0)
+			return false;
+		if (!r.canon_id)
+			return true;
+		const char *cs = a.c_str(r.canon_id);
+		const char *lt = cs ? strchr(cs, '<') : NULL;
+		if (!lt)
+			return true;
+		std::string head(cs, (size_t)(lt - cs));
+		while (!head.empty() && head[head.size() - 1] == ' ')
+			head.erase(head.size() - 1);
+		std::unordered_map<std::string, int>::iterator hi =
+			head_memo.find(head);
+		if (hi == head_memo.end()) {
+			std::unordered_map<std::string, bool>::const_iterator di =
+				_mat_filter.declared_bound.find(head);
+			int hv = di == _mat_filter.declared_bound.end()
+				 ? 0 : (di->second ? 1 : -1);
+			hi = head_memo.insert(std::make_pair(head, hv)).first;
+		}
+		return hi->second >= 0;
+	};
+
+	// Admitted set: filter-kept recordable aggregates seed a REFERENCE-PULL
+	// closure — every recordable aggregate (and enum) an admitted record
+	// reaches through member / base / anon / method-signature chains is
+	// admitted too, so a bound record never loses a referent to the filter
+	// (the plan's guard; cross-unit references are already inside the bound
+	// closure by unit-edge construction, so pulls are the residue, not the
+	// rule). Inactive filter = passes below skip the admitted check.
+	std::set<uint32_t> admitted;
+	std::set<uint32_t> pulled_enums;
+	if (_mat_filter.active) {
+		std::vector<uint32_t> work;	// admitted aggregates to expand
+		std::vector<uint32_t> tq;	// type-ids whose chains to chase
+		for (size_t i = 0; i < agg_ids.size(); ++i) {
+			uint32_t tid = agg_ids[i];
+			if (!recordable.count(tid))
+				continue;
+			madc::dis::defrec r;
+			if (!a.get_def_at(tid, r))
+				continue;
+			if (record_kept(r)) {
+				admitted.insert(tid);
+				work.push_back(tid);
+			}
+		}
+		auto admit_agg = [&](uint32_t tid) {
+			if (recordable.count(tid) && !admitted.count(tid)) {
+				admitted.insert(tid);
+				work.push_back(tid);
+			}
+		};
+		while (!work.empty() || !tq.empty()) {
+			if (!tq.empty()) {
+				uint32_t tid = tq.back();
+				tq.pop_back();
+				for (int depth = 0; depth < 64 && tid; ++depth) {
+					if (madc::dis::arena_id_is_pinned(tid))
+						break;
+					madc::dis::defrec r;
+					if (!a.get_def_at(tid, r))
+						break;
+					if (r.kind == madc::dis::DK_PTR
+					    || r.kind == madc::dis::DK_REF
+					    || r.kind == madc::dis::DK_CONST
+					    || r.kind == madc::dis::DK_CARRAY) {
+						tid = r.ref0;
+						continue;
+					}
+					if (r.kind == madc::dis::DK_STRUCT
+					    || r.kind == madc::dis::DK_UNION
+					    || r.kind == madc::dis::DK_CLASS)
+						admit_agg(tid);
+					else if (r.kind == madc::dis::DK_ENUM)
+						pulled_enums.insert(tid);
+					else if (r.kind == madc::dis::DK_FPTR) {
+						madc::dis::defrec fr;
+						if (r.ref0
+						    && a.get_def_at(r.ref0, fr)
+						    && fr.kind == madc::dis::DK_FUNC) {
+							tq.push_back(fr.ref0);
+							for (uint32_t p = 0; p < fr.params_count; ++p) {
+								madc::dis::paramrec pr;
+								if (a.get_payload(fr.params_begin, p, pr))
+									tq.push_back(pr.type_id);
+							}
+						}
+					}
+					break;
+				}
+				continue;
+			}
+			uint32_t tid = work.back();
+			work.pop_back();
+			madc::dis::defrec r;
+			if (!a.get_def_at(tid, r))
+				continue;
+			for (uint32_t m = 0; m < r.members_count; ++m) {
+				madc::dis::memberrec mr;
+				if (a.get_payload(r.members_begin, m, mr))
+					tq.push_back(mr.type_id);
+			}
+			for (uint32_t b = 0; b < r.bases_count; ++b) {
+				madc::dis::baserec br;
+				if (a.get_payload(r.bases_begin, b, br))
+					admit_agg(br.base_id);
+			}
+			for (uint32_t g = 0; g < r.anon_count; ++g) {
+				madc::dis::anonrec ar;
+				if (a.get_payload(r.anon_begin, g, ar))
+					admit_agg(ar.sub_type_id);
+			}
+			for (uint32_t m = 0; m < r.methods_count; ++m) {
+				madc::dis::methodrec mr;
+				madc::dis::defrec fr;
+				if (!a.get_payload(r.methods_begin, m, mr)
+				    || !mr.func_id
+				    || !a.get_def_at(mr.func_id, fr)
+				    || fr.kind != madc::dis::DK_FUNC)
+					continue;
+				tq.push_back(fr.ref0);
+				for (uint32_t p = 0; p < fr.params_count; ++p) {
+					madc::dis::paramrec pr;
+					if (a.get_payload(fr.params_begin, p, pr))
+						tq.push_back(pr.type_id);
+				}
+			}
+		}
+		DBG(std::cout << "materialize filter: " << admitted.size()
+			      << " of " << recordable.size()
+			      << " recordable aggregates admitted ("
+			      << pulled_enums.size() << " enums pulled)"
+			      << std::endl);
+	}
+
 	// Pass 1: allocate a DataDef per recordable aggregate, so forward member /
 	// base ids resolve in pass 2.
 	std::map<uint32_t, DataDef *> by_id;
 	for (size_t i = 0; i < agg_ids.size(); ++i) {
 		uint32_t tid = agg_ids[i];
 		if (!recordable.count(tid))
+			continue;
+		if (_mat_filter.active && !admitted.count(tid))
 			continue;
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r))
@@ -1551,6 +1732,11 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		uint32_t tid = madc::dis::arena_id_of(s);
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r) || r.kind != madc::dis::DK_ENUM)
+			continue;
+		// Rung 2a: an enum outside the bound closure skips unless an
+		// admitted record's chain pulled it.
+		if (_mat_filter.active && !pulled_enums.count(tid)
+		    && !record_kept(r))
 			continue;
 		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
 		if (!nm || !*nm)
@@ -2308,6 +2494,17 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
 		if (!nm || !*nm)
 			continue;
+		// Rung 2a: mirror registration's free-function predicate — the
+		// funcdef_map key decides; a key in NO unit's index refines by
+		// the ns::display source form (flush does the same); still
+		// unindexed = derived entity = keep.
+		if (_mat_filter.active) {
+			int v = name_verdict(r.name_id, 0);
+			if (v == 0 && r.disp_id && r.ns_id)
+				v = name_verdict(r.disp_id, r.ns_id);
+			if (v < 0)
+				continue;
+		}
 		// v20: a BODIED free function (an instantiated __mti / __ns_*__oN
 		// definition) restores WITH its forest body — the loaded method
 		// bodies call its symbol, and the m&l fixpoint materializes the

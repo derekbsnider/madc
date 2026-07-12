@@ -59,6 +59,7 @@
 #include <deque>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "cir_node.h"
@@ -767,6 +768,24 @@ struct CirRestoredFuncDefaults
 // loads UNITS ON DEMAND — a unit's records decompress the first time a
 // connector (or node_for) touches it, never at open. The image must stay
 // mapped for the forest's lifetime (cir_forest_map_image never unmaps).
+// Rung 2a (closure-filtered materialization): the demand filter the parser
+// installs BEFORE the first materialize_from_arena call. It carries the SAME
+// verdict map item 5's registration filter builds (forest_restore_decls):
+// decl-index name -> "some declaring unit is in the TU's bound-include
+// closure". materialize_from_arena consults it with the SAME fallback chain
+// as registration (qualified ns::name, then bare name, then unindexed =
+// derived entity = keep; a `<`-bearing record judged by its canonical
+// spelling HEAD). Skipped records never allocate DataDefs; an admitted
+// record's references PULL skipped aggregates/enums back in, so bound
+// chains never break. Inactive (the default) = whole-container
+// materialization — direct restores, unit tests, and --run-frozen are
+// untouched.
+struct CirMaterializeFilter
+{
+	bool active = false;
+	std::unordered_map<std::string, bool> declared_bound;
+};
+
 class CirFrozenForest
 {
 	friend class CirFrozenSegment;
@@ -830,6 +849,9 @@ class CirFrozenForest
 	// pending-funcs flush deserializes each run and re-runs parseExpression.
 	std::vector<CirRestoredFuncDefaults> _restored_param_defaults;
 	bool _types_materialized;
+	// Rung 2a: the closure demand filter (inactive by default — whole
+	// container). Installed by forest_restore_decls before materialization.
+	CirMaterializeFilter _mat_filter;
 	// Shared v2 segment reader: decompress unit slot `slot` into `out`
 	// (raw bytes). False on absent/malformed.
 	bool read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,
@@ -862,6 +884,15 @@ public:
 	// the session c2m is set here before the first node materialization (inline
 	// method body load at emit time). Safe iff no segment has materialized yet.
 	void set_c2m(c2m_ctx_t c2m) { _c2m = c2m; }
+
+	// Rung 2a: install the closure demand filter. No-op after the (memoized)
+	// materialization has run — the first caller's view wins, and a filter-
+	// less first caller (e.g. --run-frozen) correctly gets the whole container.
+	void set_materialize_filter(CirMaterializeFilter &&f)
+	{
+		if (!_types_materialized)
+			_mat_filter = std::move(f);
+	}
 
 	uint32_t unit_count() const { return (uint32_t)_units.size(); }
 	size_t units_loaded() const;			// laziness observability
