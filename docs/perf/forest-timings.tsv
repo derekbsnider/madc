@@ -15,3 +15,4 @@ date	commit	live_s	bound_s	live_derives	bound_derives	load1	note
 2026-07-12	ceff5bf7	2.413	0.829	217	187	2.22	task #14 clean re-bench (quiet host)
 2026-07-12	a711879c	2.817	0.833	217	187	2.20	rung 2a closure-filtered materialization (gated 681/681)
 2026-07-12	ee8f0ac7	2.388	0.824	217	187	1.62	rung 3 first cut (types -102/-174; globals sub-slice pending)
+2026-07-12	c31ed67b	2.399	0.804	217	187	1.26	rung 3 second cut - unified referenced-surface filter @c31ed67b
