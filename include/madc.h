@@ -13,6 +13,7 @@
 #include <istream>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 #include <ostream>
 #include <sstream>
@@ -921,8 +922,47 @@ typedef keyword_map_t::iterator keyword_map_iter;
 typedef flat_datatype_map_t::iterator flat_datatype_map_iter;	// TokenDataType ** (NULL = absent)
 typedef std::map<std::string, TokenDataType *>::iterator datatype_map_iter;
 typedef std::map<std::string, DataDef *>::iterator datadef_map_iter;
+typedef std::map<std::string, DataDef *>::const_iterator datadef_map_citer;
 typedef std::map<std::string, FuncDef *>::iterator funcdef_map_iter;
 typedef std::map<std::string, Variable *>::iterator variable_map_iter;
+
+// struct_map + its despaced-canonical lookup index as ONE object: set() is the
+// map's only write channel, so the index cannot silently desync from the map.
+// resolve_arg_spelling_datadef's fallback (template-id spellings are keyed in
+// struct_map by MANGLED name, so they resolve by matching
+// despace(strip_ns(canonical_cpp_spelling))) used to linearly re-despace every
+// entry per query; find_despaced serves the same first-hit-in-key-order answer
+// from an incrementally maintained index. Invalidation channels:
+//   growth                          -> size stamp; unseen nodes topped up
+//                                      (the map never erases)
+//   value repoint at existing key   -> set() bumps DataDef::canonical_spelling_gen
+//   spelling rewrite on a swept dd  -> DataDef::set_canonical_spelling bumps it
+// A gen mismatch rebuilds from scratch (the size-stamp reset forces the resweep).
+class StructRegistry
+{
+public:
+    typedef datadef_map_t::const_iterator const_iterator;
+    ~StructRegistry();				// MADC_DESPACE_PROBE counter dump
+    const_iterator begin() const { return map_.begin(); }
+    const_iterator end() const { return map_.end(); }
+    const_iterator find(const std::string &k) const { return map_.find(k); }
+    size_t count(const std::string &k) const { return map_.count(k); }
+    size_t size() const { return map_.size(); }
+    bool empty() const { return map_.empty(); }
+    void set(const std::string &key, DataDef *dd);
+    // First entry (in key order) whose despaced, namespace-stripped canonical
+    // spelling equals `want` — exactly the old linear scan's answer.
+    DataDef *find_despaced(const std::string &want);
+private:
+    struct Hit { const std::string *key; DataDef *dd; };
+    datadef_map_t map_;
+    std::unordered_map<std::string, Hit> index_;
+    std::unordered_set<const void *> seen_;	// map-node key addrs (map never erases)
+    size_t size_stamp_ = 0;
+    uint64_t gen_stamp_ = 0;
+    // MADC_DESPACE_PROBE counters (always maintained — increments are noise)
+    uint64_t probe_lookups_ = 0, probe_rebuilds_ = 0, probe_swept_ = 0;
+};
 
 // A builtin-registration type selector: names a parameter/return type for
 // addFunction() either by a DataType enum word or directly by a DataDef*. Both
@@ -1651,7 +1691,8 @@ public:
     // Dedicated dense pool for namespace-name keys of namespace_datatype_map.
     madc::dis::intern_table namespace_name_pool;
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
-    datadef_map_t  struct_map;		// data definitions defined by struct
+    StructRegistry struct_map;		// data definitions defined by struct
+					// (writes via .set() ONLY — despaced index)
     std::map<std::string, DataDefSTRUCT *> tsubst_local_aggregate_map;
     // Type table identity layer — project segment (madc_typeid.h; design
     // docs/plans/2026-06-12-type-table-value-abi-design.md §2). Holds every

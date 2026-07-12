@@ -210,7 +210,7 @@ TEST_SUITE("Itanium substitution: std::string") {
 
 TEST_SUITE("Itanium substitution: madc::value (the unified script array)") {
 
-	// ddARRAY's canonical_cpp_spelling is madc::value; these pin the
+	// ddARRAY's canonical_cpp_spelling() is madc::value; these pin the
 	// class-parameter rendering against g++-verified literals (generated
 	// from real prototypes via g++ -c + nm). The namespace prefix inside
 	// _ZN4madc...E substitutes to S_, and the class must keep its N..E
@@ -247,20 +247,18 @@ TEST_SUITE("marshalling-boundary text-carrier predicate") {
 
 	TEST_CASE("spellings compare via Itanium encoding") {
 		DataDef cxx11("basic_string", 32, DataType::dtVOID);
-		cxx11.canonical_cpp_spelling = std_string_type();
+		cxx11.set_canonical_spelling(std_string_type());
 		CHECK(cxx11.marshals_value_text());
 
 		// template-arg spacing is a spelling variant, not a type
 		DataDef spaced("basic_string", 32, DataType::dtVOID);
-		spaced.canonical_cpp_spelling =
-			"std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char>>";
+		spaced.set_canonical_spelling("std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char>>");
 		CHECK(spaced.marshals_value_text());
 
 		// pre-C++11-ABI std::basic_string (no __cxx11) is a DIFFERENT
 		// type (encodes Ss, not NSt7__cxx11...): must NOT match
 		DataDef oldabi("basic_string", 32, DataType::dtVOID);
-		oldabi.canonical_cpp_spelling =
-			"std::basic_string<char,std::char_traits<char>,std::allocator<char>>";
+		oldabi.set_canonical_spelling("std::basic_string<char,std::char_traits<char>,std::allocator<char>>");
 		CHECK_FALSE(oldabi.marshals_value_text());
 
 		DataDef other("Foo", 8, DataType::dtVOID);

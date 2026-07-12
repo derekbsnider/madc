@@ -1809,7 +1809,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			edd->size = r.size;
 		if (r.canon_id)
 			if (const char *cn = a.c_str(r.canon_id))
-				edd->canonical_cpp_spelling = cn;
+				edd->set_canonical_spelling(cn);
 		_mat_storage.push_back(edd);
 		by_id[tid] = edd;
 	}
@@ -1990,7 +1990,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		// under the wrong name instead of reusing the restored one.
 		if (r.canon_id)
 			if (const char *cs = a.c_str(r.canon_id))
-				sdd->canonical_cpp_spelling = cs;
+				sdd->set_canonical_spelling(cs);
 		sdd->pack                   = r.pack;
 		sdd->tag_explicit_align     = r.tag_explicit_align;
 		sdd->is_anonymous           = (r.flags & madc::dis::DF_IS_ANONYMOUS) != 0;

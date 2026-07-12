@@ -1725,11 +1725,11 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
     {
 	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd);
 	DataDef *base = ptr && ptr->base_type ? ptr->base_type : dd;
-	std::string s = base->canonical_cpp_spelling.empty()
-		      ? base->name : base->canonical_cpp_spelling;
+	std::string s = base->canonical_cpp_spelling().empty()
+		      ? base->name : base->canonical_cpp_spelling();
 	return s + "&";
     }
-    return dd->canonical_cpp_spelling.empty() ? dd->name : dd->canonical_cpp_spelling;
+    return dd->canonical_cpp_spelling().empty() ? dd->name : dd->canonical_cpp_spelling();
 }
 
 static std::string namespace_cpp_function_symbol(const std::string &ns_name,
@@ -1812,7 +1812,7 @@ static DataDef *type_query_chain_datadef(TokenBase *chain)
 
 DataDef *Program::resolve_named_datadef(const std::string &name)
 {
-    datadef_map_iter dmi = struct_map.find(name);
+    datadef_map_citer dmi = struct_map.find(name);
     if ( dmi != struct_map.end() )
 	return dmi->second;
 
@@ -2202,7 +2202,7 @@ DataDefCLASS *Program::resolve_expression_class_scope(const std::string &name)
     }
     if ( !dd )
     {
-	datadef_map_iter dmi = struct_map.find(name);
+	datadef_map_citer dmi = struct_map.find(name);
 	if ( dmi != struct_map.end() )
 	    dd = dmi->second;
     }
@@ -2468,7 +2468,7 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
     // NOT the ref-as-pointer `*` form. madc lowers references to pointers
     // (DataDefREF IS-A DataDefPTR), so a reference's name/canonical spelling is
     // the `*`-form — which is IDENTICAL to a real pointer's. Baking that into an
-    // instantiation's canonical_cpp_spelling LOSES the reference identity: when
+    // instantiation's canonical_cpp_spelling() LOSES the reference identity: when
     // that spelling is later re-resolved during deduction
     // (split_template_id_spelling -> resolve_arg_spelling_datadef), `const int32_t*`
     // rebuilds a PLAIN POINTER, so the library's `_Head&` (std::get/__get_helper's
@@ -2482,11 +2482,11 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
 	if ( DataDefPTR *r = dynamic_cast<DataDefPTR *>(&adt->definition) )
 	    if ( r->base_type )
 	    {
-		const std::string &rs = r->base_type->canonical_cpp_spelling;
+		const std::string &rs = r->base_type->canonical_cpp_spelling();
 		return cv_spelling
 		     + (rs.empty() ? r->base_type->name : rs) + "&";
 	    }
-    const std::string &cs = adt->definition.canonical_cpp_spelling;
+    const std::string &cs = adt->definition.canonical_cpp_spelling();
     return cv_spelling + (cs.empty() ? adt->definition.name : cs);
 }
 
@@ -2561,7 +2561,7 @@ TokenBase *Program::collect_template_argument_spelling(TokenBase *first,
 	{
 	    // Separate two adjacent WORD fragments (`const`+`int`, `unsigned`+`long`)
 	    // with a space so a multi-word type argument spells `const int&`, not the
-	    // unparseable `constint&`. Without it the canonical_cpp_spelling of an
+	    // unparseable `constint&`. Without it the canonical_cpp_spelling() of an
 	    // opaque/variadic instantiation (e.g. `tuple<const int&>`, a pack template)
 	    // does NOT round-trip through resolve_arg_spelling_datadef — `const ` can't
 	    // be peeled off `constint`, so partial-spec deduction of the element type
@@ -3352,8 +3352,8 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
     std::string canon;
     if ( td.owner_class )
     {
-	canon = td.owner_class->canonical_cpp_spelling.empty()
-	      ? td.owner_class->name : td.owner_class->canonical_cpp_spelling;
+	canon = td.owner_class->canonical_cpp_spelling().empty()
+	      ? td.owner_class->name : td.owner_class->canonical_cpp_spelling();
 	canon += "::";
     }
     else if ( !td.defining_namespace.empty() )
@@ -3401,8 +3401,8 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
     DataDefCLASS *fwd = new DataDefCLASS(mangled, 0, DataType::dtRESERVED);
     fwd->is_dependent_placeholder = true;
     stamp_opaque_mint_context(fwd);
-    fwd->canonical_cpp_spelling = canon;
-    struct_map[mangled] = fwd;
+    fwd->set_canonical_spelling(canon);
+    struct_map.set(mangled, fwd);
     // Keep the template-origin STRUCTURE (name + per-arg token runs) so tsubst
     // can rebuild the concrete instantiation from a binding later — the shell's
     // name/spelling alone is unresolvable (see Program::DependentShellOrigin).
@@ -3538,7 +3538,7 @@ static bool class_allows_opaque_member_type(DataDefCLASS *cls)
     if ( class_has_unresolved_dependent_surface(cls) )
 	return true;
     return cls && cls->from_system_header
-	&& cls->canonical_cpp_spelling.find('<') != std::string::npos;
+	&& cls->canonical_cpp_spelling().find('<') != std::string::npos;
 }
 
 static bool datadef_has_unresolved_dependent_surface(DataDef *dd)
@@ -3576,10 +3576,10 @@ DataDefCLASS *Program::materialize_dependent_member_type(DataDefCLASS *owner,
 	org.kind = DependentDerivedOrigin::MemberType;
 	org.member = member_name;
     }
-    std::string owner_spelling = owner->canonical_cpp_spelling.empty()
-			       ? owner->name : owner->canonical_cpp_spelling;
-    dep->canonical_cpp_spelling = owner_spelling + "::" + member_name;
-    struct_map[dep_name] = dep;
+    std::string owner_spelling = owner->canonical_cpp_spelling().empty()
+			       ? owner->name : owner->canonical_cpp_spelling();
+    dep->set_canonical_spelling(owner_spelling + "::" + member_name);
+    struct_map.set(dep_name, dep);
     datatype_map[dep_name] = new TokenDataType(dep_name.c_str(), *dep);
     // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every opaque
     // dependent-member synthesis for a matching owner — the laundered-opaque
@@ -3608,8 +3608,8 @@ DataDefCLASS *Program::materialize_opaque_class_type(const std::string &name,
     DataDefCLASS *dep = new DataDefCLASS(name, 0, DataType::dtRESERVED);
     dep->is_dependent_placeholder = true;
     stamp_opaque_mint_context(dep);
-    dep->canonical_cpp_spelling = canonical.empty() ? name : canonical;
-    struct_map[name] = dep;
+    dep->set_canonical_spelling(canonical.empty() ? name : canonical);
+    struct_map.set(name, dep);
     datatype_map[name] = new TokenDataType(name.c_str(), *dep);
     return dep;
 }
@@ -3635,8 +3635,8 @@ DataDef *Program::dependent_deref_result_type(DataDef *dd)
 	return ptr->base_type ? ptr->base_type : &ddINT64;
     if ( !datadef_has_unresolved_dependent_surface(dd) )
 	return NULL;
-    std::string spelling = dd->canonical_cpp_spelling.empty()
-			 ? dd->name : dd->canonical_cpp_spelling;
+    std::string spelling = dd->canonical_cpp_spelling().empty()
+			 ? dd->name : dd->canonical_cpp_spelling();
     DataDefCLASS *dep = materialize_opaque_class_type(
 	sanitize_template_fragment(dd->name + "__deref"), "*" + spelling);
     // Record the derivation so tsubst can re-derive the CONCRETE deref type
@@ -4080,11 +4080,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
       || (want_sticky && variadic_inst_in_progress.count(registered_mangled)) )
     {
 	DataDefCLASS *fwd = new DataDefCLASS(registered_mangled, 0, DataType::dtRESERVED);
-	fwd->canonical_cpp_spelling = canon;
+	fwd->set_canonical_spelling(canon);
 	fwd->is_dependent_placeholder = true;
 	stamp_opaque_mint_context(fwd);
 	fwd->has_dependent_surface = true;
-	struct_map[registered_mangled] = fwd;
+	struct_map.set(registered_mangled, fwd);
 	TokenDataType *tdt = new TokenDataType(registered_mangled.c_str(), *fwd);
 	datatype_map[registered_mangled] = tdt;
 	if ( !td.defining_namespace.empty() )
@@ -4528,7 +4528,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // member bodies. Keyed on the PRIMARY template's name+ns and the use-site args
     // (arg_*_by_slot), so the def's type-parameters map positionally to concretes.
     {
-	datadef_map_iter sm = struct_map.find(registered_mangled);
+	datadef_map_citer sm = struct_map.find(registered_mangled);
 	DataDefCLASS *inst_ddc = sm != struct_map.end()
 	    ? dynamic_cast<DataDefCLASS *>(sm->second) : NULL;
 	std::string ool_key = td.defining_namespace + "::" + td.class_name;
@@ -4854,8 +4854,8 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	fwd->is_dependent_placeholder = true;
 	stamp_opaque_mint_context(fwd);
 	fwd->has_dependent_surface = true;
-	fwd->canonical_cpp_spelling = canon;
-	struct_map[mangled] = fwd;
+	fwd->set_canonical_spelling(canon);
+	struct_map.set(mangled, fwd);
 	TokenDataType *tdt = new TokenDataType(mangled.c_str(), *fwd);
 	datatype_map[mangled] = tdt;
 	if ( !td.defining_namespace.empty() )
@@ -5056,9 +5056,9 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
       && class_has_unresolved_dependent_surface(td.owner_class) )
     {
 	std::string member_fragment = tname;
-	std::string owner_spelling = td.owner_class->canonical_cpp_spelling.empty()
+	std::string owner_spelling = td.owner_class->canonical_cpp_spelling().empty()
 				   ? td.owner_class->name
-				   : td.owner_class->canonical_cpp_spelling;
+				   : td.owner_class->canonical_cpp_spelling();
 	std::string canon = owner_spelling + "::" + tname + "<";
 	for ( size_t ai = 0; ai < arg_spellings.size(); ++ai )
 	{
@@ -5692,7 +5692,7 @@ TokenObjTemp *Program::try_parse_functional_ctor(TokenBase *name_tb)
 			cdd = dynamic_cast<DataDefCLASS *>(&(*dmi)->definition);
 		if ( !cdd )
 		{
-			datadef_map_iter sdmi = struct_map.find(name);
+			datadef_map_citer sdmi = struct_map.find(name);
 			if ( sdmi != struct_map.end() )
 				cdd = dynamic_cast<DataDefCLASS *>(sdmi->second);
 		}
@@ -8875,6 +8875,11 @@ DataDef *Program::parse_typedef_array_suffix(DataDef *base_dd,
     return arr_dd;
 }
 
+// Despaced-canonical index invalidation counter — bumped by
+// DataDef::set_canonical_spelling when an already-swept dd's spelling changes
+// (see StructRegistry::find_despaced).
+uint64_t DataDef::canonical_spelling_gen = 0;
+
 DataDefVOID ddVOID;
 DataDefVOIDref ddVOIDref;
 DataDefBOOL ddBOOL;
@@ -10017,10 +10022,10 @@ DataDef *Program::free_binary_operator_return_class(DataDefCLASS *lc,
     DataDefCLASS *rc = operand_object_class(right);
     if ( !rc )
 	return NULL;     // the exported by-value set is class-by-const-ref both sides
-    std::string lhead = template_head_component(lc->canonical_cpp_spelling.empty()
-						? lc->name : lc->canonical_cpp_spelling);
-    std::string rhead = template_head_component(rc->canonical_cpp_spelling.empty()
-						? rc->name : rc->canonical_cpp_spelling);
+    std::string lhead = template_head_component(lc->canonical_cpp_spelling().empty()
+						? lc->name : lc->canonical_cpp_spelling());
+    std::string rhead = template_head_component(rc->canonical_cpp_spelling().empty()
+						? rc->name : rc->canonical_cpp_spelling());
     if ( lhead.empty() || rhead.empty() )
 	return NULL;
     for ( const FreeOperatorOverload &ov : free_operator_overloads )
@@ -10068,8 +10073,8 @@ DataDef *Program::free_binary_operator_return_class_nonclass_lhs(
     DataDef *ld = left->datadef();
     if ( !rc || !ld || operand_object_class(left) )
 	return NULL;	// class-lhs rides the main path
-    std::string rhead = template_head_component(rc->canonical_cpp_spelling.empty()
-						? rc->name : rc->canonical_cpp_spelling);
+    std::string rhead = template_head_component(rc->canonical_cpp_spelling().empty()
+						? rc->name : rc->canonical_cpp_spelling());
     if ( rhead.empty() )
 	return NULL;
     for ( const FreeOperatorOverload &ov : free_operator_overloads )
@@ -10868,7 +10873,7 @@ bool DataDefCLASS::is_externally_defined() const
 {
     // Only a polymorphic class with a known Itanium spelling can be deferred to
     // libstdc++ (we must be able to name its real _ZTVSt.../_ZTISt... symbols).
-    if ( !has_vtable || canonical_cpp_spelling.empty() )
+    if ( !has_vtable || canonical_cpp_spelling().empty() )
 	return false;
     // A polymorphic class DEFINED in a system/toolchain header is owned by that
     // library: libstdc++ explicitly instantiates the standard facets/streams and
@@ -12594,9 +12599,9 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // reference names only their own closure declares).
     auto forest_product_permitted = [&](DataDef *dd) -> bool {
 	if ( !forest_closure_filter || !dd
-	  || dd->canonical_cpp_spelling.empty() )
+	  || dd->canonical_cpp_spelling().empty() )
 	    return true;
-	const std::string &cs = dd->canonical_cpp_spelling;
+	const std::string &cs = dd->canonical_cpp_spelling();
 	size_t lt = cs.find('<');
 	if ( lt == std::string::npos )
 	    return true;
@@ -12681,7 +12686,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		forest_pending_datatype_names.insert(name);
 		// A struct/class-KEYWORD typedef (`typedef struct [tag] {...} X;`
 		// / `typedef struct tag X;`) ALSO registered the alias as a tag in
-		// the producer — struct_map[X] = the aggregate (TokenSTRUCT::parse
+		// the producer — struct_map.set(X, the aggregate) (TokenSTRUCT::parse
 		// ~24055/~25002; the tagless glibc fd_set/div_t shape) — so a bound
 		// `struct X v;` resolves the tag. Stamped at save from the
 		// producer's own map state; the plain TokenTYPEDEF path never
@@ -12694,7 +12699,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		    if ( DataDefCArray *ca = dynamic_cast<DataDefCArray *>(tag_dd) )
 			tag_dd = ca->element_type;
 		    if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(tag_dd) )
-			struct_map[name] = sdd;
+			struct_map.set(name, sdd);
 		}
 	    }
 	    // v26: an explicit-specialization alias (live's alias_key block in
@@ -12708,7 +12713,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		forest_pending_datatypes.push_back(std::make_pair(name, tdt));
 		forest_pending_datatype_names.insert(name);
 		if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(rt.underlying) )
-		    struct_map[name] = sdd;
+		    struct_map.set(name, sdd);
 	    }
 	    user_typedef_names.insert(name);
 	    TopDecl td;
@@ -12761,7 +12766,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(rt.dd);
 	    if ( !sdd )
 		continue;
-	    struct_map[name] = sdd;
+	    struct_map.set(name, sdd);
 	    // Live parity: a parsed tag is ALSO a bare type name (struct≡class
 	    // — `union myu {...};` makes `myu v;` resolve with no typedef), so
 	    // the restore stages the flat datatype registration exactly like
@@ -12804,7 +12809,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(rt.dd);
 	    if ( !cdd )
 		continue;
-	    struct_map[name] = cdd;
+	    struct_map.set(name, cdd);
 	    TokenDataType *tdt = new TokenDataType(rt.name, *cdd);
 	    forest_pending_datatypes.push_back(std::make_pair(name, tdt));
 	    forest_pending_datatype_names.insert(name);
@@ -13674,7 +13679,7 @@ void Program::flush_forest_pending_globals()
 	    // re-derive (live parity: that class was never parsed).
 	    if ( rd.owner )
 	    {
-		datadef_map_iter smi = struct_map.find(rd.owner->name);
+		datadef_map_citer smi = struct_map.find(rd.owner->name);
 		if ( smi == struct_map.end() || smi->second != rd.owner )
 		    continue;
 	    }
@@ -14320,7 +14325,7 @@ std::string Program::active_cpp_lookup_namespace()
       || !compounds.top()->method->owner_class )
 	return std::string();
     DataDefCLASS *owner = compounds.top()->method->owner_class;
-    return namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling);
+    return namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling());
 }
 
 // C++ [namespace.udir]: members of a `using namespace X;` namespace join
@@ -16659,10 +16664,10 @@ static bool class_is_or_derives(DataDefCLASS *cls, DataDefCLASS *target)
 	return false;
     if ( cls == target )
 	return true;
-    std::string cls_spelling = cls->canonical_cpp_spelling.empty()
-	? cls->name : cls->canonical_cpp_spelling;
-    std::string target_spelling = target->canonical_cpp_spelling.empty()
-	? target->name : target->canonical_cpp_spelling;
+    std::string cls_spelling = cls->canonical_cpp_spelling().empty()
+	? cls->name : cls->canonical_cpp_spelling();
+    std::string target_spelling = target->canonical_cpp_spelling().empty()
+	? target->name : target->canonical_cpp_spelling();
     if ( !cls_spelling.empty() && cls_spelling == target_spelling )
 	return true;
     for ( size_t i = 0; i < cls->bases.size(); ++i )
@@ -16696,7 +16701,7 @@ static bool class_matches_friend_name(DataDefCLASS *cls,
 	return false;
     if ( cls->name == friend_name )
 	return true;
-    std::string canonical = cls->canonical_cpp_spelling;
+    std::string canonical = cls->canonical_cpp_spelling();
     if ( canonical.empty() )
 	canonical = cls->name;
     if ( canonical == friend_name )
@@ -17407,10 +17412,73 @@ static std::string despace_spelling(const std::string &s)
     return out;
 }
 
+StructRegistry::~StructRegistry()
+{
+    if ( getenv("MADC_DESPACE_PROBE") )
+	fprintf(stderr, "DESPACEPROBE lookups=%llu rebuilds=%llu swept=%llu "
+		"entries=%zu index=%zu gen=%llu\n",
+		(unsigned long long)probe_lookups_,
+		(unsigned long long)probe_rebuilds_,
+		(unsigned long long)probe_swept_,
+		map_.size(), index_.size(),
+		(unsigned long long)DataDef::canonical_spelling_gen);
+}
+
+void StructRegistry::set(const std::string &key, DataDef *dd)
+{
+    std::pair<datadef_map_t::iterator, bool> r = map_.emplace(key, dd);
+    if ( r.second || r.first->second == dd )
+	return;				// fresh insert: the size-stamp top-up covers it
+    r.first->second = dd;		// repoint at an existing key: a swept node may
+    ++DataDef::canonical_spelling_gen;	// hold the old value — rebuild the index
+}
+
+DataDef *StructRegistry::find_despaced(const std::string &want)
+{
+    ++probe_lookups_;
+    if ( gen_stamp_ != DataDef::canonical_spelling_gen )
+    {
+	index_.clear();
+	seen_.clear();
+	size_stamp_ = 0;		// forces the full resweep below
+	gen_stamp_ = DataDef::canonical_spelling_gen;
+	++probe_rebuilds_;
+    }
+    if ( map_.size() != size_stamp_ )
+    {
+	size_stamp_ = map_.size();
+	for ( datadef_map_citer it = map_.begin(); it != map_.end(); ++it )
+	{
+	    if ( !seen_.insert(&it->first).second )
+		continue;
+	    ++probe_swept_;
+	    DataDef *dd = it->second;
+	    if ( !dd )
+		continue;
+	    dd->canonical_swept = true;	// its rewrites must bump the gen from now on
+	    if ( dd->canonical_cpp_spelling().empty() )
+		continue;
+	    std::string d = despace_spelling(strip_type_namespace(dd->canonical_cpp_spelling()));
+	    std::pair<std::unordered_map<std::string, Hit>::iterator, bool> ins =
+		index_.emplace(d, Hit{ &it->first, dd });
+	    // Keep the smallest map key per despaced spelling: a top-up can visit
+	    // a later-inserted node whose key sorts BEFORE the current winner, and
+	    // the linear scan this replaces answered in key order.
+	    if ( !ins.second && it->first < *ins.first->second.key )
+	    {
+		ins.first->second.key = &it->first;
+		ins.first->second.dd = dd;
+	    }
+	}
+    }
+    std::unordered_map<std::string, Hit>::iterator hit = index_.find(want);
+    return hit == index_.end() ? NULL : hit->second.dd;
+}
+
 // Resolve a type-argument SPELLING to its DataDef. resolve_named_datadef handles
 // simple names and already-mangled keys; a template-id spelling ("node<int64_t>")
 // is keyed in struct_map under its MANGLED name, not its canonical spelling, so it
-// is found here by matching canonical_cpp_spelling. Needed when a partial spec's
+// is found here by matching canonical_cpp_spelling(). Needed when a partial spec's
 // deducible inner param binds to a concrete that is ITSELF a template-id
 // (`__replace_first_arg<C<A>, _Tp>` vs `myalloc<node<long>>` deduces A = node<long>):
 // without this the deduction fails and the spec is wrongly rejected for the primary.
@@ -17479,13 +17547,7 @@ static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &sp
     if ( spelling.find('<') == std::string::npos )
 	return NULL;
     std::string want = despace_spelling(strip_type_namespace(trim_spelling(spelling)));
-    for ( datadef_map_iter it = pgm.struct_map.begin();
-	  it != pgm.struct_map.end(); ++it )
-	if ( it->second && !it->second->canonical_cpp_spelling.empty()
-	  && despace_spelling(strip_type_namespace(it->second->canonical_cpp_spelling))
-	     == want )
-	    return it->second;
-    return NULL;
+    return pgm.struct_map.find_despaced(want);
 }
 
 // [temp.deduct.call]/4 derived-to-base: when a template-id PARAMETER pattern
@@ -17513,13 +17575,13 @@ static std::string base_spelling_for_template(DataDefCLASS *cls,
     for ( size_t i = 0; i < direct.size(); ++i )
     {
 	DataDefCLASS *b = direct[i];
-	if ( !b->canonical_cpp_spelling.empty() )
+	if ( !b->canonical_cpp_spelling().empty() )
 	{
 	    std::string bo;
 	    std::vector<std::string> ba;
-	    if ( split_template_id_spelling(b->canonical_cpp_spelling, bo, ba)
+	    if ( split_template_id_spelling(b->canonical_cpp_spelling(), bo, ba)
 	      && bo == strip_type_namespace(want_outer) )
-		return b->canonical_cpp_spelling;
+		return b->canonical_cpp_spelling();
 	}
 	std::string deep = base_spelling_for_template(b, want_outer);
 	if ( !deep.empty() )
@@ -18469,7 +18531,7 @@ std::string Program::canonical_arg_key_fragment(
       && spelling != "char32_t" )
 	if ( DataDef *dd = resolve_builtin_type_spelling(spelling) )
 	{
-	    const std::string &cs = dd->canonical_cpp_spelling;
+	    const std::string &cs = dd->canonical_cpp_spelling();
 	    return sanitize_template_fragment(cs.empty() ? dd->name : cs);
 	}
     return sanitize_template_fragment(spelling);
@@ -18579,11 +18641,11 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	    // The nested-template-id unifier needs the BRACKETED spelling to
 	    // decompose `_Template<_Up>` against the concrete (`allocator<char>`).
 	    // arg_spellings[i] may be a MANGLED form (`myalloc_int32_t`) for an
-	    // already-instantiated arg; the concrete class's canonical_cpp_spelling
+	    // already-instantiated arg; the concrete class's canonical_cpp_spelling()
 	    // carries the `<...>` structure, so prefer it for that unifier.
 	    std::string nested_concrete =
-		!arg_types_by_slot[i]->definition.canonical_cpp_spelling.empty()
-		? arg_types_by_slot[i]->definition.canonical_cpp_spelling
+		!arg_types_by_slot[i]->definition.canonical_cpp_spelling().empty()
+		? arg_types_by_slot[i]->definition.canonical_cpp_spelling()
 		: arg_spellings[i];
 	    if ( !unify_spec_pattern_arg(spec.spec_pattern[i], spec.typeparams,
 					 &arg_types_by_slot[i]->definition,
@@ -19325,7 +19387,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    target_dd = &(*tdmi)->definition;
 			if ( !target_dd )
 			{
-			    datadef_map_iter sdmi = struct_map.find(tname);
+			    datadef_map_citer sdmi = struct_map.find(tname);
 			    if ( sdmi != struct_map.end() )
 				target_dd = sdmi->second;
 			}
@@ -19338,7 +19400,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( tag_tb && tag_tb->type() == TokenType::ttIdentifier )
 			{
 			    std::string sname = ((TokenIdent *)tag_tb)->spelling();
-			    datadef_map_iter sdmi = struct_map.find(sname);
+			    datadef_map_citer sdmi = struct_map.find(sname);
 			    if ( sdmi != struct_map.end() )
 				target_dd = sdmi->second;
 			}
@@ -21218,7 +21280,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    if ( save2 && save2->type() == TokenType::ttIdentifier )
 			    {
 				std::string sname = ((TokenIdent *)save2)->spelling();
-				datadef_map_iter sdmi = struct_map.find(sname);
+				datadef_map_citer sdmi = struct_map.find(sname);
 				if ( sdmi != struct_map.end() )
 				{
 				    nextToken(); // consume tag name
@@ -24242,7 +24304,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     bool is_union = id() == TokenID::tkUNION;
     const char *aggregate_kw = is_union ? "union" : "struct";
     flat_datatype_map_iter bmi; // TokenDataType map
-    datadef_map_iter dmi;  // DataDef map
+    datadef_map_citer dmi;  // DataDef map
 
     DBG(std::cout << std::endl << "TokenSTRUCT::parse() top" << std::endl);
     if ( !(tn=pgm.peekToken()) )
@@ -24255,12 +24317,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    return pgm.cur_func_name + "::" + name;
 	return name;
     };
-    auto find_visible_struct_tag = [&](const std::string &name) -> datadef_map_iter
+    auto find_visible_struct_tag = [&](const std::string &name) -> datadef_map_citer
     {
 	std::string scoped = scoped_struct_tag(name);
 	if ( scoped != name )
 	{
-	    datadef_map_iter scoped_it = pgm.struct_map.find(scoped);
+	    datadef_map_citer scoped_it = pgm.struct_map.find(scoped);
 	    if ( scoped_it != pgm.struct_map.end() )
 		return scoped_it;
 	}
@@ -24312,7 +24374,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     {
 	if ( !sdd || pgm.is_c_mode() )
 	    return NULL;
-	if ( sdd->canonical_cpp_spelling.empty() )
+	if ( sdd->canonical_cpp_spelling().empty() )
 	{
 	    // An instantiated STRUCT template (`myalloc<int>`) must carry its
 	    // bracketed canonical spelling just like an instantiated class
@@ -24321,9 +24383,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // `__replace_first_arg<_Template<_Up>, _Tp>`). Falls back to
 	    // namespace::name for an ordinary (non-instantiated) C++ struct.
 	    if ( pgm.instantiating_spelling_applies_here() )
-		sdd->canonical_cpp_spelling = pgm.instantiating_canonical_spelling;
+		sdd->set_canonical_spelling(pgm.instantiating_canonical_spelling);
 	    else if ( !pgm.current_namespace().empty() )
-		sdd->canonical_cpp_spelling = pgm.current_namespace() + "::" + name;
+		sdd->set_canonical_spelling(pgm.current_namespace() + "::" + name);
 	}
 	pgm.pack_tap_type(name);	// B4a: decl-index tap (C++ aggregate name)
 	TokenDataType *tdt_ = NULL;
@@ -24507,7 +24569,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		fwd = new DataDefSTRUCT(tag->spelling(), 0);
 		fwd->union_layout = is_union;
 		pgm.pack_tap_struct(scoped_struct_tag(tag->spelling()));	// B4a tap
-		pgm.struct_map[scoped_struct_tag(tag->spelling())] = fwd;
+		pgm.struct_map.set(scoped_struct_tag(tag->spelling()), fwd);
 	    }
 	    else
 		fwd = static_cast<DataDefSTRUCT *>(dmi->second);
@@ -24533,7 +24595,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    DataDefSTRUCT *fwd = new DataDefSTRUCT(tag->spelling(), 0);
 	    fwd->union_layout = is_union;
 	    pgm.pack_tap_struct(scoped_struct_tag(tag->spelling()));	// B4a tap
-	    pgm.struct_map[scoped_struct_tag(tag->spelling())] = fwd;
+	    pgm.struct_map.set(scoped_struct_tag(tag->spelling()), fwd);
 	    register_cpp_aggregate_name(tag->spelling(), fwd);
 	    dmi = find_visible_struct_tag(tag->spelling());
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->spelling() << endl);
@@ -24574,7 +24636,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    if ( !alias_dd->is_pointer() )
 	    {
 		pgm.pack_tap_struct(alias_name);	// B4a tap
-		pgm.struct_map[alias_name] = dmi->second;
+		pgm.struct_map.set(alias_name, dmi->second);
 	    }
 	    record_typedef(alias_name, alias_dd, tdt, tn);
 	    return new TokenTypedefDecl(alias_name, alias_dd);
@@ -24655,7 +24717,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( tag && pgm.struct_map.find(tag_store_key) == pgm.struct_map.end() )
     {
 	pgm.pack_tap_struct(tag_store_key);	// B4a tap
-	pgm.struct_map[tag_store_key] = dds;
+	pgm.struct_map.set(tag_store_key, dds);
 	was_pre_registered = true;
 	DBG(cout << "TokenSTRUCT::parse() pre-registered " << tag_store_key << " for self-reference" << endl);
     }
@@ -24778,7 +24840,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    if ( !inner_tag || inner_tag->type() != TokenType::ttIdentifier )
 				pgm.Throw(inner_tag ? inner_tag : tn) << "Expecting struct name" << flush;
 			    std::string sname = ((TokenIdent *)inner_tag)->spelling();
-			    datadef_map_iter sdmi = pgm.struct_map.find(sname);
+			    datadef_map_citer sdmi = pgm.struct_map.find(sname);
 			    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
 			    {
 				DataDefSTRUCT *nested = NULL;
@@ -24788,7 +24850,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				    if ( inner_packed )
 					nested->pack = 1;
 				    pgm.pack_tap_struct(sname);	// B4a tap
-				    pgm.struct_map[sname] = nested;
+				    pgm.struct_map.set(sname, nested);
 				}
 				else
 				{
@@ -24815,7 +24877,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				    DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
 				    fwd->union_layout = inner_union_kw;
 				    pgm.pack_tap_struct(sname);	// B4a tap
-				    pgm.struct_map[sname] = fwd;
+				    pgm.struct_map.set(sname, fwd);
 				    sdmi = pgm.struct_map.find(sname);
 				}
 				inner_type = new TokenDataType(sname.c_str(), *sdmi->second);
@@ -25024,7 +25086,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		if ( stag->type() != TokenType::ttIdentifier )
 		    pgm.Throw(stag) << "Expecting struct name" << flush;
 		std::string sname = ((TokenIdent *)stag)->spelling();
-		datadef_map_iter sdmi = pgm.struct_map.find(sname);
+		datadef_map_citer sdmi = pgm.struct_map.find(sname);
 		// A method-bearing nested struct (C++ `struct Inner { void f(){} } m;`)
 		// must be parsed by the one class-body parser, not the data-only
 		// nested-aggregate parser. Delegate the DEFINITION to TokenCLASS in
@@ -25060,7 +25122,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    pgm.parsing_cpp_struct_class = saved_struct_class;
 		    pgm.parsing_cpp_union_class = saved_union_class;
 		    pgm.class_definition_only = saved_def_only;
-		    datadef_map_iter ndmi = pgm.struct_map.find(sname);
+		    datadef_map_citer ndmi = pgm.struct_map.find(sname);
 		    if ( ndmi == pgm.struct_map.end() )
 			pgm.Throw(stag) << "Nested class '" << sname
 			    << "' not registered by class parser" << flush;
@@ -25074,7 +25136,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			inner = new DataDefSTRUCT(sname, 0);
 			inner->union_layout = nested_union_kw;
 			pgm.pack_tap_struct(sname);	// B4a tap
-			pgm.struct_map[sname] = inner;
+			pgm.struct_map.set(sname, inner);
 		    }
 		    else
 		    {
@@ -25102,7 +25164,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
 			fwd->union_layout = nested_union_kw;
 			pgm.pack_tap_struct(sname);	// B4a tap
-			pgm.struct_map[sname] = fwd;
+			pgm.struct_map.set(sname, fwd);
 			sdmi = pgm.struct_map.find(sname);
 		    }
 		    mtype = new TokenDataType(sname.c_str(), *sdmi->second);
@@ -25407,7 +25469,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    DataDefCLASS *ddc = new DataDefCLASS(dds->name, dds->size, dds->rawtype());
 	    static_cast<DataDefSTRUCT &>(*ddc) = *dds; // copy the parsed struct state
 	    if ( was_pre_registered && tag )
-		pgm.struct_map[tag_store_key] = ddc;   // repoint the self-ref pre-registration
+		pgm.struct_map.set(tag_store_key, ddc);   // repoint the self-ref pre-registration
 	    // The old DataDefSTRUCT is left alive (not deleted): a self-reference
 	    // member pointer (`struct s *next`) made during body-parsing points at it,
 	    // and emission is by tag name, so both denote the same `struct s`. dds now
@@ -25464,7 +25526,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	else
 	{
 	    pgm.pack_tap_struct(tag_store_key);	// B4a tap
-	    pgm.struct_map[tag_store_key] = dds;
+	    pgm.struct_map.set(tag_store_key, dds);
 	    DBG(cout << "TokenSTRUCT::parse() registered struct " << tag_store_key << " size=" << dds->size << endl);
 	}
 	register_cpp_aggregate_name(tag->spelling(), dds);
@@ -25521,7 +25583,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    if ( alias_dd == dds )
 	    {
 		pgm.pack_tap_struct(alias->spelling());	// B4a tap
-		pgm.struct_map[alias->spelling()] = dds;
+		pgm.struct_map.set(alias->spelling(), dds);
 	    }
 	    // The non-pointer alias of a combined `typedef struct Tag {...} Tag;` is
 	    // the tag's body-definition point: its SPEC_DECL carries the full struct
@@ -25812,7 +25874,7 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
     if ( !ddc || !mvar )
 	return;
     FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
-    if ( !fd || !fd->declaration_only || ddc->canonical_cpp_spelling.empty() )
+    if ( !fd || !fd->declaration_only || ddc->canonical_cpp_spelling().empty() )
 	return;
     if ( fd->defaulted_or_deleted )
 	return;
@@ -25832,10 +25894,10 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
     // Itanium binding so it links against libstdc++.
     if ( !ddc->is_extern_template_instantiated && !ddc->is_externally_defined() )
     {
-	size_t lt = ddc->canonical_cpp_spelling.find('<');
+	size_t lt = ddc->canonical_cpp_spelling().find('<');
 	std::string tmpl_key = lt == std::string::npos
-	    ? ddc->canonical_cpp_spelling
-	    : ddc->canonical_cpp_spelling.substr(0, lt);
+	    ? ddc->canonical_cpp_spelling()
+	    : ddc->canonical_cpp_spelling().substr(0, lt);
 	std::map<std::string, std::vector<OutOfLineMemberDef> >::iterator oit =
 	    out_of_line_member_defs.find(tmpl_key);
 	if ( oit != out_of_line_member_defs.end() )
@@ -25849,7 +25911,7 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
     std::vector<std::string> psp;
     for ( size_t i = 1; i < fd->param_cpp_spellings.size(); ++i )
 	psp.push_back(fd->param_cpp_spellings[i]);
-    const std::string &cls = ddc->canonical_cpp_spelling;
+    const std::string &cls = ddc->canonical_cpp_spelling();
     switch ( kind )
     {
     case CppSymKind::Ctor: fd->emit_symbol = itanium_mangle_ctor_sub(cls, psp); break;
@@ -26033,8 +26095,8 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     fprintf(stderr, "[deferred-body] var=%s owner=%s spelling='%s' ns-derived='%s' cur-ns='%s'\n",
 	    body.var->name.c_str(),
 	    body.method->owner_class ? body.method->owner_class->name.c_str() : "(none)",
-	    body.method->owner_class ? body.method->owner_class->canonical_cpp_spelling.c_str() : "",
-	    body.method->owner_class ? namespace_scope_from_cpp_spelling(body.method->owner_class->canonical_cpp_spelling).c_str() : "",
+	    body.method->owner_class ? body.method->owner_class->canonical_cpp_spelling().c_str() : "",
+	    body.method->owner_class ? namespace_scope_from_cpp_spelling(body.method->owner_class->canonical_cpp_spelling()).c_str() : "",
 	    current_namespace().c_str());
 #endif
     std::string body_namespace = current_namespace();
@@ -26051,7 +26113,7 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     {
 	std::string method_namespace =
 	    namespace_scope_from_cpp_spelling(
-		body.method->owner_class->canonical_cpp_spelling);
+		body.method->owner_class->canonical_cpp_spelling());
 	if ( !method_namespace.empty() )
 	    body_namespace = method_namespace;
 	// Restore the template-instantiation context so nested template-ids and
@@ -26060,10 +26122,10 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	// lazily-materialized body loses the context and nested instantiations fall
 	// back to defaults (e.g. allocator<char> mis-resolving to allocator<int>).
 	// parsing_template_instantiated_member_body() keys off this + the owner.
-	if ( body.method->owner_class->canonical_cpp_spelling.find('<')
+	if ( body.method->owner_class->canonical_cpp_spelling().find('<')
 	     != std::string::npos )
 	    instantiating_canonical_spelling =
-		body.method->owner_class->canonical_cpp_spelling;
+		body.method->owner_class->canonical_cpp_spelling();
     }
     NamespaceScope ns_scope(*this, body_namespace);
     // Parse the body WITH its owner class on the class-scope stack — the invariant
@@ -26301,11 +26363,11 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	    pushToken(*it2);
 	cur_func_name = body.var->name;
 	std::string method_namespace =
-	    namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling);
+	    namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling());
 	NamespaceScope ns_scope(*this, method_namespace.empty()
 					? current_namespace() : method_namespace);
-	if ( owner->canonical_cpp_spelling.find('<') != std::string::npos )
-	    instantiating_canonical_spelling = owner->canonical_cpp_spelling;
+	if ( owner->canonical_cpp_spelling().find('<') != std::string::npos )
+	    instantiating_canonical_spelling = owner->canonical_cpp_spelling();
 	parsing_defaulted_member_template_constructor = true;
 	try
 	{
@@ -27092,7 +27154,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     bool do_typedef = pgm.parsing_typedef_decl
 	|| (pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false);
     flat_datatype_map_iter bmi;
-    datadef_map_iter dmi;
+    datadef_map_citer dmi;
 
     DBG(std::cout << std::endl << "TokenCLASS::parse() top" << std::endl);
     if ( !(tn=pgm.peekToken()) )
@@ -27244,7 +27306,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    }
 	    else
 	    {
-		datadef_map_iter bdmi = pgm.struct_map.find(base_name);
+		datadef_map_citer bdmi = pgm.struct_map.find(base_name);
 		bcls = (bdmi != pgm.struct_map.end())
 		    ? dynamic_cast<DataDefCLASS *>(bdmi->second) : NULL;
 		if ( !bcls && !pgm.is_c_mode() && bdmi != pgm.struct_map.end() )
@@ -27327,7 +27389,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( existing_type != pgm.datatype_map.end()
 	      && dynamic_cast<DataDefCLASS *>(&(*existing_type)->definition) )
 	    {
-		pgm.struct_map[tag->spelling()] = &(*existing_type)->definition;
+		pgm.struct_map.set(tag->spelling(), &(*existing_type)->definition);
 		dmi = pgm.struct_map.find(tag->spelling());
 	    }
 	}
@@ -27347,18 +27409,18 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		if ( nested_owner_class )
 		{
 		    std::string owner_spelling =
-			nested_owner_class->canonical_cpp_spelling.empty()
+			nested_owner_class->canonical_cpp_spelling().empty()
 			? nested_owner_class->name
-			: nested_owner_class->canonical_cpp_spelling;
-		    fwd->canonical_cpp_spelling = owner_spelling + "::" + class_source_name;
+			: nested_owner_class->canonical_cpp_spelling();
+		    fwd->set_canonical_spelling(owner_spelling + "::" + class_source_name);
 		    fwd->enclosing_class = nested_owner_class;
 		    nested_owner_class->type_aliases[class_source_name] = fwd;
 		}
 		else if ( !pgm.current_namespace().empty() )
-		    fwd->canonical_cpp_spelling = pgm.current_namespace() + "::" + tag->spelling();
+		    fwd->set_canonical_spelling(pgm.current_namespace() + "::" + tag->spelling());
 		pgm.pack_tap_struct(tag->spelling());	// B4a tap (class fwd decl)
 		pgm.pack_tap_type(tag->spelling());
-		pgm.struct_map[tag->spelling()] = fwd;
+		pgm.struct_map.set(tag->spelling(), fwd);
 		tdt = new TokenDataType(tag->spelling(), *fwd);
 		pgm.datatype_map[tag->spelling()] = tdt;
 		if ( !pgm.current_namespace().empty() )
@@ -27423,7 +27485,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	{
 	    ddc = new DataDefCLASS(tag->spelling(), 0, sfwd->rawtype());
 	    static_cast<DataDefSTRUCT &>(*ddc) = *sfwd;
-	    pgm.struct_map[tag->spelling()] = ddc;
+	    pgm.struct_map.set(tag->spelling(), ddc);
 	    completing_forward_decl = true;
 	}
 	else if ( pgm.fn_template_instantiation_depth > 0 && fwd
@@ -27471,16 +27533,16 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     if ( nested_owner_class )
     {
 	std::string owner_spelling =
-	    nested_owner_class->canonical_cpp_spelling.empty()
+	    nested_owner_class->canonical_cpp_spelling().empty()
 	    ? nested_owner_class->name
-	    : nested_owner_class->canonical_cpp_spelling;
-	ddc->canonical_cpp_spelling = owner_spelling + "::" + class_source_name;
+	    : nested_owner_class->canonical_cpp_spelling();
+	ddc->set_canonical_spelling(owner_spelling + "::" + class_source_name);
 	ddc->enclosing_class = nested_owner_class;
     }
     else if ( pgm.instantiating_spelling_applies_here() )
-	ddc->canonical_cpp_spelling = pgm.instantiating_canonical_spelling;
-    else if ( ddc->canonical_cpp_spelling.empty() && !pgm.current_namespace().empty() )
-	ddc->canonical_cpp_spelling = pgm.current_namespace() + "::" + tag->spelling();
+	ddc->set_canonical_spelling(pgm.instantiating_canonical_spelling);
+    else if ( ddc->canonical_cpp_spelling().empty() && !pgm.current_namespace().empty() )
+	ddc->set_canonical_spelling(pgm.current_namespace() + "::" + tag->spelling());
     // Record whether this class is being DEFINED from a system/toolchain header
     // (glibc / libstdc++): such a class's vtable/typeinfo/member symbols are
     // owned by that library's explicit instantiation, so madc defers to the real
@@ -27490,10 +27552,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // while parsing the defining system header, so _parse_file is that header.
     ddc->from_system_header = pgm.is_system_header_path(TokenBase::_parse_file);
     std::string constructor_source_name = class_source_name;
-    if ( !ddc->canonical_cpp_spelling.empty() )
+    if ( !ddc->canonical_cpp_spelling().empty() )
     {
 	std::string primary =
-	    primary_name_from_cpp_spelling(ddc->canonical_cpp_spelling);
+	    primary_name_from_cpp_spelling(ddc->canonical_cpp_spelling());
 	if ( !primary.empty() )
 	    constructor_source_name = primary;
     }
@@ -27513,7 +27575,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     pgm.pack_tap_type(tag->spelling());
     if ( !completing_forward_decl )
     {
-	pgm.struct_map[tag->spelling()] = ddc;
+	pgm.struct_map.set(tag->spelling(), ddc);
 	tdt = new TokenDataType(tag->spelling(), *ddc);
 	pgm.datatype_map[tag->spelling()] = tdt;
 	if ( nested_owner_class )
@@ -28810,7 +28872,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	pgm.pack_tap_type(alias->spelling());	// B4a tap (typedef class {...} alias)
 	pgm.pack_tap_struct(alias->spelling());
 	pgm.register_scoped_typedef(alias->spelling(), tdt);
-	pgm.struct_map[alias->spelling()] = ddc;
+	pgm.struct_map.set(alias->spelling(), ddc);
 	return NULL;
     }
 
@@ -29784,8 +29846,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 
 	DataDef *enum_alias_dd = new DataDefENUM(alias);
 	if ( !pgm.current_namespace().empty() )
-	    enum_alias_dd->canonical_cpp_spelling =
-		pgm.current_namespace() + "::" + alias;
+	    enum_alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias);
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *enum_alias_dd);
 	if ( pgm.class_scope_stack.empty() )
 	    pgm.register_scoped_typedef(alias, tdt);
@@ -30042,7 +30103,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	   && base_source_spelling != base_dd->name )
     {
 	DataDef *alias_dd = new DataDef(alias, base_dd->size, base_dd->type());
-	alias_dd->canonical_cpp_spelling = base_source_spelling;
+	alias_dd->set_canonical_spelling(base_source_spelling);
 	base_dd = alias_dd;
     }
     else if ( pgm.class_scope_stack.empty()
@@ -30051,7 +30112,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	   && base_dd->basetype() == BaseType::btSimple )
     {
 	DataDef *alias_dd = new DataDef(alias, base_dd->size, base_dd->type());
-	alias_dd->canonical_cpp_spelling = pgm.current_namespace() + "::" + alias;
+	alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias);
 	base_dd = alias_dd;
     }
     if ( base_dd && is_incomplete_class_datadef(base_dd) )
@@ -30149,12 +30210,12 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	    if ( !tag || tag->type() != TokenType::ttIdentifier )
 		Throw(tag ? tag : nt) << "Expecting struct name after 'struct'" << flush;
 	    std::string sname = ((TokenIdent *)tag)->spelling();
-	    datadef_map_iter sdmi = struct_map.find(sname);
+	    datadef_map_citer sdmi = struct_map.find(sname);
 	    if ( sdmi == struct_map.end() )
 	    {
 		DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
 		pack_tap_struct(sname);	// B4a tap
-		struct_map[sname] = fwd;
+		struct_map.set(sname, fwd);
 		sdmi = struct_map.find(sname);
 	    }
 	    param_dd = sdmi->second;
@@ -30223,8 +30284,8 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	if ( param_leading_const )
 	    param_spelling = "const ";
 	if ( base_param_dd )
-	    param_spelling += base_param_dd->canonical_cpp_spelling.empty()
-		? base_param_dd->name : base_param_dd->canonical_cpp_spelling;
+	    param_spelling += base_param_dd->canonical_cpp_spelling().empty()
+		? base_param_dd->name : base_param_dd->canonical_cpp_spelling();
 	for ( int sd = 0; sd < param_ptr_depth; ++sd )
 	    param_spelling += "*";
 	if ( param_is_ref )
@@ -30309,15 +30370,13 @@ TokenBase *TokenENUM::parse(Program &pgm)
 		{
 		    DataDefCLASS *owner = pgm.class_scope_stack.back();
 		    std::string owner_spelling =
-			owner->canonical_cpp_spelling.empty()
-			? owner->name : owner->canonical_cpp_spelling;
-		    enum_dd->canonical_cpp_spelling =
-			owner_spelling + "::" + enum_tag;
+			owner->canonical_cpp_spelling().empty()
+			? owner->name : owner->canonical_cpp_spelling();
+		    enum_dd->set_canonical_spelling(owner_spelling + "::" + enum_tag);
 		    owner->type_aliases[enum_tag] = enum_dd;
 		}
 		else if ( !pgm.current_namespace().empty() )
-		    enum_dd->canonical_cpp_spelling =
-			pgm.current_namespace() + "::" + enum_tag;
+		    enum_dd->set_canonical_spelling(pgm.current_namespace() + "::" + enum_tag);
 		TokenDataType *tdt = new TokenDataType(enum_tag.c_str(), *enum_dd);
 		pgm.pack_tap_type(enum_tag);	// B4a: decl-index tap
 		pgm.datatype_map[enum_tag] = tdt;
@@ -30362,15 +30421,13 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	{
 	    DataDefCLASS *owner = pgm.class_scope_stack.back();
 	    std::string owner_spelling =
-		owner->canonical_cpp_spelling.empty()
-		? owner->name : owner->canonical_cpp_spelling;
-	    enum_dd->canonical_cpp_spelling =
-		owner_spelling + "::" + enum_tag;
+		owner->canonical_cpp_spelling().empty()
+		? owner->name : owner->canonical_cpp_spelling();
+	    enum_dd->set_canonical_spelling(owner_spelling + "::" + enum_tag);
 	    owner->type_aliases[enum_tag] = enum_dd;
 	}
 	else if ( !pgm.current_namespace().empty() )
-	    enum_dd->canonical_cpp_spelling =
-		pgm.current_namespace() + "::" + enum_tag;
+	    enum_dd->set_canonical_spelling(pgm.current_namespace() + "::" + enum_tag);
 	TokenDataType *tdt = new TokenDataType(enum_tag.c_str(), *enum_dd);
 	pgm.pack_tap_type(enum_tag);	// B4a: decl-index tap
 	pgm.datatype_map[enum_tag] = tdt;
@@ -30938,7 +30995,7 @@ TokenBase *TokenNEW::parse(Program &pgm)
 	if ( tn->type() != TokenType::ttIdentifier )
 	    pgm.Throw(tn) << "Expected type after 'new'" << flush;
 	std::string class_name = ((TokenIdent *)tn)->spelling();
-	datadef_map_iter dmi = pgm.struct_map.find(class_name);
+	datadef_map_citer dmi = pgm.struct_map.find(class_name);
 	if ( dmi == pgm.struct_map.end() )
 	    pgm.Throw(tn) << "Unknown type '" << class_name << "' in new expression" << flush;
 	alloc_class = dynamic_cast<DataDefCLASS *>(dmi->second);
@@ -34103,8 +34160,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		// `<...>` structure.
 		DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(arg_dd);
 		std::string concrete =
-		    acls && !acls->canonical_cpp_spelling.empty()
-		    ? acls->canonical_cpp_spelling
+		    acls && !acls->canonical_cpp_spelling().empty()
+		    ? acls->canonical_cpp_spelling()
 		    : (arg_dd ? cpp_spelling_for_mangle(arg_dd, false)
 			      : std::string());
 		int sc = 0;
@@ -35546,8 +35603,8 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(arg_core);
 	    if ( !cls )
 		return NULL;
-	    const std::string canon = cls->canonical_cpp_spelling.empty()
-				    ? cls->name : cls->canonical_cpp_spelling;
+	    const std::string canon = cls->canonical_cpp_spelling().empty()
+				    ? cls->name : cls->canonical_cpp_spelling();
 	    if ( template_head_component(sp) != template_head_component(canon) )
 	    {
 #ifdef MADC_DBG_QCALL
@@ -35673,9 +35730,9 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	if ( param_cls[i] )
 	{
 	    const std::string chead = template_head_component(
-		param_cls[i]->canonical_cpp_spelling.empty()
+		param_cls[i]->canonical_cpp_spelling().empty()
 		    ? param_cls[i]->name
-		    : param_cls[i]->canonical_cpp_spelling);
+		    : param_cls[i]->canonical_cpp_spelling());
 	    if ( rhead == chead )
 		return param_cls[i];
 	}
@@ -36445,11 +36502,11 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 	pushToken(*it);
     cur_func_name = parse_id;
     std::string method_namespace =
-	namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling);
+	namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling());
     NamespaceScope ns_scope(*this, method_namespace.empty()
 				    ? current_namespace() : method_namespace);
-    if ( owner->canonical_cpp_spelling.find('<') != std::string::npos )
-	instantiating_canonical_spelling = owner->canonical_cpp_spelling;
+    if ( owner->canonical_cpp_spelling().find('<') != std::string::npos )
+	instantiating_canonical_spelling = owner->canonical_cpp_spelling();
     TemplateParamScope param_scope(*this, fd->template_param_names);
     dependent_parse_in_progress = true;
     bool saved_poisoned = dependent_parse_poisoned;
@@ -36564,7 +36621,7 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
     if ( !source || !pattern_class || !owner )
 	return NULL;
     std::string concrete_name = owner->name + "__" + pattern_class->name;
-    datadef_map_iter dmi = struct_map.find(concrete_name);
+    datadef_map_citer dmi = struct_map.find(concrete_name);
     if ( dmi != struct_map.end() )
 	return dynamic_cast<DataDefCLASS *>(dmi->second);
     // Find the local class's DEFINITION span in the retained template decl:
@@ -36641,10 +36698,10 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
     parsing_cpp_struct_class = false;
     parsing_cpp_union_class = false;
     std::string saved_canon = instantiating_canonical_spelling;
-    if ( owner->canonical_cpp_spelling.find('<') != std::string::npos )
-	instantiating_canonical_spelling = owner->canonical_cpp_spelling;
+    if ( owner->canonical_cpp_spelling().find('<') != std::string::npos )
+	instantiating_canonical_spelling = owner->canonical_cpp_spelling();
     std::string method_namespace =
-	namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling);
+	namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling());
     NamespaceScope ns_scope(*this, method_namespace.empty()
 				    ? current_namespace() : method_namespace);
     class_scope_stack.push_back(owner);
@@ -36707,7 +36764,7 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	    const char *cls = ::getenv("MADC_MTI_PROBE_CLASS");
 	    if ( cls && *cls )
 	    {
-		datadef_map_t::iterator smi = struct_map.find(cls);
+		datadef_map_t::const_iterator smi = struct_map.find(cls);
 		fprintf(stderr, "MTIPROBE struct_map[%s]=%p\n", cls,
 			smi != struct_map.end() ? (void *)smi->second : NULL);
 	    }
@@ -37882,7 +37939,7 @@ DataDefCLASS *Program::promote_struct_base_to_class(const std::string &name,
 
     DataDefCLASS *cls = new DataDefCLASS(sdd->name, sdd->size, sdd->rawtype());
     static_cast<DataDefSTRUCT &>(*cls) = *sdd;
-    cls->canonical_cpp_spelling = sdd->canonical_cpp_spelling;
+    cls->set_canonical_spelling(sdd->canonical_cpp_spelling());
     // A promoted struct is a complete, base-less class. Run the class layout
     // engine so its class-specific fields (nvsize / class_align / own_block_off)
     // are set — a class defined with the `class`/`struct` body parser has these
@@ -37894,8 +37951,8 @@ DataDefCLASS *Program::promote_struct_base_to_class(const std::string &name,
     // unchanged; size is preserved (nvsize == the finalized struct size).
     cls->compute_layout();
 
-    struct_map[name] = cls;
-    struct_map[sdd->name] = cls;
+    struct_map.set(name, cls);
+    struct_map.set(sdd->name, cls);
     TokenDataType *tdt = new TokenDataType(name.c_str(), *cls);
     datatype_map[name] = tdt;
     if ( sdd->name != name )
@@ -37952,9 +38009,9 @@ static bool datadef_equivalent(DataDef *a, DataDef *b)
 	return true;
     if ( !a || !b )
 	return false;
-    if ( !a->canonical_cpp_spelling.empty()
-      && !b->canonical_cpp_spelling.empty()
-      && a->canonical_cpp_spelling == b->canonical_cpp_spelling )
+    if ( !a->canonical_cpp_spelling().empty()
+      && !b->canonical_cpp_spelling().empty()
+      && a->canonical_cpp_spelling() == b->canonical_cpp_spelling() )
 	return true;
     return a->name == b->name && a->type() == b->type();
 }
@@ -38582,8 +38639,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		new DataDefCLASS(concept_name, 0, DataType::dtRESERVED);
 	    cdd->is_dependent_placeholder = true;
 	    if ( !pgm.current_namespace().empty() )
-		cdd->canonical_cpp_spelling =
-		    pgm.current_namespace() + "::" + concept_name;
+		cdd->set_canonical_spelling(pgm.current_namespace() + "::" + concept_name);
 	    TokenDataType *ctdt = new TokenDataType(concept_name.c_str(), *cdd);
 	    pgm.pack_tap_type(concept_name);	// B4a: decl-index tap (concept)
 	    if ( pgm.current_namespace().empty() )
@@ -38709,7 +38765,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		for ( size_t ri = 0; ri < oi->second.size(); ++ri )
 		{
 		    Program::OutOfLineMemberInstantiation &rec = oi->second[ri];
-		    datadef_map_iter sm =
+		    datadef_map_citer sm =
 			pgm.struct_map.find(rec.registered_mangled);
 		    DataDefCLASS *inst_ddc = sm != pgm.struct_map.end()
 			? dynamic_cast<DataDefCLASS *>(sm->second) : NULL;
@@ -38831,7 +38887,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     td.has_non_type_params = has_non_type_params;
     td.class_name = class_name;
     td.body = body;
-    td.defining_namespace = pgm.current_namespace();  // e.g. "std" — for canonical_cpp_spelling
+    td.defining_namespace = pgm.current_namespace();  // e.g. "std" — for canonical_cpp_spelling()
     td.owner_class = pgm.class_scope_stack.empty() ? NULL : pgm.class_scope_stack.back();
     if ( specialized_template_id && !typeparams.empty() )
     {
@@ -38860,8 +38916,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	std::string canon;
 	if ( td.owner_class )
 	{
-	    canon = td.owner_class->canonical_cpp_spelling.empty()
-		  ? td.owner_class->name : td.owner_class->canonical_cpp_spelling;
+	    canon = td.owner_class->canonical_cpp_spelling().empty()
+		  ? td.owner_class->name : td.owner_class->canonical_cpp_spelling();
 	    canon += "::";
 	}
 	else if ( !td.defining_namespace.empty() )
@@ -39020,9 +39076,9 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		    pgm.namespace_datatype_map[td.defining_namespace][alias_key] =
 			(TokenDataType *)(*ri);
 	    }
-	    datadef_map_iter si = pgm.struct_map.find(registered_mangled);
+	    datadef_map_citer si = pgm.struct_map.find(registered_mangled);
 	    if ( si != pgm.struct_map.end() )
-		pgm.struct_map[alias_key] = si->second;
+		pgm.struct_map.set(alias_key, si->second);
 	}
 	if ( pgm.datatype_map.find(registered_mangled) == pgm.datatype_map.end() )
 	    pgm.Throw(name_tb) << "internal: explicit specialization "
@@ -39227,14 +39283,14 @@ DataDef *Program::parse_old_style_parameter_base(TokenBase *&nt)
 	if ( !tag || !is_contextual_identifier_token(tag) )
 	    Throw(tag ? tag : nt) << "Expecting struct/union name in K&R parameter declaration" << flush;
 	std::string sname = contextual_identifier_name(tag);
-	datadef_map_iter sdmi = struct_map.find(sname);
+	datadef_map_citer sdmi = struct_map.find(sname);
 	if ( sdmi == struct_map.end() )
 	{
 	    DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
 	    if ( nt->id() == TokenID::tkUNION )
 		fwd->union_layout = true;
 	    pack_tap_struct(sname);	// B4a tap
-	    struct_map[sname] = fwd;
+	    struct_map.set(sname, fwd);
 	    sdmi = struct_map.find(sname);
 	}
 	return sdmi->second;
@@ -39928,7 +39984,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    if ( tag_nt->type() != TokenType::ttIdentifier )
 		Throw(tag_nt) << "Expecting " << kw << " name after '" << kw << "' in parameters" << flush;
 	    std::string sname = ((TokenIdent *)tag_nt)->spelling();
-	    datadef_map_iter sdmi = struct_map.find(sname);
+	    datadef_map_citer sdmi = struct_map.find(sname);
 	    if ( sdmi == struct_map.end() )
 	    {
 		// C permits pointers/references to incomplete struct types in
@@ -39937,7 +39993,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		if ( nt->id() == TokenID::tkUNION )
 		    fwd->union_layout = true;
 		pack_tap_struct(sname);	// B4a tap
-		struct_map[sname] = fwd;
+		struct_map.set(sname, fwd);
 		sdmi = struct_map.find(sname);
 	    }
 	    std::string tname(kw);
@@ -40201,7 +40257,7 @@ grabnt:
 		ptm_owner = &((TokenDataType *)nt)->definition;
 	    else
 	    {
-		datadef_map_iter omi = struct_map.find(ptm_owner_name);
+		datadef_map_citer omi = struct_map.find(ptm_owner_name);
 		if ( omi != struct_map.end() )
 		    ptm_owner = omi->second;
 	    }
@@ -40354,9 +40410,9 @@ paramdecl:
 		std::string param_spelling;
 		if ( param_leading_const )
 		    param_spelling = "const ";
-		param_spelling += pb->definition.canonical_cpp_spelling.empty()
+		param_spelling += pb->definition.canonical_cpp_spelling().empty()
 		    ? pb->definition.name
-		    : pb->definition.canonical_cpp_spelling;
+		    : pb->definition.canonical_cpp_spelling();
 		for ( int sd = 0; sd < param_ptr_depth; ++sd )
 		    param_spelling += "*";
 		if ( rtype == RefType::rtReference )
@@ -44360,7 +44416,7 @@ void Program::dump_registered_names(FILE *out)
     //    member lookup goes through the class, whose own name is indexed.
     auto instantiation_product = [](DataDef *dd) -> bool {
 	DataDefCLASS *dc = dynamic_cast<DataDefCLASS *>(dd);
-	return dc && dc->canonical_cpp_spelling.find('<') != std::string::npos;
+	return dc && dc->canonical_cpp_spelling().find('<') != std::string::npos;
     };
     std::set<std::string> lines;
     datatype_map.for_each([&](const char *key, TokenDataType *&tdt) -> bool {
@@ -44379,7 +44435,7 @@ void Program::dump_registered_names(FILE *out)
 	}
 	return false;
     });
-    for ( datadef_map_iter it = struct_map.begin(); it != struct_map.end(); ++it )
+    for ( datadef_map_citer it = struct_map.begin(); it != struct_map.end(); ++it )
     {
 	if ( it->first.find('<') != std::string::npos
 	  || instantiation_product(it->second) )

@@ -128,7 +128,26 @@ public:
     // "ns::Box<T>". Empty = use `name` (or a builtin spelling). Set from parsed
     // namespace/template declarations so a bodyless C++ method can bind to its
     // external mangled symbol without class-name tests.
-    std::string	 canonical_cpp_spelling;
+    // Write-funneled: StructRegistry::find_despaced caches a pure function of
+    // this spelling per struct_map entry, so every rewrite of an already-swept
+    // dd must bump canonical_spelling_gen — set_canonical_spelling() is the
+    // only write channel.
+private:
+    std::string	 canonical_cpp_spelling_;
+public:
+    // Despaced-canonical index invalidation counter (defined in parser.cpp).
+    static uint64_t canonical_spelling_gen;
+    // True once StructRegistry::find_despaced has swept this dd; a spelling
+    // rewrite on an unswept dd needs no gen bump (the registry's size-stamp
+    // top-up sees it fresh).
+    bool	 canonical_swept;
+    const std::string &canonical_cpp_spelling() const { return canonical_cpp_spelling_; }
+    void set_canonical_spelling(const std::string &s)
+    {
+	if ( canonical_swept && canonical_cpp_spelling_ != s )
+	    ++canonical_spelling_gen;
+	canonical_cpp_spelling_ = s;
+    }
     // Marshalling-boundary predicate (libmadc value kinds): true when this
     // type is the class that carries madc::value's TEXT kind, i.e. a value
     // of it marshals to kind::string at the libmadc boundary (runtime-eval
@@ -148,8 +167,8 @@ public:
     // lazy-stamped into the active project table by madc_type_id_for()
     // (Program::type_id_for binds its own table and delegates).
     uint32_t	 type_id;
-    DataDef() { size = 0; _type = 0; type_id = 0; }
-    DataDef(std::string n, size_t s, DataType d) { name = n; size = s; _type = (uint32_t)d; type_id = 0; }
+    DataDef() { size = 0; _type = 0; type_id = 0; canonical_swept = false; }
+    DataDef(std::string n, size_t s, DataType d) { name = n; size = s; _type = (uint32_t)d; type_id = 0; canonical_swept = false; }
     virtual ~DataDef() {}
     virtual bool is_compatible(DataDef &d)
     {
@@ -1200,7 +1219,7 @@ class DataDefARRAY: public DDClass
 public:
     DataDefARRAY(): DDClass("array", sizeof(madc::value), DataType::dtARRAY)
     {
-	canonical_cpp_spelling = "madc::value";
+	set_canonical_spelling("madc::value");
     }
 };
 

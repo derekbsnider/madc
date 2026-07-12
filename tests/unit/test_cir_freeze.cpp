@@ -659,7 +659,7 @@ TEST_CASE("B3: the directory round-trips libs and the typeid->name closure") {
 	TokenProgram *tp = prog->tokenize(main_path.c_str());
 	REQUIRE(tp != nullptr);
 	REQUIRE(prog->parse(tp));
-	datadef_map_iter smi = prog->struct_map.find("frozen_custom_t");
+	datadef_map_citer smi = prog->struct_map.find("frozen_custom_t");
 	REQUIRE(smi != prog->struct_map.end());
 	uint32_t tid = madc_type_id_for(smi->second);
 	REQUIRE(tid >= MADC_TYPEID_PROJECT_BASE);
@@ -1030,7 +1030,7 @@ TEST_CASE("Phase 6 slice 3a: forest_restore_decls reconstructs a header struct "
 	// RESTORE — no header parse — then Point is a complete struct with the same
 	// layout a live parse would have produced (int x @0, int y @4, size 8).
 	progB->forest_restore_decls(forest);
-	datadef_map_iter sit = progB->struct_map.find("Point");
+	datadef_map_citer sit = progB->struct_map.find("Point");
 	REQUIRE(sit != progB->struct_map.end());
 	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(sit->second);
 	REQUIRE(sdd != nullptr);
@@ -1245,7 +1245,7 @@ TEST_CASE("Phase 6: named + unnamed-gap bitfield structs reconstruct verbatim") 
 
 	progB->forest_restore_decls(forest);
 	// Flags restored with the right bit layout: a@bit0 w3, b@bit3 w5 (no gap).
-	datadef_map_iter fit = progB->struct_map.find("Flags");
+	datadef_map_citer fit = progB->struct_map.find("Flags");
 	REQUIRE(fit != progB->struct_map.end());
 	DataDefSTRUCT *fl = dynamic_cast<DataDefSTRUCT *>(fit->second);
 	REQUIRE(fl != nullptr);
@@ -1261,7 +1261,7 @@ TEST_CASE("Phase 6: named + unnamed-gap bitfield structs reconstruct verbatim") 
 	CHECK(fl->member_offsets[2] == 4);
 	// Gap binds too, with its true bit layout: a@bit0 w3, then the unnamed :2
 	// gap, so b@bit5 w5 (verbatim offsets preserve the gap a rebuild would lose).
-	datadef_map_iter git = progB->struct_map.find("Gap");
+	datadef_map_citer git = progB->struct_map.find("Gap");
 	REQUIRE(git != progB->struct_map.end());
 	DataDefSTRUCT *gp = dynamic_cast<DataDefSTRUCT *>(git->second);
 	REQUIRE(gp != nullptr);
@@ -1359,7 +1359,7 @@ TEST_CASE("Phase 6 slice 3c: forest_restore_decls reconstructs a header class "
 	// base_class == the first base, and the same verbatim layout a live parse gives.
 	progB->forest_restore_decls(forest);
 	progB->flush_forest_pending_globals();	// applies staged datatype_map writes
-	datadef_map_iter cit = progB->struct_map.find("C");
+	datadef_map_citer cit = progB->struct_map.find("C");
 	REQUIRE(cit != progB->struct_map.end());
 	DataDefCLASS *cd = dynamic_cast<DataDefCLASS *>(cit->second);
 	REQUIRE(cd != nullptr);
@@ -2171,7 +2171,7 @@ TEST_CASE("#23: restored class methods register as funcdef_map[method-id] + prog
 	REQUIRE(owner != nullptr);
 	CHECK(owner->name == "Counter");
 	CHECK(progB->struct_map.count("Counter") == 1);
-	CHECK(progB->struct_map["Counter"] == owner);
+	CHECK(progB->struct_map.find("Counter")->second == owner);
 
 	// Live keeps ONE Variable shared by tkProgram scope and the class's
 	// methods/method_map (TokenCLASS::parse re-finds parseFunction's
@@ -2711,8 +2711,8 @@ TEST_CASE("v25: a ctor-syntax header global restores its ctor ARGUMENTS as parse
 
 // A struct/class-KEYWORD typedef (`typedef struct {...} X;` — the tagless
 // glibc fd_set/div_t shape, or `typedef struct tag X;`) ALSO registers the
-// alias as a TAG in the producer (struct_map[X] = the aggregate,
-// TokenSTRUCT::parse ~24055/~25002) so `struct X v;` resolves. The plain
+// alias as a TAG in the producer (struct_map.set(X, the aggregate,
+// TokenSTRUCT::parse ~24055/~25002) so `struct X v);` resolves. The plain
 // TokenTYPEDEF path never writes struct_map. The save stamps
 // DF_TYPEDEF_TAG_ALIAS from the producer's own map state (same key -> same
 // definition); the restore reproduces the struct_map write — and must NOT
@@ -2758,7 +2758,7 @@ TEST_CASE("tagless-typedef struct: the alias restores as a struct_map tag too") 
 		// alias is not.
 		flat_datatype_map_iter li = progA->datatype_map.find("fdset_like");
 		REQUIRE(li != progA->datatype_map.end());
-		datadef_map_iter si = progA->struct_map.find("fdset_like");
+		datadef_map_citer si = progA->struct_map.find("fdset_like");
 		REQUIRE(si != progA->struct_map.end());
 		CHECK(si->second == &(*li)->definition);
 		CHECK(progA->struct_map.find("fl2") == progA->struct_map.end());
@@ -2767,7 +2767,7 @@ TEST_CASE("tagless-typedef struct: the alias restores as a struct_map tag too") 
 		flat_datatype_map_iter ji = progA->datatype_map.find("jb");
 		REQUIRE(ji != progA->datatype_map.end());
 		REQUIRE(dynamic_cast<DataDefCArray *>(&(*ji)->definition) != nullptr);
-		datadef_map_iter jsi = progA->struct_map.find("jb");
+		datadef_map_citer jsi = progA->struct_map.find("jb");
 		REQUIRE(jsi != progA->struct_map.end());
 		CHECK(jsi->second == dynamic_cast<DataDefCArray *>(
 			&(*ji)->definition)->element_type);
@@ -2800,7 +2800,7 @@ TEST_CASE("tagless-typedef struct: the alias restores as a struct_map tag too") 
 	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(&(*mit)->definition);
 	REQUIRE(sdd != nullptr);
 	CHECK(sdd->members.size() == 1);
-	datadef_map_iter sit = progB->struct_map.find("fdset_like");
+	datadef_map_citer sit = progB->struct_map.find("fdset_like");
 	REQUIRE(sit != progB->struct_map.end());
 	CHECK(sit->second == sdd);
 	// The PLAIN alias restores as a datatype only — no invented tag.
@@ -2814,7 +2814,7 @@ TEST_CASE("tagless-typedef struct: the alias restores as a struct_map tag too") 
 	REQUIRE(jit != progB->datatype_map.end());
 	DataDefCArray *jarr = dynamic_cast<DataDefCArray *>(&(*jit)->definition);
 	REQUIRE(jarr != nullptr);
-	datadef_map_iter jsi = progB->struct_map.find("jb");
+	datadef_map_citer jsi = progB->struct_map.find("jb");
 	REQUIRE(jsi != progB->struct_map.end());
 	CHECK(jsi->second == jarr->element_type);
 	CHECK(dynamic_cast<DataDefSTRUCT *>(jsi->second) != nullptr);

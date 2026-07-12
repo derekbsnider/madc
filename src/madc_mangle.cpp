@@ -1008,7 +1008,7 @@ std::string std_string_type()
 bool DataDef::marshals_value_text() const
 {
 	const std::string &spelling =
-		canonical_cpp_spelling.empty() ? name : canonical_cpp_spelling;
+		canonical_cpp_spelling().empty() ? name : canonical_cpp_spelling();
 	if (spelling.empty())
 		return false;
 	static const std::string text_carrier =
