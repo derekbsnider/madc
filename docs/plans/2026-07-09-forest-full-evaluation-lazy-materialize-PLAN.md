@@ -378,3 +378,31 @@ built from a token is re-deriving). Same shape for the set<string>
 Rb-tree cluster. That slice touches hot parser paths → scope it fresh
 (which chokepoints, which callers already hold a token/sid) before
 editing.
+
+### DEEP RECON, second pass (2026-07-12 next sitting) — the churn is REBUILDS, not hashing
+
+Full caller-attribution over tmp/cg_r3.out (callee call-counts + inclusive
+Ir per caller→callee edge, awk over cfn=/calls= records). The ~800M
+"intern + set<string>" cluster decomposes into three surgical targets,
+and it REVISES the sid-keyed framing: the grand token-sid conversion has
+LESS payoff than banked, because most walk-entry hashes come from callers
+holding CONSTRUCTED strings (mangled names), not tokens.
+
+| # | site | in-window Ir | calls | root cause |
+|---|---|---|---|---|
+| A | `CirBuilder::tsubst_method_body` → `set<string>::insert` | **501.7M** (93% of the whole Rb-tree cluster) | 170 calls × ~884 inserts = 150,266 | rebuilds `synth_dtor_syms` (whole struct_map scan, cir_builder.cpp ~16754) + `forest_body_syms` (struct_map×methods + funcdef_map, ~16766) FROM SCRATCH per call, then discards them. 774.6M Ir inclusive / 4.6M per call. |
+| B | `findVariableThisScope` → `unordered_map::emplace` | **253.3M** | 204,655 emplaces (28 rebuilds × ~7k-entry program scope + 8k absorbs) | task #14 fixed the rebuild re-INTERNS (196k→28); the stale-hit rebuild still `clear()`s and re-EMPLACES every entry (parser.cpp ~10992). parseFunction's 1,204 lookups carry 324M inclusive — mostly this. |
+| C | `findVariable(sp,string)` wrapper → `intern` | 212.0M | 38,479 walk-entry interns (~5.5k Ir each = LONG mangled names) | callers: Program::findVariable(string) 23,950 — of which flush_forest_pending_globals 13,471/79.7M (BOUND-ONLY, our v13 flush), unique_overload_symbol 4,162/54.9M (candidate-probe loop), TokenUSING 4,532; plus translate_module 7,297/37.6M, addVariable 3,168, parseFunction 1,204. |
+| D | PCH `deserialize_tokens` → TokenIdent(string) ctor | 51.2M | 73,768 | every rehydrated token re-interns its spelling — the pool-sid→session-sid translation idea applies HERE (hash each DISTINCT spelling once per load), worth ~50M only. |
+| E | TokenKeyword/TokenDataType ctor interns | ~35M | ~45k | per-occurrence token creation re-interns fixed spellings; ctor-overload taking the sid the lexer just used for the map hit. |
+
+Slice order (this sitting): **Fix B** (one function, semantics must equal
+the full rebuild: erase stale entries whose var's name_sid ≠ key,
+re-intern zeroed vars, then ONE ordered pass over `variables` refilling
+first-wins ONLY the affected keys) then **Fix A** (builder-level memo of
+both sets, size-stamped on struct_map/funcdef_map; pre-edit verify no
+in-place verdict flips during translate — MTI must register classes
+complete, has_forest_body set at restore only; a false `emittable()`
+verdict is a LOUD bail_covered error, so be conservative). C/D/E are
+recorded follow-ons — C's biggest half is our own bound-only flush loop.
+A+B ≈ 755M Ir ≈ 18% of the truncated window.
