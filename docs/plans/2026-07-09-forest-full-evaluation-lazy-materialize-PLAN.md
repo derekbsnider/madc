@@ -185,6 +185,15 @@ docs/perf/forest-timings.tsv):
 - ≤0.665 and onward to ~0.4 — rung 2 (closure-filtered materialization):
   post-#14 profile is FLAT (breadth-bound) — the remaining gap is
   whole-container materialize + register, exactly 2a's thesis.
+  **2a MERGED @3f06188c (2026-07-12), gated 681/681 + bind 18/18 after two
+  fixes (frozen-tree emission-name contract; two-surface ns_ok/flat_ok
+  gating — see the commits). RESULT: wall-NEUTRAL on testsubscript (0.833
+  — its bound closure spans the corpus, 682/718 aggregates admitted);
+  small TUs cut 69% (teststat 220/718). The "2b only if 2a's numbers
+  demand" condition IS MET for the headline test: the next testsubscript
+  lever is 2b (on-touch materialization of the TOUCHED set, much smaller
+  than the closure-DECLARED set) and/or rung 3 — size both against a
+  post-2a profile before choosing.**
 - <0.399 — rung 3 (emit only referenced surface; bound cir 0.542 vs
   TU-only fraction)
 - ~0.1 — rung 4 (instantiation speed) + startup residue (~0.05–0.15)
