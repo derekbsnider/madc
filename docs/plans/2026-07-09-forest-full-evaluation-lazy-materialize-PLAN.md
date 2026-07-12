@@ -194,6 +194,10 @@ docs/perf/forest-timings.tsv):
   lever is 2b (on-touch materialization of the TOUCHED set, much smaller
   than the closure-DECLARED set) and/or rung 3 — size both against a
   post-2a profile before choosing.**
+  **SIZED (2026-07-12, post-2a callgrind): 2b is DEAD — materialize self
+  = 13M Ir (0.28%); the remaining bound breadth is registration +
+  whole-surface CIR emission (set<string> inserts ~230M, intern 301M,
+  despace 70M). RUNG 3 is the next step. 2b is closed WONT-DO.**
 - <0.399 — rung 3 (emit only referenced surface; bound cir 0.542 vs
   TU-only fraction)
 - ~0.1 — rung 4 (instantiation speed) + startup residue (~0.05–0.15)
