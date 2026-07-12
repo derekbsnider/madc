@@ -164,6 +164,34 @@ class CirBuilder {
 	// calls as the first statements of main's body (declaration order). Populated
 	// by collect_global_ctors (translate_module), consumed by func_def for main.
 	std::vector<node_t> m_global_ctor_stmts;
+	// Rung 3 (referenced-only surface): per-global ctor statement groups —
+	// which m_global_ctor_stmts entries belong to which file-scope global —
+	// so the filter can drop a dead system-header global's ctor calls from
+	// __madc_global_init together with its storage decl. Parallel to the
+	// order collect_global_ctors appends: one entry per global, holding its
+	// Variable and that global's slice of statements.
+	std::vector<std::pair<Variable *, std::vector<node_t> > > m_ctor_groups;
+	// Rung 3: the Pass-0/collect-time storage decl node of each file-scope
+	// global (keyed by Variable) — links a ctor group to its decl node.
+	std::map<Variable *, node_t> m_global_decl_node;
+	// Rung 3: the conditional-emission map. A node recorded here survives the
+	// end-of-translate referenced-surface filter only if referenced: TYPE
+	// nodes (is_type) by struct tag — or, for typedef-bearing decls, any of
+	// their identifiers — through admitted decls' own references (fixpoint);
+	// SYMBOL nodes by their declared name (key). Everything NOT in this map
+	// is a root and seeds the reference harvest. Populated at the emission
+	// sites (only for system-header-origin entities), cleared per module.
+	struct CondEmit { bool is_type; std::string key; };
+	std::map<node_t, CondEmit> m_cond_nodes;
+	void cond_mark_type(node_t n) {
+		if (n) { CondEmit c; c.is_type = true; m_cond_nodes[n] = c; }
+	}
+	void cond_mark_sym(node_t n, const std::string &key) {
+		if (n && !key.empty()) {
+			CondEmit c; c.is_type = false; c.key = key;
+			m_cond_nodes[n] = c;
+		}
+	}
 	// Names of the functions whose bodies madc COMPILES this module (the user's
 	// TokenFuncs). Set in translate_module while bodies are translated; NULL
 	// otherwise. Gates the by-value non-trivial-class return (__retbuf) ABI to

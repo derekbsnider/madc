@@ -402,7 +402,17 @@ EOF
 cat > "$strbind_cons" <<'EOF'
 #include <string>
 #include <cstdio>
-int main() { std::string s; s = "hello"; printf("len=%d\n", (int)s.size()); return 0; }
+// The consumer REFERENCES hardware_destructive_interference_size and in_place so
+// the v14/v16 restoration asserts below stay meaningful under the rung-3
+// referenced-surface filter (an UNreferenced system-header global no longer
+// emits — the g++ COMDAT/ODR-use shape — on live and bind alike).
+int main() {
+    std::string s; s = "hello";
+    if (std::hardware_destructive_interference_size != 64) return 1;
+    if (!&std::in_place) return 1;
+    printf("len=%d\n", (int)s.size());
+    return 0;
+}
 EOF
 if ! timeout 180 "$BIN" --freeze="$strbind_snap" "$strbind_prod" >/dev/null 2>&1; then
     fail "[strbind] --freeze <string> FAILED"

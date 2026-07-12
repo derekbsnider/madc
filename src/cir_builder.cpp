@@ -7528,7 +7528,15 @@ void CirBuilder::emit_class_struct_with_deps(
 	emitted_classes.insert(cdd);
 	emitted_structs.insert(cdd->name);
 	node_t cd = class_struct_def(cdd);
-	if (cd) append(top_list, cd);
+	if (cd) {
+		append(top_list, cd);
+		// Rung 3: a system-header class's struct def emits only if its
+		// tag is referenced (from_system_header is exact for classes —
+		// parsed live or restored via DF_FROM_SYSTEM_HDR). User classes
+		// are roots.
+		if (cdd->from_system_header)
+			cond_mark_type(cd);
+	}
 }
 
 // Resolve the class behind a (possibly pointer-wrapped) DataDef. Recognizes
@@ -17462,6 +17470,7 @@ void CirBuilder::collect_global_ctors(Program *prog,
 				      std::set<std::string> &emitted_globals)
 {
 	m_global_ctor_stmts.clear();
+	m_ctor_groups.clear();
 	if (!prog || !prog->tkProgram) return;
 	for (Variable *v : prog->tkProgram->variables) {
 		if (!v) continue;
@@ -17480,7 +17489,10 @@ void CirBuilder::collect_global_ctors(Program *prog,
 			// Deferred with the source globals so it follows the function
 			// prototypes (definition-before-use; see deferred_globals).
 			node_t gd = var_decl(v, NULL);
-			if (gd) deferred_globals.push_back(gd);
+			if (gd) {
+				deferred_globals.push_back(gd);
+				m_global_decl_node[v] = gd;
+			}
 			emitted_globals.insert(v->name);
 		} else {
 			// Source-declared: locate the TokenDecl carrying the initializer.
@@ -17489,10 +17501,23 @@ void CirBuilder::collect_global_ctors(Program *prog,
 				    && td.var == v) { decl = td.decl; break; }
 		}
 		node_t cc = global_ctor_call(v, cdd, decl);
-		for (node_t p : m_pending_stmts)
+		// Rung 3: record this global's slice of the init statements as a
+		// GROUP, so the referenced-surface filter can drop a dead global's
+		// ctor calls together with its storage decl (a group's statements
+		// never seed the harvest — they reference their own global, which
+		// would otherwise self-admit every ctor'd global).
+		m_ctor_groups.push_back(std::make_pair(
+			v, std::vector<node_t>()));
+		std::vector<node_t> &grp = m_ctor_groups.back().second;
+		for (node_t p : m_pending_stmts) {
 			m_global_ctor_stmts.push_back(p);
+			grp.push_back(p);
+		}
 		m_pending_stmts.clear();
-		if (cc) m_global_ctor_stmts.push_back(cc);
+		if (cc) {
+			m_global_ctor_stmts.push_back(cc);
+			grp.push_back(cc);
+		}
 	}
 }
 
@@ -18402,10 +18427,34 @@ static void cir_harvest_type_refs(node_t n, std::set<std::string> &tags,
 			cir_harvest_type_refs(op, tags, ids, has_typedef);
 }
 
+// Rung 3: the identifier a declaration/definition node declares — op1 of an
+// N_SPEC_DECL / N_FUNC_DEF is the declarator (N_DECL), whose first op is the
+// declared N_ID. NULL for a pure type decl (struct def: no declarator).
+static const char *cir_declared_id(node_t n)
+{
+	if (!n || (n->code != N_SPEC_DECL && n->code != N_FUNC_DEF))
+		return NULL;
+	node_t decl = c2mir_node_first_op(n);
+	if (decl)
+		decl = c2mir_node_next_op(decl);
+	if (!decl || decl->code != N_DECL)
+		return NULL;
+	node_t idn = c2mir_node_first_op(decl);
+	if (idn && idn->code == N_ID)
+		return idn->u.s.s;
+	return NULL;
+}
+
 node_t CirBuilder::translate_module(Program *prog)
 {
 	if (!prog) return NULL;
 	m_prog = prog;
+
+	// Rung 3 referenced-surface filter state: per-module. Cleared at entry
+	// (before Pass 0 populates it), consumed by the filter at the tail.
+	m_cond_nodes.clear();
+	m_ctor_groups.clear();
+	m_global_decl_node.clear();
 
 	node_t module = simple(N_MODULE);
 	node_t top_list = list();
@@ -18517,6 +18566,18 @@ node_t CirBuilder::translate_module(Program *prog)
 	// the complete type and the global's fn-name initializer sees the proto.
 	std::vector<node_t> deferred_globals;
 
+	// Rung 3: the system-origin verdict for a top-level decl — a live parse
+	// carries the source position (origin token / file), a forest restore
+	// carries the declaring unit's verdict (TopDecl.forest_system). Only
+	// system-origin decls become filter-conditional; user decls are roots,
+	// so a pure-C / non-real-header build stays byte-for-byte unchanged.
+	auto td_system = [&](Program::TopDecl &td) -> bool {
+		if (td.forest_system)
+			return true;
+		const char *f = td.origin ? td.origin->file : td.file;
+		return f && prog->is_system_header_path(f);
+	};
+
 	for (auto &td : prog->top_decls) {
 		switch (td.kind) {
 		case Program::DeclKind::dkTypedef: {
@@ -18541,7 +18602,12 @@ node_t CirBuilder::translate_module(Program *prog)
 						       emitted_classes, emitting_classes);
 			node_t n = typedef_decl(typedef_emit_name(td.name, td.dd),
 						td.dd, emitted_structs, forward);
-			if (n) { stamp(n, td); append(top_list, n); }
+			if (n) {
+				stamp(n, td);
+				append(top_list, n);
+				if (td_system(td))
+					cond_mark_type(n);
+			}
 			// Mark the tag emitted once its body actually went out here: either
 			// this is its recorded def point, or a combined `typedef struct X
 			// {...} Y;` with no separate def point (anonymous-tag / pure-pointer
@@ -18563,7 +18629,12 @@ node_t CirBuilder::translate_module(Program *prog)
 						       emitted_classes, emitting_classes);
 				emitted_structs.insert(sdd->name);
 				node_t sd = struct_def(sdd);
-				if (sd) { stamp(sd, td); append(top_list, sd); }
+				if (sd) {
+					stamp(sd, td);
+					append(top_list, sd);
+					if (td_system(td))
+						cond_mark_type(sd);
+				}
 			}
 			break;
 		}
@@ -18586,7 +18657,22 @@ node_t CirBuilder::translate_module(Program *prog)
 				// the CIR backend (tkProgram->statements is not walked here).
 				// Deferred until after the function prototypes (see above).
 				node_t gd = var_decl(td.var, td.decl);
-				if (gd) { stamp(gd, td); deferred_globals.push_back(gd); }
+				if (gd) {
+					stamp(gd, td);
+					deferred_globals.push_back(gd);
+					m_global_decl_node[td.var] = gd;
+					// A file-scope STATIC with dynamic init is
+					// observable per-TU (internal linkage — the
+					// <iostream> __ioinit model): never filtered.
+					// Everything else system-origin emits only if
+					// referenced — the g++ COMDAT/ODR-use shape.
+					if (td_system(td)
+					    && !(td.var->flags & vfSTATIC)) {
+						const char *dn = cir_declared_id(gd);
+						if (dn)
+							cond_mark_sym(gd, dn);
+					}
+				}
 				emitted_globals.insert(td.var->name);
 			}
 			break;
@@ -18706,6 +18792,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	//    body — forest_lazy routes it through the SAME fixpoint stage, so
 	//    placement and order match live by mechanism, not by hand-ordering.
 	std::map<std::string, FuncDef *> forest_lazy;
+	std::set<std::string> forest_lazy_root;	// rung 3: non-system loaded bodies
 	std::set<std::string> forest_funcdef_syms;
 	if (prog->bind_forest && !prog->forest_chain.empty()) {
 		prog->bind_forest->set_c2m(c2m);	// safe: parse-time bind materializes no node segment
@@ -18735,8 +18822,18 @@ node_t CirBuilder::translate_module(Program *prog)
 		for (auto &kv : prog->funcdef_map) {
 			FuncDef *fd = kv.second;
 			if (fd && fd->has_forest_body && !kv.first.empty()
-			    && !forest_method_fds.count(fd))
+			    && !forest_method_fds.count(fd)) {
 				forest_lazy[kv.first] = fd;
+				// Rung 3: a body loaded from a NON-system unit (a
+				// user grove header) is a root in a live parse —
+				// exempt it from the referenced-surface filter so
+				// bind == live (system bodies are conditional,
+				// matching live's lib_funcs classification).
+				const char *up =
+					prog->bind_forest->unit_name(fd->forest_body_unit);
+				if (!up || !prog->is_system_header_path(up))
+					forest_lazy_root.insert(kv.first);
+			}
 		}
 		// Symbols with a funcdef_map declaration source: those keep riding
 		// Pass 0.75's referenced sweep (typed protos at live's sorted map
@@ -19127,6 +19224,12 @@ node_t CirBuilder::translate_module(Program *prog)
 					forest_lazy_protos.push_back(fp);
 				}
 				func_def_nodes.push_back(bn);
+				// Rung 3: a loaded system-header body survives only
+				// while referenced (methods here come from
+				// from_system_header classes; funcdef bodies from a
+				// non-system unit were exempted at collect time).
+				if (!forest_lazy_root.count(kv.first))
+					cond_mark_sym(bn, kv.first);
 				grew = true;
 			}
 			for (auto &kv : lib_funcs) {
@@ -19197,7 +19300,13 @@ node_t CirBuilder::translate_module(Program *prog)
 						std::make_pair(tf, fd));
 				} else {
 					fd = func_def(tf);
-					if (fd) func_def_nodes.push_back(fd);
+					if (fd) {
+						func_def_nodes.push_back(fd);
+						// Rung 3: lib_funcs holds ONLY
+						// system-header bodies (the roots/
+						// lib split above) — conditional.
+						cond_mark_sym(fd, kv.first);
+					}
 				}
 				grew = true;
 			}
@@ -19340,6 +19449,9 @@ node_t CirBuilder::translate_module(Program *prog)
 		append(proto, ignore());
 		append(top_list, proto);
 		typed_proto_syms.insert(symbol);
+		// Rung 3: a loaded-body callee proto survives only while a kept
+		// body still references its symbol.
+		cond_mark_sym(proto, symbol);
 	}
 	// From here on, a funcdef-sourced loaded-body callee first referenced by
 	// a LATE materialization can no longer ride this pass — the m&l callee
@@ -19395,6 +19507,8 @@ node_t CirBuilder::translate_module(Program *prog)
 		append(proto, ignore());
 		append(top_list, proto);
 		emitted_globals.insert(gname);
+		// Rung 3: reference-driven extern — drops with its last referrer.
+		cond_mark_sym(proto, gname);
 	}
 
 	// Pass 0.8: output externs for runtime and external symbols referenced by
@@ -19414,6 +19528,10 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (typed_proto_syms.count(kv.first)) continue;
 		append(top_list, kv.second);
 		emitted_extern_syms.insert(kv.first);
+		// Rung 3: an extern decl is pure declaration — it survives only
+		// while a kept node references its symbol (its param/return types
+		// would otherwise pin dead struct webs).
+		cond_mark_sym(kv.second, kv.first);
 	}
 
 	// Pass 1: forward prototypes for every user function. Emitted AFTER the
@@ -19425,7 +19543,17 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (TokenFunc *tf : funcs) {
 		if (tf->var.name == "main") continue;
 		node_t proto = func_proto(tf);
-		if (proto) append(top_list, proto);
+		if (proto) {
+			append(top_list, proto);
+			// Rung 3: a system-header function's proto is conditional —
+			// its by-value params/returns otherwise pin dead struct webs
+			// (user protos are roots, so pure-C builds are unchanged).
+			if (prog->is_system_header_path(tf->file)) {
+				const char *dn = cir_declared_id(proto);
+				if (dn)
+					cond_mark_sym(proto, dn);
+			}
+		}
 	}
 
 	// Pass 1a: the deferred global variable declarations (collected in source
@@ -19449,10 +19577,18 @@ node_t CirBuilder::translate_module(Program *prog)
 		std::string csym = class_complete_dtor_symbol(cdd);
 		if (csym != cdd->name + "___dtor" || !class_has_own_user_dtor(cdd)) {
 			node_t cp = synth_dtor_proto(csym, cdd);
-			if (cp) append(top_list, cp);
+			if (cp) {
+				append(top_list, cp);
+				if (cdd->from_system_header)
+					cond_mark_sym(cp, csym);
+			}
 		}
 		node_t dp = synth_dtor_proto(cdd->name + "___dtor_deleting", cdd);
-		if (dp) append(top_list, dp);
+		if (dp) {
+			append(top_list, dp);
+			if (cdd->from_system_header)
+				cond_mark_sym(dp, cdd->name + "___dtor_deleting");
+		}
 	}
 
 	// Pass 1.5: per-class virtual dispatch tables. Emitted after the method
@@ -19479,6 +19615,10 @@ node_t CirBuilder::translate_module(Program *prog)
 			if (ve) append(top_list, ve);
 			node_t te = data_extern_decl(class_typeinfo_symbol(cdd));
 			if (te) append(top_list, te);
+			if (cdd->from_system_header) {
+				if (ve) cond_mark_sym(ve, class_vtable_symbol(cdd));
+				if (te) cond_mark_sym(te, class_typeinfo_symbol(cdd));
+			}
 			continue;
 		}
 		// type_info first — the vtable's RTTI slot references _ZTI<cls>. (S5b)
@@ -19489,6 +19629,19 @@ node_t CirBuilder::translate_module(Program *prog)
 		// Thunks first — the vtable initializer references their symbols.
 		for (node_t th : thunks) append(top_list, th);
 		if (vt) append(top_list, vt);
+		// Rung 3: a system-header class's dispatch machinery follows its
+		// referencers — the vtable is referenced by the class's ctors' vptr
+		// stores, the typeinfo by the vtable's RTTI slot + dynamic_cast
+		// sites, each thunk by the vtable initializer.
+		if (cdd->from_system_header) {
+			if (ti) cond_mark_sym(ti, class_typeinfo_symbol(cdd));
+			if (vt) cond_mark_sym(vt, class_vtable_symbol(cdd));
+			for (node_t th : thunks) {
+				const char *tn = cir_declared_id(th);
+				if (tn)
+					cond_mark_sym(th, tn);
+			}
+		}
 	}
 
 	// Pass 1.6: synthesized destructors for classes that need a dtor (object
@@ -19524,8 +19677,11 @@ node_t CirBuilder::translate_module(Program *prog)
 				if (typed_proto_syms.count(kv.first)) continue;
 				append(top_list, kv.second);
 				emitted_extern_syms.insert(kv.first);
+				cond_mark_sym(kv.second, kv.first);
 			}
 			append(top_list, dd);
+			if (cdd->from_system_header)
+				cond_mark_sym(dd, class_dtor_symbol(cdd));
 		}
 	}
 
@@ -19545,7 +19701,11 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (emitted_complete_dtors.count(cdd)) continue;
 		emitted_complete_dtors.insert(cdd);
 		node_t cd = synth_complete_dtor_def(cdd);
-		if (cd) append(top_list, cd);
+		if (cd) {
+			append(top_list, cd);
+			if (cdd->from_system_header)
+				cond_mark_sym(cd, class_complete_dtor_symbol(cdd));
+		}
 	}
 
 	// Pass 1.8: deleting (D0) destructors for every polymorphic class with a
@@ -19559,7 +19719,11 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (emitted_deleting_dtors.count(cdd)) continue;
 		emitted_deleting_dtors.insert(cdd);
 		node_t dd0 = synth_deleting_dtor_def(cdd);
-		if (dd0) append(top_list, dd0);
+		if (dd0) {
+			append(top_list, dd0);
+			if (cdd->from_system_header)
+				cond_mark_sym(dd0, cdd->name + "___dtor_deleting");
+		}
 	}
 
 	// Pass 1.9: re-run the reachability fixpoint. The synth-dtor passes (1.6/1.7/
@@ -19648,6 +19812,10 @@ node_t CirBuilder::translate_module(Program *prog)
 		       && forest_lazy_protos[flp].anchor <= anchor; ++flp) {
 			append(top_list, forest_lazy_protos[flp].proto);
 			typed_proto_syms.insert(forest_lazy_protos[flp].sym);
+			// Rung 3: rides its body's conditionality (same symbol).
+			if (!forest_lazy_root.count(forest_lazy_protos[flp].sym))
+				cond_mark_sym(forest_lazy_protos[flp].proto,
+					      forest_lazy_protos[flp].sym);
 		}
 	};
 	for (size_t mi = 0; mi < materialized_funcs.size(); ++mi) {
@@ -19665,6 +19833,13 @@ node_t CirBuilder::translate_module(Program *prog)
 					pack_proto_nodes[func_emit_name(tf->var,
 									ptfd)] = proto;
 			}
+			// Rung 3: a materialized body is a deferred SYSTEM-header
+			// body by construction — its proto is conditional like it.
+			if (prog->is_system_header_path(tf->file)) {
+				const char *dn = cir_declared_id(proto);
+				if (dn)
+					cond_mark_sym(proto, dn);
+			}
 		}
 	}
 	flush_forest_lazy_protos((size_t)-1);
@@ -19674,8 +19849,10 @@ node_t CirBuilder::translate_module(Program *prog)
 	//     conflicting redeclaration c2mir rejects.
 	for (auto &kv : m_output_externs)
 		if (!emitted_extern_syms.count(kv.first)
-		 && !typed_proto_syms.count(kv.first))
+		 && !typed_proto_syms.count(kv.first)) {
 			append(top_list, kv.second);
+			cond_mark_sym(kv.second, kv.first);
+		}
 
 	// Synthesize `void __madc_global_init(void)` — the ONE home for the
 	// file-scope class-global ctor calls (collected by collect_global_ctors).
@@ -19684,6 +19861,8 @@ node_t CirBuilder::translate_module(Program *prog)
 	// A static once-guard makes a second invocation (host init + run_main)
 	// a no-op. Emitted FIRST among definitions so main's call (and any
 	// earlier-in-source function) sees the definition.
+	node_t gi_items = NULL;		// rung 3: the init body's stmt list —
+	node_t gi_def = NULL;		// the filter prunes dead ctor groups here
 	if (!m_global_ctor_stmts.empty()) {
 		// declaration: N_SPEC_DECL(N_SHARE(specs), declarator, attrs,
 		// asm, initializer) — c2mir.c:538.
@@ -19709,8 +19888,9 @@ node_t CirBuilder::translate_module(Program *prog)
 		node_t iret = node1(N_LIST, simple(N_VOID));
 		node_t idecl = node2(N_DECL, id("__madc_global_init"),
 				     node1(N_LIST, node1(N_FUNC, list())));
-		func_def_nodes.insert(func_def_nodes.begin(),
-				      node4(N_FUNC_DEF, iret, idecl, list(), ibody));
+		gi_items = items;
+		gi_def = node4(N_FUNC_DEF, iret, idecl, list(), ibody);
+		func_def_nodes.insert(func_def_nodes.begin(), gi_def);
 	}
 
 	// Pass 1.97: struct definitions for classes instantiated LATE — during the
@@ -19860,80 +20040,149 @@ node_t CirBuilder::translate_module(Program *prog)
 	if (prog->pack_recording)
 		bind_external_class_symbols(prog);
 
-	// Rung 3: emit only the referenced TYPE surface. Pass 0/0.5 emitted the
-	// whole registered surface above (the faithful mirror); on a real-header
-	// TU most of it is dead (testsubscript: 718 of 869 struct defs never
-	// referenced beyond their own definition). Mirror the body-DCE model and
-	// Pass 0.75's referenced-only protos: a decl whose origin file is NOT a
-	// system header is always kept — a pure-C / non-real-header build stays
-	// byte-for-byte unchanged — and a system-header type decl survives only
-	// if something OUTSIDE the type segment references its tag (struct defs)
-	// or one of its identifiers (typedef-bearing decls; ids over-approximate,
-	// erring toward emitting), transitively through admitted decls' own
-	// members. The producer freeze keeps the whole surface (pack_recording):
-	// a frozen corpus must stay complete for arbitrary consumers. Live and
-	// bound compiles filter identically, so bind == live is preserved by
-	// construction.
+	// Rung 3: emit only the REFERENCED surface. The passes above emitted the
+	// whole registered surface (the faithful mirror); on a real-header TU
+	// most of it is dead. Every node the emission sites recorded in
+	// m_cond_nodes (system-header-origin types, protos, externs, globals,
+	// vtables/typeinfo/thunks, synthesized dtors, library bodies) is
+	// CONDITIONAL: a TYPE node survives only if its struct tag — or, for a
+	// typedef-bearing decl, one of its identifiers — is referenced; a SYMBOL
+	// node survives only if its declared name is referenced. References are
+	// harvested from the ROOT content (user code, statics, shims — anything
+	// not recorded) and grow transitively through each admitted node's own
+	// references, to a fixpoint — g++'s ODR-use/COMDAT emission shape. A
+	// dead system-header global's __madc_global_init ctor statements are
+	// pruned WITH its storage decl (a ctor group never seeds the harvest —
+	// it references its own global, which would otherwise self-admit every
+	// ctor'd global). The producer freeze keeps the whole surface
+	// (pack_recording): a frozen corpus must stay complete for arbitrary
+	// consumers. Live and bound compiles filter identically, so bind == live
+	// is preserved by construction.
 	if (!prog->pack_recording) {
-		std::vector<node_t> seg;
+		// Every statement belonging to a ctor group (any owner).
+		std::set<node_t> group_stmts;
+		for (size_t g = 0; g < m_ctor_groups.size(); ++g)
+			for (size_t s = 0; s < m_ctor_groups[g].second.size(); ++s)
+				group_stmts.insert(m_ctor_groups[g].second[s]);
+
+		struct CondNd {
+			node_t n;
+			bool is_type;
+			std::string key;
+			std::set<std::string> tags, ids;
+			bool is_typedef;
+		};
+		std::vector<CondNd> pend;
+		std::map<node_t, size_t> pend_idx;
 		std::set<std::string> ref_tags, ref_ids;
-		bool past = (late_struct_anchor == NULL);
 		for (node_t ch = c2mir_node_first_op(top_list); ch;
 		     ch = c2mir_node_next_op(ch)) {
-			if (!past)
-				seg.push_back(ch);
-			if (ch == late_struct_anchor)
-				past = true;
-			else if (past)
-				cir_harvest_type_refs(ch, ref_tags, ref_ids);
+			std::map<node_t, CondEmit>::iterator mi =
+				m_cond_nodes.find(ch);
+			if (mi == m_cond_nodes.end()) {
+				// Root content seeds the harvest. The init def's
+				// trunk seeds; its ctor-group statements do not.
+				if (ch == gi_def && gi_items) {
+					for (node_t st = c2mir_node_first_op(gi_items);
+					     st; st = c2mir_node_next_op(st))
+						if (!group_stmts.count(st))
+							cir_harvest_type_refs(
+								st, ref_tags, ref_ids);
+				} else
+					cir_harvest_type_refs(ch, ref_tags, ref_ids);
+				continue;
+			}
+			CondNd c;
+			c.n = ch;
+			c.is_type = mi->second.is_type;
+			c.key = mi->second.key;
+			c.is_typedef = false;
+			cir_harvest_type_refs(ch, c.tags, c.ids, &c.is_typedef);
+			// A typedef-bearing TYPE node admits by its DECLARED
+			// ALIAS, not by every id in its subtree — a combined
+			// `typedef struct X {...} Y;` carries its whole member
+			// surface, and any common member id (size_t) would
+			// self-admit it.
+			if (c.is_type && c.is_typedef) {
+				const char *dn = cir_declared_id(ch);
+				c.key = dn ? dn : "";
+			}
+			pend_idx[ch] = pend.size();
+			pend.push_back(c);
 		}
-		struct SegNd {
-			node_t n;
+		// Ctor groups: a group whose global's storage decl is a ROOT seeds
+		// the harvest now; a group whose decl is conditional is admitted
+		// with it (folding the group's references — the ctor symbol chain).
+		struct CondGrp {
+			size_t grp;
+			size_t owner;			// index into pend
 			std::set<std::string> tags, ids;
-			bool is_typedef, root;
 		};
-		std::vector<SegNd> pend;
-		pend.reserve(seg.size());
-		for (node_t ch : seg) {
-			SegNd s;
-			s.n = ch;
-			s.is_typedef = false;
-			cir_harvest_type_refs(ch, s.tags, s.ids, &s.is_typedef);
-			const char *f = CIR_NODE(ch)->src_file();
-			s.root = !f || !prog->is_system_header_path(f);
-			pend.push_back(s);
+		std::vector<CondGrp> gpend;
+		for (size_t g = 0; g < m_ctor_groups.size(); ++g) {
+			Variable *v = m_ctor_groups[g].first;
+			std::map<Variable *, node_t>::iterator di =
+				m_global_decl_node.find(v);
+			node_t od = di == m_global_decl_node.end() ? NULL
+								   : di->second;
+			std::map<node_t, size_t>::iterator oi =
+				od ? pend_idx.find(od) : pend_idx.end();
+			if (oi == pend_idx.end()) {
+				for (size_t s = 0;
+				     s < m_ctor_groups[g].second.size(); ++s)
+					cir_harvest_type_refs(
+						m_ctor_groups[g].second[s],
+						ref_tags, ref_ids);
+				continue;
+			}
+			CondGrp cg;
+			cg.grp = g;
+			cg.owner = oi->second;
+			bool dummy = false;
+			for (size_t s = 0; s < m_ctor_groups[g].second.size(); ++s)
+				cir_harvest_type_refs(m_ctor_groups[g].second[s],
+						      cg.tags, cg.ids, &dummy);
+			gpend.push_back(cg);
 		}
 		std::vector<char> admitted(pend.size(), 0);
+		std::vector<char> gadmitted(gpend.size(), 0);
 		bool grew = true;
 		while (grew) {
 			grew = false;
 			for (size_t i = 0; i < pend.size(); ++i) {
 				if (admitted[i])
 					continue;
-				SegNd &s = pend[i];
-				bool keep = s.root;
-				if (!keep)
+				CondNd &c = pend[i];
+				bool keep = false;
+				if (!c.is_type)
+					keep = ref_ids.count(c.key) != 0;
+				else {
 					for (std::set<std::string>::iterator t =
-						 s.tags.begin();
-					     t != s.tags.end(); ++t)
+						 c.tags.begin();
+					     t != c.tags.end(); ++t)
 						if (ref_tags.count(*t)) {
 							keep = true;
 							break;
 						}
-				if (!keep && s.is_typedef)
-					for (std::set<std::string>::iterator t =
-						 s.ids.begin();
-					     t != s.ids.end(); ++t)
-						if (ref_ids.count(*t)) {
-							keep = true;
-							break;
-						}
+					if (!keep && c.is_typedef && !c.key.empty())
+						keep = ref_ids.count(c.key) != 0;
+				}
 				if (!keep)
 					continue;
 				admitted[i] = 1;
 				grew = true;
-				ref_tags.insert(s.tags.begin(), s.tags.end());
-				ref_ids.insert(s.ids.begin(), s.ids.end());
+				ref_tags.insert(c.tags.begin(), c.tags.end());
+				ref_ids.insert(c.ids.begin(), c.ids.end());
+			}
+			for (size_t g = 0; g < gpend.size(); ++g) {
+				if (gadmitted[g] || !admitted[gpend[g].owner])
+					continue;
+				gadmitted[g] = 1;
+				grew = true;
+				ref_tags.insert(gpend[g].tags.begin(),
+						gpend[g].tags.end());
+				ref_ids.insert(gpend[g].ids.begin(),
+					       gpend[g].ids.end());
 			}
 		}
 		size_t removed = 0;
@@ -19942,9 +20191,19 @@ node_t CirBuilder::translate_module(Program *prog)
 				c2mir_op_remove(top_list, pend[i].n);
 				++removed;
 			}
-		DBG(std::cout << "type-surface filter: removed " << removed
-			      << " of " << pend.size()
-			      << " early type decls" << std::endl);
+		size_t gremoved = 0;
+		for (size_t g = 0; g < gpend.size(); ++g)
+			if (!gadmitted[g]) {
+				const std::vector<node_t> &stmts =
+					m_ctor_groups[gpend[g].grp].second;
+				for (size_t s = 0; s < stmts.size(); ++s)
+					c2mir_op_remove(gi_items, stmts[s]);
+				++gremoved;
+			}
+		DBG(std::cout << "referenced-surface filter: removed " << removed
+			      << " of " << pend.size() << " conditional decls, "
+			      << gremoved << " of " << gpend.size()
+			      << " ctor groups" << std::endl);
 	}
 
 	append(module, top_list);
