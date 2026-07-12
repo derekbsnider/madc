@@ -26,7 +26,6 @@
 #include <map>
 #include <list>
 #include <set>
-#include <unordered_set>
 #include <vector>
 #include <functional>
 #include <queue>
@@ -10992,13 +10991,25 @@ Variable *TokenCpnd::findVariableThisScope(const madc::dis::intern_table &sp, ui
     // path stays O(1) and the result always matches a fresh scan.
     if ( res && res->name != id )
     {
-	std::unordered_set<uint32_t> affected;
+	// The affected key set is tiny (the rename batch that went stale), so a
+	// flat vector + linear membership beats hashing per variable in the
+	// refill scan below. Raw-pointer walk: at -O0 vector iterators are real
+	// function calls, and this test runs once per scope entry per repair.
+	std::vector<uint32_t> affected;
+	auto affected_has = [&affected](uint32_t sid) -> bool {
+	    const uint32_t *p = affected.data();
+	    for ( const uint32_t *e = p + affected.size(); p != e; ++p )
+		if ( *p == sid )
+		    return true;
+	    return false;
+	};
 	// 1. Drop entries whose var no longer carries the key (renamed away).
 	for ( std::unordered_map<uint32_t, Variable *>::iterator si = var_index.begin();
 	      si != var_index.end(); )
 	    if ( !si->second || si->second->name_sid != si->first )
 	    {
-		affected.insert(si->first);
+		if ( !affected_has(si->first) )
+		    affected.push_back(si->first);
 		si = var_index.erase(si);
 	    }
 	    else
@@ -11011,14 +11022,15 @@ Variable *TokenCpnd::findVariableThisScope(const madc::dis::intern_table &sp, ui
 		if ( !v->name_sid )
 		{
 		    v->name_sid = sp.intern(v->name);
-		    affected.insert(v->name_sid);
+		    if ( !affected_has(v->name_sid) )
+			affected.push_back(v->name_sid);
 		    var_index.erase(v->name_sid);
 		}
 	// 3. Refill ONLY the affected keys, first-wins in append order — the
 	//    same winner a full rebuild's front-to-back emplace would pick.
 	for ( size_t vi = 0; vi < variables.size(); ++vi )
 	    if ( Variable *v = variables[vi] )
-		if ( affected.count(v->name_sid) )
+		if ( affected_has(v->name_sid) )
 		    var_index.emplace(v->name_sid, v);
 	it = var_index.find(qsid);
 	res = (it != var_index.end()) ? it->second : NULL;

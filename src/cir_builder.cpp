@@ -16752,45 +16752,60 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		// Lockstep: only symbols Pass 1.6 will actually emit are admitted here, so
 		// no dangling reference can result.
 		//
-		// Both sets are MEMOIZED on the builder, size-stamped: rebuilding them
-		// from whole struct_map/funcdef_map scans on every call was ~884
-		// discarded set<string> inserts × 170 calls (500M Ir) per bound
-		// testsubscript run. A size stamp is exact here — during translation
-		// the maps only gain COMPLETE entries (see the memo's header comment).
-		if (m_emit_sets_struct_stamp != m_prog->struct_map.size()
-		    || m_emit_sets_funcdef_stamp != m_prog->funcdef_map.size()) {
-			m_synth_dtor_syms_memo.clear();
-			for (auto &kv : m_prog->struct_map) {
-				DataDefCLASS *cdd = as_user_class(kv.second);
-				if (class_gets_synth_dtor(cdd))
-					m_synth_dtor_syms_memo.insert(class_dtor_symbol(cdd));
-			}
+		// Both sets are MEMOIZED on the builder, incrementally: each map entry
+		// is classified ONCE (seen-pointer sets — see the memo's header
+		// comment for why verdicts are stable and why a size stamp fails).
+		// Rebuilding them from whole-map scans on every call was ~1k
+		// discarded set<string> inserts × 170 calls (500M+ Ir) per bound
+		// testsubscript run; this walk is a pointer-membership scan.
+		const bool forest_body_srcs = m_prog->bind_forest
+		    && !m_prog->forest_chain.empty();
+		// struct_map never erases, so an unchanged size means no new
+		// entries — skip the walk entirely (the common consecutive-call
+		// case); otherwise top up just the unseen entries.
+		if (m_prog->struct_map.size() != m_emit_sets_struct_count) {
+		m_emit_sets_struct_count = m_prog->struct_map.size();
+		for (auto &kv : m_prog->struct_map) {
+			// Seen-key = the map NODE's key address (stable, unique per
+			// entry) — a pointer key would skip an aliased second entry.
+			if (!m_emit_sets_seen_classes.insert(&kv.first).second)
+				continue;	// classified on a prior call
+			DataDefCLASS *ucdd = as_user_class(kv.second);
+			if (class_gets_synth_dtor(ucdd))
+				m_synth_dtor_syms_memo.insert(class_dtor_symbol(ucdd));
 			// v25 equivalence: a restored FOREST body (has_forest_body) is the
 			// LOADED form of a deferred lazy body — translate_module's
 			// forest_lazy / funcdef_map fixpoint stages materialize + emit it
 			// on reference, so it is a definition source exactly like the
 			// deferred arm. Collected with the SAME predicates those stages
 			// use, so only symbols that will actually emit are admitted.
-			m_forest_body_syms_memo.clear();
-			if (m_prog->bind_forest && !m_prog->forest_chain.empty()) {
-				for (auto &kv : m_prog->struct_map) {
-					DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(kv.second);
-					if (!cdd)
-						continue;
-					for (Variable *mv : cdd->methods) {
-						FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type)
-								 : NULL;
-						if (fd && fd->has_forest_body && !mv->name.empty())
-							m_forest_body_syms_memo.insert(mv->name);
-					}
-				}
-				for (auto &kv : m_prog->funcdef_map)
-					if (kv.second && kv.second->has_forest_body
-					    && !kv.first.empty())
-						m_forest_body_syms_memo.insert(kv.first);
+			// (has_forest_body is restore-stamped, so a class's forest-body
+			// method set is final by the time the class is first seen.)
+			if (!forest_body_srcs)
+				continue;
+			DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(kv.second);
+			if (!cdd)
+				continue;
+			for (Variable *mv : cdd->methods) {
+				FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type)
+						 : NULL;
+				if (fd && fd->has_forest_body && !mv->name.empty())
+					m_forest_body_syms_memo.insert(mv->name);
 			}
-			m_emit_sets_struct_stamp = m_prog->struct_map.size();
-			m_emit_sets_funcdef_stamp = m_prog->funcdef_map.size();
+		}
+		}
+		// funcdef_map's has_forest_body subset is FIXED before translation
+		// (stamped only in materialize_from_arena, at restore) and the
+		// translate-time erase sites (operator retag undo, instantiation
+		// undo) only remove non-restored entries — so ONE walk per module
+		// suffices. No per-entry seen tracking: funcdef_map nodes can be
+		// erased during translation, which would dangle node-address keys.
+		if (forest_body_srcs && !m_emit_sets_funcdefs_done) {
+			m_emit_sets_funcdefs_done = true;
+			for (auto &kv : m_prog->funcdef_map)
+				if (kv.second && kv.second->has_forest_body
+				    && !kv.first.empty())
+					m_forest_body_syms_memo.insert(kv.first);
 		}
 		const std::set<std::string> &synth_dtor_syms = m_synth_dtor_syms_memo;
 		const std::set<std::string> &forest_body_syms = m_forest_body_syms_memo;
@@ -18468,10 +18483,13 @@ node_t CirBuilder::translate_module(Program *prog)
 	m_cond_nodes.clear();
 	m_ctor_groups.clear();
 	m_global_decl_node.clear();
-	// Emittable-set memo stamps: invalidate per module so a builder reused
-	// across Programs (same map SIZES, different contents) never false-hits.
-	m_emit_sets_struct_stamp = (size_t)-1;
-	m_emit_sets_funcdef_stamp = (size_t)-1;
+	// Emittable-set memo: reset per module so a builder reused across
+	// Programs never carries verdicts (or dangling seen-keys) over.
+	m_synth_dtor_syms_memo.clear();
+	m_forest_body_syms_memo.clear();
+	m_emit_sets_seen_classes.clear();
+	m_emit_sets_struct_count = 0;
+	m_emit_sets_funcdefs_done = false;
 
 	node_t module = simple(N_MODULE);
 	node_t top_list = list();
