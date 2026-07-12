@@ -18371,6 +18371,37 @@ int CirBuilder::pack_gate_drop(node_t tree, const std::vector<int> &bad_items)
 // Top-level module translation
 // -----------------------------------------------------------------------
 
+// Rung 3 (emit only referenced surface): harvest every struct/union TAG and
+// every identifier spelling from a subtree. Tags come from N_STRUCT/N_UNION
+// nodes (both the `struct X {...}` def form and the `struct X` ref form);
+// ids catch typedef-name type specs (c2mir renders those as a bare N_ID in
+// the spec list). Ids over-approximate — a variable sharing a typedef's
+// name keeps that typedef alive — which errs toward emitting, never toward
+// a missing definition.
+static void cir_harvest_type_refs(node_t n, std::set<std::string> &tags,
+				  std::set<std::string> &ids,
+				  bool *has_typedef = NULL)
+{
+	if (!n)
+		return;
+	if (n->code == N_ID) {
+		if (n->u.s.s)
+			ids.insert(n->u.s.s);
+		return;
+	}
+	if (n->code == N_TYPEDEF && has_typedef)
+		*has_typedef = true;
+	if (n->code == N_STRUCT || n->code == N_UNION) {
+		node_t idn = c2mir_node_first_op(n);
+		if (idn && idn->code == N_ID && idn->u.s.s)
+			tags.insert(idn->u.s.s);
+	}
+	if (n->code > N_ID)
+		for (node_t op = c2mir_node_first_op(n); op;
+		     op = c2mir_node_next_op(op))
+			cir_harvest_type_refs(op, tags, ids, has_typedef);
+}
+
 node_t CirBuilder::translate_module(Program *prog)
 {
 	if (!prog) return NULL;
@@ -19828,6 +19859,93 @@ node_t CirBuilder::translate_module(Program *prog)
 	// cleared; node building is complete, so only the frozen state changes.
 	if (prog->pack_recording)
 		bind_external_class_symbols(prog);
+
+	// Rung 3: emit only the referenced TYPE surface. Pass 0/0.5 emitted the
+	// whole registered surface above (the faithful mirror); on a real-header
+	// TU most of it is dead (testsubscript: 718 of 869 struct defs never
+	// referenced beyond their own definition). Mirror the body-DCE model and
+	// Pass 0.75's referenced-only protos: a decl whose origin file is NOT a
+	// system header is always kept — a pure-C / non-real-header build stays
+	// byte-for-byte unchanged — and a system-header type decl survives only
+	// if something OUTSIDE the type segment references its tag (struct defs)
+	// or one of its identifiers (typedef-bearing decls; ids over-approximate,
+	// erring toward emitting), transitively through admitted decls' own
+	// members. The producer freeze keeps the whole surface (pack_recording):
+	// a frozen corpus must stay complete for arbitrary consumers. Live and
+	// bound compiles filter identically, so bind == live is preserved by
+	// construction.
+	if (!prog->pack_recording) {
+		std::vector<node_t> seg;
+		std::set<std::string> ref_tags, ref_ids;
+		bool past = (late_struct_anchor == NULL);
+		for (node_t ch = c2mir_node_first_op(top_list); ch;
+		     ch = c2mir_node_next_op(ch)) {
+			if (!past)
+				seg.push_back(ch);
+			if (ch == late_struct_anchor)
+				past = true;
+			else if (past)
+				cir_harvest_type_refs(ch, ref_tags, ref_ids);
+		}
+		struct SegNd {
+			node_t n;
+			std::set<std::string> tags, ids;
+			bool is_typedef, root;
+		};
+		std::vector<SegNd> pend;
+		pend.reserve(seg.size());
+		for (node_t ch : seg) {
+			SegNd s;
+			s.n = ch;
+			s.is_typedef = false;
+			cir_harvest_type_refs(ch, s.tags, s.ids, &s.is_typedef);
+			const char *f = CIR_NODE(ch)->src_file();
+			s.root = !f || !prog->is_system_header_path(f);
+			pend.push_back(s);
+		}
+		std::vector<char> admitted(pend.size(), 0);
+		bool grew = true;
+		while (grew) {
+			grew = false;
+			for (size_t i = 0; i < pend.size(); ++i) {
+				if (admitted[i])
+					continue;
+				SegNd &s = pend[i];
+				bool keep = s.root;
+				if (!keep)
+					for (std::set<std::string>::iterator t =
+						 s.tags.begin();
+					     t != s.tags.end(); ++t)
+						if (ref_tags.count(*t)) {
+							keep = true;
+							break;
+						}
+				if (!keep && s.is_typedef)
+					for (std::set<std::string>::iterator t =
+						 s.ids.begin();
+					     t != s.ids.end(); ++t)
+						if (ref_ids.count(*t)) {
+							keep = true;
+							break;
+						}
+				if (!keep)
+					continue;
+				admitted[i] = 1;
+				grew = true;
+				ref_tags.insert(s.tags.begin(), s.tags.end());
+				ref_ids.insert(s.ids.begin(), s.ids.end());
+			}
+		}
+		size_t removed = 0;
+		for (size_t i = 0; i < pend.size(); ++i)
+			if (!admitted[i]) {
+				c2mir_op_remove(top_list, pend[i].n);
+				++removed;
+			}
+		DBG(std::cout << "type-surface filter: removed " << removed
+			      << " of " << pend.size()
+			      << " early type decls" << std::endl);
+	}
 
 	append(module, top_list);
 	return module;
