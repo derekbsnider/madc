@@ -10975,12 +10975,18 @@ Variable *TokenCpnd::findVariableThisScope(const madc::dis::intern_table &sp, ui
     std::unordered_map<uint32_t, Variable *>::iterator it = var_index.find(qsid);
     Variable *res = (it != var_index.end()) ? it->second : NULL;
     // A Variable's `name` can be MUTATED after it is appended (operator arity
-    // disambiguation renames a same-name overload). The cached sid then goes
-    // stale: a lookup of the OLD name would falsely hit the renamed var, or a
-    // lookup of the NEW name would falsely miss. Detect staleness — a hit whose
-    // CURRENT name no longer matches — and rebuild the index from current names,
-    // then re-find. Rebuild fires only on a stale hit (rare: after a rename), so
-    // the common path stays O(1) and the result always matches a fresh scan.
+    // disambiguation renames a same-name overload — via Variable::rename, which
+    // zeroes the cached name_sid). The index entry then goes stale: a lookup of
+    // the OLD name would falsely hit the renamed var, or a lookup of the NEW
+    // name would falsely miss. Detect staleness — a hit whose CURRENT name no
+    // longer matches — and rebuild the index, then re-find. Because rename() is
+    // the only post-registration name writer and it zeroes name_sid, a non-zero
+    // cached sid is still current: the rebuild re-interns ONLY zeroed entries
+    // (the rename that triggered it) instead of re-hashing every name in the
+    // scope (the force-refresh was 196k long-name interns per bound
+    // testsubscript run — the task-#14 flood). Rebuild fires only on a stale
+    // hit (rare), so the common path stays O(1) and the result always matches
+    // a fresh scan.
     if ( res && res->name != id )
     {
 	var_index.clear();
@@ -10988,7 +10994,8 @@ Variable *TokenCpnd::findVariableThisScope(const madc::dis::intern_table &sp, ui
 	for ( ; var_indexed < variables.size(); ++var_indexed )
 	    if ( Variable *v = variables[var_indexed] )
 	    {
-		v->name_sid = sp.intern(v->name);	// force-refresh: a rename invalidated the cache
+		if ( !v->name_sid )	// rename() zeroed it — re-intern just this one
+		    v->name_sid = sp.intern(v->name);
 		var_index.emplace(v->name_sid, v);
 	    }
 	it = var_index.find(qsid);
@@ -28284,7 +28291,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			std::string peer_name = std::string(tag->spelling()) + "__" + mname + "_un";
 			std::string peer_old = std::string(tag->spelling()) + "__" + mname;
 			peer_fd->local_emit_name = peer_name;
-			peer->name = peer_name;
+			peer->rename(peer_name);
 			pgm.funcdef_map[peer_name] = peer_fd;
 			pgm.funcdef_map.erase(peer_old);
 		    }

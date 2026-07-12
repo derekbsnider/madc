@@ -113,6 +113,12 @@ public:
 	return n;
     }
     inline void modified() { flags |= vfMODIFIED; DBG(std::cout << "Variable::modified(" << name << ')' << std::endl); }
+    // The ONLY way to change `name` after the variable may have been registered
+    // in a scope: zeroing name_sid marks the rename for the scope index, so
+    // TokenCpnd::findVariableThisScope's staleness rebuild re-interns just this
+    // entry instead of force-rehashing every name in the scope. A raw
+    // `v->name = x` on a registered variable silently breaks sid lookups.
+    inline void rename(const std::string &n) { name = n; name_sid = 0; }
     inline void makeconstant() { flags |= vfCONSTANT; }
     inline bool is_global()   const { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
     inline bool is_constant() const { if ( (flags & vfCONSTANT) ) return true; return false; }
