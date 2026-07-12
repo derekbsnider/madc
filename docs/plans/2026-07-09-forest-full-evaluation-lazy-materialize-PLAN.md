@@ -104,6 +104,36 @@ BOTH paths together so bind == live byte-identity is preserved; fidelity
 gates are `--emit=c11` vs g++ (cirfidelity) + the full suite. This is the
 recorded "auto-include / emit-only-referenced" roadmap item.
 
+**DESIGN (2026-07-12, recon done — defer-and-filter, mirroring Pass 0.75's
+existing referenced-only proto model).** Sizing: on testsubscript's emitted
+C, 718/869 struct defs (83%) and 142/199 typedefs are dead (never
+referenced beyond their own definition). Protos are ALREADY referenced-only
+(Pass 0.75 keys on referenced_funcs, filled while bodies translate into a
+temp list before the proto pass). Types get the same treatment:
+
+1. **Collect** `referenced_types` (struct/union tags + typedef aliases) at
+   the type-reference chokepoints during node construction
+   (append_type_specs, the `N_STRUCT(id, IGNORE)` tag-ref builders,
+   typedef_emit_name). Always-on set inserts — no behavior change.
+2. **Defer** Pass 0 dkTypedef/dkStruct/dkUnion nodes and Pass 0.5 class
+   defs into a pending vector (node, kind, name, dd) instead of appending
+   to top_list; dkGlobalVar is already deferred. TU-ROOT-origin decls (the
+   user's own file) emit UNCONDITIONALLY — the faithful mirror applies to
+   the user's source, not the include surface.
+3. **Emit** after bodies + protos + globals are built: closure = seeds
+   (referenced_types ∪ TU-root decls) expanded through member/base/anon
+   deps and typedef→underlying links; splice survivors at the ORIGINAL
+   position (before protos) in ORIGINAL relative order — intra-segment dep
+   order is preserved by construction, and C's def-before-use holds because
+   the segment stays ahead of everything that references it.
+4. Late-discovered structs (Pass 1.97 splice / emit_struct_with_deps
+   during body translation) are by-construction referenced — unchanged.
+
+Steps land individually gated: (1) collection only → byte-identical;
+(2) defer + unconditional re-emit (filter off) → MADC_DUMP_MIR identical
+on the bind gates; (3) filter on → cirfidelity + fulltest + bind 18/18 +
+packed suite + bench row.
+
 ### Rung 4 — instantiation speed (successor track, not this plan)
 
 User-named products' remaining cost = the front-end-performance track
