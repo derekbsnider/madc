@@ -13,6 +13,7 @@
 #include <string>
 #include <set>
 #include <unordered_set>
+#include <cassert>
 #include <map>
 #include <vector>
 #include <functional>
@@ -38,13 +39,64 @@ class DataDefSTRUCT;
 class FuncDef;
 class Method;
 
+// Membership set of ODR-used function symbols with speculative-translation
+// journaling. referenced_funcs is membership-only (insert/count — never
+// iterated, never erased), so the container is unordered; the speculative
+// translation paths (tsubst pattern probes, deferred-construction re-lowers)
+// used to save/restore it by FULL SET COPY — three tree clones per attempt.
+// mark()/rollback() undo exactly the keys inserted since the mark instead
+// (only first-time inserts journal, so rollback restores the precise prior
+// membership). Scope is the RAII form: dtor COMMITS (keeps inserts, pops the
+// mark) when rollback() wasn't called — matching the old copy pattern's
+// behavior on exception unwind, where the restore line never ran.
+class RefFuncSet {
+	std::unordered_set<std::string> s_;
+	std::vector<std::string> journal_;	// keys newly inserted while marked
+	std::vector<size_t> marks_;
+public:
+	void insert(const std::string &k)
+	{
+		if (s_.insert(k).second && !marks_.empty())
+			journal_.push_back(k);
+	}
+	size_t count(const std::string &k) const { return s_.count(k); }
+	void mark() { marks_.push_back(journal_.size()); }
+	void rollback()
+	{
+		size_t m = marks_.back();
+		marks_.pop_back();
+		for (size_t i = journal_.size(); i-- > m; )
+			s_.erase(journal_[i]);
+		journal_.resize(m);
+	}
+	void commit()
+	{
+		marks_.pop_back();
+		if (marks_.empty())
+			journal_.clear();
+	}
+	size_t depth() const { return marks_.size(); }
+	class Scope {
+		RefFuncSet &r_;
+		size_t depth_;	// mark-stack depth OWNED by this scope
+		bool done_;
+	public:
+		explicit Scope(RefFuncSet &r)
+			: r_(r), depth_(r.depth() + 1), done_(false) { r_.mark(); }
+		// Must run at this scope's own depth — a rollback while an inner
+		// mark is still live would pop the wrong journal boundary.
+		void rollback() { assert(r_.depth() == depth_); r_.rollback(); done_ = true; }
+		~Scope() { if (!done_) { assert(r_.depth() == depth_); r_.commit(); } }
+	};
+};
+
 class CirBuilder {
 	c2m_ctx_t c2m;
 	CirArena arena;
 	// Function names referenced (called) while translating bodies. Used by
 	// translate_module to emit extern prototypes only for funcs the source
 	// actually uses (matches c2m's #include-driven scope).
-	std::set<std::string> referenced_funcs;
+	RefFuncSet referenced_funcs;
 	// Global variables referenced while translating bodies. Used to emit
 	// extern decls for libc globals (stderr/stdout/stdin, registered lazily
 	// via addGlobal but absent from top_decls) so the emitted C compiles.

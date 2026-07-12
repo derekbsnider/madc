@@ -2654,14 +2654,13 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					   const char *pack_name) -> node_t {
 			std::vector<node_t> saved_pending =
 				m_pending_stmts;
-			std::set<std::string> saved_refs =
-				referenced_funcs;
+			RefFuncSet::Scope refscope(referenced_funcs);
 			m_pending_stmts.clear();
 			node_t raw = translate_expr(expr);
 			std::vector<node_t> pending =
 				m_pending_stmts;
 			m_pending_stmts = saved_pending;
-			referenced_funcs = saved_refs;
+			refscope.rollback();
 			for (node_t p : pending)
 				prefix_items.push_back(copy_node_under(
 					p, smap, pack_index, pack_elem,
@@ -3060,10 +3059,9 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			DataDefCLASS *concrete_class =
 				dynamic_cast<DataDefCLASS *>(concrete);
 			auto placement_addr = [&]() -> node_t {
-				std::set<std::string> saved_refs =
-					referenced_funcs;
+				RefFuncSet::Scope refscope(referenced_funcs);
 				node_t raw = translate_expr(tn->placement);
-				referenced_funcs = saved_refs;
+				refscope.rollback();
 				int saved_index = m_tsubst_copy_pack_index;
 				size_t saved_elem = m_tsubst_copy_pack_elem;
 				uint32_t saved_name =
@@ -3111,11 +3109,11 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			lowered.alloc_class = concrete_class;
 			lowered.alloc_type = lowered.alloc_class ? NULL : concrete;
 			bool saved_mode = m_tsubst_pattern_mode;
-			std::set<std::string> saved_refs = referenced_funcs;
+			RefFuncSet::Scope refscope(referenced_funcs);
 			m_tsubst_pattern_mode = false;
 			node_t lowered_tree = translate_expr(&lowered);
 			m_tsubst_pattern_mode = saved_mode;
-			referenced_funcs = saved_refs;
+			refscope.rollback();
 			if (!lowered_tree)
 				return CIR_NODE(error_node(
 					"tsubst: failed to lower placement new"));
@@ -3215,9 +3213,9 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			if (!elem || template_param_under_type_layers(elem))
 				return CIR_NODE(error_node(
 					"tsubst: unbound explicit destructor type"));
-			std::set<std::string> saved_refs = referenced_funcs;
+			RefFuncSet::Scope refscope(referenced_funcs);
 			node_t raw_obj = translate_expr(td->obj);
-			referenced_funcs = saved_refs;
+			refscope.rollback();
 			cir_node *copied_obj =
 				copy_cir_subtree(CIR_NODE(raw_obj), subst);
 			node_t obj_ptr = copied_obj ? copied_obj->as_node() : NULL;
@@ -16160,7 +16158,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		// pattern that still carries a genuine error node (some other unsupported
 		// construct) is rejected -> memo NULL -> fall back to re-parse.
 		bool saved_mode = m_tsubst_pattern_mode;
-		std::set<std::string> saved_refs = referenced_funcs;
+		RefFuncSet::Scope refscope(referenced_funcs);
 		node_t pat = NULL;
 		m_tsubst_pattern_mode = true;
 		{
@@ -16173,7 +16171,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			diag.restore_public_state();
 		}
 		m_tsubst_pattern_mode = saved_mode;
-		referenced_funcs = saved_refs;
+		refscope.rollback();
 		const char *pat_err = NULL;
 		if (pat && cir_tree_has_error(pat)) {
 			// The first error in the copied pattern names the exact
@@ -16255,7 +16253,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 					p.value_init = true;
 				} else {
 					bool saved_mode2 = m_tsubst_pattern_mode;
-					std::set<std::string> saved_refs2 = referenced_funcs;
+					RefFuncSet::Scope refscope2(referenced_funcs);
 					node_t an = NULL;
 					m_tsubst_pattern_mode = true;
 					{
@@ -16268,7 +16266,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 						diag2.restore_public_state();
 					}
 					m_tsubst_pattern_mode = saved_mode2;
-					referenced_funcs = saved_refs2;
+					refscope2.rollback();
 					if (!an || cir_tree_has_error(an)) {
 						admit = false;
 						break;
@@ -16436,13 +16434,14 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			}
 		}
 	}
-	// Snapshot referenced_funcs: the instantiation copy below inserts callee
+	// Mark referenced_funcs: the instantiation copy below inserts callee
 	// symbols as it builds. If this body ultimately bails (a post-copy
 	// bail), those inserts must be undone — otherwise a bailed body leaves
 	// un-emittable symbols (e.g. __gnu_cxx::operator-) recorded as ODR-used, and
 	// MIR-link reports an undefined import even though nothing emits the body.
-	// On a hit we keep them. (bail_covered unwinds before erroring.)
-	std::set<std::string> saved_ref_funcs = referenced_funcs;
+	// On a hit the Scope dtor commits and they stay. (bail_covered rolls back
+	// before erroring.)
+	RefFuncSet::Scope refscope(referenced_funcs);
 	// Phase-5 slice 3: past this point the shape is COVERED — the pattern
 	// built and the binding is complete, so tsubst CLAIMS this body. A bail
 	// here is an internal inconsistency, not a coverage boundary: it returns
@@ -16451,7 +16450,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	// the slice-4 delete). The error node aborts the compile at the
 	// pre-c2mir gate, naming the instantiation and the [why:] reason.
 	auto bail_covered = [&](const char *why) -> node_t {
-		referenced_funcs = saved_ref_funcs;
+		refscope.rollback();
 		if (reason_out)
 			*reason_out = why;
 		m_tsubst_bailed_covered = true;
