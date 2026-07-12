@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+- **perf(forest): RUNG 3 CLOSED — unified referenced-surface filter**
+  (@154becbf). The CIR builder now emits only the REFERENCED surface, on
+  live and bound compiles identically (g++'s COMDAT/ODR-use shape): one
+  fixpoint admits system-header-origin type decls by tag/declared-alias
+  and every other category (protos, externs, globals, vtables/typeinfo/
+  thunks, synthesized dtors, library bodies) by declared symbol;
+  `__madc_global_init` ctor groups prune with their global; file-scope
+  statics stay unconditional; the producer freeze remains exempt.
+  Restored decls gained origin verdicts (`TopDecl.forest_system`,
+  qualified-then-bare index lookup) — the first cut had never fired on
+  bound. testsubscript emitted C: live 6079 → 3393 lines (structs
+  763 → 169), bound 6893 → 3965. Gates: fulltest 681/0 with bind 18/18
+  (strbind now asserts whole-TU MIR byte-identity), cirfidelity, packed
+  suite 681/0. Bound wall 0.824 → 0.804; the post-close profile shows
+  the remaining bound cost is query-time name hashing + string-keyed
+  sets → next lever is sid-keyed lookups (str-drop rung 2 territory).
+- **perf(forest): RUNG 2a — closure-filtered materialization**
+  (@3f06188c). `materialize_from_arena` builds only the TU's
+  bound-include closure (CirMaterializeFilter over the B4a decl index);
+  small TUs −69% bound wall; headline TU neutral (its closure spans the
+  corpus). Two root causes fixed en route: frozen-tree emission-name
+  contract (every kept restore surface seeds the reference-pull closure)
+  and two-surface ns_ok/flat_ok gating.
+- **perf(parser): task #14 — tracked renames end the stale-rebuild intern
+  flood** (@ceff5bf7). The only post-registration Variable rename (the
+  operator peer retag) was untracked, forcing whole-scope re-interns of
+  mangled names on every stale scope-index hit (196,596 → 28 re-interns;
+  intern hashing 853M → 301M Ir). `Variable::rename()` zeroes `name_sid`;
+  the rebuild re-interns only zeroed entries.
 - **perf(forest): raw container segments** — the pack no longer compresses
   forest segments; the reader binds them zero-copy from the image. Bound
   testsubscript: 5.31G → 4.25G instructions (−20%), 0.98s → 0.91s wall;
