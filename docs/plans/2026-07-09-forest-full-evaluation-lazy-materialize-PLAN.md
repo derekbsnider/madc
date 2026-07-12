@@ -406,3 +406,26 @@ complete, has_forest_body set at restore only; a false `emittable()`
 verdict is a LOUD bail_covered error, so be conservative). C/D/E are
 recorded follow-ons — C's biggest half is our own bound-only flush loop.
 A+B ≈ 755M Ir ≈ 18% of the truncated window.
+
+**✅ SLICE CLOSED (2026-07-12, merged @2fb72247, bench @973c3695): bound
+0.804 → 0.572 (−29%), live 2.399 → 2.182 (−9%), load 1.20 — the ≤0.665
+recovery target CLEARED with room.** Two-commit landing: @8eccc0cb first
+cut + @4da065d7 rework. LESSON from the first cut (profile-verified,
+gate-green but perf-INERT): the size-stamp memo never hit — struct_map
+grows between most tsubst calls (MTI derivations), so the "rebuild only
+on size change" guard rebuilt per call anyway (inserts/call 884→1,016).
+The landed design is INCREMENTAL: struct entries classified ONCE (seen
+set keyed by the map NODE's key address — unique per entry, safe because
+struct_map never erases; equal size skips the walk), funcdef_map walked
+ONCE per module (its has_forest_body subset is restore-stamped and fixed
+before translation; node-address tracking would dangle on its
+translate-time erases). findVariableThisScope repair: affected-key
+membership is a raw-pointer scan (at -O0 vector iterators are real
+calls). Site counts (packed dev, 120s window): tsubst→set::insert
+172,800→7,637 calls / 562.6M→25.4M Ir; emplaces 204,655→8,124.
+Gates: fulltest 681/0/0/16 ×2, bind 18/18, packed suite 681/0 ×2, zero
+warnings. NEXT: the <0.399 warm floor — remaining profiled residue =
+walk-entry interns (C: flush_forest_pending_globals 79.7M bound-only,
+unique_overload_symbol 54.9M), PCH deserialize re-interns (D, 51M),
+keyword/datatype ctor interns (E, ~35M), then rung 4 (MTI 217/187
+derivations, the post-window body work).

@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **perf(compile): lookup-churn slice — bound testsubscript 0.804 → 0.572
+  (−29%), live 2.399 → 2.182 (−9%)** (@2fb72247). Deep caller-attribution
+  recon overturned the "query-time hashing" framing: the profiled churn
+  was REBUILDS. (1) `tsubst_method_body` rebuilt its emittable-symbol
+  sets (Pass-1.6 synth dtors + forest bodies) from whole
+  struct_map/funcdef_map scans on every call — 170 calls × ~1k discarded
+  `set<string>` inserts; now an incremental builder memo (entries
+  classified once, seen-keyed by map-node key address; funcdef side
+  walked once per module since its forest-body subset is restore-stamped).
+  A first-cut size-stamp memo was profile-proven perf-inert (struct_map
+  grows between calls) before the rework landed. (2)
+  `findVariableThisScope`'s rename-stale rebuild re-emplaced the whole
+  ~7k-entry scope index (the surviving half of the task-#14 flood); now
+  an exact affected-key repair. Site counts: tsubst set-inserts
+  172,800 → 7,637; index emplaces 204,655 → 8,124. Clears the perf
+  ladder's ≤0.665 recovery target. Gates: fulltest 681/0/0/16, bind
+  18/18, packed suite 681/0, zero warnings.
 - **perf(forest): RUNG 3 CLOSED — unified referenced-surface filter**
   (@154becbf). The CIR builder now emits only the REFERENCED surface, on
   live and bound compiles identically (g++'s COMDAT/ODR-use shape): one
