@@ -367,3 +367,14 @@ wall. Next-cut candidates: (a) pool-sid → session-sid mapping at load
 is re-deriving), (b) sid-keyed hot name sets (uid-is-the-spine), (c)
 rung 4 instantiation (MTI 217/187). (a)+(b) attack the profiled ~800M;
 (c) the post-window body work.
+
+**Recon correction (same day, raw callgraph):** the ~300M intern hashing
+is QUERY-TIME, not load-time — the callers are findVariableThisScope
+(every scope lookup hashes its query), the intern_keyed_map find/erase
+paths, and TokenIdent construction. Candidate (a) is deprioritized; the
+real lever is (b) properly scoped: SID-KEYED lookups end-to-end (tokens
+already carry spelling_id from the str-drop track — re-hashing a string
+built from a token is re-deriving). Same shape for the set<string>
+Rb-tree cluster. That slice touches hot parser paths → scope it fresh
+(which chokepoints, which callers already hold a token/sid) before
+editing.
