@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **perf(cir): RefFuncSet — journaled mark/rollback replaces referenced_funcs
+  full-set copies** (@c6776767). The speculative translation paths (tsubst
+  pattern probes, deferred-construction re-lowers, the covered-bail undo)
+  saved/restored the ODR-used symbol set by full tree copy, thousands of
+  times per module. referenced_funcs is membership-only (never iterated,
+  never erased — verified), so it became an unordered_set with an
+  insert-journal: mark()/rollback() undo exactly the first-time inserts since
+  the mark, with an RAII Scope whose dtor commits (matching the old
+  exception-unwind behavior) and depth asserts against mis-nesting. Bound
+  testsubscript whole-compile work −21% (-O0 callgrind 4.390B → 3.465B Ir);
+  the -O2 wall is neutral (0.570 in the 0.561–0.572 noise band) — the -O2
+  constraint is the instantiate bucket, not container churn. Gates: fulltest
+  681/0/0/16, all forest gates, packed suite 681/0, zero new warnings.
 - **perf(compile): despaced-canonical index — resolve_arg_spelling_datadef's
   per-query struct_map scan removed** (@0f97958b, rung-4 first target).
   Template-id spellings resolve via `StructRegistry::find_despaced`, an

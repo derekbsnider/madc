@@ -480,3 +480,24 @@ Wall (bench @0f97958b): **bound 0.572 → 0.561 (−2%), live 2.182 →
 does NOT live here — as the phase table said, it lives in the
 instantiate bucket + cir-build (intern hashes, map<string> compares,
 tsubst copy breadth). Those are the next rung-4 targets.
+
+**✅ SECOND TARGET CLOSED (2026-07-12, merged @1ee5a352): RefFuncSet.**
+Post-despace attribution found the map<string> "compare cluster" was
+dominated by `referenced_funcs` FULL-SET COPIES — the 7 speculative
+translation sites (tsubst pattern probes, deferred-construction
+re-lowers, the covered-bail undo) each cloned the whole ODR-used set
+at save and again at restore. Membership-only proven (insert/count;
+never iterated/erased) → unordered_set + insert-journal mark/rollback
+(O(delta) undo; RAII Scope dtor COMMITS to match old unwind
+semantics; depth asserts). **Whole bound-compile work −21% (-O0
+callgrind 4.390B → 3.465B Ir, both runs complete).** -O2 wall
+NEUTRAL: bench @c6776767 bound 0.570, live 2.205 — the last three
+rows (0.572/0.561/0.570) are one noise band. VERDICT for the ladder:
+container churn and micro-residues are exhausted as -O2 levers; the
+0.56 plateau is owned by the instantiate bucket (139
+instantiate_fn_template_binding calls ≈ 3.5M Ir each, from
+try_instantiate_namespace_fn_template) and func_def translation (263
+calls / 488M), plus parse_deferred_lazy_body (187 / 264M) and
+node_for (31 / 120M). The next rung-4 slice must reduce
+instantiation COUNT or per-instantiation COST — a design sitting, not
+a mechanical one.
