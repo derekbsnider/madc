@@ -16751,36 +16751,49 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		// -> T::~T) recognizes the dtor as emittable instead of falling back.
 		// Lockstep: only symbols Pass 1.6 will actually emit are admitted here, so
 		// no dangling reference can result.
-		std::set<std::string> synth_dtor_syms;
-		for (auto &kv : m_prog->struct_map) {
-			DataDefCLASS *cdd = as_user_class(kv.second);
-			if (class_gets_synth_dtor(cdd))
-				synth_dtor_syms.insert(class_dtor_symbol(cdd));
-		}
-		// v25 equivalence: a restored FOREST body (has_forest_body) is the
-		// LOADED form of a deferred lazy body — translate_module's
-		// forest_lazy / funcdef_map fixpoint stages materialize + emit it
-		// on reference, so it is a definition source exactly like the
-		// deferred arm. Collected with the SAME predicates those stages
-		// use, so only symbols that will actually emit are admitted.
-		std::set<std::string> forest_body_syms;
-		if (m_prog->bind_forest && !m_prog->forest_chain.empty()) {
+		//
+		// Both sets are MEMOIZED on the builder, size-stamped: rebuilding them
+		// from whole struct_map/funcdef_map scans on every call was ~884
+		// discarded set<string> inserts × 170 calls (500M Ir) per bound
+		// testsubscript run. A size stamp is exact here — during translation
+		// the maps only gain COMPLETE entries (see the memo's header comment).
+		if (m_emit_sets_struct_stamp != m_prog->struct_map.size()
+		    || m_emit_sets_funcdef_stamp != m_prog->funcdef_map.size()) {
+			m_synth_dtor_syms_memo.clear();
 			for (auto &kv : m_prog->struct_map) {
-				DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(kv.second);
-				if (!cdd)
-					continue;
-				for (Variable *mv : cdd->methods) {
-					FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type)
-							 : NULL;
-					if (fd && fd->has_forest_body && !mv->name.empty())
-						forest_body_syms.insert(mv->name);
-				}
+				DataDefCLASS *cdd = as_user_class(kv.second);
+				if (class_gets_synth_dtor(cdd))
+					m_synth_dtor_syms_memo.insert(class_dtor_symbol(cdd));
 			}
-			for (auto &kv : m_prog->funcdef_map)
-				if (kv.second && kv.second->has_forest_body
-				    && !kv.first.empty())
-					forest_body_syms.insert(kv.first);
+			// v25 equivalence: a restored FOREST body (has_forest_body) is the
+			// LOADED form of a deferred lazy body — translate_module's
+			// forest_lazy / funcdef_map fixpoint stages materialize + emit it
+			// on reference, so it is a definition source exactly like the
+			// deferred arm. Collected with the SAME predicates those stages
+			// use, so only symbols that will actually emit are admitted.
+			m_forest_body_syms_memo.clear();
+			if (m_prog->bind_forest && !m_prog->forest_chain.empty()) {
+				for (auto &kv : m_prog->struct_map) {
+					DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(kv.second);
+					if (!cdd)
+						continue;
+					for (Variable *mv : cdd->methods) {
+						FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type)
+								 : NULL;
+						if (fd && fd->has_forest_body && !mv->name.empty())
+							m_forest_body_syms_memo.insert(mv->name);
+					}
+				}
+				for (auto &kv : m_prog->funcdef_map)
+					if (kv.second && kv.second->has_forest_body
+					    && !kv.first.empty())
+						m_forest_body_syms_memo.insert(kv.first);
+			}
+			m_emit_sets_struct_stamp = m_prog->struct_map.size();
+			m_emit_sets_funcdef_stamp = m_prog->funcdef_map.size();
 		}
+		const std::set<std::string> &synth_dtor_syms = m_synth_dtor_syms_memo;
+		const std::set<std::string> &forest_body_syms = m_forest_body_syms_memo;
 		const char *emit_probe = getenv("MADC_EMITTABLE_PROBE");	// TEMP diagnostic
 		auto emittable = [&](const std::string &s) -> bool {
 			int why = 0;
@@ -18455,6 +18468,10 @@ node_t CirBuilder::translate_module(Program *prog)
 	m_cond_nodes.clear();
 	m_ctor_groups.clear();
 	m_global_decl_node.clear();
+	// Emittable-set memo stamps: invalidate per module so a builder reused
+	// across Programs (same map SIZES, different contents) never false-hits.
+	m_emit_sets_struct_stamp = (size_t)-1;
+	m_emit_sets_funcdef_stamp = (size_t)-1;
 
 	node_t module = simple(N_MODULE);
 	node_t top_list = list();

@@ -579,6 +579,16 @@ class CirBuilder {
 	// to translate_block; capability-gated per body.
 	node_t tsubst_method_body(class TokenFunc *tf, class FuncDef *fd,
 				  const char **reason_out = NULL);
+	// Memo of the emittable-symbol sets tsubst_method_body's callee gate
+	// consults (Pass-1.6 synth dtor symbols; forest-loaded body symbols).
+	// Rebuilt only when struct_map/funcdef_map GROW: during translate_module
+	// the maps gain COMPLETE entries only (the one builder-side insert
+	// finalizes layout before registering) and has_forest_body is stamped at
+	// restore (pre-translate), so a size stamp captures every verdict change.
+	std::set<std::string> m_synth_dtor_syms_memo;
+	std::set<std::string> m_forest_body_syms_memo;
+	size_t m_emit_sets_struct_stamp = (size_t)-1;
+	size_t m_emit_sets_funcdef_stamp = (size_t)-1;
 
 public:
 	CirBuilder(c2m_ctx_t c2m_ctx);

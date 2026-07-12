@@ -26,6 +26,7 @@
 #include <map>
 #include <list>
 #include <set>
+#include <unordered_set>
 #include <vector>
 #include <functional>
 #include <queue>
@@ -10979,25 +10980,46 @@ Variable *TokenCpnd::findVariableThisScope(const madc::dis::intern_table &sp, ui
     // zeroes the cached name_sid). The index entry then goes stale: a lookup of
     // the OLD name would falsely hit the renamed var, or a lookup of the NEW
     // name would falsely miss. Detect staleness — a hit whose CURRENT name no
-    // longer matches — and rebuild the index, then re-find. Because rename() is
-    // the only post-registration name writer and it zeroes name_sid, a non-zero
-    // cached sid is still current: the rebuild re-interns ONLY zeroed entries
-    // (the rename that triggered it) instead of re-hashing every name in the
-    // scope (the force-refresh was 196k long-name interns per bound
-    // testsubscript run — the task-#14 flood). Rebuild fires only on a stale
-    // hit (rare), so the common path stays O(1) and the result always matches
-    // a fresh scan.
+    // longer matches — and REPAIR the index, then re-find. Because rename() is
+    // the only post-registration name writer and it zeroes name_sid, a stale
+    // entry is exactly one whose key no longer equals its var's name_sid; only
+    // those keys (plus the renamed vars' NEW sids, whose first-wins owner may
+    // change) can differ from a full rebuild. Repairing just that affected key
+    // set replaces the old clear()+re-emplace of the WHOLE scope — 204k
+    // unordered_map emplaces (253M Ir) per bound testsubscript run for 28
+    // repairs, the surviving half of the task-#14 flood (the re-intern half
+    // was fixed there). Repair fires only on a stale hit (rare), so the common
+    // path stays O(1) and the result always matches a fresh scan.
     if ( res && res->name != id )
     {
-	var_index.clear();
-	var_indexed = 0;
-	for ( ; var_indexed < variables.size(); ++var_indexed )
-	    if ( Variable *v = variables[var_indexed] )
+	std::unordered_set<uint32_t> affected;
+	// 1. Drop entries whose var no longer carries the key (renamed away).
+	for ( std::unordered_map<uint32_t, Variable *>::iterator si = var_index.begin();
+	      si != var_index.end(); )
+	    if ( !si->second || si->second->name_sid != si->first )
 	    {
-		if ( !v->name_sid )	// rename() zeroed it — re-intern just this one
-		    v->name_sid = sp.intern(v->name);
-		var_index.emplace(v->name_sid, v);
+		affected.insert(si->first);
+		si = var_index.erase(si);
 	    }
+	    else
+		++si;
+	// 2. Re-intern the renamed vars (name_sid zeroed) and drop any existing
+	//    entry at their NEW sid: an earlier-appended renamed var must be able
+	//    to win that key from a later var, exactly as a full rebuild would.
+	for ( size_t vi = 0; vi < variables.size(); ++vi )
+	    if ( Variable *v = variables[vi] )
+		if ( !v->name_sid )
+		{
+		    v->name_sid = sp.intern(v->name);
+		    affected.insert(v->name_sid);
+		    var_index.erase(v->name_sid);
+		}
+	// 3. Refill ONLY the affected keys, first-wins in append order — the
+	//    same winner a full rebuild's front-to-back emplace would pick.
+	for ( size_t vi = 0; vi < variables.size(); ++vi )
+	    if ( Variable *v = variables[vi] )
+		if ( affected.count(v->name_sid) )
+		    var_index.emplace(v->name_sid, v);
 	it = var_index.find(qsid);
 	res = (it != var_index.end()) ? it->second : NULL;
     }
