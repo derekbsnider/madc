@@ -12416,6 +12416,50 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // into datatype_map + user_typedef_names + a dkTypedef TopDecl (so the alias
     // node reaches c2mir, exactly as record_typedef does on the live path,
     // parser.cpp ~22689).
+
+    // Item 5 (lazy defrost) + rung 2a: build the TU's demand verdicts BEFORE
+    // materialization. The B4a decl index is the demand key: a name DECLARED
+    // by some unit (source-level export; qualified + bare forms are both
+    // indexed) is kept iff one of its declaring units is in forest_chain_set —
+    // exactly the surface a live parse of the TU's includes would declare.
+    // A name in NO unit's index is a DERIVED entity (instantiation product,
+    // __oN overload symbol, madc-internal — the forest_index_oracle allowlist
+    // classes) and is kept unconditionally: its creating machinery only runs
+    // when its pattern/owner is reachable. An EMPTY closure (a direct restore
+    // with no bound includes — unit tests, non-include consumers) keeps the
+    // whole-container semantics. Registration (below) and materialization
+    // (the CirMaterializeFilter installed here) consume the SAME map — one
+    // predicate, two consumers (rung 2a moved the skip from "register fewer"
+    // to "never build the DataDefs at all").
+    std::unordered_map<std::string, bool> forest_declared_bound;
+    const bool forest_closure_filter = !forest_chain_set.empty();
+    if ( forest_closure_filter )
+    {
+	std::vector<cir_forest_decl_entry> ents;
+	for ( uint32_t u = 0; u < forest.unit_count(); ++u )
+	{
+	    if ( !forest.unit_decl_index(u, ents) )
+		continue;
+	    bool bound = forest_chain_set.count(u) != 0;
+	    for ( size_t e = 0; e < ents.size(); ++e )
+	    {
+		const char *nm = forest.pool_str(ents[e].name_id);
+		if ( !nm || !*nm )
+		    continue;
+		std::unordered_map<std::string, bool>::iterator di =
+		    forest_declared_bound.find(nm);
+		if ( di == forest_declared_bound.end() )
+		    forest_declared_bound[nm] = bound;
+		else if ( bound )
+		    di->second = true;
+	    }
+	}
+	CirMaterializeFilter mf;
+	mf.active = true;
+	mf.declared_bound = forest_declared_bound;
+	forest.set_materialize_filter(std::move(mf));
+    }
+
     const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
 
     // v25: advance the anonymous-tag gensym PAST every restored `__anon_N` —
@@ -12464,53 +12508,20 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    last_tag[k] = i;
     }
 
-    // Item 5 (lazy defrost): registration filters to the TU's bound-include
-    // closure. The B4a decl index is the demand key: a name DECLARED by some
-    // unit (source-level export; qualified + bare forms are both indexed)
-    // registers only when one of its declaring units is in forest_chain_set —
-    // exactly the surface a live parse of the TU's includes would declare.
-    // A name in NO unit's index is a DERIVED entity (instantiation product,
-    // __oN overload symbol, madc-internal — the forest_index_oracle allowlist
-    // classes) and registers unconditionally: its creating machinery only
-    // runs when its pattern/owner is reachable. An EMPTY closure (a direct
-    // restore with no bound includes — unit tests, non-include consumers)
-    // keeps the whole-container semantics.
-    std::map<std::string, bool> forest_declared_bound; // name -> a declaring unit is bound
-    const bool forest_closure_filter = !forest_chain_set.empty();
-    if ( forest_closure_filter )
-    {
-	std::vector<cir_forest_decl_entry> ents;
-	for ( uint32_t u = 0; u < forest.unit_count(); ++u )
-	{
-	    if ( !forest.unit_decl_index(u, ents) )
-		continue;
-	    bool bound = forest_chain_set.count(u) != 0;
-	    for ( size_t e = 0; e < ents.size(); ++e )
-	    {
-		const char *nm = forest.pool_str(ents[e].name_id);
-		if ( !nm || !*nm )
-		    continue;
-		std::map<std::string, bool>::iterator di =
-		    forest_declared_bound.find(nm);
-		if ( di == forest_declared_bound.end() )
-		    forest_declared_bound[nm] = bound;
-		else if ( bound )
-		    di->second = true;
-	    }
-	}
-    }
+    // Registration's verdict lambdas read the map built above (one predicate,
+    // two consumers — see the rung-2a block before materialize_from_arena).
     auto forest_name_permitted = [&](const std::string &nm,
 				     const char *ns) -> bool {
 	if ( !forest_closure_filter )
 	    return true;
 	if ( ns && *ns )
 	{
-	    std::map<std::string, bool>::const_iterator qi =
+	    std::unordered_map<std::string, bool>::const_iterator qi =
 		forest_declared_bound.find(std::string(ns) + "::" + nm);
 	    if ( qi != forest_declared_bound.end() )
 		return qi->second;
 	}
-	std::map<std::string, bool>::const_iterator bi =
+	std::unordered_map<std::string, bool>::const_iterator bi =
 	    forest_declared_bound.find(nm);
 	if ( bi != forest_declared_bound.end() )
 	    return bi->second;
@@ -12534,7 +12545,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	std::string head = cs.substr(0, lt);
 	while ( !head.empty() && head.back() == ' ' )
 	    head.pop_back();
-	std::map<std::string, bool>::const_iterator hi =
+	std::unordered_map<std::string, bool>::const_iterator hi =
 	    forest_declared_bound.find(head);
 	if ( hi != forest_declared_bound.end() )
 	    return hi->second;
