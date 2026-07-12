@@ -1132,8 +1132,8 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 	r.kind     = cdd ? madc::dis::DK_CLASS
 			 : (sdd->union_layout ? madc::dis::DK_UNION : madc::dis::DK_STRUCT);
 	r.name_id  = forest_arena.strings.intern(sdd->name.c_str());
-	r.canon_id = sdd->canonical_cpp_spelling.empty()
-		   ? 0u : forest_arena.strings.intern(sdd->canonical_cpp_spelling.c_str());
+	r.canon_id = sdd->canonical_cpp_spelling().empty()
+		   ? 0u : forest_arena.strings.intern(sdd->canonical_cpp_spelling().c_str());
 	r.size     = (uint32_t)sdd->size;
 	r.datatype = (uint32_t)sdd->rawtype();
 	r.pack               = (uint32_t)sdd->pack;
@@ -2260,7 +2260,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 			DataDef *tag_dd = underlying;
 			if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(underlying))
 				tag_dd = ca->element_type;
-			datadef_map_iter smi = prog->struct_map.find(*it);
+			datadef_map_citer smi = prog->struct_map.find(*it);
 			if (smi != prog->struct_map.end() && tag_dd
 			    && smi->second == tag_dd)
 				p.flags |= (uint32_t)madc::dis::DF_TYPEDEF_TAG_ALIAS;
@@ -2705,7 +2705,7 @@ static void cir_forest_arena_refresh(Program *prog,
 	// as constant Variables in the tag's pseudo-namespace
 	// (namespace_map["ns::Tag"] — TokenENUM::parse). Record the type as
 	// DK_ENUM at its project slot; the enumerators ride a constvalrec run;
-	// the pseudo-namespace key derives from canonical_cpp_spelling exactly
+	// the pseudo-namespace key derives from canonical_cpp_spelling() exactly
 	// as the live registration built it.
 	prog->datatype_map.for_each([&](const char *key, TokenDataType *&tdt) -> bool {
 		if (!tdt)
@@ -2725,14 +2725,14 @@ static void cir_forest_arena_refresh(Program *prog,
 		if (prog->forest_is_tu_root_file(tdt->file))
 			r.flags |= madc::dis::DF_TU_ROOT_ORIGIN;
 		r.name_id = prog->forest_arena.strings.intern(edd->name.c_str());
-		r.canon_id = edd->canonical_cpp_spelling.empty() ? 0u
+		r.canon_id = edd->canonical_cpp_spelling().empty() ? 0u
 			   : prog->forest_arena.strings.intern(
-				edd->canonical_cpp_spelling.c_str());
+				edd->canonical_cpp_spelling().c_str());
 		r.size    = (uint32_t)edd->size;
 		// Scoped enumerators: the pseudo-namespace key is the canonical
 		// spelling when namespaced (std::__cmp_cat::_Ord), else the tag.
-		const std::string &pk = edd->canonical_cpp_spelling.empty()
-				      ? edd->name : edd->canonical_cpp_spelling;
+		const std::string &pk = edd->canonical_cpp_spelling().empty()
+				      ? edd->name : edd->canonical_cpp_spelling();
 		std::map<std::string, variable_map_t>::iterator ni =
 			prog->namespace_map.find(pk);
 		std::vector<madc::dis::constvalrec> evs;

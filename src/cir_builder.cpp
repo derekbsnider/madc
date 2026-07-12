@@ -759,7 +759,7 @@ static bool clone_local_aggregate_members(
 	if (src->has_anon_aggregate || src->has_runtime_size())
 		return false;
 
-	dst->canonical_cpp_spelling = dst->name;
+	dst->set_canonical_spelling(dst->name);
 	dst->runtime_size_expr = NULL;
 	dst->pack = src->pack;
 	dst->tag_explicit_align = src->tag_explicit_align;
@@ -867,7 +867,7 @@ static DataDefSTRUCT *materialize_local_aggregate_datadef(
 		clone->finalize();
 	}
 
-	prog->struct_map[clone->name] = clone;
+	prog->struct_map.set(clone->name, clone);
 	prog->datatype_map[clone->name] =
 		new TokenDataType(clone->name.c_str(), *clone);
 	prog->tsubst_local_aggregate_map[key] = clone;
@@ -963,7 +963,7 @@ static bool tsubst_decompose_elem_tokens(DataDef *elem,
 		return false;
 	if (is_const)
 		run.push_back(new TokenCONST());
-	const std::string &cs = core->canonical_cpp_spelling;
+	const std::string &cs = core->canonical_cpp_spelling();
 	run.push_back(new TokenDataType(
 		(cs.empty() ? core->name : cs).c_str(), *core));
 	for (int i = 0; i < ptr_depth; ++i)
@@ -3830,10 +3830,10 @@ static const DataDefENUM *as_enum_type(const DataDef *dd)
 static bool same_enum_type(const DataDefENUM *a, const DataDefENUM *b)
 {
 	if (!a || !b) return false;
-	const std::string &an = a->canonical_cpp_spelling.empty()
-			      ? a->enum_name : a->canonical_cpp_spelling;
-	const std::string &bn = b->canonical_cpp_spelling.empty()
-			      ? b->enum_name : b->canonical_cpp_spelling;
+	const std::string &an = a->canonical_cpp_spelling().empty()
+			      ? a->enum_name : a->canonical_cpp_spelling();
+	const std::string &bn = b->canonical_cpp_spelling().empty()
+			      ? b->enum_name : b->canonical_cpp_spelling();
 	return an == bn;
 }
 
@@ -6923,14 +6923,14 @@ static DataDefCLASS *class_behind(DataDef *dd); // defined below; used by the th
 std::string CirBuilder::class_vtable_symbol(DataDefCLASS *cdd)
 {
 	if (cdd && cdd->is_externally_defined())
-		return itanium_vtable_sym_cpp(cdd->canonical_cpp_spelling);
+		return itanium_vtable_sym_cpp(cdd->canonical_cpp_spelling());
 	return (cdd ? cdd->name : std::string()) + "__vtable";
 }
 
 std::string CirBuilder::class_typeinfo_symbol(DataDefCLASS *cdd)
 {
 	if (cdd && cdd->is_externally_defined())
-		return itanium_typeinfo_sym_cpp(cdd->canonical_cpp_spelling);
+		return itanium_typeinfo_sym_cpp(cdd->canonical_cpp_spelling());
 	return itanium_typeinfo_sym(cdd ? cdd->name : std::string());
 }
 
@@ -8272,8 +8272,8 @@ static bool ctor_initializer_names_class(DataDefCLASS *owner,
 	std::string short_name = last_scope_part(name);
 	if (name == target->name || short_name == target->name)
 		return true;
-	if (!target->canonical_cpp_spelling.empty()) {
-		std::string tshort = last_scope_part(target->canonical_cpp_spelling);
+	if (!target->canonical_cpp_spelling().empty()) {
+		std::string tshort = last_scope_part(target->canonical_cpp_spelling());
 		size_t lt = tshort.find('<');
 		if (lt != std::string::npos)
 			tshort = tshort.substr(0, lt);
@@ -10104,8 +10104,8 @@ std::string datadef_cpp_spelling_w2(DataDef *dd)
 {
 	if (!dd) return "";
 	if (DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd))
-		return c->canonical_cpp_spelling.empty() ? c->name
-						         : c->canonical_cpp_spelling;
+		return c->canonical_cpp_spelling().empty() ? c->name
+						         : c->canonical_cpp_spelling();
 	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd))
 		return datadef_cpp_spelling_w2(p->base_type) + "*";
 	return dd->name;
@@ -10174,8 +10174,8 @@ static void collect_self_and_base_spellings(DataDefCLASS *cls, size_t base_off,
 		std::vector<BaseCand> &out)
 {
 	if (!cls) return;
-	std::string sp = cls->canonical_cpp_spelling.empty() ? cls->name
-		       : cls->canonical_cpp_spelling;
+	std::string sp = cls->canonical_cpp_spelling().empty() ? cls->name
+		       : cls->canonical_cpp_spelling();
 	for (const auto &e : out) if (e.spelling == sp) return;   // dedup
 	out.push_back(BaseCand{sp, base_off, cls});
 	for (const BaseSpec &b : cls->bases)
@@ -10354,7 +10354,7 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 		return NULL;
 	DataDefCLASS *owner = !callee->parameters.empty()
 			    ? class_behind(callee->parameters[0]) : NULL;
-	if (!owner || owner->canonical_cpp_spelling.empty())
+	if (!owner || owner->canonical_cpp_spelling().empty())
 		return NULL;
 	if (!owner->is_externally_defined() && !owner->is_extern_template_instantiated)
 		return NULL;
@@ -10404,7 +10404,7 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 	const std::string &mname = callee->method_display_name.empty()
 				 ? tm->var.name : callee->method_display_name;
 	std::string sym = itanium_mangle_member_template_sub(
-		owner->canonical_cpp_spelling, mname, targs, ret, params,
+		owner->canonical_cpp_spelling(), mname, targs, ret, params,
 		callee->is_const_method);
 	if (sym.empty() || sym[0] != '_')
 		return NULL;
@@ -16402,7 +16402,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			DataDefCLASS *pc = dynamic_cast<DataDefCLASS *>(pd);
 			if (!pc || pc->enclosing_class || binding.count(pd))
 				continue;
-			std::map<std::string, DataDef *>::iterator ci =
+			std::map<std::string, DataDef *>::const_iterator ci =
 				m_prog->struct_map.find(own->name + "__" + pc->name);
 			DataDefCLASS *cc = ci != m_prog->struct_map.end()
 				? dynamic_cast<DataDefCLASS *>(ci->second) : NULL;
@@ -16505,7 +16505,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 								(int)(sc != NULL),
 								sc ? (int)sc->is_dependent_placeholder : -1,
 								sc ? (int)sc->has_dependent_surface : -1,
-								sc ? sc->canonical_cpp_spelling.c_str() : "");
+								sc ? sc->canonical_cpp_spelling().c_str() : "");
 							if (!sc)
 								continue;
 							std::map<DataDef *, Program::DependentShellOrigin>::iterator
@@ -16889,9 +16889,9 @@ static std::string tsubst_profile_template_key(FuncDef *source)
 		return "<unknown-template>";
 	std::ostringstream out;
 	if (source->member_template_owner) {
-		std::string owner = source->member_template_owner->canonical_cpp_spelling.empty()
+		std::string owner = source->member_template_owner->canonical_cpp_spelling().empty()
 				  ? source->member_template_owner->name
-				  : source->member_template_owner->canonical_cpp_spelling;
+				  : source->member_template_owner->canonical_cpp_spelling();
 		size_t lt = owner.find('<');
 		if (lt != std::string::npos)
 			owner = owner.substr(0, lt);
@@ -18108,10 +18108,10 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 		// the live symbol table before suppressing a header body.
 		if (!cdd || !(cdd->is_externally_defined()
 			   || cdd->is_extern_template_instantiated)) continue;
-		if (cdd->canonical_cpp_spelling.empty()) continue;
+		if (cdd->canonical_cpp_spelling().empty()) continue;
 		if (bound_ext.count(cdd)) continue;
 		bound_ext.insert(cdd);
-		const std::string &cls = cdd->canonical_cpp_spelling;
+		const std::string &cls = cdd->canonical_cpp_spelling();
 		// CTOR binding only for TEMPLATE-INSTANTIATION classes (canonical
 		// spelling contains '<'): libstdc++ EXPLICITLY INSTANTIATES exactly
 		// the polymorphic template families (basic_ios/basic_ofstream/...,
@@ -19977,7 +19977,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		// inside the materialize_and_lower fixpoint (forest_lazy above), so
 		// their definitions land after the roots exactly as a live parse's.
 		std::map<std::string, FuncDef *> bound_methods;
-		for (std::map<std::string, DataDef *>::iterator si = prog->struct_map.begin();
+		for (std::map<std::string, DataDef *>::const_iterator si = prog->struct_map.begin();
 		     si != prog->struct_map.end(); ++si) {
 			DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(si->second);
 			if (!cdd || cdd->from_system_header)
@@ -20024,7 +20024,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		// module matches a live compile's source order byte-for-byte.
 		std::vector<node_t> forest_bodies;
 		std::vector<node_t> forest_protos;
-		for (std::map<std::string, DataDef *>::iterator si = prog->struct_map.begin();
+		for (std::map<std::string, DataDef *>::const_iterator si = prog->struct_map.begin();
 		     si != prog->struct_map.end(); ++si) {
 			DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(si->second);
 			if (!cdd)

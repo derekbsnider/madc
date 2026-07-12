@@ -97,8 +97,8 @@ static uint32_t arena_ensure(DefArena &a, DataDef *dd, std::set<DataDef *> &done
 	defrec r;
 	std::memset(&r, 0, sizeof(r));
 	r.name_id  = a.strings.intern(dd->name.c_str());
-	r.canon_id = dd->canonical_cpp_spelling.empty()
-		     ? 0u : a.strings.intern(dd->canonical_cpp_spelling.c_str());
+	r.canon_id = dd->canonical_cpp_spelling().empty()
+		     ? 0u : a.strings.intern(dd->canonical_cpp_spelling().c_str());
 	r.size     = (uint32_t)dd->size;
 	r.datatype = (uint32_t)dd->rawtype();
 
@@ -763,7 +763,7 @@ TEST_CASE("B3 arena: aggregate write-through records DK_STRUCT/DK_CLASS from a r
 	REQUIRE(prog->parse(tp));
 
 	// --- Point: a plain struct (no object member) -> DK_STRUCT with 2 int members ---
-	datadef_map_iter pit = prog->struct_map.find("Point");
+	datadef_map_citer pit = prog->struct_map.find("Point");
 	REQUIRE(pit != prog->struct_map.end());
 	DataDefSTRUCT *pt = dynamic_cast<DataDefSTRUCT *>(pit->second);
 	REQUIRE(pt != NULL);
@@ -792,7 +792,7 @@ TEST_CASE("B3 arena: aggregate write-through records DK_STRUCT/DK_CLASS from a r
 	CHECK(prog->forest_arena.has_def(mx.type_id) == false);	// a pinned primitive has NO record
 
 	// --- Base: a class -> DK_CLASS carrying member "bb" ---
-	datadef_map_iter bit = prog->struct_map.find("Base");
+	datadef_map_citer bit = prog->struct_map.find("Base");
 	REQUIRE(bit != prog->struct_map.end());
 	DataDefCLASS *base = dynamic_cast<DataDefCLASS *>(bit->second);
 	REQUIRE(base != NULL);
@@ -812,7 +812,7 @@ TEST_CASE("B3 arena: aggregate write-through records DK_STRUCT/DK_CLASS from a r
 	CHECK(base_has_bb);
 
 	// --- Widget: DK_CLASS with a base (-> Base's type-id), a member "w", and >=1 method ---
-	datadef_map_iter wit = prog->struct_map.find("Widget");
+	datadef_map_citer wit = prog->struct_map.find("Widget");
 	REQUIRE(wit != prog->struct_map.end());
 	DataDefCLASS *widget = dynamic_cast<DataDefCLASS *>(wit->second);
 	REQUIRE(widget != NULL);
@@ -879,7 +879,7 @@ TEST_CASE("B3 arena: method FuncDef records resolve to DK_FUNC (return + params)
 	REQUIRE(tp != NULL);
 	REQUIRE(prog->parse(tp));
 
-	datadef_map_iter wit = prog->struct_map.find("Widget");
+	datadef_map_citer wit = prog->struct_map.find("Widget");
 	REQUIRE(wit != prog->struct_map.end());
 	DataDefCLASS *widget = dynamic_cast<DataDefCLASS *>(wit->second);
 	REQUIRE(widget != NULL);
@@ -939,7 +939,7 @@ TEST_CASE("B3 arena: an anonymous union records its own def + the parent's anonr
 	REQUIRE(tp != NULL);
 	REQUIRE(prog->parse(tp));
 
-	datadef_map_iter sit = prog->struct_map.find("S");
+	datadef_map_citer sit = prog->struct_map.find("S");
 	REQUIRE(sit != prog->struct_map.end());
 	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(sit->second);
 	REQUIRE(sdd != NULL);
