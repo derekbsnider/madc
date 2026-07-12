@@ -429,3 +429,32 @@ walk-entry interns (C: flush_forest_pending_globals 79.7M bound-only,
 unique_overload_symbol 54.9M), PCH deserialize re-interns (D, 51M),
 keyword/datatype ctor interns (E, ~35M), then rung 4 (MTI 217/187
 derivations, the post-window body work).
+
+### Rung-4 scoping (2026-07-12, post-slice phase table + profile)
+
+`--show-stats` on the bound -O2 run (total 0.571s): **cir build 0.284s
+(50%) + instantiate 0.144s (25%, 3,882 calls)** own the wall; lex/load
+0.119s, parse 0.086s, c2mir 0.017s. The 0.399 floor's −0.17s lives in
+cir-build + instantiation — the C/D/E micro-residues (1-2% each) cannot
+reach it.
+
+**FIRST RUNG-4 TARGET (scoped, NOT started): the
+`resolve_arg_spelling_datadef` fallback scan** (parser.cpp ~17481).
+For every template-id spelling that misses `resolve_named_datadef`, it
+linearly scans ALL of struct_map calling
+`despace_spelling(strip_type_namespace(canonical_cpp_spelling))` per
+entry per query — 49,105 despace calls / ~317M Ir in the current
+window (despace self 118M + string::operator+=(char) 124M are profile
+rank #3/#4, right behind the intern hashes). Fix shape = the proven
+incremental index (struct_map never erases), BUT with a trap the
+emittable memo did not have: `canonical_cpp_spelling` is REWRITTEN in
+place when a forward-declared class completes (12+ write sites:
+parser.cpp 3404/4083/4857 fwd sites vs 24324/27477/27481 completion
+sites), so a never-reindex index serves stale spellings mid-parse.
+Correct fix = a `set_canonical_spelling()` funnel (deepest layer, all
+12 sites) bumping a generation counter; the despaced index re-tops-up
+on gen change. Wants a fresh sitting: parser-wide mechanical refactor +
+full gate cycle. Remaining rung-4 surface after it: intern hashes
+~330M (C/D/E), map<string> compare cluster ~200M, dynamic_cast 50M,
+forest arena/unit_segment walks ~140M, and the -O2 instantiate bucket
+itself (tsubst copy + deduction breadth).
