@@ -501,3 +501,58 @@ calls / 488M), plus parse_deferred_lazy_body (187 / 264M) and
 node_for (31 / 120M). The next rung-4 slice must reduce
 instantiation COUNT or per-instantiation COST — a design sitting, not
 a mechanical one.
+
+### Rung-4 third phase: instantiate bucket MEASURED (2026-07-13)
+
+Bucket map from tmp/cg_refset.out (bound testsubscript, 3.465B window,
+inclusive Ir at call sites, self-recursion edges excluded):
+
+| function | calls | incl Ir | share |
+|---|---|---|---|
+| instantiate_template_use (CLASS instantiation) | 1,316 | 2.357B | **68%** |
+| → parseKeyword from inside it | 251 | **1.81B** | **52%** |
+| instantiate_fn_template_binding | 140 | 488M | 14% |
+| try_instantiate attempts that FAIL | 206 | ~30M | ~1% |
+| parse_deferred_lazy_body (drain failures) | 163 | 256M | 7% |
+| node_for (frozen materialize) | 25 | 120M | 3% |
+
+Findings:
+1. **Fn-template attempt filtering is DEAD** — 206 failed deductions
+   cost ~30M total. The InstTimer's 3,882 calls are dominated by
+   class-template uses, not failed fn-template attempts.
+2. **The plateau is the CLASS-instantiation body re-parse.** Only 7
+   top-level specializations instantiate on the bound run (verbose
+   probe) — ALL the `vector<int32_t>` family, testsubscript's own
+   consumer-triggered chain. Its transitive base/member/traits
+   closure (_Vector_base, _Vector_impl, __normal_iterator,
+   iterator_traits, __alloc_traits, ...) re-parses ~251 class bodies
+   through parseKeyword = 1.81B Ir = 52% of the whole bound compile
+   (also why the parser consumes 296× the tokens the lexer produced).
+   The TU-root fence CORRECTLY keeps consumer specializations out of
+   the grove, so this re-derives per consumer compile.
+3. Plan (priority order):
+   - **Slice A (mechanical, independent, ~7%): drain-failure
+     burn-down** — the 163 parse_deferred_lazy_body calls trace to
+     the ~175 pack-time drain reverts (parser gaps). Classify the
+     revert reasons from a verbose pack, fix the biggest families;
+     each fix moves parse+instantiate+translate of that body from
+     every consumer compile to the one-time pack.
+   - **Slice B (THE design track, ~52% ceiling): class-template
+     instantiation on the parse-once spine** — parse the class
+     pattern ONCE into a reusable member-declaration tree;
+     instantiate a specialization by substituting over that tree
+     (types, layout, member registration) WITHOUT the parser —
+     the g++ tsubst model extended to the class/construction KIND
+     already named in parse-once.md. Method BODIES are already
+     lazy/deferred; the re-parse being killed is the class shell +
+     member declarations. Staged design sitting: enumerate what
+     TokenSTRUCT/TokenCLASS::parse actually does per instantiation,
+     then define the pattern-tree memo + substitution pass, land
+     container shapes first.
+   - **Option C (owner decision, fence-compatible): explicit
+     -instantiation prelude unit** — a pack TU that itself
+     instantiates the common set (vector<int32_t>, ...) as ITS OWN
+     TU state (C++'s extern-template model). LOADED==parsed holds
+     (it IS the prelude TU's parsed state), but it is new corpus
+     policy and only covers guessed specializations — needs the
+     owner's call.
