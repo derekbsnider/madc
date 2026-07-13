@@ -1742,7 +1742,11 @@ static std::string namespace_cpp_function_symbol(const std::string &ns_name,
 	for ( size_t i = 0; i < fd->parameters.size(); ++i )
 	{
 	    if ( fd->is_varargs && i + 1 == fd->parameters.size() )
+	    {
+		// The parsed trailing `...` (pseudo-param slot) mangles as `z`.
+		params.push_back("...");
 		break;
+	    }
 	    std::string spelling;
 	    if ( i < fd->param_cpp_spellings.size() )
 		spelling = fd->param_cpp_spellings[i];
@@ -25911,6 +25915,7 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
     std::vector<std::string> psp;
     for ( size_t i = 1; i < fd->param_cpp_spellings.size(); ++i )
 	psp.push_back(fd->param_cpp_spellings[i]);
+    fd->spell_varargs_tail(psp);
     const std::string &cls = ddc->canonical_cpp_spelling();
     switch ( kind )
     {

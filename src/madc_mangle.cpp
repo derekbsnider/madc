@@ -59,6 +59,7 @@ static std::string builtin_code(const std::string &t)
 	if (t == "double")              return "d";
 	if (t == "long double")         return "e";
 	if (t == "wchar_t")             return "w";
+	if (t == "...")                 return "z";   // trailing ellipsis
 
 	// Fixed-width aliases (Linux x86-64 mappings)
 	if (t == "int8_t")              return "a";

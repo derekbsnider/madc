@@ -282,6 +282,15 @@ public:
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
     bool is_varargs;  // function declared with ... (variadic)
+    // A parsed trailing `...` rides the param arrays as a pseudo-param with an
+    // empty captured spelling; give a mangle param list its "..." entry (the
+    // Itanium encoders spell it `z`). No-op when the tail slot isn't the
+    // parsed pseudo-param.
+    void spell_varargs_tail(std::vector<std::string> &psp) const
+    {
+	if ( is_varargs && !psp.empty() && psp.back().empty() )
+	    psp.back() = "...";
+    }
     bool is_void_params; // f(void) — explicitly zero params (vs f() which is K&R unspecified)
     bool no_instrument_function;
     // __attribute__((optimize("-fno-strict-aliasing"))): the CIR builder forwards

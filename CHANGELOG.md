@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **fix(mangle): trailing `...` now mangles as Itanium `z`** (Slice A of the
+  instantiate-bucket plan, first family). A declared variadic C++ function
+  (`std::__throw_out_of_range_fmt(const char*, ...)`) mangled without the
+  ellipsis marker (`_ZSt24__throw_out_of_range_fmtPKc` instead of the real
+  export `…PKcz`), so the symbol never resolved: live, an executed throw
+  path died on an undefined MIR import; at pack time the whole caller web
+  (`basic_string::at/_M_check`, `basic_string_view::at`, `__sv_check` — 33
+  bodies) cascaded to drops. `builtin_code("...") → "z"` (both encoders,
+  never a substitution candidate), the namespace-symbol builder pushes
+  `"..."` for the parsed trailing pseudo-param, and the three method-side
+  spelling builders share `FuncDef::spell_varargs_tail()` (no-op unless the
+  tail slot is the parsed pseudo-param, so member-template placeholders and
+  post-hoc variadic promotions are untouched). Pack drops 515 → 482 (−33,
+  exactly the family), `--run-frozen` trap stubs 175 → 174; `string::at()`
+  out-of-range now throws the real `std::out_of_range` from libstdc++,
+  byte-identical live vs packed.
+
 - **perf(cir): RefFuncSet — journaled mark/rollback replaces referenced_funcs
   full-set copies** (@c6776767). The speculative translation paths (tsubst
   pattern probes, deferred-construction re-lowers, the covered-bail undo)

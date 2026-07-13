@@ -30,6 +30,58 @@
 
 ## Slice A — drain-failure burn-down (mechanical, ~7% + pack quality)
 
+### MEASURED 2026-07-13 (steps 1–2 executed; supersedes the expectations below)
+
+- **Step-1 cross-reference REFUTED the priority hypothesis.** Bound
+  testsubscript's 187 lazy-parses (`MADC_MTI_PROBE=_` capture) intersect the
+  pack-drop set in exactly ONE symbol: `basic_string<char>` ctor `__o9`
+  (73 `_Rb_tree*` + 26 `vector` + 14 `_Vector_base` + 10 `_Node_handle` +
+  15 `allocator` derives are bodies of CONSUMER-instantiated specializations
+  — `map<string,int32_t>` internals — which the TU-root fence forbids
+  packing; that cost belongs to Slice B / Option C). Same pattern across
+  teststringref/testmap/testvector/testforeach2 (1 hit each — the same
+  ctor `__o9`); testfstream adds `std::stoi` (body-span carried, 1 derive).
+  **Slice A's bound-wall value is ~0; its real value is pack completeness
+  + the correctness bugs the census exposed.**
+- **The 175 trap stubs UNDERCOUNT drops** — a stub only appears for a
+  referenced-but-undefined import. The authoritative list is the freeze
+  stderr (`pack drop:` lines): **515 drops**, classified:
+  - ~165 local-class web: `_M_construct`'s function-local `_Guard` (GCC 13)
+    methods are categorically un-carriable (66 direct "local-class method"
+    drops; `__patN__` husk names are process-specific — pack minted
+    `__pat129__`, a consumer mints `__pat19__`), cascading through
+    `_M_construct__mti` to ctor `__o9` and ~85 string-flavor bodies.
+    BY DESIGN (consumer re-derives with its own local classes) — reversing
+    it means carrying function-local classes in the arena (new record
+    family): owner-decision territory, NOT a parser gap.
+  - 33 varargs-mangling victims: `_ZSt24__throw_out_of_range_fmtPKc` lacks
+    the Itanium `z` — the whole `at`/`_M_check`/`__sv_check` throw-path web.
+    **FIXED in this slice (family 3a): drops 515 → 482, stubs 175 → 174.**
+  - ~35 typedef-leak mangles: `St9streamoff`/`St10streamsize` where the real
+    exports have `l` (Itanium mangles desugared types only);
+    `R14__ostream_type`/`R14__istream_type` in member-template return types
+    where the real exports have `RSo`/`RSi` (`_M_insert`/`_M_extract`/
+    `__basic_file`/`__ostream_insert`/`__num_base` clusters). Family 3b.
+  - ~9 dropped-param mangles: `_S_create_c_locale` lost its reference param,
+    `_List_node_base::swap` its second param, `_S_format_float` its first.
+  - ~26 harvest misclassification: calls through fn-pointer PARAMS
+    (`__pf`, `__convf`) and `alloca` recorded as named callees by
+    `cir_collect_call_callees` → un-homed → caller drops. Fix = filter
+    callee names declared within the def (careful: block-scope function
+    declarations must still count).
+  - ~91 pack-time drain parse failures (madc parser messages, not c2mir):
+    `__cerb` undeclared ×86 (istream/ostream sentry bodies), mixed-identity
+    `istreambuf_iterator<int32_t,char_traits<wchar_t>>` ×44 (wchar_t→int32_t
+    canonicalization split), `iostate`/`openmode`/`result` member-typedef
+    lookups ×16, chained arrow ×8, `Expected type in catch parameter` ×5
+    (also fails LIVE: `catch (const out_of_range &e)` — reproducible with
+    tmp/_oor.mad), typedef-typename ×4.
+  - ~16 stoa/to_xstring instantiation husks (hash-suffixed pack-context
+    names) — consumers re-derive via body-span carry (stoi = 1 derive).
+- Cross-runtime EH note (pre-existing, unchanged by 3a): a NATIVE-thrown
+  `std::out_of_range` terminates instead of entering madc's setjmp/longjmp
+  catch dispatch — live and packed behave identically; separate track.
+
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):
 basic_string 45 · reverse_iterator 18 · locale machinery

@@ -18130,6 +18130,7 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 			std::vector<std::string> psp;
 			for (size_t i = 1; i < fd->param_cpp_spellings.size(); ++i)
 				psp.push_back(fd->param_cpp_spellings[i]);
+			fd->spell_varargs_tail(psp);
 			std::string sym = itanium_mangle_ctor_sub(cls, psp);
 			if (external_symbol_available(sym))
 				fd->emit_symbol = sym;
@@ -18169,6 +18170,7 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 			std::vector<std::string> psp;
 			for (size_t i = 1; i < fd->param_cpp_spellings.size(); ++i)
 				psp.push_back(fd->param_cpp_spellings[i]);
+			fd->spell_varargs_tail(psp);
 			std::string sym;
 			if (dn.compare(0, 8, "operator") == 0)
 				sym = itanium_mangle_operator_sub(

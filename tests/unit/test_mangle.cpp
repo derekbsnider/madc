@@ -74,6 +74,14 @@ TEST_SUITE("Itanium type encoding") {
 		CHECK(itanium_encode_params({"int", "double"}) == "id");
 		CHECK(itanium_encode_params({"int", "const char*"}) == "iPKc");
 	}
+
+	TEST_CASE("Trailing ellipsis encodes as z") {
+		CHECK(itanium_encode_params({"const char*", "..."}) == "PKcz");
+		// g++ oracle: std::__throw_out_of_range_fmt(char const*, ...)
+		CHECK(itanium_mangle_nested_sub({"std"}, "__throw_out_of_range_fmt",
+		                                {"const char*", "..."})
+		      == "_ZSt24__throw_out_of_range_fmtPKcz");
+	}
 }
 
 TEST_SUITE("Itanium function mangling") {
