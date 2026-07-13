@@ -365,6 +365,33 @@
   verbose freeze. Then __alloc_traits _S_select_on_copy ×3, filebuf
   family, seekp ×4.
 
+- **FAMILY D RUNG 11 (2026-07-13, commit e56ae888): ref-return of a
+  CLASS assignment + ranked-callee operand typing.** TWO stacked roots
+  under `assign(basic_string&&) { return *this = std::move(__str); }`
+  (×9): (1) translate_return wrapped `&` around the non-lvalue
+  bit-copy/memberwise assignment — new divert (rung 7's class twin):
+  assignment as statement + return lhs ADDRESS ([expr.ass]); user
+  operator= keeps its working flow. (2) rhs `std::move(__str)` typed
+  `allocator<C>&` — the parse binds an ARBITRARY overload-set member
+  (last-registered move mti, minted by operator=(&&)'s __alloc_on_move
+  drained just before); operand_object_class now types CALL operands by
+  the RANKED callee (call_target_funcdef), the operand_value_datadef /
+  ref_returning_call_type rule. METHOD NOTE: pack_gate_note now prints
+  the defective item's SYMBOL — this killed a wrong proximity
+  attribution (the 9-error blocks were _M_construct mti items, NOT
+  assign; assign items were 1-error). FNTPL compile-flag probe
+  (-DMADC_DEBUG_FNTPL=1) proved deduce+rank correct at every logged
+  site — the poison was the silent parse bind. Test
+  testrefclassassign.mad (trivial/non-trivial/user-op=, ref identity ==
+  g++). Ladder 480 → **471** (check 50 → 41; assign__o2 ×9 ELIMINATED,
+  zero new); release 518 → **509**. Gates 694/0/0/16 live+packed.
+  NEXT (rung 12 recon): insert__o3 ×9 — "incompatible return-expr type
+  in function returning a struct/union" = struct-by-value return of
+  `return iterator(this->_M_data() + __pos);` (ctor-expression return);
+  _M_construct mti ×9 (9 errors each — iterator-substitution typing);
+  seekp ×6 (ostream.tcc:283 fpos comparison); _S_select_on_copy ×3;
+  filebuf ×2ea.
+
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):
 basic_string 45 · reverse_iterator 18 · locale machinery
