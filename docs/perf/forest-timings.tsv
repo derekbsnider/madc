@@ -19,3 +19,4 @@ date	commit	live_s	bound_s	live_derives	bound_derives	load1	note
 2026-07-12	4da065d7	2.182	0.572	217	187	1.20	lookup-churn: tsubst emit-set memo + var_index surgical repair
 2026-07-12	0f97958b	2.151	0.561	217	187	1.57	rung4: despaced-canonical index (funnel + StructRegistry)
 2026-07-12	c6776767	2.205	0.570	217	187	1.42	refset: journaled mark/rollback kills referenced_funcs set copies
+2026-07-13	2c6ccf1e	2.178	0.560	217	187	1.58	sliceA: mangle fixes 3a-3c (drops 515->472)
