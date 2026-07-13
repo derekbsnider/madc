@@ -282,6 +282,35 @@ public:
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
     bool is_varargs;  // function declared with ... (variadic)
+    // A parsed trailing `...` rides the param arrays as a pseudo-param with an
+    // empty captured spelling; give a mangle param list its "..." entry (the
+    // Itanium encoders spell it `z`). No-op when the tail slot isn't the
+    // parsed pseudo-param.
+    void spell_varargs_tail(std::vector<std::string> &psp) const
+    {
+	if ( is_varargs && !psp.empty() && psp.back().empty() )
+	    psp.back() = "...";
+    }
+    // Mangle-ready spelling of parameter i: the captured source spelling,
+    // except a BARE scalar-typedef core (std::streamoff, std::streamsize)
+    // desugars to its builtin C spelling via DataDef::mangle_scalar_spelling
+    // — Itanium encodes canonical types, never typedef names. Decorated
+    // spellings (*, &, <...>) keep the captured form: the alias dd behind
+    // them is not the parameter's own DataDef.
+    std::string mangle_param_spelling(size_t i) const
+    {
+	std::string sp = i < param_cpp_spellings.size() ? param_cpp_spellings[i]
+							: std::string();
+	if ( sp.empty() || i >= parameters.size() || !parameters[i] )
+	    return sp;
+	if ( sp.find('<') != std::string::npos
+	  || sp.back() == '*' || sp.back() == '&' )
+	    return sp;
+	std::string scalar = parameters[i]->mangle_scalar_spelling();
+	if ( scalar.empty() || scalar == sp )
+	    return sp;
+	return scalar;
+    }
     bool is_void_params; // f(void) — explicitly zero params (vs f() which is K&R unspecified)
     bool no_instrument_function;
     // __attribute__((optimize("-fno-strict-aliasing"))): the CIR builder forwards

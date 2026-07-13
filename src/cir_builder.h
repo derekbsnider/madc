@@ -1347,6 +1347,11 @@ const char *cir_first_error_msg(node_t tree);
 // so the translate_module drain materializes their deferred-lazy definitions.
 void cir_collect_call_callees(node_t tree, std::set<std::string> &out);
 
+// Parameter NAMES of a FUNC_DEF node. The pack callee-cascade subtracts them
+// from the harvested callees: a call through a fn-pointer parameter is
+// indirect, not an external symbol to judge.
+void cir_collect_funcdef_param_names(node_t fd, std::set<std::string> &out);
+
 // Collect every __attribute__((cleanup(F))) function symbol in the tree.
 // FOREST materialization sites only (a loaded body is pre-built — the live
 // lowering site that registers F as referenced never runs for it).

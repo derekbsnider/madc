@@ -74,6 +74,32 @@ TEST_SUITE("Itanium type encoding") {
 		CHECK(itanium_encode_params({"int", "double"}) == "id");
 		CHECK(itanium_encode_params({"int", "const char*"}) == "iPKc");
 	}
+
+	TEST_CASE("Trailing ellipsis encodes as z") {
+		CHECK(itanium_encode_params({"const char*", "..."}) == "PKcz");
+		// g++ oracle: std::__throw_out_of_range_fmt(char const*, ...)
+		CHECK(itanium_mangle_nested_sub({"std"}, "__throw_out_of_range_fmt",
+		                                {"const char*", "..."})
+		      == "_ZSt24__throw_out_of_range_fmtPKcz");
+	}
+
+	TEST_CASE("Desugared typedef params match libstdc++ exports") {
+		// __basic_file<char>::seekoff(streamoff, _Ios_Seekdir) — streamoff
+		// desugars to long ('l'); the enum keeps its own name. Oracle:
+		// nm libstdc++ → _ZNSt12__basic_fileIcE7seekoffElSt12_Ios_Seekdir
+		CHECK(itanium_mangle_member_sub("std::__basic_file<char>", "seekoff",
+		                                {"long", "std::_Ios_Seekdir"}, false)
+		      == "_ZNSt12__basic_fileIcE7seekoffElSt12_Ios_Seekdir");
+		// basic_ostream<char>::_M_insert<long>(long) with the __ostream_type&
+		// return desugared to the canonical class reference. Oracle:
+		// nm libstdc++ → _ZNSo9_M_insertIlEERSoT_
+		CHECK(itanium_mangle_member_template_sub(
+			      "std::basic_ostream<char,std::char_traits<char>>",
+			      "_M_insert", {"long"},
+			      "std::basic_ostream<char,std::char_traits<char>>&",
+			      {"$T0"}, false)
+		      == "_ZNSo9_M_insertIlEERSoT_");
+	}
 }
 
 TEST_SUITE("Itanium function mangling") {

@@ -1742,10 +1742,12 @@ static std::string namespace_cpp_function_symbol(const std::string &ns_name,
 	for ( size_t i = 0; i < fd->parameters.size(); ++i )
 	{
 	    if ( fd->is_varargs && i + 1 == fd->parameters.size() )
+	    {
+		// The parsed trailing `...` (pseudo-param slot) mangles as `z`.
+		params.push_back("...");
 		break;
-	    std::string spelling;
-	    if ( i < fd->param_cpp_spellings.size() )
-		spelling = fd->param_cpp_spellings[i];
+	    }
+	    std::string spelling = fd->mangle_param_spelling(i);
 	    if ( spelling.empty() )
 	    {
 		bool refp = fd->is_ref_param(i);
@@ -25910,7 +25912,8 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
     // alone loses, so the symbol matches the C++ ABI exactly (PKc, not Pc).
     std::vector<std::string> psp;
     for ( size_t i = 1; i < fd->param_cpp_spellings.size(); ++i )
-	psp.push_back(fd->param_cpp_spellings[i]);
+	psp.push_back(fd->mangle_param_spelling(i));
+    fd->spell_varargs_tail(psp);
     const std::string &cls = ddc->canonical_cpp_spelling();
     switch ( kind )
     {
@@ -30096,9 +30099,15 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // register in datatype_map
     if ( gnu_vector_bytes > 0 )
 	base_dd = new DataDefSIMD(base_dd, alias, gnu_vector_bytes);
+    // An ENUM typedef (ios_base::openmode = _Ios_Openmode) keeps the enum dd
+    // itself, exactly like a class typedef: wrapping it in a plain DataDef
+    // alias would lose enum-ness (DataDefENUM casts miss, and the alias dd's
+    // integer DataType is indistinguishable from a scalar typedef — the
+    // mangle desugar would spell it `i` where libstdc++ has St13_Ios_Openmode).
     else if ( !pgm.class_scope_stack.empty()
 	   && base_dd && !base_dd->is_pointer()
 	   && base_dd->basetype() == BaseType::btSimple
+	   && !dynamic_cast<DataDefENUM *>(base_dd)
 	   && !base_source_spelling.empty()
 	   && base_source_spelling != base_dd->name )
     {
@@ -30109,7 +30118,8 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     else if ( pgm.class_scope_stack.empty()
 	   && !pgm.current_namespace().empty()
 	   && base_dd && !base_dd->is_pointer()
-	   && base_dd->basetype() == BaseType::btSimple )
+	   && base_dd->basetype() == BaseType::btSimple
+	   && !dynamic_cast<DataDefENUM *>(base_dd) )
     {
 	DataDef *alias_dd = new DataDef(alias, base_dd->size, base_dd->type());
 	alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias);

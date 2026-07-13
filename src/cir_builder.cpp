@@ -3876,7 +3876,11 @@ static bool is_c2mir_builtin_call_name(const std::string &name)
 	return name.compare(0, 13, "__builtin_va_") == 0
 	    || name == "__builtin_add_overflow"
 	    || name == "__builtin_sub_overflow"
-	    || name == "__builtin_mul_overflow";
+	    || name == "__builtin_mul_overflow"
+	    // c2mir's ALLOCA set (c2mir.c): both spellings compile as the
+	    // builtin — no external symbol exists or is needed.
+	    || name == "alloca"
+	    || name == "__builtin_alloca";
 }
 
 static DataDefCLASS *class_behind(DataDef *dd);
@@ -10341,6 +10345,48 @@ static bool bind_member_template_param(const std::string &pattern,
 	return norm_type_w2(p) == norm_type_w2(a);
 }
 
+// Desugar a member-typedef core through the owner's class-scope aliases:
+// `__ostream_type&` names basic_ostream<C,T> inside the class, and the
+// mangled symbol must spell the canonical type (RSo), never the typedef
+// name (R14__ostream_type — libstdc++ exports no such symbol). Peels
+// trailing &/&&/* decorations and a leading const, resolves the bare core
+// through owner->type_aliases, reattaches; a scalar alias target desugars
+// further (streamsize -> long). Anything unresolved keeps its spelling.
+static std::string desugar_member_type_spelling(DataDefCLASS *owner,
+						const std::string &spell)
+{
+	if (!owner || spell.empty())
+		return spell;
+	size_t end = spell.size();
+	while (end > 0 && (spell[end - 1] == '&' || spell[end - 1] == '*'
+			   || spell[end - 1] == ' '))
+		--end;
+	std::string prefix;
+	size_t start = 0;
+	if (spell.compare(0, 6, "const ") == 0) {
+		prefix = "const ";
+		start = 6;
+	}
+	if (end <= start)
+		return spell;
+	std::string core = spell.substr(start, end - start);
+	if (core.find('<') != std::string::npos
+	    || core.find(':') != std::string::npos)
+		return spell;
+	std::map<std::string, DataDef *>::const_iterator ai =
+		owner->type_aliases.find(core);
+	if (ai == owner->type_aliases.end() || !ai->second)
+		return spell;
+	DataDef *dd = ai->second;
+	std::string canon = dd->mangle_scalar_spelling();
+	if (canon.empty())
+		canon = dd->canonical_cpp_spelling().empty()
+		      ? dd->name : dd->canonical_cpp_spelling();
+	if (canon.empty())
+		return spell;
+	return prefix + canon + spell.substr(end);
+}
+
 } // namespace
 
 node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
@@ -10395,10 +10441,13 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 	}
 	std::vector<std::string> params;
 	for (const std::string &p : callee->template_param_spellings)
-		params.push_back(template_placeholder_spelling(
-			p, callee->template_param_names));
-	std::string ret = template_placeholder_spelling(
-		callee->template_return_spelling, callee->template_param_names);
+		params.push_back(desugar_member_type_spelling(owner,
+			template_placeholder_spelling(
+				p, callee->template_param_names)));
+	std::string ret = desugar_member_type_spelling(owner,
+		template_placeholder_spelling(
+			callee->template_return_spelling,
+			callee->template_param_names));
 	const std::string &mname = callee->method_display_name.empty()
 				 ? tm->var.name : callee->method_display_name;
 	std::string sym = itanium_mangle_member_template_sub(
@@ -18129,7 +18178,8 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 			// bind_declared_cpp_symbol — so PKc / St13_Ios_Openmode match the ABI.
 			std::vector<std::string> psp;
 			for (size_t i = 1; i < fd->param_cpp_spellings.size(); ++i)
-				psp.push_back(fd->param_cpp_spellings[i]);
+				psp.push_back(fd->mangle_param_spelling(i));
+			fd->spell_varargs_tail(psp);
 			std::string sym = itanium_mangle_ctor_sub(cls, psp);
 			if (external_symbol_available(sym))
 				fd->emit_symbol = sym;
@@ -18168,7 +18218,8 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 				continue;
 			std::vector<std::string> psp;
 			for (size_t i = 1; i < fd->param_cpp_spellings.size(); ++i)
-				psp.push_back(fd->param_cpp_spellings[i]);
+				psp.push_back(fd->mangle_param_spelling(i));
+			fd->spell_varargs_tail(psp);
 			std::string sym;
 			if (dn.compare(0, 8, "operator") == 0)
 				sym = itanium_mangle_operator_sub(
@@ -19792,6 +19843,13 @@ node_t CirBuilder::translate_module(Program *prog)
 		for (size_t i = 0; i < pack_defs.size(); ++i) {
 			cir_collect_call_callees(pack_defs[i].second, pack_def_callees[i]);
 			cir_collect_cleanup_attr_fns(pack_defs[i].second, pack_def_callees[i]);
+			// A call through a fn-pointer PARAM is indirect — its name
+			// is not an external symbol the cascade should judge.
+			std::set<std::string> pnames;
+			cir_collect_funcdef_param_names(pack_defs[i].second, pnames);
+			for (std::set<std::string>::iterator pi = pnames.begin();
+			     pi != pnames.end(); ++pi)
+				pack_def_callees[i].erase(*pi);
 		}
 		// Symbol -> stash index, so a callee defined by a sibling stashed
 		// def counts as consumer-homed only while that sibling is visible.
@@ -20378,6 +20436,40 @@ void cir_collect_call_callees(node_t n, std::set<std::string> &out)
 			if (!op) break;
 			cir_collect_call_callees(op, out);
 		}
+}
+
+// Parameter names of a FUNC_DEF: op1 is the declarator N_DECL whose suffix
+// list carries the N_FUNC param list; each NAMED param is an N_SPEC_DECL
+// whose op1 declarator names it (an unnamed param is an N_TYPE — no name).
+// A call THROUGH a function-pointer parameter (`return __pf(*this);`,
+// libstdc++'s manipulator operator<< / __gnu_cxx::__stoa's __convf) parses
+// as N_CALL(N_ID __pf, ...) — a name the callee harvest must not treat as
+// an external symbol (C scoping: the param shadows any global).
+void cir_collect_funcdef_param_names(node_t fd, std::set<std::string> &out)
+{
+	if (!fd || fd->code != N_FUNC_DEF) return;
+	node_t decl = c2mir_node_op(fd, 1);
+	if (!decl || decl->code != N_DECL) return;
+	node_t suffixes = c2mir_node_op(decl, 1);
+	if (!suffixes || suffixes->code != N_LIST) return;
+	for (int i = 0; ; i++) {
+		node_t sfx = c2mir_node_op(suffixes, i);
+		if (!sfx) break;
+		if (sfx->code != N_FUNC) continue;
+		node_t params = c2mir_node_op(sfx, 0);
+		if (!params) break;
+		for (int j = 0; ; j++) {
+			node_t p = c2mir_node_op(params, j);
+			if (!p) break;
+			if (p->code != N_SPEC_DECL) continue;
+			node_t pdecl = c2mir_node_op(p, 1);
+			if (!pdecl || pdecl->code != N_DECL) continue;
+			node_t pid = c2mir_node_op(pdecl, 0);
+			if (pid && pid->code == N_ID && pid->u.s.s)
+				out.insert(pid->u.s.s);
+		}
+		break;
+	}
 }
 
 // v25: collect every identifier passed AS A CALL ARGUMENT (bare N_ID after
