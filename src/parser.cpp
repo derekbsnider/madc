@@ -28062,6 +28062,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			mvar->flags |= access_flags;
 		    ddc->methods.push_back(mvar);
 		    ddc->method_map[mname] = mvar;
+		    // The display name IS the freeze/restore contract for the
+		    // method_map key (madc_cir.cpp methodrec disp_key_id):
+		    // without it a conversion operator never restores and a
+		    // BOUND `if (obj)` misses the contextual conversion.
+		    if ( cfd )
+			cfd->method_display_name = mname;
 		}
 	    }
 	    continue;

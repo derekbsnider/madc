@@ -1,0 +1,12 @@
+#include <sstream>
+#include <cstdio>
+using namespace std;
+int main(){
+  istringstream s("3");
+  int a;
+  s >> a;
+  if (s) printf("good1\n"); else printf("bad1\n");
+  s >> a;
+  if (s) printf("good2\n"); else printf("bad2\n");
+  return 0;
+}

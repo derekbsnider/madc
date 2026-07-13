@@ -1,0 +1,59 @@
+// Contextual conversion to bool ([conv]/4): an EXPLICIT `operator bool()`
+// participates in boolean contexts — if/while/do/for conditions, ternary
+// condition, `!` operand, `&&`/`||` operands. This is what makes
+// `if (stream)` work (basic_ios declares explicit operator bool), and the
+// stream-sentry `if (__cerb)` shape in every drained libstdc++ body.
+// Covers: direct variable receiver, inherited-from-VIRTUAL-base conversion
+// (owner-subobject __this adjust), and a reference-returning CALL receiver
+// (`while (s >> a)` shape — the receiver pointer is &(*call), evaluated
+// once). 3-oracled vs g++.
+#include <cstdio>
+
+class Flag {
+public:
+  int on;
+  explicit operator bool() const { return on != 0; }
+};
+
+class VB {
+public:
+  int st;
+  explicit operator bool() const { return st == 0; }
+};
+
+class DV : virtual public VB {
+public:
+  int x;
+};
+
+class St {
+public:
+  int state;
+  int pos;
+  St& operator>>(int& v) { v = pos; pos++; if (pos > 3) state = 1; return *this; }
+  explicit operator bool() const { return state == 0; }
+};
+
+int main() {
+  Flag f; f.on = 1;
+  Flag g; g.on = 0;
+  if (f) printf("if: yes\n");
+  if (!g) printf("not: yes\n");
+  if (f && !g) printf("and: yes\n");
+  if (g || f) printf("or: yes\n");
+  printf("tern: %d\n", f ? 5 : 6);
+  int n = 0;
+  while (f) { n++; if (n == 3) f.on = 0; }
+  printf("while: %d\n", n);
+
+  DV d; d.st = 0;
+  if (d) printf("vbase: good\n");
+  d.st = 1;
+  if (d) printf("vbase: BAD\n"); else printf("vbase: fail-state\n");
+
+  St s; s.state = 0; s.pos = 0;
+  int a; int cnt = 0;
+  while (s >> a) { cnt++; if (cnt > 10) { printf("runaway\n"); return 1; } }
+  printf("extract: %d\n", cnt);
+  return 0;
+}

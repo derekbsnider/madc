@@ -1126,6 +1126,10 @@ public:
 
 	// ---- Expression translation ----
 	node_t translate_expr(TokenBase *tb);
+	// Boolean-context operand ([conv]/4 contextual conversion): translate_expr
+	// plus the class-object `operator bool` conversion when applicable.
+	node_t translate_cond(TokenBase *cond);
+	node_t cond_contextual_bool(TokenBase *cond);
 
 	// ---- Statement translation ----
 	node_t translate_stmt(TokenBase *tb);

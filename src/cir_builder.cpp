@@ -7677,6 +7677,16 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 		    && !ref_returning_call_type(tm->parent_expr))
 			return object_arg_addr(tm->parent_expr, recv_class);
 		recv_node = translate_expr(tm->parent_expr);
+		// A REFERENCE-returning CALL receiver: translate_expr yields the
+		// DEREF'd lvalue (`*call` — the reference's referent, see the
+		// returns_reference tail of class_method_call), but the receiver
+		// pointer is the call's raw value. Re-wrap with & (`&(*call)`,
+		// c2mir folds it) — without this the struct LVALUE itself flowed
+		// into the receiver casts: a hard c2mir check error under the
+		// virtual-base owner adjust, a silent "incompatible argument type"
+		// warning elsewhere.
+		if (ref_returning_call_type(tm->parent_expr))
+			return node1(N_ADDR, recv_node, origin);
 		return recv_is_ptr ? recv_node : node1(N_ADDR, recv_node, origin);
 	}
 	recv_type = tm->object.type;
@@ -12983,7 +12993,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	{
 		TokenTerQ *tq = dynamic_cast<TokenTerQ *>(tb);
 		if (tq) {
-			node_t cond = translate_expr(tq->condition);
+			node_t cond = translate_cond(tq->condition);
 			// A throw-expression branch ([expr.cond]/2): the conditional's
 			// type is the OTHER (non-throw) branch's; the throw branch is a
 			// void prvalue that never returns. c2mir's N_COND needs both
@@ -13472,7 +13482,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				if (node_t ov = class_unary_operator_call(uop, top->right, tb))
 					return ov;
 			}
-			node_t operand = translate_expr(top->right);
+			// `!obj` with no user operator! (the overload call above
+			// returned NULL): [conv]/4 contextual conversion — negate
+			// the operator bool result.
+			node_t operand = (tb->id() == TokenID::tkLnot)
+				? translate_cond(top->right)
+				: translate_expr(top->right);
 			if (tb->id() == TokenID::tkNeg)
 				// Unary negation: c2mir represents `-x` as a SINGLE-operand
 				// N_SUB (grammar: `N_SUB (expr)`), lowered with float UNOP
@@ -13593,8 +13608,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (tb->id() == TokenID::tk3Eq || tb->id() == TokenID::tk3NotEq)
 				return strict_equality_lowering(top, tb);
 
-			node_t left = translate_expr(top->left);
-			node_t right = translate_expr(top->right);
+			// `&&`/`||` operands are boolean contexts ([conv]/4): a class
+			// operand with operator bool (and no user operator&&/|| — the
+			// overload dispatch above already returned) converts.
+			bool logical_op = tb->id() == TokenID::tkLand
+				       || tb->id() == TokenID::tkLor;
+			node_t left = logical_op ? translate_cond(top->left)
+						 : translate_expr(top->left);
+			node_t right = logical_op ? translate_cond(top->right)
+						  : translate_expr(top->right);
 
 			c2mir_node_code_t code;
 			switch (tb->id()) {
@@ -14239,6 +14261,83 @@ node_t CirBuilder::translate_loop_body(TokenBase *tb)
 	return body;
 }
 
+// Contextual conversion to bool ([conv]/4): in a boolean context — if/while/
+// do/for condition, ternary condition, `!` operand, `&&`/`||` operands — a
+// CLASS-typed expression converts through the class's conversion function; an
+// EXPLICIT `operator bool()` participates in these contexts (this is what
+// makes `if (stream)` / `if (__cerb)` work — basic_ios and the stream sentry
+// classes declare explicit operator bool). Returns NULL when not applicable
+// so the caller falls back to translate_expr. The synthetic TokenCallMethod
+// routes through class_method_call, so an INHERITED conversion function gets
+// the owner-subobject __this adjustment, and every receiver shape (variable,
+// member, call-expression via parent_expr) reuses the normal machinery.
+// The class's `operator bool` conversion function, walking base classes when
+// the class has none of its OWN ([class.member.lookup] — any own declaration
+// would hide the base's). Scans the METHODS vector by display name, NOT
+// method_map: live registration flattens base entries into a derived class's
+// method_map but the forest restore rebuilds each class's map from its OWN
+// method records only — the map lookup would find inherited conversions on a
+// live class and miss them on a bound one. The methods vector is own-only on
+// BOTH paths, so this walk behaves identically live and bound.
+static Variable *class_conversion_to_bool(DataDefCLASS *cls)
+{
+	if (!cls)
+		return NULL;
+	for (Variable *mv : cls->methods) {
+		if (!mv)
+			continue;
+		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+		if (fd && fd->method_display_name == "operator bool")
+			return mv;
+	}
+	for (const BaseSpec &b : cls->bases)
+		if (b.base)
+			if (Variable *mv = class_conversion_to_bool(b.base))
+				return mv;
+	if (cls->bases.empty() && cls->base_class)
+		return class_conversion_to_bool(cls->base_class);
+	return NULL;
+}
+
+node_t CirBuilder::cond_contextual_bool(TokenBase *cond)
+{
+	if (!cond)
+		return NULL;
+	DataDef *dd = cond->datadef();
+	if (!dd)
+		return NULL;
+	// A reference-to-class condition converts (its stored value is the object
+	// address); a PLAIN pointer is already scalar — never converted.
+	if (dd->is_pointer() && !dynamic_cast<DataDefREF *>(dd))
+		return NULL;
+	DataDefCLASS *cls = class_behind(dd);
+	if (!cls)
+		return NULL;
+	Variable *conv = class_conversion_to_bool(cls);
+	if (!conv)
+		return NULL;
+	TokenCallMethod *tc;
+	TokenVar *tv = dynamic_cast<TokenVar *>(cond);
+	if (tv && cond->type() == TokenType::ttVariable) {
+		tc = new TokenCallMethod(tv->var, *conv);
+	} else {
+		Variable *rv = new Variable("__cond_obj", *dd, 1, NULL, false);
+		tc = new TokenCallMethod(*rv, *conv);
+		tc->parent_expr = cond;
+	}
+	tc->file = cond->file;
+	tc->line = cond->line;
+	tc->column = cond->column;
+	return class_method_call(tc, cond);
+}
+
+node_t CirBuilder::translate_cond(TokenBase *cond)
+{
+	if (node_t conv = cond_contextual_bool(cond))
+		return conv;
+	return translate_expr(cond);
+}
+
 node_t CirBuilder::translate_if(TokenIF *ti)
 {
 	// C++17 init-statement: `if (init; cond) S else E` lowers to
@@ -14262,7 +14361,7 @@ node_t CirBuilder::translate_if(TokenIF *ti)
 node_t CirBuilder::translate_if_core(TokenIF *ti)
 {
 	if (ti->condition_decl) {
-		node_t cond = translate_expr(ti->condition);
+		node_t cond = translate_cond(ti->condition);
 		// Temps materialized by the CONDITION (m_pending_stmts) must be
 		// declared before the IF — otherwise the then/else block's own
 		// statement loop swallows them into the wrong scope.
@@ -14296,7 +14395,7 @@ node_t CirBuilder::translate_if_core(TokenIF *ti)
 	}
 	if (is_constant_evaluated_call(ti->condition))
 		return ti->elsestmt ? translate_stmt_required(ti->elsestmt) : ignore();
-	node_t cond = translate_expr(ti->condition);
+	node_t cond = translate_cond(ti->condition);
 	// Temps materialized by the CONDITION must be emitted ahead of the IF
 	// (see the condition_decl arm above).
 	std::vector<node_t> cond_temps;
@@ -14317,7 +14416,7 @@ node_t CirBuilder::translate_while(TokenBase *tw)
 {
 	TokenWHILE *w = dynamic_cast<TokenWHILE *>(tw);
 	if (!w) return ignore();
-	node_t cond = translate_expr(w->condition);
+	node_t cond = translate_cond(w->condition);
 	return node3(N_WHILE, list(), cond,
 		     translate_loop_body(w->statement), tw);
 }
@@ -14396,7 +14495,7 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 	} else {
 		init = ignore();
 	}
-	node_t cond = tf->condition ? translate_expr(tf->condition) : ignore();
+	node_t cond = tf->condition ? translate_cond(tf->condition) : ignore();
 	node_t incr = tf->increment ? translate_expr(tf->increment) : ignore();
 	// Comma-separated increment clauses (`for (...; ...; i++, j--)`): fold the
 	// extras into the increment via N_COMMA so each runs every iteration.
@@ -15033,7 +15132,7 @@ node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv)
 
 node_t CirBuilder::translate_do(TokenDO *td)
 {
-	return node3(N_DO, list(), translate_expr(td->condition),
+	return node3(N_DO, list(), translate_cond(td->condition),
 		     translate_loop_body(td->statement), td);
 }
 

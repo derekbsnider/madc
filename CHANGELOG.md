@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+- **feat(cir): contextual conversion to bool — `operator bool` in boolean
+  contexts** (Slice A family D, rung 5). Conversion operators parsed and
+  registered but had ZERO consumers — `if (obj)` on a class with
+  `explicit operator bool()` emitted the raw struct as the condition
+  (c2mir: "if-expr should be of a scalar type"). [conv]/4 contextual
+  conversion now applies in every boolean context — if/while/do/for
+  conditions, ternary condition, `!` operand, `&&`/`||` operands — via a
+  `translate_cond` seam: the condition builds a synthetic TokenCallMethod
+  on the class's `operator bool` and routes through class_method_call, so
+  inherited conversions (basic_ios's, through the VIRTUAL base) get the
+  owner-subobject __this adjustment and all receiver shapes reuse the
+  normal machinery. CIR-time by necessity: a template pattern's
+  `if (__cerb)` can only resolve per-instantiation. Fixed in the same
+  change (class_this_arg): a REFERENCE-returning CALL receiver passed the
+  DEREF'd struct lvalue as __this — a hard c2mir error under the
+  virtual-base owner adjust, and the source of the long-standing
+  "incompatible argument type for pointer type parameter" warnings on
+  every chained receiver; the receiver pointer is now `&(*call)`. Live
+  wins: `if (stream)` / `if (!file)` state checks (test
+  teststreambool.mad), user-class conversions incl. virtual-base +
+  ref-returning-call receivers (test testopbool.mad, both byte-identical
+  to g++), and the drained-body `if (__cerb)` sentry shape. Two
+  bound-path (forest) defects fixed in the same change, found because the
+  packed suite — not the live one — caught them: (1) the conversion-op
+  registration never set `method_display_name`, and the freeze writes the
+  method_map key from it (madc_cir.cpp methodrec disp_key_id) — a
+  conversion operator never restored at all (LOADED != parsed); (2) the
+  conversion lookup used method_map, which live registration FLATTENS
+  with base entries but the restore rebuilds from each class's OWN
+  records — inherited conversions (basic_ios's operator bool two levels
+  up through the virtual base) resolved live and missed bound. The lookup
+  is now a methods-vector + base-class walk (one mechanism, identical on
+  both paths — the same lesson as the inherited-operator walk). HONEST
+  BOUNDARY: `while (s >> a)` on REAL streams still hangs — the receiver's
+  static type (basic_istream&) is not the object's most-derived type
+  (istringstream), and madc's vbase model is fully STATIC
+  (parser.cpp vbase_offset maps); the owner adjust reads the wrong offset
+  in real-libstdc++ layouts. The fix is dynamic Itanium vbase offsets
+  (vtable vbase-offset slots) — banked as its own rung.
+
 - **fix(parser+cir): chained arrow method calls — call-expression receivers**
   (Slice A family D, rung 4). `p->mid()->leaf()->get()` (the libstdc++
   stream-body shape `this->rdbuf()->sgetc()`) threw "chained arrow method
