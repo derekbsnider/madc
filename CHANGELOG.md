@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+- **fix(cir): ref-returning `return <assignment>;` lowers via a
+  hoisted lvalue-address temp** (Slice A family D, rung 7). C++
+  assignment yields the assigned LVALUE ([expr.ass]); C11's yields an
+  rvalue, so the ref-return arm's `return &(__a = __a | __b)` was
+  invalid C — the ios_base fmtflags `operator|=`/`&=`/`^=` drain
+  family (×9) and `<cstddef>`'s `std::byte` compound operators (×3),
+  and a LIVE compile error for any user `T& f(T& v) {
+  return v = ...; }` (tests/testrefassign.mad: "lvalue required as
+  unary & operand" pre-fix; now 3 3 9 9 on JIT == emitted-C-via-gcc ==
+  g++). translate_return now detects a top-level SCALAR
+  (compound-)assignment operand of a ref-returning function, hoists
+  the lhs address ONCE into a `__madc_refret_N` temp of the function's
+  C return type (m_cur_func_ret_spec_dd/_stars — set per-function in
+  func_def), assigns through the temp (plain + all compound forms via
+  assign_op_node_code), and returns the temp — the g++ shape (store,
+  then return &lhs), single evaluation of the lhs. Class operands are
+  excluded (class assignment dispatches through operator= /
+  memberwise machinery, untouched). Ladder: reducer corpus 499 -> 487
+  drops; release corpus 541 -> 529. Remaining "lvalue" census after
+  this rung: streambuf/fstream.tcc "left operand of assignment" ×10
+  (a DIFFERENT defect — the assignment's lhs itself), plus three
+  onesies (nested_exception, locale_facets, basic_string).
+
 - **fix(parser+cir): member-template returns keep their reference
   declarator; mangled-direct mti calls pass reference args by address**
   (Slice A family D, rung 6). `skipped_template_function_return_type`'s

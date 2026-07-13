@@ -14074,6 +14074,27 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 // Statement translation
 // -----------------------------------------------------------------------
 
+// The (compound-)assignment operator IDs and their CIR node codes — the
+// subset of the binary-operator switch translate_return's ref-assign arm
+// needs (C++ [expr.ass]: all of these yield the assigned lvalue).
+static bool assign_op_node_code(TokenID id, c2mir_node_code_t &code)
+{
+	switch (id) {
+	case TokenID::tkAssign: code = N_ASSIGN; return true;
+	case TokenID::tkAddEq:  code = N_ADD_ASSIGN; return true;
+	case TokenID::tkSubEq:  code = N_SUB_ASSIGN; return true;
+	case TokenID::tkMulEq:  code = N_MUL_ASSIGN; return true;
+	case TokenID::tkDivEq:  code = N_DIV_ASSIGN; return true;
+	case TokenID::tkModEq:  code = N_MOD_ASSIGN; return true;
+	case TokenID::tkBandEq: code = N_AND_ASSIGN; return true;
+	case TokenID::tkBorEq:  code = N_OR_ASSIGN; return true;
+	case TokenID::tkXorEq:  code = N_XOR_ASSIGN; return true;
+	case TokenID::tkBSLEq:  code = N_LSH_ASSIGN; return true;
+	case TokenID::tkBSREq:  code = N_RSH_ASSIGN; return true;
+	default: return false;
+	}
+}
+
 node_t CirBuilder::translate_return(TokenRETURN *tr)
 {
 	// `return <void-expr>;` inside a void function (e.g.
@@ -14173,7 +14194,54 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 			}
 		}
 	}
-	node_t expr = tr->returns ? translate_expr(tr->returns) : ignore();
+	// A ref-returning function whose return operand is a SCALAR
+	// (compound-)assignment: C++ assignment yields the assigned LVALUE
+	// ([expr.ass]) but C11's yields an rvalue, so the ref arm's
+	// `return &(assign)` is invalid C ("lvalue required as unary &
+	// operand" — the ios_base fmtflags operator|=/&=/^= drain family and
+	// any user `return v = v + x;`). Lower as the g++ shape: hoist the
+	// lhs ADDRESS once into a temp of the function's C return type,
+	// assign through it, return the temp (single evaluation of the lhs).
+	// Class operands are excluded — class assignment dispatches through
+	// operator= / memberwise machinery, not a raw N_ASSIGN.
+	TokenOperator *ref_assign = NULL;
+	c2mir_node_code_t ref_assign_code = N_ASSIGN;
+	if (m_cur_func_returns_ref && tr->returns && m_cur_func_ret_spec_dd
+	    && !m_cur_func_returns_class_ptr) {
+		TokenOperator *rtop = dynamic_cast<TokenOperator *>(tr->returns);
+		if (rtop && rtop->left && rtop->right
+		    && assign_op_node_code(rtop->id(), ref_assign_code)
+		    && !as_class_instance(rtop->left->datadef()))
+			ref_assign = rtop;
+	}
+	node_t expr;
+	if (ref_assign) {
+		char tmp[48];
+		snprintf(tmp, sizeof(tmp), "__madc_refret_%d", m_strtmp_counter++);
+		node_t lhs_addr =
+			reference_member_value_is_stored_address(ref_assign->left)
+			? translate_expr(ref_assign->left)
+			: node1(N_ADDR, translate_expr(ref_assign->left), tr);
+		node_t rhs = translate_expr(ref_assign->right);
+		node_t sd = simple(N_SPEC_DECL, tr);
+		append(sd, m_cur_func_ret_spec_alias.empty()
+			   ? type_list(m_cur_func_ret_spec_dd)
+			   : type_list(m_cur_func_ret_spec_dd,
+				       m_cur_func_ret_spec_alias));
+		node_t dl = list();
+		for (int rs = 0; rs < m_cur_func_ret_stars; rs++)
+			append(dl, pointer());
+		append(sd, node2(N_DECL, id(tmp, tr), dl));
+		append(sd, ignore());
+		append(sd, ignore());
+		append(sd, lhs_addr);
+		m_pending_stmts.push_back(sd);
+		node_t asg = node2(ref_assign_code,
+				   node1(N_DEREF, id(tmp, tr), tr), rhs, tr);
+		m_pending_stmts.push_back(node2(N_EXPR, list(), asg, tr));
+		expr = id(tmp, tr);   // already the address — no & wrap below
+	} else
+		expr = tr->returns ? translate_expr(tr->returns) : ignore();
 	// A bare `return;` in a non-void function: gcc (gnu89/c11) warns but accepts
 	// it, returning an indeterminate value. c2mir requires a value, so emit a
 	// typed zero of the function's scalar C return type — a conformant lowering
@@ -14192,7 +14260,8 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 	// `return x;` becomes `return &x;`. g++ does exactly this; the call site
 	// derefs. The expression must be an lvalue (the parser/g++ enforce that).
 	if (m_cur_func_returns_ref && tr->returns) {
-		if (!reference_member_value_is_stored_address(tr->returns))
+		if (!ref_assign
+		    && !reference_member_value_is_stored_address(tr->returns))
 			expr = node1(N_ADDR, expr, tr);
 		if (m_cur_func_returns_class_ptr)
 			expr = upcast_class_ref_addr(expr, m_cur_func_returns_class_ptr,

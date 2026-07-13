@@ -1,0 +1,19 @@
+#include <cstdio>
+
+enum E { A = 1, B = 2 };
+
+inline const E& setbits(E& a, E b)
+{ return a = (E)((int)a | (int)b); }
+
+int& bump(int& v, int by)
+{ return v = v + by; }
+
+int main()
+{
+    E f = A;
+    const E& r = setbits(f, B);
+    int n = 5;
+    int& m = bump(n, 4);
+    printf("%d %d %d %d\n", (int)f, (int)r, n, m);
+    return 0;
+}
