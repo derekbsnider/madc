@@ -14599,7 +14599,11 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 		// body block would emit a bare `T e;`. Declare it WITH the exception
 		// value as initializer in the handler instead, and remove it from the
 		// body's variables so it isn't double-declared.
-		if (!vname.empty() && tag != 99) {
+		// tag 4 = class/pointer catch: the clause never matches (no throw
+		// produces tag 4), and the parser registered the variable with its
+		// REAL type in the body scope — leave that declaration in place so
+		// the handler compiles; there is no exception value to bind.
+		if (!vname.empty() && tag != 99 && tag != 4) {
 			const char *valsym; std::vector<c2mir_node_code_t> rs;
 			if (tag == 2) { valsym = "__madc_exception_double"; rs = { N_DOUBLE }; }
 			else if (tag == 3) { valsym = "__madc_exception_cstr"; rs = {}; }

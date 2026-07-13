@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+- **fix(parser): full exception-declaration grammar in catch parameters**
+  (Slice A family D, rung 3). `TokenTRY::parse` accepted only
+  `catch(single-token-type [name])` — the type head was resolved from a
+  PEEKED token (misaligning `resolve_declared_type_token`'s stream-suffix
+  consumption, so qualified names like `__cxxabiv1::__forced_unwind`
+  could never resolve) and no declarator was consumed (`catch (T&)`
+  failed with "Expected ')' after catch parameter"). The libstdc++
+  `__catch(__cxxabiv1::__forced_unwind&)` clause in every stream body hit
+  this (the catch-param ×43 drain family — now eliminated). The catch
+  parameter now parses the real grammar: cv-qualifiers, consumed head +
+  qualified/template-id resolution, `*`/`&`/`&&` declarators, optional
+  name. Dispatch canon (g++): madc's runtime throws int/double/cstr only,
+  so a class- or pointer-typed clause is unmatchable — it gets tag 4
+  (produced by no throw; the existing tag-equality guard never fires) and
+  a thrown int correctly falls through to a later `catch(...)`. Named
+  class catches register the variable with its REAL type so the handler
+  body type-checks (CIR skips the scalar exception-value rebind for tag
+  4). New test tests/testcatchparam.mad (byte-identical to g++). Ladder:
+  <fstream> reducer corpus 538 → 552 drops (unblocked bodies advance to
+  the `__cerb`/chained-arrow/`__n` rungs; DEFBODY reverts,
+  correctness-neutral). Recon banked: the `__n` ×45 family is a
+  SECONDARY failure — drain parse #1 succeeds, the lowering fails the
+  c2mir check ("incompatible argument type" families on fstream.tcc
+  bodies), the drop reverts to DEFBODY, and the consumer's re-derive
+  parse #2 then fails `__n` — the primary defect is the check-rejected
+  lowering, not the parse.
+
 - **fix(parser): out-of-line nested-class definitions of class templates +
   qualified member-typedef declarations** (Slice A family D, rungs 1–2).
   (1) `template<...> class Owner<T>::Nested { ... };` (basic_istream's

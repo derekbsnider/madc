@@ -30873,7 +30873,9 @@ TokenBase *TokenTRY::parse(Program &pgm)
 	if ( !tn || tn->id() != TokenID::tkOpBrk )
 	    pgm.Throw(tn ? tn : this) << "Expected '(' after 'catch'" << flush;
 
-	// Parse catch parameter: (type var) or (...)
+	// Parse catch parameter: exception-declaration or (...)
+	TokenDataType *ctype = NULL;   // resolved caught type (class catches)
+	int ptr_depth = 0;             // trailing '*' count on the declarator
 	tn = pgm.peekToken();
 	if ( tn && tn->id() == TokenID::tkDot )
 	{
@@ -30890,16 +30892,60 @@ TokenBase *TokenTRY::parse(Program &pgm)
 	}
 	else
 	{
-	    // catch(type var)
-	    TokenDataType *ctype = pgm.resolve_declared_type_token(tn, true, true);
+	    // catch([cv] type [*|&|&&] [name]) — the exception-declaration
+	    // grammar. The type may be namespace-qualified or a template-id
+	    // (`__cxxabiv1::__forced_unwind&` in libstdc++ stream bodies);
+	    // resolve_declared_type_token consumes the qualification suffix
+	    // from the stream, so the head token must be CONSUMED first — a
+	    // peeked head misaligns the suffix consume.
+	    while ( tn && (tn->id() == TokenID::tkCONST
+			|| tn->id() == TokenID::tkVOLATILE) )
+	    {
+		pgm.nextToken();
+		tn = pgm.peekToken();
+	    }
+	    TokenBase *head = pgm.nextToken();
+	    if ( !head )
+		pgm.Throw(this) << "Expected type in catch parameter" << flush;
+	    ctype = pgm.resolve_declared_type_token(head, true, true);
 	    if ( !ctype )
-		pgm.Throw(tn) << "Expected type in catch parameter" << flush;
-	    pgm.nextToken(); // consume type
+		pgm.Throw(head) << "Expected type in catch parameter" << flush;
 
-	    // Determine exception type tag
+	    // Declarator: fold trailing '*' / '&' / '&&' and interleaved
+	    // cv-qualifiers. A catch reference binds to the thrown value; at
+	    // the runtime's fidelity (int/double/cstr) ref and value coincide.
+	    while ( (tn = pgm.peekToken()) )
+	    {
+		if ( tn->id() == TokenID::tkStar )
+		{
+		    ptr_depth++;
+		    pgm.nextToken();
+		    continue;
+		}
+		if ( tn->id() == TokenID::tkBand || tn->id() == TokenID::tkLand
+		  || tn->id() == TokenID::tkCONST
+		  || tn->id() == TokenID::tkVOLATILE )
+		{
+		    pgm.nextToken();
+		    continue;
+		}
+		break;
+	    }
+
+	    // Determine exception type tag. The runtime throws int / double /
+	    // cstr only (exception_runtime.cpp MADC_EXCEPT_*): a class- or
+	    // pointer-typed clause can never match a madc-thrown exception, so
+	    // it gets tag 4 — a value no throw produces — and the dispatch
+	    // guard is never taken (GCC canon: catch(T&) matches T only, so a
+	    // thrown int must fall through to a later catch(...) clause).
 	    int tag = 99; // default: any
 	    DataType dt = ctype->definition.rawtype();
-	    if ( dt == DataType::dtINT || dt == DataType::dtINT32
+	    if ( dt == DataType::dtCHAR && ptr_depth > 0 )
+		tag = 3; // MADC_EXCEPT_CSTR
+	    else if ( ptr_depth > 0
+		   || dynamic_cast<DataDefCLASS *>(&ctype->definition) )
+		tag = 4; // MADC_EXCEPT_CLASS: unmatchable (see above)
+	    else if ( dt == DataType::dtINT || dt == DataType::dtINT32
 	      || dt == DataType::dtINT64 )
 		tag = 1; // MADC_EXCEPT_INT
 	    else if ( dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT )
@@ -30935,6 +30981,15 @@ TokenBase *TokenTRY::parse(Program &pgm)
 	    TokenCpnd *catch_scope = pgm.compounds.empty() ? NULL : pgm.compounds.top();
 	    DataDef *cv_type = &ddINT64; // default
 	    if ( catch_types.back() == 2 ) cv_type = &ddDOUBLE;
+	    else if ( catch_types.back() == 4 && ctype )
+	    {
+		// class/pointer catch: register the REAL type so the handler
+		// body type-checks; the clause never matches (tag 4 above), so
+		// the variable is never bound from an exception value.
+		cv_type = &ctype->definition;
+		for ( int pd = 0; pd < ptr_depth; pd++ )
+		    cv_type = pgm.getPointerType(cv_type);
+	    }
 	    pgm.addVariable(catch_scope, *cv_type, catch_varnames.back(), 1, NULL, false);
 	}
 	catch_bodies.push_back(pgm.parseCompound());
