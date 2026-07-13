@@ -179,6 +179,29 @@
   methods (a different derivation path than the .tcc OOL bodies rung 1
   fixed); the ×4 at istream.tcc:224/:329 are OOL stragglers.
 
+- **FAMILY D RUNG 4 (2026-07-13, commit @5dd9be6e): chained-arrow ×36
+  ELIMINATED.** The arrow method-call arm accepted subscript/operator->/
+  member/variable receivers only; any expression-backed receiver
+  (`this->rdbuf()->sgetc()`) now passes as parent_expr (class_this_arg
+  already handles it — recv_is_ptr). Latent defect fixed same commit:
+  VIRTUAL dispatch reads the receiver twice (__this + vptr load) — a
+  call receiver now materializes ONCE into `__madc_vrecv_N` (unadjusted;
+  owner-adjust wraps the temp read); g++ canon calls=1 guarded in
+  tests/testarrowchain.mad. Ladder: reducer corpus 574; release corpus
+  616 / 217 stubs; fulltest 685/0, packed 685/0. **BANKED task #35
+  (live crash, reducer tmp/red_arrow_8.mad): polymorphic OBJECT MEMBER
+  vptr never initialized by enclosing-class construction
+  (`class Mid { Leaf lf; }` → `(&m.lf)->vget()` crashes; standalone
+  works) — pre-existing, ctor-synthesis layer.** Remaining-rung map
+  (positions after rungs 3+4): `__cerb` ×108 [×76 anchor
+  `<istream>:60:67` = basic_istream CLASS-HEAD token] + `_M_num_put`
+  ×30 [SAME anchor] = ONE investigation: the IN-CLASS-defined body
+  derivation path (different from the .tcc OOL path rung 1 fixed);
+  `__n` ×45 = secondary of check-rejected lowerings (chase the c2mir
+  check families on fstream.tcc bodies); "member reference is not a
+  structure or union" ×19; `__c` ×13; "cannot dereference non-pointer"
+  ×13; typedef-typename ×8.
+
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):
 basic_string 45 · reverse_iterator 18 · locale machinery
