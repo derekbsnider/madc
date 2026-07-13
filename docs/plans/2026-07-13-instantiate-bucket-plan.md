@@ -226,6 +226,46 @@
   lives elsewhere in real libstdc++ layouts); needs vtable
   vbase-offset slots (madc's vbase model is fully static today).
 
+- **FAMILY D RUNG 6 (2026-07-13): member-template reference returns +
+  reference args — the ×68 istream/ostream family ELIMINATED.**
+  `skipped_template_function_return_type`'s backward scan counted `*`
+  but silently skipped `&`/`&&`: every skipped member fn template with
+  a reference return registered it BY VALUE — on the placeholder AND
+  the `__mti` instantiated def (instantiation parse, same scanner,
+  parser.cpp:38098 + :35488). member_template_method_call saw
+  returns_reference()==false → no N_DEREF wrap → drained
+  `{ return _M_extract(__n); }` one-liners emitted `&(call)` ("lvalue
+  required as unary & operand" ×68 at the istream/ostream class-head
+  anchors). **LIVE wrong-answer, not just drain**: chained mti calls
+  through a ref return mutated a temporary — tests/testmtref.mad
+  printed 0, g++ prints 8 (now JIT == emit-C-via-gcc == g++ == 8).
+  Fix: fold trailing declarators off the return-type range +
+  apply_declarators wrap (getPointerType/getReferenceType); the
+  template-id branch sees through trailing declarators too (heals the
+  latent `vector<T>& f(` grab-inside-angles trap). **Companion the fix
+  UNMASKED** (bodies that used to drop at check now reach MIR gen):
+  mti mangled-direct calls passed reference params BY VALUE — float
+  value in a pointer slot = MIR fatal "wrong type memory" (release
+  pack died in operator>>__o16); ref params (trailing `&` in the
+  substituted spelling) now route ref_param_arg_addr (lvalue → &x,
+  caller ref-param forwarded, cast rvalue → temp spill). GATE LESSON:
+  the c2mir check gate is NOT the last arbiter — a family fix can
+  advance bodies from check-drop to GEN-fatal, and only the release
+  pack + selfexe gate catch that. Probes committed: MADC_MTCALL_PROBE
+  (per-guard bail reasons), MADC_RETPROBE (registration return scan).
+  Ladder: reducer corpus 515 → **499**; istream/ostream 60:67 family
+  68 → **0**; check-gate items 167 → 103. HONEST FINDING: __cerb ×108 /
+  __n ×45 UNCHANGED — the "one-liners feed the secondaries" hypothesis
+  is REFUTED (they ride the .tcc definition drains). Banked next:
+  (1) ref-return of ASSIGNMENT `return __a = __a | __b;` (ios_base
+  ×9+9; C++ assign-is-lvalue vs C11; fix = lvalue-addr temp in the
+  translate_return ref arm, cir_builder.cpp:14182); (2) non-template
+  manipulators — `cout << std::hex` FAILS LIVE ("too few arguments" +
+  raw SHIFT; hex/dec/oct are inline-only, NOT exported like
+  endl/flush's W2 template path — needs local body derivation, whose
+  chain hits (1) via setf → operator|=); reducers tmp/red_mtref_1.mad,
+  tmp/red_iosflags_1.mad; baseline log tmp/bfL_freeze.log.
+
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):
 basic_string 45 · reverse_iterator 18 · locale machinery
