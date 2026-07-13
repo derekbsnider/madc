@@ -1,0 +1,28 @@
+// Rung 10 (family D): `*this` as a variable-like unary-* head.
+// `this` is a KEYWORD token (tkCPPKEYWORD), so `*this = sv` missed the
+// identifier deref arm and fell to the parseExpression fallback, which
+// swallowed `= sv` into the operand — building `*(this = sv)` and dying
+// in the c2mir check ("incompatible types in assignment to a pointer").
+// This is the trivial-class swap shape from basic_string.h/string_view
+// (`*this = __sv;` in self-assign helpers). Oracle: g++ prints the same.
+#include <cstdio>
+
+class V {
+public:
+    const char *p;
+    int n;
+    void swap(V& sv) { V tmp = *this; *this = sv; sv = tmp; }
+    void put(V& sv) { V *q = this; *q = sv; }
+};
+
+int main()
+{
+    V a; a.p = "aa"; a.n = 1;
+    V b; b.p = "bb"; b.n = 2;
+    a.swap(b);
+    printf("%s %d %s %d\n", a.p, a.n, b.p, b.n);
+    V c; c.p = "cc"; c.n = 3;
+    a.put(c);
+    printf("%s %d\n", a.p, a.n);
+    return 0;
+}

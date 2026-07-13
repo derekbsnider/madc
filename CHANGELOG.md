@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+- **fix(parser): `*this = sv` — deref-this as assignment lhs**
+  (Slice A family D, rung 10). The unary-`*` bare-head arm — the one
+  whose own `dname == "this"` → `__this` resolution has existed all
+  along — required a ttIdentifier head, but `this` is a KEYWORD token
+  (tkCPPKEYWORD), so `*this = sv` (the trivial-class swap shape;
+  string_view's `swap(*this)` self-assign helpers) skipped the arm
+  AND the rung-9 chain arm (no postfix follower) and fell to the
+  parseExpression fallback, which swallowed `= sv` into the operand:
+  `*(this = sv)` — a struct assigned to the pointer `this`
+  ("incompatible types in assignment to a pointer"). The head test
+  now also accepts `this` — ONLY `this`, via
+  contextual_identifier_name: other contextual keywords (`new`, the
+  named casts) are expression leaders the fallback must keep owning.
+  LIVE compile error fixed too (tests/testswapself.mad: user-class
+  member swap via `*this` — "bb 2 aa 1" == g++). Ladder: reducer
+  corpus 483 -> 480 drops (check-error drops 55 -> 50; the
+  basic_string_view swap x5 family eliminated); release corpus
+  521 -> 518.
+
 - **fix(parser): `*this->ptr() = c` — deref-of-method-call as
   assignment lhs** (Slice A family D, rung 9). The unary-`*` operand
   arm that parses ONLY the postfix chain (so trailing binary operators

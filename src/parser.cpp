@@ -22526,7 +22526,16 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    }
 			    else
 			    {
-				if ( deref_tb->type() == TokenType::ttIdentifier
+				if ( (deref_tb->type() == TokenType::ttIdentifier
+				      // `this` is a KEYWORD token (tkCPPKEYWORD) but names
+				      // the hidden __this receiver — a variable-like head.
+				      // Without it, `*this = sv` (the trivial-class swap
+				      // shape) fell to the parseExpression fallback below,
+				      // which swallowed `= sv` into the operand and built
+				      // `*(this = sv)`. Only `this` widens here: other
+				      // contextual keywords (`new`, casts) have their own
+				      // expression grammar the fallback must keep owning.
+				   || contextual_identifier_name(deref_tb) == "this")
 				  && !(peekToken()
 				    && (peekToken()->id() == TokenID::tkOpBrk
 				     || peekToken()->id() == TokenID::tkDeRef
@@ -22534,7 +22543,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				     || peekToken()->id() == TokenID::tkNS
 				     || peekToken()->id() == TokenID::tkOpSqr)) )
 				{
-				    std::string dname = ((TokenIdent *)deref_tb)->spelling();
+				    std::string dname = contextual_identifier_name(deref_tb);
 				    Variable *dvar = findVariable(dname);
 				    if ( !dvar && dname == "this"
 				      && code && code->method && code->method->owner_class )
