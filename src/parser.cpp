@@ -22802,7 +22802,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    else
 					Throw(inner_tb) << "expecting pointer expression after '*'" << flush;
 				}
-				else if ( deref_tb->type() == TokenType::ttIdentifier
+				else if ( (deref_tb->type() == TokenType::ttIdentifier
+					|| is_contextual_identifier_token(deref_tb))
 				   && peekToken()
 				   && (peekToken()->id() == TokenID::tkDeRef
 				    || peekToken()->id() == TokenID::tkDot
@@ -22810,7 +22811,15 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				{
 				    // Postfix chain (e.g. `res->name`, `p.x`, `tab[i]`)
 				    // — parse only the chain so trailing binary operators
-				    // like `*p->name == '$'` don't get swallowed.
+				    // like `*p->name == '$'` don't get swallowed. The
+				    // head test matches parsePostfixChain's own contract
+				    // (contextual identifiers included): `this` is a
+				    // KEYWORD token, and `*this->pptr() = __c` (the
+				    // streambuf sputc shape) otherwise fell to the full
+				    // parseExpression fallback, which swallowed `= __c`
+				    // into the deref operand — the assignment's lhs
+				    // became the raw CALL ("lvalue required as left
+				    // operand of assignment").
 				    deref_expr = parsePostfixChain(deref_tb);
 				}
 				else if ( deref_tb->type() == TokenType::ttIdentifier

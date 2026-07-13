@@ -327,6 +327,20 @@
   argument not a function") — emit-C hygiene item, not a rung
   regression.
 
+- **FAMILY D RUNG 9 (2026-07-13, same sitting): `*this->ptr() = c`.**
+  The unary-`*` postfix-chain arm (the one that parses ONLY the chain
+  so trailing operators don't get swallowed) required a ttIdentifier
+  head — `this` is a KEYWORD, so streambuf sputc's
+  `*this->pptr() = __c` (and fstream.tcc's `*this->gptr()` bodies)
+  fell to the full-parseExpression fallback which swallowed `= __c`
+  into the deref operand ("lvalue required as left operand of
+  assignment"). Head test widened to parsePostfixChain's own contract
+  (contextual identifiers). Live error too — testderefcall.mad
+  ("hi" == g++). Ladder 487 → **483**; the ENTIRE left-operand family
+  (streambuf ×4 + fstream.tcc ×6) eliminated; lvalue census down to
+  3 unrelated unary-& onesies (nested_exception/locale_facets/
+  basic_string:4245).
+
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):
 basic_string 45 · reverse_iterator 18 · locale machinery

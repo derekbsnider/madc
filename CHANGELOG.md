@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **fix(parser): `*this->ptr() = c` — deref-of-method-call as
+  assignment lhs** (Slice A family D, rung 9). The unary-`*` operand
+  arm that parses ONLY the postfix chain (so trailing binary operators
+  don't get swallowed) required a ttIdentifier head — but `this` is a
+  KEYWORD token, so `*this->pptr() = __c` (streambuf's sputc, the
+  fstream.tcc underflow/overflow `*this->gptr()` family) fell to the
+  full-parseExpression fallback, which swallowed `= __c` into the
+  deref operand: the assignment's lhs became the raw CALL ("lvalue
+  required as left operand of assignment" + int-to-pointer warning).
+  The head test now matches parsePostfixChain's own contract
+  (contextual identifiers included). LIVE compile error fixed too
+  (tests/testderefcall.mad: user-class `*this->ptr() = c` — "hi" ==
+  g++). Ladder: reducer corpus 487 -> 483 drops; the whole
+  "lvalue required as left operand" family (streambuf x4 +
+  fstream.tcc x6) eliminated — only 3 unrelated unary-& onesies
+  remain in the lvalue census.
+
 - **fix(parser+cir): stream manipulators — `cout << hex << 255` works**
   (Slice A family D, rung 8b). Two stacked fixes. (1) PARSE: the
   identifier arm consumed the token after a parenless function name
