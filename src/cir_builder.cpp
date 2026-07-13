@@ -3876,7 +3876,11 @@ static bool is_c2mir_builtin_call_name(const std::string &name)
 	return name.compare(0, 13, "__builtin_va_") == 0
 	    || name == "__builtin_add_overflow"
 	    || name == "__builtin_sub_overflow"
-	    || name == "__builtin_mul_overflow";
+	    || name == "__builtin_mul_overflow"
+	    // c2mir's ALLOCA set (c2mir.c): both spellings compile as the
+	    // builtin — no external symbol exists or is needed.
+	    || name == "alloca"
+	    || name == "__builtin_alloca";
 }
 
 static DataDefCLASS *class_behind(DataDef *dd);
@@ -19839,6 +19843,13 @@ node_t CirBuilder::translate_module(Program *prog)
 		for (size_t i = 0; i < pack_defs.size(); ++i) {
 			cir_collect_call_callees(pack_defs[i].second, pack_def_callees[i]);
 			cir_collect_cleanup_attr_fns(pack_defs[i].second, pack_def_callees[i]);
+			// A call through a fn-pointer PARAM is indirect — its name
+			// is not an external symbol the cascade should judge.
+			std::set<std::string> pnames;
+			cir_collect_funcdef_param_names(pack_defs[i].second, pnames);
+			for (std::set<std::string>::iterator pi = pnames.begin();
+			     pi != pnames.end(); ++pi)
+				pack_def_callees[i].erase(*pi);
 		}
 		// Symbol -> stash index, so a callee defined by a sibling stashed
 		// def counts as consumer-homed only while that sibling is visible.
@@ -20425,6 +20436,40 @@ void cir_collect_call_callees(node_t n, std::set<std::string> &out)
 			if (!op) break;
 			cir_collect_call_callees(op, out);
 		}
+}
+
+// Parameter names of a FUNC_DEF: op1 is the declarator N_DECL whose suffix
+// list carries the N_FUNC param list; each NAMED param is an N_SPEC_DECL
+// whose op1 declarator names it (an unnamed param is an N_TYPE — no name).
+// A call THROUGH a function-pointer parameter (`return __pf(*this);`,
+// libstdc++'s manipulator operator<< / __gnu_cxx::__stoa's __convf) parses
+// as N_CALL(N_ID __pf, ...) — a name the callee harvest must not treat as
+// an external symbol (C scoping: the param shadows any global).
+void cir_collect_funcdef_param_names(node_t fd, std::set<std::string> &out)
+{
+	if (!fd || fd->code != N_FUNC_DEF) return;
+	node_t decl = c2mir_node_op(fd, 1);
+	if (!decl || decl->code != N_DECL) return;
+	node_t suffixes = c2mir_node_op(decl, 1);
+	if (!suffixes || suffixes->code != N_LIST) return;
+	for (int i = 0; ; i++) {
+		node_t sfx = c2mir_node_op(suffixes, i);
+		if (!sfx) break;
+		if (sfx->code != N_FUNC) continue;
+		node_t params = c2mir_node_op(sfx, 0);
+		if (!params) break;
+		for (int j = 0; ; j++) {
+			node_t p = c2mir_node_op(params, j);
+			if (!p) break;
+			if (p->code != N_SPEC_DECL) continue;
+			node_t pdecl = c2mir_node_op(p, 1);
+			if (!pdecl || pdecl->code != N_DECL) continue;
+			node_t pid = c2mir_node_op(pdecl, 0);
+			if (pid && pid->code == N_ID && pid->u.s.s)
+				out.insert(pid->u.s.s);
+		}
+		break;
+	}
 }
 
 // v25: collect every identifier passed AS A CALL ARGUMENT (bare N_ID after

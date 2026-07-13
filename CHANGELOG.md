@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **fix(cir): pack callee-cascade stops judging alloca and fn-pointer-param
+  calls as external symbols** (Slice A family 3c).
+  `is_c2mir_builtin_call_name` now accepts `alloca`/`__builtin_alloca`
+  (c2mir's own ALLOCA builtin set — no external symbol exists or is
+  needed), and the harvested callee set subtracts the def's own parameter
+  names (`cir_collect_funcdef_param_names`): a call through a fn-pointer
+  parameter (`return __pf(*this);` — the ostream manipulator operators,
+  `__gnu_cxx::__stoa`'s `__convf`) is indirect, not a symbol to resolve.
+  Recovers 26 bodies on the <fstream> reducer freeze with zero new drops:
+  the manipulator `operator<</>>` families, the `num_put::_M_insert_int`
+  web (alloca-rooted), and all its `do_put` cascade victims.
+
 - **fix(mangle): typedef spellings desugar in mangled symbols; enum typedefs
   keep their enum dd** (Slice A family 3b). Two mangle bugs and one latent
   type-identity bug: (1) a namespace-scope scalar typedef (std::streamoff)
