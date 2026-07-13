@@ -61,7 +61,18 @@
     exports have `l` (Itanium mangles desugared types only);
     `R14__ostream_type`/`R14__istream_type` in member-template return types
     where the real exports have `RSo`/`RSi` (`_M_insert`/`_M_extract`/
-    `__basic_file`/`__ostream_insert`/`__num_base` clusters). Family 3b.
+    `__basic_file`/`__ostream_insert`/`__num_base` clusters). Family 3b —
+    **FIXED** (DataDef::mangle_scalar_spelling + FuncDef::mangle_param_spelling
+    + desugar_member_type_spelling; 0 leak survivors on the fstream reducer
+    freeze). Landed WITH the enum-typedef minting fix the first cut flushed
+    out: `ios_base::openmode` wrapped its enum in a plain DataDef (enum-ness
+    lost; the desugar spelled it `i`, `basic_filebuf::open` stopped binding
+    external, and its madc-compiled body hit the mbstate identity split —
+    testfstream/testdefer/testloop). Enum typedefs now keep the enum dd,
+    like class typedefs. Net live effect: wifstream string-open derive
+    4 check errors → 1 (residual = the wchar drain cluster, reducer
+    tmp/reducer_wifstream_open_string.mad); ~4 already-rotten wchar open
+    bodies moved from carried-with-int-flattened-enums to DEFBODY.
   - ~9 dropped-param mangles: `_S_create_c_locale` lost its reference param,
     `_List_node_base::swap` its second param, `_S_format_float` its first.
   - ~26 harvest misclassification: calls through fn-pointer PARAMS
@@ -81,6 +92,22 @@
 - Cross-runtime EH note (pre-existing, unchanged by 3a): a NATIVE-thrown
   `std::out_of_range` terminates instead of entering madc's setjmp/longjmp
   catch dispatch — live and packed behave identically; separate track.
+- **3b full-corpus honesty (measured on the release pack):** 0 net drop
+  recoveries — the seekoff/xsgetn caller family's reason CHANGED from
+  "calls unresolvable <typedef-leaked symbol>" to "c2mir check errors":
+  correct mangles let those bodies reach the check gate for the first
+  time, where the NEXT pre-existing gap layer (the mbstate/fpos struct
+  family) drops them. Drops 482 → 498 (+16: bodies with enum-typed
+  `openmode` DEFAULT-ARG expressions — fstream `open__o2`, stringstream
+  ctors — newly visible to the same residual). Pack completeness for
+  these families is gated on family D (drain parse gaps), not mangling.
+  The mangle fixes stand on live correctness: real symbols resolve
+  (at()/seekoff/_M_insert callers), enum typedefs keep identity.
+- Pre-existing live gap found while probing (NOT from this slice; fails
+  identically on the 3a-era binary): `istringstream >> int` mis-resolves
+  as SHIFT ("shift operands should be of an integer type") — the suite
+  has NO istringstream-extraction coverage. Reducer banked:
+  tmp/reducer_istringstream_extract.mad. Candidate early family-D item.
 
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):

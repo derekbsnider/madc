@@ -156,6 +156,13 @@ public:
     // knowledge (scripts/check-no-std-hardcoding.sh); callers ask the
     // marshalling question and never name the type.
     bool marshals_value_text() const;
+    // Itanium desugaring for a PLAIN SCALAR (a typedef alias dd like
+    // std::streamoff, or a builtin scalar dd): the builtin C spelling for
+    // its DataType ("long", "unsigned int", ...), or "" when this dd is not
+    // a plain scalar (enum/class/pointer/complex/... keep their own
+    // spelling). Itanium mangling encodes canonical types, never typedef
+    // names. Defined in src/madc_mangle.cpp.
+    std::string mangle_scalar_spelling() const;
     // Strict-equality (===) type-domain identity: do two types share one
     // value domain? Spec: docs/superpowers/specs/2026-06-11-strict-equality-design.md
     // §2.1. Defined in src/parser.cpp (needs the DataDef subclass set).

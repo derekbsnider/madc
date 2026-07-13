@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+- **fix(mangle): typedef spellings desugar in mangled symbols; enum typedefs
+  keep their enum dd** (Slice A family 3b). Two mangle bugs and one latent
+  type-identity bug: (1) a namespace-scope scalar typedef (std::streamoff)
+  minted an alias DataDef whose canonical spelling is the alias itself, and
+  the mangle-spelling builders copied it verbatim — `__basic_file::seekoff`
+  mangled `...ESt9streamoffSt12_Ios_Seekdir` where libstdc++ exports
+  `...ElSt12_Ios_Seekdir` (Itanium encodes canonical types, never typedefs);
+  fixed by `DataDef::mangle_scalar_spelling()` +
+  `FuncDef::mangle_param_spelling()` feeding all four symbol builders.
+  (2) a member-template's return typedef leaked (`_M_insert` mangled
+  `R14__ostream_type` where the export has `RSo`); fixed by resolving
+  ret/param cores through the owner's `type_aliases`
+  (`desugar_member_type_spelling`). (3) an ENUM typedef
+  (`ios_base::openmode` = `_Ios_Openmode`) wrapped the enum in a plain
+  DataDef alias, losing enum-ness — `DataDefENUM` casts missed on it, and
+  its integer DataType was indistinguishable from a scalar typedef; enum
+  typedefs now keep the enum dd itself, exactly like class typedefs.
+  Verified against nm(libstdc++) oracles in the unit suite; wifstream's
+  string-open derive improves from 4 c2mir check errors to 1 (the residual
+  is the pre-existing wchar drain cluster — reducer banked at
+  tmp/reducer_wifstream_open_string.mad).
+
 - **fix(mangle): trailing `...` now mangles as Itanium `z`** (Slice A of the
   instantiate-bucket plan, first family). A declared variadic C++ function
   (`std::__throw_out_of_range_fmt(const char*, ...)`) mangled without the

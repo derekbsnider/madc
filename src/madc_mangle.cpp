@@ -8,6 +8,7 @@
 
 #include "madc_mangle.h"
 #include <cstring>
+#include <typeinfo>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 
@@ -1006,6 +1007,36 @@ std::string std_string_type()
 // Spellings compare through the Itanium encoding, never raw strings:
 // spacing/substitution variants normalize, while genuinely distinct ABI
 // types (pre-C++11 std::basic_string vs std::__cxx11::) stay distinct.
+// Itanium desugaring for a PLAIN SCALAR dd (see datadef.h). A namespace or
+// class-scope scalar typedef mints an alias DataDef whose canonical spelling
+// is the ALIAS ("std::streamoff") — right for source fidelity, wrong inside a
+// mangled symbol (libstdc++ exports seekoff as ...El..., never
+// ...ESt9streamoff...). The typeid guard keeps this to EXACT DataDef
+// instances: every derived kind (enum, class, pointer, complex, SIMD, ...)
+// spells itself. char-width types stay out — dtCHAR == dtINT8, so `c` vs `a`
+// is not recoverable from the DataType alone.
+std::string DataDef::mangle_scalar_spelling() const
+{
+	if (typeid(*this) != typeid(DataDef))
+		return "";
+	if (basetype() != BaseType::btSimple)
+		return "";
+	switch (rawtype()) {
+	case DataType::dtBOOL:    return "bool";
+	case DataType::dtUINT8:   return "unsigned char";
+	case DataType::dtINT16:   return "short";
+	case DataType::dtUINT16:  return "unsigned short";
+	case DataType::dtINT32:   return "int";
+	case DataType::dtUINT32:  return "unsigned int";
+	case DataType::dtINT64:   return "long";
+	case DataType::dtUINT64:  return "unsigned long";
+	case DataType::dtFLOAT:   return "float";
+	case DataType::dtDOUBLE:  return "double";
+	case DataType::dtLDOUBLE: return "long double";
+	default:                  return "";
+	}
+}
+
 bool DataDef::marshals_value_text() const
 {
 	const std::string &spelling =

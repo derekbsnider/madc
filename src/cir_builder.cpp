@@ -10341,6 +10341,48 @@ static bool bind_member_template_param(const std::string &pattern,
 	return norm_type_w2(p) == norm_type_w2(a);
 }
 
+// Desugar a member-typedef core through the owner's class-scope aliases:
+// `__ostream_type&` names basic_ostream<C,T> inside the class, and the
+// mangled symbol must spell the canonical type (RSo), never the typedef
+// name (R14__ostream_type — libstdc++ exports no such symbol). Peels
+// trailing &/&&/* decorations and a leading const, resolves the bare core
+// through owner->type_aliases, reattaches; a scalar alias target desugars
+// further (streamsize -> long). Anything unresolved keeps its spelling.
+static std::string desugar_member_type_spelling(DataDefCLASS *owner,
+						const std::string &spell)
+{
+	if (!owner || spell.empty())
+		return spell;
+	size_t end = spell.size();
+	while (end > 0 && (spell[end - 1] == '&' || spell[end - 1] == '*'
+			   || spell[end - 1] == ' '))
+		--end;
+	std::string prefix;
+	size_t start = 0;
+	if (spell.compare(0, 6, "const ") == 0) {
+		prefix = "const ";
+		start = 6;
+	}
+	if (end <= start)
+		return spell;
+	std::string core = spell.substr(start, end - start);
+	if (core.find('<') != std::string::npos
+	    || core.find(':') != std::string::npos)
+		return spell;
+	std::map<std::string, DataDef *>::const_iterator ai =
+		owner->type_aliases.find(core);
+	if (ai == owner->type_aliases.end() || !ai->second)
+		return spell;
+	DataDef *dd = ai->second;
+	std::string canon = dd->mangle_scalar_spelling();
+	if (canon.empty())
+		canon = dd->canonical_cpp_spelling().empty()
+		      ? dd->name : dd->canonical_cpp_spelling();
+	if (canon.empty())
+		return spell;
+	return prefix + canon + spell.substr(end);
+}
+
 } // namespace
 
 node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
@@ -10395,10 +10437,13 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 	}
 	std::vector<std::string> params;
 	for (const std::string &p : callee->template_param_spellings)
-		params.push_back(template_placeholder_spelling(
-			p, callee->template_param_names));
-	std::string ret = template_placeholder_spelling(
-		callee->template_return_spelling, callee->template_param_names);
+		params.push_back(desugar_member_type_spelling(owner,
+			template_placeholder_spelling(
+				p, callee->template_param_names)));
+	std::string ret = desugar_member_type_spelling(owner,
+		template_placeholder_spelling(
+			callee->template_return_spelling,
+			callee->template_param_names));
 	const std::string &mname = callee->method_display_name.empty()
 				 ? tm->var.name : callee->method_display_name;
 	std::string sym = itanium_mangle_member_template_sub(
@@ -18129,7 +18174,7 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 			// bind_declared_cpp_symbol — so PKc / St13_Ios_Openmode match the ABI.
 			std::vector<std::string> psp;
 			for (size_t i = 1; i < fd->param_cpp_spellings.size(); ++i)
-				psp.push_back(fd->param_cpp_spellings[i]);
+				psp.push_back(fd->mangle_param_spelling(i));
 			fd->spell_varargs_tail(psp);
 			std::string sym = itanium_mangle_ctor_sub(cls, psp);
 			if (external_symbol_available(sym))
@@ -18169,7 +18214,7 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 				continue;
 			std::vector<std::string> psp;
 			for (size_t i = 1; i < fd->param_cpp_spellings.size(); ++i)
-				psp.push_back(fd->param_cpp_spellings[i]);
+				psp.push_back(fd->mangle_param_spelling(i));
 			fd->spell_varargs_tail(psp);
 			std::string sym;
 			if (dn.compare(0, 8, "operator") == 0)
