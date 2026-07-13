@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+- **fix(parser+cir): stream manipulators — `cout << hex << 255` works**
+  (Slice A family D, rung 8b). Two stacked fixes. (1) PARSE: the
+  identifier arm consumed the token after a parenless function name
+  and silently dropped it unless it was `(`/`;`/`...` — the second
+  `<<` in `cout << hex << 255` vanished and the expression tree
+  mis-reduced (ANY manipulator in non-terminal chain position broke,
+  including `cout << endl << "x"`; endl-LAST worked only because `;`
+  empties the operator stack cleanly; a previous instance of this
+  same swallow had been patched around by extending the fn-address
+  decay set per-operator). The looked-at token is now pushed back;
+  the shunting-yard finalizes the pending 0-arg call as an operand
+  exactly as it always did at `;`. (2) CIR: concrete-manipulator arm
+  in try_free_operator_call — hex/dec/oct/fixed/... are inline-only
+  (never exported, unlike endl/flush's mangled-direct W2 template
+  path), so `os << hex` lowers as `hex(&os)` through the NORMAL call
+  machinery (vbase-adjusted reference bind via rung 8a, on-use body
+  derivation, whose setf -> operator|= chain rung 7 unblocked), with
+  a static downcast recovering the STREAM lvalue for chaining (the
+  manipulator contract: it returns its argument). Guarded on the
+  1-ref-param/same-class-ref-return shape; operator>> included.
+  Tests: testmanip.mad (hex/dec/oct transitions, fixed, ostringstream
+  — madc == g++ byte-for-byte). Pack-neutral (487 drops) — the value
+  is live correctness. Pre-existing (NOT this rung): --emit=c11 of
+  any <iostream> TU emits a bogus `cleanup` attribute on the extern
+  cout declaration ("cleanup argument not a function").
+
 - **fix(parser): transitive virtual-base subobject offsets** (Slice A
   family D, rung 8a). base_offset_of returned -1 for a non-virtual
   base OF a virtual base (ios_base within basic_ios within ostream),

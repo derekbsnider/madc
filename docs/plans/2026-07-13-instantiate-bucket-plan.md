@@ -308,6 +308,25 @@
   CIR arm then completes the chain; oracles red_iosflags_1 = ff/0xff,
   red_manip_4 = newline+x.
 
+- **FAMILY D RUNG 8b (2026-07-13, gated same sitting): manipulators
+  WORK.** Parse root cause was one layer deeper than the stack
+  reduction: the identifier arm CONSUMED the token after a parenless
+  function name and dropped it unless `(`/`;`/`...` — the second `<<`
+  vanished (a previous instance of the same swallow had been patched
+  around via the fn-address decay set, see the comment at the decay
+  arm). Fix: push the looked-at token back (parenless path only;
+  parseCallFunc consumes exactly through its own `)`). The pending
+  0-arg call then finalizes through popOperator exactly as at `;`.
+  With the CIR concrete-manipulator arm now reachable:
+  `cout << hex << 255` = ff, `<< dec <<`/`<< oct <<` transitions,
+  fixed, ostringstream<<hex, mid-chain endl — ALL == g++
+  (tests/testmanip.mad). retref=1 — the ns-fn parse keeps ref returns
+  (the earlier suspicion was wrong). Pack-NEUTRAL (487): rung 8's
+  value is live correctness. PRE-EXISTING banked: --emit=c11 of any
+  <iostream> TU emits `cleanup` on the extern cout decl ("cleanup
+  argument not a function") — emit-C hygiene item, not a rung
+  regression.
+
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):
 basic_string 45 · reverse_iterator 18 · locale machinery

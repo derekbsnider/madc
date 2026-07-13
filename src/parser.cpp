@@ -20880,7 +20880,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    tb = nextToken();
 		    tc->line = tb->line;
 		    tc->column = tb->column;
-		    if ( tb->id() == TokenID::tkOpBrk )
+		    bool called_with_parens = ( tb->id() == TokenID::tkOpBrk );
+		    if ( called_with_parens )
 		    {
 			tb = parseCallFunc(tc);
 			DBG(cout << "parseCallFunc returned with token " << (char)tb->get() << endl);
@@ -20907,6 +20908,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    opStack.push(tc);
 		    if ( tb->id() == TokenID::tkSemi )
 			done = true;
+		    // Parenless call shape (`os << hex`, `f, 1`): the token
+		    // consumed above was only LOOKED at — give it back, or the
+		    // following operator vanishes and the expression tree
+		    // mis-reduces (`cout << hex << 255` lost its second `<<`;
+		    // any manipulator in non-terminal chain position broke).
+		    // The paren path never has a foreign token here:
+		    // parseCallFunc consumes exactly through its own `)`/`;`.
+		    else if ( !called_with_parens )
+			pushToken(tb);
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		if ( var->type->is_integer() )
