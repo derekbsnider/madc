@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+- **fix(parser): out-of-line nested-class definitions of class templates +
+  qualified member-typedef declarations** (Slice A family D, rungs 1–2).
+  (1) `template<...> class Owner<T>::Nested { ... };` (basic_istream's
+  `sentry` in <istream>/<ostream>) was mis-classified as a SPECIALIZATION
+  of Owner — the bogus spec could replace the primary pattern and the
+  nested type never registered (the `__cerb` ×86 drain family). The
+  qualified class-head is now detected (`template_class_head_is_qualified`),
+  captured per owner template (`OutOfLineNestedClassDef`), and parsed
+  eagerly with each monomorphization of the owner
+  (`instantiate_outofline_nested_classes`: typeparams → use-site args,
+  Owner/Owner<...> → the mangled tag; shell eager, method bodies stay
+  ODR-use-lazy; a defective nested body drops only itself).
+  (2) `string::size_type n = ...;` / `ios_base::iostate e = ...;` — a
+  qualified member-typedef DECLARATION at statement position inside a
+  function body unconditionally routed to the expression parser ("'X' is
+  not a static member of 'Y'"); the registered-datatype statement arm now
+  runs the same `datatype_statement_starts_qualified_expr()` +
+  `resolve_class_member_type_chain` probe the template-id arm already had.
+  New test tests/testoolnested.mad (byte-identical to g++). HONEST pack
+  finding: the drain-body gap ladder is deeper — on the <fstream> reducer
+  corpus these two rungs eliminate the wchar-identity ×149 and iostate ×96
+  families but advance bodies to catch-param/chained-arrow/_M_num_put
+  rungs (drops 429 → 538 mid-ladder; full release corpus 472 → 580,
+  trap stubs 178 → 211; every drop is a DEFBODY revert,
+  correctness-neutral — the packed suite stays the arbiter). Pack
+  completeness lands when the remaining rungs drain.
+
 - **fix(cir): member operators inherited from base classes now resolve**
   (Slice A family D prelude). CIR-time operator overload selection
   (`select_operator_overload` / `select_unary_operator_overload`) scanned

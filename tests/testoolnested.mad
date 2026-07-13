@@ -1,0 +1,52 @@
+#!../bin/madc
+// Out-of-line NESTED-CLASS definition of a class template
+// (`template<...> class Owner<T>::Nested { ... };` — the shape of
+// basic_istream/basic_ostream's `sentry` in <istream>/<ostream>) plus
+// qualified member-typedef DECLARATIONS at statement position
+// (`string::size_type n`, `ios_base::iostate e` — the statement every
+// stream sentry body opens with). Both were family-D drain parse gaps.
+#include <iostream>
+#include <string>
+using namespace std;
+
+template<typename T>
+class Outer {
+public:
+    class Inner;
+    T stored;
+    Outer() { stored = T(); }
+    int poke();
+};
+
+template<typename T>
+class Outer<T>::Inner {
+public:
+    bool ok;
+    Inner(Outer &o, bool b) { ok = !b; }
+};
+
+template<typename T>
+int Outer<T>::poke()
+{
+    Inner __cerb(*this, false);
+    if (__cerb.ok)
+        return 7;
+    return 3;
+}
+
+int main()
+{
+    Outer<int> o;
+    cout << "ool: " << o.poke() << endl;
+
+    // qualified member-typedef declaration at statement position
+    string s = "hello";
+    string::size_type n = s.size();
+    cout << "size_type: " << n << endl;
+
+    ios_base::iostate err = ios_base::goodbit;
+    err |= ios_base::failbit;
+    cout << "iostate: " << (err == ios_base::failbit ? "fail" : "other") << endl;
+
+    return 0;
+}

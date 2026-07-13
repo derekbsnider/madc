@@ -2601,6 +2601,28 @@ public:
 	const std::string &registered_mangled, DataDefCLASS *ddc,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
 	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot);
+    // An out-of-line NESTED-CLASS definition of a class template
+    // (`template<...> class Owner<T>::Nested { ... };` — basic_istream's
+    // `sentry`, [class.nest] + [temp]). NOT a specialization of Owner: the
+    // class-head name is qualified. Captured keyed by "<ns>::<Owner>"; when
+    // Owner<Args> is monomorphized the decl is substituted (typeparams ->
+    // concrete args, the Owner template-id -> the mangled instantiation tag)
+    // and parsed as a qualified nested-class definition of the instantiated
+    // owner. The SHELL parses eagerly with the owner (name lookup inside the
+    // owner's member bodies needs the type); method bodies inside it stay
+    // ODR-use-lazy via the normal member-body deferral.
+    struct OutOfLineNestedClassDef {
+	std::string nested_name;
+	std::vector<std::string> typeparams;	// owner type-params (positional)
+	std::vector<bool> typeparam_is_pack;
+	std::vector<TokenBase *> decl;	// full decl incl body, owned clones
+    };
+    std::map<std::string, std::vector<OutOfLineNestedClassDef> >
+	out_of_line_nested_class_defs;
+    void instantiate_outofline_nested_classes(
+	const std::string &class_name, const std::string &defining_namespace,
+	const std::string &registered_mangled,
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot);
     bool parsing_cpp_struct_class;
     // Set by TokenSTRUCT::parse when delegating a UNION with class-only syntax
     // to the class parser ([class.union]); TokenCLASS::parse consumes it and

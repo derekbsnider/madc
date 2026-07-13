@@ -125,6 +125,33 @@
   `while (s >> a)` needs operator-bool-in-boolean-context (explicit
   operator bool on basic_ios) — DIFFERENT machinery (conversion
   operator, not overload selection), reducer tmp/red_iss_9.mad.**
+- **FAMILY D RUNGS 1–2 (2026-07-13, same sitting): the `__cerb` root cause
+  is a TEMPLATE-CLASSIFICATION bug** — `template<...> class
+  Owner<T>::Nested {...};` (basic_istream/basic_ostream's `sentry`) was
+  captured as a SPECIALIZATION of Owner (TokenTEMPLATE::parse's class path
+  never checked for `::` after the template-id); the bogus spec could
+  replace the primary (reducer tmp/red_cerb_2.mad: "Unknown class scope")
+  and sentry never existed as a type. Fixed: qualified-head detection +
+  OutOfLineNestedClassDef capture + eager shell parse per owner
+  monomorphization. Rung 2: sentry bodies' first statement
+  (`ios_base::iostate __err = ios_base::goodbit;`) exposed that qualified
+  member-typedef DECLARATIONS at statement position inside bodies always
+  routed to the expression parser — `string::size_type n` failed in plain
+  user code (!); the registered-datatype arm now runs the same
+  qualified-expr discriminator + member-type-chain probe as the
+  template-id arm. Test tests/testoolnested.mad. **LADDER FINDING (the
+  slice's central measurement): the drain bodies fail through a gap
+  LADDER — fixing a rung advances bodies to the next. fstream-reducer
+  corpus (tmp/_bf3.cpp): baseline 429 drops [wchar-'equal' ×149, __cerb
+  ×86, __n ×45]; rung 1 → 534 [wchar family GONE, iostate ×96 surfaced];
+  rungs 1+2 → 538 [iostate GONE; catch-param ×43 (`__catch(__forced_
+  unwind&)`), chained arrow ×36, `_M_num_put` member ×30, __cerb ×108 as
+  more flavors start]. Remaining rungs to net-positive: catch-parameter
+  types, chained arrow in drain bodies, protected-member access through
+  the basic_ios vbase (`this->_M_num_put`), the `__n` ×45 identifier-scope
+  family. Full release corpus: drops 472 → 580, trap stubs 178 → 211.
+  Every drop is a DEFBODY revert (correctness-neutral); live gates stay
+  the arbiter per commit.**
 
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):

@@ -4554,6 +4554,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	register_outofline_member_instantiations(td.class_name,
 	    td.defining_namespace, registered_mangled, inst_ddc,
 	    arg_types_by_slot, arg_tokens_by_slot);
+	// Out-of-line NESTED-CLASS definitions (basic_istream's sentry) parse
+	// eagerly with the owner — the owner's member bodies name the type.
+	instantiate_outofline_nested_classes(td.class_name,
+	    td.defining_namespace, registered_mangled, arg_tokens_by_slot);
     }
 
     flat_datatype_map_iter now = datatype_map.find(registered_mangled);
@@ -32267,6 +32271,84 @@ static bool skipped_template_outofline_member(
     return true;
 }
 
+// `template<...> class Owner<T>::Nested { ... };` — an out-of-line NESTED-CLASS
+// definition ([class.nest] + [temp]), shaped [class|struct, Owner, <...>, ::,
+// Nested, body]. v1 recognizes the plain single-level form (basic_istream's
+// sentry); a further `::` or `<` after Nested (deeper nesting / member class
+// template) falls back to the existing paths.
+static bool skipped_template_outofline_nested_class(
+	Program &pgm, const std::vector<TokenBase *> &tokens,
+	std::string &class_name_out, std::string &nested_name_out)
+{
+    if ( tokens.size() < 7 || !tokens[0]
+      || (tokens[0]->id() != TokenID::tkCLASS && tokens[0]->id() != TokenID::tkSTRUCT)
+      || !is_contextual_identifier_token(tokens[1])
+      || !tokens[2] || tokens[2]->id() != TokenID::tkLT )
+	return false;
+    int depth = 0;
+    size_t i = 2;
+    for ( ; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    return false;
+	if ( t->id() == TokenID::tkLT )
+	    ++depth;
+	else if ( t->id() == TokenID::tkGT )
+	    --depth;
+	else if ( t->id() == TokenID::tkBSR )
+	    depth -= 2;
+	else if ( t->id() == TokenID::tkOpBrc || t->id() == TokenID::tkSemi )
+	    return false;
+	if ( depth <= 0 )
+	    break;
+    }
+    if ( i + 2 >= tokens.size() || !tokens[i + 1]
+      || tokens[i + 1]->id() != TokenID::tkNS
+      || !is_contextual_identifier_token(tokens[i + 2]) )
+	return false;
+    if ( i + 3 < tokens.size() && tokens[i + 3]
+      && (tokens[i + 3]->id() == TokenID::tkNS
+       || tokens[i + 3]->id() == TokenID::tkLT) )
+	return false;
+    std::string cls = contextual_identifier_name(tokens[1]);
+    if ( cls.empty() || !pgm.find_template(cls, pgm.current_namespace()) )
+	return false;
+    class_name_out = cls;
+    nested_name_out = contextual_identifier_name(tokens[i + 2]);
+    return true;
+}
+
+// Lookahead (the class keyword already consumed): does the pending stream shape
+// `Name <balanced args> ::` — a QUALIFIED class-head? That is an out-of-line
+// nested-class definition, not a specialization of Name.
+static bool template_class_head_is_qualified(Program &pgm)
+{
+    if ( pgm.tokens.size() < 4 || !pgm.tokens[0]
+      || !is_contextual_identifier_token(pgm.tokens[0])
+      || !pgm.tokens[1] || pgm.tokens[1]->id() != TokenID::tkLT )
+	return false;
+    int depth = 0;
+    for ( size_t i = 1; i < pgm.tokens.size(); ++i )
+    {
+	TokenBase *t = pgm.tokens[i];
+	if ( !t )
+	    return false;
+	if ( t->id() == TokenID::tkLT )
+	    ++depth;
+	else if ( t->id() == TokenID::tkGT )
+	    --depth;
+	else if ( t->id() == TokenID::tkBSR )
+	    depth -= 2;
+	else if ( t->id() == TokenID::tkOpBrc || t->id() == TokenID::tkSemi )
+	    return false;
+	if ( depth <= 0 )
+	    return i + 1 < pgm.tokens.size() && pgm.tokens[i + 1]
+		&& pgm.tokens[i + 1]->id() == TokenID::tkNS;
+    }
+    return false;
+}
+
 // On monomorphizing ClassName<Args>, materialize every captured out-of-line
 // member definition of ClassName as a deferred full-definition body of the
 // instantiated class, keyed by the member's emit symbol. Substitution mirrors
@@ -32574,6 +32656,164 @@ static bool is_template_type_parameter_name(
 	if ( typeparams[i] == name )
 	    return true;
     return false;
+}
+
+// On monomorphizing Owner<Args>, parse every captured out-of-line NESTED-CLASS
+// definition of Owner (`template<...> class Owner<T>::Nested {...};` —
+// basic_istream's `sentry`) as a qualified nested-class definition of the
+// instantiated owner: substitute the owner's type-parameters with the use-site
+// args (defaults are already materialized into arg_tokens_by_slot) and collapse
+// the Owner name / Owner<...> template-id to the mangled instantiation tag,
+// then inject + parse via the class keyword — TokenCLASS::parse's
+// qualified-head path attaches Nested to the registered owner. The SHELL
+// parses eagerly with the owner (name lookup in the owner's member bodies
+// needs the type); method bodies inside it stay ODR-use-lazy via the normal
+// member-body deferral. A parse failure drops THIS nested def only (the owner
+// stays valid — the pre-fix semantics), mirroring the pack drain tolerance.
+void Program::instantiate_outofline_nested_classes(
+	const std::string &class_name, const std::string &defining_namespace,
+	const std::string &registered_mangled,
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot)
+{
+    std::map<std::string, std::vector<OutOfLineNestedClassDef> >::iterator it =
+	out_of_line_nested_class_defs.find(defining_namespace + "::" + class_name);
+    if ( it == out_of_line_nested_class_defs.end() )
+	return;
+    for ( size_t di = 0; di < it->second.size(); ++di )
+    {
+	OutOfLineNestedClassDef &def = it->second[di];
+	// Once-only: the nested class registers as Owner__Nested. The owner
+	// pattern's in-class `class Nested;` FORWARD declaration registers an
+	// empty placeholder under the same name — only a COMPLETED definition
+	// (members/methods/size) stops the definition parse.
+	std::string reg_nested = registered_mangled + "__" + def.nested_name;
+	{
+	    datadef_map_citer smi = struct_map.find(reg_nested);
+	    if ( smi != struct_map.end() )
+	    {
+		DataDefCLASS *ex = dynamic_cast<DataDefCLASS *>(smi->second);
+		if ( !ex || !ex->members.empty() || !ex->methods.empty()
+		  || ex->size > 0 )
+		    continue;
+	    }
+	}
+	// Pack-parameter owners (the <ranges> views) are not substituted here
+	// yet; the def stays unparsed — exactly today's semantics.
+	bool has_pack = false;
+	for ( size_t i = 0; i < def.typeparam_is_pack.size(); ++i )
+	    if ( def.typeparam_is_pack[i] )
+		has_pack = true;
+	if ( has_pack )
+	    continue;
+	// Substitute: typeparam -> use-site arg tokens (positional);
+	// Owner / Owner<...> -> the mangled instantiation tag.
+	std::vector<TokenBase *> inj;
+	bool subst_ok = true;
+	for ( size_t bi = 0; bi < def.decl.size() && subst_ok; ++bi )
+	{
+	    TokenBase *bt = def.decl[bi];
+	    if ( !bt )
+		continue;
+	    if ( is_contextual_identifier_token(bt) )
+	    {
+		std::string s = contextual_identifier_name(bt);
+		size_t slot = def.typeparams.size();
+		for ( size_t k = 0; k < def.typeparams.size(); ++k )
+		    if ( def.typeparams[k] == s )
+		    {
+			slot = k;
+			break;
+		    }
+		if ( slot < def.typeparams.size() )
+		{
+		    if ( slot >= arg_tokens_by_slot.size()
+		      || arg_tokens_by_slot[slot].empty() )
+		    {
+			subst_ok = false;
+			break;
+		    }
+		    for ( size_t ai = 0; ai < arg_tokens_by_slot[slot].size(); ++ai )
+			inj.push_back(arg_tokens_by_slot[slot][ai]
+				      ? arg_tokens_by_slot[slot][ai]->clone() : NULL);
+		    continue;
+		}
+		if ( s == class_name )
+		{
+		    TokenIdent *ni = (TokenIdent *)bt->clone();
+		    set_token_spelling(ni, registered_mangled);
+		    inj.push_back(ni);
+		    if ( bi + 1 < def.decl.size() && def.decl[bi + 1]
+		      && def.decl[bi + 1]->id() == TokenID::tkLT )
+		    {
+			bool split_gt = false;
+			bi = template_id_suffix_end(def.decl, bi + 1, &split_gt);
+			if ( split_gt )
+			    inj.push_back(new TokenGT());
+		    }
+		    continue;
+		}
+	    }
+	    inj.push_back(bt->clone());
+	}
+	if ( !subst_ok )
+	{
+	    for ( size_t ii = 0; ii < inj.size(); ++ii )
+		delete inj[ii];
+	    continue;
+	}
+	inj.push_back(new TokenSemi());
+	// The caller's pending tokens sit BELOW the injection; after the parse
+	// (success or failure) drain any leftover injected tokens so the
+	// use-site statement parse resumes exactly where it was.
+	size_t pre_size = tokens.size();
+	for ( std::vector<TokenBase *>::reverse_iterator ri = inj.rbegin();
+	      ri != inj.rend(); ++ri )
+	    pushToken(*ri);
+	// Same top-level isolation discipline as instantiate_template_use's
+	// pattern re-parse: the nested-class definition must not inherit the
+	// caller's function scope or parse mode.
+	std::stack<TokenCpnd *> saved_compounds;
+	std::swap(compounds, saved_compounds);
+	std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	    saved_typedef_shadows;
+	std::swap(block_typedef_shadows, saved_typedef_shadows);
+	std::vector<DataDefCLASS *> saved_class_scope_stack;
+	std::swap(class_scope_stack, saved_class_scope_stack);
+	std::string saved_func = cur_func_name;
+	cur_func_name.clear();
+	bool saved_def_only = class_definition_only;
+	bool saved_cpp_struct_class = parsing_cpp_struct_class;
+	bool saved_cpp_union_class = parsing_cpp_union_class;
+	class_definition_only = false;
+	parsing_cpp_struct_class = false;
+	parsing_cpp_union_class = false;
+	{
+	    NamespaceScope ns_scope(*this, defining_namespace);
+	    TokenBase *kw = nextToken();
+	    try
+	    {
+		parseKeyword((TokenKeyword *)kw);
+	    }
+	    catch ( ... )
+	    {
+		// The throw site already reported to stderr; the owner's
+		// instantiation must not fail for a defective nested body.
+	    }
+	}
+	while ( tokens.size() > pre_size )
+	    nextToken();
+	std::swap(class_scope_stack, saved_class_scope_stack);
+	std::swap(compounds, saved_compounds);
+	unwind_block_typedef_shadows(0, "ool-nested");
+	std::swap(block_typedef_shadows, saved_typedef_shadows);
+	cur_func_name = saved_func;
+	class_definition_only = saved_def_only;
+	parsing_cpp_struct_class = saved_cpp_struct_class;
+	parsing_cpp_union_class = saved_cpp_union_class;
+	DBG(std::cout << "instantiate_outofline_nested_classes(): " << reg_nested
+	    << (struct_map.find(reg_nested) != struct_map.end()
+		? " registered" : " did not register") << std::endl);
+    }
 }
 
 static void record_skipped_template_return_pattern(
@@ -38706,13 +38946,59 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.register_template_alias(ad);
 	return NULL;
     }
-    if ( class_kw->id() != TokenID::tkCLASS && class_kw->id() != TokenID::tkSTRUCT )
+    // A QUALIFIED class-head (`class Owner<T>::Nested { ... };`) is an
+    // out-of-line nested-class definition — route it down the skip path with
+    // the other out-of-line member forms, NOT into the class path (which
+    // would mis-register it as a specialization of Owner and lose the nested
+    // type — basic_istream's `sentry`, the `__cerb` drain family).
+    bool ool_nested_class_head = (class_kw->id() == TokenID::tkCLASS
+			       || class_kw->id() == TokenID::tkSTRUCT)
+			      && template_class_head_is_qualified(pgm);
+    if ( ool_nested_class_head
+      || (class_kw->id() != TokenID::tkCLASS && class_kw->id() != TokenID::tkSTRUCT) )
     {
 	std::vector<TokenBase *> skipped_decl;
 	pgm.skip_template_nonclass_declaration(class_kw, &skipped_decl);
 	pgm.last_skipped_template_decl = skipped_decl;
 	pgm.last_skipped_template_typeparams = typeparams;
 	pgm.last_skipped_template_typeparam_is_pack = typeparam_is_pack;
+	// Out-of-line NESTED-CLASS definition: capture keyed by the owner
+	// template; instantiate with each monomorphization of the owner
+	// (including any already recorded — the replay mirrors the member-def
+	// path below).
+	if ( ool_nested_class_head && !pgm.deferred_function_body_sink )
+	{
+	    std::string oolc_class, oolc_nested;
+	    bool oolc_ok = skipped_template_outofline_nested_class(
+				pgm, skipped_decl, oolc_class, oolc_nested);
+	    DBG(std::cout << "TokenTEMPLATE::parse() out-of-line nested class: "
+		<< (oolc_ok ? oolc_class + "::" + oolc_nested
+			    : std::string("unrecognized shape"))
+		<< " (" << skipped_decl.size() << " tokens)" << std::endl);
+	    if ( oolc_ok )
+	    {
+		Program::OutOfLineNestedClassDef nd;
+		nd.nested_name = oolc_nested;
+		nd.typeparams = typeparams;
+		nd.typeparam_is_pack = typeparam_is_pack;
+		for ( size_t i = 0; i < skipped_decl.size(); ++i )
+		    nd.decl.push_back(skipped_decl[i] ? skipped_decl[i]->clone() : NULL);
+		Program::TemplateDef *owner_template =
+		    pgm.find_template(oolc_class, pgm.current_namespace());
+		std::string owner_ns = owner_template
+		    ? owner_template->defining_namespace : pgm.current_namespace();
+		std::string oolc_key = owner_ns + "::" + oolc_class;
+		pgm.out_of_line_nested_class_defs[oolc_key].push_back(nd);
+		std::map<std::string, std::vector<Program::OutOfLineMemberInstantiation> >::iterator ni =
+		    pgm.out_of_line_member_instantiations.find(oolc_key);
+		if ( ni != pgm.out_of_line_member_instantiations.end() )
+		    for ( size_t ri = 0; ri < ni->second.size(); ++ri )
+			pgm.instantiate_outofline_nested_classes(oolc_class,
+			    owner_ns, ni->second[ri].registered_mangled,
+			    ni->second[ri].arg_tokens_by_slot);
+	    }
+	    return NULL;
+	}
 	// C++14 VARIABLE TEMPLATE (`template<...> [inline constexpr] T name = init;`):
 	// register the name + typeparams + initializer so a use `name<Arg>` resolves
 	// (std::numbers::e_v/pi_v/…). NOT a function or out-of-line member.
@@ -43998,6 +44284,21 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 			    {
 				if ( !compounds.empty() )
 				{
+				    // `Type::member` at statement position inside a
+				    // body: a qualified member TYPE
+				    // (`string::size_type n`, `ios_base::iostate e`)
+				    // is a DECLARATION — probe it exactly like the
+				    // template-id branch above. A qualified
+				    // expression tail (call/assign/++/--) stays with
+				    // the expression parser; the chain probe consumes
+				    // nothing when `::name` is not a member type.
+				    if ( !datatype_statement_starts_qualified_expr() )
+					if ( DataDefCLASS *owner =
+						dynamic_cast<DataDefCLASS *>(
+						    &(*dmi)->definition) )
+					    if ( TokenDataType *member =
+						    resolve_class_member_type_chain(owner, tb) )
+						return parseDeclaration(member);
 				    resetPrevToken();
 				    return parseExprStmt(tb);
 				}
