@@ -20045,6 +20045,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				// whole member expression as parent_expr so class_this_arg
 				// emits the full `__this->p` pointer value as __this.
 				recv_parent = lhs;
+			    else if ( expr_backed_lhs )
+				// Any other pointer-valued EXPRESSION receiver — a
+				// pointer-returning call chain (`s->rdbuf()->sgetc()`),
+				// a deref, a cast: class_this_arg translates parent_expr
+				// and passes its pointer value as __this (recv_is_ptr),
+				// exactly like the subscript/operator-> cases.
+				recv_parent = lhs;
 			    else if ( lhs->type() != TokenType::ttVariable )
 				Throw(tb) << "chained arrow method call not yet supported" << flush;
 			    TokenCallMethod *tc = new TokenCallMethod(*obj_var, *var);

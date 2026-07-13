@@ -7910,6 +7910,43 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	// EVERY dispatch flavor below — the externally-bound (emit_symbol) and
 	// member-template paths previously returned early WITHOUT this adjustment,
 	// so the real libstdc++ good()/rdstate() read the wrong bytes.
+	// Receiver-once: a side-effectful (call-expression) receiver of a VIRTUAL
+	// method is read twice by the vcall lowering below — the __this argument
+	// and the vptr load ("freshly-derived receiver"). Evaluate it once into a
+	// typed temp and let both reads use the temp (g++ canon: the receiver
+	// expression of `f()->vmethod()` is evaluated exactly once). Pure lvalue
+	// receivers (variable, member, subscript) keep their direct lowering. The
+	// temp holds the UNADJUSTED receiver: the vptr load wants the most-derived
+	// pointer, while the owner-subobject adjustment below wraps the temp read
+	// for __this.
+	char vrecv_tmp[48]; vrecv_tmp[0] = '\0';
+	if (tm->parent_expr
+	    && (tm->parent_expr->type() == TokenType::ttCallFunc
+		|| tm->parent_expr->type() == TokenType::ttCallMethod)
+	    && callee) {
+		std::string mname_chk = (sym.size() > recv_class->name.size() + 2)
+					? sym.substr(recv_class->name.size() + 2) : sym;
+		size_t vg; int vs;
+		if (recv_class->find_vslot(mname_chk, vg, vs)) {
+			snprintf(vrecv_tmp, sizeof(vrecv_tmp), "__madc_vrecv_%d",
+				 m_strtmp_counter++);
+			// struct <recv> *__madc_vrecv_N = <receiver>;
+			node_t vr_spec = list();
+			append(vr_spec, class_tag_ref(recv_class));
+			node_t vr_dl = list();
+			append(vr_dl, pointer());
+			node_t vr_sd = simple(N_SPEC_DECL, origin);
+			append(vr_sd, node1(N_SHARE, vr_spec));
+			append(vr_sd, node2(N_DECL, id(vrecv_tmp, origin), vr_dl));
+			append(vr_sd, ignore());
+			append(vr_sd, ignore());
+			append(vr_sd, this_arg);
+			CIR_NODE(vr_sd)->synth_from_origin = true;
+			m_pending_stmts.push_back(vr_sd);
+			this_arg = id(vrecv_tmp, origin);
+		}
+	}
+
 	DataDefCLASS *owner = (callee && !callee->parameters.empty())
 				? class_behind(callee->parameters[0]) : NULL;
 	if (owner && recv_class && owner != recv_class) {
@@ -8067,7 +8104,11 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 		std::string vfld = (G.this_offset == 0)
 			? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
 		DataDefCLASS *dummy = NULL;
-		node_t recv_for_vptr = class_this_arg(tm, dummy, origin);
+		// A call-expression receiver was materialized once above — read the
+		// temp; re-deriving via class_this_arg would emit the call twice.
+		node_t recv_for_vptr = vrecv_tmp[0]
+			? id(vrecv_tmp, origin)
+			: class_this_arg(tm, dummy, origin);
 		// (void**)recv->__vptr[_<off>] — load the owning group's vptr field by
 		// name from the most-derived receiver (no vowner cast: the field already
 		// lives in recv_class's struct at the right offset).

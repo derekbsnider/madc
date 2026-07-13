@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+- **fix(parser+cir): chained arrow method calls — call-expression receivers**
+  (Slice A family D, rung 4). `p->mid()->leaf()->get()` (the libstdc++
+  stream-body shape `this->rdbuf()->sgetc()`) threw "chained arrow method
+  call not yet supported": the arrow method-call arm accepted only
+  subscript / operator-> / member / variable receivers. Any
+  expression-backed receiver now passes as parent_expr — class_this_arg
+  already translates it and passes the pointer value as __this
+  (recv_is_ptr), the same contract the subscript/operator-> arms use.
+  The newly-reachable path exposed a latent defect fixed in the same
+  change: the VIRTUAL dispatch lowering reads the receiver twice (the
+  __this argument and the vptr load), which would evaluate a
+  call-expression receiver twice (double side effects). A virtual chained
+  call now materializes the receiver once into a typed temp
+  (`__madc_vrecv_N`) read by both; g++ canon `calls=1` guarded in the new
+  test tests/testarrowchain.mad (byte-identical to g++). The chained-arrow
+  ×36 drain family is eliminated (ladder: <fstream> reducer corpus
+  552 → 574 drops as unblocked bodies advance; DEFBODY reverts,
+  correctness-neutral). BANKED separately (task #35): a PRE-EXISTING live
+  crash uncovered by the bisect — a polymorphic OBJECT MEMBER's vptr is
+  never initialized by the enclosing class's construction
+  (`class Mid { Leaf lf; }` → `(&m.lf)->vget()` crashes; reducer
+  tmp/red_arrow_8.mad; standalone `Leaf l;` works).
+
 - **fix(parser): full exception-declaration grammar in catch parameters**
   (Slice A family D, rung 3). `TokenTRY::parse` accepted only
   `catch(single-token-type [name])` — the type head was resolved from a
