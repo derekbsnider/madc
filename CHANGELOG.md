@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+- **fix(cir): ref-return of a class assignment + ranked-callee operand
+  typing** (Slice A family D, rung 11). Two stacked root causes under
+  the drained `assign(basic_string&& __str) { return *this =
+  std::move(__str); }` family (x9). (1) A ref-returning function whose
+  return operand is a class-to-class `=` wrapped N_ADDR around a
+  non-lvalue (the trivial bit-copy N_ASSIGN / the memberwise
+  stmt-expr) — "lvalue required as unary & operand". translate_return
+  now diverts the implicit-operator= shapes: emit the assignment as a
+  statement, return the lhs ADDRESS (the expression's value is the lhs
+  itself per [expr.ass]); a USER-declared operator= keeps its existing
+  flow (the call IS the value). (2) Beneath it, the rhs
+  `std::move(__str)` TYPED as `allocator<C>&`: a late-bound overload
+  set's parse-bound Variable is an arbitrary set member (whichever
+  `move` instantiation registered last — the allocator one from
+  operator=(&&)'s __alloc_on_move, drained just before), and
+  CirBuilder::operand_object_class read that raw datadef.
+  operand_object_class now types CALL operands by the RANKED callee's
+  return (call_target_funcdef → return_value_type) — the same rule
+  Program::operand_value_datadef and ref_returning_call_type already
+  follow — so operator= selection and the memberwise guard see the
+  real class. Also: the pack check gate now prints each defective
+  item's SYMBOL (pack_gate_note reuses cir_top_item_symbol), which is
+  what made the mis-attribution visible ("9 errors" belonged to
+  _M_construct mti items, not assign). Live test
+  tests/testrefclassassign.mad (trivial / non-trivial / user
+  operator=, reference identity checked — == g++). Ladder: reducer
+  corpus 480 -> 471 drops (check drops 50 -> 41; assign__o2 x9
+  ELIMINATED, zero new drops); release corpus 518 -> 509.
+
 - **fix(parser): `*this = sv` — deref-this as assignment lhs**
   (Slice A family D, rung 10). The unary-`*` bare-head arm — the one
   whose own `dname == "this"` → `__this` resolution has existed all

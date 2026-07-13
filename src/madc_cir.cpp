@@ -329,9 +329,9 @@ static const char *cir_top_item_symbol(node_t n)
 // each printed error to its item (no silent caps; fires only on defects).
 static void pack_gate_note(node_t item, int index, unsigned n_errs, void *data)
 {
-    (void)item;
-    fprintf(stderr, "pack check gate: item %d: %u check error(s)\n",
-	    index, n_errs);
+    const char *sym = cir_top_item_symbol(item);
+    fprintf(stderr, "pack check gate: item %d (%s): %u check error(s)\n",
+	    index, sym ? sym : "?", n_errs);
     ((std::vector<int> *)data)->push_back(index);
 }
 

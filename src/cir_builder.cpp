@@ -7560,6 +7560,24 @@ static DataDefCLASS *class_behind(DataDef *dd)
 DataDefCLASS *CirBuilder::operand_object_class(TokenBase *t)
 {
 	if (!t) return NULL;
+	// A CALL operand types by its RESOLVED callee's return: the parse-bound
+	// Variable is an arbitrary member of a late-bound overload set (the
+	// parser defers ranking to CIR — same rule as ref_returning_call_type
+	// and Program::operand_value_datadef). Without this, the drained
+	// `return *this = std::move(__str)` typed rhs by whichever `move`
+	// instantiation registered last (an allocator's), so operator= selection
+	// and the memberwise guard both saw the wrong class.
+	if (TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(t)) {
+		if (!tcf->return_override) {
+			if (FuncDef *cfd = call_target_funcdef(tcf)) {
+				// return_value_type() already yields the referent
+				// of a reference return.
+				DataDef *r = &cfd->return_value_type();
+				if (DataDefCLASS *c = as_class_instance(r))
+					return c;
+			}
+		}
+	}
 	DataDef *dd = t->datadef();
 	if (DataDefCLASS *c = as_class_instance(dd))
 		return c;
@@ -14299,7 +14317,37 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		    && !as_class_instance(rtop->left->datadef()))
 			ref_assign = rtop;
 	}
+	// The CLASS twin of the hoist above: a ref-returning function whose
+	// return operand is a class-to-class `=` (`return *this = __str;` —
+	// basic_string::assign(basic_string&&), the string drain family). A
+	// USER-declared operator= dispatches below through class_operator_call
+	// and its result flows exactly as before. The IMPLICIT operator=
+	// (memberwise stmt-expr / trivial bit-copy N_ASSIGN) yields a
+	// non-lvalue in C11, so the ref arm's `&(assign)` was invalid ("lvalue
+	// required as unary & operand"): emit the assignment as a statement
+	// and return the lhs ADDRESS — for the implicit operator= the
+	// expression's value is defined to be the lhs itself ([expr.ass]).
+	TokenOperator *cls_ref_assign = NULL;
+	if (m_cur_func_returns_ref && tr->returns && !ref_assign) {
+		TokenOperator *rtop = dynamic_cast<TokenOperator *>(tr->returns);
+		if (rtop && rtop->id() == TokenID::tkAssign
+		    && rtop->left && rtop->right) {
+			// operand_object_class: the rhs may be a reference to
+			// the object (`sv` — a V& parameter) or a &&-returning
+			// call (`std::move(__str)` — typed by the RANKED
+			// callee); a raw POINTER rhs stays excluded.
+			DataDefCLASS *lc = as_class_instance(rtop->left->datadef());
+			DataDefCLASS *rc = operand_object_class(rtop->right);
+			if (getenv("MADC_CREFA_PROBE"))
+				fprintf(stderr, "[crefa] lc=%s rc=%s\n",
+					lc ? lc->name.c_str() : "<null>",
+					rc ? rc->name.c_str() : "<null>");
+			if (lc && lc == rc)
+				cls_ref_assign = rtop;
+		}
+	}
 	node_t expr;
+	bool expr_is_address = false;
 	if (ref_assign) {
 		char tmp[48];
 		snprintf(tmp, sizeof(tmp), "__madc_refret_%d", m_strtmp_counter++);
@@ -14325,6 +14373,25 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 				   node1(N_DEREF, id(tmp, tr), tr), rhs, tr);
 		m_pending_stmts.push_back(node2(N_EXPR, list(), asg, tr));
 		expr = id(tmp, tr);   // already the address — no & wrap below
+		expr_is_address = true;
+	} else if (cls_ref_assign) {
+		node_t ov = class_operator_call(cls_ref_assign, cls_ref_assign);
+		if (ov)
+			// user operator=: the call IS the return value; the &
+			// wrap below treats it exactly as the pre-existing
+			// translate_expr flow did (the call lowers to an
+			// lvalue `*(call)` shape).
+			expr = ov;
+		else {
+			node_t asg = translate_expr(cls_ref_assign);
+			m_pending_stmts.push_back(node2(N_EXPR, list(), asg, tr));
+			expr = reference_member_value_is_stored_address(
+				       cls_ref_assign->left)
+			     ? translate_expr(cls_ref_assign->left)
+			     : node1(N_ADDR,
+				     translate_expr(cls_ref_assign->left), tr);
+			expr_is_address = true;
+		}
 	} else
 		expr = tr->returns ? translate_expr(tr->returns) : ignore();
 	// A bare `return;` in a non-void function: gcc (gnu89/c11) warns but accepts
@@ -14345,7 +14412,7 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 	// `return x;` becomes `return &x;`. g++ does exactly this; the call site
 	// derefs. The expression must be an lvalue (the parser/g++ enforce that).
 	if (m_cur_func_returns_ref && tr->returns) {
-		if (!ref_assign
+		if (!expr_is_address
 		    && !reference_member_value_is_stored_address(tr->returns))
 			expr = node1(N_ADDR, expr, tr);
 		if (m_cur_func_returns_class_ptr)
