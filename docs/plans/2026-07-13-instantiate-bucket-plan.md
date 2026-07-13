@@ -202,6 +202,30 @@
   structure or union" ×19; `__c` ×13; "cannot dereference non-pointer"
   ×13; typedef-typename ×8.
 
+- **FAMILY D RUNG 5 (2026-07-13, commit @ff09a2f1): contextual operator
+  bool — THE LADDER TURNS.** Conversion operators registered but had
+  ZERO consumers; `if (obj)` emitted the raw struct ("if-expr should be
+  of a scalar type" — the check family killing _M_insert/_M_extract and
+  every sentry-using body). translate_cond seam applies [conv]/4 in all
+  boolean contexts (if/while/do/for/ternary/!/&&/||) via a synthetic
+  TokenCallMethod → class_method_call. Companions in the same commit:
+  class_this_arg ref-returning-call receiver = &(*call) (was passing the
+  DEREF'd struct as __this — the "incompatible argument type" warning
+  family); conversion-op registration now sets method_display_name (the
+  freeze's method_map key — conversion ops never RESTORED before);
+  lookup = methods-vector + base walk (method_map flatten exists live
+  but NOT after restore — the packed suite caught both bound-path
+  defects, the live suite could not). Ladder: reducer corpus 574 →
+  **515** (first net-negative rung); release corpus 557 drops /
+  **202 stubs** (below sitting-1's 211). Tests testopbool.mad +
+  teststreambool.mad (live == bound == packed == g++). Suites
+  687/0/0/16 live + packed. **BANKED as its own rung: dynamic Itanium
+  vbase offsets** — `while (s >> a)` on REAL streams hangs because the
+  owner adjust uses the STATIC vbase_offset of the receiver's static
+  type (basic_istream) while the object is an istringstream (the vbase
+  lives elsewhere in real libstdc++ layouts); needs vtable
+  vbase-offset slots (madc's vbase model is fully static today).
+
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):
 basic_string 45 · reverse_iterator 18 · locale machinery
