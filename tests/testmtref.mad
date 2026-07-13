@@ -1,0 +1,18 @@
+#include <cstdio>
+
+template<typename T>
+class Acc {
+public:
+    typedef Acc<T> self;
+    T total;
+    template<typename U> self& add(U x) { total += (T)x; return *this; }
+};
+
+int main()
+{
+    Acc<int> a;
+    a.total = 0;
+    a.add(3).add(4L).add(true);
+    printf("%d\n", a.total);
+    return 0;
+}

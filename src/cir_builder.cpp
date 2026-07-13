@@ -10467,19 +10467,26 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 					       node_t this_arg,
 					       TokenBase *origin)
 {
+	// Env-gated probe (MADC_MTCALL_PROBE=<substr>): report which guard
+	// rejects a member-template mangled-direct call for a matching method.
+	static const char *mtcp = ::getenv("MADC_MTCALL_PROBE");
+	bool probing = mtcp && tm && tm->var.name.find(mtcp) != std::string::npos;
+	#define MTCALL_BAIL(reason) do { if (probing) fprintf(stderr, \
+		"[mtcall] %s: bail %s\n", tm->var.name.c_str(), reason); \
+		return NULL; } while (0)
 	if (!tm || !callee || !callee->is_member_template
 	    || !callee->declaration_only || !callee->is_varargs)
-		return NULL;
+		MTCALL_BAIL("flags");
 	DataDefCLASS *owner = !callee->parameters.empty()
 			    ? class_behind(callee->parameters[0]) : NULL;
 	if (!owner || owner->canonical_cpp_spelling().empty())
-		return NULL;
+		MTCALL_BAIL("owner");
 	if (!owner->is_externally_defined() && !owner->is_extern_template_instantiated)
-		return NULL;
+		MTCALL_BAIL("not-external");
 	if (callee->template_param_names.empty()
 	    || callee->template_return_spelling.empty()
 	    || callee->template_param_spellings.size() != tm->parameters.size())
-		return NULL;
+		MTCALL_BAIL("template-metadata");
 
 	auto arg_spelling = [&](TokenBase *arg) -> std::string {
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
@@ -10503,14 +10510,20 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 		std::string actual = arg_spelling(tm->parameters[i]);
 		if (!bind_member_template_param(callee->template_param_spellings[i],
 						actual, callee->template_param_names,
-						binding))
+						binding)) {
+			if (probing) fprintf(stderr,
+				"[mtcall] %s: bail deduce p%zu '%s' vs '%s'\n",
+				tm->var.name.c_str(), i,
+				callee->template_param_spellings[i].c_str(),
+				actual.c_str());
 			return NULL;
+		}
 	}
 	std::vector<std::string> targs;
 	for (const std::string &tp : callee->template_param_names) {
 		std::map<std::string, std::string>::iterator it = binding.find(tp);
 		if (it == binding.end())
-			return NULL;
+			MTCALL_BAIL("unbound-tparam");
 		targs.push_back(it->second);
 	}
 	std::vector<std::string> params;
@@ -10527,15 +10540,36 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 	std::string sym = itanium_mangle_member_template_sub(
 		owner->canonical_cpp_spelling(), mname, targs, ret, params,
 		callee->is_const_method);
-	if (sym.empty() || sym[0] != '_')
+	if (sym.empty() || sym[0] != '_') {
+		if (probing) fprintf(stderr,
+			"[mtcall] %s: bail mangle sym='%s' ret='%s' targ0='%s'\n",
+			tm->var.name.c_str(), sym.c_str(), ret.c_str(),
+			targs.empty() ? "" : targs[0].c_str());
 		return NULL;
+	}
+	if (probing) fprintf(stderr, "[mtcall] %s: OK sym=%s ret_ref=%d\n",
+		tm->var.name.c_str(), sym.c_str(),
+		(int)callee->returns_reference());
+	#undef MTCALL_BAIL
 
 	node_t args = list();
 	append(args, this_arg);
-	for (TokenBase *arg : tm->parameters) {
+	for (size_t i = 0; i < tm->parameters.size(); ++i) {
+		TokenBase *arg = tm->parameters[i];
 		DataDefCLASS *vc = as_class_instance(arg ? arg->datadef() : NULL);
+		// A REFERENCE parameter (`_ValueT&` — trailing & / && in the
+		// substituted spelling) is a pointer in the Itanium ABI: pass
+		// the argument's ADDRESS (forwarding a caller ref param passes
+		// its pointer through). Passing the VALUE survived only while
+		// these bodies always dropped at the c2mir check; once they
+		// reach MIR gen a float value in the pointer slot is a fatal
+		// ("in instruction 'call': wrong type memory").
+		bool ref_param = i < params.size() && !params[i].empty()
+				 && params[i][params[i].size() - 1] == '&';
 		if (vc)
 			append(args, object_arg_value(arg, vc));
+		else if (ref_param)
+			append(args, ref_param_arg_addr(arg));
 		else
 			append(args, translate_expr(arg));
 	}

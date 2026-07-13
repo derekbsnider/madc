@@ -37592,6 +37592,9 @@ static DataDef *skipped_template_function_return_type(
 	const std::string &name,
 	const std::vector<std::string> *fn_typeparams)
 {
+    // Env-gated probe (MADC_RETPROBE=<substr>): registration return-type scan.
+    static const char *rp = ::getenv("MADC_RETPROBE");
+    bool rprobe = rp && name.find(rp) != std::string::npos;
     size_t name_index = tokens.size();
     for ( size_t i = 0; i < tokens.size(); ++i )
     {
@@ -37610,17 +37613,53 @@ static DataDef *skipped_template_function_return_type(
 	"static", "constexpr", "inline", "virtual", "friend", "extern",
 	"typename", "const", "volatile", "auto"
     };
+    // Reference / pointer DECLARATOR tokens between the type and the name
+    // (`__istream_type & _M_extract(`, `T && f(`, `Node * make(`): fold them
+    // off the END of the return-type range first. Reference-ness must be
+    // preserved — the backward scan used to skip `&` silently, so a
+    // reference-returning member template registered its return as the class
+    // BY VALUE (returns_reference() false) and a mangled-direct call site was
+    // never deref-wrapped: the stream one-liners `{ return _M_extract(__n); }`
+    // lowered as `return &(call)` ("lvalue required as unary & operand").
+    // Folding declarators first also lets the template-id branch recognize
+    // `vector<T>& f(` (the `>` sits behind the `&`, not adjacent to the name).
+    size_t type_end = name_index;
+    size_t ref_wraps = 0, star_wraps = 0;
+    while ( type_end > 0 && type_end <= tokens.size() && tokens[type_end - 1] )
+    {
+	TokenBase *dt = tokens[type_end - 1];
+	TokenID did = dt->id();
+	if ( did == TokenID::tkBand || did == TokenID::tkLand )
+	{ ++ref_wraps; --type_end; continue; }
+	if ( did == TokenID::tkCONST || did == TokenID::tkVOLATILE )
+	{ --type_end; continue; }
+	if ( dt->type() != TokenType::ttDataType
+	  && !is_contextual_identifier_token(dt)
+	  && (char)dt->get() == '*' )
+	{ ++star_wraps; --type_end; continue; }
+	break;
+    }
+    // Wrap the folded declarators back onto a resolved base type: stars
+    // innermost (`T*&` = reference to pointer), a reference outermost at most
+    // once (references never nest).
+    auto apply_declarators = [&](DataDef *base) -> DataDef * {
+	for ( size_t s = 0; base && s < star_wraps; ++s )
+	    base = pgm.getPointerType(base);
+	if ( base && ref_wraps )
+	    base = pgm.getReferenceType(base);
+	return base;
+    };
     // A template-id return type (`pair<iterator, bool> m(...)`) ends in a
     // closing angle right before the name. The plain backward scan below would
     // wrongly grab the LAST type INSIDE `<...>` (e.g. `bool`) as the return
     // type. Resolve the full return-type token range through the canonical
     // resolver instead (handles nested template-ids, `std::`, class typedefs).
-    if ( name_index > 0 && tokens[name_index - 1]
-      && (tokens[name_index - 1]->id() == TokenID::tkGT
-       || tokens[name_index - 1]->id() == TokenID::tkBSR) )
+    if ( type_end > 0 && tokens[type_end - 1]
+      && (tokens[type_end - 1]->id() == TokenID::tkGT
+       || tokens[type_end - 1]->id() == TokenID::tkBSR) )
     {
 	size_t rs = 0;
-	while ( rs < name_index && tokens[rs]
+	while ( rs < type_end && tokens[rs]
 	     && is_contextual_identifier_token(tokens[rs])
 	     && specifiers.count(contextual_identifier_name(tokens[rs])) )
 	    ++rs;
@@ -37633,7 +37672,7 @@ static DataDef *skipped_template_function_return_type(
 	// when the OWNER is instantiated) is fine to resolve.
 	bool depends_on_fn_param = false;
 	if ( fn_typeparams && !fn_typeparams->empty() )
-	    for ( size_t i = rs; i < name_index && !depends_on_fn_param; ++i )
+	    for ( size_t i = rs; i < type_end && !depends_on_fn_param; ++i )
 		if ( tokens[i] && is_contextual_identifier_token(tokens[i]) )
 		{
 		    std::string tn = contextual_identifier_name(tokens[i]);
@@ -37641,9 +37680,9 @@ static DataDef *skipped_template_function_return_type(
 			if ( (*fn_typeparams)[p] == tn )
 			    { depends_on_fn_param = true; break; }
 		}
-	if ( rs < name_index && !depends_on_fn_param )
-	    if ( DataDef *tid = pgm.resolve_type_token_range(tokens, rs, name_index) )
-		return tid;
+	if ( rs < type_end && !depends_on_fn_param )
+	    if ( DataDef *tid = pgm.resolve_type_token_range(tokens, rs, type_end) )
+		return apply_declarators(tid);
     }
     // Pointer-declarator stars between the base type and the name
     // (`Node * make`, `T ** f`): count them backward and fold getPointerType
@@ -37652,7 +37691,7 @@ static DataDef *skipped_template_function_return_type(
     // (e.g. a functor's `_Link_type operator()(...)`) emit a by-value struct
     // return and lose its hidden `__this`.
     size_t stars = 0;
-    for ( size_t i = name_index; i-- > 0; )
+    for ( size_t i = type_end; i-- > 0; )
     {
 	TokenBase *t = tokens[i];
 	if ( !t )
@@ -37677,6 +37716,10 @@ static DataDef *skipped_template_function_return_type(
 		if ( dmi != pgm.datatype_map.end() )
 		    base = &(*dmi)->definition;
 	    }
+	    if ( rprobe )
+		fprintf(stderr, "[retprobe] %s owner=%s ident='%s' base=%s\n",
+			name.c_str(), owner ? owner->name.c_str() : "-",
+			tname.c_str(), base ? base->name.c_str() : "NULL");
 	    if ( !base )
 		continue;
 	}
@@ -37684,8 +37727,11 @@ static DataDef *skipped_template_function_return_type(
 	    continue;
 	for ( size_t s = 0; s < stars; ++s )
 	    base = pgm.getPointerType(base);
-	return base;
+	return apply_declarators(base);
     }
+    if ( rprobe )
+	fprintf(stderr, "[retprobe] %s owner=%s FALLBACK ddINT64 name_index=%zu\n",
+		name.c_str(), owner ? owner->name.c_str() : "-", name_index);
     return &ddINT64;
 }
 

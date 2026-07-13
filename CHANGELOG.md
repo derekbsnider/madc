@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+- **fix(parser+cir): member-template returns keep their reference
+  declarator; mangled-direct mti calls pass reference args by address**
+  (Slice A family D, rung 6). `skipped_template_function_return_type`'s
+  backward scan counted `*` declarators but silently skipped `&`/`&&`,
+  so every skipped member function template with a reference return
+  registered it as the base type BY VALUE — on both the
+  declaration-only placeholder and the `__mti` instantiated definition
+  (the instantiation parse feeds through the same scanner).
+  `member_template_method_call` then saw `returns_reference()` false:
+  no N_DEREF wrap on the call, and the drained stream one-liners
+  `{ return _M_extract(__n); }` lowered as `return &(call)` — the
+  "lvalue required as unary & operand" ×68 istream/ostream drain family
+  (38+30 at the class-head anchors). LIVE wrong-answer too, not just
+  drain: chained member-template calls through a reference return
+  mutated a temporary — tests/testmtref.mad printed 0 where g++ prints
+  8. Fix at the scanner: fold trailing declarator tokens (`&`, `&&`,
+  `*`, cv) off the return-type range, resolve the base, wrap
+  getPointerType/getReferenceType back on; the template-id branch now
+  also sees through trailing declarators (`vector<T>& f(` no longer
+  falls into the backward scan's grab-inside-angles trap). Companion
+  fix the first one UNMASKED (bodies that used to drop at the c2mir
+  check now reach MIR gen): member_template_method_call passed
+  reference parameters BY VALUE (`translate_expr`) — a float value in
+  the pointer slot is a MIR fatal ("in instruction 'call': wrong type
+  memory", release pack DIED in operator>>__o16); reference params
+  (trailing `&` in the substituted spelling) now pass through
+  ref_param_arg_addr — lvalues by address, caller ref-params forwarded,
+  cast rvalues (`_M_insert(static_cast<long>(__n))`) spilled to a temp.
+  New env-gated probes MADC_MTCALL_PROBE / MADC_RETPROBE (the family's
+  diagnostic toolkit). Ladder: reducer corpus 515 -> 499 drops;
+  istream/ostream 60:67 check family 68 -> 0; pack check-gate items
+  167 -> 103. HONEST FINDING: __cerb ×108 / __n ×45 secondaries
+  UNCHANGED — the "one-liners feed them" hypothesis is REFUTED; they
+  ride the .tcc definition drains. Also surfaced live (banked, next
+  rungs): `cout << std::hex` fails (non-template manipulators are
+  inline-only, need local derivation) and `return __a = __a | __b;`
+  ref-returns of assignments (ios_base ×9) need the assignment-lvalue
+  lowering.
+
 - **feat(cir): contextual conversion to bool — `operator bool` in boolean
   contexts** (Slice A family D, rung 5). Conversion operators parsed and
   registered but had ZERO consumers — `if (obj)` on a class with
