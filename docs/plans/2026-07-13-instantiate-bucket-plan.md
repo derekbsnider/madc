@@ -287,6 +287,27 @@
   .tcc re-probe, wchar identity split (reclaims the +24 stubs),
   basic_string.h assign-struct ×28 cluster.
 
+- **FAMILY D RUNG 8 (2026-07-13, in flight): transitive vbase offsets +
+  manipulator seam.** 8a (verified, gating): `base_offset_of` returned
+  -1 for a non-virtual base OF a virtual base (ios_base within
+  basic_ios within ostream) — `cout.setf()` / `std::hex(cout)` wrote
+  flag bits at the stream's offset 0 (printed "     255"). Transitive
+  arm added (direct vbase hits first, then compose vbase + non-virtual
+  inner walk); tmp/red_manip_2.mad now prints ff == g++; test
+  tests/testvbasemanip.mad. 8b (CIR seam written, INERT — blocked one
+  layer deeper): concrete-manipulator arm in try_free_operator_call
+  (synthetic `fname(lhs)` call + static downcast chain value; probes
+  MADC_MANIP_PROBE). 🔴 REAL BLOCKER = PARSE-LAYER: parseExpression
+  mis-reduces a resolved 0-arg namespace-fn call token (on opStack)
+  when a following binary `<<` arrives — popOperator pops the
+  ttCallFunc prematurely; exStack ends size 2; raw shifts emitted.
+  PROOF: `cout << endl << "x"` fails too (tmp/red_manip_4.mad) — ANY
+  manipulator in non-terminal chain position; endl-last works only
+  because `;` empties the stack cleanly. Evidence: tmp/_manip_v.log
+  231569-231610. Next: fix the opStack reduction (deepest layer), the
+  CIR arm then completes the chain; oracles red_iosflags_1 = ff/0xff,
+  red_manip_4 = newline+x.
+
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):
 basic_string 45 · reverse_iterator 18 · locale machinery

@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **fix(parser): transitive virtual-base subobject offsets** (Slice A
+  family D, rung 8a). base_offset_of returned -1 for a non-virtual
+  base OF a virtual base (ios_base within basic_ios within ostream),
+  so the method owner-adjust and reference-binding paths silently
+  skipped the subobject adjustment: cout.setf() / std::hex(cout)
+  wrote flag bits at the stream's own offset 0 (printed "     255").
+  Direct vbase-map hits resolve first; then the transitive arm
+  composes vbase offset + the non-virtual inner walk. Static offsets
+  (correct for most-derived views; the dynamic-view gap is the vtable
+  vbase-offset-slot work). Test testvbasemanip.mad (ff == g++).
+  Companion (inert until the parse rung lands): concrete-manipulator
+  arm in try_free_operator_call — `os << hex` routing written; the
+  REAL blocker found one layer deeper: parseExpression pops a 0-arg
+  namespace-fn call token off the operator stack when a following <<
+  arrives (ANY manipulator in non-terminal chain position breaks,
+  incl. `cout << endl << "x"`). Probe MADC_MANIP_PROBE.
+
 - **fix(cir): ref-returning `return <assignment>;` lowers via a
   hoisted lvalue-address temp** (Slice A family D, rung 7). C++
   assignment yields the assigned LVALUE ([expr.ass]); C11's yields an

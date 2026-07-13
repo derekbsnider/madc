@@ -10811,8 +10811,23 @@ void DataDefCLASS::build_vtable_groups()
 size_t DataDefCLASS::base_offset_of(const DataDefCLASS *target) const
 {
     if ( target == this ) return 0;
+    // Direct virtual-base hits first: the layout builder records the class's
+    // full virtual-base set here, so an (in)direct vbase always resolves from
+    // its own entry, never composed through another vbase's local offsets.
     for ( const auto &vb : vbase_offset )
 	if ( vb.first == target ) return vb.second;
+    // Transitive through a virtual base: a NON-virtual base of a virtual
+    // base (ios_base within basic_ios within ostream). Without this arm the
+    // walk returned -1 and every consumer (method-call owner adjust,
+    // object_arg_addr reference binding) silently skipped the subobject
+    // adjustment — cout.setf()/std::hex(cout) wrote flag bits at the
+    // stream's own offset 0. Static offsets: correct for a most-derived
+    // view (the dynamic-view gap is the vtable vbase-offset-slot work).
+    for ( const auto &vb : vbase_offset )
+    {
+	size_t vinner = vb.first->base_offset_of(target);
+	if ( vinner != (size_t)-1 ) return vb.second + vinner;
+    }
     for ( const auto &bs : bases )
     {
 	if ( bs.is_virtual ) continue; // virtual bases handled via vbase_offset above

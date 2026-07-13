@@ -1,0 +1,2 @@
+#include <iostream>
+int main() { std::hex(std::cout); std::cout << 255; std::cout << "\n"; return 0; }

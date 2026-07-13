@@ -11113,7 +11113,15 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	// pf(*this).) The instantiated FuncDef is memoized per symbol like every
 	// other Pattern-A binding; the matched (base) stream class rides its
 	// parameters[0], and object_arg_addr's base walk adjusts a derived lhs.
-	if (mname == "operator<<" && lcls) {
+	if ((mname == "operator<<" || mname == "operator>>") && lcls) {
+		// Env-gated probe (MADC_MANIP_PROBE): rhs token shape at the
+		// manipulator gate.
+		static const char *manp0 = ::getenv("MADC_MANIP_PROBE");
+		if (manp0)
+			fprintf(stderr, "[manip-entry] %s lcls=%s rtype=%d rcast=%d\n",
+				mname.c_str(), lcls->name.c_str(),
+				(int)top->right->type(),
+				dynamic_cast<TokenCallFunc *>(top->right) ? 1 : 0);
 		if (TokenCallFunc *rc = dynamic_cast<TokenCallFunc *>(top->right)) {
 			FuncDef *rfd = dynamic_cast<FuncDef *>(rc->var.type);
 			std::string fname = (rfd && !rfd->function_display_name.empty())
@@ -11165,6 +11173,83 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 					id(minst->emit_symbol.c_str(), origin), a, origin);
 				CIR_NODE(call)->synth_from_origin = true;
 				return node1(N_DEREF, call, origin);   // ostream&
+			}
+			// CONCRETE manipulator (`os << hex`, `os << fixed`):
+			// rc->var is already bound to the resolved namespace
+			// function — a plain inline fn libstdc++ never exports,
+			// so it cannot bind mangled-direct like the template
+			// loop above; its body derives locally through the
+			// NORMAL call machinery instead. Shape gate: exactly
+			// one declared parameter, a reference to a class the
+			// lhs is-or-derives-from, returned by reference as the
+			// SAME class (the manipulator contract — it returns its
+			// argument), which is what makes the static downcast
+			// back to the stream valid.
+			// Env-gated probe (MADC_MANIP_PROBE=<substr>): concrete-
+			// manipulator gate values for a matching rhs call.
+			static const char *manp = ::getenv("MADC_MANIP_PROBE");
+			if (manp && rfd
+			    && rc->var.name.find(manp) != std::string::npos)
+				fprintf(stderr, "[manip] %s: mtmpl=%d varargs=%d "
+					"rcp=%zu np=%zu refp0=%d retref=%d\n",
+					rc->var.name.c_str(),
+					(int)rfd->is_member_template,
+					(int)rfd->is_varargs, rc->parameters.size(),
+					rfd->parameters.size(),
+					(int)rfd->is_ref_param(0),
+					(int)rfd->returns_reference());
+			if (rfd && !rfd->is_member_template && !rfd->is_varargs
+			    && rc->parameters.empty()
+			    && rfd->parameters.size() == 1
+			    && rfd->is_ref_param(0)
+			    && rfd->returns_reference()) {
+				DataDefCLASS *pcls = class_behind(rfd->parameters[0]);
+				DataDefCLASS *rcls =
+					class_behind(&rfd->return_value_type());
+				size_t boff = (pcls && (lcls == pcls
+						|| lcls->is_or_derives_from(pcls)))
+					    ? lcls->base_offset_of(pcls)
+					    : (size_t)-1;
+				if (pcls && pcls == rcls && boff != (size_t)-1) {
+					// fname(<lhs>) through the normal call
+					// path: arg coercion (vbase-adjusted
+					// reference bind), on-use body
+					// derivation, ref-return auto-deref.
+					// The lhs is evaluated ONCE — inside
+					// the call's argument.
+					TokenCallFunc *mc =
+						new TokenCallFunc(rc->var);
+					mc->parameters.push_back(top->left);
+					mc->file = top->file;
+					mc->line = top->line;
+					mc->column = top->column;
+					node_t mval = translate_expr(mc);
+					// The call yields the BASE-subobject
+					// lvalue (ios_base&); the chain needs
+					// the STREAM. The manipulator returned
+					// its argument, so the static downcast
+					// recovers it (&* folds to the call's
+					// pointer value).
+					node_t addr = node1(N_ADDR, mval, origin);
+					if (boff) {
+						node_t charp = node2(N_CAST,
+							node2(N_TYPE,
+							      node1(N_LIST, simple(N_CHAR)),
+							      node2(N_DECL, ignore(),
+								    node1(N_LIST, pointer()))),
+							addr, origin);
+						addr = node2(N_SUB, charp,
+							integer((long)boff, origin),
+							origin);
+					}
+					addr = node2(N_CAST,
+						node2(N_TYPE,
+						      node1(N_LIST, class_tag_ref(lcls)),
+						      node2(N_DECL, ignore(),
+							    node1(N_LIST, pointer()))),
+						addr, origin);
+					return node1(N_DEREF, addr, origin);
+				}
 			}
 		}
 	}
