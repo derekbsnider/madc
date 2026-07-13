@@ -1,0 +1,135 @@
+# Instantiate-bucket plan — rung 4, third phase (Slices A, B, Option C)
+
+**Date:** 2026-07-13 · **Branch policy:** each slice on its own
+`feature/…-claude` branch off `develop`, full gate matrix before merge.
+**Prereq reading:** `docs/plans/2026-07-09-forest-full-evaluation-lazy-materialize-PLAN.md`
+("Rung-4 third phase" section — the measurements this plan executes on),
+`.claude/rules/parse-once.md`, the topic memory RUNG-4 blocks.
+
+## SETTLED (do not re-derive)
+
+- The bound testsubscript -O2 wall sits at the **0.56 plateau**
+  (0.572/0.561/0.570 = one noise band). Mechanical/container levers are
+  EXHAUSTED — verdict stamped 2026-07-12.
+- Bucket map (tmp/cg_refset.out, 3.465B bound window, inclusive Ir):
+  class-template instantiation `instantiate_template_use` 1,316 calls /
+  2.36B = 68%; inside it the class-body re-parse (`parseKeyword`) 251
+  calls / **1.81B = 52% of the whole compile**. Fn-template failed
+  attempts ≈ 30M (DEAD as a lever — do not build attempt filtering).
+  `parse_deferred_lazy_body` 163 / 256M ≈ 7%. `node_for` 25 / 120M ≈ 3%.
+- Only **7 top-level specializations** instantiate on the bound run — the
+  `vector<int32_t>` consumer chain; its base/member/traits closure drives
+  the ~251 class-body parses (parser consumes 296× the lexer's tokens).
+- The TU-root fence is CORRECT: consumer specializations are TU state and
+  must not silently enter the header grove. Any pack-side coverage of them
+  goes through Option C (an explicit prelude TU), owner-approved, never
+  through relaxing the fence.
+- Attribution hygiene: name-substring caller attribution pollutes buckets
+  (map<…less<string>…> in SIGNATURES). Verify per-callee, and re-profile
+  the mechanism before benching (lookup-churn lesson).
+
+## Slice A — drain-failure burn-down (mechanical, ~7% + pack quality)
+
+The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
+binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):
+basic_string 45 · reverse_iterator 18 · locale machinery
+(__ctype_abstract_base/num_get/codecvt) ~20 · basic_string_view 10 ·
+basic_filebuf 7 · __alloc_traits 6 · basic_istream 6 · _Hash_impl 4 · rest
+long tail. A consumer that references one re-parses it at bind time
+(`parse_deferred_lazy_body`, 163 calls / 256M on bound testsubscript).
+
+1. **Cross-reference first.** Instrument nothing: run bound testsubscript
+   with `-v` and capture which deferred bodies actually lazy-parse
+   (the `parse_deferred_lazy_body` entry DBG or add a one-line env-gated
+   log if none exists). Prioritize the intersection with the 175 — those
+   families pay on every consumer compile. Expect basic_string members
+   and reverse_iterator (vector's rbegin/rend surface) on top.
+2. **Get the pack-time drop REASONS** (not just names): re-freeze with the
+   drain log visible (`scripts/forest_pack.sh` on a dev-binary copy with
+   verbose/env drain logging — pack_record_drop logs "why"). Classify
+   into parser-gap families.
+3. **Fix the biggest family at the deepest layer** (parser gap, not drain
+   shim), one family per commit. After each: re-pack, confirm the
+   unresolved count drops, full gate matrix.
+4. **Acceptance:** unresolved count meaningfully down (target: the
+   consumer-hit families to zero), `parse_deferred_lazy_body` calls on
+   bound testsubscript down accordingly, fulltest 681 + packed suite 681
+   + bind gate 18/18 + tsubst ratchet green, bench row recorded.
+   ~0.04s of bound wall is the realistic ceiling here — the strategic
+   value is pack completeness (fewer trap stubs) as much as the wall.
+
+## Slice B — class-template instantiation on the parse-once spine (~52% ceiling)
+
+**The design track.** Today a class specialization instantiates by
+re-running the PARSER (`instantiate_template_use` → substituted saved
+tokens → `parseKeyword` → TokenSTRUCT/TokenCLASS::parse) for the class
+shell + member declarations — method BODIES are already lazy. Extend the
+parse-once model (g++ tsubst; `.claude/rules/parse-once.md` names the
+construction/member-type KINDs) to the class KIND: parse the class
+pattern ONCE into a reusable declaration tree; instantiate by
+substituting over that tree — types, layout, member/method registration —
+without the parser.
+
+This is a DESIGN SITTING first, not code. Charter:
+
+1. **Enumerate what TokenSTRUCT/TokenCLASS::parse produces per
+   instantiation** (read, don't guess): DataDefCLASS + members +
+   method_map Variables + vtable groups + layout + type_aliases +
+   nested types + out-of-line member registration + forest taps. The
+   substitution pass must produce EXACTLY this set. List every side
+   effect (struct_map/datatype_map writes, template registrations,
+   pending_funcs, MTI hooks).
+2. **Define the pattern memo:** what is saved per class template primary /
+   partial spec (the parsed member-declaration tree with placeholder
+   types), where it lives (alongside `m_tsubst_body_patterns` /
+   TemplateDef), and the eligibility predicate (start NARROW: container
+   shapes — data members, base specs, member fn declarations, typedefs;
+   anything else falls back to today's token parse, tallied like the
+   tsubst `[why:]` fallbacks so the ratchet model applies).
+3. **Define the substitution pass:** placeholder→concrete DataDef mapping
+   (reuse tsubst's binding machinery), layout computation via the
+   existing compute_layout, member Variable minting without TokenIdent
+   re-parse. Nested dependent types resolve through the existing
+   dependent-member-type machinery.
+4. **Gates for the first landing:** the instantiated result must be
+   INDISTINGUISHABLE from the parsed one — same struct_map/datatype_map
+   entries, same layouts (sizeof/offset oracle vs g++), same mangled
+   symbols, whole-suite green + bind byte-identity gates. Add a
+   `--show-stats` counter: class instantiations via pattern vs via parse
+   (the new burndown metric, mirroring the tsubst HIT/FALLBACK model).
+5. **Sizing checkpoints:** vector<int32_t> chain first (the measured 52%);
+   then string/map chains. Expected shape of win: bound AND live both
+   drop (this is not forest-specific — it is the front end).
+
+Do NOT start B's implementation in the same sitting as its design doc;
+the design lands as a plan appendix or its own doc, then implementation
+slices follow the ratchet model (eligibility widens per-KIND, fallback
+tally must go down or stay flat — never up).
+
+## Option C — explicit-instantiation prelude TU (OWNER DECISION, not scheduled)
+
+C++'s extern-template model applied to the pack: add a prelude TU to the
+corpus that explicitly instantiates the common set (`vector<int32_t>`,
+`vector<int64_t>`, `string` iterators, …). Its instantiations freeze as
+that TU's OWN parsed state — LOADED==parsed holds, the TU-root fence is
+respected (nothing consumer-specific leaks into header groves; the
+prelude is just another producer). Consumers whose specializations match
+restore instead of instantiating; mismatches still take path B.
+Cost: corpus policy change + a guessed specialization list to maintain.
+**Do not implement without the owner's explicit go.** If B lands well,
+C may be unnecessary.
+
+## Ordering
+
+1. Slice A (mechanical, independent, fresh sitting, full gate cycle).
+2. Slice B design sitting (produces the design doc + eligibility spec).
+3. Slice B implementation slices (ratcheted, one shape family at a time).
+4. Option C only on owner sign-off, and only if B leaves a gap worth it.
+
+## Bench discipline (unchanged)
+
+`scripts/forest_phase_bench.sh` rows at load<2 (one self-exiting
+background command), TSV `docs/perf/forest-timings.tsv`, callgrind site
+counts as the mechanism proof (bound runs complete within the 120s cap;
+live runs truncate — compare sites, never totals), re-profile mechanism
+before benching, mirrors at milestone cadence.
