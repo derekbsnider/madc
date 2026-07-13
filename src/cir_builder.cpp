@@ -9975,6 +9975,29 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 		return best;
 	}
 	if (any && !rhs_dd) return any;
+	// C++ member lookup ([class.member.lookup]): a name entirely absent from
+	// this class is looked up in the bases; a name PRESENT here hides every
+	// base declaration (even a non-viable overload stops the walk). Walks
+	// every direct base — basic_iostream's operator<< lives on its SECOND
+	// base (basic_ostream) — mirroring binary_operator_return_type /
+	// find_method_by_callable_arity. The caller binds __this to the OWNER's
+	// subobject (class_operator_call / class_operator_external_call derive
+	// the owner from the callee's param[0]).
+	// (method_map is NOT a hiding signal: class registration FLATTENS base
+	// entries into the derived map — parser.cpp "Inherit methods / vtable
+	// slots ... per direct base". Own-declaration presence = the methods
+	// vector scans above.)
+	if (!first && !any) {
+		for (const BaseSpec &b : cls->bases)
+			if (b.base)
+				if (FuncDef *bfd = select_operator_overload(b.base,
+									    mname, rhs))
+					return bfd;
+		if (cls->bases.empty() && cls->base_class)
+			if (FuncDef *bfd = select_operator_overload(cls->base_class,
+								    mname, rhs))
+				return bfd;
+	}
 	if (rhs_dd)
 		return NULL;
 	// Fall back to the keyed lookup (method_map under the unmangled name) only
@@ -10895,6 +10918,17 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 	DataDef *pt0 = callee->parameters.empty() ? NULL : callee->parameters[0];
 	bool refp0 = callee->is_ref_param(0);
 	DataDefCLASS *lhs_target = param_object_class(pt0, refp0);
+	// A member operator found on a BASE of the lhs class (the overload
+	// walk in select_operator_overload): __this must bind the OWNER's
+	// subobject — hand object_arg_addr the owner so its derived->base walk
+	// applies the subobject offset (basic_ostream is basic_iostream's
+	// SECOND base; `stringstream << x` needs the non-zero offset).
+	if (!lhs_target) {
+		DataDefCLASS *owner = class_behind(pt0);
+		if (owner && lcls && lcls != owner
+		    && lcls->is_or_derives_from(owner))
+			lhs_target = owner;
+	}
 	if (!lhs_target) lhs_target = lcls;
 
 	std::vector<ExternParam> eparams;
@@ -11380,10 +11414,41 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		// &call is not an lvalue; `__x.base() - __y.base()` chains).
 		this_arg = object_arg_addr(top->left, lcls);
 
+	// An operator INHERITED from a base (the overload walk in
+	// select_operator_overload): __this must point at the OWNER's
+	// subobject, exactly like the inherited method-call path. Offset 0
+	// (a primary base) keeps the emitted shape unchanged.
+	DataDefCLASS *towner = callee->parameters.empty()
+				? NULL : class_behind(callee->parameters[0]);
+	bool from_base = towner && towner != lcls
+			 && lcls->is_or_derives_from(towner);
+	if (from_base) {
+		size_t boff = lcls->base_offset_of(towner);
+		if (boff != 0 && boff != (size_t)-1) {
+			node_t charp = node2(N_CAST,
+				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				this_arg, origin);
+			this_arg = node2(N_CAST, void_ptr_type(),
+				node2(N_ADD, charp, integer((long)boff), origin),
+				origin);
+		}
+		// Cast even at offset 0: the emitted body's prototype expects
+		// the OWNER pointer type, not the derived receiver type (the
+		// inherited method-call path does the same).
+		this_arg = node2(N_CAST,
+			node2(N_TYPE,
+			      node1(N_LIST, class_tag_ref(towner)),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			this_arg, origin);
+	}
+
 	// ClassName__operator== by default; an arity-disambiguated same-name
 	// overload (P2.1b gaps 3 & 4) carries its real symbol in local_emit_name.
 	// (emit_symbol is empty here — the external-bind branch above returned.)
-	std::string sym = call_emit_symbol(callee, lcls->name + "__" + mname);
+	// An inherited operator's emitted body is the OWNER's, not the lhs class's.
+	std::string sym = call_emit_symbol(callee,
+		(from_base ? towner->name : lcls->name) + "__" + mname);
 
 	// Part B: an operator returning a class object BY VALUE (e.g. V operator+(V&))
 	// yields an rvalue; materialize it into an addressable cleanup temp so the
@@ -11563,9 +11628,11 @@ static FuncDef *select_unary_operator_overload(DataDefCLASS *cls,
 					       const std::string &mname)
 {
 	if (!cls) return NULL;
+	bool any_named = false;
 	// Scan the methods vector for a same-name overload taking only __this.
 	for (Variable *mv : cls->methods) {
 		if (!mv || mv->name != mname) continue;
+		any_named = true;
 		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
 		if (!fd) continue;
 		if (fd->parameters.size() <= 1) return fd;   // __this only -> unary
@@ -11580,9 +11647,26 @@ static FuncDef *select_unary_operator_overload(DataDefCLASS *cls,
 	for (Variable *mv : cls->methods) {
 		if (!mv || (mv->name != mangled_canon && mv->name != mangled_un))
 			continue;
+		any_named = true;
 		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
 		if (!fd) continue;
 		if (fd->parameters.size() <= 1) return fd;   // nullary -> unary
+	}
+	// C++ member lookup ([class.member.lookup]): a name entirely absent from
+	// this class is looked up in the bases; a present name (any arity) hides
+	// every base declaration. Same walk as select_operator_overload (and the
+	// same caveat: method_map flattens base entries, so only the vector
+	// scans above signal an OWN declaration).
+	if (!any_named) {
+		for (const BaseSpec &b : cls->bases)
+			if (b.base)
+				if (FuncDef *bfd =
+					select_unary_operator_overload(b.base, mname))
+					return bfd;
+		if (cls->bases.empty() && cls->base_class)
+			if (FuncDef *bfd =
+				select_unary_operator_overload(cls->base_class, mname))
+				return bfd;
 	}
 	// Fall back to the keyed lookup (method_map under the unmangled name).
 	std::string key = mname;
@@ -11625,12 +11709,43 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 		// rejects it — reverse_iterator's `--base()`-style chains).
 		this_arg = object_arg_addr(operand, cls);
 
+	// An operator INHERITED from a base (the overload walk): __this must
+	// point at the OWNER's subobject. operator!/operator bool live on
+	// basic_ios — a VIRTUAL base: base_offset_of resolves it through the
+	// static vbase_offset. Offset 0 keeps the emitted shape unchanged.
+	DataDefCLASS *towner = callee->parameters.empty()
+				? NULL : class_behind(callee->parameters[0]);
+	bool from_base = towner && towner != cls
+			 && cls->is_or_derives_from(towner);
+	if (from_base) {
+		size_t boff = cls->base_offset_of(towner);
+		if (boff != 0 && boff != (size_t)-1) {
+			node_t charp = node2(N_CAST,
+				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				this_arg, origin);
+			this_arg = node2(N_CAST, void_ptr_type(),
+				node2(N_ADD, charp, integer((long)boff), origin),
+				origin);
+		}
+		// A madc-emitted owner body's prototype expects the OWNER pointer
+		// type (the external branch below void*-casts instead).
+		if (callee->emit_symbol.empty())
+			this_arg = node2(N_CAST,
+				node2(N_TYPE,
+				      node1(N_LIST, class_tag_ref(towner)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				this_arg, origin);
+	}
+
 	// A class-bound external operator names its real symbol via emit_symbol;
 	// otherwise the default ClassName__operator<sym> scheme + the
 	// referenced-funcs prototype pass (a madc-emitted method body). An
 	// arity-disambiguated same-name overload (P2.1b gaps 3 & 4 — the unary peer
 	// of a binary of the same name) carries its real symbol in local_emit_name.
-	std::string sym = call_emit_symbol(callee, cls->name + "__" + mname);
+	// An inherited operator's emitted body is the OWNER's, not the receiver's.
+	std::string sym = call_emit_symbol(callee,
+		(from_base ? towner->name : cls->name) + "__" + mname);
 	std::vector<ExternParam> eparams = { { {N_VOID}, true } };
 	node_t args = list();
 	if (!callee->emit_symbol.empty()) {

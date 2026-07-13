@@ -108,6 +108,23 @@
   as SHIFT ("shift operands should be of an integer type") — the suite
   has NO istringstream-extraction coverage. Reducer banked:
   tmp/reducer_istringstream_extract.mad. Candidate early family-D item.
+  **FIXED 2026-07-13 (family-D prelude commit): the root cause was
+  GENERAL — CIR-time operator overload selection never walked base
+  classes, so every member operator inherited from a base was invisible
+  (all derived streams' scalar `<<`/`>>`, plus user-class operators
+  across single/multiple inheritance; only direct cin/cout objects
+  worked). Both selectors now do the [class.member.lookup] base walk
+  (name-hiding preserved; method_map is flattened and NOT a hiding
+  signal) and all three call-lowering branches bind __this to the
+  owner's subobject (base_offset_of, virtual bases via static vbase
+  offset — `!stream` on basic_ios works). New test
+  tests/testopinherit.mad, byte-identical to g++. HONEST FINDING: pack
+  census unchanged (472 drops, identical set — the stream operator
+  bodies were already recovered by 3c; the remaining drops fail on
+  __cerb/wchar/mbstate). Live-correctness value only. Follow-up banked:
+  `while (s >> a)` needs operator-bool-in-boolean-context (explicit
+  operator bool on basic_ios) — DIFFERENT machinery (conversion
+  operator, not overload selection), reducer tmp/red_iss_9.mad.**
 
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):

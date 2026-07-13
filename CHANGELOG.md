@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+- **fix(cir): member operators inherited from base classes now resolve**
+  (Slice A family D prelude). CIR-time operator overload selection
+  (`select_operator_overload` / `select_unary_operator_overload`) scanned
+  only the receiving class's methods vector, so any member operator
+  inherited from a base was invisible and the expression fell through to
+  the builtin lowering: `istringstream >> int` emitted a raw SHIFT
+  (c2mir check: "shift operands should be of an integer type"),
+  `ostringstream << 42`, `stringstream` both directions and
+  `ifstream >> int` failed the same way, and user-class operators
+  inherited across single/multiple inheritance mis-lowered to builtin
+  arithmetic. Both selectors now walk the direct bases when the operator
+  name is entirely absent from the receiving class (C++ name hiding
+  preserved — any same-name member of any arity stops the walk;
+  `method_map` is NOT the hiding signal since class registration flattens
+  base entries into it), and `__this` binds the OWNER's subobject in all
+  three call-lowering branches (external, user binary, user unary):
+  `base_offset_of` supplies the offset (virtual bases through the static
+  vbase offset — `operator!` on `basic_ios`), with the owner-typed
+  pointer cast and owner-named default symbol for madc-emitted bodies.
+  New test `tests/testopinherit.mad` (output byte-identical to g++);
+  pack census unchanged (472 drops, identical set) — the value is live
+  correctness, not pack completeness.
+
 - **fix(cir): pack callee-cascade stops judging alloca and fn-pointer-param
   calls as external symbols** (Slice A family 3c).
   `is_c2mir_builtin_call_name` now accepts `alloca`/`__builtin_alloca`

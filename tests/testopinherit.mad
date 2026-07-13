@@ -1,0 +1,97 @@
+#!../bin/madc
+// Inherited member operators: a binary operator declared on a BASE class must
+// resolve on a derived object ([class.member.lookup] — name lookup walks the
+// bases; __this binds the owner's subobject). Covers the external stream
+// operators (basic_istream::operator>>, basic_ostream::operator<< on the
+// sstream family — basic_ostream is basic_iostream's SECOND base, so the
+// stringstream insert exercises a non-zero subobject offset) and user-class
+// operators inherited across single and multiple inheritance.
+#include <iostream>
+#include <sstream>
+using namespace std;
+
+class Acc {
+public:
+    int v;
+    Acc() { v = 0; }
+    Acc &operator+=(int x) { v += x; return *this; }
+};
+
+class DAcc : public Acc {
+public:
+    int extra;
+    DAcc() { extra = 0; }
+};
+
+class Pad {
+public:
+    int p;
+    Pad() { p = 1; }
+};
+
+class Neg {
+public:
+    int n;
+    Neg() { n = 5; }
+    int operator-() { return -n; }
+};
+
+class DNeg : public Neg {
+public:
+    int pad;
+    DNeg() { pad = 1; }
+};
+
+class Mix : public Pad, public Acc {
+public:
+    int q;
+    Mix() { q = 9; }
+};
+
+int main()
+{
+    // basic_istream::operator>>(int&) through basic_istringstream, chained
+    istringstream is("42 7");
+    int a;
+    int b;
+    is >> a >> b;
+    cout << "extract: " << a << " " << b << endl;
+
+    // basic_ostream::operator<<(int) through basic_ostringstream
+    ostringstream os;
+    os << 42;
+    cout << "insert: " << os.str() << endl;
+
+    // stringstream: insert via the SECONDARY base (non-zero offset), then
+    // extract via the primary base
+    stringstream ss;
+    ss << 19;
+    int c;
+    ss >> c;
+    cout << "roundtrip: " << c << endl;
+
+    // user-class operator+= inherited across single inheritance
+    DAcc d;
+    d += 5;
+    d += 2;
+    cout << "inherit: " << d.v << endl;
+
+    // user-class operator+= inherited from a SECONDARY base (this-adjustment
+    // must write B's subobject, not Pad's)
+    Mix m;
+    m += 4;
+    cout << "mi: " << m.p << " " << m.v << " " << m.q << endl;
+
+    // UNARY operator inherited from a base (same walk, unary selector)
+    DNeg dn;
+    cout << "neg: " << -dn << endl;
+
+    // unary operator! inherited from a VIRTUAL base (basic_ios within the
+    // istringstream — the static vbase offset binds __this)
+    istringstream bad("x");
+    int z;
+    bad >> z;
+    cout << "state: " << (!bad ? "fail" : "ok") << endl;
+
+    return 0;
+}

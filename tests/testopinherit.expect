@@ -1,0 +1,7 @@
+extract: 42 7
+insert: 42
+roundtrip: 19
+inherit: 7
+mi: 1 4 9
+neg: -5
+state: fail
