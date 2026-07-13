@@ -341,6 +341,30 @@
   3 unrelated unary-& onesies (nested_exception/locale_facets/
   basic_string:4245).
 
+- **FAMILY D RUNG 10 (2026-07-13, commit e1872b7d): `*this = sv`.**
+  Rung 9's sibling one arm up: the unary-`*` BARE-head arm (whose own
+  `dname == "this"` → `__this` resolution existed all along) required
+  ttIdentifier — `this` is tkCPPKEYWORD, so `*this = sv` (string_view
+  swap's self-assign, the trivial-class swap shape) skipped it and the
+  chain arm (no postfix follower) and the fallback built
+  `*(this = sv)` ("incompatible types in assignment to a pointer").
+  Widened to accept `this` ONLY (contextual_identifier_name — widening
+  to all contextual keywords would regress `*new T(...)` heads, which
+  the fallback owns). Gotcha: spelling()/spelling_is are TokenIdent
+  members, not TokenBase — first build failed and the masked rc +
+  stale-binary retest cost a cycle. Live error too — testswapself.mad
+  ("bb 2 aa 1"/"cc 3" == g++). Ladder 483 → **480** (check drops
+  55 → 50; string_view swap ×5 ELIMINATED; +2 ostream_int32_t
+  wchar-trap owners advanced to unresolvable-symbol drops). Release
+  521 → **518**. Gates 693/0/0/16 live + packed. NEXT (rung 11 recon,
+  banked in task #34): basic_string `assign(basic_string&&)` ×9
+  (`return *this = std::move(__str)`, basic_string.h:1623) — 9 check
+  errors ("invalid operand types of +", "incompatible types in
+  assignment to struct/union"); LIVE reducer tmp/red_moveassign_1.mad
+  PASSES (mangled-direct) — the gap is DRAIN-PARSE-ONLY, probe via
+  verbose freeze. Then __alloc_traits _S_select_on_copy ×3, filebuf
+  family, seekp ×4.
+
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):
 basic_string 45 · reverse_iterator 18 · locale machinery
