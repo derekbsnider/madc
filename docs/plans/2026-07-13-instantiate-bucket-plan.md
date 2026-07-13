@@ -153,6 +153,32 @@
   Every drop is a DEFBODY revert (correctness-neutral); live gates stay
   the arbiter per commit.**
 
+- **FAMILY D RUNG 3 (2026-07-13, commit @452acae9): catch-param ×43
+  ELIMINATED.** `TokenTRY::parse` accepted only
+  `catch(single-token-type [name])`: the head was resolved from a PEEKED
+  token (misaligning `resolve_declared_type_token`'s stream-suffix
+  consume — qualified `__cxxabiv1::__forced_unwind` could never resolve)
+  and no declarator was consumed (`catch (T&)` → "Expected ')'").
+  Now the full exception-declaration grammar parses: cv-quals, consumed
+  head + qualified/template-id resolution, `*`/`&`/`&&`, optional name.
+  Class/pointer clauses get tag 4 = UNMATCHABLE (runtime throws
+  int/double/cstr only; g++ canon — a thrown int falls through
+  `catch(ns::T&)` to `catch(...)`); named class catch vars register with
+  their REAL type (handler bodies type-check; CIR skips the scalar rebind
+  for tag 4). Test tests/testcatchparam.mad, byte-identical to g++.
+  Ladder: reducer corpus 538 → 552; release corpus 594 drops / 215
+  stubs; packed suite 684/0. **RECON BANKED for the next rungs:**
+  (a) `__n` ×45 is SECONDARY — drain parse #1 succeeds, the LOWERING
+  fails the c2mir check ("incompatible argument type" families on
+  fstream.tcc bodies, e.g. filebuf xsgetn/xsputn/seekoff all drop
+  "c2mir check errors"), the DEFBODY revert makes a consumer re-derive,
+  and parse #2 fails `__n` — the primary defect is the check-rejected
+  lowering, chase THAT (MADC_MTI_PROBE + MADC_DEBUG_NS_RESOLVE hooks
+  exist). (b) `__cerb` residual ×76-of-108 anchors at `<istream>:60:67`
+  — the basic_istream CLASS-HEAD token — i.e. IN-CLASS-defined stream
+  methods (a different derivation path than the .tcc OOL bodies rung 1
+  fixed); the ×4 at istream.tcc:224/:329 are OOL stragglers.
+
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):
 basic_string 45 · reverse_iterator 18 · locale machinery
