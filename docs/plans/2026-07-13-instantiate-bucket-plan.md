@@ -266,6 +266,27 @@
   chain hits (1) via setf → operator|=); reducers tmp/red_mtref_1.mad,
   tmp/red_iosflags_1.mad; baseline log tmp/bfL_freeze.log.
 
+- **FAMILY D RUNG 7 (2026-07-13, commit @32259bf0): ref-return of a
+  scalar assignment.** C++ [expr.ass] lvalue vs C11 rvalue:
+  `return __a = __a | __b;` lowered `&(assign)` — the ios_base
+  fmtflags ×9 + std::byte ×3 families and a LIVE compile error for
+  user `T& f(T& v) { return v = ...; }`. translate_return hoists the
+  lhs address ONCE (__madc_refret_N temp of the C return type),
+  assigns through (plain + compound via assign_op_node_code), returns
+  the temp; class operands excluded. Test testrefassign.mad (3 3 9 9,
+  three surfaces). Ladder: reducer 499 → **487**; release 541 → 529.
+  Suites 689/0/0/16 live + packed. NEXT: non-template manipulators —
+  `cout << std::hex` fails live; hex/dec/oct are inline-only (never
+  exported, unlike endl/flush's W2 template path), and
+  free_operator_overloads captures only namespace fn TEMPLATES →
+  extend the W2 branch (cir_builder.cpp ~11104): 0-arg-call rhs whose
+  FuncDef is a 1-param ios_base&/stream&-taking namespace function →
+  lower as fname(&os) through the NORMAL derivation path (the inline
+  body derives on use; its setf → operator|= chain is what rung 7
+  unblocked). Then: streambuf/fstream.tcc "left operand" ×10, __cerb
+  .tcc re-probe, wchar identity split (reclaims the +24 stubs),
+  basic_string.h assign-struct ×28 cluster.
+
 The pack reverts ~175 library bodies to DEFBODY (trap stubs in the packed
 binary; census from `bin/madc-release --run-frozen -v`, 2026-07-13):
 basic_string 45 · reverse_iterator 18 · locale machinery
