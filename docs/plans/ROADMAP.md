@@ -1,8 +1,8 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-07-14 (family-D forest
-drain-gap campaign closed with stable function-local declaration identity;
-reducer 308 drops and live/packed suites 695/0/0/16).
+Master plan linking all workstreams. Updated 2026-07-14 (bound forest RECORDS
+materialization optimized on its feature branch; Slice B class-KIND parse-once
+design complete, implementation not started).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -28,6 +28,26 @@ high-level" — the answer is both.**
 
 ## Current State
 
+- **Slice B class-KIND parse-once (2026-07-14): DESIGN COMPLETE.** The
+  standalone design in
+  `docs/plans/2026-07-14-class-kind-parse-once-DESIGN.md` inventories the
+  complete `TokenSTRUCT`/`TokenCLASS` output contract and specifies one-time
+  dependent pattern capture, immutable structural `ClassPattern` nodes,
+  substitution through shared registration/layout/mangling helpers, and a
+  pattern-vs-sole-parse ratchet. Eligibility is decided before instantiation:
+  an ineligible pattern uses today's token parser as its only tallied lane; an
+  admitted pattern rolls back and fails loudly rather than retrying through the
+  parser. No implementation landed in the design sitting. Next: B0 shared
+  helpers/journal/counters/vector census. Before B1, owner review is required
+  for the format-version bump and extension of the existing class-template
+  `TEMPLATE_PAYLOAD`; bind-time reparse is forbidden.
+- **Bound CIR-build Mission 1 (2026-07-14): CLOSED ON FEATURE BRANCH.**
+  `feature/forest-perf-cirbuild-codex` @cbcb79b6 keeps decoded RECORDS in their
+  columnar byte-plane representation and reconstructs only touched rows.
+  Bound `cir build` median falls 0.361 -> 0.270 s and canonical packed wall
+  0.715 -> 0.593 s; the packed binary remains exactly 9708520 bytes. Fulltest
+  and packed suites are 695/0/0/16; bind is 18/18. The result and handoff are
+  closed by @4fc32e63; the branch is pushed but not merged into `develop`.
 - **Family-D forest drain gaps (2026-07-14): CLOSED.** Function-local class,
   nested-function, and dependent-pattern hoists now use deterministic
   enclosing-emission-symbol x source-name x per-body-ordinal identities. The

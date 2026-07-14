@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **docs(plan): complete the Slice B class-KIND parse-once design.** The
+  standalone plan inventories every aggregate parser side effect, defines an
+  immutable class declaration/type pattern, a transactional structural
+  substitution path, pre-decided pattern eligibility with a tallied sole-parse
+  lane, forest persistence, semantic equivalence gates, and vector/string/map
+  widening slices. No implementation is included; owner review of the existing
+  class-template payload extension is the checkpoint before durable pattern
+  carry.
+
 ## [v0.35.0] — 2026-07-14
 
 The small-binary + family-D release: the packed release binary shrinks
