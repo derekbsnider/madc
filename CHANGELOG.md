@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [v0.35.0] — 2026-07-14
+
+The small-binary + family-D release: the packed release binary shrinks
+101 MB → 9.26 MB (per-segment zstd + snapshot-v2 segment transforms +
+intern-spine pack compression), and the family-D drain-gap campaign
+lands (pack drops 483 → 308, stable local-class hoist identity, a
+ladder of live parser/CIR correctness fixes); fulltest and packed
+suite both 695/0/0/16.
+
 - **feat(forest): segment transforms + intern-spine pack compression —
   packed release binary 15.6 -> 9.26 MB; the <10 MB owner target is
   met (task #37 complete, @295615a5).** The planned ZDICT dictionary

@@ -259,30 +259,33 @@ user-signed failset classification audit
 are roadmap items, not gate blockers. In-process `eval`/exec runs on the CIR
 JIT (`CirJitSession`); the REPL and native AOT output remain deferred.
 
-**Branch state:** `develop` carries v0.34.0 (CIR backend). `master` still holds
+**Branch state:** `develop` carries v0.35.0 (CIR backend). `master` still holds
 the v0.24.0 asmjit/Gecko backend at full C89 coverage (419 pass / 0 fail) —
 develop is **not** promoted to master until the CIR path reaches feature parity.
 
 ### Current Release
 
-**v0.34.0** is the pack-time drain release: Phase 2 rung 1 of the
-embedded-header-forest work is closed. Deferred header bodies drain to
-fixpoint at pack time and freeze fully evaluated, validated by a pack-side
-c2mir check gate with error-tolerant reverts (drain failures revert to
-on-use derivation; eager-parsed source functions revert to a body-span
-carry — restoring packed `std::stoi`/`std::stod`). First fully-green
-fulltest of the drain era (681/0/0/16 + every ratchet + bind gate 18/18 +
-both oracles) and the first-ever **packed suite 681/681**. The build now
-keeps `bin/madc` (dev -O0) and `bin/madc-release` (packed -O2) side by
-side, with the timing trend tracked in `docs/perf/forest-timings.tsv`.
+**v0.35.0** is the small-binary + family-D release. The packed release
+binary drops **101 MB → 9.26 MB** (under the 10 MB product target): every
+forest segment compresses with per-segment zstd, the new snapshot-v2
+transform vocabulary re-codes the heavy per-unit kinds (children u32-delta,
+records byte-plane with an SSE2 tile transpose), and the intern spine
+compresses in the release pack (owner-approved ~7 ms/process rebind; dev
+freezes keep zero-copy binds). Alongside it, the family-D drain-gap
+campaign lands: pack drops fall 483 → 308, function-local class hoists get
+stable deterministic identities, call operands type by the rank-resolved
+callee, and a ladder of live correctness fixes ships (`*this = v`,
+stream manipulators, chained arrows, catch-parameter grammar, contextual
+`operator bool`). Both fulltest and the packed release suite are
+**695/0/0/16**; the bind gate holds bound == live == g++ at 18/18.
 
 ### Recent Releases
 
+- **v0.35.0** — Small-binary + family-D: packed binary 101 MB → 9.26 MB (per-segment zstd, snapshot-v2 segment transforms, intern-spine pack compression; libzstd-dev now required); family-D campaign merged (drops 483 → 308, stable local-class hoist identity, ranked-callee typing, live-correctness ladder); fulltest + packed suite 695/0/0/16
 - **v0.34.0** — Pack-time deferred-body drain (rung 1): pack-side c2mir check gate (fork `c2mir_check_tree` @062dd97), error-tolerant reverts incl. body-span carry (packed stoi/stod restored), emission split + trap prebind; packed suite 681/681; dual dev/packed binaries; timing trend TSV; fulltest 681/0/0/16
 - **v0.33.0** — Parse-once campaign complete: seven copy-time KINDs (incl. the SET wall), first-skip flipped to production, re-parse machinery deleted (−123 lines); burndown 312/0; map-iteration for-init SIGSEGV fixed (+`testmapiter`); typed dtor externs make emit-C gcc-clean on containers; fulltest 677/0/0/16
 - **v0.32.0** — Rung-1 interning capstone: `TokenIdent::str` dropped (4-byte interned spelling_id; −43% token string ctors, −3.3% instructions); `Variable::name_sid` + finalize caches (−6.6% instructions); tsubst burndown root-caused to the dependent-member-type KIND
 - **v0.31.0** — Tag-arithmetic encoding retired (structural derivation only); `madc::dis` substrate primitives + `datatype_map` re-key; `-O2` default front-end speedup; c2mir warnings 97 → 0; lambda `[&]` capture; fulltest 673/0/0/16
-- **v0.30.0** — Set wall cleared: real-libstdc++ `std::set`/`std::map` (incl. `std::map<std::string,std::string>`) compile and run on the default C++17 path (eight container bugs fixed); real 16-byte `__int128`; embedded-header-forest plan; fulltest 669/0/0/18, torture failset byte-identical to baseline
 
 ## Roadmap
 

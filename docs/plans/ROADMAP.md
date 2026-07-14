@@ -35,20 +35,30 @@ high-level" — the answer is both.**
   and both the live fulltest and packed release suite are **695/0/0/16** with
   every forest gate green, including `[subbind]`. See
   `docs/plans/2026-07-14-CODEX-HANDBACK-local-class-identity.md`.
-- **Version:** `0.34.0` (per `VERSION`) — released on `develop` (CIR backend);
-  the **pack-time drain** release: Phase 2 rung 1 of the embedded-header
-  forest (docs/plans/2026-07-09-forest-full-evaluation-lazy-materialize-PLAN.md)
-  is CLOSED. Deferred header bodies drain to fixpoint at pack time and freeze
-  fully evaluated, guarded by a pack-side c2mir check gate (fork
-  `c2mir_check_tree` @062dd97) with error-tolerant reverts (DEFBODY re-insert;
-  body-span carry for eager-parsed source fns — restored packed
-  `std::stoi`/`stod`); emission split + `--run-frozen` trap prebind preserve
-  whole-TU byte-identity. First fully-green fulltest of the drain era
-  (**681/0/0/16** + every ratchet + bind gate 18/18 + both oracles) and the
-  first-ever **packed suite 681/681**. Dual build outputs: `bin/madc`
-  (dev -O0) and `bin/madc-release` (packed -O2) coexist; timing trend in
-  `docs/perf/forest-timings.tsv` (bound 0.965s vs 1.006s -O2 live baseline
-  on testsubscript; corpus growth recovery = rung 2). v0.33.0 was
+- **Version:** `0.35.0` (per `VERSION`) — released on `develop` (CIR backend);
+  the **small-binary + family-D** release: the packed release binary drops
+  **101 MB → 9.26 MB** (<10 MB owner target; blob 3.8 MB) via per-segment
+  zstd (pack L15 / dev codec-default), the snapshot-v2 segment-transform
+  vocabulary (CHILDREN u32-delta 1.68→0.09 MB, RECORDS byte-plane-80
+  2.05→0.89 MB with an SSE2 16×16 tile transpose — the planned ZDICT
+  dictionary was measured on real pack frames and refuted), and
+  owner-approved intern-spine compression in the release pack only
+  (3.74→0.81 MB, ~7 ms/process owned-buffer rebind; dev freezes stay
+  zero-copy). configure now REQUIRES libzstd-dev. The family-D drain-gap
+  campaign lands in the same release: pack drops 483→308 (reducer) / 346
+  (release), stable function-local hoist identity (enclosing emission
+  symbol × source name × ordinal), ranked-callee operand typing, and the
+  live-correctness ladder (`*this = v`, `*this->ptr() = c`, stream
+  manipulators, chained arrows, catch-param grammar, contextual
+  `operator bool`, transitive vbase offsets). fulltest **695/0/0/16**,
+  packed suite **695/0/0/16**, bind gate 18/18. Bound testsubscript 0.70 s
+  worst-case (decode cost of the compressed pack; no-include TUs
+  unaffected). v0.34.0 was the **pack-time drain** release: Phase 2 rung 1
+  of the embedded-header forest CLOSED — deferred header bodies drain to
+  fixpoint at pack time and freeze fully evaluated, guarded by a pack-side
+  c2mir check gate (fork `c2mir_check_tree` @062dd97) with error-tolerant
+  reverts; first-ever fully-green packed suite (681/681); dual dev/packed
+  binaries; timing trend in `docs/perf/forest-timings.tsv`. v0.33.0 was
   the **parse-once** release: the template re-parse deprecation campaign
   (Phase 5) is COMPLETE. Every member-template instantiation — first or
   repeat — takes its body from tsubst over the one saved pattern tree (the
