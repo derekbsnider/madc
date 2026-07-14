@@ -1,5 +1,29 @@
 # HANDOFF — forest recompression: dictionary slice (task #37, toward the <10 MB binary)
 
+> ## ⛔ OUTCOME (2026-07-14, same day): TASK COMPLETE — but NOT via this spec
+>
+> The ZDICT plan below was measured on the real pack frames BEFORE
+> implementation and **refuted**: trained dictionaries net ~−0.3 MB total
+> for +13 s pack CPU, and a children dictionary was net NEGATIVE. Do not
+> implement it. What landed instead (slice 2 @295615a5, all gates green):
+>
+> - **Container segment transforms** (snapshot format v2 — the `flags`
+>   field): CHILDREN u32-delta 1.68→0.09 MB; RECORDS byte-plane(80)
+>   2.05→0.89 MB (SSE2 16×16 tile transpose on decode — the scalar loop
+>   cost bound compiles +110 ms).
+> - **Intern-spine zstd, release pack only** (owner-approved in-session):
+>   3.74→0.81 MB; consumers rebind via the pre-existing forest_pool_block
+>   owned-buffer fallback (~7 ms once per process); dev freezes stay raw.
+>
+> **Result: packed binary 15.6 → 9.26 MB (blob 3.8 MB) — <10 MB target
+> met.** Bound testsubscript 0.62→0.70 s worst-case; no-include compiles
+> unaffected. Packed suite 695/0/0/16, bind gate 18/18, fulltest green.
+> Measurement evidence: session scratchpad `ztrain_all*.log` (the harness
+> parses a packed binary's container and measures levers per KIND).
+>
+> The rest of this document is kept as the historical spec + measured
+> level data. Its "MEASURED" table and traps remain valid references.
+
 **From:** Claude, 2026-07-14. **For:** next sitting (Claude post-compact or Codex).
 **Branch:** `feature/forest-recompress-claude` · **HEAD:** `0ef1f682` (pushed, NOT merged to develop).
 **Owner directive:** packed release binary <10 MB; raw-forest storage was never an agreed trade. BOTH surfaces stay regression-free.
