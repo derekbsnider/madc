@@ -97,9 +97,12 @@ public:
     void set_context_hash(uint64_t h) { _context_hash = h; }
 
     // Compress and stage one segment. False on duplicate seg_id or codec
-    // failure (e.g. Zstd requested in a build without HAVE_ZSTD).
+    // failure (e.g. Zstd requested in a build without HAVE_ZSTD). `level`
+    // is the Zstd compression level (0 = codec default; see
+    // madc_pch::compress) — decompression speed is level-independent.
     bool add_segment(uint32_t seg_id, uint32_t kind,
-		     const void *bytes, size_t len, PchCompression codec);
+		     const void *bytes, size_t len, PchCompression codec,
+		     int level = 0);
 
     // Assemble the complete blob (header + payloads + directory + footer).
     bool build(std::vector<uint8_t> &out) const;

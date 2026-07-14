@@ -18,7 +18,8 @@ static size_t align16(size_t n) { return (n + 15) & ~(size_t)15; }
 // --- writer ---
 
 bool snapshot_writer::add_segment(uint32_t seg_id, uint32_t kind,
-				  const void *bytes, size_t len, PchCompression codec)
+				  const void *bytes, size_t len, PchCompression codec,
+				  int level)
 {
     for ( size_t i = 0; i < _segs.size(); ++i )
 	if ( _segs[i].meta.seg_id == seg_id )
@@ -35,7 +36,7 @@ bool snapshot_writer::add_segment(uint32_t seg_id, uint32_t kind,
     std::vector<uint8_t> raw((const uint8_t *)bytes, (const uint8_t *)bytes + len);
     if ( codec == PchCompression::None )
 	p.payload.swap(raw);
-    else if ( !madc_pch::compress(raw, p.payload, codec) )
+    else if ( !madc_pch::compress(raw, p.payload, codec, level) )
 	return false;
     p.meta.comp_size = (uint64_t)p.payload.size();
 

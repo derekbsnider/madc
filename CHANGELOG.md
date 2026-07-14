@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+- **feat(forest): per-segment zstd compression — packed release binary
+  101 MB -> 15.6 MB (-85%).** Implements the container design as written
+  (2026-07-04 plan: zstd frames + per-segment codec directory; zlib is
+  the explicit fallback only): the forest pack now compresses every
+  segment with zstd EXCEPT the INTERN pool blocks, which stay raw — they
+  are the zero-copy bind-in-place spine (keyed on SNAP_KIND_INTERN_*, not
+  seg-ids). Per-unit payloads already load on demand (unit_segment), so a
+  consumer decodes only the units it binds. CIR_RECORDS compress 30x
+  (61.8 -> 2.05 MB). Level by placement: the appended release pack pays
+  zstd-15 once per release build (level 19 measured 53s CPU on this
+  corpus — over the dev box's ~120s per-process kill; 15 costs ~5s for
+  ~97% of the plain-level ratio); dev/standalone freezes keep the fast
+  codec default so the drain-ladder loop is untaxed. Build: configure now
+  REQUIRES libzstd-dev (hard error, --without-zstd is the loud opt-out;
+  the silent HAVE_ZSTD-undefined degradation to zlib is how the pack
+  quietly regressed to raw in the first place). Honest cost: a bound
+  compile decodes its closure — worst case (testsubscript, closure spans
+  the corpus) 0.57 -> 0.62s (+~50ms); small TUs pay proportionally less.
+  Gates: fulltest 695/0/0/16 (self-exe gate green), release pack rc=0,
+  packed suite 695/0/0/16 with the blob present. Follow-up (task #37):
+  shared trained ZDICT dictionary (cross-unit redundancy — the
+  whole-file-vs-per-segment experiments show the headroom) toward the
+  <10 MB binary target.
+
 - **fix(parser+cir): stable function-local declaration identity closes the
   family-D forest carry campaign.** Function-local classes, GNU nested
   functions, and dependent-pattern bodies now mint hoisted symbols from the

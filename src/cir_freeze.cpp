@@ -431,14 +431,36 @@ bool cir_freeze_forest(cir_node *root, const char *main_unit_name,
 // Container glue
 // ---------------------------------------------------------------------------
 
+// Pack-time zstd level for the CURRENT cir_forest_write call. Set from its
+// zstd_level parameter (the freeze path is single-threaded): the RELEASE
+// pack passes a high level — compression is paid once per release build,
+// and zstd DEcompression speed is essentially level-independent — while
+// dev/standalone freezes keep the fast default (0 -> codec default 3) so
+// the drain-ladder loop never pays high-level compression. The pack level
+// itself is budgeted against the ~120s per-process CPU kill on the dev
+// box (see the selection comment at the madc_cir.cpp call site).
+static int cir_forest_zstd_level = 0;
+
 // Zero-length payloads take codec None (nothing to compress); the writer
 // still needs a non-NULL byte pointer.
+// INTERN pool blocks (both the container pool and the arena's — keyed on
+// KIND, not seg-id) are ALWAYS None: they are the bind-in-place spine the
+// reader binds zero-copy from the image (forest_pool_block/raw_ptr — the
+// path the per-segment codec field exists for). Everything else reaches
+// consumers through a copying read_segment (per-unit payloads via the
+// load-on-demand unit_segment), so compression there trades a memcpy for
+// a zstd frame decode of only what a consumer actually loads.
 static bool add_seg(madc::dis::snapshot_writer &w, uint32_t seg_id,
 		    uint32_t kind, const void *bytes, size_t len,
 		    PchCompression codec)
 {
+	if (kind == madc::dis::SNAP_KIND_INTERN_BYTES
+	    || kind == madc::dis::SNAP_KIND_INTERN_ENTRIES
+	    || kind == madc::dis::SNAP_KIND_INTERN_BUCKETS)
+		codec = PchCompression::None;
 	return w.add_segment(seg_id, kind, len ? bytes : (const void *)"",
-			     len, len ? codec : PchCompression::None);
+			     len, len ? codec : PchCompression::None,
+			     cir_forest_zstd_level);
 }
 
 bool cir_freeze_write(const cir_frozen_blob &blob,
@@ -495,8 +517,9 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 }
 
 bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
-		      PchCompression codec)
+		      PchCompression codec, int zstd_level)
 {
+	cir_forest_zstd_level = zstd_level;
 	madc::dis::intern_table *pool = TokenBase::_active_strpool;
 	if (f.units.empty() || !pool)
 		return false;
