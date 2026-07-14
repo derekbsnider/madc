@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **docs(plan): complete the Slice B class-KIND parse-once design.** The
+  standalone plan inventories every aggregate parser side effect, defines an
+  immutable class declaration/type pattern, a transactional structural
+  substitution path, pre-decided pattern eligibility with a tallied sole-parse
+  lane, forest persistence, semantic equivalence gates, and vector/string/map
+  widening slices. No implementation is included; owner review of the existing
+  class-template payload extension is the checkpoint before durable pattern
+  carry.
+
 - **perf(forest): keep bound RECORDS columnar and reconstruct rows lazily.**
   The packed reader can now return a decoded segment without inverting its
   recorded byte-stream transform. Forest units retain byte-plane RECORDS,
@@ -12,7 +21,8 @@
   drops 0.361 -> 0.270 s and the packed five-run wall median drops
   0.715 -> 0.593 s. The snapshot format and compression design are unchanged,
   and `bin/madc-release` remains exactly 9,708,520 bytes. Validation:
-  fulltest and packed suite 695/0/0/16, bind gate 18/18.
+  fulltest and packed suite 695/0/0/16, bind gate 18/18 (independently
+  re-verified before merge).
 
 ## [v0.35.0] — 2026-07-14
 

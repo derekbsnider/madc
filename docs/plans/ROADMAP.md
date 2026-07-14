@@ -2,7 +2,8 @@
 
 Master plan linking all workstreams. Updated 2026-07-14 (family-D forest
 drain-gap campaign closed; bound RECORDS decode no longer eagerly rebuilds
-untouched rows; live/packed suites 695/0/0/16).
+untouched rows; Slice B class-KIND parse-once design complete, implementation
+not started; live/packed suites 695/0/0/16).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -28,8 +29,21 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Bound forest RECORDS decode (2026-07-14, `cbcb79b6`): CLOSED on
-  `feature/forest-perf-cirbuild-codex`.** Callgrind found the new bound CIR
+- **Slice B class-KIND parse-once (2026-07-14): DESIGN COMPLETE.** The
+  standalone design in
+  `docs/plans/2026-07-14-class-kind-parse-once-DESIGN.md` inventories the
+  complete `TokenSTRUCT`/`TokenCLASS` output contract and specifies one-time
+  dependent pattern capture, immutable structural `ClassPattern` nodes,
+  substitution through shared registration/layout/mangling helpers, and a
+  pattern-vs-sole-parse ratchet. Eligibility is decided before instantiation:
+  an ineligible pattern uses today's token parser as its only tallied lane; an
+  admitted pattern rolls back and fails loudly rather than retrying through the
+  parser. No implementation landed in the design sitting. Next: B0 shared
+  helpers/journal/counters/vector census. Before B1, owner review is required
+  for the format-version bump and extension of the existing class-template
+  `TEMPLATE_PAYLOAD`; bind-time reparse is forbidden.
+- **Bound forest RECORDS decode (2026-07-14, `cbcb79b6`): CLOSED, merged to
+  `develop` (independently verified).** Callgrind found the new bound CIR
   regression below `CirFrozenForest::unit_segment`: whole-frame
   `byteplane_inv` cost 404.9 M instructions even though the consumer touched
   only a small subset of the 566,522 loaded records. The reader now exposes
@@ -41,8 +55,7 @@ high-level" — the answer is both.**
   with 240 units; fulltest and packed suite are **695/0/0/16**, bind gate
   **18/18**. The broad bind restore path remains structural work: 95% of
   recordable aggregates are needed by this workload, refuting an early-demand
-  filter. **Next:** a separate design-only Slice B class-KIND parse-once
-  sitting; no implementation in that design sitting.
+  filter.
 - **Family-D forest drain gaps (2026-07-14): CLOSED.** Function-local class,
   nested-function, and dependent-pattern hoists now use deterministic
   enclosing-emission-symbol x source-name x per-body-ordinal identities. The
