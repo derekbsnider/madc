@@ -9,4 +9,4 @@ URL: https://github.com/derekbsnider/madc
 Version: @PACKAGE_VERSION@
 Cflags: -I${includedir}
 Libs: -L${libdir} -lmadc
-Libs.private: -lasmjit -ldl
+Libs.private: -ldl -lz -lm -lpthread @OPTIONAL_LIBS@

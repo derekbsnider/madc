@@ -35,6 +35,30 @@ AC_SUBST([HAVE_QDBM])
 AC_SUBST([HAVE_XQDBM])
 AC_SUBST([HAVE_SQLITE3])
 
+# zstd — the forest/pch container codec (zstd-preferred by design; the packed
+# release binary depends on it for its size). REQUIRED by default: a missing
+# dev package must fail configure, never silently degrade the pack to the
+# zlib fallback (that silent degradation is how the packed release binary
+# regressed 9MB -> 100MB). Opt out explicitly with --without-zstd.
+AC_ARG_WITH([zstd],
+    [AS_HELP_STRING([--without-zstd],
+        [build without zstd; the packed forest falls back to zlib (larger binaries, slower binds — not recommended)])],
+    [with_zstd="$withval"],
+    [with_zstd=yes])
+HAVE_ZSTD=0
+if test "$with_zstd" != no; then
+    AC_CHECK_HEADER([zstd.h], [madc_zstd_h=yes], [madc_zstd_h=no])
+    AC_CHECK_LIB([zstd], [ZSTD_compress], [madc_zstd_lib=yes], [madc_zstd_lib=no])
+    if test "$madc_zstd_h" = yes && test "$madc_zstd_lib" = yes; then
+        HAVE_ZSTD=1
+        OPTIONAL_CPPFLAGS="$OPTIONAL_CPPFLAGS -DHAVE_ZSTD"
+        OPTIONAL_LIBS="$OPTIONAL_LIBS -lzstd"
+    else
+        AC_MSG_ERROR([zstd development files not found (install libzstd-dev), or pass --without-zstd to accept the zlib fallback (larger packed binaries, slower binds)])
+    fi
+fi
+AC_SUBST([HAVE_ZSTD])
+
 AC_ARG_ENABLE([madcdat],
     [AS_HELP_STRING([--enable-madcdat], [build madcdat storage/federation support @<:@default=yes@:>@])],
     [enable_madcdat="$enableval"],

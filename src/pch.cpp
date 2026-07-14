@@ -497,7 +497,7 @@ bool deserialize_tokens(const uint8_t *data, size_t len,
 
 bool compress(const std::vector<uint8_t> &in,
 	      std::vector<uint8_t> &out,
-	      PchCompression method)
+	      PchCompression method, int level)
 {
     if ( method == PchCompression::None )
     {
@@ -510,7 +510,8 @@ bool compress(const std::vector<uint8_t> &in,
     {
 	size_t bound = ZSTD_compressBound(in.size());
 	out.resize(bound);
-	size_t result = ZSTD_compress(out.data(), bound, in.data(), in.size(), 3);
+	size_t result = ZSTD_compress(out.data(), bound, in.data(), in.size(),
+				      level ? level : 3);
 	if ( ZSTD_isError(result) )
 	    return false;
 	out.resize(result);

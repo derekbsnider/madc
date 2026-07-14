@@ -554,9 +554,17 @@ bool cir_freeze_forest(cir_node *root, const char *main_unit_name,
 // (the active pool, whose ids all forest handles reference), typeid->name
 // closure, and every unit's four payload segments. The caller still sets
 // the context hash (cir_forest_write does it) and picks placement
-// (write_file / append_file / build).
+// (write_file / append_file / build). `zstd_level` (Zstd codec only):
+// the RELEASE pack passes high (paid once per release build, budgeted
+// against the per-process CPU cap — see the madc_cir.cpp call site);
+// dev/standalone freezes keep the fast default so the drain-ladder loop
+// stays cheap. `compress_intern` compresses the three intern-spine blocks
+// too (release pack only — consumers rebind via the owned-buffer fallback
+// at ~7ms once per process instead of zero-copy; owner-approved trade,
+// task #37).
 bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
-		      PchCompression codec = PchCompression::Zlib);
+		      PchCompression codec = PchCompression::Zlib,
+		      int zstd_level = 0, bool compress_intern = false);
 
 // Map a container image for reading: the file at `path`, or the running
 // executable (readlink /proc/self/exe) when `path` is NULL — the appended-

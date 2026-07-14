@@ -41,7 +41,9 @@
 namespace madc {
 namespace dis {
 
-enum : uint32_t { SNAPSHOT_FORMAT_VERSION = 1 };
+// v2: segment `flags` carries the byte-stream TRANSFORM vocabulary below.
+// Readers accept v1 (whose flags are always 0) and v2.
+enum : uint32_t { SNAPSHOT_FORMAT_VERSION = 2 };
 
 // Reserved well-known segment `kind` tags. Consumers may use any value >=
 // SNAP_KIND_CONSUMER for their own contracts; the container never interprets it.
@@ -53,6 +55,31 @@ enum snapshot_kind : uint32_t
     SNAP_KIND_INTERN_BUCKETS = 3,	// intern_table bucket block
     SNAP_KIND_CONSUMER       = 256	// first consumer-defined kind
 };
+
+// Byte-stream TRANSFORMS (segment `flags`): reversible re-codings applied to
+// the raw payload BEFORE compression and inverted by read_segment() after
+// decompression. Content-blind, like `codec` — the consumer picks a transform
+// per segment where it knows the payload SHAPE pays (delta for
+// near-sequential u32 index streams, byte-plane for arrays of fixed-stride
+// records whose per-field redundancy is columnar). A transformed segment
+// never binds in place (raw_ptr() = NULL), so transforms are out of bounds
+// for zero-copy spine segments.
+//
+// `flags` layout: bits 0..7 transform id (snapshot_transform), bits 8..23
+// transform parameter (SNAP_XFORM_BYTEPLANE: the record stride), bits 24..31
+// reserved (0).
+enum snapshot_transform : uint32_t
+{
+    SNAP_XFORM_NONE      = 0,
+    SNAP_XFORM_DELTA32   = 1,	// forward delta over a u32 stream (raw_size % 4 == 0)
+    SNAP_XFORM_BYTEPLANE = 2	// fixed-stride records split into byte planes
+				// (param = stride > 0, raw_size % stride == 0)
+};
+
+inline uint32_t snap_xform_flags(snapshot_transform id, uint32_t param = 0)
+	{ return (uint32_t)id | (param << 8); }
+inline uint32_t snap_xform_id(uint32_t flags)    { return flags & 0xffu; }
+inline uint32_t snap_xform_param(uint32_t flags) { return (flags >> 8) & 0xffffu; }
 
 struct snapshot_header		// at blob offset 0 (32 bytes)
 {
@@ -72,7 +99,7 @@ struct snapshot_segment		// one directory record (40 bytes)
     uint64_t comp_size;		// stored payload bytes
     uint64_t raw_size;		// decompressed bytes (== comp_size when codec None)
     uint32_t codec;		// PchCompression value
-    uint32_t flags;		// reserved (0)
+    uint32_t flags;		// transform vocabulary (snapshot_transform; 0 = none)
 };
 
 struct snapshot_footer		// the LAST bytes of the file (32 bytes)
@@ -96,10 +123,16 @@ public:
 
     void set_context_hash(uint64_t h) { _context_hash = h; }
 
-    // Compress and stage one segment. False on duplicate seg_id or codec
-    // failure (e.g. Zstd requested in a build without HAVE_ZSTD).
+    // Compress and stage one segment. False on duplicate seg_id, codec
+    // failure (e.g. Zstd requested in a build without HAVE_ZSTD), or a
+    // transform that doesn't fit the payload (size not a multiple of the
+    // element/stride). `level` is the Zstd compression level (0 = codec
+    // default; see madc_pch::compress) — decompression speed is
+    // level-independent. `xform` is a snap_xform_flags() value applied to
+    // the payload before compression (read_segment inverts it).
     bool add_segment(uint32_t seg_id, uint32_t kind,
-		     const void *bytes, size_t len, PchCompression codec);
+		     const void *bytes, size_t len, PchCompression codec,
+		     int level = 0, uint32_t xform = 0);
 
     // Assemble the complete blob (header + payloads + directory + footer).
     bool build(std::vector<uint8_t> &out) const;
@@ -135,11 +168,12 @@ public:
 	{ return idx < _dir.size() ? &_dir[idx] : (const snapshot_segment *)0; }
     const snapshot_segment *find(uint32_t seg_id) const;
 
-    // Decompress (or copy) a segment payload into out (resized to raw_size).
+    // Decompress (or copy) a segment payload into out (resized to raw_size),
+    // inverting the segment's transform when one is recorded in seg.flags.
     bool read_segment(const snapshot_segment &seg, std::vector<uint8_t> &out) const;
 
     // Zero-copy payload pointer for codec None segments (bind-in-place path);
-    // NULL for compressed segments.
+    // NULL for compressed or transformed segments.
     const uint8_t *raw_ptr(const snapshot_segment &seg) const;
 };
 

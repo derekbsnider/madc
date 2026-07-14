@@ -2929,16 +2929,38 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 						  : NULL);	// freeze-time fidelity (inline bodies / typedefs / ns)
 		cir_forest_fill_globals(prog, f);	// file-scope globals (CIR_GLOBALS; ids swizzle via the arena)
 		cir_forest_fill_templates(prog, f);	// v20: template-NAME state (pattern maps, token runs)
-		// RAW segments, deliberately: the reader binds uncompressed
-		// blocks IN PLACE from the image (zero-copy — the path the
-		// per-segment codec field exists for), while a compressed
-		// blob taxes EVERY consumer compile with inflate. Measured
-		// on testsubscript bound: zlib was 569M Ir, 10.7% of the
-		// whole run (callgrind, 2026-07-11). Container bytes are
-		// paid once at pack; consumer cycles are paid per compile.
-		PchCompression codec = PchCompression::None;
+		// Per-segment zstd, per the container design (2026-07-04 plan:
+		// zstd frames + per-segment codec directory; zlib is the
+		// explicit --without-zstd fallback only). The INTERN pool
+		// blocks stay codec None inside add_seg — they are the
+		// zero-copy bind-in-place spine. Everything else reaches
+		// consumers through a copying read_segment, and the per-unit
+		// payloads load on demand (unit_segment), so a consumer
+		// decodes only the units it actually binds. History: a
+		// whole-corpus zlib inflate per compile cost 569M Ir (10.7%
+		// of bound testsubscript, callgrind 2026-07-11); the RAW
+		// interim that replaced it grew the packed release binary
+		// 9MB -> 100MB — never an agreed trade (task #37).
+#ifdef HAVE_ZSTD
+		PchCompression codec = PchCompression::Zstd;
+#else
+		PchCompression codec = PchCompression::Zlib;
+		fprintf(stderr, "%s: WARNING: built --without-zstd — forest "
+			"pack falls back to zlib (larger container, slower "
+			"binds)\n", source_name);
+#endif
 		madc::dis::snapshot_writer w;
-		if (!cir_forest_write(f, w, codec)) {
+		// Level by placement: the appended release pack pays a high
+		// level once per release build; a standalone dev freeze stays
+		// at the codec default so the drain-ladder loop is never
+		// taxed. 15, not 19: this box hard-kills processes at ~120s
+		// CPU and the pack freeze itself uses ~70s — level 19 costs
+		// ~53s on this corpus (SIGXCPU), level 15 ~5s for ~97% of
+		// the plain-level ratio (measured 2026-07-14, task #37).
+		// The intern spine compresses only in the appended pack
+		// (owner-approved ~7ms-per-process trade; dev freezes keep
+		// zero-copy binds).
+		if (!cir_forest_write(f, w, codec, append ? 15 : 0, append)) {
 		    fprintf(stderr, "%s: forest container assembly failed\n",
 			    source_name);
 		} else if (!(append ? w.append_file(out_path)

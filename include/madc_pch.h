@@ -77,10 +77,13 @@ bool deserialize_tokens(const uint8_t *data, size_t len,
 			uint32_t expected_count,
 			std::deque<TokenBase *> &out);
 
-// Compress a buffer (returns compressed data)
+// Compress a buffer (returns compressed data). `level` applies to Zstd only
+// (zlib keeps Z_DEFAULT_COMPRESSION): 0 = the codec default (3 — the .madh
+// PCH balance); pack-time callers that pay compression ONCE per release build
+// pass a high level (the forest container uses 19).
 bool compress(const std::vector<uint8_t> &in,
 	      std::vector<uint8_t> &out,
-	      PchCompression method);
+	      PchCompression method, int level = 0);
 
 // Decompress a buffer
 bool decompress(const uint8_t *in, size_t in_len,

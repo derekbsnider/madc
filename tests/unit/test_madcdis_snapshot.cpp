@@ -286,3 +286,87 @@ TEST_CASE("empty container (zero segments) still round-trips")
     CHECK(r.segment_count() == 0u);
     CHECK(r.find(1) == nullptr);
 }
+
+TEST_CASE("segment transforms round-trip losslessly (v2 flags vocabulary)")
+{
+    using madc::dis::snap_xform_flags;
+    using madc::dis::SNAP_XFORM_DELTA32;
+    using madc::dis::SNAP_XFORM_BYTEPLANE;
+
+    // A u32 stream with ascending runs, a wrap-around drop, and a
+    // connector-style high-bit entry — delta must be lossless mod 2^32.
+    std::vector<uint32_t> idx;
+    for ( uint32_t i = 0; i < 1000; ++i )
+	idx.push_back(i);
+    idx.push_back(3u);
+    idx.push_back(0x80000005u);
+    idx.push_back(7u);
+
+    // Fixed-stride 8-byte records with columnar redundancy.
+    std::vector<uint8_t> recs;
+    for ( uint32_t i = 0; i < 500; ++i )
+    {
+	uint8_t rec[8] = { (uint8_t)i, 0, 0, 0, 42, 0, (uint8_t)(i >> 8), 0 };
+	recs.insert(recs.end(), rec, rec + 8);
+    }
+
+    snapshot_writer w;
+    REQUIRE(w.add_segment(1, 0, idx.data(), idx.size() * 4, PchCompression::Zlib,
+			  0, snap_xform_flags(SNAP_XFORM_DELTA32)));
+    REQUIRE(w.add_segment(2, 0, recs.data(), recs.size(), PchCompression::Zlib,
+			  0, snap_xform_flags(SNAP_XFORM_BYTEPLANE, 8)));
+    // Transform with codec None: stored bytes are transformed, so no
+    // bind-in-place — but read_segment must still return the original.
+    REQUIRE(w.add_segment(3, 0, idx.data(), idx.size() * 4, PchCompression::None,
+			  0, snap_xform_flags(SNAP_XFORM_DELTA32)));
+    std::vector<uint8_t> blob;
+    REQUIRE(w.build(blob));
+
+    snapshot_reader r;
+    REQUIRE(r.open(blob.data(), blob.size()));
+    std::vector<uint8_t> got;
+    REQUIRE(r.read_segment(*r.find(1), got));
+    CHECK(memcmp(got.data(), idx.data(), idx.size() * 4) == 0);
+    REQUIRE(r.read_segment(*r.find(2), got));
+    CHECK(got == recs);
+    REQUIRE(r.read_segment(*r.find(3), got));
+    CHECK(memcmp(got.data(), idx.data(), idx.size() * 4) == 0);
+    CHECK(r.raw_ptr(*r.find(3)) == nullptr);   // transformed -> no bind-in-place
+}
+
+TEST_CASE("transforms that do not fit the payload are refused")
+{
+    using madc::dis::snap_xform_flags;
+    using madc::dis::SNAP_XFORM_DELTA32;
+    using madc::dis::SNAP_XFORM_BYTEPLANE;
+
+    snapshot_writer w;
+    // delta32 needs a multiple of 4
+    CHECK(!w.add_segment(1, 0, "abcde", 5, PchCompression::None,
+			 0, snap_xform_flags(SNAP_XFORM_DELTA32)));
+    // byteplane needs a nonzero stride dividing the payload
+    CHECK(!w.add_segment(2, 0, "abcdefgh", 8, PchCompression::None,
+			 0, snap_xform_flags(SNAP_XFORM_BYTEPLANE, 0)));
+    CHECK(!w.add_segment(3, 0, "abcdefgh", 8, PchCompression::None,
+			 0, snap_xform_flags(SNAP_XFORM_BYTEPLANE, 3)));
+    // unknown transform id / reserved high bits
+    CHECK(!w.add_segment(4, 0, "abcd", 4, PchCompression::None, 0, 0x7u));
+    CHECK(!w.add_segment(5, 0, "abcd", 4, PchCompression::None, 0, 0x01000001u));
+}
+
+TEST_CASE("a corrupt transform in the directory is rejected at open()")
+{
+    snapshot_writer w;
+    REQUIRE(w.add_segment(1, 0, "abcd", 4, PchCompression::None));
+    std::vector<uint8_t> blob;
+    REQUIRE(w.build(blob));
+
+    madc::dis::snapshot_footer ftr;
+    memcpy(&ftr, blob.data() + blob.size() - sizeof(ftr), sizeof(ftr));
+    snapshot_segment *dir = (snapshot_segment *)(blob.data() + ftr.dir_offset);
+    dir[0].flags = 0x7u;   // invalid transform id
+    snapshot_reader r;
+    CHECK(!r.open(blob.data(), blob.size()));
+    dir[0].flags = 0;
+    CHECK(r.open(blob.data(), blob.size()));
+}

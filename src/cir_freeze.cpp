@@ -431,14 +431,64 @@ bool cir_freeze_forest(cir_node *root, const char *main_unit_name,
 // Container glue
 // ---------------------------------------------------------------------------
 
+// Pack-time zstd level for the CURRENT cir_forest_write call. Set from its
+// zstd_level parameter (the freeze path is single-threaded): the RELEASE
+// pack passes a high level — compression is paid once per release build,
+// and zstd DEcompression speed is essentially level-independent — while
+// dev/standalone freezes keep the fast default (0 -> codec default 3) so
+// the drain-ladder loop never pays high-level compression. The pack level
+// itself is budgeted against the ~120s per-process CPU kill on the dev
+// box (see the selection comment at the madc_cir.cpp call site).
+static int cir_forest_zstd_level = 0;
+
+// Pack-time intern-spine compression for the CURRENT cir_forest_write call
+// (owner-approved 2026-07-14, task #37): the RELEASE pack compresses the
+// three intern blocks (3.74 -> 0.81 MB stored — the difference between a
+// ~12.8 and a ~9.5 MB packed binary) and its consumers rebind through the
+// forest_pool_block owned-buffer fallback at ~7ms decode once per process.
+// Dev/standalone freezes keep the spine raw so their binds stay zero-copy
+// (the drain-ladder loop's instant rebinds).
+static bool cir_forest_compress_intern = false;
+
 // Zero-length payloads take codec None (nothing to compress); the writer
 // still needs a non-NULL byte pointer.
+// INTERN pool blocks (both the container pool and the arena's — keyed on
+// KIND, not seg-id) stay codec None outside the release pack: they are the
+// bind-in-place spine the reader binds zero-copy from the image
+// (forest_pool_block/raw_ptr — the path the per-segment codec field exists
+// for). Everything else reaches consumers through a copying read_segment
+// (per-unit payloads via the load-on-demand unit_segment), so compression
+// there trades a memcpy for a zstd frame decode of only what a consumer
+// actually loads.
+//
+// Per-KIND transform policy (declared format vocabulary; measured on the
+// packed corpus, task #37 2026-07-14): CHILDREN are near-sequential record
+// indices (depth-first record layout) — a forward delta turns them into
+// tiny runs (1.68 -> 0.09 MB stored). RECORDS are fixed-stride structs —
+// byte-plane transposition groups like fields into columns so zstd sees
+// the cross-record redundancy (2.05 -> 0.90 MB stored, and compresses ~3x
+// faster than row order). Trained ZDICT dictionaries were measured the
+// same day and rejected: net ~-0.3 MB for +13s pack CPU and a dictionary
+// segment + reader wiring — the transforms dominate them on every axis.
 static bool add_seg(madc::dis::snapshot_writer &w, uint32_t seg_id,
 		    uint32_t kind, const void *bytes, size_t len,
 		    PchCompression codec)
 {
+	if (!cir_forest_compress_intern
+	    && (kind == madc::dis::SNAP_KIND_INTERN_BYTES
+		|| kind == madc::dis::SNAP_KIND_INTERN_ENTRIES
+		|| kind == madc::dis::SNAP_KIND_INTERN_BUCKETS))
+		codec = PchCompression::None;
+	uint32_t xform = 0;
+	if (kind == SNAP_KIND_CIR_CHILDREN)
+		xform = madc::dis::snap_xform_flags(madc::dis::SNAP_XFORM_DELTA32);
+	else if (kind == SNAP_KIND_CIR_RECORDS)
+		xform = madc::dis::snap_xform_flags(
+			madc::dis::SNAP_XFORM_BYTEPLANE,
+			(uint32_t)sizeof(cir_frozen_record));
 	return w.add_segment(seg_id, kind, len ? bytes : (const void *)"",
-			     len, len ? codec : PchCompression::None);
+			     len, len ? codec : PchCompression::None,
+			     cir_forest_zstd_level, len ? xform : 0);
 }
 
 bool cir_freeze_write(const cir_frozen_blob &blob,
@@ -495,8 +545,10 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 }
 
 bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
-		      PchCompression codec)
+		      PchCompression codec, int zstd_level, bool compress_intern)
 {
+	cir_forest_zstd_level = zstd_level;
+	cir_forest_compress_intern = compress_intern;
 	madc::dis::intern_table *pool = TokenBase::_active_strpool;
 	if (f.units.empty() || !pool)
 		return false;
