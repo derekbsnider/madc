@@ -668,13 +668,10 @@ static std::string tsubst_local_aggregate_name(
 				    ? sdd->name : std::string("__local"))
 	   << "__tsubst_" << std::hex << h;
 	std::string base = os.str();
-	std::string name = base;
-	for (unsigned n = 2; prog && prog->struct_map.count(name); ++n) {
-		std::ostringstream alt;
-		alt << base << "_" << n;
-		name = alt.str();
-	}
-	return name;
+	if (prog && prog->struct_map.count(base))
+		prog->Throw << "tsubst local aggregate symbol collision for '"
+			    << base << "'" << std::flush;
+	return base;
 }
 
 static Variable *tsubst_local_class_own_dtor(DataDefCLASS *cdd)
@@ -16961,10 +16958,20 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		collect_cir_node_datadefs(pattern->as_node(), pat_dds);
 		for (DataDef *pd : pat_dds) {
 			DataDefCLASS *pc = dynamic_cast<DataDefCLASS *>(pd);
-			if (!pc || pc->enclosing_class || binding.count(pd))
+			HoistedDeclIdentity pattern_identity;
+			if (!pc || binding.count(pd)
+			    || !m_prog->function_local_class_identity(
+				pc, pattern_identity))
 				continue;
+			std::string concrete_enclosing_symbol =
+				m_prog->function_body_emission_symbol(tf->var);
+			std::string concrete_name = Program::hoisted_decl_symbol(
+				concrete_enclosing_symbol,
+				pattern_identity.source_name,
+				pattern_identity.ordinal,
+				HoistedDeclKind::LocalClass);
 			std::map<std::string, DataDef *>::const_iterator ci =
-				m_prog->struct_map.find(own->name + "__" + pc->name);
+				m_prog->struct_map.find(concrete_name);
 			DataDefCLASS *cc = ci != m_prog->struct_map.end()
 				? dynamic_cast<DataDefCLASS *>(ci->second) : NULL;
 			// Parse-once: when the eager first-instantiation body parse
@@ -16974,7 +16981,8 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			// to no definition span and stays unmapped, as today.
 			if (!cc)
 				cc = m_prog->materialize_pattern_local_class(
-					source, pc, own);
+					source, pc, own,
+					concrete_enclosing_symbol);
 			if (!cc || cc == pc || cc->enclosing_class != own)
 				continue;
 			binding[pd] = cc;

@@ -1605,14 +1605,111 @@ static TokenBase *make_complex_component_token(TokenBase *expr, bool imag_part)
     return new TokenComplexPart(expr, imag_part);
 }
 
-static std::string make_nested_function_name(TokenCpnd *scope,
-					     const std::string &local_name)
+std::string Program::hoisted_decl_symbol(const std::string &owner_symbol,
+					 const std::string &source_name,
+					 size_t ordinal,
+					 HoistedDeclKind kind)
 {
-    static size_t nested_counter = 0;
-    std::string owner = "nested";
-    if ( scope && scope->method )
-	owner = scope->method->returns.name;
-    return owner + "__" + local_name + "__" + std::to_string(++nested_counter);
+    std::string marker;
+    switch ( kind )
+    {
+    case HoistedDeclKind::LocalClass: marker = "__local_class_"; break;
+    case HoistedDeclKind::NestedFunction: marker = "__nested_fn_"; break;
+    case HoistedDeclKind::PatternFunction: marker = "__pattern_"; break;
+    }
+    return owner_symbol + marker + source_name + "__" + std::to_string(ordinal);
+}
+
+std::string Program::function_body_emission_symbol(const Variable &var) const
+{
+    FuncDef *fd = dynamic_cast<FuncDef *>(var.type);
+    if ( fd && !fd->emit_symbol.empty() )
+	return fd->emit_symbol;
+    if ( var.type && var.type->is_function() && !var.storage_alias_name.empty() )
+	return var.storage_alias_name;
+    return var.name;
+}
+
+void Program::remember_hoisted_identity(const HoistedDeclIdentity &identity,
+					TokenBase *origin)
+{
+    std::ostringstream key;
+    key << static_cast<int>(identity.kind)
+	<< ':' << identity.owner_symbol.size() << ':' << identity.owner_symbol
+	<< ':' << identity.source_name.size() << ':' << identity.source_name
+	<< ':' << identity.ordinal;
+    std::map<std::string, std::string>::iterator it =
+	hoisted_symbol_identity_keys.find(identity.symbol);
+    if ( it != hoisted_symbol_identity_keys.end() && it->second != key.str() )
+	Throw(origin) << "Hoisted declaration symbol collision for '"
+		      << identity.symbol << "'" << flush;
+    hoisted_symbol_identity_keys[identity.symbol] = key.str();
+}
+
+HoistedDeclIdentity Program::declare_hoisted_declaration(
+	TokenCpnd *scope, HoistedDeclKind kind,
+	const std::string &source_name, TokenBase *origin)
+{
+    if ( !scope || !scope->method || source_name.empty() )
+	Throw(origin) << "Missing enclosing function identity for local declaration"
+		      << flush;
+    Method *method = scope->method;
+    Method::hoisted_decl_key_t key(kind, source_name);
+    std::map<Method::hoisted_decl_key_t, HoistedDeclIdentity> &decls =
+	method->hoisted_decls[scope];
+    std::map<Method::hoisted_decl_key_t, HoistedDeclIdentity>::iterator it =
+	decls.find(key);
+    if ( it != decls.end() )
+	return it->second;
+
+    HoistedDeclIdentity identity;
+    identity.kind = kind;
+    identity.owner_symbol = function_body_emission_symbol(method->returns);
+    identity.source_name = source_name;
+    identity.ordinal = ++method->next_hoisted_decl_ordinal;
+    identity.symbol = hoisted_decl_symbol(identity.owner_symbol,
+					  identity.source_name,
+					  identity.ordinal, identity.kind);
+    remember_hoisted_identity(identity, origin);
+    decls[key] = identity;
+    return identity;
+}
+
+bool Program::find_hoisted_declaration(TokenCpnd *scope,
+	HoistedDeclKind kind, const std::string &source_name,
+	HoistedDeclIdentity &out) const
+{
+    Method::hoisted_decl_key_t key(kind, source_name);
+    for ( TokenCpnd *cur = scope; cur; cur = cur->parent )
+    {
+	if ( !cur->method )
+	    continue;
+	std::map<const TokenCpnd *,
+		 std::map<Method::hoisted_decl_key_t,
+			  HoistedDeclIdentity> >::const_iterator si =
+	    cur->method->hoisted_decls.find(cur);
+	if ( si == cur->method->hoisted_decls.end() )
+	    continue;
+	std::map<Method::hoisted_decl_key_t,
+		 HoistedDeclIdentity>::const_iterator di = si->second.find(key);
+	if ( di != si->second.end() )
+	{
+	    out = di->second;
+	    return true;
+	}
+    }
+    return false;
+}
+
+bool Program::function_local_class_identity(DataDefCLASS *cdd,
+					    HoistedDeclIdentity &out) const
+{
+    std::map<DataDefCLASS *, HoistedDeclIdentity>::const_iterator it =
+	function_local_class_identities.find(cdd);
+    if ( it == function_local_class_identities.end() )
+	return false;
+    out = it->second;
+    return true;
 }
 
 static std::string namespace_function_symbol(const std::string &ns_name,
@@ -26129,6 +26226,8 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     if ( !body.var || !body.method )
 	return;
 
+    body.method->reset_hoisted_declarations();
+
     std::string saved_func = cur_func_name;
     std::string saved_canon = instantiating_canonical_spelling;
     cur_func_name = body.var->name;
@@ -26428,6 +26527,7 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	parsing_defaulted_member_template_constructor = true;
 	try
 	{
+	    body.method->reset_hoisted_declarations();
 	    std::string parse_id = body.var->name;
 	    // Re-parse with the member's REAL return type, not ddVOID: parseFunction
 	    // refreshes an already-declared funcdef's return type from the passed
@@ -27203,6 +27303,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     TokenDataType *tdt;
     std::string class_source_name;
     DataDefCLASS *nested_owner_class = NULL;
+    HoistedDeclIdentity local_class_identity;
+    bool has_local_class_identity = false;
+    bool register_local_source_alias = false;
     // A C++ UNION with class-only syntax ([class.union] — a union is a class)
     // is delegated here by TokenSTRUCT::parse with this flag set; it applies
     // to THIS class only (consume it so nested members don't inherit it).
@@ -27262,6 +27365,50 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.set_token_spelling(tag, nested_owner_class->name + "__" + class_source_name);
 		qualified_class_name = true;
 	    }
+	}
+	bool local_definition = tn->id() == TokenID::tkOpBrc
+			     || tn->id() == TokenID::tkColon;
+	if ( tn && is_contextual_identifier_token(tn)
+	  && contextual_identifier_name(tn) == "final"
+	  && pgm.tokens.size() >= 2 && pgm.tokens[1]
+	  && (pgm.tokens[1]->id() == TokenID::tkOpBrc
+	   || pgm.tokens[1]->id() == TokenID::tkColon) )
+	    local_definition = true;
+	bool local_forward = tn->id() == TokenID::tkSemi;
+	TokenCpnd *local_scope = pgm.compounds.empty()
+	    ? NULL : pgm.compounds.top();
+	if ( !qualified_class_name
+	  && pgm.forced_local_class_identity_active
+	  && pgm.forced_local_class_identity.kind == HoistedDeclKind::LocalClass
+	  && pgm.forced_local_class_identity.source_name == class_source_name )
+	{
+	    local_class_identity = pgm.forced_local_class_identity;
+	    pgm.forced_local_class_identity_active = false;
+	    pgm.remember_hoisted_identity(local_class_identity, tag);
+	    has_local_class_identity = true;
+	}
+	else if ( !qualified_class_name && local_scope && local_scope->method
+	       && !pgm.deferred_function_body_sink )
+	{
+	    if ( local_definition || local_forward )
+	    {
+		local_class_identity = pgm.declare_hoisted_declaration(
+		    local_scope, HoistedDeclKind::LocalClass,
+		    class_source_name, tag);
+		has_local_class_identity = true;
+	    }
+	    else
+		has_local_class_identity = pgm.find_hoisted_declaration(
+		    local_scope, HoistedDeclKind::LocalClass,
+		    class_source_name, local_class_identity);
+	}
+	if ( has_local_class_identity )
+	{
+	    pgm.set_token_spelling(tag, local_class_identity.symbol);
+	    qualified_class_name = true;
+	    register_local_source_alias = local_scope && local_scope->method;
+	    if ( !pgm.class_scope_stack.empty() )
+		nested_owner_class = pgm.class_scope_stack.back();
 	}
 	if ( !qualified_class_name && !pgm.class_scope_stack.empty() )
 	{
@@ -27463,6 +27610,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( tn->id() == TokenID::tkSemi )
 	    {
 		DataDefCLASS *fwd = new DataDefCLASS(tag->spelling(), 0, DataType::dtRESERVED);
+		if ( has_local_class_identity )
+		    pgm.function_local_class_identities[fwd] = local_class_identity;
 		if ( nested_owner_class )
 		{
 		    std::string owner_spelling =
@@ -27480,12 +27629,26 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.struct_map.set(tag->spelling(), fwd);
 		tdt = new TokenDataType(tag->spelling(), *fwd);
 		pgm.datatype_map[tag->spelling()] = tdt;
+		if ( register_local_source_alias )
+		    pgm.register_scoped_typedef(class_source_name, tdt);
 		if ( !pgm.current_namespace().empty() )
 		    pgm.namespace_datatype_map[pgm.current_namespace()][tag->spelling()] = tdt;
 		pgm.nextToken();
 		return NULL;
 	    }
 	    pgm.Throw(tn) << "Unknown class type '" << tag->spelling() << "'" << flush;
+	}
+	if ( has_local_class_identity )
+	    if ( DataDefCLASS *local = dynamic_cast<DataDefCLASS *>(dmi->second) )
+		pgm.function_local_class_identities[local] = local_class_identity;
+	if ( register_local_source_alias && tn->id() == TokenID::tkSemi )
+	{
+	    flat_datatype_map_iter local_type =
+		pgm.datatype_map.find(tag->spelling());
+	    TokenDataType *local_tdt = local_type != pgm.datatype_map.end()
+		? *local_type
+		: new TokenDataType(tag->spelling(), *dmi->second);
+	    pgm.register_scoped_typedef(class_source_name, local_tdt);
 	}
 	if ( tn->id() == TokenID::tkSemi )
 	{
@@ -27529,6 +27692,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     if ( dmi != pgm.struct_map.end() )
     {
 	DataDefCLASS *fwd = dynamic_cast<DataDefCLASS *>(dmi->second);
+	if ( has_local_class_identity && fwd )
+	    pgm.function_local_class_identities[fwd] = local_class_identity;
 	DataDefSTRUCT *sfwd = dynamic_cast<DataDefSTRUCT *>(dmi->second);
 	if ( fwd && !fwd->is_complete && fwd->size == 0 && fwd->members.empty()
 	  && fwd->methods.empty() && fwd->ctors.empty()
@@ -27553,6 +27718,15 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // __save_errno;`): the definition is identical per instantiation —
 	    // reuse the first one, skip this body, and parse the trailing
 	    // declarator against the existing type.
+	    if ( register_local_source_alias )
+	    {
+		flat_datatype_map_iter local_type =
+		    pgm.datatype_map.find(tag->spelling());
+		TokenDataType *local_tdt = local_type != pgm.datatype_map.end()
+		    ? *local_type
+		    : new TokenDataType(tag->spelling(), *fwd);
+		pgm.register_scoped_typedef(class_source_name, local_tdt);
+	    }
 	    int bdepth = 1;
 	    while ( bdepth > 0 && pgm.peekToken() )
 	    {
@@ -27581,6 +27755,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     }
     if ( !ddc )
 	ddc = new DataDefCLASS(tag->spelling(), 0, DataType::dtRESERVED);
+    if ( has_local_class_identity )
+	pgm.function_local_class_identities[ddc] = local_class_identity;
     if ( union_class )
 	ddc->union_layout = true;   // members overlap at offset 0 (layout + CIR
 				    // emission both branch on this flag)
@@ -27656,6 +27832,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	if ( !pgm.current_namespace().empty() )
 	    pgm.namespace_datatype_map[pgm.current_namespace()][tag->spelling()] = tdt;
     }
+    if ( register_local_source_alias )
+	pgm.register_scoped_typedef(class_source_name, tdt);
     ddc->type_aliases[class_source_name] = ddc;
     if ( constructor_source_name != class_source_name )
 	ddc->type_aliases[constructor_source_name] = ddc;
@@ -36803,6 +36981,23 @@ static void tsubst_drop_pack_decl_ellipsis(FuncDef *fd,
 // the parse_deferred_lazy_body save/restore model; dependent_parse_in_progress is
 // set across the parse so the instantiation entry points DEFER (do not eagerly fire)
 // any param-dependent nested call, leaving it dependent in the recipe (PLAN §11.5c).
+static Variable *member_template_source_variable(DataDefCLASS *owner,
+						 FuncDef *fd)
+{
+    if ( !owner || !fd )
+	return NULL;
+    for ( Variable *var : owner->methods )
+	if ( var && var->type == fd )
+	    return var;
+    for ( Variable *var : owner->ctors )
+	if ( var && var->type == fd )
+	    return var;
+    for ( const auto &entry : owner->method_map )
+	if ( entry.second && entry.second->type == fd )
+	    return entry.second;
+    return NULL;
+}
+
 TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 {
     if ( !tsubst_eligible(fd) )
@@ -36847,8 +37042,21 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     if ( def_tokens.empty() )
 	return NULL;
 
-    static size_t pat_counter = 0;
-    std::string parse_id = fd->name + "__pat" + std::to_string(pat_counter++);
+    Variable *source_var = member_template_source_variable(owner, fd);
+    if ( !source_var )
+	Throw(decl[ni]) << "Missing registered source variable for dependent pattern"
+		       << flush;
+    HoistedDeclIdentity pattern_identity;
+    pattern_identity.kind = HoistedDeclKind::PatternFunction;
+    pattern_identity.owner_symbol = source_var->storage_alias_name.empty()
+	? source_var->name : source_var->storage_alias_name;
+    pattern_identity.source_name = "body";
+    pattern_identity.ordinal = 0;
+    pattern_identity.symbol = hoisted_decl_symbol(
+	pattern_identity.owner_symbol, pattern_identity.source_name,
+	pattern_identity.ordinal, pattern_identity.kind);
+    remember_hoisted_identity(pattern_identity, decl[ni]);
+    std::string parse_id = pattern_identity.symbol;
 
     size_t before = pending_funcs.size();
     TokenStream::Pos saved_tokens = tokens.savepos();
@@ -36875,17 +37083,11 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 
     // Hermetic COMPOUND scope for the pattern parse (the
     // instantiate_fn_template_binding model): a pattern built MID-BODY-PARSE
-    // must not see the enclosing function's compounds — compounds.top()->method
-    // would nested-classify the pattern (make_nested_function_name renames it
-    // `<encl>__<patid>__<uid>`, so the funcdef_map.erase(parse_id) below
-    // misses and a stale entry leaks) and the pattern body could wrongly bind
-    // enclosing-function locals. class_scope_stack is deliberately INHERITED
-    // from the caller (NOT swapped): member-type resolution in header-triggered
-    // pattern builds relies on the caller's owner scope, and a LOCAL class in
-    // the pattern body must keep its caller-scope-dependent naming — pushing
-    // the owner here made a user-site pattern's local class register under the
-    // concrete `<owner>__<local>` name BEFORE the shell parse creates the real
-    // one, hijacking it (testlocalclassraii undefined `__patN__..Guard` import).
+    // must not see the enclosing function's compounds or bind its locals. The
+    // pattern function has its own stable identity, and a pattern local class
+    // is remapped to the concrete function-local identity during tsubst.
+    // class_scope_stack remains inherited because header-triggered pattern
+    // builds rely on the caller's active owner scope for member-type lookup.
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(compounds, saved_compounds);
     // Block-typedef shadow frames travel with the compound context (see
@@ -36977,14 +37179,27 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 
 DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
 						       DataDefCLASS *pattern_class,
-						       DataDefCLASS *owner)
+						       DataDefCLASS *owner,
+						       const std::string &enclosing_symbol)
 {
-    if ( !source || !pattern_class || !owner )
+    if ( !source || !pattern_class || !owner || enclosing_symbol.empty() )
 	return NULL;
-    std::string concrete_name = owner->name + "__" + pattern_class->name;
+    HoistedDeclIdentity pattern_identity;
+    if ( !function_local_class_identity(pattern_class, pattern_identity) )
+	return NULL;
+    HoistedDeclIdentity concrete_identity = pattern_identity;
+    concrete_identity.owner_symbol = enclosing_symbol;
+    concrete_identity.symbol = hoisted_decl_symbol(
+	concrete_identity.owner_symbol, concrete_identity.source_name,
+	concrete_identity.ordinal, concrete_identity.kind);
+    std::string concrete_name = concrete_identity.symbol;
     datadef_map_citer dmi = struct_map.find(concrete_name);
     if ( dmi != struct_map.end() )
-	return dynamic_cast<DataDefCLASS *>(dmi->second);
+	if ( DataDefCLASS *existing = dynamic_cast<DataDefCLASS *>(dmi->second) )
+	{
+	    function_local_class_identities[existing] = concrete_identity;
+	    return existing;
+	}
     // Find the local class's DEFINITION span in the retained template decl:
     // `struct|class <name> ... { ... }`. A bodyless `struct <name>;` is a mere
     // declaration — keep scanning for the defining occurrence.
@@ -36997,7 +37212,8 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
 	    continue;
 	TokenBase *nm = decl[i + 1];
 	if ( !nm || nm->type() != TokenType::ttIdentifier
-	  || !((TokenIdent *)nm)->spelling_is(pattern_class->name.c_str()) )
+	  || !((TokenIdent *)nm)->spelling_is(
+		pattern_identity.source_name.c_str()) )
 	    continue;
 	size_t ob = i + 2;
 	while ( ob < decl.size() && decl[ob]
@@ -37052,6 +37268,10 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::string saved_func = cur_func_name;
     cur_func_name.clear();
+    bool saved_forced_local = forced_local_class_identity_active;
+    HoistedDeclIdentity saved_forced_identity = forced_local_class_identity;
+    forced_local_class_identity = concrete_identity;
+    forced_local_class_identity_active = true;
     bool saved_def_only = class_definition_only;
     bool saved_cpp_struct_class = parsing_cpp_struct_class;
     bool saved_cpp_union_class = parsing_cpp_union_class;
@@ -37071,7 +37291,7 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
     {
 	TokenBase *class_kw = nextToken();
 	parseKeyword((TokenKeyword *)class_kw);
-	parsed = true;
+	parsed = !forced_local_class_identity_active;
     }
     catch ( ... ) { parsed = false; }
     std::swap(class_scope_stack, saved_class_scope_stack);
@@ -37079,6 +37299,8 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
     unwind_block_typedef_shadows(0, "C-ool");
     std::swap(block_typedef_shadows, saved_typedef_shadows);
     cur_func_name = saved_func;
+    forced_local_class_identity_active = saved_forced_local;
+    forced_local_class_identity = saved_forced_identity;
     class_definition_only = saved_def_only;
     parsing_cpp_struct_class = saved_cpp_struct_class;
     parsing_cpp_union_class = saved_cpp_union_class;
@@ -40182,13 +40404,19 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // Mangling it nested (main__fabs__1) orphans the real name: the call
     // then falls to the 64-bit dlsym default and a double return is read as
     // a long (fabs(-2.5) -> 1.0). GNU nested functions are non-extern.
-    bool is_nested_function = !compounds.empty() && compounds.top() && compounds.top()->method
+    // A method of a block-local class is still a CLASS method, not a GNU
+    // nested function. Treating it as nested prefixed its real class symbol
+    // with the temporary dependent-pattern function id and was the source of
+    // the frozen `__patN__...Guard__N` imports.
+    bool is_nested_function = !owner_class && !compounds.empty()
+			      && compounds.top() && compounds.top()->method
 			      && !parsing_extern_decl;
     std::string nested_local_name = id;
     TokenCpnd *nested_owner_scope = is_nested_function ? compounds.top() : NULL;
     bool has_hidden_this = owner_class && !static_class_method;
     if ( is_nested_function )
-	id = make_nested_function_name(nested_owner_scope, id);
+	id = declare_hoisted_declaration(nested_owner_scope,
+		HoistedDeclKind::NestedFunction, id, prevToken()).symbol;
 
     DBG(cout << "parseFunction(" << dd.name << ' ' << id << ") START" << endl);
     cur_func_name = id; // for __FUNCTION__/__func__ expansion in the lexer
@@ -44886,9 +45114,34 @@ void Program::dump_registered_names(FILE *out)
 	DataDefCLASS *dc = dynamic_cast<DataDefCLASS *>(dd);
 	return dc && dc->canonical_cpp_spelling().find('<') != std::string::npos;
     };
+    auto function_local_class = [&](DataDef *dd) -> bool {
+	DataDefCLASS *dc = dynamic_cast<DataDefCLASS *>(dd);
+	return dc && function_local_class_identities.count(dc);
+    };
+    std::set<FuncDef *> function_local_methods;
+    for ( const auto &entry : function_local_class_identities )
+    {
+	DataDefCLASS *dc = entry.first;
+	if ( !dc )
+	    continue;
+	for ( Variable *var : dc->methods )
+	    if ( var )
+		if ( FuncDef *fd = dynamic_cast<FuncDef *>(var->type) )
+		    function_local_methods.insert(fd);
+	for ( Variable *var : dc->ctors )
+	    if ( var )
+		if ( FuncDef *fd = dynamic_cast<FuncDef *>(var->type) )
+		    function_local_methods.insert(fd);
+	for ( const auto &method : dc->method_map )
+	    if ( method.second )
+		if ( FuncDef *fd = dynamic_cast<FuncDef *>(method.second->type) )
+		    function_local_methods.insert(fd);
+    }
     std::set<std::string> lines;
     datatype_map.for_each([&](const char *key, TokenDataType *&tdt) -> bool {
-	if ( strchr(key, '<') || (tdt && instantiation_product(&tdt->definition)) )
+	if ( strchr(key, '<')
+	  || (tdt && (instantiation_product(&tdt->definition)
+		     || function_local_class(&tdt->definition))) )
 	    return false;
 	lines.insert(std::string("type\t") + key);
 	return false;
@@ -44897,7 +45150,9 @@ void Program::dump_registered_names(FILE *out)
 	for ( datatype_map_iter it = m.begin(); it != m.end(); ++it )
 	{
 	    if ( it->first.find('<') != std::string::npos
-	      || (it->second && instantiation_product(&it->second->definition)) )
+	      || (it->second
+	       && (instantiation_product(&it->second->definition)
+		|| function_local_class(&it->second->definition))) )
 		continue;
 	    lines.insert(std::string("type\t") + ns + "::" + it->first);
 	}
@@ -44906,13 +45161,16 @@ void Program::dump_registered_names(FILE *out)
     for ( datadef_map_citer it = struct_map.begin(); it != struct_map.end(); ++it )
     {
 	if ( it->first.find('<') != std::string::npos
-	  || instantiation_product(it->second) )
+	  || instantiation_product(it->second)
+	  || function_local_class(it->second) )
 	    continue;
 	lines.insert(std::string("struct\t") + it->first);
     }
     for ( funcdef_map_iter it = funcdef_map.begin(); it != funcdef_map.end(); ++it )
     {
 	if ( it->first.find('<') != std::string::npos )
+	    continue;
+	if ( function_local_methods.count(it->second) )
 	    continue;
 	if ( it->second && !it->second->method_display_name.empty() )
 	    continue;	// class method: materialized via the class slice

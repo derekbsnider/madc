@@ -39,6 +39,7 @@ class TokenSWITCH;
 struct DelimDepth;	// parser-internal balanced-delimiter depth (parser.cpp)
 class TokenCASE;
 class TokenFunc;
+class TokenCpnd;
 class DataDefTemplateParam;	// typed template-parameter placeholder (datadef.h)
 
 class MadcTeeBuf : public std::streambuf
@@ -391,6 +392,25 @@ public:
     virtual BaseType basetype() const { return BaseType::btClass; }
 };
 
+enum class HoistedDeclKind
+{
+    LocalClass,
+    NestedFunction,
+    PatternFunction
+};
+
+struct HoistedDeclIdentity
+{
+    HoistedDeclKind kind;
+    std::string owner_symbol;
+    std::string source_name;
+    size_t ordinal;
+    std::string symbol;
+
+    HoistedDeclIdentity()
+	: kind(HoistedDeclKind::LocalClass), ordinal(0) {}
+};
+
 class Method
 {
 public:
@@ -400,7 +420,21 @@ public:
     void *x86code;
     Variable *env_param; // hidden void** param for [&] lambdas (nullptr if no capture)
     class DataDefCLASS *owner_class; // non-null when this is a class method
-    Method(Variable &v) : returns(v), x86code(NULL), env_param(NULL), owner_class(NULL) {}
+    // Block-local classes and GNU nested functions share one source-ordered
+    // ordinal stream per enclosing function body. The per-scope map makes a
+    // forward declaration and its definition reuse one identity while equal
+    // source names in distinct lexical blocks remain distinct.
+    size_t next_hoisted_decl_ordinal;
+    typedef std::pair<HoistedDeclKind, std::string> hoisted_decl_key_t;
+    std::map<const TokenCpnd *,
+	     std::map<hoisted_decl_key_t, HoistedDeclIdentity> > hoisted_decls;
+    Method(Variable &v) : returns(v), x86code(NULL), env_param(NULL),
+	owner_class(NULL), next_hoisted_decl_ordinal(0) {}
+    void reset_hoisted_declarations()
+    {
+	next_hoisted_decl_ordinal = 0;
+	hoisted_decls.clear();
+    }
     Variable *getParameter(unsigned int i) { if ( i >= parameters.size() ) return NULL; return parameters[i]; }
     Variable *findParameter(const std::string &);
     Variable *findVariable(const std::string &);
@@ -2240,6 +2274,22 @@ public:
     std::set<std::string> template_completion_requested;    // mangled template aliases that should be completed when body appears
     std::set<std::string> template_instantiated;           // mangled names done
     std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup
+    // Function-local class identities are parse-session metadata. The class's
+    // emitted name carries the durable identity; this side table lets tsubst
+    // map a Tree-1 pattern local class to the matching concrete instantiation
+    // without encoding identity in a pattern-global counter or a new forest
+    // record family.
+    std::map<DataDefCLASS *, HoistedDeclIdentity> function_local_class_identities;
+    // materialize_pattern_local_class replays only the class-definition token
+    // span, outside its original compound. It supplies the already-computed
+    // concrete identity through this one-shot context so TokenCLASS takes the
+    // same naming path as an eager body parse.
+    bool forced_local_class_identity_active = false;
+    HoistedDeclIdentity forced_local_class_identity;
+    // Computed symbol -> full source identity. Repeated parses of the same
+    // definition are allowed; two distinct definitions minting one symbol are
+    // a hard collision rather than a counter-based silent uniquification.
+    std::map<std::string, std::string> hoisted_symbol_identity_keys;
     // Scoped template-parameter registry (two-tree Phase 2 / 2a). A stack of
     // {param-name -> DataDefTemplateParam*} frames, pushed (via TemplateParamScope)
     // for the duration of a DEPENDENT template-body parse so a bare `T` resolves to
@@ -2314,7 +2364,8 @@ public:
     // body is not defined in it and must not materialize).
     DataDefCLASS *materialize_pattern_local_class(FuncDef *source,
 						  DataDefCLASS *pattern_class,
-						  DataDefCLASS *owner);
+						  DataDefCLASS *owner,
+						  const std::string &enclosing_symbol);
     std::map<DataDef*, DataDefPTR*> ptr_type_cache; // cached pointer-to-T DataDefs
     std::map<DataDef*, DataDefREF*> ref_type_cache; // cached reference-to-T DataDefs (alias-spelled T&)
     std::map<DataDef*, DataDefCONST*> const_type_cache; // cached const-T DataDefs
@@ -3110,6 +3161,22 @@ public:
     // manage compound nesting
     void pushCompound();
     void popCompound();
+    static std::string hoisted_decl_symbol(const std::string &owner_symbol,
+					    const std::string &source_name,
+					    size_t ordinal,
+					    HoistedDeclKind kind);
+    std::string function_body_emission_symbol(const Variable &var) const;
+    HoistedDeclIdentity declare_hoisted_declaration(TokenCpnd *scope,
+						    HoistedDeclKind kind,
+						    const std::string &source_name,
+						    TokenBase *origin);
+    bool find_hoisted_declaration(TokenCpnd *scope, HoistedDeclKind kind,
+					  const std::string &source_name,
+					  HoistedDeclIdentity &out) const;
+    void remember_hoisted_identity(const HoistedDeclIdentity &identity,
+				   TokenBase *origin);
+    bool function_local_class_identity(DataDefCLASS *cdd,
+				       HoistedDeclIdentity &out) const;
 
     // generate tokens
     TokenBase *getToken();

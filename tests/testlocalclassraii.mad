@@ -1,9 +1,7 @@
 // Local RAII class inside a member template — the reduced shape of
 // std::basic_string::_M_construct's `_Guard` (a scope-exit guard: ctor arms,
-// dtor disposes unless disarmed). Passes flag-off. Under MADC_XTEST_DEP_PARSE
-// it currently FALLS BACK to re-parse (the local class has a user ctor + a
-// non-empty dtor, which the tsubst local-class clone does not yet materialize)
-// — this is the RED target for tsubst-burndown step-2 (local-class-in-tsubst).
+// dtor disposes unless disarmed). The parse-once path materializes the concrete
+// local class and remaps the pattern ctor/dtor calls to its stable identity.
 // See docs/plans/2026-07-01-tsubst-step2-local-class-HANDOFF.md.
 #include <iostream>
 using namespace std;
