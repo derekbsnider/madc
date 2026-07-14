@@ -18803,12 +18803,12 @@ void CirBuilder::pack_record_drop(TokenFunc *tf, const char *why,
 }
 
 // A callee is HOMED when a consumer can resolve it: a surviving sibling def,
-// a (non-local-class) DEFBODY derived on use, a TU-root user fn, a synth dtor
+// a DEFBODY derived on use, a TU-root user fn, a synth dtor
 // (Pass 1.6 emits it in consumers too), a c2mir builtin, a forest-carried
 // body from a bound base (freeze-append), or a dlsym-resolvable external
 // (libc / Itanium-mangled / __madc runtime). Anything else is a pack-context
 // artifact — a rolled-back speculative instantiation (the __ns_std__Construct
-// slot-1 husk), a local-class hoist — and freezing a call to it is an
+// slot-1 husk) — and freezing a call to it is an
 // undefined import in every bound consumer, so the CALLER must drop (its
 // DEFBODY revert / consumer re-instantiation covers it on use).
 bool CirBuilder::pack_callee_homed(const std::string &sym)
@@ -18821,8 +18821,6 @@ bool CirBuilder::pack_callee_homed(const std::string &sym)
 	std::map<std::string, Program::DeferredFunctionBody>::iterator
 		di = m_prog->deferred_lazy_bodies.find(sym);
 	if (di != m_prog->deferred_lazy_bodies.end()) {
-		if (Program::method_var_is_local_class_hoist(di->second.var))
-			return false;
 		// Instantiation-born free fn: its DEFBODY does not freeze (no
 		// template-param context to derive from) — mirror the
 		// DK_DEFBODY writer.
@@ -19547,16 +19545,10 @@ node_t CirBuilder::translate_module(Program *prog)
 	// derivation in consumers) instead of poisoning the whole tree
 	// (cir_report_errors rejects any error node).
 	//
-	// Pack-time carriability: a LOCAL-CLASS METHOD (see
-	// Program::method_var_is_local_class_hoist — basic_string::
-	// _M_construct's `_Guard`, __stoa's `_Save_errno` / `_Range_chk`) has
-	// NO consumer-visible home in the corpus; the freeze also skips its
-	// class record and DEFBODY, so a consumer's own derivation of the
-	// enclosing body creates the local class fresh, as a live parse does.
 	// Pack-time defs are STASHED in the pack_defs member instead of going
 	// straight to func_def_nodes: a frozen body whose callee has no
-	// consumer-side home (an un-carriable local-class method, or a dropped
-	// body that could NOT revert to DEFBODY) must itself drop — the
+	// consumer-side home (a dropped body that could NOT revert to DEFBODY)
+	// must itself drop — the
 	// consumer re-derives / re-instantiates it — so the final emit set is
 	// decided by a cascade AFTER the last fixpoint run. A drop that DID
 	// revert to DEFBODY is a consumer-derivable home (the on-use
@@ -19856,18 +19848,11 @@ node_t CirBuilder::translate_module(Program *prog)
 				// instantiation def (OOL / __mti, no deferred entry)
 				// just drops — the consumer's pattern-instantiation
 				// machinery is the standing fallback, exactly the
-				// pre-drain semantics. The same tolerance covers the
-				// carriability rule (var_is_local_class_method above):
-				// a local-class method body reverts to DEFBODY here;
-				// bodies CALLING dropped/un-carriable symbols drop in
+				// pre-drain semantics. Bodies calling dropped symbols drop in
 				// the post-fixpoint cascade so consumers re-derive
 				// them with their own local classes.
 				node_t fd = NULL;
-				bool uncarriable = false;
 				if (prog->pack_recording) {
-					uncarriable =
-						Program::method_var_is_local_class_hoist(
-							&tf->var);
 					try {
 						fd = func_def(tf);
 					} catch (...) {
@@ -19876,25 +19861,10 @@ node_t CirBuilder::translate_module(Program *prog)
 					if (fd && cir_tree_has_error(fd))
 						fd = NULL;
 					if (!fd) {
-						pack_record_drop(tf, uncarriable
-							? "local-class method; " : "",
-							uncarriable);
+						pack_record_drop(tf, "", false);
 						grew = true;
 						continue;
 					}
-					// A LOCAL-CLASS METHOD def is
-					// tree-resident (--run-frozen compiles
-					// the pack's real lowered state) but
-					// consumer-INVISIBLE (no arena record /
-					// DEFBODY / body stamp — a consumer's
-					// own derivation of the enclosing body
-					// creates the local class fresh, as a
-					// live parse does). Record the
-					// exclusion; keep the def.
-					if (uncarriable)
-						pack_record_drop(tf,
-							"local-class method; ",
-							true);
 					pack_defs.push_back(
 						std::make_pair(tf, fd));
 				} else {
@@ -20341,12 +20311,11 @@ node_t CirBuilder::translate_module(Program *prog)
 	//   lowered state); only the post-translate c2mir check gate splices
 	//   defective defs out.
 	//   CONSUMER visibility — what a bound consumer may restore. A def
-	//   whose lowered body calls a consumer-invisible symbol (an
-	//   un-carriable local-class method, a DEFBODY-reverted body, or a
-	//   body excluded by an earlier cascade round) must itself be
+	//   whose lowered body calls a consumer-invisible symbol (a
+	//   DEFBODY-reverted body or a body excluded by an earlier cascade
+	//   round) must itself be
 	//   excluded — a restored body calling it would be an undefined
-	//   import in every bound consumer (the string ctor calling a
-	//   local-_Guard _M_construct __mti). Reverted DEFBODYs / consumer
+	//   import in every bound consumer. Reverted DEFBODYs / consumer
 	//   re-instantiation cover the excluded chain on use, exactly the
 	//   pre-drain semantics; the freeze skips DF_HAS_FOREST_BODY stamps
 	//   for excluded symbols (pack_stamp_excluded). State + cascade live

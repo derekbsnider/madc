@@ -1756,16 +1756,6 @@ public:
     // type-id (the referent records itself at ITS completion; the id-addressed arena tolerates a
     // forward slot ref). Reads stay on the live DataDef; only this write dual-populates the record.
     void forest_arena_record_aggregate(DataDefSTRUCT *sdd);
-    // A FUNCTION-LOCAL class's method: hoisted under its enclosing function's
-    // name, so the Variable's name is NOT prefixed by its owner class's name
-    // (a class-scoped method/ctor/dtor/__oN overload always is; a using-decl
-    // import is prefixed by its DEFINER, which IS its owner_class). The forest
-    // has no per-function local-class identity, so the freeze skips the class,
-    // its method DEFBODYs, and (pack cascade) bodies that call one.
-    static bool method_var_is_local_class_hoist(Variable *v);
-    // True when the class is a function-local class (any of its OWN methods is
-    // a local hoist) — the aggregate recorder and restore selection skip it.
-    static bool class_is_function_local(DataDefSTRUCT *sdd);
     // write-through: record a FuncDef (DK_FUNC) into forest_arena at its project-id slot —
     // ref0 = return type-id, a params run of paramrec (type-id + const/spelling), and the
     // is_varargs/is_void_params/declaration_only flags. Called for each class method from the

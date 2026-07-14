@@ -270,8 +270,8 @@ class CirBuilder {
 	std::vector<char> pack_is_dropped;
 	std::set<std::string> pack_dropped;
 	// Symbols whose tree-resident defs must NOT stamp DF_HAS_FOREST_BODY
-	// (consumer-excluded under the emission split): local-class methods,
-	// DEFBODY-reverted bodies, and cascade-excluded callers. Consumed by
+	// (consumer-excluded under the emission split): DEFBODY-reverted bodies
+	// and cascade-excluded callers. Consumed by
 	// madc_cir_freeze (erased from funcdef_locs pre-arena_complete).
 	std::set<std::string> pack_stamp_excluded;
 	// Symbol -> the Pass-1.95 forward-proto node of a materialized body.
