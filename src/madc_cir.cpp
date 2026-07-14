@@ -2957,7 +2957,10 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		// CPU and the pack freeze itself uses ~70s — level 19 costs
 		// ~53s on this corpus (SIGXCPU), level 15 ~5s for ~97% of
 		// the plain-level ratio (measured 2026-07-14, task #37).
-		if (!cir_forest_write(f, w, codec, append ? 15 : 0)) {
+		// The intern spine compresses only in the appended pack
+		// (owner-approved ~7ms-per-process trade; dev freezes keep
+		// zero-copy binds).
+		if (!cir_forest_write(f, w, codec, append ? 15 : 0, append)) {
 		    fprintf(stderr, "%s: forest container assembly failed\n",
 			    source_name);
 		} else if (!(append ? w.append_file(out_path)
