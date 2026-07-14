@@ -1,8 +1,8 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-06-30 (v0.31.0 — tag-arithmetic
-type encoding retired; `madc::dis` substrate primitives; `-O2` default front-end
-speedup; c2mir warnings 97 → 0).
+Master plan linking all workstreams. Updated 2026-07-14 (family-D forest
+drain-gap campaign closed with stable function-local declaration identity;
+reducer 308 drops and live/packed suites 695/0/0/16).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -28,6 +28,13 @@ high-level" — the answer is both.**
 
 ## Current State
 
+- **Family-D forest drain gaps (2026-07-14): CLOSED.** Function-local class,
+  nested-function, and dependent-pattern hoists now use deterministic
+  enclosing-emission-symbol x source-name x per-body-ordinal identities. The
+  local-class carry remains enabled, the reducer holds at **308** pack drops,
+  and both the live fulltest and packed release suite are **695/0/0/16** with
+  every forest gate green, including `[subbind]`. See
+  `docs/plans/2026-07-14-CODEX-HANDBACK-local-class-identity.md`.
 - **Version:** `0.34.0` (per `VERSION`) — released on `develop` (CIR backend);
   the **pack-time drain** release: Phase 2 rung 1 of the embedded-header
   forest (docs/plans/2026-07-09-forest-full-evaluation-lazy-materialize-PLAN.md)

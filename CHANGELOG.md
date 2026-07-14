@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **fix(parser+cir): stable function-local declaration identity closes the
+  family-D forest carry campaign.** Function-local classes, GNU nested
+  functions, and dependent-pattern bodies now mint hoisted symbols from the
+  enclosing definition's emission symbol, source spelling, and a per-body
+  declaration ordinal instead of global parse-order counters. Pattern-local
+  classes carry that identity through tsubst and remap it to the concrete
+  enclosing function; computed-name collisions fail loudly rather than being
+  silently uniquified. This keeps the local-class forest records introduced by
+  the carry slice while restoring LOADED == PARSED for grove-bound consumers.
+  `tests/testlocalclassidentity.mad` covers two same-named local classes in
+  sibling scopes, with live and packed output `15` matching GCC and clang;
+  `testlocalclassraii` remains 1 tsubst hit / 0 fallback. Final gates: reducer
+  **308** drops, fulltest **695/0/0/16** with every forest gate green,
+  release pack rc=0 with 240 units, and packed suite **695/0/0/16**.
+
 - **fix(cir): ref-return of a class assignment + ranked-callee operand
   typing** (Slice A family D, rung 11). Two stacked root causes under
   the drained `assign(basic_string&& __str) { return *this =

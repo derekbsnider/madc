@@ -1,9 +1,30 @@
 # CODEX HANDBACK — local-class identity: keep the 308, make the bound surface green
 
 **For:** Codex (GPT-5.6). **From:** Claude, 2026-07-14.
-**Branch:** `feature/forest-sliceA-draingaps-codex` · **HEAD:** `403e5e82` (your carry slice is PRESERVED at `dd14e76d` — build ON it, do not revert it, do not rebase it away).
-**Verdict on round 1:** your local-class-carry slice is the RIGHT direction and the ladder win is real and independently verified (reducer 471 → **308**, release 509 → **346**; the only new drops are the known `_M_construct` family advancing). It is NOT landable yet because the BOUND surface regressed — this handback is the fix round.
+**Branch:** `feature/forest-sliceA-draingaps-codex` · **Implementation:** `a874bde7` (the carry slice remains preserved at `dd14e76d`).
+**Verdict:** **LANDED 2026-07-14.** The local-class carry stays enabled, and deterministic hoisted-declaration identities make the live, frozen, and bound surfaces agree.
 **Prior briefs:** `docs/plans/2026-07-13-CODEX-HANDOFF-family-D-drain-gaps.md` (campaign context, metric, tools) — still applies in full.
+
+---
+
+## LANDED RESULT
+
+- Local classes, GNU nested functions, and dependent-pattern functions now use
+  stable identities derived from the enclosing emission symbol, source name,
+  and a per-body declaration ordinal. The global `nested_counter` and
+  `pat_counter` mint sites are gone.
+- Pattern-local classes retain their source identity through tsubst and are
+  remapped to the concrete enclosing function. Computed-name collisions fail
+  loudly instead of acquiring a counter suffix.
+- `tests/testlocalclassidentity.mad` pins two same-named local classes in
+  sibling scopes. The live and packed binaries both print `15`, matching the
+  GCC and clang reference lowering; `testlocalclassraii` remains parse-once at
+  1 hit / 0 fallback.
+- Reducer freeze: **308** pack drops. `make -C src fulltest`: rc=0,
+  **695 passed / 0 failed / 0 timed out / 16 skipped**, including `[subbind]`
+  and every forest oracle. `make -C src release`: rc=0, 240 units packed.
+  Packed release suite: **695 / 0 / 0 / 16**, rc=0.
+- KG `Decision {local_class_forest_carry}` is `landed` as of 2026-07-14.
 
 ---
 

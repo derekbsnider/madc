@@ -196,7 +196,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.30.0, develop): 669 integration/unit tests pass (0 failing, 0 timed out, 18 skipped); gcc.c-torture failset byte-identical to the 51-name baseline — promote gate = all remaining standard-C failures fixed, 33 gcc-only/torture-only tests formally skipped per [`docs/parity/failset-classification.md`](docs/parity/failset-classification.md). `std::string` is a real C++ class and `std::vector`/`map`/`set` are real `#include`-defined `std::` templates consumed from unmodified libstdc++ (the legacy `dtSTRING`/`tkSTRING`/`tkVECTOR`/`ns_stl` shortcuts are retired) — real `std::set`/`std::map` including `std::map<std::string,std::string>` compile and run on the default C++17 path. SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.34.0, develop): 695 integration tests pass (0 failing, 0 timed out, 16 skipped) through both the live and packed release binaries. Every forest gate is green, including bound-surface `[subbind]`; the current reducer corpus is 308 pack drops. The gcc.c-torture promote gate and formally skipped cases are tracked in [`docs/parity/failset-classification.md`](docs/parity/failset-classification.md). SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -248,8 +248,8 @@ binaries now coexist (`bin/madc` / `bin/madc-release`), and
 `docs/perf/forest-timings.tsv` tracks the timing trend per release. See
 [`docs/release-notes/v0.34.0.md`](docs/release-notes/v0.34.0.md).
 
-CIR baseline (2026-07-11): **681 integration pass / 0 fail / 0 timeout /
-16 skip** (packed suite 681/681) (zero known reds, both check gates GREEN) and **gcc.c-torture 1567
+CIR baseline (2026-07-14): **695 integration pass / 0 fail / 0 timeout /
+16 skip** (packed suite 695/695; zero known reds, all forest gates GREEN) and **gcc.c-torture 1567
 of 1652 in-scope (95.0%) at `-O1` and `-O2`** — the develop→master promote
 gate is **all 41 remaining standard-C failures fixed (≥1608)**, per the
 user-signed failset classification audit
