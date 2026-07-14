@@ -379,35 +379,13 @@ const snapshot_segment *snapshot_reader::find(uint32_t seg_id) const
     return (const snapshot_segment *)0;
 }
 
-bool snapshot_reader::read_segment(const snapshot_segment &seg, std::vector<uint8_t> &out) const
+bool snapshot_reader::read_segment_transformed(const snapshot_segment &seg,
+					std::vector<uint8_t> &out) const
 {
     if ( !_blob )
 	return false;
     const uint8_t *payload = _blob + seg.offset;
     out.resize((size_t)seg.raw_size);
-
-    // Byte-plane inversion permutes rather than mutates, so it decodes via a
-    // scratch buffer; the in-place transforms decode straight into out. The
-    // scratch is reused across calls (grow-only) — a per-call vector re-pays
-    // page faults on every multi-MB segment of a lazy per-unit load sweep.
-    uint32_t xid = snap_xform_id(seg.flags);
-    if ( xid == SNAP_XFORM_BYTEPLANE )
-    {
-	static thread_local std::vector<uint8_t> planes;
-	planes.resize((size_t)seg.raw_size);
-	if ( seg.codec == (uint32_t)PchCompression::None )
-	{
-	    if ( seg.raw_size )
-		memcpy(planes.data(), payload, (size_t)seg.raw_size);
-	}
-	else if ( !madc_pch::decompress(payload, (size_t)seg.comp_size,
-					planes.data(), (size_t)seg.raw_size,
-					(PchCompression)seg.codec) )
-	    return false;
-	size_t stride = snap_xform_param(seg.flags);
-	byteplane_inv(planes.data(), out.data(), out.size() / stride, stride);
-	return true;
-    }
 
     if ( seg.codec == (uint32_t)PchCompression::None )
     {
@@ -417,6 +395,32 @@ bool snapshot_reader::read_segment(const snapshot_segment &seg, std::vector<uint
     else if ( !madc_pch::decompress(payload, (size_t)seg.comp_size,
 				    out.data(), (size_t)seg.raw_size,
 				    (PchCompression)seg.codec) )
+	return false;
+    return true;
+}
+
+bool snapshot_reader::read_segment(const snapshot_segment &seg, std::vector<uint8_t> &out) const
+{
+    if ( !_blob )
+	return false;
+
+    // Byte-plane inversion permutes rather than mutates, so it decodes via a
+    // scratch buffer; the in-place transforms decode straight into out. The
+    // scratch is reused across calls (grow-only) — a per-call vector re-pays
+    // page faults on every multi-MB segment of a lazy per-unit load sweep.
+    uint32_t xid = snap_xform_id(seg.flags);
+    if ( xid == SNAP_XFORM_BYTEPLANE )
+    {
+	static thread_local std::vector<uint8_t> planes;
+	if ( !read_segment_transformed(seg, planes) )
+	    return false;
+	out.resize((size_t)seg.raw_size);
+	size_t stride = snap_xform_param(seg.flags);
+	byteplane_inv(planes.data(), out.data(), out.size() / stride, stride);
+	return true;
+    }
+
+    if ( !read_segment_transformed(seg, out) )
 	return false;
     if ( xid == SNAP_XFORM_DELTA32 )
 	delta32_inv(out.data(), out.size());

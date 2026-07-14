@@ -585,6 +585,8 @@ class CirFrozenSegment : public cir_segment_source
 	friend class CirFrozenForest;
 
 	cir_frozen_blob _blob;
+	std::vector<uint8_t> _record_planes;	// forest byte-plane records, kept columnar
+	size_t _record_count;
 	std::vector<uint64_t> _connectors;	// forest units only
 	std::vector<cir_frozen_pos> _positions;	// forest units only
 	CirFrozenForest *_forest;		// NULL = standalone (B2 mode)
@@ -593,6 +595,7 @@ class CirFrozenSegment : public cir_segment_source
 	std::vector<cir_node *> _mat;		// per-record memo (NULL = cold)
 	std::deque<cir_node> _nodes;		// materialized node storage (stable)
 
+	bool record_at(uint32_t idx, cir_frozen_record &out) const;
 	cir_node *shell(uint32_t idx);		// phase A: node without children
 
 	// Shared resolve driver (standalone + forest): iterative shell pass
@@ -605,10 +608,14 @@ public:
 	CirFrozenSegment(cir_frozen_blob &&blob, c2m_ctx_t c2m);
 	CirFrozenSegment(cir_forest_unit &&unit, CirFrozenForest *forest,
 			 c2m_ctx_t c2m);
+	CirFrozenSegment(cir_forest_unit &&unit,
+			 std::vector<uint8_t> &&record_planes,
+			 size_t record_count, CirFrozenForest *forest,
+			 c2m_ctx_t c2m);
 	~CirFrozenSegment();
 
 	uint32_t seg() const { return _seg; }
-	size_t record_count() const { return _blob.records.size(); }
+	size_t record_count() const { return _record_count; }
 	size_t materialized_count() const;
 	CirFrozenForest *forest() const { return _forest; }
 	uint64_t connector(uint32_t i) const { return _connectors[i]; }
