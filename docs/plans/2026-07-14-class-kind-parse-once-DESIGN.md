@@ -732,6 +732,14 @@ First performance acceptance:
 
 ## 15. Owner checkpoint
 
+> **✅ APPROVED by the owner, 2026-07-14 (same day as the design merge):**
+> B0 is green-lit, and the B1 format extension is approved as specced —
+> `ClassPattern` rides the existing `CIR_TMPLK_CLASS`/`CIR_TMPLK_PARTIAL`
+> template records via a pattern-payload slice in the existing
+> `TEMPLATE_PAYLOAD` segment, with a `CIR_FOREST_FORMAT_VERSION` bump.
+> No new segment, no new top-level record KIND. The prohibition stands:
+> bind-time reparse of a restored body is never an acceptable substitute.
+
 Before B1, obtain explicit review of the proposed format-version bump and the
 extension of the existing class-template payload to carry `ClassPattern`.
 Everything else in the plan is internal front-end refactoring or ratcheted KIND
