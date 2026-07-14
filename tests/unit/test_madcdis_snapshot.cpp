@@ -325,6 +325,12 @@ TEST_CASE("segment transforms round-trip losslessly (v2 flags vocabulary)")
     snapshot_reader r;
     REQUIRE(r.open(blob.data(), blob.size()));
     std::vector<uint8_t> got;
+    std::vector<uint8_t> transformed;
+    REQUIRE(r.read_segment_transformed(*r.find(2), transformed));
+    REQUIRE(transformed.size() == recs.size());
+    for ( size_t row = 0; row < 500; ++row )
+	for ( size_t col = 0; col < 8; ++col )
+	    CHECK(transformed[col * 500 + row] == recs[row * 8 + col]);
     REQUIRE(r.read_segment(*r.find(1), got));
     CHECK(memcmp(got.data(), idx.data(), idx.size() * 4) == 0);
     REQUIRE(r.read_segment(*r.find(2), got));

@@ -742,18 +742,32 @@ bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 // ---------------------------------------------------------------------------
 
 CirFrozenSegment::CirFrozenSegment(cir_frozen_blob &&blob, c2m_ctx_t c2m)
-	: _blob(std::move(blob)), _forest(NULL), _c2m(c2m)
+	: _blob(std::move(blob)), _record_count(_blob.records.size()),
+	  _forest(NULL), _c2m(c2m)
 {
-	_mat.assign(_blob.records.size(), (cir_node *)NULL);
+	_mat.assign(_record_count, (cir_node *)NULL);
 	_seg = madc_cir_register_segment(this);
 }
 
 CirFrozenSegment::CirFrozenSegment(cir_forest_unit &&unit, CirFrozenForest *forest,
 				   c2m_ctx_t c2m)
-	: _blob(std::move(unit.blob)), _connectors(std::move(unit.connectors)),
+	: _blob(std::move(unit.blob)), _record_count(_blob.records.size()),
+	  _connectors(std::move(unit.connectors)),
 	  _positions(std::move(unit.positions)), _forest(forest), _c2m(c2m)
 {
-	_mat.assign(_blob.records.size(), (cir_node *)NULL);
+	_mat.assign(_record_count, (cir_node *)NULL);
+	_seg = madc_cir_register_segment(this);
+}
+
+CirFrozenSegment::CirFrozenSegment(cir_forest_unit &&unit,
+				   std::vector<uint8_t> &&record_planes,
+				   size_t record_count, CirFrozenForest *forest,
+				   c2m_ctx_t c2m)
+	: _blob(std::move(unit.blob)), _record_planes(std::move(record_planes)),
+	  _record_count(record_count), _connectors(std::move(unit.connectors)),
+	  _positions(std::move(unit.positions)), _forest(forest), _c2m(c2m)
+{
+	_mat.assign(_record_count, (cir_node *)NULL);
 	_seg = madc_cir_register_segment(this);
 }
 
@@ -771,6 +785,20 @@ size_t CirFrozenSegment::materialized_count() const
 	return n;
 }
 
+bool CirFrozenSegment::record_at(uint32_t idx, cir_frozen_record &out) const
+{
+	if (idx >= _record_count)
+		return false;
+	if (_record_planes.empty()) {
+		out = _blob.records[idx];
+		return true;
+	}
+	uint8_t *dst = reinterpret_cast<uint8_t *>(&out);
+	for (size_t b = 0; b < sizeof(out); ++b)
+		dst[b] = _record_planes[b * _record_count + idx];
+	return true;
+}
+
 // Phase A: materialize ONE record as a childless node shell — code, uid,
 // payload, extension block, self ref, source position — memoized before any
 // child work so shares and cycles terminate. Mirrors CirBuilder::make().
@@ -780,7 +808,9 @@ size_t CirFrozenSegment::materialized_count() const
 // cross-process it yields the fresh valid id.
 cir_node *CirFrozenSegment::shell(uint32_t idx)
 {
-	const cir_frozen_record &r = _blob.records[idx];
+	cir_frozen_record r;
+	if (!record_at(idx, r))
+		return NULL;
 	_nodes.emplace_back();
 	cir_node *cn = &_nodes.back();
 	memset(cn, 0, sizeof(cir_node));
@@ -880,7 +910,7 @@ static bool cir_child_target(CirFrozenSegment *s, uint32_t entry,
 
 cir_node *CirFrozenSegment::resolve(CirFrozenSegment *s0, uint32_t idx0)
 {
-	if (idx0 >= s0->_blob.records.size())
+	if (idx0 >= s0->record_count())
 		return NULL;
 	if (s0->_mat[idx0])
 		return s0->_mat[idx0];
@@ -890,11 +920,14 @@ cir_node *CirFrozenSegment::resolve(CirFrozenSegment *s0, uint32_t idx0)
 	// step, not a recursion; memoized shells terminate shares and cycles,
 	// including cycles that cross units).
 	std::vector<std::pair<CirFrozenSegment *, uint32_t> > created;
-	s0->shell(idx0);
+	if (!s0->shell(idx0))
+		return NULL;
 	created.push_back(std::make_pair(s0, idx0));
 	for (size_t w = 0; w < created.size(); ++w) {
 		CirFrozenSegment *s = created[w].first;
-		const cir_frozen_record &r = s->_blob.records[created[w].second];
+		cir_frozen_record r;
+		if (!s->record_at(created[w].second, r))
+			return NULL;
 		for (uint32_t k = 0; k < r.nchildren; ++k) {
 			CirFrozenSegment *cs = NULL;
 			uint32_t cidx = 0;
@@ -902,7 +935,8 @@ cir_node *CirFrozenSegment::resolve(CirFrozenSegment *s0, uint32_t idx0)
 					      cs, cidx))
 				return NULL;
 			if (!cs->_mat[cidx]) {
-				cs->shell(cidx);
+				if (!cs->shell(cidx))
+					return NULL;
 				created.push_back(std::make_pair(cs, cidx));
 			}
 		}
@@ -915,7 +949,9 @@ cir_node *CirFrozenSegment::resolve(CirFrozenSegment *s0, uint32_t idx0)
 	// parents read head-only, so every parent still sees its child).
 	for (size_t w = 0; w < created.size(); ++w) {
 		CirFrozenSegment *s = created[w].first;
-		const cir_frozen_record &r = s->_blob.records[created[w].second];
+		cir_frozen_record r;
+		if (!s->record_at(created[w].second, r))
+			return NULL;
 		cir_node *parent = s->_mat[created[w].second];
 		for (uint32_t k = 0; k < r.nchildren; ++k) {
 			CirFrozenSegment *cs = NULL;
@@ -2923,7 +2959,15 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 		return NULL;
 	}
 	std::vector<uint8_t> rb, kb, cb, pb;
-	if (!_reader.read_segment(*recs, rb) || !_reader.read_segment(*kids, kb)
+	bool records_columnar =
+		madc::dis::snap_xform_id(recs->flags)
+			== madc::dis::SNAP_XFORM_BYTEPLANE
+		&& madc::dis::snap_xform_param(recs->flags)
+			== sizeof(cir_frozen_record);
+	bool records_ok = records_columnar
+		? _reader.read_segment_transformed(*recs, rb)
+		: _reader.read_segment(*recs, rb);
+	if (!records_ok || !_reader.read_segment(*kids, kb)
 	    || !_reader.read_segment(*conn, cb) || !_reader.read_segment(*poss, pb)
 	    || rb.size() % sizeof(cir_frozen_record) || kb.size() % sizeof(uint32_t)
 	    || cb.size() % sizeof(uint64_t) || pb.size() % sizeof(cir_frozen_pos)) {
@@ -2933,31 +2977,63 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 
 	cir_forest_unit fu;
 	fu.unit_name_id = _units[unit].unit_name_id;
-	fu.blob.records.resize(rb.size() / sizeof(cir_frozen_record));
+	size_t record_count = rb.size() / sizeof(cir_frozen_record);
+	if (!records_columnar)
+		fu.blob.records.resize(record_count);
 	fu.blob.children.resize(kb.size() / sizeof(uint32_t));
 	fu.connectors.resize(cb.size() / sizeof(uint64_t));
 	fu.positions.resize(pb.size() / sizeof(cir_frozen_pos));
-	if (!rb.empty()) memcpy(fu.blob.records.data(), rb.data(), rb.size());
+	if (!records_columnar && !rb.empty())
+		memcpy(fu.blob.records.data(), rb.data(), rb.size());
 	if (!kb.empty()) memcpy(fu.blob.children.data(), kb.data(), kb.size());
 	if (!cb.empty()) memcpy(fu.connectors.data(), cb.data(), cb.size());
 	if (!pb.empty()) memcpy(fu.positions.data(), pb.data(), pb.size());
 
-	bool ok = fu.blob.records.size() == _units[unit].record_count
+	bool ok = record_count == _units[unit].record_count
 	       && fu.connectors.size() == _units[unit].connector_count
-	       && fu.positions.size() == fu.blob.records.size();
-	for (size_t i = 0; ok && i < fu.blob.records.size(); ++i) {
-		const cir_frozen_record &rec = fu.blob.records[i];
-		if (rec.child_base + rec.nchildren > fu.blob.children.size()) {
+	       && fu.positions.size() == record_count;
+	const uint8_t *nchildren_planes[sizeof(uint32_t)] = {};
+	const uint8_t *child_base_planes[sizeof(uint64_t)] = {};
+	if (records_columnar && record_count) {
+		const uint8_t *plane_data = rb.data();
+		for (size_t b = 0; b < sizeof(uint32_t); ++b)
+			nchildren_planes[b] = plane_data
+				+ (offsetof(cir_frozen_record, nchildren) + b)
+				  * record_count;
+		for (size_t b = 0; b < sizeof(uint64_t); ++b)
+			child_base_planes[b] = plane_data
+				+ (offsetof(cir_frozen_record, child_base) + b)
+				  * record_count;
+	}
+	for (size_t i = 0; ok && i < record_count; ++i) {
+		uint32_t nchildren = 0;
+		uint64_t child_base = 0;
+		if (records_columnar) {
+			uint8_t *nchildren_bytes =
+				reinterpret_cast<uint8_t *>(&nchildren);
+			uint8_t *child_base_bytes =
+				reinterpret_cast<uint8_t *>(&child_base);
+			for (size_t b = 0; b < sizeof(nchildren); ++b)
+				nchildren_bytes[b] = nchildren_planes[b][i];
+			for (size_t b = 0; b < sizeof(child_base); ++b)
+				child_base_bytes[b] = child_base_planes[b][i];
+		} else {
+			const cir_frozen_record &rec = fu.blob.records[i];
+			nchildren = rec.nchildren;
+			child_base = rec.child_base;
+		}
+		if (!ok || child_base > fu.blob.children.size()
+		    || nchildren > fu.blob.children.size() - child_base) {
 			ok = false;
 			break;
 		}
-		for (uint32_t k = 0; ok && k < rec.nchildren; ++k) {
-			uint32_t ci = fu.blob.children[rec.child_base + k];
+		for (uint32_t k = 0; ok && k < nchildren; ++k) {
+			uint32_t ci = fu.blob.children[child_base + k];
 			if (ci & CIR_FROZEN_CHILD_CONNECTOR_BIT)
 				ok = (ci & ~CIR_FROZEN_CHILD_CONNECTOR_BIT)
 				     < fu.connectors.size();
 			else
-				ok = ci < fu.blob.records.size();
+				ok = ci < record_count;
 		}
 	}
 	for (size_t c = 0; ok && c < fu.connectors.size(); ++c) {
@@ -2972,8 +3048,12 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 	}
 
 	DBG(fprintf(stderr, "forest: loading unit %u (%zu records)\n",
-		    unit, fu.blob.records.size()));
-	_segs[unit] = new CirFrozenSegment(std::move(fu), this, _c2m);
+		    unit, record_count));
+	if (records_columnar)
+		_segs[unit] = new CirFrozenSegment(std::move(fu), std::move(rb),
+						   record_count, this, _c2m);
+	else
+		_segs[unit] = new CirFrozenSegment(std::move(fu), this, _c2m);
 	return _segs[unit];
 }
 

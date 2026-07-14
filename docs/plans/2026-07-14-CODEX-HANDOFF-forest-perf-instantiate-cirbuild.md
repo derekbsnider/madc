@@ -5,6 +5,44 @@
 **Owner mission:** reduce bound-compile time — the INSTANTIATE bucket, and **especially the
 cir_build bucket, which the forest makes SLOWER than a live parse**.
 
+> **Mission 1 result (Codex, 2026-07-14, `cbcb79b6`): CLOSED.** The
+> packed RECORDS payload now stays in its decoded byte-plane representation;
+> `CirFrozenSegment` reconstructs only records actually touched by the consumer.
+> Quiet-host `cir build` fell **0.361 -> 0.270 s** and the canonical packed wall
+> row fell **0.715 -> 0.593 s**. `bin/madc-release` remains exactly **9,708,520
+> bytes** with 240 packed units. Fulltest and the packed suite are both
+> **695/0/0/16**; the bind gate is **18/18**. Mission 2 remains a separate
+> design-only sitting and branch.
+
+### MISSION 1 COMPOSITION AND FINDINGS
+
+Callgrind values below are inclusive instruction reads and therefore overlap;
+they identify ownership rather than forming an additive phase total.
+
+| surface | pre-change bound | post-change mechanism profile | finding |
+|---|---:|---:|---|
+| `CirBuilder::translate_module` | 2,252.0 M | 2,106.3 M | The bound-only excess was below translation, not shared deferred parsing. |
+| `CirFrozenForest::node_for` | 594.5 M | 448.5 M | Forty consumer lookups triggered fourteen unit loads. |
+| `CirFrozenForest::unit_segment` | 590.1 M | 424.8 M | Whole-unit RECORDS inversion dominated the avoidable part. |
+| RECORDS `byteplane_inv` | **404.9 M** | **absent** | The decoded transformed bytes are now the bound representation. |
+| RECORDS transformed read | folded into 470.4 M `read_segment` | 39.9 M | Zstd remains; only the eager 80-byte row reconstruction was removed. |
+| `parse_deferred_lazy_body` | 260.49 M | live was 260.13 M | Refuted as the source of the bound CIR regression. |
+
+Integrity validation did not move later or become partial: unit load still scans
+every record and validates every child range, child reference, connector, and
+position count. It reads the `nchildren` and `child_base` planes directly; node
+materialization reconstructs a complete 80-byte row only on first touch. The
+snapshot version, transform vocabulary, codecs, and packed payload encoding are
+unchanged.
+
+The bound `lex` bucket was also attributed. `Program::tokenize` consumed 1,598 M
+instructions, with `flush_forest_pending_globals` at 1,381 M and
+`forest_restore_decls` at 968.7 M. Within restore, `materialize_from_arena` was
+382.9 M and restored-template token deserialization was 352.8 M. An early
+aggregate-demand filter was **refuted** for this workload: 758 of 794 recordable
+aggregates (95%) were admitted. Narrowing that path would add policy churn for
+little gain; the class parse-once Slice B is the next structural lever.
+
 This doc is self-contained; you have no access to prior session memory. Everything
 you must not re-derive is in SETTLED. Read these before coding:
 `docs/plans/2026-07-13-instantiate-bucket-plan.md` (the Slice A/B/C charter — Slice B

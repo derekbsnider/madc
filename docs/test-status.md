@@ -1,15 +1,17 @@
 # Test Status
 
-> **Current (2026-07-14, family-D local-class forest carry landed):**
+> **Current (2026-07-14, bound columnar RECORDS bind @`cbcb79b6`):**
 > `make -C src fulltest` exits 0 with **695 passed, 0 failed, 0 timed out,
 > 16 skipped**. Every static and forest gate is green, including
 > `forest_bind_gate [subbind]`, the full bind matrix, and both forest oracles.
 > The reducer corpus freezes with **308 pack drops**. `make -C src release`
 > exits 0 and appends 240 packed units; the full packed run
 > (`MADC_BIN=bin/madc-release bash scripts/run_tests.sh`) is also
-> **695/0/0/16**. New `tests/testlocalclassidentity.mad` covers two
-> same-named local classes in sibling scopes and returns `15` through both the
-> live and packed binaries, matching the GCC and clang reference lowering.
+> **695/0/0/16**. `bin/test_madcdis_snapshot` is **10/10** with **13,884
+> assertions**, including direct verification of the preserved byte-plane
+> layout; `bin/test_cir_freeze` is **36/36** with **690 assertions**. The
+> packed artifact carries a readable 240-unit forest and remains exactly
+> **9,708,520 bytes**.
 >
 > **Local branch update (2026-06-28, `feature/front-end-performance-claude` @
 > Kind 3 dependent-member body tsubst slice):** fulltest

@@ -1,8 +1,8 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-07-14 (family-D forest
-drain-gap campaign closed with stable function-local declaration identity;
-reducer 308 drops and live/packed suites 695/0/0/16).
+drain-gap campaign closed; bound RECORDS decode no longer eagerly rebuilds
+untouched rows; live/packed suites 695/0/0/16).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -28,6 +28,21 @@ high-level" — the answer is both.**
 
 ## Current State
 
+- **Bound forest RECORDS decode (2026-07-14, `cbcb79b6`): CLOSED on
+  `feature/forest-perf-cirbuild-codex`.** Callgrind found the new bound CIR
+  regression below `CirFrozenForest::unit_segment`: whole-frame
+  `byteplane_inv` cost 404.9 M instructions even though the consumer touched
+  only a small subset of the 566,522 loaded records. The reader now exposes
+  decoded transformed bytes, forest segments retain RECORDS columnar, unit
+  load validates all child/connector bounds from the linkage planes, and only
+  touched rows are reconstructed. Quiet-host `cir build` falls
+  **0.361 -> 0.270 s** (final live 0.227 s); the tracked packed wall median
+  falls **0.715 -> 0.593 s**. The binary remains exactly **9,708,520 bytes**
+  with 240 units; fulltest and packed suite are **695/0/0/16**, bind gate
+  **18/18**. The broad bind restore path remains structural work: 95% of
+  recordable aggregates are needed by this workload, refuting an early-demand
+  filter. **Next:** a separate design-only Slice B class-KIND parse-once
+  sitting; no implementation in that design sitting.
 - **Family-D forest drain gaps (2026-07-14): CLOSED.** Function-local class,
   nested-function, and dependent-pattern hoists now use deterministic
   enclosing-emission-symbol x source-name x per-body-ordinal identities. The

@@ -172,6 +172,12 @@ public:
     // inverting the segment's transform when one is recorded in seg.flags.
     bool read_segment(const snapshot_segment &seg, std::vector<uint8_t> &out) const;
 
+    // Decompress (or copy) a segment payload while preserving its recorded
+    // byte-stream transform. Consumers that can bind the transformed shape
+    // directly use this to avoid eagerly rebuilding the original layout.
+    bool read_segment_transformed(const snapshot_segment &seg,
+				  std::vector<uint8_t> &out) const;
+
     // Zero-copy payload pointer for codec None segments (bind-in-place path);
     // NULL for compressed or transformed segments.
     const uint8_t *raw_ptr(const snapshot_segment &seg) const;
