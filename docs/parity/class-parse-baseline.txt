@@ -1,0 +1,9 @@
+# B0 suite-wide class-template parse ratchet (bin/madc, live parse).
+# `parse` may only decrease. `pattern` records structural-lane engagement.
+# `tests` prevents a partial/aborted scan passing. Reasons are only those seen
+# in this slice; a newly observed reason requires an intentional baseline edit.
+tests 690
+mode-skipped 5
+pattern 0
+parse 48604
+reason pattern-not-captured

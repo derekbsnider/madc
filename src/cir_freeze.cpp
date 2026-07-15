@@ -1570,7 +1570,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
 		std::string why = "?";
 		for (uint32_t m = 0; m < r.members_count; ++m) {
-			madc::dis::memberrec mr;
+			madc::dis::memberrec mr = {};
 			if (!a.get_payload(r.members_begin, m, mr)
 			    || !arena_chain_ok(a, mr.type_id, tid, recordable)) {
 				const char *mn = mr.name_id ? a.c_str(mr.name_id) : "?";
@@ -1580,7 +1580,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		}
 		if (why == "?" && r.kind == madc::dis::DK_CLASS)
 			for (uint32_t b = 0; b < r.bases_count; ++b) {
-				madc::dis::baserec br;
+				madc::dis::baserec br = {};
 				if (!a.get_payload(r.bases_begin, b, br)
 				    || !recordable.count(br.base_id)) {
 					madc::dis::defrec bd;

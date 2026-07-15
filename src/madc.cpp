@@ -55,6 +55,28 @@ static Program *g_active_program = NULL;
 // if the address falls inside a generated function's code range.
 extern "C" int madc_jit_symbolize(void *addr, char *out, unsigned long n);
 
+static void crash_write(const char *data, size_t size)
+{
+    while ( size > 0 )
+    {
+	ssize_t written = write(STDERR_FILENO, data, size);
+	if ( written <= 0 )
+	    return;
+	data += written;
+	size -= (size_t)written;
+    }
+}
+
+static void crash_write_formatted(const char *data, int length, size_t capacity)
+{
+    if ( length <= 0 || capacity == 0 )
+	return;
+    size_t size = (size_t)length;
+    if ( size >= capacity )
+	size = capacity - 1;
+    crash_write(data, size);
+}
+
 // Async-signal-safe crash handler: writes signal name + backtrace to fd 2
 // (stderr) using only async-signal-safe libc calls. Re-raises the signal
 // with the default handler so core files still drop if enabled.
@@ -70,18 +92,18 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 	case SIGILL:  name = "SIGILL (illegal instruction)";	break;
     }
     const char *prefix = "\nmadc: caught ";
-    write(2, prefix, strlen(prefix));
-    write(2, name, strlen(name));
+    crash_write(prefix, strlen(prefix));
+    crash_write(name, strlen(name));
     if ( info && (sig == SIGSEGV || sig == SIGBUS) )
     {
 	char addrbuf[64];
 	int n = snprintf(addrbuf, sizeof(addrbuf), " at address %p", info->si_addr);
-	write(2, addrbuf, n);
+	crash_write_formatted(addrbuf, n, sizeof(addrbuf));
     }
-    write(2, "\n", 1);
+    crash_write("\n", 1);
 
     const char *btheader = "Backtrace:\n";
-    write(2, btheader, strlen(btheader));
+    crash_write(btheader, strlen(btheader));
 
     void *frames[64];
     int nf = backtrace(frames, 64);
@@ -95,7 +117,7 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 	if ( madc_jit_symbolize(frames[i], sym, sizeof(sym)) )
 	{
 	    int n = snprintf(line, sizeof(line), "  [%p] %s\n", frames[i], sym);
-	    write(2, line, n);
+	    crash_write_formatted(line, n, sizeof(line));
 	    continue;
 	}
 	Dl_info di;
@@ -104,12 +126,12 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 	    int n = snprintf(line, sizeof(line), "  [%p] %s+0x%lx\n", frames[i],
 			     di.dli_sname,
 			     (unsigned long)((char *)frames[i] - (char *)di.dli_saddr));
-	    write(2, line, n);
+	    crash_write_formatted(line, n, sizeof(line));
 	}
 	else
 	{
 	    int n = snprintf(line, sizeof(line), "  [%p] ??\n", frames[i]);
-	    write(2, line, n);
+	    crash_write_formatted(line, n, sizeof(line));
 	}
     }
 
@@ -935,6 +957,7 @@ int main(int argc, char **argv)
 		"[stats] parse time .......... %.3f s  (%.0f tok/s)\n"
 		"[stats]   instantiate ....... %.3f s  (%.0f%% of parse; %llu calls)\n"
 		"[stats]   tsubst bodies ..... %llu hit / %llu fallback\n"
+		"[stats]   class instantiate . %llu pattern / %llu parse / %llu cache / %llu opaque\n"
 		"[stats]   decl-parse ........ %.3f s  (PCH-cacheable share)\n"
 		"[stats] cir build ........... %.3f s  (AST -> cir_node)\n"
 		"[stats] c2mir compile ....... %.3f s\n"
@@ -954,6 +977,10 @@ int main(int argc, char **argv)
 		prog->_inst_count,
 		prog->_tsubst_body_hits,
 		prog->_tsubst_body_fallbacks,
+		prog->_class_inst_pattern,
+		prog->_class_inst_parse,
+		prog->_class_inst_cache,
+		prog->_class_inst_opaque,
 		decl_secs,
 		cir_secs,
 		c2mir_secs,
@@ -984,6 +1011,53 @@ int main(int argc, char **argv)
 				? "?" : rows[i].second.reason.c_str(),
 			    rows[i].second.sample.c_str());
 	    }
+	    if ( !prog->_class_parse_profile.empty() )
+	    {
+		typedef std::pair<Program::ClassParseProfileKey,
+			Program::ClassParseProfile> ClassProfileRow;
+		std::vector<ClassProfileRow> rows;
+		for (std::map<Program::ClassParseProfileKey,
+			Program::ClassParseProfile>::const_iterator it =
+			 prog->_class_parse_profile.begin();
+		     it != prog->_class_parse_profile.end(); ++it)
+		    rows.push_back(*it);
+		std::sort(rows.begin(), rows.end(),
+			  [](const ClassProfileRow &a, const ClassProfileRow &b) {
+			      if (a.second.count != b.second.count)
+				  return a.second.count > b.second.count;
+			      return a.first < b.first;
+			  });
+		fprintf(stderr, "[stats]   class parse profile (ranked):\n");
+		unsigned long long body_calls = 0;
+		unsigned long long base_specs = 0;
+		std::map<Program::ClassDeclKind, unsigned long long> decls;
+		for (size_t i = 0; i < rows.size(); ++i)
+		{
+		    fprintf(stderr,
+			"[stats]     %zu. %llu x %s [why: %s] sample=%s\n",
+			i + 1, rows[i].second.count,
+			rows[i].first.identity.c_str(),
+			Program::class_parse_reason_name(rows[i].first.reason),
+			rows[i].second.sample.c_str());
+		    body_calls += rows[i].second.body_calls;
+		    base_specs += rows[i].second.base_specs;
+		    for (std::map<Program::ClassDeclKind,
+			    unsigned long long>::const_iterator di =
+			    rows[i].second.decls.begin();
+			 di != rows[i].second.decls.end(); ++di)
+			decls[di->first] += di->second;
+		}
+		fprintf(stderr,
+			"[stats]   class parse census . %llu body / %llu base-spec\n",
+			body_calls, base_specs);
+		fprintf(stderr, "[stats]   class decl KINDs ....");
+		for (std::map<Program::ClassDeclKind,
+			unsigned long long>::const_iterator it = decls.begin();
+		     it != decls.end(); ++it)
+		    fprintf(stderr, " %s=%llu",
+			Program::class_decl_kind_name(it->first), it->second);
+		fprintf(stderr, "\n");
+	    }
 	};
 
 	if ( !parse_ok )
@@ -1001,6 +1075,7 @@ int main(int argc, char **argv)
 	if ( dump_registered )
 	{
 	    prog->dump_registered_names(stdout);
+	    print_stats();
 	    return 0;
 	}
 

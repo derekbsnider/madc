@@ -1013,6 +1013,8 @@ public:
     size_t size() const { return map_.size(); }
     bool empty() const { return map_.empty(); }
     void set(const std::string &key, DataDef *dd);
+    datadef_map_t snapshot() const { return map_; }
+    void restore(const datadef_map_t &entries);
     // First entry (in key order) whose despaced, namespace-stripped canonical
     // spelling equals `want` — exactly the old linear scan's answer.
     DataDef *find_despaced(const std::string &want);
@@ -1829,6 +1831,24 @@ public:
 	TemplateDef() : has_non_type_params(false), owner_class(nullptr),
 			is_partial_specialization(false) {}
     };
+    // B0 class-KIND parse-once foundation. Capture uses the production class
+    // parser once, so all temporary registrations must roll back as one unit.
+    // The implementation snapshots registry surfaces behind this small RAII
+    // handle; B1 activates it around pattern capture.
+    class ClassRegistrationJournal
+    {
+	struct State;
+	Program &pgm;
+	State *state;
+	bool finished;
+	ClassRegistrationJournal(const ClassRegistrationJournal &);
+	ClassRegistrationJournal &operator=(const ClassRegistrationJournal &);
+    public:
+	explicit ClassRegistrationJournal(Program &p);
+	~ClassRegistrationJournal();
+	void commit();
+	void rollback();
+    };
     // Templates are keyed by BARE name, but a same-named class template may be
     // declared in more than one namespace (e.g. std::char_traits and
     // __gnu_cxx::char_traits). Each bare name therefore maps to a vector of
@@ -2491,6 +2511,7 @@ public:
 	std::vector<std::pair<std::string, uint32_t> > names; // (name, kind)
     };
     bool pack_recording = false;
+    bool class_registration_taps_muted = false;
     std::vector<const char *> pack_unit_order;	// first-tokenization order (interned)
     std::set<const char *> pack_units_seen;
     std::map<const char *, std::vector<PackMacroEvent> > pack_pp_exports; // unit -> ordered deltas
@@ -2564,6 +2585,82 @@ public:
 	TsubstBodyProfile() : count(0), sample(), reason() {}
     };
     std::map<std::string, TsubstBodyProfile> _tsubst_body_fallback_profile;
+    // Class-template dispatch accounting. A parse is counted only after the
+    // selected body is known to take the sole parser lane; cache and dependent
+    // shells are disjoint outcomes. ClassParseReason stays typed until the
+    // --show-stats rendering boundary.
+    enum class ClassParseReason : uint8_t {
+	PatternNotCaptured,		// B0-only transition; removed by B1 capture
+	PatternParseError,
+	PatternParsePoisoned,
+	UnnormalizableType,
+	DependentValueExpression,
+	UnsupportedDeclKind,
+	UnsupportedNestedDefinition,
+	UnsupportedFriendDefinition,
+	UnsupportedDefaultedComparison,
+	UnsupportedOutOfLineNested,
+	RequiresEagerBodyParse,
+	RegistrationEscape
+    };
+    enum class ClassDeclKind : uint8_t {
+	TypeAlias,
+	NestedAggregate,
+	NestedForward,
+	NestedEnum,
+	DataMember,
+	BitField,
+	AnonymousAggregate,
+	StaticDataMember,
+	Method,
+	MemberTemplate,
+	FriendType,
+	FriendFunction,
+	DefaultedComparison,
+	UsingBaseMember,
+	StaticAssert
+    };
+    struct ClassParseProfileKey {
+	std::string identity;
+	ClassParseReason reason;
+	bool operator<(const ClassParseProfileKey &o) const
+	{
+	    return identity < o.identity
+		|| (identity == o.identity && reason < o.reason);
+	}
+    };
+    struct ClassParseProfile {
+	unsigned long long count;
+	unsigned long long body_calls;
+	unsigned long long base_specs;
+	std::string sample;
+	std::map<ClassDeclKind, unsigned long long> decls;
+	ClassParseProfile() : count(0), body_calls(0), base_specs(0), sample() {}
+    };
+    unsigned long long _class_inst_pattern = 0;
+    unsigned long long _class_inst_parse = 0;
+    unsigned long long _class_inst_cache = 0;
+    unsigned long long _class_inst_opaque = 0;
+    std::map<ClassParseProfileKey, ClassParseProfile> _class_parse_profile;
+    std::vector<ClassParseProfileKey> _class_parse_census_stack;
+    static const char *class_parse_reason_name(ClassParseReason reason);
+    static const char *class_decl_kind_name(ClassDeclKind kind);
+    void note_class_parse(const std::string &identity,
+			  ClassParseReason reason, const std::string &sample);
+    void note_class_body_parse();
+    void note_class_base_spec();
+    void note_class_decl(ClassDeclKind kind, unsigned long long count = 1);
+    class ClassParseCensusScope
+    {
+	Program &pgm;
+	bool active;
+	ClassParseCensusScope(const ClassParseCensusScope &);
+	ClassParseCensusScope &operator=(const ClassParseCensusScope &);
+    public:
+	ClassParseCensusScope(Program &p, const std::string &identity,
+		ClassParseReason reason, const std::string &sample);
+	~ClassParseCensusScope();
+    };
     // User-defined function AST nodes, in source order. Parallel to the
     // ast queue. Populated by parseFunction / parseLambda; consumed by
     // Program::compile in a pre-pass to create funcnodes (labels) before
@@ -3794,6 +3891,31 @@ public:
     void parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 						 TokenBase *loc);
     bool class_body_enum_definition_follows();
+    enum class ClassMethodKind { Method, Constructor, Destructor, Conversion };
+    struct ClassMethodRegistration {
+	ClassMethodKind kind;
+	std::string display_name;
+	uint32_t access_flags;
+	bool is_static;
+	bool is_virtual;
+	bool is_operator;
+	bool bind_cpp_symbol;
+	std::string local_emit_name;
+	ClassMethodRegistration()
+	    : kind(ClassMethodKind::Method), access_flags(0), is_static(false),
+	      is_virtual(false), is_operator(false), bind_cpp_symbol(true) {}
+    };
+    TokenDataType *register_class_shell(DataDefCLASS *ddc,
+		const std::string &registered_name,
+		const std::string &source_name,
+		const std::string &constructor_source_name,
+		DataDefCLASS *owner, bool completing_forward,
+		bool register_source_alias);
+    void initialize_class_bases(DataDefCLASS *ddc,
+				const std::vector<BaseSpec> &bases);
+    void register_class_method_signature(DataDefCLASS *ddc, Variable *mvar,
+					 const ClassMethodRegistration &spec);
+    void complete_class_aggregate(DataDefCLASS *ddc);
     void bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 				  CppSymKind kind, const std::string &mname,
 				  bool is_operator);

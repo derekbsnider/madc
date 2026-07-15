@@ -82,6 +82,101 @@ struct InstTimer
 };
 }
 
+const char *Program::class_parse_reason_name(ClassParseReason reason)
+{
+    switch ( reason )
+    {
+    case ClassParseReason::PatternNotCaptured: return "pattern-not-captured";
+    case ClassParseReason::PatternParseError: return "pattern-parse-error";
+    case ClassParseReason::PatternParsePoisoned: return "pattern-parse-poisoned";
+    case ClassParseReason::UnnormalizableType: return "unnormalizable-type";
+    case ClassParseReason::DependentValueExpression: return "dependent-value-expression";
+    case ClassParseReason::UnsupportedDeclKind: return "unsupported-decl-kind";
+    case ClassParseReason::UnsupportedNestedDefinition: return "unsupported-nested-definition";
+    case ClassParseReason::UnsupportedFriendDefinition: return "unsupported-friend-definition";
+    case ClassParseReason::UnsupportedDefaultedComparison: return "unsupported-defaulted-comparison";
+    case ClassParseReason::UnsupportedOutOfLineNested: return "unsupported-outofline-nested";
+    case ClassParseReason::RequiresEagerBodyParse: return "requires-eager-body-parse";
+    case ClassParseReason::RegistrationEscape: return "registration-escape";
+    }
+    return "unknown";
+}
+
+const char *Program::class_decl_kind_name(ClassDeclKind kind)
+{
+    switch ( kind )
+    {
+    case ClassDeclKind::TypeAlias: return "TYPE_ALIAS";
+    case ClassDeclKind::NestedAggregate: return "NESTED_AGGREGATE";
+    case ClassDeclKind::NestedForward: return "NESTED_FORWARD";
+    case ClassDeclKind::NestedEnum: return "NESTED_ENUM";
+    case ClassDeclKind::DataMember: return "DATA_MEMBER";
+    case ClassDeclKind::BitField: return "BIT_FIELD";
+    case ClassDeclKind::AnonymousAggregate: return "ANONYMOUS_AGGREGATE";
+    case ClassDeclKind::StaticDataMember: return "STATIC_DATA_MEMBER";
+    case ClassDeclKind::Method: return "METHOD";
+    case ClassDeclKind::MemberTemplate: return "MEMBER_TEMPLATE";
+    case ClassDeclKind::FriendType: return "FRIEND_TYPE";
+    case ClassDeclKind::FriendFunction: return "FRIEND_FUNCTION";
+    case ClassDeclKind::DefaultedComparison: return "DEFAULTED_COMPARISON";
+    case ClassDeclKind::UsingBaseMember: return "USING_BASE_MEMBER";
+    case ClassDeclKind::StaticAssert: return "STATIC_ASSERT";
+    }
+    return "UNKNOWN";
+}
+
+void Program::note_class_parse(const std::string &identity,
+	ClassParseReason reason, const std::string &sample)
+{
+    ++_class_inst_parse;
+    ClassParseProfileKey key;
+    key.identity = identity;
+    key.reason = reason;
+    ClassParseProfile &profile = _class_parse_profile[key];
+    ++profile.count;
+    if ( profile.sample.empty() )
+	profile.sample = sample;
+}
+
+Program::ClassParseCensusScope::ClassParseCensusScope(Program &p,
+	const std::string &identity, ClassParseReason reason,
+	const std::string &sample)
+    : pgm(p), active(true)
+{
+    pgm.note_class_parse(identity, reason, sample);
+    ClassParseProfileKey key;
+    key.identity = identity;
+    key.reason = reason;
+    pgm._class_parse_census_stack.push_back(key);
+}
+
+Program::ClassParseCensusScope::~ClassParseCensusScope()
+{
+    if ( active )
+	pgm._class_parse_census_stack.pop_back();
+}
+
+void Program::note_class_body_parse()
+{
+    if ( _class_parse_census_stack.empty() )
+	return;
+    ++_class_parse_profile[_class_parse_census_stack.back()].body_calls;
+}
+
+void Program::note_class_base_spec()
+{
+    if ( _class_parse_census_stack.empty() )
+	return;
+    ++_class_parse_profile[_class_parse_census_stack.back()].base_specs;
+}
+
+void Program::note_class_decl(ClassDeclKind kind, unsigned long long count)
+{
+    if ( _class_parse_census_stack.empty() )
+	return;
+    _class_parse_profile[_class_parse_census_stack.back()].decls[kind] += count;
+}
+
 extern "C" {
 int64_t __madc_regex_match(void *, void *);
 int64_t __madc_regex_search(void *, void *);
@@ -3828,9 +3923,15 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		     || template_base_clause_has_template_id(td));
     if ( template_has_parameter_pack(td.typeparam_is_pack) && !pack_real_inst
       && !try_spec_real_inst )
+	{
+	++_class_inst_opaque;
 	return instantiate_opaque_template_use(td, tname, tb);
+	}
     if ( td.has_non_type_params && td.body.empty() && !try_spec_real_inst )
+	{
+	++_class_inst_opaque;
 	return instantiate_opaque_template_use(td, tname, tb);
+	}
 
     // Parse `< Arg [, Arg ...] >`, resolving type parameters as DataDefs and
     // preserving non-type parameters as token sequences for later substitution.
@@ -4166,8 +4267,16 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     if ( have != datatype_map.end() )
     {
 	TokenDataType *cached = (TokenDataType *)(*have);
-	if ( td.body.empty() || !is_incomplete_template_class_type(cached) )
+	if ( td.body.empty() )
+	{
+	    ++_class_inst_opaque;
 	    return use_site_type_token(cached, tb);
+	}
+	if ( !is_incomplete_template_class_type(cached) )
+	{
+	    ++_class_inst_cache;
+	    return use_site_type_token(cached, tb);
+	}
     }
     // A variadic template admitted to the real path (template_pack_real_instantiable)
     // but instantiated with a STILL-DEPENDENT arg stays an opaque dependent shell —
@@ -4178,6 +4287,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     if ( td.body.empty() || (pack_real_inst && dependent_surface)
       || (want_sticky && variadic_inst_in_progress.count(registered_mangled)) )
     {
+	++_class_inst_opaque;
 	DataDefCLASS *fwd = new DataDefCLASS(registered_mangled, 0, DataType::dtRESERVED);
 	fwd->set_canonical_spelling(canon);
 	fwd->is_dependent_placeholder = true;
@@ -4571,6 +4681,19 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    }
 	}
     } sticky_guard(*this, registered_mangled, want_sticky);
+
+    std::string class_profile_identity;
+    if ( td.owner_class )
+    {
+	class_profile_identity = td.owner_class->canonical_cpp_spelling().empty()
+	    ? td.owner_class->name : td.owner_class->canonical_cpp_spelling();
+	class_profile_identity += "::";
+    }
+    else if ( !td.defining_namespace.empty() )
+	class_profile_identity = td.defining_namespace + "::";
+    class_profile_identity += tname;
+    ClassParseCensusScope class_parse_scope(*this, class_profile_identity,
+	ClassParseReason::PatternNotCaptured, canon);
 
     TokenBase *class_kw = nextToken();   // the injected `class` keyword
     try
@@ -17551,6 +17674,216 @@ void StructRegistry::set(const std::string &key, DataDef *dd)
     ++DataDef::canonical_spelling_gen;	// hold the old value — rebuild the index
 }
 
+void StructRegistry::restore(const datadef_map_t &entries)
+{
+    map_ = entries;
+    index_.clear();
+    seen_.clear();
+    size_stamp_ = 0;
+    ++DataDef::canonical_spelling_gen;
+    gen_stamp_ = 0;
+}
+
+struct Program::ClassRegistrationJournal::State
+{
+    flat_datatype_map_t datatype_map;
+    datadef_map_t datadef_map;
+    datadef_map_t struct_map;
+    std::map<std::string, DataDefSTRUCT *> tsubst_local_aggregate_map;
+    madc::dis::id_table<DataDef> project_types;
+    std::map<DataDef *, DataDefPTR *> ptr_type_cache;
+    std::map<DataDef *, DataDefREF *> ref_type_cache;
+    std::map<DataDef *, DataDefCONST *> const_type_cache;
+    funcdef_map_t funcdef_map;
+    variable_map_t literal_map;
+    namespace_map_t namespace_map;
+    namespace_datatype_map_t namespace_datatype_map;
+    madc::dis::intern_keyed_map<std::vector<TemplateDef> > template_map;
+    madc::dis::intern_keyed_map<std::vector<TemplateDef> > partial_spec_map;
+    madc::dis::intern_keyed_map<std::vector<TemplateAliasDef> > template_alias_map;
+    madc::dis::intern_keyed_map<VarTemplateDef> var_template_map;
+    std::map<std::string, ConceptDef> concept_map;
+    madc::dis::intern_keyed_map<std::vector<FnTemplateDef> > fn_template_map;
+    madc::dis::intern_keyed_map<std::vector<FnTemplateDef> > fn_template_decl_map;
+    std::set<std::string> fn_template_instantiated;
+    madc::dis::intern_keyed_map<Variable *> fn_template_instantiated_vars;
+    std::vector<FreeOperatorOverload> free_operator_overloads;
+    std::vector<FreeOperatorOverload> free_function_overloads;
+    std::map<std::string, std::vector<NamespaceFnOverload> > namespace_fn_overload_sets;
+    std::map<std::string, std::vector<PendingTemplateInstantiation> > pending_template_instantiations;
+    std::map<DataDef *, DependentShellOrigin> dependent_shell_origin;
+    std::map<DataDef *, DependentDerivedOrigin> dependent_derived_origin;
+    std::set<std::string> template_completion_requested;
+    std::set<std::string> template_instantiated;
+    std::map<DataDefCLASS *, HoistedDeclIdentity> function_local_class_identities;
+    std::map<std::string, std::string> hoisted_symbol_identity_keys;
+    std::vector<DataDefTemplateParam *> template_param_pool;
+    std::vector<std::map<std::string, DataDef *> > template_param_scopes;
+    std::queue<TokenBase *> ast;
+    std::vector<TokenBase *> pending_funcs;
+    std::map<std::string, DeferredFunctionBody> deferred_lazy_bodies;
+    std::map<std::string, std::vector<OutOfLineMemberDef> > out_of_line_member_defs;
+    std::map<std::string, std::vector<OutOfLineMemberInstantiation> >
+	out_of_line_member_instantiations;
+    std::map<std::string, std::vector<OutOfLineNestedClassDef> >
+	out_of_line_nested_class_defs;
+    std::vector<TopDecl> top_decls;
+    std::vector<PackDeclEntry> pack_decls;
+    std::vector<PackDeclFrame> pack_decl_stack;
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	block_typedef_shadows;
+    std::vector<Variable *> root_variables;
+    std::unordered_map<uint32_t, Variable *> root_var_index;
+    size_t root_var_indexed;
+    std::vector<TokenStmt *> root_statements;
+    std::vector<TokenBase *> root_deferred;
+    std::vector<Variable *> root_destruct_order;
+    TokenCpnd *root;
+    bool taps_muted;
+    bool forest_arena_enabled;
+
+    explicit State(Program &p)
+	: datatype_map(p.datatype_map), datadef_map(p.datadef_map),
+	  struct_map(p.struct_map.snapshot()),
+	  tsubst_local_aggregate_map(p.tsubst_local_aggregate_map),
+	  project_types(p.project_types), ptr_type_cache(p.ptr_type_cache),
+	  ref_type_cache(p.ref_type_cache), const_type_cache(p.const_type_cache),
+	  funcdef_map(p.funcdef_map), literal_map(p.literal_map),
+	  namespace_map(p.namespace_map), namespace_datatype_map(p.namespace_datatype_map),
+	  template_map(p.template_map), partial_spec_map(p.partial_spec_map),
+	  template_alias_map(p.template_alias_map), var_template_map(p.var_template_map),
+	  concept_map(p.concept_map), fn_template_map(p.fn_template_map),
+	  fn_template_decl_map(p.fn_template_decl_map),
+	  fn_template_instantiated(p.fn_template_instantiated),
+	  fn_template_instantiated_vars(p.fn_template_instantiated_vars),
+	  free_operator_overloads(p.free_operator_overloads),
+	  free_function_overloads(p.free_function_overloads),
+	  namespace_fn_overload_sets(p.namespace_fn_overload_sets),
+	  pending_template_instantiations(p.pending_template_instantiations),
+	  dependent_shell_origin(p.dependent_shell_origin),
+	  dependent_derived_origin(p.dependent_derived_origin),
+	  template_completion_requested(p.template_completion_requested),
+	  template_instantiated(p.template_instantiated),
+	  function_local_class_identities(p.function_local_class_identities),
+	  hoisted_symbol_identity_keys(p.hoisted_symbol_identity_keys),
+	  template_param_pool(p.template_param_pool),
+	  template_param_scopes(p.template_param_scopes), ast(p.ast),
+	  pending_funcs(p.pending_funcs), deferred_lazy_bodies(p.deferred_lazy_bodies),
+	  out_of_line_member_defs(p.out_of_line_member_defs),
+	  out_of_line_member_instantiations(p.out_of_line_member_instantiations),
+	  out_of_line_nested_class_defs(p.out_of_line_nested_class_defs),
+	  top_decls(p.top_decls), pack_decls(p.pack_decls),
+	  pack_decl_stack(p.pack_decl_stack),
+	  block_typedef_shadows(p.block_typedef_shadows), root_variables(),
+	  root_var_index(), root_var_indexed(0), root_statements(),
+	  root_deferred(), root_destruct_order(), root(p.tkProgram),
+	  taps_muted(p.class_registration_taps_muted),
+	  forest_arena_enabled(p.forest_arena_enabled)
+    {
+	if ( root )
+	{
+	    root_variables = root->variables;
+	    root_var_index = root->var_index;
+	    root_var_indexed = root->var_indexed;
+	    root_statements = root->statements;
+	    root_deferred = root->deferred;
+	    root_destruct_order = root->destruct_order;
+	}
+    }
+};
+
+Program::ClassRegistrationJournal::ClassRegistrationJournal(Program &p)
+    : pgm(p), state(new State(p)), finished(false)
+{
+    pgm.class_registration_taps_muted = true;
+    pgm.forest_arena_enabled = false;
+}
+
+Program::ClassRegistrationJournal::~ClassRegistrationJournal()
+{
+    if ( !finished )
+	rollback();
+    delete state;
+}
+
+void Program::ClassRegistrationJournal::commit()
+{
+    if ( finished )
+	return;
+    pgm.class_registration_taps_muted = state->taps_muted;
+    pgm.forest_arena_enabled = state->forest_arena_enabled;
+    finished = true;
+}
+
+void Program::ClassRegistrationJournal::rollback()
+{
+    if ( finished )
+	return;
+    pgm.datatype_map = state->datatype_map;
+    pgm.datadef_map = state->datadef_map;
+    pgm.struct_map.restore(state->struct_map);
+    pgm.tsubst_local_aggregate_map = state->tsubst_local_aggregate_map;
+    for ( size_t i = 0; i < pgm.project_types.size(); ++i )
+    {
+	DataDef *current = pgm.project_types.at_index(i);
+	DataDef *saved = state->project_types.at_index(i);
+	if ( current && current != saved
+	  && current->type_id == pgm.project_types.base() + i )
+	    current->type_id = 0;
+    }
+    pgm.project_types = state->project_types;
+    pgm.ptr_type_cache = state->ptr_type_cache;
+    pgm.ref_type_cache = state->ref_type_cache;
+    pgm.const_type_cache = state->const_type_cache;
+    pgm.funcdef_map = state->funcdef_map;
+    pgm.literal_map = state->literal_map;
+    pgm.namespace_map = state->namespace_map;
+    pgm.namespace_datatype_map = state->namespace_datatype_map;
+    pgm.template_map = state->template_map;
+    pgm.partial_spec_map = state->partial_spec_map;
+    pgm.template_alias_map = state->template_alias_map;
+    pgm.var_template_map = state->var_template_map;
+    pgm.concept_map = state->concept_map;
+    pgm.fn_template_map = state->fn_template_map;
+    pgm.fn_template_decl_map = state->fn_template_decl_map;
+    pgm.fn_template_instantiated = state->fn_template_instantiated;
+    pgm.fn_template_instantiated_vars = state->fn_template_instantiated_vars;
+    pgm.free_operator_overloads = state->free_operator_overloads;
+    pgm.free_function_overloads = state->free_function_overloads;
+    pgm.namespace_fn_overload_sets = state->namespace_fn_overload_sets;
+    pgm.pending_template_instantiations = state->pending_template_instantiations;
+    pgm.dependent_shell_origin = state->dependent_shell_origin;
+    pgm.dependent_derived_origin = state->dependent_derived_origin;
+    pgm.template_completion_requested = state->template_completion_requested;
+    pgm.template_instantiated = state->template_instantiated;
+    pgm.function_local_class_identities = state->function_local_class_identities;
+    pgm.hoisted_symbol_identity_keys = state->hoisted_symbol_identity_keys;
+    pgm.template_param_pool = state->template_param_pool;
+    pgm.template_param_scopes = state->template_param_scopes;
+    pgm.ast = state->ast;
+    pgm.pending_funcs = state->pending_funcs;
+    pgm.deferred_lazy_bodies = state->deferred_lazy_bodies;
+    pgm.out_of_line_member_defs = state->out_of_line_member_defs;
+    pgm.out_of_line_member_instantiations = state->out_of_line_member_instantiations;
+    pgm.out_of_line_nested_class_defs = state->out_of_line_nested_class_defs;
+    pgm.top_decls = state->top_decls;
+    pgm.pack_decls = state->pack_decls;
+    pgm.pack_decl_stack = state->pack_decl_stack;
+    pgm.block_typedef_shadows = state->block_typedef_shadows;
+    if ( state->root )
+    {
+	state->root->variables = state->root_variables;
+	state->root->var_index = state->root_var_index;
+	state->root->var_indexed = state->root_var_indexed;
+	state->root->statements = state->root_statements;
+	state->root->deferred = state->root_deferred;
+	state->root->destruct_order = state->root_destruct_order;
+    }
+    pgm.class_registration_taps_muted = state->taps_muted;
+    pgm.forest_arena_enabled = state->forest_arena_enabled;
+    finished = true;
+}
+
 DataDef *StructRegistry::find_despaced(const std::string &want)
 {
     ++probe_lookups_;
@@ -19583,8 +19916,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    && lhs_dot->id() != TokenID::tkObjTemp        // T(args).member — functional-ctor temp
 				    && lhs_dot->id() != TokenID::tkTypeid )   // typeid(x).name() (S5d)
 				    Throw(tb) << "member reference is not a structure or union" << flush;
-		    Variable *tv_var;
-		    DataDef  *struct_type;
+		    Variable *tv_var = NULL;
+		    DataDef  *struct_type = NULL;
 		    if ( lhs_dot->type() == TokenType::ttVariable )
 		    {
 			TokenVar *tv = dynamic_cast<TokenVar *>(lhs_dot);
@@ -19750,6 +20083,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			}
 			else
 			    Throw(tb) << "member reference '.' on unsupported subscript form" << flush;
+		    }
+		    if ( !tv_var || !struct_type )
+		    {
+			Throw(tb) << "member access has no receiver type" << flush;
+			return ExprStep::Break;
 		    }
 		    if ( !struct_type->is_struct() && !struct_type->is_object() )
 			Throw(tb) << "member reference is not a structure or union" << flush;
@@ -27266,17 +27604,16 @@ static bool try_parse_defaulted_member_template_constructor(
     {
 	cfd->is_member_template = true;
 	cfd->method_display_name = ctor_source_name;
-	std::string default_symbol = ddc->name + "__" + ddc->name;
-	if ( ctor_disambiguated || mangled != default_symbol )
-	    cfd->local_emit_name = mangled;
     }
-    if ( access_flags )
-	mvar->flags |= access_flags;
-    ddc->methods.push_back(mvar);
-    if ( ddc->method_map.find(ctor_source_name) == ddc->method_map.end() )
-	ddc->method_map[ctor_source_name] = mvar;
-    ddc->ctors.push_back(mvar);
-    ddc->has_user_ctor = true;
+    Program::ClassMethodRegistration spec;
+    spec.kind = Program::ClassMethodKind::Constructor;
+    spec.display_name = ctor_source_name;
+    spec.access_flags = access_flags;
+    spec.bind_cpp_symbol = false;
+    std::string default_symbol = ddc->name + "__" + ddc->name;
+    if ( ctor_disambiguated || mangled != default_symbol )
+	spec.local_emit_name = mangled;
+    pgm.register_class_method_signature(ddc, mvar, spec);
     if ( has_body )
     {
 	Program::DeferredFunctionBody body;
@@ -27292,12 +27629,220 @@ static bool try_parse_defaulted_member_template_constructor(
     return true;
 }
 
+TokenDataType *Program::register_class_shell(DataDefCLASS *ddc,
+	const std::string &registered_name, const std::string &source_name,
+	const std::string &constructor_source_name, DataDefCLASS *owner,
+	bool completing_forward, bool register_source_alias)
+{
+    pack_tap_struct(registered_name);
+    pack_tap_type(registered_name);
+
+    TokenDataType *tdt = NULL;
+    if ( !completing_forward )
+    {
+	struct_map.set(registered_name, ddc);
+	tdt = new TokenDataType(registered_name.c_str(), *ddc);
+	datatype_map[registered_name] = tdt;
+    }
+    else
+    {
+	flat_datatype_map_iter existing_type = datatype_map.find(registered_name);
+	if ( existing_type == datatype_map.end()
+	  || &(*existing_type)->definition != ddc )
+	{
+	    tdt = new TokenDataType(registered_name.c_str(), *ddc);
+	    datatype_map[registered_name] = tdt;
+	}
+	else
+	    tdt = *existing_type;
+    }
+
+    if ( owner )
+	owner->type_aliases[source_name] = ddc;
+    if ( !current_namespace().empty() )
+	namespace_datatype_map[current_namespace()][registered_name] = tdt;
+    if ( register_source_alias )
+	register_scoped_typedef(source_name, tdt);
+    ddc->type_aliases[source_name] = ddc;
+    if ( constructor_source_name != source_name )
+	ddc->type_aliases[constructor_source_name] = ddc;
+    return tdt;
+}
+
+void Program::initialize_class_bases(DataDefCLASS *ddc,
+	const std::vector<BaseSpec> &bases)
+{
+    if ( bases.empty() )
+	return;
+
+    ddc->bases = bases;
+    ddc->base_class = bases.front().base;
+
+    auto flatten_member = [&](DataDefCLASS *src, size_t i, int origin,
+			      DataDefCLASS *vb)
+    {
+	size_t idx = ddc->members.size();
+	ddc->members.push_back(src->members[i]);
+	ddc->member_offsets.push_back(src->member_offsets[i]);
+	ddc->member_counts.push_back(i < src->member_counts.size()
+	    ? src->member_counts[i] : 1);
+	ddc->member_array_flags.push_back(i < src->member_array_flags.size()
+	    ? src->member_array_flags[i] : false);
+	ddc->member_bitfields.push_back(i < src->member_bitfields.size()
+	    ? src->member_bitfields[i] : DataDefSTRUCT::BitFieldInfo());
+	ddc->member_dims.push_back(i < src->member_dims.size()
+	    ? src->member_dims[i] : std::vector<carray_dim_t>());
+	ddc->member_count_exprs.push_back(i < src->member_count_exprs.size()
+	    ? src->member_count_exprs[i] : NULL);
+	ddc->member_access.push_back(i < src->member_access.size()
+	    ? src->member_access[i] : 0);
+	ddc->member_origin.push_back(origin);
+	if ( vb )
+	    ddc->member_vbase[idx] = vb;
+    };
+
+    for ( size_t bi = 0; bi < ddc->bases.size(); ++bi )
+    {
+	if ( ddc->bases[bi].is_virtual )
+	    continue;
+	DataDefCLASS *base = ddc->bases[bi].base;
+	for ( size_t i = 0; i < base->members.size(); ++i )
+	{
+	    if ( base->member_vbase.count(i) )
+		continue;
+	    flatten_member(base, i, (int)bi, NULL);
+	}
+    }
+
+    std::vector<DataDefCLASS *> virtual_bases;
+    std::set<DataDefCLASS *> seen;
+    ddc->collect_vbases(virtual_bases, seen);
+    for ( DataDefCLASS *base : virtual_bases )
+	for ( size_t i = 0; i < base->members.size(); ++i )
+	{
+	    if ( base->member_vbase.count(i) )
+		continue;
+	    flatten_member(base, i, -1, base);
+	}
+
+    for ( size_t bi = 0; bi < ddc->bases.size(); ++bi )
+    {
+	DataDefCLASS *base = ddc->bases[bi].base;
+	for ( std::map<std::string, Variable *>::iterator it =
+		base->method_map.begin(); it != base->method_map.end(); ++it )
+	    if ( ddc->method_map.find(it->first) == ddc->method_map.end() )
+		ddc->method_map[it->first] = it->second;
+	if ( base->has_user_dtor )
+	    ddc->has_user_dtor = true;
+	if ( base->has_vtable )
+	{
+	    ddc->has_vtable = true;
+	    for ( std::vector<std::string>::iterator it =
+		    base->vtable_slots.begin(); it != base->vtable_slots.end(); ++it )
+		if ( ddc->vtable_slot(*it) < 0 )
+		    ddc->vtable_slots.push_back(*it);
+	    for ( std::map<std::string, bool>::iterator it =
+		    base->virtual_methods.begin();
+		  it != base->virtual_methods.end(); ++it )
+		ddc->virtual_methods[it->first] = true;
+	}
+	DBG(cout << "TokenCLASS::parse() inherited methods/vtable from base "
+	    << base->name << " (index " << bi << ')' << endl);
+    }
+    ddc->size = 0;
+}
+
+void Program::register_class_method_signature(DataDefCLASS *ddc, Variable *mvar,
+	const ClassMethodRegistration &spec)
+{
+    if ( !ddc || !mvar )
+	return;
+    FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
+    if ( fd && !spec.local_emit_name.empty() )
+	fd->local_emit_name = spec.local_emit_name; // allowed-exception: registration recipe field copy
+    if ( spec.access_flags )
+	mvar->flags |= spec.access_flags;
+    if ( spec.is_static )
+	mvar->flags |= vfSTATIC;
+    ddc->methods.push_back(mvar);
+
+    switch ( spec.kind )
+    {
+    case ClassMethodKind::Constructor:
+	if ( ddc->method_map.find(spec.display_name) == ddc->method_map.end() )
+	    ddc->method_map[spec.display_name] = mvar;
+	ddc->ctors.push_back(mvar);
+	ddc->has_user_ctor = true;
+	if ( spec.bind_cpp_symbol )
+	    bind_declared_cpp_symbol(ddc, mvar, CppSymKind::Ctor,
+				     spec.display_name, false);
+	break;
+    case ClassMethodKind::Destructor:
+	ddc->method_map[spec.display_name] = mvar;
+	ddc->has_user_dtor = true;
+	if ( spec.bind_cpp_symbol )
+	    bind_declared_cpp_symbol(ddc, mvar, CppSymKind::Dtor,
+				     spec.display_name, false);
+	break;
+    case ClassMethodKind::Conversion:
+	ddc->method_map[spec.display_name] = mvar;
+	if ( fd )
+	    fd->method_display_name = spec.display_name;
+	break;
+    case ClassMethodKind::Method:
+	if ( fd )
+	{
+	    fd->method_display_name = spec.display_name;
+	    if ( fd->declaration_only && !mvar->storage_alias_name.empty() )
+		fd->emit_symbol = mvar->storage_alias_name;
+	}
+	ddc->method_map[spec.display_name] = mvar;
+	if ( spec.bind_cpp_symbol )
+	    bind_declared_cpp_symbol(ddc, mvar, CppSymKind::Method,
+				     spec.display_name, spec.is_operator);
+	break;
+    }
+
+    if ( spec.kind == ClassMethodKind::Destructor )
+    {
+	if ( spec.is_virtual || ddc->vtable_slot("~") >= 0 )
+	{
+	    ddc->virtual_methods[spec.display_name] = true;
+	    if ( ddc->vtable_slot("~") < 0 )
+		ddc->vtable_slots.push_back("~");
+	    if ( ddc->vtable_slot("~$deleting") < 0 )
+		ddc->vtable_slots.push_back("~$deleting");
+	    ddc->has_vtable = true;
+	}
+    }
+    else if ( spec.kind == ClassMethodKind::Method
+	   && (spec.is_virtual || ddc->is_virtual_method(spec.display_name)) )
+    {
+	ddc->virtual_methods[spec.display_name] = true;
+	if ( ddc->vtable_slot(spec.display_name) < 0 )
+	    ddc->vtable_slots.push_back(spec.display_name);
+	ddc->has_vtable = true;
+    }
+}
+
+void Program::complete_class_aggregate(DataDefCLASS *ddc)
+{
+    ddc->member_origin.resize(ddc->members.size(), -1);
+    ddc->compute_layout();
+    ddc->apply_member_layout();
+    ddc->build_vtable_groups();
+    ddc->is_complete = true;
+    if ( forest_arena_enabled )
+	forest_arena_record_aggregate(ddc);
+}
+
 // forms:
 // class Name { type member; rettype method() { ... } };
 // class Name variable;
 // typedef class Name alias;
 TokenBase *TokenCLASS::parse(Program &pgm)
 {
+    pgm.note_class_body_parse();
     TokenIdent *tag = NULL;
     TokenBase *tn;
     TokenDataType *tdt;
@@ -27437,9 +27982,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
     // --- inheritance: class Derived : [virtual] [access] Base, ... { ... } ---
     // Multiple + virtual bases: collect a BaseSpec per base into base_specs (ddc
-    // does not exist yet — assigned to ddc->bases at flatten time). inherit_base
-    // keeps the first base for the legacy single-base code paths.
-    DataDefCLASS *inherit_base = NULL;
+    // does not exist yet — assigned to ddc->bases by the shared base helper).
     std::vector<BaseSpec> base_specs;
     if ( tn->id() == TokenID::tkColon )
     {
@@ -27574,7 +28117,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( !bcls )
 		pgm.Throw(bn) << "Unknown base class '" << base_name << "'" << flush;
 	    base_specs.push_back(BaseSpec{bcls, 0, bvirtual, baccess, false});
-	    if ( !inherit_base ) inherit_base = bcls;
+	    pgm.note_class_base_spec();
 	    DBG(cout << "TokenCLASS::parse() inherits from " << base_name
 		<< (bvirtual ? " (virtual)" : "") << endl);
 	} while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma
@@ -27804,39 +28347,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // by which point ddc is complete, so by-value self params/returns pick up the
     // final size. This is the standard incomplete-self-reference pattern, and is
     // consistent with the inherited-base members being copied in early below.
-    pgm.pack_tap_struct(tag->spelling());	// B4a tap (class definition)
-    pgm.pack_tap_type(tag->spelling());
-    if ( !completing_forward_decl )
-    {
-	pgm.struct_map.set(tag->spelling(), ddc);
-	tdt = new TokenDataType(tag->spelling(), *ddc);
-	pgm.datatype_map[tag->spelling()] = tdt;
-	if ( nested_owner_class )
-	    nested_owner_class->type_aliases[class_source_name] = ddc;
-	if ( !pgm.current_namespace().empty() )
-	    pgm.namespace_datatype_map[pgm.current_namespace()][tag->spelling()] = tdt;
-    }
-    else
-    {
-	flat_datatype_map_iter existing_type = pgm.datatype_map.find(tag->spelling());
-	if ( existing_type == pgm.datatype_map.end()
-	  || &(*existing_type)->definition != ddc )
-	{
-	    tdt = new TokenDataType(tag->spelling(), *ddc);
-	    pgm.datatype_map[tag->spelling()] = tdt;
-	}
-	else
-	    tdt = (*existing_type);
-	if ( nested_owner_class )
-	    nested_owner_class->type_aliases[class_source_name] = ddc;
-	if ( !pgm.current_namespace().empty() )
-	    pgm.namespace_datatype_map[pgm.current_namespace()][tag->spelling()] = tdt;
-    }
-    if ( register_local_source_alias )
-	pgm.register_scoped_typedef(class_source_name, tdt);
-    ddc->type_aliases[class_source_name] = ddc;
-    if ( constructor_source_name != class_source_name )
-	ddc->type_aliases[constructor_source_name] = ddc;
+    tdt = pgm.register_class_shell(ddc, tag->spelling(), class_source_name,
+	constructor_source_name, nested_owner_class, completing_forward_decl,
+	register_local_source_alias);
 
     // Flatten EACH base's data members into the derived class so method bodies can
     // resolve inherited members during the body loop. Tag each with its origin base
@@ -27845,90 +28358,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // base). Own members (added below via addMember) are origin -1 (normalized at
     // the compute_layout call site). size is reset to 0: own members start at 0,
     // and compute_layout assigns the real total.
-    if ( !base_specs.empty() )
-    {
-	ddc->bases = base_specs;
-	ddc->base_class = inherit_base; // first base, for legacy single-base paths
-
-	// Append source-class member `i` (with every parallel attribute vector)
-	// into ddc, tagging its origin. A non-NULL `vb` marks it a virtual-base
-	// member whose final offset is resolved against vbase_offset[vb] in
-	// apply_member_layout (so a shared vbase lands once, at the hoisted slot).
-	auto flatten_member = [&](DataDefCLASS *src, size_t i, int origin,
-				  DataDefCLASS *vb)
-	{
-	    size_t idx = ddc->members.size();
-	    ddc->members.push_back(src->members[i]);
-	    ddc->member_offsets.push_back(src->member_offsets[i]);
-	    ddc->member_counts.push_back(i < src->member_counts.size() ? src->member_counts[i] : 1);
-	    ddc->member_array_flags.push_back(i < src->member_array_flags.size() ? src->member_array_flags[i] : false);
-	    ddc->member_bitfields.push_back(i < src->member_bitfields.size() ? src->member_bitfields[i] : DataDefSTRUCT::BitFieldInfo());
-	    ddc->member_dims.push_back(i < src->member_dims.size() ? src->member_dims[i] : std::vector<carray_dim_t>());
-	    ddc->member_count_exprs.push_back(i < src->member_count_exprs.size() ? src->member_count_exprs[i] : NULL);
-	    ddc->member_access.push_back(i < src->member_access.size() ? src->member_access[i] : 0);
-	    ddc->member_origin.push_back(origin);
-	    if ( vb )
-		ddc->member_vbase[idx] = vb;
-	};
-
-	// Pass A: each NON-VIRTUAL direct base contributes its NON-virtual-base
-	// members per path (origin = the direct base index). A member that already
-	// belongs to a shared virtual base inside that base (member_vbase set) is
-	// SKIPPED here and re-added once by the closure pass — otherwise a diamond
-	// copies the shared base's members once per inheritance path (the c2mir
-	// "repeated declaration _M_*" wall) AND at the wrong per-path offset.
-	for ( size_t bi = 0; bi < ddc->bases.size(); bi++ )
-	{
-	    if ( ddc->bases[bi].is_virtual )
-		continue; // virtual direct base: handled by the closure pass below
-	    DataDefCLASS *b = ddc->bases[bi].base;
-	    for ( size_t i = 0; i < b->members.size(); ++i )
-	    {
-		if ( b->member_vbase.count(i) )
-		    continue; // shared vbase member -> Pass B
-		flatten_member(b, i, (int)bi, NULL);
-	    }
-	}
-
-	// Pass B: virtual-base closure — every unique virtual base (direct or
-	// transitive) exactly ONCE, in the canonical order compute_layout hoists
-	// them (collect_vbases). Each contributes only its OWN members (those not
-	// belonging to a still-deeper virtual base, which is its own closure
-	// entry); they resolve against vbase_offset[V]. Result: a shared vbase's
-	// members appear once at the hoisted offset, matching the Itanium layout.
-	std::vector<DataDefCLASS *> vbs;
-	std::set<DataDefCLASS *> vseen;
-	ddc->collect_vbases(vbs, vseen);
-	for ( DataDefCLASS *V : vbs )
-	    for ( size_t i = 0; i < V->members.size(); ++i )
-	    {
-		if ( V->member_vbase.count(i) )
-		    continue; // belongs to a deeper vbase (its own closure entry)
-		flatten_member(V, i, -1, V);
-	    }
-
-	// Inherit methods / vtable slots / dtor flags per direct base (order
-	// preserved; member flattening above is independent of this).
-	for ( size_t bi = 0; bi < ddc->bases.size(); bi++ )
-	{
-	    DataDefCLASS *b = ddc->bases[bi].base;
-	    for ( auto &mp : b->method_map )
-		if ( ddc->method_map.find(mp.first) == ddc->method_map.end() )
-		    ddc->method_map[mp.first] = mp.second;
-	    if ( b->has_user_dtor )
-		ddc->has_user_dtor = true;
-	    if ( b->has_vtable )
-	    {
-		ddc->has_vtable = true;
-		for ( auto &vs : b->vtable_slots )
-		    if ( ddc->vtable_slot(vs) < 0 ) ddc->vtable_slots.push_back(vs);
-		for ( auto &vm : b->virtual_methods ) ddc->virtual_methods[vm.first] = true;
-	    }
-	    DBG(cout << "TokenCLASS::parse() inherited methods/vtable from base "
-		<< b->name << " (index " << bi << ')' << endl);
-	}
-	ddc->size = 0; // own members start at 0; compute_layout assigns the real total
-    }
+    pgm.initialize_class_bases(ddc, base_specs);
 
     // C++ defaults: `class` members are private until a public:/protected:
     // label; `struct` members are public. Named C++ structs with class-only
@@ -27980,6 +28410,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	if ( tn->id() == TokenID::tkTYPEDEF )
 	{
 	    pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+	    pgm.note_class_decl(Program::ClassDeclKind::TypeAlias);
 	    continue;
 	}
 	if ( tn->id() == TokenID::tkUSING )
@@ -27987,9 +28418,17 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    bool alias_decl = pgm.tokens.size() > 2
 		&& pgm.tokens[2] && pgm.tokens[2]->id() == TokenID::tkAssign;
 	    if ( alias_decl )
+	    {
 		pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
-	    else if ( !try_import_using_base_member(pgm, ddc) )
+		pgm.note_class_decl(Program::ClassDeclKind::TypeAlias);
+	    }
+	    else if ( try_import_using_base_member(pgm, ddc) )
+		pgm.note_class_decl(Program::ClassDeclKind::UsingBaseMember);
+	    else
+	    {
 		pgm.skip_template_nonclass_declaration(pgm.nextToken());
+		pgm.note_class_decl(Program::ClassDeclKind::UsingBaseMember);
+	    }
 	    continue;
 	}
 
@@ -27999,7 +28438,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( try_parse_defaulted_member_template_constructor(
 		    pgm, ddc, class_source_name, constructor_source_name,
 		    tag->spelling(), access_flags) )
+	    {
+		pgm.note_class_decl(Program::ClassDeclKind::MemberTemplate);
 		continue;
+	    }
 	    size_t method_count_before = ddc->methods.size();
 	    std::vector<TokenBase *> skipped_decl;
 	    pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
@@ -28017,6 +28459,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.last_skipped_template_decl.clear();
 		pgm.last_skipped_template_typeparams.clear();
 	    }
+	    pgm.note_class_decl(Program::ClassDeclKind::MemberTemplate);
 	    continue;
 	}
 
@@ -28057,16 +28500,18 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // queued for member-list synthesis instead.
 	    std::string friend_opname;
 	    if ( skipped_friend_operator_definition(skipped_decl,
-						    &friend_opname) )
+					    &friend_opname) )
 	    {
 		hoisted_friend_operator_defs.push_back(skipped_decl);
 		ddc->friend_function_names.push_back(friend_opname);
+		pgm.note_class_decl(Program::ClassDeclKind::FriendFunction);
 	    }
 	    else if ( skipped_friend_defaulted_comparison(skipped_decl,
 							  &friend_opname) )
 	    {
 		defaulted_comparison_ops.push_back(friend_opname);
 		ddc->friend_function_names.push_back(friend_opname);
+		pgm.note_class_decl(Program::ClassDeclKind::DefaultedComparison);
 	    }
 	    else
 	    {
@@ -28078,7 +28523,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		std::string friend_fname =
 		    skipped_template_function_declarator_name(skipped_decl);
 		if ( !friend_fname.empty() )
+		{
 		    ddc->friend_function_names.push_back(friend_fname);
+		    pgm.note_class_decl(Program::ClassDeclKind::FriendFunction);
+		}
+		else
+		    pgm.note_class_decl(Program::ClassDeclKind::FriendType);
 	    }
 	    continue;
 	}
@@ -28158,17 +28608,19 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    DBG(cout << "TokenCLASS::parse() parsing destructor " << mangled << endl);
 	    pgm.parseFunction(ddVOID, mangled, ddc);
 	    Variable *mvar;
+	    bool registered_dtor = false;
 	    if ( (mvar=pgm.tkProgram->findVariable(pgm.strpool, mangled)) )
 	    {
 		FuncDef *dfd = dynamic_cast<FuncDef *>(mvar->type);
 		if ( !dfd || !dfd->defaulted_or_deleted )
 		{
-		    if ( access_flags )
-			mvar->flags |= access_flags;
-		    ddc->methods.push_back(mvar);
-		    ddc->method_map["~" + dtor_source_name] = mvar;
-		    ddc->has_user_dtor = true;
-		    pgm.bind_declared_cpp_symbol(ddc, mvar, CppSymKind::Dtor, "~" + dtor_source_name, false);
+		    Program::ClassMethodRegistration spec;
+		    spec.kind = Program::ClassMethodKind::Destructor;
+		    spec.display_name = "~" + dtor_source_name;
+		    spec.access_flags = access_flags;
+		    spec.is_virtual = is_virtual;
+		    pgm.register_class_method_signature(ddc, mvar, spec);
+		    registered_dtor = true;
 		}
 	    }
 	    // Virtual destructor: register the Itanium D1/D0 slot pair at the
@@ -28178,7 +28630,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // at ~11952; class_vtable_def re-resolves to the current class's symbols).
 	    // The guard is also true (inherited virtuality) when the markers are
 	    // already present from a virtual base dtor.
-	    if ( is_virtual || ddc->vtable_slot("~") >= 0 )
+	    if ( !registered_dtor
+	      && (is_virtual || ddc->vtable_slot("~") >= 0) )
 	    {
 		ddc->virtual_methods["~" + dtor_source_name] = true;
 		if ( ddc->vtable_slot("~") < 0 )
@@ -28187,6 +28640,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    ddc->vtable_slots.push_back("~$deleting");
 		ddc->has_vtable = true;
 	    }
+	    pgm.note_class_decl(Program::ClassDeclKind::Method);
 	    continue;
 	}
 
@@ -28217,25 +28671,17 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type);
 		    if ( !cfd || !cfd->defaulted_or_deleted )
 		    {
-			// The call side falls back to Class__Class; carry the
-			// real key whenever this ctor's symbol differs — a
-			// RENAMED nested class (`B_int32_t__Impl`) registers
-			// its ctor under Class__SourceName, not Class__Class.
-			if ( cfd && (ctor_disambiguated
-			     || mangled != std::string(tag->spelling()) + "__" + tag->spelling()) )
-			    cfd->local_emit_name = mangled;
-			if ( access_flags )
-			    mvar->flags |= access_flags;
-			ddc->methods.push_back(mvar);
-			// Keep method_map[Class] pointing at the FIRST ctor (all ctors live
-			// in ddc->ctors); preserves existing single-ctor name resolution.
-			if ( ddc->method_map.find(ctor_source_name) == ddc->method_map.end() )
-			    ddc->method_map[ctor_source_name] = mvar;
-			ddc->ctors.push_back(mvar);
-			ddc->has_user_ctor = true;
-			pgm.bind_declared_cpp_symbol(ddc, mvar, CppSymKind::Ctor, ctor_source_name, false);
+			Program::ClassMethodRegistration spec;
+			spec.kind = Program::ClassMethodKind::Constructor;
+			spec.display_name = ctor_source_name;
+			spec.access_flags = access_flags;
+			if ( ctor_disambiguated
+			  || mangled != std::string(tag->spelling()) + "__" + tag->spelling() )
+			    spec.local_emit_name = mangled;
+			pgm.register_class_method_signature(ddc, mvar, spec);
 		    }
 		}
+		pgm.note_class_decl(Program::ClassDeclKind::Method);
 		continue;
 	    }
 	    // Not a constructor — push back and fall through to normal parsing.
@@ -28279,18 +28725,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type);
 		if ( !cfd || !cfd->defaulted_or_deleted )
 		{
-		    if ( access_flags )
-			mvar->flags |= access_flags;
-		    ddc->methods.push_back(mvar);
-		    ddc->method_map[mname] = mvar;
-		    // The display name IS the freeze/restore contract for the
-		    // method_map key (madc_cir.cpp methodrec disp_key_id):
-		    // without it a conversion operator never restores and a
-		    // BOUND `if (obj)` misses the contextual conversion.
-		    if ( cfd )
-			cfd->method_display_name = mname;
+		    Program::ClassMethodRegistration spec;
+		    spec.kind = Program::ClassMethodKind::Conversion;
+		    spec.display_name = mname;
+		    spec.access_flags = access_flags;
+		    pgm.register_class_method_signature(ddc, mvar, spec);
 		}
 	    }
+	    pgm.note_class_decl(Program::ClassDeclKind::Method);
 	    continue;
 	}
 
@@ -28315,6 +28757,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.parseKeyword(kw);
 	    else
 		pgm.Throw(enum_kw) << "Expected enum keyword" << flush;
+	    pgm.note_class_decl(Program::ClassDeclKind::NestedEnum);
 	    continue;
 	}
 
@@ -28340,6 +28783,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			pgm.parseKeyword(kw);
 		    else
 			pgm.Throw(agg_kw) << "Expected nested type keyword" << flush;
+		    pgm.note_class_decl(Program::ClassDeclKind::NestedForward);
 		    handled_nested_type = true;
 		}
 		else if ( after_tag
@@ -28380,6 +28824,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			type_name->column = tag_tb->column;
 			pgm.pushToken(type_name);
 		    }
+		    pgm.note_class_decl(Program::ClassDeclKind::NestedAggregate);
 		    handled_nested_type = true;
 		}
 		else
@@ -28474,6 +28919,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		if ( access_flags )
 		    for ( size_t i = first_member; i < ddc->members.size(); ++i )
 			ddc->member_access[i] = access_flags;
+		pgm.note_class_decl(Program::ClassDeclKind::AnonymousAggregate);
 		continue;
 	    }
 	    pgm.pushToken(agg_kw);
@@ -28488,6 +28934,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		{
 		    TokenBase *assert_tb = pgm.nextToken();
 		    pgm.consume_class_static_assert_declaration(assert_tb);
+		    pgm.note_class_decl(Program::ClassDeclKind::StaticAssert);
 		    continue;
 		}
 		TokenBase *type_head = pgm.nextToken();
@@ -28582,6 +29029,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    pgm.Throw(inner) << "Unexpected end of input after function pointer class member" << flush;
 		if ( tn->id() != TokenID::tkSemi )
 		    pgm.Throw(tn) << "Expecting ';' after function pointer class member" << flush;
+		pgm.note_class_decl(Program::ClassDeclKind::DataMember);
 		continue;
 	    }
 	    pgm.Throw(inner ? inner : open)
@@ -28715,34 +29163,26 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			    defaulted_comparison_ops.push_back("operator==");
 			    ddc->friend_function_names.push_back("operator==");
 			}
+			pgm.note_class_decl(
+			    Program::ClassDeclKind::DefaultedComparison);
 		    }
+		    else
+			pgm.note_class_decl(Program::ClassDeclKind::Method);
 		    continue;
 		}
-		if ( FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type) )
-		{
-		    mfd->method_display_name = mname;
-		    if ( mfd->declaration_only && !mvar->storage_alias_name.empty() )
-			mfd->emit_symbol = mvar->storage_alias_name;
-		    if ( (name_disambiguated && this_is_nullary) || type_overload_disambiguated )
-			mfd->local_emit_name = mangled;
-		}
-		if ( access_flags )
-		    mvar->flags |= access_flags;
-		if ( is_static_member )
-		    mvar->flags |= vfSTATIC;
-		ddc->methods.push_back(mvar);
-		// also register under the unmangled name for method lookup
-		ddc->method_map[mname] = mvar;
-		pgm.bind_declared_cpp_symbol(ddc, mvar, CppSymKind::Method, mname, is_operator_method);
-		// Track virtual methods and assign vtable slots
-		if ( is_virtual || ddc->is_virtual_method(mname) )
-		{
-		    ddc->virtual_methods[mname] = true;
-		    if ( ddc->vtable_slot(mname) < 0 )
-			ddc->vtable_slots.push_back(mname);
-		    ddc->has_vtable = true;
-		}
+		Program::ClassMethodRegistration spec;
+		spec.kind = Program::ClassMethodKind::Method;
+		spec.display_name = mname;
+		spec.access_flags = access_flags;
+		spec.is_static = is_static_member;
+		spec.is_virtual = is_virtual;
+		spec.is_operator = is_operator_method;
+		if ( (name_disambiguated && this_is_nullary)
+		  || type_overload_disambiguated )
+		    spec.local_emit_name = mangled;
+		pgm.register_class_method_signature(ddc, mvar, spec);
 	    }
+	    pgm.note_class_decl(Program::ClassDeclKind::Method);
 	}
 	else
 	{
@@ -28783,6 +29223,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.nextToken(); // consume ':'
 		size_t bf_width = pgm.parse_bitfield_width(tn, cmember_dd, true, *ddc);
 		ddc->addBitField(mname, *cmember_dd, bf_width);
+		unsigned long long bitfield_count = 1;
 		if ( access_flags && !ddc->member_access.empty() )
 		    ddc->member_access.back() = access_flags;
 		skip_member_attributes(); // `int f : 3 __attribute__((packed));`
@@ -28805,6 +29246,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    }
 		    size_t w = pgm.parse_bitfield_width(tn, bf_dd, !bf_unnamed, *ddc);
 		    ddc->addBitField(bf_name, *bf_dd, w);
+		    ++bitfield_count;
 		    if ( access_flags && !ddc->member_access.empty() )
 			ddc->member_access.back() = access_flags;
 		    skip_member_attributes();
@@ -28813,6 +29255,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		}
 		if ( !tn || tn->id() != TokenID::tkSemi )
 		    pgm.Throw(tn) << "Expecting ';' after class member" << flush;
+		pgm.note_class_decl(Program::ClassDeclKind::BitField,
+				    bitfield_count);
 		continue;
 	    }
 	    // Optional fixed-size array dimensions: `long _buf[64];`, `int m[4][8];`.
@@ -28895,10 +29339,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		}
 		DBG(cout << "TokenCLASS::parse() recorded static member "
 		    << cmember_dd->name << ' ' << mname << endl);
+		pgm.note_class_decl(Program::ClassDeclKind::StaticDataMember);
 		continue;
 	    }
 	    ddc->addMember(mname, *cmember_dd, member_count, NULL, member_is_array,
 		member_is_array ? &member_dims : NULL);
+	    pgm.note_class_decl(Program::ClassDeclKind::DataMember);
 	    if ( access_flags && !ddc->member_access.empty() )
 		ddc->member_access.back() = access_flags;
 	    DBG(cout << "TokenCLASS::parse() added member " << cmember_dd->name << ' ' << mname
@@ -28953,6 +29399,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			}
 			ddc->addMember(nmname, *next_dd, ncount, NULL, nis_array,
 				nis_array ? &ndims : NULL);
+			pgm.note_class_decl(Program::ClassDeclKind::DataMember);
 			if ( access_flags && !ddc->member_access.empty() )
 				ddc->member_access.back() = access_flags;
 			skip_member_attributes();
@@ -28985,25 +29432,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // correct non-zero offsets for multiple/virtual bases. For a base-less or
     // single-inheritance class it reproduces the previous layout byte-for-byte
     // (vptr@0, base@0, own members after).
-    ddc->member_origin.resize(ddc->members.size(), -1); // own members (addMember) -> -1
-    ddc->compute_layout();
-    ddc->apply_member_layout();
-    ddc->build_vtable_groups(); // grouped vtable (primary + secondary polymorphic bases)
-    ddc->is_complete = true; // a `{ ... }` body was fully parsed (even if it had zero
-			     // members — e.g. a typedef-only trait like iterator_traits<T>).
-			     // Mirrors the C struct parser; without it an instantiated C++
-			     // class template stays is_complete=false and is misread as
-			     // "not yet instantiated", so instantiate_template_use's cache
-			     // never hits and re-instantiates it on every reference.
+    pgm.complete_class_aggregate(ddc);
     DBG(cout << "TokenCLASS::parse() finalized layout, size now " << ddc->size << endl);
-
-    // B3 SLICE 1e: dual-populate the arena record now that the layout trio has run —
-    // members/offsets, bases, vbase_offset, and vtable_groups are all final (methods
-    // recorded as they stand; late friend-operator / defaulted-comparison additions are
-    // follow-on). One hook, one call. Reads stay on ddc. Fires only for a live parse that
-    // has opted in (default off = bin/madc unchanged, freeze byte-identical).
-    if ( pgm.forest_arena_enabled )
-	pgm.forest_arena_record_aggregate(ddc);
 
     // Lazy member-function-body instantiation ([temp.inst]): for a system-header
     // class (typically a template instantiation), DON'T parse member bodies now —
@@ -29058,12 +29488,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	}
     }
 
-    // Allocate vtable if needed
     if ( ddc->has_vtable )
     {
 	size_t nslots = ddc->vtable_slots.size();
 	ddc->vtable = (void **)calloc(nslots, sizeof(void *));
-	DBG(cout << "TokenCLASS::parse() allocated vtable with " << nslots << " slots" << endl);
+	DBG(cout << "TokenCLASS::parse() allocated vtable with " << nslots
+	    << " slots" << endl);
     }
 
     // The class type was registered early (before the body loop) so methods
@@ -40385,7 +40815,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // anonymous-aggregate parameter ("struct has no member" otherwise).
     vector<std::string> param_aliases;
     std::string param_alias;  // alias for the parameter currently being parsed
-    TokenDataType *pb;        // parameter basetype
+    TokenDataType *pb = NULL; // parameter basetype
     std::string pid;          // parameter id
     RefType rtype = RefType::rtNone;
     // Number of `*` levels seen for the parameter currently being parsed.
@@ -40593,6 +41023,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 
 	// tolerate C qualifiers/storage hints in parameter lists such as
 	// `const char *s` and `register char *s`
+	pb = NULL;
 	param_alias.clear();  // reset per-parameter typedef alias
 	// Default ARGUMENT expression (`T x = expr`) for this parameter, or NULL.
 	// Declared at loop top so the gotos into `paramdecl:` do not cross its
@@ -40747,6 +41178,11 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	}
 	else
 	    pb = (TokenDataType *)nt;
+	if ( !pb )
+	{
+	    Throw(nt) << "Failed to resolve function parameter type" << flush;
+	    continue;
+	}
 	rtype = RefType::rtValue;
 	param_ptr_depth = 0;
 	param_rvalue_ref = false;
@@ -45034,7 +45470,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 
 void Program::pack_open_toplevel_decl()
 {
-    if ( !pack_recording )
+    if ( !pack_recording || class_registration_taps_muted )
 	return;
     TokenStream::Pos p = tokens.savepos();
     pack_decl_stack.push_back(PackDeclFrame());
@@ -45045,7 +45481,8 @@ void Program::pack_open_toplevel_decl()
 
 void Program::pack_close_toplevel_decl()
 {
-    if ( !pack_recording || pack_decl_stack.empty() )
+    if ( !pack_recording || class_registration_taps_muted
+      || pack_decl_stack.empty() )
 	return;
     TokenStream::Pos p = tokens.savepos();
     PackDeclFrame &f = pack_decl_stack.back();
@@ -45067,7 +45504,8 @@ void Program::pack_close_toplevel_decl()
 
 void Program::pack_tap_name(const std::string &name, uint32_t kind)
 {
-    if ( !pack_recording || pack_decl_stack.empty() || name.empty() )
+    if ( !pack_recording || class_registration_taps_muted
+      || pack_decl_stack.empty() || name.empty() )
 	return;
     if ( !compounds.empty() )	// block scope: not an exported declaration
 	return;
@@ -45085,7 +45523,7 @@ void Program::pack_tap_name(const std::string &name, uint32_t kind)
 // namespace_datatype_map insert pair every type-registration cluster performs.
 void Program::pack_tap_type(const std::string &name)
 {
-    if ( !pack_recording )
+    if ( !pack_recording || class_registration_taps_muted )
 	return;
     pack_tap_name(name, pdkTypedef);
     if ( !current_namespace().empty() )
@@ -45221,7 +45659,8 @@ void Program::dump_registered_names(FILE *out)
 // parse the token queue
 bool Program::parse(TokenProgram *tp)
 {
-    TokenBase *tb, *ts;
+    TokenBase *tb = NULL;
+    TokenBase *ts = NULL;
 
     DBG(cout << endl << "Program::parse() START" << endl);
     clear_diagnostics();

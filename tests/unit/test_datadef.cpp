@@ -1629,6 +1629,56 @@ TEST_SUITE("type table (typeid) identity layer") {
         CHECK(pgm.type_id_for((DataDef *)NULL) == MADC_TYPEID_INVALID);
     }
 
+    TEST_CASE("class registration journal rolls back registries and type ids") {
+        Program pgm;
+        pgm.datatype_map.set_pool(&pgm.type_name_pool);
+        pgm.namespace_datatype_map.set_pool(&pgm.namespace_name_pool);
+        pgm.template_map.set_pool(&pgm.template_name_pool);
+        pgm.partial_spec_map.set_pool(&pgm.template_name_pool);
+        pgm.template_alias_map.set_pool(&pgm.template_name_pool);
+        pgm.var_template_map.set_pool(&pgm.template_name_pool);
+        pgm.fn_template_map.set_pool(&pgm.template_name_pool);
+        pgm.fn_template_decl_map.set_pool(&pgm.template_name_pool);
+        pgm.fn_template_instantiated_vars.set_pool(&pgm.template_name_pool);
+
+        DataDefCLASS original("JournalOriginal", 0, DataType::dtRESERVED);
+        DataDefCLASS temporary("JournalTemporary", 0, DataType::dtRESERVED);
+        TokenDataType original_type("JournalOriginal", original);
+        TokenDataType temporary_type("JournalTemporary", temporary);
+        pgm.struct_map.set("JournalKey", &original);
+        pgm.datatype_map["JournalKey"] = &original_type;
+        pgm.forest_arena_enabled = true;
+
+        {
+            Program::ClassRegistrationJournal journal(pgm);
+            CHECK(pgm.class_registration_taps_muted);
+            CHECK_FALSE(pgm.forest_arena_enabled);
+            pgm.struct_map.set("JournalKey", &temporary);
+            pgm.struct_map.set("TemporaryKey", &temporary);
+            pgm.datatype_map["JournalKey"] = &temporary_type;
+            pgm.datatype_map["TemporaryKey"] = &temporary_type;
+            CHECK(pgm.type_id_for(&temporary) == MADC_TYPEID_PROJECT_BASE);
+        }
+
+        CHECK_FALSE(pgm.class_registration_taps_muted);
+        CHECK(pgm.forest_arena_enabled);
+        CHECK(pgm.struct_map.find("JournalKey")->second == &original);
+        CHECK(pgm.struct_map.find("TemporaryKey") == pgm.struct_map.end());
+        CHECK(*pgm.datatype_map.find("JournalKey") == &original_type);
+        CHECK(pgm.datatype_map.find("TemporaryKey") == pgm.datatype_map.end());
+        CHECK(temporary.type_id == 0);
+        CHECK(pgm.project_types.size() == 0);
+
+        {
+            Program::ClassRegistrationJournal journal(pgm);
+            pgm.struct_map.set("CommittedKey", &temporary);
+            journal.commit();
+        }
+        CHECK(pgm.struct_map.find("CommittedKey")->second == &temporary);
+        CHECK_FALSE(pgm.class_registration_taps_muted);
+        CHECK(pgm.forest_arena_enabled);
+    }
+
     TEST_CASE("derived-type id API: pointer/reference/const round-trip + idempotent") {
         Program pgm;
         madc_stamp_primitive_type_ids();

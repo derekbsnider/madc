@@ -73,6 +73,13 @@ public:
 	return idx < _objs.size() ? _objs[idx] : (T *)0;
     }
 
+    // Transaction diagnostics/rollback support: inspect an assigned slot by
+    // segment-relative index without changing the stable public id policy.
+    T *at_index(size_t index) const
+    {
+	return index < _objs.size() ? _objs[index] : (T *)0;
+    }
+
     // Repoint an already-assigned id to a replacement object — ONE identity, a
     // new object (the struct-promoted-to-class case: the promotion copies the
     // type_id onto the fresh DataDefCLASS, so the id must resolve to it, not to
