@@ -67,3 +67,59 @@ TEST_CASE("reserve does not change ids")
     CHECK(p.intern("alpha") == a);
     CHECK(p.str(a) == "alpha");
 }
+
+TEST_CASE("intern-keyed map transaction rolls back touched keys")
+{
+    madc::dis::intern_table p;
+    madc::dis::intern_keyed_map<std::string> map;
+    map.set_pool(&p);
+    map["keep"] = "before";
+    map["erase"] = "present";
+    p.intern("preinterned");
+
+    madc::dis::intern_keyed_map<std::string>::transaction_state state;
+    map.begin_transaction(state);
+    REQUIRE(map.find("keep") != map.end());
+    *map.find("keep") = "after";
+    map["new"] = "temporary";
+    map["preinterned"] = "temporary";
+    CHECK(map.erase("erase") == 1u);
+    map.rollback_transaction(state);
+
+    REQUIRE(map.find("keep") != map.end());
+    CHECK(*map.find("keep") == "before");
+    REQUIRE(map.find("erase") != map.end());
+    CHECK(*map.find("erase") == "present");
+    CHECK(map.find("new") == map.end());
+    CHECK(map.find("preinterned") == map.end());
+    CHECK(map.size() == 2u);
+}
+
+TEST_CASE("intern-keyed map transaction restores clear and can commit")
+{
+    madc::dis::intern_table p;
+    madc::dis::intern_keyed_map<std::string> map;
+    map.set_pool(&p);
+    map["first"] = "one";
+    map["second"] = "two";
+
+    madc::dis::intern_keyed_map<std::string>::transaction_state rollback;
+    map.begin_transaction(rollback);
+    map.clear();
+    map["replacement"] = "temporary";
+    map.rollback_transaction(rollback);
+    REQUIRE(map.find("first") != map.end());
+    REQUIRE(map.find("second") != map.end());
+    CHECK(*map.find("first") == "one");
+    CHECK(*map.find("second") == "two");
+    CHECK(map.find("replacement") == map.end());
+
+    madc::dis::intern_keyed_map<std::string>::transaction_state commit;
+    map.begin_transaction(commit);
+    map["first"] = "committed";
+    map["third"] = "three";
+    map.commit_transaction(commit);
+    CHECK(*map.find("first") == "committed");
+    CHECK(*map.find("third") == "three");
+    CHECK(map.size() == 3u);
+}

@@ -86,6 +86,7 @@ const char *Program::class_parse_reason_name(ClassParseReason reason)
 {
     switch ( reason )
     {
+    case ClassParseReason::None: return "none";
     case ClassParseReason::PatternNotCaptured: return "pattern-not-captured";
     case ClassParseReason::PatternParseError: return "pattern-parse-error";
     case ClassParseReason::PatternParsePoisoned: return "pattern-parse-poisoned";
@@ -172,6 +173,13 @@ void Program::note_class_base_spec()
 
 void Program::note_class_decl(ClassDeclKind kind, unsigned long long count)
 {
+    if ( class_pattern_decl_capture && !class_scope_stack.empty() )
+    {
+	std::vector<ClassDeclKind> &ordered =
+	    (*class_pattern_decl_capture)[class_scope_stack.back()];
+	for ( unsigned long long i = 0; i < count; ++i )
+	    ordered.push_back(kind);
+    }
     if ( _class_parse_census_stack.empty() )
 	return;
     _class_parse_profile[_class_parse_census_stack.back()].decls[kind] += count;
@@ -189,6 +197,14 @@ int TokenBase::_parse_line = 0;
 int TokenBase::_parse_column = 0;
 madc::dis::intern_table *TokenBase::_active_strpool = NULL;
 madc::dis::value_pool *TokenBase::_active_valpool = NULL;
+
+// Generated parser-local names are process-wide for historical compatibility.
+// Class-pattern capture snapshots them in ClassRegistrationJournal so its
+// temporary production parse cannot perturb later live symbol identity.
+static int runtime_size_capture_counter = 0;
+static int vla_dim_capture_counter = 0;
+static size_t anon_tag_counter = 0;
+static int lambda_counter = 0;
 
 // ---- Token arena (Phase 1) ------------------------------------------------
 // Every `new TokenX(...)` and every TokenBase::clone() routes here via the
@@ -2647,6 +2663,212 @@ static std::string template_token_fragment(TokenBase *tb)
     return c ? std::string(1, c) : std::string("_");
 }
 
+namespace {
+class ClassPatternHash
+{
+    uint64_t value_;
+public:
+    ClassPatternHash() : value_(1469598103934665603ULL) {}
+    void add_u64(uint64_t value)
+    {
+	for ( unsigned i = 0; i < 8; ++i )
+	{
+	    value_ ^= (uint8_t)(value & 0xffu);
+	    value_ *= 1099511628211ULL;
+	    value >>= 8;
+	}
+    }
+    void add_bool(bool value) { add_u64(value ? 1 : 0); }
+    void add_string(const std::string &value)
+    {
+	add_u64(value.size());
+	for ( size_t i = 0; i < value.size(); ++i )
+	{
+	    value_ ^= (uint8_t)value[i];
+	    value_ *= 1099511628211ULL;
+	}
+    }
+    uint64_t value() const { return value_; }
+};
+}
+
+uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
+{
+    ClassPatternHash hash;
+    auto add_tokens = [&](const std::vector<TokenBase *> &tokens) {
+	hash.add_u64(tokens.size());
+	for ( size_t i = 0; i < tokens.size(); ++i )
+	{
+	    TokenBase *token = tokens[i];
+	    hash.add_bool(token != NULL);
+	    if ( !token )
+		continue;
+	    hash.add_u64((uint64_t)token->id());
+	    hash.add_u64((uint64_t)token->type());
+	    hash.add_u64((uint64_t)token->datatype());
+	    hash.add_bool(token->is_bracketed());
+	    hash.add_bool(token->is_overloaded());
+	    hash.add_string(template_token_fragment(token));
+	    if ( token->type() == TokenType::ttChar )
+		hash.add_u64((uint64_t)token->ival());
+	    else if ( token->type() == TokenType::ttReal )
+	    {
+		TokenReal *real = static_cast<TokenReal *>(token);
+		hash.add_string(real->source_text);
+		uint64_t bits = 0;
+		double value = real->dval();
+		memcpy(&bits, &value, sizeof(bits));
+		hash.add_u64(bits);
+	    }
+	    else if ( token->type() == TokenType::ttString )
+		hash.add_bool(static_cast<TokenStr *>(token)->wide);
+	}
+    };
+
+    hash.add_string(pattern.identity);
+    hash.add_string(pattern.class_name);
+    hash.add_string(pattern.defining_namespace);
+    hash.add_bool(pattern.is_partial_specialization);
+    hash.add_u64((uint64_t)pattern.capture_reason);
+    hash.add_u64(pattern.types.size());
+    for ( size_t i = 0; i < pattern.types.size(); ++i )
+    {
+	const ClassTypePattern &type = pattern.types[i];
+	hash.add_u64((uint64_t)type.kind);
+	hash.add_u64(type.flags);
+	hash.add_u64(type.concrete_type_id);
+	hash.add_u64(type.operand);
+	hash.add_u64(type.secondary);
+	hash.add_u64(type.template_param_index);
+	hash.add_u64(type.nested_node_id);
+	hash.add_u64(type.pack_param_index);
+	hash.add_string(type.name);
+	hash.add_u64(type.arguments.size());
+	for ( size_t a = 0; a < type.arguments.size(); ++a )
+	    hash.add_u64(type.arguments[a]);
+	hash.add_u64(type.dimensions.size());
+	for ( size_t d = 0; d < type.dimensions.size(); ++d )
+	    hash.add_u64(type.dimensions[d]);
+    }
+    hash.add_u64(pattern.nodes.size());
+    for ( size_t i = 0; i < pattern.nodes.size(); ++i )
+    {
+	const ClassAggregatePatternNode &node = pattern.nodes[i];
+	hash.add_u64(node.local_id);
+	hash.add_u64(node.parent_id);
+	hash.add_u64((uint64_t)node.kind);
+	hash.add_string(node.source_name);
+	hash.add_string(node.canonical_spelling);
+	hash.add_bool(node.complete);
+	hash.add_bool(node.from_system_header);
+	hash.add_u64(node.bases.size());
+	for ( size_t b = 0; b < node.bases.size(); ++b )
+	{
+	    hash.add_u64(node.bases[b].type);
+	    hash.add_u64(node.bases[b].access);
+	    hash.add_bool(node.bases[b].is_virtual);
+	}
+	hash.add_u64(node.declarations.size());
+	for ( size_t d = 0; d < node.declarations.size(); ++d )
+	    hash.add_u64((uint64_t)node.declarations[d]);
+	hash.add_u64(node.aliases.size());
+	for ( size_t a = 0; a < node.aliases.size(); ++a )
+	{
+	    hash.add_string(node.aliases[a].name);
+	    hash.add_u64(node.aliases[a].type);
+	}
+	hash.add_u64(node.members.size());
+	for ( size_t m = 0; m < node.members.size(); ++m )
+	{
+	    const ClassMemberPattern &member = node.members[m];
+	    hash.add_string(member.name);
+	    hash.add_u64(member.type);
+	    hash.add_u64(member.count);
+	    hash.add_u64(member.access);
+	    hash.add_bool(member.is_array);
+	    hash.add_bool(member.is_bitfield);
+	    hash.add_bool(member.is_anonymous);
+	    hash.add_u64(member.bit_width);
+	    hash.add_u64(member.dimensions.size());
+	    for ( size_t d = 0; d < member.dimensions.size(); ++d )
+		hash.add_u64(member.dimensions[d]);
+	}
+	hash.add_u64(node.methods.size());
+	for ( size_t m = 0; m < node.methods.size(); ++m )
+	{
+	    const ClassMethodPattern &method = node.methods[m];
+	    hash.add_u64((uint64_t)method.kind);
+	    hash.add_string(method.variable_name);
+	    hash.add_string(method.display_name);
+	    hash.add_string(method.storage_alias_name);
+	    hash.add_string(method.local_emit_name); // allowed-exception: fingerprint field, not symbol build
+	    hash.add_string(method.emit_symbol);
+	    hash.add_string(method.return_typedef_name);
+	    hash.add_u64(method.return_type);
+	    hash.add_u64(method.flags);
+	    hash.add_bool(method.is_varargs);
+	    hash.add_bool(method.is_void_params);
+	    hash.add_bool(method.declaration_only);
+	    hash.add_bool(method.defaulted_or_deleted);
+	    hash.add_bool(method.is_deleted);
+	    hash.add_bool(method.pure_virtual);
+	    hash.add_bool(method.is_const_method);
+	    hash.add_bool(method.is_member_template);
+	    hash.add_bool(method.has_eager_body);
+	    hash.add_u64(method.parameters.size());
+	    for ( size_t p = 0; p < method.parameters.size(); ++p )
+	    {
+		const ClassMethodParamPattern &param = method.parameters[p];
+		hash.add_string(param.name);
+		hash.add_u64(param.type);
+		hash.add_u64(param.flags);
+		hash.add_bool(param.is_const);
+		hash.add_string(param.cpp_spelling);
+		hash.add_string(param.typedef_name);
+		add_tokens(param.default_tokens);
+	    }
+	    hash.add_u64(method.template_param_names.size());
+	    for ( size_t p = 0; p < method.template_param_names.size(); ++p )
+		hash.add_string(method.template_param_names[p]);
+	    hash.add_u64(method.template_param_is_type.size());
+	    for ( size_t p = 0; p < method.template_param_is_type.size(); ++p )
+		hash.add_bool(method.template_param_is_type[p]);
+	    hash.add_u64(method.template_param_is_pack.size());
+	    for ( size_t p = 0; p < method.template_param_is_pack.size(); ++p )
+		hash.add_bool(method.template_param_is_pack[p]);
+	    hash.add_string(method.template_return_spelling);
+	    hash.add_u64(method.template_param_spellings.size());
+	    for ( size_t p = 0; p < method.template_param_spellings.size(); ++p )
+		hash.add_string(method.template_param_spellings[p]);
+	    add_tokens(method.body_tokens);
+	    add_tokens(method.definition_tokens);
+	    add_tokens(method.trailing_ret_tokens);
+	    add_tokens(method.ctor_init_tokens);
+	    add_tokens(method.member_template_decl);
+	    add_tokens(method.member_template_return_tokens);
+	}
+	hash.add_u64(node.static_members.size());
+	for ( size_t s = 0; s < node.static_members.size(); ++s )
+	{
+	    hash.add_string(node.static_members[s].first);
+	    hash.add_u64(node.static_members[s].second);
+	}
+	hash.add_u64(node.static_values.size());
+	for ( size_t s = 0; s < node.static_values.size(); ++s )
+	{
+	    hash.add_string(node.static_values[s].first);
+	    hash.add_u64((uint64_t)node.static_values[s].second);
+	}
+	hash.add_u64(node.friend_classes.size());
+	for ( size_t f = 0; f < node.friend_classes.size(); ++f )
+	    hash.add_string(node.friend_classes[f]);
+	hash.add_u64(node.friend_functions.size());
+	for ( size_t f = 0; f < node.friend_functions.size(); ++f )
+	    hash.add_string(node.friend_functions[f]);
+    }
+    return hash.value();
+}
+
 static std::string template_type_arg_spelling(TokenDataType *adt,
 					      const std::string &cv_spelling)
 {
@@ -3562,7 +3784,9 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
     }
     canon += ">";
 
-    if ( opaque_template_args_select_concrete_partial_spec(*this, td, tname,
+
+    if ( !class_pattern_capture_in_progress
+      && opaque_template_args_select_concrete_partial_spec(*this, td, tname,
 	    args, raw_arg_tokens) )
     {
 	std::vector<TokenBase *> replay;
@@ -3889,6 +4113,12 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // registration, and a vector reallocation would dangle a live reference.
     // Both this function and instantiate_opaque_template_use only read td.
     Program::TemplateDef td = *tdp;
+    // Definition-time class-pattern capture parses declarations only. Every nested
+    // template-id remains an opaque structural recipe for later tsubst; eager
+    // instantiation here is both duplicate work and can recurse before a later
+    // terminating partial specialization has even been declared.
+    if ( class_pattern_capture_in_progress )
+	return instantiate_opaque_template_use(td, tname, tb);
     // A variadic template normally stays an opaque dependent shell — EXCEPT a
     // concrete-arg trailing-type-pack template with a body, which must really
     // instantiate so its members (e.g. `__construct_helper<_Tp,_Args...>::type =
@@ -7647,7 +7877,6 @@ TokenBase *Program::materialize_runtime_struct_size_captures(TokenCpnd *code,
     if ( !code || !dds || !dds->has_runtime_size() )
 	return NULL;
 
-    static int runtime_size_capture_counter = 0;
     std::string cap_name = "__vla_type_size_" + std::to_string(runtime_size_capture_counter++);
     Variable *cap_var = addVariable(code, ddUINT64, cap_name, 1, NULL, false);
     TokenDecl *td = new TokenDecl(*cap_var);
@@ -7682,7 +7911,6 @@ TokenBase *Program::materialize_vla_dim_capture(TokenCpnd *code,
     if ( !code || !dim_expr )
 	return NULL;
 
-    static int vla_dim_capture_counter = 0;
     std::string cap_name = "__madc_vla_dim_" + std::to_string(vla_dim_capture_counter++);
     Variable *cap_var = addVariable(code, ddUINT64, cap_name, 1, NULL, false);
     TokenDecl *td = new TokenDecl(*cap_var);
@@ -12683,6 +12911,298 @@ static void recapture_free_overload_surfaces(Program &pgm,
 // Defined beside new_anon_struct (below): advance the anonymous-tag gensym.
 void madc_anon_tag_counter_at_least(size_t n);
 
+namespace {
+class ClassPatternPayloadReader
+{
+    Program &pgm;
+    const CirFrozenForest &forest;
+    const uint32_t *cursor;
+    const uint32_t *end;
+    bool valid;
+
+    uint32_t word()
+    {
+	if ( cursor == end )
+	{
+	    valid = false;
+	    return 0;
+	}
+	return *cursor++;
+    }
+
+    uint64_t word64()
+    {
+	uint64_t low = word();
+	uint64_t high = word();
+	return low | (high << 32);
+    }
+
+    bool boolean()
+    {
+	uint32_t value = word();
+	if ( value > 1 )
+	    valid = false;
+	return value != 0;
+    }
+
+    uint32_t count()
+    {
+	uint32_t value = word();
+	if ( value > (uint32_t)(end - cursor) || value > 0x1000000u )
+	    valid = false;
+	return valid ? value : 0;
+    }
+
+    std::string string()
+    {
+	uint32_t id = word();
+	if ( !id )
+	    return std::string();
+	const char *value = forest.restored_template_string(id);
+	if ( !value )
+	{
+	    valid = false;
+	    return std::string();
+	}
+	return value;
+    }
+
+    void tokens(std::vector<TokenBase *> &out)
+    {
+	cir_forest_token_run encoded;
+	encoded.tok_off = word();
+	encoded.tok_bytes = word();
+	encoded.tok_count = word();
+	encoded.file_id = word();
+	if ( !valid || !encoded.tok_count )
+	    return;
+	CirRestoredTemplateRun run = forest.restored_template_run(encoded);
+	if ( !run.bytes || run.count != encoded.tok_count )
+	{
+	    valid = false;
+	    return;
+	}
+	std::deque<TokenBase *> restored;
+	if ( !madc_pch::deserialize_tokens(run.bytes, run.len, run.count, restored) )
+	{
+	    valid = false;
+	    return;
+	}
+	const char *file = run.file ? pgm.intern_file(run.file) : NULL;
+	for ( std::deque<TokenBase *>::iterator it = restored.begin();
+	      it != restored.end(); ++it )
+	    if ( *it )
+	    {
+		(*it)->file = file;
+		out.push_back(*it);
+	    }
+    }
+
+    Program::ClassMethodParamPattern parameter()
+    {
+	Program::ClassMethodParamPattern out;
+	out.name = string();
+	out.type = word();
+	out.flags = word();
+	out.is_const = boolean();
+	out.cpp_spelling = string();
+	out.typedef_name = string();
+	tokens(out.default_tokens);
+	return out;
+    }
+
+    Program::ClassMethodPattern method()
+    {
+	Program::ClassMethodPattern out;
+	uint32_t kind = word();
+	if ( kind > (uint32_t)Program::ClassMethodKind::Conversion )
+	    valid = false;
+	out.kind = (Program::ClassMethodKind)kind;
+	out.variable_name = string();
+	out.display_name = string();
+	out.storage_alias_name = string();
+	out.local_emit_name = string();
+	out.emit_symbol = string();
+	out.return_typedef_name = string();
+	out.return_type = word();
+	out.flags = word();
+	out.is_varargs = boolean();
+	out.is_void_params = boolean();
+	out.declaration_only = boolean();
+	out.defaulted_or_deleted = boolean();
+	out.is_deleted = boolean();
+	out.pure_virtual = boolean();
+	out.is_const_method = boolean();
+	out.is_member_template = boolean();
+	out.has_eager_body = boolean();
+	uint32_t nparams = count();
+	for ( uint32_t i = 0; valid && i < nparams; ++i )
+	    out.parameters.push_back(parameter());
+	uint32_t nnames = count();
+	for ( uint32_t i = 0; valid && i < nnames; ++i )
+	    out.template_param_names.push_back(string());
+	uint32_t ntypes = count();
+	for ( uint32_t i = 0; valid && i < ntypes; ++i )
+	    out.template_param_is_type.push_back(boolean());
+	uint32_t npacks = count();
+	for ( uint32_t i = 0; valid && i < npacks; ++i )
+	    out.template_param_is_pack.push_back(boolean());
+	out.template_return_spelling = string();
+	uint32_t nspellings = count();
+	for ( uint32_t i = 0; valid && i < nspellings; ++i )
+	    out.template_param_spellings.push_back(string());
+	tokens(out.body_tokens);
+	tokens(out.definition_tokens);
+	tokens(out.trailing_ret_tokens);
+	tokens(out.ctor_init_tokens);
+	tokens(out.member_template_decl);
+	tokens(out.member_template_return_tokens);
+	return out;
+    }
+
+    Program::ClassAggregatePatternNode node()
+    {
+	Program::ClassAggregatePatternNode out;
+	out.local_id = word();
+	out.parent_id = word();
+	uint32_t kind = word();
+	if ( kind > (uint32_t)Program::ClassAggregateKind::Enum )
+	    valid = false;
+	out.kind = (Program::ClassAggregateKind)kind;
+	out.source_name = string();
+	out.canonical_spelling = string();
+	out.complete = boolean();
+	out.from_system_header = boolean();
+	uint32_t nbases = count();
+	for ( uint32_t i = 0; valid && i < nbases; ++i )
+	{
+	    Program::ClassBasePattern base;
+	    base.type = word();
+	    base.access = word();
+	    base.is_virtual = boolean();
+	    out.bases.push_back(base);
+	}
+	uint32_t ndecls = count();
+	for ( uint32_t i = 0; valid && i < ndecls; ++i )
+	{
+	    uint32_t decl = word();
+	    if ( decl > (uint32_t)Program::ClassDeclKind::StaticAssert )
+		valid = false;
+	    out.declarations.push_back((Program::ClassDeclKind)decl);
+	}
+	uint32_t naliases = count();
+	for ( uint32_t i = 0; valid && i < naliases; ++i )
+	{
+	    Program::ClassAliasPattern alias;
+	    alias.name = string();
+	    alias.type = word();
+	    out.aliases.push_back(alias);
+	}
+	uint32_t nmembers = count();
+	for ( uint32_t i = 0; valid && i < nmembers; ++i )
+	{
+	    Program::ClassMemberPattern member;
+	    member.name = string();
+	    member.type = word();
+	    member.count = word64();
+	    member.access = word();
+	    member.is_array = boolean();
+	    member.is_bitfield = boolean();
+	    member.is_anonymous = boolean();
+	    member.bit_width = word64();
+	    uint32_t ndims = count();
+	    for ( uint32_t d = 0; valid && d < ndims; ++d )
+		member.dimensions.push_back(word64());
+	    out.members.push_back(member);
+	}
+	uint32_t nmethods = count();
+	for ( uint32_t i = 0; valid && i < nmethods; ++i )
+	    out.methods.push_back(method());
+	uint32_t nstatic = count();
+	for ( uint32_t i = 0; valid && i < nstatic; ++i )
+	{
+	    std::string name = string();
+	    uint32_t type = word();
+	    out.static_members.push_back(std::make_pair(name, type));
+	}
+	uint32_t nvalues = count();
+	for ( uint32_t i = 0; valid && i < nvalues; ++i )
+	{
+	    std::string name = string();
+	    int64_t value = (int64_t)word64();
+	    out.static_values.push_back(std::make_pair(name, value));
+	}
+	uint32_t nfriend_classes = count();
+	for ( uint32_t i = 0; valid && i < nfriend_classes; ++i )
+	    out.friend_classes.push_back(string());
+	uint32_t nfriend_functions = count();
+	for ( uint32_t i = 0; valid && i < nfriend_functions; ++i )
+	    out.friend_functions.push_back(string());
+	return out;
+    }
+
+public:
+    ClassPatternPayloadReader(Program &program, const CirFrozenForest &source,
+	const uint32_t *words, uint32_t count)
+	: pgm(program), forest(source), cursor(words),
+	  end(words ? words + count : words),
+	  valid(words != NULL) {}
+
+    bool read(Program::ClassPattern &out, uint32_t record_reason)
+    {
+	if ( word() != CIR_CLASS_PATTERN_MAGIC
+	  || word() != CIR_CLASS_PATTERN_PAYLOAD_VERSION )
+	    return false;
+	uint32_t reason = word();
+	if ( reason > (uint32_t)Program::ClassParseReason::RegistrationEscape
+	  || reason != record_reason )
+	    valid = false;
+	out.capture_reason = (Program::ClassParseReason)reason;
+	out.semantic_fingerprint = word64();
+	out.identity = string();
+	out.class_name = string();
+	out.defining_namespace = string();
+	out.is_partial_specialization = boolean();
+	out.types.clear();
+	uint32_t ntypes = count();
+	if ( !ntypes )
+	    valid = false;
+	for ( uint32_t i = 0; valid && i < ntypes; ++i )
+	{
+	    Program::ClassTypePattern type;
+	    uint32_t kind = word();
+	    if ( kind > (uint32_t)Program::ClassTypePatternKind::PackExpansion )
+		valid = false;
+	    type.kind = (Program::ClassTypePatternKind)kind;
+	    type.flags = word();
+	    type.concrete_type_id = word();
+	    type.operand = word();
+	    type.secondary = word();
+	    type.template_param_index = word();
+	    type.nested_node_id = word();
+	    type.pack_param_index = word();
+	    type.name = string();
+	    uint32_t nargs = count();
+	    uint32_t ndims = count();
+	    for ( uint32_t a = 0; valid && a < nargs; ++a )
+		type.arguments.push_back(word());
+	    for ( uint32_t d = 0; valid && d < ndims; ++d )
+		type.dimensions.push_back(word64());
+	    out.types.push_back(type);
+	}
+	uint32_t nnodes = count();
+	for ( uint32_t i = 0; valid && i < nnodes; ++i )
+	    out.nodes.push_back(node());
+	if ( cursor != end || out.identity.empty() || out.class_name.empty() )
+	    valid = false;
+	if ( !valid )
+	    return false;
+	uint64_t stored = out.semantic_fingerprint;
+	return pgm.class_pattern_fingerprint(out) == stored;
+    }
+};
+}
+
 void Program::forest_restore_decls(CirFrozenForest &forest)
 {
     // Phase 6 / B3 (v18): LOAD the serialized type graph (do NOT re-derive).
@@ -13216,6 +13736,10 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    td.owner_class = rt.owner;
 	    td.has_non_type_params = (rt.flags & CIR_TMPLF_HAS_NON_TYPE_PARAMS) != 0;
 	    td.is_partial_specialization = (rt.flags & CIR_TMPLF_IS_PARTIAL_SPEC) != 0;
+	    if ( rt.pattern_reason <= (uint32_t)ClassParseReason::RegistrationEscape )
+		td.class_pattern_reason = (ClassParseReason)rt.pattern_reason;
+	    else
+		td.class_pattern_reason = ClassParseReason::PatternParseError;
 	    for ( size_t p = 0; p < rt.params.size(); ++p )
 	    {
 		td.typeparams.push_back(rt.params[p].first);
@@ -13231,6 +13755,19 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    {
 		td.spec_pattern.push_back(std::vector<TokenBase *>());
 		restore_run(rt.spec[sp], td.spec_pattern.back());
+	    }
+	    if ( rt.pattern && rt.pattern_words )
+	    {
+		ClassPattern restored_pattern;
+		ClassPatternPayloadReader reader(*this, forest, rt.pattern,
+					 rt.pattern_words);
+		if ( reader.read(restored_pattern, rt.pattern_reason) )
+		{
+		    td.class_pattern_id = class_pattern_arena.add(restored_pattern);
+		    td.class_pattern_reason = restored_pattern.capture_reason;
+		}
+		else
+		    td.class_pattern_reason = ClassParseReason::PatternParseError;
 	    }
 	    if ( rt.kind == CIR_TMPLK_CLASS )
 		template_map[key].push_back(td);
@@ -17686,7 +18223,7 @@ void StructRegistry::restore(const datadef_map_t &entries)
 
 struct Program::ClassRegistrationJournal::State
 {
-    flat_datatype_map_t datatype_map;
+    flat_datatype_map_t::transaction_state datatype_map;
     datadef_map_t datadef_map;
     datadef_map_t struct_map;
     std::map<std::string, DataDefSTRUCT *> tsubst_local_aggregate_map;
@@ -17697,16 +18234,22 @@ struct Program::ClassRegistrationJournal::State
     funcdef_map_t funcdef_map;
     variable_map_t literal_map;
     namespace_map_t namespace_map;
-    namespace_datatype_map_t namespace_datatype_map;
-    madc::dis::intern_keyed_map<std::vector<TemplateDef> > template_map;
-    madc::dis::intern_keyed_map<std::vector<TemplateDef> > partial_spec_map;
-    madc::dis::intern_keyed_map<std::vector<TemplateAliasDef> > template_alias_map;
-    madc::dis::intern_keyed_map<VarTemplateDef> var_template_map;
+    namespace_datatype_map_t::transaction_state namespace_datatype_map;
+    madc::dis::intern_keyed_map<std::vector<TemplateDef> >::transaction_state
+	template_map;
+    madc::dis::intern_keyed_map<std::vector<TemplateDef> >::transaction_state
+	partial_spec_map;
+    madc::dis::intern_keyed_map<std::vector<TemplateAliasDef> >::transaction_state
+	template_alias_map;
+    madc::dis::intern_keyed_map<VarTemplateDef>::transaction_state var_template_map;
     std::map<std::string, ConceptDef> concept_map;
-    madc::dis::intern_keyed_map<std::vector<FnTemplateDef> > fn_template_map;
-    madc::dis::intern_keyed_map<std::vector<FnTemplateDef> > fn_template_decl_map;
+    madc::dis::intern_keyed_map<std::vector<FnTemplateDef> >::transaction_state
+	fn_template_map;
+    madc::dis::intern_keyed_map<std::vector<FnTemplateDef> >::transaction_state
+	fn_template_decl_map;
     std::set<std::string> fn_template_instantiated;
-    madc::dis::intern_keyed_map<Variable *> fn_template_instantiated_vars;
+    madc::dis::intern_keyed_map<Variable *>::transaction_state
+	fn_template_instantiated_vars;
     std::vector<FreeOperatorOverload> free_operator_overloads;
     std::vector<FreeOperatorOverload> free_function_overloads;
     std::map<std::string, std::vector<NamespaceFnOverload> > namespace_fn_overload_sets;
@@ -17732,6 +18275,9 @@ struct Program::ClassRegistrationJournal::State
     std::vector<PackDeclFrame> pack_decl_stack;
     std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
 	block_typedef_shadows;
+    std::set<std::string> user_typedef_names;
+    std::map<DataDefCLASS *, std::map<std::string, DataDef *> >
+	class_scope_type_aliases;
     std::vector<Variable *> root_variables;
     std::unordered_map<uint32_t, Variable *> root_var_index;
     size_t root_var_indexed;
@@ -17741,21 +18287,19 @@ struct Program::ClassRegistrationJournal::State
     TokenCpnd *root;
     bool taps_muted;
     bool forest_arena_enabled;
+    int runtime_size_capture_counter_value;
+    int vla_dim_capture_counter_value;
+    size_t anon_tag_counter_value;
+    int lambda_counter_value;
 
     explicit State(Program &p)
-	: datatype_map(p.datatype_map), datadef_map(p.datadef_map),
-	  struct_map(p.struct_map.snapshot()),
+	: datadef_map(p.datadef_map), struct_map(p.struct_map.snapshot()),
 	  tsubst_local_aggregate_map(p.tsubst_local_aggregate_map),
 	  project_types(p.project_types), ptr_type_cache(p.ptr_type_cache),
 	  ref_type_cache(p.ref_type_cache), const_type_cache(p.const_type_cache),
 	  funcdef_map(p.funcdef_map), literal_map(p.literal_map),
-	  namespace_map(p.namespace_map), namespace_datatype_map(p.namespace_datatype_map),
-	  template_map(p.template_map), partial_spec_map(p.partial_spec_map),
-	  template_alias_map(p.template_alias_map), var_template_map(p.var_template_map),
-	  concept_map(p.concept_map), fn_template_map(p.fn_template_map),
-	  fn_template_decl_map(p.fn_template_decl_map),
+	  namespace_map(p.namespace_map), concept_map(p.concept_map),
 	  fn_template_instantiated(p.fn_template_instantiated),
-	  fn_template_instantiated_vars(p.fn_template_instantiated_vars),
 	  free_operator_overloads(p.free_operator_overloads),
 	  free_function_overloads(p.free_function_overloads),
 	  namespace_fn_overload_sets(p.namespace_fn_overload_sets),
@@ -17774,12 +18318,21 @@ struct Program::ClassRegistrationJournal::State
 	  out_of_line_nested_class_defs(p.out_of_line_nested_class_defs),
 	  top_decls(p.top_decls), pack_decls(p.pack_decls),
 	  pack_decl_stack(p.pack_decl_stack),
-	  block_typedef_shadows(p.block_typedef_shadows), root_variables(),
+	  block_typedef_shadows(p.block_typedef_shadows),
+	  user_typedef_names(p.user_typedef_names), root_variables(),
 	  root_var_index(), root_var_indexed(0), root_statements(),
 	  root_deferred(), root_destruct_order(), root(p.tkProgram),
 	  taps_muted(p.class_registration_taps_muted),
-	  forest_arena_enabled(p.forest_arena_enabled)
+	  forest_arena_enabled(p.forest_arena_enabled),
+	  runtime_size_capture_counter_value(::runtime_size_capture_counter),
+	  vla_dim_capture_counter_value(::vla_dim_capture_counter),
+	  anon_tag_counter_value(::anon_tag_counter),
+	  lambda_counter_value(::lambda_counter)
     {
+	for ( size_t i = 0; i < p.class_scope_stack.size(); ++i )
+	    if ( p.class_scope_stack[i] )
+		class_scope_type_aliases[p.class_scope_stack[i]] =
+		    p.class_scope_stack[i]->type_aliases;
 	if ( root )
 	{
 	    root_variables = root->variables;
@@ -17795,6 +18348,16 @@ struct Program::ClassRegistrationJournal::State
 Program::ClassRegistrationJournal::ClassRegistrationJournal(Program &p)
     : pgm(p), state(new State(p)), finished(false)
 {
+    pgm.datatype_map.begin_transaction(state->datatype_map);
+    pgm.namespace_datatype_map.begin_transaction(state->namespace_datatype_map);
+    pgm.template_map.begin_transaction(state->template_map);
+    pgm.partial_spec_map.begin_transaction(state->partial_spec_map);
+    pgm.template_alias_map.begin_transaction(state->template_alias_map);
+    pgm.var_template_map.begin_transaction(state->var_template_map);
+    pgm.fn_template_map.begin_transaction(state->fn_template_map);
+    pgm.fn_template_decl_map.begin_transaction(state->fn_template_decl_map);
+    pgm.fn_template_instantiated_vars.begin_transaction(
+	state->fn_template_instantiated_vars);
     pgm.class_registration_taps_muted = true;
     pgm.forest_arena_enabled = false;
 }
@@ -17810,6 +18373,16 @@ void Program::ClassRegistrationJournal::commit()
 {
     if ( finished )
 	return;
+    pgm.datatype_map.commit_transaction(state->datatype_map);
+    pgm.namespace_datatype_map.commit_transaction(state->namespace_datatype_map);
+    pgm.template_map.commit_transaction(state->template_map);
+    pgm.partial_spec_map.commit_transaction(state->partial_spec_map);
+    pgm.template_alias_map.commit_transaction(state->template_alias_map);
+    pgm.var_template_map.commit_transaction(state->var_template_map);
+    pgm.fn_template_map.commit_transaction(state->fn_template_map);
+    pgm.fn_template_decl_map.commit_transaction(state->fn_template_decl_map);
+    pgm.fn_template_instantiated_vars.commit_transaction(
+	state->fn_template_instantiated_vars);
     pgm.class_registration_taps_muted = state->taps_muted;
     pgm.forest_arena_enabled = state->forest_arena_enabled;
     finished = true;
@@ -17819,7 +18392,16 @@ void Program::ClassRegistrationJournal::rollback()
 {
     if ( finished )
 	return;
-    pgm.datatype_map = state->datatype_map;
+    pgm.datatype_map.rollback_transaction(state->datatype_map);
+    pgm.namespace_datatype_map.rollback_transaction(state->namespace_datatype_map);
+    pgm.template_map.rollback_transaction(state->template_map);
+    pgm.partial_spec_map.rollback_transaction(state->partial_spec_map);
+    pgm.template_alias_map.rollback_transaction(state->template_alias_map);
+    pgm.var_template_map.rollback_transaction(state->var_template_map);
+    pgm.fn_template_map.rollback_transaction(state->fn_template_map);
+    pgm.fn_template_decl_map.rollback_transaction(state->fn_template_decl_map);
+    pgm.fn_template_instantiated_vars.rollback_transaction(
+	state->fn_template_instantiated_vars);
     pgm.datadef_map = state->datadef_map;
     pgm.struct_map.restore(state->struct_map);
     pgm.tsubst_local_aggregate_map = state->tsubst_local_aggregate_map;
@@ -17838,16 +18420,8 @@ void Program::ClassRegistrationJournal::rollback()
     pgm.funcdef_map = state->funcdef_map;
     pgm.literal_map = state->literal_map;
     pgm.namespace_map = state->namespace_map;
-    pgm.namespace_datatype_map = state->namespace_datatype_map;
-    pgm.template_map = state->template_map;
-    pgm.partial_spec_map = state->partial_spec_map;
-    pgm.template_alias_map = state->template_alias_map;
-    pgm.var_template_map = state->var_template_map;
     pgm.concept_map = state->concept_map;
-    pgm.fn_template_map = state->fn_template_map;
-    pgm.fn_template_decl_map = state->fn_template_decl_map;
     pgm.fn_template_instantiated = state->fn_template_instantiated;
-    pgm.fn_template_instantiated_vars = state->fn_template_instantiated_vars;
     pgm.free_operator_overloads = state->free_operator_overloads;
     pgm.free_function_overloads = state->free_function_overloads;
     pgm.namespace_fn_overload_sets = state->namespace_fn_overload_sets;
@@ -17870,6 +18444,11 @@ void Program::ClassRegistrationJournal::rollback()
     pgm.pack_decls = state->pack_decls;
     pgm.pack_decl_stack = state->pack_decl_stack;
     pgm.block_typedef_shadows = state->block_typedef_shadows;
+    pgm.user_typedef_names = state->user_typedef_names;
+    for ( std::map<DataDefCLASS *, std::map<std::string, DataDef *> >::const_iterator
+	    it = state->class_scope_type_aliases.begin();
+	  it != state->class_scope_type_aliases.end(); ++it )
+	it->first->type_aliases = it->second;
     if ( state->root )
     {
 	state->root->variables = state->root_variables;
@@ -17881,7 +18460,959 @@ void Program::ClassRegistrationJournal::rollback()
     }
     pgm.class_registration_taps_muted = state->taps_muted;
     pgm.forest_arena_enabled = state->forest_arena_enabled;
+    runtime_size_capture_counter = state->runtime_size_capture_counter_value;
+    vla_dim_capture_counter = state->vla_dim_capture_counter_value;
+    anon_tag_counter = state->anon_tag_counter_value;
+    lambda_counter = state->lambda_counter_value;
     finished = true;
+}
+
+namespace {
+static std::vector<TokenBase *> class_pattern_clone_tokens(
+	const std::vector<TokenBase *> &tokens)
+{
+    std::vector<TokenBase *> out;
+    out.reserve(tokens.size());
+    for ( size_t i = 0; i < tokens.size(); ++i )
+	out.push_back(tokens[i] ? tokens[i]->clone() : NULL);
+    return out;
+}
+
+static std::string class_pattern_tokens_spelling(
+	const std::vector<TokenBase *> &tokens)
+{
+    std::string out;
+    for ( size_t i = 0; i < tokens.size(); ++i )
+	if ( tokens[i] )
+	    out += template_token_fragment(tokens[i]);
+    return out;
+}
+
+static void class_pattern_collect_stable_types(Program &pgm,
+	std::set<DataDef *> &out)
+{
+    for ( uint32_t id = 1; id < MADC_TYPEID_PRIMITIVE_END; ++id )
+	if ( DataDef *dd = madc_primitive_for_slot(id) )
+	    out.insert(dd);
+    pgm.datatype_map.for_each([&](const char *, TokenDataType *&tdt) -> bool {
+	if ( tdt )
+	    out.insert(&tdt->definition);
+	return false;
+    });
+    for ( datadef_map_citer it = pgm.struct_map.begin();
+	  it != pgm.struct_map.end(); ++it )
+	if ( it->second )
+	    out.insert(it->second);
+    for ( size_t i = 0; i < pgm.project_types.size(); ++i )
+	if ( DataDef *dd = pgm.project_types.at_index(i) )
+	    out.insert(dd);
+    for ( std::map<DataDef *, DataDefPTR *>::const_iterator it =
+	    pgm.ptr_type_cache.begin(); it != pgm.ptr_type_cache.end(); ++it )
+	{
+	out.insert(it->first);
+	out.insert(it->second);
+    }
+    for ( std::map<DataDef *, DataDefREF *>::const_iterator it =
+	    pgm.ref_type_cache.begin(); it != pgm.ref_type_cache.end(); ++it )
+	{
+	out.insert(it->first);
+	out.insert(it->second);
+    }
+    for ( std::map<DataDef *, DataDefCONST *>::const_iterator it =
+	    pgm.const_type_cache.begin(); it != pgm.const_type_cache.end(); ++it )
+	{
+	out.insert(it->first);
+	out.insert(it->second);
+    }
+}
+
+class ClassPatternNormalizer
+{
+    Program &pgm;
+    const Program::TemplateDef &td;
+    const std::set<DataDef *> &stable_types;
+    const std::map<DataDefCLASS *, std::vector<Program::ClassDeclKind> > &decls;
+    const std::map<DataDefCLASS *,
+	std::vector<Program::DeferredFunctionBody> > &bodies;
+    Program::ClassPattern pattern;
+    std::map<DataDef *, Program::ClassTypePatternId> type_ids;
+    std::map<DataDef *, uint32_t> node_ids;
+    std::vector<DataDef *> node_types;
+    std::vector<uint32_t> node_parents;
+    std::vector<std::string> node_names;
+    std::vector<DataDef *> external_types;
+
+    void fail(Program::ClassParseReason reason)
+    {
+	if ( pattern.capture_reason == Program::ClassParseReason::None )
+	    pattern.capture_reason = reason;
+    }
+
+    Program::ClassTypePatternId append_type()
+    {
+	pattern.types.push_back(Program::ClassTypePattern());
+	external_types.push_back(NULL);
+	return (Program::ClassTypePatternId)(pattern.types.size() - 1);
+    }
+
+    Program::ClassTypePatternId unary(
+	Program::ClassTypePatternKind kind,
+	Program::ClassTypePatternId operand)
+    {
+	Program::ClassTypePatternId id = append_type();
+	pattern.types[id].kind = kind;
+	pattern.types[id].operand = operand;
+	return id;
+    }
+
+    DataDef *lookup_named_type(const std::string &name)
+    {
+	flat_datatype_map_iter dt = pgm.datatype_map.find(name);
+	if ( dt != pgm.datatype_map.end() && *dt )
+	    return &(*dt)->definition;
+	datadef_map_citer st = pgm.struct_map.find(name);
+	if ( st != pgm.struct_map.end() )
+	    return st->second;
+	return NULL;
+    }
+
+    Program::ClassTypePatternId normalize_token_type(
+	const std::vector<TokenBase *> &raw)
+    {
+	std::vector<TokenBase *> tokens;
+	for ( size_t i = 0; i < raw.size(); ++i )
+	    if ( raw[i] )
+		tokens.push_back(raw[i]);
+	if ( tokens.empty() )
+	{
+	    fail(Program::ClassParseReason::UnnormalizableType);
+	    return 0;
+	}
+
+	bool add_const = false;
+	while ( !tokens.empty() && is_type_qualifier_token(tokens.front()) )
+	{
+	    if ( tokens.front()->id() == TokenID::tkCONST )
+		add_const = true;
+	    else
+		fail(Program::ClassParseReason::UnnormalizableType);
+	    tokens.erase(tokens.begin());
+	}
+	std::vector<Program::ClassTypePatternKind> suffix;
+	bool pack_expand = false;
+	if ( tokens.size() >= 3
+	  && tokens[tokens.size() - 1]->id() == TokenID::tkDot
+	  && tokens[tokens.size() - 2]->id() == TokenID::tkDot
+	  && tokens[tokens.size() - 3]->id() == TokenID::tkDot )
+	{
+	    tokens.resize(tokens.size() - 3);
+	    pack_expand = true;
+	}
+	while ( !tokens.empty() )
+	{
+	    TokenID id = tokens.back()->id();
+	    if ( id == TokenID::tkMul || id == TokenID::tkStar )
+		suffix.push_back(Program::ClassTypePatternKind::Pointer);
+	    else if ( id == TokenID::tkBand || id == TokenID::tkLand )
+		suffix.push_back(Program::ClassTypePatternKind::Reference);
+	    else
+		break;
+	    tokens.pop_back();
+	}
+
+	Program::ClassTypePatternId base = 0;
+	if ( tokens.size() == 1 && tokens[0]->type() == TokenType::ttDataType )
+	    base = normalize_type(&((TokenDataType *)tokens[0])->definition);
+	else if ( tokens.size() == 1 && is_contextual_identifier_token(tokens[0]) )
+	{
+	    std::string name = contextual_identifier_name(tokens[0]);
+	    for ( size_t i = 0; i < td.typeparams.size(); ++i )
+		if ( td.typeparams[i] == name )
+		{
+		    base = append_type();
+		    pattern.types[base].kind =
+			Program::ClassTypePatternKind::TemplateParam;
+		    pattern.types[base].template_param_index = (uint32_t)i;
+		    break;
+		}
+	    if ( !base )
+		if ( DataDef *dd = lookup_named_type(name) )
+		    base = normalize_type(dd);
+	}
+
+	if ( !base )
+	{
+	    size_t member_sep = tokens.size();
+	    int angle = 0;
+	    for ( size_t i = 0; i < tokens.size(); ++i )
+	    {
+		if ( tokens[i]->id() == TokenID::tkLT )
+		    ++angle;
+		else if ( tokens[i]->id() == TokenID::tkGT && angle > 0 )
+		    --angle;
+		else if ( tokens[i]->id() == TokenID::tkNS && angle == 0 )
+		    member_sep = i;
+	    }
+	    if ( member_sep < tokens.size() && member_sep > 0
+	      && member_sep + 1 < tokens.size() )
+	    {
+		std::vector<TokenBase *> owner(tokens.begin(),
+					       tokens.begin() + member_sep);
+		base = append_type();
+		pattern.types[base].kind =
+		    Program::ClassTypePatternKind::DependentMember;
+		Program::ClassTypePatternId owner_type = normalize_token_type(owner);
+		pattern.types[base].operand = owner_type;
+		pattern.types[base].name =
+		    contextual_identifier_name(tokens[member_sep + 1]);
+	    }
+	}
+
+	if ( !base )
+	{
+	    size_t open = tokens.size();
+	    for ( size_t i = 0; i < tokens.size(); ++i )
+		if ( tokens[i]->id() == TokenID::tkLT )
+		{
+		    open = i;
+		    break;
+		}
+	if ( open > 0 && open < tokens.size() )
+	{
+	    base = append_type();
+	    pattern.types[base].kind = Program::ClassTypePatternKind::TemplateId;
+	    std::vector<TokenBase *> head(tokens.begin(), tokens.begin() + open);
+	    pattern.types[base].name = class_pattern_tokens_spelling(head);
+	    std::vector<TokenBase *> arg;
+		int depth = 0;
+		for ( size_t i = open + 1; i < tokens.size(); ++i )
+		{
+		    TokenID id = tokens[i]->id();
+		    bool close = id == TokenID::tkGT && depth == 0;
+		if ( close || (id == TokenID::tkComma && depth == 0) )
+		{
+		    if ( !arg.empty() )
+		    {
+			Program::ClassTypePatternId argument =
+			    normalize_token_type(arg);
+			pattern.types[base].arguments.push_back(argument);
+		    }
+			arg.clear();
+			if ( close )
+			    break;
+			continue;
+		    }
+		    if ( id == TokenID::tkLT )
+			++depth;
+		    else if ( id == TokenID::tkGT && depth > 0 )
+			--depth;
+		    arg.push_back(tokens[i]);
+		}
+	    }
+	}
+
+	if ( !base )
+	{
+	    std::string spelling = class_pattern_tokens_spelling(tokens);
+	    if ( DataDef *dd = lookup_named_type(spelling) )
+		base = normalize_type(dd);
+	    else
+	    {
+		base = append_type();
+		pattern.types[base].name = spelling;
+		fail(Program::ClassParseReason::UnnormalizableType);
+	    }
+	}
+	if ( add_const )
+	    base = unary(Program::ClassTypePatternKind::ConstType, base);
+	for ( size_t i = suffix.size(); i-- > 0; )
+	    base = unary(suffix[i], base);
+	if ( pack_expand )
+	{
+	    Program::ClassTypePatternId expanded =
+		unary(Program::ClassTypePatternKind::PackExpansion, base);
+	    if ( pattern.types[base].kind ==
+		 Program::ClassTypePatternKind::TemplateParam )
+		pattern.types[expanded].pack_param_index =
+		    pattern.types[base].template_param_index;
+	    else
+		fail(Program::ClassParseReason::UnnormalizableType);
+	    base = expanded;
+	}
+	return base;
+    }
+
+    Program::ClassTypePatternId normalize_type(DataDef *dd)
+    {
+	if ( !dd )
+	{
+	    fail(Program::ClassParseReason::UnnormalizableType);
+	    return 0;
+	}
+	std::map<DataDef *, Program::ClassTypePatternId>::const_iterator known =
+	    type_ids.find(dd);
+	if ( known != type_ids.end() )
+	    return known->second;
+	Program::ClassTypePatternId id = append_type();
+	type_ids[dd] = id;
+
+	if ( DataDefTemplateParam *param =
+		dynamic_cast<DataDefTemplateParam *>(dd) )
+	{
+	    pattern.types[id].kind = Program::ClassTypePatternKind::TemplateParam;
+	    pattern.types[id].template_param_index = param->param_index;
+	}
+	else if ( node_ids.count(dd) )
+	{
+	    uint32_t node = node_ids[dd];
+	    pattern.types[id].kind = node == 0
+		? Program::ClassTypePatternKind::SelfType
+		: Program::ClassTypePatternKind::NestedType;
+	    pattern.types[id].nested_node_id = node;
+	}
+	else if ( DataDefCONST *qualified = dynamic_cast<DataDefCONST *>(dd) )
+	{
+	    pattern.types[id].kind = Program::ClassTypePatternKind::ConstType;
+	    Program::ClassTypePatternId operand =
+		normalize_type(qualified->base_type);
+	    pattern.types[id].operand = operand;
+	}
+	else if ( DataDefREF *ref = dynamic_cast<DataDefREF *>(dd) )
+	{
+	    pattern.types[id].kind = Program::ClassTypePatternKind::Reference;
+	    Program::ClassTypePatternId operand = normalize_type(ref->base_type);
+	    pattern.types[id].operand = operand;
+	}
+	else if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+	{
+	    pattern.types[id].kind = Program::ClassTypePatternKind::Pointer;
+	    Program::ClassTypePatternId operand = normalize_type(ptr->base_type);
+	    pattern.types[id].operand = operand;
+	}
+	else if ( DataDefCArray *array = dynamic_cast<DataDefCArray *>(dd) )
+	{
+	    pattern.types[id].kind = Program::ClassTypePatternKind::CArray;
+	    Program::ClassTypePatternId operand = normalize_type(array->element_type);
+	    pattern.types[id].operand = operand;
+	    pattern.types[id].dimensions.push_back(array->count);
+	    if ( array->count_expr )
+		fail(Program::ClassParseReason::DependentValueExpression);
+	}
+	else if ( DataDefFPTR *fptr = dynamic_cast<DataDefFPTR *>(dd) )
+	{
+	    pattern.types[id].kind = Program::ClassTypePatternKind::FunctionPointer;
+	    pattern.types[id].flags = fptr->ptr_syntax ? 1u : 0u;
+	    if ( fptr->target )
+	    {
+		Program::ClassTypePatternId result =
+		    normalize_type(&fptr->target->returns);
+		pattern.types[id].secondary = result;
+		for ( size_t i = 0; i < fptr->target->parameters.size(); ++i )
+		{
+		    Program::ClassTypePatternId parameter =
+			normalize_type(fptr->target->parameters[i]);
+		    pattern.types[id].arguments.push_back(parameter);
+		}
+	    }
+	    else
+		fail(Program::ClassParseReason::UnnormalizableType);
+	}
+	else
+	{
+	    std::map<DataDef *, Program::DependentDerivedOrigin>::const_iterator derived =
+		pgm.dependent_derived_origin.find(dd);
+	    std::map<DataDef *, Program::DependentShellOrigin>::const_iterator shell =
+		pgm.dependent_shell_origin.find(dd);
+	    if ( derived != pgm.dependent_derived_origin.end()
+	      && derived->second.kind == Program::DependentDerivedOrigin::MemberType )
+	    {
+		pattern.types[id].kind =
+		    Program::ClassTypePatternKind::DependentMember;
+		Program::ClassTypePatternId operand =
+		    normalize_type(derived->second.source);
+		pattern.types[id].operand = operand;
+		pattern.types[id].name = derived->second.member;
+	    }
+	    else if ( shell != pgm.dependent_shell_origin.end() )
+	    {
+		pattern.types[id].kind = Program::ClassTypePatternKind::TemplateId;
+		pattern.types[id].name = shell->second.defining_namespace.empty()
+		    ? shell->second.tname
+		    : shell->second.defining_namespace + "::" + shell->second.tname;
+		for ( size_t i = 0; i < shell->second.raw_arg_tokens.size(); ++i )
+		{
+		    Program::ClassTypePatternId argument =
+			normalize_token_type(shell->second.raw_arg_tokens[i]);
+		    pattern.types[id].arguments.push_back(argument);
+		}
+	    }
+	    else if ( derived != pgm.dependent_derived_origin.end() )
+		fail(Program::ClassParseReason::UnnormalizableType);
+	    else if ( stable_types.count(dd) )
+	    {
+		pattern.types[id].kind = Program::ClassTypePatternKind::ConcreteType;
+		external_types[id] = dd;
+	    }
+	    else
+	    {
+		pattern.types[id].kind = Program::ClassTypePatternKind::ConcreteType;
+		pattern.types[id].name = dd->canonical_cpp_spelling().empty()
+		    ? dd->name : dd->canonical_cpp_spelling();
+		fail(Program::ClassParseReason::UnnormalizableType);
+	    }
+	}
+	return id;
+    }
+
+    void add_node(DataDef *dd, uint32_t parent, const std::string &source_name)
+    {
+	if ( !dd || node_ids.count(dd) )
+	    return;
+	uint32_t id = (uint32_t)node_types.size();
+	node_ids[dd] = id;
+	node_types.push_back(dd);
+	node_parents.push_back(parent);
+	node_names.push_back(source_name);
+    }
+
+    void collect_nodes(DataDef *root)
+    {
+	add_node(root, 0, td.class_name);
+	for ( size_t i = 0; i < node_types.size(); ++i )
+	{
+	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(node_types[i]);
+	    DataDefSTRUCT *aggregate = dynamic_cast<DataDefSTRUCT *>(node_types[i]);
+	    if ( cls )
+		for ( std::map<std::string, DataDef *>::const_iterator alias =
+			cls->type_aliases.begin(); alias != cls->type_aliases.end();
+		      ++alias )
+		{
+		    DataDef *candidate = alias->second;
+		    if ( !candidate || candidate == cls )
+			continue;
+		    DataDefCLASS *nested = dynamic_cast<DataDefCLASS *>(candidate);
+		    if ( nested && nested->enclosing_class == cls )
+			add_node(nested, (uint32_t)i, alias->first);
+		    else if ( !stable_types.count(candidate)
+			   && (dynamic_cast<DataDefENUM *>(candidate)
+			       || (dynamic_cast<DataDefSTRUCT *>(candidate) && !nested)) )
+			add_node(candidate, (uint32_t)i, alias->first);
+		}
+	    if ( aggregate )
+		for ( size_t a = 0; a < aggregate->anonymous_aggregates.size(); ++a )
+		    add_node(const_cast<DataDefSTRUCT *>(
+			aggregate->anonymous_aggregates[a].aggregate),
+			(uint32_t)i, std::string());
+	}
+    }
+
+    const Program::DeferredFunctionBody *body_for(DataDefCLASS *owner,
+	Variable *var) const
+    {
+	std::map<DataDefCLASS *,
+	    std::vector<Program::DeferredFunctionBody> >::const_iterator found =
+	    bodies.find(owner);
+	if ( found == bodies.end() )
+	    return NULL;
+	for ( size_t i = 0; i < found->second.size(); ++i )
+	    if ( found->second[i].var == var )
+		return &found->second[i];
+	return NULL;
+    }
+
+    Program::ClassMethodPattern normalize_method(DataDefCLASS *owner,
+	Variable *var)
+    {
+	Program::ClassMethodPattern out;
+	if ( !var )
+	{
+	    fail(Program::ClassParseReason::UnsupportedDeclKind);
+	    return out;
+	}
+	FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	if ( !fd )
+	{
+	    fail(Program::ClassParseReason::UnsupportedDeclKind);
+	    return out;
+	}
+	out.variable_name = var->name;
+	out.display_name = fd->method_display_name;
+	out.storage_alias_name = var->storage_alias_name;
+	out.local_emit_name = fd->local_emit_name; // allowed-exception: pattern field copy, not symbol build
+	out.emit_symbol = fd->emit_symbol;
+	out.return_typedef_name = fd->return_typedef_name;
+	out.return_type = normalize_type(&fd->returns);
+	out.flags = var->flags;
+	out.is_varargs = fd->is_varargs;
+	out.is_void_params = fd->is_void_params;
+	out.declaration_only = fd->declaration_only;
+	out.defaulted_or_deleted = fd->defaulted_or_deleted;
+	out.is_deleted = fd->is_deleted;
+	out.pure_virtual = fd->pure_virtual;
+	out.is_const_method = fd->is_const_method;
+	out.is_member_template = fd->is_member_template;
+	out.template_param_names = fd->template_param_names;
+	out.template_param_is_type = fd->template_param_is_type;
+	out.template_param_is_pack = fd->template_param_is_pack;
+	out.template_return_spelling = fd->template_return_spelling;
+	out.template_param_spellings = fd->template_param_spellings;
+	out.member_template_decl = class_pattern_clone_tokens(fd->member_template_decl);
+	out.member_template_return_tokens =
+	    class_pattern_clone_tokens(fd->member_template_return_tokens);
+
+	for ( size_t i = 0; i < owner->ctors.size(); ++i )
+	    if ( owner->ctors[i] == var )
+		out.kind = Program::ClassMethodKind::Constructor;
+	if ( !out.display_name.empty() && out.display_name[0] == '~' )
+	    out.kind = Program::ClassMethodKind::Destructor;
+	else if ( out.display_name.compare(0, 9, "operator ") == 0 )
+	    out.kind = Program::ClassMethodKind::Conversion;
+
+	Method *method = var->data ? static_cast<Method *>(var->data) : NULL;
+	for ( size_t i = 0; i < fd->parameters.size(); ++i )
+	{
+	    Program::ClassMethodParamPattern param;
+	    param.type = normalize_type(fd->parameters[i]);
+	    param.is_const = i < fd->const_params.size() && fd->const_params[i];
+	    if ( i < fd->param_cpp_spellings.size() )
+		param.cpp_spelling = fd->param_cpp_spellings[i];
+	    if ( i < fd->param_typedef_names.size() )
+		param.typedef_name = fd->param_typedef_names[i];
+	    if ( method && i < method->parameters.size() && method->parameters[i] )
+	    {
+		param.name = method->parameters[i]->name;
+		param.flags = method->parameters[i]->flags;
+	    }
+	    if ( i < fd->param_default_tokens.size() )
+		param.default_tokens =
+		    class_pattern_clone_tokens(fd->param_default_tokens[i]);
+	    if ( i < fd->param_defaults.size() && fd->param_defaults[i]
+	      && param.default_tokens.empty() )
+		fail(Program::ClassParseReason::RequiresEagerBodyParse);
+	    out.parameters.push_back(param);
+	}
+	const Program::DeferredFunctionBody *recipe = body_for(owner, var);
+	if ( recipe )
+	{
+	    out.body_tokens = class_pattern_clone_tokens(recipe->body_tokens);
+	    out.definition_tokens =
+		class_pattern_clone_tokens(recipe->definition_tokens);
+	    out.trailing_ret_tokens =
+		class_pattern_clone_tokens(recipe->trailing_ret_tokens);
+	    out.ctor_init_tokens =
+		class_pattern_clone_tokens(recipe->ctor_init_tokens);
+	}
+	else if ( !fd->declaration_only && !fd->defaulted_or_deleted
+	       && !fd->pure_virtual && fd->emit_symbol.empty()
+	       && fd->member_template_decl.empty() )
+	{
+	    out.has_eager_body = true;
+	    fail(Program::ClassParseReason::RequiresEagerBodyParse);
+	}
+	return out;
+    }
+
+    void populate_node(size_t index)
+    {
+	DataDef *dd = node_types[index];
+	DataDefSTRUCT *aggregate = dynamic_cast<DataDefSTRUCT *>(dd);
+	DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+	DataDefENUM *enumeration = dynamic_cast<DataDefENUM *>(dd);
+	Program::ClassAggregatePatternNode node;
+	node.local_id = (uint32_t)index;
+	node.parent_id = node_parents[index];
+	node.source_name = node_names[index];
+	node.canonical_spelling = dd->canonical_cpp_spelling();
+	node.complete = aggregate ? aggregate->is_complete : enumeration != NULL;
+	node.from_system_header = cls && cls->from_system_header;
+	if ( enumeration )
+	    node.kind = Program::ClassAggregateKind::Enum;
+	else if ( aggregate && aggregate->union_layout )
+	    node.kind = Program::ClassAggregateKind::Union;
+	else if ( cls )
+	    node.kind = Program::ClassAggregateKind::Class;
+	else
+	    node.kind = Program::ClassAggregateKind::Struct;
+	if ( index == 0 && !td.body.empty() && td.body[0]
+	  && td.body[0]->id() == TokenID::tkSTRUCT )
+	    node.kind = Program::ClassAggregateKind::Struct;
+
+	if ( cls )
+	{
+	    std::map<DataDefCLASS *,
+		std::vector<Program::ClassDeclKind> >::const_iterator ordered =
+		decls.find(cls);
+	    if ( ordered != decls.end() )
+		node.declarations = ordered->second;
+	    for ( size_t i = 0; i < cls->bases.size(); ++i )
+	    {
+		Program::ClassBasePattern base;
+		base.type = normalize_type(cls->bases[i].base);
+		base.access = cls->bases[i].access;
+		base.is_virtual = cls->bases[i].is_virtual;
+		node.bases.push_back(base);
+	    }
+	    for ( std::map<std::string, DataDef *>::const_iterator alias =
+		    cls->type_aliases.begin(); alias != cls->type_aliases.end();
+		  ++alias )
+		if ( alias->second && alias->second != cls )
+		{
+		    Program::ClassAliasPattern normalized;
+		    normalized.name = alias->first;
+		    normalized.type = normalize_type(alias->second);
+		    node.aliases.push_back(normalized);
+		}
+	    for ( size_t i = 0; i < cls->methods.size(); ++i )
+		node.methods.push_back(normalize_method(cls, cls->methods[i]));
+	    for ( std::map<std::string, DataDef *>::const_iterator member =
+		    cls->static_member_types.begin();
+		  member != cls->static_member_types.end(); ++member )
+		node.static_members.push_back(std::make_pair(
+		    member->first, normalize_type(member->second)));
+	    for ( std::map<std::string, int64_t>::const_iterator value =
+		    cls->static_member_const_values.begin();
+		  value != cls->static_member_const_values.end(); ++value )
+		node.static_values.push_back(*value);
+	    node.friend_classes = cls->friend_class_names;
+	    node.friend_functions = cls->friend_function_names;
+	    for ( size_t i = 0; i < node.declarations.size(); ++i )
+	    {
+		if ( node.declarations[i] == Program::ClassDeclKind::FriendFunction )
+		    fail(Program::ClassParseReason::UnsupportedFriendDefinition);
+		else if ( node.declarations[i] ==
+			  Program::ClassDeclKind::DefaultedComparison )
+		    fail(Program::ClassParseReason::UnsupportedDefaultedComparison);
+	    }
+	}
+	if ( aggregate )
+	{
+	    if ( !aggregate->member_default_inits.empty() )
+		fail(Program::ClassParseReason::RequiresEagerBodyParse);
+	    for ( size_t i = 0; i < aggregate->members.size(); ++i )
+	    {
+		int origin = i < aggregate->member_origin.size()
+		    ? aggregate->member_origin[i] : -1;
+		if ( origin >= 0 )
+		    continue;
+		Program::ClassMemberPattern member;
+		member.name = aggregate->members[i].first;
+		member.type = normalize_type(aggregate->members[i].second);
+		member.count = i < aggregate->member_counts.size()
+		    ? aggregate->member_counts[i] : 1;
+		member.access = i < aggregate->member_access.size()
+		    ? aggregate->member_access[i] : 0;
+		member.is_array = i < aggregate->member_array_flags.size()
+		    && aggregate->member_array_flags[i];
+		if ( i < aggregate->member_bitfields.size() )
+		{
+		    member.is_bitfield = aggregate->member_bitfields[i].is_bitfield;
+		    member.bit_width = aggregate->member_bitfields[i].bit_width;
+		}
+		if ( i < aggregate->member_dims.size() )
+		    for ( size_t d = 0; d < aggregate->member_dims[i].size(); ++d )
+			member.dimensions.push_back(aggregate->member_dims[i][d]);
+		if ( i < aggregate->member_count_exprs.size()
+		  && aggregate->member_count_exprs[i] )
+		    fail(Program::ClassParseReason::DependentValueExpression);
+		for ( size_t a = 0; a < aggregate->anonymous_aggregates.size(); ++a )
+		    if ( i >= aggregate->anonymous_aggregates[a].first_member
+		      && i < aggregate->anonymous_aggregates[a].first_member
+			   + aggregate->anonymous_aggregates[a].member_count )
+			member.is_anonymous = true;
+		node.members.push_back(member);
+	    }
+	    if ( !cls && node.declarations.empty() )
+		for ( size_t i = 0; i < node.members.size(); ++i )
+		    node.declarations.push_back(node.members[i].is_bitfield
+			? Program::ClassDeclKind::BitField
+			: Program::ClassDeclKind::DataMember);
+	}
+	pattern.nodes.push_back(node);
+    }
+
+public:
+    ClassPatternNormalizer(Program &program, const Program::TemplateDef &def,
+	DataDef *root, const std::set<DataDef *> &stable,
+	const std::map<DataDefCLASS *,
+	    std::vector<Program::ClassDeclKind> > &ordered,
+	const std::map<DataDefCLASS *,
+	    std::vector<Program::DeferredFunctionBody> > &body_recipes,
+	const std::string &identity)
+	: pgm(program), td(def), stable_types(stable), decls(ordered),
+	  bodies(body_recipes)
+    {
+	pattern.identity = identity;
+	pattern.class_name = td.class_name;
+	pattern.defining_namespace = td.defining_namespace;
+	pattern.is_partial_specialization = td.is_partial_specialization;
+	external_types.push_back(NULL);
+	collect_nodes(root);
+	for ( size_t i = 0; i < node_types.size(); ++i )
+	    populate_node(i);
+    }
+
+    Program::ClassPattern release(std::vector<DataDef *> &external)
+    {
+	external.swap(external_types);
+	return pattern;
+    }
+};
+}
+
+Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
+{
+    td.class_pattern_id = 0;
+    td.class_pattern_reason = ClassParseReason::None;
+    if ( td.body.empty() )
+	return 0;
+    if ( class_pattern_capture_in_progress )
+	return 0;
+    struct CaptureGuard {
+	bool &active;
+	explicit CaptureGuard(bool &value) : active(value) { active = true; }
+	~CaptureGuard() { active = false; }
+    } capture_guard(class_pattern_capture_in_progress);
+
+    std::set<DataDef *> stable_types;
+    class_pattern_collect_stable_types(*this, stable_types);
+    ClassPatternHash identity_hash;
+    identity_hash.add_string(td.defining_namespace);
+    identity_hash.add_string(td.owner_class
+	? td.owner_class->canonical_cpp_spelling() : std::string());
+    identity_hash.add_string(td.class_name);
+    identity_hash.add_bool(td.is_partial_specialization);
+    for ( size_t i = 0; i < td.spec_pattern.size(); ++i )
+	identity_hash.add_string(class_pattern_tokens_spelling(td.spec_pattern[i]));
+    std::ostringstream internal_name;
+    internal_name << "__madc_class_pattern_" << std::hex << std::setw(16)
+	<< std::setfill('0') << identity_hash.value();
+    std::string identity = internal_name.str();
+
+    std::string canonical;
+    if ( td.owner_class )
+	canonical = td.owner_class->canonical_cpp_spelling().empty()
+	    ? td.owner_class->name : td.owner_class->canonical_cpp_spelling();
+    else
+	canonical = td.defining_namespace;
+    if ( !canonical.empty() )
+	canonical += "::";
+    canonical += td.class_name + "<";
+    if ( td.is_partial_specialization )
+    {
+	for ( size_t i = 0; i < td.spec_pattern.size(); ++i )
+	{
+	    if ( i )
+		canonical += ",";
+	    canonical += class_pattern_tokens_spelling(td.spec_pattern[i]);
+	}
+    }
+    else
+	for ( size_t i = 0; i < td.typeparams.size(); ++i )
+	{
+	    if ( i )
+		canonical += ",";
+	    canonical += td.typeparams[i];
+	    if ( i < td.typeparam_is_pack.size() && td.typeparam_is_pack[i] )
+		canonical += "...";
+	}
+    canonical += ">";
+
+    std::vector<TokenBase *> injected = class_pattern_clone_tokens(td.body);
+    if ( injected.size() < 2 || !injected[1]
+	  || injected[1]->type() != TokenType::ttIdentifier )
+    {
+	td.class_pattern_reason = ClassParseReason::PatternParseError;
+	return 0;
+    }
+    set_token_spelling(static_cast<TokenIdent *>(injected[1]), identity);
+    injected.push_back(new TokenSemi());
+
+    TokenStream::Pos saved_tokens = tokens.savepos();
+    TokenBase *saved_prv = _prv_token;
+    TokenBase *saved_cur = _cur_token;
+    const char *saved_parse_file = TokenBase::_parse_file;
+    int saved_parse_line = TokenBase::_parse_line;
+    int saved_parse_column = TokenBase::_parse_column;
+    std::stack<TokenCpnd *> saved_compounds;
+    std::swap(compounds, saved_compounds);
+    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+	saved_typedef_shadows;
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
+    std::vector<DataDefCLASS *> saved_class_scope_stack;
+    std::swap(class_scope_stack, saved_class_scope_stack);
+    std::string saved_func = cur_func_name;
+    TokenCpnd *saved_tk_function = tkFunction;
+    std::vector<TokenSWITCH *> saved_switch_stack = switch_stack;
+    std::vector<TokenCASE *> saved_switch_case_stack = switch_case_stack;
+    std::string saved_canon = instantiating_canonical_spelling;
+    bool saved_dependent_surface = instantiating_dependent_surface;
+    bool saved_dep_parse = dependent_parse_in_progress;
+    bool saved_poisoned = dependent_parse_poisoned;
+    bool saved_definition_only = class_definition_only;
+    bool saved_cpp_struct = parsing_cpp_struct_class;
+    bool saved_cpp_union = parsing_cpp_union_class;
+    LinkageSpec saved_linkage = current_linkage;
+    bool saved_extern_decl = parsing_extern_decl;
+    bool saved_static_decl = parsing_static_decl;
+    bool saved_const_decl = parsing_const_decl;
+    bool saved_typedef_decl = parsing_typedef_decl;
+    bool saved_pattern_ctor_inits = dependent_pattern_ctor_inits;
+    std::vector<DeferredFunctionBody> *saved_deferred_sink =
+	deferred_function_body_sink;
+    std::vector<TokenBase *> saved_pending_ctor_inits =
+	pending_deferred_ctor_inits;
+    std::vector<TokenBase *> saved_skipped_template_decl =
+	last_skipped_template_decl;
+    std::vector<std::string> saved_skipped_template_typeparams =
+	last_skipped_template_typeparams;
+    std::vector<bool> saved_skipped_template_packs =
+	last_skipped_template_typeparam_is_pack;
+    std::string saved_stmt_callee_namespace = stmt_callee_namespace;
+    std::map<DataDefCLASS *, std::vector<ClassDeclKind> > *saved_decl_capture =
+	class_pattern_decl_capture;
+    std::map<DataDefCLASS *, std::vector<DeferredFunctionBody> >
+	*saved_body_capture = class_pattern_body_capture;
+    std::map<DataDefCLASS *, std::vector<ClassDeclKind> > captured_decls;
+    std::map<DataDefCLASS *, std::vector<DeferredFunctionBody> > captured_bodies;
+    class_pattern_decl_capture = &captured_decls;
+    class_pattern_body_capture = &captured_bodies;
+    size_t saved_diag_count = diagnostics.size();
+    ErrorInfo saved_error = last_error;
+    std::streambuf *saved_cerr = std::cerr.rdbuf();
+    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    std::cerr.rdbuf(&g_madc_null_streambuf);
+    for ( std::vector<TokenBase *>::reverse_iterator it = injected.rbegin();
+	  it != injected.rend(); ++it )
+	pushToken(*it);
+    cur_func_name.clear();
+    tkFunction = NULL;
+    switch_stack.clear();
+    switch_case_stack.clear();
+    instantiating_canonical_spelling = canonical;
+    instantiating_dependent_surface = true;
+    dependent_parse_in_progress = true;
+    dependent_parse_poisoned = false;
+    class_definition_only = false;
+    parsing_cpp_struct_class = false;
+    parsing_cpp_union_class = false;
+    current_linkage = LinkageSpec::Cpp;
+    parsing_extern_decl = false;
+    parsing_static_decl = false;
+    parsing_const_decl = false;
+    parsing_typedef_decl = false;
+    dependent_pattern_ctor_inits = false;
+    deferred_function_body_sink = NULL;
+    pending_deferred_ctor_inits.clear();
+    last_skipped_template_decl.clear();
+    last_skipped_template_typeparams.clear();
+    last_skipped_template_typeparam_is_pack.clear();
+    stmt_callee_namespace.clear();
+
+    bool parsed = false;
+    ClassPattern pending;
+    std::vector<DataDef *> external_types;
+    ClassRegistrationJournal journal(*this);
+    {
+	NamespaceScope namespace_scope(*this, td.defining_namespace);
+	TemplateParamScope param_scope(*this, td.typeparams);
+	if ( td.owner_class )
+	    class_scope_stack.push_back(td.owner_class);
+	try
+	{
+	    TokenBase *class_kw = nextToken();
+	    parseKeyword(static_cast<TokenKeyword *>(class_kw));
+	    datadef_map_citer root = struct_map.find(identity);
+	    DataDef *root_type = root != struct_map.end() ? root->second : NULL;
+	    if ( dynamic_cast<DataDefSTRUCT *>(root_type) )
+	    {
+		ClassPatternNormalizer normalizer(*this, td, root_type,
+		    stable_types, captured_decls, captured_bodies, identity);
+		pending = normalizer.release(external_types);
+		parsed = true;
+	    }
+	}
+	catch ( ... )
+	{
+	    parsed = false;
+	}
+	if ( td.owner_class && !class_scope_stack.empty()
+	  && class_scope_stack.back() == td.owner_class )
+	    class_scope_stack.pop_back();
+    }
+    bool poisoned = dependent_parse_poisoned;
+    journal.rollback();
+
+    class_pattern_decl_capture = saved_decl_capture;
+    class_pattern_body_capture = saved_body_capture;
+    std::swap(class_scope_stack, saved_class_scope_stack);
+    std::swap(compounds, saved_compounds);
+    unwind_block_typedef_shadows(0, "class-pattern");
+    std::swap(block_typedef_shadows, saved_typedef_shadows);
+    cur_func_name = saved_func;
+    tkFunction = saved_tk_function;
+    switch_stack.swap(saved_switch_stack);
+    switch_case_stack.swap(saved_switch_case_stack);
+    instantiating_canonical_spelling = saved_canon;
+    instantiating_dependent_surface = saved_dependent_surface;
+    dependent_parse_in_progress = saved_dep_parse;
+    dependent_parse_poisoned = saved_poisoned;
+    class_definition_only = saved_definition_only;
+    parsing_cpp_struct_class = saved_cpp_struct;
+    parsing_cpp_union_class = saved_cpp_union;
+    current_linkage = saved_linkage;
+    parsing_extern_decl = saved_extern_decl;
+    parsing_static_decl = saved_static_decl;
+    parsing_const_decl = saved_const_decl;
+    parsing_typedef_decl = saved_typedef_decl;
+    dependent_pattern_ctor_inits = saved_pattern_ctor_inits;
+    deferred_function_body_sink = saved_deferred_sink;
+    pending_deferred_ctor_inits.swap(saved_pending_ctor_inits);
+    last_skipped_template_decl.swap(saved_skipped_template_decl);
+    last_skipped_template_typeparams.swap(saved_skipped_template_typeparams);
+    last_skipped_template_typeparam_is_pack.swap(saved_skipped_template_packs);
+    stmt_callee_namespace = saved_stmt_callee_namespace;
+    tokens = saved_tokens;
+    _prv_token = saved_prv;
+    _cur_token = saved_cur;
+    TokenBase::_parse_file = saved_parse_file;
+    TokenBase::_parse_line = saved_parse_line;
+    TokenBase::_parse_column = saved_parse_column;
+    std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
+    diagnostics.resize(saved_diag_count);
+    last_error = saved_error;
+
+    if ( !parsed )
+    {
+	td.class_pattern_reason = poisoned
+	    ? ClassParseReason::PatternParsePoisoned
+	    : ClassParseReason::PatternParseError;
+	return 0;
+    }
+    if ( struct_map.find(identity) != struct_map.end()
+	  || datatype_map.find(identity) != datatype_map.end() )
+    {
+	td.class_pattern_reason = ClassParseReason::RegistrationEscape;
+	return 0;
+    }
+    for ( size_t i = 1; i < pending.types.size(); ++i )
+	if ( i < external_types.size() && external_types[i] )
+	{
+	    if ( !stable_types.count(external_types[i]) )
+	    {
+		if ( pending.capture_reason == ClassParseReason::None )
+		    pending.capture_reason = ClassParseReason::UnnormalizableType;
+		continue;
+	    }
+	    pending.types[i].concrete_type_id = type_id_for(external_types[i]);
+	    if ( !pending.types[i].concrete_type_id
+	      && pending.capture_reason == ClassParseReason::None )
+		pending.capture_reason = ClassParseReason::UnnormalizableType;
+	}
+    pending.semantic_fingerprint = class_pattern_fingerprint(pending);
+    td.class_pattern_id = class_pattern_arena.add(pending);
+    td.class_pattern_reason = pending.capture_reason;
+    return td.class_pattern_id;
 }
 
 DataDef *StructRegistry::find_despaced(const std::string &want)
@@ -24497,8 +26028,6 @@ TokenBase *TokenPREFER::parse(Program &pgm)
 // degraded to an incomplete `struct anonymous` reference. A unique `__anon_N`
 // name keeps each distinct AND emittable; is_anonymous marks it for the inline
 // declarator paths that must NOT forward-reference it across translation.
-static size_t anon_tag_counter = 0;
-
 // v25 (forest): a bound container's restored anonymous aggregates keep their
 // SAVED `__anon_N` names; the consumer's own parse must mint PAST them —
 // exactly where a live parse of the same headers would have left the counter
@@ -29434,6 +30963,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // (vptr@0, base@0, own members after).
     pgm.complete_class_aggregate(ddc);
     DBG(cout << "TokenCLASS::parse() finalized layout, size now " << ddc->size << endl);
+
+    if ( pgm.class_pattern_body_capture )
+	(*pgm.class_pattern_body_capture)[ddc] = deferred_method_bodies;
 
     // Lazy member-function-body instantiation ([temp.inst]): for a system-header
     // class (typically a template instantiation), DON'T parse member bodies now —
@@ -40003,6 +41535,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	td.is_partial_specialization = true;
 	td.spec_pattern = spec_pattern_tokens;
 	td.constraint = partial_spec_constraint;   // C++20 requires-clause (may be empty)
+	pgm.capture_class_pattern(td);
 	pgm.pack_tap_name(class_name, Program::pdkTemplate);	// B4a: the map key
 	if ( !td.defining_namespace.empty() )
 	    pgm.pack_tap_name(td.defining_namespace + "::" + class_name,
@@ -40192,6 +41725,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     }
     if ( !specialized_template_id )
     {
+	pgm.capture_class_pattern(td);
 	pgm.register_template(td, /*only_if_absent=*/false);
 	pgm.complete_pending_template_instantiations(class_name);
     }
@@ -42416,8 +43950,6 @@ static DataDef *deduce_return_type_from_stmt(Program *pgm, TokenBase *stmt)
 
 TokenBase *Program::parseLambda()
 {
-    static int lambda_counter = 0;
-
     DBG(cout << "parseLambda() START" << endl);
 
     auto resolve_lambda_param_type = [&](TokenBase *type_tb) -> TokenDataType * {

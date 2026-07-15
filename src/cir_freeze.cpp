@@ -2877,6 +2877,18 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			rt.extra = t.extra_id ? pool_str(t.extra_id) : NULL;
 			rt.owner = NULL;
 			rt.flags = t.flags;
+			rt.pattern = NULL;
+			rt.pattern_words = 0;
+			rt.pattern_reason = t.pattern_reason;
+			if (t.pattern_words) {
+				size_t begin = t.pattern_begin;
+				size_t count = t.pattern_words;
+				if (begin > _template_payload.size()
+				    || count > _template_payload.size() - begin)
+					continue;
+				rt.pattern = _template_payload.data() + begin;
+				rt.pattern_words = t.pattern_words;
+			}
 			if (t.owner_type_id) {
 				DataDefCLASS *oc = dynamic_cast<DataDefCLASS *>(
 					arena_swizzle(t.owner_type_id, by_id));
@@ -2922,6 +2934,36 @@ const char *CirFrozenForest::type_name_for(uint32_t type_id) const
 {
 	std::map<uint32_t, const char *>::const_iterator it = _type_names.find(type_id);
 	return it != _type_names.end() ? it->second : NULL;
+}
+
+const char *CirFrozenForest::restored_template_string(uint32_t id) const
+{
+	if (!id)
+		return NULL;
+	uint32_t len = 0;
+	return pool_cstr(id, len);
+}
+
+CirRestoredTemplateRun CirFrozenForest::restored_template_run(
+	const cir_forest_token_run &run) const
+{
+	CirRestoredTemplateRun restored;
+	restored.bytes = NULL;
+	restored.len = 0;
+	restored.count = 0;
+	restored.file = NULL;
+	if (run.tok_count
+	    && (size_t)run.tok_off <= _template_tokens.size()
+	    && (size_t)run.tok_bytes <= _template_tokens.size() - run.tok_off) {
+		restored.bytes = _template_tokens.data() + run.tok_off;
+		restored.len = run.tok_bytes;
+		restored.count = run.tok_count;
+	}
+	if (run.file_id) {
+		uint32_t len = 0;
+		restored.file = pool_cstr(run.file_id, len);
+	}
+	return restored;
 }
 
 size_t CirFrozenForest::units_loaded() const

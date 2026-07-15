@@ -1,17 +1,23 @@
 # Test Status
 
-> **Current (2026-07-14, bound columnar RECORDS bind @`cbcb79b6`):**
+> **Current (2026-07-15, class-KIND parse-once B1 checkpoint on
+> `feature/class-parse-once-codex`):**
 > `make -C src fulltest` exits 0 with **695 passed, 0 failed, 0 timed out,
 > 16 skipped**. Every static and forest gate is green, including
 > `forest_bind_gate [subbind]`, the full bind matrix, and both forest oracles.
-> The reducer corpus freezes with **308 pack drops**. `make -C src release`
-> exits 0 and appends 240 packed units; the full packed run
+> `make -C src release` exits 0 and appends 240 packed units; the full packed run
 > (`MADC_BIN=bin/madc-release bash scripts/run_tests.sh`) is also
-> **695/0/0/16**. `bin/test_madcdis_snapshot` is **10/10** with **13,884
-> assertions**, including direct verification of the preserved byte-plane
-> layout; `bin/test_cir_freeze` is **36/36** with **690 assertions**. The
-> packed artifact carries a readable 240-unit forest and remains exactly
-> **9,708,520 bytes**.
+> **695/0/0/16**. `bin/test_cir_freeze` is **36/36** with **740 assertions**,
+> including class-pattern semantic/token fingerprint and forest round-trip
+> coverage; `bin/test_stringpool` is **7/7** with **10,032 assertions**,
+> including scoped keyed-map transactions. The tsubst matrix is **13/13** and
+> the suite ratchet remains **10 hit / 0 fallback**. The full class census is
+> pattern **0**, parse **48604**, cache **99334**, opaque **24430**, with only
+> `pattern-not-captured`; all patterns are deliberately ineligible in B1. Both
+> the debug/PIC build and the `-Wall -O2` release build emit **0 host compiler
+> warnings**; the source warning census compiles **711** tests with **0
+> warnings**. The packed artifact carries a readable 240-unit forest, is
+> **10,176,152 bytes**, and has `MADCSNAP` footer magic.
 >
 > **Local branch update (2026-06-28, `feature/front-end-performance-claude` @
 > Kind 3 dependent-member body tsubst slice):** fulltest

@@ -1805,6 +1805,221 @@ public:
     // record, encoded by forest_arena_record_func) at its own project slot. Idempotent via
     // has_def; the target's own fptr-typed params/return recurse, bounded by the same guard.
     void forest_arena_record_fptr(DataDef *dd);
+    // Class-template parse-once representation. TemplateDef is copied across
+    // lookup, merge, partial selection, and forest restore, so it owns only a
+    // stable Program-lifetime arena id. Pattern nodes use ids and value fields;
+    // no temporary aggregate pointer survives definition-time capture.
+    typedef uint32_t ClassPatternId;
+    typedef uint32_t ClassTypePatternId;
+    enum class ClassParseReason : uint8_t {
+	None,
+	PatternNotCaptured,		// B0/B1 transition; removed when B2 admits patterns
+	PatternParseError,
+	PatternParsePoisoned,
+	UnnormalizableType,
+	DependentValueExpression,
+	UnsupportedDeclKind,
+	UnsupportedNestedDefinition,
+	UnsupportedFriendDefinition,
+	UnsupportedDefaultedComparison,
+	UnsupportedOutOfLineNested,
+	RequiresEagerBodyParse,
+	RegistrationEscape
+    };
+    enum class ClassDeclKind : uint8_t {
+	TypeAlias,
+	NestedAggregate,
+	NestedForward,
+	NestedEnum,
+	DataMember,
+	BitField,
+	AnonymousAggregate,
+	StaticDataMember,
+	Method,
+	MemberTemplate,
+	FriendType,
+	FriendFunction,
+	DefaultedComparison,
+	UsingBaseMember,
+	StaticAssert
+    };
+    enum class ClassTypePatternKind : uint8_t {
+	ConcreteType,
+	TemplateParam,
+	SelfType,
+	NestedType,
+	Pointer,
+	Reference,
+	ConstType,
+	CArray,
+	FunctionPointer,
+	TemplateId,
+	DependentMember,
+	PackExpansion
+    };
+    enum class ClassAggregateKind : uint8_t {
+	Class,
+	Struct,
+	Union,
+	Enum
+    };
+    enum class ClassMethodKind : uint8_t {
+	Method,
+	Constructor,
+	Destructor,
+	Conversion
+    };
+    struct ClassTypePattern {
+	ClassTypePatternKind kind;
+	uint32_t flags;
+	uint32_t concrete_type_id;
+	ClassTypePatternId operand;
+	ClassTypePatternId secondary;
+	uint32_t template_param_index;
+	uint32_t nested_node_id;
+	uint32_t pack_param_index;
+	std::string name;
+	std::vector<ClassTypePatternId> arguments;
+	std::vector<uint64_t> dimensions;
+	ClassTypePattern()
+	    : kind(ClassTypePatternKind::ConcreteType), flags(0), concrete_type_id(0),
+	      operand(0), secondary(0), template_param_index(0),
+	      nested_node_id(0), pack_param_index(0) {}
+    };
+    struct ClassBasePattern {
+	ClassTypePatternId type;
+	uint32_t access;
+	bool is_virtual;
+	ClassBasePattern() : type(0), access(0), is_virtual(false) {}
+    };
+    struct ClassAliasPattern {
+	std::string name;
+	ClassTypePatternId type;
+	ClassAliasPattern() : type(0) {}
+    };
+    struct ClassMemberPattern {
+	std::string name;
+	ClassTypePatternId type;
+	uint64_t count;
+	uint32_t access;
+	bool is_array;
+	bool is_bitfield;
+	bool is_anonymous;
+	uint64_t bit_width;
+	std::vector<uint64_t> dimensions;
+	ClassMemberPattern()
+	    : type(0), count(1), access(0), is_array(false),
+	      is_bitfield(false), is_anonymous(false), bit_width(0) {}
+    };
+    struct ClassMethodParamPattern {
+	std::string name;
+	ClassTypePatternId type;
+	uint32_t flags;
+	bool is_const;
+	std::string cpp_spelling;
+	std::string typedef_name;
+	std::vector<TokenBase *> default_tokens;
+	ClassMethodParamPattern() : type(0), flags(0), is_const(false) {}
+    };
+    struct ClassMethodPattern {
+	ClassMethodKind kind;
+	std::string variable_name;
+	std::string display_name;
+	std::string storage_alias_name;
+	std::string local_emit_name;
+	std::string emit_symbol;
+	std::string return_typedef_name;
+	ClassTypePatternId return_type;
+	uint32_t flags;
+	bool is_varargs;
+	bool is_void_params;
+	bool declaration_only;
+	bool defaulted_or_deleted;
+	bool is_deleted;
+	bool pure_virtual;
+	bool is_const_method;
+	bool is_member_template;
+	bool has_eager_body;
+	std::vector<ClassMethodParamPattern> parameters;
+	std::vector<std::string> template_param_names;
+	std::vector<bool> template_param_is_type;
+	std::vector<bool> template_param_is_pack;
+	std::string template_return_spelling;
+	std::vector<std::string> template_param_spellings;
+	std::vector<TokenBase *> body_tokens;
+	std::vector<TokenBase *> definition_tokens;
+	std::vector<TokenBase *> trailing_ret_tokens;
+	std::vector<TokenBase *> ctor_init_tokens;
+	std::vector<TokenBase *> member_template_decl;
+	std::vector<TokenBase *> member_template_return_tokens;
+	ClassMethodPattern()
+	    : kind(ClassMethodKind::Method), return_type(0), flags(0),
+	      is_varargs(false), is_void_params(false), declaration_only(false),
+	      defaulted_or_deleted(false), is_deleted(false), pure_virtual(false),
+	      is_const_method(false), is_member_template(false),
+	      has_eager_body(false) {}
+    };
+    struct ClassAggregatePatternNode {
+	uint32_t local_id;
+	uint32_t parent_id;
+	ClassAggregateKind kind;
+	std::string source_name;
+	std::string canonical_spelling;
+	bool complete;
+	bool from_system_header;
+	std::vector<ClassBasePattern> bases;
+	std::vector<ClassDeclKind> declarations;
+	std::vector<ClassAliasPattern> aliases;
+	std::vector<ClassMemberPattern> members;
+	std::vector<ClassMethodPattern> methods;
+	std::vector<std::pair<std::string, ClassTypePatternId> > static_members;
+	std::vector<std::pair<std::string, int64_t> > static_values;
+	std::vector<std::string> friend_classes;
+	std::vector<std::string> friend_functions;
+	ClassAggregatePatternNode()
+	    : local_id(0), parent_id(0), kind(ClassAggregateKind::Class),
+	      complete(false), from_system_header(false) {}
+    };
+    struct ClassPattern {
+	std::string identity;
+	std::string class_name;
+	std::string defining_namespace;
+	bool is_partial_specialization;
+	ClassParseReason capture_reason;
+	uint64_t semantic_fingerprint;
+	std::vector<ClassTypePattern> types;
+	std::vector<ClassAggregatePatternNode> nodes;
+	ClassPattern()
+	    : is_partial_specialization(false),
+	      capture_reason(ClassParseReason::None), semantic_fingerprint(0)
+	{
+	    types.push_back(ClassTypePattern());
+	}
+    };
+    class ClassPatternArena {
+	std::vector<ClassPattern> patterns;
+    public:
+	ClassPatternArena() { patterns.push_back(ClassPattern()); }
+	ClassPatternId add(const ClassPattern &pattern)
+	{
+	    patterns.push_back(pattern);
+	    return (ClassPatternId)(patterns.size() - 1);
+	}
+	const ClassPattern *get(ClassPatternId id) const
+	{
+	    return id && id < patterns.size() ? &patterns[id] : NULL;
+	}
+	ClassPattern *get(ClassPatternId id)
+	{
+	    return id && id < patterns.size() ? &patterns[id] : NULL;
+	}
+	size_t size() const { return patterns.size() - 1; }
+    };
+    ClassPatternArena class_pattern_arena;
+    bool class_pattern_capture_in_progress = false;
+    std::map<DataDefCLASS *, std::vector<ClassDeclKind> >
+	*class_pattern_decl_capture = NULL;
+
     // Captured `template<typename T> class Name {...}` definitions for
     // Borland-model instantiation: name -> {type params, the class-body token
     // range}. `Name<ConcreteT>` clones+substitutes+re-parses it as a concrete
@@ -1828,9 +2043,14 @@ public:
 	// unconstrained. match_partial_specialization folds this (typeparams
 	// substituted) and rejects the candidate when it is false.
 	std::vector<TokenBase *> constraint;
+	ClassPatternId class_pattern_id;
+	ClassParseReason class_pattern_reason;
 	TemplateDef() : has_non_type_params(false), owner_class(nullptr),
-			is_partial_specialization(false) {}
+			is_partial_specialization(false), class_pattern_id(0),
+			class_pattern_reason(ClassParseReason::None) {}
     };
+	ClassPatternId capture_class_pattern(TemplateDef &td);
+	uint64_t class_pattern_fingerprint(const ClassPattern &pattern) const;
     // B0 class-KIND parse-once foundation. Capture uses the production class
     // parser once, so all temporary registrations must roll back as one unit.
     // The implementation snapshots registry surfaces behind this small RAII
@@ -2589,37 +2809,6 @@ public:
     // selected body is known to take the sole parser lane; cache and dependent
     // shells are disjoint outcomes. ClassParseReason stays typed until the
     // --show-stats rendering boundary.
-    enum class ClassParseReason : uint8_t {
-	PatternNotCaptured,		// B0-only transition; removed by B1 capture
-	PatternParseError,
-	PatternParsePoisoned,
-	UnnormalizableType,
-	DependentValueExpression,
-	UnsupportedDeclKind,
-	UnsupportedNestedDefinition,
-	UnsupportedFriendDefinition,
-	UnsupportedDefaultedComparison,
-	UnsupportedOutOfLineNested,
-	RequiresEagerBodyParse,
-	RegistrationEscape
-    };
-    enum class ClassDeclKind : uint8_t {
-	TypeAlias,
-	NestedAggregate,
-	NestedForward,
-	NestedEnum,
-	DataMember,
-	BitField,
-	AnonymousAggregate,
-	StaticDataMember,
-	Method,
-	MemberTemplate,
-	FriendType,
-	FriendFunction,
-	DefaultedComparison,
-	UsingBaseMember,
-	StaticAssert
-    };
     struct ClassParseProfileKey {
 	std::string identity;
 	ClassParseReason reason;
@@ -2686,6 +2875,8 @@ public:
 	int column;
 	DeferredFunctionBody() : var(NULL), method(NULL), full_definition(false), file(NULL), line(0), column(0) {}
     };
+    std::map<DataDefCLASS *, std::vector<DeferredFunctionBody> >
+	*class_pattern_body_capture = NULL;
     std::vector<DeferredFunctionBody> *deferred_function_body_sink;
     // Mem-initializer tokens captured for the NEXT enqueue_deferred_function_body
     // (set by parseFunction's ':' arm when a class-body ctor defers).
@@ -3891,7 +4082,6 @@ public:
     void parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 						 TokenBase *loc);
     bool class_body_enum_definition_follows();
-    enum class ClassMethodKind { Method, Constructor, Destructor, Conversion };
     struct ClassMethodRegistration {
 	ClassMethodKind kind;
 	std::string display_name;

@@ -7,6 +7,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+MADC="${MADC:-bin/madc}"
 OUT="$ROOT/tmp/warn_census_out"
 BASELINE="$ROOT/docs/parity/warning-baseline.txt"
 CHECK=0
@@ -69,12 +70,23 @@ for f in tests/*.mad; do
 	[ "$base" = "include_helper.mad" ] && continue
 
 	flags=()
+	args=()
 	flags_file="tests/${base%.mad}.flags"
+	input_file="tests/${base%.mad}.input"
+	argv_file="tests/${base%.mad}.argv"
+	timeout_file="tests/${base%.mad}.timeout"
 	[ -f "$flags_file" ] && read -r -a flags < "$flags_file"
+	[ -f "$argv_file" ] && read -r -a args < "$argv_file"
+	test_timeout="$TIMEOUT_SECONDS"
+	[ -f "$timeout_file" ] && read -r test_timeout < "$timeout_file"
 
 	total_tests=$((total_tests + 1))
 	stderr_file="$OUT/${base%.mad}.stderr"
-	{ timeout "$TIMEOUT_SECONDS" bin/madc "${flags[@]}" "$f" > /dev/null; } 2> "$stderr_file"
+	if [ -f "$input_file" ]; then
+		{ timeout "$test_timeout" "$MADC" "${flags[@]}" "$f" "${args[@]}" < "$input_file" > /dev/null; } 2> "$stderr_file"
+	else
+		{ timeout "$test_timeout" "$MADC" "${flags[@]}" "$f" "${args[@]}" > /dev/null; } 2> "$stderr_file"
+	fi
 	warn_file="$OUT/${base%.mad}.warnings"
 	grep -- 'warning --' "$stderr_file" > "$warn_file"
 	n=$(grep -c -- 'warning --' "$warn_file")

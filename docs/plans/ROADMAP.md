@@ -1,9 +1,8 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-07-14 (family-D forest
-drain-gap campaign closed; bound RECORDS decode no longer eagerly rebuilds
-untouched rows; Slice B class-KIND parse-once design complete, implementation
-not started; live/packed suites 695/0/0/16).
+Master plan linking all workstreams. Updated 2026-07-15 (class-KIND parse-once
+B1 checkpoint ready for independent verification; live/packed suites
+695/0/0/16; host and source warning censuses clean).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -29,7 +28,8 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Slice B class-KIND parse-once (2026-07-14): DESIGN COMPLETE.** The
+- **Slice B class-KIND parse-once (2026-07-15): B1 CHECKPOINT READY FOR
+  INDEPENDENT VERIFICATION.** The
   standalone design in
   `docs/plans/2026-07-14-class-kind-parse-once-DESIGN.md` inventories the
   complete `TokenSTRUCT`/`TokenCLASS` output contract and specifies one-time
@@ -38,10 +38,19 @@ high-level" — the answer is both.**
   pattern-vs-sole-parse ratchet. Eligibility is decided before instantiation:
   an ineligible pattern uses today's token parser as its only tallied lane; an
   admitted pattern rolls back and fails loudly rather than retrying through the
-  parser. No implementation landed in the design sitting. Next: B0 shared
-  helpers/journal/counters/vector census. Before B1, owner review is required
-  for the format-version bump and extension of the existing class-template
-  `TEMPLATE_PAYLOAD`; bind-time reparse is forbidden.
+  parser. B0 @`c6f05b48` landed the shared registration/completion helpers,
+  transactional journal, class-lane counters, ratchet, and vector census. B1
+  captures and normalizes primary/partial `ClassPattern`s once, fingerprints
+  them, and carries/restores them directly through the owner-approved existing
+  class-template `TEMPLATE_PAYLOAD` in CIR forest format v28. Bind-time reparse
+  is absent, and every pattern remains intentionally ineligible at B1, so the
+  instantiation path is unchanged. Gates: fulltest and packed release
+  **695/0/0/16**, bind **18/18**, tsubst **10 hit / 0 fallback**, compiler
+  warnings **0**, source warning census **711/0**. The exact class census stays
+  at the B0 baseline: pattern 0, parse 48604, cache 99334, opaque 24430, sole
+  reason `pattern-not-captured`. Next: independent B1 verification; after
+  approval, B2 enables the narrow basic structural pattern lane with loud
+  rollback and no parser retry.
 - **Bound forest RECORDS decode (2026-07-14, `cbcb79b6`): CLOSED, merged to
   `develop` (independently verified).** Callgrind found the new bound CIR
   regression below `CirFrozenForest::unit_segment`: whole-frame

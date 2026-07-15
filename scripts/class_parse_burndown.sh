@@ -67,7 +67,25 @@ for file in "$TESTS"/*.mad; do
 		"$MADC" --show-stats --dump-registered "${flags[@]}" "$file" \
 		2>&1 >/dev/null)
 	test_rc=$?
-	if [ "$test_rc" -ne 0 ]; then
+	expect_err="$base.expect_err"
+	if [ -f "$expect_err" ]; then
+		expected_error_ok=1
+		if [ "$test_rc" -eq 0 ] || [ "$test_rc" -eq 124 ]; then
+			expected_error_ok=0
+		else
+			while IFS= read -r line; do
+				[ -z "$line" ] && continue
+				if ! grep -qF -- "$line" <<< "$out"; then
+					expected_error_ok=0
+					break
+				fi
+			done < "$expect_err"
+		fi
+		if [ "$expected_error_ok" -ne 1 ]; then
+			echo "class census expected-error mismatch: $file (rc=$test_rc)" >&2
+			rc=1
+		fi
+	elif [ "$test_rc" -ne 0 ]; then
 		echo "class census failed: $file (rc=$test_rc)" >&2
 		rc=1
 	fi

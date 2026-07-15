@@ -1832,6 +1832,170 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	return r;
     };
 
+    auto pattern_words_of = [&](const Program::ClassPattern &pattern) {
+	std::vector<uint32_t> words;
+	auto word64 = [&](uint64_t value) {
+	    words.push_back((uint32_t)(value & 0xffffffffu));
+	    words.push_back((uint32_t)(value >> 32));
+	};
+	auto intern_spelling = [&](const std::string &value) -> uint32_t {
+	    return value.empty() ? 0 : pool.intern(value);
+	};
+	auto token_run = [&](const std::vector<TokenBase *> &tokens) {
+	    cir_forest_token_run run = run_of(tokens);
+	    words.push_back(run.tok_off);
+	    words.push_back(run.tok_bytes);
+	    words.push_back(run.tok_count);
+	    words.push_back(run.file_id);
+	};
+	words.push_back(CIR_CLASS_PATTERN_MAGIC);
+	words.push_back(CIR_CLASS_PATTERN_PAYLOAD_VERSION);
+	words.push_back((uint32_t)pattern.capture_reason);
+	word64(pattern.semantic_fingerprint);
+	words.push_back(intern_spelling(pattern.identity));
+	words.push_back(intern_spelling(pattern.class_name));
+	words.push_back(intern_spelling(pattern.defining_namespace));
+	words.push_back(pattern.is_partial_specialization ? 1u : 0u);
+	words.push_back((uint32_t)pattern.types.size());
+	for ( size_t i = 0; i < pattern.types.size(); ++i )
+	{
+	    const Program::ClassTypePattern &type = pattern.types[i];
+	    words.push_back((uint32_t)type.kind);
+	    words.push_back(type.flags);
+	    words.push_back(type.concrete_type_id);
+	    words.push_back(type.operand);
+	    words.push_back(type.secondary);
+	    words.push_back(type.template_param_index);
+	    words.push_back(type.nested_node_id);
+	    words.push_back(type.pack_param_index);
+	    words.push_back(intern_spelling(type.name));
+	    words.push_back((uint32_t)type.arguments.size());
+	    words.push_back((uint32_t)type.dimensions.size());
+	    for ( size_t a = 0; a < type.arguments.size(); ++a )
+		words.push_back(type.arguments[a]);
+	    for ( size_t d = 0; d < type.dimensions.size(); ++d )
+		word64(type.dimensions[d]);
+	}
+	words.push_back((uint32_t)pattern.nodes.size());
+	for ( size_t i = 0; i < pattern.nodes.size(); ++i )
+	{
+	    const Program::ClassAggregatePatternNode &node = pattern.nodes[i];
+	    words.push_back(node.local_id);
+	    words.push_back(node.parent_id);
+	    words.push_back((uint32_t)node.kind);
+	    words.push_back(intern_spelling(node.source_name));
+	    words.push_back(intern_spelling(node.canonical_spelling));
+	    words.push_back(node.complete ? 1u : 0u);
+	    words.push_back(node.from_system_header ? 1u : 0u);
+	    words.push_back((uint32_t)node.bases.size());
+	    for ( size_t b = 0; b < node.bases.size(); ++b )
+	    {
+		words.push_back(node.bases[b].type);
+		words.push_back(node.bases[b].access);
+		words.push_back(node.bases[b].is_virtual ? 1u : 0u);
+	    }
+	    words.push_back((uint32_t)node.declarations.size());
+	    for ( size_t d = 0; d < node.declarations.size(); ++d )
+		words.push_back((uint32_t)node.declarations[d]);
+	    words.push_back((uint32_t)node.aliases.size());
+	    for ( size_t a = 0; a < node.aliases.size(); ++a )
+	    {
+		words.push_back(intern_spelling(node.aliases[a].name));
+		words.push_back(node.aliases[a].type);
+	    }
+	    words.push_back((uint32_t)node.members.size());
+	    for ( size_t m = 0; m < node.members.size(); ++m )
+	    {
+		const Program::ClassMemberPattern &member = node.members[m];
+		words.push_back(intern_spelling(member.name));
+		words.push_back(member.type);
+		word64(member.count);
+		words.push_back(member.access);
+		words.push_back(member.is_array ? 1u : 0u);
+		words.push_back(member.is_bitfield ? 1u : 0u);
+		words.push_back(member.is_anonymous ? 1u : 0u);
+		word64(member.bit_width);
+		words.push_back((uint32_t)member.dimensions.size());
+		for ( size_t d = 0; d < member.dimensions.size(); ++d )
+		    word64(member.dimensions[d]);
+	    }
+	    words.push_back((uint32_t)node.methods.size());
+	    for ( size_t m = 0; m < node.methods.size(); ++m )
+	    {
+		const Program::ClassMethodPattern &method = node.methods[m];
+		words.push_back((uint32_t)method.kind);
+		words.push_back(intern_spelling(method.variable_name));
+		words.push_back(intern_spelling(method.display_name));
+		words.push_back(intern_spelling(method.storage_alias_name));
+		words.push_back(intern_spelling(method.local_emit_name)); // allowed-exception: pattern persistence field, not symbol build
+		words.push_back(intern_spelling(method.emit_symbol));
+		words.push_back(intern_spelling(method.return_typedef_name));
+		words.push_back(method.return_type);
+		words.push_back(method.flags);
+		words.push_back(method.is_varargs ? 1u : 0u);
+		words.push_back(method.is_void_params ? 1u : 0u);
+		words.push_back(method.declaration_only ? 1u : 0u);
+		words.push_back(method.defaulted_or_deleted ? 1u : 0u);
+		words.push_back(method.is_deleted ? 1u : 0u);
+		words.push_back(method.pure_virtual ? 1u : 0u);
+		words.push_back(method.is_const_method ? 1u : 0u);
+		words.push_back(method.is_member_template ? 1u : 0u);
+		words.push_back(method.has_eager_body ? 1u : 0u);
+		words.push_back((uint32_t)method.parameters.size());
+		for ( size_t p = 0; p < method.parameters.size(); ++p )
+		{
+		    const Program::ClassMethodParamPattern &param =
+			method.parameters[p];
+		    words.push_back(intern_spelling(param.name));
+		    words.push_back(param.type);
+		    words.push_back(param.flags);
+		    words.push_back(param.is_const ? 1u : 0u);
+		    words.push_back(intern_spelling(param.cpp_spelling));
+		    words.push_back(intern_spelling(param.typedef_name));
+		    token_run(param.default_tokens);
+		}
+		words.push_back((uint32_t)method.template_param_names.size());
+		for ( size_t p = 0; p < method.template_param_names.size(); ++p )
+		    words.push_back(intern_spelling(method.template_param_names[p]));
+		words.push_back((uint32_t)method.template_param_is_type.size());
+		for ( size_t p = 0; p < method.template_param_is_type.size(); ++p )
+		    words.push_back(method.template_param_is_type[p] ? 1u : 0u);
+		words.push_back((uint32_t)method.template_param_is_pack.size());
+		for ( size_t p = 0; p < method.template_param_is_pack.size(); ++p )
+		    words.push_back(method.template_param_is_pack[p] ? 1u : 0u);
+		words.push_back(intern_spelling(method.template_return_spelling));
+		words.push_back((uint32_t)method.template_param_spellings.size());
+		for ( size_t p = 0; p < method.template_param_spellings.size(); ++p )
+		    words.push_back(intern_spelling(method.template_param_spellings[p]));
+		token_run(method.body_tokens);
+		token_run(method.definition_tokens);
+		token_run(method.trailing_ret_tokens);
+		token_run(method.ctor_init_tokens);
+		token_run(method.member_template_decl);
+		token_run(method.member_template_return_tokens);
+	    }
+	    words.push_back((uint32_t)node.static_members.size());
+	    for ( size_t s = 0; s < node.static_members.size(); ++s )
+	    {
+		words.push_back(intern_spelling(node.static_members[s].first));
+		words.push_back(node.static_members[s].second);
+	    }
+	    words.push_back((uint32_t)node.static_values.size());
+	    for ( size_t s = 0; s < node.static_values.size(); ++s )
+	    {
+		words.push_back(intern_spelling(node.static_values[s].first));
+		word64((uint64_t)node.static_values[s].second);
+	    }
+	    words.push_back((uint32_t)node.friend_classes.size());
+	    for ( size_t fidx = 0; fidx < node.friend_classes.size(); ++fidx )
+		words.push_back(intern_spelling(node.friend_classes[fidx]));
+	    words.push_back((uint32_t)node.friend_functions.size());
+	    for ( size_t fidx = 0; fidx < node.friend_functions.size(); ++fidx )
+		words.push_back(intern_spelling(node.friend_functions[fidx]));
+	}
+	return words;
+    };
+
     // Emit one record: params first, then the positional run table
     // (body, constraint, per-param defaults, per-slot spec patterns) — both as
     // contiguous pod_append slices into f.template_payload.
@@ -1842,9 +2006,11 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		    const std::vector<bool> &is_type,
 		    const std::vector<bool> &is_pack,
 		    const std::vector<std::vector<TokenBase *> > &defaults,
-		    const std::vector<TokenBase *> &body,
-		    const std::vector<TokenBase *> &constraint,
-		    const std::vector<std::vector<TokenBase *> > &spec) {
+	    const std::vector<TokenBase *> &body,
+	    const std::vector<TokenBase *> &constraint,
+	    const std::vector<std::vector<TokenBase *> > &spec,
+	    Program::ClassPatternId pattern_id,
+	    Program::ClassParseReason pattern_reason) {
 	cir_forest_template_record r;
 	memset(&r, 0, sizeof(r));
 	r.kind    = kind;
@@ -1854,6 +2020,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	r.extra_id = extra.empty() ? 0 : pool.intern(extra);
 	r.owner_type_id = owner ? forest_serialize_type_id(owner) : 0;
 	r.flags   = flags;
+	r.pattern_reason = (uint32_t)pattern_reason;
 	// v24: a pattern CAPTURED in the TU's root file (the program's own
 	// templates) is fenced from the bind restore. Provenance = the first
 	// body/decl token carrying a file.
@@ -1898,6 +2065,14 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		first = false;
 	    }
 	}
+	if (const Program::ClassPattern *pattern =
+		prog->class_pattern_arena.get(pattern_id)) {
+	    std::vector<uint32_t> words = pattern_words_of(*pattern);
+	    r.pattern_begin = (uint32_t)f.template_payload.size();
+	    r.pattern_words = (uint32_t)words.size();
+	    f.template_payload.insert(f.template_payload.end(),
+		words.begin(), words.end());
+	}
 	f.templates.push_back(r);
     };
 
@@ -1912,7 +2087,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 (td.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0)
 		 | (td.is_partial_specialization ? CIR_TMPLF_IS_PARTIAL_SPEC : 0),
 		 td.typeparams, td.typeparam_is_type, td.typeparam_is_pack,
-		 td.typeparam_defaults, td.body, td.constraint, td.spec_pattern);
+		 td.typeparam_defaults, td.body, td.constraint, td.spec_pattern,
+		 td.class_pattern_id, td.class_pattern_reason);
 	return false;
     });
     prog->partial_spec_map.for_each([&](const char *key, std::vector<Program::TemplateDef> &v) {
@@ -1922,7 +2098,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 (td.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0)
 		 | (td.is_partial_specialization ? CIR_TMPLF_IS_PARTIAL_SPEC : 0),
 		 td.typeparams, td.typeparam_is_type, td.typeparam_is_pack,
-		 td.typeparam_defaults, td.body, td.constraint, td.spec_pattern);
+		 td.typeparam_defaults, td.body, td.constraint, td.spec_pattern,
+		 td.class_pattern_id, td.class_pattern_reason);
 	return false;
     });
     prog->template_alias_map.for_each([&](const char *key, std::vector<Program::TemplateAliasDef> &v) {
@@ -1931,7 +2108,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 std::string(), ad.owner_class,
 		 ad.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0,
 		 ad.typeparams, ad.typeparam_is_type, ad.typeparam_is_pack,
-		 ad.typeparam_defaults, ad.target, no_toks, no_multi);
+		 ad.typeparam_defaults, ad.target, no_toks, no_multi, 0,
+		 Program::ClassParseReason::None);
 	return false;
     });
     prog->fn_template_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {
@@ -1940,7 +2118,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
-		 fd.typeparam_defaults, fd.decl, no_toks, no_multi);
+		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, 0,
+		 Program::ClassParseReason::None);
 	return false;
     });
     prog->fn_template_decl_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {
@@ -1949,14 +2128,16 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
-		 fd.typeparam_defaults, fd.decl, no_toks, no_multi);
+		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, 0,
+		 Program::ClassParseReason::None);
 	return false;
     });
     prog->var_template_map.for_each([&](const char *key, Program::VarTemplateDef &vd) {
 	emit(CIR_TMPLK_VAR, key, std::string(), vd.defining_namespace,
 	     std::string(), NULL, 0,
 	     vd.typeparams, no_bools, vd.typeparam_is_pack,
-	     no_multi, vd.init, no_toks, no_multi);
+	     no_multi, vd.init, no_toks, no_multi, 0,
+	     Program::ClassParseReason::None);
 	return false;
     });
     for (std::map<std::string, Program::ConceptDef>::iterator ci =
@@ -1964,7 +2145,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	emit(CIR_TMPLK_CONCEPT, ci->first.c_str(), std::string(),
 	     ci->second.defining_namespace, std::string(), NULL, 0,
 	     ci->second.typeparams, no_bools, no_bools,
-	     no_multi, no_toks, ci->second.constraint, no_multi);
+	     no_multi, no_toks, ci->second.constraint, no_multi, 0,
+	     Program::ClassParseReason::None);
 
     // v21: body-bearing MEMBER function templates — the pattern state
     // register_skipped_class_template_function leaves on a class's FuncDef
@@ -1990,7 +2172,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	     instance ? CIR_TMPLF_INSTANCE_METHOD : 0,
 	     fd->template_param_names, fd->template_param_is_type,
 	     fd->template_param_is_pack, no_multi,
-	     fd->member_template_decl, no_toks, no_multi);
+	     fd->member_template_decl, no_toks, no_multi, 0,
+	     Program::ClassParseReason::None);
     }
 
     // v21: out-of-line member DEFINITIONS of class templates (vector.tcc's
