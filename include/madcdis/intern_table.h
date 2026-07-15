@@ -70,6 +70,12 @@ private:
 	}
     }
 public:
+    struct transaction_state {
+	size_t bytes_size;
+	size_t entries_size;
+	transaction_state() : bytes_size(0), entries_size(0) {}
+    };
+
     intern_table()
     {
 	reserve(1u << 16, 1u << 12);  // decent default: avoid early realloc churn
@@ -134,6 +140,19 @@ public:
     uint32_t intern(const char *s, uint32_t len) const { return len ? intern(s, len, hash_bytes(s, len)) : 0; }
     uint32_t intern(const std::string &s) const { return intern(s.data(), (uint32_t)s.size()); }
     uint32_t intern(const char *s)        const { return intern(s, (uint32_t)strlen(s)); }
+
+    void begin_transaction(transaction_state &state) const
+    {
+	state.bytes_size = _bytes.size();
+	state.entries_size = _entries.size();
+    }
+    void commit_transaction(transaction_state &) const {}
+    void rollback_transaction(const transaction_state &state) const
+    {
+	_bytes.resize(state.bytes_size);
+	_entries.resize(state.entries_size);
+	rehash(_buckets.size());
+    }
 
     const char *c_str(uint32_t id)  const { return &_bytes[_entries[id].off]; }
     uint32_t    length(uint32_t id) const { return _entries[id].len; }

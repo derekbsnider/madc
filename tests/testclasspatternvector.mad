@@ -1,0 +1,117 @@
+extern "C" int printf(const char *, ...);
+
+template<class T>
+struct PatternBaseA {
+	typedef T value_type;
+	T base_a;
+};
+
+template<class T>
+struct PatternBaseB {
+	T base_b;
+};
+
+template<class T>
+class PatternVectorClosure : public PatternBaseA<T>, public PatternBaseB<T> {
+public:
+	typedef typename PatternBaseA<T>::value_type value_type;
+	class Buffer {
+	public:
+		T values[2];
+	};
+	class ImplData {
+	public:
+		T *begin;
+		T *end;
+	};
+	struct Impl : public ImplData {
+		Buffer buffer;
+	};
+	Impl impl;
+	PatternVectorClosure();
+	~PatternVectorClosure();
+	value_type &operator[](int index);
+	const value_type &operator[](int index) const;
+	void direct(T value);
+	void store(value_type value);
+	template<class U> U add(U value);
+};
+
+template<class T>
+PatternVectorClosure<T>::PatternVectorClosure()
+{
+	this->base_a = (T)3;
+	this->base_b = (T)4;
+}
+
+template<class T>
+PatternVectorClosure<T>::~PatternVectorClosure() {}
+
+template<class T>
+typename PatternVectorClosure<T>::value_type &
+PatternVectorClosure<T>::operator[](int index)
+{
+	return impl.buffer.values[index];
+}
+
+template<class T>
+const typename PatternVectorClosure<T>::value_type &
+PatternVectorClosure<T>::operator[](int index) const
+{
+	return impl.buffer.values[index];
+}
+
+template<class T>
+void PatternVectorClosure<T>::direct(T value)
+{
+	this->base_a = value;
+}
+
+template<class T>
+void PatternVectorClosure<T>::store(
+	typename PatternVectorClosure<T>::value_type value)
+{
+	this->impl.buffer.values[0] = value;
+}
+
+template<class T> template<class U>
+U PatternVectorClosure<T>::add(U value)
+{
+	return value + (U)this->base_a;
+}
+
+typedef int PatternElement;
+typedef PatternVectorClosure<PatternElement> PatternVectorClosureInt;
+typedef PatternVectorClosure<long> PatternVectorClosureLong;
+
+int main()
+{
+	alignas(PatternVectorClosureInt)
+	unsigned char int_storage[sizeof(PatternVectorClosureInt)] = {};
+	alignas(PatternVectorClosureLong)
+	unsigned char long_storage[sizeof(PatternVectorClosureLong)] = {};
+	PatternVectorClosureInt *closure_int =
+		(PatternVectorClosureInt *)int_storage;
+	PatternVectorClosureLong *closure_long =
+		(PatternVectorClosureLong *)long_storage;
+	const PatternVectorClosureInt *const_int = closure_int;
+
+	closure_int->direct(3);
+	closure_int->store(35);
+	(*closure_int)[1] = 7;
+	closure_long->store(11);
+	printf("%d %ld %d\n",
+		closure_int->add((*const_int)[0] + (*const_int)[1]),
+		(*closure_long)[0],
+		(int)(sizeof(*closure_int) + sizeof(*closure_long)));
+	printf("%zu %zu %lld %lld %lld %zu %zu %lld %lld %lld\n",
+		sizeof(*closure_int), alignof(PatternVectorClosureInt),
+		(long long)((char *)&closure_int->base_a - (char *)closure_int),
+		(long long)((char *)&closure_int->base_b - (char *)closure_int),
+		(long long)((char *)&closure_int->impl - (char *)closure_int),
+		sizeof(*closure_long), alignof(PatternVectorClosureLong),
+		(long long)((char *)&closure_long->base_a - (char *)closure_long),
+		(long long)((char *)&closure_long->base_b - (char *)closure_long),
+		(long long)((char *)&closure_long->impl - (char *)closure_long));
+	return 0;
+}

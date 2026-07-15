@@ -2215,7 +2215,10 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 	{
 		std::ofstream inc(inc_path.c_str());
 		inc << "template<typename T, typename U = T> struct W2Box {\n"
+		       "    typedef T value_type;\n"
 		       "    T v; U u;\n"
+		       "    void direct(T);\n"
+		       "    void aliased(value_type);\n"
 		       "    T get() { return v; }\n"
 		       "};\n"
 		       "template<typename T> struct W2Box<T*, T*> { T *p; };\n"
@@ -2263,6 +2266,22 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 		      Program::ClassParseReason::None);
 		producer_primary_fingerprint =
 			live_primary_pattern->semantic_fingerprint;
+		bool live_direct = false;
+		bool live_aliased = false;
+		for (size_t i = 0;
+		     i < live_primary_pattern->nodes[0].methods.size(); ++i) {
+			const Program::ClassMethodPattern &method =
+				live_primary_pattern->nodes[0].methods[i];
+			if (method.parameters.empty()) continue;
+			if (method.display_name == "direct")
+				live_direct = method.parameters.back()
+					.template_param_spelled_directly;
+			if (method.display_name == "aliased")
+				live_aliased = !method.parameters.back()
+					.template_param_spelled_directly;
+		}
+		CHECK(live_direct);
+		CHECK(live_aliased);
 		std::vector<Program::TemplateDef> *live_partials =
 			progA->partial_spec_map.find("W2Box");
 		REQUIRE(live_partials != nullptr);
@@ -2334,7 +2353,7 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 				dependent_base->class_pattern_id);
 		REQUIRE(dependent_base_pattern != nullptr);
 		CHECK(dependent_base_pattern->capture_reason ==
-		      Program::ClassParseReason::None);
+		      Program::ClassParseReason::UnnormalizableType);
 		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
 					snap_path.c_str(), /*append=*/false) == 0);
 	}
@@ -2409,6 +2428,22 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 	      producer_primary_fingerprint);
 	CHECK(progB->class_pattern_fingerprint(*restored_primary_pattern) ==
 	      producer_primary_fingerprint);
+	bool restored_direct = false;
+	bool restored_aliased = false;
+	for (size_t i = 0;
+	     i < restored_primary_pattern->nodes[0].methods.size(); ++i) {
+		const Program::ClassMethodPattern &method =
+			restored_primary_pattern->nodes[0].methods[i];
+		if (method.parameters.empty()) continue;
+		if (method.display_name == "direct")
+			restored_direct = method.parameters.back()
+				.template_param_spelled_directly;
+		if (method.display_name == "aliased")
+			restored_aliased = !method.parameters.back()
+				.template_param_spelled_directly;
+	}
+	CHECK(restored_direct);
+	CHECK(restored_aliased);
 	REQUIRE(td->typeparam_defaults.size() == 2);
 	CHECK(td->typeparam_defaults[0].empty());
 	CHECK(!td->typeparam_defaults[1].empty());

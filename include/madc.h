@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <cctype>
+#include <cassert>
 #include <fstream>
 #include <functional>
 #include <istream>
@@ -130,6 +131,11 @@ public:
     // Source typedef alias used for each parameter, when the declaration named
     // one. Index-aligned with `parameters`; empty means render from DataDef.
     std::vector<std::string> param_typedef_names;
+    // True when a class-template method parameter spelled its base type as the
+    // template parameter itself, rather than through a class-scope alias that
+    // resolves to the same DataDef. Definition-capture provenance only; the
+    // normalized ClassPattern persists the corresponding bit.
+    std::vector<bool> param_template_param_spelled_directly;
     // Default ARGUMENT expression for each parameter (C++ `T x = expr`), captured
     // at parse time, index-aligned with `parameters`; NULL when the parameter has
     // no default. A call that omits a trailing argument fills it from here, and
@@ -968,8 +974,125 @@ typedef madc::dis::intern_keyed_map<TokenKeyword *> keyword_map_t;
 typedef madc::dis::intern_keyed_map<TokenDataType *> flat_datatype_map_t;
 typedef std::map<std::string, TokenDataType *> datatype_map_t;
 typedef std::map<std::string, DataDef *> datadef_map_t;
-typedef std::map<std::string, FuncDef *> funcdef_map_t;
-typedef std::map<std::string, Variable *> variable_map_t;
+
+template<class Key, class Value>
+class registration_map : public std::map<Key, Value>
+{
+    typedef std::map<Key, Value> base_type;
+    struct SavedValue {
+	Key key;
+	bool existed;
+	Value value;
+	SavedValue(const Key &k, bool e, const Value &v)
+	    : key(k), existed(e), value(v) {}
+    };
+public:
+    struct transaction_state {
+	std::vector<SavedValue> saved;
+	std::set<Key> touched;
+    };
+private:
+    transaction_state *transaction;
+
+    void save(const Key &key)
+    {
+	if ( !transaction )
+	    return;
+	if ( !transaction->touched.insert(key).second )
+	    return;
+	typename base_type::const_iterator found = base_type::find(key);
+	transaction->saved.push_back(SavedValue(
+	    key, found != base_type::end(),
+	    found == base_type::end() ? Value() : found->second));
+    }
+public:
+    typedef typename base_type::iterator iterator;
+    typedef typename base_type::const_iterator const_iterator;
+    typedef typename base_type::value_type value_type;
+    typedef typename base_type::size_type size_type;
+
+    registration_map() : transaction(NULL) {}
+    registration_map(const registration_map &other)
+	: base_type(other), transaction(NULL) {}
+    registration_map(const base_type &other)
+	: base_type(other), transaction(NULL) {}
+    registration_map &operator=(const registration_map &other)
+    {
+	if ( this != &other )
+	{
+	    assert(!transaction);
+	    base_type::operator=(other);
+	}
+	return *this;
+    }
+    registration_map &operator=(const base_type &other)
+    {
+	assert(!transaction);
+	base_type::operator=(other);
+	return *this;
+    }
+    Value &operator[](const Key &key)
+    {
+	save(key);
+	return base_type::operator[](key);
+    }
+    std::pair<iterator, bool> insert(const value_type &value)
+    {
+	save(value.first);
+	return base_type::insert(value);
+    }
+    size_type erase(const Key &key)
+    {
+	save(key);
+	return base_type::erase(key);
+    }
+    iterator erase(const_iterator position)
+    {
+	if ( position != base_type::end() )
+	    save(position->first);
+	return base_type::erase(position);
+    }
+    void clear()
+    {
+	if ( transaction )
+	    for ( const_iterator it = base_type::begin();
+		  it != base_type::end(); ++it )
+		save(it->first);
+	base_type::clear();
+    }
+    void begin_transaction(transaction_state &state)
+    {
+	assert(!transaction);
+	state.saved.clear();
+	state.touched.clear();
+	transaction = &state;
+    }
+    void commit_transaction(transaction_state &state)
+    {
+	assert(transaction == &state);
+	transaction = NULL;
+	state.saved.clear();
+	state.touched.clear();
+    }
+    void rollback_transaction(transaction_state &state)
+    {
+	assert(transaction == &state);
+	transaction = NULL;
+	for ( size_t i = state.saved.size(); i-- > 0; )
+	{
+	    const SavedValue &saved = state.saved[i];
+	    if ( saved.existed )
+		base_type::operator[](saved.key) = saved.value;
+	    else
+		base_type::erase(saved.key);
+	}
+	state.saved.clear();
+	state.touched.clear();
+    }
+};
+
+typedef registration_map<std::string, FuncDef *> funcdef_map_t;
+typedef registration_map<std::string, Variable *> variable_map_t;
 typedef std::map<std::string, variable_map_t> namespace_map_t;
 // Outer map (namespace -> inner type-name map) on the substrate primitive,
 // keyed via Program::namespace_name_pool. `::iterator` is datatype_map_t* now
@@ -986,8 +1109,8 @@ typedef flat_datatype_map_t::iterator flat_datatype_map_iter;	// TokenDataType *
 typedef std::map<std::string, TokenDataType *>::iterator datatype_map_iter;
 typedef std::map<std::string, DataDef *>::iterator datadef_map_iter;
 typedef std::map<std::string, DataDef *>::const_iterator datadef_map_citer;
-typedef std::map<std::string, FuncDef *>::iterator funcdef_map_iter;
-typedef std::map<std::string, Variable *>::iterator variable_map_iter;
+typedef funcdef_map_t::iterator funcdef_map_iter;
+typedef variable_map_t::iterator variable_map_iter;
 
 // struct_map + its despaced-canonical lookup index as ONE object: set() is the
 // map's only write channel, so the index cannot silently desync from the map.
@@ -1005,6 +1128,17 @@ class StructRegistry
 {
 public:
     typedef datadef_map_t::const_iterator const_iterator;
+    struct transaction_state {
+	struct SavedValue {
+	    std::string key;
+	    bool existed;
+	    DataDef *value;
+	    SavedValue(const std::string &k, bool e, DataDef *v)
+		: key(k), existed(e), value(v) {}
+	};
+	std::vector<SavedValue> saved;
+	std::set<std::string> touched;
+    };
     ~StructRegistry();				// MADC_DESPACE_PROBE counter dump
     const_iterator begin() const { return map_.begin(); }
     const_iterator end() const { return map_.end(); }
@@ -1015,12 +1149,16 @@ public:
     void set(const std::string &key, DataDef *dd);
     datadef_map_t snapshot() const { return map_; }
     void restore(const datadef_map_t &entries);
+    void begin_transaction(transaction_state &state);
+    void commit_transaction(transaction_state &state);
+    void rollback_transaction(transaction_state &state);
     // First entry (in key order) whose despaced, namespace-stripped canonical
     // spelling equals `want` — exactly the old linear scan's answer.
     DataDef *find_despaced(const std::string &want);
 private:
     struct Hit { const std::string *key; DataDef *dd; };
     datadef_map_t map_;
+    transaction_state *transaction_ = NULL;
     std::unordered_map<std::string, Hit> index_;
     std::unordered_set<const void *> seen_;	// map-node key addrs (map never erases)
     size_t size_stamp_ = 0;
@@ -1869,6 +2007,10 @@ public:
 	Destructor,
 	Conversion
     };
+    enum class ClassNestedTemplateKind : uint8_t {
+	ClassTemplate,
+	AliasTemplate
+    };
     struct ClassTypePattern {
 	ClassTypePatternKind kind;
 	uint32_t flags;
@@ -1916,10 +2058,13 @@ public:
 	ClassTypePatternId type;
 	uint32_t flags;
 	bool is_const;
+	bool template_param_spelled_directly;
 	std::string cpp_spelling;
 	std::string typedef_name;
 	std::vector<TokenBase *> default_tokens;
-	ClassMethodParamPattern() : type(0), flags(0), is_const(false) {}
+	ClassMethodParamPattern()
+	    : type(0), flags(0), is_const(false),
+	      template_param_spelled_directly(false) {}
     };
     struct ClassMethodPattern {
 	ClassMethodKind kind;
@@ -1959,6 +2104,29 @@ public:
 	      is_const_method(false), is_member_template(false),
 	      has_eager_body(false) {}
     };
+    struct ClassUsingMemberPattern {
+	ClassTypePatternId owner_type;
+	std::string name;
+	ClassUsingMemberPattern() : owner_type(0) {}
+    };
+    struct ClassNestedTemplatePattern {
+	ClassNestedTemplateKind kind;
+	std::vector<std::string> typeparams;
+	std::vector<std::vector<TokenBase *> > typeparam_defaults;
+	std::vector<bool> typeparam_is_type;
+	std::vector<bool> typeparam_is_pack;
+	bool has_non_type_params;
+	std::string class_name;
+	std::vector<TokenBase *> body;
+	std::string defining_namespace;
+	bool is_partial_specialization;
+	std::vector<std::vector<TokenBase *> > spec_pattern;
+	std::vector<TokenBase *> constraint;
+	std::vector<TokenBase *> target;
+	ClassNestedTemplatePattern()
+	    : kind(ClassNestedTemplateKind::ClassTemplate),
+	      has_non_type_params(false), is_partial_specialization(false) {}
+    };
     struct ClassAggregatePatternNode {
 	uint32_t local_id;
 	uint32_t parent_id;
@@ -1972,6 +2140,8 @@ public:
 	std::vector<ClassAliasPattern> aliases;
 	std::vector<ClassMemberPattern> members;
 	std::vector<ClassMethodPattern> methods;
+	std::vector<ClassUsingMemberPattern> using_members;
+	std::vector<ClassNestedTemplatePattern> nested_templates;
 	std::vector<std::pair<std::string, ClassTypePatternId> > static_members;
 	std::vector<std::pair<std::string, int64_t> > static_values;
 	std::vector<std::string> friend_classes;
@@ -2020,8 +2190,12 @@ public:
     // Temporary B2-B5 equivalence-test switch. The default remains the
     // structural lane; B6 deletes this when the parse-reason tally reaches zero.
     bool force_legacy_class_patterns = false;
+    unsigned class_registration_journal_depth = 0;
     std::map<DataDefCLASS *, std::vector<ClassDeclKind> >
 	*class_pattern_decl_capture = NULL;
+    std::map<DataDefCLASS *,
+	std::vector<std::pair<DataDefCLASS *, std::string> > >
+	*class_pattern_using_capture = NULL;
 
     // Captured `template<typename T> class Name {...}` definitions for
     // Borland-model instantiation: name -> {type params, the class-body token
@@ -2056,14 +2230,15 @@ public:
 	uint64_t class_pattern_fingerprint(const ClassPattern &pattern) const;
     // B0 class-KIND parse-once foundation. Capture uses the production class
     // parser once, so all temporary registrations must roll back as one unit.
-    // The implementation snapshots registry surfaces behind this small RAII
-    // handle; B1 activates it around pattern capture.
+    // The implementation journals first writes behind this small RAII handle;
+    // B1 activates it around pattern capture.
     class ClassRegistrationJournal
     {
 	struct State;
 	Program &pgm;
 	State *state;
 	bool finished;
+	bool outermost;
 	ClassRegistrationJournal(const ClassRegistrationJournal &);
 	ClassRegistrationJournal &operator=(const ClassRegistrationJournal &);
     public:
@@ -2177,6 +2352,21 @@ public:
 	TemplateAliasDef() : has_non_type_params(false), owner_class(nullptr) {}
     };
     madc::dis::intern_keyed_map<std::vector<TemplateAliasDef>> template_alias_map; // keyed via template_name_pool
+    struct ClassNestedTemplateCaptureEntry {
+	ClassNestedTemplateKind kind;
+	bool partial_specialization;
+	std::string key;
+	ClassNestedTemplateCaptureEntry(ClassNestedTemplateKind k,
+		bool partial, const std::string &registry_key)
+	    : kind(k), partial_specialization(partial), key(registry_key) {}
+    };
+    typedef std::map<DataDefCLASS *,
+	std::vector<ClassNestedTemplateCaptureEntry> >
+	class_nested_template_capture_t;
+    class_nested_template_capture_t *class_pattern_nested_template_capture = NULL;
+    void record_class_pattern_nested_template(DataDefCLASS *owner,
+	ClassNestedTemplateKind kind, const std::string &key,
+	bool partial_specialization = false);
     // C++14 VARIABLE TEMPLATE: `template<...> [inline constexpr] T name = init;`
     // (std::numbers::e_v, pi_v, …). madc does not model these as first-class
     // values; it registers the name + typeparams + initializer tokens so a use
@@ -2250,7 +2440,8 @@ public:
 	std::vector<std::string> template_arg_names;
 	Variable *var;
     };
-    std::map<std::string, std::vector<NamespaceFnOverload>> namespace_fn_overload_sets;
+    registration_map<std::string, std::vector<NamespaceFnOverload> >
+	namespace_fn_overload_sets;
     // Rank ns::name's parsed overloads against the call's arg types; returns
     // the winning Variable, or NULL when no set (or no viable overload) exists.
     // `zero_args` (parallel to argtypes, optional) marks literal-0 arguments —
@@ -2481,7 +2672,8 @@ public:
 	std::string canonical_spelling;
 	std::vector<TokenDataType *> args;
     };
-    std::map<std::string, std::vector<PendingTemplateInstantiation>> pending_template_instantiations;
+    registration_map<std::string, std::vector<PendingTemplateInstantiation> >
+	pending_template_instantiations;
     // Template-origin structure for a DEPENDENT template-id placeholder shell
     // (`tuple<_Args1...>`, `_Index_tuple<__integer_pack(sizeof...(_Args1))...>`),
     // recorded at the shell's creation (instantiate_opaque_template_use) so
@@ -2496,7 +2688,7 @@ public:
 	std::vector<std::string> arg_spellings;
 	std::vector<std::vector<TokenBase *>> raw_arg_tokens;
     };
-    std::map<DataDef *, DependentShellOrigin> dependent_shell_origin;
+    registration_map<DataDef *, DependentShellOrigin> dependent_shell_origin;
     // Provenance for DERIVED dependent placeholders — the `X__deref` /
     // `Owner__member` opaques minted by dependent_deref_result_type /
     // materialize_dependent_member_type: the SOURCE type + derivation kind,
@@ -2510,8 +2702,10 @@ public:
 	DataDef *source = NULL;
 	enum Kind { Deref, MemberType } kind = Deref;
 	std::string member;			// MemberType only
+	bool member_is_template = false;		// MemberType only; preserves member<>
+	std::vector<std::vector<TokenBase *> > raw_arg_tokens;
     };
-    std::map<DataDef *, DependentDerivedOrigin> dependent_derived_origin;
+    registration_map<DataDef *, DependentDerivedOrigin> dependent_derived_origin;
     // Thin public accessor over the class-scope member-type lookup
     // (type_aliases + bases + enclosing walk) for the tsubst re-derivation.
     static DataDef *class_member_type(DataDefCLASS *cls, const std::string &name);
@@ -2610,9 +2804,9 @@ public:
 						  DataDefCLASS *pattern_class,
 						  DataDefCLASS *owner,
 						  const std::string &enclosing_symbol);
-    std::map<DataDef*, DataDefPTR*> ptr_type_cache; // cached pointer-to-T DataDefs
-    std::map<DataDef*, DataDefREF*> ref_type_cache; // cached reference-to-T DataDefs (alias-spelled T&)
-    std::map<DataDef*, DataDefCONST*> const_type_cache; // cached const-T DataDefs
+    registration_map<DataDef *, DataDefPTR *> ptr_type_cache; // cached pointer-to-T DataDefs
+    registration_map<DataDef *, DataDefREF *> ref_type_cache; // cached reference-to-T DataDefs (alias-spelled T&)
+    registration_map<DataDef *, DataDefCONST *> const_type_cache; // cached const-T DataDefs
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
@@ -2834,6 +3028,7 @@ public:
     unsigned long long _class_inst_parse = 0;
     unsigned long long _class_inst_cache = 0;
     unsigned long long _class_inst_opaque = 0;
+    bool class_parse_observability = false;
     std::map<ClassParseProfileKey, ClassParseProfile> _class_parse_profile;
     std::vector<ClassParseProfileKey> _class_parse_census_stack;
     static const char *class_parse_reason_name(ClassParseReason reason);
@@ -2894,7 +3089,7 @@ public:
     // definitions) and dissolves walls in unused inline bodies. The cir_builder
     // reachability fixpoint
     // materializes a deferred body the moment its symbol enters referenced_funcs.
-    std::map<std::string, DeferredFunctionBody> deferred_lazy_bodies;
+    registration_map<std::string, DeferredFunctionBody> deferred_lazy_bodies;
     // Out-of-line member DEFINITIONS of a class template
     // (`template<class T> RET ClassName<T>::member(params){body}` — the bits/*.tcc
     // shape, e.g. std::vector::_M_realloc_insert). A class instantiation re-parses
@@ -2921,14 +3116,20 @@ public:
 	std::vector<bool> inner_is_pack;
 	std::vector<bool> inner_is_type;	// false = non-type param (`size_t... _Indexes`)
     };
-    std::map<std::string, std::vector<OutOfLineMemberDef>> out_of_line_member_defs;
+    registration_map<std::string, std::vector<OutOfLineMemberDef> >
+	out_of_line_member_defs;
     struct OutOfLineMemberInstantiation {
 	std::string registered_mangled;
 	std::vector<TokenDataType *> arg_types_by_slot;
 	std::vector<std::vector<TokenBase *> > arg_tokens_by_slot;
     };
-    std::map<std::string, std::vector<OutOfLineMemberInstantiation> >
+    registration_map<std::string, std::vector<OutOfLineMemberInstantiation> >
 	out_of_line_member_instantiations;
+    void attach_outofline_member_instantiations(
+	const std::string &class_name, const std::string &defining_namespace,
+	const std::string &registered_mangled, DataDefCLASS *ddc,
+	const std::vector<TokenDataType *> &arg_types_by_slot,
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot);
     void register_outofline_member_instantiations(
 	const std::string &class_name, const std::string &defining_namespace,
 	const std::string &registered_mangled, DataDefCLASS *ddc,
@@ -2950,7 +3151,7 @@ public:
 	std::vector<bool> typeparam_is_pack;
 	std::vector<TokenBase *> decl;	// full decl incl body, owned clones
     };
-    std::map<std::string, std::vector<OutOfLineNestedClassDef> >
+    registration_map<std::string, std::vector<OutOfLineNestedClassDef> >
 	out_of_line_nested_class_defs;
     void instantiate_outofline_nested_classes(
 	const std::string &class_name, const std::string &defining_namespace,
@@ -3351,9 +3552,10 @@ public:
     // serialize the constant (CIR_GLOBALF_CONST_SCALAR) and classify its
     // TU-root fence.
     std::map<std::string, const char *> forest_enum_const_origin;
-    // Forest default-arg RAW-TOKEN capture (parseFunction's `= expr` param
-    // branches). begin() returns true and snapshots the stream position (buffer
-    // cursor + a copy of the pushback LIFO) when arena recording is on; end()
+    // Default-arg RAW-TOKEN capture (parseFunction's `= expr` param branches).
+    // begin() returns true and snapshots the stream position (buffer cursor + a
+    // copy of the pushback LIFO) when arena recording is on, or when the caller
+    // explicitly requests the one-time ClassPattern definition capture; end()
     // clones the consumed run — the popped pushback entries (a template-
     // instantiation replay feeds parseFunction from the injection LIFO — the
     // v26 widening; before it, every instantiated method's default silently
@@ -3361,7 +3563,8 @@ public:
     // consumed-then-pushed-back stop token — into `out`. The clones ride
     // FuncDef::param_default_tokens into the DK_FUNC record's paramrec runs.
     struct DefCapState { size_t cap_begin; std::vector<TokenBase *> pb; };
-    bool param_default_capture_begin(DefCapState &st);
+    bool param_default_capture_begin(DefCapState &st,
+				     bool for_class_pattern = false);
     void param_default_capture_end(const DefCapState &st,
 				   std::vector<TokenBase *> &out);
     // v21: body-bearing MEMBER function templates restored from a bound header
@@ -3497,6 +3700,11 @@ public:
     inline TokenBase *prevToken() { return _prv_token; }
     inline TokenBase *curToken()  { return _cur_token; }
     inline void resetPrevToken() { _prv_token = NULL; }
+    inline void setTokenContext(TokenBase *current, TokenBase *previous)
+    {
+	_cur_token = current;
+	_prv_token = previous;
+    }
     inline void pushToken(TokenBase *t) { tokens.push_front(t); }
 
     inline bool keywordStartsUnaryOperandContext(TokenID id)

@@ -709,6 +709,8 @@ int main(int argc, char **argv)
         }
     }
 
+    prog->class_parse_observability = show_stats;
+
     if ( show_help )
     {
         print_usage(argv[0]);

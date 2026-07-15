@@ -1950,6 +1950,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		    words.push_back(param.type);
 		    words.push_back(param.flags);
 		    words.push_back(param.is_const ? 1u : 0u);
+		    words.push_back(param.template_param_spelled_directly ? 1u : 0u);
 		    words.push_back(intern_spelling(param.cpp_spelling));
 		    words.push_back(intern_spelling(param.typedef_name));
 		    token_run(param.default_tokens);
@@ -1973,6 +1974,41 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		token_run(method.ctor_init_tokens);
 		token_run(method.member_template_decl);
 		token_run(method.member_template_return_tokens);
+	    }
+	    words.push_back((uint32_t)node.using_members.size());
+	    for ( size_t u = 0; u < node.using_members.size(); ++u )
+	    {
+		words.push_back(node.using_members[u].owner_type);
+		words.push_back(intern_spelling(node.using_members[u].name));
+	    }
+	    words.push_back((uint32_t)node.nested_templates.size());
+	    for ( size_t t = 0; t < node.nested_templates.size(); ++t )
+	    {
+		const Program::ClassNestedTemplatePattern &nested =
+		    node.nested_templates[t];
+		words.push_back((uint32_t)nested.kind);
+		words.push_back((uint32_t)nested.typeparams.size());
+		for ( size_t p = 0; p < nested.typeparams.size(); ++p )
+		    words.push_back(intern_spelling(nested.typeparams[p]));
+		words.push_back((uint32_t)nested.typeparam_defaults.size());
+		for ( size_t p = 0; p < nested.typeparam_defaults.size(); ++p )
+		    token_run(nested.typeparam_defaults[p]);
+		words.push_back((uint32_t)nested.typeparam_is_type.size());
+		for ( size_t p = 0; p < nested.typeparam_is_type.size(); ++p )
+		    words.push_back(nested.typeparam_is_type[p] ? 1u : 0u);
+		words.push_back((uint32_t)nested.typeparam_is_pack.size());
+		for ( size_t p = 0; p < nested.typeparam_is_pack.size(); ++p )
+		    words.push_back(nested.typeparam_is_pack[p] ? 1u : 0u);
+		words.push_back(nested.has_non_type_params ? 1u : 0u);
+		words.push_back(intern_spelling(nested.class_name));
+		token_run(nested.body);
+		words.push_back(intern_spelling(nested.defining_namespace));
+		words.push_back(nested.is_partial_specialization ? 1u : 0u);
+		words.push_back((uint32_t)nested.spec_pattern.size());
+		for ( size_t p = 0; p < nested.spec_pattern.size(); ++p )
+		    token_run(nested.spec_pattern[p]);
+		token_run(nested.constraint);
+		token_run(nested.target);
 	    }
 	    words.push_back((uint32_t)node.static_members.size());
 	    for ( size_t s = 0; s < node.static_members.size(); ++s )

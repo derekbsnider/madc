@@ -22,3 +22,4 @@ date	commit	live_s	bound_s	live_derives	bound_derives	load1	note
 2026-07-13	2c6ccf1e	2.178	0.560	217	187	1.58	sliceA: mangle fixes 3a-3c (drops 515->472)
 2026-07-14	fdbb4d78	2.418	0.715	217	184	1.94	v0.35.0: recompressed pack (transforms+intern zstd); decode cost in bound wall
 2026-07-14	cbcb79b6	2.172	0.593	217	184	0.88	columnar RECORDS bind: lazy row reconstruction
+2026-07-15	3e99b9d4	9.624	0.999	217	184	3.07	B3-vector-closure-checkpoint
