@@ -63,11 +63,17 @@ for file in "$TESTS"/*.mad; do
 		tests_mode_skipped=$((tests_mode_skipped + 1))
 		continue
 	fi
-	out=$(env MADC_CPU_LIMIT="$MADC_CPU_LIMIT" timeout "$PER_TEST_TIMEOUT" \
-		"$MADC" --show-stats --dump-registered "${flags[@]}" "$file" \
-		2>&1 >/dev/null)
-	test_rc=$?
 	expect_err="$base.expect_err"
+	if [ -f "$expect_err" ]; then
+		out=$(env MADC_CPU_LIMIT="$MADC_CPU_LIMIT" \
+			timeout "$PER_TEST_TIMEOUT" "$MADC" --show-stats \
+			"${flags[@]}" "$file" 2>&1 >/dev/null)
+	else
+		out=$(env MADC_CPU_LIMIT="$MADC_CPU_LIMIT" \
+			timeout "$PER_TEST_TIMEOUT" "$MADC" --show-stats \
+			--dump-registered "${flags[@]}" "$file" 2>&1 >/dev/null)
+	fi
+	test_rc=$?
 	if [ -f "$expect_err" ]; then
 		expected_error_ok=1
 		if [ "$test_rc" -eq 0 ] || [ "$test_rc" -eq 124 ]; then

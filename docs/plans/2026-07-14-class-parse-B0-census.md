@@ -39,6 +39,30 @@ The machine-readable ratchet is
 `docs/parity/class-parse-baseline.txt`. Later slices may lower `parse`, but may
 not raise it or introduce an unapproved reason.
 
+## B2 checkpoint census
+
+The first structural lane is engaged after B2. One complete live census of the
+same suite produced:
+
+| Metric | B2 checkpoint |
+|---|---:|
+| Tests with stats | 691 |
+| Project-mode tests skipped | 5 |
+| Pattern | 3 |
+| Parse | 48,604 |
+| Cache | 99,334 |
+| Opaque | 24,431 |
+
+The three pattern hits are the new basic equivalence fixture's specializations.
+The pre-existing suite parse count is flat, which is allowed by B2 acceptance;
+the measured vector chain remains intentionally assigned to B3. The approved
+parser-lane reason vocabulary is now `pattern-parse-error`,
+`unnormalizable-type`, `dependent-value-expression`, `unsupported-decl-kind`,
+`unsupported-nested-definition`, `unsupported-friend-definition`, and
+`requires-eager-body-parse`. An admitted structural failure is not one of those
+fallbacks: it rolls back the registration journal and fails the test without a
+parser retry.
+
 ## `testsubscript` container chain
 
 The exact samples were collected with:

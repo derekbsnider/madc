@@ -1,23 +1,31 @@
 # Test Status
 
-> **Current (2026-07-15, class-KIND parse-once B1 checkpoint on
+> **Current (2026-07-15, class-KIND parse-once B2 on
 > `feature/class-parse-once-codex`):**
-> `make -C src fulltest` exits 0 with **695 passed, 0 failed, 0 timed out,
-> 16 skipped**. Every static and forest gate is green, including
+> The fulltest component matrix is green with **696 passed, 0 failed, 0 timed
+> out, 16 skipped**. Every static and forest gate is green, including
 > `forest_bind_gate [subbind]`, the full bind matrix, and both forest oracles.
+> The initial fulltest invocation used the census cap (`MADC_CPU_LIMIT=30`), so
+> its final `testsubscript --freeze` process hit that cap; only the interrupted
+> forest bind gate and the two unreached tail oracles were resumed at the
+> documented `MADC_CPU_LIMIT=120`, and all passed.
 > `make -C src release` exits 0 and appends 240 packed units; the full packed run
 > (`MADC_BIN=bin/madc-release bash scripts/run_tests.sh`) is also
-> **695/0/0/16**. `bin/test_cir_freeze` is **36/36** with **740 assertions**,
+> **696/0/0/16**. `bin/test_class_pattern` is **2/2** with **159 assertions**,
+> covering structural-versus-legacy metadata equivalence, GCC/Clang Itanium
+> symbols, and loud rollback without parser retry. `bin/test_cir_freeze` is
+> **36/36** with **740 assertions**,
 > including class-pattern semantic/token fingerprint and forest round-trip
 > coverage; `bin/test_stringpool` is **7/7** with **10,032 assertions**,
 > including scoped keyed-map transactions. The tsubst matrix is **13/13** and
 > the suite ratchet remains **10 hit / 0 fallback**. The full class census is
-> pattern **0**, parse **48604**, cache **99334**, opaque **24430**, with only
-> `pattern-not-captured`; all patterns are deliberately ineligible in B1. Both
+> pattern **3**, parse **48604**, cache **99334**, opaque **24431**. B2 admits
+> the narrow aliases/member/layout/simple-method/forward-completion subset;
+> every other shape stays on the single parser lane under a typed reason. Both
 > the debug/PIC build and the `-Wall -O2` release build emit **0 host compiler
-> warnings**; the source warning census compiles **711** tests with **0
+> warnings**; the source warning census compiles **712** tests with **0
 > warnings**. The packed artifact carries a readable 240-unit forest, is
-> **10,176,152 bytes**, and has `MADCSNAP` footer magic.
+> **10,219,496 bytes**, and has `MADCSNAP` footer magic.
 >
 > **Local branch update (2026-06-28, `feature/front-end-performance-claude` @
 > Kind 3 dependent-member body tsubst slice):** fulltest

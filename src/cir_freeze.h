@@ -404,7 +404,9 @@ enum : uint32_t {	// cir_forest_template_param::pflags
 };
 enum : uint32_t {
 	CIR_CLASS_PATTERN_MAGIC = 0x43504154u,	// "CPAT"
-	CIR_CLASS_PATTERN_PAYLOAD_VERSION = 1
+	// v2 fences pre-B2 payloads that lack the capture-time eligibility
+	// invariants (notably virtual/layout state that the basic walker excludes).
+	CIR_CLASS_PATTERN_PAYLOAD_VERSION = 2
 };
 struct cir_forest_template_param
 {

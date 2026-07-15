@@ -4098,6 +4098,634 @@ TokenDataType *Program::instantiate_template_id(const std::string &tname,
     return instantiate_template_use(tname, tb, ns_hint, owner_hint);
 }
 
+namespace {
+struct BasicClassPatternBinding
+{
+    const Program::TemplateDef &definition;
+    const Program::ClassPattern &pattern;
+    const std::map<std::string, TokenDataType *> &type_subst;
+    std::string local_name;
+    std::string registered_name;
+    std::string canonical_spelling;
+    bool dependent_surface;
+    TokenBase *location;
+};
+
+static std::string basic_class_datadef_spelling(DataDef *dd)
+{
+    if ( !dd )
+	return std::string();
+    if ( DataDefCONST *qualified = dynamic_cast<DataDefCONST *>(dd) )
+    {
+	std::string operand = basic_class_datadef_spelling(qualified->base_type);
+	if ( dynamic_cast<DataDefPTR *>(qualified->base_type) )
+	    return operand + " const";
+	return "const " + operand;
+    }
+    if ( DataDefREF *ref = dynamic_cast<DataDefREF *>(dd) )
+	return basic_class_datadef_spelling(ref->base_type) + "&";
+    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+	return basic_class_datadef_spelling(ptr->base_type) + "*";
+    if ( DataDefCArray *array = dynamic_cast<DataDefCArray *>(dd) )
+	return basic_class_datadef_spelling(array->element_type) + "["
+	     + std::to_string(array->count) + "]";
+    return dd->canonical_cpp_spelling().empty()
+	? dd->name : dd->canonical_cpp_spelling();
+}
+
+static std::string basic_class_pattern_type_spelling(
+	Program &pgm, const BasicClassPatternBinding &binding,
+	Program::ClassTypePatternId id, bool concrete,
+	std::vector<bool> &active)
+{
+    if ( !id || id >= binding.pattern.types.size() || active[id] )
+	return std::string();
+    active[id] = true;
+    const Program::ClassTypePattern &type = binding.pattern.types[id];
+    std::string spelling;
+    switch ( type.kind )
+    {
+    case Program::ClassTypePatternKind::ConcreteType:
+	spelling = basic_class_datadef_spelling(
+	    pgm.type_from_id(type.concrete_type_id));
+	break;
+    case Program::ClassTypePatternKind::TemplateParam:
+	if ( type.template_param_index < binding.definition.typeparams.size() )
+	{
+	    const std::string &name =
+		binding.definition.typeparams[type.template_param_index];
+	    if ( concrete )
+	    {
+		std::map<std::string, TokenDataType *>::const_iterator found =
+		    binding.type_subst.find(name);
+		if ( found != binding.type_subst.end() && found->second )
+		    spelling = basic_class_datadef_spelling(
+			&found->second->definition);
+	    }
+	    else
+		spelling = name;
+	}
+	break;
+    case Program::ClassTypePatternKind::SelfType:
+	spelling = concrete ? binding.canonical_spelling
+	    : (binding.pattern.nodes.empty() ? std::string()
+	       : binding.pattern.nodes[0].canonical_spelling);
+	break;
+    case Program::ClassTypePatternKind::Pointer:
+    case Program::ClassTypePatternKind::Reference:
+    case Program::ClassTypePatternKind::ConstType:
+    case Program::ClassTypePatternKind::CArray:
+	spelling = basic_class_pattern_type_spelling(
+	    pgm, binding, type.operand, concrete, active);
+	if ( !spelling.empty() )
+	{
+	    if ( type.kind == Program::ClassTypePatternKind::Pointer )
+		spelling += "*";
+	    else if ( type.kind == Program::ClassTypePatternKind::Reference )
+		spelling += "&";
+	    else if ( type.kind == Program::ClassTypePatternKind::ConstType )
+	    {
+		const Program::ClassTypePattern &operand =
+		    binding.pattern.types[type.operand];
+		if ( operand.kind == Program::ClassTypePatternKind::Pointer )
+		    spelling += " const";
+		else
+		    spelling = "const " + spelling;
+	    }
+	    else
+		for ( size_t i = 0; i < type.dimensions.size(); ++i )
+		    spelling += "[" + std::to_string(type.dimensions[i]) + "]";
+	}
+	break;
+    case Program::ClassTypePatternKind::NestedType:
+    case Program::ClassTypePatternKind::FunctionPointer:
+    case Program::ClassTypePatternKind::TemplateId:
+    case Program::ClassTypePatternKind::DependentMember:
+    case Program::ClassTypePatternKind::PackExpansion:
+	break;
+    }
+    active[id] = false;
+    return spelling;
+}
+
+static std::string basic_class_compact_spelling(const std::string &spelling)
+{
+    std::string compact;
+    compact.reserve(spelling.size());
+    for ( size_t i = 0; i < spelling.size(); ++i )
+	if ( !isspace((unsigned char)spelling[i]) )
+	    compact += spelling[i];
+    return compact;
+}
+
+static Program::ClassParseReason basic_class_pattern_eligibility(
+	Program &pgm, const BasicClassPatternBinding &binding,
+	const std::map<std::string, std::vector<TokenBase *> > &token_subst,
+	const std::map<std::string, std::vector<TokenDataType *> > &pack_subst)
+{
+    typedef Program::ClassParseReason Reason;
+    if ( binding.definition.class_pattern_reason != Reason::None )
+	return binding.definition.class_pattern_reason;
+    if ( binding.pattern.capture_reason != Reason::None )
+	return binding.pattern.capture_reason;
+    if ( binding.dependent_surface )
+	return Reason::UnnormalizableType;
+    if ( binding.definition.has_non_type_params || !token_subst.empty() )
+	return Reason::DependentValueExpression;
+    if ( !pack_subst.empty() )
+	return Reason::UnsupportedDeclKind;
+    for ( size_t i = 0; i < binding.definition.typeparams.size(); ++i )
+    {
+	if ( i < binding.definition.typeparam_is_type.size()
+	  && !binding.definition.typeparam_is_type[i] )
+	    return Reason::DependentValueExpression;
+	if ( i < binding.definition.typeparam_is_pack.size()
+	  && binding.definition.typeparam_is_pack[i] )
+	    return Reason::UnsupportedDeclKind;
+    }
+    if ( binding.pattern.nodes.size() != 1 )
+	return Reason::UnsupportedNestedDefinition;
+    const Program::ClassAggregatePatternNode &node = binding.pattern.nodes[0];
+    if ( node.local_id != 0 || node.parent_id != 0 || !node.complete )
+	return Reason::UnsupportedDeclKind;
+    if ( node.kind != Program::ClassAggregateKind::Class )
+	return Reason::UnsupportedDeclKind;
+    if ( !node.bases.empty() )
+	return Reason::UnsupportedDeclKind;
+    if ( !node.static_members.empty() || !node.static_values.empty() )
+	return Reason::UnsupportedDeclKind;
+    if ( !node.friend_functions.empty() )
+	return Reason::UnsupportedFriendDefinition;
+    if ( !node.friend_classes.empty() )
+	return Reason::UnsupportedFriendDefinition;
+
+    for ( size_t i = 1; i < binding.pattern.types.size(); ++i )
+    {
+	const Program::ClassTypePattern &type = binding.pattern.types[i];
+	switch ( type.kind )
+	{
+	case Program::ClassTypePatternKind::ConcreteType:
+	    if ( !type.concrete_type_id
+	      || !pgm.type_from_id(type.concrete_type_id)
+	      || datadef_has_unresolved_dependent_surface(
+		  pgm.type_from_id(type.concrete_type_id)) )
+		return Reason::UnnormalizableType;
+	    break;
+	case Program::ClassTypePatternKind::TemplateParam:
+	    if ( type.template_param_index >=
+		 binding.definition.typeparams.size() )
+		return Reason::UnnormalizableType;
+	    {
+		const std::string &name = binding.definition.typeparams[
+		    type.template_param_index];
+		std::map<std::string, TokenDataType *>::const_iterator found =
+		    binding.type_subst.find(name);
+		if ( found == binding.type_subst.end() || !found->second
+		  || datadef_has_unresolved_dependent_surface(
+		      &found->second->definition) )
+		    return Reason::UnnormalizableType;
+	    }
+	    break;
+	case Program::ClassTypePatternKind::SelfType:
+	    break;
+	case Program::ClassTypePatternKind::Pointer:
+	case Program::ClassTypePatternKind::Reference:
+	case Program::ClassTypePatternKind::ConstType:
+	    if ( !type.operand || type.operand >= binding.pattern.types.size() )
+		return Reason::UnnormalizableType;
+	    break;
+	case Program::ClassTypePatternKind::CArray:
+	    if ( !type.operand || type.operand >= binding.pattern.types.size()
+	      || type.dimensions.empty() )
+		return Reason::UnnormalizableType;
+	    for ( size_t d = 0; d < type.dimensions.size(); ++d )
+		if ( !type.dimensions[d] || type.dimensions[d] > SIZE_MAX )
+		    return Reason::DependentValueExpression;
+	    break;
+	case Program::ClassTypePatternKind::NestedType:
+	    return Reason::UnsupportedNestedDefinition;
+	case Program::ClassTypePatternKind::FunctionPointer:
+	case Program::ClassTypePatternKind::TemplateId:
+	case Program::ClassTypePatternKind::DependentMember:
+	case Program::ClassTypePatternKind::PackExpansion:
+	    return Reason::UnsupportedDeclKind;
+	}
+    }
+
+    size_t alias_count = 0;
+    size_t member_count = 0;
+    size_t method_count = 0;
+    for ( size_t i = 0; i < node.declarations.size(); ++i )
+    {
+	switch ( node.declarations[i] )
+	{
+	case Program::ClassDeclKind::TypeAlias: ++alias_count; break;
+	case Program::ClassDeclKind::DataMember: ++member_count; break;
+	case Program::ClassDeclKind::Method: ++method_count; break;
+	case Program::ClassDeclKind::NestedAggregate:
+	case Program::ClassDeclKind::NestedForward:
+	case Program::ClassDeclKind::NestedEnum:
+	    return Reason::UnsupportedNestedDefinition;
+	case Program::ClassDeclKind::FriendType:
+	case Program::ClassDeclKind::FriendFunction:
+	    return Reason::UnsupportedFriendDefinition;
+	case Program::ClassDeclKind::DefaultedComparison:
+	    return Reason::UnsupportedDefaultedComparison;
+	case Program::ClassDeclKind::BitField:
+	case Program::ClassDeclKind::AnonymousAggregate:
+	case Program::ClassDeclKind::StaticDataMember:
+	case Program::ClassDeclKind::MemberTemplate:
+	case Program::ClassDeclKind::UsingBaseMember:
+	case Program::ClassDeclKind::StaticAssert:
+	    return Reason::UnsupportedDeclKind;
+	}
+    }
+    if ( alias_count != node.aliases.size()
+	  || member_count != node.members.size()
+	  || method_count != node.methods.size() )
+	return Reason::UnsupportedDeclKind;
+
+    for ( size_t i = 0; i < node.members.size(); ++i )
+    {
+	const Program::ClassMemberPattern &member = node.members[i];
+	if ( !member.type || member.type >= binding.pattern.types.size() )
+	    return Reason::UnnormalizableType;
+	if ( member.is_bitfield || member.is_anonymous )
+	    return Reason::UnsupportedDeclKind;
+	if ( member.is_array )
+	{
+	    if ( member.dimensions.empty() || !member.count
+	      || member.count > SIZE_MAX )
+		return Reason::DependentValueExpression;
+	    uint64_t folded = 1;
+	    for ( size_t d = 0; d < member.dimensions.size(); ++d )
+	    {
+		uint64_t dim = member.dimensions[d];
+		if ( !dim || folded > UINT64_MAX / dim )
+		    return Reason::DependentValueExpression;
+		folded *= dim;
+	    }
+	    if ( folded != member.count )
+		return Reason::DependentValueExpression;
+	}
+	else if ( member.count != 1 || !member.dimensions.empty() )
+	    return Reason::UnsupportedDeclKind;
+    }
+
+    std::set<std::string> method_names;
+    for ( size_t i = 0; i < node.methods.size(); ++i )
+    {
+	const Program::ClassMethodPattern &method = node.methods[i];
+	if ( method.kind != Program::ClassMethodKind::Method
+	  || method.display_name.empty()
+	  || method.display_name.compare(0, 8, "operator") == 0
+	  || !method_names.insert(method.display_name).second
+	  || !method.local_emit_name.empty() )
+	    return Reason::UnsupportedDeclKind;
+	if ( !method.declaration_only || method.has_eager_body
+	  || !method.body_tokens.empty() || !method.definition_tokens.empty()
+	  || !method.trailing_ret_tokens.empty()
+	  || !method.ctor_init_tokens.empty() )
+	    return Reason::RequiresEagerBodyParse;
+	if ( method.defaulted_or_deleted || method.is_deleted
+	  || method.pure_virtual || method.is_member_template
+	  || method.is_varargs || !method.template_param_names.empty()
+	  || !method.template_param_is_type.empty()
+	  || !method.template_param_is_pack.empty()
+	  || !method.template_return_spelling.empty()
+	  || !method.template_param_spellings.empty()
+	  || !method.member_template_decl.empty()
+	  || !method.member_template_return_tokens.empty() )
+	    return Reason::UnsupportedDeclKind;
+	if ( !method.return_type
+	  || method.return_type >= binding.pattern.types.size()
+	  || (method.flags & ~(vfSTATIC | vfPRIVATE | vfPROTECTED)) )
+	    return Reason::UnsupportedDeclKind;
+	bool is_static = (method.flags & vfSTATIC) != 0;
+	if ( !is_static
+	  && (method.parameters.empty()
+	      || !method.parameters[0].cpp_spelling.empty()) )
+	    return Reason::UnsupportedDeclKind;
+	for ( size_t p = 0; p < method.parameters.size(); ++p )
+	{
+	    const Program::ClassMethodParamPattern &param = method.parameters[p];
+	    if ( !param.type || param.type >= binding.pattern.types.size()
+	      || !param.default_tokens.empty() )
+		return Reason::UnsupportedDeclKind;
+	    if ( !is_static && p == 0 )
+		continue;
+	    if ( param.cpp_spelling.empty() )
+		return Reason::UnsupportedDeclKind;
+	    std::vector<bool> active(binding.pattern.types.size(), false);
+	    std::string normalized = basic_class_pattern_type_spelling(
+		pgm, binding, param.type, false, active);
+	    if ( normalized.empty()
+	      || basic_class_compact_spelling(normalized)
+		 != basic_class_compact_spelling(param.cpp_spelling) )
+		return Reason::UnsupportedDeclKind;
+	}
+    }
+
+    std::string out_of_line_key = binding.definition.defining_namespace
+	+ "::" + binding.definition.class_name;
+    if ( pgm.out_of_line_nested_class_defs.count(out_of_line_key) )
+	return Reason::UnsupportedOutOfLineNested;
+    if ( pgm.out_of_line_member_defs.count(out_of_line_key) )
+	return Reason::UnsupportedDeclKind;
+    return Reason::None;
+}
+
+class BasicClassPatternResolver
+{
+    Program &pgm;
+    const BasicClassPatternBinding &binding;
+    DataDefCLASS *self;
+    std::vector<DataDef *> resolved;
+    std::vector<bool> active;
+
+    DataDef *invalid(const char *message)
+    {
+	pgm.Throw(binding.location)
+	    << "internal: basic ClassPattern " << message << flush;
+	return NULL;
+    }
+
+public:
+    BasicClassPatternResolver(Program &program,
+	const BasicClassPatternBinding &bound, DataDefCLASS *root)
+	: pgm(program), binding(bound), self(root),
+	  resolved(bound.pattern.types.size(), NULL),
+	  active(bound.pattern.types.size(), false) {}
+
+    DataDef *resolve(Program::ClassTypePatternId id)
+    {
+	if ( !id || id >= binding.pattern.types.size() )
+	    return invalid("references an invalid type id");
+	if ( resolved[id] )
+	    return resolved[id];
+	if ( active[id] )
+	    return invalid("contains a cyclic unary type");
+	active[id] = true;
+	const Program::ClassTypePattern &type = binding.pattern.types[id];
+	DataDef *result = NULL;
+	switch ( type.kind )
+	{
+	case Program::ClassTypePatternKind::ConcreteType:
+	    result = pgm.type_from_id(type.concrete_type_id);
+	    break;
+	case Program::ClassTypePatternKind::TemplateParam:
+	    if ( type.template_param_index < binding.definition.typeparams.size() )
+	    {
+		const std::string &name = binding.definition.typeparams[
+		    type.template_param_index];
+		std::map<std::string, TokenDataType *>::const_iterator found =
+		    binding.type_subst.find(name);
+		if ( found != binding.type_subst.end() && found->second )
+		    result = &found->second->definition;
+	    }
+	    break;
+	case Program::ClassTypePatternKind::SelfType:
+	    result = self;
+	    break;
+	case Program::ClassTypePatternKind::Pointer:
+	    result = pgm.getPointerType(resolve(type.operand));
+	    break;
+	case Program::ClassTypePatternKind::Reference:
+	    result = pgm.getReferenceType(resolve(type.operand));
+	    break;
+	case Program::ClassTypePatternKind::ConstType:
+	    result = pgm.getConstType(resolve(type.operand));
+	    break;
+	case Program::ClassTypePatternKind::CArray:
+	    result = resolve(type.operand);
+	    for ( size_t i = type.dimensions.size(); i-- > 0; )
+	    {
+		DataDefCArray *array = new DataDefCArray(*result, result->name,
+		    (size_t)type.dimensions[i], NULL);
+		if ( pgm.forest_arena_enabled )
+		    pgm.forest_arena_record_unary(array);
+		result = array;
+	    }
+	    break;
+	case Program::ClassTypePatternKind::NestedType:
+	case Program::ClassTypePatternKind::FunctionPointer:
+	case Program::ClassTypePatternKind::TemplateId:
+	case Program::ClassTypePatternKind::DependentMember:
+	case Program::ClassTypePatternKind::PackExpansion:
+	    break;
+	}
+	active[id] = false;
+	if ( !result )
+	    return invalid("could not resolve a normalized type");
+	if ( datadef_has_unresolved_dependent_surface(result) )
+	    return invalid("resolved to a dependent placeholder");
+	resolved[id] = result;
+	return result;
+    }
+
+    std::string concrete_spelling(Program::ClassTypePatternId id)
+    {
+	std::vector<bool> spelling_active(binding.pattern.types.size(), false);
+	return basic_class_pattern_type_spelling(
+	    pgm, binding, id, true, spelling_active);
+    }
+};
+
+static const char *basic_class_pattern_source_file(
+	const Program::TemplateDef &definition)
+{
+    for ( size_t i = 0; i < definition.body.size(); ++i )
+	if ( definition.body[i] && definition.body[i]->file )
+	    return definition.body[i]->file;
+    return NULL;
+}
+
+static void register_basic_class_pattern_method(
+	Program &pgm, const BasicClassPatternBinding &binding,
+	BasicClassPatternResolver &resolver, DataDefCLASS *owner,
+	const Program::ClassMethodPattern &pattern)
+{
+    std::string symbol = owner->name + "__" + pattern.display_name;
+    if ( pgm.findVariable(symbol) || pgm.funcdef_map.count(symbol) )
+	pgm.Throw(binding.location)
+	    << "internal: basic ClassPattern method symbol collision for "
+	    << symbol << flush;
+
+    DataDef *return_type = resolver.resolve(pattern.return_type);
+    FuncDef *fd = new FuncDef(*return_type);
+    fd->return_typedef_name = pattern.return_typedef_name;
+    fd->is_void_params = pattern.is_void_params;
+    fd->declaration_only = true;
+    fd->decl_file = basic_class_pattern_source_file(binding.definition);
+    fd->is_const_method = pattern.is_const_method;
+    for ( size_t i = 0; i < pattern.parameters.size(); ++i )
+    {
+	const Program::ClassMethodParamPattern &param = pattern.parameters[i];
+	fd->parameters.push_back(resolver.resolve(param.type));
+	fd->const_params.push_back(param.is_const);
+	fd->param_typedef_names.push_back(param.typedef_name);
+	fd->param_defaults.push_back(NULL);
+	bool hidden_this = !(pattern.flags & vfSTATIC) && i == 0;
+	std::string spelling = hidden_this
+	    ? std::string() : resolver.concrete_spelling(param.type);
+	if ( !hidden_this && spelling.empty() )
+	    pgm.Throw(binding.location)
+		<< "internal: basic ClassPattern lost method parameter spelling"
+		<< flush;
+	fd->param_cpp_spellings.push_back(spelling);
+    }
+
+    pgm.pack_tap_name(symbol, Program::pdkFunction);
+    pgm.funcdef_map[symbol] = fd;
+    Variable *mvar = pgm.addVariable(NULL, *fd, symbol);
+    if ( !mvar || mvar->type != fd )
+	pgm.Throw(binding.location)
+	    << "internal: basic ClassPattern failed to register method "
+	    << symbol << flush;
+    mvar->storage_alias_name = pattern.storage_alias_name;
+    Method *method = new Method(*mvar);
+    method->owner_class = owner;
+    mvar->data = method;
+
+    Program::ClassMethodRegistration spec;
+    spec.kind = Program::ClassMethodKind::Method;
+    spec.display_name = pattern.display_name;
+    spec.access_flags = pattern.flags & (vfPRIVATE | vfPROTECTED);
+    spec.is_static = (pattern.flags & vfSTATIC) != 0;
+    pgm.register_class_method_signature(owner, mvar, spec);
+}
+
+static bool basic_incomplete_class_shell(DataDefCLASS *ddc)
+{
+    return ddc && !ddc->is_complete && ddc->size == 0
+	&& ddc->members.empty() && ddc->methods.empty()
+	&& ddc->ctors.empty() && ddc->bases.empty()
+	&& ddc->staticconst.empty() && ddc->static_member_types.empty()
+	&& ddc->static_member_const_values.empty()
+	&& ddc->friend_class_names.empty() && ddc->friend_function_names.empty()
+	&& !ddc->has_vtable;
+}
+
+static TokenDataType *instantiate_basic_class_pattern(
+	Program &pgm, const BasicClassPatternBinding &binding)
+{
+    Program::ClassRegistrationJournal journal(pgm, false);
+    DataDefCLASS *ddc = NULL;
+    datadef_map_citer aggregate = pgm.struct_map.find(binding.registered_name);
+    if ( aggregate != pgm.struct_map.end() )
+	ddc = dynamic_cast<DataDefCLASS *>(aggregate->second);
+    flat_datatype_map_iter datatype =
+	pgm.datatype_map.find(binding.registered_name);
+    DataDefCLASS *typed = datatype == pgm.datatype_map.end() ? NULL
+	: dynamic_cast<DataDefCLASS *>(&(*datatype)->definition);
+    if ( ddc && typed && ddc != typed )
+	pgm.Throw(binding.location)
+	    << "internal: basic ClassPattern found conflicting forward shells"
+	    << flush;
+    if ( !ddc )
+	ddc = typed;
+    bool completing_forward = ddc != NULL;
+    if ( completing_forward && !basic_incomplete_class_shell(ddc) )
+	pgm.Throw(binding.location)
+	    << "internal: basic ClassPattern cannot complete incompatible shell "
+	    << binding.registered_name << flush;
+
+    std::unique_ptr<DataDefCLASS> saved_forward(
+	completing_forward ? new DataDefCLASS(*ddc) : NULL);
+    if ( !ddc )
+	ddc = new DataDefCLASS(binding.registered_name, 0,
+			       DataType::dtRESERVED);
+
+    try
+    {
+	const Program::ClassAggregatePatternNode &node = binding.pattern.nodes[0];
+	ddc->name = binding.registered_name;
+	ddc->set_canonical_spelling(binding.canonical_spelling);
+	ddc->enclosing_class = binding.definition.owner_class;
+	ddc->from_system_header = node.from_system_header;
+	ddc->is_dependent_placeholder = false;
+	ddc->opaque_concrete_tag = false;
+	ddc->has_dependent_surface = false;
+	if ( completing_forward && aggregate == pgm.struct_map.end() )
+	    pgm.struct_map.set(binding.registered_name, ddc);
+	TokenDataType *tdt = pgm.register_class_shell(ddc,
+	    binding.registered_name, binding.local_name,
+	    binding.definition.class_name, binding.definition.owner_class,
+	    completing_forward, false);
+
+	BasicClassPatternResolver resolver(pgm, binding, ddc);
+	size_t alias_index = 0;
+	size_t member_index = 0;
+	size_t method_index = 0;
+	for ( size_t i = 0; i < node.declarations.size(); ++i )
+	{
+	    switch ( node.declarations[i] )
+	    {
+	    case Program::ClassDeclKind::TypeAlias:
+	    {
+		const Program::ClassAliasPattern &alias =
+		    node.aliases[alias_index++];
+		ddc->type_aliases[alias.name] = resolver.resolve(alias.type);
+		break;
+	    }
+	    case Program::ClassDeclKind::DataMember:
+	    {
+		const Program::ClassMemberPattern &member =
+		    node.members[member_index++];
+		std::vector<carray_dim_t> dimensions;
+		for ( size_t d = 0; d < member.dimensions.size(); ++d )
+		    dimensions.push_back((carray_dim_t)member.dimensions[d]);
+		ddc->addMember(member.name, *resolver.resolve(member.type),
+		    (size_t)member.count, NULL, member.is_array,
+		    member.is_array ? &dimensions : NULL);
+		if ( !ddc->member_access.empty() )
+		    ddc->member_access.back() = member.access;
+		break;
+	    }
+	    case Program::ClassDeclKind::Method:
+		register_basic_class_pattern_method(pgm, binding, resolver,
+		    ddc, node.methods[method_index++]);
+		break;
+	    case Program::ClassDeclKind::NestedAggregate:
+	    case Program::ClassDeclKind::NestedForward:
+	    case Program::ClassDeclKind::NestedEnum:
+	    case Program::ClassDeclKind::BitField:
+	    case Program::ClassDeclKind::AnonymousAggregate:
+	    case Program::ClassDeclKind::StaticDataMember:
+	    case Program::ClassDeclKind::MemberTemplate:
+	    case Program::ClassDeclKind::FriendType:
+	    case Program::ClassDeclKind::FriendFunction:
+	    case Program::ClassDeclKind::DefaultedComparison:
+	    case Program::ClassDeclKind::UsingBaseMember:
+	    case Program::ClassDeclKind::StaticAssert:
+		pgm.Throw(binding.location)
+		    << "internal: ineligible declaration reached basic ClassPattern"
+		    << flush;
+		break;
+	    }
+	}
+	pgm.complete_class_aggregate(ddc);
+	for ( size_t i = 0; i < ddc->members.size(); ++i )
+	    if ( datadef_has_unresolved_dependent_surface(ddc->members[i].second) )
+		pgm.Throw(binding.location)
+		    << "internal: basic ClassPattern committed a dependent member"
+		    << flush;
+	journal.commit();
+	return use_site_type_token(tdt, binding.location);
+    }
+    catch ( ... )
+    {
+	if ( saved_forward )
+	{
+	    *ddc = *saved_forward;
+	    ++DataDef::canonical_spelling_gen;
+	}
+	journal.rollback();
+	throw;
+    }
+}
+}
+
 TokenDataType *Program::instantiate_template_use(const std::string &tname,
 					       TokenBase *tb,
 					       const std::string &ns_hint,
@@ -4532,6 +5160,45 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	return use_site_type_token(tdt, tb);
     }
 
+    std::string class_profile_identity;
+    if ( td.owner_class )
+    {
+	class_profile_identity = td.owner_class->canonical_cpp_spelling().empty()
+	    ? td.owner_class->name : td.owner_class->canonical_cpp_spelling();
+	class_profile_identity += "::";
+    }
+    else if ( !td.defining_namespace.empty() )
+	class_profile_identity = td.defining_namespace + "::";
+    class_profile_identity += tname;
+
+    const ClassPattern *selected_pattern =
+	class_pattern_arena.get(td.class_pattern_id);
+    ClassParseReason legacy_reason = td.class_pattern_reason;
+    if ( !selected_pattern )
+	legacy_reason = legacy_reason == ClassParseReason::None
+	    ? ClassParseReason::PatternNotCaptured : legacy_reason;
+    bool force_legacy = force_legacy_class_patterns;
+    const char *force_env = ::getenv("MADC_CLASS_PATTERN_FORCE_LEGACY");
+    if ( force_env && *force_env && strcmp(force_env, "0") != 0 )
+	force_legacy = true;
+    if ( selected_pattern && legacy_reason == ClassParseReason::None )
+    {
+	BasicClassPatternBinding binding = {
+	    td, *selected_pattern, subst, mangled, registered_mangled, canon,
+	    dependent_surface, tb
+	};
+	legacy_reason = basic_class_pattern_eligibility(
+	    *this, binding, token_subst, pack_subst);
+	if ( legacy_reason == ClassParseReason::None && !force_legacy )
+	{
+	    ++_class_inst_pattern;
+	    NamespaceScope namespace_scope(*this, td.defining_namespace);
+	    return instantiate_basic_class_pattern(*this, binding);
+	}
+	if ( legacy_reason == ClassParseReason::None )
+	    legacy_reason = ClassParseReason::PatternNotCaptured;
+    }
+
     // Build the substituted, renamed class-definition token sequence:
     // clone each body token; rename the class tag (TokenIdent == class_name) to
     // `mangled`; replace each type-parameter ident with its concrete type token.
@@ -4912,18 +5579,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	}
     } sticky_guard(*this, registered_mangled, want_sticky);
 
-    std::string class_profile_identity;
-    if ( td.owner_class )
-    {
-	class_profile_identity = td.owner_class->canonical_cpp_spelling().empty()
-	    ? td.owner_class->name : td.owner_class->canonical_cpp_spelling();
-	class_profile_identity += "::";
-    }
-    else if ( !td.defining_namespace.empty() )
-	class_profile_identity = td.defining_namespace + "::";
-    class_profile_identity += tname;
     ClassParseCensusScope class_parse_scope(*this, class_profile_identity,
-	ClassParseReason::PatternNotCaptured, canon);
+	legacy_reason, canon);
 
     TokenBase *class_kw = nextToken();   // the injected `class` keyword
     try
@@ -18228,6 +18885,7 @@ struct Program::ClassRegistrationJournal::State
     datadef_map_t struct_map;
     std::map<std::string, DataDefSTRUCT *> tsubst_local_aggregate_map;
     madc::dis::id_table<DataDef> project_types;
+    std::unique_ptr<madc::dis::DefArena> forest_arena;
     std::map<DataDef *, DataDefPTR *> ptr_type_cache;
     std::map<DataDef *, DataDefREF *> ref_type_cache;
     std::map<DataDef *, DataDefCONST *> const_type_cache;
@@ -18292,10 +18950,13 @@ struct Program::ClassRegistrationJournal::State
     size_t anon_tag_counter_value;
     int lambda_counter_value;
 
-    explicit State(Program &p)
+    State(Program &p, bool snapshot_forest)
 	: datadef_map(p.datadef_map), struct_map(p.struct_map.snapshot()),
 	  tsubst_local_aggregate_map(p.tsubst_local_aggregate_map),
-	  project_types(p.project_types), ptr_type_cache(p.ptr_type_cache),
+	  project_types(p.project_types),
+	  forest_arena(snapshot_forest
+	      ? new madc::dis::DefArena(p.forest_arena) : NULL),
+	  ptr_type_cache(p.ptr_type_cache),
 	  ref_type_cache(p.ref_type_cache), const_type_cache(p.const_type_cache),
 	  funcdef_map(p.funcdef_map), literal_map(p.literal_map),
 	  namespace_map(p.namespace_map), concept_map(p.concept_map),
@@ -18345,8 +19006,10 @@ struct Program::ClassRegistrationJournal::State
     }
 };
 
-Program::ClassRegistrationJournal::ClassRegistrationJournal(Program &p)
-    : pgm(p), state(new State(p)), finished(false)
+Program::ClassRegistrationJournal::ClassRegistrationJournal(
+	Program &p, bool isolate_registration_side_effects)
+    : pgm(p), state(new State(p, !isolate_registration_side_effects
+				&& p.forest_arena_enabled)), finished(false)
 {
     pgm.datatype_map.begin_transaction(state->datatype_map);
     pgm.namespace_datatype_map.begin_transaction(state->namespace_datatype_map);
@@ -18358,8 +19021,11 @@ Program::ClassRegistrationJournal::ClassRegistrationJournal(Program &p)
     pgm.fn_template_decl_map.begin_transaction(state->fn_template_decl_map);
     pgm.fn_template_instantiated_vars.begin_transaction(
 	state->fn_template_instantiated_vars);
-    pgm.class_registration_taps_muted = true;
-    pgm.forest_arena_enabled = false;
+    if ( isolate_registration_side_effects )
+    {
+	pgm.class_registration_taps_muted = true;
+	pgm.forest_arena_enabled = false;
+    }
 }
 
 Program::ClassRegistrationJournal::~ClassRegistrationJournal()
@@ -18414,6 +19080,8 @@ void Program::ClassRegistrationJournal::rollback()
 	    current->type_id = 0;
     }
     pgm.project_types = state->project_types;
+    if ( state->forest_arena )
+	pgm.forest_arena = *state->forest_arena;
     pgm.ptr_type_cache = state->ptr_type_cache;
     pgm.ref_type_cache = state->ref_type_cache;
     pgm.const_type_cache = state->const_type_cache;
@@ -18935,6 +19603,11 @@ class ClassPatternNormalizer
 	    fail(Program::ClassParseReason::UnsupportedDeclKind);
 	    return out;
 	}
+	if ( fd->explicit_alignment || fd->has_captures
+	  || !fd->return_types.empty() || fd->no_instrument_function
+	  || fd->no_strict_aliasing || fd->has_large_struct_retbuf
+	  || fd->ctor_trailing_self || fd->has_forest_body )
+	    fail(Program::ClassParseReason::UnsupportedDeclKind);
 	out.variable_name = var->name;
 	out.display_name = fd->method_display_name;
 	out.storage_alias_name = var->storage_alias_name;
@@ -18967,6 +19640,8 @@ class ClassPatternNormalizer
 	    out.kind = Program::ClassMethodKind::Destructor;
 	else if ( out.display_name.compare(0, 9, "operator ") == 0 )
 	    out.kind = Program::ClassMethodKind::Conversion;
+	if ( owner->is_virtual_method(out.display_name) )
+	    fail(Program::ClassParseReason::UnsupportedDeclKind);
 
 	Method *method = var->data ? static_cast<Method *>(var->data) : NULL;
 	for ( size_t i = 0; i < fd->parameters.size(); ++i )
@@ -19086,6 +19761,12 @@ class ClassPatternNormalizer
 	}
 	if ( aggregate )
 	{
+	    if ( aggregate->pack || aggregate->tag_explicit_align
+	      || aggregate->union_layout || aggregate->has_anon_aggregate
+	      || aggregate->is_anonymous || aggregate->reverse_scalar_storage
+	      || aggregate->runtime_size_expr
+	      || !aggregate->member_explicit_align.empty() )
+		fail(Program::ClassParseReason::UnsupportedDeclKind);
 	    if ( !aggregate->member_default_inits.empty() )
 		fail(Program::ClassParseReason::RequiresEagerBodyParse);
 	    for ( size_t i = 0; i < aggregate->members.size(); ++i )
@@ -27925,11 +28606,13 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 		if ( oit->second[oi].member_name == mname )
 		    return;   // madc-instantiated out-of-line; leave emit_symbol unset
     }
-    // Parameter spellings, captured at parse time, EXCLUDING the hidden __this
-    // (slot 0). These carry pointee-const / `&` / template structure the DataDef
-    // alone loses, so the symbol matches the C++ ABI exactly (PKc, not Pc).
+    // Parameter spellings, captured at parse time, excluding slot 0 only when
+    // it is the hidden __this. A static method has no hidden slot, so all of its
+    // parameters participate in the ABI name.
     std::vector<std::string> psp;
-    for ( size_t i = 1; i < fd->param_cpp_spellings.size(); ++i )
+    size_t first_user_param = (mvar->flags & vfSTATIC) ? 0 : 1;
+    for ( size_t i = first_user_param;
+	  i < fd->param_cpp_spellings.size(); ++i )
 	psp.push_back(fd->mangle_param_spelling(i));
     fd->spell_varargs_tail(psp);
     const std::string &cls = ddc->canonical_cpp_spelling();

@@ -2017,6 +2017,9 @@ public:
     };
     ClassPatternArena class_pattern_arena;
     bool class_pattern_capture_in_progress = false;
+    // Temporary B2-B5 equivalence-test switch. The default remains the
+    // structural lane; B6 deletes this when the parse-reason tally reaches zero.
+    bool force_legacy_class_patterns = false;
     std::map<DataDefCLASS *, std::vector<ClassDeclKind> >
 	*class_pattern_decl_capture = NULL;
 
@@ -2064,7 +2067,8 @@ public:
 	ClassRegistrationJournal(const ClassRegistrationJournal &);
 	ClassRegistrationJournal &operator=(const ClassRegistrationJournal &);
     public:
-	explicit ClassRegistrationJournal(Program &p);
+	explicit ClassRegistrationJournal(Program &p,
+		bool isolate_registration_side_effects = true);
 	~ClassRegistrationJournal();
 	void commit();
 	void rollback();

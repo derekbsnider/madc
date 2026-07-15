@@ -1,0 +1,57 @@
+template<typename T>
+class PatternBasic {
+public:
+	typedef T value_type;
+	using pointer = T *;
+	T value;
+	pointer ptr;
+	T slots[3];
+	PatternBasic *next;
+	T read(T *p) const;
+	static T choose(T value);
+};
+
+typedef PatternBasic<int64_t> PatternBasicI64;
+typedef PatternBasic<char> PatternBasicChar;
+
+template<typename T> class PatternForward;
+typedef PatternForward<int64_t> PatternForwardI64;
+PatternForwardI64 *forward_before;
+
+template<typename T>
+class PatternForward {
+public:
+	T value;
+};
+
+int main()
+{
+	PatternBasicI64 first;
+	PatternBasicChar second;
+	PatternForwardI64 complete;
+	first.value = 4;
+	first.ptr = &first.value;
+	first.slots[0] = 1;
+	first.slots[1] = 2;
+	second.value = 7;
+	complete.value = 9;
+	printf("%lld %d %lld\n",
+		(long long)(first.value + *first.ptr
+			+ first.slots[0] + first.slots[1]),
+		(int)second.value, (long long)complete.value);
+	printf("%zu %zu %lld %lld %lld %lld "
+	       "%zu %zu %lld %lld %lld %lld %zu %zu %lld\n",
+		sizeof(first), alignof(PatternBasicI64),
+		(long long)((char *)&first.value - (char *)&first),
+		(long long)((char *)&first.ptr - (char *)&first),
+		(long long)((char *)&first.slots - (char *)&first),
+		(long long)((char *)&first.next - (char *)&first),
+		sizeof(second), alignof(PatternBasicChar),
+		(long long)((char *)&second.value - (char *)&second),
+		(long long)((char *)&second.ptr - (char *)&second),
+		(long long)((char *)&second.slots - (char *)&second),
+		(long long)((char *)&second.next - (char *)&second),
+		sizeof(complete), alignof(PatternForwardI64),
+		(long long)((char *)&complete.value - (char *)&complete));
+	return 0;
+}

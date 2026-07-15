@@ -1,8 +1,8 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-07-15 (class-KIND parse-once
-B1 checkpoint ready for independent verification; live/packed suites
-695/0/0/16; host and source warning censuses clean).
+B2 complete; live/packed suites 696/0/0/16; host and source warning censuses
+clean; B3 vector closure next).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -28,8 +28,7 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Slice B class-KIND parse-once (2026-07-15): B1 CHECKPOINT READY FOR
-  INDEPENDENT VERIFICATION.** The
+- **Slice B class-KIND parse-once (2026-07-15): B2 COMPLETE; B3 NEXT.** The
   standalone design in
   `docs/plans/2026-07-14-class-kind-parse-once-DESIGN.md` inventories the
   complete `TokenSTRUCT`/`TokenCLASS` output contract and specifies one-time
@@ -43,14 +42,17 @@ high-level" — the answer is both.**
   captures and normalizes primary/partial `ClassPattern`s once, fingerprints
   them, and carries/restores them directly through the owner-approved existing
   class-template `TEMPLATE_PAYLOAD` in CIR forest format v28. Bind-time reparse
-  is absent, and every pattern remains intentionally ineligible at B1, so the
-  instantiation path is unchanged. Gates: fulltest and packed release
-  **695/0/0/16**, bind **18/18**, tsubst **10 hit / 0 fallback**, compiler
-  warnings **0**, source warning census **711/0**. The exact class census stays
-  at the B0 baseline: pattern 0, parse 48604, cache 99334, opaque 24430, sole
-  reason `pattern-not-captured`. Next: independent B1 verification; after
-  approval, B2 enables the narrow basic structural pattern lane with loud
-  rollback and no parser retry.
+  is absent. After owner approval of B1, B2 admits the narrow structural subset:
+  unary concrete/template-param types, aliases, scalar/pointer/array members,
+  simple declaration-only methods, and forward completion. Structural and
+  forced-legacy metadata, runtime, C11, MIR, layout, and GCC/Clang Itanium
+  symbols agree; an admitted failure rolls back and fails loudly without a
+  parser retry. Gates: live and packed release **696/0/0/16**, bind **18/18**,
+  tsubst **10 hit / 0 fallback**, compiler warnings **0**, source warning census
+  **712/0**. The exact class census is pattern 3, parse 48604, cache 99334,
+  opaque 24431. Next: B3 closes the measured vector declaration/type surfaces
+  and must materially shift `testsubscript` parses to the pattern lane while
+  reducing both live and bound instantiate/total time.
 - **Bound forest RECORDS decode (2026-07-14, `cbcb79b6`): CLOSED, merged to
   `develop` (independently verified).** Callgrind found the new bound CIR
   regression below `CirFrozenForest::unit_segment`: whole-frame
