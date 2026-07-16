@@ -2282,8 +2282,11 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 		}
 		CHECK(live_direct);
 		CHECK(live_aliased);
-		std::vector<Program::TemplateDef> *live_partials =
+		Program::template_registry_entry_t *live_partial_registry =
 			progA->partial_spec_map.find("W2Box");
+		std::vector<Program::TemplateDef> *live_partials =
+			live_partial_registry
+			? live_partial_registry->find(NULL) : NULL;
 		REQUIRE(live_partials != nullptr);
 		REQUIRE(live_partials->size() == 1);
 		INFO("partial capture reason="
@@ -2482,8 +2485,10 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 	}
 	CHECK(progB->partial_spec_map.count("W2Box") == 1);
 	{
-		std::vector<Program::TemplateDef> *psv =
+		Program::template_registry_entry_t *partial_registry =
 			progB->partial_spec_map.find("W2Box");
+		std::vector<Program::TemplateDef> *psv =
+			partial_registry ? partial_registry->find(NULL) : NULL;
 		REQUIRE(psv != nullptr);
 		REQUIRE(psv->size() == 1);
 		CHECK((*psv)[0].is_partial_specialization);

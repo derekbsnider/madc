@@ -2382,6 +2382,7 @@ public:
 	    std::vector<bool> typeparam_is_pack;
 	    bool has_non_type_params;
 	    std::string class_name;                // e.g. "Box"
+	uint32_t registry_name_id;             // template_name_pool id for class_name
 	    std::vector<TokenBase *> body;         // cloned tokens: `class Name { ... }`
 	std::string defining_namespace;        // current_namespace at capture (e.g. "std")
 	DataDefCLASS *owner_class;             // enclosing class for member templates
@@ -2414,7 +2415,8 @@ public:
 	const uint32_t *frozen_class_pattern;
 	uint32_t frozen_class_pattern_words;
 	CirFrozenForest *frozen_class_pattern_forest;
-	TemplateDef() : has_non_type_params(false), owner_class(nullptr),
+	TemplateDef() : has_non_type_params(false), registry_name_id(0),
+			owner_class(nullptr),
 			is_partial_specialization(false), class_pattern_id(0),
 			class_pattern_reason(ClassParseReason::None),
 			class_pattern_capture_deferred(false),
@@ -2422,7 +2424,36 @@ public:
 			frozen_class_pattern(NULL), frozen_class_pattern_words(0),
 			frozen_class_pattern_forest(NULL) {}
     };
-	ClassPatternId capture_class_pattern(TemplateDef &td);
+	template<class Definition>
+	struct TemplateRegistryEntry {
+	    typedef std::vector<Definition> variants_t;
+	    variants_t namespace_variants;
+	    std::unordered_map<DataDefCLASS *, variants_t> member_variants;
+
+	    variants_t *find(DataDefCLASS *owner)
+	    {
+		if ( !owner )
+		    return namespace_variants.empty() ? NULL : &namespace_variants;
+		typename std::unordered_map<DataDefCLASS *, variants_t>::iterator it =
+		    member_variants.find(owner);
+		return it == member_variants.end() ? NULL : &it->second;
+	    }
+	    const variants_t *find(DataDefCLASS *owner) const
+	    {
+		if ( !owner )
+		    return namespace_variants.empty() ? NULL : &namespace_variants;
+		typename std::unordered_map<DataDefCLASS *, variants_t>::const_iterator it =
+		    member_variants.find(owner);
+		return it == member_variants.end() ? NULL : &it->second;
+	    }
+	    variants_t &for_write(DataDefCLASS *owner)
+	    {
+		return owner ? member_variants[owner] : namespace_variants;
+	    }
+    };
+    typedef TemplateRegistryEntry<TemplateDef> template_registry_entry_t;
+    struct TemplateAliasDef;
+    ClassPatternId capture_class_pattern(TemplateDef &td);
 	const ClassPattern *materialize_class_pattern(const TemplateDef &td);
 	void writeback_class_pattern_capture(const TemplateDef &td);
 	void note_class_pattern_use(const TemplateDef &td);
@@ -2449,6 +2480,10 @@ public:
 	void record_type_alias_write(DataDefCLASS *owner,
 				     const std::string &name);
 	variable_map_t &namespace_for_write(const std::string &name);
+	std::vector<TemplateDef> &class_template_variants_for_write(
+		uint32_t name_id, DataDefCLASS *owner, bool partial);
+	std::vector<TemplateAliasDef> &alias_template_variants_for_write(
+		uint32_t name_id, DataDefCLASS *owner);
     };
     ClassRegistrationJournal *active_class_registration_journal = NULL;
     variable_map_t &namespace_variables_for_write(const std::string &name);
@@ -2458,7 +2493,7 @@ public:
     // partitioned by their concrete owner. Same-key namespace variants remain
     // disambiguated by TemplateDef::defining_namespace. All selection goes
     // through find_template().
-    madc::dis::intern_keyed_map<std::vector<TemplateDef>> template_map; // name -> variants (keyed via template_name_pool)
+    madc::dis::intern_keyed_map<template_registry_entry_t> template_map; // bare-name id -> namespace + owner variants
     // Select a template variant. owner_hint scopes nested member templates
     // (e.g. allocator<T>::rebind<U>); NULL selects namespace/global templates.
     // ns_hint != "" => exact defining_namespace match (or NULL); ns_hint == ""
@@ -2467,6 +2502,9 @@ public:
     TemplateDef *find_template(const std::string &name,
 			       const std::string &ns_hint = std::string(),
 			       DataDefCLASS *owner_hint = NULL);
+    TemplateDef *find_template(uint32_t name_id,
+			       const std::string &ns_hint,
+			       DataDefCLASS *owner_hint);
     // The variant carrying a parsed body, if any (for completion gating).
     TemplateDef *template_with_body(const std::string &name);
     // Replace the same-namespace variant (merging template-default args from the
@@ -2474,10 +2512,12 @@ public:
     // same-namespace variant untouched (first-wins, for bodyless forward decls).
     void register_template(const TemplateDef &td, bool only_if_absent);
     // Partial specializations (template<class T> struct X<T*> {...}), keyed by
-    // bare class name or concrete owner + name for member templates. Kept OUT
+    // bare-name id with concrete owners partitioned inside the value. Kept OUT
     // of template_map (its same-namespace merge would clobber the primary).
     // Selected at instantiation by most-specialized pattern unification.
-    madc::dis::intern_keyed_map<std::vector<TemplateDef>> partial_spec_map; // keyed via template_name_pool
+    madc::dis::intern_keyed_map<template_registry_entry_t> partial_spec_map; // bare-name id -> namespace + owner variants
+    std::vector<TemplateDef> &class_template_variants_for_write(
+	uint32_t name_id, DataDefCLASS *owner, bool partial = false);
     // Choose the most-specialized partial spec of `name` whose pattern unifies with
     // the concrete arguments. Type slots deduce into out_subst; non-type slots must
     // fold to the same constant value. Returns NULL to fall back to the primary.
@@ -2490,7 +2530,8 @@ public:
 	    std::map<std::string, std::string> &out_template_subst,
 	    std::map<std::string, std::vector<std::string> > &out_pack_subst,
 	    std::map<std::string, std::vector<TokenBase *> > &out_nontype_subst,
-	    DataDefCLASS *owner_hint = NULL);
+	    const std::string &ns_hint, DataDefCLASS *owner_hint = NULL,
+	    uint32_t name_id = 0);
     // Unify a nested template-id pattern arg (e.g. `allocator<_Tp>`) against a
     // concrete type spelling (e.g. `std::allocator<char>`), deducing the spec's
     // type params. Fallback used by match_partial_specialization when the flat
@@ -2545,26 +2586,32 @@ public:
     // canonicalizing at only SOME sites shatters identity (the 202-regression).
     std::string canonical_arg_key_fragment(const std::vector<TokenBase *> &argtoks,
 					   const std::string &spelling);
-	struct TemplateAliasDef {
+    struct TemplateAliasDef {
 	    std::vector<std::string> typeparams;
 	    std::vector<std::vector<TokenBase *>> typeparam_defaults;
 	    std::vector<bool> typeparam_is_type;
 	    std::vector<bool> typeparam_is_pack;
 	    bool has_non_type_params;
 	    std::string alias_name;
+	uint32_t registry_name_id;
 	std::vector<TokenBase *> target;
 	std::string defining_namespace;
 	DataDefCLASS *owner_class;
-	TemplateAliasDef() : has_non_type_params(false), owner_class(nullptr) {}
+	TemplateAliasDef() : has_non_type_params(false), registry_name_id(0),
+		owner_class(nullptr) {}
     };
-    madc::dis::intern_keyed_map<std::vector<TemplateAliasDef>> template_alias_map; // keyed via template_name_pool
+    typedef TemplateRegistryEntry<TemplateAliasDef> template_alias_registry_entry_t;
+    madc::dis::intern_keyed_map<template_alias_registry_entry_t> template_alias_map; // bare-name id -> namespace + owner variants
+    std::vector<TemplateAliasDef> &alias_template_variants_for_write(
+	uint32_t name_id, DataDefCLASS *owner);
     struct ClassNestedTemplateCaptureEntry {
 	ClassNestedTemplateKind kind;
 	bool partial_specialization;
-	std::string key;
+	uint32_t name_id;
 	ClassNestedTemplateCaptureEntry(ClassNestedTemplateKind k,
-		bool partial, const std::string &registry_key)
-	    : kind(k), partial_specialization(partial), key(registry_key) {}
+		bool partial, uint32_t registry_name_id)
+	    : kind(k), partial_specialization(partial),
+	      name_id(registry_name_id) {}
     };
     typedef std::map<DataDefCLASS *,
 	std::vector<ClassNestedTemplateCaptureEntry> >
@@ -2572,6 +2619,9 @@ public:
     class_nested_template_capture_t *class_pattern_nested_template_capture = NULL;
     void record_class_pattern_nested_template(DataDefCLASS *owner,
 	ClassNestedTemplateKind kind, const std::string &key,
+	bool partial_specialization = false);
+    void record_class_pattern_nested_template(DataDefCLASS *owner,
+	ClassNestedTemplateKind kind, uint32_t name_id,
 	bool partial_specialization = false);
     // C++14 VARIABLE TEMPLATE: `template<...> [inline constexpr] T name = init;`
     // (std::numbers::e_v, pi_v, …). madc does not model these as first-class
@@ -2895,6 +2945,7 @@ public:
     // clones (structural type tokens, not source text).
     struct DependentShellOrigin {
 	std::string tname;			// class-template name (template map key)
+	uint32_t registry_name_id = 0;
 	std::string defining_namespace;
 	DataDefCLASS *owner_class = NULL;
 	std::vector<std::string> arg_spellings;
@@ -4462,6 +4513,9 @@ public:
     TemplateAliasDef *find_template_alias(const std::string &name,
 					  const std::string &ns_hint = std::string(),
 					  DataDefCLASS *owner_hint = NULL);
+    TemplateAliasDef *find_template_alias(uint32_t name_id,
+					  const std::string &ns_hint,
+					  DataDefCLASS *owner_hint);
     void register_template_alias(const TemplateAliasDef &td);
     DataDefCLASS *materialize_dependent_member_type(DataDefCLASS *owner,
 						    const std::string &member_name);

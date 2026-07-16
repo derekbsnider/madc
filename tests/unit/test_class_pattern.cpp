@@ -707,9 +707,9 @@ TEST_CASE("B3 template lookup stays read-only during registration transactions")
 	REQUIRE(tokens != NULL);
 	REQUIRE(program.parse(tokens));
 
-	madc::dis::intern_keyed_map<std::vector<Program::TemplateDef> >
+	madc::dis::intern_keyed_map<Program::template_registry_entry_t>
 	    ::transaction_state template_transaction;
-	madc::dis::intern_keyed_map<std::vector<Program::TemplateAliasDef> >
+	madc::dis::intern_keyed_map<Program::template_alias_registry_entry_t>
 	    ::transaction_state alias_transaction;
 	program.template_map.begin_transaction(template_transaction);
 	program.template_alias_map.begin_transaction(alias_transaction);
@@ -779,6 +779,8 @@ TEST_CASE("R1 nested template registrations stay owner-scoped")
 		"    template<class U> using Pointer = U *;\n"
 		"    T value;\n"
 		"};\n"
+		"template<class T> struct Rebind { T global_value; };\n"
+		"template<class T> using Pointer = T;\n"
 		"R1Outer<int32_t> first;\n"
 		"R1Outer<int64_t> second;\n";
 	Program program;
@@ -801,16 +803,106 @@ TEST_CASE("R1 nested template registrations stay owner-scoped")
 		program.find_template_alias("Pointer", std::string(), first);
 	Program::TemplateAliasDef *second_pointer =
 		program.find_template_alias("Pointer", std::string(), second);
-	const std::vector<Program::TemplateDef> *bare_rebind =
-		program.template_map.find_readonly("Rebind");
-	const std::vector<Program::TemplateAliasDef> *bare_pointer =
-		program.template_alias_map.find_readonly("Pointer");
+	Program::TemplateDef *global_rebind = program.find_template("Rebind");
+	Program::TemplateAliasDef *global_pointer =
+		program.find_template_alias("Pointer");
+	uint32_t rebind_id = program.template_name_pool.intern("Rebind");
+	uint32_t pointer_id = program.template_name_pool.intern("Pointer");
+	const Program::template_registry_entry_t *bare_rebind =
+		program.template_map.find_readonly(rebind_id);
+	const Program::template_alias_registry_entry_t *bare_pointer =
+		program.template_alias_map.find_readonly(pointer_id);
 	CHECK(first_rebind != NULL);
 	CHECK(second_rebind != NULL);
 	CHECK(first_pointer != NULL);
 	CHECK(second_pointer != NULL);
-	CHECK(bare_rebind == NULL);
-	CHECK(bare_pointer == NULL);
+	CHECK(global_rebind != NULL);
+	CHECK(global_pointer != NULL);
+	REQUIRE(bare_rebind != NULL);
+	REQUIRE(bare_pointer != NULL);
+	CHECK(bare_rebind->namespace_variants.size() == 1);
+	CHECK(bare_pointer->namespace_variants.size() == 1);
+	CHECK(bare_rebind->member_variants.size() == 2);
+	CHECK(bare_pointer->member_variants.size() == 2);
+
+	DataDefCLASS rolled_back_owner(
+		"R1OuterRolledBack", 0, DataType::dtRESERVED);
+	{
+		Program::ClassRegistrationJournal journal(program);
+		Program::TemplateDef rolled_back = *first_rebind;
+		rolled_back.owner_class = &rolled_back_owner;
+		program.register_template(rolled_back, false);
+		Program::TemplateDef *temporary = program.find_template(
+			"Rebind", std::string(), &rolled_back_owner);
+		CHECK(temporary != NULL);
+		journal.rollback();
+	}
+	Program::TemplateDef *removed = program.find_template(
+		"Rebind", std::string(), &rolled_back_owner);
+	CHECK(removed == NULL);
+	CHECK(bare_rebind->member_variants.size() == 2);
+
+	const uint16_t original_use_count = first_rebind->class_pattern_use_count;
+	const bool original_alias_non_type = first_pointer->has_non_type_params;
+	{
+		Program::ClassRegistrationJournal journal(program);
+		Program::TemplateDef changed = *first_rebind;
+		changed.class_pattern_use_count = original_use_count + 7;
+		program.register_template(changed, false);
+		Program::TemplateAliasDef changed_alias = *first_pointer;
+		changed_alias.has_non_type_params = !original_alias_non_type;
+		program.register_template_alias(changed_alias);
+		CHECK(program.find_template(
+			"Rebind", std::string(), first)->class_pattern_use_count
+			== original_use_count + 7);
+		CHECK(program.find_template_alias(
+			"Pointer", std::string(), first)->has_non_type_params
+			== !original_alias_non_type);
+		journal.rollback();
+	}
+	first_rebind = program.find_template("Rebind", std::string(), first);
+	first_pointer = program.find_template_alias(
+		"Pointer", std::string(), first);
+	REQUIRE(first_rebind != NULL);
+	REQUIRE(first_pointer != NULL);
+	CHECK(first_rebind->class_pattern_use_count == original_use_count);
+	CHECK(first_pointer->has_non_type_params == original_alias_non_type);
+}
+
+TEST_CASE("R1 partial specializations stay namespace-scoped")
+{
+	const char *source =
+		"namespace R1Left {\n"
+		"template<class T> struct Choice { char primary; };\n"
+		"template<class T> struct Choice<T *> { int32_t left; };\n"
+		"}\n"
+		"namespace R1Right {\n"
+		"template<class T> struct Choice { char primary; };\n"
+		"template<class T> struct Choice<T *> { int64_t right; };\n"
+		"}\n"
+		"R1Left::Choice<int32_t *> left_choice;\n"
+		"R1Right::Choice<int32_t *> right_choice;\n";
+	Program program;
+	TokenProgram *tokens = program.tokenize_buffer(
+		source, "<class-pattern-partial-namespaces>");
+	REQUIRE(tokens != NULL);
+	REQUIRE(program.parse(tokens));
+	DataDefCLASS *left = find_canonical_class(
+		program, "R1Left::Choice<int32_t*>");
+	DataDefCLASS *right = find_canonical_class(
+		program, "R1Right::Choice<int32_t*>");
+	REQUIRE(left != NULL);
+	REQUIRE(right != NULL);
+	auto has_member = [](DataDefCLASS *owner, const char *name) {
+		for (size_t i = 0; i < owner->members.size(); ++i)
+			if (owner->members[i].first == name)
+				return true;
+		return false;
+	};
+	CHECK(has_member(left, "left"));
+	CHECK(!has_member(left, "right"));
+	CHECK(has_member(right, "right"));
+	CHECK(!has_member(right, "left"));
 }
 
 TEST_CASE("B3 dependent non-type template arguments stay on the fallback lane")

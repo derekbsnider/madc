@@ -2125,36 +2125,104 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
     static const std::vector<TokenBase *> no_toks;
     static const std::vector<bool> no_bools;
 
-    prog->template_map.for_each([&](const char *key, std::vector<Program::TemplateDef> &v) {
-	for (Program::TemplateDef &td : v)
-	    emit(CIR_TMPLK_CLASS, key, td.class_name, td.defining_namespace,
-		 std::string(), td.owner_class,
-		 (td.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0)
-		 | (td.is_partial_specialization ? CIR_TMPLF_IS_PARTIAL_SPEC : 0),
-		 td.typeparams, td.typeparam_is_type, td.typeparam_is_pack,
-		 td.typeparam_defaults, td.body, td.constraint, td.spec_pattern,
-		 prog->materialize_class_pattern(td), td.class_pattern_reason);
+    // v31 serialized member-template keys used owner-name + US + bare-name.
+    // Keep that cold wire spelling for reader compatibility and closure-filter
+    // semantics; the live registry itself is keyed only by the bare-name id.
+    auto frozen_template_key = [](const char *bare_name,
+	    const std::string &template_name, DataDefCLASS *owner) {
+	if (!owner)
+	    return std::string(bare_name);
+	std::string key;
+	key.reserve(owner->name.size() + 1 + template_name.size());
+	key.append(owner->name);
+	key.push_back('\x1f');
+	key.append(template_name);
+	return key;
+    };
+
+    auto emit_class_registry = [&](uint32_t kind, const char *key,
+	    Program::template_registry_entry_t &registry) {
+	auto emit_variants = [&](std::vector<Program::TemplateDef> &variants) {
+	    for (Program::TemplateDef &td : variants) {
+		const std::string record_key = frozen_template_key(
+		    key, td.class_name, td.owner_class);
+		emit(kind, record_key.c_str(), td.class_name,
+		     td.defining_namespace,
+		     std::string(), td.owner_class,
+		     (td.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0)
+		     | (td.is_partial_specialization ? CIR_TMPLF_IS_PARTIAL_SPEC : 0),
+		     td.typeparams, td.typeparam_is_type, td.typeparam_is_pack,
+		     td.typeparam_defaults, td.body, td.constraint, td.spec_pattern,
+		     prog->materialize_class_pattern(td), td.class_pattern_reason);
+	    }
+	};
+	emit_variants(registry.namespace_variants);
+	std::vector<std::pair<std::string,
+	    std::vector<Program::TemplateDef> *> > owners;
+	for (std::unordered_map<DataDefCLASS *,
+		std::vector<Program::TemplateDef> >::iterator it =
+		registry.member_variants.begin();
+	     it != registry.member_variants.end(); ++it) {
+	    const std::string &canonical =
+		it->first->canonical_cpp_spelling();
+	    owners.push_back(std::make_pair(
+		canonical.empty() ? it->first->name : canonical, &it->second));
+	}
+	std::sort(owners.begin(), owners.end(),
+	    [](const std::pair<std::string,
+		       std::vector<Program::TemplateDef> *> &a,
+	       const std::pair<std::string,
+		       std::vector<Program::TemplateDef> *> &b) {
+		return a.first < b.first;
+	    });
+	for (size_t i = 0; i < owners.size(); ++i)
+	    emit_variants(*owners[i].second);
+    };
+    prog->template_map.for_each([&](const char *key,
+	    Program::template_registry_entry_t &registry) {
+	emit_class_registry(CIR_TMPLK_CLASS, key, registry);
 	return false;
     });
-    prog->partial_spec_map.for_each([&](const char *key, std::vector<Program::TemplateDef> &v) {
-	for (Program::TemplateDef &td : v)
-	    emit(CIR_TMPLK_PARTIAL, key, td.class_name, td.defining_namespace,
-		 std::string(), td.owner_class,
-		 (td.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0)
-		 | (td.is_partial_specialization ? CIR_TMPLF_IS_PARTIAL_SPEC : 0),
-		 td.typeparams, td.typeparam_is_type, td.typeparam_is_pack,
-		 td.typeparam_defaults, td.body, td.constraint, td.spec_pattern,
-		 prog->materialize_class_pattern(td), td.class_pattern_reason);
+    prog->partial_spec_map.for_each([&](const char *key,
+	    Program::template_registry_entry_t &registry) {
+	emit_class_registry(CIR_TMPLK_PARTIAL, key, registry);
 	return false;
     });
-    prog->template_alias_map.for_each([&](const char *key, std::vector<Program::TemplateAliasDef> &v) {
-	for (Program::TemplateAliasDef &ad : v)
-	    emit(CIR_TMPLK_ALIAS, key, ad.alias_name, ad.defining_namespace,
-		 std::string(), ad.owner_class,
-		 ad.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0,
-		 ad.typeparams, ad.typeparam_is_type, ad.typeparam_is_pack,
-		 ad.typeparam_defaults, ad.target, no_toks, no_multi, NULL,
-		 Program::ClassParseReason::None);
+    prog->template_alias_map.for_each([&](const char *key,
+	    Program::template_alias_registry_entry_t &registry) {
+	auto emit_variants = [&](std::vector<Program::TemplateAliasDef> &variants) {
+	    for (Program::TemplateAliasDef &ad : variants) {
+		const std::string record_key = frozen_template_key(
+		    key, ad.alias_name, ad.owner_class);
+		emit(CIR_TMPLK_ALIAS, record_key.c_str(), ad.alias_name,
+		     ad.defining_namespace, std::string(), ad.owner_class,
+		     ad.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0,
+		     ad.typeparams, ad.typeparam_is_type, ad.typeparam_is_pack,
+		     ad.typeparam_defaults, ad.target, no_toks, no_multi, NULL,
+		     Program::ClassParseReason::None);
+	    }
+	};
+	emit_variants(registry.namespace_variants);
+	std::vector<std::pair<std::string,
+	    std::vector<Program::TemplateAliasDef> *> > owners;
+	for (std::unordered_map<DataDefCLASS *,
+		std::vector<Program::TemplateAliasDef> >::iterator it =
+		registry.member_variants.begin();
+	     it != registry.member_variants.end(); ++it) {
+	    const std::string &canonical =
+		it->first->canonical_cpp_spelling();
+	    owners.push_back(std::make_pair(
+		canonical.empty() ? it->first->name : canonical, &it->second));
+	}
+	std::sort(owners.begin(), owners.end(),
+	    [](const std::pair<std::string,
+		       std::vector<Program::TemplateAliasDef> *> &a,
+	       const std::pair<std::string,
+		       std::vector<Program::TemplateAliasDef> *> &b) {
+		return a.first < b.first;
+	    });
+	for (size_t i = 0; i < owners.size(); ++i)
+	    emit_variants(*owners[i].second);
 	return false;
     });
     prog->fn_template_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {

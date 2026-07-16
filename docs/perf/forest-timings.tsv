@@ -24,3 +24,5 @@ date	commit	live_s	bound_s	live_derives	bound_derives	load1	note
 2026-07-14	cbcb79b6	2.172	0.593	217	184	0.88	columnar RECORDS bind: lazy row reconstruction
 2026-07-15	3e99b9d4	9.624	0.999	217	184	3.07	B3-vector-closure-checkpoint
 2026-07-16	3863967d	2.194	0.619	217	184	1.15	class-pattern capture fixes: flagships unlocked at bind (77 pattern), pack fence, lazy live opt-in
+2026-07-16	ea4f4021	2.374	0.519	217	184	1.30	R1/R2 A/B baseline; live pattern opt-in, identical madcdat=no + zstd config
+2026-07-16	2acfaf60	2.446	0.539	217	184	1.44	R1+R2 landed A/B; live pattern opt-in; bound calls 3550->3542, wall net-negative

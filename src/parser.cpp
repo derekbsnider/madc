@@ -3015,19 +3015,6 @@ static std::string sanitize_template_fragment(const std::string &s)
     return out.empty() ? std::string("_") : out;
 }
 
-// Member templates belong to one concrete class specialization. Keeping every
-// owner in the bare-name vector makes registration reallocate/copy all prior
-// variants and makes owner-aware lookup scan them linearly. Partition those
-// entries inside the existing transactional map; the separator cannot occur in
-// a C++ identifier or in madc's generated aggregate names.
-static std::string owner_scoped_template_key(
-	const std::string &name, const DataDefCLASS *owner)
-{
-    if ( !owner )
-	return name;
-    return owner->name + '\x1f' + name;
-}
-
 // The datatype_map / struct_map key HEAD for a template instantiation: the
 // bare name unless the same name is declared in 2+ namespaces (std::char_traits
 // vs __gnu_cxx::char_traits), where the defining namespace must disambiguate.
@@ -3036,11 +3023,14 @@ static std::string owner_scoped_template_key(
 // is invisible to use sites, which then instantiate the primary instead.
 static std::string template_instantiation_key_head(
 	Program &pgm, const std::string &tname,
+	uint32_t name_id,
 	const std::string &defining_namespace,
 	DataDefCLASS *owner = NULL)
 {
+    const Program::template_registry_entry_t *entry =
+	pgm.template_map.find_readonly(name_id);
     const std::vector<Program::TemplateDef> *g =
-	pgm.template_map.find_readonly(owner_scoped_template_key(tname, owner));
+	entry ? entry->find(owner) : NULL;
     if ( g && g->size() > 1
       && !defining_namespace.empty() )
 	return sanitize_template_fragment(defining_namespace) + "__" + tname;
@@ -3193,7 +3183,7 @@ static TokenDataType *resolve_type_token_sequence(Program &pgm,
 }
 
 static const Program::TemplateAliasDef *find_template_alias_in_class_tree(
-	Program &pgm, const std::string &name, DataDefCLASS *owner,
+	Program &pgm, uint32_t name_id, DataDefCLASS *owner,
 	DataDefCLASS **matched_owner, std::set<DataDefCLASS *> *seen = NULL)
 {
     if ( !owner )
@@ -3206,7 +3196,7 @@ static const Program::TemplateAliasDef *find_template_alias_in_class_tree(
     seen->insert(owner);
 
     if ( const Program::TemplateAliasDef *found =
-	    pgm.find_template_alias(name, std::string(), owner) )
+	    pgm.find_template_alias(name_id, std::string(), owner) )
     {
 	if ( matched_owner )
 	    *matched_owner = owner;
@@ -3215,16 +3205,18 @@ static const Program::TemplateAliasDef *find_template_alias_in_class_tree(
 
     for ( size_t i = 0; i < owner->bases.size(); ++i )
 	if ( const Program::TemplateAliasDef *td =
-		find_template_alias_in_class_tree(pgm, name,
-						  owner->bases[i].base,
-						  matched_owner, seen) )
+		find_template_alias_in_class_tree(pgm, name_id,
+					  owner->bases[i].base,
+					  matched_owner, seen) )
 	    return td;
     if ( const Program::TemplateAliasDef *td =
-	    find_template_alias_in_class_tree(pgm, name, owner->base_class,
-					      matched_owner, seen) )
+	    find_template_alias_in_class_tree(pgm, name_id, owner->base_class,
+				      matched_owner, seen) )
 	return td;
-    return find_template_alias_in_class_tree(pgm, name, owner->enclosing_class,
-					     matched_owner, seen);
+
+    return find_template_alias_in_class_tree(pgm, name_id,
+				     owner->enclosing_class,
+				     matched_owner, seen);
 }
 
 static TokenDataType *resolve_simple_member_detection_alias(
@@ -3804,7 +3796,8 @@ static bool opaque_template_args_select_concrete_partial_spec(
     const Program::TemplateDef *spec = pgm.match_partial_specialization(
 	tname, arg_types_by_slot, arg_spellings, arg_tokens_by_slot,
 	td.typeparam_is_type, spec_subst, spec_tmpl_subst, spec_pack_subst,
-	spec_nontype_subst, td.owner_class);
+	spec_nontype_subst, td.defining_namespace, td.owner_class,
+	td.registry_name_id);
     return spec && !spec->body.empty();
 }
 
@@ -3936,6 +3929,7 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
     {
 	DependentShellOrigin &org = dependent_shell_origin[fwd];
 	org.tname = tname;
+	org.registry_name_id = td.registry_name_id;
 	org.defining_namespace = td.defining_namespace;
 	org.owner_class = td.owner_class;
 	org.arg_spellings = args;
@@ -5415,6 +5409,7 @@ static void register_basic_class_pattern_nested_templates(
 	    td.typeparam_is_pack = nested.typeparam_is_pack;
 	    td.has_non_type_params = nested.has_non_type_params;
 	    td.class_name = nested.class_name;
+	    td.registry_name_id = pgm.template_name_pool.intern(td.class_name);
 	    td.body = basic_class_pattern_substitute_tokens(binding, nested.body);
 	    td.defining_namespace = nested.defining_namespace;
 	    td.owner_class = owner;
@@ -5431,11 +5426,11 @@ static void register_basic_class_pattern_nested_templates(
 		    Program::ClassParseReason::PatternNotCaptured;
 	    if ( td.is_partial_specialization )
 	    {
-		pgm.partial_spec_map[owner_scoped_template_key(
-		    td.class_name, owner)].push_back(td);
+		pgm.class_template_variants_for_write(
+		    td.registry_name_id, owner, true).push_back(td);
 		pgm.record_class_pattern_nested_template(owner,
 		    Program::ClassNestedTemplateKind::ClassTemplate,
-		    td.class_name, true);
+		    td.registry_name_id, true);
 	    }
 	    else
 		pgm.register_template(td, false);
@@ -5450,6 +5445,7 @@ static void register_basic_class_pattern_nested_templates(
 	    td.typeparam_is_pack = nested.typeparam_is_pack;
 	    td.has_non_type_params = nested.has_non_type_params;
 	    td.alias_name = nested.class_name;
+	    td.registry_name_id = pgm.template_name_pool.intern(td.alias_name);
 	    td.target = basic_class_pattern_substitute_tokens(
 		binding, nested.target);
 	    td.defining_namespace = nested.defining_namespace;
@@ -5788,7 +5784,9 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 					       DataDefCLASS *owner_hint)
 {
     InstTimer _it(*this, _inst_class_count);	// --show-stats
-    const Program::TemplateDef *tdp = find_template(tname, ns_hint, owner_hint);
+    const uint32_t tname_id = template_name_pool.intern(tname);
+    const Program::TemplateDef *tdp = find_template(
+	tname_id, ns_hint, owner_hint);
     if ( !tdp )
 	return NULL;
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
@@ -5797,6 +5795,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // registration, and a vector reallocation would dangle a live reference.
     // Both this function and instantiate_opaque_template_use only read td.
     Program::TemplateDef td = *tdp;
+    if ( !td.registry_name_id )
+	td.registry_name_id = tname_id;
     // Definition-time class-pattern capture parses declarations only. Every nested
     // template-id remains an opaque structural recipe for later tsubst; eager
     // instantiation here is both duplicate work and can recurse before a later
@@ -5826,9 +5826,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // (`typedef decltype(_S_test<...>(0)) type;`). Defer the opaque bail so the
     // partial-spec match below can run and swap to that spec; if none matches, the
     // primary's empty body falls back to the opaque placeholder downstream (3287).
+    const template_registry_entry_t *partial_entry =
+	partial_spec_map.find_readonly(tname_id);
     bool try_spec_real_inst = (allow_variadic_real_inst || variadic_real_inst_sticky)
-			   && partial_spec_map.count(
-			       owner_scoped_template_key(tname, td.owner_class));
+			   && partial_entry && partial_entry->find(td.owner_class);
     allow_variadic_real_inst = false;
     // When this real-instantiation forwards through a dependent-member base
     // (`: Base<...>::type`), keep real-instantiation on for the nested base/arg
@@ -5864,7 +5865,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // Keeping the common single-namespace case byte-identical avoids churning
     // every std:: template's internal tag.
     std::string mangled = template_instantiation_key_head(
-	*this, tname, td.defining_namespace, td.owner_class);
+	*this, tname, tname_id, td.defining_namespace, td.owner_class);
     std::map<std::string, TokenDataType *> subst;
     std::map<std::string, std::vector<TokenBase *> > token_subst;
     // A trailing-pack param deduced by a partial spec (`_SomeTemplate<_Tp, _Types...>`
@@ -6097,7 +6098,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	if ( const Program::TemplateDef *spec = match_partial_specialization(
 		tname, arg_types_by_slot, arg_spellings, arg_tokens_by_slot,
 		td.typeparam_is_type, spec_subst, spec_tmpl_subst, spec_pack_subst,
-		spec_nontype_subst, td.owner_class) )
+		spec_nontype_subst, td.defining_namespace, td.owner_class,
+		tname_id) )
 	{
 	    // Keep the USE-SITE owner across the swap. A nested class template's
 	    // partial recipe carries the concrete owner that registered it, while
@@ -6884,8 +6886,9 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 						     DataDefCLASS *owner_hint)
 {
     InstTimer _it(*this, _inst_alias_count);	// --show-stats
-    const Program::TemplateAliasDef *tdp = find_template_alias(tname, ns_hint,
-							 owner_hint);
+    const uint32_t tname_id = template_name_pool.intern(tname);
+    const Program::TemplateAliasDef *tdp = find_template_alias(
+	tname_id, ns_hint, owner_hint);
     if ( !tdp )
 	return NULL;
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
@@ -6899,6 +6902,8 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
     // arguments".) The copy is self-contained: typeparams/defaults are value
     // vectors and target holds cloned token pointers not stored in that vector.
     Program::TemplateAliasDef td = *tdp;
+    if ( !td.registry_name_id )
+	td.registry_name_id = tname_id;
     if ( td.has_non_type_params )
     {
 	nextToken(); // consume '<'
@@ -6943,12 +6948,14 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    const Program::TemplateAliasDef *op_alias = NULL;
 	    if ( !op_name.empty() )
 	    {
+		const uint32_t op_name_id = template_name_pool.intern(op_name);
 		for ( std::vector<DataDefCLASS *>::reverse_iterator it =
 			  class_scope_stack.rbegin();
 		      it != class_scope_stack.rend() && !op_alias; ++it )
-		    op_alias = find_template_alias_in_class_tree(*this, op_name,
-								*it,
-								&op_owner);
+		    op_alias = find_template_alias_in_class_tree(*this,
+							op_name_id,
+							*it,
+							&op_owner);
 	    }
 	    std::vector<std::vector<TokenBase *> > op_args;
 	    for ( size_t ai = 2; ai < arg_tokens.size(); ++ai )
@@ -7598,9 +7605,10 @@ TokenDataType *Program::resolve_class_member_type_chain(DataDefCLASS *owner,
 	    // shape the loop body resolves (via instantiate_template_id ->
 	    // instantiate_template_alias_use), so the probe must admit it too —
 	    // otherwise the chain never descends and the type fails to resolve.
+	    const uint32_t probe_name_id = template_name_pool.intern(probe_name);
 	    if ( !resolve_class_type_alias(owner, probe_name)
-	      && !find_template(probe_name, std::string(), owner)
-	      && !find_template_alias(probe_name, std::string(), owner) )
+	      && !find_template(probe_name_id, std::string(), owner)
+	      && !find_template_alias(probe_name_id, std::string(), owner) )
 		return NULL;
 	    first_segment = false;
 	}
@@ -7985,8 +7993,10 @@ TokenObjTemp *Program::try_parse_functional_ctor(TokenBase *name_tb)
 	if ( name.empty() )
 		return NULL;
 	DataDefCLASS *cdd = NULL;
+	const uint32_t name_id = template_name_pool.intern(name);
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT
-	  && (find_template(name) || find_template_alias(name)) )
+	  && (find_template(name_id, std::string(), NULL)
+	   || find_template_alias(name_id, std::string(), NULL)) )
 	{
 		// Template-id: instantiate (consumes `<...>`), then require '('.
 		if ( TokenDataType *inst = instantiate_template_id(name, name_tb) )
@@ -10284,9 +10294,11 @@ bool Program::fold_constant_qualified_member(TokenBase *first, madc_wide_int &ou
 	// In the raw constant-expression token stream a type name is still a
 	// bare identifier (not yet resolved to ttDataType).
 	std::string nm = contextual_identifier_name(first);
+	const uint32_t nm_id = template_name_pool.intern(nm);
 	// Template-id leading segment `Name<...>::...`: instantiate to a scope.
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT
-	  && (template_map.count(nm) || template_alias_map.count(nm)) )
+	  && (find_template(nm_id, std::string(), NULL)
+	   || find_template_alias(nm_id, std::string(), NULL)) )
 	{
 	    // Fold a trait's `::value` (e.g. `__and_<__has_construct<...>>::value`):
 	    // let the variadic trait template really instantiate so its `::value`
@@ -15128,13 +15140,21 @@ public:
 static Program::TemplateDef *registered_template_entry_for(
 	Program &pgm, const Program::TemplateDef &td)
 {
-    const std::string key = owner_scoped_template_key(
-	td.class_name, td.owner_class);
-    std::vector<Program::TemplateDef> *variants = td.is_partial_specialization
-	? pgm.partial_spec_map.find(key)
-	: pgm.template_map.find(key);
-    if ( !variants )
+    const uint32_t name_id = td.registry_name_id
+	? td.registry_name_id : pgm.template_name_pool.intern(td.class_name);
+    const Program::template_registry_entry_t *entry =
+	td.is_partial_specialization
+	? pgm.partial_spec_map.find_readonly(name_id)
+	: pgm.template_map.find_readonly(name_id);
+    const std::vector<Program::TemplateDef> *found =
+	entry ? entry->find(td.owner_class) : NULL;
+    if ( !found )
 	return NULL;
+    std::vector<Program::TemplateDef> *variants =
+	pgm.active_class_registration_journal
+	? &pgm.class_template_variants_for_write(name_id, td.owner_class,
+						 td.is_partial_specialization)
+	: const_cast<std::vector<Program::TemplateDef> *>(found);
     for ( size_t i = 0; i < variants->size(); ++i )
     {
 	Program::TemplateDef &v = (*variants)[i];
@@ -15731,6 +15751,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	{
 	    TemplateDef td;
 	    td.class_name = rt.name ? rt.name : "";
+	    td.registry_name_id = template_name_pool.intern(td.class_name);
 	    td.defining_namespace = rt.ns ? rt.ns : "";
 	    td.owner_class = rt.owner;
 	    td.has_non_type_params = (rt.flags & CIR_TMPLF_HAS_NON_TYPE_PARAMS) != 0;
@@ -15779,15 +15800,19 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    }
 	    if ( rt.kind == CIR_TMPLK_CLASS )
 	    {
-		template_map[key].push_back(td);
+		class_template_variants_for_write(
+		    td.registry_name_id, td.owner_class).push_back(td);
 		record_class_pattern_nested_template(td.owner_class,
-		    ClassNestedTemplateKind::ClassTemplate, td.class_name);
+		    ClassNestedTemplateKind::ClassTemplate,
+		    td.registry_name_id);
 	    }
 	    else
 	    {
-		partial_spec_map[key].push_back(td);
+		class_template_variants_for_write(
+		    td.registry_name_id, td.owner_class, true).push_back(td);
 		record_class_pattern_nested_template(td.owner_class,
-		    ClassNestedTemplateKind::ClassTemplate, td.class_name, true);
+		    ClassNestedTemplateKind::ClassTemplate,
+		    td.registry_name_id, true);
 	    }
 	    break;
 	}
@@ -15795,6 +15820,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	{
 	    TemplateAliasDef ad;
 	    ad.alias_name = rt.name ? rt.name : "";
+	    ad.registry_name_id = template_name_pool.intern(ad.alias_name);
 	    ad.defining_namespace = rt.ns ? rt.ns : "";
 	    ad.owner_class = rt.owner;
 	    ad.has_non_type_params = (rt.flags & CIR_TMPLF_HAS_NON_TYPE_PARAMS) != 0;
@@ -15808,9 +15834,10 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		    restore_run(rt.defaults[p], ad.typeparam_defaults.back());
 	    }
 	    restore_run(rt.body, ad.target);
-	    template_alias_map[key].push_back(ad);
+	    alias_template_variants_for_write(
+		ad.registry_name_id, ad.owner_class).push_back(ad);
 	    record_class_pattern_nested_template(ad.owner_class,
-		ClassNestedTemplateKind::AliasTemplate, ad.alias_name);
+		ClassNestedTemplateKind::AliasTemplate, ad.registry_name_id);
 	    break;
 	}
 	case CIR_TMPLK_FN:
@@ -19832,9 +19859,19 @@ Program::TemplateDef *Program::find_template(const std::string &name,
 					     const std::string &ns_hint,
 					     DataDefCLASS *owner_hint)
 {
+    return find_template(template_name_pool.intern(name), ns_hint, owner_hint);
+}
+
+Program::TemplateDef *Program::find_template(uint32_t name_id,
+					     const std::string &ns_hint,
+					     DataDefCLASS *owner_hint)
+{
+    const template_registry_entry_t *entry =
+	template_map.find_readonly(name_id);
+    const std::vector<Program::TemplateDef> *found =
+	entry ? entry->find(owner_hint) : NULL;
     std::vector<Program::TemplateDef> *g = const_cast<
-	std::vector<Program::TemplateDef> *>(template_map.find_readonly(
-	    owner_scoped_template_key(name, owner_hint)));
+	std::vector<Program::TemplateDef> *>(found);
     if ( !g || g->empty() )
 	return NULL;
     std::vector<Program::TemplateDef> &variants = *g;
@@ -19867,28 +19904,21 @@ Program::TemplateDef *Program::find_template(const std::string &name,
 	return NULL;
     }
 
-    std::vector<Program::TemplateDef *> owned;
-    for ( size_t i = 0; i < variants.size(); ++i )
-	if ( variants[i].owner_class == owner_hint )
-	    owned.push_back(&variants[i]);
-    if ( owned.empty() )
-	return NULL;
-
     // Unqualified: a single matching-owner variant reproduces the old
     // map-by-bare-name behavior exactly. Only when more than one namespace
     // declares the same bare name do we have to choose — prefer the active
     // namespace, then the global one, then the first matching-owner variant.
-    if ( owned.size() == 1 )
-	return owned[0];
+    // The registry already selected one owner bucket, so this path performs no
+    // allocation and does not need to filter the variants a second time.
+    if ( variants.size() == 1 )
+	return &variants[0];
     for ( size_t i = 0; i < variants.size(); ++i )
-	if ( variants[i].owner_class == owner_hint
-	  && variants[i].defining_namespace == current_namespace() )
+	if ( variants[i].defining_namespace == current_namespace() )
 	    return &variants[i];
     for ( size_t i = 0; i < variants.size(); ++i )
-	if ( variants[i].owner_class == owner_hint
-	  && variants[i].defining_namespace.empty() )
+	if ( variants[i].defining_namespace.empty() )
 	    return &variants[i];
-    return owned[0];
+    return &variants[0];
 }
 
 Program::TemplateAliasDef *Program::find_template_alias(
@@ -19896,10 +19926,21 @@ Program::TemplateAliasDef *Program::find_template_alias(
 							const std::string &ns_hint,
 							DataDefCLASS *owner_hint)
 {
+    return find_template_alias(
+	template_name_pool.intern(name), ns_hint, owner_hint);
+}
+
+Program::TemplateAliasDef *Program::find_template_alias(
+							uint32_t name_id,
+							const std::string &ns_hint,
+							DataDefCLASS *owner_hint)
+{
+    const template_alias_registry_entry_t *entry =
+	template_alias_map.find_readonly(name_id);
+    const std::vector<Program::TemplateAliasDef> *found =
+	entry ? entry->find(owner_hint) : NULL;
     std::vector<Program::TemplateAliasDef> *g = const_cast<
-	std::vector<Program::TemplateAliasDef> *>(
-	    template_alias_map.find_readonly(
-		owner_scoped_template_key(name, owner_hint)));
+	std::vector<Program::TemplateAliasDef> *>(found);
     if ( !g || g->empty() )
 	return NULL;
     std::vector<Program::TemplateAliasDef> &variants = *g;
@@ -19930,32 +19971,28 @@ Program::TemplateAliasDef *Program::find_template_alias(
 	return NULL;
     }
 
-    std::vector<Program::TemplateAliasDef *> owned;
-    for ( size_t i = 0; i < variants.size(); ++i )
-	if ( variants[i].owner_class == owner_hint )
-	    owned.push_back(&variants[i]);
-    if ( owned.empty() )
-	return NULL;
-    if ( owner_hint && owned.size() == 1 )
-	return owned[0];
+    // As above, `variants` is already the selected owner bucket. Member alias
+    // lookup is the hot path and normally returns here without allocating.
+    if ( owner_hint && variants.size() == 1 )
+	return &variants[0];
 
     if ( !current_namespace().empty() )
     {
 	std::string scope = current_namespace();
 	for (;;)
 	{
-	    for ( size_t i = 0; i < owned.size(); ++i )
-		if ( owned[i]->defining_namespace == scope )
-		    return owned[i];
+	    for ( size_t i = 0; i < variants.size(); ++i )
+		if ( variants[i].defining_namespace == scope )
+		    return &variants[i];
 	    size_t pos = scope.rfind("::");
 	    if ( pos == std::string::npos )
 		break;
 	    scope = scope.substr(0, pos);
 	}
     }
-    for ( size_t i = 0; i < owned.size(); ++i )
-	if ( owned[i]->defining_namespace.empty() )
-	    return owned[i];
+    for ( size_t i = 0; i < variants.size(); ++i )
+	if ( variants[i].defining_namespace.empty() )
+	    return &variants[i];
 
     // Unqualified lookup ([basic.lookup.unqual] + [namespace.udir]): a candidate
     // in a non-enclosing, non-global namespace is reachable ONLY if that namespace
@@ -19963,20 +20000,24 @@ Program::TemplateAliasDef *Program::find_template_alias(
     // a using-directive on its parent — so `std::pmr::vector` must NOT satisfy an
     // unqualified `vector` under `using namespace std` (only `std` is reachable);
     // the class template `std::vector` (found via find_template) must win instead.
-    for ( size_t i = 0; i < owned.size(); ++i )
+    for ( size_t i = 0; i < variants.size(); ++i )
 	for ( size_t u = 0; u < active_using_namespaces.size(); ++u )
-	    if ( owned[i]->defining_namespace == active_using_namespaces[u] )
-		return owned[i];
+	    if ( variants[i].defining_namespace == active_using_namespaces[u] )
+		return &variants[i];
     if ( owner_hint )
-	return owned[0];
+	return &variants[0];
     return NULL;
 }
 
 Program::TemplateDef *Program::template_with_body(
 	const std::string &name)
 {
+    const template_registry_entry_t *entry = template_map.find_readonly(
+	template_name_pool.intern(name));
+    const std::vector<Program::TemplateDef> *found =
+	entry ? entry->find(NULL) : NULL;
     std::vector<Program::TemplateDef> *g = const_cast<
-	std::vector<Program::TemplateDef> *>(template_map.find_readonly(name));
+	std::vector<Program::TemplateDef> *>(found);
     if ( !g )
 	return NULL;
     for ( size_t i = 0; i < g->size(); ++i )
@@ -19987,13 +20028,15 @@ Program::TemplateDef *Program::template_with_body(
 
 void Program::register_template(const Program::TemplateDef &td, bool only_if_absent)
 {
+    const uint32_t name_id = td.registry_name_id
+	? td.registry_name_id : template_name_pool.intern(td.class_name);
     pack_tap_name(td.class_name, pdkTemplate);	// B4a: the map key (bare)
     if ( !td.defining_namespace.empty() )
 	pack_tap_name(td.defining_namespace + "::" + td.class_name, pdkTemplate);
     record_class_pattern_nested_template(td.owner_class,
-	ClassNestedTemplateKind::ClassTemplate, td.class_name);
+	ClassNestedTemplateKind::ClassTemplate, name_id);
     std::vector<Program::TemplateDef> &variants =
-	template_map[owner_scoped_template_key(td.class_name, td.owner_class)];
+	class_template_variants_for_write(name_id, td.owner_class);
     for ( size_t i = 0; i < variants.size(); ++i )
     {
 	if ( variants[i].defining_namespace != td.defining_namespace
@@ -20004,6 +20047,7 @@ void Program::register_template(const Program::TemplateDef &td, bool only_if_abs
 	// Carry forward template-default arguments the prior declaration of this
 	// same template (same namespace) supplied but this one omitted.
 	Program::TemplateDef merged = td;
+	merged.registry_name_id = name_id;
 	const Program::TemplateDef &prev = variants[i];
 	if ( merged.typeparam_defaults.size() < prev.typeparam_defaults.size() )
 	    merged.typeparam_defaults.resize(prev.typeparam_defaults.size());
@@ -20018,32 +20062,46 @@ void Program::register_template(const Program::TemplateDef &td, bool only_if_abs
 	variants[i] = merged;
 	return;
     }
-    variants.push_back(td);
+    Program::TemplateDef registered = td;
+    registered.registry_name_id = name_id;
+    variants.push_back(registered);
 }
 
 void Program::register_template_alias(const Program::TemplateAliasDef &td)
 {
+    const uint32_t name_id = td.registry_name_id
+	? td.registry_name_id : template_name_pool.intern(td.alias_name);
     pack_tap_name(td.alias_name, pdkTemplate);	// B4a: the map key (bare)
     if ( !td.defining_namespace.empty() )
 	pack_tap_name(td.defining_namespace + "::" + td.alias_name, pdkTemplate);
     record_class_pattern_nested_template(td.owner_class,
-	ClassNestedTemplateKind::AliasTemplate, td.alias_name);
+	ClassNestedTemplateKind::AliasTemplate, name_id);
     std::vector<Program::TemplateAliasDef> &variants =
-	template_alias_map[owner_scoped_template_key(
-	    td.alias_name, td.owner_class)];
+	alias_template_variants_for_write(name_id, td.owner_class);
     for ( size_t i = 0; i < variants.size(); ++i )
     {
 	if ( variants[i].defining_namespace != td.defining_namespace
 	  || variants[i].owner_class != td.owner_class )
 	    continue;
 	variants[i] = td;
+	variants[i].registry_name_id = name_id;
 	return;
     }
-    variants.push_back(td);
+    Program::TemplateAliasDef registered = td;
+    registered.registry_name_id = name_id;
+    variants.push_back(registered);
 }
 
 void Program::record_class_pattern_nested_template(DataDefCLASS *owner,
 	ClassNestedTemplateKind kind, const std::string &key,
+	bool partial_specialization)
+{
+    record_class_pattern_nested_template(owner, kind,
+	template_name_pool.intern(key), partial_specialization);
+}
+
+void Program::record_class_pattern_nested_template(DataDefCLASS *owner,
+	ClassNestedTemplateKind kind, uint32_t name_id,
 	bool partial_specialization)
 {
     if ( !owner || !class_pattern_nested_template_capture )
@@ -20053,10 +20111,10 @@ void Program::record_class_pattern_nested_template(DataDefCLASS *owner,
     for ( size_t i = 0; i < entries.size(); ++i )
 	if ( entries[i].kind == kind
 	  && entries[i].partial_specialization == partial_specialization
-	  && entries[i].key == key )
+	  && entries[i].name_id == name_id )
 	    return;
     entries.push_back(ClassNestedTemplateCaptureEntry(
-	kind, partial_specialization, key));
+	kind, partial_specialization, name_id));
 }
 
 bool Program::template_declared_in_namespace(const std::string &name,
@@ -20322,6 +20380,25 @@ struct Program::ClassRegistrationJournal::State
 	SavedTypeAlias(DataDefCLASS *o, const std::string &n, bool e, DataDef *v)
 	    : owner(o), name(n), existed(e), value(v) {}
     };
+    struct SavedClassTemplateVariants {
+	uint32_t name_id;
+	DataDefCLASS *owner;
+	bool partial;
+	bool existed;
+	std::vector<TemplateDef> variants;
+	SavedClassTemplateVariants(uint32_t id, DataDefCLASS *o, bool p,
+		bool e, const std::vector<TemplateDef> &v)
+	    : name_id(id), owner(o), partial(p), existed(e), variants(v) {}
+    };
+    struct SavedAliasTemplateVariants {
+	uint32_t name_id;
+	DataDefCLASS *owner;
+	bool existed;
+	std::vector<TemplateAliasDef> variants;
+	SavedAliasTemplateVariants(uint32_t id, DataDefCLASS *o, bool e,
+		const std::vector<TemplateAliasDef> &v)
+	    : name_id(id), owner(o), existed(e), variants(v) {}
+    };
     flat_datatype_map_t::transaction_state datatype_map;
     StructRegistry::transaction_state struct_map_transaction;
     madc::dis::id_table<DataDef>::transaction_state project_types_transaction;
@@ -20342,12 +20419,20 @@ struct Program::ClassRegistrationJournal::State
 	namespace_map_transactions;
     std::set<std::string> inserted_namespace_map_keys;
     namespace_datatype_map_t::transaction_state namespace_datatype_map;
-    madc::dis::intern_keyed_map<std::vector<TemplateDef> >::transaction_state
+    madc::dis::intern_keyed_map<template_registry_entry_t>::transaction_state
 	template_map;
-    madc::dis::intern_keyed_map<std::vector<TemplateDef> >::transaction_state
+    madc::dis::intern_keyed_map<template_registry_entry_t>::transaction_state
 	partial_spec_map;
-    madc::dis::intern_keyed_map<std::vector<TemplateAliasDef> >::transaction_state
+    madc::dis::intern_keyed_map<template_alias_registry_entry_t>::transaction_state
 	template_alias_map;
+    std::vector<SavedClassTemplateVariants> class_template_variants;
+    std::vector<SavedAliasTemplateVariants> alias_template_variants;
+    std::set<std::pair<uint32_t, DataDefCLASS *> > touched_template_variants;
+    std::set<std::pair<uint32_t, DataDefCLASS *> > touched_partial_variants;
+    std::set<std::pair<uint32_t, DataDefCLASS *> > touched_alias_variants;
+    std::set<uint32_t> inserted_template_ids;
+    std::set<uint32_t> inserted_partial_ids;
+    std::set<uint32_t> inserted_alias_ids;
     madc::dis::intern_keyed_map<VarTemplateDef>::transaction_state var_template_map;
     registration_map<std::string, ConceptDef>::transaction_state
 	concept_map_transaction;
@@ -20573,12 +20658,135 @@ variable_map_t &Program::ClassRegistrationJournal::namespace_for_write(
     return current->second;
 }
 
+std::vector<Program::TemplateDef> &
+Program::ClassRegistrationJournal::class_template_variants_for_write(
+	uint32_t name_id, DataDefCLASS *owner, bool partial)
+{
+    madc::dis::intern_keyed_map<template_registry_entry_t> &registry =
+	partial ? pgm.partial_spec_map : pgm.template_map;
+    if ( !outermost || !state )
+	return registry[name_id].for_write(owner);
+
+    madc::dis::intern_keyed_map<template_registry_entry_t>::transaction_state
+	&transaction = partial ? state->partial_spec_map : state->template_map;
+    std::set<uint32_t> &inserted = partial
+	? state->inserted_partial_ids : state->inserted_template_ids;
+    const template_registry_entry_t *existing =
+	registry.find_readonly(name_id);
+    if ( !existing )
+    {
+	inserted.insert(name_id);
+	return registry[name_id].for_write(owner);
+    }
+
+    template_registry_entry_t *entry =
+	registry.find_for_subvalue_write(name_id, transaction);
+    assert(entry);
+    if ( inserted.count(name_id) )
+	return entry->for_write(owner);
+
+    std::set<std::pair<uint32_t, DataDefCLASS *> > &touched = partial
+	? state->touched_partial_variants : state->touched_template_variants;
+    std::pair<uint32_t, DataDefCLASS *> key(name_id, owner);
+    if ( touched.insert(key).second )
+    {
+	bool group_existed = false;
+	std::vector<TemplateDef> original;
+	if ( owner )
+	{
+	    std::unordered_map<DataDefCLASS *,
+		std::vector<TemplateDef> >::const_iterator found =
+		existing->member_variants.find(owner);
+	    group_existed = found != existing->member_variants.end();
+	    if ( group_existed )
+		original = found->second;
+	}
+	else
+	{
+	    group_existed = !existing->namespace_variants.empty();
+	    original = existing->namespace_variants;
+	}
+	state->class_template_variants.push_back(
+	    State::SavedClassTemplateVariants(name_id, owner, partial,
+		group_existed, original));
+    }
+    return entry->for_write(owner);
+}
+
+std::vector<Program::TemplateAliasDef> &
+Program::ClassRegistrationJournal::alias_template_variants_for_write(
+	uint32_t name_id, DataDefCLASS *owner)
+{
+    if ( !outermost || !state )
+	return pgm.template_alias_map[name_id].for_write(owner);
+
+    const template_alias_registry_entry_t *existing =
+	pgm.template_alias_map.find_readonly(name_id);
+    if ( !existing )
+    {
+	state->inserted_alias_ids.insert(name_id);
+	return pgm.template_alias_map[name_id].for_write(owner);
+    }
+
+    template_alias_registry_entry_t *entry =
+	pgm.template_alias_map.find_for_subvalue_write(
+	    name_id, state->template_alias_map);
+    assert(entry);
+    if ( state->inserted_alias_ids.count(name_id) )
+	return entry->for_write(owner);
+
+    std::pair<uint32_t, DataDefCLASS *> key(name_id, owner);
+    if ( state->touched_alias_variants.insert(key).second )
+    {
+	bool group_existed = false;
+	std::vector<TemplateAliasDef> original;
+	if ( owner )
+	{
+	    std::unordered_map<DataDefCLASS *,
+		std::vector<TemplateAliasDef> >::const_iterator found =
+		existing->member_variants.find(owner);
+	    group_existed = found != existing->member_variants.end();
+	    if ( group_existed )
+		original = found->second;
+	}
+	else
+	{
+	    group_existed = !existing->namespace_variants.empty();
+	    original = existing->namespace_variants;
+	}
+	state->alias_template_variants.push_back(
+	    State::SavedAliasTemplateVariants(name_id, owner,
+		group_existed, original));
+    }
+    return entry->for_write(owner);
+}
+
 variable_map_t &Program::namespace_variables_for_write(
 	const std::string &name)
 {
     if ( active_class_registration_journal )
 	return active_class_registration_journal->namespace_for_write(name);
     return namespace_map[name];
+}
+
+std::vector<Program::TemplateDef> &Program::class_template_variants_for_write(
+	uint32_t name_id, DataDefCLASS *owner, bool partial)
+{
+    if ( active_class_registration_journal )
+	return active_class_registration_journal->
+	    class_template_variants_for_write(name_id, owner, partial);
+    return (partial ? partial_spec_map : template_map)[name_id]
+	.for_write(owner);
+}
+
+std::vector<Program::TemplateAliasDef> &
+Program::alias_template_variants_for_write(
+	uint32_t name_id, DataDefCLASS *owner)
+{
+    if ( active_class_registration_journal )
+	return active_class_registration_journal->
+	    alias_template_variants_for_write(name_id, owner);
+    return template_alias_map[name_id].for_write(owner);
 }
 
 void Program::set_class_type_alias(DataDefCLASS *owner,
@@ -20604,6 +20812,9 @@ void Program::ClassRegistrationJournal::commit()
     pgm.datatype_map.commit_transaction(state->datatype_map);
     pgm.project_types.commit_transaction(state->project_types_transaction);
     pgm.namespace_datatype_map.commit_transaction(state->namespace_datatype_map);
+    assert(state->template_map.saved.empty());
+    assert(state->partial_spec_map.saved.empty());
+    assert(state->template_alias_map.saved.empty());
     pgm.template_map.commit_transaction(state->template_map);
     pgm.partial_spec_map.commit_transaction(state->partial_spec_map);
     pgm.template_alias_map.commit_transaction(state->template_alias_map);
@@ -20675,9 +20886,47 @@ void Program::ClassRegistrationJournal::rollback()
     }
     pgm.datatype_map.rollback_transaction(state->datatype_map);
     pgm.namespace_datatype_map.rollback_transaction(state->namespace_datatype_map);
+    assert(state->template_map.saved.empty());
+    assert(state->partial_spec_map.saved.empty());
+    assert(state->template_alias_map.saved.empty());
     pgm.template_map.rollback_transaction(state->template_map);
     pgm.partial_spec_map.rollback_transaction(state->partial_spec_map);
     pgm.template_alias_map.rollback_transaction(state->template_alias_map);
+    for ( size_t i = state->class_template_variants.size(); i-- > 0; )
+    {
+	const State::SavedClassTemplateVariants &saved =
+	    state->class_template_variants[i];
+	madc::dis::intern_keyed_map<template_registry_entry_t> &registry =
+	    saved.partial ? pgm.partial_spec_map : pgm.template_map;
+	template_registry_entry_t *entry = registry.find(saved.name_id);
+	assert(entry);
+	if ( saved.owner )
+	{
+	    if ( saved.existed )
+		entry->member_variants[saved.owner] = saved.variants;
+	    else
+		entry->member_variants.erase(saved.owner);
+	}
+	else
+	    entry->namespace_variants = saved.variants;
+    }
+    for ( size_t i = state->alias_template_variants.size(); i-- > 0; )
+    {
+	const State::SavedAliasTemplateVariants &saved =
+	    state->alias_template_variants[i];
+	template_alias_registry_entry_t *entry =
+	    pgm.template_alias_map.find(saved.name_id);
+	assert(entry);
+	if ( saved.owner )
+	{
+	    if ( saved.existed )
+		entry->member_variants[saved.owner] = saved.variants;
+	    else
+		entry->member_variants.erase(saved.owner);
+	}
+	else
+	    entry->namespace_variants = saved.variants;
+    }
     pgm.var_template_map.rollback_transaction(state->var_template_map);
     pgm.concept_map.rollback_transaction(state->concept_map_transaction);
     pgm.fn_template_map.rollback_transaction(state->fn_template_map);
@@ -20940,15 +21189,17 @@ class ClassPatternNormalizer
     Program::ClassParseReason dependent_shell_fallback_reason(
 	const Program::DependentShellOrigin &origin)
     {
+	const uint32_t name_id = origin.registry_name_id
+	    ? origin.registry_name_id : pgm.template_name_pool.intern(origin.tname);
 	const Program::TemplateAliasDef *alias = pgm.find_template_alias(
-	    origin.tname, origin.defining_namespace, origin.owner_class);
+	    name_id, origin.defining_namespace, origin.owner_class);
 	if ( alias )
 	    return has_non_type_template_parameter(alias->typeparam_is_type,
 		alias->has_non_type_params)
-		? Program::ClassParseReason::DependentValueExpression
-		: Program::ClassParseReason::None;
+	    ? Program::ClassParseReason::DependentValueExpression
+	    : Program::ClassParseReason::None;
 	const Program::TemplateDef *definition = pgm.find_template(
-	    origin.tname, origin.defining_namespace, origin.owner_class);
+	    name_id, origin.defining_namespace, origin.owner_class);
 	if ( !definition )
 	    return Program::ClassParseReason::None;
 	if ( has_non_type_template_parameter(definition->typeparam_is_type,
@@ -21357,9 +21608,10 @@ class ClassPatternNormalizer
 		captured->second[i];
 	    if ( entry.kind == Program::ClassNestedTemplateKind::AliasTemplate )
 	    {
+		const Program::template_alias_registry_entry_t *registry =
+		    pgm.template_alias_map.find_readonly(entry.name_id);
 		const std::vector<Program::TemplateAliasDef> *variants =
-		    pgm.template_alias_map.find_readonly(
-			owner_scoped_template_key(entry.key, owner));
+		    registry ? registry->find(owner) : NULL;
 		if ( !variants )
 		    continue;
 		for ( size_t v = 0; v < variants->size(); ++v )
@@ -21368,12 +21620,12 @@ class ClassPatternNormalizer
 			    nested_alias_template((*variants)[v]));
 		continue;
 	    }
-	    const std::vector<Program::TemplateDef> *variants =
+	    const Program::template_registry_entry_t *registry =
 		entry.partial_specialization
-		? pgm.partial_spec_map.find_readonly(
-		    owner_scoped_template_key(entry.key, owner))
-		: pgm.template_map.find_readonly(
-		    owner_scoped_template_key(entry.key, owner));
+		? pgm.partial_spec_map.find_readonly(entry.name_id)
+		: pgm.template_map.find_readonly(entry.name_id);
+	    const std::vector<Program::TemplateDef> *variants =
+		registry ? registry->find(owner) : NULL;
 	    if ( !variants )
 		continue;
 	    for ( size_t v = 0; v < variants->size(); ++v )
@@ -23263,11 +23515,15 @@ Program::TemplateDef *Program::match_partial_specialization(
 	std::map<std::string, std::string> &out_template_subst,
 	std::map<std::string, std::vector<std::string> > &out_pack_subst,
 	std::map<std::string, std::vector<TokenBase *> > &out_nontype_subst,
-	DataDefCLASS *owner_hint)
+	const std::string &ns_hint, DataDefCLASS *owner_hint, uint32_t name_id)
 {
-    std::vector<TemplateDef> *it = const_cast<std::vector<TemplateDef> *>(
-	partial_spec_map.find_readonly(
-	    owner_scoped_template_key(name, owner_hint)));
+    if ( !name_id )
+	name_id = template_name_pool.intern(name);
+    const template_registry_entry_t *entry =
+	partial_spec_map.find_readonly(name_id);
+    const std::vector<TemplateDef> *found =
+	entry ? entry->find(owner_hint) : NULL;
+    std::vector<TemplateDef> *it = const_cast<std::vector<TemplateDef> *>(found);
     if ( !it )
 	return NULL;
     if ( arg_types_by_slot.size() != arg_spellings.size()
@@ -23283,6 +23539,8 @@ Program::TemplateDef *Program::match_partial_specialization(
     for ( size_t s = 0; s < it->size(); ++s )
     {
 	TemplateDef &spec = (*it)[s];
+	if ( spec.defining_namespace != ns_hint )
+	    continue;
 	// A trailing parameter-pack slot (`_Types...` as the LAST pattern arg, naming a
 	// declared pack typeparam) absorbs 0+ trailing concrete args into one slot, so
 	// the fixed (non-pack) slot count is one less and the arg arity need only be >=
@@ -28673,27 +28931,12 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	// template, or a variable template — defined in ns_name. madc keys
 	// templates globally by simple name, so the name is already resolvable;
 	// accept the using (no import action needed) rather than erroring.
-	bool have_template = false;
-	{
-	    const std::vector<Program::TemplateAliasDef> *ai =
-		pgm.template_alias_map.find_readonly(member_name);
-	    if ( ai )
-		for ( size_t i = 0; i < ai->size(); ++i )
-		    if ( (*ai)[i].defining_namespace == ns_name )
-		    { have_template = true; break; }
-	    if ( !have_template )
-	    {
-		const std::vector<Program::TemplateDef> *ti =
-		    pgm.template_map.find_readonly(member_name);
-		if ( ti )
-		    for ( size_t i = 0; i < ti->size(); ++i )
-			if ( (*ti)[i].defining_namespace == ns_name )
-			{ have_template = true; break; }
-	    }
-	    if ( !have_template
-	      && pgm.var_template_map.count(ns_name + "::" + member_name) )
-		have_template = true;
-	}
+	const uint32_t member_name_id =
+	    pgm.template_name_pool.intern(member_name);
+	bool have_template =
+	    pgm.find_template_alias(member_name_id, ns_name, NULL)
+	 || pgm.find_template(member_name_id, ns_name, NULL)
+	 || pgm.var_template_map.count(ns_name + "::" + member_name);
 	if ( !have_var && !have_type && !have_template )
 	    pgm.Throw(tn) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
 	// import into the current namespace, or global scope outside a namespace
@@ -44307,6 +44550,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     td.typeparam_is_pack = typeparam_is_pack;
     td.has_non_type_params = has_non_type_params;
     td.class_name = class_name;
+    td.registry_name_id = pgm.template_name_pool.intern(class_name);
     td.body = body;
     td.defining_namespace = pgm.current_namespace();  // e.g. "std" — for canonical_cpp_spelling()
     td.owner_class = pgm.class_scope_stack.empty() ? NULL : pgm.class_scope_stack.back();
@@ -44324,10 +44568,11 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	if ( !td.defining_namespace.empty() )
 	    pgm.pack_tap_name(td.defining_namespace + "::" + class_name,
 			      Program::pdkTemplate);
-	pgm.partial_spec_map[owner_scoped_template_key(
-	    class_name, td.owner_class)].push_back(td);
+	pgm.class_template_variants_for_write(
+	    td.registry_name_id, td.owner_class, true).push_back(td);
 	pgm.record_class_pattern_nested_template(td.owner_class,
-	    Program::ClassNestedTemplateKind::ClassTemplate, class_name, true);
+	    Program::ClassNestedTemplateKind::ClassTemplate,
+	    td.registry_name_id, true);
 	return NULL;
     }
     if ( specialized_template_id && typeparams.empty() )
@@ -44336,7 +44581,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	// specialization and instantiate the primary (std::char_traits<char>
 	// folding static calls to 0 was exactly that).
 	std::string mangled = template_instantiation_key_head(
-	    pgm, class_name, td.owner_class ? std::string()
+	    pgm, class_name, td.registry_name_id,
+	    td.owner_class ? std::string()
 					    : td.defining_namespace,
 	    td.owner_class);
 	std::string canon;
@@ -49383,10 +49629,12 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		// parseDeclaration with `<int> t` unconsumed ("Expecting identifier
 		// after type" at the `>`). Prefer template-id resolution when a '<'
 		// follows a name that is a template/alias template.
+		const uint32_t tname_id = template_name_pool.intern(tname);
 		bool name_is_template_id = peekToken()
 			&& peekToken()->id() == TokenID::tkLT
-			&& (template_map.count(tname)
-			    || template_alias_map.count(tname));
+			&& (find_template(tname_id, std::string(), NULL)
+			    || find_template_alias(
+				tname_id, std::string(), NULL));
 		if ( dmi == datatype_map.end() || name_is_template_id )
 		{
 			    // Statement-leading template name as a declaration is a
@@ -49963,19 +50211,34 @@ void Program::dump_registered_names(FILE *out)
 	    continue;	// class method: materialized via the class slice
 	lines.insert(std::string("function\t") + it->first);
     }
-    template_map.for_each([&](const char *, std::vector<TemplateDef> &defs) -> bool {
+    auto add_class_templates = [&](const std::vector<TemplateDef> &defs) {
 	for ( const TemplateDef &td : defs )
 	    lines.insert(std::string("template\t") + td.class_name);
+    };
+    auto add_class_registry = [&](const char *,
+	    template_registry_entry_t &registry) -> bool {
+	add_class_templates(registry.namespace_variants);
+	for ( std::unordered_map<DataDefCLASS *,
+		std::vector<TemplateDef> >::const_iterator it =
+		registry.member_variants.begin();
+	      it != registry.member_variants.end(); ++it )
+	    add_class_templates(it->second);
 	return false;
-    });
-    partial_spec_map.for_each([&](const char *, std::vector<TemplateDef> &defs) -> bool {
-	for ( const TemplateDef &td : defs )
-	    lines.insert(std::string("template\t") + td.class_name);
-	return false;
-    });
-    template_alias_map.for_each([&](const char *, std::vector<TemplateAliasDef> &defs) -> bool {
-	for ( const TemplateAliasDef &td : defs )
-	    lines.insert(std::string("template\t") + td.alias_name);
+    };
+    template_map.for_each(add_class_registry);
+    partial_spec_map.for_each(add_class_registry);
+    template_alias_map.for_each([&](const char *,
+	    template_alias_registry_entry_t &registry) -> bool {
+	auto add_aliases = [&](const std::vector<TemplateAliasDef> &defs) {
+	    for ( const TemplateAliasDef &td : defs )
+		lines.insert(std::string("template\t") + td.alias_name);
+	};
+	add_aliases(registry.namespace_variants);
+	for ( std::unordered_map<DataDefCLASS *,
+		std::vector<TemplateAliasDef> >::const_iterator it =
+		registry.member_variants.begin();
+	      it != registry.member_variants.end(); ++it )
+	    add_aliases(it->second);
 	return false;
     });
     var_template_map.for_each([&](const char *key, VarTemplateDef &) -> bool {

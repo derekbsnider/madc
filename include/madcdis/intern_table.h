@@ -382,6 +382,16 @@ public:
 	}
 	return nullptr;
     }
+    // Existing parent value, with rollback owned by a narrower subvalue
+    // journal. This prevents copying a large grouped value merely to mutate
+    // one independently journaled child. New parent keys must still use
+    // operator[] so the normal transaction records their insertion.
+    V *find_for_subvalue_write(uint32_t id, transaction_state &state)
+    {
+	assert(_transaction == &state);
+	return id < _slot.size() && _slot[id] >= 0
+	    ? &_vals[(size_t)_slot[id]] : nullptr;
+    }
     const V *find_readonly(uint32_t id) const
     {
 	return id < _slot.size() && _slot[id] >= 0
