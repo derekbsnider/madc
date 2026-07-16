@@ -706,10 +706,7 @@ static bool tsubst_local_function_body_empty(Program *prog, Variable *var)
 		if (matches_empty_body(dynamic_cast<TokenFunc *>(pb)))
 			return true;
 	}
-	std::queue<TokenBase *> q = prog->ast;
-	while (!q.empty()) {
-		TokenBase *tb = q.front();
-		q.pop();
+	for (TokenBase *tb : prog->ast) {
 		if (matches_empty_body(dynamic_cast<TokenFunc *>(tb)))
 			return true;
 	}
@@ -764,6 +761,7 @@ static bool clone_local_aggregate_members(
 	dst->is_complete = true;
 	dst->is_anonymous = false;
 	dst->reverse_scalar_storage = src->reverse_scalar_storage;
+	dst->definition_origin = src->definition_origin;
 
 	bool substituted_object_member = false;
 	for (size_t i = 0; i < src->members.size(); ++i) {
@@ -1736,10 +1734,7 @@ static TokenFunc *find_ast_function_body(CirBuilder *cb, Program *prog,
 {
 	if (!cb || !prog || sym.empty())
 		return NULL;
-	std::queue<TokenBase *> q = prog->ast;
-	while (!q.empty()) {
-		TokenBase *tb = q.front();
-		q.pop();
+	for (TokenBase *tb : prog->ast) {
 		TokenFunc *tf = dynamic_cast<TokenFunc *>(tb);
 		FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
 		if (tf && fd && !tf->is_overridden && !fd->declaration_only

@@ -271,7 +271,7 @@ TEST_CASE("B2 admitted ClassPattern failures roll back without parser retry")
 		definition, "<class-pattern-failure-definition>");
 	REQUIRE(definition_tokens != NULL);
 	REQUIRE(program.parse(definition_tokens));
-	Program::TemplateDef *template_def = program.find_template(
+	const Program::TemplateDef *template_def = program.find_template(
 		"PatternFailure");
 	REQUIRE(template_def != NULL);
 	REQUIRE(template_def->class_pattern_id != 0);
@@ -296,6 +296,138 @@ TEST_CASE("B2 admitted ClassPattern failures roll back without parser retry")
 	      program.datatype_map.end());
 }
 
+TEST_CASE("B3 ClassPattern products retain their definition-file origin")
+{
+	Program program;
+	program.forest_arena_enabled = true;
+	TokenProgram *header_tokens = program.tokenize_buffer(
+		"template<class T> struct PatternOrigin { T value; };\n",
+		"<class-pattern-origin-header>");
+	REQUIRE(header_tokens != NULL);
+	REQUIRE(program.parse(header_tokens));
+
+	TokenProgram *root_tokens = program.tokenize_buffer(
+		"PatternOrigin<int32_t> probe;\n",
+		"<class-pattern-origin-root>");
+	REQUIRE(root_tokens != NULL);
+	REQUIRE(program.parse(root_tokens));
+	CHECK(program._class_inst_pattern == 1);
+
+	DataDefCLASS *product = find_canonical_class(
+		program, "PatternOrigin<int32_t>");
+	REQUIRE(product != NULL);
+	CHECK(product->definition_origin == AggregateDefinitionOrigin::Included);
+	madc::dis::defrec record;
+	REQUIRE(program.forest_arena.get_def_at(product->type_id, record));
+	CHECK((record.flags & madc::dis::DF_TU_ROOT_ORIGIN) == 0);
+
+	record.flags |= madc::dis::DF_TU_ROOT_ORIGIN;
+	program.forest_arena.set_def_at(product->type_id, record);
+	program.forest_arena_record_aggregate(product);
+	REQUIRE(program.forest_arena.get_def_at(product->type_id, record));
+	CHECK((record.flags & madc::dis::DF_TU_ROOT_ORIGIN) == 0);
+}
+
+TEST_CASE("B3 ClassPattern default-type products retain definition origin")
+{
+	Program program;
+	program.forest_arena_enabled = true;
+	TokenProgram *header_tokens = program.tokenize_buffer(
+		"template<class T> struct PatternDep { T value; };\n"
+		"template<class T, class C = PatternDep<T>> "
+		"struct PatternOwner { C value; };\n",
+		"<class-pattern-default-origin-header>");
+	REQUIRE(header_tokens != NULL);
+	REQUIRE(program.parse(header_tokens));
+
+	TokenProgram *root_tokens = program.tokenize_buffer(
+		"PatternOwner<int32_t> owner;\n",
+		"<class-pattern-default-origin-root>");
+	REQUIRE(root_tokens != NULL);
+	REQUIRE(program.parse(root_tokens));
+
+	DataDefCLASS *dependency = find_canonical_class(
+		program, "PatternDep<int32_t>");
+	DataDefCLASS *owner = find_canonical_class(
+		program, "PatternOwner<int32_t,PatternDep<int32_t>>");
+	REQUIRE(dependency != NULL);
+	REQUIRE(owner != NULL);
+	CHECK(dependency->definition_origin ==
+	      AggregateDefinitionOrigin::Included);
+	CHECK(owner->definition_origin == AggregateDefinitionOrigin::Included);
+
+	madc::dis::defrec record;
+	REQUIRE(program.forest_arena.get_def_at(dependency->type_id, record));
+	CHECK((record.flags & madc::dis::DF_TU_ROOT_ORIGIN) == 0);
+	REQUIRE(program.forest_arena.get_def_at(owner->type_id, record));
+	CHECK((record.flags & madc::dis::DF_TU_ROOT_ORIGIN) == 0);
+}
+
+TEST_CASE("B3 ClassPattern root products retain root origin")
+{
+	Program program;
+	program.forest_arena_enabled = true;
+	TokenProgram *tokens = program.tokenize_buffer(
+		"template<class T> struct PatternRoot { T value; };\n"
+		"PatternRoot<int32_t> root;\n",
+		"<class-pattern-root-origin>");
+	REQUIRE(tokens != NULL);
+	REQUIRE(program.parse(tokens));
+
+	DataDefCLASS *product = find_canonical_class(
+		program, "PatternRoot<int32_t>");
+	REQUIRE(product != NULL);
+	CHECK(product->definition_origin ==
+	      AggregateDefinitionOrigin::TranslationUnitRoot);
+	madc::dis::defrec record;
+	REQUIRE(program.forest_arena.get_def_at(product->type_id, record));
+	CHECK((record.flags & madc::dis::DF_TU_ROOT_ORIGIN) != 0);
+}
+
+TEST_CASE("B3 live included templates avoid eager pattern capture")
+{
+	Program program;
+	TokenProgram *header_tokens = program.tokenize_buffer(
+		"template<class T> struct PatternIncluded { T value; };\n",
+		"<class-pattern-included-header>");
+	REQUIRE(header_tokens != NULL);
+	program.forest_root_file = "<class-pattern-included-root>";
+	REQUIRE(program.parse(header_tokens));
+
+	const Program::TemplateDef *definition = program.find_template(
+		"PatternIncluded");
+	REQUIRE(definition != NULL);
+	CHECK(definition->class_pattern_id == 0);
+	CHECK(definition->class_pattern_reason ==
+	      Program::ClassParseReason::PatternNotCaptured);
+
+	TokenProgram *root_tokens = program.tokenize_buffer(
+		"PatternIncluded<int32_t> value;\n",
+		"<class-pattern-included-root>");
+	REQUIRE(root_tokens != NULL);
+	REQUIRE(program.parse(root_tokens));
+	CHECK(program._class_inst_pattern == 0);
+	CHECK(program._class_inst_parse == 1);
+}
+
+TEST_CASE("B3 ClassPattern arena references survive recursive materialization")
+{
+	Program::ClassPatternArena arena;
+	Program::ClassPattern outer;
+	outer.identity = "outer";
+	Program::ClassPatternId outer_id = arena.add(outer);
+	const Program::ClassPattern *outer_ref = arena.get(outer_id);
+	REQUIRE(outer_ref != NULL);
+
+	for (size_t i = 0; i < 1024; ++i) {
+		Program::ClassPattern nested;
+		nested.identity = "nested-" + std::to_string(i);
+		arena.add(std::move(nested));
+	}
+	CHECK(arena.get(outer_id) == outer_ref);
+	CHECK(outer_ref->identity == "outer");
+}
+
 TEST_CASE("B3 structural registration transactions restore first writes")
 {
 	registration_map<std::string, int> values;
@@ -318,11 +450,75 @@ TEST_CASE("B3 structural registration transactions restore first writes")
 	CHECK(values["existing"] == 5);
 	CHECK(values["committed"] == 6);
 
+	registration_set<std::string> names;
+	names.insert("existing");
+	registration_set<std::string>::transaction_state name_transaction;
+	names.begin_transaction(name_transaction);
+	names.erase("existing");
+	names.insert("existing");
+	names.insert("created");
+	names.erase("created");
+	names.emplace("created");
+	names.rollback_transaction(name_transaction);
+	CHECK(names.count("existing") == 1);
+	CHECK(names.count("created") == 0);
+	names.begin_transaction(name_transaction);
+	names.erase("existing");
+	names.insert("committed");
+	names.commit_transaction(name_transaction);
+	CHECK(names.count("existing") == 0);
+	CHECK(names.count("committed") == 1);
+	names.begin_transaction(name_transaction);
+	names.clear();
+	names.emplace_hint(names.end(), "temporary");
+	names.rollback_transaction(name_transaction);
+	CHECK(names.count("committed") == 1);
+	CHECK(names.count("temporary") == 0);
+	registration_set<std::string> other_names;
+	other_names.insert("other");
+	registration_set<std::string>::transaction_state other_transaction;
+	names.begin_transaction(name_transaction);
+	other_names.begin_transaction(other_transaction);
+	names.swap(other_names);
+	names.rollback_transaction(name_transaction);
+	other_names.rollback_transaction(other_transaction);
+	CHECK(names.count("committed") == 1);
+	CHECK(other_names.count("other") == 1);
+
 	FuncDef original_func(ddINT32);
 	FuncDef replacement_func(ddINT64);
 	Variable original_var("original", ddINT32, 1, NULL, false);
 	Variable replacement_var("replacement", ddINT64, 1, NULL, false);
+	DataDefCLASS alias_owner("AliasOwner", 0, DataType::dtRESERVED);
+	alias_owner.type_aliases["existing"] = &ddINT32;
+	DataDef project_original("ProjectOriginal", 4, DataType::dtINT32);
+	DataDef project_replacement("ProjectReplacement", 4, DataType::dtINT32);
+	DataDef project_appended("ProjectAppended", 4, DataType::dtINT32);
+	DataDef project_appended_replacement(
+		"ProjectAppendedReplacement", 4, DataType::dtINT32);
 	Program program;
+	uint32_t project_original_id = program.type_id_for(&project_original);
+	TokenSemi ast_before;
+	TokenSemi ast_during;
+	program.ast.push_back(&ast_before);
+	program.intern_template_param("Before", 0);
+	Program::PackDeclEntry pack_entry = {};
+	pack_entry.name = "before";
+	program.pack_decls.push_back(pack_entry);
+	Program::PackDeclFrame pack_frame = {};
+	pack_frame.names.push_back(std::make_pair("before", Program::pdkStruct));
+	program.pack_decl_stack.push_back(pack_frame);
+	program.block_typedef_shadows.push_back(
+		std::vector<std::pair<std::string, TokenDataType *> >());
+	program.block_typedef_shadows.back().push_back(
+		std::make_pair("before", (TokenDataType *)NULL));
+	Program::ConceptDef original_concept;
+	original_concept.defining_namespace = "original";
+	program.concept_map["existing"] = original_concept;
+	HoistedDeclIdentity original_identity;
+	original_identity.symbol = "original";
+	program.function_local_class_identities[&alias_owner] = original_identity;
+	program.hoisted_symbol_identity_keys["existing"] = "original";
 	program.funcdef_map["existing"] = &original_func;
 	program.namespace_map["known"]["existing"] = &original_var;
 	program.struct_map.set("existing", &ddINT32);
@@ -330,6 +526,9 @@ TEST_CASE("B3 structural registration transactions restore first writes")
 	program.out_of_line_member_defs["existing"].push_back(
 		Program::OutOfLineMemberDef());
 	program.forest_arena_enabled = true;
+	program.fn_template_instantiated.insert("existing");
+	program.template_completion_requested.insert("existing");
+	program.user_typedef_names.insert("existing");
 	{
 		Program::ClassRegistrationJournal journal(program);
 		CHECK(program.class_registration_taps_muted);
@@ -347,6 +546,50 @@ TEST_CASE("B3 structural registration transactions restore first writes")
 			Program::OutOfLineMemberDef());
 		program.out_of_line_member_defs["created"].push_back(
 			Program::OutOfLineMemberDef());
+		program.fn_template_instantiated.erase("existing");
+		program.fn_template_instantiated.insert("created");
+		program.template_completion_requested.erase("existing");
+		program.template_completion_requested.insert("created");
+		program.user_typedef_names.erase("existing");
+		program.user_typedef_names.insert("created");
+		project_replacement.type_id = project_original_id;
+		CHECK(program.project_types.set(
+			project_original_id, &project_replacement));
+		uint32_t project_appended_id = program.type_id_for(&project_appended);
+		project_appended_replacement.type_id = project_appended_id;
+		CHECK(program.project_types.set(
+			project_appended_id, &project_appended_replacement));
+		program.ast.push_back(&ast_during);
+		program.intern_template_param("During", 1);
+		Program::PackDeclEntry added_pack_entry = {};
+		added_pack_entry.name = "during";
+		program.pack_decls.push_back(added_pack_entry);
+		program.pack_decl_stack[0].names.push_back(
+			std::make_pair("during", Program::pdkStruct));
+		program.pack_decl_stack.push_back(Program::PackDeclFrame());
+		program.block_typedef_shadows[0].push_back(
+			std::make_pair("during", (TokenDataType *)NULL));
+		program.block_typedef_shadows.push_back(
+			std::vector<std::pair<std::string, TokenDataType *> >());
+		Program::ConceptDef replacement_concept;
+		replacement_concept.defining_namespace = "replacement";
+		program.concept_map["existing"] = replacement_concept;
+		program.concept_map["created"] = replacement_concept;
+		HoistedDeclIdentity replacement_identity;
+		replacement_identity.symbol = "replacement";
+		program.function_local_class_identities[&alias_owner] =
+			replacement_identity;
+		program.hoisted_symbol_identity_keys["existing"] = "replacement";
+		program.hoisted_symbol_identity_keys["created"] = "replacement";
+		program.set_class_type_alias(&alias_owner, "existing", &ddINT64);
+		program.set_class_type_alias(&alias_owner, "existing", &ddUINT64);
+		program.set_class_type_alias(&alias_owner, "created", &ddINT64);
+		{
+			Program::ClassRegistrationJournal nested(program);
+			program.set_class_type_alias(&alias_owner, "nested", &ddINT64);
+			nested.rollback();
+		}
+		CHECK(program.active_class_registration_journal != NULL);
 		journal.rollback();
 	}
 	CHECK(program.funcdef_map["existing"] == &original_func);
@@ -360,8 +603,97 @@ TEST_CASE("B3 structural registration transactions restore first writes")
 	CHECK(program.deferred_lazy_bodies.count("created") == 0);
 	REQUIRE(program.out_of_line_member_defs["existing"].size() == 1);
 	CHECK(program.out_of_line_member_defs.count("created") == 0);
+	CHECK(program.fn_template_instantiated.count("existing") == 1);
+	CHECK(program.fn_template_instantiated.count("created") == 0);
+	CHECK(program.template_completion_requested.count("existing") == 1);
+	CHECK(program.template_completion_requested.count("created") == 0);
+	CHECK(program.user_typedef_names.count("existing") == 1);
+	CHECK(program.user_typedef_names.count("created") == 0);
+	CHECK(program.project_types.size() == 1);
+	CHECK(program.project_types.get(project_original_id) == &project_original);
+	CHECK(project_original.type_id == project_original_id);
+	CHECK(project_replacement.type_id == 0);
+	CHECK(project_appended.type_id == 0);
+	CHECK(project_appended_replacement.type_id == 0);
+	REQUIRE(program.ast.size() == 1);
+	CHECK(program.ast[0] == &ast_before);
+	REQUIRE(program.template_param_pool.size() == 1);
+	CHECK(program.template_param_pool[0]->name == "Before");
+	REQUIRE(program.pack_decls.size() == 1);
+	CHECK(program.pack_decls[0].name == "before");
+	REQUIRE(program.pack_decl_stack.size() == 1);
+	REQUIRE(program.pack_decl_stack[0].names.size() == 1);
+	CHECK(program.pack_decl_stack[0].names[0].first == "before");
+	REQUIRE(program.block_typedef_shadows.size() == 1);
+	REQUIRE(program.block_typedef_shadows[0].size() == 1);
+	CHECK(program.block_typedef_shadows[0][0].first == "before");
+	CHECK(program.concept_map["existing"].defining_namespace == "original");
+	CHECK(program.concept_map.count("created") == 0);
+	CHECK(program.function_local_class_identities[&alias_owner].symbol ==
+	      "original");
+	CHECK(program.hoisted_symbol_identity_keys["existing"] == "original");
+	CHECK(program.hoisted_symbol_identity_keys.count("created") == 0);
+	CHECK(alias_owner.type_aliases["existing"] == &ddINT32);
+	CHECK(alias_owner.type_aliases.count("created") == 0);
+	CHECK(alias_owner.type_aliases.count("nested") == 0);
+	CHECK(program.active_class_registration_journal == NULL);
 	CHECK_FALSE(program.class_registration_taps_muted);
 	CHECK(program.forest_arena_enabled);
+	{
+		Program::ClassRegistrationJournal journal(program);
+		program.set_class_type_alias(&alias_owner, "committed", &ddINT64);
+		program.fn_template_instantiated.insert("committed");
+		journal.commit();
+	}
+	CHECK(alias_owner.type_aliases["committed"] == &ddINT64);
+	CHECK(program.fn_template_instantiated.count("committed") == 1);
+	CHECK(program.active_class_registration_journal == NULL);
+	{
+		Program::ClassRegistrationJournal journal(program);
+		program.set_class_type_alias(&alias_owner, "committed", &ddUINT64);
+		program.fn_template_instantiated.erase("committed");
+		journal.rollback();
+	}
+	CHECK(alias_owner.type_aliases["committed"] == &ddINT64);
+	CHECK(program.fn_template_instantiated.count("committed") == 1);
+}
+
+TEST_CASE("B3 template lookup stays read-only during registration transactions")
+{
+	const char *source =
+		"template<class T> struct LookupBox { T value; };\n"
+		"template<class T> using LookupAlias = LookupBox<T>;\n";
+	Program program;
+	TokenProgram *tokens = program.tokenize_buffer(
+		source, "<class-pattern-readonly-lookup>");
+	REQUIRE(tokens != NULL);
+	REQUIRE(program.parse(tokens));
+
+	madc::dis::intern_keyed_map<std::vector<Program::TemplateDef> >
+	    ::transaction_state template_transaction;
+	madc::dis::intern_keyed_map<std::vector<Program::TemplateAliasDef> >
+	    ::transaction_state alias_transaction;
+	program.template_map.begin_transaction(template_transaction);
+	program.template_alias_map.begin_transaction(alias_transaction);
+	Program::TemplateDef *found_template = program.find_template("LookupBox");
+	Program::TemplateDef *found_body = program.template_with_body("LookupBox");
+	Program::TemplateDef *missing_template =
+		program.find_template("MissingTemplate");
+	Program::TemplateAliasDef *found_alias =
+		program.find_template_alias("LookupAlias");
+	Program::TemplateAliasDef *missing_alias =
+		program.find_template_alias("MissingAlias");
+	CHECK(found_template != NULL);
+	CHECK(found_body != NULL);
+	CHECK(missing_template == NULL);
+	CHECK(found_alias != NULL);
+	CHECK(missing_alias == NULL);
+	CHECK(template_transaction.saved.empty());
+	CHECK(template_transaction.inserted.empty());
+	CHECK(alias_transaction.saved.empty());
+	CHECK(alias_transaction.inserted.empty());
+	program.template_alias_map.rollback_transaction(alias_transaction);
+	program.template_map.rollback_transaction(template_transaction);
 }
 
 TEST_CASE("B3 capture indexes nested templates by their parsed owner")
@@ -377,7 +709,7 @@ TEST_CASE("B3 capture indexes nested templates by their parsed owner")
 		source, "<class-pattern-nested-templates>");
 	REQUIRE(tokens != NULL);
 	REQUIRE(program.parse(tokens));
-	Program::TemplateDef *definition = program.find_template("PatternNested");
+	const Program::TemplateDef *definition = program.find_template("PatternNested");
 	REQUIRE(definition != NULL);
 	REQUIRE(definition->class_pattern_id != 0);
 	const Program::ClassPattern *pattern =
@@ -425,7 +757,7 @@ TEST_CASE("B3 dependent non-type template arguments stay on the fallback lane")
 		source, "<class-pattern-dependent-value>");
 	REQUIRE(tokens != NULL);
 	REQUIRE(program.parse(tokens));
-	Program::TemplateDef *definition = program.find_template(
+	const Program::TemplateDef *definition = program.find_template(
 		"PatternValueArg");
 	REQUIRE(definition != NULL);
 	REQUIRE(definition->class_pattern_id != 0);
@@ -434,7 +766,7 @@ TEST_CASE("B3 dependent non-type template arguments stay on the fallback lane")
 	REQUIRE(pattern != NULL);
 	CHECK(pattern->capture_reason ==
 	      Program::ClassParseReason::DependentValueExpression);
-	Program::TemplateDef *outer_definition = program.find_template(
+	const Program::TemplateDef *outer_definition = program.find_template(
 		"PatternValueOuter");
 	REQUIRE(outer_definition != NULL);
 	REQUIRE(outer_definition->class_pattern_id != 0);
@@ -461,7 +793,7 @@ TEST_CASE("B3 dependent member types require a guaranteed pattern member")
 		source, "<class-pattern-dependent-member>");
 	REQUIRE(tokens != NULL);
 	REQUIRE(program.parse(tokens));
-	Program::TemplateDef *definition = program.find_template(
+	const Program::TemplateDef *definition = program.find_template(
 		"PatternMaybeUse");
 	REQUIRE(definition != NULL);
 	REQUIRE(definition->class_pattern_id != 0);
@@ -547,7 +879,7 @@ TEST_CASE("B3 vector closure matches the sole parser lane and compiler ABI")
 	CHECK_FALSE(pattern_store->declaration_only);
 	CHECK_FALSE(legacy_store->declaration_only);
 
-	Program::TemplateDef *definition = pattern->find_template(
+	const Program::TemplateDef *definition = pattern->find_template(
 		"PatternVectorClosure");
 	REQUIRE(definition != NULL);
 	REQUIRE(definition->class_pattern_id != 0);

@@ -20,8 +20,10 @@
 #include <sstream>
 #include <deque>
 #include <iterator>
+#include <initializer_list>
 #include <set>
 #include <stack>
+#include <utility>
 #include <vector>
 
 #include "libmadc/value.h"
@@ -1087,6 +1089,164 @@ public:
 		base_type::erase(saved.key);
 	}
 	state.saved.clear();
+	state.touched.clear();
+    }
+};
+
+template<class Key>
+class registration_set : public std::set<Key>
+{
+    typedef std::set<Key> base_type;
+public:
+    struct transaction_state {
+	std::vector<Key> changed;
+	std::set<Key> existed;
+	std::set<Key> touched;
+    };
+private:
+    transaction_state *transaction;
+
+    void save(const Key &key)
+    {
+	if ( !transaction || !transaction->touched.insert(key).second )
+	    return;
+	transaction->changed.push_back(key);
+	if ( base_type::count(key) )
+	    transaction->existed.insert(key);
+    }
+public:
+    typedef typename base_type::iterator iterator;
+    typedef typename base_type::const_iterator const_iterator;
+    typedef typename base_type::value_type value_type;
+    typedef typename base_type::size_type size_type;
+
+    registration_set() : transaction(NULL) {}
+    registration_set(const registration_set &other)
+	: base_type(other), transaction(NULL) {}
+    registration_set &operator=(const registration_set &other)
+    {
+	if ( this != &other )
+	{
+	    assert(!transaction);
+	    base_type::operator=(other);
+	}
+	return *this;
+    }
+    std::pair<iterator, bool> insert(const Key &key)
+    {
+	save(key);
+	return base_type::insert(key);
+    }
+    std::pair<iterator, bool> insert(Key &&key)
+    {
+	save(key);
+	return base_type::insert(std::move(key));
+    }
+    iterator insert(const_iterator hint, const Key &key)
+    {
+	save(key);
+	return base_type::insert(hint, key);
+    }
+    iterator insert(const_iterator hint, Key &&key)
+    {
+	save(key);
+	return base_type::insert(hint, std::move(key));
+    }
+    template<class InputIterator>
+    void insert(InputIterator first, InputIterator last)
+    {
+	for ( ; first != last; ++first )
+	    insert(*first);
+    }
+    void insert(std::initializer_list<value_type> values)
+    {
+	insert(values.begin(), values.end());
+    }
+    template<class... Args>
+    std::pair<iterator, bool> emplace(Args&&... args)
+    {
+	Key key(std::forward<Args>(args)...);
+	return insert(std::move(key));
+    }
+    template<class... Args>
+    iterator emplace_hint(const_iterator hint, Args&&... args)
+    {
+	Key key(std::forward<Args>(args)...);
+	return insert(hint, std::move(key));
+    }
+    size_type erase(const Key &key)
+    {
+	save(key);
+	return base_type::erase(key);
+    }
+    iterator erase(const_iterator position)
+    {
+	if ( position != base_type::end() )
+	    save(*position);
+	return base_type::erase(position);
+    }
+    iterator erase(const_iterator first, const_iterator last)
+    {
+	for ( const_iterator it = first; it != last; ++it )
+	    save(*it);
+	return base_type::erase(first, last);
+    }
+    void clear()
+    {
+	if ( transaction )
+	    for ( const_iterator it = base_type::begin();
+		  it != base_type::end(); ++it )
+		save(*it);
+	base_type::clear();
+    }
+    void swap(registration_set &other)
+    {
+	if ( this == &other )
+	    return;
+	for ( const_iterator it = base_type::begin();
+	      it != base_type::end(); ++it )
+	{
+	    save(*it);
+	    other.save(*it);
+	}
+	for ( const_iterator it = other.begin(); it != other.end(); ++it )
+	{
+	    save(*it);
+	    other.save(*it);
+	}
+	base_type::swap(other);
+    }
+    friend void swap(registration_set &left, registration_set &right)
+    {
+	left.swap(right);
+    }
+    void begin_transaction(transaction_state &state)
+    {
+	assert(!transaction);
+	state.changed.clear();
+	state.existed.clear();
+	state.touched.clear();
+	transaction = &state;
+    }
+    void commit_transaction(transaction_state &state)
+    {
+	assert(transaction == &state);
+	transaction = NULL;
+	state.changed.clear();
+	state.existed.clear();
+	state.touched.clear();
+    }
+    void rollback_transaction(transaction_state &state)
+    {
+	assert(transaction == &state);
+	transaction = NULL;
+	for ( size_t i = state.changed.size(); i-- > 0; )
+	    if ( state.existed.count(state.changed[i]) )
+		base_type::insert(state.changed[i]);
+	    else
+		base_type::erase(state.changed[i]);
+	state.changed.clear();
+	state.existed.clear();
 	state.touched.clear();
     }
 };
@@ -2167,12 +2327,17 @@ public:
 	}
     };
     class ClassPatternArena {
-	std::vector<ClassPattern> patterns;
+	std::deque<ClassPattern> patterns;
     public:
 	ClassPatternArena() { patterns.push_back(ClassPattern()); }
 	ClassPatternId add(const ClassPattern &pattern)
 	{
 	    patterns.push_back(pattern);
+	    return (ClassPatternId)(patterns.size() - 1);
+	}
+	ClassPatternId add(ClassPattern &&pattern)
+	{
+	    patterns.push_back(std::move(pattern));
 	    return (ClassPatternId)(patterns.size() - 1);
 	}
 	const ClassPattern *get(ClassPatternId id) const
@@ -2186,6 +2351,9 @@ public:
 	size_t size() const { return patterns.size() - 1; }
     };
     ClassPatternArena class_pattern_arena;
+    std::map<const uint32_t *, ClassPatternId> restored_class_pattern_cache;
+    unsigned long long _class_pattern_restore_deferred = 0;
+    unsigned long long _class_pattern_restore_materialized = 0;
     bool class_pattern_capture_in_progress = false;
     // Temporary B2-B5 equivalence-test switch. The default remains the
     // structural lane; B6 deletes this when the parse-reason tally reaches zero.
@@ -2222,11 +2390,20 @@ public:
 	std::vector<TokenBase *> constraint;
 	ClassPatternId class_pattern_id;
 	ClassParseReason class_pattern_reason;
+	// A bound forest keeps the immutable payload mapped for the Program's
+	// lifetime. Restore records this span and materializes the ClassPattern only
+	// if an eligible specialization actually needs it.
+	const uint32_t *frozen_class_pattern;
+	uint32_t frozen_class_pattern_words;
+	CirFrozenForest *frozen_class_pattern_forest;
 	TemplateDef() : has_non_type_params(false), owner_class(nullptr),
 			is_partial_specialization(false), class_pattern_id(0),
-			class_pattern_reason(ClassParseReason::None) {}
+			class_pattern_reason(ClassParseReason::None),
+			frozen_class_pattern(NULL), frozen_class_pattern_words(0),
+			frozen_class_pattern_forest(NULL) {}
     };
 	ClassPatternId capture_class_pattern(TemplateDef &td);
+	const ClassPattern *materialize_class_pattern(const TemplateDef &td);
 	uint64_t class_pattern_fingerprint(const ClassPattern &pattern) const;
     // B0 class-KIND parse-once foundation. Capture uses the production class
     // parser once, so all temporary registrations must roll back as one unit.
@@ -2247,7 +2424,12 @@ public:
 	~ClassRegistrationJournal();
 	void commit();
 	void rollback();
+	void record_type_alias_write(DataDefCLASS *owner,
+				     const std::string &name);
     };
+    ClassRegistrationJournal *active_class_registration_journal = NULL;
+    void set_class_type_alias(DataDefCLASS *owner, const std::string &name,
+			      DataDef *type);
     // Templates are keyed by BARE name, but a same-named class template may be
     // declared in more than one namespace (e.g. std::char_traits and
     // __gnu_cxx::char_traits). Each bare name therefore maps to a vector of
@@ -2391,7 +2573,7 @@ public:
 	std::vector<TokenBase *> constraint;    // tokens after '=' up to ';'
 	std::string defining_namespace;
     };
-    std::map<std::string, ConceptDef> concept_map;
+    registration_map<std::string, ConceptDef> concept_map;
     std::vector<TokenBase *> last_skipped_template_decl;
     // The SOURCE name of the tracked free-function overload parseDeclaration
     // is about to hand to parseFunction ("operator<"), stamped on the FuncDef
@@ -2518,7 +2700,7 @@ public:
     // declared return (resolve_namespace_fn_template_call_return_type — the
     // clang deduction-forms-the-function-type-without-a-body model).
     madc::dis::intern_keyed_map<std::vector<FnTemplateDef>> fn_template_decl_map; // keyed via template_name_pool
-    std::set<std::string> fn_template_instantiated;   // "ns::name<t1,t2,...>" memo
+    registration_set<std::string> fn_template_instantiated; // "ns::name<t1,t2,...>" memo
     // inst_key -> the overload Variable that instantiation registered, so an
     // operator USE site can call the instantiated definition directly.
     madc::dis::intern_keyed_map<Variable *> fn_template_instantiated_vars; // keyed via template_name_pool
@@ -2709,7 +2891,7 @@ public:
     // Thin public accessor over the class-scope member-type lookup
     // (type_aliases + bases + enclosing walk) for the tsubst re-derivation.
     static DataDef *class_member_type(DataDefCLASS *cls, const std::string &name);
-    std::set<std::string> template_completion_requested;    // mangled template aliases that should be completed when body appears
+    registration_set<std::string> template_completion_requested; // mangled aliases awaiting completion
     std::set<std::string> template_instantiated;           // mangled names done
     std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup
     // Function-local class identities are parse-session metadata. The class's
@@ -2717,7 +2899,8 @@ public:
     // map a Tree-1 pattern local class to the matching concrete instantiation
     // without encoding identity in a pattern-global counter or a new forest
     // record family.
-    std::map<DataDefCLASS *, HoistedDeclIdentity> function_local_class_identities;
+    registration_map<DataDefCLASS *, HoistedDeclIdentity>
+	function_local_class_identities;
     // materialize_pattern_local_class replays only the class-definition token
     // span, outside its original compound. It supplies the already-computed
     // concrete identity through this one-shot context so TokenCLASS takes the
@@ -2727,7 +2910,7 @@ public:
     // Computed symbol -> full source identity. Repeated parses of the same
     // definition are allowed; two distinct definitions minting one symbol are
     // a hard collision rather than a counter-based silent uniquification.
-    std::map<std::string, std::string> hoisted_symbol_identity_keys;
+    registration_map<std::string, std::string> hoisted_symbol_identity_keys;
     // Scoped template-parameter registry (two-tree Phase 2 / 2a). A stack of
     // {param-name -> DataDefTemplateParam*} frames, pushed (via TemplateParamScope)
     // for the duration of a DEPENDENT template-body parse so a bare `T` resolves to
@@ -2953,7 +3136,7 @@ public:
     void pack_tap_type(const std::string &name);   // flat + ns-qualified typedef tap
     void pack_tap_struct(const std::string &name); // struct_map-key tap
     void dump_registered_names(FILE *out); // --dump-registered: oracle side B
-    std::queue<TokenBase *> ast;	// Abstract Syntax Tree
+    std::vector<TokenBase *> ast;	// Abstract Syntax Tree in source order
     TokenStream tokens;			// parsed token stream (flat arena + cursor; P1)
     std::deque<TokenBase *> injected_tokens; // synthetic lexer output for lowered directives
     // --show-stats: token-stream traffic counters (diagnostic only).
@@ -2990,6 +3173,13 @@ public:
     double             _inst_seconds = 0.0;
     unsigned long long _inst_count   = 0;
     int                _inst_depth   = 0;
+    unsigned long long _inst_opaque_count = 0;
+    unsigned long long _inst_class_count = 0;
+    unsigned long long _inst_alias_count = 0;
+    unsigned long long _inst_fn_count = 0;
+    unsigned long long _inst_member_fn_count = 0;
+    unsigned long long _inst_member_ctor_count = 0;
+    unsigned long long _inst_capture_count = 0;
     // --show-stats: env-gated two-tree body-instantiation engagement. A
     // tsubst "hit" means CIR built the concrete body from the retained Tree-1
     // recipe. A fallback means an instantiated member-template body had tsubst
@@ -3232,7 +3422,7 @@ public:
     // alias so CIR emits ID("alias"); distinguishes user typedefs from
     // builtin type keywords (whose token str can differ from the DataDef
     // name, e.g. `int` -> "int32_t", making a name compare unreliable).
-    std::set<std::string> user_typedef_names;
+    registration_set<std::string> user_typedef_names;
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
     std::vector<TokenSWITCH *> switch_stack; // active switch parse contexts for nested case/default hoisting
     std::vector<TokenCASE *> switch_case_stack; // current active case/default while parsing each switch

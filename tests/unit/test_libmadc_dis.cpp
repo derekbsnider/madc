@@ -47,6 +47,69 @@ TEST_CASE("dis::id_table<T> — stable id <-> object, base offset honoured")
     CHECK(tab.get(0x103u) == (int *)0);		// past end
 }
 
+TEST_CASE("dis::id_table<T> transactions restore first writes and appended tail")
+{
+    int a = 10, b = 20, replacement1 = 30, replacement2 = 40;
+    int appended = 50, appended_replacement = 60;
+    madc::dis::id_table<int> tab(0x200u);
+    uint32_t ia = tab.add(&a);
+    uint32_t ib = tab.add(&b);
+    madc::dis::id_table<int>::transaction_state transaction;
+
+    tab.begin_transaction(transaction);
+    CHECK(transaction.original_size == 2u);
+    CHECK(tab.set(ia, &replacement1));
+    CHECK(tab.set(ia, &replacement2));		// first value is saved once
+    uint32_t ic = tab.add(&appended);
+    CHECK(tab.set(ic, &appended_replacement));
+    CHECK(tab.get(ic) == &appended_replacement);
+    CHECK(tab.set(ic, &appended));		// appended slot is also saved once
+    REQUIRE(transaction.saved.size() == 2u);
+    CHECK(transaction.saved[0].index == 0u);
+    CHECK(transaction.saved[0].value == &a);
+    CHECK(transaction.saved[1].index == 2u);
+    CHECK(transaction.saved[1].value == &appended);
+    CHECK(tab.get(ia) == &replacement2);
+    CHECK(tab.get(ic) == &appended);
+
+    tab.rollback_transaction(transaction);
+    CHECK(tab.size() == 2u);
+    CHECK(tab.get(ia) == &a);
+    CHECK(tab.get(ib) == &b);
+    CHECK(tab.get(ic) == (int *)0);
+    CHECK(transaction.original_size == 0u);
+    CHECK(transaction.saved.empty());
+    CHECK(transaction.touched.empty());
+}
+
+TEST_CASE("dis::id_table<T> transactions commit and state can be reused")
+{
+    int a = 10, b = 20, replacement = 30, appended = 40, temporary = 50;
+    madc::dis::id_table<int> tab(0x300u);
+    uint32_t ia = tab.add(&a);
+    madc::dis::id_table<int>::transaction_state transaction;
+
+    tab.begin_transaction(transaction);
+    CHECK_FALSE(tab.set(0x2ffu, &replacement));
+    CHECK_FALSE(tab.set(0x301u, &replacement));
+    CHECK(tab.set(ia, &replacement));
+    uint32_t ib = tab.add(&appended);
+    tab.commit_transaction(transaction);
+    CHECK(tab.size() == 2u);
+    CHECK(tab.get(ia) == &replacement);
+    CHECK(tab.get(ib) == &appended);
+    CHECK(transaction.saved.empty());
+
+    tab.begin_transaction(transaction);
+    CHECK(tab.set(ia, &b));
+    uint32_t ic = tab.add(&temporary);
+    tab.rollback_transaction(transaction);
+    CHECK(tab.size() == 2u);
+    CHECK(tab.get(ia) == &replacement);
+    CHECK(tab.get(ib) == &appended);
+    CHECK(tab.get(ic) == (int *)0);
+}
+
 TEST_CASE("dis::value_pool — wide-value handle dedup + limb round-trip")
 {
     madc::dis::value_pool p;

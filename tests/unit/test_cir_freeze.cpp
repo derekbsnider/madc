@@ -2256,7 +2256,7 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
-		Program::TemplateDef *live_primary = progA->find_template("W2Box");
+		const Program::TemplateDef *live_primary = progA->find_template("W2Box");
 		REQUIRE(live_primary != nullptr);
 		REQUIRE(live_primary->class_pattern_id != 0);
 		const Program::ClassPattern *live_primary_pattern =
@@ -2344,7 +2344,7 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 		CHECK(std::stoull(after_name.substr(7)) ==
 		      std::stoull(before_name.substr(7)) + 1);
 		CHECK(progA->user_typedef_names.count("W2CaptureOnlyAlias") == 0);
-		Program::TemplateDef *dependent_base =
+		const Program::TemplateDef *dependent_base =
 			progA->find_template("W2DependentBase");
 		REQUIRE(dependent_base != nullptr);
 		REQUIRE(dependent_base->class_pattern_id != 0);
@@ -2413,17 +2413,23 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 	std::remove(cons_path.c_str());
 	progB->forest_restore_decls(forest);
 
-	Program::TemplateDef *td = progB->find_template("W2Box");
+	const Program::TemplateDef *td = progB->find_template("W2Box");
 	REQUIRE(td != nullptr);
 	REQUIRE(td->typeparams.size() == 2);
 	CHECK(td->typeparams[0] == "T");
 	CHECK(td->typeparams[1] == "U");
 	CHECK(td->typeparam_is_type[0]);
 	CHECK(!td->body.empty());
-	REQUIRE(td->class_pattern_id != 0);
+	CHECK(td->class_pattern_id == 0);
+	REQUIRE(td->frozen_class_pattern != NULL);
+	REQUIRE(td->frozen_class_pattern_words > 0);
+	size_t pattern_count = progB->class_pattern_arena.size();
 	const Program::ClassPattern *restored_primary_pattern =
-		progB->class_pattern_arena.get(td->class_pattern_id);
+		progB->materialize_class_pattern(*td);
 	REQUIRE(restored_primary_pattern != nullptr);
+	CHECK(progB->class_pattern_arena.size() == pattern_count + 1);
+	CHECK(progB->materialize_class_pattern(*td) == restored_primary_pattern);
+	CHECK(progB->class_pattern_arena.size() == pattern_count + 1);
 	CHECK(restored_primary_pattern->semantic_fingerprint ==
 	      producer_primary_fingerprint);
 	CHECK(progB->class_pattern_fingerprint(*restored_primary_pattern) ==
@@ -2457,9 +2463,9 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 		    && (*restored_nested_defs)[i].owner_class->name == "W2Owner")
 			restored_nested = &(*restored_nested_defs)[i];
 	REQUIRE(restored_nested != nullptr);
-	REQUIRE(restored_nested->class_pattern_id != 0);
+	CHECK(restored_nested->class_pattern_id == 0);
 	const Program::ClassPattern *restored_nested_pattern =
-		progB->class_pattern_arena.get(restored_nested->class_pattern_id);
+		progB->materialize_class_pattern(*restored_nested);
 	REQUIRE(restored_nested_pattern != nullptr);
 	CHECK(restored_nested_pattern->semantic_fingerprint ==
 	      producer_nested_fingerprint);
@@ -2483,16 +2489,19 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 		REQUIRE(psv->size() == 1);
 		CHECK((*psv)[0].is_partial_specialization);
 		CHECK((*psv)[0].spec_pattern.size() == 2);
-		REQUIRE((*psv)[0].class_pattern_id != 0);
-		CHECK((*psv)[0].class_pattern_id != td->class_pattern_id);
+		CHECK((*psv)[0].class_pattern_id == 0);
 		const Program::ClassPattern *restored_partial_pattern =
-			progB->class_pattern_arena.get((*psv)[0].class_pattern_id);
+			progB->materialize_class_pattern((*psv)[0]);
 		REQUIRE(restored_partial_pattern != nullptr);
+		CHECK(restored_partial_pattern != restored_primary_pattern);
 		CHECK(restored_partial_pattern->semantic_fingerprint ==
 		      producer_partial_fingerprint);
 		CHECK(progB->class_pattern_fingerprint(*restored_partial_pattern) ==
 		      producer_partial_fingerprint);
 	}
+	CHECK(progB->_class_pattern_restore_materialized == 3);
+	CHECK(progB->_class_pattern_restore_deferred >
+	      progB->_class_pattern_restore_materialized);
 	CHECK(progB->template_alias_map.count("W2Same") == 1);
 	std::remove(inc_path.c_str());
 }

@@ -306,6 +306,7 @@ private:
     }
 public:
     typedef V *iterator;          // find() returns a pointer to the value, NULL = absent
+    typedef const V *const_iterator;
     intern_keyed_map() {}
     intern_keyed_map(const intern_keyed_map &other)
 	: _slot(other._slot), _vals(other._vals), _pool(other._pool),
@@ -381,6 +382,11 @@ public:
 	}
 	return nullptr;
     }
+    const V *find_readonly(uint32_t id) const
+    {
+	return id < _slot.size() && _slot[id] >= 0
+	    ? &_vals[(size_t)_slot[id]] : nullptr;
+    }
     size_t count(uint32_t id) const
     {
 	return ( id < _slot.size() && _slot[id] >= 0 ) ? 1 : 0;
@@ -414,6 +420,8 @@ public:
 
     // string overloads — intern the key; keep every existing insert / cold call site working
     V     *find(const std::string &k)        { return find(_pool->intern(k)); }
+    const V *find_readonly(const std::string &k) const
+	{ return find_readonly(_pool->intern(k)); }
     size_t count(const std::string &k)       { return count(_pool->intern(k)); }
     V     &operator[](const std::string &k)  { return (*this)[_pool->intern(k)]; }
     size_t erase(const std::string &k)       { return erase(_pool->intern(k)); }

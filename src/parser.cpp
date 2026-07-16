@@ -60,21 +60,38 @@ using namespace std;
 // an instantiated body is correctly attributed to instantiation. _inst_count is
 // bumped on every entry (all depths). See Program::_inst_seconds.
 namespace {
+AggregateDefinitionOrigin aggregate_definition_origin(
+	const Program &pgm, const char *file)
+{
+    if ( !file )
+	return AggregateDefinitionOrigin::Unknown;
+    return pgm.forest_is_tu_root_file(file)
+	? AggregateDefinitionOrigin::TranslationUnitRoot
+	: AggregateDefinitionOrigin::Included;
+}
+
 struct InstTimer
 {
     Program &pgm;
+    bool active;
     bool outer;
     std::chrono::steady_clock::time_point t0;
-    InstTimer(Program &p) : pgm(p)
+    InstTimer(Program &p, unsigned long long &site_count)
+	: pgm(p), active(p.class_parse_observability), outer(false)
     {
-	++pgm._inst_count;
 	outer = (pgm._inst_depth++ == 0);
+	if ( !active )
+	    return;
+	++pgm._inst_count;
+	++site_count;
+	if ( pgm.class_pattern_capture_in_progress )
+	    ++pgm._inst_capture_count;
 	if ( outer )
 	    t0 = std::chrono::steady_clock::now();
     }
     ~InstTimer()
     {
-	if ( outer )
+	if ( active && outer )
 	    pgm._inst_seconds += std::chrono::duration<double>(
 		std::chrono::steady_clock::now() - t0).count();
 	--pgm._inst_depth;
@@ -2991,9 +3008,9 @@ static std::string template_instantiation_key_head(
 	Program &pgm, const std::string &tname,
 	const std::string &defining_namespace)
 {
-    std::vector<Program::TemplateDef> *g =
-	pgm.template_map.find(tname);
-    if ( g != pgm.template_map.end() && g->size() > 1
+    const std::vector<Program::TemplateDef> *g =
+	pgm.template_map.find_readonly(tname);
+    if ( g && g->size() > 1
       && !defining_namespace.empty() )
 	return sanitize_template_fragment(defining_namespace) + "__" + tname;
     return tname;
@@ -3144,7 +3161,7 @@ static TokenDataType *resolve_type_token_sequence(Program &pgm,
     return resolved;
 }
 
-static Program::TemplateAliasDef *find_template_alias_in_class_tree(
+static const Program::TemplateAliasDef *find_template_alias_in_class_tree(
 	Program &pgm, const std::string &name, DataDefCLASS *owner,
 	DataDefCLASS **matched_owner, std::set<DataDefCLASS *> *seen = NULL)
 {
@@ -3157,9 +3174,9 @@ static Program::TemplateAliasDef *find_template_alias_in_class_tree(
 	return NULL;
     seen->insert(owner);
 
-    std::vector<Program::TemplateAliasDef> *it =
-	pgm.template_alias_map.find(name);
-    if ( it != pgm.template_alias_map.end() )
+    const std::vector<Program::TemplateAliasDef> *it =
+	pgm.template_alias_map.find_readonly(name);
+    if ( it )
 	for ( size_t i = 0; i < it->size(); ++i )
 	    if ( (*it)[i].owner_class == owner )
 	    {
@@ -3169,12 +3186,12 @@ static Program::TemplateAliasDef *find_template_alias_in_class_tree(
 	    }
 
     for ( size_t i = 0; i < owner->bases.size(); ++i )
-	if ( Program::TemplateAliasDef *td =
+	if ( const Program::TemplateAliasDef *td =
 		find_template_alias_in_class_tree(pgm, name,
 						  owner->bases[i].base,
 						  matched_owner, seen) )
 	    return td;
-    if ( Program::TemplateAliasDef *td =
+    if ( const Program::TemplateAliasDef *td =
 	    find_template_alias_in_class_tree(pgm, name, owner->base_class,
 					      matched_owner, seen) )
 	return td;
@@ -3756,7 +3773,7 @@ static bool opaque_template_args_select_concrete_partial_spec(
     std::map<std::string, std::string> spec_tmpl_subst;
     std::map<std::string, std::vector<std::string> > spec_pack_subst;
     std::map<std::string, std::vector<TokenBase *> > spec_nontype_subst;
-    Program::TemplateDef *spec = pgm.match_partial_specialization(
+    const Program::TemplateDef *spec = pgm.match_partial_specialization(
 	tname, arg_types_by_slot, arg_spellings, arg_tokens_by_slot,
 	td.typeparam_is_type, spec_subst, spec_tmpl_subst, spec_pack_subst,
 	spec_nontype_subst);
@@ -3767,7 +3784,7 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 						      const std::string &tname,
 						      TokenBase *tb)
 {
-    InstTimer _it(*this);	// --show-stats: instantiation time
+    InstTimer _it(*this, _inst_opaque_count);	// --show-stats
     nextToken(); // consume '<'
     expand_integer_pack_template_args();
     std::vector<std::string> args;
@@ -4905,14 +4922,59 @@ public:
     }
 };
 
-static const char *basic_class_pattern_source_file(
+static const TokenBase *basic_class_pattern_source_token(
 	const Program::TemplateDef &definition)
 {
     for ( size_t i = 0; i < definition.body.size(); ++i )
 	if ( definition.body[i] && definition.body[i]->file )
-	    return definition.body[i]->file;
+	    return definition.body[i];
     return NULL;
 }
+
+static const char *basic_class_pattern_source_file(
+	const Program::TemplateDef &definition)
+{
+    const TokenBase *source = basic_class_pattern_source_token(definition);
+    return source ? source->file : NULL;
+}
+
+static void prepare_class_pattern_definition(
+	Program &pgm, Program::TemplateDef &definition)
+{
+    const char *source = basic_class_pattern_source_file(definition);
+    if ( pgm.forest_arena_enabled || pgm.forest_is_tu_root_file(source) )
+	pgm.capture_class_pattern(definition);
+    else
+	definition.class_pattern_reason =
+	    Program::ClassParseReason::PatternNotCaptured;
+}
+
+class BasicClassPatternParsePosition
+{
+    const char *file;
+    int line;
+    int column;
+public:
+    explicit BasicClassPatternParsePosition(
+	const Program::TemplateDef &definition)
+	: file(TokenBase::_parse_file), line(TokenBase::_parse_line),
+	  column(TokenBase::_parse_column)
+    {
+	const TokenBase *source = basic_class_pattern_source_token(definition);
+	if ( source )
+	{
+	    TokenBase::_parse_file = source->file;
+	    TokenBase::_parse_line = source->line;
+	    TokenBase::_parse_column = source->column;
+	}
+    }
+    ~BasicClassPatternParsePosition()
+    {
+	TokenBase::_parse_file = file;
+	TokenBase::_parse_line = line;
+	TokenBase::_parse_column = column;
+    }
+};
 
 static std::vector<TokenBase *> basic_class_pattern_substitute_tokens(
 	const BasicClassPatternBinding &binding,
@@ -5211,12 +5273,12 @@ static void register_basic_class_pattern_method(
     spec.bind_cpp_symbol = !pattern.is_member_template;
     if ( !pattern.local_emit_name.empty() )
 	{
-	    std::string local_emit_name = owner->name + "__"
+	    std::string pattern_emit_symbol = owner->name + "__"
 		+ basic_class_pattern_rebind_root_constructor_name(
-		    binding, owner, pattern.kind, pattern.local_emit_name);
+		    binding, owner, pattern.kind, pattern.local_emit_name); // allowed-exception: normalized pattern recipe
 	    if ( pattern.kind != Program::ClassMethodKind::Constructor
-	      || local_emit_name != symbol )
-		spec.local_emit_name = local_emit_name;
+	      || pattern_emit_symbol != symbol )
+		spec.local_emit_name = pattern_emit_symbol;
 	}
     pgm.register_class_method_signature(owner, mvar, spec);
 
@@ -5464,8 +5526,8 @@ public:
 	}
 
 	for ( size_t i = 0; i < node.aliases.size(); ++i )
-	    owner->type_aliases[node.aliases[i].name] =
-		resolver.resolve(node.aliases[i].type);
+	    pgm.set_class_type_alias(owner, node.aliases[i].name,
+		resolver.resolve(node.aliases[i].type));
 
 	std::vector<BaseSpec> bases;
 	for ( size_t i = 0; i < node.bases.size(); ++i )
@@ -5519,6 +5581,9 @@ public:
 static TokenDataType *instantiate_basic_class_pattern(
 	Program &pgm, const BasicClassPatternBinding &binding)
 {
+    BasicClassPatternParsePosition parse_position(binding.definition);
+    AggregateDefinitionOrigin definition_origin = aggregate_definition_origin(
+	pgm, basic_class_pattern_source_file(binding.definition));
     Program::ClassRegistrationJournal journal(pgm, false);
     DataDefCLASS *ddc = NULL;
     datadef_map_citer aggregate = pgm.struct_map.find(binding.registered_name);
@@ -5557,6 +5622,7 @@ static TokenDataType *instantiate_basic_class_pattern(
 	ddc->enclosing_class = binding.definition.owner_class;
 	ddc->from_system_header = node.from_system_header;
 	ddc->union_layout = node.kind == Program::ClassAggregateKind::Union;
+	ddc->definition_origin = definition_origin;
 	ddc->is_dependent_placeholder = false;
 	ddc->opaque_concrete_tag = false;
 	ddc->has_dependent_surface = false;
@@ -5595,6 +5661,7 @@ static TokenDataType *instantiate_basic_class_pattern(
 	    shell->from_system_header = nested.from_system_header;
 	    shell->union_layout =
 		nested.kind == Program::ClassAggregateKind::Union;
+	    shell->definition_origin = definition_origin;
 	    shell->is_dependent_placeholder = false;
 	    shell->opaque_concrete_tag = false;
 	    shell->has_dependent_surface = false;
@@ -5641,8 +5708,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 					       const std::string &ns_hint,
 					       DataDefCLASS *owner_hint)
 {
-    InstTimer _it(*this);	// --show-stats: instantiation time
-    Program::TemplateDef *tdp = find_template(tname, ns_hint, owner_hint);
+    InstTimer _it(*this, _inst_class_count);	// --show-stats
+    const Program::TemplateDef *tdp = find_template(tname, ns_hint, owner_hint);
     if ( !tdp )
 	return NULL;
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
@@ -5947,7 +6014,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	std::map<std::string, std::string> spec_tmpl_subst;
 	std::map<std::string, std::vector<std::string> > spec_pack_subst;
 	std::map<std::string, std::vector<TokenBase *> > spec_nontype_subst;
-	if ( Program::TemplateDef *spec = match_partial_specialization(
+	if ( const Program::TemplateDef *spec = match_partial_specialization(
 		tname, arg_types_by_slot, arg_spellings, arg_tokens_by_slot,
 		td.typeparam_is_type, spec_subst, spec_tmpl_subst, spec_pack_subst,
 		spec_nontype_subst) )
@@ -6086,9 +6153,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	class_profile_identity = td.defining_namespace + "::";
     class_profile_identity += tname;
 
-    const ClassPattern *selected_pattern =
-	class_pattern_arena.get(td.class_pattern_id);
+    // Definition capture must leave every concrete class-instantiation lane
+    // unreachable. Nested template-ids returned through the structural shell
+    // guard above.
+    assert(!class_pattern_capture_in_progress);
+
     ClassParseReason legacy_reason = td.class_pattern_reason;
+    const ClassPattern *selected_pattern = legacy_reason == ClassParseReason::None
+	? materialize_class_pattern(td) : NULL;
     if ( !selected_pattern )
 	legacy_reason = legacy_reason == ClassParseReason::None
 	    ? ClassParseReason::PatternNotCaptured : legacy_reason;
@@ -6638,8 +6710,8 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 						     const std::string &ns_hint,
 						     DataDefCLASS *owner_hint)
 {
-    InstTimer _it(*this);	// --show-stats: instantiation time
-    Program::TemplateAliasDef *tdp = find_template_alias(tname, ns_hint,
+    InstTimer _it(*this, _inst_alias_count);	// --show-stats
+    const Program::TemplateAliasDef *tdp = find_template_alias(tname, ns_hint,
 							 owner_hint);
     if ( !tdp )
 	return NULL;
@@ -6695,7 +6767,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	{
 	    std::string op_name = single_contextual_token_name(arg_tokens[1]);
 	    DataDefCLASS *op_owner = NULL;
-	    Program::TemplateAliasDef *op_alias = NULL;
+	    const Program::TemplateAliasDef *op_alias = NULL;
 	    if ( !op_name.empty() )
 	    {
 		for ( std::vector<DataDefCLASS *>::reverse_iterator it =
@@ -10939,6 +11011,7 @@ DataDef *Program::parse_typedef_array_suffix(DataDef *base_dd,
 // DataDef::set_canonical_spelling when an already-swept dd's spelling changes
 // (see StructRegistry::find_despaced).
 uint64_t DataDef::canonical_spelling_gen = 0;
+thread_local bool madc_class_pattern_capture_active = false;
 
 DataDefVOID ddVOID;
 DataDefVOIDref ddVOIDref;
@@ -14741,7 +14814,7 @@ class ClassPatternPayloadReader
 	    Program::ClassAliasPattern alias;
 	    alias.name = string();
 	    alias.type = word();
-	    out.aliases.push_back(alias);
+	    out.aliases.push_back(std::move(alias));
 	}
 	uint32_t nmembers = count();
 	for ( uint32_t i = 0; valid && i < nmembers; ++i )
@@ -14758,7 +14831,7 @@ class ClassPatternPayloadReader
 	    uint32_t ndims = count();
 	    for ( uint32_t d = 0; valid && d < ndims; ++d )
 		member.dimensions.push_back(word64());
-	    out.members.push_back(member);
+	    out.members.push_back(std::move(member));
 	}
 	uint32_t nmethods = count();
 	for ( uint32_t i = 0; valid && i < nmethods; ++i )
@@ -14769,7 +14842,7 @@ class ClassPatternPayloadReader
 	    Program::ClassUsingMemberPattern imported;
 	    imported.owner_type = word();
 	    imported.name = string();
-	    out.using_members.push_back(imported);
+	    out.using_members.push_back(std::move(imported));
 	}
 	uint32_t ntemplates = count();
 	for ( uint32_t i = 0; valid && i < ntemplates; ++i )
@@ -14844,7 +14917,7 @@ public:
 		type.arguments.push_back(word());
 	    for ( uint32_t d = 0; valid && d < ndims; ++d )
 		type.dimensions.push_back(word64());
-	    out.types.push_back(type);
+	    out.types.push_back(std::move(type));
 	}
 	uint32_t nnodes = count();
 	for ( uint32_t i = 0; valid && i < nnodes; ++i )
@@ -14857,6 +14930,31 @@ public:
 	return pgm.class_pattern_fingerprint(out) == stored;
     }
 };
+}
+
+const Program::ClassPattern *Program::materialize_class_pattern(
+	const TemplateDef &td)
+{
+    if ( td.class_pattern_id )
+	return class_pattern_arena.get(td.class_pattern_id);
+    if ( !td.frozen_class_pattern || !td.frozen_class_pattern_words
+      || !td.frozen_class_pattern_forest )
+	return NULL;
+
+    std::map<const uint32_t *, ClassPatternId>::const_iterator cached =
+	restored_class_pattern_cache.find(td.frozen_class_pattern);
+    if ( cached != restored_class_pattern_cache.end() )
+	return class_pattern_arena.get(cached->second);
+
+    ++_class_pattern_restore_materialized;
+    ClassPattern restored;
+    ClassPatternPayloadReader reader(*this, *td.frozen_class_pattern_forest,
+	td.frozen_class_pattern, td.frozen_class_pattern_words);
+    ClassPatternId id = 0;
+    if ( reader.read(restored, (uint32_t)td.class_pattern_reason) )
+	id = class_pattern_arena.add(std::move(restored));
+    restored_class_pattern_cache[td.frozen_class_pattern] = id;
+    return class_pattern_arena.get(id);
 }
 
 void Program::forest_restore_decls(CirFrozenForest &forest)
@@ -15414,16 +15512,10 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    }
 	    if ( rt.pattern && rt.pattern_words )
 	    {
-		ClassPattern restored_pattern;
-		ClassPatternPayloadReader reader(*this, forest, rt.pattern,
-					 rt.pattern_words);
-		if ( reader.read(restored_pattern, rt.pattern_reason) )
-		{
-		    td.class_pattern_id = class_pattern_arena.add(restored_pattern);
-		    td.class_pattern_reason = restored_pattern.capture_reason;
-		}
-		else
-		    td.class_pattern_reason = ClassParseReason::PatternParseError;
+		td.frozen_class_pattern = rt.pattern;
+		td.frozen_class_pattern_words = rt.pattern_words;
+		td.frozen_class_pattern_forest = &forest;
+		++_class_pattern_restore_deferred;
 	    }
 	    if ( rt.kind == CIR_TMPLK_CLASS )
 	    {
@@ -18837,8 +18929,8 @@ TokenFunc *Program::build_expression_function(TokenProgram *tp,
 	tf->statements.push_back((TokenStmt *)ret);
     }
 
-    ast.push(tp);
-    ast.push(tf);
+    ast.push_back(tp);
+    ast.push_back(tf);
     pending_funcs.push_back(tf);
     return tf;
 }
@@ -19479,9 +19571,9 @@ Program::TemplateDef *Program::find_template(const std::string &name,
 					     const std::string &ns_hint,
 					     DataDefCLASS *owner_hint)
 {
-    std::vector<Program::TemplateDef> *g =
-	template_map.find(name);
-    if ( g == template_map.end() || g->empty() )
+    std::vector<Program::TemplateDef> *g = const_cast<
+	std::vector<Program::TemplateDef> *>(template_map.find_readonly(name));
+    if ( !g || g->empty() )
 	return NULL;
     std::vector<Program::TemplateDef> &variants = *g;
 
@@ -19537,13 +19629,15 @@ Program::TemplateDef *Program::find_template(const std::string &name,
     return owned[0];
 }
 
-Program::TemplateAliasDef *Program::find_template_alias(const std::string &name,
+Program::TemplateAliasDef *Program::find_template_alias(
+							const std::string &name,
 							const std::string &ns_hint,
 							DataDefCLASS *owner_hint)
 {
-    std::vector<Program::TemplateAliasDef> *g =
-	template_alias_map.find(name);
-    if ( g == template_alias_map.end() || g->empty() )
+    std::vector<Program::TemplateAliasDef> *g = const_cast<
+	std::vector<Program::TemplateAliasDef> *>(
+	    template_alias_map.find_readonly(name));
+    if ( !g || g->empty() )
 	return NULL;
     std::vector<Program::TemplateAliasDef> &variants = *g;
 
@@ -19615,11 +19709,12 @@ Program::TemplateAliasDef *Program::find_template_alias(const std::string &name,
     return NULL;
 }
 
-Program::TemplateDef *Program::template_with_body(const std::string &name)
+Program::TemplateDef *Program::template_with_body(
+	const std::string &name)
 {
-    std::vector<Program::TemplateDef> *g =
-	template_map.find(name);
-    if ( g == template_map.end() )
+    std::vector<Program::TemplateDef> *g = const_cast<
+	std::vector<Program::TemplateDef> *>(template_map.find_readonly(name));
+    if ( !g )
 	return NULL;
     for ( size_t i = 0; i < g->size(); ++i )
 	if ( !(*g)[i].body.empty() )
@@ -19954,11 +20049,17 @@ void StructRegistry::rollback_transaction(transaction_state &state)
 
 struct Program::ClassRegistrationJournal::State
 {
+    struct SavedTypeAlias {
+	DataDefCLASS *owner;
+	std::string name;
+	bool existed;
+	DataDef *value;
+	SavedTypeAlias(DataDefCLASS *o, const std::string &n, bool e, DataDef *v)
+	    : owner(o), name(n), existed(e), value(v) {}
+    };
     flat_datatype_map_t::transaction_state datatype_map;
-    datadef_map_t datadef_map;
     StructRegistry::transaction_state struct_map_transaction;
-    std::map<std::string, DataDefSTRUCT *> tsubst_local_aggregate_map;
-    madc::dis::id_table<DataDef> project_types;
+    madc::dis::id_table<DataDef>::transaction_state project_types_transaction;
     bool snapshot_forest;
     madc::dis::intern_table::transaction_state forest_strings;
     std::vector<uint32_t> forest_defs;
@@ -19983,12 +20084,14 @@ struct Program::ClassRegistrationJournal::State
     madc::dis::intern_keyed_map<std::vector<TemplateAliasDef> >::transaction_state
 	template_alias_map;
     madc::dis::intern_keyed_map<VarTemplateDef>::transaction_state var_template_map;
-    std::map<std::string, ConceptDef> concept_map;
+    registration_map<std::string, ConceptDef>::transaction_state
+	concept_map_transaction;
     madc::dis::intern_keyed_map<std::vector<FnTemplateDef> >::transaction_state
 	fn_template_map;
     madc::dis::intern_keyed_map<std::vector<FnTemplateDef> >::transaction_state
 	fn_template_decl_map;
-    std::set<std::string> fn_template_instantiated;
+    registration_set<std::string>::transaction_state
+	fn_template_instantiated_transaction;
     madc::dis::intern_keyed_map<Variable *>::transaction_state
 	fn_template_instantiated_vars;
     size_t free_operator_overloads_size;
@@ -20002,14 +20105,16 @@ struct Program::ClassRegistrationJournal::State
 	dependent_shell_origin_transaction;
     registration_map<DataDef *, DependentDerivedOrigin>::transaction_state
 	dependent_derived_origin_transaction;
-    std::set<std::string> template_completion_requested;
-    std::set<std::string> template_instantiated;
-    std::map<DataDefCLASS *, HoistedDeclIdentity> function_local_class_identities;
-    std::map<std::string, std::string> hoisted_symbol_identity_keys;
-    std::vector<DataDefTemplateParam *> template_param_pool;
-    std::vector<std::map<std::string, DataDef *> > template_param_scopes;
-    std::queue<TokenBase *> ast;
-    std::vector<TokenBase *> pending_funcs;
+    registration_set<std::string>::transaction_state
+	template_completion_requested_transaction;
+    registration_map<DataDefCLASS *, HoistedDeclIdentity>::transaction_state
+	function_local_class_identities_transaction;
+    registration_map<std::string, std::string>::transaction_state
+	hoisted_symbol_identity_keys_transaction;
+    size_t template_param_pool_size;
+    size_t template_param_scopes_size;
+    size_t ast_size;
+    size_t pending_funcs_size;
     registration_map<std::string, DeferredFunctionBody>::transaction_state
 	deferred_lazy_bodies_transaction;
     registration_map<std::string,
@@ -20021,20 +20126,19 @@ struct Program::ClassRegistrationJournal::State
     registration_map<std::string,
 	std::vector<OutOfLineNestedClassDef> >::transaction_state
 	out_of_line_nested_class_defs_transaction;
-    std::vector<TopDecl> top_decls;
-    std::vector<PackDeclEntry> pack_decls;
-    std::vector<PackDeclFrame> pack_decl_stack;
-    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
-	block_typedef_shadows;
-    std::set<std::string> user_typedef_names;
-    std::map<DataDefCLASS *, std::map<std::string, DataDef *> >
-	class_scope_type_aliases;
-    std::vector<Variable *> root_variables;
-    std::unordered_map<uint32_t, Variable *> root_var_index;
-    size_t root_var_indexed;
-    std::vector<TokenStmt *> root_statements;
-    std::vector<TokenBase *> root_deferred;
-    std::vector<Variable *> root_destruct_order;
+    size_t top_decls_size;
+    size_t pack_decls_size;
+    size_t pack_decl_stack_size;
+    std::vector<size_t> pack_decl_name_sizes;
+    size_t block_typedef_shadow_depth;
+    std::vector<size_t> block_typedef_shadow_sizes;
+    registration_set<std::string>::transaction_state
+	user_typedef_names_transaction;
+    std::vector<SavedTypeAlias> type_aliases;
+    std::set<std::pair<DataDefCLASS *, std::string> > touched_type_aliases;
+    size_t root_variables_size;
+    size_t root_statements_size;
+    size_t root_deferred_size;
     TokenCpnd *root;
     bool taps_muted;
     bool forest_arena_enabled;
@@ -20044,32 +20148,23 @@ struct Program::ClassRegistrationJournal::State
     int lambda_counter_value;
 
     State(Program &p, bool snapshot_forest)
-	: datadef_map(p.datadef_map),
-	  tsubst_local_aggregate_map(p.tsubst_local_aggregate_map),
-	  project_types(p.project_types),
-	  snapshot_forest(snapshot_forest),
+	: snapshot_forest(snapshot_forest),
 	  forest_defs(snapshot_forest ? p.forest_arena.defs
 				      : std::vector<uint32_t>()),
 	  forest_payload_size(snapshot_forest ? p.forest_arena.payload.size() : 0),
 	  forest_tokbytes_size(snapshot_forest ? p.forest_arena.tokbytes.size() : 0),
-	  concept_map(p.concept_map),
-	  fn_template_instantiated(p.fn_template_instantiated),
 	  free_operator_overloads_size(p.free_operator_overloads.size()),
 	  free_function_overloads_size(p.free_function_overloads.size()),
-	  template_completion_requested(p.template_completion_requested),
-	  template_instantiated(p.template_instantiated),
-	  function_local_class_identities(p.function_local_class_identities),
-	  hoisted_symbol_identity_keys(p.hoisted_symbol_identity_keys),
-	  template_param_pool(p.template_param_pool),
-	  template_param_scopes(p.template_param_scopes), ast(p.ast),
-	  pending_funcs(p.pending_funcs),
-	  top_decls(p.top_decls), pack_decls(p.pack_decls),
-	  pack_decl_stack(p.pack_decl_stack),
-	  block_typedef_shadows(p.block_typedef_shadows),
-	  user_typedef_names(p.user_typedef_names),
-	  root_variables(),
-	  root_var_index(), root_var_indexed(0), root_statements(),
-	  root_deferred(), root_destruct_order(), root(p.tkProgram),
+	  template_param_pool_size(p.template_param_pool.size()),
+	  template_param_scopes_size(p.template_param_scopes.size()),
+	  ast_size(p.ast.size()),
+	  pending_funcs_size(p.pending_funcs.size()),
+	  top_decls_size(p.top_decls.size()),
+	  pack_decls_size(p.pack_decls.size()),
+	  pack_decl_stack_size(p.pack_decl_stack.size()),
+	  block_typedef_shadow_depth(p.block_typedef_shadows.size()),
+	  root_variables_size(0), root_statements_size(0),
+	  root_deferred_size(0), root(p.tkProgram),
 	  taps_muted(p.class_registration_taps_muted),
 	  forest_arena_enabled(p.forest_arena_enabled),
 	  runtime_size_capture_counter_value(::runtime_size_capture_counter),
@@ -20077,6 +20172,11 @@ struct Program::ClassRegistrationJournal::State
 	  anon_tag_counter_value(::anon_tag_counter),
 	  lambda_counter_value(::lambda_counter)
     {
+	for ( size_t i = 0; i < p.pack_decl_stack.size(); ++i )
+	    pack_decl_name_sizes.push_back(p.pack_decl_stack[i].names.size());
+	for ( size_t i = 0; i < p.block_typedef_shadows.size(); ++i )
+	    block_typedef_shadow_sizes.push_back(
+		p.block_typedef_shadows[i].size());
 	if ( snapshot_forest )
 	    p.forest_arena.strings.begin_transaction(forest_strings);
 	for ( namespace_map_t::const_iterator it = p.namespace_map.begin();
@@ -20086,18 +20186,11 @@ struct Program::ClassRegistrationJournal::State
 	    namespace_map_transactions[it->first] =
 		variable_map_t::transaction_state();
 	}
-	for ( size_t i = 0; i < p.class_scope_stack.size(); ++i )
-	    if ( p.class_scope_stack[i] )
-		class_scope_type_aliases[p.class_scope_stack[i]] =
-		    p.class_scope_stack[i]->type_aliases;
 	if ( root )
 	{
-	    root_variables = root->variables;
-	    root_var_index = root->var_index;
-	    root_var_indexed = root->var_indexed;
-	    root_statements = root->statements;
-	    root_deferred = root->deferred;
-	    root_destruct_order = root->destruct_order;
+	    root_variables_size = root->variables.size();
+	    root_statements_size = root->statements.size();
+	    root_deferred_size = root->deferred.size();
 	}
     }
 };
@@ -20120,15 +20213,27 @@ Program::ClassRegistrationJournal::ClassRegistrationJournal(
 	throw;
     }
     pgm.datatype_map.begin_transaction(state->datatype_map);
+    pgm.project_types.begin_transaction(state->project_types_transaction);
     pgm.namespace_datatype_map.begin_transaction(state->namespace_datatype_map);
     pgm.template_map.begin_transaction(state->template_map);
     pgm.partial_spec_map.begin_transaction(state->partial_spec_map);
     pgm.template_alias_map.begin_transaction(state->template_alias_map);
     pgm.var_template_map.begin_transaction(state->var_template_map);
+    pgm.concept_map.begin_transaction(state->concept_map_transaction);
     pgm.fn_template_map.begin_transaction(state->fn_template_map);
     pgm.fn_template_decl_map.begin_transaction(state->fn_template_decl_map);
     pgm.fn_template_instantiated_vars.begin_transaction(
 	state->fn_template_instantiated_vars);
+    pgm.fn_template_instantiated.begin_transaction(
+	state->fn_template_instantiated_transaction);
+    pgm.template_completion_requested.begin_transaction(
+	state->template_completion_requested_transaction);
+    pgm.user_typedef_names.begin_transaction(
+	state->user_typedef_names_transaction);
+    pgm.function_local_class_identities.begin_transaction(
+	state->function_local_class_identities_transaction);
+    pgm.hoisted_symbol_identity_keys.begin_transaction(
+	state->hoisted_symbol_identity_keys_transaction);
     pgm.struct_map.begin_transaction(state->struct_map_transaction);
     pgm.funcdef_map.begin_transaction(state->funcdef_map_transaction);
     pgm.literal_map.begin_transaction(state->literal_map_transaction);
@@ -20165,6 +20270,7 @@ Program::ClassRegistrationJournal::ClassRegistrationJournal(
 	pgm.class_registration_taps_muted = true;
 	pgm.forest_arena_enabled = false;
     }
+    pgm.active_class_registration_journal = this;
 }
 
 Program::ClassRegistrationJournal::~ClassRegistrationJournal()
@@ -20172,6 +20278,31 @@ Program::ClassRegistrationJournal::~ClassRegistrationJournal()
     if ( !finished )
 	rollback();
     delete state;
+}
+
+void Program::ClassRegistrationJournal::record_type_alias_write(
+	DataDefCLASS *owner, const std::string &name)
+{
+    if ( !outermost || !state || !owner )
+	return;
+    std::pair<DataDefCLASS *, std::string> key(owner, name);
+    if ( !state->touched_type_aliases.insert(key).second )
+	return;
+    std::map<std::string, DataDef *>::const_iterator found =
+	owner->type_aliases.find(name);
+    state->type_aliases.push_back(State::SavedTypeAlias(owner, name,
+	found != owner->type_aliases.end(),
+	found == owner->type_aliases.end() ? NULL : found->second));
+}
+
+void Program::set_class_type_alias(DataDefCLASS *owner,
+	const std::string &name, DataDef *type)
+{
+    if ( !owner )
+	return;
+    if ( active_class_registration_journal )
+	active_class_registration_journal->record_type_alias_write(owner, name);
+    owner->type_aliases[name] = type;
 }
 
 void Program::ClassRegistrationJournal::commit()
@@ -20185,15 +20316,27 @@ void Program::ClassRegistrationJournal::commit()
 	return;
     }
     pgm.datatype_map.commit_transaction(state->datatype_map);
+    pgm.project_types.commit_transaction(state->project_types_transaction);
     pgm.namespace_datatype_map.commit_transaction(state->namespace_datatype_map);
     pgm.template_map.commit_transaction(state->template_map);
     pgm.partial_spec_map.commit_transaction(state->partial_spec_map);
     pgm.template_alias_map.commit_transaction(state->template_alias_map);
     pgm.var_template_map.commit_transaction(state->var_template_map);
+    pgm.concept_map.commit_transaction(state->concept_map_transaction);
     pgm.fn_template_map.commit_transaction(state->fn_template_map);
     pgm.fn_template_decl_map.commit_transaction(state->fn_template_decl_map);
     pgm.fn_template_instantiated_vars.commit_transaction(
 	state->fn_template_instantiated_vars);
+    pgm.fn_template_instantiated.commit_transaction(
+	state->fn_template_instantiated_transaction);
+    pgm.template_completion_requested.commit_transaction(
+	state->template_completion_requested_transaction);
+    pgm.user_typedef_names.commit_transaction(
+	state->user_typedef_names_transaction);
+    pgm.function_local_class_identities.commit_transaction(
+	state->function_local_class_identities_transaction);
+    pgm.hoisted_symbol_identity_keys.commit_transaction(
+	state->hoisted_symbol_identity_keys_transaction);
     pgm.struct_map.commit_transaction(state->struct_map_transaction);
     pgm.funcdef_map.commit_transaction(state->funcdef_map_transaction);
     pgm.literal_map.commit_transaction(state->literal_map_transaction);
@@ -20229,6 +20372,7 @@ void Program::ClassRegistrationJournal::commit()
 	pgm.forest_arena.strings.commit_transaction(state->forest_strings);
     pgm.class_registration_taps_muted = state->taps_muted;
     pgm.forest_arena_enabled = state->forest_arena_enabled;
+    pgm.active_class_registration_journal = NULL;
     --pgm.class_registration_journal_depth;
     finished = true;
 }
@@ -20249,10 +20393,21 @@ void Program::ClassRegistrationJournal::rollback()
     pgm.partial_spec_map.rollback_transaction(state->partial_spec_map);
     pgm.template_alias_map.rollback_transaction(state->template_alias_map);
     pgm.var_template_map.rollback_transaction(state->var_template_map);
+    pgm.concept_map.rollback_transaction(state->concept_map_transaction);
     pgm.fn_template_map.rollback_transaction(state->fn_template_map);
     pgm.fn_template_decl_map.rollback_transaction(state->fn_template_decl_map);
     pgm.fn_template_instantiated_vars.rollback_transaction(
 	state->fn_template_instantiated_vars);
+    pgm.fn_template_instantiated.rollback_transaction(
+	state->fn_template_instantiated_transaction);
+    pgm.template_completion_requested.rollback_transaction(
+	state->template_completion_requested_transaction);
+    pgm.user_typedef_names.rollback_transaction(
+	state->user_typedef_names_transaction);
+    pgm.function_local_class_identities.rollback_transaction(
+	state->function_local_class_identities_transaction);
+    pgm.hoisted_symbol_identity_keys.rollback_transaction(
+	state->hoisted_symbol_identity_keys_transaction);
     pgm.struct_map.rollback_transaction(state->struct_map_transaction);
     pgm.funcdef_map.rollback_transaction(state->funcdef_map_transaction);
     pgm.literal_map.rollback_transaction(state->literal_map_transaction);
@@ -20292,17 +20447,27 @@ void Program::ClassRegistrationJournal::rollback()
 	    pgm.namespace_map.erase(it++);
 	else
 	    ++it;
-    pgm.datadef_map = state->datadef_map;
-    pgm.tsubst_local_aggregate_map = state->tsubst_local_aggregate_map;
-    for ( size_t i = 0; i < pgm.project_types.size(); ++i )
+    for ( size_t i = 0; i < state->project_types_transaction.saved.size(); ++i )
+    {
+	const madc::dis::id_table<DataDef>::transaction_state::SavedSlot &saved =
+	    state->project_types_transaction.saved[i];
+	DataDef *current = pgm.project_types.at_index(saved.index);
+	if ( current && current != saved.value
+	  && current->type_id == pgm.project_types.base() + saved.index )
+	    current->type_id = 0;
+	if ( saved.index >= state->project_types_transaction.original_size
+	  && saved.value
+	  && saved.value->type_id == pgm.project_types.base() + saved.index )
+	    saved.value->type_id = 0;
+    }
+    for ( size_t i = state->project_types_transaction.original_size;
+	  i < pgm.project_types.size(); ++i )
     {
 	DataDef *current = pgm.project_types.at_index(i);
-	DataDef *saved = state->project_types.at_index(i);
-	if ( current && current != saved
-	  && current->type_id == pgm.project_types.base() + i )
+	if ( current && current->type_id == pgm.project_types.base() + i )
 	    current->type_id = 0;
     }
-    pgm.project_types = state->project_types;
+    pgm.project_types.rollback_transaction(state->project_types_transaction);
     if ( state->snapshot_forest )
     {
 	pgm.forest_arena.strings.rollback_transaction(state->forest_strings);
@@ -20310,33 +20475,50 @@ void Program::ClassRegistrationJournal::rollback()
 	pgm.forest_arena.payload.resize(state->forest_payload_size);
 	pgm.forest_arena.tokbytes.resize(state->forest_tokbytes_size);
     }
-    pgm.concept_map = state->concept_map;
-    pgm.fn_template_instantiated = state->fn_template_instantiated;
-    pgm.template_completion_requested = state->template_completion_requested;
-    pgm.template_instantiated = state->template_instantiated;
-    pgm.function_local_class_identities = state->function_local_class_identities;
-    pgm.hoisted_symbol_identity_keys = state->hoisted_symbol_identity_keys;
-    pgm.template_param_pool = state->template_param_pool;
-    pgm.template_param_scopes = state->template_param_scopes;
-    pgm.ast = state->ast;
-    pgm.pending_funcs = state->pending_funcs;
-    pgm.top_decls = state->top_decls;
-    pgm.pack_decls = state->pack_decls;
-    pgm.pack_decl_stack = state->pack_decl_stack;
-    pgm.block_typedef_shadows = state->block_typedef_shadows;
-    pgm.user_typedef_names = state->user_typedef_names;
-    for ( std::map<DataDefCLASS *, std::map<std::string, DataDef *> >::const_iterator
-	    it = state->class_scope_type_aliases.begin();
-	  it != state->class_scope_type_aliases.end(); ++it )
-	it->first->type_aliases = it->second;
+    pgm.template_param_pool.resize(state->template_param_pool_size);
+    assert(pgm.template_param_scopes.size() >= state->template_param_scopes_size);
+    pgm.template_param_scopes.resize(state->template_param_scopes_size);
+    pgm.ast.resize(state->ast_size);
+    pgm.pending_funcs.resize(state->pending_funcs_size);
+    pgm.top_decls.resize(state->top_decls_size);
+    pgm.pack_decls.resize(state->pack_decls_size);
+    assert(pgm.pack_decl_stack.size() >= state->pack_decl_stack_size);
+    for ( size_t i = 0; i < state->pack_decl_stack_size; ++i )
+	pgm.pack_decl_stack[i].names.resize(state->pack_decl_name_sizes[i]);
+    pgm.pack_decl_stack.resize(state->pack_decl_stack_size);
+    assert(pgm.block_typedef_shadows.size() >=
+	state->block_typedef_shadow_depth);
+    for ( size_t i = 0; i < state->block_typedef_shadow_depth; ++i )
+	pgm.block_typedef_shadows[i].resize(
+	    state->block_typedef_shadow_sizes[i]);
+    pgm.block_typedef_shadows.resize(state->block_typedef_shadow_depth);
+    for ( size_t i = state->type_aliases.size(); i-- > 0; )
+    {
+	const State::SavedTypeAlias &saved = state->type_aliases[i];
+	if ( saved.existed )
+	    saved.owner->type_aliases[saved.name] = saved.value;
+	else
+	    saved.owner->type_aliases.erase(saved.name);
+    }
     if ( state->root )
     {
-	state->root->variables = state->root_variables;
-	state->root->var_index = state->root_var_index;
-	state->root->var_indexed = state->root_var_indexed;
-	state->root->statements = state->root_statements;
-	state->root->deferred = state->root_deferred;
-	state->root->destruct_order = state->root_destruct_order;
+	for ( size_t i = state->root_variables_size;
+	      i < state->root->variables.size(); ++i )
+	{
+	    Variable *added = state->root->variables[i];
+	    if ( !added )
+		continue;
+	    std::unordered_map<uint32_t, Variable *>::iterator indexed =
+		state->root->var_index.find(added->name_sid);
+	    if ( indexed != state->root->var_index.end()
+	      && indexed->second == added )
+		state->root->var_index.erase(indexed);
+	}
+	state->root->variables.resize(state->root_variables_size);
+	if ( state->root->var_indexed > state->root_variables_size )
+	    state->root->var_indexed = state->root_variables_size;
+	state->root->statements.resize(state->root_statements_size);
+	state->root->deferred.resize(state->root_deferred_size);
     }
     pgm.class_registration_taps_muted = state->taps_muted;
     pgm.forest_arena_enabled = state->forest_arena_enabled;
@@ -20344,6 +20526,7 @@ void Program::ClassRegistrationJournal::rollback()
     vla_dim_capture_counter = state->vla_dim_capture_counter_value;
     anon_tag_counter = state->anon_tag_counter_value;
     lambda_counter = state->lambda_counter_value;
+    pgm.active_class_registration_journal = NULL;
     --pgm.class_registration_journal_depth;
     finished = true;
 }
@@ -20379,53 +20562,18 @@ static std::string class_pattern_tokens_spelling(
     return out;
 }
 
-static void class_pattern_collect_stable_types(Program &pgm,
-	std::unordered_set<DataDef *> &out)
+static bool class_pattern_type_predates_capture(DataDef *dd)
 {
-    out.reserve(MADC_TYPEID_PRIMITIVE_END + pgm.datatype_map.size()
-	+ pgm.struct_map.size() + pgm.project_types.size()
-	+ 2 * (pgm.ptr_type_cache.size() + pgm.ref_type_cache.size()
-	    + pgm.const_type_cache.size()));
-    for ( uint32_t id = 1; id < MADC_TYPEID_PRIMITIVE_END; ++id )
-	if ( DataDef *dd = madc_primitive_for_slot(id) )
-	    out.insert(dd);
-    pgm.datatype_map.for_each([&](const char *, TokenDataType *&tdt) -> bool {
-	if ( tdt )
-	    out.insert(&tdt->definition);
-	return false;
-    });
-    for ( datadef_map_citer it = pgm.struct_map.begin();
-	  it != pgm.struct_map.end(); ++it )
-	if ( it->second )
-	    out.insert(it->second);
-    for ( size_t i = 0; i < pgm.project_types.size(); ++i )
-	if ( DataDef *dd = pgm.project_types.at_index(i) )
-	    out.insert(dd);
-    for ( std::map<DataDef *, DataDefPTR *>::const_iterator it =
-	    pgm.ptr_type_cache.begin(); it != pgm.ptr_type_cache.end(); ++it )
-	{
-	out.insert(it->first);
-	out.insert(it->second);
-    }
-    for ( std::map<DataDef *, DataDefREF *>::const_iterator it =
-	    pgm.ref_type_cache.begin(); it != pgm.ref_type_cache.end(); ++it )
-	{
-	out.insert(it->first);
-	out.insert(it->second);
-    }
-    for ( std::map<DataDef *, DataDefCONST *>::const_iterator it =
-	    pgm.const_type_cache.begin(); it != pgm.const_type_cache.end(); ++it )
-	{
-	out.insert(it->first);
-	out.insert(it->second);
-    }
+    // Registry membership is not provenance: a pre-existing class-scope
+    // scalar alias can be owned only by type_aliases. Birth during the isolated
+    // production parse is the property that makes a DataDef unsafe to retain.
+    return dd && !dd->speculative_class_capture;
 }
 
 class ClassPatternNormalizer
 {
     Program &pgm;
     const Program::TemplateDef &td;
-    const std::unordered_set<DataDef *> &stable_types;
     const std::map<DataDefCLASS *, std::vector<Program::ClassDeclKind> > &decls;
     const std::map<DataDefCLASS *,
 	std::vector<std::pair<DataDefCLASS *, std::string> > > &using_decls;
@@ -20497,14 +20645,14 @@ class ClassPatternNormalizer
     Program::ClassParseReason dependent_shell_fallback_reason(
 	const Program::DependentShellOrigin &origin)
     {
-	Program::TemplateAliasDef *alias = pgm.find_template_alias(
+	const Program::TemplateAliasDef *alias = pgm.find_template_alias(
 	    origin.tname, origin.defining_namespace, origin.owner_class);
 	if ( alias )
 	    return has_non_type_template_parameter(alias->typeparam_is_type,
 		alias->has_non_type_params)
 		? Program::ClassParseReason::DependentValueExpression
 		: Program::ClassParseReason::None;
-	Program::TemplateDef *definition = pgm.find_template(
+	const Program::TemplateDef *definition = pgm.find_template(
 	    origin.tname, origin.defining_namespace, origin.owner_class);
 	if ( !definition )
 	    return Program::ClassParseReason::None;
@@ -20518,7 +20666,7 @@ class ClassPatternNormalizer
 	const Program::DependentShellOrigin &origin,
 	const std::string &member, bool member_is_template)
     {
-	Program::TemplateDef *definition = pgm.find_template(
+	const Program::TemplateDef *definition = pgm.find_template(
 	    origin.tname, origin.defining_namespace, origin.owner_class);
 	if ( !definition || definition->class_pattern_reason !=
 		Program::ClassParseReason::None )
@@ -20565,6 +20713,7 @@ class ClassPatternNormalizer
 	const std::vector<TokenBase *> &raw)
     {
 	std::vector<TokenBase *> tokens;
+	tokens.reserve(raw.size());
 	for ( size_t i = 0; i < raw.size(); ++i )
 	    if ( raw[i] )
 		tokens.push_back(raw[i]);
@@ -20864,7 +21013,7 @@ class ClassPatternNormalizer
 		    << std::endl);
 		fail(Program::ClassParseReason::UnnormalizableType);
 	    }
-	    else if ( stable_types.count(dd) )
+	    else if ( class_pattern_type_predates_capture(dd) )
 	    {
 		pattern.types[id].kind = Program::ClassTypePatternKind::ConcreteType;
 		external_types[id] = dd;
@@ -20943,9 +21092,9 @@ class ClassPatternNormalizer
 		captured->second[i];
 	    if ( entry.kind == Program::ClassNestedTemplateKind::AliasTemplate )
 	    {
-		std::vector<Program::TemplateAliasDef> *variants =
-		    pgm.template_alias_map.find(entry.key);
-		if ( variants == pgm.template_alias_map.end() )
+		const std::vector<Program::TemplateAliasDef> *variants =
+		    pgm.template_alias_map.find_readonly(entry.key);
+		if ( !variants )
 		    continue;
 		for ( size_t v = 0; v < variants->size(); ++v )
 		    if ( (*variants)[v].owner_class == owner )
@@ -20953,10 +21102,10 @@ class ClassPatternNormalizer
 			    nested_alias_template((*variants)[v]));
 		continue;
 	    }
-	    std::vector<Program::TemplateDef> *variants =
+	    const std::vector<Program::TemplateDef> *variants =
 		entry.partial_specialization
-		? pgm.partial_spec_map.find(entry.key)
-		: pgm.template_map.find(entry.key);
+		? pgm.partial_spec_map.find_readonly(entry.key)
+		: pgm.template_map.find_readonly(entry.key);
 	    if ( !variants )
 		continue;
 	    for ( size_t v = 0; v < variants->size(); ++v )
@@ -20995,7 +21144,7 @@ class ClassPatternNormalizer
 		    DataDefCLASS *nested = dynamic_cast<DataDefCLASS *>(candidate);
 		    if ( nested && nested->enclosing_class == cls )
 			add_node(nested, (uint32_t)i, alias->first);
-		    else if ( !stable_types.count(candidate)
+		    else if ( !class_pattern_type_predates_capture(candidate)
 			   && (dynamic_cast<DataDefENUM *>(candidate)
 			       || (dynamic_cast<DataDefSTRUCT *>(candidate) && !nested)) )
 			add_node(candidate, (uint32_t)i, alias->first);
@@ -21079,6 +21228,7 @@ class ClassPatternNormalizer
 	out.member_template_decl = class_pattern_clone_tokens(fd->member_template_decl);
 	out.member_template_return_tokens =
 	    class_pattern_clone_tokens(fd->member_template_return_tokens);
+	out.parameters.reserve(fd->parameters.size());
 
 	for ( size_t i = 0; i < owner->ctors.size(); ++i )
 	    if ( owner->ctors[i] == var )
@@ -21124,7 +21274,7 @@ class ClassPatternNormalizer
 		    << ": parsed default lacks source tokens" << std::endl);
 		fail(Program::ClassParseReason::RequiresEagerBodyParse);
 	    }
-	    out.parameters.push_back(param);
+	    out.parameters.push_back(std::move(param));
 	}
 	const Program::DeferredFunctionBody *recipe = body_for(owner, var);
 	if ( recipe )
@@ -21204,7 +21354,7 @@ class ClassPatternNormalizer
 		    Program::ClassAliasPattern normalized;
 		    normalized.name = alias->first;
 		    normalized.type = normalize_type(alias->second);
-		    node.aliases.push_back(normalized);
+		    node.aliases.push_back(std::move(normalized));
 		}
 	    std::set<std::pair<DataDefCLASS *, std::string> > imported_methods;
 	    std::map<DataDefCLASS *, std::vector<std::pair<DataDefCLASS *,
@@ -21220,7 +21370,7 @@ class ClassPatternNormalizer
 		    Program::ClassUsingMemberPattern imported;
 		    imported.owner_type = normalize_type(entry.first);
 		    imported.name = entry.second;
-		    node.using_members.push_back(imported);
+		    node.using_members.push_back(std::move(imported));
 		}
 	    for ( size_t i = 0; i < cls->methods.size(); ++i )
 	    {
@@ -21238,7 +21388,7 @@ class ClassPatternNormalizer
 			Program::ClassUsingMemberPattern imported;
 			imported.owner_type = normalize_type(method->owner_class);
 			imported.name = fd->method_display_name;
-			node.using_members.push_back(imported);
+			node.using_members.push_back(std::move(imported));
 		    }
 		    continue;
 		}
@@ -21324,7 +21474,7 @@ class ClassPatternNormalizer
 		      && i < aggregate->anonymous_aggregates[a].first_member
 			   + aggregate->anonymous_aggregates[a].member_count )
 			member.is_anonymous = true;
-		node.members.push_back(member);
+		node.members.push_back(std::move(member));
 	    }
 	    if ( !cls && node.declarations.empty() )
 		for ( size_t i = 0; i < node.members.size(); ++i )
@@ -21332,13 +21482,13 @@ class ClassPatternNormalizer
 			? Program::ClassDeclKind::BitField
 			: Program::ClassDeclKind::DataMember);
 	}
-	pattern.nodes.push_back(node);
+	pattern.nodes.push_back(std::move(node));
 	normalizing_owner = saved_owner;
     }
 
 public:
     ClassPatternNormalizer(Program &program, const Program::TemplateDef &def,
-	DataDef *root, const std::unordered_set<DataDef *> &stable,
+	DataDef *root,
 	const std::map<DataDefCLASS *,
 	    std::vector<Program::ClassDeclKind> > &ordered,
 	const std::map<DataDefCLASS *,
@@ -21347,7 +21497,7 @@ public:
 	    std::vector<Program::DeferredFunctionBody> > &body_recipes,
 	const Program::class_nested_template_capture_t &nested_templates,
 	const std::string &identity)
-	: pgm(program), td(def), stable_types(stable), decls(ordered),
+	: pgm(program), td(def), decls(ordered),
 	  using_decls(using_members), bodies(body_recipes),
 	  nested_template_keys(nested_templates), normalizing_owner(NULL)
     {
@@ -21357,6 +21507,7 @@ public:
 	pattern.is_partial_specialization = td.is_partial_specialization;
 	external_types.push_back(NULL);
 	collect_nodes(root);
+	pattern.nodes.reserve(node_types.size());
 	for ( size_t i = 0; i < node_types.size(); ++i )
 	    populate_node(i);
     }
@@ -21364,7 +21515,7 @@ public:
     Program::ClassPattern release(std::vector<DataDef *> &external)
     {
 	external.swap(external_types);
-	return pattern;
+	return std::move(pattern);
     }
 };
 }
@@ -21379,12 +21530,20 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	return 0;
     struct CaptureGuard {
 	bool &active;
-	explicit CaptureGuard(bool &value) : active(value) { active = true; }
-	~CaptureGuard() { active = false; }
+	bool saved_global;
+	explicit CaptureGuard(bool &value)
+	    : active(value), saved_global(madc_class_pattern_capture_active)
+	{
+	    active = true;
+	    madc_class_pattern_capture_active = true;
+	}
+	~CaptureGuard()
+	{
+	    madc_class_pattern_capture_active = saved_global;
+	    active = false;
+	}
     } capture_guard(class_pattern_capture_in_progress);
 
-    std::unordered_set<DataDef *> stable_types;
-    class_pattern_collect_stable_types(*this, stable_types);
     ClassPatternHash identity_hash;
     identity_hash.add_string(td.defining_namespace);
     identity_hash.add_string(td.owner_class
@@ -21546,7 +21705,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	    if ( dynamic_cast<DataDefSTRUCT *>(root_type) )
 	    {
 		ClassPatternNormalizer normalizer(*this, td, root_type,
-		    stable_types, captured_decls, captured_using,
+		    captured_decls, captured_using,
 		    captured_bodies, captured_nested_templates, identity);
 		pending = normalizer.release(external_types);
 		parsed = true;
@@ -21621,7 +21780,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     for ( size_t i = 1; i < pending.types.size(); ++i )
 	if ( i < external_types.size() && external_types[i] )
 	{
-	    if ( !stable_types.count(external_types[i]) )
+	    if ( !class_pattern_type_predates_capture(external_types[i]) )
 	    {
 		if ( pending.capture_reason == ClassParseReason::None )
 		    pending.capture_reason = ClassParseReason::UnnormalizableType;
@@ -21633,8 +21792,8 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 		pending.capture_reason = ClassParseReason::UnnormalizableType;
 	}
     pending.semantic_fingerprint = class_pattern_fingerprint(pending);
-    td.class_pattern_id = class_pattern_arena.add(pending);
     td.class_pattern_reason = pending.capture_reason;
+    td.class_pattern_id = class_pattern_arena.add(std::move(pending));
     return td.class_pattern_id;
 }
 
@@ -22742,7 +22901,8 @@ std::string Program::canonical_arg_key_fragment(
     return sanitize_template_fragment(spelling);
 }
 
-Program::TemplateDef *Program::match_partial_specialization(const std::string &name,
+Program::TemplateDef *Program::match_partial_specialization(
+	const std::string &name,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
 	const std::vector<std::string> &arg_spellings,
 	const std::vector<std::vector<TokenBase *>> &arg_tokens_by_slot,
@@ -22752,8 +22912,9 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	std::map<std::string, std::vector<std::string> > &out_pack_subst,
 	std::map<std::string, std::vector<TokenBase *> > &out_nontype_subst)
 {
-    std::vector<TemplateDef> *it = partial_spec_map.find(name);
-    if ( it == partial_spec_map.end() )
+    std::vector<TemplateDef> *it = const_cast<std::vector<TemplateDef> *>(
+	partial_spec_map.find_readonly(name));
+    if ( !it )
 	return NULL;
     if ( arg_types_by_slot.size() != arg_spellings.size()
       || arg_tokens_by_slot.size() != arg_spellings.size() )
@@ -28062,7 +28223,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    // typedef path) — keep them out of user_typedef_names so use-sites emit
 	    // the resolved underlying type, not the bare alias name.
 	    if ( !pgm.class_scope_stack.empty() )
-		pgm.class_scope_stack.back()->type_aliases[alias_name] = alias_dd;
+		pgm.set_class_type_alias(pgm.class_scope_stack.back(), alias_name,
+		    alias_dd);
 	    else
 	    {
 		pgm.user_typedef_names.insert(alias_name);
@@ -28154,15 +28316,17 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	// accept the using (no import action needed) rather than erroring.
 	bool have_template = false;
 	{
-	    auto ai = pgm.template_alias_map.find(member_name);
-	    if ( ai != pgm.template_alias_map.end() )
+	    const std::vector<Program::TemplateAliasDef> *ai =
+		pgm.template_alias_map.find_readonly(member_name);
+	    if ( ai )
 		for ( size_t i = 0; i < ai->size(); ++i )
 		    if ( (*ai)[i].defining_namespace == ns_name )
 		    { have_template = true; break; }
 	    if ( !have_template )
 	    {
-		auto ti = pgm.template_map.find(member_name);
-		if ( ti != pgm.template_map.end() )
+		const std::vector<Program::TemplateDef> *ti =
+		    pgm.template_map.find_readonly(member_name);
+		if ( ti )
 		    for ( size_t i = 0; i < ti->size(); ++i )
 			if ( (*ti)[i].defining_namespace == ns_name )
 			{ have_template = true; break; }
@@ -28898,6 +29062,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     pgm.nextToken(); // consume '{'
 
     DataDefSTRUCT *dds = tag ? new DataDefSTRUCT(tag->spelling(), 0) : new_anon_struct();
+    dds->definition_origin = aggregate_definition_origin(
+	pgm, tag ? tag->file : file);
     std::string tag_store_key = tag ? tag->spelling() : "";
     if ( tag )
     {
@@ -29040,6 +29206,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    std::function<void(DataDefSTRUCT *, TokenBase *)> parse_nested_aggregate_body;
 	    parse_nested_aggregate_body = [&](DataDefSTRUCT *inner, TokenBase *loc) -> void
 	    {
+		inner->definition_origin = aggregate_definition_origin(
+		    pgm, loc ? loc->file : NULL);
 		while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 		{
 		    while ( is_attribute_identifier_token(tn) )
@@ -29758,6 +29926,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		existing->max_align = dds->max_align;
 		existing->tag_explicit_align = dds->tag_explicit_align;
 		existing->union_layout = dds->union_layout;
+		existing->definition_origin = dds->definition_origin;
 		existing->is_complete = true;
 		DBG(cout << "TokenSTRUCT::parse() completed forward-declared struct " << tag->spelling() << " size=" << existing->size << endl);
 		delete dds;
@@ -30079,6 +30248,8 @@ DataDefSTRUCT *Program::parse_class_anonymous_aggregate(TokenBase *kw)
 	return NULL;
     DataDefSTRUCT *agg = new_anon_struct();
     agg->union_layout = kw && kw->id() == TokenID::tkUNION;
+    agg->definition_origin = aggregate_definition_origin(
+	*this, kw ? kw->file : NULL);
     if ( packed )
 	agg->pack = 1;
     parse_class_anonymous_aggregate_members(agg, kw);
@@ -30522,7 +30693,7 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 		}
 	    }
 	}
-	ast.push(tf);
+	ast.push_back(tf);
 	pending_funcs.push_back(tf);
     }
     catch(...)
@@ -31412,14 +31583,14 @@ TokenDataType *Program::register_class_shell(DataDefCLASS *ddc,
     }
 
     if ( owner )
-	owner->type_aliases[source_name] = ddc;
+	set_class_type_alias(owner, source_name, ddc);
     if ( !current_namespace().empty() )
 	namespace_datatype_map[current_namespace()][registered_name] = tdt;
     if ( register_source_alias )
 	register_scoped_typedef(source_name, tdt);
-    ddc->type_aliases[source_name] = ddc;
+    set_class_type_alias(ddc, source_name, ddc);
     if ( constructor_source_name != source_name )
-	ddc->type_aliases[constructor_source_name] = ddc;
+	set_class_type_alias(ddc, constructor_source_name, ddc);
     return tdt;
 }
 
@@ -31916,7 +32087,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			: nested_owner_class->canonical_cpp_spelling();
 		    fwd->set_canonical_spelling(owner_spelling + "::" + class_source_name);
 		    fwd->enclosing_class = nested_owner_class;
-		    nested_owner_class->type_aliases[class_source_name] = fwd;
+		    pgm.set_class_type_alias(nested_owner_class,
+			class_source_name, fwd);
 		}
 		else if ( !pgm.current_namespace().empty() )
 		    fwd->set_canonical_spelling(pgm.current_namespace() + "::" + tag->spelling());
@@ -32051,6 +32223,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     }
     if ( !ddc )
 	ddc = new DataDefCLASS(tag->spelling(), 0, DataType::dtRESERVED);
+    ddc->definition_origin = aggregate_definition_origin(pgm, tag->file);
     if ( has_local_class_identity )
 	pgm.function_local_class_identities[ddc] = local_class_identity;
     if ( union_class )
@@ -34194,7 +34367,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 			  << " alias=" << alias << " dd=" << dd->name
 			  << " type=" << (int)dd->type() << std::endl;
 #endif
-	    pgm.class_scope_stack.back()->type_aliases[alias] = dd;
+	    pgm.set_class_type_alias(pgm.class_scope_stack.back(), alias, dd);
 	    return new TokenTypedefDecl(alias, dd);
 	}
 	// Namespace visibility is for NAMESPACE-scope typedefs only — a
@@ -34807,7 +34980,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 			owner->canonical_cpp_spelling().empty()
 			? owner->name : owner->canonical_cpp_spelling();
 		    enum_dd->set_canonical_spelling(owner_spelling + "::" + enum_tag);
-		    owner->type_aliases[enum_tag] = enum_dd;
+		    pgm.set_class_type_alias(owner, enum_tag, enum_dd);
 		}
 		else if ( !pgm.current_namespace().empty() )
 		    enum_dd->set_canonical_spelling(pgm.current_namespace() + "::" + enum_tag);
@@ -34858,7 +35031,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 		owner->canonical_cpp_spelling().empty()
 		? owner->name : owner->canonical_cpp_spelling();
 	    enum_dd->set_canonical_spelling(owner_spelling + "::" + enum_tag);
-	    owner->type_aliases[enum_tag] = enum_dd;
+	    pgm.set_class_type_alias(owner, enum_tag, enum_dd);
 	}
 	else if ( !pgm.current_namespace().empty() )
 	    enum_dd->set_canonical_spelling(pgm.current_namespace() + "::" + enum_tag);
@@ -38662,7 +38835,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	std::vector<std::vector<DataDef *> > *type_arg_packs_out = NULL,
 	Variable **var_out = NULL)
 {
-    InstTimer _it(pgm);	// --show-stats: instantiation time
+    InstTimer _it(pgm, pgm._inst_fn_count);	// --show-stats
     if ( type_args_out )
 	type_args_out->clear();
     if ( type_arg_packs_out )
@@ -41528,7 +41701,7 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
 
 Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 {
-    InstTimer _it(*this);	// --show-stats: instantiation time
+    InstTimer _it(*this, _inst_member_fn_count);	// --show-stats
     if ( !tc )
 	return NULL;
     // Two-tree Phase 2 (PLAN §11.5c, widening step 1): DEFER this member-template
@@ -41822,7 +41995,7 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 void Program::instantiate_member_ctor_template_for_construction(
 	DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args)
 {
-    InstTimer _it(*this);	// --show-stats: instantiation time
+    InstTimer _it(*this, _inst_member_ctor_count);	// --show-stats
     if ( !cdd )
 	return;
 #ifdef MADC_DEBUG_CTORTMPL
@@ -43573,7 +43746,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		nd.typeparam_is_pack = typeparam_is_pack;
 		for ( size_t i = 0; i < skipped_decl.size(); ++i )
 		    nd.decl.push_back(skipped_decl[i] ? skipped_decl[i]->clone() : NULL);
-		Program::TemplateDef *owner_template =
+		const Program::TemplateDef *owner_template =
 		    pgm.find_template(oolc_class, pgm.current_namespace());
 		std::string owner_ns = owner_template
 		    ? owner_template->defining_namespace : pgm.current_namespace();
@@ -43638,7 +43811,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 						  d.inner_is_type);
 	    for ( size_t i = 0; i < skipped_decl.size(); ++i )
 		d.decl.push_back(skipped_decl[i] ? skipped_decl[i]->clone() : NULL);
-	    Program::TemplateDef *owner_template =
+	    const Program::TemplateDef *owner_template =
 		pgm.find_template(ool_class, pgm.current_namespace());
 	    std::string owner_ns = owner_template
 		? owner_template->defining_namespace : pgm.current_namespace();
@@ -43784,7 +43957,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	td.is_partial_specialization = true;
 	td.spec_pattern = spec_pattern_tokens;
 	td.constraint = partial_spec_constraint;   // C++20 requires-clause (may be empty)
-	pgm.capture_class_pattern(td);
+	prepare_class_pattern_definition(pgm, td);
 	pgm.pack_tap_name(class_name, Program::pdkTemplate);	// B4a: the map key
 	if ( !td.defining_namespace.empty() )
 	    pgm.pack_tap_name(td.defining_namespace + "::" + class_name,
@@ -43976,7 +44149,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     }
     if ( !specialized_template_id )
     {
-	pgm.capture_class_pattern(td);
+	prepare_class_pattern_definition(pgm, td);
 	pgm.register_template(td, /*only_if_absent=*/false);
 	pgm.complete_pending_template_instantiations(class_name);
     }
@@ -46118,7 +46291,7 @@ paramdecl:
     }
 
     DBG(cout << "parseFunction() calling ast.push" << endl);
-    ast.push(tf);
+    ast.push_back(tf);
     pending_funcs.push_back(tf);
 
     DBG(cout << "parseFunction(" << id << ") END" << endl);
@@ -46401,7 +46574,7 @@ TokenBase *Program::parseLambda()
     // It will be compiled before the enclosing function since
     // the enclosing function's ast.push happens after parseCompound returns.
     DBG(cout << "parseLambda() pushing " << lambda_name << " onto ast" << endl);
-    ast.push(tf);
+    ast.push_back(tf);
     pending_funcs.push_back(tf);
 
     DBG(cout << "parseLambda() END — returning TokenVar for " << lambda_name << endl);
@@ -49489,7 +49662,7 @@ bool Program::parse(TokenProgram *tp)
 	// (empty) program.
 	inject_pending_auto_includes();
 	_parser_init();
-	ast.push(tp);
+	ast.push_back(tp);
 	return true;
     }
 
@@ -49497,7 +49670,7 @@ bool Program::parse(TokenProgram *tp)
     _parser_init();
 
     DBG(cout << endl << "Program::parse() calling ast.push for TokenProgram" << endl);
-    ast.push(tp);
+    ast.push_back(tp);
 
     try
     {
@@ -49532,7 +49705,7 @@ bool Program::parse(TokenProgram *tp)
 		else
 		{
 		    DBG(cout << "Program::parse() calling ast.push" << endl);
-		    ast.push(ts);
+		    ast.push_back(ts);
 		}
 	    }
 #endif

@@ -3,6 +3,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cassert>
+#include <set>
+#include <utility>
 #include <vector>
 
 // madcdis/id_table.h — the segmented stable-id table madc::dis substrate primitive.
@@ -36,6 +39,8 @@
 //   bool     set(uint32_t id, T *obj) -> repoint an ASSIGNED id to a new object
 //                                 (one identity, a replacement object — e.g. the
 //                                 struct->class promotion); false if id not ours
+//   begin/commit/rollback_transaction -> first-write tracking for assigned slots
+//                                 plus truncation of objects appended in scope
 //   uint32_t base()            -> the segment base this table assigns ids from
 //   size_t   size()            -> number of objects registered
 //
@@ -50,10 +55,41 @@ namespace dis {
 template<class T>
 class id_table
 {
+public:
+    struct transaction_state
+    {
+	struct SavedSlot
+	{
+	    size_t index;
+	    T *value;
+	    SavedSlot(size_t i, T *v) : index(i), value(v) {}
+	};
+	size_t original_size;
+	std::vector<SavedSlot> saved;
+	std::set<size_t> touched;
+	transaction_state() : original_size(0) {}
+    };
+
+private:
     std::vector<T *> _objs;
     uint32_t _base;
+    transaction_state *_transaction;
 public:
-    explicit id_table(uint32_t base = 0) : _base(base) {}
+    explicit id_table(uint32_t base = 0)
+	: _base(base), _transaction((transaction_state *)0) {}
+    id_table(const id_table &other)
+	: _objs(other._objs), _base(other._base),
+	  _transaction((transaction_state *)0) {}
+    id_table &operator=(const id_table &other)
+    {
+	if ( this != &other )
+	{
+	    assert(!_transaction);
+	    _objs = other._objs;
+	    _base = other._base;
+	}
+	return *this;
+    }
 
     // Append obj and return its stable id (base + prior size). Idempotency is
     // the consumer's job (it holds the per-object memo); this always appends.
@@ -92,8 +128,57 @@ public:
 	uint32_t idx = id - _base;
 	if ( idx >= _objs.size() )
 	    return false;
+	if ( _transaction )
+	{
+	    std::pair<typename std::set<size_t>::iterator, bool> inserted =
+		_transaction->touched.insert(idx);
+	    if ( inserted.second )
+		try
+		{
+		    _transaction->saved.push_back(
+			typename transaction_state::SavedSlot(idx, _objs[idx]));
+		}
+		catch ( ... )
+		{
+		    _transaction->touched.erase(inserted.first);
+		    throw;
+		}
+	}
 	_objs[idx] = obj;
 	return true;
+    }
+
+    void begin_transaction(transaction_state &state)
+    {
+	assert(!_transaction);
+	state.original_size = _objs.size();
+	state.saved.clear();
+	state.touched.clear();
+	_transaction = &state;
+    }
+
+    void commit_transaction(transaction_state &state)
+    {
+	assert(_transaction == &state);
+	_transaction = (transaction_state *)0;
+	state.original_size = 0;
+	state.saved.clear();
+	state.touched.clear();
+    }
+
+    void rollback_transaction(transaction_state &state)
+    {
+	assert(_transaction == &state);
+	_transaction = (transaction_state *)0;
+	for ( size_t i = state.saved.size(); i-- > 0; )
+	{
+	    const typename transaction_state::SavedSlot &saved = state.saved[i];
+	    _objs[saved.index] = saved.value;
+	}
+	_objs.resize(state.original_size);
+	state.original_size = 0;
+	state.saved.clear();
+	state.touched.clear();
     }
 
     uint32_t base() const { return _base; }

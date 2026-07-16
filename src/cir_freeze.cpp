@@ -1871,6 +1871,9 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			sdd = new DataDefSTRUCT(std::string(nm), r.size);
 			sdd->union_layout = (r.flags & madc::dis::DF_UNION_LAYOUT) != 0;
 		}
+		sdd->definition_origin = (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
+		? AggregateDefinitionOrigin::TranslationUnitRoot
+		: AggregateDefinitionOrigin::Included;
 		_mat_storage.push_back(sdd);
 		by_id[tid] = sdd;
 	}

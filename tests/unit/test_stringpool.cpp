@@ -79,7 +79,16 @@ TEST_CASE("intern-keyed map transaction rolls back touched keys")
 
     madc::dis::intern_keyed_map<std::string>::transaction_state state;
     map.begin_transaction(state);
+    const madc::dis::intern_keyed_map<std::string> &readonly = map;
+    const std::string *keep = readonly.find_readonly("keep");
+    REQUIRE(keep != nullptr);
+    CHECK(*keep == "before");
+    CHECK(readonly.find_readonly("missing") == nullptr);
+    CHECK(state.saved.empty());
+    CHECK(state.inserted.empty());
+    CHECK(map.size() == 2u);
     REQUIRE(map.find("keep") != map.end());
+    CHECK(state.saved.size() == 1u);
     *map.find("keep") = "after";
     map["new"] = "temporary";
     map["preinterned"] = "temporary";

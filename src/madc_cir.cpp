@@ -1100,13 +1100,13 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 	if (sdd->is_anonymous)           r.flags |= madc::dis::DF_IS_ANONYMOUS;
 	if (sdd->reverse_scalar_storage) r.flags |= madc::dis::DF_REVERSE_SCALAR;
 	if (sdd->has_anon_aggregate)     r.flags |= madc::dis::DF_HAS_ANON_AGG;
-	// v24 TU-root origin: the parse-time write-through runs at the aggregate's
-	// COMPLETION, where _parse_file IS the defining file (an instantiation
-	// product's cloned tokens carry the pattern header's file, so products
-	// classify include-origin). A RE-record (the freeze-time refresh, the
-	// struct->class promotion — both tid-keyed) PRESERVES the first stamp:
-	// _parse_file is stale by then.
-	{
+	// Known definition provenance is intrinsic to the aggregate. Unknown is
+	// retained for legacy/opaque paths and preserves the previous record before
+	// falling back to the ambient parser position.
+	if (sdd->definition_origin ==
+	    AggregateDefinitionOrigin::TranslationUnitRoot)
+		r.flags |= madc::dis::DF_TU_ROOT_ORIGIN;
+	else if (sdd->definition_origin == AggregateDefinitionOrigin::Unknown) {
 		madc::dis::defrec old;
 		if (forest_arena.get_def_at(tid, old) && old.kind != madc::dis::DK_NONE)
 			r.flags |= old.flags & madc::dis::DF_TU_ROOT_ORIGIN;
@@ -2045,7 +2045,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	    const std::vector<TokenBase *> &body,
 	    const std::vector<TokenBase *> &constraint,
 	    const std::vector<std::vector<TokenBase *> > &spec,
-	    Program::ClassPatternId pattern_id,
+	    const Program::ClassPattern *pattern,
 	    Program::ClassParseReason pattern_reason) {
 	cir_forest_template_record r;
 	memset(&r, 0, sizeof(r));
@@ -2101,8 +2101,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		first = false;
 	    }
 	}
-	if (const Program::ClassPattern *pattern =
-		prog->class_pattern_arena.get(pattern_id)) {
+	if (pattern) {
 	    std::vector<uint32_t> words = pattern_words_of(*pattern);
 	    r.pattern_begin = (uint32_t)f.template_payload.size();
 	    r.pattern_words = (uint32_t)words.size();
@@ -2124,7 +2123,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 | (td.is_partial_specialization ? CIR_TMPLF_IS_PARTIAL_SPEC : 0),
 		 td.typeparams, td.typeparam_is_type, td.typeparam_is_pack,
 		 td.typeparam_defaults, td.body, td.constraint, td.spec_pattern,
-		 td.class_pattern_id, td.class_pattern_reason);
+		 prog->materialize_class_pattern(td), td.class_pattern_reason);
 	return false;
     });
     prog->partial_spec_map.for_each([&](const char *key, std::vector<Program::TemplateDef> &v) {
@@ -2135,7 +2134,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 | (td.is_partial_specialization ? CIR_TMPLF_IS_PARTIAL_SPEC : 0),
 		 td.typeparams, td.typeparam_is_type, td.typeparam_is_pack,
 		 td.typeparam_defaults, td.body, td.constraint, td.spec_pattern,
-		 td.class_pattern_id, td.class_pattern_reason);
+		 prog->materialize_class_pattern(td), td.class_pattern_reason);
 	return false;
     });
     prog->template_alias_map.for_each([&](const char *key, std::vector<Program::TemplateAliasDef> &v) {
@@ -2144,7 +2143,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 std::string(), ad.owner_class,
 		 ad.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0,
 		 ad.typeparams, ad.typeparam_is_type, ad.typeparam_is_pack,
-		 ad.typeparam_defaults, ad.target, no_toks, no_multi, 0,
+		 ad.typeparam_defaults, ad.target, no_toks, no_multi, NULL,
 		 Program::ClassParseReason::None);
 	return false;
     });
@@ -2154,7 +2153,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
-		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, 0,
+		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, NULL,
 		 Program::ClassParseReason::None);
 	return false;
     });
@@ -2164,7 +2163,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
-		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, 0,
+		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, NULL,
 		 Program::ClassParseReason::None);
 	return false;
     });
@@ -2172,7 +2171,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	emit(CIR_TMPLK_VAR, key, std::string(), vd.defining_namespace,
 	     std::string(), NULL, 0,
 	     vd.typeparams, no_bools, vd.typeparam_is_pack,
-	     no_multi, vd.init, no_toks, no_multi, 0,
+	     no_multi, vd.init, no_toks, no_multi, NULL,
 	     Program::ClassParseReason::None);
 	return false;
     });
@@ -2181,7 +2180,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	emit(CIR_TMPLK_CONCEPT, ci->first.c_str(), std::string(),
 	     ci->second.defining_namespace, std::string(), NULL, 0,
 	     ci->second.typeparams, no_bools, no_bools,
-	     no_multi, no_toks, ci->second.constraint, no_multi, 0,
+	     no_multi, no_toks, ci->second.constraint, no_multi, NULL,
 	     Program::ClassParseReason::None);
 
     // v21: body-bearing MEMBER function templates — the pattern state
@@ -2208,7 +2207,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	     instance ? CIR_TMPLF_INSTANCE_METHOD : 0,
 	     fd->template_param_names, fd->template_param_is_type,
 	     fd->template_param_is_pack, no_multi,
-	     fd->member_template_decl, no_toks, no_multi, 0,
+	     fd->member_template_decl, no_toks, no_multi, NULL,
 	     Program::ClassParseReason::None);
     }
 

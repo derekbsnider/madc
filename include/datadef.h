@@ -27,6 +27,9 @@ extern thread_local bool madc_verbose;
 // JIT/codegen optimization level (0-3), set by the `-O<n>` CLI flag. Drives
 // both MIR_gen_set_optimize_level and c2mir's compile optimize_level. Default 1.
 extern thread_local int madc_opt_level;
+// True only while the production parser is building an isolated class pattern.
+// DataDefs born in that scope retain speculative provenance after rollback.
+extern thread_local bool madc_class_pattern_capture_active;
 
 class TokenBase;
 
@@ -174,8 +177,36 @@ public:
     // lazy-stamped into the active project table by madc_type_id_for()
     // (Program::type_id_for binds its own table and delegates).
     uint32_t	 type_id;
-    DataDef() { size = 0; _type = 0; type_id = 0; canonical_swept = false; }
-    DataDef(std::string n, size_t s, DataType d) { name = n; size = s; _type = (uint32_t)d; type_id = 0; canonical_swept = false; }
+    // Intrinsic provenance for temporary semantic objects born while an
+    // isolated class-pattern production parse is active.
+    bool	 speculative_class_capture;
+    DataDef()
+	: _type(0), name(), size(0), canonical_cpp_spelling_(),
+	  canonical_swept(false), type_id(0),
+	  speculative_class_capture(madc_class_pattern_capture_active) {}
+    DataDef(std::string n, size_t s, DataType d)
+	: _type((uint32_t)d), name(n), size(s), canonical_cpp_spelling_(),
+	  canonical_swept(false), type_id(0),
+	  speculative_class_capture(madc_class_pattern_capture_active) {}
+    DataDef(const DataDef &other)
+	: _type(other._type), name(other.name), size(other.size),
+	  canonical_cpp_spelling_(other.canonical_cpp_spelling_),
+	  canonical_swept(other.canonical_swept), type_id(other.type_id),
+	  speculative_class_capture(other.speculative_class_capture
+	      || madc_class_pattern_capture_active) {}
+    DataDef &operator=(const DataDef &other)
+    {
+	if ( this != &other )
+	{
+	    _type = other._type;
+	    name = other.name;
+	    size = other.size;
+	    canonical_cpp_spelling_ = other.canonical_cpp_spelling_;
+	    canonical_swept = other.canonical_swept;
+	    type_id = other.type_id;
+	}
+	return *this;
+    }
     virtual ~DataDef() {}
     virtual bool is_compatible(DataDef &d)
     {
@@ -362,6 +393,13 @@ struct memberpair_t {
 class Variable; // forward dec
 class DataDefCLASS; // forward dec (member_vbase maps a member index to its virtual base)
 
+enum class AggregateDefinitionOrigin : uint8_t
+{
+    Unknown,
+    Included,
+    TranslationUnitRoot
+};
+
 class DataDefSTRUCT: public DataDef
 {
 public:
@@ -430,6 +468,7 @@ public:
 				// being a real, emittable, referenceable C tag.
     bool reverse_scalar_storage;
     bool bitfield_active;
+    AggregateDefinitionOrigin definition_origin;
     size_t bitfield_unit_offset;
     size_t bitfield_unit_size;
     size_t bitfield_next_bit;
@@ -458,12 +497,14 @@ public:
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
 	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), tag_explicit_align(0), union_layout(false),
 	  is_complete(false), has_anon_aggregate(false),
-	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
+	  reverse_scalar_storage(false), bitfield_active(false),
+	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
 	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), max_align(1), tag_explicit_align(0),
 	  union_layout(false), is_complete(false), has_anon_aggregate(false),
-	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
+	  reverse_scalar_storage(false), bitfield_active(false),
+	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0)
     {
 	DBG(std::cout << "DataDefSTRUCT(" << n << ") constructor" << std::endl);

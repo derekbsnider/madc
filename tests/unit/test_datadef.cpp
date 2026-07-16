@@ -88,6 +88,55 @@ TEST_SUITE("varflag_t") {
 }
 
 TEST_SUITE("DataDef type queries") {
+    TEST_CASE("class-pattern provenance follows object birth and copy") {
+	struct CaptureFlagRestore {
+	    bool saved;
+	    CaptureFlagRestore() : saved(madc_class_pattern_capture_active) {}
+	    ~CaptureFlagRestore() { madc_class_pattern_capture_active = saved; }
+	} restore;
+	madc_class_pattern_capture_active = false;
+	DataDef stable("stable", 4, DataType::dtINT32);
+	stable.set_canonical_spelling("ns::stable");
+	stable.canonical_swept = true;
+	stable.type_id = 77;
+	DataDef stable_copy(stable);
+	CHECK_FALSE(stable.speculative_class_capture);
+	CHECK_FALSE(stable_copy.speculative_class_capture);
+
+	madc_class_pattern_capture_active = true;
+	DataDef speculative("speculative", 4, DataType::dtINT32);
+	DataDef copied_stable(stable);
+	CHECK(speculative.speculative_class_capture);
+	CHECK(copied_stable.speculative_class_capture);
+	CHECK(copied_stable.name == stable.name);
+	CHECK(copied_stable.size == stable.size);
+	CHECK(copied_stable.type() == stable.type());
+	CHECK(copied_stable.canonical_cpp_spelling() == "ns::stable");
+	CHECK(copied_stable.canonical_swept);
+	CHECK(copied_stable.type_id == 77);
+
+	madc_class_pattern_capture_active = false;
+	DataDef copied_speculative(speculative);
+	CHECK(copied_speculative.speculative_class_capture);
+	stable = speculative;
+	CHECK_FALSE(stable.speculative_class_capture);
+	CHECK(stable.name == "speculative");
+	CHECK(stable.size == speculative.size);
+	CHECK(stable.type() == speculative.type());
+	speculative = stable;
+	CHECK(speculative.speculative_class_capture);
+
+	DataDefCLASS stable_class("StableClass", 0, DataType::dtRESERVED);
+	madc_class_pattern_capture_active = true;
+	DataDefCLASS speculative_class(stable_class);
+	CHECK(speculative_class.speculative_class_capture);
+	madc_class_pattern_capture_active = false;
+	DataDefCLASS stable_destination("Destination", 0,
+	    DataType::dtRESERVED);
+	stable_destination = speculative_class;
+	CHECK_FALSE(stable_destination.speculative_class_capture);
+    }
+
     TEST_CASE("ddINT is numeric and integer") {
         CHECK(ddINT.is_numeric());
         CHECK(ddINT.is_integer());
