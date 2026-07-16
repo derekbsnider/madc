@@ -2451,12 +2451,10 @@ public:
     ClassRegistrationJournal *active_class_registration_journal = NULL;
     void set_class_type_alias(DataDefCLASS *owner, const std::string &name,
 			      DataDef *type);
-    // Templates are keyed by BARE name, but a same-named class template may be
-    // declared in more than one namespace (e.g. std::char_traits and
-    // __gnu_cxx::char_traits). Each bare name therefore maps to a vector of
-    // per-namespace variants, disambiguated by TemplateDef::defining_namespace.
-    // All selection goes through find_template() so the no-collision case keeps
-    // exactly the old single-entry behavior.
+    // Namespace/global templates are keyed by bare name; member templates are
+    // partitioned by their concrete owner. Same-key namespace variants remain
+    // disambiguated by TemplateDef::defining_namespace. All selection goes
+    // through find_template().
     madc::dis::intern_keyed_map<std::vector<TemplateDef>> template_map; // name -> variants (keyed via template_name_pool)
     // Select a template variant. owner_hint scopes nested member templates
     // (e.g. allocator<T>::rebind<U>); NULL selects namespace/global templates.
@@ -2472,9 +2470,10 @@ public:
     // prior one) or append a new variant. only_if_absent => leave an existing
     // same-namespace variant untouched (first-wins, for bodyless forward decls).
     void register_template(const TemplateDef &td, bool only_if_absent);
-    // Partial specializations (template<class T> struct X<T*> {...}), keyed by bare
-    // class name. Kept OUT of template_map (its same-namespace merge would clobber
-    // the primary). Selected at instantiation by most-specialized pattern unification.
+    // Partial specializations (template<class T> struct X<T*> {...}), keyed by
+    // bare class name or concrete owner + name for member templates. Kept OUT
+    // of template_map (its same-namespace merge would clobber the primary).
+    // Selected at instantiation by most-specialized pattern unification.
     madc::dis::intern_keyed_map<std::vector<TemplateDef>> partial_spec_map; // keyed via template_name_pool
     // Choose the most-specialized partial spec of `name` whose pattern unifies with
     // the concrete arguments. Type slots deduce into out_subst; non-type slots must
@@ -2487,7 +2486,8 @@ public:
 	    std::map<std::string, TokenDataType *> &out_subst,
 	    std::map<std::string, std::string> &out_template_subst,
 	    std::map<std::string, std::vector<std::string> > &out_pack_subst,
-	    std::map<std::string, std::vector<TokenBase *> > &out_nontype_subst);
+	    std::map<std::string, std::vector<TokenBase *> > &out_nontype_subst,
+	    DataDefCLASS *owner_hint = NULL);
     // Unify a nested template-id pattern arg (e.g. `allocator<_Tp>`) against a
     // concrete type spelling (e.g. `std::allocator<char>`), deducing the spec's
     // type params. Fallback used by match_partial_specialization when the flat

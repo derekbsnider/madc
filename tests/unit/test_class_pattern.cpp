@@ -726,7 +726,7 @@ TEST_CASE("B3 capture indexes nested templates by their parsed owner")
 {
 	const char *source =
 		"template<class T> struct PatternNested {\n"
-		"    template<class U> struct Rebind { U value; };\n"
+		"    template<class U> class Rebind { public: U value; };\n"
 		"    template<class U> using Pointer = U *;\n"
 		"    T value;\n"
 		"};\n";
@@ -757,6 +757,48 @@ TEST_CASE("B3 capture indexes nested templates by their parsed owner")
 	}
 	CHECK(saw_class);
 	CHECK(saw_alias);
+}
+
+TEST_CASE("R1 nested template registrations stay owner-scoped")
+{
+	const char *source =
+		"template<class T> struct R1Outer {\n"
+		"    template<class U> struct Rebind { U value; };\n"
+		"    template<class U> using Pointer = U *;\n"
+		"    T value;\n"
+		"};\n"
+		"R1Outer<int32_t> first;\n"
+		"R1Outer<int64_t> second;\n";
+	Program program;
+	TokenProgram *tokens = program.tokenize_buffer(
+		source, "<class-pattern-owner-registry>");
+	REQUIRE(tokens != NULL);
+	REQUIRE(program.parse(tokens));
+
+	DataDefCLASS *first = find_canonical_class(
+		program, "R1Outer<int32_t>");
+	DataDefCLASS *second = find_canonical_class(
+		program, "R1Outer<int64_t>");
+	REQUIRE(first != NULL);
+	REQUIRE(second != NULL);
+	Program::TemplateDef *first_rebind =
+		program.find_template("Rebind", std::string(), first);
+	Program::TemplateDef *second_rebind =
+		program.find_template("Rebind", std::string(), second);
+	Program::TemplateAliasDef *first_pointer =
+		program.find_template_alias("Pointer", std::string(), first);
+	Program::TemplateAliasDef *second_pointer =
+		program.find_template_alias("Pointer", std::string(), second);
+	const std::vector<Program::TemplateDef> *bare_rebind =
+		program.template_map.find_readonly("Rebind");
+	const std::vector<Program::TemplateAliasDef> *bare_pointer =
+		program.template_alias_map.find_readonly("Pointer");
+	CHECK(first_rebind != NULL);
+	CHECK(second_rebind != NULL);
+	CHECK(first_pointer != NULL);
+	CHECK(second_pointer != NULL);
+	CHECK(bare_rebind == NULL);
+	CHECK(bare_pointer == NULL);
 }
 
 TEST_CASE("B3 dependent non-type template arguments stay on the fallback lane")

@@ -2307,13 +2307,8 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 		     live_owner->type_aliases.begin();
 		     it != live_owner->type_aliases.end(); ++it)
 			CHECK(it->first.find("__madc_class_pattern_") == std::string::npos);
-		std::vector<Program::TemplateDef> *nested_defs =
-			progA->template_map.find("Inner");
-		REQUIRE(nested_defs != nullptr);
-		Program::TemplateDef *live_nested = nullptr;
-		for (size_t i = 0; i < nested_defs->size(); ++i)
-			if ((*nested_defs)[i].owner_class == live_owner)
-				live_nested = &(*nested_defs)[i];
+		Program::TemplateDef *live_nested = progA->find_template(
+			"Inner", std::string(), live_owner);
 		REQUIRE(live_nested != nullptr);
 		REQUIRE(live_nested->class_pattern_id != 0);
 		const Program::ClassPattern *live_nested_pattern =
@@ -2458,14 +2453,14 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 	CHECK(td->typeparam_defaults[0].empty());
 	CHECK(!td->typeparam_defaults[1].empty());
 	CHECK(progB->template_with_body("W2Box") != nullptr);
-	std::vector<Program::TemplateDef> *restored_nested_defs =
-		progB->template_map.find("Inner");
-	REQUIRE(restored_nested_defs != nullptr);
-	Program::TemplateDef *restored_nested = nullptr;
-	for (size_t i = 0; i < restored_nested_defs->size(); ++i)
-		if ((*restored_nested_defs)[i].owner_class
-		    && (*restored_nested_defs)[i].owner_class->name == "W2Owner")
-			restored_nested = &(*restored_nested_defs)[i];
+	datadef_map_citer restored_owner_it =
+		progB->struct_map.find("W2Owner");
+	REQUIRE(restored_owner_it != progB->struct_map.end());
+	DataDefCLASS *restored_owner = dynamic_cast<DataDefCLASS *>(
+		restored_owner_it->second);
+	REQUIRE(restored_owner != nullptr);
+	Program::TemplateDef *restored_nested = progB->find_template(
+		"Inner", std::string(), restored_owner);
 	REQUIRE(restored_nested != nullptr);
 	CHECK(restored_nested->class_pattern_id == 0);
 	const Program::ClassPattern *restored_nested_pattern =
