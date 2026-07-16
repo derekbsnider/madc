@@ -1,8 +1,13 @@
 # R4 findings — "member-template overload replay" root-cause investigation
 
-**Status: FIX STACK BUILT, VALIDATION IN FLIGHT (2026-07-16, Claude).**
-Working tree = fence lifts + diagnostics + THREE fixes. NOT validated; do not
-merge.
+**Status: VALIDATED GREEN (2026-07-16, Claude) — R4 COMPLETE.**
+Both fences DELETED; full matrix green at the fix stack (default-flags build):
+fulltest **697/0/0/16**; bind gate **18/18 incl. subbind** (owner's bar, on an
+UNFENCED pack); tsubst ratchet + equivalence oracle + selfexe gate GREEN;
+packed suite **697/0/0/16** with MADCSNAP blob; binary **10,381,208** bytes
+(−2,096 vs R3's 10,383,304 — fence deletion outweighs fix additions; still
++49,600 vs the 10.33MB reference, R5 sign-off item). Owner's-bar spot check:
+unfenced freeze+bind of testsubscript == live output byte-identical.
 
 ## RESUME HERE (post-compaction rehydration)
 

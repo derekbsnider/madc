@@ -28,3 +28,4 @@ date	commit	live_s	bound_s	live_derives	bound_derives	load1	note
 2026-07-16	2acfaf60	2.446	0.539	217	184	1.44	R1+R2 landed A/B; live pattern opt-in; bound calls 3550->3542, wall net-negative
 2026-07-16	19b8e2b0	2.591	0.664	217	184	2.18	R1 rework b2b2cf5e: owner-id registry + owner-granular journal; live pattern opt-in
 2026-07-16	19b8e2b0	2.366	0.633	217	184	2.92	R3 resolver memo landed on owner-id registry; 38 hit/134 miss live; live pattern opt-in
+2026-07-16	0f979fb8	2.257	0.613	217	184	1.00	R4 fences lifted: registered-identity token parity, base-class deduction; pattern-lane pack
