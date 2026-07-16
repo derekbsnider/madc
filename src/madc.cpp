@@ -710,6 +710,11 @@ int main(int argc, char **argv)
     }
 
     prog->class_parse_observability = show_stats;
+    {
+	const char *live_capture = getenv("MADC_CLASS_PATTERN_LIVE");
+	if ( live_capture && *live_capture && strcmp(live_capture, "0") != 0 )
+	    prog->class_pattern_live_capture = true;
+    }
 
     if ( show_help )
     {

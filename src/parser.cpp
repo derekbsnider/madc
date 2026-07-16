@@ -116,6 +116,8 @@ const char *Program::class_parse_reason_name(ClassParseReason reason)
     case ClassParseReason::UnsupportedOutOfLineNested: return "unsupported-outofline-nested";
     case ClassParseReason::RequiresEagerBodyParse: return "requires-eager-body-parse";
     case ClassParseReason::RegistrationEscape: return "registration-escape";
+    case ClassParseReason::UnsupportedMemberTemplateOverloads:
+	return "member-template-overloads";
     }
     return "unknown";
 }
@@ -2782,7 +2784,22 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	const ClassTypePattern &type = pattern.types[i];
 	hash.add_u64((uint64_t)type.kind);
 	hash.add_u64(type.flags);
-	hash.add_u64(type.concrete_type_id);
+	// Fingerprint the concrete type by its process-stable canonical
+	// spelling, never by the raw id: runtime type ids are process-local
+	// (the producer's id space), so a correctly-swizzled restore would
+	// always mismatch an id-based hash. Presence still hashes (id==0 vs
+	// resolved is a semantic difference).
+	if ( type.concrete_type_id )
+	{
+	    DataDef *concrete = madc_type_from_id(type.concrete_type_id);
+	    if ( concrete )
+		hash.add_string(concrete->canonical_cpp_spelling().empty()
+		    ? concrete->name : concrete->canonical_cpp_spelling());
+	    else
+		hash.add_u64(1);	// resolvable-at-capture marker
+	}
+	else
+	    hash.add_u64(0);
 	hash.add_u64(type.operand);
 	hash.add_u64(type.secondary);
 	hash.add_u64(type.template_param_index);
@@ -4409,6 +4426,20 @@ static std::string basic_class_compact_spelling(const std::string &spelling)
     return compact;
 }
 
+static Program::ClassParseReason class_pattern_eligibility_note(
+	const BasicClassPatternBinding &binding,
+	Program::ClassParseReason reason, int line)
+{
+    static const char *cpp_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
+    if ( cpp_probe && reason != Program::ClassParseReason::None
+      && (binding.definition.class_name.find(cpp_probe) != std::string::npos
+	   || !strcmp(cpp_probe, "*")) )
+	std::cerr << "[class-pattern-probe] eligibility REJECT "
+	    << binding.definition.class_name << " reason=" << (unsigned)reason
+	    << " site=parser.cpp:" << line << std::endl;
+    return reason;
+}
+
 static Program::ClassParseReason basic_class_pattern_eligibility(
 	Program &pgm, const BasicClassPatternBinding &binding,
 	const std::map<std::string, std::vector<TokenBase *> > &token_subst,
@@ -4420,52 +4451,63 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
     if ( binding.pattern.capture_reason != Reason::None )
 	return binding.pattern.capture_reason;
     if ( binding.dependent_surface )
-	return Reason::UnnormalizableType;
+	return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
     if ( binding.definition.has_non_type_params || !token_subst.empty() )
-	return Reason::DependentValueExpression;
+	return class_pattern_eligibility_note(binding, Reason::DependentValueExpression, __builtin_LINE());
     if ( !pack_subst.empty() )
-	return Reason::UnsupportedDeclKind;
+	return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
     for ( size_t i = 0; i < binding.definition.typeparams.size(); ++i )
     {
 	if ( i < binding.definition.typeparam_is_type.size()
 	  && !binding.definition.typeparam_is_type[i] )
-	    return Reason::DependentValueExpression;
+	    return class_pattern_eligibility_note(binding, Reason::DependentValueExpression, __builtin_LINE());
 	if ( i < binding.definition.typeparam_is_pack.size()
 	  && binding.definition.typeparam_is_pack[i] )
-	    return Reason::UnsupportedDeclKind;
+	    return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
     }
     if ( binding.pattern.nodes.empty() )
-	return Reason::UnsupportedDeclKind;
+	return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
     if ( binding.pattern.nodes[0].kind != Program::ClassAggregateKind::Class
       && binding.pattern.nodes[0].kind != Program::ClassAggregateKind::Struct )
-	return Reason::UnsupportedDeclKind;
+	return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 
     for ( size_t i = 0; i < binding.pattern.nodes.size(); ++i )
     {
 	const Program::ClassAggregatePatternNode &node = binding.pattern.nodes[i];
 	if ( node.local_id != i || (i == 0 && node.parent_id != 0)
 	  || (i > 0 && (node.parent_id >= i || node.source_name.empty())) )
-	    return Reason::UnsupportedNestedDefinition;
+	    return class_pattern_eligibility_note(binding, Reason::UnsupportedNestedDefinition, __builtin_LINE());
 	if ( node.kind == Program::ClassAggregateKind::Enum )
-	    return Reason::UnsupportedNestedDefinition;
+	    return class_pattern_eligibility_note(binding, Reason::UnsupportedNestedDefinition, __builtin_LINE());
 	if ( !node.static_members.empty() || !node.static_values.empty() )
-	    return Reason::UnsupportedDeclKind;
+	    return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 	if ( !node.friend_functions.empty() || !node.friend_classes.empty() )
-	    return Reason::UnsupportedFriendDefinition;
+	    return class_pattern_eligibility_note(binding, Reason::UnsupportedFriendDefinition, __builtin_LINE());
 	for ( size_t b = 0; b < node.bases.size(); ++b )
 	    if ( !node.bases[b].type
 	      || node.bases[b].type >= binding.pattern.types.size()
 	      || node.bases[b].is_virtual )
-		return Reason::UnsupportedDeclKind;
+		return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 	for ( size_t t = 0; t < node.nested_templates.size(); ++t )
 	{
 	    const Program::ClassNestedTemplatePattern &nested =
 		node.nested_templates[t];
 	    if ( nested.class_name.empty() || nested.is_partial_specialization )
-		return Reason::UnsupportedDeclKind;
+		return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 	    if ( nested.typeparams.size() != nested.typeparam_is_type.size()
 	      || nested.typeparams.size() != nested.typeparam_is_pack.size() )
-		return Reason::UnsupportedDeclKind;
+		return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
+	    // Same-name member-template OVERLOADS (vector::_M_data_ptr): the
+	    // nested-recipe replay does not yet reproduce live overload
+	    // selection, so an instantiated body can come from the wrong
+	    // overload (a drained-body c2mir check error — the subbind gate).
+	    // Fence the whole pattern until the replay ranks overloads.
+	    for ( size_t u = t + 1; u < node.nested_templates.size(); ++u )
+		if ( node.nested_templates[u].kind == nested.kind
+		  && node.nested_templates[u].class_name == nested.class_name )
+		    return class_pattern_eligibility_note(binding,
+			Reason::UnsupportedMemberTemplateOverloads,
+			__builtin_LINE());
 	}
     }
 
@@ -4479,12 +4521,25 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 	      || !pgm.type_from_id(type.concrete_type_id)
 	      || datadef_has_unresolved_dependent_surface(
 		  pgm.type_from_id(type.concrete_type_id)) )
-		return Reason::UnnormalizableType;
+	    {
+		static const char *cpp_probe =
+		    ::getenv("MADC_CLASS_PATTERN_PROBE");
+		if ( cpp_probe
+		  && (binding.definition.class_name.find(cpp_probe)
+			!= std::string::npos || !strcmp(cpp_probe, "*")) )
+		    std::cerr << "[class-pattern-probe]   concrete type[" << i
+			<< "] name='" << type.name
+			<< "' id=" << type.concrete_type_id
+			<< " resolved=" << (type.concrete_type_id
+			    && pgm.type_from_id(type.concrete_type_id) ? 1 : 0)
+			<< std::endl;
+		return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
+	    }
 	    break;
 	case Program::ClassTypePatternKind::TemplateParam:
 	    if ( type.template_param_index >=
 		 binding.definition.typeparams.size() )
-		return Reason::UnnormalizableType;
+		return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
 	    {
 		const std::string &name = binding.definition.typeparams[
 		    type.template_param_index];
@@ -4493,7 +4548,7 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 		if ( found == binding.type_subst.end() || !found->second
 		  || datadef_has_unresolved_dependent_surface(
 		      &found->second->definition) )
-		    return Reason::UnnormalizableType;
+		    return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
 	    }
 	    break;
 	case Program::ClassTypePatternKind::SelfType:
@@ -4502,47 +4557,47 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 	case Program::ClassTypePatternKind::Reference:
 	case Program::ClassTypePatternKind::ConstType:
 	    if ( !type.operand || type.operand >= binding.pattern.types.size() )
-		return Reason::UnnormalizableType;
+		return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
 	    break;
 	case Program::ClassTypePatternKind::CArray:
 	    if ( !type.operand || type.operand >= binding.pattern.types.size()
 	      || type.dimensions.empty() )
-		return Reason::UnnormalizableType;
+		return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
 	    for ( size_t d = 0; d < type.dimensions.size(); ++d )
 		if ( !type.dimensions[d] || type.dimensions[d] > SIZE_MAX )
-		    return Reason::DependentValueExpression;
+		    return class_pattern_eligibility_note(binding, Reason::DependentValueExpression, __builtin_LINE());
 	    break;
 	case Program::ClassTypePatternKind::NestedType:
 	    if ( !type.nested_node_id
 	      || type.nested_node_id >= binding.pattern.nodes.size() )
-		return Reason::UnsupportedNestedDefinition;
+		return class_pattern_eligibility_note(binding, Reason::UnsupportedNestedDefinition, __builtin_LINE());
 	    break;
 	case Program::ClassTypePatternKind::TemplateId:
 	    if ( type.name.empty() )
-		return Reason::UnnormalizableType;
+		return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
 	    for ( size_t c = 0; c < type.name.size(); ++c )
 		if ( !isalnum((unsigned char)type.name[c])
 		  && type.name[c] != '_' && type.name[c] != ':' )
-		    return Reason::DependentValueExpression;
+		    return class_pattern_eligibility_note(binding, Reason::DependentValueExpression, __builtin_LINE());
 	    for ( size_t a = 0; a < type.arguments.size(); ++a )
 		if ( !type.arguments[a]
 		  || type.arguments[a] >= binding.pattern.types.size() )
-		    return Reason::UnnormalizableType;
+		    return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
 	    break;
 	case Program::ClassTypePatternKind::DependentMember:
 	    if ( !type.operand || type.operand >= binding.pattern.types.size()
 	      || type.name.empty() || (type.flags & ~1u) )
-		return Reason::UnnormalizableType;
+		return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
 	    if ( !(type.flags & 1u) && !type.arguments.empty() )
-		return Reason::UnnormalizableType;
+		return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
 	    for ( size_t a = 0; a < type.arguments.size(); ++a )
 		if ( !type.arguments[a]
 		  || type.arguments[a] >= binding.pattern.types.size() )
-		    return Reason::UnnormalizableType;
+		    return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
 	    break;
 	case Program::ClassTypePatternKind::FunctionPointer:
 	case Program::ClassTypePatternKind::PackExpansion:
-	    return Reason::UnsupportedDeclKind;
+	    return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 	}
     }
 
@@ -4563,47 +4618,47 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 	    case Program::ClassDeclKind::StaticAssert:
 		break;
 	    case Program::ClassDeclKind::NestedEnum:
-		return Reason::UnsupportedNestedDefinition;
+		return class_pattern_eligibility_note(binding, Reason::UnsupportedNestedDefinition, __builtin_LINE());
 	    case Program::ClassDeclKind::FriendType:
 	    case Program::ClassDeclKind::FriendFunction:
-		return Reason::UnsupportedFriendDefinition;
+		return class_pattern_eligibility_note(binding, Reason::UnsupportedFriendDefinition, __builtin_LINE());
 	    case Program::ClassDeclKind::DefaultedComparison:
-		return Reason::UnsupportedDefaultedComparison;
+		return class_pattern_eligibility_note(binding, Reason::UnsupportedDefaultedComparison, __builtin_LINE());
 	    case Program::ClassDeclKind::BitField:
 	    case Program::ClassDeclKind::AnonymousAggregate:
 	    case Program::ClassDeclKind::StaticDataMember:
-		return Reason::UnsupportedDeclKind;
+		return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 	    }
 	}
 	for ( size_t i = 0; i < node.aliases.size(); ++i )
 	    if ( node.aliases[i].name.empty() || !node.aliases[i].type
 	      || node.aliases[i].type >= binding.pattern.types.size() )
-		return Reason::UnnormalizableType;
+		return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
 	for ( size_t i = 0; i < node.members.size(); ++i )
 	{
 	    const Program::ClassMemberPattern &member = node.members[i];
 	    if ( !member.type || member.type >= binding.pattern.types.size() )
-		return Reason::UnnormalizableType;
+		return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
 	    if ( member.is_bitfield || member.is_anonymous )
-		return Reason::UnsupportedDeclKind;
+		return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 	    if ( member.is_array )
 	    {
 		if ( member.dimensions.empty() || !member.count
 		  || member.count > SIZE_MAX )
-		    return Reason::DependentValueExpression;
+		    return class_pattern_eligibility_note(binding, Reason::DependentValueExpression, __builtin_LINE());
 		uint64_t folded = 1;
 		for ( size_t d = 0; d < member.dimensions.size(); ++d )
 		{
 		    uint64_t dim = member.dimensions[d];
 		    if ( !dim || folded > UINT64_MAX / dim )
-			return Reason::DependentValueExpression;
+			return class_pattern_eligibility_note(binding, Reason::DependentValueExpression, __builtin_LINE());
 		    folded *= dim;
 		}
 		if ( folded != member.count )
-		    return Reason::DependentValueExpression;
+		    return class_pattern_eligibility_note(binding, Reason::DependentValueExpression, __builtin_LINE());
 	    }
 	    else if ( member.count != 1 || !member.dimensions.empty() )
-		return Reason::UnsupportedDeclKind;
+		return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 	}
 
 	for ( size_t i = 0; i < node.methods.size(); ++i )
@@ -4614,11 +4669,11 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 	      || !method.return_type
 	      || method.return_type >= binding.pattern.types.size()
 	      || (method.flags & ~(vfSTATIC | vfPRIVATE | vfPROTECTED)) )
-		return Reason::UnsupportedDeclKind;
+		return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 	    if ( !method.declaration_only && !method.defaulted_or_deleted
 	      && method.body_tokens.empty() && method.definition_tokens.empty()
 	      && !method.is_member_template )
-		return Reason::RequiresEagerBodyParse;
+		return class_pattern_eligibility_note(binding, Reason::RequiresEagerBodyParse, __builtin_LINE());
 	    TokenBase *body_origin = NULL;
 	    const std::vector<TokenBase *> *body_runs[2] = {
 		&method.body_tokens, &method.definition_tokens
@@ -4633,29 +4688,29 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 	    if ( body_origin
 	      && (!body_origin->file
 		  || !pgm.is_system_header_path(body_origin->file)) )
-		return Reason::RequiresEagerBodyParse;
+		return class_pattern_eligibility_note(binding, Reason::RequiresEagerBodyParse, __builtin_LINE());
 	    bool is_static = (method.flags & vfSTATIC) != 0;
 	    if ( !is_static && method.parameters.empty() )
-		return Reason::UnsupportedDeclKind;
+		return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 	    if ( method.is_member_template
 	      && !method.template_param_is_type.empty()
 	      && method.template_param_names.size()
 		 != method.template_param_is_type.size() )
-		return Reason::UnsupportedDeclKind;
+		return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 	    for ( size_t p = 0; p < method.parameters.size(); ++p )
 	    {
 		const Program::ClassMethodParamPattern &param =
 		    method.parameters[p];
 		if ( !param.type || param.type >= binding.pattern.types.size() )
-		    return Reason::UnnormalizableType;
+		    return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
 		if ( !is_static && p == 0 )
 		{
 		    if ( !param.cpp_spelling.empty() )
-			return Reason::UnsupportedDeclKind;
+			return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 		    continue;
 		}
 		if ( !method.is_member_template && param.cpp_spelling.empty() )
-		    return Reason::UnsupportedDeclKind;
+		    return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 		if ( !method.is_member_template )
 		{
 		    std::vector<bool> active(
@@ -4664,7 +4719,7 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 			pgm, binding, param.type, false, active);
 		    if ( normalized.empty()
 		      || basic_class_compact_spelling(normalized).empty() )
-			return Reason::UnsupportedDeclKind;
+			return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 		}
 	    }
 	}
@@ -4673,8 +4728,8 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
     std::string out_of_line_key = binding.definition.defining_namespace
 	+ "::" + binding.definition.class_name;
     if ( pgm.out_of_line_nested_class_defs.count(out_of_line_key) )
-	return Reason::UnsupportedOutOfLineNested;
-    return Reason::None;
+	return class_pattern_eligibility_note(binding, Reason::UnsupportedOutOfLineNested, __builtin_LINE());
+    return class_pattern_eligibility_note(binding, Reason::None, __builtin_LINE());
 }
 
 static bool basic_class_pattern_direct_template_param(
@@ -4944,6 +4999,14 @@ static void prepare_class_pattern_definition(
     const char *source = basic_class_pattern_source_file(definition);
     if ( pgm.forest_arena_enabled || pgm.forest_is_tu_root_file(source) )
 	pgm.capture_class_pattern(definition);
+    else if ( !definition.body.empty() )
+	// Live header template: capture LAZILY at the first concrete
+	// instantiation (instantiate_template_use), where the parse lane
+	// would pay a full body parse anyway and the environment is the
+	// same one that parse sees. Eager capture here taxed every defined
+	// template whether or not it was ever instantiated (the B3 live
+	// regression); skipping capture entirely killed the live lane.
+	definition.class_pattern_capture_deferred = true;
     else
 	definition.class_pattern_reason =
 	    Program::ClassParseReason::PatternNotCaptured;
@@ -5350,7 +5413,11 @@ static void register_basic_class_pattern_nested_templates(
 	    td.constraint = basic_class_pattern_substitute_tokens(
 		binding, nested.constraint);
 	    td.class_pattern_id = 0;
-	    td.class_pattern_reason = Program::ClassParseReason::PatternNotCaptured;
+	    td.class_pattern_reason = Program::ClassParseReason::None;
+	    td.class_pattern_capture_deferred = !td.body.empty();
+	    if ( td.body.empty() )
+		td.class_pattern_reason =
+		    Program::ClassParseReason::PatternNotCaptured;
 	    if ( td.is_partial_specialization )
 	    {
 		pgm.partial_spec_map[td.class_name].push_back(td);
@@ -6112,6 +6179,15 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    ++_class_inst_cache;
 	    return use_site_type_token(cached, tb);
 	}
+	if ( class_pattern_inst_in_progress.count(registered_mangled) )
+	{
+	    // This specialization is being pattern-instantiated up-stack; its
+	    // shell is registered but incomplete. Returning the shell is the
+	    // parse lane's self-reference semantics; re-instantiating here
+	    // recurses forever through cyclic dependency webs.
+	    ++_class_inst_cache;
+	    return use_site_type_token(cached, tb);
+	}
     }
     // A variadic template admitted to the real path (template_pack_real_instantiable)
     // but instantiated with a STILL-DEPENDENT arg stays an opaque dependent shell —
@@ -6158,16 +6234,84 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // guard above.
     assert(!class_pattern_capture_in_progress);
 
-    ClassParseReason legacy_reason = td.class_pattern_reason;
-    const ClassPattern *selected_pattern = legacy_reason == ClassParseReason::None
-	? materialize_class_pattern(td) : NULL;
-    if ( !selected_pattern )
-	legacy_reason = legacy_reason == ClassParseReason::None
-	    ? ClassParseReason::PatternNotCaptured : legacy_reason;
     bool force_legacy = force_legacy_class_patterns;
     const char *force_env = ::getenv("MADC_CLASS_PATTERN_FORCE_LEGACY");
     if ( force_env && *force_env && strcmp(force_env, "0") != 0 )
 	force_legacy = true;
+    // A PACK (--freeze / --freeze-append) instantiates through the proven
+    // parse lane: the pack DRAINS every method body — including ones no
+    // program demands — forcing the pattern machinery's whole replay
+    // surface (member-template overload ranks, ctor-init recipes), where it
+    // is not yet body-exact (the subbind gate caught a drained vector body
+    // deriving from the wrong _M_data_ptr overload). Capture still runs and
+    // the patterns serialize; CONSUMERS pattern-instantiate at bind, where
+    // bodies defer through DEFBODY and derive on demand via the normal m&l
+    // fixpoint (verified live==bound byte-identical).
+    if ( pack_recording )
+	force_legacy = true;
+    ClassParseReason legacy_reason = td.class_pattern_reason;
+    const ClassPattern *selected_pattern = legacy_reason == ClassParseReason::None
+	? materialize_class_pattern(td) : NULL;
+    if ( !selected_pattern && legacy_reason == ClassParseReason::None
+	  && td.class_pattern_capture_deferred && !force_legacy
+	  && class_pattern_live_capture
+	  && class_registration_journal_depth == 0 )
+    {
+	// Definition-only pre-filter: eligibility categorically rejects
+	// non-type params, value/pack params, and friend-bearing bodies —
+	// capturing such a template is a guaranteed-wasted parse. Stamp the
+	// same reason eligibility would report and never revisit.
+	ClassParseReason doomed = ClassParseReason::None;
+	if ( td.has_non_type_params )
+	    doomed = ClassParseReason::DependentValueExpression;
+	for ( size_t p = 0; doomed == ClassParseReason::None
+			     && p < td.typeparams.size(); ++p )
+	{
+	    if ( p < td.typeparam_is_type.size() && !td.typeparam_is_type[p] )
+		doomed = ClassParseReason::DependentValueExpression;
+	    else if ( p < td.typeparam_is_pack.size() && td.typeparam_is_pack[p] )
+		doomed = ClassParseReason::UnsupportedDeclKind;
+	}
+	for ( size_t t = 0; doomed == ClassParseReason::None
+			     && t < td.body.size(); ++t )
+	    if ( td.body[t] && td.body[t]->id() == TokenID::tkFRIEND )
+		doomed = ClassParseReason::UnsupportedFriendDefinition;
+	if ( doomed != ClassParseReason::None )
+	{
+	    td.class_pattern_reason = doomed;
+	    td.class_pattern_capture_deferred = false;
+	    writeback_class_pattern_capture(td);
+	    legacy_reason = doomed;
+	}
+	else if ( td.class_pattern_use_count == 0 )
+	    // The first concrete demand stays on the parse lane and just
+	    // arms the counter. Only repeat demand — the pattern lane's
+	    // actual market — justifies the capture parse (a single-use
+	    // template would pay capture + substitution against the parse
+	    // lane's one body parse).
+	    note_class_pattern_use(td);
+	else
+	{
+	    // Lazy live capture on repeat demand: the one-time capture parse
+	    // replaces a body parse PER SPECIALIZATION from here on. Capture
+	    // on the local copy, persist the outcome on the registered
+	    // definition so it runs at most once per template, then
+	    // re-materialize.
+	    // Only at journal depth 0: a capture nested inside a pattern-lane
+	    // instantiation would open a NESTED isolate journal, which does
+	    // not snapshot (only the outermost does) — its rollback could not
+	    // undo the capture parse's registrations.
+	    capture_class_pattern(td);
+	    td.class_pattern_capture_deferred = false;
+	    writeback_class_pattern_capture(td);
+	    legacy_reason = td.class_pattern_reason;
+	    selected_pattern = legacy_reason == ClassParseReason::None
+		? materialize_class_pattern(td) : NULL;
+	}
+    }
+    if ( !selected_pattern )
+	legacy_reason = legacy_reason == ClassParseReason::None
+	    ? ClassParseReason::PatternNotCaptured : legacy_reason;
     if ( selected_pattern && legacy_reason == ClassParseReason::None )
     {
 	BasicClassPatternBinding binding = {
@@ -6179,6 +6323,23 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	if ( legacy_reason == ClassParseReason::None && !force_legacy )
 	{
 	    ++_class_inst_pattern;
+	    {
+		static const char *cpp_probe =
+		    ::getenv("MADC_CLASS_PATTERN_PROBE");
+		if ( cpp_probe && (registered_mangled.find(cpp_probe)
+					!= std::string::npos
+				    || !strcmp(cpp_probe, "*")) )
+		    std::cerr << "[class-pattern-probe] pattern-lane: "
+			<< registered_mangled << std::endl;
+	    }
+	    struct InFlightGuard {
+		std::set<std::string> &set;
+		const std::string &key;
+		bool inserted;
+		InFlightGuard(std::set<std::string> &s, const std::string &k)
+		    : set(s), key(k), inserted(s.insert(k).second) {}
+		~InFlightGuard() { if ( inserted ) set.erase(key); }
+	    } in_flight(class_pattern_inst_in_progress, registered_mangled);
 	    NamespaceScope namespace_scope(*this, td.defining_namespace);
 	    return instantiate_basic_class_pattern(*this, binding);
 	}
@@ -14598,12 +14759,14 @@ class ClassPatternPayloadReader
     const uint32_t *cursor;
     const uint32_t *end;
     bool valid;
+    int fail_line = 0;
+    void invalidate(int line) { if ( valid ) { invalidate(__LINE__); fail_line = line; } }
 
     uint32_t word()
     {
 	if ( cursor == end )
 	{
-	    valid = false;
+	    invalidate(__LINE__);
 	    return 0;
 	}
 	return *cursor++;
@@ -14620,7 +14783,7 @@ class ClassPatternPayloadReader
     {
 	uint32_t value = word();
 	if ( value > 1 )
-	    valid = false;
+	    invalidate(__LINE__);
 	return value != 0;
     }
 
@@ -14628,7 +14791,7 @@ class ClassPatternPayloadReader
     {
 	uint32_t value = word();
 	if ( value > (uint32_t)(end - cursor) || value > 0x1000000u )
-	    valid = false;
+	    invalidate(__LINE__);
 	return valid ? value : 0;
     }
 
@@ -14640,7 +14803,7 @@ class ClassPatternPayloadReader
 	const char *value = forest.restored_template_string(id);
 	if ( !value )
 	{
-	    valid = false;
+	    invalidate(__LINE__);
 	    return std::string();
 	}
 	return value;
@@ -14658,13 +14821,13 @@ class ClassPatternPayloadReader
 	CirRestoredTemplateRun run = forest.restored_template_run(encoded);
 	if ( !run.bytes || run.count != encoded.tok_count )
 	{
-	    valid = false;
+	    invalidate(__LINE__);
 	    return;
 	}
 	std::deque<TokenBase *> restored;
 	if ( !madc_pch::deserialize_tokens(run.bytes, run.len, run.count, restored) )
 	{
-	    valid = false;
+	    invalidate(__LINE__);
 	    return;
 	}
 	const char *file = run.file ? pgm.intern_file(run.file) : NULL;
@@ -14696,7 +14859,7 @@ class ClassPatternPayloadReader
 	Program::ClassMethodPattern out;
 	uint32_t kind = word();
 	if ( kind > (uint32_t)Program::ClassMethodKind::Conversion )
-	    valid = false;
+	    invalidate(__LINE__);
 	out.kind = (Program::ClassMethodKind)kind;
 	out.variable_name = string();
 	out.display_name = string();
@@ -14745,7 +14908,7 @@ class ClassPatternPayloadReader
 	Program::ClassNestedTemplatePattern out;
 	uint32_t kind = word();
 	if ( kind > (uint32_t)Program::ClassNestedTemplateKind::AliasTemplate )
-	    valid = false;
+	    invalidate(__LINE__);
 	out.kind = (Program::ClassNestedTemplateKind)kind;
 	uint32_t nparams = count();
 	for ( uint32_t i = 0; valid && i < nparams; ++i )
@@ -14785,7 +14948,7 @@ class ClassPatternPayloadReader
 	out.parent_id = word();
 	uint32_t kind = word();
 	if ( kind > (uint32_t)Program::ClassAggregateKind::Enum )
-	    valid = false;
+	    invalidate(__LINE__);
 	out.kind = (Program::ClassAggregateKind)kind;
 	out.source_name = string();
 	out.canonical_spelling = string();
@@ -14805,7 +14968,7 @@ class ClassPatternPayloadReader
 	{
 	    uint32_t decl = word();
 	    if ( decl > (uint32_t)Program::ClassDeclKind::StaticAssert )
-		valid = false;
+		invalidate(__LINE__);
 	    out.declarations.push_back((Program::ClassDeclKind)decl);
 	}
 	uint32_t naliases = count();
@@ -14877,15 +15040,17 @@ public:
 	  end(words ? words + count : words),
 	  valid(words != NULL) {}
 
+    int failed_at() const { return fail_line; }
+
     bool read(Program::ClassPattern &out, uint32_t record_reason)
     {
 	if ( word() != CIR_CLASS_PATTERN_MAGIC
 	  || word() != CIR_CLASS_PATTERN_PAYLOAD_VERSION )
 	    return false;
 	uint32_t reason = word();
-	if ( reason > (uint32_t)Program::ClassParseReason::RegistrationEscape
+	if ( reason > (uint32_t)Program::ClassParseReason::UnsupportedMemberTemplateOverloads
 	  || reason != record_reason )
-	    valid = false;
+	    invalidate(__LINE__);
 	out.capture_reason = (Program::ClassParseReason)reason;
 	out.semantic_fingerprint = word64();
 	out.identity = string();
@@ -14895,16 +15060,28 @@ public:
 	out.types.clear();
 	uint32_t ntypes = count();
 	if ( !ntypes )
-	    valid = false;
+	    invalidate(__LINE__);
 	for ( uint32_t i = 0; valid && i < ntypes; ++i )
 	{
 	    Program::ClassTypePattern type;
 	    uint32_t kind = word();
 	    if ( kind > (uint32_t)Program::ClassTypePatternKind::PackExpansion )
-		valid = false;
+		invalidate(__LINE__);
 	    type.kind = (Program::ClassTypePatternKind)kind;
 	    type.flags = word();
 	    type.concrete_type_id = word();
+	    // The serialized id is the PRODUCER's tid (== its arena tid).
+	    // Pinned primitives are process-stable; everything else swizzles
+	    // through the forest's restored-def map and re-mints the
+	    // CONSUMER's runtime id. An unrestorable tid keeps 0 — eligibility
+	    // rejects that binding to the parse lane (soft, per-use).
+	    if ( type.concrete_type_id
+	      && type.concrete_type_id >= MADC_TYPEID_PRIMITIVE_END )
+	    {
+		DataDef *concrete =
+		    forest.restored_def_by_tid(type.concrete_type_id);
+		type.concrete_type_id = concrete ? pgm.type_id_for(concrete) : 0;
+	    }
 	    type.operand = word();
 	    type.secondary = word();
 	    type.template_param_index = word();
@@ -14923,13 +15100,59 @@ public:
 	for ( uint32_t i = 0; valid && i < nnodes; ++i )
 	    out.nodes.push_back(node());
 	if ( cursor != end || out.identity.empty() || out.class_name.empty() )
-	    valid = false;
+	    invalidate(__LINE__);
 	if ( !valid )
 	    return false;
 	uint64_t stored = out.semantic_fingerprint;
 	return pgm.class_pattern_fingerprint(out) == stored;
     }
 };
+}
+
+// Re-find the REGISTERED definition matching a by-value copy
+// (instantiate_template_use copies to survive map reallocation) — matched by
+// body-token identity: both copies share the same TokenBase pointers, and no
+// two registrations share a body vector.
+static Program::TemplateDef *registered_template_entry_for(
+	Program &pgm, const Program::TemplateDef &td)
+{
+    std::vector<Program::TemplateDef> *variants = td.is_partial_specialization
+	? pgm.partial_spec_map.find(td.class_name)
+	: pgm.template_map.find(td.class_name);
+    if ( !variants )
+	return NULL;
+    for ( size_t i = 0; i < variants->size(); ++i )
+    {
+	Program::TemplateDef &v = (*variants)[i];
+	if ( v.body == td.body
+	  && v.defining_namespace == td.defining_namespace
+	  && v.owner_class == td.owner_class
+	  && v.is_partial_specialization == td.is_partial_specialization )
+	    return &v;
+    }
+    return NULL;
+}
+
+// Persist a lazy capture's outcome (id + reason + cleared deferred flag) on
+// the REGISTERED definition, so the capture runs at most once per template.
+void Program::writeback_class_pattern_capture(const TemplateDef &td)
+{
+    TemplateDef *entry = registered_template_entry_for(*this, td);
+    if ( !entry )
+	return;
+    entry->class_pattern_id = td.class_pattern_id;
+    entry->class_pattern_reason = td.class_pattern_reason;
+    entry->class_pattern_capture_deferred = false;
+}
+
+// Record one unit of concrete-instantiation demand on the REGISTERED
+// definition (saturating). The 0 -> 1 transition arms the lazy capture: the
+// first demand stays on the parse lane; repeat demand pays the capture.
+void Program::note_class_pattern_use(const TemplateDef &td)
+{
+    TemplateDef *entry = registered_template_entry_for(*this, td);
+    if ( entry && entry->class_pattern_use_count != (uint16_t)~0u )
+	++entry->class_pattern_use_count;
 }
 
 const Program::ClassPattern *Program::materialize_class_pattern(
@@ -14953,6 +15176,16 @@ const Program::ClassPattern *Program::materialize_class_pattern(
     ClassPatternId id = 0;
     if ( reader.read(restored, (uint32_t)td.class_pattern_reason) )
 	id = class_pattern_arena.add(std::move(restored));
+    {
+	static const char *cpp_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
+	if ( cpp_probe && (td.class_name.find(cpp_probe) != std::string::npos
+			    || !strcmp(cpp_probe, "*")) )
+	    std::cerr << "[class-pattern-probe] materialize: " << td.class_name
+		<< " words=" << td.frozen_class_pattern_words
+		<< " read=" << (id ? "ok" : "FAILED")
+		<< " id=" << id
+		<< " fail_line=" << reader.failed_at() << std::endl;
+    }
     restored_class_pattern_cache[td.frozen_class_pattern] = id;
     return class_pattern_arena.get(id);
 }
@@ -15490,10 +15723,25 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    td.owner_class = rt.owner;
 	    td.has_non_type_params = (rt.flags & CIR_TMPLF_HAS_NON_TYPE_PARAMS) != 0;
 	    td.is_partial_specialization = (rt.flags & CIR_TMPLF_IS_PARTIAL_SPEC) != 0;
-	    if ( rt.pattern_reason <= (uint32_t)ClassParseReason::RegistrationEscape )
+	    if ( rt.pattern_reason <= (uint32_t)ClassParseReason::UnsupportedMemberTemplateOverloads )
 		td.class_pattern_reason = (ClassParseReason)rt.pattern_reason;
 	    else
 		td.class_pattern_reason = ClassParseReason::PatternParseError;
+	    {
+		// Env-gated probe (MADC_CLASS_PATTERN_PROBE=<substr>): show what
+		// the forest actually carried for a matching template record.
+		static const char *cpp_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
+		if ( cpp_probe && (td.class_name.find(cpp_probe) != std::string::npos
+				    || !strcmp(cpp_probe, "*")) )
+		    std::cerr << "[class-pattern-probe] restore: "
+			<< (rt.ns ? rt.ns : "") << "::" << td.class_name
+			<< " kind=" << rt.kind
+			<< " partial=" << td.is_partial_specialization
+			<< " reason=" << (unsigned)rt.pattern_reason
+			<< " pattern_words=" << rt.pattern_words
+			<< " params=" << rt.params.size()
+			<< std::endl;
+	    }
 	    for ( size_t p = 0; p < rt.params.size(); ++p )
 	    {
 		td.typeparams.push_back(rt.params[p].first);
@@ -20589,10 +20837,21 @@ class ClassPatternNormalizer
     std::vector<DataDef *> external_types;
     DataDefCLASS *normalizing_owner;
 
-    void fail(Program::ClassParseReason reason)
+    void fail(Program::ClassParseReason reason, int site = __builtin_LINE())
     {
 	if ( pattern.capture_reason == Program::ClassParseReason::None )
+	{
 	    pattern.capture_reason = reason;
+	    static const char *cpp_probe =
+		::getenv("MADC_CLASS_PATTERN_PROBE");
+	    // cout, not cerr: capture mutes cerr for the parse duration.
+	    if ( cpp_probe
+	      && (pattern.class_name.find(cpp_probe) != std::string::npos
+		   || !strcmp(cpp_probe, "*")) )
+		std::cout << "[class-pattern-probe] normalize FAIL: "
+		    << pattern.class_name << " reason=" << (unsigned)reason
+		    << " site=parser.cpp:" << site << std::endl;
+	}
     }
 
     Program::ClassTypePatternId append_type()
@@ -20659,55 +20918,20 @@ class ClassPatternNormalizer
 	if ( has_non_type_template_parameter(definition->typeparam_is_type,
 		definition->has_non_type_params) )
 	    return Program::ClassParseReason::DependentValueExpression;
-	return definition->class_pattern_reason;
+	// The dependency's OWN capture state is not contagious: at pattern
+	// instantiation the resolver routes every TemplateId dependency
+	// through the full instantiation dispatch, which picks that
+	// dependency's best lane (its pattern if eligible, else the parse
+	// lane). Inheriting its capture failure here permanently poisoned
+	// every dependent pattern (vector/map/_Rb_tree all carried a
+	// dependency's pattern-parse-error despite capturing cleanly).
+	return Program::ClassParseReason::None;
     }
 
-    bool dependent_shell_defines_member_type(
-	const Program::DependentShellOrigin &origin,
-	const std::string &member, bool member_is_template)
-    {
-	const Program::TemplateDef *definition = pgm.find_template(
-	    origin.tname, origin.defining_namespace, origin.owner_class);
-	if ( !definition || definition->class_pattern_reason !=
-		Program::ClassParseReason::None )
-	    return false;
-	const Program::ClassPattern *dependency =
-	    pgm.class_pattern_arena.get(definition->class_pattern_id);
-	if ( !dependency || dependency->nodes.empty() )
-	    return false;
-	const Program::ClassAggregatePatternNode &root = dependency->nodes[0];
-	if ( member_is_template )
-	{
-	    for ( size_t i = 0; i < root.nested_templates.size(); ++i )
-		if ( root.nested_templates[i].class_name == member )
-		    return true;
-	    return false;
-	}
-	for ( size_t i = 0; i < root.aliases.size(); ++i )
-	    if ( root.aliases[i].name == member )
-		return true;
-	for ( size_t i = 1; i < dependency->nodes.size(); ++i )
-	    if ( dependency->nodes[i].parent_id == 0
-	      && dependency->nodes[i].source_name == member )
-		return true;
-	return false;
-    }
-
-    bool dependent_member_type_is_guaranteed(
-	const Program::DependentDerivedOrigin &origin)
-    {
-	DataDefCLASS *source = dynamic_cast<DataDefCLASS *>(origin.source);
-	if ( !source )
-	    return false;
-	if ( !class_has_unresolved_dependent_surface(source)
-	  && Program::class_member_type(source, origin.member) )
-	    return true;
-	std::map<DataDef *, Program::DependentShellOrigin>::const_iterator shell =
-	    pgm.dependent_shell_origin.find(source);
-	return shell != pgm.dependent_shell_origin.end()
-	    && dependent_shell_defines_member_type(shell->second, origin.member,
-		origin.member_is_template);
-    }
+    // (The capture-time "dependent member guaranteed" gate and its
+    // member-name oracle were deleted with the gate itself: after
+    // substitution every source is concrete and the resolver walks member
+    // chains through the same machinery the parse lane uses.)
 
     Program::ClassTypePatternId normalize_token_type(
 	const std::vector<TokenBase *> &raw)
@@ -20975,8 +21199,13 @@ class ClassPatternNormalizer
 		    Program::ClassTypePatternKind::DependentMember;
 		Program::ClassTypePatternId operand =
 		    normalize_type(derived->second.source);
-		if ( !dependent_member_type_is_guaranteed(derived->second) )
-		    fail(Program::ClassParseReason::UnnormalizableType);
+		// No capture-time "member guaranteed" gate: after substitution
+		// every source is concrete, and the resolver walks member
+		// chains through the same machinery the parse lane uses. A
+		// member the parse lane could resolve resolves here too; a
+		// genuine resolution gap surfaces LOUD at instantiation (the
+		// actionable signal), instead of silently poisoning every
+		// container pattern over allocator rebinding at capture.
 	pattern.types[id].operand = operand;
 	pattern.types[id].name = derived->second.member;
 	pattern.types[id].flags = derived->second.member_is_template ? 1u : 0u;
@@ -21528,6 +21757,11 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	return 0;
     if ( class_pattern_capture_in_progress )
 	return 0;
+    if ( td.owner_class && ::getenv("MADC_CLASS_PATTERN_NO_MEMBER") )
+    {
+	td.class_pattern_reason = ClassParseReason::PatternNotCaptured;
+	return 0;
+    }
     struct CaptureGuard {
 	bool &active;
 	bool saved_global;
@@ -21688,6 +21922,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     stmt_callee_namespace.clear();
 
     bool parsed = false;
+    std::string capture_probe_detail;
     ClassPattern pending;
     std::vector<DataDef *> external_types;
     ClassRegistrationJournal journal(*this);
@@ -21701,6 +21936,12 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	    TokenBase *class_kw = nextToken();
 	    parseKeyword(static_cast<TokenKeyword *>(class_kw));
 	    datadef_map_citer root = struct_map.find(identity);
+	    // A MEMBER template's class parse runs with td.owner_class on
+	    // class_scope_stack, so TokenCLASS::parse rewrites the tag to the
+	    // owner-mangled `Owner__<identity>` before registering — look the
+	    // shell up under the same key the parse actually used.
+	    if ( root == struct_map.end() && td.owner_class )
+		root = struct_map.find(td.owner_class->name + "__" + identity);
 	    DataDef *root_type = root != struct_map.end() ? root->second : NULL;
 	    if ( dynamic_cast<DataDefSTRUCT *>(root_type) )
 	    {
@@ -21709,11 +21950,27 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 		    captured_bodies, captured_nested_templates, identity);
 		pending = normalizer.release(external_types);
 		parsed = true;
+		{
+		    static const char *cpp_probe =
+			::getenv("MADC_CLASS_PATTERN_PROBE");
+		    // cout, not cerr: capture mutes cerr for the parse duration.
+		    if ( cpp_probe
+		      && (td.class_name.find(cpp_probe) != std::string::npos
+			   || !strcmp(cpp_probe, "*")) )
+			std::cout << "[class-pattern-probe] released: "
+			    << td.class_name << " reason="
+			    << (unsigned)pending.capture_reason << std::endl;
+		}
 	    }
+	    else
+		capture_probe_detail = "no DataDefSTRUCT registered under pattern identity";
 	}
 	catch ( ... )
 	{
 	    parsed = false;
+	    capture_probe_detail = Throw.str();
+	    if ( capture_probe_detail.empty() && last_error.has_error )
+		capture_probe_detail = last_error.message;
 	}
 	if ( td.owner_class && !class_scope_stack.empty()
 	  && class_scope_stack.back() == td.owner_class )
@@ -21769,6 +22026,24 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	td.class_pattern_reason = poisoned
 	    ? ClassParseReason::PatternParsePoisoned
 	    : ClassParseReason::PatternParseError;
+	// Env-gated probe (MADC_CLASS_PATTERN_PROBE=<substr>): capture parses
+	// swallow their diagnostics (nulled cerr + journal rollback); this
+	// re-surfaces the failure for matching class names on stderr.
+	static const char *cpp_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
+	if ( cpp_probe && (td.class_name.find(cpp_probe) != std::string::npos
+			    || !strcmp(cpp_probe, "*")) )
+	{
+	    const TokenBase *src = basic_class_pattern_source_token(td);
+	    std::cerr << "[class-pattern-probe] capture FAILED: "
+		<< (td.defining_namespace.empty() ? "" : td.defining_namespace + "::")
+		<< td.class_name
+		<< (poisoned ? " (poisoned)" : "")
+		<< " at " << (src && src->file ? src->file : "?")
+		<< ":" << (src ? src->line : 0)
+		<< "\n[class-pattern-probe]   detail: "
+		<< (capture_probe_detail.empty() ? "(none)" : capture_probe_detail)
+		<< std::endl;
+	}
 	return 0;
     }
     if ( struct_map.find(identity) != struct_map.end()
@@ -21777,23 +22052,61 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	td.class_pattern_reason = ClassParseReason::RegistrationEscape;
 	return 0;
     }
+    if ( td.owner_class )
+    {
+	std::string mangled_identity = td.owner_class->name + "__" + identity;
+	if ( struct_map.find(mangled_identity) != struct_map.end()
+	      || datatype_map.find(mangled_identity) != datatype_map.end() )
+	{
+	    td.class_pattern_reason = ClassParseReason::RegistrationEscape;
+	    return 0;
+	}
+    }
+    static const char *cpp_tail_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
+    bool tail_probe_match = cpp_tail_probe
+	&& (td.class_name.find(cpp_tail_probe) != std::string::npos
+	     || !strcmp(cpp_tail_probe, "*"));
     for ( size_t i = 1; i < pending.types.size(); ++i )
 	if ( i < external_types.size() && external_types[i] )
 	{
 	    if ( !class_pattern_type_predates_capture(external_types[i]) )
 	    {
 		if ( pending.capture_reason == ClassParseReason::None )
+		{
 		    pending.capture_reason = ClassParseReason::UnnormalizableType;
+		    if ( tail_probe_match )
+			std::cerr << "[class-pattern-probe] tail FAIL "
+			    << td.class_name << ": speculative concrete type '"
+			    << external_types[i]->name << "'" << std::endl;
+		}
 		continue;
 	    }
 	    pending.types[i].concrete_type_id = type_id_for(external_types[i]);
 	    if ( !pending.types[i].concrete_type_id
 	      && pending.capture_reason == ClassParseReason::None )
+	    {
 		pending.capture_reason = ClassParseReason::UnnormalizableType;
+		if ( tail_probe_match )
+		    std::cerr << "[class-pattern-probe] tail FAIL "
+			<< td.class_name << ": no type id for '"
+			<< external_types[i]->name << "'" << std::endl;
+	    }
 	}
     pending.semantic_fingerprint = class_pattern_fingerprint(pending);
     td.class_pattern_reason = pending.capture_reason;
     td.class_pattern_id = class_pattern_arena.add(std::move(pending));
+    {
+	static const char *cpp_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
+	if ( cpp_probe && (td.class_name.find(cpp_probe) != std::string::npos
+			    || !strcmp(cpp_probe, "*")) )
+	    std::cerr << "[class-pattern-probe] capture OK: "
+		<< (td.defining_namespace.empty() ? "" : td.defining_namespace + "::")
+		<< td.class_name
+		<< " partial=" << td.is_partial_specialization
+		<< " id=" << td.class_pattern_id
+		<< " reason=" << (unsigned)td.class_pattern_reason
+		<< std::endl;
+    }
     return td.class_pattern_id;
 }
 

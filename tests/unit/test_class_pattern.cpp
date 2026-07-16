@@ -384,9 +384,10 @@ TEST_CASE("B3 ClassPattern root products retain root origin")
 	CHECK((record.flags & madc::dis::DF_TU_ROOT_ORIGIN) != 0);
 }
 
-TEST_CASE("B3 live included templates avoid eager pattern capture")
+TEST_CASE("B3 live included templates capture lazily at first instantiation")
 {
 	Program program;
+	program.class_pattern_live_capture = true;
 	TokenProgram *header_tokens = program.tokenize_buffer(
 		"template<class T> struct PatternIncluded { T value; };\n",
 		"<class-pattern-included-header>");
@@ -394,20 +395,45 @@ TEST_CASE("B3 live included templates avoid eager pattern capture")
 	program.forest_root_file = "<class-pattern-included-root>";
 	REQUIRE(program.parse(header_tokens));
 
+	// Definition parse does NOT capture (no eager tax on templates that
+	// are never instantiated) — capture defers to the first concrete use.
 	const Program::TemplateDef *definition = program.find_template(
 		"PatternIncluded");
 	REQUIRE(definition != NULL);
 	CHECK(definition->class_pattern_id == 0);
 	CHECK(definition->class_pattern_reason ==
-	      Program::ClassParseReason::PatternNotCaptured);
+	      Program::ClassParseReason::None);
+	CHECK(definition->class_pattern_capture_deferred);
 
 	TokenProgram *root_tokens = program.tokenize_buffer(
 		"PatternIncluded<int32_t> value;\n",
 		"<class-pattern-included-root>");
 	REQUIRE(root_tokens != NULL);
 	REQUIRE(program.parse(root_tokens));
+	// FIRST demand stays on the parse lane — it only arms the demand
+	// counter (a single-use template must not pay a capture parse).
 	CHECK(program._class_inst_pattern == 0);
 	CHECK(program._class_inst_parse == 1);
+	definition = program.find_template("PatternIncluded");
+	REQUIRE(definition != NULL);
+	CHECK(definition->class_pattern_id == 0);
+	CHECK(definition->class_pattern_capture_deferred);
+	CHECK(definition->class_pattern_use_count == 1);
+
+	// SECOND demand (a different specialization) pays the one-time
+	// capture and instantiates through the pattern lane; the outcome
+	// persists on the registered definition.
+	TokenProgram *more_tokens = program.tokenize_buffer(
+		"PatternIncluded<int64_t> other;\n",
+		"<class-pattern-included-root>");
+	REQUIRE(more_tokens != NULL);
+	REQUIRE(program.parse(more_tokens));
+	CHECK(program._class_inst_pattern == 1);
+	CHECK(program._class_inst_parse == 1);
+	definition = program.find_template("PatternIncluded");
+	REQUIRE(definition != NULL);
+	CHECK(definition->class_pattern_id != 0);
+	CHECK(!definition->class_pattern_capture_deferred);
 }
 
 TEST_CASE("B3 ClassPattern arena references survive recursive materialization")
@@ -773,8 +799,12 @@ TEST_CASE("B3 dependent non-type template arguments stay on the fallback lane")
 	const Program::ClassPattern *outer_pattern =
 		program.class_pattern_arena.get(outer_definition->class_pattern_id);
 	REQUIRE(outer_pattern != NULL);
+	// The outer template only passes TYPE arguments; a dependency's own
+	// dependent-value ineligibility is not contagious (the resolver
+	// instantiates the dependency through the full dispatch, which sends
+	// it to the parse lane) — so the outer pattern captures clean.
 	CHECK(outer_pattern->capture_reason ==
-	      Program::ClassParseReason::DependentValueExpression);
+	      Program::ClassParseReason::None);
 	CHECK(program._class_inst_parse >= 1);
 }
 
@@ -800,8 +830,14 @@ TEST_CASE("B3 dependent member types require a guaranteed pattern member")
 	const Program::ClassPattern *pattern =
 		program.class_pattern_arena.get(definition->class_pattern_id);
 	REQUIRE(pattern != NULL);
+	// No capture-time "member guaranteed" gate: after substitution the
+	// source is concrete and the resolver looks the member up through
+	// the same machinery the parse lane uses. A binding whose source
+	// really lacks the member (the unspecialized PatternMaybe<T>) errors
+	// at instantiation — the same diagnostic the parse lane produces —
+	// instead of the gate silently poisoning every dependent pattern.
 	CHECK(pattern->capture_reason ==
-	      Program::ClassParseReason::UnnormalizableType);
+	      Program::ClassParseReason::None);
 }
 
 TEST_CASE("B3 vector closure matches the sole parser lane and compiler ABI")

@@ -1463,6 +1463,11 @@ static DataDef *arena_swizzle(uint32_t tid,
 	return it != by_id.end() ? it->second : NULL;
 }
 
+DataDef *CirFrozenForest::restored_def_by_tid(uint32_t tid) const
+{
+	return arena_swizzle(tid, _defs_by_tid);
+}
+
 const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 {
 	if (_types_materialized)
@@ -1840,8 +1845,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	}
 
 	// Pass 1: allocate a DataDef per recordable aggregate, so forward member /
-	// base ids resolve in pass 2.
-	std::map<uint32_t, DataDef *> by_id;
+	// base ids resolve in pass 2. The map persists on the forest
+	// (_defs_by_tid) so post-restore consumers — lazy ClassPattern payload
+	// reads — can swizzle serialized producer tids.
+	std::map<uint32_t, DataDef *> &by_id = _defs_by_tid;
 	for (size_t i = 0; i < agg_ids.size(); ++i) {
 		uint32_t tid = agg_ids[i];
 		if (!recordable.count(tid))

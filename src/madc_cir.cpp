@@ -2108,6 +2108,16 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	    f.template_payload.insert(f.template_payload.end(),
 		words.begin(), words.end());
 	}
+	{
+	    static const char *cpp_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
+	    if (cpp_probe && (name.find(cpp_probe) != std::string::npos
+			       || !strcmp(cpp_probe, "*")))
+		std::cerr << "[class-pattern-probe] freeze-emit: " << ns << "::"
+		    << name << " kind=" << kind
+		    << " reason=" << r.pattern_reason
+		    << " pattern=" << (pattern ? 1 : 0)
+		    << " words=" << r.pattern_words << std::endl;
+	}
 	f.templates.push_back(r);
     };
 

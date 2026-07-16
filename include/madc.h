@@ -2122,7 +2122,12 @@ public:
 	UnsupportedDefaultedComparison,
 	UnsupportedOutOfLineNested,
 	RequiresEagerBodyParse,
-	RegistrationEscape
+	RegistrationEscape,
+	// Same-name member-function-template overloads (vector::_M_data_ptr):
+	// the nested-recipe replay does not yet reproduce live overload
+	// selection — an instantiated body can come from the wrong overload
+	// (caught by the subbind gate as a drained-body check error).
+	UnsupportedMemberTemplateOverloads
     };
     enum class ClassDeclKind : uint8_t {
 	TypeAlias,
@@ -2390,6 +2395,18 @@ public:
 	std::vector<TokenBase *> constraint;
 	ClassPatternId class_pattern_id;
 	ClassParseReason class_pattern_reason;
+	// Live parse defers header-template capture to the SECOND concrete
+	// instantiation (the same environment the parse lane sees): the first
+	// demand goes to the parse lane and only repeat demand — the pattern
+	// lane's only market — pays the one-time capture parse. Pack-time
+	// (forest_arena_enabled) and TU-root definitions still capture
+	// eagerly. Never serialized: a frozen forest always carries either a
+	// real pattern or a real reason.
+	bool class_pattern_capture_deferred;
+	// Concrete-instantiation demand seen so far (saturating; only the
+	// 0 -> 1 transition matters). Lives on the REGISTERED definition via
+	// Program::note_class_pattern_use.
+	uint16_t class_pattern_use_count;
 	// A bound forest keeps the immutable payload mapped for the Program's
 	// lifetime. Restore records this span and materializes the ClassPattern only
 	// if an eligible specialization actually needs it.
@@ -2399,11 +2416,15 @@ public:
 	TemplateDef() : has_non_type_params(false), owner_class(nullptr),
 			is_partial_specialization(false), class_pattern_id(0),
 			class_pattern_reason(ClassParseReason::None),
+			class_pattern_capture_deferred(false),
+			class_pattern_use_count(0),
 			frozen_class_pattern(NULL), frozen_class_pattern_words(0),
 			frozen_class_pattern_forest(NULL) {}
     };
 	ClassPatternId capture_class_pattern(TemplateDef &td);
 	const ClassPattern *materialize_class_pattern(const TemplateDef &td);
+	void writeback_class_pattern_capture(const TemplateDef &td);
+	void note_class_pattern_use(const TemplateDef &td);
 	uint64_t class_pattern_fingerprint(const ClassPattern &pattern) const;
     // B0 class-KIND parse-once foundation. Capture uses the production class
     // parser once, so all temporary registrations must roll back as one unit.
@@ -2729,6 +2750,12 @@ public:
     // the same key while variadic_real_inst_sticky is on returns the opaque placeholder
     // instead of recursing — the recursion bound for the sticky forwarding-trait path.
     std::set<std::string> variadic_inst_in_progress;
+    // Pattern-lane instantiations in flight, keyed by registered mangled name.
+    // A cyclic dependency web (the resolver instantiates a dependency whose
+    // own pattern instantiation references back) re-enters here mid-flight;
+    // the re-entry returns the early-registered incomplete shell — the same
+    // semantics a parse-lane self-reference gets — instead of recursing.
+    std::set<std::string> class_pattern_inst_in_progress;
     // Alias-template uses currently being resolved (keyed tname + arg spellings).
     // Re-entering the SAME key is a resolution CYCLE (a self-referential trait, now
     // reachable because variadic members really instantiate) — it short-circuits to
@@ -3219,6 +3246,15 @@ public:
     unsigned long long _class_inst_cache = 0;
     unsigned long long _class_inst_opaque = 0;
     bool class_parse_observability = false;
+    // Lazy LIVE pattern capture (capture-on-repeat-demand at
+    // instantiate_template_use). Off by default: with the current
+    // per-instantiation pattern-lane costs (nested-template re-registration,
+    // journal open/close, resolver re-derivation) the live lane measures
+    // slightly net-negative on small TUs; the bound leg (pack-time capture)
+    // is unaffected by this flag. Enable via MADC_CLASS_PATTERN_LIVE=1 or
+    // directly in unit tests; flips to default-on when the pattern lane's
+    // per-instantiation overheads land (B4+).
+    bool class_pattern_live_capture = false;
     std::map<ClassParseProfileKey, ClassParseProfile> _class_parse_profile;
     std::vector<ClassParseProfileKey> _class_parse_census_stack;
     static const char *class_parse_reason_name(ClassParseReason reason);

@@ -2352,8 +2352,12 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 			progA->class_pattern_arena.get(
 				dependent_base->class_pattern_id);
 		REQUIRE(dependent_base_pattern != nullptr);
+		// A dependent base no longer poisons the pattern at capture:
+		// the resolver instantiates TemplateId dependencies through
+		// the full dispatch at binding time, so the dependency's own
+		// state is not contagious and this pattern captures clean.
 		CHECK(dependent_base_pattern->capture_reason ==
-		      Program::ClassParseReason::UnnormalizableType);
+		      Program::ClassParseReason::None);
 		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
 					snap_path.c_str(), /*append=*/false) == 0);
 	}
