@@ -1,12 +1,54 @@
 # CODEX HANDOFF — pattern-lane perf rungs (close B3's wall gate)
 
 **From:** Claude, 2026-07-16. **For:** a fresh Codex session.
-**Branch:** `feature/class-parse-once-codex` @2524cf1c (pushed). Base stays develop.
+**Branch:** `feature/class-parse-once-codex` @b2b2cf5e (pushed). Base stays develop.
 **Prereq reading (in order):** this doc;
 `docs/plans/2026-07-16-class-pattern-capture-fixes.md` (the five defects fixed,
 the fences, the measured state — SETTLED, do not re-litigate);
 `docs/plans/2026-07-14-CODEX-HANDOFF-class-parse-once-B0-B6.md` (parent ladder:
 gates, traps, checkpoint protocol — all still apply).
+
+## CODEX HAND-BACK (2026-07-16, stopped before R3)
+
+The owner requested an immediate hand-back. Do not treat R1-R2 as having
+cleared their per-rung gates yet, and do not resume without a new instruction.
+
+- Pushed commits: R1 `f0439942`, R2 `2acfaf60`, and the required R1 keying
+  correction `b2b2cf5e`. The corrected registry keeps one map keyed by the
+  bare-name `uint32_t`; each value holds namespace variants and a
+  `DataDefCLASS*` owner sub-index. Hot owner lookup performs no composite
+  string construction or pool interning. Owner-granular journaling avoids
+  copying every accumulated owner on first transactional write.
+- The required clean A/B exposed a regression in the original R1+R2:
+  `ea4f4021` live 2.373986487 s / bound 0.519055262 s versus `2acfaf60` live
+  2.445673476 s / bound 0.539002492 s (medians of 5, load below 2). Live
+  counters were unchanged at 6790 calls (2646 class, 2604 alias; lane
+  132/304/682/153). Bound calls improved only 3550 -> 3542 (class 1234 ->
+  1230, alias 1249 -> 1245; lane 77/160/291/55 unchanged). The TSV contains
+  these baseline and original R1+R2 rows; derives remained live 217 / bound
+  184 in both revisions.
+- After the integer-key/owner-journal correction, the live median was
+  2.331096573 s at load 1.24 before / 1.34 after (samples 2.326683537,
+  2.331096573, 2.383025566, 2.452833944, 2.321633888). A focused 20-owner
+  callgrind workload fell from 44,496,251 to 41,057,303 instructions (-7.73%).
+  A preliminary corrected bound median was 0.516307467 s, but that run
+  predates the final owner-granular journal follow-up. Re-run bound on exact
+  `b2b2cf5e`; the per-rung counters-and-bench acceptance is still open.
+- Exact-HEAD focused tests are green: `test_class_pattern` 15/15 with 643
+  assertions and `test_cir_freeze` 36/36 with 751 assertions. A clean
+  pre-follow-up fulltest was green at 697/0/0/16, all 18 bind gates, and the
+  equivalence/oracle gates. The exact-HEAD fulltest was interrupted during
+  relinking when the owner requested wrap-up. Therefore exact-HEAD bound,
+  packed 697/0/0/16 + blob, and binary-size gates remain unverified.
+- R3 was not committed. Its four-file WIP is stash commit `42fb2800`, currently
+  `stash@{0}` with message `wip-r3-resolver-memo`, based on `2acfaf60`. It
+  contains `include/madc.h`, `src/madc.cpp`, `src/parser.cpp`, and
+  `tests/unit/test_class_pattern.cpp`. R4 and R5 were not started. Leave the
+  stash intact.
+- A `SIGXCPU` during the full `testsubscript` callgrind run came from madc's
+  internal `RLIMIT_CPU` control via `MADC_CPU_LIMIT`, not a host CPU limit.
+  `src/madc.cpp` defaults it to 60 seconds; `MADC_CPU_LIMIT=0` disables it.
+- Foreign untracked `mir-debug-support.md` remains untouched. Never stage it.
 
 ## STATE (verified 2026-07-16, all pushed)
 
