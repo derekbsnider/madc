@@ -4502,17 +4502,6 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 	    if ( nested.typeparams.size() != nested.typeparam_is_type.size()
 	      || nested.typeparams.size() != nested.typeparam_is_pack.size() )
 		return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
-	    // Same-name member-template OVERLOADS (vector::_M_data_ptr): the
-	    // nested-recipe replay does not yet reproduce live overload
-	    // selection, so an instantiated body can come from the wrong
-	    // overload (a drained-body c2mir check error — the subbind gate).
-	    // Fence the whole pattern until the replay ranks overloads.
-	    for ( size_t u = t + 1; u < node.nested_templates.size(); ++u )
-		if ( node.nested_templates[u].kind == nested.kind
-		  && node.nested_templates[u].class_name == nested.class_name )
-		    return class_pattern_eligibility_note(binding,
-			Reason::UnsupportedMemberTemplateOverloads,
-			__builtin_LINE());
 	}
     }
 
@@ -4824,6 +4813,8 @@ class BasicClassPatternResolver
 	const std::vector<DataDef *> &arguments, uint64_t &hash)
     {
 	hash = resolution_key(kind, name_id, namespace_id, owner, arguments);
+	if ( ::getenv("MADC_CLASS_PATTERN_NO_MEMO") )
+	    return NULL;
 	for ( size_t i = pending.size(); i-- > 0; )
 	    if ( pending[i].resolution_hash == hash
 	      && pending[i].kind == kind && pending[i].name_id == name_id
@@ -5709,8 +5700,21 @@ public:
 	}
 
 	for ( size_t i = 0; i < node.aliases.size(); ++i )
-	    pgm.set_class_type_alias(owner, node.aliases[i].name,
-		resolver.resolve(node.aliases[i].type));
+	{
+	    DataDef *alias_type = resolver.resolve(node.aliases[i].type);
+	    {
+		static const char *cpp_probe =
+		    ::getenv("MADC_CLASS_PATTERN_PROBE");
+		if ( cpp_probe && (owner->name.find(cpp_probe)
+					!= std::string::npos
+				    || !strcmp(cpp_probe, "*")) )
+		    std::cerr << "[class-pattern-probe] alias: "
+			<< owner->name << "::" << node.aliases[i].name
+			<< " = " << (alias_type ? alias_type->name : "(null)")
+			<< std::endl;
+	    }
+	    pgm.set_class_type_alias(owner, node.aliases[i].name, alias_type);
+	}
 
 	std::vector<BaseSpec> bases;
 	for ( size_t i = 0; i < node.bases.size(); ++i )
@@ -6364,17 +6368,6 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     bool force_legacy = force_legacy_class_patterns;
     const char *force_env = ::getenv("MADC_CLASS_PATTERN_FORCE_LEGACY");
     if ( force_env && *force_env && strcmp(force_env, "0") != 0 )
-	force_legacy = true;
-    // A PACK (--freeze / --freeze-append) instantiates through the proven
-    // parse lane: the pack DRAINS every method body — including ones no
-    // program demands — forcing the pattern machinery's whole replay
-    // surface (member-template overload ranks, ctor-init recipes), where it
-    // is not yet body-exact (the subbind gate caught a drained vector body
-    // deriving from the wrong _M_data_ptr overload). Capture still runs and
-    // the patterns serialize; CONSUMERS pattern-instantiate at bind, where
-    // bodies defer through DEFBODY and derive on demand via the normal m&l
-    // fixpoint (verified live==bound byte-identical).
-    if ( pack_recording )
 	force_legacy = true;
     ClassParseReason legacy_reason = td.class_pattern_reason;
     const ClassPattern *selected_pattern = legacy_reason == ClassParseReason::None
