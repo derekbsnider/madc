@@ -15387,7 +15387,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 				     DataDef *dd, TokenDataType *existing) {
 	if ( !ns || !*ns || !dd )
 	    return;
-	namespace_map[ns];		// ensure the namespace exists as a scope
+	namespace_variables_for_write(ns); // ensure the namespace exists as a scope
 	namespace_datatype_map[ns][nm] =
 	    existing ? existing : new TokenDataType(nm.c_str(), *dd);
     };
@@ -15510,7 +15510,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    {
 		std::string pk = (rt.ns && *rt.ns && ns_ok)
 			       ? std::string(rt.ns) + "::" + name : name;
-		variable_map_t &scope_ns = namespace_map[pk];
+		variable_map_t &scope_ns = namespace_variables_for_write(pk);
 		for ( size_t e = 0; e < rt.enumerators.size(); ++e )
 		{
 		    Variable *evar = new Variable(rt.enumerators[e].first,
@@ -16047,7 +16047,8 @@ void Program::flush_forest_pending_globals()
 				  + pf.fd->function_display_name;
 		if ( !pf.fd->namespace_name.empty() )
 		{
-		    variable_map_t &nsmap = namespace_map[pf.fd->namespace_name];
+		    variable_map_t &nsmap = namespace_variables_for_write(
+			pf.fd->namespace_name);
 		    if ( nsmap.find(pf.fd->function_display_name) == nsmap.end() )
 			nsmap[pf.fd->function_display_name] = fv;
 		}
@@ -16152,7 +16153,7 @@ void Program::flush_forest_pending_globals()
 	    {
 		xv->storage_alias_name =
 		    namespace_cpp_variable_symbol(pg.ns, pg.name);
-		variable_map_t &xns = namespace_map[pg.ns];
+		variable_map_t &xns = namespace_variables_for_write(pg.ns);
 		if ( xns.find(pg.name) == xns.end() )
 		    xns[pg.name] = xv;
 	    }
@@ -16212,7 +16213,7 @@ void Program::flush_forest_pending_globals()
 	// resolves a QUALIFIED tag reference (std::piecewise_construct) through.
 	if ( !pg.ns.empty() )
 	{
-	    variable_map_t &gns = namespace_map[pg.ns];
+	    variable_map_t &gns = namespace_variables_for_write(pg.ns);
 	    if ( gns.find(pg.name) == gns.end() )
 		gns[pg.name] = gv;
 	}
@@ -16338,7 +16339,7 @@ void Program::flush_forest_pending_globals()
 	    Variable *v = findVariable(b.key);
 	    if ( !v || !v->type || !v->type->is_function() )
 		continue;
-	    variable_map_t &m = namespace_map[b.ns];
+	    variable_map_t &m = namespace_variables_for_write(b.ns);
 	    if ( m.find(b.name) == m.end() )
 	    {
 		m[b.name] = v;
@@ -16551,12 +16552,12 @@ void Program::flush_forest_pending_globals()
 
 void Program::add_namespaces()
 {
-    namespace_map["std"];
+    namespace_variables_for_write("std");
 }
 
 void Program::add_madc_namespace()
 {
-    variable_map_t &madc_ns = namespace_map["madc"];
+    variable_map_t &madc_ns = namespace_variables_for_write("madc");
     Variable *var;
     typespec_t objp = ptr_of(ddVOID);
     typespec_t cstr = ptr_of(ddCHAR);
@@ -17466,7 +17467,7 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
 	    var->storage_alias_name =
 		namespace_cpp_variable_symbol(current_namespace(), id);
 	if ( !current_namespace().empty() )
-	    namespace_map[current_namespace()][id] = var;
+	    namespace_variables_for_write(current_namespace())[id] = var;
 	return var;
     }
     var = new Variable(id, dd, c, init, alloc);
@@ -17481,7 +17482,7 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
 	    namespace_cpp_variable_symbol(current_namespace(), id);
     tkProgram->variables.push_back(var);
     if ( !current_namespace().empty() )
-	namespace_map[current_namespace()][id] = var;
+	namespace_variables_for_write(current_namespace())[id] = var;
 
     DBG(std::cout << "Added new global variable type: " << dd.name << " size: "
 		<< dd.size << " name: " << id << " ptr: " << var << " flags: " << var->flags << std::endl);
@@ -19396,7 +19397,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 		    std::string func_id = "__dl_" + aname + "_" + member_name;
 		    ns_var = addFunction(func_id,
 			datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)sym);
-		    nsi->second[member_name] = ns_var;
+		    namespace_variables_for_write(aname)[member_name] = ns_var;
 		}
 	    }
 	}
@@ -20339,7 +20340,7 @@ struct Program::ClassRegistrationJournal::State
     variable_map_t::transaction_state literal_map_transaction;
     std::map<std::string, variable_map_t::transaction_state>
 	namespace_map_transactions;
-    std::set<std::string> namespace_map_keys;
+    std::set<std::string> inserted_namespace_map_keys;
     namespace_datatype_map_t::transaction_state namespace_datatype_map;
     madc::dis::intern_keyed_map<std::vector<TemplateDef> >::transaction_state
 	template_map;
@@ -20443,13 +20444,6 @@ struct Program::ClassRegistrationJournal::State
 		p.block_typedef_shadows[i].size());
 	if ( snapshot_forest )
 	    p.forest_arena.strings.begin_transaction(forest_strings);
-	for ( namespace_map_t::const_iterator it = p.namespace_map.begin();
-	      it != p.namespace_map.end(); ++it )
-	{
-	    namespace_map_keys.insert(it->first);
-	    namespace_map_transactions[it->first] =
-		variable_map_t::transaction_state();
-	}
 	if ( root )
 	{
 	    root_variables_size = root->variables.size();
@@ -20520,15 +20514,6 @@ Program::ClassRegistrationJournal::ClassRegistrationJournal(
 	state->out_of_line_member_instantiations_transaction);
     pgm.out_of_line_nested_class_defs.begin_transaction(
 	state->out_of_line_nested_class_defs_transaction);
-    for ( namespace_map_t::iterator it = pgm.namespace_map.begin();
-	  it != pgm.namespace_map.end(); ++it )
-    {
-	std::map<std::string,
-	    variable_map_t::transaction_state>::iterator transaction =
-	    state->namespace_map_transactions.find(it->first);
-	assert(transaction != state->namespace_map_transactions.end());
-	it->second.begin_transaction(transaction->second);
-    }
     if ( isolate_registration_side_effects )
     {
 	pgm.class_registration_taps_muted = true;
@@ -20557,6 +20542,43 @@ void Program::ClassRegistrationJournal::record_type_alias_write(
     state->type_aliases.push_back(State::SavedTypeAlias(owner, name,
 	found != owner->type_aliases.end(),
 	found == owner->type_aliases.end() ? NULL : found->second));
+}
+
+variable_map_t &Program::ClassRegistrationJournal::namespace_for_write(
+	const std::string &name)
+{
+    // Existing namespace registries journal only when this instantiation
+    // actually mutates them. A namespace created inside the journal can be
+    // removed wholesale, so it needs no inner transaction.
+    namespace_map_t::iterator current = pgm.namespace_map.find(name);
+    if ( !outermost || !state )
+	return current == pgm.namespace_map.end()
+	     ? pgm.namespace_map[name] : current->second;
+    if ( current == pgm.namespace_map.end() )
+    {
+	state->inserted_namespace_map_keys.insert(name);
+	return pgm.namespace_map[name];
+    }
+    if ( state->inserted_namespace_map_keys.count(name) )
+	return current->second;
+    std::map<std::string,
+	variable_map_t::transaction_state>::iterator transaction =
+	state->namespace_map_transactions.find(name);
+    if ( transaction == state->namespace_map_transactions.end() )
+    {
+	transaction = state->namespace_map_transactions.insert(std::make_pair(
+	    name, variable_map_t::transaction_state())).first;
+	current->second.begin_transaction(transaction->second);
+    }
+    return current->second;
+}
+
+variable_map_t &Program::namespace_variables_for_write(
+	const std::string &name)
+{
+    if ( active_class_registration_journal )
+	return active_class_registration_journal->namespace_for_write(name);
+    return namespace_map[name];
 }
 
 void Program::set_class_type_alias(DataDefCLASS *owner,
@@ -20705,12 +20727,10 @@ void Program::ClassRegistrationJournal::rollback()
 	assert(current != pgm.namespace_map.end());
 	current->second.rollback_transaction(it->second);
     }
-    for ( namespace_map_t::iterator it = pgm.namespace_map.begin();
-	  it != pgm.namespace_map.end(); )
-	if ( !state->namespace_map_keys.count(it->first) )
-	    pgm.namespace_map.erase(it++);
-	else
-	    ++it;
+    for ( std::set<std::string>::const_iterator it =
+	    state->inserted_namespace_map_keys.begin();
+	  it != state->inserted_namespace_map_keys.end(); ++it )
+	pgm.namespace_map.erase(*it);
     for ( size_t i = 0; i < state->project_types_transaction.saved.size(); ++i )
     {
 	const madc::dis::id_table<DataDef>::transaction_state::SavedSlot &saved =
@@ -24878,7 +24898,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			ns_name = nested_ns_name;
 			nsi = namespace_map.find(ns_name);
 			if ( nsi == namespace_map.end() )
-			    nsi = namespace_map.insert(std::make_pair(ns_name, variable_map_t())).first;
+			{
+			    namespace_variables_for_write(ns_name);
+			    nsi = namespace_map.find(ns_name);
+			}
 			member_tb = nextToken();
 			if ( !member_tb )
 			    Throw(tb) << "Expecting identifier after '" << ns_name << "::'" << flush;
@@ -25026,7 +25049,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    (fVOIDFUNC)sym);
 			if ( !var )
 			    Throw(member_tb) << "Failed to register dlsym function '" << member_name << "'" << flush;
-			nsi->second[member_name] = var; // cache for next call
+			// Cache the resolved symbol for the next qualified call.
+			namespace_variables_for_write(ns_name)[member_name] = var;
 			DBG(cout << "parseExpression() dlsym resolved " << ns_name << "::" << member_name << " at " << (uint64_t)sym << endl);
 		    }
 		    else
@@ -28082,7 +28106,7 @@ void Program::mirror_inline_namespace_into_parent(const std::string &parent_ns,
     {
 	if ( !parent_ns.empty() )
 	{
-	    variable_map_t &parent_vars = namespace_map[parent_ns];
+	    variable_map_t &parent_vars = namespace_variables_for_write(parent_ns);
 	    for ( variable_map_iter it = child_vars->second.begin();
 		  it != child_vars->second.end(); ++it )
 		if ( parent_vars.find(it->first) == parent_vars.end() )
@@ -28190,7 +28214,7 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
     {
 	opened_namespace = opened_namespace.empty()
 			 ? ns_parts[i] : (opened_namespace + "::" + ns_parts[i]);
-	namespace_map[opened_namespace];
+	namespace_variables_for_write(opened_namespace);
     }
     NamespaceScope ns_scope(*this, opened_namespace);
     if ( inline_namespace )
@@ -28470,7 +28494,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		if ( !(v->type && v->type->is_function()) )
 		    pgm.pack_tap_name(pgm.current_namespace() + "::" + name,
 				      Program::pdkVariable);	// B4a tap
-		pgm.namespace_map[pgm.current_namespace()][name] = v;
+		pgm.namespace_variables_for_write(
+		    pgm.current_namespace())[name] = v;
 	    }
 	    if ( source_ns.empty() && dti != pgm.datatype_map.end() )
 	    {
@@ -28679,7 +28704,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    {
 		pgm.pack_tap_name(pgm.current_namespace() + "::" + name,
 				  Program::pdkVariable);	// B4a tap
-		pgm.namespace_map[pgm.current_namespace()][name] = vmi->second;
+		pgm.namespace_variables_for_write(
+		    pgm.current_namespace())[name] = vmi->second;
 	    }
 	    if ( have_type )
 	    {
@@ -35389,7 +35415,8 @@ TokenBase *TokenENUM::parse(Program &pgm)
     if ( scoped && !pgm.current_namespace().empty()
       && pgm.class_scope_stack.empty() )
 	scoped_ns_key = pgm.current_namespace() + "::" + enum_tag;
-    variable_map_t *scope_ns = scoped ? &pgm.namespace_map[scoped_ns_key] : NULL;
+    variable_map_t *scope_ns = scoped
+	? &pgm.namespace_variables_for_write(scoped_ns_key) : NULL;
 
     int64_t val = 0;
     while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
@@ -38556,7 +38583,8 @@ static void register_skipped_namespace_template_function(
     bool retained_body = retain_namespace_fn_template_body(pgm, tokens,
 	typeparams, typeparam_defaults, typeparam_is_type, typeparam_is_pack,
 	name);
-    variable_map_t &ns = pgm.namespace_map[pgm.current_namespace()];
+    variable_map_t &ns = pgm.namespace_variables_for_write(
+	pgm.current_namespace());
     Variable *var = NULL;
     {
 	variable_map_iter ni = ns.find(name);
@@ -49041,7 +49069,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    }
 	    if ( namespace_function )
 	    {
-		variable_map_t &ns = namespace_map[current_namespace()];
+		variable_map_t &ns = namespace_variables_for_write(
+		    current_namespace());
 		ns[source_id] = ns_var;
 		ns.erase(parse_id);
 	    }

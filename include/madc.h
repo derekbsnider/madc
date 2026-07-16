@@ -1091,6 +1091,7 @@ public:
 	state.saved.clear();
 	state.touched.clear();
     }
+    bool transaction_active() const { return transaction != NULL; }
 };
 
 template<class Key>
@@ -2447,8 +2448,10 @@ public:
 	void rollback();
 	void record_type_alias_write(DataDefCLASS *owner,
 				     const std::string &name);
+	variable_map_t &namespace_for_write(const std::string &name);
     };
     ClassRegistrationJournal *active_class_registration_journal = NULL;
+    variable_map_t &namespace_variables_for_write(const std::string &name);
     void set_class_type_alias(DataDefCLASS *owner, const std::string &name,
 			      DataDef *type);
     // Namespace/global templates are keyed by bare name; member templates are

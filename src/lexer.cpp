@@ -3277,7 +3277,7 @@ TokenBase *Program::_getToken()
 				      << " — auto-load off, bound to global scope" << std::endl);
 		    }
 		    dlopen_map[ns_name] = handle;
-		    namespace_map[ns_name]; // create empty namespace
+		    namespace_variables_for_write(ns_name); // create empty namespace
 		    return getToken();
 		}
 		if ( directive == "define" )

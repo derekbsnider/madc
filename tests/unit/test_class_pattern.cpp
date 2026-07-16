@@ -547,6 +547,7 @@ TEST_CASE("B3 structural registration transactions restore first writes")
 	program.hoisted_symbol_identity_keys["existing"] = "original";
 	program.funcdef_map["existing"] = &original_func;
 	program.namespace_map["known"]["existing"] = &original_var;
+	program.namespace_map["untouched"]["existing"] = &original_var;
 	program.struct_map.set("existing", &ddINT32);
 	program.deferred_lazy_bodies["existing"].line = 7;
 	program.out_of_line_member_defs["existing"].push_back(
@@ -559,11 +560,19 @@ TEST_CASE("B3 structural registration transactions restore first writes")
 		Program::ClassRegistrationJournal journal(program);
 		CHECK(program.class_registration_taps_muted);
 		CHECK_FALSE(program.forest_arena_enabled);
+		CHECK_FALSE(program.namespace_map["known"].transaction_active());
+		CHECK_FALSE(program.namespace_map["untouched"].transaction_active());
 		program.funcdef_map["existing"] = &replacement_func;
 		program.funcdef_map["created"] = &replacement_func;
-		program.namespace_map["known"]["existing"] = &replacement_var;
-		program.namespace_map["known"]["created"] = &replacement_var;
-		program.namespace_map["created"]["entry"] = &replacement_var;
+		program.namespace_variables_for_write("known")["existing"] =
+			&replacement_var;
+		program.namespace_variables_for_write("known")["created"] =
+			&replacement_var;
+		program.namespace_variables_for_write("created")["entry"] =
+			&replacement_var;
+		CHECK(program.namespace_map["known"].transaction_active());
+		CHECK_FALSE(program.namespace_map["untouched"].transaction_active());
+		CHECK_FALSE(program.namespace_map["created"].transaction_active());
 		program.struct_map.set("existing", &ddINT64);
 		program.struct_map.set("created", &ddINT64);
 		program.deferred_lazy_bodies["existing"].line = 9;
@@ -622,7 +631,10 @@ TEST_CASE("B3 structural registration transactions restore first writes")
 	CHECK(program.funcdef_map.count("created") == 0);
 	CHECK(program.namespace_map["known"]["existing"] == &original_var);
 	CHECK(program.namespace_map["known"].count("created") == 0);
+	CHECK(program.namespace_map["untouched"]["existing"] == &original_var);
 	CHECK(program.namespace_map.count("created") == 0);
+	CHECK_FALSE(program.namespace_map["known"].transaction_active());
+	CHECK_FALSE(program.namespace_map["untouched"].transaction_active());
 	CHECK(program.struct_map.find("existing")->second == &ddINT32);
 	CHECK(program.struct_map.find("created") == program.struct_map.end());
 	CHECK(program.deferred_lazy_bodies["existing"].line == 7);
