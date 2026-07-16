@@ -967,6 +967,7 @@ int main(int argc, char **argv)
 		"[stats]   tsubst bodies ..... %llu hit / %llu fallback\n"
 		"[stats]   class instantiate . %llu pattern / %llu parse / %llu cache / %llu opaque\n"
 		"[stats]   class patterns .... %llu materialized / %llu deferred\n"
+		"[stats]   resolver memo ...... %llu hit / %llu miss / %llu published\n"
 		"[stats]   decl-parse ........ %.3f s  (PCH-cacheable share)\n"
 		"[stats] cir build ........... %.3f s  (AST -> cir_node)\n"
 		"[stats] c2mir compile ....... %.3f s\n"
@@ -999,6 +1000,9 @@ int main(int argc, char **argv)
 		prog->_class_inst_opaque,
 		prog->_class_pattern_restore_materialized,
 		prog->_class_pattern_restore_deferred,
+		prog->_class_pattern_resolver_memo_hits,
+		prog->_class_pattern_resolver_memo_misses,
+		prog->_class_pattern_resolver_memo_published,
 		decl_secs,
 		cir_secs,
 		c2mir_secs,

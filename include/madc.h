@@ -2332,6 +2332,23 @@ public:
 	    types.push_back(ClassTypePattern());
 	}
     };
+    struct ClassPatternResolverMemoEntry {
+	uint8_t kind;
+	uint32_t name_id;
+	uint32_t namespace_id;
+	DataDefCLASS *owner;
+	std::vector<DataDef *> arguments;
+	DataDef *result;
+	ClassPatternResolverMemoEntry(
+		uint8_t k = 0, uint32_t n = 0, uint32_t ns = 0,
+		DataDefCLASS *o = NULL,
+		const std::vector<DataDef *> &args = std::vector<DataDef *>(),
+		DataDef *dd = NULL)
+	    : kind(k), name_id(n), namespace_id(ns), owner(o),
+	      arguments(args), result(dd) {}
+    };
+    typedef std::unordered_multimap<uint64_t, ClassPatternResolverMemoEntry>
+	class_pattern_resolver_memo_t;
     class ClassPatternArena {
 	std::deque<ClassPattern> patterns;
     public:
@@ -2357,6 +2374,10 @@ public:
 	size_t size() const { return patterns.size() - 1; }
     };
     ClassPatternArena class_pattern_arena;
+    class_pattern_resolver_memo_t class_pattern_resolver_memo;
+    unsigned long long _class_pattern_resolver_memo_hits = 0;
+    unsigned long long _class_pattern_resolver_memo_misses = 0;
+    unsigned long long _class_pattern_resolver_memo_published = 0;
     std::map<const uint32_t *, ClassPatternId> restored_class_pattern_cache;
     unsigned long long _class_pattern_restore_deferred = 0;
     unsigned long long _class_pattern_restore_materialized = 0;
@@ -2484,9 +2505,26 @@ public:
 		uint32_t name_id, DataDefCLASS *owner, bool partial);
 	std::vector<TemplateAliasDef> &alias_template_variants_for_write(
 		uint32_t name_id, DataDefCLASS *owner);
+	DataDef *find_class_pattern_resolution(uint64_t resolution_hash,
+		uint8_t kind, uint32_t name_id, uint32_t namespace_id,
+		DataDefCLASS *owner,
+		const std::vector<DataDef *> &arguments) const;
+	void record_class_pattern_resolution(uint64_t resolution_hash,
+		uint8_t kind, uint32_t name_id, uint32_t namespace_id,
+		DataDefCLASS *owner,
+		const std::vector<DataDef *> &arguments, DataDef *result);
+	void publish_class_pattern_resolutions();
     };
     ClassRegistrationJournal *active_class_registration_journal = NULL;
     variable_map_t &namespace_variables_for_write(const std::string &name);
+    DataDef *find_class_pattern_resolution(uint64_t resolution_hash,
+	uint8_t kind, uint32_t name_id, uint32_t namespace_id,
+	DataDefCLASS *owner,
+	const std::vector<DataDef *> &arguments) const;
+    void record_class_pattern_resolution(uint64_t resolution_hash,
+	uint8_t kind, uint32_t name_id, uint32_t namespace_id,
+	DataDefCLASS *owner,
+	const std::vector<DataDef *> &arguments, DataDef *result);
     void set_class_type_alias(DataDefCLASS *owner, const std::string &name,
 			      DataDef *type);
     // Namespace/global templates are keyed by bare name; member templates are

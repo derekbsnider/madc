@@ -4783,11 +4783,70 @@ static std::string basic_class_pattern_bound_typedef(
 
 class BasicClassPatternResolver
 {
+    struct PendingResolution {
+	uint64_t resolution_hash;
+	uint8_t kind;
+	uint32_t name_id;
+	uint32_t namespace_id;
+	DataDefCLASS *owner;
+	std::vector<DataDef *> arguments;
+	DataDef *result;
+	PendingResolution(uint64_t hash, uint8_t k, uint32_t n,
+		uint32_t ns, DataDefCLASS *o,
+		const std::vector<DataDef *> &args, DataDef *dd)
+	    : resolution_hash(hash), kind(k), name_id(n), namespace_id(ns),
+	      owner(o), arguments(args), result(dd) {}
+    };
     Program &pgm;
     const BasicClassPatternBinding &binding;
     std::vector<DataDef *> nodes;
     std::vector<DataDef *> resolved;
     std::vector<bool> active;
+    std::vector<PendingResolution> pending;
+
+    uint64_t resolution_key(uint8_t kind, uint32_t name_id,
+	uint32_t namespace_id, DataDefCLASS *owner,
+	const std::vector<DataDef *> &arguments) const
+    {
+	ClassPatternHash hash;
+	hash.add_u64(kind);
+	hash.add_u64(name_id);
+	hash.add_u64(namespace_id);
+	hash.add_u64((uint64_t)(uintptr_t)owner);
+	hash.add_u64(arguments.size());
+	for ( size_t i = 0; i < arguments.size(); ++i )
+	    hash.add_u64((uint64_t)(uintptr_t)arguments[i]);
+	return hash.value();
+    }
+
+    DataDef *find_memoized(uint8_t kind, uint32_t name_id,
+	uint32_t namespace_id, DataDefCLASS *owner,
+	const std::vector<DataDef *> &arguments, uint64_t &hash)
+    {
+	hash = resolution_key(kind, name_id, namespace_id, owner, arguments);
+	for ( size_t i = pending.size(); i-- > 0; )
+	    if ( pending[i].resolution_hash == hash
+	      && pending[i].kind == kind && pending[i].name_id == name_id
+	      && pending[i].namespace_id == namespace_id
+	      && pending[i].owner == owner
+	      && pending[i].arguments == arguments )
+	    {
+		if ( pgm.class_parse_observability )
+		    ++pgm._class_pattern_resolver_memo_hits;
+		return pending[i].result;
+	    }
+	DataDef *cached = pgm.find_class_pattern_resolution(hash, kind, name_id,
+	    namespace_id, owner, arguments);
+	if ( cached )
+	{
+	    if ( pgm.class_parse_observability )
+		++pgm._class_pattern_resolver_memo_hits;
+	    return cached;
+	}
+	if ( pgm.class_parse_observability )
+	    ++pgm._class_pattern_resolver_memo_misses;
+	return NULL;
+    }
 
     DataDef *invalid(const char *message)
     {
@@ -4796,11 +4855,24 @@ class BasicClassPatternResolver
 	return NULL;
     }
 
-    TokenDataType *instantiate_pattern_template(
+    DataDef *instantiate_pattern_template(
 	const std::string &qualified_name,
 	const std::vector<Program::ClassTypePatternId> &arguments,
-	DataDefCLASS *owner)
+	DataDefCLASS *owner, uint8_t memo_kind,
+	uint32_t memo_name_id, uint32_t memo_namespace_id,
+	uint64_t &memo_hash,
+	std::vector<DataDef *> &memo_arguments, bool &memo_miss)
     {
+	memo_arguments.clear();
+	memo_arguments.reserve(arguments.size());
+	for ( size_t i = 0; i < arguments.size(); ++i )
+	    memo_arguments.push_back(resolve(arguments[i]));
+	DataDef *cached = find_memoized(memo_kind, memo_name_id,
+	    memo_namespace_id, owner, memo_arguments, memo_hash);
+	if ( cached )
+	    return cached;
+	memo_miss = true;
+
 	std::string name = qualified_name;
 	std::string ns;
 	size_t scope = name.rfind("::");
@@ -4816,14 +4888,13 @@ class BasicClassPatternResolver
 	{
 	    if ( i )
 		replay.push_back(new TokenComma());
-	    DataDef *argument = resolve(arguments[i]);
 	    std::vector<bool> spelling_active(
 		binding.pattern.types.size(), false);
 	    std::string spelling = basic_class_pattern_type_spelling(
 		pgm, binding, arguments[i], true, spelling_active);
 	    replay.push_back(new TokenDataType(
-		spelling.empty() ? argument->name.c_str() : spelling.c_str(),
-		*argument));
+		spelling.empty() ? memo_arguments[i]->name.c_str()
+				 : spelling.c_str(), *memo_arguments[i]));
 	}
 	replay.push_back(new TokenGT());
 	size_t replay_base = pgm.tokens.size();
@@ -4849,7 +4920,7 @@ class BasicClassPatternResolver
 	pgm.allow_variadic_real_inst = saved_vri;
 	while ( pgm.tokens.size() > replay_base )
 	    pgm.nextToken();
-	return instantiated;
+	return instantiated ? &instantiated->definition : NULL;
     }
 
     DataDefCLASS *resolved_class(Program::ClassTypePatternId id)
@@ -4883,8 +4954,15 @@ public:
 	    return resolved[id];
 	if ( active[id] )
 	    return invalid("contains a cyclic unary type");
-	active[id] = true;
 	const Program::ClassTypePattern &type = binding.pattern.types[id];
+	uint64_t memo_hash = 0;
+	uint8_t memo_kind = 0;
+	uint32_t memo_name_id = 0;
+	uint32_t memo_namespace_id = 0;
+	DataDefCLASS *memo_owner = NULL;
+	std::vector<DataDef *> memo_arguments;
+	bool memo_miss = false;
+	active[id] = true;
 	DataDef *result = NULL;
 	switch ( type.kind )
 	{
@@ -4931,22 +5009,38 @@ public:
 	    break;
 	case Program::ClassTypePatternKind::TemplateId:
 	{
-	    TokenDataType *instantiated = instantiate_pattern_template(
-		type.name, type.arguments, NULL);
-	    result = instantiated ? &instantiated->definition : NULL;
+	    memo_kind = 1;
+	    memo_name_id = pgm.template_name_pool.intern(type.name);
+	    memo_namespace_id = pgm.namespace_name_pool.intern(
+		binding.definition.defining_namespace);
+	    result = instantiate_pattern_template(type.name, type.arguments,
+		NULL, memo_kind, memo_name_id, memo_namespace_id, memo_hash,
+		memo_arguments, memo_miss);
 	    break;
 	}
 	case Program::ClassTypePatternKind::DependentMember:
 	{
-	    DataDefCLASS *owner = resolved_class(type.operand);
-	    if ( owner && (type.flags & 1u) )
+	    memo_owner = resolved_class(type.operand);
+	    if ( memo_owner && (type.flags & 1u) )
 	    {
-		TokenDataType *instantiated = instantiate_pattern_template(
-		    type.name, type.arguments, owner);
-		result = instantiated ? &instantiated->definition : NULL;
+		memo_kind = 3;
+		memo_name_id = pgm.template_name_pool.intern(type.name);
+		result = instantiate_pattern_template(type.name, type.arguments,
+		    memo_owner, memo_kind, memo_name_id, memo_namespace_id,
+		    memo_hash, memo_arguments, memo_miss);
 	    }
-	    else if ( owner )
-		result = Program::class_member_type(owner, type.name);
+	    else if ( memo_owner )
+	    {
+		memo_kind = 2;
+		memo_name_id = pgm.template_name_pool.intern(type.name);
+		result = find_memoized(memo_kind, memo_name_id,
+		    memo_namespace_id, memo_owner, memo_arguments, memo_hash);
+		if ( !result )
+		{
+		    memo_miss = true;
+		    result = Program::class_member_type(memo_owner, type.name);
+		}
+	    }
 	    break;
 	}
 	case Program::ClassTypePatternKind::FunctionPointer:
@@ -4972,8 +5066,22 @@ public:
 		<< "' in '" << binding.pattern.class_name << "'" << flush;
 	    return NULL;
 	}
+	if ( memo_miss )
+	    pending.push_back(PendingResolution(memo_hash, memo_kind,
+		memo_name_id, memo_namespace_id, memo_owner, memo_arguments,
+		result));
 	resolved[id] = result;
 	return result;
+    }
+
+    void stage_cache()
+    {
+	for ( size_t i = 0; i < pending.size(); ++i )
+	    pgm.record_class_pattern_resolution(pending[i].resolution_hash,
+		pending[i].kind, pending[i].name_id,
+		pending[i].namespace_id, pending[i].owner,
+		pending[i].arguments, pending[i].result);
+	pending.clear();
     }
 
     std::string concrete_spelling(Program::ClassTypePatternId id)
@@ -5685,6 +5793,7 @@ static TokenDataType *instantiate_basic_class_pattern(
     if ( !ddc )
 	ddc = new DataDefCLASS(binding.registered_name, 0,
 			       DataType::dtRESERVED);
+    bool registration_committed = false;
 
     try
     {
@@ -5762,17 +5871,21 @@ static TokenDataType *instantiate_basic_class_pattern(
 	    binding.definition.defining_namespace,
 	    binding.registered_name, ddc,
 	    binding.arg_types_by_slot, binding.arg_tokens_by_slot);
+	resolver.stage_cache();
 	journal.commit();
+	registration_committed = true;
+	journal.publish_class_pattern_resolutions();
 	return use_site_type_token(tdt, binding.location);
     }
     catch ( ... )
     {
-	if ( saved_forward )
+	if ( !registration_committed && saved_forward )
 	{
 	    *ddc = *saved_forward;
 	    ++DataDef::canonical_spelling_gen;
 	}
-	journal.rollback();
+	if ( !registration_committed )
+	    journal.rollback();
 	throw;
     }
 }
@@ -20418,6 +20531,8 @@ struct Program::ClassRegistrationJournal::State
     std::map<std::string, variable_map_t::transaction_state>
 	namespace_map_transactions;
     std::set<std::string> inserted_namespace_map_keys;
+    std::vector<std::pair<uint64_t, ClassPatternResolverMemoEntry> >
+	class_pattern_resolutions;
     namespace_datatype_map_t::transaction_state namespace_datatype_map;
     madc::dis::intern_keyed_map<template_registry_entry_t>::transaction_state
 	template_map;
@@ -20787,6 +20902,100 @@ Program::alias_template_variants_for_write(
 	return active_class_registration_journal->
 	    alias_template_variants_for_write(name_id, owner);
     return template_alias_map[name_id].for_write(owner);
+}
+
+DataDef *Program::ClassRegistrationJournal::find_class_pattern_resolution(
+	uint64_t resolution_hash, uint8_t kind, uint32_t name_id,
+	uint32_t namespace_id, DataDefCLASS *owner,
+	const std::vector<DataDef *> &arguments) const
+{
+    if ( !outermost || !state )
+	return NULL;
+    for ( size_t i = state->class_pattern_resolutions.size(); i-- > 0; )
+    {
+	const std::pair<uint64_t, ClassPatternResolverMemoEntry> &pending =
+	    state->class_pattern_resolutions[i];
+	if ( pending.first == resolution_hash
+	  && pending.second.kind == kind && pending.second.name_id == name_id
+	  && pending.second.namespace_id == namespace_id
+	  && pending.second.owner == owner
+	  && pending.second.arguments == arguments )
+	    return pending.second.result;
+    }
+    return NULL;
+}
+
+void Program::ClassRegistrationJournal::record_class_pattern_resolution(
+	uint64_t resolution_hash, uint8_t kind, uint32_t name_id,
+	uint32_t namespace_id, DataDefCLASS *owner,
+	const std::vector<DataDef *> &arguments, DataDef *result)
+{
+    if ( !outermost || !state || !result )
+	return;
+    if ( find_class_pattern_resolution(resolution_hash, kind, name_id,
+	    namespace_id, owner, arguments) )
+	return;
+    state->class_pattern_resolutions.push_back(std::make_pair(
+	resolution_hash, ClassPatternResolverMemoEntry(
+	    kind, name_id, namespace_id, owner, arguments, result)));
+}
+
+void Program::ClassRegistrationJournal::publish_class_pattern_resolutions()
+{
+    if ( !outermost || !state || !finished )
+	return;
+    for ( size_t i = 0; i < state->class_pattern_resolutions.size(); ++i )
+    {
+	const std::pair<uint64_t, ClassPatternResolverMemoEntry> &pending =
+	    state->class_pattern_resolutions[i];
+	pgm.record_class_pattern_resolution(pending.first,
+	    pending.second.kind, pending.second.name_id,
+	    pending.second.namespace_id, pending.second.owner,
+	    pending.second.arguments, pending.second.result);
+    }
+    state->class_pattern_resolutions.clear();
+}
+
+DataDef *Program::find_class_pattern_resolution(uint64_t resolution_hash,
+	uint8_t kind, uint32_t name_id, uint32_t namespace_id,
+	DataDefCLASS *owner,
+	const std::vector<DataDef *> &arguments) const
+{
+    std::pair<class_pattern_resolver_memo_t::const_iterator,
+	class_pattern_resolver_memo_t::const_iterator> range =
+	class_pattern_resolver_memo.equal_range(resolution_hash);
+    for ( class_pattern_resolver_memo_t::const_iterator it = range.first;
+	  it != range.second; ++it )
+	if ( it->second.kind == kind && it->second.name_id == name_id
+	  && it->second.namespace_id == namespace_id
+	  && it->second.owner == owner && it->second.arguments == arguments )
+	    return it->second.result;
+    return active_class_registration_journal
+	? active_class_registration_journal->find_class_pattern_resolution(
+	    resolution_hash, kind, name_id, namespace_id, owner, arguments)
+	: NULL;
+}
+
+void Program::record_class_pattern_resolution(uint64_t resolution_hash,
+	uint8_t kind, uint32_t name_id, uint32_t namespace_id,
+	DataDefCLASS *owner,
+	const std::vector<DataDef *> &arguments, DataDef *result)
+{
+    if ( active_class_registration_journal )
+    {
+	active_class_registration_journal->record_class_pattern_resolution(
+	    resolution_hash, kind, name_id, namespace_id, owner, arguments,
+	    result);
+	return;
+    }
+    if ( !result || find_class_pattern_resolution(resolution_hash,
+	    kind, name_id, namespace_id, owner, arguments) )
+	return;
+    class_pattern_resolver_memo.insert(std::make_pair(
+	resolution_hash, ClassPatternResolverMemoEntry(
+	    kind, name_id, namespace_id, owner, arguments, result)));
+    if ( class_parse_observability )
+	++_class_pattern_resolver_memo_published;
 }
 
 void Program::set_class_type_alias(DataDefCLASS *owner,

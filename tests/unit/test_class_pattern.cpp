@@ -242,14 +242,22 @@ TEST_CASE("B2 basic ClassPattern substitution matches the sole parser lane")
 TEST_CASE("B2 admitted ClassPattern failures roll back without parser retry")
 {
 	const char *definition =
+		"template<typename T> struct PatternDependency {\n"
+		"    using type = T;\n"
+		"};\n"
 		"template<typename T> class PatternFailure {\n"
 		"public:\n"
+		"    using rebound = typename PatternDependency<T>::type;\n"
 		"    T value;\n"
 		"    T read(T *p) const;\n"
 		"};\n";
 	const char *complete_source =
+		"template<typename T> struct PatternDependency {\n"
+		"    using type = T;\n"
+		"};\n"
 		"template<typename T> class PatternFailure {\n"
 		"public:\n"
+		"    using rebound = typename PatternDependency<T>::type;\n"
 		"    T value;\n"
 		"    T read(T *p) const;\n"
 		"};\n"
@@ -281,12 +289,14 @@ TEST_CASE("B2 admitted ClassPattern failures roll back without parser retry")
 
 	FuncDef *collision = new FuncDef(ddINT);
 	program.funcdef_map[collision_name] = collision;
+	program.class_parse_observability = true;
+	size_t resolver_memo_size = program.class_pattern_resolver_memo.size();
 	TokenProgram *use_tokens = program.tokenize_buffer(
 		"PatternFailure<int64_t> failed;\n",
 		"<class-pattern-failure-use>");
 	REQUIRE(use_tokens != NULL);
 	CHECK_FALSE(program.parse(use_tokens));
-	CHECK(program._class_inst_pattern == 1);
+	CHECK(program._class_inst_pattern == 2);
 	CHECK(program._class_inst_parse == 0);
 	REQUIRE(program.funcdef_map.count(collision_name) == 1);
 	CHECK(program.funcdef_map.find(collision_name)->second == collision);
@@ -294,6 +304,35 @@ TEST_CASE("B2 admitted ClassPattern failures roll back without parser retry")
 	      program.struct_map.end());
 	CHECK(program.datatype_map.find(registered_name) ==
 	      program.datatype_map.end());
+	CHECK(program._class_pattern_resolver_memo_misses > 0);
+	CHECK(program.class_pattern_resolver_memo.size() == resolver_memo_size);
+}
+
+TEST_CASE("B3 resolver memo shares committed dependent type chains")
+{
+	const char *source =
+		"template<typename T> struct SharedPatternDependency {\n"
+		"    using type = T;\n"
+		"};\n"
+		"template<typename T> struct PatternMemoLeft {\n"
+		"    using value_type = typename SharedPatternDependency<T>::type;\n"
+		"    value_type value;\n"
+		"};\n"
+		"template<typename T> struct PatternMemoRight {\n"
+		"    using value_type = typename SharedPatternDependency<T>::type;\n"
+		"    value_type value;\n"
+		"};\n"
+		"PatternMemoLeft<int64_t> left;\n"
+		"PatternMemoRight<int64_t> right;\n";
+
+	Program program;
+	program.class_parse_observability = true;
+	TokenProgram *tokens = program.tokenize_buffer(
+		source, "<class-pattern-resolver-memo>");
+	REQUIRE(tokens != NULL);
+	REQUIRE(program.parse(tokens));
+	CHECK(program._class_pattern_resolver_memo_hits > 0);
+	CHECK(program._class_pattern_resolver_memo_published > 0);
 }
 
 TEST_CASE("B3 ClassPattern products retain their definition-file origin")
