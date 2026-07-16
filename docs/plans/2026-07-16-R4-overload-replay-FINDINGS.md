@@ -1,7 +1,62 @@
 # R4 findings — "member-template overload replay" root-cause investigation
 
-**Status: IN PROGRESS (2026-07-16, Claude).** Working tree carries the fence
-lifts + diagnostics (uncommitted → WIP commit). NOT validated; do not merge.
+**Status: FIX STACK BUILT, VALIDATION IN FLIGHT (2026-07-16, Claude).**
+Working tree = fence lifts + diagnostics + THREE fixes. NOT validated; do not
+merge.
+
+## RESUME HERE (post-compaction rehydration)
+
+The root cause (full chain below) is: **pattern-lane replay tokens carried C++
+SOURCE spellings where the parse lane carries REGISTERED identities
+(dd->name)**; frozen decl text with source spellings neither resolves
+(datatype lookup) nor deduces (template-id unifier) consumer-side at bind.
+The failing shape: `vector<string>` pattern-instantiated at pack →
+`__alloc_traits<...>` parse-lane-instantiated as its dependency WITH
+source-spelled replay arg tokens → its `construct`/`destroy` member-template
+placeholder decl tokens freeze with source spellings → at bind, the derived
+`_M_realloc_insert__mti` body's `_Alloc_traits::construct(...)` fails
+deduction (ok=0, then STREAM IMBALANCE on a later attempt) → call stays on the
+ref-less varargs placeholder → struct passes by value → c2mir "conversion of
+non-scalar value requested" ×2 (construct + destroy) → subbind red.
+
+**Three fixes in the working tree (commit them as one rung):**
+1. `fn_template` deducer ([temp.deduct.call] derived-class rule): template-id
+   param unify failure retries against the argument class's BASES,
+   breadth-first, with `binding_pre` copies so failed attempts can't poison
+   state (parser.cpp ~39915, after the direct unify).
+2. `basic_class_pattern_canonicalize_type_tokens(pgm, out)`: every substituted
+   `TokenDataType` in pattern token streams gets its spelling set to
+   `definition.name` (applied in `basic_class_pattern_substitute_tokens` —
+   which grew a `Program &pgm` first param, all ~13 call sites updated, plus
+   `basic_class_pattern_substitute_token_runs` — and in
+   `basic_class_pattern_member_template_tokens`).
+3. Resolver replay tokens (`instantiate_pattern_template`, parser.cpp ~4886):
+   `TokenDataType(memo_arguments[i]->name, *memo_arguments[i])` — ALWAYS the
+   registered identity, never `basic_class_pattern_type_spelling`. Key-neutral:
+   instantiation keys derive from the attached DataDef (fenced/unfenced packs
+   register identical mangled names).
+
+**Next steps (exactly where this left off):**
+1. Build in flight: `CXXFLAGS="-std=c++11 -Wall -O0 -DMADC_DEBUG_FNTPL=1"
+   make -C src ../bin/madc` (debug define is #if-gated; FINAL validation must
+   rebuild parser.o with default CXXFLAGS).
+2. Test cycle: `bin/madc --freeze=tmp/r4_fix.msnap tests/testsubscript.mad`
+   then `--forest-bind=tmp/r4_fix.msnap` → diff vs `tmp/r4_sub_live.out`
+   (13-line expected output; live output captured there). Watch deduce with
+   `MADC_DEBUG_FNTPL_DUMP=construct` — param[0] spelling should now be
+   `allocator_std__..._&` and ok=1.
+3. If green: default-flags rebuild, `make -C src fulltest` (includes bind gate
+   18/18 + subbind), `make -C src release`, packed suite
+   (`MADC_BIN=bin/madc-release bash scripts/run_tests.sh`), blob check, binary
+   size vs 10,383,304. Commit rung (fences deleted + 3 fixes + probes),
+   re-freeze everything, push.
+4. If still red: the same evidence loop — `MADC_CHECK_ATTRIB=1` names the
+   failing def; FNTPL dumps name the failing deduce/parse.
+5. Remaining after R4: task #41 (live lazy capture of vector fails —
+   dependent-base _M_impl; fix likely benefits from fixes 2+3 since capture
+   bodies also parse substituted tokens), then R5 (flip live default + B3 wall
+   gate; needs eligibility widening for __iterator_traits/allocator_traits ×14
+   + __move_if_noexcept_cond parse-error family).
 
 ## What R4 turned out to actually be
 

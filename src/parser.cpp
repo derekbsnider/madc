@@ -4879,13 +4879,16 @@ class BasicClassPatternResolver
 	{
 	    if ( i )
 		replay.push_back(new TokenComma());
-	    std::vector<bool> spelling_active(
-		binding.pattern.types.size(), false);
-	    std::string spelling = basic_class_pattern_type_spelling(
-		pgm, binding, arguments[i], true, spelling_active);
+	    // The replay arg token carries the REGISTERED type identity
+	    // (dd->name) — the spelling the parse lane's tsubst feeds at the
+	    // same juncture. A C++-source spelling here leaks into the nested
+	    // instantiation's substituted decl tokens (member-template param
+	    // spellings, frozen text), where it neither resolves nor deduces
+	    // on the consumer side. Instantiation keys are derived from the
+	    // attached DataDef, not the token text (fenced/unfenced packs
+	    // register identical mangled names), so this is key-neutral.
 	    replay.push_back(new TokenDataType(
-		spelling.empty() ? memo_arguments[i]->name.c_str()
-				 : spelling.c_str(), *memo_arguments[i]));
+		memo_arguments[i]->name.c_str(), *memo_arguments[i]));
 	}
 	replay.push_back(new TokenGT());
 	size_t replay_base = pgm.tokens.size();
@@ -5143,8 +5146,24 @@ public:
     }
 };
 
+// A substituted type token must carry the REGISTERED type identity as its
+// spelling (dd->name — what the parse lane's tsubst emits), not the C++
+// source spelling. The token's attached DataDef makes either work LIVE, but
+// the freeze flattens tokens to spelling text: a source-spelled type in a
+// frozen member-template decl neither resolves (datatype lookup) nor deduces
+// (the template-id unifier) on the consumer side. Parity = registered name.
+static void basic_class_pattern_canonicalize_type_tokens(
+	Program &pgm, std::vector<TokenBase *> &out)
+{
+    for ( size_t i = 0; i < out.size(); ++i )
+	if ( TokenDataType *tdt = dynamic_cast<TokenDataType *>(out[i]) )
+	    if ( !tdt->definition.name.empty()
+	      && tdt->spelling() != tdt->definition.name )
+		pgm.set_token_spelling(tdt, tdt->definition.name);
+}
+
 static std::vector<TokenBase *> basic_class_pattern_substitute_tokens(
-	const BasicClassPatternBinding &binding,
+	Program &pgm, const BasicClassPatternBinding &binding,
 	const std::vector<TokenBase *> &tokens)
 {
     std::vector<TokenBase *> out =
@@ -5156,6 +5175,7 @@ static std::vector<TokenBase *> basic_class_pattern_substitute_tokens(
 	    out[i]->line = tokens[i]->line;
 	    out[i]->column = tokens[i]->column;
 	}
+    basic_class_pattern_canonicalize_type_tokens(pgm, out);
     return out;
 }
 
@@ -5226,6 +5246,7 @@ static std::vector<TokenBase *> basic_class_pattern_member_template_tokens(
 	out.push_back(token ? basic_class_pattern_token_at_source(
 	    token->clone(), token) : NULL);
     }
+    basic_class_pattern_canonicalize_type_tokens(pgm, out);
     return out;
 }
 
@@ -5244,7 +5265,7 @@ static TokenBase *parse_basic_class_pattern_default(
 	const std::vector<TokenBase *> &raw)
 {
     std::vector<TokenBase *> seq =
-	basic_class_pattern_substitute_tokens(binding, raw);
+	basic_class_pattern_substitute_tokens(pgm, binding, raw);
     if ( seq.empty() )
 	return NULL;
     seq.push_back(new TokenClBrk());
@@ -5302,7 +5323,7 @@ static void register_basic_class_pattern_method(
 	std::vector<TokenBase *> tokens = owner->name == binding.registered_name
 	    ? basic_class_pattern_member_template_tokens(
 		pgm, binding, pattern.member_template_decl)
-	    : basic_class_pattern_substitute_tokens(
+	    : basic_class_pattern_substitute_tokens(pgm,
 		binding, pattern.member_template_decl);
 	std::string ctor_source_name;
 	if ( pattern.kind == Program::ClassMethodKind::Constructor )
@@ -5354,9 +5375,9 @@ static void register_basic_class_pattern_method(
     fd->template_param_is_pack = pattern.template_param_is_pack;
     fd->template_return_spelling = pattern.template_return_spelling;
     fd->template_param_spellings = pattern.template_param_spellings;
-    fd->member_template_decl = basic_class_pattern_substitute_tokens(
+    fd->member_template_decl = basic_class_pattern_substitute_tokens(pgm,
 	binding, pattern.member_template_decl);
-    fd->member_template_return_tokens = basic_class_pattern_substitute_tokens(
+    fd->member_template_return_tokens = basic_class_pattern_substitute_tokens(pgm,
 	binding, pattern.member_template_return_tokens);
     if ( pattern.is_member_template )
 	fd->member_template_owner = owner;
@@ -5375,7 +5396,7 @@ static void register_basic_class_pattern_method(
 	fd->param_typedef_names.push_back(typedef_name);
 	fd->param_defaults.push_back(NULL);
 	fd->param_default_tokens.push_back(
-	    basic_class_pattern_substitute_tokens(binding, param.default_tokens));
+	    basic_class_pattern_substitute_tokens(pgm, binding, param.default_tokens));
 	bool hidden_this = !(pattern.flags & vfSTATIC) && i == 0;
 	std::vector<bool> active(binding.pattern.types.size(), false);
 	bool dependent = !hidden_this && basic_class_pattern_type_is_dependent(
@@ -5460,13 +5481,13 @@ static void register_basic_class_pattern_method(
 	Program::DeferredFunctionBody body;
 	body.var = mvar;
 	body.method = method;
-	body.body_tokens = basic_class_pattern_substitute_tokens(
+	body.body_tokens = basic_class_pattern_substitute_tokens(pgm,
 	    binding, pattern.body_tokens);
-	body.definition_tokens = basic_class_pattern_substitute_tokens(
+	body.definition_tokens = basic_class_pattern_substitute_tokens(pgm,
 	    binding, pattern.definition_tokens);
-	body.trailing_ret_tokens = basic_class_pattern_substitute_tokens(
+	body.trailing_ret_tokens = basic_class_pattern_substitute_tokens(pgm,
 	    binding, pattern.trailing_ret_tokens);
-	body.ctor_init_tokens = basic_class_pattern_substitute_tokens(
+	body.ctor_init_tokens = basic_class_pattern_substitute_tokens(pgm,
 	    binding, pattern.ctor_init_tokens);
 	body.full_definition = !body.definition_tokens.empty();
 	TokenBase *source = basic_class_pattern_first_token(
@@ -5480,12 +5501,12 @@ static void register_basic_class_pattern_method(
 
 static std::vector<std::vector<TokenBase *> >
 basic_class_pattern_substitute_token_runs(
-	const BasicClassPatternBinding &binding,
+	Program &pgm, const BasicClassPatternBinding &binding,
 	const std::vector<std::vector<TokenBase *> > &runs)
 {
     std::vector<std::vector<TokenBase *> > out;
     for ( size_t i = 0; i < runs.size(); ++i )
-	out.push_back(basic_class_pattern_substitute_tokens(binding, runs[i]));
+	out.push_back(basic_class_pattern_substitute_tokens(pgm, binding, runs[i]));
     return out;
 }
 
@@ -5502,20 +5523,20 @@ static void register_basic_class_pattern_nested_templates(
 	{
 	    Program::TemplateDef td;
 	    td.typeparams = nested.typeparams;
-	    td.typeparam_defaults = basic_class_pattern_substitute_token_runs(
+	    td.typeparam_defaults = basic_class_pattern_substitute_token_runs(pgm,
 		binding, nested.typeparam_defaults);
 	    td.typeparam_is_type = nested.typeparam_is_type;
 	    td.typeparam_is_pack = nested.typeparam_is_pack;
 	    td.has_non_type_params = nested.has_non_type_params;
 	    td.class_name = nested.class_name;
 	    td.registry_name_id = pgm.template_name_pool.intern(td.class_name);
-	    td.body = basic_class_pattern_substitute_tokens(binding, nested.body);
+	    td.body = basic_class_pattern_substitute_tokens(pgm, binding, nested.body);
 	    td.defining_namespace = nested.defining_namespace;
 	    td.owner_class = owner;
 	    td.is_partial_specialization = nested.is_partial_specialization;
-	    td.spec_pattern = basic_class_pattern_substitute_token_runs(
+	    td.spec_pattern = basic_class_pattern_substitute_token_runs(pgm,
 		binding, nested.spec_pattern);
-	    td.constraint = basic_class_pattern_substitute_tokens(
+	    td.constraint = basic_class_pattern_substitute_tokens(pgm,
 		binding, nested.constraint);
 	    td.class_pattern_id = 0;
 	    td.class_pattern_reason = Program::ClassParseReason::None;
@@ -5538,14 +5559,14 @@ static void register_basic_class_pattern_nested_templates(
 	{
 	    Program::TemplateAliasDef td;
 	    td.typeparams = nested.typeparams;
-	    td.typeparam_defaults = basic_class_pattern_substitute_token_runs(
+	    td.typeparam_defaults = basic_class_pattern_substitute_token_runs(pgm,
 		binding, nested.typeparam_defaults);
 	    td.typeparam_is_type = nested.typeparam_is_type;
 	    td.typeparam_is_pack = nested.typeparam_is_pack;
 	    td.has_non_type_params = nested.has_non_type_params;
 	    td.alias_name = nested.class_name;
 	    td.registry_name_id = pgm.template_name_pool.intern(td.alias_name);
-	    td.target = basic_class_pattern_substitute_tokens(
+	    td.target = basic_class_pattern_substitute_tokens(pgm,
 		binding, nested.target);
 	    td.defining_namespace = nested.defining_namespace;
 	    td.owner_class = owner;
@@ -12969,6 +12990,24 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
     // a candidate (e.g. a typedef-reference param it doesn't model), keep the
     // already parse-resolved overload (tc->var) — the rebind below still applies.
     Variable *ov = owner->findMethodOverload(member, at);
+#if MADC_DEBUG_FNTPL
+    {
+	const char *dump = ::getenv("MADC_DEBUG_FNTPL_DUMP");
+	if ( dump && member.find(dump) != std::string::npos )
+	{
+	    std::cerr << "FNTPL reselect member=" << member
+		      << " owner=" << owner->name
+		      << " initial=" << tc->var.name
+		      << " ov=" << (ov ? ov->name : "(none)")
+		      << " ov_static=" << (ov ? (int)((ov->flags & vfSTATIC) != 0) : -1)
+		      << " argc=" << at.size();
+	    for ( size_t i = 0; i < at.size(); ++i )
+		std::cerr << " a" << i << "="
+			  << (at[i] ? at[i]->name : "(null)");
+	    std::cerr << std::endl;
+	}
+    }
+#endif
     Variable *selvar = (ov && (ov->flags & vfSTATIC)) ? ov : &tc->var;
     TokenCallFunc *sel = tc;
     if ( selvar != &tc->var )
@@ -39896,10 +39935,55 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 			      : std::string());
 		int sc = 0;
 		std::map<std::string, std::vector<std::string> > outpk;
+		// A failed unify may have partially written `binding`; keep the
+		// pre-attempt state so the base-class retries below start clean.
+		std::map<std::string, DataDef *> binding_pre = binding;
 		bool uok = !concrete.empty()
 		  && pgm.unify_nested_spec_pattern_arg(core, ft.typeparams,
 						       concrete, binding, sc,
 						       NULL, &outpk);
+		// [temp.deduct.call]: a template-id parameter P also deduces
+		// from a BASE of the argument's class ("class derived from
+		// P"). `_Alloc_traits::construct(this->_M_impl, ...)` is the
+		// canonical shape: the argument is _Vector_impl, the param
+		// spells the base allocator<T>&. Breadth-first over bases,
+		// nearest first; first unifying base wins.
+		if ( !uok && acls )
+		{
+		    std::vector<DataDefCLASS *> queue;
+		    std::set<DataDefCLASS *> seen;
+		    seen.insert(acls);
+		    for ( size_t b = 0; b < acls->bases.size(); ++b )
+			if ( acls->bases[b].base && seen.insert(acls->bases[b].base).second )
+			    queue.push_back(acls->bases[b].base);
+		    if ( acls->base_class && seen.insert(acls->base_class).second )
+			queue.push_back(acls->base_class);
+		    for ( size_t q = 0; q < queue.size() && !uok; ++q )
+		    {
+			DataDefCLASS *bc = queue[q];
+			std::string bconc = !bc->canonical_cpp_spelling().empty()
+			    ? bc->canonical_cpp_spelling()
+			    : cpp_spelling_for_mangle(bc, false);
+			std::map<std::string, DataDef *> try_binding = binding_pre;
+			std::map<std::string, std::vector<std::string> > try_outpk;
+			int sc2 = 0;
+			if ( !bconc.empty()
+			  && pgm.unify_nested_spec_pattern_arg(core,
+				 ft.typeparams, bconc, try_binding, sc2,
+				 NULL, &try_outpk) )
+			{
+			    binding = try_binding;
+			    outpk = try_outpk;
+			    uok = true;
+			    break;
+			}
+			for ( size_t b = 0; b < bc->bases.size(); ++b )
+			    if ( bc->bases[b].base && seen.insert(bc->bases[b].base).second )
+				queue.push_back(bc->bases[b].base);
+			if ( bc->base_class && seen.insert(bc->base_class).second )
+			    queue.push_back(bc->base_class);
+		    }
+		}
 #ifdef MADC_DEBUG_CTORTMPL
 		if ( getenv("MADC_DEBUG_CTORTMPL") && !tid_packs.empty() )
 		    fprintf(stderr, "[tidpack] %s param[%zu] core='%s' concrete='%s' uok=%d outpk=%zu\n",
