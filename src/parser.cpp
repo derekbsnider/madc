@@ -5469,8 +5469,41 @@ static void register_basic_class_pattern_method(
 	    binding.pattern, param.type, active);
 	std::string spelling = hidden_this
 	    ? std::string() : resolver.concrete_spelling(param.type);
+	{
+	    static const char *cpp_probe =
+		::getenv("MADC_CLASS_PATTERN_PROBE");
+	    if ( cpp_probe && !hidden_this
+	      && (owner->name.find(cpp_probe) != std::string::npos
+		   || !strcmp(cpp_probe, "*")) )
+		std::cerr << "[class-pattern-probe] param-spelling: "
+		    << symbol << " param " << i
+		    << " dep=" << dependent
+		    << " concrete='" << spelling
+		    << "' captured='" << param.cpp_spelling << "'"
+		    << std::endl;
+	}
 	if ( !hidden_this && !dependent && !param.cpp_spelling.empty() )
 	    spelling = param.cpp_spelling;
+	else if ( !hidden_this && dependent && !param.cpp_spelling.empty() )
+	{
+	    // The resolved-type render cannot see two Itanium-relevant
+	    // qualifiers that exist ONLY in the captured source spelling: a
+	    // leading const (it rides const_params, never the type graph —
+	    // `const string&` would mangle R not RK) and rvalue-refness
+	    // (DataDefREF spells '&' for both `&` and `&&`). Both are
+	    // STRUCTURAL — substitution never changes them — so carry them
+	    // over from the captured spelling onto the concrete render.
+	    if ( param.cpp_spelling.compare(0, 6, "const ") == 0
+	      && spelling.compare(0, 6, "const ") != 0 )
+		spelling = "const " + spelling;
+	    size_t cn = param.cpp_spelling.size();
+	    size_t sn = spelling.size();
+	    if ( cn >= 2 && param.cpp_spelling[cn - 1] == '&'
+	      && param.cpp_spelling[cn - 2] == '&'
+	      && sn >= 1 && spelling[sn - 1] == '&'
+	      && (sn < 2 || spelling[sn - 2] != '&') )
+		spelling += "&";
+	}
 	if ( !hidden_this && spelling.empty() )
 	    pgm.Throw(binding.location)
 		<< "internal: basic ClassPattern lost method parameter spelling"
@@ -31290,6 +31323,11 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 		if ( oit->second[oi].member_name == mname )
 		    return;   // madc-instantiated out-of-line; leave emit_symbol unset
     }
+    // A signature whose spelling array is absent or misaligned (a restore or
+    // serve gap) must not mangle: the fabricated name drops parameters and can
+    // collide with a genuinely exported symbol (a 3-arg ctor mangling C1Ev).
+    if ( fd->param_cpp_spellings.size() != fd->parameters.size() )
+	return;
     // Parameter spellings, captured at parse time, excluding slot 0 only when
     // it is the hidden __this. A static method has no hidden slot, so all of its
     // parameters participate in the ABI name.

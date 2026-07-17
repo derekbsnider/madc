@@ -18687,10 +18687,36 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 		// concrete classes keep madc's vptr-init construction, which already
 		// works. The dtor is virtual (in the vtable) so it's exported for both.
 		bool ctor_exported = cls.find('<') != std::string::npos;
+		// Env-gated probe (MADC_EXTSYM_PROBE=<substr>): the FuncDef state each
+		// ctor mangles from, at every run of this pass (translate + pack re-run).
+		static const char *xsp = ::getenv("MADC_EXTSYM_PROBE");
+		bool xsp_hit = xsp && *xsp && cls.find(xsp) != std::string::npos;
 		for (Variable *cv : ctor_exported ? cdd->ctors
 						  : std::vector<Variable *>()) {
 			FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+			if (xsp_hit && fd) {
+				std::string sp;
+				for (size_t i = 0; i < fd->param_cpp_spellings.size(); ++i) {
+					sp += i ? "," : "";
+					sp += fd->param_cpp_spellings[i].empty()
+						? "<empty>" : fd->param_cpp_spellings[i];
+				}
+				fprintf(stderr, "EXTSYM ctor %s fd=%p params=%zu"
+					" spellings=%zu [%s] emit_symbol=%s mt=%d\n",
+					cv->name.c_str(), (void *)fd,
+					fd->parameters.size(),
+					fd->param_cpp_spellings.size(), sp.c_str(),
+					fd->emit_symbol.empty() ? "<empty>"
+								: fd->emit_symbol.c_str(),
+					fd->is_member_template ? 1 : 0);
+			}
 			if (!fd || !fd->emit_symbol.empty() || fd->is_member_template) continue;
+			// A signature whose spelling array is absent or misaligned
+			// (a restore/serve gap) must NOT mangle: the fabricated name
+			// drops parameters (a 3-arg ctor mangles C1Ev) and C1Ev IS
+			// exported, so the wrong bind would succeed silently.
+			if (fd->param_cpp_spellings.size() != fd->parameters.size())
+				continue;
 			// Param spellings EXCLUDING the hidden __this (slot 0), same as
 			// bind_declared_cpp_symbol — so PKc / St13_Ios_Openmode match the ABI.
 			std::vector<std::string> psp;
@@ -18698,6 +18724,10 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 				psp.push_back(fd->mangle_param_spelling(i));
 			fd->spell_varargs_tail(psp);
 			std::string sym = itanium_mangle_ctor_sub(cls, psp);
+			if (xsp_hit)
+				fprintf(stderr, "EXTSYM ctor %s -> %s avail=%d\n",
+					cv->name.c_str(), sym.c_str(),
+					external_symbol_available(sym) ? 1 : 0);
 			if (external_symbol_available(sym))
 				fd->emit_symbol = sym;
 		}
@@ -18729,6 +18759,9 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 			if (!fd || !fd->emit_symbol.empty() || fd->is_member_template)
 				continue;
 			if (fd->defaulted_or_deleted || fd->pure_virtual)
+				continue;
+			// Same misaligned-spelling fence as the ctor loop above.
+			if (fd->param_cpp_spellings.size() != fd->parameters.size())
 				continue;
 			const std::string &dn = fd->method_display_name;
 			if (dn.empty() || dn[0] == '~')   // dtor handled above

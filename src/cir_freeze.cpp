@@ -2284,6 +2284,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					DataDefPTR *thisp = new DataDefPTR(*cdd);
 					_mat_storage.push_back(thisp);
 					fd->parameters.push_back(thisp);
+					// hidden __this — excluded from mangling, but the
+					// spelling array must stay index-aligned with
+					// parameters (parseFunction parity).
+					fd->param_cpp_spellings.push_back(std::string());
 				}
 				bool pok = true;
 				// v23: a param's default-argument token run rides its
@@ -2301,6 +2305,16 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					DataDef *pd = arena_swizzle(pr.type_id, by_id);
 					if (!pd) { pok = false; break; }
 					fd->parameters.push_back(pd);
+					// The C++ param spelling rides the paramrec exactly
+					// as on the free-function arm below: without it a
+					// restored method's signature is NOT the parsed
+					// state, and a consumer-side Itanium re-mangle
+					// (bind_external_class_symbols) fabricates a
+					// parameter-less symbol (C1Ev) for a ctor whose
+					// pack-side binding stayed empty.
+					const char *psp = pr.cpp_spelling_id
+						        ? a.c_str(pr.cpp_spelling_id) : NULL;
+					fd->param_cpp_spellings.push_back(psp ? psp : "");
 					const uint8_t *db =
 						a.tok_run(pr.def_tok_off, pr.def_tok_bytes);
 					if (db && pr.def_tok_count) {
