@@ -652,18 +652,45 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	return false;
     }
     cir_mir_error_armed = true;
+    // MADC_MIR_CACHE_TIME=1: per-step wall laps for the cache lane (the
+    // decomposition that exposed the eager-gen link cost — keep it).
+    const bool mc_time = getenv("MADC_MIR_CACHE_TIME") != NULL;
+    auto mc_t0 = std::chrono::steady_clock::now();
+    auto mc_lap = [&](const char *what) {
+	if (!mc_time) return;
+	auto now = std::chrono::steady_clock::now();
+	fprintf(stderr, "[mc-time] %-18s %.3f s\n", what,
+		std::chrono::duration<double>(now - mc_t0).count());
+	mc_t0 = now;
+    };
     // Rung 3: the privatized cache module loads FIRST; the consumer module's
     // exports then win every env-level overlap (setup_global overwrites), and
     // the cache's imports — including its privatized named data — resolve to
     // the consumer's definitions at link.
     if (cache_mod)
 	MIR_load_module(ctx, cache_mod);
+    mc_lap("load(cache_mod)");
     MIR_load_module(ctx, mod);
+    mc_lap("load(consumer)");
     if (cache_mod)
 	cir_prebind_cache_traps(ctx, cache_mod, mod);
+    mc_lap("cache traps");
     cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
-    MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
+    if (cache_mod) {
+	// MIR_set_gen_interface is EAGER — it MIR_gen()s every loaded func at
+	// link, which for the 4290-func cache module costs ~0.8s per compile.
+	// Ride the lazy interface (first-call generation) and eagerly gen only
+	// the CONSUMER's funcs, so the consumer keeps exactly the no-cache
+	// lane's gen-fatal surface and wall; cache bodies generate on demand.
+	MIR_link(ctx, MIR_set_lazy_gen_interface, cir_import_resolver);
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it))
+	    if (it->item_type == MIR_func_item)
+		MIR_gen(ctx, it);
+    } else
+	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
     cir_active_host_regs = NULL;
+    mc_lap("MIR_link");
     cir_mir_error_armed = false;
     return true;
 }
@@ -684,14 +711,33 @@ bool CirJitSession::build(Program *prog, const char *source_name,
     // instead of loaded def for cache-exported symbols; the call resolves as
     // a MIR import against this module at link). Every fallible step runs
     // here, pre-translate, so any failure discards the cache and the
-    // consumer emits everything itself, bit-for-bit (MADC_NO_MIR_CACHE=1
-    // forces that — the equivalence gate's A/B lever).
+    // consumer emits everything itself, bit-for-bit.
+    //
+    // OPT-IN (MADC_MIR_CACHE_BIND=1): measured on testsubscript, the lane's
+    // fixed floor (MIR_read 0.08s + link-time simplify of all 4290 cache
+    // funcs ~0.15s) EXCEEDS what it saves a single-TU consumer (materialize
+    // + emit + gen of its referenced drained bodies, ~0.1s) — see the
+    // refutation note in docs/plans/2026-07-17-mir-module-cache-DESIGN.md.
+    // The win case is many consumers per load (--project) or a body-heavy
+    // consumer; --run-frozen's whole-module consumption (build_frozen) keeps
+    // its own economics and stays on by default. MADC_NO_MIR_CACHE=1 remains
+    // the master off-lever for both lanes.
     cache_mod = NULL;
     if (prog) prog->mir_cache_exports.clear();
     if (prog && prog->bind_forest && !prog->forest_chain.empty()
+	&& getenv("MADC_MIR_CACHE_BIND")
 	&& !getenv("MADC_NO_MIR_CACHE")) {
 	std::vector<uint8_t> mblob;
+	auto mcs_t0 = std::chrono::steady_clock::now();
+	auto mcs_lap = [&](const char *what) {
+	    if (!getenv("MADC_MIR_CACHE_TIME")) return;
+	    auto now = std::chrono::steady_clock::now();
+	    fprintf(stderr, "[mc-time] %-18s %.3f s\n", what,
+		    std::chrono::duration<double>(now - mcs_t0).count());
+	    mcs_t0 = now;
+	};
 	if (prog->bind_forest->mir_module_bytes(mblob)) {
+	    mcs_lap("blob segment read");
 	    if (setjmp(cir_mir_error_jmp)) {
 		// bmir version check / corrupt blob — rebuild-path fallback.
 		cir_mir_error_armed = false;
@@ -710,6 +756,7 @@ bool CirJitSession::build(Program *prog, const char *source_name,
 		cache_mod = DLIST_TAIL(MIR_module_t,
 				       *MIR_get_module_list(ctx));
 	    }
+	    mcs_lap("MIR_read");
 	    if (cache_mod) {
 		// The pack TU's entry points are never shared: the consumer
 		// defines its own. A module whose exported data heads a
@@ -735,6 +782,7 @@ bool CirJitSession::build(Program *prog, const char *source_name,
 		    << prog->mir_cache_exports.size()
 		    << " importable bodies)" << std::endl);
 	    }
+	    mcs_lap("privatize+exports");
 	}
     }
 

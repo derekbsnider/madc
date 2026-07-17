@@ -181,8 +181,7 @@ untouched either way.
   imports (`cir_prebind_cache_traps` — a name the consumer also imports stays
   strict, preserving the live-compile failure surface).
 - **3a keeps materialization + the callee-walk** (consumer emission surface =
-  live minus the skipped defs) — the wall win is rung 3b (skip `node_for` for
-  cache-exported syms; transitively-referenced bodies then never materialize).
+  live minus the skipped defs).
 - Gates: packed suite 697/0/0/16 (release binary, cache active on every
   test); bind gate 18/18; 3-way equivalence cache == no-cache == live on
   testsubscript/testfreezerun/testforeach2; emit lane byte-identical with the
@@ -190,6 +189,39 @@ untouched either way.
   asserts engagement (staged-line grep) + cache==no-cache equality on every
   release pack. Release binary 10,690,832 (+4,128 vs rung 2 — code only).
   testsubscript imports 38 bodies instead of emitting them (4288 importable).
+
+## ⛔ Bind-lane premise REFUTED by measurement (2026-07-17) — lane is OPT-IN
+
+The design above assumed the bound lane's cir_build 0.278s bucket was
+forest_lazy BODY materialization. Measured (env-gated skip of
+materialize+walk+proto for every cache-exported sym, -O0, interleaved A/B):
+the skippable share is **~0.09s of a 2.35s wall** (-O0) — the 0.278s bucket
+is the whole cir-build phase (consumer TU translate + fixpoint), not the
+loaded bodies. What the bind-lane cache can save a single-TU consumer
+(materialize + c2mir-emit + gen of its referenced drained bodies) is
+**~0.1s**; what it costs is a fixed floor of **~0.26s** — MIR_read 0.082s +
+`MIR_load_module` 0.022s + link-time `simplify_func` of all 4290 cache funcs
+~0.15s (lap breakdown via `MADC_MIR_CACHE_TIME=1`). Net **-0.2s per compile:
+the lane loses on every typical consumer**, so `MADC_MIR_CACHE_BIND=1` is
+required to engage it. Release-grade confirmation (packed `bin/madc-release`,
+testsubscript, interleaved ×5, load ≤1.3): **default 0.62s / opt-in 0.89s**
+— the default bound wall is exactly the pre-rung-3 number. The machinery is correct and gated (equivalence holds
+both ways); the win cases are (a) `--project` — N consumer TUs in ONE
+context amortize a single cache load+simplify against N× body savings
+(SMAUG: 51 TUs), unwired today, and (b) a body-heavy consumer referencing a
+large fraction of the corpus. `--run-frozen`'s whole-module consumption
+(rungs 1+2, −77%) is unaffected and stays default-on.
+
+**Collateral discovery — `MIR_set_gen_interface` is EAGER.** It `MIR_gen()`s
+every loaded func at `MIR_link` (mir-gen.c:9855). The 3a-as-first-landed lane
+was paying full codegen of all 4290 cache funcs per compile (~0.8s of link);
+fixed by linking with `MIR_set_lazy_gen_interface` when the cache module is
+loaded, plus an explicit eager `MIR_gen` sweep over the CONSUMER module only
+(preserves the no-cache lane's gen-fatal surface and wall exactly; cache
+bodies generate on first call — the bare-probe-proven flow). Banked thought:
+the normal live lane also eager-gens its whole module at link; for large
+programs a lazy default + eager-main could cut startup — separate track,
+owner call.
 
 ## Rung 3 design — forest-bind m&l short-circuit (recon; 3a landed above, 3b open)
 
