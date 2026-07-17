@@ -7822,7 +7822,8 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 }
 
 TokenDataType *Program::resolve_class_member_type_chain(DataDefCLASS *owner,
-						      TokenBase *owner_tb)
+						      TokenBase *owner_tb,
+						      bool committed_type_context)
 {
     if ( !owner || !peekToken() || peekToken()->id() != TokenID::tkNS )
 	return NULL;
@@ -7864,9 +7865,15 @@ TokenDataType *Program::resolve_class_member_type_chain(DataDefCLASS *owner,
 	    // instantiate_template_alias_use), so the probe must admit it too —
 	    // otherwise the chain never descends and the type fails to resolve.
 	    const uint32_t probe_name_id = template_name_pool.intern(probe_name);
+	    // A COMMITTED type context (base-specifier position — `typename`
+	    // is forbidden there, so `Owner<T>::member` can only be a type)
+	    // admits the opaque escape the speculative probe excludes.
+	    bool committed_opaque = committed_type_context
+		&& class_allows_opaque_member_type(owner);
 	    if ( !resolve_class_type_alias(owner, probe_name)
 	      && !find_template(probe_name_id, std::string(), owner)
-	      && !find_template_alias(probe_name_id, std::string(), owner) )
+	      && !find_template_alias(probe_name_id, std::string(), owner)
+	      && !committed_opaque )
 		return NULL;
 	    first_segment = false;
 	}
@@ -21550,12 +21557,21 @@ class ClassPatternNormalizer
     static bool has_non_type_template_parameter(
 	const std::vector<bool> &param_is_type, bool has_non_type_params)
     {
-	if ( has_non_type_params )
-	    return true;
+	// TemplateDef.has_non_type_params is a documented misnomer (see the
+	// registration at TokenTEMPLATE::parse and the note near the opaque
+	// path): a variadic TYPE pack (`typename... _Bn`, __and_/__or_) also
+	// sets it, because the legacy instantiation lanes treat packs and
+	// value params alike. THIS fence exists for a narrower reason — a
+	// VALUE argument must not be mis-encoded as a type pattern — so it
+	// consults the per-param classification: a type pack's arguments are
+	// always types and replay fine. Template-template and value params
+	// register is_type=false and stay fenced.
 	for ( size_t i = 0; i < param_is_type.size(); ++i )
 	    if ( !param_is_type[i] )
 		return true;
-	return false;
+	// Defensive only: no registration path sets the flag without also
+	// pushing a param, so an empty vector defers to the flag.
+	return param_is_type.empty() && has_non_type_params;
     }
 
     Program::ClassParseReason dependent_shell_fallback_reason(
@@ -21884,7 +21900,21 @@ class ClassPatternNormalizer
 		Program::ClassParseReason dependency_reason =
 		    dependent_shell_fallback_reason(shell->second);
 		if ( dependency_reason != Program::ClassParseReason::None )
+		{
+		    // Env-gated probe (MADC_CLASS_PATTERN_PROBE=<substr>): WHICH
+		    // shell dependency carried the fallback reason.
+		    static const char *cpp_probe =
+			::getenv("MADC_CLASS_PATTERN_PROBE");
+		    if ( cpp_probe && *cpp_probe
+		      && (td.class_name.find(cpp_probe) != std::string::npos
+			   || !strcmp(cpp_probe, "*")) )
+			// cout, not cerr: the capture window MUTES cerr.
+			std::cout << "[class-pattern-probe] shell-fallback: "
+			    << td.class_name << " dep="
+			    << pattern.types[id].name << " reason="
+			    << (unsigned)dependency_reason << std::endl;
 		    fail(dependency_reason);
+		}
 		for ( size_t i = 0; i < shell->second.raw_arg_tokens.size(); ++i )
 		{
 		    Program::ClassTypePatternId argument =
@@ -32991,6 +33021,25 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    ? dynamic_cast<DataDefCLASS *>(bdmi->second) : NULL;
 		if ( !bcls && !pgm.is_c_mode() && bdmi != pgm.struct_map.end() )
 		    bcls = pgm.promote_struct_base_to_class(base_name, bdmi->second);
+	    }
+	    // Dependent base member-chain (`__and_<...>::type` in base
+	    // position, move.h __move_if_noexcept_cond): the speculative
+	    // first-segment probe leaves `::member` unconsumed when the owner
+	    // is a dependent-surface placeholder (capture parse / dependent
+	    // instantiation), and the parse then desyncs into the class body.
+	    // A base-specifier is a COMMITTED type context (`typename` is
+	    // forbidden here) — descend with the opaque escape enabled.
+	    if ( bcls && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS
+	      && class_allows_opaque_member_type(bcls) )
+	    {
+		if ( TokenDataType *chained =
+			pgm.resolve_class_member_type_chain(bcls, bn, true) )
+		    if ( DataDefCLASS *chained_cls =
+			    dynamic_cast<DataDefCLASS *>(&chained->definition) )
+		    {
+			bcls = chained_cls;
+			base_name = chained_cls->name;
+		    }
 	    }
 	    if ( !bcls && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
 	    {

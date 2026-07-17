@@ -4586,8 +4586,13 @@ public:
     TokenDataType *resolve_typename_type_token(TokenBase *first,
 					       bool allow_lazy_types,
 					       TokenBase *typename_tb);
+    // committed_type_context: the caller KNOWS `owner::name` must be a type
+    // (base-specifier position, where `typename` is forbidden) — the
+    // first-segment probe then admits the opaque dependent-member escape a
+    // speculative (expression-position) caller must never take.
     TokenDataType *resolve_class_member_type_chain(DataDefCLASS *owner,
-						   TokenBase *owner_tb);
+						   TokenBase *owner_tb,
+						   bool committed_type_context = false);
     TokenDataType *resolve_member_chain_or_type(TokenDataType *type_tok,
 						TokenBase *tb,
 						bool consume_class_member_chain);
