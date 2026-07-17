@@ -4464,6 +4464,43 @@ static Program::ClassParseReason class_pattern_eligibility_note(
     return reason;
 }
 
+// True when the friend declaration starting at body[i] (a tkFRIEND token)
+// needs the parse lane: a hidden-friend operator DEFINITION (body braces —
+// hoisted to namespace scope at parse) or a DEFAULTED comparison (member-list
+// synthesis at parse). Bodyless declarations — friend classes, named function
+// declarations, `= delete` — are name-grant bookkeeping the serve replays
+// verbatim from the pattern's friend name lists.
+static bool class_body_friend_needs_parse(
+	const std::vector<TokenBase *> &body, size_t i)
+{
+    int parens = 0;
+    for ( size_t j = i + 1; j < body.size(); ++j )
+    {
+	TokenBase *t = body[j];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++parens;
+	else if ( t->id() == TokenID::tkClBrk )
+	    --parens;
+	else if ( parens == 0 )
+	{
+	    if ( t->id() == TokenID::tkOpBrc )
+		return true;	// definition body
+	    if ( t->id() == TokenID::tkSemi )
+		return false;	// declaration only
+	    if ( t->id() == TokenID::tkAssign )
+	    {
+		for ( size_t k = j + 1; k < body.size(); ++k )
+		    if ( body[k] )
+			return body[k]->id() == TokenID::tkDEFAULT;
+		return true;
+	    }
+	}
+    }
+    return true;	// unterminated — needs the parse lane
+}
+
 static Program::ClassParseReason basic_class_pattern_eligibility(
 	Program &pgm, const BasicClassPatternBinding &binding,
 	const std::map<std::string, std::vector<TokenBase *> > &token_subst,
@@ -4495,6 +4532,19 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
       && binding.pattern.nodes[0].kind != Program::ClassAggregateKind::Struct )
 	return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 
+    // Friend DECLARATIONS are name-grant bookkeeping the serve replays
+    // verbatim; only a hidden-friend DEFINITION or a defaulted comparison
+    // still needs the parse lane. The pattern's name lists cannot distinguish
+    // the two, so classify from the definition's own tokens; a token-less
+    // definition with friend lists stays rejected — it cannot be verified.
+    bool friend_bodies_checked = !binding.definition.body.empty();
+    for ( size_t t = 0; friend_bodies_checked
+			 && t < binding.definition.body.size(); ++t )
+	if ( binding.definition.body[t]
+	  && binding.definition.body[t]->id() == TokenID::tkFRIEND
+	  && class_body_friend_needs_parse(binding.definition.body, t) )
+	    return class_pattern_eligibility_note(binding, Reason::UnsupportedFriendDefinition, __builtin_LINE());
+
     for ( size_t i = 0; i < binding.pattern.nodes.size(); ++i )
     {
 	const Program::ClassAggregatePatternNode &node = binding.pattern.nodes[i];
@@ -4505,7 +4555,8 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 	    return class_pattern_eligibility_note(binding, Reason::UnsupportedNestedDefinition, __builtin_LINE());
 	if ( !node.static_members.empty() || !node.static_values.empty() )
 	    return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
-	if ( !node.friend_functions.empty() || !node.friend_classes.empty() )
+	if ( !friend_bodies_checked
+	  && (!node.friend_functions.empty() || !node.friend_classes.empty()) )
 	    return class_pattern_eligibility_note(binding, Reason::UnsupportedFriendDefinition, __builtin_LINE());
 	for ( size_t b = 0; b < node.bases.size(); ++b )
 	    if ( !node.bases[b].type
@@ -4634,7 +4685,12 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 		return class_pattern_eligibility_note(binding, Reason::UnsupportedNestedDefinition, __builtin_LINE());
 	    case Program::ClassDeclKind::FriendType:
 	    case Program::ClassDeclKind::FriendFunction:
-		return class_pattern_eligibility_note(binding, Reason::UnsupportedFriendDefinition, __builtin_LINE());
+		// The token scan above proved every friend run is a bodyless
+		// declaration (name grant, replayed verbatim). Without tokens
+		// the kinds alone cannot rule out a hidden-friend definition.
+		if ( !friend_bodies_checked )
+		    return class_pattern_eligibility_note(binding, Reason::UnsupportedFriendDefinition, __builtin_LINE());
+		break;
 	    case Program::ClassDeclKind::DefaultedComparison:
 		return class_pattern_eligibility_note(binding, Reason::UnsupportedDefaultedComparison, __builtin_LINE());
 	    case Program::ClassDeclKind::BitField:
@@ -4937,6 +4993,21 @@ class BasicClassPatternResolver
 	      && template_type_arg_spelling(slot_tok, "")
 		 != basic_class_datadef_spelling(memo_arguments[i]) )
 		replay.push_back(slot_tok->clone());
+	    else if ( DataDefCONST *carg =
+			dynamic_cast<DataDefCONST *>(memo_arguments[i]) )
+	    {
+		// A const-qualified argument re-enters the parse lane the way
+		// source spells it: a `const` qualifier token + the BASE type
+		// (consume_template_type_arg_qualifiers owns it from there,
+		// keying the instantiation with the const in the SPELLING).
+		// Pushing the DataDefCONST wrapper itself would type the
+		// instantiated class's members/params with the wrapper — a
+		// shape the parse lane never produces and member lookup walks
+		// as if it were a class (SIGSEGV on `pair<const K,V>::first`).
+		replay.push_back(new TokenCONST());
+		replay.push_back(new TokenDataType(
+		    carg->base_type->name.c_str(), *carg->base_type));
+	    }
 	    else
 		replay.push_back(new TokenDataType(
 		    memo_arguments[i]->name.c_str(), *memo_arguments[i]));
@@ -5399,6 +5470,14 @@ static void register_basic_class_pattern_method(
 	    pgm.last_skipped_template_typeparam_is_pack;
 	pgm.last_skipped_template_typeparam_is_pack =
 	    pattern.template_param_is_pack;
+	// The registration return-type scan re-parses the declaration tokens
+	// (`pair<iterator, bool> emplace(...)`); member aliases like
+	// `iterator` resolve through class_scope_stack. The parse lane runs
+	// this registration inside the class-body parse with the owner
+	// pushed — mirror that context here (same shape as the default-arg
+	// parse above).
+	if ( owner )
+	    pgm.class_scope_stack.push_back(owner);
 	try
 	{
 	    register_skipped_class_template_function(
@@ -5407,9 +5486,15 @@ static void register_basic_class_pattern_method(
 	}
 	catch ( ... )
 	{
+	    if ( owner && !pgm.class_scope_stack.empty()
+	      && pgm.class_scope_stack.back() == owner )
+		pgm.class_scope_stack.pop_back();
 	    pgm.last_skipped_template_typeparam_is_pack = saved_pack_state;
 	    throw;
 	}
+	if ( owner && !pgm.class_scope_stack.empty()
+	  && pgm.class_scope_stack.back() == owner )
+	    pgm.class_scope_stack.pop_back();
 	pgm.last_skipped_template_typeparam_is_pack = saved_pack_state;
 	return;
     }
@@ -5943,6 +6028,11 @@ static TokenDataType *instantiate_basic_class_pattern(
 	ddc->is_dependent_placeholder = false;
 	ddc->opaque_concrete_tag = false;
 	ddc->has_dependent_surface = false;
+	// Friend DECLARATIONS replay as the same name-grant bookkeeping the
+	// parse lane records (register_skipped_friend_type / named friend
+	// function declarations). Grants are by bare name — no substitution.
+	ddc->friend_class_names = node.friend_classes;
+	ddc->friend_function_names = node.friend_functions;
 	if ( completing_forward && aggregate == pgm.struct_map.end() )
 	    pgm.struct_map.set(binding.registered_name, ddc);
 	TokenDataType *tdt = pgm.register_class_shell(ddc,
@@ -5982,6 +6072,8 @@ static TokenDataType *instantiate_basic_class_pattern(
 	    shell->is_dependent_placeholder = false;
 	    shell->opaque_concrete_tag = false;
 	    shell->has_dependent_surface = false;
+	    shell->friend_class_names = nested.friend_classes;
+	    shell->friend_function_names = nested.friend_functions;
 	    pgm.register_class_shell(shell, registered, nested.source_name,
 		nested.source_name, parent, false, false);
 	    aggregate_nodes[i] = shell;
@@ -6536,7 +6628,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	}
 	for ( size_t t = 0; doomed == ClassParseReason::None
 			     && t < td.body.size(); ++t )
-	    if ( td.body[t] && td.body[t]->id() == TokenID::tkFRIEND )
+	    if ( td.body[t] && td.body[t]->id() == TokenID::tkFRIEND
+	      && class_body_friend_needs_parse(td.body, t) )
 		doomed = ClassParseReason::UnsupportedFriendDefinition;
 	if ( doomed != ClassParseReason::None )
 	{
@@ -21968,10 +22061,31 @@ class ClassPatternNormalizer
 	    }
 	    else if ( shell != pgm.dependent_shell_origin.end() )
 	    {
-		pattern.types[id].kind = Program::ClassTypePatternKind::TemplateId;
-		pattern.types[id].name = shell->second.defining_namespace.empty()
-		    ? shell->second.tname
-		    : shell->second.defining_namespace + "::" + shell->second.tname;
+		if ( shell->second.owner_class )
+		{
+		    // An OWNER-nested template shell (`__allocator_traits_base
+		    // ::__rebind<...>`): the template registry keys it by
+		    // OWNER, not namespace — a namespace-qualified TemplateId
+		    // (`std::__rebind`) can never resolve it. Encode the owner
+		    // as the DependentMember operand; the serve's owner-keyed
+		    // instantiation arm (memo_kind 3) passes it through.
+		    pattern.types[id].kind =
+			Program::ClassTypePatternKind::DependentMember;
+		    pattern.types[id].operand =
+			normalize_type(shell->second.owner_class);
+		    pattern.types[id].name = shell->second.tname;
+		    pattern.types[id].flags = 1u;
+		}
+		else
+		{
+		    pattern.types[id].kind =
+			Program::ClassTypePatternKind::TemplateId;
+		    pattern.types[id].name =
+			shell->second.defining_namespace.empty()
+			? shell->second.tname
+			: shell->second.defining_namespace + "::"
+			    + shell->second.tname;
+		}
 		Program::ClassParseReason dependency_reason =
 		    dependent_shell_fallback_reason(shell->second);
 		if ( dependency_reason != Program::ClassParseReason::None )
@@ -22403,9 +22517,21 @@ class ClassPatternNormalizer
 		node.static_values.push_back(*value);
 	    node.friend_classes = cls->friend_class_names;
 	    node.friend_functions = cls->friend_function_names;
+	    // A FriendFunction kind covers BOTH a bodyless named declaration
+	    // (name grant — replayable) and a hidden-friend operator
+	    // DEFINITION (hoisted at parse — not replayable). Classify from
+	    // the definition's own tokens. DefaultedComparison stays failed
+	    // unconditionally: member-defaulted comparisons synthesize
+	    // without any tkFRIEND token.
+	    bool friend_definition = false;
+	    for ( size_t t = 0; !friend_definition && t < td.body.size(); ++t )
+		if ( td.body[t] && td.body[t]->id() == TokenID::tkFRIEND
+		  && class_body_friend_needs_parse(td.body, t) )
+		    friend_definition = true;
 	    for ( size_t i = 0; i < node.declarations.size(); ++i )
 	    {
-		if ( node.declarations[i] == Program::ClassDeclKind::FriendFunction )
+		if ( node.declarations[i] == Program::ClassDeclKind::FriendFunction
+		  && friend_definition )
 		    fail(Program::ClassParseReason::UnsupportedFriendDefinition);
 		else if ( node.declarations[i] ==
 			  Program::ClassDeclKind::DefaultedComparison )
