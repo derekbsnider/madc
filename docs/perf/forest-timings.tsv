@@ -29,3 +29,4 @@ date	commit	live_s	bound_s	live_derives	bound_derives	load1	note
 2026-07-16	19b8e2b0	2.591	0.664	217	184	2.18	R1 rework b2b2cf5e: owner-id registry + owner-granular journal; live pattern opt-in
 2026-07-16	19b8e2b0	2.366	0.633	217	184	2.92	R3 resolver memo landed on owner-id registry; 38 hit/134 miss live; live pattern opt-in
 2026-07-16	0f979fb8	2.257	0.613	217	184	1.00	R4 fences lifted: registered-identity token parity, base-class deduction; pattern-lane pack
+2026-07-17	6e7bce07	2.200	0.627	217	184	1.07	task41: lazy-capture clone-position fix — flagships pattern-serve live (opt-in)

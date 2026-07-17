@@ -3915,6 +3915,25 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
     }
 
     flat_datatype_map_iter have = datatype_map.find(mangled);
+    // Env-gated probe (MADC_CLASS_PATTERN_PROBE=<substr>): during a capture
+    // parse every nested template-id lands here — show what the capture's
+    // dependent surface actually resolves to (cached shell w/ members vs a
+    // fresh memberless placeholder). cout: capture mutes cerr.
+    {
+	static const char *cpp_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
+	if ( cpp_probe && *cpp_probe && class_pattern_capture_in_progress
+	  && (tname.find(cpp_probe) != std::string::npos
+	       || !strcmp(cpp_probe, "*")) )
+	{
+	    DataDefSTRUCT *sdd = have != datatype_map.end()
+		? dynamic_cast<DataDefSTRUCT *>(&(*have)->definition) : NULL;
+	    std::cout << "[class-pattern-probe] capture-opaque: " << mangled
+		<< (have != datatype_map.end() ? " HIT" : " MISS-mint")
+		<< (sdd ? " members=" : "")
+		<< (sdd ? std::to_string(sdd->members.size()) : std::string())
+		<< std::endl;
+	}
+    }
     if ( have != datatype_map.end() )
 	return use_site_type_token((TokenDataType *)(*have), tb);
 
@@ -4682,7 +4701,17 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 	    if ( body_origin
 	      && (!body_origin->file
 		  || !pgm.is_system_header_path(body_origin->file)) )
+	    {
+		static const char *cpp_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
+		if ( cpp_probe && (binding.definition.class_name.find(cpp_probe)
+					!= std::string::npos
+				    || !strcmp(cpp_probe, "*")) )
+		    std::cerr << "[class-pattern-probe]   eager-body method '"
+			<< method.display_name << "' body file="
+			<< (body_origin->file ? body_origin->file : "(null)")
+			<< std::endl;
 		return class_pattern_eligibility_note(binding, Reason::RequiresEagerBodyParse, __builtin_LINE());
+	    }
 	    bool is_static = (method.flags & vfSTATIC) != 0;
 	    if ( !is_static && method.parameters.empty() )
 		return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
@@ -22352,10 +22381,36 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	}
     canonical += ">";
 
+    // clone() stamps each new token's file/line/column from the STATIC
+    // _parse_* (TokenBase's ctor). An EAGER capture runs at the template's
+    // definition, so the statics already hold the defining header — but a
+    // LAZY capture runs mid-consumer-parse, where the statics hold the USER
+    // file. User-file tokens misclassify from_system_header: every inline
+    // member body then parses EAGERLY inside the capture — where dependent
+    // bases are memberless opaque placeholders ("no member named '_M_impl'"
+    // → poison) — and any deferred body the NORMALIZER re-clones after the
+    // parse fails eligibility (RequiresEagerBodyParse: non-system origin).
+    // Hold the body's real origin in _parse_* for the WHOLE capture window —
+    // clones, trailing semi, parse, and normalizer — restored at the common
+    // exit below (and on the early return).
+    const char *capture_pf = TokenBase::_parse_file;
+    int capture_pl = TokenBase::_parse_line;
+    int capture_pc = TokenBase::_parse_column;
+    for ( size_t bt0 = 0; bt0 < td.body.size(); ++bt0 )
+	if ( td.body[bt0] && td.body[bt0]->file )
+	{
+	    TokenBase::_parse_file = td.body[bt0]->file;
+	    TokenBase::_parse_line = td.body[bt0]->line;
+	    TokenBase::_parse_column = td.body[bt0]->column;
+	    break;
+	}
     std::vector<TokenBase *> injected = class_pattern_clone_tokens(td.body);
     if ( injected.size() < 2 || !injected[1]
 	  || injected[1]->type() != TokenType::ttIdentifier )
     {
+	TokenBase::_parse_file = capture_pf;
+	TokenBase::_parse_line = capture_pl;
+	TokenBase::_parse_column = capture_pc;
 	td.class_pattern_reason = ClassParseReason::PatternParseError;
 	return 0;
     }
@@ -22545,9 +22600,12 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     tokens = saved_tokens;
     _prv_token = saved_prv;
     _cur_token = saved_cur;
-    TokenBase::_parse_file = saved_parse_file;
-    TokenBase::_parse_line = saved_parse_line;
-    TokenBase::_parse_column = saved_parse_column;
+    // saved_parse_* were captured AFTER the body-origin stamp above, so they
+    // hold the stamped values — restore the caller's true statics instead.
+    TokenBase::_parse_file = capture_pf;
+    TokenBase::_parse_line = capture_pl;
+    TokenBase::_parse_column = capture_pc;
+    (void)saved_parse_file; (void)saved_parse_line; (void)saved_parse_column;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
     diagnostics.resize(saved_diag_count);
