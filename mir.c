@@ -2019,6 +2019,80 @@ static void link_module_lrefs (MIR_context_t ctx, MIR_module_t m) {
   }
 }
 
+/* madc fork: see mir.h.  Item identity is preserved: a converted item keeps
+   its DLIST position and its module item-table entry (names are ctx-interned
+   and the table hashes the name POINTER, which is reused as the import id),
+   so insn REF operands and ref_data targets pointing at the item keep
+   resolving.  Only the export list-items of privatized names are unlinked
+   (they are never the item-table entry when a definition exists). */
+static int privatize_dataish_p (MIR_item_type_t t) {
+  return t == MIR_bss_item || t == MIR_data_item || t == MIR_ref_data_item
+         || t == MIR_lref_data_item || t == MIR_expr_data_item;
+}
+
+static int privatize_anon_tail_p (MIR_item_t item) {
+  MIR_item_t next = DLIST_NEXT (MIR_item_t, item);
+  return next != NULL && privatize_dataish_p (next->item_type)
+         && MIR_item_name (NULL, next) == NULL;
+}
+
+static int privatize_unexported_name_p (const char *nm, const char *const *unexport_names,
+                                        size_t n) {
+  for (size_t i = 0; i < n; i++)
+    if (strcmp (nm, unexport_names[i]) == 0) return TRUE;
+  return FALSE;
+}
+
+size_t MIR_module_privatize_for_link (MIR_context_t ctx, MIR_module_t m,
+                                      const char *const *unexport_names, size_t n) {
+  size_t skipped = 0;
+  MIR_item_t item, next, def;
+  const char *nm;
+
+  mir_assert (m != NULL);
+  for (item = DLIST_HEAD (MIR_item_t, m->items); item != NULL; item = next) {
+    next = DLIST_NEXT (MIR_item_t, item);
+    switch (item->item_type) {
+    case MIR_export_item:
+      nm = item->u.export_id;
+      if (!privatize_unexported_name_p (nm, unexport_names, n)) {
+        def = item_tab_find (ctx, nm, m);
+        /* an import here means the definition was already converted below */
+        if (def == NULL
+            || (def->item_type != MIR_import_item
+                && !(privatize_dataish_p (def->item_type) && !privatize_anon_tail_p (def))))
+          break;
+      }
+      DLIST_REMOVE (MIR_item_t, m->items, item);
+      MIR_free (ctx->alloc, item);
+      break;
+    case MIR_func_item:
+      if (item->export_p && privatize_unexported_name_p (item->u.func->name, unexport_names, n))
+        item->export_p = FALSE;
+      break;
+    case MIR_bss_item:
+    case MIR_data_item:
+    case MIR_ref_data_item:
+    case MIR_lref_data_item:
+    case MIR_expr_data_item:
+      if (!item->export_p || (nm = MIR_item_name (ctx, item)) == NULL) break;
+      if (privatize_anon_tail_p (item)) { /* head of a multi-item section: can't split */
+        skipped++;
+        break;
+      }
+      mir_assert (item->addr == NULL); /* must run before MIR_load_module */
+      MIR_free (ctx->alloc, item->u.bss); /* union: frees whichever payload is live */
+      item->item_type = MIR_import_item;
+      item->u.import_id = nm; /* ctx-interned: table hash/eq by pointer stay valid */
+      item->export_p = FALSE;
+      item->ref_def = NULL;
+      break;
+    default: break;
+    }
+  }
+  return skipped;
+}
+
 void MIR_load_module (MIR_context_t ctx, MIR_module_t m) {
   int lref_p = FALSE;
   mir_assert (m != NULL);

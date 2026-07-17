@@ -647,6 +647,20 @@ extern void MIR_scan_string (MIR_context_t ctx, const char *str);
 #endif
 
 extern MIR_item_t MIR_get_global_item (MIR_context_t ctx, const char *name);
+/* madc fork: prepare a module (typically just MIR_read) for side-by-side
+   linking with a host module that owns the entry points and all shared named
+   data.  Un-exports every func named in unexport_names (the host defines its
+   own) and converts every exported named data/bss/ref_data/lref_data/expr_data
+   item into an import of the same name, so the host stays the sole definer of
+   shared data (two loaded definitions of one datum would get two addresses —
+   split state, not a link error).  Item identity is preserved (insn REF
+   operands and the module item table keep working).  Must be called BEFORE
+   MIR_load_module on the module.  Returns the number of exported data items
+   left untouched because an anonymous continuation item follows them (their
+   storage cannot be split from the section); 0 means the module is fully
+   privatized. */
+extern size_t MIR_module_privatize_for_link (MIR_context_t ctx, MIR_module_t m,
+                                             const char *const *unexport_names, size_t n);
 extern void MIR_load_module (MIR_context_t ctx, MIR_module_t m);
 extern void MIR_load_external (MIR_context_t ctx, const char *name, void *addr);
 extern void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_item_t item),
