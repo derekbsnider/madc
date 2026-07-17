@@ -665,6 +665,25 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
     if (getenv("MADC_DUMP_MIR"))
 	MIR_output(ctx, stderr);
 
+    // MADC_MIR_CACHE_PROBE=<path>: serialize the compiled module (probe A of
+    // docs/plans/2026-07-17-mir-module-cache-DESIGN.md — GO/NO-GO size and
+    // read-time numbers only; no container integration).
+    if (const char *probe_path = getenv("MADC_MIR_CACHE_PROBE")) {
+	FILE *pf = fopen(probe_path, "wb");
+	if (pf) {
+	    auto _w0 = std::chrono::steady_clock::now();
+	    MIR_write_module(ctx, pf, mod);
+	    double wsecs = std::chrono::duration<double>(
+		std::chrono::steady_clock::now() - _w0).count();
+	    long sz = ftell(pf);
+	    fclose(pf);
+	    fprintf(stderr, "[mir-cache-probe] wrote %s: %ld bytes in %.3fs\n",
+		    probe_path, sz, wsecs);
+	} else
+	    fprintf(stderr, "[mir-cache-probe] cannot open %s for write\n",
+		    probe_path);
+    }
+
     // Rung 1: a drained module carries library bodies outside the TU's
     // executed closure — bind their unresolved imports to loud trap stubs
     // (see cir_prebind_frozen_traps) so only genuinely-executed gaps fail.

@@ -1,7 +1,44 @@
 # MIR module cache — pack the compiled form of the drained bodies
 
-**Status: DESIGN / EXPLORATION (2026-07-17, Claude; owner said "worth
-exploring"). Nothing lands without owner sign-off on the size dimension.**
+**Status: PROBE A MEASURED — GO numbers in hand (2026-07-17, Claude).
+Awaiting owner GO/NO-GO on the size dimension before Phase 1.**
+
+## Probe A results (2026-07-17, measured)
+
+Corpus: the release-pack synthetic TU (19 headers from
+`scripts/forest_pack_headers.txt` + empty main) frozen at HEAD — **240 units**,
+the exact module every packed-binary program binds. Blob written by the
+env-gated `MADC_MIR_CACHE_PROBE=<path>` hook in `CirJitSession::build_frozen`
+(src/madc_cir.cpp, after `cir_compile`, before trap-prebind/link); read/run
+probes are standalone C against the fork's libmir.a (tmp/probe_mir_read.c,
+tmp/probe_mir_run.c, tmp/probe_zstd.c).
+
+- **(a) Blob size: 331,337 bytes raw; 291,116 bytes zstd-19 (−12%; MIR binary
+  is already dense).** Module = 9,552 items / 4,290 funcs. Against the
+  10,381,208-byte packed release binary that is **+2.8%**. `MIR_write` took
+  0.100s (pack-time cost, don't-care).
+- **(b) MIR_read: 0.085s** (0.0848–0.0864 over 5 runs, -O2 probe, shared box
+  at load ~1.9). Replaces cir_build 0.278s + c2mir 0.017s ≈ 0.295s →
+  **projected bound 0.60 → ~0.39s** (the design target was 0.32–0.40).
+- **(c) Stretch — the blob is EXECUTABLE, not just parseable:** in a bare C
+  host with a dlsym+trap import resolver (same shape as
+  `cir_prebind_frozen_traps`), MIR_read 0.079s + `MIR_load_module`+`MIR_link`
+  (lazy-gen interface) 0.154s + `MIR_gen(main)` 0.0001s + `main()` → **rc=0**.
+  Unresolved-to-trap imports were the expected check-gate-dropped /
+  madc-hybrid-instantiation set (e.g. `num_get<int, istreambuf_iterator<int,
+  char_traits<wchar_t>>>` vtables) — never called, exactly today's trap
+  semantics.
+
+**Finding for Phase 1 (new risk #7): check-clean ≠ gen-clean.** The pack
+check gate runs `do_context` only; MIR codegen can still fatal. Concretely:
+`--run-frozen` on a fresh **testsubscript** freeze dies with `MIR fatal error:
+undeclared func reg fp` — c2mir creates the `fp` frame reg only when the
+function's top scope has stack vars (c2mir.c ~18409) but four gen paths
+reference it unconditionally (15327, 17420, 17794, 18138); some
+testsubscript-specific def hits that combination. The RELEASE-pack module
+gen+runs clean (`forest_pack.sh` already validates `--run-frozen`), so Probe A
+is unaffected, but Phase 1 must MIR_write only from a gen-validated compile
+(or fix the c2mir fp bug first — it is a fork bug worth fixing regardless).
 
 ## Motivation (measured 2026-07-17, testsubscript vs the standard pack)
 
