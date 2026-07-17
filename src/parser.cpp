@@ -4096,7 +4096,7 @@ static bool datadef_has_unresolved_dependent_surface(DataDef *dd)
     return false;
 }
 
-DataDefCLASS *Program::materialize_dependent_member_type(DataDefCLASS *owner,
+DataDefCLASS *Program::materialize_dependent_member_type(DataDef *owner,
 						       const std::string &member_name)
 {
     if ( !owner || member_name.empty() )
@@ -4915,9 +4915,31 @@ class BasicClassPatternResolver
 	    // spellings, frozen text), where it neither resolves nor deduces
 	    // on the consumer side. Instantiation keys are derived from the
 	    // attached DataDef, not the token text (fenced/unfenced packs
-	    // register identical mangled names), so this is key-neutral.
-	    replay.push_back(new TokenDataType(
-		memo_arguments[i]->name.c_str(), *memo_arguments[i]));
+	    // register identical mangled names), so this is key-neutral —
+	    // EXCEPT where the parse lane's key rule itself is token-driven:
+	    // template_type_arg_spelling PRESERVES certain use-site spellings
+	    // over an aliased dd identity (wchar_t/char16_t/char32_t over
+	    // integer dds). For an argument that is one of the binding's own
+	    // parameter slots, dd->name there would mint a derived key the
+	    // parse lane never uses (basic_istream<int32_t,...> alongside its
+	    // basic_istream<wchar_t,...>) — split identity, duplicate
+	    // definition. Clone the use-site slot token in exactly that case.
+	    TokenDataType *slot_tok = NULL;
+	    if ( arguments[i] && arguments[i] < binding.pattern.types.size() )
+	    {
+		const Program::ClassTypePattern &argp =
+		    binding.pattern.types[arguments[i]];
+		if ( argp.kind == Program::ClassTypePatternKind::TemplateParam
+		  && argp.template_param_index < binding.arg_types_by_slot.size() )
+		    slot_tok = binding.arg_types_by_slot[argp.template_param_index];
+	    }
+	    if ( slot_tok && &slot_tok->definition == memo_arguments[i]
+	      && template_type_arg_spelling(slot_tok, "")
+		 != basic_class_datadef_spelling(memo_arguments[i]) )
+		replay.push_back(slot_tok->clone());
+	    else
+		replay.push_back(new TokenDataType(
+		    memo_arguments[i]->name.c_str(), *memo_arguments[i]));
 	}
 	replay.push_back(new TokenGT());
 	size_t replay_base = pgm.tokens.size();
@@ -5188,7 +5210,22 @@ static void basic_class_pattern_canonicalize_type_tokens(
 	if ( TokenDataType *tdt = dynamic_cast<TokenDataType *>(out[i]) )
 	    if ( !tdt->definition.name.empty()
 	      && tdt->spelling() != tdt->definition.name )
+	    {
+		// The parse lane's instantiation-key rule
+		// (template_type_arg_spelling) PRESERVES certain use-site
+		// spellings over an aliased dd identity (wchar_t/char16_t/
+		// char32_t over integer dds). Rewriting such a token to
+		// dd->name mints derived template-id keys the parse lane
+		// never uses (split identity, duplicate definition). Keep
+		// the spelling iff the key rule preserves it AND it resolves
+		// as a registered type name (frozen text must still resolve
+		// by datatype lookup — the reason this canonicalizer exists).
+		if ( template_type_arg_spelling(tdt, "") == tdt->spelling()
+		  && pgm.datatype_map.find(tdt->spelling())
+		     != pgm.datatype_map.end() )
+		    continue;
 		pgm.set_token_spelling(tdt, tdt->definition.name);
+	    }
 }
 
 static std::vector<TokenBase *> basic_class_pattern_substitute_tokens(
@@ -7627,8 +7664,20 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
     if ( !owner_type )
 	return NULL;
     DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(&owner_type->definition);
+    // `typename T::member` where T is a TEMPLATE-PARAMETER placeholder (an
+    // active dependent pattern/capture parse): there is no class to look
+    // inside — every member is dependent by construction. Walk the chain in
+    // "param mode": each hop materializes a dependent-member placeholder
+    // stamped with DependentDerivedOrigin{MemberType} (the same recipe the
+    // opaque-class arm below records), so tsubst / the class-pattern resolver
+    // re-derive the CONCRETE type under an instance substitution.
+    DataDef *param_owner = NULL;
     if ( !owner )
-	return NULL;
+    {
+	if ( !owner_type->definition.is_template_param() )
+	    return NULL;
+	param_owner = &owner_type->definition;
+    }
     // Env-gated probe (MADC_TYPENAME_PROBE=<substr of first name>): trace every
     // owner hop of a `typename A::B::...` chain — the owner-swap diagnostic.
     static const char *tnp = ::getenv("MADC_TYPENAME_PROBE");
@@ -7637,8 +7686,9 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
     if ( tnp_on )
 	fprintf(stderr, "TNPROBE head %s -> %s incomplete=%d\n",
 		contextual_identifier_name(first).c_str(),
-		owner->name.c_str(), (int)is_incomplete_class_datadef(owner));
-    if ( is_incomplete_class_datadef(owner) )
+		owner ? owner->name.c_str() : param_owner->name.c_str(),
+		(int)(owner && is_incomplete_class_datadef(owner)));
+    if ( owner && is_incomplete_class_datadef(owner) )
     {
 	request_template_instantiation_completion(owner->name);
 	flat_datatype_map_iter refreshed = datatype_map.find(owner->name);
@@ -7652,7 +7702,7 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 
     while ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
-	if ( is_incomplete_class_datadef(owner) )
+	if ( owner && is_incomplete_class_datadef(owner) )
 	{
 	    request_template_instantiation_completion(owner->name);
 	    flat_datatype_map_iter refreshed = datatype_map.find(owner->name);
@@ -7675,13 +7725,18 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	bool member_is_template = false;
 	if ( tnp_on )
 	    fprintf(stderr, "TNPROBE hop owner=%s member=%s\n",
-		    owner->name.c_str(), member_name.c_str());
+		    owner ? owner->name.c_str() : param_owner->name.c_str(),
+		    member_name.c_str());
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
 	    member_is_template = true;
-	    if ( TokenDataType *inst =
-		    instantiate_template_id(member_name, member_tb,
-					    std::string(), owner) )
+	    // Param mode: no class to instantiate against — keep the raw
+	    // `<...>` args for the placeholder's derivation recipe.
+	    TokenDataType *inst = owner
+		? instantiate_template_id(member_name, member_tb,
+					  std::string(), owner)
+		: NULL;
+	    if ( inst )
 	    {
 		owner = dynamic_cast<DataDefCLASS *>(&inst->definition);
 		if ( !owner )
@@ -7693,13 +7748,17 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	    member_template_args = collect_dependent_member_template_args(*this);
 	}
 
-	DataDef *alias_dd = resolve_class_type_alias(owner, member_name);
+	DataDef *alias_dd = owner ? resolve_class_type_alias(owner, member_name)
+				  : NULL;
 	if ( tnp_on )
-	    fprintf(stderr, "TNPROBE alias %s::%s -> %s\n", owner->name.c_str(),
+	    fprintf(stderr, "TNPROBE alias %s::%s -> %s\n",
+		    owner ? owner->name.c_str() : param_owner->name.c_str(),
 		    member_name.c_str(), alias_dd ? alias_dd->name.c_str() : "(null)");
-	if ( !alias_dd && class_allows_opaque_member_type(owner) )
+	if ( !alias_dd && (owner ? class_allows_opaque_member_type(owner)
+				 : true) )
 	{
-	    alias_dd = materialize_dependent_member_type(owner, member_name);
+	    alias_dd = materialize_dependent_member_type(
+		owner ? static_cast<DataDef *>(owner) : param_owner, member_name);
 	    if ( alias_dd && member_is_template )
 	    {
 		DependentDerivedOrigin &origin = dependent_derived_origin[alias_dd];
@@ -7714,6 +7773,7 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	owner = dynamic_cast<DataDefCLASS *>(alias_dd);
 	if ( !owner )
 	    return NULL;
+	param_owner = NULL;   // subsequent hops run in class mode
     }
 
     return owner_type;

@@ -4561,7 +4561,10 @@ public:
 					  const std::string &ns_hint,
 					  DataDefCLASS *owner_hint);
     void register_template_alias(const TemplateAliasDef &td);
-    DataDefCLASS *materialize_dependent_member_type(DataDefCLASS *owner,
+    // Owner is any dependent-surface type: an opaque placeholder CLASS or a
+    // bare TEMPLATE-PARAMETER placeholder (`typename T::member` in a dependent
+    // pattern/capture parse) — only name/canonical spelling are read from it.
+    DataDefCLASS *materialize_dependent_member_type(DataDef *owner,
 						    const std::string &member_name);
     DataDefCLASS *materialize_opaque_class_type(const std::string &name,
 						const std::string &canonical);
