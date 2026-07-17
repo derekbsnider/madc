@@ -5806,12 +5806,21 @@ public:
 	std::vector<BaseSpec> bases;
 	for ( size_t i = 0; i < node.bases.size(); ++i )
 	{
-	    DataDefCLASS *base = dynamic_cast<DataDefCLASS *>(
-		resolver.resolve(node.bases[i].type));
+	    DataDef *base_dd = resolver.resolve(node.bases[i].type);
+	    DataDefCLASS *base = dynamic_cast<DataDefCLASS *>(base_dd);
+	    // A base that instantiated as a plain DataDefSTRUCT (an EMPTY
+	    // struct never earns class-hood — e.g. the C++20 __iterator_traits
+	    // primary `{ }`) promotes exactly as the legacy base-clause does.
+	    if ( !base && base_dd )
+		base = pgm.promote_struct_base_to_class(base_dd->name, base_dd);
 	    if ( !base || !base->is_complete )
 		pgm.Throw(binding.location)
-		    << "internal: ClassPattern base did not resolve complete"
-		    << flush;
+		    << "internal: ClassPattern base did not resolve complete ("
+		    << owner->name << " base "
+		    << (base_dd ? base_dd->name : std::string("(null)"))
+		    << (base ? (base->is_dependent_placeholder
+				? ", incomplete placeholder" : ", incomplete")
+			     : "") << ")" << flush;
 	    BaseSpec spec = { base, 0, node.bases[i].is_virtual,
 		node.bases[i].access, false };
 	    bases.push_back(spec);
