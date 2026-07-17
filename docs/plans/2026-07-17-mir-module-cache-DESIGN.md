@@ -133,6 +133,48 @@ workflow is exactly this shape).
    translate (or re-translate and re-check — same rule as the check gate's
    round discipline).
 
+## Phase 1 status (2026-07-17)
+
+- **Rungs 1+2 LANDED @1f2694b8**: `--freeze-mir-cache` packs the module as
+  optional segment `CIR_FOREST_SEG_MIR_MODULE` (slot 20; stamp = forest
+  version + MIR API level; gen-fatal containment verified on testsubscript's
+  fp bug); `--run-frozen` consumes it — **4.14s → 0.97s (−77%)** on the
+  240-unit pack; `MADC_NO_MIR_CACHE=1` is the A/B lever;
+  `forest_selfexe_gate` asserts cache == no-cache output. Release binary
+  10,686,704 (+2.9%, the approved trade); packed suite 697/0/0/16.
+
+## Rung 3 design — forest-bind m&l short-circuit (recon complete, not built)
+
+The bind lane's cost is `forest_lazy` (cir_builder.cpp ~19394): restored
+`has_forest_body` symbols materialize node records into the consumer tree
+inside the m&l fixpoint — the 0.278s cir_build bucket. Short-circuit: skip
+materializing any symbol the blob exports; emit only the forward proto
+(`forest_fwd_proto` needs the def's op0/op1 — a proto-only materialization,
+or serialize proto shapes alongside the blob); the consumer's reference
+becomes a MIR import; load the blob module alongside and MIR_link resolves.
+
+**The duplicate-item problem (measured facts, mir.c):** `MIR_load_module`
+FATALS on a cross-module exported-func redefinition unless
+`MIR_set_func_redef_permission` (mir.h:567) is on; named DATA items loaded
+twice get TWO addresses — split state (a mutable global duplicated between
+blob and consumer is a correctness bug, not a link error). The blob today
+also carries the pack TU's `main` and `__madc_global_init`, which every
+consumer defines.
+
+**Chosen shape — funcs-only blob (single owner for every named datum):** at
+pack, before MIR_write_module, strip the module to code: remove `main` +
+`__madc_global_init` outright; replace every NAMED data/bss/ref_data/
+expr_data item with an import of that name (anonymous items — string
+literals — stay, they cannot collide). The consumer remains the sole
+definer of all named data (vtables, tag globals); blob bodies import them,
+exactly like library code relocating against program-owned symbols. No
+redefinition permission needed for data; func overlap disappears because
+the consumer stops emitting exactly the blob-exported set. Residual risk:
+a blob body referencing a named datum the consumer's referenced-surface
+emission never emits → trap import (dlsym fallback catches real libstdc++
+symbols first); the equivalence gate (bind-with-blob == bind-without ==
+live, plus the bind gate 18/18) is the arbiter.
+
 ## Phased plan
 
 - **Probe A (cheap, 1 sitting):** at --freeze, after the check-gate compile,
