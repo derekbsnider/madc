@@ -19817,13 +19817,28 @@ node_t CirBuilder::translate_module(Program *prog)
 					fp.proto  = proto;
 					forest_lazy_protos.push_back(fp);
 				}
-				func_def_nodes.push_back(bn);
-				// Rung 3: a loaded system-header body survives only
-				// while referenced (methods here come from
-				// from_system_header classes; funcdef bodies from a
-				// non-system unit were exempted at collect time).
-				if (!forest_lazy_root.count(kv.first))
-					cond_mark_sym(bn, kv.first);
+				// MIR cache: a symbol the container's compiled
+				// module exports needs no def here — the forward
+				// proto types the call, c2mir emits an extern
+				// reference, and MIR_link resolves the import
+				// against the loaded cache module. (Emitting the
+				// def too would redefine the func at load.) A
+				// proto-less shape keeps its def; the session
+				// then un-exports the cache's copy.
+				if (proto && prog->mir_cache_exports.count(kv.first)) {
+					DBG(std::cout << "mir cache import: "
+					    << kv.first << std::endl);
+				} else {
+					func_def_nodes.push_back(bn);
+					// Rung 3: a loaded system-header body
+					// survives only while referenced (methods
+					// here come from from_system_header
+					// classes; funcdef bodies from a
+					// non-system unit were exempted at
+					// collect time).
+					if (!forest_lazy_root.count(kv.first))
+						cond_mark_sym(bn, kv.first);
+				}
 				grew = true;
 			}
 			for (auto &kv : lib_funcs) {

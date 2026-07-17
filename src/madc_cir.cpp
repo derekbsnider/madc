@@ -152,17 +152,17 @@ static void cir_dump_undefined_imports(MIR_context_t ctx)
 
 extern "C" void __madc_frozen_trap(const char *sym)
 {
-    fprintf(stderr, "madc: --run-frozen: reached unresolved drained-library "
-	    "symbol %s (outside the executed TU closure; a bound consumer "
-	    "derives it on use)\n", sym ? sym : "?");
+    fprintf(stderr, "madc: frozen module: reached unresolved drained-library "
+	    "symbol %s (outside the executed closure; a live compile derives "
+	    "it on use)\n", sym ? sym : "?");
     abort();
 }
 
 extern "C" void __madc_frozen_trap_vslot(const char *sym)
 {
-    fprintf(stderr, "madc: --run-frozen: virtual call through unmaterialized "
-	    "vtable %s (drained-library class outside the executed TU "
-	    "closure)\n", sym ? sym : "?");
+    fprintf(stderr, "madc: frozen module: virtual call through unmaterialized "
+	    "vtable %s (drained-library class outside the executed closure)\n",
+	    sym ? sym : "?");
     abort();
 }
 
@@ -175,9 +175,11 @@ static bool itanium_data_symbol(const std::string &nm)
 	|| nm.compare(0, 4, "_ZTS") == 0 || nm.compare(0, 4, "_ZGV") == 0;
 }
 
-static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
+// Named defs of a module, appended into `defined` (the trap scanners' "has a
+// real definition somewhere" set).
+static void cir_collect_module_defs(MIR_context_t ctx, MIR_module_t mod,
+				    std::set<std::string> &defined)
 {
-    std::set<std::string> defined;
     for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
 	 it = DLIST_NEXT(MIR_item_t, it)) {
 	switch (it->item_type) {
@@ -188,22 +190,13 @@ static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
 	default: break;
 	}
     }
-    std::vector<std::string> undef;
-    std::set<std::string> seen;
-    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
-	 it = DLIST_NEXT(MIR_item_t, it)) {
-	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
-	std::string nm = it->u.import_id;
-	if (defined.count(nm) || !seen.insert(nm).second) continue;
-	if (cir_import_resolver(nm.c_str())) continue;
-	undef.push_back(nm);
-    }
-    if (undef.empty()) return;
-    fprintf(stderr, "madc: --run-frozen: %zu unresolved drained-library "
-	    "import(s) bound to trap stubs (-v lists them)\n", undef.size());
-    DBG(for (const std::string &nm : undef)
-	    std::cerr << "  trap-bound: " << nm << std::endl);
+}
 
+// Build + load the per-symbol trap-stub module for `undef` (shared by the
+// --run-frozen whole-module lane and the bind lane's cache module).
+static void cir_bind_trap_module(MIR_context_t ctx,
+				 const std::vector<std::string> &undef)
+{
     MIR_new_module(ctx, "__madc_frozen_traps");
     MIR_item_t trap_proto = MIR_new_proto(ctx, "__madc_frozen_trap__proto",
 					  0, NULL, 1, MIR_T_P, "sym");
@@ -246,6 +239,65 @@ static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
     }
     MIR_finish_module(ctx);
     MIR_load_module(ctx, DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx)));
+}
+
+static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
+{
+    std::set<std::string> defined;
+    cir_collect_module_defs(ctx, mod, defined);
+    std::vector<std::string> undef;
+    std::set<std::string> seen;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
+	std::string nm = it->u.import_id;
+	if (defined.count(nm) || !seen.insert(nm).second) continue;
+	if (cir_import_resolver(nm.c_str())) continue;
+	undef.push_back(nm);
+    }
+    if (undef.empty()) return;
+    fprintf(stderr, "madc: --run-frozen: %zu unresolved drained-library "
+	    "import(s) bound to trap stubs (-v lists them)\n", undef.size());
+    DBG(for (const std::string &nm : undef)
+	    std::cerr << "  trap-bound: " << nm << std::endl);
+    cir_bind_trap_module(ctx, undef);
+}
+
+// Bind lane, rung 3: the loaded MIR cache module carries the whole drained
+// library, so it legitimately imports named data / drained-sibling symbols
+// outside this consumer's emitted surface (a tag global of a header the
+// consumer never references). Trap-bind ONLY the cache module's own
+// otherwise-unresolvable imports; a name the CONSUMER module also imports
+// stays strict — an unresolved consumer import is a live-compile correctness
+// signal and must keep failing exactly as it does without the cache.
+static void cir_prebind_cache_traps(MIR_context_t ctx, MIR_module_t cache_mod,
+				    MIR_module_t consumer_mod)
+{
+    std::set<std::string> defined;
+    cir_collect_module_defs(ctx, cache_mod, defined);
+    cir_collect_module_defs(ctx, consumer_mod, defined);
+    std::set<std::string> consumer_imports;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, consumer_mod->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it))
+	if (it->item_type == MIR_import_item && it->u.import_id)
+	    consumer_imports.insert(it->u.import_id);
+    std::vector<std::string> undef;
+    std::set<std::string> seen;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, cache_mod->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
+	std::string nm = it->u.import_id;
+	if (defined.count(nm) || consumer_imports.count(nm)
+	    || !seen.insert(nm).second) continue;
+	if (cir_import_resolver(nm.c_str())) continue;
+	undef.push_back(nm);
+    }
+    if (undef.empty()) return;
+    DBG(std::cout << "mir cache: " << undef.size() << " cache-only "
+	"import(s) bound to trap stubs" << std::endl);
+    DBG(for (const std::string &nm : undef)
+	    std::cerr << "  cache trap-bound: " << nm << std::endl);
+    cir_bind_trap_module(ctx, undef);
 }
 
 // -----------------------------------------------------------------------
@@ -538,7 +590,8 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 }
 
 CirJitSession::CirJitSession()
-    : ctx(NULL), c2m(NULL), builder(NULL), forest(NULL), mod(NULL)
+    : ctx(NULL), c2m(NULL), builder(NULL), forest(NULL), mod(NULL),
+      cache_mod(NULL)
 {
 }
 
@@ -564,6 +617,7 @@ void CirJitSession::teardown()
     builder = NULL;
     forest = NULL;
     mod = NULL;
+    cache_mod = NULL;	// owned by ctx (MIR_finish freed it above)
     gen_cache.clear();
 }
 
@@ -598,7 +652,15 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	return false;
     }
     cir_mir_error_armed = true;
+    // Rung 3: the privatized cache module loads FIRST; the consumer module's
+    // exports then win every env-level overlap (setup_global overwrites), and
+    // the cache's imports — including its privatized named data — resolve to
+    // the consumer's definitions at link.
+    if (cache_mod)
+	MIR_load_module(ctx, cache_mod);
     MIR_load_module(ctx, mod);
+    if (cache_mod)
+	cir_prebind_cache_traps(ctx, cache_mod, mod);
     cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
     MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
     cir_active_host_regs = NULL;
@@ -616,6 +678,66 @@ bool CirJitSession::build(Program *prog, const char *source_name,
     if (!init_contexts(source_name, dump_checked))
 	return false;
 
+    // MIR module cache, rung 3 (bind lane): a container that provided the
+    // bound grove may carry its compiled MIR module. Stage it BEFORE
+    // translate — the export set steers the m&l fixpoint (forward proto
+    // instead of loaded def for cache-exported symbols; the call resolves as
+    // a MIR import against this module at link). Every fallible step runs
+    // here, pre-translate, so any failure discards the cache and the
+    // consumer emits everything itself, bit-for-bit (MADC_NO_MIR_CACHE=1
+    // forces that — the equivalence gate's A/B lever).
+    cache_mod = NULL;
+    if (prog) prog->mir_cache_exports.clear();
+    if (prog && prog->bind_forest && !prog->forest_chain.empty()
+	&& !getenv("MADC_NO_MIR_CACHE")) {
+	std::vector<uint8_t> mblob;
+	if (prog->bind_forest->mir_module_bytes(mblob)) {
+	    if (setjmp(cir_mir_error_jmp)) {
+		// bmir version check / corrupt blob — rebuild-path fallback.
+		cir_mir_error_armed = false;
+		cir_mir_cache_read_src = NULL;
+		cache_mod = NULL;
+		fprintf(stderr, "%s: mir cache: MIR_read failed: %s — "
+			"falling back to full emission\n",
+			source_name, cir_mir_error_text);
+	    } else {
+		cir_mir_error_armed = true;
+		cir_mir_cache_read_src = &mblob;
+		cir_mir_cache_read_pos = 0;
+		MIR_read_with_func(ctx, cir_mir_cache_read_byte);
+		cir_mir_cache_read_src = NULL;
+		cir_mir_error_armed = false;
+		cache_mod = DLIST_TAIL(MIR_module_t,
+				       *MIR_get_module_list(ctx));
+	    }
+	    if (cache_mod) {
+		// The pack TU's entry points are never shared: the consumer
+		// defines its own. A module whose exported data heads a
+		// multi-item section can't be privatized — drop the cache
+		// now, while the fallback is still clean.
+		static const char *entry_syms[] = {"main", "__madc_global_init"};
+		if (MIR_module_privatize_for_link(ctx, cache_mod,
+						  entry_syms, 2)) {
+		    fprintf(stderr, "%s: mir cache: module has unsplittable "
+			    "exported data section(s) — falling back to full "
+			    "emission\n", source_name);
+		    cache_mod = NULL;	// stays in ctx unloaded; harmless
+		}
+	    }
+	    if (cache_mod) {
+		for (MIR_item_t it = DLIST_HEAD(MIR_item_t, cache_mod->items);
+		     it; it = DLIST_NEXT(MIR_item_t, it))
+		    if (it->item_type == MIR_func_item && it->export_p
+			&& it->u.func->name)
+			prog->mir_cache_exports.insert(it->u.func->name);
+		DBG(std::cout << "mir cache: bind module staged ("
+		    << mblob.size() << " bytes, "
+		    << prog->mir_cache_exports.size()
+		    << " importable bodies)" << std::endl);
+	    }
+	}
+    }
+
     bool stop = false;
     mod = build_tu_module(ctx, c2m, prog, source_name,
 			  dump_tree, dump_nodes, dump_checked,
@@ -626,6 +748,27 @@ bool CirJitSession::build(Program *prog, const char *source_name,
 	if (dump_stop) *dump_stop = stop;
 	teardown();
 	return false;
+    }
+
+    // Rung 3: the consumer wins every overlap. Un-export from the cache
+    // module any symbol this consumer module ALSO defines (an eagerly
+    // emitted user func in a full-program corpus; a proto-less fallback
+    // emission), so MIR_load_module can never hit a func redefinition.
+    // Privatize is idempotent — the entry points and data are already done.
+    if (cache_mod) {
+	std::vector<const char *> unexp;
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it))
+	    if (it->item_type == MIR_func_item && it->u.func->name
+		&& prog->mir_cache_exports.count(it->u.func->name))
+		unexp.push_back(it->u.func->name);
+	if (!unexp.empty()) {
+	    DBG(std::cout << "mir cache: " << unexp.size()
+		<< " consumer-defined overlap(s) un-exported from the cache "
+		"module" << std::endl);
+	    MIR_module_privatize_for_link(ctx, cache_mod,
+					  unexp.data(), unexp.size());
+	}
     }
 
     return load_and_link(source_name, prog);

@@ -3812,6 +3812,12 @@ public:
     }
     CirFrozenForest *bind_forest = NULL;	// lazily opened on first system include
     bool bind_forest_tried = false;	// one-shot open attempt (success or fail)
+    // MIR module cache, rung 3 (JIT bind lane ONLY — the emit/dump lanes never
+    // populate this, keeping their output byte-identical to live). Func names
+    // exported by the container's MIR cache module: the m&l fixpoint emits a
+    // forward proto instead of the loaded def for these, and the call resolves
+    // as a MIR import against the loaded cache module at link.
+    std::set<std::string> mir_cache_exports;
     bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)
     // v13: file-scope globals restored from a bound header. forest_restore_decls
     // runs during lexer #include handling, BEFORE tkProgram exists, so the globals

@@ -85,6 +85,8 @@ private:
     CirBuilder *builder;
     CirFrozenForest *forest;	// build_frozen(): owns the thawed node storage
     MIR_module_t mod;
+    MIR_module_t cache_mod;	// build(): the container's MIR cache module,
+				// loaded beside `mod` (rung 3); NULL = no cache
     std::map<std::string, void *> gen_cache;
     bool init_contexts(const char *source_name, bool dump_checked);
     bool load_and_link(const char *source_name, Program *prog);

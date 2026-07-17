@@ -40,4 +40,14 @@ timeout 120 "$BIN" --dump-forest > tmp/forest_pack_dump.txt
 grep -q '^forest	units=' tmp/forest_pack_dump.txt
 timeout 120 "$BIN" --run-frozen
 
-echo "forest_pack: OK ($(grep -c '^unit	' tmp/forest_pack_dump.txt) units appended to $BIN)"
+# MIR-cache bind-lane equivalence (rung 3): the packed binary compiling a real
+# test must (a) actually engage the cache lane — a silent fallback would pass
+# every equality check while testing nothing — and (b) produce byte-identical
+# output with the lane disabled (the blob is DERIVED state, never semantic).
+timeout 120 "$BIN" -v tests/testfreezerun.mad 2>/dev/null \
+    | grep -aq 'mir cache: bind module staged'
+out_cache=$(timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
+out_nocache=$(MADC_NO_MIR_CACHE=1 timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
+[ "$out_cache" = "$out_nocache" ]
+
+echo "forest_pack: OK ($(grep -c '^unit	' tmp/forest_pack_dump.txt) units appended to $BIN; bind cache == no-cache)"

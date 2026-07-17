@@ -143,7 +143,55 @@ workflow is exactly this shape).
   `forest_selfexe_gate` asserts cache == no-cache output. Release binary
   10,686,704 (+2.9%, the approved trade); packed suite 697/0/0/16.
 
-## Rung 3 design — forest-bind m&l short-circuit (recon complete, not built)
+## Rung 3a status (2026-07-17) — bind-lane import short-circuit LANDED
+
+Implemented with ONE deviation from the design below, chosen after an item
+census of the real pack module: the blob stays a WHOLE module (rung-2 format
+unchanged, `--run-frozen` untouched, old corpora stay valid) and the
+funcs-only strip happens IN-MEMORY at bind, after `MIR_read`, via a new fork
+API. Census facts that made this cheap (tmp/probe_item_census.c): 4290 funcs
+(all exported, incl. main/`__madc_global_init`), only 11 exported data items
+(std tag globals — `in_place`, `piecewise_construct`, `__default_lock_policy`,
+…), zero ref_data/expr_data, zero anonymous tails after exported data (tails
+only follow private string-literal sections). No vtables — the pack TU
+instantiates no polymorphic classes; consumer-side vtable emission is
+untouched either way.
+
+- **Fork API** `MIR_module_privatize_for_link(ctx, m, unexport_names, n)`
+  (mir.h/mir.c): un-exports the named funcs (defs stay as unexported dead
+  weight — no unlinking) and converts every exported named data item to an
+  import IN PLACE — the interned name pointer is reused as the import id, so
+  the module item table (which hashes the name pointer) and every insn REF
+  operand stay valid. Export list-items of privatized names are unlinked.
+  Idempotent; returns the count of unsplittable sections (exported data with
+  an anonymous continuation item — refuses those; caller falls back). Data
+  redefinition across modules is SILENT split-state in MIR (mir.c
+  `MIR_load_module` only fatals func redefs), which is exactly why
+  consumer-sole-owner is enforced by conversion, not by load order.
+- **Bind lane** (`CirJitSession::build`): stages the cache PRE-translate
+  (read blob → privatize entry points → collect func exports into
+  `prog->mir_cache_exports`) so every fallible step fails while the fallback
+  is still clean; the m&l fixpoint (cir_builder.cpp forest_lazy stage) emits
+  the forward proto but SKIPS the def for cache-exported symbols (proto-less
+  shapes keep their def — self-healing); post-translate, any consumer-defined
+  overlap (eager user funcs in full-program corpora) is un-exported from the
+  cache module — consumer wins every overlap by construction, no
+  `MIR_set_func_redef_permission` needed; `load_and_link` loads the cache
+  module first, then the consumer, then trap-binds cache-ONLY unresolvable
+  imports (`cir_prebind_cache_traps` — a name the consumer also imports stays
+  strict, preserving the live-compile failure surface).
+- **3a keeps materialization + the callee-walk** (consumer emission surface =
+  live minus the skipped defs) — the wall win is rung 3b (skip `node_for` for
+  cache-exported syms; transitively-referenced bodies then never materialize).
+- Gates: packed suite 697/0/0/16 (release binary, cache active on every
+  test); bind gate 18/18; 3-way equivalence cache == no-cache == live on
+  testsubscript/testfreezerun/testforeach2; emit lane byte-identical with the
+  lane on/off (cache is JIT-bind-only by construction); `forest_pack.sh` now
+  asserts engagement (staged-line grep) + cache==no-cache equality on every
+  release pack. Release binary 10,690,832 (+4,128 vs rung 2 — code only).
+  testsubscript imports 38 bodies instead of emitting them (4288 importable).
+
+## Rung 3 design — forest-bind m&l short-circuit (recon; 3a landed above, 3b open)
 
 The bind lane's cost is `forest_lazy` (cir_builder.cpp ~19394): restored
 `has_forest_body` symbols materialize node records into the consumer tree
