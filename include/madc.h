@@ -2478,6 +2478,21 @@ public:
 	const ClassPattern *materialize_class_pattern(const TemplateDef &td);
 	void writeback_class_pattern_capture(const TemplateDef &td);
 	void note_class_pattern_use(const TemplateDef &td);
+	// Lazy capture demanded at journal depth > 0 (nested inside a pattern
+	// serve) cannot run there — a nested isolate journal does not snapshot,
+	// so its rollback could not undo the capture parse's registrations.
+	// Queue the demand by registry key and drain at the next depth-0
+	// checkpoint (the outermost serve's return), where a capture journal
+	// is outermost again.
+	struct PendingClassPatternCapture
+	{
+	    uint32_t name_id;
+	    DataDefCLASS *owner;	// pointer-equality lookup key only
+	    bool is_partial;
+	};
+	std::vector<PendingClassPatternCapture> pending_class_pattern_captures;
+	void queue_class_pattern_capture(const TemplateDef &td);
+	void drain_pending_class_pattern_captures();
 	uint64_t class_pattern_fingerprint(const ClassPattern &pattern) const;
     // B0 class-KIND parse-once foundation. Capture uses the production class
     // parser once, so all temporary registrations must roll back as one unit.

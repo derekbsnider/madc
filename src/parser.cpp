@@ -6501,10 +6501,23 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     ClassParseReason legacy_reason = td.class_pattern_reason;
     const ClassPattern *selected_pattern = legacy_reason == ClassParseReason::None
 	? materialize_class_pattern(td) : NULL;
+    {
+	static const char *cpp_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
+	if ( cpp_probe && *cpp_probe
+	  && registered_mangled.find(cpp_probe) != std::string::npos )
+	    std::cout << "[class-pattern-probe] lazy-arm: " << registered_mangled
+		<< " pattern=" << (selected_pattern ? 1 : 0)
+		<< " reason=" << (unsigned)legacy_reason
+		<< " deferred=" << (td.class_pattern_capture_deferred ? 1 : 0)
+		<< " live=" << (class_pattern_live_capture ? 1 : 0)
+		<< " jdepth=" << class_registration_journal_depth
+		<< " uses=" << td.class_pattern_use_count
+		<< " partial=" << (td.is_partial_specialization ? 1 : 0)
+		<< std::endl;
+    }
     if ( !selected_pattern && legacy_reason == ClassParseReason::None
 	  && td.class_pattern_capture_deferred && !force_legacy
-	  && class_pattern_live_capture
-	  && class_registration_journal_depth == 0 )
+	  && class_pattern_live_capture )
     {
 	// Definition-only pre-filter: eligibility categorically rejects
 	// non-type params, value/pack params, and friend-bearing bodies —
@@ -6539,6 +6552,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    // template would pay capture + substitution against the parse
 	    // lane's one body parse).
 	    note_class_pattern_use(td);
+	else if ( class_registration_journal_depth != 0 )
+	    // Repeat demand from INSIDE a pattern serve: a capture here would
+	    // open a NESTED isolate journal, which does not snapshot (only
+	    // the outermost does) — its rollback could not undo the capture
+	    // parse's registrations. Queue it; the outermost serve's return
+	    // drains the queue at depth 0. This demand stays on the parse
+	    // lane.
+	    queue_class_pattern_capture(td);
 	else
 	{
 	    // Lazy live capture on repeat demand: the one-time capture parse
@@ -6546,10 +6567,6 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    // on the local copy, persist the outcome on the registered
 	    // definition so it runs at most once per template, then
 	    // re-materialize.
-	    // Only at journal depth 0: a capture nested inside a pattern-lane
-	    // instantiation would open a NESTED isolate journal, which does
-	    // not snapshot (only the outermost does) — its rollback could not
-	    // undo the capture parse's registrations.
 	    capture_class_pattern(td);
 	    td.class_pattern_capture_deferred = false;
 	    writeback_class_pattern_capture(td);
@@ -6581,16 +6598,23 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    std::cerr << "[class-pattern-probe] pattern-lane: "
 			<< registered_mangled << std::endl;
 	    }
-	    struct InFlightGuard {
-		std::set<std::string> &set;
-		const std::string &key;
-		bool inserted;
-		InFlightGuard(std::set<std::string> &s, const std::string &k)
-		    : set(s), key(k), inserted(s.insert(k).second) {}
-		~InFlightGuard() { if ( inserted ) set.erase(key); }
-	    } in_flight(class_pattern_inst_in_progress, registered_mangled);
-	    NamespaceScope namespace_scope(*this, td.defining_namespace);
-	    return instantiate_basic_class_pattern(*this, binding);
+	    TokenDataType *served;
+	    {
+		struct InFlightGuard {
+		    std::set<std::string> &set;
+		    const std::string &key;
+		    bool inserted;
+		    InFlightGuard(std::set<std::string> &s, const std::string &k)
+			: set(s), key(k), inserted(s.insert(k).second) {}
+		    ~InFlightGuard() { if ( inserted ) set.erase(key); }
+		} in_flight(class_pattern_inst_in_progress, registered_mangled);
+		NamespaceScope namespace_scope(*this, td.defining_namespace);
+		served = instantiate_basic_class_pattern(*this, binding);
+	    }
+	    // Depth is 0 again here (the serve's journal closed): run any
+	    // captures queued by nested demand inside the serve.
+	    drain_pending_class_pattern_captures();
+	    return served;
 	}
 	if ( legacy_reason == ClassParseReason::None )
 	    legacy_reason = ClassParseReason::PatternNotCaptured;
@@ -15470,6 +15494,57 @@ void Program::note_class_pattern_use(const TemplateDef &td)
     TemplateDef *entry = registered_template_entry_for(*this, td);
     if ( entry && entry->class_pattern_use_count != (uint16_t)~0u )
 	++entry->class_pattern_use_count;
+}
+
+void Program::queue_class_pattern_capture(const TemplateDef &td)
+{
+    PendingClassPatternCapture key;
+    key.name_id = td.registry_name_id
+	? td.registry_name_id : template_name_pool.intern(td.class_name);
+    key.owner = td.owner_class;
+    key.is_partial = td.is_partial_specialization;
+    for ( size_t i = 0; i < pending_class_pattern_captures.size(); ++i )
+	if ( pending_class_pattern_captures[i].name_id == key.name_id
+	  && pending_class_pattern_captures[i].owner == key.owner
+	  && pending_class_pattern_captures[i].is_partial == key.is_partial )
+	    return;
+    pending_class_pattern_captures.push_back(key);
+}
+
+void Program::drain_pending_class_pattern_captures()
+{
+    if ( pending_class_pattern_captures.empty()
+      || class_registration_journal_depth != 0
+      || class_pattern_capture_in_progress )
+	return;
+    std::vector<PendingClassPatternCapture> queue;
+    queue.swap(pending_class_pattern_captures);
+    // Copy the candidate variants up front: capture_class_pattern parses,
+    // which can grow the registry vectors (reallocation) — never hold a
+    // registry pointer across a capture.
+    std::vector<TemplateDef> to_capture;
+    for ( size_t i = 0; i < queue.size(); ++i )
+    {
+	const template_registry_entry_t *entry = queue[i].is_partial
+	    ? partial_spec_map.find_readonly(queue[i].name_id)
+	    : template_map.find_readonly(queue[i].name_id);
+	const std::vector<TemplateDef> *found =
+	    entry ? entry->find(queue[i].owner) : NULL;
+	if ( !found )
+	    continue;
+	for ( size_t v = 0; v < found->size(); ++v )
+	    if ( (*found)[v].class_pattern_capture_deferred
+	      && (*found)[v].class_pattern_reason == ClassParseReason::None
+	      && (*found)[v].class_pattern_use_count > 0 )
+		to_capture.push_back((*found)[v]);
+    }
+    for ( size_t i = 0; i < to_capture.size(); ++i )
+    {
+	TemplateDef &td = to_capture[i];
+	capture_class_pattern(td);
+	td.class_pattern_capture_deferred = false;
+	writeback_class_pattern_capture(td);
+    }
 }
 
 const Program::ClassPattern *Program::materialize_class_pattern(
