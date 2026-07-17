@@ -14680,36 +14680,42 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 		TokenDecl *td = dynamic_cast<TokenDecl *>(tf->initialize);
 		if (td && !tf->init_extras.empty()) {
 			// Typed multi-declarator init `for (int x=1, y=2, z=3; ...)`.
-			// Every declarator's variable is hoisted into the enclosing scope
-			// (the single-declarator case hoists too — `int i;` precedes the
-			// loop), so the for-init's job is purely to INITIALIZE. Lower it as
-			// the comma of the declarators' initializing assignments: a bare
-			// var_decl (N_SPEC_DECL) can't be folded into an N_COMMA, and no
-			// multi-declarator N_SPEC_DECL is built here, so the assignments to
-			// the already-hoisted vars are the faithful equivalent. (The old
-			// code dropped init_extras whenever `initialize` was a TokenDecl,
-			// leaving y/z uninitialized -> garbage / infinite loop:
-			// testfortypedcomma.)
-			std::vector<node_t> parts;
+			// The declarators' variables live in the for-init's own parse
+			// scope (C++ [stmt.for]; TokenFOR::parse pushes a compound the
+			// CIR never visits), so this lowering must DECLARE them, not
+			// just initialize. Emit decl + initializing assignment per
+			// declarator, in order, into the synthetic block wrapping the
+			// loop (built at the return below) — the same wrap the
+			// class-shape single-declarator arm uses. Class-shape
+			// declarators go through class_decl_stmts (decl + real
+			// construction + cleanup dtor).
+			class_init_items = list();
 			auto add_clause = [&](TokenBase *clause) {
-				if (TokenDecl *ctd = dynamic_cast<TokenDecl *>(clause)) {
-					if (ctd->initialize)
-						parts.push_back(translate_expr(ctd->initialize));
-					// no initializer: the var is hoisted; nothing to run
-				} else {
-					parts.push_back(translate_expr(clause));
+				TokenDecl *ctd = dynamic_cast<TokenDecl *>(clause);
+				if (!ctd) {
+					append(class_init_items, translate_expr(clause));
+					return;
 				}
+				if (DataDefCLASS *cdc = as_class_instance(ctd->var.type)) {
+					class_decl_stmts(ctd, cdc, class_init_items);
+					return;
+				}
+				if (is_array_object(ctd->var.type)) {
+					append(class_init_items, var_decl(&ctd->var, ctd));
+					append(class_init_items,
+					       array_ctor_call(ctd->var.name.c_str(), ctd));
+					return;
+				}
+				// Scalar declarator: var_decl folds ctd->initialize
+				// into the SPEC_DECL initializer (RHS-unwrapped), so
+				// no separate assignment — one would re-run a
+				// side-effecting initializer.
+				append(class_init_items, var_decl(&ctd->var, ctd));
 			};
 			add_clause(tf->initialize);
 			for (TokenBase *ex : tf->init_extras)
 				add_clause(ex);
-			if (parts.empty())
-				init = ignore();
-			else {
-				init = parts[0];
-				for (size_t i = 1; i < parts.size(); i++)
-					init = node2(N_COMMA, init, parts[i]);
-			}
+			init = ignore();
 		} else if (td && (as_class_instance(td->var.type)
 				  || is_array_object(td->var.type))) {
 			// Class-shape single declarator (`for (map<K,V>::iterator it =

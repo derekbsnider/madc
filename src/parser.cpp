@@ -35225,6 +35225,15 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	    pgm.pushToken(amp_tok);
 	if ( const_tok )
 	    pgm.parsing_const_decl = true;
+	// C++ [stmt.for]: a for-init declaration has LOOP scope. Without a
+	// scope of its own, sibling loops declaring the same name land in the
+	// SAME enclosing block and addVariable's same-block reuse silently
+	// returns the FIRST loop's variable — with the first loop's TYPE
+	// (two iterator loops over different containers both named `it`
+	// conflated set/map _Rb_tree iterators). The compound is a parse-time
+	// name scope only: CIR never sees it (the for lowering declares the
+	// variable itself — init-slot var_decl or the synthetic block wrap).
+	pgm.pushCompound();
 	initialize = pgm.parseDeclaration(dt);
 	typed_for_init = true;
     }
@@ -35339,6 +35348,10 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	    DBG(cout << "TokenFOR::parse() statement(s): calling parseStatement(" << (char)tn->get() << ')' << endl);
 	    if ( !(statement = pgm.parseStatement(tn)) )
 		pgm.Throw(tn) << "Failed to parse statement" << flush;
+
+    // Close the for-init declaration scope opened above (typed init only).
+    if ( typed_for_init )
+	pgm.popCompound();
 
     DBG(std::cout << "TokenFOR::parse() END" << std::endl);
 
