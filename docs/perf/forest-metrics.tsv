@@ -8,3 +8,5 @@
 date	commit	lane	wall_s	cpu_s	maxrss_kb	minflt	majflt	nivcsw	ir	load1	note
 2026-07-17	9685e748	live	2.270	2.255	214616	53039	0	35	4058690879	1.13	metrics v2 seed: rusage (cpu/maxrss/flt/nivcsw) + callgrind Ir anchor (owner-directed after box-drift finding)
 2026-07-17	9685e748	bound	0.665	0.618	217028	54484	0	2	1820044505	1.13	metrics v2 seed: rusage (cpu/maxrss/flt/nivcsw) + callgrind Ir anchor (owner-directed after box-drift finding)
+2026-07-17	f11b0762	live	2.269	2.254	214508	53031	0	52	-	1.42	R5 s4 @2ccb63b7 + s5 @f11b0762: deferred nested-demand capture + friend-decl serve (3 depth fixes); default lanes FLAT; opt-in A/B 2.261/2.396 (+135ms, capture cost of big classes)
+2026-07-17	f11b0762	bound	0.665	0.650	216464	54336	0	3	-	1.42	R5 s4 @2ccb63b7 + s5 @f11b0762: deferred nested-demand capture + friend-decl serve (3 depth fixes); default lanes FLAT; opt-in A/B 2.261/2.396 (+135ms, capture cost of big classes)
