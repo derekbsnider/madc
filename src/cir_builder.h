@@ -1188,6 +1188,7 @@ public:
 	// emits the index loop + per-iteration element fill (php_array_get /
 	// php_array_get_int) around the translated body.
 	node_t translate_foreach(class TokenFOREACH *fe);
+	node_t translate_foreach_loop(class TokenFOREACH *fe);
 	// Range-for over a user-defined class / template-instantiated container:
 	// `for (T x : c) body` -> index loop using c.size() and c[__i] (the
 	// class's size()/operator[] methods). The loop var is declared in the

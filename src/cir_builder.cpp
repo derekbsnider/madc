@@ -15078,7 +15078,42 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 //   }
 // Class element -> php_array_get((void*)x, (void*)arr, __fe_i) (assigns into
 // the pre-constructed object). Numeric element -> x = php_array_get_int().
+// The element variable lives in the range-for's own parse scope (TokenFOR::parse
+// pushes a compound around the range-for — the #44 loop-scope model), so the
+// enclosing block's hoisted-variable walk no longer declares it. Declare it (plus
+// default construction for a class-shape element — the per-iteration fills assign
+// into a pre-constructed object) in a block wrapping the loop, using the same
+// decl shapes as translate_block's hoisted-variable walk.
 node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
+{
+	node_t loop = translate_foreach_loop(fe);
+	Variable *ev = fe->elemvar;
+	if (!loop || !ev)
+		return loop;
+	node_t items = list();
+	append(items, var_decl(ev, fe));
+	if (is_array_object(ev->type)) {
+		append(items, array_ctor_call(ev->name.c_str(), fe));
+	} else if (DataDefCLASS *edc = as_class_instance(ev->type)) {
+		node_t cc = class_ctor_call(ev, edc, std::vector<TokenBase *>(), fe);
+		if (cc)
+			append(items, cc);
+		else {
+			if (class_has_object_members(edc))
+				class_instance_member_ctors(ev->name.c_str(), edc,
+							    items, fe);
+			std::vector<node_t> nsdmi_stmts;
+			if (emit_member_default_inits(edc, ev->name.c_str(), false,
+						      nsdmi_stmts, fe, NULL))
+				for (node_t s : nsdmi_stmts)
+					append(items, s);
+		}
+	}
+	append(items, loop);
+	return node2(N_BLOCK, list(), items, fe);
+}
+
+node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 {
 	if (!fe->container || !fe->elemtype)
 		return error_node("range-for missing container or element type", fe);

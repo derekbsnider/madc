@@ -35181,6 +35181,14 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		DBG(cout << "TokenFOR::parse() range-for detected: " << dt->definition.name << ' ' << fe->elemname
 		    << (range_elem_ref ? " (reference)" : "") << endl);
 
+		// The element variable has LOOP scope (C++ [stmt.ranged], the
+		// same model as the typed for-init below): declare it in a
+		// parse-time compound of its own, so sibling range-fors reusing
+		// the element name get fresh variables instead of addVariable's
+		// same-block reuse handing loop 2 loop 1's variable + type.
+		// CIR never visits this compound; translate_foreach declares
+		// the element itself in its wrap block.
+		pgm.pushCompound();
 		// add the loop variable to the current scope. A reference loop
 		// var is a pointer-to-element with vfREFERENCE (auto-deref on
 		// read; writes hit the aliased source) — the same model as a
@@ -35208,6 +35216,9 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		fe->statement = pgm.parseStatement(tn4);
 		if ( !fe->statement )
 		    pgm.Throw(tn4) << "Failed to parse range-for body" << flush;
+
+		// Close the range-for element scope opened above.
+		pgm.popCompound();
 
 		DBG(std::cout << "TokenFOR::parse() range-for END" << std::endl);
 		return fe;
