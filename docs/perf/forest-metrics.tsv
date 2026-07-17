@@ -1,0 +1,10 @@
+# forest phase metrics trend — one row per lane per measurement (append-only).
+# lane: live = bin/madc (-O0, live parse); bound = bin/madc-release (packed -O2, forest bind).
+# wall_s/cpu_s = median of 5 (cpu = child ru_utime+ru_stime); maxrss_kb = max of 5.
+# minflt/majflt/nivcsw = per-run medians; majflt>0 or high nivcsw marks a confounded row.
+# ir = callgrind instruction count (deterministic work anchor; "-" unless MADC_BENCH_IR=1).
+# Wall alone is unreliable on this shared host: neighbor contention shifts IPC ±15% with
+# no guest loadavg signal (proven 2026-07-17: the 0.519 binary re-measured 0.620 at load 0.42).
+date	commit	lane	wall_s	cpu_s	maxrss_kb	minflt	majflt	nivcsw	ir	load1	note
+2026-07-17	9685e748	live	2.270	2.255	214616	53039	0	35	4058690879	1.13	metrics v2 seed: rusage (cpu/maxrss/flt/nivcsw) + callgrind Ir anchor (owner-directed after box-drift finding)
+2026-07-17	9685e748	bound	0.665	0.618	217028	54484	0	2	1820044505	1.13	metrics v2 seed: rusage (cpu/maxrss/flt/nivcsw) + callgrind Ir anchor (owner-directed after box-drift finding)

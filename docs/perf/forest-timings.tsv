@@ -32,3 +32,4 @@ date	commit	live_s	bound_s	live_derives	bound_derives	load1	note
 2026-07-17	6e7bce07	2.200	0.627	217	184	1.07	task41: lazy-capture clone-position fix — flagships pattern-serve live (opt-in)
 2026-07-17	73089db2	2.181	0.615	217	184	1.07	MIR cache rung 3: bind lane OPT-IN (premise refuted: fixed floor 0.27 > body savings ~0.1; opt-in bound 0.89); default lanes flat
 2026-07-17	945c12b9	2.270	0.626	217	184	0.89	R5 slice 2 @434f7f2c: pattern-served ctor Itanium fidelity (serve qualifier carry-over + restore spelling round-trip + mangle fence); packed suite re-green 697/0/0/16
+2026-07-17	9685e748	2.270	0.665	217	184	1.13	metrics v2 seed: rusage (cpu/maxrss/flt/nivcsw) + callgrind Ir anchor (owner-directed after box-drift finding)
