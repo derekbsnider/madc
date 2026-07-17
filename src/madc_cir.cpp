@@ -492,6 +492,12 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     out_builder = NULL;
     out_stop = false;
 
+    // The tree build resolves token spellings / wide values / datadef ids via
+    // the process-global active-owner statics. --project parses every TU
+    // before building any (throwing calls stay outside the MIR bracket), so
+    // by the time this TU builds, another Program's pools are active.
+    prog->activate_token_pools();
+
     // CirBuilder (cir_node) is the sole backend. The builder owns its node
     // arena and must outlive cir_compile()/MIR_gen() — hence it is returned to
     // the caller. (The legacy static cir_translate() path was removed; it had
@@ -3800,7 +3806,8 @@ static bool is_c_source_file(const std::string &path)
 
 int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			 int user_argc, char **user_argv,
-			 bool forest_bind, const std::string &forest_bind_path)
+			 bool forest_bind, const std::string &forest_bind_path,
+			 bool class_pattern_live_capture)
 {
 	if (manifest.tus.empty()) {
 		fprintf(stderr, "madc_project_execute: empty manifest\n");
@@ -3827,6 +3834,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		// falls through to live parse when no container is present.
 		prog->forest_bind_enabled = forest_bind;
 		prog->forest_bind_path = forest_bind_path;
+		prog->class_pattern_live_capture = class_pattern_live_capture;
 		for (const std::string &inc : tu.include_dirs)
 			prog->add_include_dir(inc);
 		for (const std::string &d : tu.defines)
@@ -3859,6 +3867,13 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	// Phase 2: now that all parsing is done, enter the MIR bracket. No
 	// throwing call sits between MIR_init() and teardown().
 	MIR_context_t ctx = MIR_init();
+	// C++ TUs each emit their own copy of every template instantiation they
+	// use (ODR: the copies are identical). MIR treats a same-named exported
+	// func in a later module as a fatal redefinition; permit it so the last
+	// copy wins — the linkonce/COMDAT analogue for the multi-TU JIT.
+	// (Named DATA duplicates still get per-module addresses — split-state
+	// hazard for template statics; revisit when a corpus actually hits it.)
+	MIR_set_func_redef_permission(ctx, TRUE);
 	c2mir_init(ctx);
 	MIR_gen_init(ctx);
 	MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);

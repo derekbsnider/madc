@@ -35,9 +35,13 @@ class MadcEngine;
 // empty) — the compile-mode default, with silent live fall-through when no
 // container is present. false = force live parse (--no-forest-bind, the A/B
 // measurement lever).
+// class_pattern_live_capture: per-TU lazy live ClassPattern capture (the
+// MADC_CLASS_PATTERN_LIVE opt-in, resolved by the CLI onto its Program and
+// forwarded here so the lever reaches every TU).
 int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			 int user_argc, char **user_argv,
 			 bool forest_bind = true,
-			 const std::string &forest_bind_path = std::string());
+			 const std::string &forest_bind_path = std::string(),
+			 bool class_pattern_live_capture = false);
 
 #endif

@@ -1095,8 +1095,7 @@ void Program::_tokenizer_init()
     // pre-computed spelling_id (uint32) instead of comparing strings.
     // Bind the active pool for TokenIdent::spelling() (interning Step 4). Compile is
     // sequential per-Program, so the currently-initializing Program owns the accessor.
-    TokenBase::_active_strpool = &strpool;
-    TokenBase::_active_valpool = &valpool;	// P0 slice 3: wide constants resolve via wival()
+    activate_token_pools();
     keyword_map.set_pool(&strpool);
     cpp_operator_map.set_pool(&strpool);
     define_map.set_pool(&strpool);

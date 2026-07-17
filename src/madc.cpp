@@ -884,7 +884,8 @@ int main(int argc, char **argv)
 	char **run_argv = argv + filearg;
 	int rc = madc_project_execute(engine, manifest, run_argc, run_argv,
 				      prog->forest_bind_enabled,
-				      prog->forest_bind_path);
+				      prog->forest_bind_path,
+				      prog->class_pattern_live_capture);
 	return (rc < 0) ? 1 : rc;
     }
 

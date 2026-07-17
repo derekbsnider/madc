@@ -4018,6 +4018,12 @@ public:
     void consume_directive_line_tail();
 //  TokenProgram *tokenize(std::istream &);
     TokenProgram *tokenize(const char *);
+    // Bind this Program's pools to the process-global active-owner statics
+    // (TokenBase spelling()/wival(), cir_node datadef_id). Any phase that
+    // processes a Program's tokens after ANOTHER Program has tokenized/parsed
+    // (--project builds every TU's tree after all TUs are parsed) must
+    // re-activate the owning Program first.
+    void activate_token_pools();
     // Full-fidelity source reconstruction from the token stream (requires
     // keep_trivia set before tokenizing). See TokenBase::leading_trivia.
     std::string reconstruct_source();

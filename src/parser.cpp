@@ -17085,11 +17085,16 @@ void Program::add_host_callbacks()
     }
 }
 
-void Program::_parser_init()
+void Program::activate_token_pools()
 {
     TokenBase::_active_strpool = &strpool;	// interning Step 4: this Program owns spelling()
     TokenBase::_active_valpool = &valpool;	// P0 slice 3: wide constants resolve via wival()
     madc_active_project_types = &project_types;	// B1: cir_node datadef_id resolves via typeids
+}
+
+void Program::_parser_init()
+{
+    activate_token_pools();
     ensure_registration_config();
     add_functions();
     add_globals();
