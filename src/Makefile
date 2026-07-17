@@ -225,6 +225,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) test
 	@cd .. && bash scripts/class_pattern_equivalence.sh
 	@cd .. && bash scripts/forest_selfexe_gate.sh
 	@cd .. && bash scripts/forest_bind_gate.sh
+	@cd .. && bash scripts/project_gate.sh
 	@cd .. && bash scripts/forest_index_oracle.sh
 	@cd .. && bash scripts/forest_dm_oracle.sh
 
