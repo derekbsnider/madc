@@ -278,6 +278,28 @@ static void MIR_NO_RETURN cir_mir_error(MIR_error_type_t error_type,
     exit(1);
 }
 
+// --- MIR module cache byte IO (no FILE*: a MIR fatal's longjmp must leave
+// nothing open; thread_local park spots for the with_func callbacks) ---
+
+// Byte sink for MIR_write_module_with_func — appends into the parked vector.
+static thread_local std::vector<uint8_t> *cir_mir_cache_sink = NULL;
+static int cir_mir_cache_write_byte(MIR_context_t, uint8_t b)
+{
+    cir_mir_cache_sink->push_back(b);
+    return 1;
+}
+
+// Byte source for MIR_read_with_func — fgetc semantics (EOF = -1).
+static thread_local const std::vector<uint8_t> *cir_mir_cache_read_src = NULL;
+static thread_local size_t cir_mir_cache_read_pos = 0;
+static int cir_mir_cache_read_byte(MIR_context_t)
+{
+    if (!cir_mir_cache_read_src
+	|| cir_mir_cache_read_pos >= cir_mir_cache_read_src->size())
+	return EOF;
+    return (*cir_mir_cache_read_src)[cir_mir_cache_read_pos++];
+}
+
 // -----------------------------------------------------------------------
 // JIT symbolization for the crash handler
 // -----------------------------------------------------------------------
@@ -635,32 +657,67 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
 	}
     }
 
-    cir_node *root = forest->root();
-    if (!root) {
-	fprintf(stderr, "%s: forest root failed to materialize\n", module_name);
-	teardown();
-	return false;
+    // MIR module cache: a container carrying its compiled module skips the
+    // node materialization + c2mir compile entirely — MIR_read the blob into
+    // this context. Any failure (no segment, stamp mismatch, bmir read error)
+    // falls through to the rebuild path bit-for-bit. MADC_NO_MIR_CACHE=1
+    // forces the rebuild (the equivalence gate's A/B lever).
+    mod = NULL;
+    if (!getenv("MADC_NO_MIR_CACHE")) {
+	std::vector<uint8_t> mblob;
+	if (forest->mir_module_bytes(mblob)) {
+	    if (setjmp(cir_mir_error_jmp)) {
+		// The bmir stream's internal version check (or a corrupt
+		// blob) fataled — fall back to the rebuild below.
+		cir_mir_error_armed = false;
+		cir_mir_cache_read_src = NULL;
+		mod = NULL;
+		fprintf(stderr, "%s: mir cache: MIR_read failed: %s — "
+			"falling back to node materialization\n",
+			module_name, cir_mir_error_text);
+	    } else {
+		cir_mir_error_armed = true;
+		cir_mir_cache_read_src = &mblob;
+		cir_mir_cache_read_pos = 0;
+		MIR_read_with_func(ctx, cir_mir_cache_read_byte);
+		cir_mir_cache_read_src = NULL;
+		cir_mir_error_armed = false;
+		mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+		DBG(std::cout << "mir cache: module loaded from container ("
+		    << mblob.size() << " bytes; node rebuild skipped)"
+		    << std::endl);
+	    }
+	}
     }
 
-    // The same validity gate as a live build: never hand c2mir a tree
-    // containing error/incomplete nodes.
-    if (int nerr = cir_report_errors(stderr, root->as_node())) {
-	fprintf(stderr, "%s: %d untranslatable node(s) in frozen tree; not compiling\n",
-		module_name, nerr);
-	teardown();
-	return false;
-    }
-
-    if (!cir_compile(ctx, c2m, root->as_node(), module_name)) {
-	fprintf(stderr, "%s: cir_compile failed\n", module_name);
-	teardown();
-	return false;
-    }
-    mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
     if (!mod) {
-	fprintf(stderr, "%s: no module produced\n", module_name);
-	teardown();
-	return false;
+	cir_node *root = forest->root();
+	if (!root) {
+	    fprintf(stderr, "%s: forest root failed to materialize\n", module_name);
+	    teardown();
+	    return false;
+	}
+
+	// The same validity gate as a live build: never hand c2mir a tree
+	// containing error/incomplete nodes.
+	if (int nerr = cir_report_errors(stderr, root->as_node())) {
+	    fprintf(stderr, "%s: %d untranslatable node(s) in frozen tree; not compiling\n",
+		    module_name, nerr);
+	    teardown();
+	    return false;
+	}
+
+	if (!cir_compile(ctx, c2m, root->as_node(), module_name)) {
+	    fprintf(stderr, "%s: cir_compile failed\n", module_name);
+	    teardown();
+	    return false;
+	}
+	mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+	if (!mod) {
+	    fprintf(stderr, "%s: no module produced\n", module_name);
+	    teardown();
+	    return false;
+	}
     }
     if (getenv("MADC_DUMP_MIR"))
 	MIR_output(ctx, stderr);
@@ -3114,8 +3171,76 @@ static void cir_forest_arena_refresh(Program *prog,
 	}
 }
 
+// MIR module cache (2026-07-17 design): compile a just-assembled container
+// image to its MIR module in FRESH contexts — exactly the compile a consumer's
+// --run-frozen would run — and serialize it with MIR_write_module. Error-
+// contained: check-clean does NOT imply gen-clean (c2mir can still fatal on a
+// defective drained body — "undeclared func reg fp"), so a MIR fatal here
+// longjmps back, the pack carries no blob, and every consumer falls back to
+// node materialization bit-for-bit.
+static bool cir_forest_mir_cache_blob(const void *image, size_t image_len,
+				      const char *source_name,
+				      std::vector<uint8_t> &out)
+{
+    MIR_context_t ctx = MIR_init();
+    MIR_set_error_func(ctx, cir_mir_error);
+    c2mir_init(ctx);
+    c2m_ctx_t c2m = cir_init(ctx, /*debug_p=*/false);
+    bool ok = false;
+    {
+	CirFrozenForest forest;
+	do {
+	    if (!c2m)
+		break;
+	    if (!forest.open(image, image_len, c2m))
+		break;
+	    cir_node *root = forest.root();
+	    if (!root)
+		break;
+	    if (cir_report_errors(stderr, root->as_node()))
+		break;
+	    if (setjmp(cir_mir_error_jmp)) {
+		cir_mir_error_armed = false;
+		cir_mir_cache_sink = NULL;
+		fprintf(stderr, "%s: mir cache: MIR error during module "
+			"compile: %s — blob skipped (consumers fall back)\n",
+			source_name, cir_mir_error_text);
+		break;
+	    }
+	    cir_mir_error_armed = true;
+	    bool compiled = cir_compile(ctx, c2m, root->as_node(), "frozen");
+	    MIR_module_t mod = compiled
+		? DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx)) : NULL;
+	    if (!mod) {
+		cir_mir_error_armed = false;
+		fprintf(stderr, "%s: mir cache: module compile failed — "
+			"blob skipped (consumers fall back)\n", source_name);
+		break;
+	    }
+	    cir_forest_mir_header mh;
+	    mh.forest_version = CIR_FOREST_FORMAT_VERSION;
+	    mh.mir_api_x100 = (uint32_t)(_MIR_get_api_version() * 100.0 + 0.5);
+	    out.clear();
+	    out.insert(out.end(), (const uint8_t *)&mh,
+		       (const uint8_t *)&mh + sizeof(mh));
+	    cir_mir_cache_sink = &out;
+	    MIR_write_module_with_func(ctx, cir_mir_cache_write_byte, mod);
+	    cir_mir_cache_sink = NULL;
+	    cir_mir_error_armed = false;
+	    ok = out.size() > sizeof(mh);
+	} while (0);
+	if (c2m)
+	    cir_finish(c2m);
+    }
+    c2mir_finish(ctx);
+    MIR_finish(ctx);
+    if (!ok)
+	out.clear();
+    return ok;
+}
+
 int madc_cir_freeze(Program *prog, const char *source_name,
-		    const char *out_path, bool append)
+		    const char *out_path, bool append, bool mir_cache)
 {
     // The type graph rides the parse-populated DefArena (v18): a Program that
     // parsed with forest_arena_enabled OFF would freeze a type-less container
@@ -3275,7 +3400,31 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		// The intern spine compresses only in the appended pack
 		// (owner-approved ~7ms-per-process trade; dev freezes keep
 		// zero-copy binds).
-		if (!cir_forest_write(f, w, codec, append ? 15 : 0, append)) {
+		bool staged = cir_forest_write(f, w, codec, append ? 15 : 0,
+					       append);
+		// MIR module cache (--freeze-mir-cache): assemble the container
+		// in memory, thaw + compile that EXACT image (what a consumer's
+		// --run-frozen builds), and stage the serialized module as one
+		// more segment before the file is written. Blob failure never
+		// fails the freeze — the segment is simply absent and every
+		// consumer falls back to node materialization.
+		if (staged && mir_cache) {
+		    std::vector<uint8_t> image, mblob;
+		    if (w.build(image)
+			&& cir_forest_mir_cache_blob(image.data(), image.size(),
+						     source_name, mblob)) {
+			if (!w.add_segment(CIR_FOREST_SEG_MIR_MODULE,
+					   SNAP_KIND_CIR_MIR_MODULE,
+					   mblob.data(), mblob.size(), codec,
+					   append ? 15 : 0))
+			    fprintf(stderr, "%s: mir cache: segment add "
+				    "failed — blob skipped\n", source_name);
+			else
+			    fprintf(stderr, "%s: mir cache: %zu-byte module "
+				    "blob packed\n", source_name, mblob.size());
+		    }
+		}
+		if (!staged) {
 		    fprintf(stderr, "%s: forest container assembly failed\n",
 			    source_name);
 		} else if (!(append ? w.append_file(out_path)
@@ -3382,6 +3531,11 @@ int madc_cir_dump_forest(const char *container_path)
 	return -1;
 
     printf("forest\tunits=%u\n", forest.unit_count());
+    {
+	std::vector<uint8_t> mblob;
+	if (forest.mir_module_bytes(mblob))
+	    printf("mircache\tbytes=%zu\n", mblob.size());
+    }
     for (size_t i = 0; i < forest.libs().size(); ++i)
 	printf("lib\t%s\n", forest.libs()[i].c_str());
     const std::vector<uint32_t> &canon = forest.canon_order();

@@ -38,7 +38,7 @@ extern int madc_cir_execute(Program *prog, const char *source_name,
 extern int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
                          CirEmitLang lang);
 extern int madc_cir_freeze(Program *prog, const char *source_name,
-                           const char *out_path, bool append);
+                           const char *out_path, bool append, bool mir_cache);
 extern int madc_cir_execute_frozen(const char *container_path,
                                    int user_argc, char **user_argv);
 extern int madc_cir_dump_forest(const char *container_path);
@@ -451,6 +451,9 @@ static void print_usage(const char *prog)
 "                          into a forest snapshot container (no run)\n"
 "  --freeze-append=<bin>   same, but append the container to an existing\n"
 "                          binary (found later from its EOF footer)\n"
+"  --freeze-mir-cache      also compile the frozen module and pack its MIR\n"
+"                          binary form as a cache segment (consumers skip\n"
+"                          node rebuild + c2mir; absent = normal fallback)\n"
 "  --run-frozen[=<file>]   thaw + compile + run a frozen container; with no\n"
 "                          value, load the blob appended to this executable.\n"
 "                          Remaining arguments become the program's argv\n"
@@ -518,6 +521,7 @@ int main(int argc, char **argv)
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
     bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
+    bool freeze_mir_cache = false;        // --freeze-mir-cache: pack the compiled MIR module blob
     bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
     bool freeze_run = false;              // --freeze-run: freeze, then re-exec fresh to run
@@ -628,6 +632,9 @@ int main(int argc, char **argv)
         } else if (strncmp(argv[i], "--freeze-append=", 16) == 0) {
             freeze_path = argv[i] + 16;
             freeze_append = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--freeze-mir-cache") == 0) {
+            freeze_mir_cache = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--freeze-run") == 0) {
             freeze_run = true;
@@ -1117,7 +1124,7 @@ int main(int argc, char **argv)
 	if ( freeze_path )
 	{
 	    int frc = madc_cir_freeze(prog.get(), argv[filearg], freeze_path,
-				      freeze_append);
+				      freeze_append, freeze_mir_cache);
 	    print_stats();
 	    return frc == 0 ? 0 : 1;
 	}
@@ -1136,7 +1143,8 @@ int main(int argc, char **argv)
 		return 1;
 	    }
 	    close(tfd);
-	    if ( madc_cir_freeze(prog.get(), argv[filearg], tmpl, false) != 0 )
+	    if ( madc_cir_freeze(prog.get(), argv[filearg], tmpl, false,
+				 freeze_mir_cache) != 0 )
 	    {
 		unlink(tmpl);
 		return 1;

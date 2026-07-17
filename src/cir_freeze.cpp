@@ -1319,6 +1319,38 @@ uint32_t CirFrozenForest::unit_anchor(uint32_t unit) const
 				    : CIR_FOREST_ANCHOR_NONE;
 }
 
+bool CirFrozenForest::mir_module_bytes(std::vector<uint8_t> &out) const
+{
+	const madc::dis::snapshot_segment *s =
+		_reader.find(CIR_FOREST_SEG_MIR_MODULE);
+	if (!s || s->kind != SNAP_KIND_CIR_MIR_MODULE
+	    || s->raw_size <= sizeof(cir_forest_mir_header))
+		return false;	// no cache segment: the normal blob-less case
+	std::vector<uint8_t> payload;
+	if (!_reader.read_segment(*s, payload)
+	    || payload.size() <= sizeof(cir_forest_mir_header)) {
+		fprintf(stderr, "madc: mir cache: malformed segment — "
+			"falling back to node materialization\n");
+		return false;
+	}
+	cir_forest_mir_header mh;
+	memcpy(&mh, payload.data(), sizeof(mh));
+	uint32_t api_x100 = (uint32_t)(_MIR_get_api_version() * 100.0 + 0.5);
+	if (mh.forest_version != CIR_FOREST_FORMAT_VERSION
+	    || mh.mir_api_x100 != api_x100) {
+		// A coupling bug, not routine fallback: the container-level
+		// version pin + context hash should have rejected this first.
+		fprintf(stderr, "madc: mir cache: stamp mismatch (forest v%u "
+			"vs v%u, MIR api %u vs %u) — falling back\n",
+			mh.forest_version, (unsigned)CIR_FOREST_FORMAT_VERSION,
+			mh.mir_api_x100, api_x100);
+		return false;
+	}
+	out.assign(payload.begin() + sizeof(cir_forest_mir_header),
+		   payload.end());
+	return true;
+}
+
 bool CirFrozenForest::unit_tokens(uint32_t unit, std::vector<uint8_t> &madh_payload,
 				  uint32_t &token_count)
 {

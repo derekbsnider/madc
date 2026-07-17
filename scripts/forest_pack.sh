@@ -31,7 +31,7 @@ TU=tmp/forest_pack_tu.cpp
 cp "$BIN" tmp/forest_packer_madc
 
 ulimit -t 900
-timeout 900 tmp/forest_packer_madc --freeze-append="$BIN" "$TU"
+timeout 900 tmp/forest_packer_madc --freeze-mir-cache --freeze-append="$BIN" "$TU"
 
 # Verify: the blob reads back from the packed binary itself (context-hash pin
 # + directory), and the stripped+appended binary still runs a frozen module —

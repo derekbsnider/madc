@@ -132,9 +132,12 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 // per-unit segments, string-pool/position/type-name closure, link libs,
 // context-hash pin. `append` uses placement 2 (blob appended to an existing
 // binary, found from its EOF footer). Backs --freeze / --freeze-append.
+// `mir_cache` additionally compiles the assembled container's module and
+// packs its MIR binary form as an optional cache segment
+// (--freeze-mir-cache; blob failure never fails the freeze).
 // Returns 0 on success, -1 on failure.
 int madc_cir_freeze(Program *prog, const char *source_name,
-		    const char *out_path, bool append);
+		    const char *out_path, bool append, bool mir_cache = false);
 
 // Thaw + compile + run a frozen forest: from the container file at
 // `container_path`, or from the blob appended to the running executable

@@ -105,7 +105,13 @@ enum : uint32_t
 	// --- v23: the arena's raw token-byte block (DefArena::tokbytes, .madh
 	// record form) — param-default expression runs referenced by BYTE offset
 	// from paramrec.def_tok_off. ---
-	SNAP_KIND_CIR_ARENA_TOKBYTES   = madc::dis::SNAP_KIND_CONSUMER + 20  // container-global: raw token bytes (.madh record form)
+	SNAP_KIND_CIR_ARENA_TOKBYTES   = madc::dis::SNAP_KIND_CONSUMER + 20, // container-global: raw token bytes (.madh record form)
+	// --- MIR module cache (2026-07-17 design): the container's whole drained
+	// module in MIR binary form (cir_forest_mir_header + MIR_write_module
+	// bytes) — DERIVED state, regenerated per pack from the same compile
+	// --run-frozen proves executable. OPTIONAL segment: absent = no cache,
+	// consumers fall back to node materialization + c2mir bit-for-bit. ---
+	SNAP_KIND_CIR_MIR_MODULE       = madc::dis::SNAP_KIND_CONSUMER + 21  // container-global: cir_forest_mir_header + .bmir module bytes
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -207,6 +213,7 @@ enum : uint32_t
 	CIR_FOREST_SEG_TEMPLATE_TOKENS  = 17,	// raw token bytes (.madh record form; runs carry byte offsets)
 	CIR_FOREST_SEG_EXTERN_LOCS      = 18,	// cir_forest_extern_loc[] (extern decl index, v20)
 	CIR_FOREST_SEG_ARENA_TOKBYTES   = 19,	// v23: DefArena::tokbytes (param-default token runs)
+	CIR_FOREST_SEG_MIR_MODULE       = 20,	// MIR module cache (optional; absent = no cache)
 	CIR_FOREST_SEG_UNIT_BASE     = 24,
 	CIR_FOREST_SEGS_PER_UNIT     = 8	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
@@ -224,6 +231,18 @@ struct cir_forest_dir_header	// directory payload: header, then units, then lib 
 	uint32_t language_std;	// v27: producer config — Program::LanguageStd | (gnu_dialect << 16)
 	uint32_t defines_hash;	// v27: fold of the producer's -D cli defines (0 = none)
 	uint32_t _pad;
+};
+
+// MIR module cache segment header (precedes the raw MIR_write_module bytes).
+// Coupling: the container version pin + context hash already reject a
+// container from a different madc build; this stamp adds the MIR API level
+// so a blob never feeds a MIR_read from an incompatible libmir (the .bmir
+// stream's own internal version check is the final backstop, error-contained
+// on the read side).
+struct cir_forest_mir_header
+{
+	uint32_t forest_version;	// CIR_FOREST_FORMAT_VERSION at pack
+	uint32_t mir_api_x100;		// (uint32_t)(_MIR_get_api_version() * 100)
 };
 
 struct cir_forest_dir_unit
@@ -952,6 +971,12 @@ public:
 	bool unit_edges(uint32_t unit, std::vector<uint32_t> &out);
 	const std::vector<uint32_t> &branch_macros() const { return _branch_macros; }
 	const std::vector<uint32_t> &canon_order() const { return _canon_order; }
+	// MIR module cache: the container's compiled-module blob (raw
+	// MIR_write_module bytes, stamp header validated and stripped). False =
+	// no cache segment (the normal blob-less case), stamp mismatch (logged
+	// loud — a mismatched cache means a coupling bug, not routine fallback),
+	// or a malformed segment. Reader-only; independent of unit/node state.
+	bool mir_module_bytes(std::vector<uint8_t> &out) const;
 	// B3 (v18): reconstruct the type graph from the dumped DefArena (idempotent;
 	// lazy — allocates on the first call). Reads defrec/memberrec/baserec/
 	// methodrec/anonrec/paramrec, applying at LOAD time the same selection rules
