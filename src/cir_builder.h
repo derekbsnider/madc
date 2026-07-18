@@ -1066,12 +1066,28 @@ public:
 	// construction/destruction (so it requires a ctor/dtor even if the user
 	// wrote none).
 	bool class_has_object_members(DataDefCLASS *cdd);
-	// Append constructor statements (one per embedded object member) to the
-	// c2mir list node `items`. Used at a
-	// value class-instance declaration that has object members but no user
-	// constructor (the member access is `inst.member`, not `__this->member`).
-	void class_instance_member_ctors(const char *inst, DataDefCLASS *cdd,
-					 node_t items, TokenBase *origin);
+	// Default-construct ONE class-type member subobject at `member_addr`:
+	// a ctorless member class runs its implicit default construction
+	// (vptr stores + its own members, recursively); a member class with a
+	// default ctor gets that ctor called; no default ctor emits nothing.
+	node_t member_default_construct_stmt(node_t member_addr,
+					     DataDefCLASS *mc,
+					     TokenBase *origin);
+	// Default-construct every class-type member of `cdd` through the NAMED
+	// pointer variable `recv_ptr`, appending to the c2mir list node
+	// `items` (a fresh id() per member — c2mir nodes hold a single parent
+	// link, so a receiver node cannot be shared). Returns true when
+	// anything was emitted. The one member loop behind implicit default
+	// construction (class_ctor_call_addr's ctorless arm, the ctorless
+	// `new` path).
+	bool append_member_default_constructs(node_t items,
+					      const char *recv_ptr,
+					      DataDefCLASS *cdd,
+					      TokenBase *origin);
+	// True when ctorless `cdd`'s implicit default construction must emit
+	// member statements (some member has a callable default ctor or is a
+	// ctorless class that itself needs construction).
+	bool class_needs_member_construction(DataDefCLASS *cdd);
 	// True when a class needs an (implicit) destructor — the g++
 	// [class.dtor] TRANSITIVE test: a user dtor, an embedded object member
 	// whose class itself needs one, or a base that needs one. A class whose

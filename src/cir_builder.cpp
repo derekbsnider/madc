@@ -9009,32 +9009,82 @@ node_t CirBuilder::synth_dtor_proto(const std::string &sym, DataDefCLASS *cdd)
 	return proto;
 }
 
-void CirBuilder::class_instance_member_ctors(const char *inst,
-					     DataDefCLASS *cdd, node_t items,
-					     TokenBase *origin)
+// Default-construct ONE class-type member subobject at `member_addr`.
+// A ctorless member class is NOT a no-op: its implicit default ctor must
+// still run (vptr stores for a polymorphic member — the task-#35 crash —
+// plus its own members, recursively) via class_ctor_call_addr. A member
+// class with ctors but no default ctor emits nothing here (the parser
+// owns that diagnosis).
+node_t CirBuilder::member_default_construct_stmt(node_t member_addr,
+						 DataDefCLASS *mc,
+						 TokenBase *origin)
 {
-	if (!cdd) return;
+	if (!mc || !member_addr) return NULL;
+	if (!mc->has_user_ctor)
+		return class_ctor_call_addr(member_addr, mc,
+					    std::vector<TokenBase *>(), origin);
+	FuncDef *ctor = class_default_ctor_def(mc);
+	if (!ctor) return NULL;
+	std::string sym = ctor_call_symbol(mc, ctor);
+	bool external = !ctor->emit_symbol.empty();
+	if (external)
+		need_output_extern(sym.c_str(), false, { { {N_VOID}, true } });
+	else
+		referenced_funcs.insert(sym);
+	node_t addr = member_addr;
+	if (external)
+		addr = node2(N_CAST, void_ptr_type(), addr, origin);
+	node_t a = list();
+	append(a, addr);
+	node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
+	return node2(N_EXPR, list(), call, origin);
+}
+
+// Default-construct every class-type member of `cdd` through the NAMED
+// pointer variable `recv_ptr` (`__this` / a bound receiver temp / a heap
+// pointer). Takes a name, not a node: c2mir nodes hold a single parent
+// link, so a receiver node cannot be reused across members — each member
+// mints a fresh id(). The one member loop behind implicit default
+// construction — class_ctor_call_addr's ctorless arm and the ctorless
+// `new` path both use it.
+bool CirBuilder::append_member_default_constructs(node_t items,
+						  const char *recv_ptr,
+						  DataDefCLASS *cdd,
+						  TokenBase *origin)
+{
+	if (!cdd) return false;
+	bool any = false;
 	for (const auto &m : cdd->members) {
 		DataDefCLASS *mc = as_class_instance(m.second);
 		if (!mc) continue;
-		FuncDef *ctor = class_default_ctor_def(mc);
-		if (!ctor) continue;
-		std::string sym = ctor_call_symbol(mc, ctor);
-		bool external = !ctor->emit_symbol.empty();
-		if (external)
-			need_output_extern(sym.c_str(), false, { { {N_VOID}, true } });
-		else
-			referenced_funcs.insert(sym);
-		node_t fld = node2(N_FIELD, id(inst, origin),
+		node_t fld = node2(N_DEREF_FIELD, id(recv_ptr, origin),
 				   id(m.first.c_str(), origin));
-		node_t addr = node1(N_ADDR, fld, origin);
-		if (external)
-			addr = node2(N_CAST, void_ptr_type(), addr, origin);
-		node_t a = list();
-		append(a, addr);
-		node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
-		append(items, node2(N_EXPR, list(), call, origin));
+		node_t stmt = member_default_construct_stmt(
+			node1(N_ADDR, fld, origin), mc, origin);
+		if (!stmt) continue;
+		append(items, stmt);
+		any = true;
 	}
+	return any;
+}
+
+// True when the implicit default construction of ctorless `cdd` must emit
+// member statements: some class-type member either has a callable default
+// ctor, or is itself a ctorless class that needs construction (a vtable to
+// stamp, or members of its own — recursion bottoms out on finite member
+// nesting).
+bool CirBuilder::class_needs_member_construction(DataDefCLASS *cdd)
+{
+	if (!cdd) return false;
+	for (const auto &m : cdd->members) {
+		DataDefCLASS *mc = as_class_instance(m.second);
+		if (!mc) continue;
+		if (mc->has_user_ctor
+		    ? class_default_ctor_def(mc) != NULL
+		    : (mc->has_vtable || class_needs_member_construction(mc)))
+			return true;
+	}
+	return false;
 }
 
 node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
@@ -9520,24 +9570,46 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 	if (!this_addr || !cdd) return NULL;
 
 	if (!cdd->has_user_ctor) {
-		if (!cdd->has_vtable) return NULL;
-		std::string vname = class_vtable_symbol(cdd);
+		bool members = class_needs_member_construction(cdd);
+		if (!cdd->has_vtable && !members) return NULL;
+		// Bind the receiver ONCE into a scoped temp: c2mir nodes hold a
+		// single parent link, so the incoming this_addr node cannot be
+		// reused across the vptr stores and member constructions — every
+		// use below mints a fresh id(tmp) instead.
+		char tmp[32];
+		snprintf(tmp, sizeof(tmp), "__mdc%d", m_strtmp_counter++);
 		node_t blk = list();
-		for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
-			const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
-			std::string fld = (G.this_offset == 0)
-				? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
-			node_t lhs = node2(N_DEREF_FIELD, this_addr,
-				id(fld.c_str(), origin));
-			node_t vptr_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-			node_t tab = id(vname.c_str(), origin);
-			node_t ap = (G.addr_point == 0) ? tab
-				: node2(N_ADD, tab, integer((long)G.addr_point, origin), origin);
-			node_t vtab = node2(N_CAST, vptr_type, ap, origin);
-			append(blk, node2(N_EXPR, list(),
-				node2(N_ASSIGN, lhs, vtab, origin), origin));
+		node_t decl = simple(N_SPEC_DECL);
+		append(decl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
+		append(decl, node2(N_DECL, id(tmp, origin), node1(N_LIST, pointer())));
+		append(decl, ignore());
+		append(decl, ignore());
+		append(decl, this_addr);
+		append(blk, decl);
+		if (cdd->has_vtable) {
+			std::string vname = class_vtable_symbol(cdd);
+			for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
+				const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
+				std::string fld = (G.this_offset == 0)
+					? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
+				node_t lhs = node2(N_DEREF_FIELD, id(tmp, origin),
+					id(fld.c_str(), origin));
+				node_t vptr_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				node_t tab = id(vname.c_str(), origin);
+				node_t ap = (G.addr_point == 0) ? tab
+					: node2(N_ADD, tab, integer((long)G.addr_point, origin), origin);
+				node_t vtab = node2(N_CAST, vptr_type, ap, origin);
+				append(blk, node2(N_EXPR, list(),
+					node2(N_ASSIGN, lhs, vtab, origin), origin));
+			}
 		}
+		// The implicit default ctor also constructs class-type MEMBERS
+		// ([class.default.ctor]) — a polymorphic member subobject gets
+		// its vptr stamped here, recursively through ctorless layers
+		// (task #35: `Mid m;` where Mid{Leaf lf} left lf's vptr garbage).
+		if (members)
+			append_member_default_constructs(blk, tmp, cdd, origin);
 		return node2(N_BLOCK, list(), blk, origin);
 	}
 
@@ -9657,34 +9729,15 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 {
 	if (!v || !cdd) return NULL;
 
-	// No user ctor, but a polymorphic class still needs its vptr(s) initialized so
-	// a virtual call through a base pointer to this (stack) object works — C++'s
-	// implicit default ctor sets the vptr. Emit the grouped vptr-init (same as the
-	// `new` path / user-ctor prologue). Non-polymorphic ctorless classes need
-	// nothing. (A vbase-only class with no virtual methods has no emitted vtable —
-	// its vbase-offset table is S4 — so gate on has_vtable, not has_vptr_slot.)
-	if (!cdd->has_user_ctor) {
-		if (!cdd->has_vtable) return NULL;
-		std::string vname = class_vtable_symbol(cdd);
-		node_t blk = list();
-		for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
-			const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
-			std::string fld = (G.this_offset == 0)
-				? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
-			node_t lhs = node2(N_DEREF_FIELD,
-				node1(N_ADDR, id(v->name.c_str(), origin), origin),
-				id(fld.c_str(), origin));
-			node_t vptr_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-			node_t tab = id(vname.c_str(), origin);
-			node_t ap = (G.addr_point == 0) ? tab
-				: node2(N_ADD, tab, integer((long)G.addr_point, origin), origin);
-			node_t vtab = node2(N_CAST, vptr_type, ap, origin);
-			append(blk, node2(N_EXPR, list(),
-				node2(N_ASSIGN, lhs, vtab, origin), origin));
-		}
-		return node2(N_BLOCK, list(), blk, origin);
-	}
+	// No user ctor: the implicit default ctor still initializes vptr(s) (a
+	// virtual call through a base pointer to this stack object must work)
+	// AND default-constructs class-type members, recursively. One
+	// implementation — the address-receiver variant. Returns NULL when the
+	// class truly needs nothing (no vtable, no members to construct).
+	if (!cdd->has_user_ctor)
+		return class_ctor_call_addr(
+			node1(N_ADDR, id(v->name.c_str(), origin), origin),
+			cdd, ctor_args, origin);
 
 	// Resolve the ctor: prefer the overload matching the initializer (the
 	// general path; a user class has one ctor so this is a no-op). Fall back
@@ -12836,30 +12889,36 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			}
 			node_t ccall = node2(N_CALL, id(csym.c_str(), tb), cargs, tb);
 			append(items, node2(N_EXPR, list(), ccall, tb));
-		} else if (cdd->has_vtable) {
-			// No user constructor, but a virtual (polymorphic) class: calloc
-			// zeroes the storage, leaving __vptr NULL — a virtual call would
-			// deref NULL and crash. A user ctor's body sets __vptr (func_def
-			// prologue); with no ctor we must set it here so `new B()` yields a
-			// usable polymorphic object. `__newN->__vptr = (void*)B__vtable`.
-			std::string vname = class_vtable_symbol(cdd);
-			for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
-				const auto &G = cdd->vtable_groups[g];
-				std::string fld = (G.this_offset == 0)
-					? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
-				node_t vptr_lhs = node2(N_DEREF_FIELD, id(tmp, tb),
-							id(fld.c_str(), tb));
-				node_t vptr_type = node2(N_TYPE,
-					node1(N_LIST, simple(N_VOID)),
-					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-				node_t tab = id(vname.c_str(), tb);
-				node_t ap = (G.addr_point == 0) ? tab
-					: node2(N_ADD, tab, integer((long)G.addr_point), tb);
-				node_t vtab = node2(N_CAST, vptr_type, ap, tb);
-				node_t asn = node2(N_ASSIGN, vptr_lhs, vtab, tb);
-				CIR_NODE(asn)->synth_from_origin = true;
-				append(items, node2(N_EXPR, list(), asn, tb));
+		} else {
+			if (cdd->has_vtable) {
+				// No user constructor, but a virtual (polymorphic) class: calloc
+				// zeroes the storage, leaving __vptr NULL — a virtual call would
+				// deref NULL and crash. A user ctor's body sets __vptr (func_def
+				// prologue); with no ctor we must set it here so `new B()` yields a
+				// usable polymorphic object. `__newN->__vptr = (void*)B__vtable`.
+				std::string vname = class_vtable_symbol(cdd);
+				for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
+					const auto &G = cdd->vtable_groups[g];
+					std::string fld = (G.this_offset == 0)
+						? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
+					node_t vptr_lhs = node2(N_DEREF_FIELD, id(tmp, tb),
+								id(fld.c_str(), tb));
+					node_t vptr_type = node2(N_TYPE,
+						node1(N_LIST, simple(N_VOID)),
+						node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+					node_t tab = id(vname.c_str(), tb);
+					node_t ap = (G.addr_point == 0) ? tab
+						: node2(N_ADD, tab, integer((long)G.addr_point), tb);
+					node_t vtab = node2(N_CAST, vptr_type, ap, tb);
+					node_t asn = node2(N_ASSIGN, vptr_lhs, vtab, tb);
+					CIR_NODE(asn)->synth_from_origin = true;
+					append(items, node2(N_EXPR, list(), asn, tb));
+				}
 			}
+			// The implicit default ctor also constructs class-type
+			// members (a polymorphic member subobject needs its vptr —
+			// calloc zeroed it), recursively through ctorless layers.
+			append_member_default_constructs(items, tmp, cdd, tb);
 		}
 		// __newN;  (value of the statement expression)
 		append(items, node2(N_EXPR, list(), id(tmp, tb), tb));
@@ -15095,13 +15154,16 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 	if (is_array_object(ev->type)) {
 		append(items, array_ctor_call(ev->name.c_str(), fe));
 	} else if (DataDefCLASS *edc = as_class_instance(ev->type)) {
+		// class_ctor_call owns implicit default construction end-to-end
+		// (user ctor call, or vptr stores + member construction for a
+		// ctorless class); NULL means nothing to construct.
 		node_t cc = class_ctor_call(ev, edc, std::vector<TokenBase *>(), fe);
 		if (cc)
 			append(items, cc);
-		else {
-			if (class_has_object_members(edc))
-				class_instance_member_ctors(ev->name.c_str(), edc,
-							    items, fe);
+		// C++11 NSDMI on a ctorless instance (a user ctor applies them
+		// in its prologue) — including a polymorphic ctorless class,
+		// where cc is the vptr block.
+		if (!edc->has_user_ctor) {
 			std::vector<node_t> nsdmi_stmts;
 			if (emit_member_default_inits(edc, ev->name.c_str(), false,
 						      nsdmi_stmts, fe, NULL))
@@ -15903,48 +15965,46 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 	for (node_t p : m_pending_stmts)
 		append(items, p);
 	m_pending_stmts.clear();
+	// class_ctor_call owns implicit default construction end-to-end (user
+	// ctor call, or vptr stores + member construction for a ctorless
+	// class); NULL means nothing to construct.
 	if (cc) append(items, cc);
-	else {
-		// No user ctor but embedded object members: construct each
-		// member in place. With a
-		// user ctor, the ctor body's prologue constructs them.
-		if (class_has_object_members(cdcl))
-			class_instance_member_ctors(sdcl->var.name.c_str(),
-						    cdcl, items, sdcl);
-		// No ctor, no object members — a TRIVIAL class/struct with an
-		// initializer (`A z = makeA(9)`, `Point m = mid(a,b)`): emit the
-		// initialization `var = <init>` so the value is actually copied
-		// in. Without this the initializer was dropped and the object
-		// read garbage. A trivial struct has no dtor, so c2mir's native
-		// struct copy is correct (no double-free). (A class WITH object
-		// members needs copy-construction via the __retbuf ABI — handled
-		// by the object-returning-call path, not here.)
-		else if (!ctor_args.empty() && ctor_args[0]) {
-			DataDef *idd = ctor_args[0]->datadef();
-			if (idd && (idd->is_struct() || idd->is_object())
-			    && !idd->is_pointer()) {
-				node_t lhs = id(sdcl->var.name.c_str(), sdcl);
-				node_t rhs = translate_expr(ctor_args[0]);
-				// A sub-call may have queued pending temps; flush first.
-				for (node_t p : m_pending_stmts)
-					append(items, p);
-				m_pending_stmts.clear();
-				node_t asg = node2(N_ASSIGN, lhs, rhs, sdcl);
-				append(items, node2(N_EXPR, list(), asg, sdcl));
-			}
+	// No ctor, no object members — a TRIVIAL class/struct with an
+	// initializer (`A z = makeA(9)`, `Point m = mid(a,b)`): emit the
+	// initialization `var = <init>` so the value is actually copied
+	// in. Without this the initializer was dropped and the object
+	// read garbage. A trivial struct has no dtor, so c2mir's native
+	// struct copy is correct (no double-free). (A class WITH object
+	// members needs copy-construction via the __retbuf ABI — handled
+	// by the object-returning-call path, not here.)
+	if (!cc && !class_has_object_members(cdcl)
+	    && !ctor_args.empty() && ctor_args[0]) {
+		DataDef *idd = ctor_args[0]->datadef();
+		if (idd && (idd->is_struct() || idd->is_object())
+		    && !idd->is_pointer()) {
+			node_t lhs = id(sdcl->var.name.c_str(), sdcl);
+			node_t rhs = translate_expr(ctor_args[0]);
+			// A sub-call may have queued pending temps; flush first.
+			for (node_t p : m_pending_stmts)
+				append(items, p);
+			m_pending_stmts.clear();
+			node_t asg = node2(N_ASSIGN, lhs, rhs, sdcl);
+			append(items, node2(N_EXPR, list(), asg, sdcl));
 		}
-		// C++11 default member initializers on a DEFAULT-constructed
-		// no-ctor instance (`S s;` — incl. a scalar-only struct promoted
-		// to a class purely for its NSDMI). A whole-object initializer
-		// (the trivial-copy arm) supplies all members, so skip then.
-		if (ctor_args.empty()) {
-			std::vector<node_t> nsdmi_stmts;
-			if (emit_member_default_inits(cdcl,
-					sdcl->var.name.c_str(), false,
-					nsdmi_stmts, sdcl, NULL))
-				for (node_t ns : nsdmi_stmts)
-					append(items, ns);
-		}
+	}
+	// C++11 default member initializers on a DEFAULT-constructed
+	// no-ctor instance (`S s;` — incl. a scalar-only struct promoted
+	// to a class purely for its NSDMI, and a polymorphic ctorless
+	// class whose cc is the vptr block). A whole-object initializer
+	// (the trivial-copy arm) supplies all members, so skip then; a
+	// user ctor applies NSDMI in its prologue.
+	if (!cdcl->has_user_ctor && ctor_args.empty()) {
+		std::vector<node_t> nsdmi_stmts;
+		if (emit_member_default_inits(cdcl,
+				sdcl->var.name.c_str(), false,
+				nsdmi_stmts, sdcl, NULL))
+			for (node_t ns : nsdmi_stmts)
+				append(items, ns);
 	}
 	// In a try body, also register this object's dtor on the runtime
 	// cleanup stack so it runs on the exception (longjmp) unwind path
@@ -16016,23 +16076,21 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			append(items, array_ctor_call(v->name.c_str(), tc));
 		} else if (DataDefCLASS *cdd = as_class_instance(v->type)) {
 			// `Foo f;` / `string s;` — a class instance declared without an
-			// explicit constructor-call (no ctor args). Default-construct it;
-			// scope-exit destruction is via the cleanup attribute (var_decl). The
-			// argful form `Foo f(a,b)` parses to a TokenDecl statement handled below.
+			// explicit constructor-call (no ctor args). class_ctor_call owns
+			// implicit default construction end-to-end (user ctor call, or
+			// vptr stores + member construction for a ctorless class);
+			// scope-exit destruction is via the cleanup attribute (var_decl).
+			// The argful form `Foo f(a,b)` parses to a TokenDecl statement
+			// handled below.
 			node_t cc = class_ctor_call(v, cdd,
 						    std::vector<TokenBase *>(), tc);
 			if (cc) append(items, cc);
-			// A class with embedded object members but NO user ctor still
-			// needs each member constructed.
-			// (Member destruction is via the synthesized dtor referenced by
-			// the cleanup attribute — see class_struct_def / var_decl.)
-			else {
-				if (class_has_object_members(cdd))
-					class_instance_member_ctors(v->name.c_str(), cdd,
-								    items, tc);
-				// C++11 default member initializers on a no-ctor instance
-				// (incl. a scalar-only struct promoted to a class purely
-				// for its NSDMI): `recv.member = init` per declaration order.
+			// C++11 default member initializers on a ctorless instance
+			// (incl. a scalar-only struct promoted to a class purely for
+			// its NSDMI, and a polymorphic ctorless class whose cc is the
+			// vptr block): `recv.member = init` per declaration order. A
+			// user ctor applies NSDMI in its prologue.
+			if (!cdd->has_user_ctor) {
 				std::vector<node_t> nsdmi_stmts;
 				if (emit_member_default_inits(cdd, v->name.c_str(), false,
 							      nsdmi_stmts, tc, NULL))
