@@ -911,6 +911,11 @@ public:
     size_t own_block_off; // offset where this class's own data members begin
     size_t class_align = 0; // TRUE class alignment (members + vptr + bases); set by compute_layout. 0 = not yet computed
     bool has_vptr_slot;   // class carries a vptr (virtual methods OR a virtual base); set by compute_layout
+    // The class has a vptr to stamp and a vtable object to emit/read: either
+    // polymorphic (has_vtable) or vbase-carrying without virtual functions
+    // (has_vptr_slot only — Itanium still gives it a prologue-only vtable of
+    // [vbase offsets, offset_to_top, RTTI] per group).
+    bool has_any_vptr() const { return has_vtable || has_vptr_slot; }
     // A class's alignment is the strongest of its members, bases, and (if
     // polymorphic) the vptr — computed by compute_layout and cached in
     // class_align. Until then, fall back to the own-member alignment (max_align).

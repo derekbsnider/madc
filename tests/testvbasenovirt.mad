@@ -1,0 +1,44 @@
+// Task #49: virtual BASES without virtual FUNCTIONS. Itanium still gives
+// every vbase-carrying class a vtable — prologue-only groups of
+// [vbase offsets, offset_to_top, RTTI] — and stamps a vptr, so views
+// (A*/B* into a D) adjust dynamically exactly like the polymorphic diamond
+// (tests/testvbasediamond.mad). Also covers the plain-base typeinfo hole:
+// the A/B/D typeinfos reference _ZTI1V, which has no vtable pass of its
+// own and must be defined by the referencing emission. Oracle: g++ -O0.
+#include <cstdio>
+
+struct V { int v; };
+struct A : virtual V { int a; };
+struct B : virtual V { int b; };
+struct D : A, B { int d; };
+
+int take_v(V &r) { return r.v; }
+
+D &get(D &r) { return r; }
+B &getb(D &r) { return r; }
+
+int main()
+{
+	D obj;
+	obj.v = 7; obj.a = 1; obj.b = 2; obj.d = 3;
+	A *ap = &obj;
+	B *bp = &obj;
+	printf("member %d %d\n", ap->v, bp->v);
+	ap->v = 9;
+	printf("write %d %d\n", obj.v, bp->v);
+	V *vpa = ap;
+	V *vpb = bp;
+	printf("upcast %d %d\n", vpa->v, vpb->v);
+	printf("bind %d %d\n", take_v(*ap), take_v(*bp));
+	V &rc = get(obj);
+	B &bu = getb(obj);
+	printf("retup %d %d %d\n", rc.v, bu.b, bu.v);
+	// Heap object: the ctorless `new` path must stamp the prologue-only
+	// vptrs too, or every dynamic adjust reads a NULL vtable.
+	D *hp = new D();
+	hp->v = 4; hp->b = 5;
+	B *hb = hp;
+	printf("heap %d %d\n", hb->v, hb->b);
+	delete hp;
+	return 0;
+}

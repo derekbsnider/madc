@@ -7013,9 +7013,9 @@ node_t CirBuilder::data_extern_decl(const std::string &sym)
 	return sd;
 }
 
-node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd)
+node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 {
-	if (!cdd || !cdd->has_vtable)
+	if (!cdd || (!force && !cdd->has_any_vptr()))
 		return NULL;
 	// libstdc++ owns an externally-defined class's typeinfo (see Pass 1.5).
 	if (cdd->is_externally_defined())
@@ -7096,6 +7096,15 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd)
 
 	auto base_ti_ref = [&](DataDefCLASS *b) -> node_t {
 		std::string bti = itanium_typeinfo_sym(b->name);
+		// A VPTR-LESS base is never reached by the Pass-1.5 sweep — define
+		// its typeinfo here (recursively, before the referencing _ZTI),
+		// else _ZTI<base> stays an undefined import (pre-existing hole for
+		// any plain base of a polymorphic class; exposed by task #49).
+		if (!b->has_any_vptr() && !b->is_externally_defined()
+		    && m_forced_base_typeinfos.insert(b).second) {
+			node_t bd = class_typeinfo_def(b, /*force=*/true);
+			if (bd) append(out, bd);
+		}
 		emit_data_extern(bti, /*void_ptr_elem=*/true); // extern void* _ZTI<base>[];
 		referenced_funcs.insert(bti);
 		return void_ptr_to(id(bti.c_str()));            // (void*)_ZTI<base> (array decays)
@@ -7140,7 +7149,10 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd)
 
 node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thunks)
 {
-	if (!cdd || !cdd->has_vtable || cdd->vtable_slots.empty())
+	// A vbase-carrying class WITHOUT virtual functions (has_vptr_slot only)
+	// still gets a vtable: prologue-only groups — [vbase offsets,
+	// offset_to_top, RTTI], no function slots (Itanium; task #49).
+	if (!cdd || !cdd->has_any_vptr())
 		return NULL;
 	// libstdc++ owns an externally-defined class's vtable (see Pass 1.5).
 	if (cdd->is_externally_defined())
@@ -8038,17 +8050,17 @@ static int vbase_slot_index(DataDefCLASS *view, DataDefCLASS *owner,
 //   ({ struct V *__madc_vbv_N = (struct V *)(recv);
 //      (void *)((char *)__madc_vbv_N
 //               + ((long *)__madc_vbv_N->__vptr)[-(3+i)] + nv); })
-// Applies to any polymorphic view: REAL libstdc++ vtables carry the
-// vbase-offset slots, and madc-emitted vtables emit them too (slice 2 —
-// class_vtable_def prologue, same collect_vbases indexing). A vbase-only
-// view WITHOUT virtual functions (has_vptr_slot, !has_vtable) has no
-// emitted vtable to read, so it keeps the static adjust (residue (e)).
-// NULL = not applicable, caller keeps the static adjust.
+// Applies to any vptr-carrying view: REAL libstdc++ vtables carry the
+// vbase-offset slots, madc-emitted vtables emit them too (slice 2 —
+// class_vtable_def prologue, same collect_vbases indexing), and a
+// vbase-only view WITHOUT virtual functions gets a prologue-only vtable
+// (has_vptr_slot, task #49). NULL = not applicable, caller keeps the
+// static adjust.
 node_t CirBuilder::vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
 					DataDefCLASS *owner, TokenBase *origin)
 {
 	if (!this_arg || !view || !owner || view == owner) return NULL;
-	if (!view->has_vtable) return NULL;
+	if (!view->has_any_vptr()) return NULL;
 	size_t nv_extra = 0;
 	int slot = vbase_slot_index(view, owner, nv_extra);
 	if (slot < 0) return NULL;
@@ -9349,7 +9361,7 @@ bool CirBuilder::class_needs_member_construction(DataDefCLASS *cdd)
 		if (!mc) continue;
 		if (mc->has_user_ctor
 		    ? class_default_ctor_def(mc) != NULL
-		    : (mc->has_vtable || class_needs_member_construction(mc)))
+		    : (mc->has_any_vptr() || class_needs_member_construction(mc)))
 			return true;
 	}
 	return false;
@@ -9839,7 +9851,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 
 	if (!cdd->has_user_ctor) {
 		bool members = class_needs_member_construction(cdd);
-		if (!cdd->has_vtable && !members) return NULL;
+		if (!cdd->has_any_vptr() && !members) return NULL;
 		// Bind the receiver ONCE into a scoped temp: c2mir nodes hold a
 		// single parent link, so the incoming this_addr node cannot be
 		// reused across the vptr stores and member constructions — every
@@ -9854,7 +9866,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		append(decl, ignore());
 		append(decl, this_addr);
 		append(blk, decl);
-		if (cdd->has_vtable) {
+		if (cdd->has_any_vptr()) {
 			std::string vname = class_vtable_symbol(cdd);
 			for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
 				const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
@@ -13166,8 +13178,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			node_t ccall = node2(N_CALL, id(csym.c_str(), tb), cargs, tb);
 			append(items, node2(N_EXPR, list(), ccall, tb));
 		} else {
-			if (cdd->has_vtable) {
-				// No user constructor, but a virtual (polymorphic) class: calloc
+			if (cdd->has_any_vptr()) {
+				// No user constructor, but a vptr-carrying class: calloc
 				// zeroes the storage, leaving __vptr NULL — a virtual call would
 				// deref NULL and crash. A user ctor's body sets __vptr (func_def
 				// prologue); with no ctor we must set it here so `new B()` yields a
@@ -18301,7 +18313,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		// member construction (Itanium [class.base.init] order) — a member
 		// initializer that virtual-calls or vbase-adjusts through `this`
 		// (vtable vbase-offset reads, task #36) must see this class's vptr.
-		if (is_ctor && !delegating_ci && ocls->has_vtable) {
+		if (is_ctor && !delegating_ci && ocls->has_any_vptr()) {
 			std::string vname = class_vtable_symbol(ocls);
 			for (size_t g = 0; g < ocls->vtable_groups.size(); g++) {
 				const auto &G = ocls->vtable_groups[g];
@@ -20619,7 +20631,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	std::set<DataDefCLASS *> emitted_vtables;
 	for (auto &kv : prog->struct_map) {
 		DataDefCLASS *cdd = as_user_class(kv.second);
-		if (!cdd || !cdd->has_vtable) continue;
+		if (!cdd || !cdd->has_any_vptr()) continue;
 		if (emitted_vtables.count(cdd)) continue;
 		emitted_vtables.insert(cdd);
 		// An externally-defined class (a std:: library polymorphic class madc

@@ -873,7 +873,12 @@ public:
 	// (findMethod walks class -> base). Returns NULL when the class has no
 	// vtable. Must be emitted after the method prototypes it references.
 	node_t class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thunks);
-	node_t class_typeinfo_def(DataDefCLASS *cdd); // _ZTI/_ZTS objects; NULL if non-polymorphic (S5b)
+	// _ZTI/_ZTS objects; NULL for a vptr-less class unless forced — a
+	// vptr-less BASE referenced by an emitted class's typeinfo is forced
+	// (recursively, deduped via m_forced_base_typeinfos), else its _ZTI
+	// stays an undefined import. (S5b; task #49)
+	node_t class_typeinfo_def(DataDefCLASS *cdd, bool force = false);
+	std::set<DataDefCLASS *> m_forced_base_typeinfos;
 	// The vtable / typeinfo SYMBOL to reference for cdd: the madc-emitted
 	// `Cls__vtable` / `_ZTI<cls>` for a class madc defines, or the REAL
 	// libstdc++ `_ZTVSt.../_ZTISt...` for an externally-defined class (whose
