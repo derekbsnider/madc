@@ -6558,7 +6558,15 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// and the cleanup mechanism passes &v (a `struct Cls *`) — a type match.
 	node_t attr_node = ignore();
 	{
-		DataDefCLASS *cdd = (!is_ptr) ? as_class_instance(base_dd) : NULL;
+		// Never on an EXTERN declaration: the object is defined (and
+		// destroyed) elsewhere — a TU referencing `extern ostream cout`
+		// must not register a dtor for it (g++ parity). gcc also rejects
+		// the shape outright when the dtor symbol is not yet declared
+		// ("cleanup argument not a function"); the c2mir fork applies
+		// cleanup to automatic variables only, so this attach was inert
+		// for externs in the JIT lane anyway.
+		DataDefCLASS *cdd = (!is_ptr && !(v->flags & vfEXTERN))
+				    ? as_class_instance(base_dd) : NULL;
 		if (cdd && class_needs_dtor(cdd)) {
 			std::string dtor_sym = class_complete_dtor_symbol(cdd);
 			referenced_funcs.insert(dtor_sym);
@@ -18821,7 +18829,11 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		// The callee then constructs the result DIRECTLY into the cell;
 		// the cell's finalizer is the class's own complete-object dtor.
 		std::string dtor_sym = class_complete_dtor_symbol(ret_cdd);
-		std::vector<ExternParam> dparams{ { {N_VOID}, true } };
+		// TYPED forward proto (`void d(struct X *)`): a madc-emitted dtor's
+		// definition is typed, and a `void *` extern here is a conflicting
+		// declaration gcc rejects (c2mir tolerates it, so only the portable
+		// --emit=c11 output broke) — same shape as the explicit-dtor arm.
+		std::vector<ExternParam> dparams{ { {}, true, ret_cdd } };
 		need_output_extern(dtor_sym.c_str(), false, dparams);
 		referenced_funcs.insert(dtor_sym);
 		std::vector<ExternParam> mi_params{
