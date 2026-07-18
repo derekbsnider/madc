@@ -25,6 +25,9 @@ struct D : A, B {
 
 int take_v(V &r) { return r.v; }
 
+D &get(D &r) { return r; }
+B &getb(D &r) { return r; }
+
 int main()
 {
 	D obj;
@@ -45,5 +48,18 @@ int main()
 	printf("member %d %d\n", ap->v, bp->v);
 	ap->v = 9;
 	printf("write %d %d\n", obj.v, bp->v);
+	// Task #47 residue: a V& bound to a ref-RETURNING call (D& / B&) or
+	// re-bound from a ref variable takes the same dynamic vbase adjust —
+	// the operand's class hides behind a DataDefREF, not a class datadef.
+	V &rc = get(obj);
+	V &rb = getb(obj);
+	B &br = obj;
+	V &rr = br;
+	printf("refcall %d %d %d\n", rc.v, rb.v, rr.v);
+	// ...and the ref-RETURN upcast itself (`return r;` converting D& to B&
+	// inside getb) must adjust to the B subobject — pair the member read
+	// with the vcall (slot-prefix luck hides a wrong receiver otherwise).
+	B &bu = getb(obj);
+	printf("retup %d %d\n", bu.b, bu.btag());
 	return 0;
 }

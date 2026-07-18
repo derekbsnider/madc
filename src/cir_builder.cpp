@@ -4472,13 +4472,25 @@ static DataDefCLASS *expr_pointee_class(TokenBase *tb)
 	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb))
 		if (!tn->placement)
 			return as_user_class(tn->alloc_class);
-	if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(tb))
-		if (DataDefCLASS *ic = as_user_class(ta->expr ? ta->expr->datadef()
-							       : NULL))
+	if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(tb)) {
+		DataDef *idd = ta->expr ? ta->expr->datadef() : NULL;
+		if (DataDefCLASS *ic = as_user_class(idd))
 			return ic;
-	if (TokenAddrOf *to = dynamic_cast<TokenAddrOf *>(tb))
+		// The operand may itself be reference-valued (a ref-RETURNING
+		// call: `V &vr = get();` with get() yielding `D&`) — its datadef
+		// is a DataDefREF whose referent class is the real pointee
+		// (task #47 residue).
+		if (DataDefCLASS *ic = pointee_user_class(idd))
+			return ic;
+	}
+	if (TokenAddrOf *to = dynamic_cast<TokenAddrOf *>(tb)) {
 		if (DataDefCLASS *ic = as_user_class(to->var.type))
 			return ic;
+		// Same for a reference VARIABLE operand (`V &vr2 = vb;` with
+		// vb a `B&`): its declared type is a DataDefREF to the class.
+		if (DataDefCLASS *ic = pointee_user_class(to->var.type))
+			return ic;
+	}
 	return pointee_user_class(tb->datadef());
 }
 
@@ -4527,7 +4539,14 @@ node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rh
 node_t CirBuilder::upcast_class_ref_addr(node_t value, DataDefCLASS *base,
 					 TokenBase *rhs, TokenBase *origin)
 {
-	DataDefCLASS *derived = as_user_class(rhs ? rhs->datadef() : NULL);
+	DataDef *rdd = rhs ? rhs->datadef() : NULL;
+	DataDefCLASS *derived = as_user_class(rdd);
+	// A REFERENCE-typed lvalue (`B &f(D &r) { return r; }`): its address IS
+	// the referent's, so the derived class is the referent's class (task #47
+	// residue). Gated to references — a pointer-typed lvalue's address is a
+	// `T**`, not a class pointer.
+	if (!derived && rdd && rdd->is_reference())
+		derived = pointee_user_class(rdd);
 	if (!base || !derived || base == derived) return value;
 	if (!derived->is_or_derives_from(base)) return value;
 	// A virtual base's offset is read from the vtable slot — the returned

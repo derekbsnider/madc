@@ -5,3 +5,5 @@ vcall 7
 refmem 7
 member 7 7
 write 9 9
+refcall 9 9 9
+retup 2 2
