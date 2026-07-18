@@ -1088,6 +1088,15 @@ public:
 	// member statements (some member has a callable default ctor or is a
 	// ctorless class that itself needs construction).
 	bool class_needs_member_construction(DataDefCLASS *cdd);
+	// Owner-subobject adjust through a VIRTUAL base, read from the
+	// vtable's vbase-offset slot at runtime (Itanium): a receiver whose
+	// STATIC class is not the object's most-derived type cannot use the
+	// static base_offset_of. Emits a stmt-expr consuming `this_arg`
+	// exactly once. NULL when not applicable (caller keeps the static
+	// adjust). Slice 1: externally-defined view classes only (real
+	// libstdc++ vtables carry the slots; madc-emitted ones do not yet).
+	node_t vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
+				    DataDefCLASS *owner, TokenBase *origin);
 	// True when a class needs an (implicit) destructor — the g++
 	// [class.dtor] TRANSITIVE test: a user dtor, an embedded object member
 	// whose class itself needs one, or a base that needs one. A class whose

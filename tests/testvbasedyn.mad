@@ -1,0 +1,18 @@
+// Dynamic Itanium vbase offsets (task #36 slice 1): `s >> a` yields a
+// basic_istream& — a NON-most-derived view of the istringstream — so the
+// owner adjust for basic_ios::operator bool must read the REAL vbase offset
+// from the vtable's vbase-offset slot (vtable[-3] == 120 here), not
+// basic_istream's static idea (+16). With the static offset the condition
+// read garbage rdstate and this loop hung forever.
+#include <sstream>
+#include <iostream>
+using namespace std;
+int main(){
+    istringstream s("3 5 8");
+    int a;
+    int sum = 0;
+    while (s >> a)
+        sum += a;
+    cout << sum << endl;
+    return 0;
+}

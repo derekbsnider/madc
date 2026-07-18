@@ -7867,6 +7867,105 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	return call;
 }
 
+// Itanium vbase-offset slot of `owner` in `view`'s vtable: -(3 + i) words
+// before the address point, i = the position (in view's collect_vbases
+// order) of the virtual base HOSTING owner. Ascending memory order in the
+// vtable prologue is REVERSE declaration order, so position 0 sits nearest
+// the address point (probe tmp/vbase_probe2.cpp: D{virtual VA, virtual VB}
+// -> VA@[-3], VB@[-4]; istringstream's basic_ios @ [-3] = 120). `nv_extra`
+// receives the static non-virtual offset of owner WITHIN that hosting
+// vbase (0 when owner IS the vbase; e.g. ios_base inside basic_ios).
+// Returns -1 when owner is not reached through a virtual base of view.
+// Static offset of `target` within `cls` following ONLY non-virtual base
+// arms (a vbase-crossing resolution would bake the HOST's static idea of
+// the vbase position — exactly the wrong number the dynamic path replaces).
+static size_t nonvirtual_base_offset_of(DataDefCLASS *cls,
+					const DataDefCLASS *target)
+{
+	if (cls == target) return 0;
+	for (const BaseSpec &bs : cls->bases) {
+		if (bs.is_virtual || !bs.base) continue;
+		size_t inner = nonvirtual_base_offset_of(bs.base, target);
+		if (inner != (size_t)-1) return bs.offset + inner;
+	}
+	return (size_t)-1;
+}
+
+static int vbase_slot_index(DataDefCLASS *view, DataDefCLASS *owner,
+			    size_t &nv_extra)
+{
+	if (!view || !owner) return -1;
+	std::vector<DataDefCLASS *> vbs;
+	std::set<DataDefCLASS *> seen;
+	view->collect_vbases(vbs, seen);
+	for (size_t i = 0; i < vbs.size(); i++) {
+		size_t nv = nonvirtual_base_offset_of(vbs[i], owner);
+		if (nv == (size_t)-1) continue;
+		nv_extra = nv;
+		return (int)i;
+	}
+	return -1;
+}
+
+// Owner-subobject adjust through a VIRTUAL base, read from the vtable's
+// vbase-offset slot at runtime. A receiver whose STATIC class is not the
+// object's most-derived type (a basic_istream& returned by `s >> a` over
+// an istringstream) cannot use view->base_offset_of(owner): that value is
+// only correct for a most-derived view (the vbase is hoisted to the end
+// of the MOST-DERIVED object). Emits a GNU stmt-expr so the receiver
+// expression is consumed exactly once and stays inline (a while-condition
+// receiver must re-evaluate per iteration):
+//   ({ struct V *__madc_vbv_N = (struct V *)(recv);
+//      (void *)((char *)__madc_vbv_N
+//               + ((long *)__madc_vbv_N->__vptr)[-(3+i)] + nv); })
+// Slice 1 is gated to externally-defined view classes: REAL libstdc++
+// vtables carry the vbase-offset slots; madc-emitted vtables do not yet
+// (their prologue is [offset_to_top, RTTI] only) — emitting the slots and
+// lifting this gate is the follow-on slice. NULL = not applicable, caller
+// keeps the static adjust.
+node_t CirBuilder::vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
+					DataDefCLASS *owner, TokenBase *origin)
+{
+	if (!this_arg || !view || !owner || view == owner) return NULL;
+	if (!view->has_vtable || !view->is_externally_defined()) return NULL;
+	size_t nv_extra = 0;
+	int slot = vbase_slot_index(view, owner, nv_extra);
+	if (slot < 0) return NULL;
+
+	char tmp[40];
+	snprintf(tmp, sizeof(tmp), "__madc_vbv_%d", m_strtmp_counter++);
+	// struct V *tmp = (struct V *)(this_arg);
+	node_t vp_type = node2(N_TYPE, node1(N_LIST, class_tag_ref(view)),
+			       node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+	node_t sd = simple(N_SPEC_DECL, origin);
+	append(sd, node1(N_SHARE, node1(N_LIST, class_tag_ref(view))));
+	node_t sd_dl = list();
+	append(sd_dl, pointer());
+	append(sd, node2(N_DECL, id(tmp, origin), sd_dl));
+	append(sd, ignore());
+	append(sd, ignore());
+	append(sd, node2(N_CAST, vp_type, this_arg, origin));
+	node_t items = list();
+	append(items, sd);
+	// ((long *)tmp->__vptr)[-(3 + slot)]
+	node_t vptr = node2(N_DEREF_FIELD, id(tmp, origin), id("__vptr", origin));
+	node_t lp_type = node2(N_TYPE, node1(N_LIST, simple(N_LONG)),
+			       node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+	node_t vboff = node2(N_IND, node2(N_CAST, lp_type, vptr, origin),
+			     integer(-(long)(3 + slot), origin), origin);
+	// (char *)tmp + vboff [+ nv_extra]
+	node_t charp = node2(N_CAST,
+		node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+		      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+		id(tmp, origin), origin);
+	node_t sum = node2(N_ADD, charp, vboff, origin);
+	if (nv_extra)
+		sum = node2(N_ADD, sum, integer((long)nv_extra, origin), origin);
+	append(items, node2(N_EXPR, list(),
+			    node2(N_CAST, void_ptr_type(), sum, origin), origin));
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
+}
+
 node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 {
 	DataDefCLASS *recv_class = NULL;
@@ -7970,6 +8069,14 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	DataDefCLASS *owner = (callee && !callee->parameters.empty())
 				? class_behind(callee->parameters[0]) : NULL;
 	if (owner && recv_class && owner != recv_class) {
+		node_t dyn = vbase_dynamic_adjust(this_arg, recv_class, owner,
+						  origin);
+		if (dyn) {
+			// Owner reached through a VIRTUAL base of a receiver
+			// whose static type may not be most-derived: the real
+			// offset is read from the vtable's vbase-offset slot.
+			this_arg = dyn;
+		} else {
 		size_t boff = recv_class->base_offset_of(owner);
 		if (boff != 0 && boff != (size_t)-1) {
 			// (void*)((char*)this_arg + boff)
@@ -7980,6 +8087,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 			this_arg = node2(N_CAST, void_ptr_type(),
 				node2(N_ADD, charp, integer((long)boff), origin),
 				origin);
+		}
 		}
 		// Cast even when the base subobject starts at offset 0: the C ABI
 		// prototype still expects the inherited method's owner pointer type
@@ -11944,13 +12052,20 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 
 	// An operator INHERITED from a base (the overload walk): __this must
 	// point at the OWNER's subobject. operator!/operator bool live on
-	// basic_ios — a VIRTUAL base: base_offset_of resolves it through the
-	// static vbase_offset. Offset 0 keeps the emitted shape unchanged.
+	// basic_ios — a VIRTUAL base: through a receiver whose static type may
+	// not be most-derived (`s >> a` yields basic_istream&, the object is an
+	// istringstream), the offset is read from the vtable's vbase-offset
+	// slot; otherwise base_offset_of's static resolution stands. Offset 0
+	// keeps the emitted shape unchanged.
 	DataDefCLASS *towner = callee->parameters.empty()
 				? NULL : class_behind(callee->parameters[0]);
 	bool from_base = towner && towner != cls
 			 && cls->is_or_derives_from(towner);
 	if (from_base) {
+		node_t dyn = vbase_dynamic_adjust(this_arg, cls, towner, origin);
+		if (dyn) {
+			this_arg = dyn;
+		} else {
 		size_t boff = cls->base_offset_of(towner);
 		if (boff != 0 && boff != (size_t)-1) {
 			node_t charp = node2(N_CAST,
@@ -11960,6 +12075,7 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 			this_arg = node2(N_CAST, void_ptr_type(),
 				node2(N_ADD, charp, integer((long)boff), origin),
 				origin);
+		}
 		}
 		// A madc-emitted owner body's prototype expects the OWNER pointer
 		// type (the external branch below void*-casts instead).
