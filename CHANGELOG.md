@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **fix(vbase): ref-binds over ref-returning calls and the ref-return
+  upcast take the vbase adjust.** Two sibling holes where the derived
+  class hid behind a `DataDefREF`: binding `V &vr = get()` (a `D&`/`B&`-
+  returning call) or rebinding from a ref variable skipped the dynamic
+  vbase adjust (`expr_pointee_class` unwraps the reference now), and the
+  ref-return conversion itself (`B &getb(D &r) { return r; }`) never
+  adjusted at all — not even the static secondary-base offset
+  (`upcast_class_ref_addr` reads the referent's class). Both showed the
+  structural-luck signature: green vcalls through a wrong pointer, wrong
+  member reads. `testvbasediamond.mad` gains `refcall`/`retup` probes
+  (member reads paired with vcalls). Remaining vbase residues are now
+  tasks #48 (manipulator downcast restructure) and #49 (vptr-less
+  views). Suite 703, packed arbiter green.
+
 - **fix(vbase): dynamic member access through vbase views (slice 3) —
   `ap->v` on a virtual-base-hosted member reads the vtable slot, and the
   `member_vbase` provenance joins the freeze format (v32).** A pointer-view
