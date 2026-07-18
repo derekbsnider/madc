@@ -4,6 +4,7 @@
 // parser (it used to accept raw pointers only and reject map iterators).
 #include <cstdio>
 #include <map>
+#include <set>
 #include <string>
 
 int main()
@@ -24,6 +25,12 @@ int main()
 	for (std::map<std::string, std::string>::iterator it = b.begin();
 	     it != b.end(); ++it)
 		total += (int)it->second.size();   // class-valued member chain
+	std::set<std::string> s;
+	s.insert("one");
+	s.insert("three");
+	for (std::set<std::string>::iterator it = s.begin();
+	     it != s.end(); ++it)
+		total += (int)it->size();          // const_iterator operator->
 	printf("total=%d\n", total);
 	return 0;
 }
