@@ -39,5 +39,11 @@ int main()
 	V &vr = *bp;
 	printf("vcall %d\n", vr.tag());
 	printf("refmem %d\n", vr.v);
+	// Task #47: direct member access through the less-derived views — the
+	// member is hosted in the virtual base, so the read/write must take the
+	// dynamic (vtable-slot) adjust, not A's/B's static flattened offset.
+	printf("member %d %d\n", ap->v, bp->v);
+	ap->v = 9;
+	printf("write %d %d\n", obj.v, bp->v);
 	return 0;
 }

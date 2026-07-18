@@ -1423,6 +1423,12 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		// DK_FUNC param run stays contiguous.
 		forest_arena_record_fptr(sdd->members[i].second);
 	}
+	// v32: per-member virtual-base provenance (member_vbase), resolved before
+	// the run begins like every other cross-ref.
+	std::map<size_t, uint32_t> mvb;
+	for (std::map<size_t, DataDefCLASS *>::const_iterator vi = sdd->member_vbase.begin();
+	     vi != sdd->member_vbase.end(); ++vi)
+		mvb[vi->first] = forest_serialize_type_id(vi->second);
 	r.members_begin = (uint32_t)forest_arena.payload.size();
 	r.members_count = (uint32_t)sdd->members.size();
 	for (size_t i = 0; i < sdd->members.size(); ++i) {
@@ -1437,6 +1443,9 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		m.flags  = (i < sdd->member_array_flags.size() && sdd->member_array_flags[i]) ? 1u : 0u;
 		m.access = i < sdd->member_access.size() ? sdd->member_access[i] : 0u;
 		m.origin = i < sdd->member_origin.size() ? (int32_t)sdd->member_origin[i] : -1;
+		std::map<size_t, uint32_t>::const_iterator vbi = mvb.find(i);
+		if (vbi != mvb.end())
+			m.vbase_id = vbi->second;
 		if (i < sdd->member_bitfields.size() && sdd->member_bitfields[i].is_bitfield) {
 			const DataDefSTRUCT::BitFieldInfo &bf = sdd->member_bitfields[i];
 			m.bf_flags = 1u | (bf.is_unsigned ? 2u : 0u) | (bf.reverse_storage ? 4u : 0u);

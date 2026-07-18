@@ -1569,7 +1569,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			for (uint32_t m = 0; ok && m < r.members_count; ++m) {
 				madc::dis::memberrec mr;
 				if (!a.get_payload(r.members_begin, m, mr)
-				    || !arena_chain_ok(a, mr.type_id, tid, recordable))
+				    || !arena_chain_ok(a, mr.type_id, tid, recordable)
+				    || (mr.vbase_id && !recordable.count(mr.vbase_id)))
 					ok = false;
 			}
 			if (ok && r.kind == madc::dis::DK_CLASS) {
@@ -1609,7 +1610,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		for (uint32_t m = 0; m < r.members_count; ++m) {
 			madc::dis::memberrec mr = {};
 			if (!a.get_payload(r.members_begin, m, mr)
-			    || !arena_chain_ok(a, mr.type_id, tid, recordable)) {
+			    || !arena_chain_ok(a, mr.type_id, tid, recordable)
+			    || (mr.vbase_id && !recordable.count(mr.vbase_id))) {
 				const char *mn = mr.name_id ? a.c_str(mr.name_id) : "?";
 				why = std::string("member ") + (mn ? mn : "?");
 				break;
@@ -2095,6 +2097,15 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				bf.storage_size    = mr.bf_storage_size;
 			}
 			sdd->member_bitfields.push_back(bf);
+			// v32: virtual-base provenance, swizzled like every class
+			// cross-ref. A dangling id means the closure failed — drop
+			// the aggregate rather than silently degrade to static.
+			if (mr.vbase_id) {
+				DataDefCLASS *vbc = dynamic_cast<DataDefCLASS *>(
+					arena_swizzle(mr.vbase_id, by_id));
+				if (!vbc) { ok = false; break; }
+				sdd->member_vbase[m] = vbc;
+			}
 		}
 		if (!ok)
 			continue;		// defensive: the closure should have dropped it

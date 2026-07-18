@@ -3,3 +3,5 @@ upcast 7 7
 bind 7 7
 vcall 7
 refmem 7
+member 7 7
+write 9 9

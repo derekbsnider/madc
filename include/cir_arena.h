@@ -321,6 +321,11 @@ struct memberrec {
 	uint32_t bf_bit_width;
 	uint32_t bf_storage_offset;
 	uint32_t bf_storage_size;
+	// v32: member_vbase[i] — the VIRTUAL base this member belongs to, as a
+	// type-id (0 = not a virtual-base member). Member access through a vbase
+	// VIEW reads this to pick the dynamic (vtable-slot) adjust; without it a
+	// restored header class silently degraded to the static offset.
+	uint32_t vbase_id;
 };
 
 // A direct base (DataDefCLASS::bases -> BaseSpec).

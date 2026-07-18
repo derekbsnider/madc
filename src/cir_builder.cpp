@@ -13706,6 +13706,30 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				if (!deref_ok && odd && odd->is_struct())
 					return error_node("'->' applied to a non-pointer "
 						"struct value (use '.')", tb);
+				// Member hosted in a VIRTUAL base, accessed through a
+				// pointer-typed view: the view's flattened static offset
+				// is only correct for a most-derived object — the pointer
+				// may address a base subobject of something larger, so
+				// read the real vbase offset from the vtable (the
+				// member-access twin of the upcast sites, task #47). The
+				// adjusted pointer is the HOST's own type; the member
+				// resolves on its struct at the inner offset. A direct
+				// object value (N_FIELD) is most-derived by construction
+				// and keeps the static layout (g++'s choice too); a
+				// vptr-less view keeps the static adjust
+				// (vbase_dynamic_adjust answers NULL).
+				DataDefCLASS *view = tm->parent_expr
+					? expr_pointee_class(tm->parent_expr)
+					: pointee_user_class(tm->object.type);
+				DataDefCLASS *host = view
+					? view->member_vbase_host(tm->var.name) : NULL;
+				if (host && host != view) {
+					node_t dyn = vbase_dynamic_adjust(obj, view,
+									  host, tb);
+					if (dyn)
+						obj = node2(N_CAST, class_ptr_type(host),
+							    dyn, tb);
+				}
 			}
 			node_t fld = node2(code, obj, member, tb);
 			// A SCALAR reference MEMBER (`int& m`, lowered to a pointer slot)

@@ -493,6 +493,17 @@ public:
 	return dd.size;
     }
 
+    // The VIRTUAL base hosting the named member (member_vbase provenance), or
+    // NULL for an own / non-virtual-base member.
+    DataDefCLASS *member_vbase_host(const std::string &mname) const
+    {
+	for ( std::map<size_t, DataDefCLASS *>::const_iterator vi = member_vbase.begin();
+	      vi != member_vbase.end(); ++vi )
+	    if ( vi->first < members.size() && members[vi->first].first == mname )
+		return vi->second;
+	return NULL;
+    }
+
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
 	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), tag_explicit_align(0), union_layout(false),
