@@ -1677,6 +1677,7 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 	if (fd->is_void_params)   r.flags |= madc::dis::DF_IS_VOID_PARAMS;
 	if (fd->declaration_only) r.flags |= madc::dis::DF_DECLARATION_ONLY;
 	if (fd->is_const_method)  r.flags |= madc::dis::DF_IS_CONST_METHOD;
+	if (fd->pure_virtual)     r.flags |= madc::dis::DF_PURE_VIRTUAL;
 	if (fd->is_member_template || !fd->template_param_names.empty())
 		r.flags |= madc::dis::DF_IS_MEMBER_TEMPLATE;	// load skips it (the v6 rule)
 	// FuncDef-intrinsic method metadata available at parse time (emit_symbol / display name).

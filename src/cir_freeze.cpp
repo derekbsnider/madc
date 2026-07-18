@@ -2348,6 +2348,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 						fd->emit_symbol = es;
 				fd->is_const_method =
 					(fr.flags & madc::dis::DF_IS_CONST_METHOD) != 0;
+				fd->pure_virtual =
+					(fr.flags & madc::dis::DF_PURE_VIRTUAL) != 0;
 				fd->is_varargs =
 					(fr.flags & madc::dis::DF_IS_VARARGS) != 0;
 				fd->is_void_params =

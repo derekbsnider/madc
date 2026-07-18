@@ -959,6 +959,9 @@ public:
 	// subobjects: some transitive NON-VIRTUAL base has a callable user
 	// default ctor (virtual bases are the complete-object site's duty).
 	bool class_needs_base_construction(DataDefCLASS *cdd);
+	// The pure-virtual slot (if any) that makes `cdd` abstract — the slot
+	// name whose most-derived resolution is still `= 0`; "" when concrete.
+	std::string class_pure_virtual_of(DataDefCLASS *cdd);
 	// Default-construct the non-virtual base subobjects of ctorless `cdd`
 	// through the named receiver pointer, recursing through ctorless
 	// layers with the accumulated offset.

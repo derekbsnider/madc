@@ -1,0 +1,38 @@
+// Task #52: pure virtual functions. An abstract base's vtable slot fills
+// with __cxa_pure_virtual; a concrete derived overrides and dispatches
+// normally through the base pointer (including through a virtual base in
+// the diamond, and via an inherited override). Oracle: g++ -O0.
+#include <cstdio>
+
+struct A {
+	int x;
+	A() : x(1) {}
+	virtual int f() = 0;
+	virtual int g() { return 10; }
+};
+struct C : A {
+	int f() { return 2; }
+};
+struct VB { virtual int who() = 0; virtual ~VB() {} };
+struct L : virtual VB { int l; };
+struct R : virtual VB { int r; };
+struct D : L, R { int who() { return 42; } };
+struct A2 { virtual int f() = 0; };
+struct M : A2 { int f() { return 5; } };
+struct N : M {};
+
+int main()
+{
+	C c;
+	A *ap = &c;
+	printf("%d %d %d\n", ap->f(), ap->g(), ap->x);
+	D d;
+	d.l = 1;
+	d.r = 2;
+	VB *vp = &d;
+	printf("%d %d %d\n", vp->who(), d.l, d.r);
+	N n;
+	A2 *bp = &n;
+	printf("%d\n", bp->f());
+	return 0;
+}

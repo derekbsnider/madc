@@ -7323,6 +7323,23 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 				continue;
 			}
 			FuncDef *mfd = dynamic_cast<FuncDef *>(mv->type);
+			// A slot whose FINAL OVERRIDER is pure (`= 0`, no override
+			// anywhere below): Itanium fills it with __cxa_pure_virtual
+			// (libstdc++ aborts if it is ever reached). The class is
+			// abstract — instantiation is rejected at the construction
+			// sites (class_pure_virtual_of) — but its vtable is still
+			// emitted for derived-ctor intermediate states and RTTI.
+			if (mfd && mfd->pure_virtual) {
+				need_output_extern("__cxa_pure_virtual", false,
+						   std::vector<ExternParam>());
+				node_t pv_type = node2(N_TYPE,
+					node1(N_LIST, simple(N_VOID)),
+					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				append(inits, node2(N_INIT, list(),
+					node2(N_CAST, pv_type,
+					      id("__cxa_pure_virtual"))));
+				continue;
+			}
 			DataDefCLASS *mowner = (mfd && !mfd->parameters.empty())
 				? class_behind(mfd->parameters[0]) : NULL;
 			std::string symname = mv->name;
@@ -10059,6 +10076,25 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 	return node2(N_EXPR, list(), call, origin);
 }
 
+// The pure-virtual slot (if any) that makes `cdd` ABSTRACT: a vtable slot
+// whose most-derived resolution (findMethod — overrides win) is still a
+// `= 0` declaration. Returns the slot name, or "" for a concrete class.
+// Dtor slots resolve through the synthesized dtor chain, never pure here.
+std::string CirBuilder::class_pure_virtual_of(DataDefCLASS *cdd)
+{
+	if (!cdd || !cdd->has_vtable) return std::string();
+	for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
+		for (const std::string &slot : cdd->vtable_groups[g].slots) {
+			if (slot == "~" || slot == "~$deleting") continue;
+			Variable *mv = cdd->findMethod(slot);
+			FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+			if (fd && fd->pure_virtual)
+				return slot;
+		}
+	}
+	return std::string();
+}
+
 // Complete-object (Itanium C1-flavor) construction: user-ctor virtual bases
 // first, base-most order, then the C2-flavor construction
 // (class_ctor_call_addr: the user ctor call, or the ctorless arm's base
@@ -10074,6 +10110,20 @@ void CirBuilder::complete_object_construct_stmts(
 	std::vector<node_t> &out)
 {
 	if (!cdd) return;
+	// ABSTRACT class ([class.abstract]): creating a complete object of a
+	// class with an unoverridden pure virtual is a compile error (heap
+	// new, array element, member subobject — the named-variable site has
+	// the same check). Pointers/references to it stay legal.
+	{
+		std::string pv = class_pure_virtual_of(cdd);
+		if (!pv.empty()) {
+			std::string msg = "cannot instantiate abstract class '"
+				+ cdd->name + "' (pure virtual '" + pv
+				+ "' has no overrider)";
+			out.push_back(error_node(msg.c_str(), origin));
+			return;
+		}
+	}
 	std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> vseen;
 	cdd->collect_vbases(vbs, vseen);
 	if (!vbs.empty()) {
@@ -10137,6 +10187,20 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 				   TokenBase *origin)
 {
 	if (!v || !cdd) return NULL;
+
+	// ABSTRACT class: declaring a variable of a type with an unoverridden
+	// pure virtual is a compile error (matches g++'s "cannot declare
+	// variable ... to be of abstract type"). The array/heap/member sites
+	// share the check via complete_object_construct_stmts.
+	{
+		std::string pv = class_pure_virtual_of(cdd);
+		if (!pv.empty()) {
+			std::string msg = "cannot declare variable '" + v->name
+				+ "' of abstract class '" + cdd->name
+				+ "' (pure virtual '" + pv + "' has no overrider)";
+			return error_node(msg.c_str(), origin);
+		}
+	}
 
 	// A fixed ARRAY of class objects (`B a[3];`): construct EVERY element
 	// (g++ semantics) — a single ctor call on &a constructed only element 0
@@ -20922,6 +20986,35 @@ node_t CirBuilder::translate_module(Program *prog)
 			append(top_list, dp);
 			if (cdd->from_system_header)
 				cond_mark_sym(dp, cdd->name + "___dtor_deleting");
+		}
+	}
+
+	// Pass 1.48: `extern void __cxa_pure_virtual(void);` ahead of Pass 1.5 —
+	// an abstract class's vtable initializer references it as an address
+	// constant, and c2mir requires the declaration first (same reason as
+	// the Pass-1.45 dtor protos). typed_proto_syms keeps the late extern
+	// flush from emitting a duplicate.
+	{
+		bool have_pure = false;
+		std::set<DataDefCLASS *> seen_pv;
+		for (auto &kv : prog->struct_map) {
+			DataDefCLASS *cdd = as_user_class(kv.second);
+			if (!cdd || cdd->is_externally_defined()) continue;
+			if (!seen_pv.insert(cdd).second) continue;
+			if (!class_pure_virtual_of(cdd).empty()) {
+				have_pure = true;
+				break;
+			}
+		}
+		if (have_pure) {
+			need_output_extern("__cxa_pure_virtual", false,
+					   std::vector<ExternParam>());
+			auto pe = m_output_externs.find("__cxa_pure_virtual");
+			if (pe != m_output_externs.end()
+			    && !typed_proto_syms.count(pe->first)) {
+				append(top_list, pe->second);
+				typed_proto_syms.insert(pe->first);
+			}
 		}
 	}
 
