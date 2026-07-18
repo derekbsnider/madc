@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+- **fix(pp): `#if` expressions get the `?:` tier and `##` token pasting;
+  the strict `--std=c++11` lane compiles real headers (task #54).** The
+  recorded "feature-macro mismatch" was two evaluator holes: a ternary's
+  CONDITION value leaked out as the result (arms ignored) and
+  `__GLIBC_USE(F)`'s `__GLIBC_USE_ ## F` never pasted — glibc's
+  `__GLIBC_USE_DEPRECATED_GETS` chain took the wrong branch, so C++11's
+  `using ::gets` had nothing to import. Correct evaluation opened
+  math.h's typegeneric regions, which needed `(typeof(x))` CASTS in
+  expressions (a new typeof arm in the cast detection + a
+  `parse_typeof_datatype` double-`)` steal fix). Strict lane now
+  compiles `<cstdio>/<cstring>/<cstdlib>/<iostream>` == g++ -std=c++11;
+  default lane byte-equal answers now for the right reasons. New
+  `tests/teststdcxx11.mad` (`.flags` fixture) + `tests/testppternary.mad`.
+  Residue → task #55: math.h's now-open template overload regions print
+  non-fatal stderr parse errors (tests green). Suite 711 → 713, packed
+  arbiter green.
+
+- **feat(class): explicit destructor calls dispatch virtually; placement
+  new uses the complete-object assembler (task #53).** `vb->~VB()`
+  through a base pointer ran the base dtor statically (g++ runs the
+  most-derived chain) — the explicit-dtor arm now dispatches through the
+  vtable D1 slot via the `virtual_dtor_slot_call` helper extracted from
+  delete's D0 arm. Placement new on a class passed the RAW placement
+  address as `__this` and emitted nothing for ctorless classes — it now
+  routes through `complete_object_construct_stmts` at the typed address.
+  Converging surfaced an implicit old behavior now explicit: a
+  pack-expansion ctor-argument list can't be overload-scored, so the
+  no-match fallback admits it for the tsubst copy to expand. New
+  `tests/testexplicitdtor.mad`, green both lanes. Suite 710 → 711,
+  packed arbiter green.
+
+- **feat(class): pure virtual functions — `__cxa_pure_virtual` slots,
+  abstract-class errors, freeze flag (task #52).** `= 0` already parsed
+  (`FuncDef::pure_virtual`); the vtable slot now fills with
+  `__cxa_pure_virtual` when the final overrider is still pure (declared
+  ahead of Pass 1.5 — a global-init address constant needs the decl
+  first), instantiating an abstract class errors loudly at both
+  construction chokepoints (`class_pure_virtual_of`), and
+  `DF_PURE_VIRTUAL` (flag bit, no format bump) carries the flag through
+  freeze/restore. New `tests/testpurevirtual.mad` (diamond +
+  inherited-override shapes, both lanes) and `tests/testpureabstract.mad`
+  (`.expect_err`). Suite 708 → 710, packed arbiter green.
+
 - **fix(ctor): complete-object construction — class arrays, base chains,
   heap vbases (task #51).** The #35-siblings audit found five real holes,
   one KIND: `new D[3]` allocated ONE element (garbage vptrs, heap
