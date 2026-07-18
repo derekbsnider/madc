@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- **fix(vbase): Itanium virtual-base completion (slice 2) — madc-emitted
+  vtables carry vbase-offset slots, vbase groups, and the Itanium vcall
+  convention.** Building on slice 1's dynamic reads, madc's own vtables now
+  emit the per-group vbase-offset prologue (`vtable[-(3+i)]`), a vtable
+  group (with a stamped vptr and a `__vptr_<off>` struct field) for every
+  polymorphic virtual base, and generalized signed-delta thunks to the
+  final overrider — virtual dispatch passes the group-subobject pointer
+  (the old adjust-to-owner convention double-adjusted through non-most-
+  derived views). Upcasts, object-argument binding, and reference binds
+  (`V &vr = *bp;`) take the dynamic vbase adjust; ctor vptr stamps move
+  before the mem-init list ([class.base.init] order). A user-class diamond
+  accessed through `A*`/`B*`/`V*`/`V&` views now matches g++ on every
+  line (new `tests/testvbasediamond.mad`; JIT and `--emit=c11` lanes).
+  Known residue (task #36): direct member access through a vbase view is
+  still static. Suite 702 → 703, packed arbiter green.
+
 - **fix(vbase): dynamic Itanium vbase offsets, slice 1 — `while (s >> a)`
   on a real stream no longer hangs.** An owner-subobject adjust into a
   virtual base through a receiver whose static type is not most-derived
