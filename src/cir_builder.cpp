@@ -11553,44 +11553,96 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 						|| lcls->is_or_derives_from(pcls)))
 					    ? lcls->base_offset_of(pcls)
 					    : (size_t)-1;
-				if (pcls && pcls == rcls && boff != (size_t)-1) {
-					// fname(<lhs>) through the normal call
-					// path: arg coercion (vbase-adjusted
-					// reference bind), on-use body
-					// derivation, ref-return auto-deref.
-					// The lhs is evaluated ONCE — inside
-					// the call's argument.
-					TokenCallFunc *mc =
-						new TokenCallFunc(rc->var);
-					mc->parameters.push_back(top->left);
-					mc->file = top->file;
-					mc->line = top->line;
-					mc->column = top->column;
-					node_t mval = translate_expr(mc);
-					// The call yields the BASE-subobject
-					// lvalue (ios_base&); the chain needs
-					// the STREAM. The manipulator returned
-					// its argument, so the static downcast
-					// recovers it (&* folds to the call's
-					// pointer value).
-					node_t addr = node1(N_ADDR, mval, origin);
-					if (boff) {
-						node_t charp = node2(N_CAST,
-							node2(N_TYPE,
-							      node1(N_LIST, simple(N_CHAR)),
-							      node2(N_DECL, ignore(),
-								    node1(N_LIST, pointer()))),
-							addr, origin);
-						addr = node2(N_SUB, charp,
-							integer((long)boff, origin),
-							origin);
-					}
-					addr = node2(N_CAST,
+				std::string csym = func_emit_name(rc->var, rfd);
+				if (pcls && pcls == rcls && boff != (size_t)-1
+				    && !csym.empty()) {
+					// The manipulator returns its ARGUMENT, so
+					// the SAVED lhs pointer IS the result —
+					// g++'s member operator<< shape applies the
+					// manipulator to *this and returns *this,
+					// never re-deriving the stream from the
+					// returned base view. (Downcasting the
+					// returned ios_base& by the static offset
+					// breaks when the lhs view is not
+					// most-derived: the argument coercion is
+					// DYNAMIC through the virtual base since
+					// task #36, and the vbase-offset mechanism
+					// has no inverse. task #48)
+					//   ({ struct L *__mstrm = &<lhs>;
+					//      fname(<base view of __mstrm>);
+					//      (void *)__mstrm; })
+					// The callee symbol joins referenced_funcs —
+					// the materialize-and-lower fixpoint derives
+					// the body on use, same as a TokenCallFunc
+					// route; the void* extern is flush-skipped
+					// when the typed local def lands
+					// (typed_proto_syms).
+					referenced_funcs.insert(csym);
+					need_output_extern(csym.c_str(), /*ret_ptr*/true,
+							   { { {N_VOID}, true } }, { N_VOID });
+					char tmp[40];
+					snprintf(tmp, sizeof(tmp), "__mstrm_%d",
+						 m_strtmp_counter++);
+					// struct L *tmp = (struct L *)&<lhs>;
+					// (lhs evaluated exactly ONCE)
+					node_t sd = simple(N_SPEC_DECL, origin);
+					append(sd, node1(N_SHARE,
+						node1(N_LIST, class_tag_ref(lcls))));
+					node_t sd_dl = list();
+					append(sd_dl, pointer());
+					append(sd, node2(N_DECL, id(tmp, origin), sd_dl));
+					append(sd, ignore());
+					append(sd, ignore());
+					append(sd, node2(N_CAST,
 						node2(N_TYPE,
 						      node1(N_LIST, class_tag_ref(lcls)),
 						      node2(N_DECL, ignore(),
 							    node1(N_LIST, pointer()))),
-						addr, origin);
+						object_arg_addr(top->left, lcls),
+						origin));
+					node_t items = list();
+					append(items, sd);
+					// fname(<base view of tmp>): dyn-first vbase
+					// adjust (the same subobject the normal arg
+					// coercion binds), static offset fallback.
+					node_t aarg = vbase_dynamic_adjust(
+						id(tmp, origin), lcls, pcls, origin);
+					if (!aarg) {
+						aarg = id(tmp, origin);
+						if (boff) {
+							node_t charp = node2(N_CAST,
+								node2(N_TYPE,
+								      node1(N_LIST, simple(N_CHAR)),
+								      node2(N_DECL, ignore(),
+									    node1(N_LIST, pointer()))),
+								aarg, origin);
+							aarg = node2(N_ADD, charp,
+								integer((long)boff, origin),
+								origin);
+						}
+					}
+					node_t margs = list();
+					append(margs, node2(N_CAST,
+						class_ptr_type(pcls), aarg, origin));
+					node_t mcall = node2(N_CALL,
+						id(csym.c_str(), origin), margs, origin);
+					CIR_NODE(mcall)->synth_from_origin = true;
+					append(items, node2(N_EXPR, list(), mcall,
+							    origin));
+					// The saved stream pointer is the value.
+					append(items, node2(N_EXPR, list(),
+						node2(N_CAST, void_ptr_type(),
+						      id(tmp, origin), origin),
+						origin));
+					node_t se = node1(N_STMTEXPR,
+						node2(N_BLOCK, list(), items, origin),
+						origin);
+					node_t addr = node2(N_CAST,
+						node2(N_TYPE,
+						      node1(N_LIST, class_tag_ref(lcls)),
+						      node2(N_DECL, ignore(),
+							    node1(N_LIST, pointer()))),
+						se, origin);
 					return node1(N_DEREF, addr, origin);
 				}
 			}
