@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **fix(stream): concrete manipulators (`os << hex`) keep the lhs stream
+  pointer — the virtual-inheritance arc is closed.** The manipulator
+  lowering downcast the returned `ios_base&` back to the stream with a
+  static offset while the argument coercion is dynamic through the
+  virtual base — through a non-most-derived view (an `ostream&` over an
+  `ofstream`) the chain continued on a garbage stream and crashed. The
+  lowering now saves the lhs pointer once, applies the manipulator to
+  its coerced view, and yields the saved pointer (g++'s
+  `return *this` shape); the hand-emitted callee joins
+  `referenced_funcs` so the materialize-and-lower fixpoint derives its
+  body as before. New `tests/testmanipview.mad` (cout control +
+  ofstream-view chain with file readback). Closes #35 → #36 → #47 →
+  #48/#49. Newly recorded (pre-existing, task #50): the `--emit=c11`
+  lane rejects any `<iostream>`-globals TU — extern `cout` carries a
+  `cleanup` attribute naming an undeclared dtor. Suite 704 → 705,
+  packed arbiter green.
+
 - **fix(vbase): vbase-carrying classes without virtual functions get
   their Itanium prologue-only vtables — and plain bases of polymorphic
   classes get real typeinfo.** A class with virtual bases but no virtual
