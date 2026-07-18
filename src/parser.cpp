@@ -1692,6 +1692,32 @@ DataDef *Program::effective_pointer_type_for_member_access(TokenBase *tb)
     return NULL;
 }
 
+TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
+{
+    // type()-gated, not dynamic_cast alone: TokenMember/TokenCallMethod
+    // IS-A TokenVar, and their .var is the member/method Variable — the
+    // rewrite only applies to a BARE object variable receiver.
+    if ( !lhs || lhs->type() != TokenType::ttVariable )
+	return NULL;
+    TokenVar *otv = dynamic_cast<TokenVar *>(lhs);
+    if ( !otv || !otv->var.type || !otv->var.type->is_object()
+      || otv->var.type->is_pointer() )
+	return NULL;
+    DataDefCLASS *ocls = dynamic_cast<DataDefCLASS *>(otv->var.type);
+    std::string arrow_name("operator->");
+    Variable *arrow_m = ocls ? ocls->findMethod(arrow_name) : NULL;
+    if ( !arrow_m )
+	return NULL;
+    TokenCallMethod *opcall = new TokenCallMethod(otv->var, *arrow_m);
+    opcall->file = loc_tb->file;
+    opcall->line = loc_tb->line;
+    opcall->column = loc_tb->column;
+    DataDef *ret = opcall->datadef();
+    if ( !ret || !ret->is_pointer() )
+	Throw(loc_tb) << "operator-> must return a pointer" << flush;
+    return opcall;
+}
+
 static uint32_t member_proxy_flags(uint32_t owner_flags)
 {
     return owner_flags & ~vfFIXEDARRAY;
@@ -19307,6 +19333,17 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		    {
 		if ( TokenVar *tv = dynamic_cast<TokenVar *>(result) )
 		    fixed_array_arrow = tv->var.is_fixed_array();
+		// operator-> rewrite (same canon as the main expression
+		// parser): a class-object head like a map iterator becomes
+		// `head.operator->()` and the real '->' applies to the
+		// returned pointer. Reached for cast operands: `(int)it->m`.
+		if ( !fixed_array_arrow )
+		    if ( TokenCallMethod *opcall = arrow_operator_call(result, mtb) )
+		    {
+			result = opcall;
+			var = NULL;
+			member_object_type = opcall->datadef();
+		    }
 		if ( !fixed_array_arrow )
 		    obj_type = effective_pointer_type_for_member_access(result);
 		if ( !fixed_array_arrow && (!obj_type || !obj_type->is_pointer()) )
@@ -19339,8 +19376,12 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 			{
 			    Variable *recv_var = NULL;
 			    TokenBase *recv_parent = NULL;
-			    if ( TokenVar *tv = dynamic_cast<TokenVar *>(result) )
-				recv_var = &tv->var;
+			    // Dispatch on type(), not dynamic_cast: TokenMember IS-A
+			    // TokenVar (via TokenCallFunc), so a cast-first check
+			    // swallows chained member receivers and drops the
+			    // parent_expr the CIR needs to emit the full chain.
+			    if ( result->type() == TokenType::ttVariable )
+				recv_var = &dynamic_cast<TokenVar *>(result)->var;
 			    else if ( TokenMember *tm = dynamic_cast<TokenMember *>(result) )
 			    {
 				recv_var = &tm->var;
@@ -25496,24 +25537,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // Reuses the class-method dispatch — no parallel codegen (I6).
 		    if ( lhs->type() == TokenType::ttVariable )
 		    {
-			TokenVar *otv = dynamic_cast<TokenVar *>(lhs);
-			DataDefCLASS *ocls = (otv && otv->var.type && otv->var.type->is_object())
-			    ? dynamic_cast<DataDefCLASS *>(otv->var.type) : NULL;
-			std::string arrow_name("operator->");
-			Variable *arrow_m = ocls ? ocls->findMethod(arrow_name) : NULL;
-			if ( arrow_m && !otv->var.type->is_pointer() )
+			if ( TokenCallMethod *opcall = arrow_operator_call(lhs, tb) )
 			{
-			    TokenCallMethod *opcall = new TokenCallMethod(otv->var, *arrow_m);
-			    opcall->file = tb->file;
-			    opcall->line = tb->line;
-			    opcall->column = tb->column;
-			    DataDef *ret = opcall->datadef();
-			    if ( !ret || !ret->is_pointer() )
-				Throw(tb) << "operator-> must return a pointer" << flush;
 			    exStack.pop();
 			    exStack.push(opcall);
 			    lhs = opcall;
-			    obj_type = ret;
+			    obj_type = opcall->datadef();
 			    obj_var = new Variable("__arrow_op", *obj_type, 1, NULL, false);
 			    expr_backed_lhs = true;
 			    arrow_via_op = true;

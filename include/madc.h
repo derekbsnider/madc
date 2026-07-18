@@ -4732,6 +4732,12 @@ public:
     bool parse_qualified_special_member_definition(TokenBase *first_tb);
     // Assorted parse helpers (expression/declaration/statement support).
     DataDef *effective_pointer_type_for_member_access(TokenBase *tb);
+    // C++ canon operator-> rewrite: when lhs is a class OBJECT (not a
+    // pointer) whose class declares operator->, return the
+    // `lhs.operator->()` call token (its datadef() is the pointer the
+    // real '->' then applies to). NULL when the rewrite does not apply.
+    class TokenCallMethod *arrow_operator_call(TokenBase *lhs,
+					       TokenBase *loc_tb);
     DataDef *parse_typedef_array_suffix(DataDef *base_dd,
 					const std::string &alias_name,
 					TokenBase *err_tok);
