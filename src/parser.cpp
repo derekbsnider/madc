@@ -26596,6 +26596,52 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
     return done ? ExprStep::Done : ExprStep::Break;
 }
 
+// The receiver's STATIC class for an explicit-destructor call: unwrap
+// const/reference wrappers, then (for the arrow form) ONE pointer level,
+// then const/reference again. NULL when not statically a class (dependent,
+// scalar pseudo-dtor receiver, unknown).
+static DataDefCLASS *dtor_receiver_class(TokenBase *lhs, bool is_arrow)
+{
+    DataDef *rdd = lhs ? lhs->datadef() : NULL;
+    auto strip_cv_ref = [](DataDef *d) -> DataDef * {
+	for (;;) {
+	    if ( DataDefCONST *cq = dynamic_cast<DataDefCONST *>(d) )
+		d = cq->base_type;
+	    else if ( d && d->is_reference() ) {
+		DataDefPTR *p = dynamic_cast<DataDefPTR *>(d);
+		if ( !p ) break;
+		d = p->base_type;
+	    }
+	    else break;
+	}
+	return d;
+    };
+    rdd = strip_cv_ref(rdd);
+    if ( is_arrow && rdd && rdd->is_pointer() ) {
+	DataDefPTR *p = dynamic_cast<DataDefPTR *>(rdd);
+	rdd = p ? strip_cv_ref(p->base_type) : NULL;
+    }
+    return dynamic_cast<DataDefCLASS *>(rdd);
+}
+
+// [expr.prim.id.dtor]: does the identifier after `~` name the receiver's
+// class? True for the class's own (unqualified) name and — for a template
+// instantiation — the injected-class-name (`p->~Box()` on a `Box<int> *`):
+// the template-name of the canonical spelling, namespace-stripped.
+static bool dtor_ident_names_class(const char *spell, DataDefCLASS *cls)
+{
+    if ( !spell || !*spell || !cls )
+	return false;
+    const std::string &canon = cls->canonical_cpp_spelling().empty()
+			     ? cls->name : cls->canonical_cpp_spelling();
+    size_t lt = canon.find('<');
+    std::string tn = (lt == std::string::npos) ? canon : canon.substr(0, lt);
+    size_t q = tn.rfind("::");
+    if ( q != std::string::npos )
+	tn = tn.substr(q + 2);
+    return tn == spell;
+}
+
 // ttMultiOp/ttOperator switch-arm of parseExpression (see madc.h for the
 // ExprStep contract). Operator handling: precedence-climbing shunting-yard
 // pushes/pops, unary vs binary disambiguation, parentheses/subscript,
@@ -26630,9 +26676,52 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    bool is_arrow = (tb->id() == TokenID::tkDeRef);
 		    nextToken(); // consume '~'
 		    TokenBase *tyt = nextToken();
-		    TokenDataType *dt = resolve_declared_type_token(tyt, true, true);
-		    if ( !dt )
-			Throw(tyt ? tyt : tb) << "Unknown type in explicit destructor call" << flush;
+		    DataDefCLASS *rcls = dtor_receiver_class(exStack.top(), is_arrow);
+		    DataDefCLASS *dcls = NULL;
+		    TokenIdent *tyid = dynamic_cast<TokenIdent *>(tyt);
+		    if ( rcls && tyid && tyid->type() == TokenType::ttIdentifier
+		      && peekToken() && peekToken()->id() == TokenID::tkOpBrk
+		      && dtor_ident_names_class(tyid->spelling(), rcls) )
+		    {
+			// `p->~Box()` on a `Box<int> *`: the name is looked up in
+			// the receiver's class scope first, where the
+			// injected-class-name (no template args) denotes the class
+			// itself ([expr.prim.id.dtor], [temp.local]).
+			dcls = rcls;
+		    }
+		    else
+		    {
+			TokenDataType *dt = resolve_declared_type_token(tyt, true, true);
+			if ( !dt )
+			    Throw(tyt ? tyt : tb) << "Unknown type in explicit destructor call" << flush;
+			DataDef *named = &dt->definition;
+			while ( DataDefCONST *nc = dynamic_cast<DataDefCONST *>(named) )
+			    named = nc->base_type;
+			dcls = dynamic_cast<DataDefCLASS *>(named);
+			// The named type must BE the receiver's class ([class.dtor];
+			// a typedef/alias resolves to the SAME DataDef, so pointer
+			// equality is the alias-tolerant check) — even when the
+			// named type is a plain struct or scalar (a plain struct is
+			// not a DataDefCLASS, but naming it is still the g++ error
+			// "the type being destroyed is 'X', but the destructor
+			// refers to 'Y'"). Enforced only when both sides are
+			// concrete — dependent/pattern parses skip (the tsubst
+			// marker path owns those).
+			if ( rcls && named != (DataDef *)rcls
+			  && !named->is_template_param()
+			  && !rcls->is_dependent_placeholder
+			  && !rcls->has_dependent_surface
+			  && !(dcls && (dcls->is_dependent_placeholder
+					|| dcls->has_dependent_surface)) )
+			    Throw(tyt ? tyt : tb)
+				<< "the type being destroyed is '"
+				<< (rcls->canonical_cpp_spelling().empty()
+				    ? rcls->name : rcls->canonical_cpp_spelling())
+				<< "', but the destructor refers to '"
+				<< (named->canonical_cpp_spelling().empty()
+				    ? named->name : named->canonical_cpp_spelling())
+				<< "'" << flush;
+		    }
 		    TokenBase *opbrk = nextToken();
 		    if ( !opbrk || opbrk->id() != TokenID::tkOpBrk )
 			Throw(opbrk ? opbrk : tb) << "Expected '(' in explicit destructor call" << flush;
@@ -26640,7 +26729,6 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    if ( !clbrk || clbrk->id() != TokenID::tkClBrk )
 			Throw(clbrk ? clbrk : tb) << "Expected ')' in explicit destructor call" << flush;
 		    TokenBase *lhs = exStack.top(); exStack.pop();
-		    DataDefCLASS *dcls = dynamic_cast<DataDefCLASS *>(&dt->definition);
 		    TokenExplicitDtor *ted = new TokenExplicitDtor(lhs, dcls, is_arrow);
 		    ted->file = tb->file;
 		    ted->line = tb->line;

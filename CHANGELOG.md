@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **feat(parser): explicit-destructor names — injected-class-name +
+  the [class.dtor] same-type check (task #57).** Verify-first: the
+  template-id (`p->~Box<int>()`) and typedef/alias (`q->~XT()`) forms
+  already worked at live HEAD. The two real gaps: `p->~Box()` (the
+  injected-class-name without template args, [expr.prim.id.dtor] —
+  now looked up against the receiver's class, works for madc templates
+  and library classes alike, `s->~basic_string()`); and the missing
+  same-type check — `q->~Y()` on an `X *` compiled silently, now the
+  g++-parity error "the type being destroyed is 'X', but the destructor
+  refers to 'Y'" (pointer-equality on the resolved DataDef, so
+  typedefs/aliases pass and even never-promoted plain structs are
+  caught; dependent/pattern parses skip). New `tests/testdtorname.mad`
+  (g++-oracle byte-equal) + `tests/testdtormismatch.mad`
+  (`.expect_err`). Incidental pre-existing gap noted:
+  `sizeof(Box<int>)` (template-id sizeof operand) fails to parse.
+  Suite 715 → 717, packed arbiter green.
+
 - **feat(class): stack class-array scope-exit destructors — per-element
   REVERSE destruction (task #56).** `{ B a[3]; }` destroyed only
   element 0: the cleanup attribute calls one function with `&a`, and it
