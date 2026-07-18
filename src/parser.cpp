@@ -41584,6 +41584,22 @@ static bool instantiate_fn_template_binding(Program &pgm,
     pgm.unevaluated_operand_depth = 0;
 
     bool ok = true;
+    // SFINAE-quiet attempt: this body parse is a speculative candidate
+    // instantiation — a failure keeps the placeholder and overload resolution
+    // recovers, exactly like g++ discarding a candidate on substitution failure
+    // ([temp.deduct]/8: not an error, nothing printed). The parser's Throw
+    // prints to std::cerr at throw time (throwbuf::sync), so a failing attempt
+    // leaks hard-error noise for silent-by-canon failures (<cmath>'s
+    // __enable_if<false,_>::__type overloads on every scoring pass). Mute cerr
+    // for the attempt (same idiom as fold_if_constexpr_condition); a FAILED
+    // attempt also rolls back the diagnostics ledger. A placeholder that turns
+    // out to be genuinely needed still fails loudly later (unresolved import),
+    // and MADC_DIAG_FNTPLTHROW's fprintf bypasses the mute for developers.
+    size_t saved_diag_count = pgm.diagnostics.size();
+    Program::ErrorInfo saved_last_error = pgm.last_error;
+    std::streambuf *saved_cerr = std::cerr.rdbuf();
+    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    std::cerr.rdbuf(&g_madc_null_streambuf);
     ++pgm.fn_template_instantiation_depth;
     try
     {
@@ -41618,6 +41634,13 @@ static bool instantiate_fn_template_binding(Program &pgm,
 #endif
     }
     --pgm.fn_template_instantiation_depth;
+    std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
+    if ( !ok )
+    {
+	pgm.diagnostics.resize(saved_diag_count);
+	pgm.last_error = saved_last_error;
+    }
 #if MADC_DEBUG_FNTPL
     if ( pgm.tokens.size() != base_depth )
 	std::cerr << "FNTPL inst " << inst_key << " STREAM IMBALANCE: tokens "

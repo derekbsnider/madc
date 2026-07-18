@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **fix(tpl): speculative template instantiation is SFINAE-quiet —
+  `<math.h>` TUs compile with zero stderr (task #55).** All 32 noise
+  lines the #54 header-opening exposed mapped 1:1 onto FAILED
+  speculative fn-template instantiations during overload scoring
+  (`__enable_if<false,_>::__type` SFINAE candidates, `__promote_2`
+  substitution gaps) — failures g++ discards silently ([temp.deduct]/8).
+  The attempt site (`instantiate_fn_template_binding`) now mutes
+  `std::cerr` with the existing speculative-parse idiom and rolls back
+  the diagnostics ledger on failure; attempts nested inside constant
+  folds already ran muted. A genuinely-needed failing template still
+  errors loudly at the call site with correct attribution
+  (`MADC_DIAG_FNTPLTHROW` still bypasses the mute for developers). New
+  generic runner fixture `tests/foo.expect_quiet` (stderr must be
+  EMPTY, reported `NOISY(stderr):`) locks the hygiene:
+  `tests/testmathheader.mad` (g++-oracle byte-equal) + `.expect_quiet`
+  on `teststdcxx11`. Suite 713 → 714, packed arbiter green.
+
 - **fix(pp): `#if` expressions get the `?:` tier and `##` token pasting;
   the strict `--std=c++11` lane compiles real headers (task #54).** The
   recorded "feature-macro mismatch" was two evaluator holes: a ternary's

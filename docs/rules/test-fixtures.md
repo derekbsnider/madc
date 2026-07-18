@@ -51,6 +51,20 @@ test: nonzero exit (a timeout still fails) and the listed lines must
 appear on stderr — the diagnostics are the expected output. The EXE pass
 skips these tests because the source does not compile by design.
 
+## Why `.expect_quiet` exists
+
+`.expect` only requires the listed lines to *appear*, so a test whose
+output is correct but whose compile leaks warnings or recovered-error
+noise to stderr still passes — the noise is invisible to the suite.
+Diagnostic-hygiene work (task #55: speculative template-instantiation
+failures during overload scoring must be SFINAE-silent, matching g++)
+needs the inverse assertion: this compile+run produces *no* stderr at
+all. `.expect_quiet` (presence-only; content ignored) makes the runner
+capture stderr separately and fail the test if any byte lands there,
+reported as `NOISY(stderr):`. Use it on tests that compile real system
+headers, where a reintroduced diagnostic leak would otherwise regress
+silently.
+
 ## How to add a new capability
 
 If the runner needs a new knob (say, compiler flags or environment variables), resist the
