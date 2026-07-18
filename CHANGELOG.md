@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **fix(vbase): vbase-carrying classes without virtual functions get
+  their Itanium prologue-only vtables — and plain bases of polymorphic
+  classes get real typeinfo.** A class with virtual bases but no virtual
+  functions reserved its vptr slots (layout matched g++) but emitted no
+  vtable and never stamped the vptrs, so every view-adjust fell back to
+  wrong static offsets. New `has_any_vptr()` widens the eight
+  emission/stamp/adjust gates; the parser's group builder already
+  handled these classes. Emitting the vtables exposed a pre-existing
+  RTTI hole (zero coverage): `_ZTI<base>` of any vptr-less base was
+  externed but never defined — `base_ti_ref` now force-defines it
+  recursively. New `tests/testvbasenovirt.mad` (views, ref binds,
+  ctorless heap; g++ oracle, both lanes). No freeze-format change.
+  Suite 703 → 704, packed arbiter green. The virtual-inheritance arc is
+  now closed except task #48 (manipulator downcast).
+
 - **fix(vbase): ref-binds over ref-returning calls and the ref-return
   upcast take the vbase adjust.** Two sibling holes where the derived
   class hid behind a `DataDefREF`: binding `V &vr = get()` (a `D&`/`B&`-
