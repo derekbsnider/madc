@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+- **fix(ctor): complete-object construction — class arrays, base chains,
+  heap vbases (task #51).** The #35-siblings audit found five real holes,
+  one KIND: `new D[3]` allocated ONE element (garbage vptrs, heap
+  corruption), `delete[]` never ran per-element dtors, stack class arrays
+  constructed only element 0, a ctorless class with a user-ctor BASE
+  never called it, and heap/member complete-object sites skipped
+  user-ctor virtual bases. One assembler now owns the shape
+  (`complete_object_construct_stmts`, Itanium C1 = vbases then C2): the
+  ctorless arm chains transitive non-virtual user-ctor base default
+  ctors before its vptr stamps; `new C[n]` allocates count+cookie
+  (Itanium element-count cookie iff non-trivial dtor) and constructs per
+  element; `delete[]` reads the cookie back and destroys in reverse;
+  stack arrays reuse the same loop. The ctorless-`new` duplicate block
+  and `member_default_construct_stmt` are deleted (parallel
+  implementations). Six reducers == g++; new `tests/testnewarray.mad` +
+  `tests/testctorlessbase.mad`, green on JIT AND emit-C lanes. Residue:
+  stack-array scope-exit dtors still run once on element 0 (cleanup attr
+  takes one fn). Suite 706 → 708, packed arbiter green.
+
+- **fix(emit-c): extern globals never get cleanup attributes; shim dtor
+  externs are typed (task #50).** Two pre-existing hygiene bugs blocked
+  gcc on the `--emit=c11` lane (c2mir tolerated both): extern class
+  globals (`extern ostream _ZSt4cout`) carried a `cleanup` attribute
+  naming a not-yet-declared dtor (gcc: "cleanup argument not a
+  function"; semantically a TU never destroys an object it doesn't own —
+  and the c2mir fork applies cleanup to automatic variables only, so the
+  attach was inert on the JIT lane), and the host-call shim registered
+  complete dtors as `void(void*)` externs that conflicted with the typed
+  madc definitions. `var_decl`'s cleanup gate now requires `!vfEXTERN`;
+  the shim uses the typed `ExternParam` form. Any `<iostream>`-globals
+  TU now compiles under gcc — `tests/testmanipview.mad` (task #48) is
+  emit-C-validated byte-identical to g++, and new
+  `tests/testglobalrefret.mad` covers the global + ref-returning-fn
+  shape task #47 had to keep out of the suite. Supersedes the old
+  "task #20 dtor-proto hygiene" ledger item. Suite 705 → 706, packed
+  arbiter green.
+
 - **fix(stream): concrete manipulators (`os << hex`) keep the lhs stream
   pointer — the virtual-inheritance arc is closed.** The manipulator
   lowering downcast the returned `ios_base&` back to the stream with a
