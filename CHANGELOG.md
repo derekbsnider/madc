@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **refactor(madcdis): C1 core-ification — the data-substrate interface
+  headers move `include/madcdat/` → `include/madcdis/` (task #58,
+  governing plan §6).** schema/mapper/query/relation/dataset/driver now
+  live in the madc::dis core surface; forwarding shims hold the old
+  paths for out-of-tree consumers (deletion horizon noted); all in-tree
+  consumers point at the new home; madcdat keeps external drivers +
+  source_adapter behind `--enable-madcdat`; `install-libmadc` now ships
+  `include/madcdis/`. Both configure modes build clean (=yes ran the
+  full bdb/gdbm/qdbm/sqlite unit suites through the moved headers);
+  fulltest + packed arbiter 717/0/0/16 in the =yes mode.
+
 - **feat(parser): explicit-destructor names — injected-class-name +
   the [class.dtor] same-type check (task #57).** Verify-first: the
   template-id (`p->~Box<int>()`) and typedef/alias (`q->~XT()`) forms

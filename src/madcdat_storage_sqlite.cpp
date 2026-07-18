@@ -1,5 +1,5 @@
-#include "madcdat/driver.h"
-#include "madcdat/query.h"
+#include "madcdis/driver.h"
+#include "madcdis/query.h"
 
 #ifdef HAVE_SQLITE3
 
