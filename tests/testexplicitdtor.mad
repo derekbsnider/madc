@@ -1,0 +1,39 @@
+// Task #53: explicit destructor calls (obj.~X() / p->~X()) paired with
+// placement new. The explicit call runs the COMPLETE (D1) dtor — no free;
+// through a base pointer with a virtual dtor it dispatches to the
+// most-derived dtor chain via the vtable D1 slot. Placement new
+// constructs at the given address through the shared complete-object
+// assembler (typed __this, ctorless vptr stamps). Oracle: g++ -O0.
+#include <cstdio>
+#include <cstdlib>
+#include <new>
+
+int g_d = 0;
+
+struct X {
+	int v;
+	X() : v(5) {}
+	~X() { g_d++; }
+};
+struct VB { virtual ~VB() { g_d += 10; } };
+struct VD : VB { ~VD() { g_d += 100; } };
+
+int main()
+{
+	char buf[sizeof(X)];
+	X *p = new (buf) X();
+	printf("pv %d\n", p->v);
+	p->~X();
+	printf("d1 %d\n", g_d);
+	X s;
+	s.~X();
+	printf("d2 %d\n", g_d);
+	new (&s) X();
+	void *m = malloc(sizeof(VD));
+	VD *vd = new (m) VD();
+	VB *vb = vd;
+	vb->~VB();
+	printf("d3 %d\n", g_d);
+	free(m);
+	return 0;
+}

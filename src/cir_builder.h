@@ -962,6 +962,12 @@ public:
 	// The pure-virtual slot (if any) that makes `cdd` abstract — the slot
 	// name whose most-derived resolution is still `= 0`; "" when concrete.
 	std::string class_pure_virtual_of(DataDefCLASS *cdd);
+	// Dispatch a destructor through the receiver's vtable dtor slot; sname
+	// is "~" (D1 complete — explicit p->~X()) or "~$deleting" (D0 —
+	// delete). recv_vptr/recv_arg = two independent receiver translations.
+	node_t virtual_dtor_slot_call(DataDefCLASS *cdd, const char *sname,
+			       node_t recv_vptr, node_t recv_arg,
+			       TokenBase *tb);
 	// Default-construct the non-virtual base subobjects of ctorless `cdd`
 	// through the named receiver pointer, recursing through ctorless
 	// layers with the accumulated offset.

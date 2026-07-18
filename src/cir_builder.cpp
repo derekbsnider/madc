@@ -7381,6 +7381,53 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 	return sd;
 }
 
+// Dispatch a destructor through the receiver's vtable dtor slot —
+// (void(*)(void*))(((void**)recv->__vptr_G)[slot])(recv_arg). sname picks
+// the arm: "~" = D1 complete (explicit p->~X(): most-derived destruction,
+// no free) or "~$deleting" = D0 (delete: D1 then free). recv_vptr and
+// recv_arg are two INDEPENDENT translations of the receiver (c2mir single
+// parent link), both `struct Cls *`-typed so the vptr field loads by name.
+// NULL when the class has no such virtual slot.
+node_t CirBuilder::virtual_dtor_slot_call(DataDefCLASS *cdd, const char *sname,
+					  node_t recv_vptr, node_t recv_arg,
+					  TokenBase *tb)
+{
+	size_t grp; int slot;
+	if (!cdd || !cdd->find_vslot(sname, grp, slot))
+		return NULL;
+	const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[grp];
+	std::string vfld = (G.this_offset == 0)
+		? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
+	// recv->__vptr — load the owning group's vptr field by name from
+	// the static-type pointer (already `struct Cls *`, no recast).
+	node_t vptr = node2(N_DEREF_FIELD, recv_vptr, id(vfld.c_str(), tb));
+	// (void**)vptr[slot]
+	node_t vpp_dl = list();
+	append(vpp_dl, pointer());
+	append(vpp_dl, pointer());
+	node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+				node2(N_DECL, ignore(), vpp_dl));
+	node_t vtab = node2(N_CAST, vpp_type, vptr, tb);
+	node_t slotref = node2(N_IND, vtab, integer(slot, tb), tb);
+	// Cast the slot to void(*)(void*) — the dtor signature. Suffix order
+	// matches fnptr_decl_pieces: POINTER first (the `(*)`), then FUNC (the
+	// `(void*)` params) — pointer-to-function, not fn-returning-pointer.
+	node_t fp_dl = list();
+	append(fp_dl, pointer());
+	append(fp_dl, node1(N_FUNC,
+		node1(N_LIST,
+		      node2(N_TYPE,
+			    node1(N_LIST, simple(N_VOID)),
+			    node2(N_DECL, ignore(),
+				  node1(N_LIST, pointer()))))));
+	node_t fp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+			       node2(N_DECL, ignore(), fp_dl));
+	node_t fn = node2(N_CAST, fp_type, slotref, tb);
+	node_t darg = list();
+	append(darg, recv_arg);
+	return node2(N_CALL, fn, darg, tb);
+}
+
 node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 {
 	node_t member_list = list();
@@ -9974,7 +10021,12 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		if (node_t cc = try_implicit_copy_construct(dst, cdd, ctor_args,
 							    origin))
 			return cc;
-		if (cdd->ctors.empty() || ctor_args.empty()) {
+		// A PACK-EXPANSION argument list can never be overload-scored
+		// (pack arity is per-instantiation) — defer to the class-name
+		// ctor; the tsubst copy expands the arguments (the placement-new
+		// pattern shape, `new (p) T(std::forward<Args>(args)...)`).
+		if (cdd->ctors.empty() || ctor_args.empty()
+		    || tsubst_args_have_pack_expansion(ctor_args)) {
 			auto it = cdd->method_map.find(cdd->name);
 			if (it != cdd->method_map.end() && it->second)
 				ctor = dynamic_cast<FuncDef *>(it->second->type);
@@ -13228,56 +13280,26 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			auto addr = [&]() -> node_t { return translate_expr(tn->placement); };
 			node_t construct = NULL;
 			if (tn->alloc_class) {
+				// Complete-object construction at the (typed) placement
+				// address — the shared assembler: user ctor call (with
+				// default-arg completion), or the ctorless cascade (vptr
+				// stamps + base chain + members), plus user-ctor virtual
+				// bases. The raw placement expression may be char*/void*;
+				// the cast makes __this well-typed (c2mir pointer check).
 				DataDefCLASS *pc = tn->alloc_class;
-				if (pc->has_user_ctor) {
-					FuncDef *ctor = select_ctor_overload(pc, tn->ctor_args);
-					if (!ctor) {
-						auto it = pc->method_map.find(pc->name);
-						if (it != pc->method_map.end() && it->second)
-							ctor = dynamic_cast<FuncDef *>(it->second->type);
-					}
-					std::string csym = ctor_call_symbol(pc, ctor);
-					referenced_funcs.insert(csym);
-					node_t a = list();
-					append(a, addr());   // __this (already Class*)
-					for (size_t i = 0; i < tn->ctor_args.size(); i++) {
-						TokenBase *arg = tn->ctor_args[i];
-						size_t pi = i + 1;
-						DataDef *pt = (ctor && pi < ctor->parameters.size())
-								? ctor->parameters[pi] : NULL;
-						bool refp = ctor && ctor->is_ref_param(pi);
-						if (DataDefCLASS *pc = param_object_class(pt, refp))
-							append(a, object_arg_addr(arg, pc));
-						else if (DataDefCLASS *vc = as_class_instance(pt))
-							append(a, object_arg_value(arg, vc));
-						else if (refp)
-							append(a, ref_param_arg_addr(arg,
-								ref_param_referent(pt),
-								const_ref_param(ctor, pi)));
-						else
-							append(a, translate_expr(arg));
-					}
-					if (ctor && ctor->ctor_trailing_self)
-						append(a, addr());   // trailing allocator& == &this
-					if (ctor && !ctor->emit_symbol.empty()) {
-						std::vector<ExternParam> eparams;
-						eparams.push_back({ {N_VOID}, true });
-						for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
-							DataDef *pt = ctor->parameters[pi];
-							bool refp = ctor->is_ref_param(pi);
-							if (param_object_class(pt, refp) || refp)
-								eparams.push_back({ {N_VOID}, true });
-							else if (pt && pt->is_pointer())
-								eparams.push_back({ {N_CHAR}, true });
-							else
-								eparams.push_back({ {N_LONG}, false });
-						}
-						if (ctor->ctor_trailing_self)
-							eparams.push_back({ {N_VOID}, true });
-						need_output_extern(csym.c_str(), false, eparams);
-					}
-					construct = node2(N_CALL, id(csym.c_str(), tb), a, tb);
-				}
+				node_t pitems = list();
+				std::vector<node_t> cstmts;
+				complete_object_construct_stmts([&]() -> node_t {
+					return node2(N_CAST, class_ptr_type(pc),
+						     addr(), tb);
+				}, pc, tn->ctor_args, tb, cstmts);
+				for (node_t cs : cstmts)
+					append(pitems, cs);
+				append(pitems, node2(N_EXPR, list(),
+					node2(N_CAST, class_ptr_type(pc), addr(), tb),
+					tb));
+				return node1(N_STMTEXPR,
+					     node2(N_BLOCK, list(), pitems, tb), tb);
 			} else {
 				// Scalar T: *(T *)addr = arg (or zero-init when no args).
 				// Cast the placement address to the CONSTRUCTED type's
@@ -13304,7 +13326,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				construct = node2(N_ASSIGN, node1(N_DEREF, typed_addr, tb),
 						  rhs, tb);
 			}
-			// ({ <construct>; addr; }) — yields the placement address (T*).
+			// ({ <construct>; addr; }) — yields the placement address
+			// (the class arm returned above with its typed yield).
 			node_t items = list();
 			if (construct)
 				append(items, node2(N_EXPR, list(), construct, tb));
@@ -13505,41 +13528,9 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		// which runs the most-derived complete destructor AND frees. No
 		// separate free() — the D0 dtor owns the free.
 		if (cdd && !tdl->is_array && cdd->vtable_slot("~$deleting") >= 0) {
-			size_t grp; int slot;
-			cdd->find_vslot("~$deleting", grp, slot);
-			const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[grp];
-			std::string vfld = (G.this_offset == 0)
-				? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
-			// ptr->__vptr — load the owning group's vptr field by name from
-			// the static-type pointer (already `struct Cls *`, no recast).
-			node_t vptr = node2(N_DEREF_FIELD, translate_expr(tdl->expr),
-					    id(vfld.c_str(), tb));
-			// (void**)vptr[slot]
-			node_t vpp_dl = list();
-			append(vpp_dl, pointer());
-			append(vpp_dl, pointer());
-			node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-						node2(N_DECL, ignore(), vpp_dl));
-			node_t vtab = node2(N_CAST, vpp_type, vptr, tb);
-			node_t slotref = node2(N_IND, vtab, integer(slot, tb), tb);
-			// Cast the slot to void(*)(void*) — the deleting-dtor signature.
-			// Suffix order matches fnptr_decl_pieces: POINTER first (the
-			// `(*)`), then FUNC (the `(void*)` params) — i.e. pointer-to-
-			// function, not function-returning-pointer.
-			node_t fp_dl = list();
-			append(fp_dl, pointer());
-			append(fp_dl, node1(N_FUNC,
-				node1(N_LIST,
-				      node2(N_TYPE,
-					    node1(N_LIST, simple(N_VOID)),
-					    node2(N_DECL, ignore(),
-						  node1(N_LIST, pointer()))))));
-			node_t fp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-					       node2(N_DECL, ignore(), fp_dl));
-			node_t fn = node2(N_CAST, fp_type, slotref, tb);
-			node_t darg = list();
-			append(darg, translate_expr(tdl->expr));
-			node_t dcall = node2(N_CALL, fn, darg, tb);
+			node_t dcall = virtual_dtor_slot_call(cdd, "~$deleting",
+				translate_expr(tdl->expr),
+				translate_expr(tdl->expr), tb);
 			node_t items = list();
 			append(items, node2(N_EXPR, list(), dcall, tb));
 			append(items, node2(N_EXPR, list(), integer(0, tb), tb));
@@ -13669,6 +13660,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			}
 		}
 		DataDefCLASS *cdd = ted->dtor_class;
+		// Virtual dtor through a POINTER receiver: dispatch through the
+		// D1 (complete) slot — most-derived destruction, NO free (that is
+		// delete's D0 arm). A '.' receiver's dynamic type IS its static
+		// type, so it stays a devirtualized static call (g++ shape).
+		if (cdd && ted->is_arrow && cdd->vtable_slot("~") >= 0) {
+			node_t dcall = virtual_dtor_slot_call(cdd, "~",
+				translate_expr(ted->obj),
+				translate_expr(ted->obj), tb);
+			if (dcall)
+				return dcall;
+		}
 		node_t obj_ptr = ted->is_arrow
 			? translate_expr(ted->obj)
 			: node1(N_ADDR, translate_expr(ted->obj), tb);
