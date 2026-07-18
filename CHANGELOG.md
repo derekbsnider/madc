@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **feat(class): stack class-array scope-exit destructors — per-element
+  REVERSE destruction (task #56).** `{ B a[3]; }` destroyed only
+  element 0: the cleanup attribute calls one function with `&a`, and it
+  named the scalar dtor. Now a per-(class,N) wrapper
+  `Cls__arr<N>___dtor(void*)` destroys all N in reverse ([class.dtor],
+  g++ byte-parity), demanded at the cleanup attach, the try-body unwind
+  push (throw now unwinds whole arrays), and the tsubst SPEC_DECL
+  cleanup re-resolution arm; definitions flush with the Pass 1.95 late
+  declarations. Freeze/forest-neutral (synthesized from live class
+  state). SIBLING BUG fixed: #51's construct loop strode a whole ROW
+  for multi-dim arrays (`B m[2][2]` decays to `B(*)[2]`) — elements
+  constructed out of bounds; `class_array_construct_loop` now flattens
+  with a `(struct Cls*)` cast. emit-C lane verified (gcc-compiled
+  output == g++ oracle, zero warnings). New `tests/testarraydtor.mad`
+  (dtor ORDER encoded as per-phase sequence lines, + `.expect_quiet`).
+  Suite 714 → 715, packed arbiter green.
+
 - **fix(tpl): speculative template instantiation is SFINAE-quiet —
   `<math.h>` TUs compile with zero stderr (task #55).** All 32 noise
   lines the #54 header-opening exposed mapped 1:1 onto FAILED

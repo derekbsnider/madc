@@ -1555,6 +1555,40 @@ static bool attr_list_has_cleanup(node_t attrs)
 	return false;
 }
 
+// Fixed-array element count of a SPEC_DECL's declarator: the product of its
+// N_ARR dims when every dim is an integer-literal node. 0 = not a fixed array
+// (no N_ARR, or a non-constant dim — VLA/extern-[] shapes never carry a class
+// cleanup attribute, so 0 simply keeps the scalar-dtor path).
+static size_t spec_decl_fixed_array_elems(node_t spec_decl)
+{
+	node_t d = c2mir_node_op(spec_decl, 1);          // declarator (N_DECL)
+	if (!d || d->code != N_DECL)
+		return 0;
+	node_t dlist = c2mir_node_op(d, 1);              // suffix list
+	if (!dlist || dlist->code != N_LIST)
+		return 0;
+	size_t n = 1;
+	bool saw = false;
+	for (node_t op = c2mir_node_first_op(dlist); op;
+	     op = c2mir_node_next_op(op)) {
+		if (op->code != N_ARR)
+			continue;
+		node_t sz = c2mir_node_op(op, 2);        // N_ARR(static, quals, size)
+		if (!sz)
+			return 0;
+		if (sz->code == N_I || sz->code == N_L) {
+			cir_node *sn = CIR_NODE(sz);
+			if (sn->base.u.l <= 0)
+				return 0;
+			n *= (size_t)sn->base.u.l;
+			saw = true;
+		} else {
+			return 0;
+		}
+	}
+	return saw ? n : 0;
+}
+
 static bool node_is_deref_of_id(node_t n, const char *name)
 {
 	if (!n || n->code != N_DEREF)
@@ -3580,8 +3614,17 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				DataDefCLASS *cdd = as_class_instance(concrete);
 				if (cdd) {
 					if (class_needs_dtor(cdd)) {
-						std::string dtor_sym =
-							class_complete_dtor_symbol(cdd);
+						// A fixed-array decl re-targets to the
+						// substituted class's per-(class,N)
+						// ARRAY wrapper, not the scalar dtor
+						// (task #56) — the pattern's attr was
+						// the exemplar class's wrapper.
+						size_t arr_n =
+							spec_decl_fixed_array_elems(
+								src->as_node());
+						std::string dtor_sym = arr_n
+							? demand_array_dtor(cdd, arr_n)
+							: class_complete_dtor_symbol(cdd);
 						referenced_funcs.insert(dtor_sym);
 						node_t attr_args = list();
 						append(attr_args,
@@ -6568,7 +6611,15 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		DataDefCLASS *cdd = (!is_ptr && !(v->flags & vfEXTERN))
 				    ? as_class_instance(base_dd) : NULL;
 		if (cdd && class_needs_dtor(cdd)) {
-			std::string dtor_sym = class_complete_dtor_symbol(cdd);
+			// A fixed ARRAY gets the per-(class,N) wrapper: the cleanup
+			// mechanism calls one function with &a (element 0), which
+			// destroyed only a[0] — g++ destroys all N in REVERSE
+			// (task #56; the VLA case stays on the free-only arm below).
+			std::string dtor_sym =
+				(v->is_fixed_array() && !v->is_vla()
+				 && v->total_elements() > 0)
+				? demand_array_dtor(cdd, v->total_elements())
+				: class_complete_dtor_symbol(cdd);
 			referenced_funcs.insert(dtor_sym);
 			node_t attr_args = list();
 			append(attr_args, id(dtor_sym.c_str(), origin));
@@ -9301,6 +9352,77 @@ node_t CirBuilder::synth_complete_dtor_def(DataDefCLASS *cdd)
 	return node4(N_FUNC_DEF, ret_type, decl, list(), body);
 }
 
+std::string CirBuilder::class_array_dtor_symbol(DataDefCLASS *cdd, size_t n)
+{
+	char buf[40];
+	snprintf(buf, sizeof(buf), "__arr%zu___dtor", n);
+	return cdd->name + buf;
+}
+
+std::string CirBuilder::demand_array_dtor(DataDefCLASS *cdd, size_t n)
+{
+	std::string sym = class_array_dtor_symbol(cdd, n);
+	referenced_funcs.insert(sym);
+	if (!m_array_dtor_defs.count(sym))
+		m_array_dtor_defs[sym] = synth_array_dtor_def(cdd, n, sym);
+	return sym;
+}
+
+// void Cls__arr<N>___dtor(void *p)
+// { struct Cls *q = (struct Cls *)p;
+//   for (long __ci = N-1; __ci >= 0; __ci -= 1) <complete-dtor>(q + __ci); }
+// The param is void*: the cleanup attribute passes &arr — a `Cls (*)[N]`,
+// which a `struct Cls *` param would take only through an
+// incompatible-pointer-type diagnostic (c2mir warns, gcc on emitted C11
+// warns). void* accepts it silently in both lanes; the body casts once.
+node_t CirBuilder::synth_array_dtor_def(DataDefCLASS *cdd, size_t n,
+					const std::string &sym)
+{
+	node_t ret_type = node1(N_LIST, simple(N_VOID));
+	node_t param = simple(N_SPEC_DECL);
+	append(param, node1(N_SHARE, node1(N_LIST, simple(N_VOID))));
+	append(param, node2(N_DECL, id("p"), node1(N_LIST, pointer())));
+	append(param, ignore());
+	append(param, ignore());
+	append(param, ignore());
+	node_t param_list = list();
+	append(param_list, param);
+	node_t decl = node2(N_DECL, id(sym.c_str()),
+			    node1(N_LIST, node1(N_FUNC, param_list)));
+	node_t items = list();
+	// struct Cls *q = (struct Cls *)p;
+	node_t qdecl = simple(N_SPEC_DECL);
+	append(qdecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
+	append(qdecl, node2(N_DECL, id("q"), node1(N_LIST, pointer())));
+	append(qdecl, ignore());
+	append(qdecl, ignore());
+	node_t cast_t = node2(N_TYPE, node1(N_LIST, class_tag_ref(cdd)),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+	append(qdecl, node2(N_CAST, cast_t, id("p")));
+	append(items, qdecl);
+	// for (long __ci = N-1; __ci >= 0; __ci -= 1) dtor(q + __ci);
+	std::string dsym = class_complete_dtor_symbol(cdd);
+	referenced_funcs.insert(dsym);
+	// TYPED forward proto — a void* extern conflicts with the typed madc
+	// definition (task #50 KIND). Suppressed when a typed proto exists.
+	need_output_extern(dsym.c_str(), false, { { {}, true, cdd } });
+	node_t idecl = simple(N_SPEC_DECL);
+	append(idecl, node1(N_SHARE, node1(N_LIST, simple(N_LONG))));
+	append(idecl, node2(N_DECL, id("__ci"), list()));
+	append(idecl, ignore());
+	append(idecl, ignore());
+	append(idecl, integer((long)n - 1));
+	node_t cond = node2(N_GE, id("__ci"), integer(0));
+	node_t step = node2(N_SUB_ASSIGN, id("__ci"), integer(1));
+	node_t dargs = list();
+	append(dargs, node2(N_ADD, id("q"), id("__ci")));
+	node_t dtor_call = node2(N_EXPR, list(),
+		node2(N_CALL, id(dsym.c_str()), dargs));
+	append(items, node5(N_FOR, list(), idecl, cond, step, dtor_call));
+	node_t body = node2(N_BLOCK, list(), items);
+	return node4(N_FUNC_DEF, ret_type, decl, list(), body);
+}
+
 // void Cls___dtor_deleting(struct Cls *__this) { <complete-dtor>(__this); free(__this); }
 // Itanium D0 (deleting) destructor: complete-object destruction, then operator
 // delete (free, for user classes). Referenced from the D0 vtable slot.
@@ -10212,7 +10334,16 @@ node_t CirBuilder::class_array_construct_loop(
 	snprintf(ci, sizeof(ci), "__ci%d", m_strtmp_counter++);
 	std::vector<node_t> elem_stmts;
 	complete_object_construct_stmts([&]() -> node_t {
-		return node2(N_ADD, id(arr_ptr, origin), id(ci, origin), origin);
+		// (struct Cls *)arr + __ci: a MULTI-dim fixed array (`B m[2][2]`)
+		// decays to Cls(*)[M], whose +1 strides a whole ROW — elements
+		// constructed out of bounds, dtors reading garbage (task #56).
+		// The cast flattens to element stride for any dimensionality and
+		// is a no-op for 1D arrays and heap element pointers.
+		node_t flat = node2(N_CAST,
+			node2(N_TYPE, node1(N_LIST, class_tag_ref(cdd)),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			id(arr_ptr, origin), origin);
+		return node2(N_ADD, flat, id(ci, origin), origin);
 	}, cdd, std::vector<TokenBase *>(), origin, elem_stmts);
 	if (elem_stmts.empty()) return NULL;
 
@@ -15566,18 +15697,25 @@ node_t CirBuilder::translate_throw(TokenTHROW *th)
 // P1.1c.
 void CirBuilder::emit_try_body_cleanup_push(const char *varname,
 					    DataDefCLASS *cdd,
-					    node_t items, TokenBase *origin)
+					    node_t items, TokenBase *origin,
+					    size_t array_elems)
 {
 	if (m_try_body_depth <= 0 || !cdd || !class_needs_dtor(cdd))
 		return;
-	std::string dtor_sym = class_complete_dtor_symbol(cdd);
+	// A fixed array pushes the per-(class,N) wrapper so the longjmp unwind
+	// destroys all N elements in reverse, same as the scope-exit cleanup
+	// attribute (task #56).
+	std::string dtor_sym = array_elems
+		? demand_array_dtor(cdd, array_elems)
+		: class_complete_dtor_symbol(cdd);
 	// A user-class dtor is a madc-EMITTED function `void Cls___dtor(struct Cls*)`;
 	// referencing it (referenced_funcs) drives its emission and declaration with
 	// the real signature — re-declaring it here as `void f(void*)` would conflict.
 	// An externally-bound C++ dtor (emit_symbol set) has NO madc body, so it
 	// must be declared extern here so `(void*)dtor_sym` is a well-typed function
-	// address (not "undeclared").
-	bool dtor_is_external = (dtor_sym != cdd->name + "___dtor");
+	// address (not "undeclared"). The array wrapper is always madc-emitted.
+	bool dtor_is_external = !array_elems
+		&& (dtor_sym != cdd->name + "___dtor");
 	if (dtor_is_external)
 		need_output_extern(dtor_sym.c_str(), false, { { {N_VOID}, true } });
 	referenced_funcs.insert(dtor_sym);
@@ -16685,7 +16823,10 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 	// cleanup stack so it runs on the exception (longjmp) unwind path
 	// (the cleanup attribute alone does not — P1.1c). No-op otherwise.
 	emit_try_body_cleanup_push(sdcl->var.name.c_str(),
-				   cdcl, items, sdcl);
+				   cdcl, items, sdcl,
+				   (sdcl->var.is_fixed_array()
+				    && !sdcl->var.is_vla())
+				   ? sdcl->var.total_elements() : 0);
 }
 
 node_t CirBuilder::translate_stmt_required(TokenBase *tb)
@@ -21288,6 +21429,13 @@ node_t CirBuilder::translate_module(Program *prog)
 			append(top_list, kv.second);
 			cond_mark_sym(kv.second, kv.first);
 		}
+	// (c) Stack-array destructor wrappers demanded during body translation
+	//     (task #56). Definitions land here — after the element dtors' typed
+	//     protos above, ahead of every function definition (Pass 2) whose
+	//     cleanup attribute names them.
+	for (auto &kv : m_array_dtor_defs)
+		append(top_list, kv.second);
+	m_array_dtor_defs.clear();
 
 	// Synthesize `void __madc_global_init(void)` — the ONE home for the
 	// file-scope class-global ctor calls (collected by collect_global_ctors).

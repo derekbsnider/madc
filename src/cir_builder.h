@@ -1168,6 +1168,19 @@ public:
 	// instance (ClassName___dtor) — whether user-written or synthesized.
 	std::string class_dtor_symbol(DataDefCLASS *cdd);
 	std::string class_complete_dtor_symbol(DataDefCLASS *cdd);
+	// Per-(class,N) stack-array destructor wrapper `Cls__arr<N>___dtor`: the
+	// cleanup attribute calls ONE function with &arr, so a fixed array of a
+	// dtor-carrying class destroys its N elements in REVERSE through this
+	// wrapper (g++ [class.dtor] order; mirrors the delete[] cookie arm).
+	std::string class_array_dtor_symbol(DataDefCLASS *cdd, size_t n);
+	// Demand the wrapper: synthesize+record its definition once (emitted with
+	// the Pass 1.95 late declarations, ahead of every function definition),
+	// mark it referenced, and return its symbol.
+	std::string demand_array_dtor(DataDefCLASS *cdd, size_t n);
+	node_t synth_array_dtor_def(DataDefCLASS *cdd, size_t n,
+				    const std::string &sym);
+	// Wrapper defs demanded during body translation, flushed at Pass 1.95.
+	std::map<std::string, node_t> m_array_dtor_defs;
 	node_t synth_complete_dtor_def(DataDefCLASS *cdd);
 	node_t synth_deleting_dtor_def(DataDefCLASS *cdd);
 	node_t synth_dtor_proto(const std::string &sym, DataDefCLASS *cdd);
@@ -1249,8 +1262,11 @@ public:
 	// for the object `varname` (its dtor runs on the exception/longjmp unwind
 	// path). No-op outside a try body or for a class with no dtor. See P1.1c
 	// (docs/plans/refs/exceptions-sjlj.md).
+	// array_elems > 0 = the object is a fixed array of that many elements;
+	// the pushed dtor is then the per-(class,N) array wrapper.
 	void emit_try_body_cleanup_push(const char *varname, class DataDefCLASS *cdd,
-					node_t items, class TokenBase *origin);
+					node_t items, class TokenBase *origin,
+					size_t array_elems = 0);
 	// Range-based for over a madc array (madc::value): `for (T x : arr) body`. The loop
 	// variable is declared in the enclosing scope by the parser, so this only
 	// emits the index loop + per-iteration element fill (php_array_get /

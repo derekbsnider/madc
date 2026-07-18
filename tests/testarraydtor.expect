@@ -1,0 +1,9 @@
+scope 3
+ord1 3.2.1.
+nested 4
+ord2 4.3.2.1.
+try 3
+caught 7
+ord3 3.2.1.
+vbscope 2
+ord4 D2,9.vb.D1,9.vb.
