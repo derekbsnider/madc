@@ -890,6 +890,10 @@ public:
 	node_t data_extern_decl(const std::string &sym);
 	void vbase_ctor_stmts(const std::string &objname, bool addr_of,
 			      DataDefCLASS *cdd, std::vector<node_t> &out, TokenBase *o);
+	// Core of vbase_ctor_stmts with a minted receiver address (a fresh node
+	// per vbase — array elements / heap temps have no bare object name).
+	void vbase_ctor_stmts_addr(const std::function<node_t()> &mint_addr,
+			      DataDefCLASS *cdd, std::vector<node_t> &out, TokenBase *o);
 	void vbase_dtor_stmts(const std::string &objname, bool addr_of,
 			      DataDefCLASS *cdd, std::vector<node_t> &out, TokenBase *o);
 	// Lower a user-defined class method call on a class OBJECT (or pointer)
@@ -928,6 +932,38 @@ public:
 			       TokenBase *origin);
 	node_t class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin);
+	// Complete-object (Itanium C1-flavor) construction at a minted address:
+	// user-ctor virtual bases first (base-most order), then the C2-flavor
+	// construction (class_ctor_call_addr). `mint_addr` returns a FRESH typed
+	// address node per call (c2mir single parent link). Statements append
+	// to `out`. The one assembler behind heap and array-element sites.
+	void complete_object_construct_stmts(
+			       const std::function<node_t()> &mint_addr,
+			       DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin, std::vector<node_t> &out);
+	// Per-element complete-object construction loop over a class array:
+	// `for (long __ci = 0; __ci < <count>; __ci += 1)
+	//      <construct (arr_ptr + __ci)>;`
+	// NULL when the element class needs no construction (trivial).
+	node_t class_array_construct_loop(const char *arr_ptr,
+			       const std::function<node_t()> &mint_count,
+			       DataDefCLASS *cdd, TokenBase *origin);
+	// Itanium new[] cookie size: max(sizeof(size_t), alignof) when the
+	// element class has a non-trivial dtor (delete[] reads the element
+	// count back to run per-element dtors), else 0 — new[] and delete[]
+	// must agree, so both call this.
+	size_t class_array_cookie_size(DataDefCLASS *cdd);
+	// True when ctorless `cdd`'s implicit default ctor must construct base
+	// subobjects: some transitive NON-VIRTUAL base has a callable user
+	// default ctor (virtual bases are the complete-object site's duty).
+	bool class_needs_base_construction(DataDefCLASS *cdd);
+	// Default-construct the non-virtual base subobjects of ctorless `cdd`
+	// through the named receiver pointer, recursing through ctorless
+	// layers with the accumulated offset.
+	void append_base_default_constructs(node_t items, const char *recv_ptr,
+			       DataDefCLASS *cdd, size_t off0,
 			       TokenBase *origin);
 	// The loud no-match result shared by both ctor-call builders: an
 	// error_node naming the class and the initializer argument types.
@@ -1071,13 +1107,6 @@ public:
 	// construction/destruction (so it requires a ctor/dtor even if the user
 	// wrote none).
 	bool class_has_object_members(DataDefCLASS *cdd);
-	// Default-construct ONE class-type member subobject at `member_addr`:
-	// a ctorless member class runs its implicit default construction
-	// (vptr stores + its own members, recursively); a member class with a
-	// default ctor gets that ctor called; no default ctor emits nothing.
-	node_t member_default_construct_stmt(node_t member_addr,
-					     DataDefCLASS *mc,
-					     TokenBase *origin);
 	// Default-construct every class-type member of `cdd` through the NAMED
 	// pointer variable `recv_ptr`, appending to the c2mir list node
 	// `items` (a fresh id() per member — c2mir nodes hold a single parent
