@@ -1,0 +1,43 @@
+// Task #36 slice 2: user-class diamond accessed through base-typed views.
+// A shared virtual base lives at the end of the MOST-DERIVED object, so any
+// adjust through a less-derived view (A* / B* pointing into a D) must read
+// the offset from the vtable's vbase-offset slot — madc-emitted vtables
+// carry the slots (class_vtable_def prologue). Oracle: g++ -O0 prints the
+// same four lines.
+#include <cstdio>
+
+struct V {
+	int v;
+	virtual int tag() { return v; }
+	virtual ~V() {}
+};
+struct A : virtual V {
+	int a;
+	virtual int atag() { return a; }
+};
+struct B : virtual V {
+	int b;
+	virtual int btag() { return b; }
+};
+struct D : A, B {
+	int d;
+};
+
+int take_v(V &r) { return r.v; }
+
+int main()
+{
+	D obj;
+	obj.v = 7; obj.a = 1; obj.b = 2; obj.d = 3;
+	A *ap = &obj;
+	B *bp = &obj;
+	printf("call %d %d\n", ap->tag(), bp->tag());
+	V *vpa = ap;
+	V *vpb = bp;
+	printf("upcast %d %d\n", vpa->v, vpb->v);
+	printf("bind %d %d\n", take_v(*ap), take_v(*bp));
+	V &vr = *bp;
+	printf("vcall %d\n", vr.tag());
+	printf("refmem %d\n", vr.v);
+	return 0;
+}

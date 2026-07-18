@@ -4448,7 +4448,11 @@ static bool is_char_pointer(DataDef *dd)
 // without user-class layout metadata are deliberately excluded.
 static DataDefCLASS *pointee_user_class(DataDef *dd)
 {
-	if (!dd || !dd->is_pointer()) return NULL;
+	// A REFERENCE slot holds an address just like a pointer (DataDefREF
+	// IS-A DataDefPTR); its pointee is the referent class — so a `V &vr`
+	// initializer / a ref-valued rhs takes the same derived->base subobject
+	// adjustment as a `V *` (task #36).
+	if (!dd || (!dd->is_pointer() && !dd->is_reference())) return NULL;
 	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
 	if (!p) return NULL;
 	return as_user_class(p->base_type);
@@ -4457,12 +4461,24 @@ static DataDefCLASS *pointee_user_class(DataDef *dd)
 // The user-class a class-pointer-valued expression yields. `new B()` carries
 // its allocated class directly (TokenNEW::alloc_class, never reflected in
 // datadef()); any other expression is read through its `Cls *` datadef pointee.
+// An address-of token's declared pointer type may already be COERCED to a
+// bound reference's referent (`V &vr = *bp;` parses to a TokenAddrExpr typed
+// `V *` by reference_bind_address_expr), hiding the operand's real class —
+// read the pointee from the OPERAND lvalue, the class the address actually
+// points at, so the derived->base subobject adjust still fires (task #36).
 static DataDefCLASS *expr_pointee_class(TokenBase *tb)
 {
 	if (!tb) return NULL;
 	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb))
 		if (!tn->placement)
 			return as_user_class(tn->alloc_class);
+	if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(tb))
+		if (DataDefCLASS *ic = as_user_class(ta->expr ? ta->expr->datadef()
+							       : NULL))
+			return ic;
+	if (TokenAddrOf *to = dynamic_cast<TokenAddrOf *>(tb))
+		if (DataDefCLASS *ic = as_user_class(to->var.type))
+			return ic;
 	return pointee_user_class(tb->datadef());
 }
 
@@ -4482,16 +4498,24 @@ node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rh
 	if (!base || !derived || base == derived) return value;
 	if (!derived->is_or_derives_from(base)) return value;
 	// Adjust the pointer to the base subobject. Single inheritance / primary base
-	// = offset 0 (a plain cast, byte-identical to before); a secondary or virtual
-	// base sits at a non-zero offset, so emit (Base*)((char*)value + offset).
-	size_t off = derived->base_offset_of(base);
+	// = offset 0 (a plain cast, byte-identical to before); a secondary base sits
+	// at a non-zero static offset, so emit (Base*)((char*)value + offset). A
+	// VIRTUAL base's position depends on the most-derived type — the pointer's
+	// static pointee class may be a less-derived view, so read the offset from
+	// the vtable's vbase-offset slot (task #36).
 	node_t adj = value;
+	node_t dyn = vbase_dynamic_adjust(value, derived, base, origin);
+	if (dyn) {
+		adj = dyn;
+	} else {
+	size_t off = derived->base_offset_of(base);
 	if (off != 0 && off != (size_t)-1) {
 		node_t charp = node2(N_CAST,
 			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 			value, origin);
 		adj = node2(N_ADD, charp, integer((long)off), origin);
+	}
 	}
 	return node2(N_CAST, class_ptr_type(base), adj, origin);
 }
@@ -4506,14 +4530,21 @@ node_t CirBuilder::upcast_class_ref_addr(node_t value, DataDefCLASS *base,
 	DataDefCLASS *derived = as_user_class(rhs ? rhs->datadef() : NULL);
 	if (!base || !derived || base == derived) return value;
 	if (!derived->is_or_derives_from(base)) return value;
-	size_t off = derived->base_offset_of(base);
+	// A virtual base's offset is read from the vtable slot — the returned
+	// lvalue's static class may be a less-derived view (task #36).
 	node_t adj = value;
+	node_t dyn = vbase_dynamic_adjust(value, derived, base, origin);
+	if (dyn) {
+		adj = dyn;
+	} else {
+	size_t off = derived->base_offset_of(base);
 	if (off != 0 && off != (size_t)-1) {
 		node_t charp = node2(N_CAST,
 			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 			value, origin);
 		adj = node2(N_ADD, charp, integer((long)off), origin);
+	}
 	}
 	return node2(N_CAST, class_ptr_type(base), adj, origin);
 }
@@ -4753,6 +4784,14 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 			node_t addr = node2(N_CAST, void_ptr_type(),
 					    node1(N_ADDR, translate_expr(arg), arg),
 					    arg);
+			// The call's static return class may be a less-derived
+			// view — a virtual-base bind reads the offset from the
+			// vtable slot (task #36).
+			if (rc != target) {
+				node_t dyn = vbase_dynamic_adjust(addr, rc,
+								  target, arg);
+				if (dyn) return dyn;
+			}
 			size_t off = rc != target ? rc->base_offset_of(target)
 						  : 0;
 			if (off != 0 && off != (size_t)-1) {
@@ -4787,11 +4826,14 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 	// the base at its byte offset. Without this, a derived arg fell into the
 	// converting-ctor temp fallback below, CONSTRUCTING a Base temp instead of
 	// binding. Offset 0 (single-inheritance primary base) emits the same
-	// own-address shape as before. Virtual bases keep the prior behavior
-	// (base_offset_of -1 -> no static adjustment), matching upcast_class_ptr.
+	// own-address shape as before. A VIRTUAL base bind reads the offset from
+	// the vtable slot — the arg's static class may be a less-derived view
+	// (task #36); static fallback matches upcast_class_ptr.
 	DataDefCLASS *own = as_class_instance(arg ? arg->datadef() : NULL);
 	if (own && own != target && own->is_or_derives_from(target)) {
 		node_t addr = object_arg_addr(arg, own);
+		node_t dyn = vbase_dynamic_adjust(addr, own, target, arg);
+		if (dyn) return dyn;
 		size_t off = own->base_offset_of(target);
 		if (off != 0 && off != (size_t)-1) {
 			node_t charp = node2(N_CAST,
@@ -6474,10 +6516,13 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		if (as && as->right)
 			init_expr = as->right;
 		init_node = translate_expr(init_expr);
-		// Derived->base pointer initializer (`A *p = new B();`, `A *p = bptr;`):
-		// emit an explicit `(A*)` cast so the conversion is explicit and c2mir
-		// does not warn. Single inheritance, base subobject at offset 0 — value
-		// unchanged.
+		// Derived->base pointer initializer (`A *p = new B();`, `A *p = bptr;`)
+		// — and, via pointee_user_class's reference handling, a class
+		// REFERENCE bound to a derived lvalue (`V &vr = *bp;`, the parser
+		// stores the initializer as the referent's address): emit an explicit
+		// `(A*)` cast so the conversion is explicit and c2mir does not warn.
+		// Single inheritance, base subobject at offset 0 — value unchanged;
+		// a virtual base reads the vtable's vbase-offset slot (task #36).
 		init_node = upcast_class_ptr(init_node, v->type,
 					     init_expr, origin);
 		}
@@ -7082,16 +7127,27 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 	if (cdd->is_externally_defined())
 		return NULL;
 
-	// Build a this-adjusting thunk: a function with the override's signature whose
-	// body re-adjusts `this` from the secondary-base subobject back to the override's
-	// class, then tail-calls the override. Returns the thunk's symbol name.
-	//   RET Cls__thunk_<off>_<m>(__self, p1...) {
-	//       return Override((MOwner*)((char*)__self - off), p1...);
+	// Build a this-adjusting thunk: a function with the override's signature
+	// whose body re-adjusts `this` from the GROUP's subobject (the Itanium
+	// vcall convention — the caller passes the subobject whose vptr the slot
+	// was read from) to the final overrider's subobject, then tail-calls it.
+	// delta is SIGNED: base_offset_of(overrider owner) - group this_offset
+	// (a vbase-owned method entered via the primary vptr adjusts FORWARD to
+	// the hoisted vbase; an override at the top entered via a secondary vptr
+	// adjusts BACK). Deduped by name — two groups needing the same
+	// (delta, method) share one thunk. Returns the thunk's symbol name.
+	//   RET Cls__thunk_<delta>_<m>(__self, p1...) {
+	//       return Override((MOwner*)((char*)__self + delta), p1...);
 	//   }
+	std::set<std::string> emitted_thunks;
 	auto make_thunk = [&](FuncDef *ov, const std::string &target_sym,
-			      DataDefCLASS *mowner, size_t off,
+			      DataDefCLASS *mowner, long delta,
 			      const std::string &mname) -> std::string {
-		std::string tname = cdd->name + "__thunk_" + std::to_string(off) + "_" + mname;
+		std::string tname = cdd->name + "__thunk_"
+			+ (delta < 0 ? "m" : "")
+			+ std::to_string(delta < 0 ? -delta : delta) + "_" + mname;
+		if (!emitted_thunks.insert(tname).second)
+			return tname;
 		node_t ret_spec = list();
 		node_t throwaway = list();
 		fnptr_decl_pieces(ov, true, ret_spec, throwaway, std::vector<carray_dim_t>());
@@ -7102,12 +7158,12 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 		}
 		node_t tdecl = node2(N_DECL, id(tname.c_str()),
 				     node1(N_LIST, node1(N_FUNC, plist)));
-		// (char*)__self - off
+		// (char*)__self + delta
 		node_t charp = node2(N_CAST,
 			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 			id("__self"));
-		node_t adj = node2(N_SUB, charp, integer((long)off));
+		node_t adj = node2(N_ADD, charp, integer(delta));
 		// (MOwner*)adj
 		node_t ownerp = node2(N_CAST,
 			node2(N_TYPE, node1(N_LIST, class_tag_ref(mowner)),
@@ -7168,10 +7224,30 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 	node_t inits = list();
 	for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
 		const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
+		// Itanium vbase-offset slots precede [offset_to_top, RTTI]: one per
+		// virtual base of the GROUP's owner, reverse collect_vbases order in
+		// ascending memory (the first collected vbase lands nearest the
+		// address point, read back by vbase_dynamic_adjust as
+		// ((long*)vptr)[-(3+i)], i = collect_vbases position). Value =
+		// offset from this group's subobject to the vbase within the
+		// complete object. build_vtable_groups reserved 2 + n_vbases
+		// prologue slots per group. (task #36 slice 2)
+		std::vector<DataDefCLASS *> gvbs;
+		std::set<DataDefCLASS *> gvseen;
+		G.owner->collect_vbases(gvbs, gvseen);
+		for (size_t vb = gvbs.size(); vb-- > 0; ) {
+			size_t voff = cdd->base_offset_of(gvbs[vb]);
+			long vval = (voff == (size_t)-1)
+				? 0 : (long)voff - (long)G.this_offset;
+			node_t vbtype = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+					      node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			append(inits, node2(N_INIT, list(),
+					    node2(N_CAST, vbtype, integer(vval))));
+		}
 		// Itanium prologue for this address point: [offset_to_top, &type_info].
 		// offset_to_top = -(this_offset): how far back to the most-derived object
 		// (so __dynamic_cast / typeid can recover the complete object from any
-		// subobject vptr). build_vtable_groups reserved 2 slots per group. (S5a)
+		// subobject vptr). (S5a)
 		node_t vtype = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
 				     node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 		node_t otop = node2(N_CAST, vtype, integer(-(long)G.this_offset));
@@ -7211,8 +7287,17 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 			DataDefCLASS *mowner = (mfd && !mfd->parameters.empty())
 				? class_behind(mfd->parameters[0]) : NULL;
 			std::string symname = mv->name;
-			if (G.this_offset != 0 && mowner && mowner != G.owner && mfd)
-				symname = make_thunk(mfd, mv->name, mowner, G.this_offset, sname);
+			// The slot is entered with `this` = this GROUP's subobject
+			// (Itanium vcall convention); the final overrider expects its
+			// OWNER's subobject. thunk when they differ — including a
+			// vbase-owned method entered via the primary vptr (positive
+			// delta to the hoisted vbase). base_offset_of is correct here:
+			// emission is per-complete-type, cdd IS most-derived.
+			size_t moff = mowner ? cdd->base_offset_of(mowner) : (size_t)-1;
+			long tdelta = (moff != (size_t)-1)
+				? (long)moff - (long)G.this_offset : 0;
+			if (tdelta != 0 && mowner && mfd)
+				symname = make_thunk(mfd, mv->name, mowner, tdelta, sname);
 			else
 				referenced_funcs.insert(mv->name);
 			node_t vptr_type = node2(N_TYPE,
@@ -7289,6 +7374,22 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 					fields.push_back(Field{cdd->bases[b].offset, 8, 0, 0, NULL});
 					break;
 				}
+		// A polymorphic VIRTUAL base carries its own vptr at its hoisted
+		// position (Itanium: one vtable group per vbase subobject) — emit
+		// its __vptr_<off> field so ctor stamping and V*-receiver dispatch
+		// address it by name. (task #36 slice 2)
+		{
+			std::vector<DataDefCLASS *> vvbs;
+			std::set<DataDefCLASS *> vvseen;
+			cdd->collect_vbases(vvbs, vvseen);
+			for (DataDefCLASS *vb : vvbs) {
+				if (!vb->has_vptr_slot) continue;
+				auto voi = cdd->vbase_offset.find(vb);
+				if (voi == cdd->vbase_offset.end() || voi->second == 0)
+					continue;
+				fields.push_back(Field{voi->second, 8, 0, 0, NULL});
+			}
+		}
 		std::set<size_t> anon_grouped_members;
 		for (const DataDefSTRUCT::AnonymousAggregateInfo &ag
 		     : cdd->anonymous_aggregates) {
@@ -7918,16 +8019,17 @@ static int vbase_slot_index(DataDefCLASS *view, DataDefCLASS *owner,
 //   ({ struct V *__madc_vbv_N = (struct V *)(recv);
 //      (void *)((char *)__madc_vbv_N
 //               + ((long *)__madc_vbv_N->__vptr)[-(3+i)] + nv); })
-// Slice 1 is gated to externally-defined view classes: REAL libstdc++
-// vtables carry the vbase-offset slots; madc-emitted vtables do not yet
-// (their prologue is [offset_to_top, RTTI] only) — emitting the slots and
-// lifting this gate is the follow-on slice. NULL = not applicable, caller
-// keeps the static adjust.
+// Applies to any polymorphic view: REAL libstdc++ vtables carry the
+// vbase-offset slots, and madc-emitted vtables emit them too (slice 2 —
+// class_vtable_def prologue, same collect_vbases indexing). A vbase-only
+// view WITHOUT virtual functions (has_vptr_slot, !has_vtable) has no
+// emitted vtable to read, so it keeps the static adjust (residue (e)).
+// NULL = not applicable, caller keeps the static adjust.
 node_t CirBuilder::vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
 					DataDefCLASS *owner, TokenBase *origin)
 {
 	if (!this_arg || !view || !owner || view == owner) return NULL;
-	if (!view->has_vtable || !view->is_externally_defined()) return NULL;
+	if (!view->has_vtable) return NULL;
 	size_t nv_extra = 0;
 	int slot = vbase_slot_index(view, owner, nv_extra);
 	if (slot < 0) return NULL;
@@ -8068,7 +8170,46 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 
 	DataDefCLASS *owner = (callee && !callee->parameters.empty())
 				? class_behind(callee->parameters[0]) : NULL;
-	if (owner && recv_class && owner != recv_class) {
+	// Itanium vcall convention: a call dispatched through the vtable below
+	// receives the GROUP-subobject pointer — the same subobject whose vptr
+	// the slot is read from; the slot itself (class_vtable_def) carries any
+	// final-overrider `this` adjustment as a thunk. Adjusting to the method
+	// OWNER here would compose with the thunk and double-adjust (the diamond
+	// B-view bug). Externally-bound (emit_symbol) and member-template calls
+	// never reach the vcall arm — they early-return below with the owner
+	// adjust applied (direct-call convention).
+	size_t vgrp = 0;
+	int vslot = -1;
+	if (callee && callee->emit_symbol.empty()
+	    && !(callee->is_member_template && callee->declaration_only)) {
+		std::string vmn = (sym.size() > recv_class->name.size() + 2)
+					? sym.substr(recv_class->name.size() + 2) : sym;
+		size_t vg; int vs;
+		if (recv_class->find_vslot(vmn, vg, vs)) {
+			vgrp = vg;
+			vslot = vs;
+		}
+	}
+	if (vslot >= 0 && recv_class) {
+		// Group-subobject adjust: a non-virtual offset within recv_class
+		// (secondary groups use bs.offset), so it is view-invariant —
+		// static is safe here.
+		const DataDefCLASS::VtableGroup &VG = recv_class->vtable_groups[vgrp];
+		if (VG.this_offset != 0) {
+			node_t charp = node2(N_CAST,
+				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				this_arg, origin);
+			this_arg = node2(N_ADD, charp,
+					 integer((long)VG.this_offset, origin), origin);
+		}
+		if (owner)
+			this_arg = node2(N_CAST,
+				node2(N_TYPE,
+				      node1(N_LIST, class_tag_ref(owner)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				this_arg, origin);
+	} else if (owner && recv_class && owner != recv_class) {
 		node_t dyn = vbase_dynamic_adjust(this_arg, recv_class, owner,
 						  origin);
 		if (dyn) {
@@ -8218,15 +8359,15 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	//   ( (RET(*)(struct Owner*, params))
 	//       ((void**)recv->__vptr)[slot] )(args...)
 	// recv->__vptr is loaded from a freshly-derived receiver pointer (the
-	// this_arg node above is already consumed as the call's first argument).
-	std::string mname = (sym.size() > recv_class->name.size() + 2)
-				? sym.substr(recv_class->name.size() + 2) : sym;
-	// Grouped dispatch: find which vtable group (subobject) owns the method, load
-	// THAT group's vptr field from the most-derived receiver, index by the in-group
-	// slot (the vptr already points at the group's address point). Single
-	// inheritance = group 0 / "__vptr" / flat slot, reproducing the old lowering.
-	size_t grp; int slot;
-	if (recv_class->find_vslot(mname, grp, slot) && callee) {
+	// this_arg node above is already consumed as the call's first argument —
+	// adjusted to the GROUP subobject, the Itanium vcall convention).
+	// Grouped dispatch: the group/slot were resolved above (before the
+	// receiver adjust), load THAT group's vptr field from the receiver, index
+	// by the in-group slot (the vptr already points at the group's address
+	// point). Single inheritance = group 0 / "__vptr" / flat slot.
+	if (vslot >= 0 && callee) {
+		size_t grp = vgrp;
+		int slot = vslot;
 		DataDefCLASS *vowner = owner ? owner : recv_class;
 		const DataDefCLASS::VtableGroup &G = recv_class->vtable_groups[grp];
 		std::string vfld = (G.this_offset == 0)
@@ -18111,29 +18252,14 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 						      : b->name + "__" + b->name));
 				}
 			}
-		// Phase-5 slice 1 whole-ctor switch: a tsubst hit body that already
-		// carries the substituted mem-inits (at its head) owns them — the
-		// shell-token-side emission would double-initialize.
-		if (is_ctor && !delegating_ci && !m_tsubst_body_carries_meminits)
-			class_ctor_initializer_stmts(ocls, fd, prologue, tf);
-		// C++11 default member initializers (`int x = 5;`): applied for every
-		// member NOT given an explicit ctor member-init, after the ctor-init
-		// list (which overrides them via explicit_member_inits).
-		if (is_ctor && !delegating_ci)
-			emit_member_default_inits(ocls, "__this", true, prologue, tf,
-						  &explicit_member_inits);
-		// Construct embedded object members at ctor entry (after base ctor),
-		// destruct them at dtor exit (before base dtor) — C++ member lifetime.
-		if (is_ctor && !delegating_ci)
-			class_member_construct(ocls, prologue, tf, &explicit_member_inits);
-		if (is_dtor)
-			class_member_destruct(ocls, epilogue, tf);
+		// Set each subobject's vptr to its group's address point in the flat
+		// table: __this->__vptr[_<off>] = (void*)(Cls__vtable + addr_point).
+		// Stamped AFTER base construction and BEFORE the mem-init list /
+		// member construction (Itanium [class.base.init] order) — a member
+		// initializer that virtual-calls or vbase-adjusts through `this`
+		// (vtable vbase-offset reads, task #36) must see this class's vptr.
 		if (is_ctor && !delegating_ci && ocls->has_vtable) {
 			std::string vname = class_vtable_symbol(ocls);
-			// Set each subobject's vptr to its group's address point in the flat
-			// table: __this->__vptr[_<off>] = (void*)(Cls__vtable + addr_point).
-			// Primary group (offset 0, addr_point 0) reproduces the old single
-			// assignment byte-for-byte.
 			for (size_t g = 0; g < ocls->vtable_groups.size(); g++) {
 				const auto &G = ocls->vtable_groups[g];
 				std::string fld = (G.this_offset == 0)
@@ -18151,6 +18277,23 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 					node2(N_ASSIGN, vptr_lhs, vtab, tf), tf));
 			}
 		}
+		// Phase-5 slice 1 whole-ctor switch: a tsubst hit body that already
+		// carries the substituted mem-inits (at its head) owns them — the
+		// shell-token-side emission would double-initialize.
+		if (is_ctor && !delegating_ci && !m_tsubst_body_carries_meminits)
+			class_ctor_initializer_stmts(ocls, fd, prologue, tf);
+		// C++11 default member initializers (`int x = 5;`): applied for every
+		// member NOT given an explicit ctor member-init, after the ctor-init
+		// list (which overrides them via explicit_member_inits).
+		if (is_ctor && !delegating_ci)
+			emit_member_default_inits(ocls, "__this", true, prologue, tf,
+						  &explicit_member_inits);
+		// Construct embedded object members at ctor entry (after base ctor),
+		// destruct them at dtor exit (before base dtor) — C++ member lifetime.
+		if (is_ctor && !delegating_ci)
+			class_member_construct(ocls, prologue, tf, &explicit_member_inits);
+		if (is_dtor)
+			class_member_destruct(ocls, epilogue, tf);
 		// Destroy NON-VIRTUAL bases in REVERSE declaration order (MI), offset-adjusted.
 		// Virtual bases are destroyed once by the complete-object dtor (_dtor_complete).
 		if (is_dtor)

@@ -13530,17 +13530,42 @@ void DataDefCLASS::build_vtable_groups()
 	vtable_groups.push_back(VtableGroup{o, off, o->vtable_slots, 0});
     }
 
+    // Itanium: the complete-object vtable also carries one group per
+    // POLYMORPHIC virtual base — the vbase subobject has its own vptr at its
+    // hoisted position, and a V*-typed receiver dispatches through it. Skip a
+    // vbase already covered by a group at the same offset (a primary-shared
+    // nearly-empty vbase). Appended LAST so find_vslot prefers the primary /
+    // secondary groups. (task #36 slice 2)
+    std::vector<DataDefCLASS *> gvbases;
+    std::set<DataDefCLASS *> gvbseen;
+    collect_vbases(gvbases, gvbseen);
+    for ( DataDefCLASS *vb : gvbases )
+    {
+	if ( !vb->has_vptr_slot ) continue;
+	size_t voff = vbase_offset.count(vb) ? vbase_offset[vb] : 0;
+	bool covered = false;
+	for ( auto &g : vtable_groups )
+	    if ( g.this_offset == voff ) { covered = true; break; }
+	if ( covered ) continue;
+	vtable_groups.push_back(VtableGroup{vb, voff, vb->vtable_slots, 0});
+    }
+
     // Address point of each group = the index in the flat Cls__vtable[] array
     // (sub-tables emitted back-to-back) of the group's first FUNCTION slot. Each
-    // address point is preceded by the Itanium 2-word prologue
-    // [offset_to_top, &_ZTI<cls>] (emitted in class_vtable_def), so the running
-    // index advances by PROLOGUE before each group. Computed here so emission /
-    // dispatch / vptr-init agree regardless of pass order. (S5a)
-    const size_t PROLOGUE = 2;
+    // address point is preceded by the Itanium prologue: one vbase-offset slot
+    // per virtual base of the group's OWNER (reverse collect_vbases order in
+    // ascending memory — the first collected vbase reads back at vptr[-3]),
+    // then [offset_to_top, &_ZTI<cls>] (all emitted in class_vtable_def), so
+    // the running index advances by 2 + n_vbases before each group. Computed
+    // here so emission / dispatch / vptr-init agree regardless of pass order.
+    // (S5a; vbase-offset slots: task #36 slice 2)
     size_t ap = 0;
     for ( auto &g : vtable_groups )
     {
-	ap += PROLOGUE;          // this group's prologue precedes its address point
+	std::vector<DataDefCLASS *> gvbs;
+	std::set<DataDefCLASS *> gvseen;
+	g.owner->collect_vbases(gvbs, gvseen);
+	ap += 2 + gvbs.size();   // this group's prologue precedes its address point
 	g.addr_point = ap;
 	ap += g.slots.size();
     }
