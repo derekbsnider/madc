@@ -10415,11 +10415,17 @@ TokenDataType *Program::parse_typeof_datatype(TokenBase *op_tb)
 	dd = resolve_named_datadef(tname);
 	if ( !dd )
 	{
+	    // The bracketed subparse (initial_brackets=1) usually consumes
+	    // typeof's own ')' — check that FIRST, or a ')' that follows the
+	    // whole typeof (the enclosing cast's `(typeof (x))` close-paren)
+	    // gets stolen and the cast degrades to an unbalanced group.
 	    TokenBase *expr = parseExpression(type_tb, true, false, true, 1);
-	    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+	    if ( (curToken() && curToken()->id() == TokenID::tkClBrk)
+	      || (prevToken() && prevToken()->id() == TokenID::tkClBrk) )
+		; // subparse already consumed typeof's ')'
+	    else if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
 		nextToken();
-	    else if ( (!curToken() || curToken()->id() != TokenID::tkClBrk)
-		   && (!prevToken() || prevToken()->id() != TokenID::tkClBrk) )
+	    else
 		Throw(type_tb) << "Expecting ')' after typeof expression" << flush;
 	    dd = expr ? expr->datadef() : NULL;
 	    closed_paren = true;
@@ -10428,10 +10434,12 @@ TokenDataType *Program::parse_typeof_datatype(TokenBase *op_tb)
     else
     {
 	TokenBase *expr = parseExpression(type_tb, true, false, true, 1);
-	if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+	if ( (curToken() && curToken()->id() == TokenID::tkClBrk)
+	  || (prevToken() && prevToken()->id() == TokenID::tkClBrk) )
+	    ; // subparse already consumed typeof's ')' (see above)
+	else if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
 	    nextToken();
-	else if ( (!curToken() || curToken()->id() != TokenID::tkClBrk)
-	       && (!prevToken() || prevToken()->id() != TokenID::tkClBrk) )
+	else
 	    Throw(type_tb) << "Expecting ')' after typeof expression" << flush;
 	dd = expr ? expr->datadef() : NULL;
 	closed_paren = true;
@@ -26996,6 +27004,21 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				nextToken(); // consume optional tag
 			    cast_dd = &ddINT32;
 			}
+			else if ( peek1->type() == TokenType::ttIdentifier
+			       && is_typeof_identifier(((TokenIdent *)peek1)->spelling())
+			       && tokens.size() > 1 && tokens[1]
+			       && tokens[1]->id() == TokenID::tkOpBrk )
+			{
+			    // (typeof(expr))x / (__typeof (x))(x) cast — glibc's
+			    // math.h C++ regions (__iscanonical & friends) expand
+			    // to this shape. parse_typeof_datatype consumes the
+			    // operand parens; the cast's own stars/close-paren
+			    // follow through the shared tail below.
+			    TokenBase *typeof_tb = nextToken();
+			    TokenDataType *tdt = parse_typeof_datatype(typeof_tb);
+			    if ( tdt )
+				cast_dd = &tdt->definition;
+			}
 			else if ( peek1->type() == TokenType::ttIdentifier )
 			{
 			    std::string tname = ((TokenIdent *)peek1)->spelling();
@@ -27356,7 +27379,12 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					|| (inner_peek->type() == TokenType::ttIdentifier
 					    && (datatype_map.count(((TokenIdent *)inner_peek)->spelling())
 						|| struct_map.count(((TokenIdent *)inner_peek)->spelling())
-						|| resolve_current_class_type_alias(((TokenIdent *)inner_peek)->spelling()))));
+						|| resolve_current_class_type_alias(((TokenIdent *)inner_peek)->spelling())
+						// (__typeof (x))(x) — a typeof CAST
+						// (glibc math.h C++ regions);
+						// re-dispatch to the cast path,
+						// whose typeof arm resolves it.
+						|| is_typeof_identifier(((TokenIdent *)inner_peek)->spelling()))));
 				if ( inner_is_cast )
 				{
 				    // Push `(` back — parseExpression will handle it

@@ -1,0 +1,31 @@
+// Task #54 evaluator lock (default lane): the ?: tier of the #if
+// expression grammar — condition selects an ARM; the arms are not
+// ignored; nesting and parenthesized ternaries evaluate per C.
+// Oracle: g++ (any dialect — the branches are dialect-independent).
+#include <cstdio>
+
+#if 0 ? 1 : 0
+#error wrong: false condition selected the then-arm
+#endif
+#if 1 ? 0 : 1
+#error wrong: true condition selected the else-arm
+#endif
+#if defined __cplusplus ? 1 : 0
+// correct: C++ mode, then-arm
+#else
+#error wrong: defined-condition ternary took the else-arm
+#endif
+#if (defined __STDC_HOSTED__ ? 0 : 1) ? 1 : 0
+#error wrong: nested ternary condition mis-evaluated
+#endif
+#if defined __NOT_A_MACRO_ZZZ ? 1 : defined __cplusplus
+// correct: else-arm re-evaluates defined
+#else
+#error wrong: else-arm defined operand mis-evaluated
+#endif
+
+int main()
+{
+	printf("pp ok\n");
+	return 0;
+}

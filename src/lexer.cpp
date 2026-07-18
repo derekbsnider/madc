@@ -5100,9 +5100,10 @@ TokenBase *Program::skipConditionalBlock()
     return NULL;
 }
 
-// evaluate #if condition: supports defined(NAME), !, &&, ||, identifiers,
-// and integer constants. This is enough for the header guards and platform
-// feature checks used by the imported SMAUG sources.
+// evaluate #if condition: supports defined(NAME), !, &&, ||, ?:, the
+// comparison/arithmetic/bitwise/shift tiers, identifiers, and integer
+// constants — the full C #if expression grammar real glibc/libstdc++
+// headers use.
 // Expand all #define macros in a #if/#elif expression string.
 // Simple defines are replaced with their values; undefined identifiers
 // (other than 'defined') become 0 per the C standard. Runs up to
@@ -5229,6 +5230,28 @@ std::string Program::expandIfMacros(const std::string &raw)
 			if ( !subst )
 			    expanded += bw;
 		    }
+		    // Token pasting: `A ## B` joins into ONE token after
+		    // parameter substitution — glibc's #if-consulted macros
+		    // are built this way (`__GLIBC_USE(F)` -> `__GLIBC_USE_
+		    // ## F`); without the join the evaluator saw two
+		    // undefined halves (0) and glibc feature conditions
+		    // (__GLIBC_USE (DEPRECATED_GETS)) took the wrong branch.
+		    // The joined name resolves on the next expansion pass.
+		    size_t hh;
+		    while ( (hh = expanded.find("##")) != std::string::npos )
+		    {
+			size_t lend = hh;
+			while ( lend > 0 && (expanded[lend-1] == ' '
+					  || expanded[lend-1] == '\t') )
+			    --lend;
+			size_t rstart = hh + 2;
+			while ( rstart < expanded.size()
+			     && (expanded[rstart] == ' '
+			      || expanded[rstart] == '\t') )
+			    ++rstart;
+			expanded = expanded.substr(0, lend)
+				 + expanded.substr(rstart);
+		    }
 		    out += "(" + expanded + ")";
 		    i = j;
 		    changed = true;
@@ -5270,6 +5293,7 @@ bool Program::evaluateIfCondition()
     };
 
     // Integer-valued recursive descent so comparisons work correctly.
+    std::function<int64_t()> parse_cond;
     std::function<int64_t()> parse_or;
     std::function<int64_t()> parse_and;
     std::function<int64_t()> parse_comparison;
@@ -5356,7 +5380,7 @@ bool Program::evaluateIfCondition()
 	if ( expr[pos] == '(' )
 	{
 	    ++pos;
-	    int64_t value = parse_or();
+	    int64_t value = parse_cond();
 	    skip_ws();
 	    if ( pos < expr.size() && expr[pos] == ')' )
 		++pos;
@@ -5679,7 +5703,30 @@ bool Program::evaluateIfCondition()
 	}
     };
 
-    return parse_or() != 0;
+    // Conditional operator (?:) — the lowest #if precedence tier
+    // (conditional-expression: logical-OR ? expression : conditional-expr,
+    // right-associative). Without this tier the ternary's CONDITION value
+    // leaked out as the result and both arms were ignored — glibc's
+    // features.h `defined __cplusplus ? __cplusplus >= 201402L : defined
+    // __USE_ISOC11` (__GLIBC_USE_DEPRECATED_GETS) took the wrong branch
+    // under --std=c++11, hiding ::gets from <cstdio>'s using-declaration.
+    parse_cond = [&]() -> int64_t {
+	int64_t cond = parse_or();
+	skip_ws();
+	if ( pos < expr.size() && expr[pos] == '?' )
+	{
+	    ++pos;
+	    int64_t then_v = parse_cond();
+	    skip_ws();
+	    if ( pos < expr.size() && expr[pos] == ':' )
+		++pos;
+	    int64_t else_v = parse_cond();
+	    return cond ? then_v : else_v;
+	}
+	return cond;
+    };
+
+    return parse_cond() != 0;
 }
 
 TokenBase *Program::getToken()
