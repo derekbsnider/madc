@@ -625,3 +625,24 @@ NEXT: **B4b** (flag-gated bind + materialize-on-use: the forest-lookup chain
 in `lazy_resolve`/`lazy_resolve_type`, PP-export install along the include
 DAG, nested slice parse via the `parse_deferred_lazy_body` reentrancy
 pattern).
+
+**✅ C1 madcdis core-ification LANDED `bdd129fe` (2026-07-18, branch
+`feature/class-parse-once-codex`, task #58).** The six interface headers
+(schema, mapper, query, relation, dataset, driver) moved `include/madcdat/` →
+`include/madcdis/` (git mv; guards `__LIBMADCDAT_*` → `__LIBMADCDIS_*`;
+intra-includes retargeted). Forwarding shims hold the old madcdat/ paths for
+out-of-tree consumers (deletion horizon: first release after libmadcdat ships
+against madcdis paths); every in-tree consumer — the `include/libmadc/` public
+shims, `madcdat/source_adapter.h`, the four external-driver TUs — points at
+the new home directly. madcdat keeps external drivers + source_adapter behind
+`--enable-madcdat`, unchanged. The substrate was verified ALREADY core
+(`madcdis_snapshot.o` in `CORE_OFILES`, built with madcdat=no) — no gating
+change; no `mem://`/`snapshot://` driver invented (A2's deliverable).
+`install-libmadc` now ships `include/madcdis/` (the installed `libmadc/`
+shims previously dangled without install-madcdat). `DataSource` stays in
+`include/libmadc/`. Gate: BOTH configure modes build clean 0 warnings; the
+=yes mode (all backends: bdb/gdbm/qdbm/sqlite) ran fulltest 717/0/0/16 with
+every madcdat storage/relation/contract unit suite green through the moved
+headers + packed release arbiter 717/0/0/16 blob-verified; tree restored to
+the =no baseline. NEXT in track C: C2 (intrinsic types) after B proves the
+substrate.
