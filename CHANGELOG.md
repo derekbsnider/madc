@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+- **fix(vbase): dynamic Itanium vbase offsets, slice 1 — `while (s >> a)`
+  on a real stream no longer hangs.** An owner-subobject adjust into a
+  virtual base through a receiver whose static type is not most-derived
+  (`s >> a` yields `basic_istream&` over an `istringstream`) now reads the
+  real vbase offset from the vtable's vbase-offset slot at runtime
+  (`vtable[-(3+i)]`, Itanium) instead of the view class's static
+  `base_offset_of` — the v0.34.0 "honest boundary" stream-extraction loop
+  is fixed (new `tests/testvbasedyn.mad`). Slice 1 covers externally
+  defined (real libstdc++) view classes at the method/unary-operator
+  adjust sites; emitting the slots in madc's own vtables and lifting the
+  gate is the follow-on. Also this branch: cast-operand arrow chains
+  resolve `operator->` (`(int)it->second`, `tests/testcastarrow.mad`),
+  for-init/range-for declarations get loop scope
+  (`tests/testforinitscope.mad`, `tests/testforeachscope.mad`), and
+  implicit default construction cascades into member subobjects — a
+  polymorphic member's vptr is stamped, recursively, stack and heap
+  (`tests/testvptrmember.mad`). Suite 697 → 702, packed arbiter green.
+
 - **docs(plan): complete the Slice B class-KIND parse-once design.** The
   standalone plan inventories every aggregate parser side effect, defines an
   immutable class declaration/type pattern, a transactional structural
