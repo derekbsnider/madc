@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+- **fix(vbase): dynamic member access through vbase views (slice 3) —
+  `ap->v` on a virtual-base-hosted member reads the vtable slot, and the
+  `member_vbase` provenance joins the freeze format (v32).** A pointer-view
+  member access whose static class hosts the member in a virtual base took
+  the view's flattened static offset — correct only for a most-derived
+  object; through an `A*` into a diamond `D` it read a sibling subobject
+  (and writes missed the real one). The access now routes the receiver
+  through the same vtable vbase-offset read as the slice-1/2 upcast sites
+  and resolves the member on the hosting base's own struct; direct object
+  values stay static (most-derived by construction, g++'s choice).
+  Because the fix reads `DataDefSTRUCT::member_vbase` — previously
+  parse-time-only state — the freeze format's `memberrec` grows a
+  `vbase_id` word so a restored header class carries the same provenance
+  (LOADED == parsed); `CIR_FOREST_FORMAT_VERSION` 31 → 32 rejects stale
+  corpora and the release repack re-freezes the blob.
+  `tests/testvbasediamond.mad` gains the member read/write probes (both
+  views, both lanes == g++). Suite 703, packed arbiter green.
+
 - **fix(vbase): Itanium virtual-base completion (slice 2) — madc-emitted
   vtables carry vbase-offset slots, vbase groups, and the Itanium vcall
   convention.** Building on slice 1's dynamic reads, madc's own vtables now
