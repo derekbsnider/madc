@@ -27,6 +27,40 @@
 > warnings**. The packed artifact carries a readable 240-unit forest, is
 > **10,219,496 bytes**, and has `MADCSNAP` footer magic.
 >
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #61
+> mir_skip audit):** all **16** `tests/*.mir_skip` fixtures re-run at live HEAD
+> with runner-equivalent fixture handling — **all 16 still fail; zero lifted**;
+> the suite surface is unchanged (arbiter remains 717/0/0/16). Five recorded
+> reasons verified still-true (testbitfieldwidearith, testbuiltinllabsoverride,
+> teststructleadingattrmember, testunionscalarcast, testvarargsstructruntime);
+> **eleven fixtures reworded** because the recorded reason had drifted or was
+> wrong: `testvarargsstructcomplex` ("no _Complex" — stale; true cause is GNU
+> INTEGER complex `_Complex int` hitting a MIR gen fatal even as a scalar),
+> `testvlastructmember` (c2mir now accepts VLA struct members but miscompiles
+> the stmt-expr copy — runtime abort, not a reject),
+> `testfloattointclamp` (GCC itself saturates via front-end constant folding —
+> verified `gcc -O0` prints 2147483647, the .expect IS canon; c2mir converts at
+> runtime → INT_MIN), `testfinstrumentfunctions` (no inline asm in the test;
+> instrumentation IS implemented — `no_instrument_function` on a prototype
+> doesn't merge into the later definition), `testbuiltinframeaddress` /
+> `testbuiltinsetjmp` (both lower to runtime helpers in va_helpers.cpp that
+> execute in the helper's frame — structurally unable to satisfy
+> frame-address/returns-twice semantics), `testdlcall` (madc's `dlcall()`
+> builtin has no MIR-lane runtime; the test has no `#load`), `testdlopen`
+> (#load parses and lowers; the MIR import resolver just doesn't consult the
+> #load'd handles), `testbuiltinvalisttypedef` (the test is INVALID on x86-64 —
+> gcc and clang both reject `ap = 0` on the array-typed va_list; madc's
+> `__builtin_va_list` divergently accepts it), `testnestedpackedmember` (c2mir
+> packed nested-struct member offset not packed while sizeof is), and
+> `testwideconcat` (madc-side mixed-width concat lowering emits undeclared
+> `__wliteral__a`). Follow-on near-miss tasks filed: fold-spine float→int
+> overflow folding (lifts testfloattointclamp), prototype-attr merge for
+> `no_instrument_function`, #load/dlcall MIR import resolution, mapping
+> `__builtin_va_list` to the target's real type (then convert the test to
+> `.expect_err` and lift), and the fork-side `_Complex int` gen fatal.
+> Reducers banked: `tmp/s61_cx{A..E}.mad`, `tmp/s61_ftoi.c`,
+> `tmp/s61_valist.c`, `tmp/s61_packed.c`.
+>
 > **Local branch update (2026-06-28, `feature/front-end-performance-claude` @
 > Kind 3 dependent-member body tsubst slice):** fulltest
 > **670 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates

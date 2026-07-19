@@ -1,1 +1,1 @@
-c2mir does not support GCC union cast extension
+c2mir does not support the GCC union-cast extension ("conversion to non-scalar type requested" on (t_be)0x100000000ULL). Verified at HEAD, audit 2026-07-19.

@@ -1,1 +1,1 @@
-c2mir does not support _Complex
+GNU INTEGER complex (_Complex int) hits a MIR gen fatal ("in instruction 'mov': wrong type memory") even as a plain scalar (tmp/s61_cxE.mad) — nothing to do with varargs or structs. The fork's native _Complex covers floating complex only; old "c2mir does not support _Complex" reason stale. Fork-side follow-on task filed. Audit 2026-07-19.

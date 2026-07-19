@@ -1,1 +1,1 @@
-c2mir does not support inline asm
+--finstrument-functions IS implemented; the failure is no_instrument_function given on a PROTOTYPE ("int main() NOCHK;") not merging into the later definition — main gets instrumented and its first ASSERT aborts (SIGABRT in main [JIT]). No inline asm anywhere in this test (old reason wrong). Follow-on task filed. Audit 2026-07-19.
