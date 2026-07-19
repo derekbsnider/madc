@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+- **feat(parser): implicit-int / K&R function definitions — the
+  promote-gate lever, +30 torture tests in one work item (task #72).**
+  gcc-torture 1572 → **1601** passed; failset 50 → **20** names (all 30
+  cluster names flipped, zero regressions — byte-identical name-set
+  diff). Three arms, all std-gated on the existing `knr_supported()`
+  (C78..C17; never C++ modes, never the madc dialect): (1) the BARE
+  K&R identifier list `f(x){…}` — the declaration-suffix predicate now
+  also accepts `{` directly after `)` (empty declaration list; the
+  decl-list machinery already defaulted undeclared params to int);
+  (2) implicit-int definitions of ALREADY-DECLARED names
+  (`dummy(); … dummy(){}` — a prior implicit call declaration or
+  prototype) no longer get eaten as call expressions: the implicit-int
+  definition arm was extracted into
+  `try_parse_implicit_int_function_definition()` (non-destructive shape
+  probe) and now runs before the known-identifier expression route;
+  (3) C89 implicit function DECLARATIONS in expression context are now
+  gated on the SELECTED STANDARD rather than only the `.c` filename
+  extension (a filename gate where the `--std=` gate belongs; the
+  extension predicate stays for C sources compiled under the default
+  dialect). New `tests/testknrdef.mad` (+`.flags` `--std=c17`,
+  `.expect` from the gcc oracle) locks all the shapes. The mandatory
+  SMAUG soak was run and is UNCHANGED by this work — it fails
+  identically at the pre-#72 baseline (proven by stash-rebuild A/B);
+  that pre-existing breakage is filed as P0 task #75.
+
 - **docs(parity): gcc-torture re-baseline at HEAD (task #64).** Full
   sweep 1572/32/18/0/63 — the 50-name failset is **byte-identical** to
   `docs/parity/torture-failset-current.txt`: ZERO regressions across

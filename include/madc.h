@@ -4445,6 +4445,7 @@ public:
     // the stream; parse_old_style_parameter_declaration fills param_types.
     bool old_style_parameter_head_has_declaration_suffix();
     bool is_old_style_parameter_head(TokenBase *tb);
+    bool try_parse_implicit_int_function_definition(TokenBase *tb);
     bool is_old_style_parameter_declaration_start(TokenBase *tb);
     DataDef *parse_old_style_parameter_base(TokenBase *&nt);
     void parse_old_style_parameter_declaration(TokenBase *nt,

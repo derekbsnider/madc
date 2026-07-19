@@ -26311,7 +26311,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			funcdef_map[fname] = implicit_func;  /* emit a real prototype (see above) */
 			DBG(cout << "parseExpression() created builtin complex helper declaration for " << fname << endl);
 		    }
-		    if ( !var && token_origin_allows_c89_implicit_function(ident_tb) )
+		    // C89 implicit function declaration. Gated on the SELECTED
+		    // STANDARD (knr_supported(): C78..C17 — gcc-13 accepts with
+		    // a warning through C17), with the .c-extension predicate
+		    // kept so C sources compiled under the default madc dialect
+		    // (no --std=) keep their C-family semantics.
+		    if ( !var && (knr_supported()
+			       || token_origin_allows_c89_implicit_function(ident_tb)) )
 		    {
 			FuncDef *implicit_func = new FuncDef(ddINT32);
 			// No prototype exists yet, so accept any argument count.
@@ -45821,6 +45827,13 @@ bool Program::old_style_parameter_head_has_declaration_suffix()
 	    {
 		TokenBase *after = (i + 1 < tokens.size())
 		    ? tokens[i + 1] : NULL;
+		// Bare identifier list with an EMPTY declaration list —
+		// `f(x) { ... }` — is the other C89 old-style form: every
+		// parameter defaults to int (the declaration-list loop after
+		// the parameter loop already defaults undeclared identifiers
+		// to ddINT32).
+		if ( after && after->id() == TokenID::tkOpBrc )
+		    return true;
 		return is_old_style_parameter_declaration_start(after);
 	    }
 	    --paren_depth;
@@ -46093,6 +46106,53 @@ bool Program::scan_old_style_definition_suffix(
 	    return false;
     }
     return false;
+}
+
+// C89 implicit-int function definition at statement position:
+// `name(params) { body }` or `name(ids) decl-list { body }` — the omitted
+// return type defaults to int (knr_supported() standards only, C78..C17).
+// Probes the shape non-destructively (balanced parens, then `{` or a K&R
+// declaration suffix; every consumed token is pushed back), and on a match
+// re-consumes and parses the definition. Returns true when a definition was
+// parsed. This must also win for names ALREADY known — a prior implicit
+// call declaration or prototype (`dummy(); ... dummy(){}`) must not divert
+// the DEFINITION to the expression path: at C statement position a call
+// ends with ';', so `name(...) {` is only ever a definition
+// (torture 921202-1, cmpsi-1, 20031211-2).
+bool Program::try_parse_implicit_int_function_definition(TokenBase *tb)
+{
+    if ( !knr_supported()
+      || !tb || tb->type() != TokenType::ttIdentifier
+      || !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	return false;
+    std::string fname = ((TokenIdent *)tb)->spelling();
+    if ( datatype_map.count(fname) || struct_map.count(fname) )
+	return false;
+
+    std::vector<TokenBase *> saved;
+    saved.push_back(nextToken()); // consume (
+    int depth = 1;
+    while ( depth > 0 )
+    {
+	TokenBase *t = nextToken();
+	if ( !t ) break;
+	saved.push_back(t);
+	if ( t->id() == TokenID::tkOpBrk ) ++depth;
+	else if ( t->id() == TokenID::tkClBrk ) --depth;
+    }
+    bool found_brace = peekToken() && peekToken()->id() == TokenID::tkOpBrc;
+    std::vector<TokenBase *> suffix;
+    if ( !found_brace )
+	found_brace = scan_old_style_definition_suffix(suffix);
+    for ( auto it = suffix.rbegin(); it != suffix.rend(); ++it )
+	pushToken(*it);
+    for ( auto it = saved.rbegin(); it != saved.rend(); ++it )
+	pushToken(*it);
+    if ( !found_brace )
+	return false;
+    nextToken(); // re-consume (
+    parseFunction(ddINT32, fname, NULL);
+    return true;
 }
 
 TokenBase *Program::consume_balanced_parenthesized_suffix(TokenBase *open)
@@ -50574,6 +50634,14 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		   || peekToken()->id() == TokenID::tkInc
 		   || peekToken()->id() == TokenID::tkDec) )
 		{
+		    // An implicit-int DEFINITION of an already-declared name —
+		    // a prior implicit call declaration or prototype
+		    // (`dummy(); ... dummy () {}`) — must not be eaten as a
+		    // call expression; the shape probe restores the stream
+		    // when it does not match.
+		    if ( peekToken()->id() == TokenID::tkOpBrk
+		      && try_parse_implicit_int_function_definition(tb) )
+			return NULL;
 		    resetPrevToken();
 		    return parseExprStmt(tb);
 		}
@@ -50828,41 +50896,9 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		return td;
 	    }
 	// C89 implicit-int function definition: `name(params) { body }`
-	// at file scope with no return type defaults to int.
-	if ( knr_supported()
-	    && tb->type() == TokenType::ttIdentifier
-	    && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-	{
-	    std::string fname = ((TokenIdent *)tb)->spelling();
-	    if ( !datatype_map.count(fname) && !struct_map.count(fname) )
-	    {
-		std::vector<TokenBase *> saved;
-		saved.push_back(nextToken()); // consume (
-		int depth = 1;
-		while ( depth > 0 )
-		{
-		    TokenBase *t = nextToken();
-		    if ( !t ) break;
-		    saved.push_back(t);
-		    if ( t->id() == TokenID::tkOpBrk ) ++depth;
-		    else if ( t->id() == TokenID::tkClBrk ) --depth;
-		}
-		bool found_brace = peekToken() && peekToken()->id() == TokenID::tkOpBrc;
-		std::vector<TokenBase *> suffix;
-		if ( !found_brace )
-		    found_brace = scan_old_style_definition_suffix(suffix);
-		for ( auto it = suffix.rbegin(); it != suffix.rend(); ++it )
-		    pushToken(*it);
-		for ( auto it = saved.rbegin(); it != saved.rend(); ++it )
-		    pushToken(*it);
-		if ( found_brace )
-		{
-		    nextToken(); // re-consume (
-		    parseFunction(ddINT32, fname, NULL);
-		    return NULL;
-		}
-	    }
-	}
+	// with no return type defaults to int.
+	if ( try_parse_implicit_int_function_definition(tb) )
+	    return NULL;
 	case TokenType::ttOperator:
 	case TokenType::ttMultiOp:
 	    // multi-return function declaration: (type, type) funcname(...)

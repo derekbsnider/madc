@@ -27,6 +27,25 @@
 > warnings**. The packed artifact carries a readable 240-unit forest, is
 > **10,219,496 bytes**, and has `MADCSNAP` footer magic.
 >
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #72
+> implicit-int/K&R function definitions):** gcc-torture **1601 passed, 2
+> compile-failed, 18 runtime-failed, 0 timed out (memcpy-a8 timed out under
+> box load during the sweep; verified passing 4× standalone at 3.6–4.1s vs the
+> 5s cap — load-margin flake, not counted), 63 skipped** — all **30** cluster-1
+> names flipped, zero regressions (byte-identical name-set diff);
+> `docs/parity/torture-failset-current.txt` refreshed to the **20** remaining
+> names. Fulltest **720/0/0/16** (+1 = `tests/testknrdef.mad`, gcc-oracle
+> byte-equal under `--std=c17`). The three arms all sit behind the existing
+> `knr_supported()` gate. Adjacent std-gating fix: C89 implicit function
+> declarations in expression context were gated on the `.c` filename
+> extension only — `--std=c17` on a `.mad` file now behaves as C17 (the
+> extension predicate stays for default-dialect C sources). ⚠️ The mandatory
+> SMAUG soak FAILED — and fails BYTE-IDENTICALLY at the pre-#72 baseline
+> (stash-rebuild A/B proof): "stances.c: tokenize failed" with no diagnostic,
+> only under --project after ~40 green TUs; standalone-with-flags compiles
+> clean. Pre-existing madc-side breakage (MadSMAUG tree untouched) — filed as
+> **P0 task #75**; #72 introduces no soak delta.
+>
 > **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #64
 > gcc-torture re-baseline):** full sweep at HEAD @1aa53a4e via
 > `scripts/run_gcc_testsuite.py` (defaults: dev binary, `--std=c17`, formal
