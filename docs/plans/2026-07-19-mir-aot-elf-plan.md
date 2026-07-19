@@ -186,3 +186,84 @@ symtab). One writer, one section/DWARF encoder — no parallel implementation.
   ADR 0001 gets a note (owner decision date, this plan) rather than an edit
   of its accepted text.
 - Mirror-sync (claude_status / KG / memory) at rung milestones.
+
+## R0 survey notes (2026-07-19, fork @8a6a6c57 develop — read-only recon)
+
+**1. const_pool address-vs-value provenance** (`mir-gen-x86_64.c`):
+`const_ref_t` (:727) carries `func_item` provenance ONLY for function refs —
+the `'P'`/imm64-REF template path (:2950) passes it into `setup_imm_addr`
+(:2557); the other `setup_imm_addr` caller is the `'c'` hex-literal template
+(:2977) whose values come from pattern text (FP masks etc.) and are NEVER
+addresses. DATA-item addresses reach the pool through `int_value` (:2179 →
+`get_ref_value`, mir-gen.c:776 — returns `ref->addr`, or `u.data->u.els` for
+reserved-name data) as bare uint64 with NO provenance. Additionally
+`add_to_const_pool` (:2547) DEDUPS BY VALUE — meaningless in object mode where
+addresses are unknown at emit time. **Object mode: widen `setup_imm_addr`'s
+provenance parameter from `MIR_item_t func_item` to any item (the hook already
+exists in the signature), key pool entries by (item, addend) instead of value,
+and emit `R_X86_64_64` for each address-bearing slot.** Pure values stay
+verbatim in `.rodata`.
+
+**2. abs_address_locs producers** (:772): exactly ONE producer —
+`translate_finish` (:3111) pushes the imm64 slot of every label_ref with
+`abs_addr_p` (set at :3069, the labels-as-values / computed-goto path; :2929
+is the FALSE branch-ref case). These are SECTION-INTERNAL label addresses →
+`R_X86_64_64` against the function's section symbol + addend, never external.
+Consumed by the func-redef relocation walks at :3244/:3372.
+**Two additional address-escape channels the original recon missed:**
+(a) `get_int_const` (mir-gen.c:5636) — the SSA const-prop fold turns a
+non-func REF into a plain integer that can then flow into arbitrary folded
+arithmetic, untrackable by any ledger. Object mode must disable this fold for
+REF operands (cheap: the existing `item_type != MIR_func_item` guard becomes
+`FALSE` in object mode).
+(b) `gen_setup_lrefs` (mir-gen.c:784) — `MIR_lref_data` items (label-address
+DATA, e.g. computed-goto tables stored in data items) get patched with
+absolute code addresses at gen time; in object mode each lref slot needs a
+section-internal reloc against the owning function's text (label2 diff form
+stays a link-time constant only if both labels share the section — it does).
+
+**3. Item→section/symbol mapping** (object mode):
+- `MIR_func_item` → `.text`, `STT_FUNC`; exports `GLOBAL`, else `LOCAL`.
+- `MIR_data_item` (initialized) → `.data` (`.rodata` candidate only if a
+  read-only marking exists — MIR has none today, so `.data` uniformly);
+  reserved-name data (`_MIR_reserved_ref_name_p`) resolves via `u.els` and is
+  gen-internal — never emitted.
+- `MIR_bss_item` → `.bss` (`SHT_NOBITS`).
+- `MIR_ref_data_item` → `.data` slot + `R_X86_64_64` against the referenced
+  item's symbol (+ disp addend).
+- `MIR_lref_data_item` → `.data` slot + section-internal reloc (see 2b).
+- `MIR_expr_data_item` → REJECT loudly (see 4).
+- `MIR_import_item` → `SHN_UNDEF` symbol; every call-pool slot against it
+  gets `R_X86_64_64` (the call pool becomes the GOT-like `.madc.addrpool`
+  section; the rip-rel disp32 in text is a PC32 reloc into that section —
+  matching the existing `call *disp32(rip)` shape, :755/:1520).
+- `MIR_export_item`/`MIR_forward_item` → symbol-binding metadata only.
+- Redefinable functions (`store_call_refs`/`call_refs`, :3212–3275): the
+  redef machinery rewrites call-pool slots at runtime — in AOT the emitted
+  module is emit-final; map redef-able funcs to ordinary strong symbols and
+  assert the redef API is never invoked in object mode (R0 confirms the two
+  consumers, pattern serves and --project ODR, are both pre-emission).
+
+**4. expr_data policy**: c2mir emits ZERO expr_data (0 hits in c2mir.c); madc
+only enumerates the kind in madc_cir.cpp switch arms (:117/:187/:986 — walks
+and naming, never creation). **Policy: object mode rejects `MIR_expr_data_item`
+loudly.** Nothing produces them in our pipeline; the evaluate-at-emit
+equivalence question is moot.
+
+**5. TLS**: MIR has no TLS item kind; c2mir explicitly warns "Thread local is
+not implemented" (error under -pedantic; c2mir.c:4645). Nothing in the madc
+pipeline generates TLS. Object mode inherits the same posture — no `.tdata`,
+reject if a TLS item kind ever appears.
+
+**6. c2mir source-loc stamping**: ABSENT on fork develop — zero
+dwarf/src_loc/insn-loc machinery in mir.h / mir-gen.c, and c2mir drops node
+positions when building MIR insns. R1's debug-support merge brings the MIR
+side; R1 must ALSO add the c2mir stamping pass (node pos → insn loc) or R5's
+`.debug_line` has nothing to consume from the c2mir lane. madc's `cir_node`
+positions (file/line/col on every node, mc11-ir.md) are the upstream source
+of truth and already flow into c2mir nodes.
+
+**R0 verdict:** the reloc ledger is real — call pool + const pool + one
+abs_address_locs producer + lref data cover every address escape, with two
+object-mode adjustments (disable the SSA REF fold; symbolic const-pool
+keying). No blocking unknowns for R1/R2.
