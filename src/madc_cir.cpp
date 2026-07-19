@@ -42,10 +42,12 @@
 extern "C" {
 #include "c2mir/c2mir_api.h"
 #include "mir-gen.h"
+#include "mir-debug.h"
 }
 
 extern thread_local bool madc_verbose;
 extern thread_local int madc_opt_level;
+extern thread_local bool madc_debug_info;
 
 // -----------------------------------------------------------------------
 // Public API
@@ -59,6 +61,9 @@ c2m_ctx_t cir_init(MIR_context_t mir_ctx, bool debug_p)
     // debug_p makes c2mir_compile_tree print the POST-check tree (after
     // do_context) to message_file — same stage as `c2m -d`, for diffing.
     opts->debug_p = debug_p ? 1 : 0;
+    // -g: stamp source locations on MIR insns and snapshot each function's
+    // typed locals while compiling (consumed by cir_register_source_debug).
+    opts->debug_info_p = madc_debug_info ? 1 : 0;
     return c2mir_init_compile(mir_ctx, opts);
 }
 
@@ -71,6 +76,29 @@ int cir_compile(MIR_context_t mir_ctx, c2m_ctx_t c2m, node_t tree,
 void cir_finish(c2m_ctx_t c2m)
 {
     c2mir_finish_compile(c2m);
+}
+
+// -g debuggable codegen: O0 (clean stepping), no inlining (one frame per
+// function), spill every local to a stable frame slot so gdb can locate it.
+// Overrides -O<n> — a debug build wants describable code, not fast code.
+static void cir_set_debug_codegen(MIR_context_t ctx)
+{
+    MIR_gen_set_optimize_level(ctx, 0);
+    MIR_set_inline_permission(ctx, 0);
+    MIR_set_spill_all(ctx, 1);
+}
+
+// -g, after MIR_link/gen: resolve the compile-time snapshot of each
+// function's typed locals to frame offsets, emit the in-memory GDB-JIT ELF
+// (symtab + .debug_line/.debug_info) and register it. The registration is
+// bound to ctx — MIR_finish unregisters and frees it. Functions without
+// generated code (lazy lanes) are skipped inside c2mir_get_debug_object.
+static void cir_register_source_debug(MIR_context_t ctx)
+{
+    void *buf;
+    size_t size;
+    if (c2mir_get_debug_object(ctx, &buf, &size) == 0)
+	MIR_debug_gdb_register(ctx, buf, size);
 }
 
 // -----------------------------------------------------------------------
@@ -360,7 +388,7 @@ static int cir_mir_cache_read_byte(MIR_context_t)
 // before main() is invoked so the crash handler (madc.cpp) can map a
 // faulting machine-code address back to the MIR function name + offset —
 // MIR generates each function lazily, recording its code range in
-// machine_code / machine_code_len, so a function on the live call stack has
+// machine_code / code_len, so a function on the live call stack has
 // a resolvable range. This is the first brick of madc's own debugger.
 static MIR_module_t g_jit_module = NULL;
 
@@ -375,7 +403,7 @@ extern "C" int madc_jit_symbolize(void *addr, char *out, unsigned long n)
 	     item != NULL; item = DLIST_NEXT(MIR_item_t, item)) {
 		if (item->item_type != MIR_func_item || !item->u.func) continue;
 		char *mc = (char *)item->u.func->machine_code;
-		size_t len = item->u.func->machine_code_len;
+		size_t len = item->u.func->code_len;
 		if (mc && len && a >= mc && a < mc + len) {
 			snprintf(out, n, "%s+0x%lx [JIT]", item->u.func->name,
 				 (unsigned long)(a - mc));
@@ -634,6 +662,8 @@ bool CirJitSession::init_contexts(const char *source_name, bool dump_checked)
     c2mir_init(ctx);
     MIR_gen_init(ctx);
     MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
+    if (madc_debug_info)
+	cir_set_debug_codegen(ctx);
 
     c2m = cir_init(ctx, dump_checked);
     if (!c2m) {
@@ -697,6 +727,8 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
     cir_active_host_regs = NULL;
     mc_lap("MIR_link");
+    if (madc_debug_info)
+	cir_register_source_debug(ctx);
     cir_mir_error_armed = false;
     return true;
 }
@@ -3887,6 +3919,8 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	c2mir_init(ctx);
 	MIR_gen_init(ctx);
 	MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
+	if (madc_debug_info)
+		cir_set_debug_codegen(ctx);
 
 	c2m_ctx_t c2m = cir_init(ctx, false);
 	if (!c2m) {
@@ -3927,6 +3961,8 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	for (MIR_module_t m : modules)
 		MIR_load_module(ctx, m);
 	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
+	if (madc_debug_info)
+		cir_register_source_debug(ctx);
 
 	// Find the entry symbol across all modules. First match wins; a
 	// duplicate entry (e.g. two main()s across TUs) is not diagnosed here.
