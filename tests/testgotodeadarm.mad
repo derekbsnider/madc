@@ -1,0 +1,26 @@
+/* pr17078-1 shape: goto into a constant-false if-arm (labels have function scope) */
+int main(void)
+{
+	int i = 1;
+	goto target;
+	if (0)
+	{
+		target:
+		i = 42;
+	}
+	else
+		i = 7;
+	__builtin_printf("i=%d\n", i);
+	int k = 0;
+	if (1)
+		k = 5;
+	else
+	{
+		back:
+		k = k + 10;
+	}
+	if (k == 5)
+		goto back;
+	__builtin_printf("k=%d\n", k);
+	return 0;
+}

@@ -27,6 +27,22 @@
 > warnings**. The packed artifact carries a readable 240-unit forest, is
 > **10,219,496 bytes**, and has `MADCSNAP` footer magic.
 >
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #74
+> dead-branch fold keeps function-scope labels):** gcc-torture **1606 passed,
+> 2 compile-failed, 14 runtime-failed, 0 timed out, 63 skipped** — name-set
+> diff vs the post-#73 baseline is EXACTLY {pr17078-1.c, vla-dealloc-1.c}
+> removed, zero regressions; `docs/parity/torture-failset-current.txt`
+> refreshed to the **16** remaining names (11 class-(b) GNU-ext + 5 class-(a)
+> singles). vla-dealloc-1's VLA-dealloc half already worked — the label drop
+> was its whole story. Fix: `stmt_contains_label()` walk guards BOTH constant
+> fold arms in `translate_if_core` (a label makes a dead arm a live goto
+> target, C11 6.2.1p3 — the fold falls through to the full N_IF, gcc -O0's
+> shape). Fulltest **722/0/0/15** (+1: new `tests/testgotodeadarm.mad`,
+> gcc-oracle byte-equal). Gate math: 1606 + 5 class-(a) singles (va_list
+> delegation 20041214-1, VLA param bound pr22061-1, _Bool bitfield
+> 20030714-1, strlen-4, struct-ret-1) = 1611 ≥ 1608 — TWO more singles cross
+> the promote gate.
+>
 > **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #73
 > wide string literals):** gcc-torture **1604 passed, 2 compile-failed, 16
 > runtime-failed, 0 timed out, 63 skipped** — name-set diff vs the post-#72

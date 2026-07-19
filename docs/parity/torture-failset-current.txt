@@ -5,7 +5,6 @@
 20041214-1.c
 misalign.c
 pr122000.c
-pr17078-1.c
 pr22061-1.c
 pr23135.c
 pr23324.c
@@ -15,4 +14,3 @@ simd-1.c
 simd-2.c
 strlen-4.c
 struct-ret-1.c
-vla-dealloc-1.c

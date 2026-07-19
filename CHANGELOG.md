@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- **fix(cir): the dead-branch fold no longer discards function-scope
+  labels — torture cluster 3 closed (task #74).** `translate_if_core`
+  folds a compile-time-constant condition and prunes the dead branch
+  (the `__builtin_constant_p(...) link_error()` idiom needs it: neither
+  c2mir nor MIR eliminates `if (0)`, so an undefined extern in the dead
+  arm would fail at MIR link). But C labels have FUNCTION scope (C11
+  6.2.1p3): a label inside a constant-false arm keeps that arm a live
+  `goto` target, and pruning it produced "undefined label" at the c2mir
+  check (pr17078-1's `goto useless;` into `if (0) { useless: … }`).
+  New `stmt_contains_label()` walks the discarded branch's statement
+  structure (compound, if, do/while/for/range-for, switch cases +
+  default + pre-case decls, try/catch); when it finds a label the fold
+  falls through to the full `N_IF` translation — gcc -O0 emits the full
+  branch too. Both fold arms guarded (the integer/char-literal fold and
+  the `is_constant_evaluated` fold). Flips pr17078-1.c AND
+  vla-dealloc-1.c — the latter's VLA-dealloc half already worked; the
+  label drop was its whole story. New `tests/testgotodeadarm.mad`
+  (gcc-oracle byte-equal) locks goto-into-dead-then and
+  goto-back-into-dead-else.
+
 - **feat(cir): wide string literals lowered to static int arrays —
   torture cluster 2 closed, testwideconcat lifted (task #73).** The
   parser has always materialized `L"..."` (and mixed-width

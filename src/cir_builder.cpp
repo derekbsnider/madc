@@ -15463,6 +15463,59 @@ node_t CirBuilder::translate_cond(TokenBase *cond)
 	return translate_expr(cond);
 }
 
+// C labels have FUNCTION scope (C11 6.2.1p3): a label inside a
+// constant-false branch still makes that branch a live goto target
+// (pr17078-1), so the dead-branch fold must not discard a subtree that
+// declares one — gcc -O0 emits the full branch too. Walks the STATEMENT
+// structure only: a label cannot appear in an expression, and GNU
+// statement-exprs carry their statements behind TokenCpnd, which is walked.
+static bool stmt_contains_label(TokenBase *tb)
+{
+	if (!tb)
+		return false;
+	if (dynamic_cast<TokenLabel *>(tb))
+		return true;
+	if (TokenCpnd *tc = dynamic_cast<TokenCpnd *>(tb)) {
+		for (TokenStmt *s : tc->statements)
+			if (stmt_contains_label(s))
+				return true;
+		return false;
+	}
+	if (TokenIF *ti = dynamic_cast<TokenIF *>(tb))
+		return stmt_contains_label(ti->statement)
+		    || stmt_contains_label(ti->elsestmt);
+	if (TokenDO *td = dynamic_cast<TokenDO *>(tb))
+		return stmt_contains_label(td->statement);
+	if (TokenWHILE *tw = dynamic_cast<TokenWHILE *>(tb))
+		return stmt_contains_label(tw->statement);
+	if (TokenFOR *tf = dynamic_cast<TokenFOR *>(tb))
+		return stmt_contains_label(tf->statement);
+	if (TokenFOREACH *tfe = dynamic_cast<TokenFOREACH *>(tb))
+		return stmt_contains_label(tfe->statement);
+	if (TokenSWITCH *ts = dynamic_cast<TokenSWITCH *>(tb)) {
+		for (TokenBase *p : ts->pre_case_stmts)
+			if (stmt_contains_label(p))
+				return true;
+		for (TokenCASE *c : ts->cases)
+			for (TokenBase *s : c->statements)
+				if (stmt_contains_label(s))
+					return true;
+		if (ts->defaultcase)
+			for (TokenBase *s : ts->defaultcase->statements)
+				if (stmt_contains_label(s))
+					return true;
+		return false;
+	}
+	if (TokenTRY *tt = dynamic_cast<TokenTRY *>(tb)) {
+		if (stmt_contains_label(tt->try_body))
+			return true;
+		for (TokenBase *cb : tt->catch_bodies)
+			if (stmt_contains_label(cb))
+				return true;
+	}
+	return false;
+}
+
 node_t CirBuilder::translate_if(TokenIF *ti)
 {
 	// C++17 init-statement: `if (init; cond) S else E` lowers to
@@ -15516,9 +15569,15 @@ node_t CirBuilder::translate_if_core(TokenIF *ti)
 	     ti->condition->type() == TokenType::ttChar)) {
 		bool taken = ti->condition->ival() != 0;
 		TokenBase *branch = taken ? ti->statement : ti->elsestmt;
-		return branch ? translate_stmt_required(branch) : ignore();
+		TokenBase *dead = taken ? ti->elsestmt : ti->statement;
+		// A function-scope label in the dead branch keeps it a goto
+		// target (stmt_contains_label) — fall through to the full
+		// N_IF translation instead of pruning.
+		if (!stmt_contains_label(dead))
+			return branch ? translate_stmt_required(branch) : ignore();
 	}
-	if (is_constant_evaluated_call(ti->condition))
+	if (is_constant_evaluated_call(ti->condition)
+	    && !stmt_contains_label(ti->statement))
 		return ti->elsestmt ? translate_stmt_required(ti->elsestmt) : ignore();
 	node_t cond = translate_cond(ti->condition);
 	// Temps materialized by the CONDITION must be emitted ahead of the IF
