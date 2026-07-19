@@ -6413,9 +6413,10 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		//
 		// When declared via an array typedef alias (`HARD_REG_SET x[2]` with
 		// `typedef T HARD_REG_SET[2]`), the parser flattens the typedef's own
-		// dims into v->dims, so v->dims = [typedef-dims..., own-dims...]. The
-		// alias spec (ID("HARD_REG_SET")) already implies the typedef's dims,
-		// so emit only the variable's OWN leading dims here — skip the trailing
+		// dims into v->dims, so v->dims = [own-dims..., typedef-dims...] (the
+		// declarator's dims are the OUTER dimensions). The alias spec
+		// (ID("HARD_REG_SET")) already implies the typedef's dims, so emit
+		// only the variable's OWN leading dims here — skip the trailing
 		// dims contributed by the alias.
 		// NOTE: this flattening happens ONLY in the parser's non-pointer path.
 		// When the declarator has a pointer prefix (`A3_28 *paa[]`, is_ptr), the

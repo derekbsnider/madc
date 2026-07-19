@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+- **fix(parser+fork): array-typedef dims order + &array-lvalue typing —
+  strlen-4 flips, torture 1609, failset 13 (task #78).** Two stacked
+  bugs. (1) Parser: `typedef char A28[28]; A28 row[3]` produced dims
+  `{28,3}` instead of C's `{3,28}` — `peel_carray_dimensions` ran before
+  the declarator suffix parse, leaving the typedef's dims at the FRONT
+  of `arr_dims` while the declarator's dims (the OUTER dimensions) were
+  appended after. Result: `sizeof(row[0])` = 3 (gcc: 28), string
+  initializers truncated to 3 bytes, and the CIR emitter's skip_tail
+  contract (which always assumed own-dims-leading) emitted `row[28]`.
+  Fix: record the alias-dim count at the peel and `std::rotate` the
+  alias dims behind the declarator's own dims once the declarator is
+  parsed — this also re-aligns `arr_dim_exprs` with `arr_dims`.
+  (2) c2mir fork @8a6a6c57 (MIR_COMMIT bumped): `N_ADDR` of an operand
+  that DECAYED from an array lvalue copied the decayed element pointer,
+  so `&a[i]` (a: `T[n][m]`) came out `T*` instead of `T(*)[m]`
+  (C11 6.5.3.2). Pointer arithmetic reads `arr_type` (stride was
+  right), but `N_DEREF` reads `u.ptr_type` — `*(&a[i] + k)` yielded the
+  element SCALAR, and strlen received the first char as an address
+  (SIGSEGV at 0x31). Proof it was c2mir: standalone `c2m -eg` on the
+  plain C text reproduced the warning + crash while gcc ran it fine.
+  Now `&a[i]` constructs the true pointer-to-array (the explicit
+  `T (*q)[m]` declarator path already produced exactly this type).
+  New `tests/testarraytypedef.mad` (gcc-oracle byte-equal: dims order,
+  layout, all four deref forms incl. `*(&row[2] - 1)`). Torture 1608 →
+  **1609**, name-set diff exactly {strlen-4.c}, failset 13 names
+  (11 class-(b) + 20041214-1 + pr22061-1). Found adjacent, filed #79:
+  the CAST form `(char (*)[28])expr` is rejected by the fn-ptr cast arm.
+
 - **feat(cli): liberal default resource guards — the CLI never
   throttles legitimate work (task #77, owner directive).** madc is a
   developer CLI that also RUNS the program; gcc/clang-style tools

@@ -28,6 +28,27 @@
 > **10,219,496 bytes**, and has `MADCSNAP` footer magic.
 >
 > **Local branch update (2026-07-19, `feature/class-parse-once-codex`,
+> task #78 — array-typedef dims order + &array-lvalue typing, strlen-4
+> flips):** gcc-torture **1609 passed, 2 compile-failed, 11
+> runtime-failed, 0 timed out, 63 skipped** — name-set diff vs the
+> post-singles baseline is EXACTLY {strlen-4.c} removed, zero
+> regressions; `docs/parity/torture-failset-current.txt` refreshed to
+> **13** names = 11 class-(b) GNU-ext + **2 class-(a) singles**
+> (20041214-1 va_list delegation, pr22061-1 VLA param bound). Two
+> stacked fixes: (1) parser dims order for `A28 row[3]` with
+> `typedef char A28[28]` — the declarator's dims are the OUTER
+> dimensions; the peeled typedef dims now rotate behind them
+> (`sizeof(row[0])` was 3, initializers truncated); (2) c2mir fork
+> @8a6a6c57 — `&a[i]` on a decayed array lvalue now constructs the true
+> pointer-to-array type instead of copying the decayed element pointer
+> (`*(&a[i] + k)` yielded a char scalar; strlen crashed at 0x31).
+> Fulltest **725/0/0/15** (+`testarraytypedef`, gcc-oracle byte-equal),
+> packed arbiter **725/0/0/15** with forest_pack OK (240 units, bind
+> cache == no-cache), SMAUG soak GREEN dev+packed. Adjacent gap filed
+> as #79: the CAST form `(char (*)[28])expr` is rejected by the fn-ptr
+> cast arm.
+>
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`,
 > task #77 — liberal default resource guards, owner directive):** the CLI's
 > self-limits no longer throttle legitimate work: `MADC_CPU_LIMIT` default
 > 60 s → **0 (disabled, opt-in)** — madc RUNS the program, so any finite

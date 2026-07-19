@@ -31,6 +31,7 @@
 #include <queue>
 #include <stack>
 #include <chrono>
+#include <algorithm>
 #include "libmadc/program.h"
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 // Temporary fn-template pack diagnostics — enable with
@@ -48705,12 +48706,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // fn-ptr base needs the count recorded (-1 = "use the emitter's legacy path").
     int decl_fnptr_stars = is_fnptr_base ? n_decl_stars : -1;
 
+    size_t alias_dim_count = 0;
     if ( !saw_pointer_decl )
     {
 	if ( DataDefCArray *alias_array = dynamic_cast<DataDefCArray *>(base_type) )
 	{
 	    (void)alias_array;
 	    decl_type = peel_carray_dimensions(base_type, arr_dims, vla_size_expr);
+	    alias_dim_count = arr_dims.size();
 	}
     }
 
@@ -49142,6 +49145,17 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	if ( !nt )
 	    Throw(tb) << "Unexpected end of data in array declaration" << flush;
     }
+
+    // Array-typedef base + declarator dims: `A28 row[3]` (typedef char
+    // A28[28]) is array-3-of-A28, so the DECLARATOR's dims are the OUTER
+    // dimensions. The alias dims were peeled before the declarator was
+    // parsed and sit at the front of arr_dims — rotate them behind the
+    // declarator's own dims ({28,3} -> {3,28}). This is also the order the
+    // CIR emitter's skip_tail contract expects (own dims leading, alias
+    // dims trailing) and re-aligns arr_dim_exprs (pushed only by declarator
+    // dims) with arr_dims.
+    if ( alias_dim_count > 0 && alias_dim_count < arr_dims.size() )
+	std::rotate(arr_dims.begin(), arr_dims.begin() + alias_dim_count, arr_dims.end());
 
     std::string storage_alias_name;
     if ( is_attribute_identifier_token(nt) )

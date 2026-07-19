@@ -1,0 +1,27 @@
+// Array-typedef declarations and pointer-to-array expressions.
+// (1) `A28 row[3]` must be array-3-of-A28 (char[3][28]): the declarator's
+//     dims are the OUTER dimensions (dims order {3,28}, not {28,3}).
+// (2) `&row[i]` is char(*)[28]; +n strides by 28; *(...) yields the row
+//     (C11 6.5.3.2), which decays to char* — not the first char.
+#include <stdio.h>
+#include <string.h>
+
+typedef char A28[28];
+
+static A28 row[3] = { "1\00012", "123\0001234", "12345\000123456" };
+
+int main()
+{
+	const A28 *p = &row[0];
+	char (*q)[28] = &row[0];
+
+	printf("sizeof(row)=%lu sizeof(row[0])=%lu\n",
+	       (unsigned long)sizeof(row), (unsigned long)sizeof(row[0]));
+	printf("row1=%s row2=%s\n", row[1], row[2]);
+	printf("decay=%lu\n", (unsigned long)strlen(*(row + 1)));
+	printf("explicit=%lu\n", (unsigned long)strlen(*(q + 1)));
+	printf("alias=%lu\n", (unsigned long)strlen(*(p + 2)));
+	printf("addr=%lu\n", (unsigned long)strlen(*(&row[0] + 2)));
+	printf("addrsub=%lu\n", (unsigned long)strlen(*(&row[2] - 1)));
+	return 0;
+}
