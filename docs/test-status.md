@@ -1,6 +1,21 @@
 # Test Status
 
-> **Current (2026-07-15, class-KIND parse-once B2 on
+> **Current (2026-07-19, `develop` @daed32ce — AOT R1: madc `-g`
+> source-level gdb on the JIT lane, task #82):**
+> fulltest **727 passed, 0 failed, 0 timed out, 14 skipped** (+1:
+> `testdebuginfo`, the `-g` pipeline lock). Packed suite
+> (`MADC_BIN=bin/madc-release bash scripts/run_tests.sh`) also
+> **727/0/0/14**; `forest_pack: OK (240 units; bind cache == no-cache)`.
+> gcc-torture **1610 passed**, failset **12 names byte-identical** to
+> `docs/parity/torture-failset-current.txt`. MIR fork test battery green
+> at fork develop @b6a411fa (upstream sync with vnmakarov master
+> a8ab7c31 + the 13-commit debug-support arc + `.debug_frame` CFI +
+> the force_val pr34099-2 restoration). SMAUG `--project` soak green on
+> both binaries ("ready at address"). Interactive gdb gate:
+> `break file.mad:line`, named typed frames across JIT + host, and
+> `info locals` in any frame — verified on the final binaries.
+
+> **Previous (2026-07-15, class-KIND parse-once B2 on
 > `feature/class-parse-once-codex`):**
 > The fulltest component matrix is green with **696 passed, 0 failed, 0 timed
 > out, 16 skipped**. Every static and forest gate is green, including

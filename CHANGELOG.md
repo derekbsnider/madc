@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+- **feat(debug): `madc -g` — source-level gdb on the JIT lane (AOT R1,
+  task #82).** `bin/madc -g prog.mad` gives a real debugger experience
+  on JIT'd code: `break prog.mad:42` (pending breakpoints resolve via
+  the GDB JIT interface), named+typed frames across the whole stack
+  (JIT frames with correct source lines, then host frames), and
+  `info locals`/`info args` in any frame including unwound callers.
+  The MIR fork (develop @b6a411fa, `MIR_COMMIT` bumped in the same
+  commit) gained: an upstream sync with vnmakarov/mir master a8ab7c31
+  (our ten accepted PRs round-tripped with Makarov's follow-ups; his
+  force_val addr_p narrowing was reverted with counterexample
+  pr34099-2 — uninitialized narrow locals need the unconditional
+  extension; caught by the torture ladder, propose back upstream); the
+  13 cyanogilvie debug-support commits (insn source locations →
+  per-function line maps, inline permission, spill-all + reg frame
+  offsets, the mir-debug ELF/DWARF builder + context-bound GDB-JIT
+  registration, c2mir `-g` stamping + rich typed locals); and NEW
+  `.debug_frame` CFI in the debug object (template FDE per function) —
+  gdb's heuristic analyzer cannot unwind MIR's mov/lea FP prologue, so
+  without CFI `bt` could not leave frame 0. madc side: `-g` flag →
+  c2mir `debug_info_p` + debuggable codegen (O0, no inlining,
+  spill-all) + post-link debug-object registration in the one-shot and
+  `--project` lanes; `tests/testdebuginfo.mad` locks the pipeline.
+  En route, #69 (integer `_Complex`) was investigated: c2mir types it
+  as the plain scalar base (imaginary parts silently drop); a blanket
+  rejection regressed two green suite tests and was reverted —
+  re-scoped as the real component-correct feature per owner directive.
+  Suite 727/0/0/14 dev == packed; torture 1610, failset 12
+  byte-identical; SMAUG soak green both binaries.
+
 - **fix(types): `__builtin_va_list` is the real SysV va_list — one
   compiler-owned definition; 20041214-1 flips, torture 1610, failset 12
   (task #68).** The lexer macro-rewrote `__builtin_va_list` to `long`,
