@@ -10532,7 +10532,13 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       *e->type = *((struct expr *) deref_op->attr)->type;
       break;
     } else if (e1->type->mode == TM_PTR && e1->type->arr_type != NULL) {
-      *e->type = *e1->type;
+      /* The operand decayed from an array lvalue: &a[i] (a: T[n][m]) is a
+         pointer to the ARRAY type T[m] (C11 6.5.3.2), not a copy of the
+         decayed element pointer.  N_DEREF reads u.ptr_type, so copying the
+         decayed type made *(&a[i] + k) yield the element SCALAR instead of
+         the k-th row (pointer arithmetic already strode by arr_type). */
+      e->type->mode = TM_PTR;
+      e->type->u.ptr_type = e1->type->arr_type;
       break;
     } else if (e1->type->mode == TM_PTR && e1->type->u.ptr_type->mode == TM_FUNC
                && e1->type->func_type_before_adjustment_p) {
