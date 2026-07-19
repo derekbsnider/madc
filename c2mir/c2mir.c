@@ -362,9 +362,7 @@ typedef struct {
 #error "undefined or unsupported generation target for C"
 #endif
 
-static inline MIR_alloc_t c2m_alloc (c2m_ctx_t c2m_ctx) {
-  return MIR_get_alloc (c2m_ctx->ctx);
-}
+static inline MIR_alloc_t c2m_alloc (c2m_ctx_t c2m_ctx) { return MIR_get_alloc (c2m_ctx->ctx); }
 
 static void *reg_malloc (c2m_ctx_t c2m_ctx, size_t s) {
   MIR_alloc_t alloc = c2m_alloc (c2m_ctx);
@@ -946,7 +944,8 @@ static void finish_streams (c2m_ctx_t c2m_ctx) {
   VARR_DESTROY (stream_t, streams);
 }
 
-static stream_t new_stream (MIR_alloc_t alloc, FILE *f, const char *fname, int (*getc_func) (c2m_ctx_t)) {
+static stream_t new_stream (MIR_alloc_t alloc, FILE *f, const char *fname,
+                            int (*getc_func) (c2m_ctx_t)) {
   stream_t s = MIR_malloc (alloc, sizeof (struct stream));
 
   VARR_CREATE (char, s->ln, alloc, 128);
@@ -3017,14 +3016,12 @@ static void transform_to_header (c2m_ctx_t c2m_ctx, VARR (token_t) * buffer) {
   token_t t;
   pos_t pos;
 
-  for (i = 0; i < VARR_LENGTH (token_t, buffer) && VARR_GET (token_t, buffer, i)->code == ' '; i++)
-    ;
+  for (i = 0; i < VARR_LENGTH (token_t, buffer) && VARR_GET (token_t, buffer, i)->code == ' '; i++);
   if (i >= VARR_LENGTH (token_t, buffer)) return;
   if ((t = VARR_GET (token_t, buffer, i))->node_code != N_LT) return;
   pos = t->pos;
   for (j = i + 1;
-       j < VARR_LENGTH (token_t, buffer) && VARR_GET (token_t, buffer, j)->node_code != N_GT; j++)
-    ;
+       j < VARR_LENGTH (token_t, buffer) && VARR_GET (token_t, buffer, j)->node_code != N_GT; j++);
   if (j >= VARR_LENGTH (token_t, buffer)) return;
   VARR_TRUNC (char, symbol_text, 0);
   VARR_TRUNC (char, temp_string, 0);
@@ -5865,8 +5862,8 @@ static void symbol_clear (symbol_t sym, void *arg MIR_UNUSED) { VARR_DESTROY (no
 
 static void symbol_init (c2m_ctx_t c2m_ctx) {
   MIR_alloc_t alloc = c2m_alloc (c2m_ctx);
-  HTAB_CREATE_WITH_FREE_FUNC (symbol_t, symbol_tab, alloc, 5000, symbol_hash, symbol_eq, symbol_clear,
-                              NULL);
+  HTAB_CREATE_WITH_FREE_FUNC (symbol_t, symbol_tab, alloc, 5000, symbol_hash, symbol_eq,
+                              symbol_clear, NULL);
 }
 
 static int symbol_find (c2m_ctx_t c2m_ctx, enum symbol_mode mode, node_t id, node_t scope,
@@ -7191,8 +7188,7 @@ static int incomplete_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
 
     if (NL_EL (n->u.ops, 1)->code == N_IGNORE) return TRUE;
     for (scope = curr_scope; scope != NULL && scope != top_scope && scope != n;
-         scope = ((struct node_scope *) scope->attr)->scope)
-      ;
+         scope = ((struct node_scope *) scope->attr)->scope);
     return scope == n;
   }
   case TM_PTR: return FALSE;
@@ -7603,8 +7599,7 @@ static void make_type_complete (c2m_ctx_t c2m_ctx, struct type *type) {
 
 static node_t skip_struct_scopes (node_t scope) {
   for (; scope != NULL && (scope->code == N_STRUCT || scope->code == N_UNION);
-       scope = ((struct node_scope *) scope->attr)->scope)
-    ;
+       scope = ((struct node_scope *) scope->attr)->scope);
   return scope;
 }
 static void check (c2m_ctx_t c2m_ctx, node_t node, node_t context);
@@ -8599,8 +8594,7 @@ static int update_init_object_path (c2m_ctx_t c2m_ctx, size_t mark, struct type 
                && (init_object.u.curr_member->code != N_MEMBER
                    || (NL_EL (init_object.u.curr_member->u.ops, 1)->code == N_IGNORE
                        && !anon_struct_union_type_member_p (init_object.u.curr_member)));
-               init_object.u.curr_member = NL_NEXT (init_object.u.curr_member))
-            ;
+               init_object.u.curr_member = NL_NEXT (init_object.u.curr_member));
         } else if (init_object.container_type->mode == TM_UNION
                    && !init_object.field_designator_p) { /* no next union member: */
           init_object.u.curr_member = NULL;
@@ -10834,8 +10828,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     for (n_spec_index = (int) VARR_LENGTH (node_t, context_stack) - 1;
          n_spec_index >= 0 && (n = VARR_GET (node_t, context_stack, n_spec_index)) != NULL
          && n->code != N_SPEC_DECL;
-         n_spec_index--)
-      ;
+         n_spec_index--);
     if (n_spec_index < (int) VARR_LENGTH (node_t, context_stack) - 1
         && (n_spec_index < 0
             || !get_compound_literal (VARR_GET (node_t, context_stack, n_spec_index + 1), &addr_p)
@@ -11297,8 +11290,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
         error (c2m_ctx, POS (r), "asm register decl should be at the top level");
       } else {
         asm_str = NL_HEAD (asm_part->u.ops)->u.s.s;
-        for (i = 0; asm_str[i] != '\0' && _MIR_name_char_p (c2m_ctx->ctx, asm_str[i], i == 0); i++)
-          ;
+        for (i = 0; asm_str[i] != '\0' && _MIR_name_char_p (c2m_ctx->ctx, asm_str[i], i == 0); i++);
         if (asm_str[i] != '\0') {
           error (c2m_ctx, POS (r), "asm register name %s contains wrong char '%c'", asm_str,
                  asm_str[i]);
@@ -11603,6 +11595,18 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     t1 = e1->type;
     e = create_expr (c2m_ctx, r);
     *e->type = *t1;
+    /* Reserve a frame slot for struct/union results so that sibling statement-expressions get
+       independent storage without a dynamic ALLOCA (which would overflow the stack in a loop): */
+    if (func_block_scope != NULL && (t1->mode == TM_STRUCT || t1->mode == TM_UNION)) {
+      struct node_scope *fns = func_block_scope->attr;
+      mir_size_t size = type_size (c2m_ctx, t1);
+      mir_size_t align = var_align (c2m_ctx, t1);
+
+      fns->size = round_size (fns->size, align);
+      e->c.u_val = fns->size;
+      fns->size += size;
+      fns->stack_var_p = TRUE;
+    }
     break;
   }
   case N_BLOCK:
@@ -12849,7 +12853,7 @@ static op_t force_val (c2m_ctx_t c2m_ctx, op_t op, int arr_p) {
     /* an array -- use a pointer: */
     return mem_to_address (c2m_ctx, op, FALSE);
   }
-  if (op.decl != NULL && op.mir_op.mode == MIR_OP_REG
+  if (op.decl != NULL && op.decl->addr_p && op.mir_op.mode == MIR_OP_REG
       && integer_type_p (op.decl->decl_spec.type)) {
     t = get_mir_type (c2m_ctx, op.decl->decl_spec.type);
     if (t == MIR_T_I8 || t == MIR_T_U8 || t == MIR_T_I16 || t == MIR_T_U16)
@@ -16139,7 +16143,7 @@ static MIR_item_t get_string_data (c2m_ctx_t c2m_ctx, node_t n) {
 
   _MIR_get_temp_item_name (ctx, module, buff, sizeof (buff));
   if (n->code == N_STR) {
-    data = MIR_new_string_data (ctx, buff, (MIR_str_t){n->u.s.len, n->u.s.s});
+    data = MIR_new_string_data (ctx, buff, (MIR_str_t) {n->u.s.len, n->u.s.s});
   } else {
     assert (n->code == N_STR16 || n->code == N_STR32);
     if (n->code == N_STR16) {
@@ -16272,32 +16276,30 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
     MIR_alloc_t alloc = c2m_alloc (c2m_ctx);
 
     assert (var.mir_op.mode == MIR_OP_REF);
-    /* PR middle-end/24109: pre-compute the element values FIRST, so any
-       out-of-line data a value generates (a compound literal's storage, a
-       string-literal address) is emitted into the module BEFORE this object's
-       own data items.  Otherwise the 2nd+ such sub-object's data is appended
-       into the MIDDLE of this object (the 1st works only because its value is
-       gen'd before this object's first data item exists), and the element's
-       trailing `ref` becomes an anonymous data item attached to the sub-object
-       instead of this object -- truncating it.  Constants gen
-       position-independently, so pre-genning them does not change output;
-       bit-field members (handled inline below) are constants too and need no
-       caching.  Indexed parallel to init_els[init_start..]. */
+    /* gcc/20050929-1.c: pre-compute the element values FIRST, so any out-of-line data a value
+       generates (a compound literal's storage, a string-literal address) is emitted into the module
+       BEFORE this object's own data items.  Otherwise the 2nd+ such sub-object's data is appended
+       into the MIDDLE of this object (the 1st works only because its value is gen'd before this
+       object's first data item exists), and the element's trailing `ref` becomes an anonymous data
+       item attached to the sub-object instead of this object -- truncating it.  Constants gen
+       position-independently, so pre-genning them does not change output; bit-field members
+       (handled inline below) are constants too and need no caching.  Indexed parallel to
+       init_els[init_start..]. */
     VARR_CREATE (MIR_op_t, pregen_vals, alloc, VARR_LENGTH (init_el_t, init_els) - init_start);
     for (size_t k = init_start; k < VARR_LENGTH (init_el_t, init_els); k++) {
-      init_el_t pe = VARR_GET (init_el_t, init_els, k);
-      struct expr *pex = pe.init->attr;
-      MIR_op_t pv;
+      init_el_t init_el = VARR_GET (init_el_t, init_els, k);
+      struct expr *init_expr = init_el.init->attr;
+      MIR_op_t init_val;
 
-      pv.mode = MIR_OP_UNDEF; /* unused for const-addr / complex-const elements */
-      if (!(complex_type_p (pe.el_type) && pex->const_p) && !pex->const_addr_p) {
-        if (pex->const_p) {
-          convert_value (pex, pe.el_type);
-          pex->type = pe.el_type; /* right value in the gen below */
+      init_val.mode = MIR_OP_UNDEF; /* unused for const-addr / complex-const elements */
+      if (!(complex_type_p (init_el.el_type) && init_expr->const_p) && !init_expr->const_addr_p) {
+        if (init_expr->const_p) {
+          convert_value (init_expr, init_el.el_type);
+          init_expr->type = init_el.el_type; /* right value in the gen below */
         }
-        pv = val_gen (c2m_ctx, pe.init).mir_op;
+        init_val = val_gen (c2m_ctx, init_el.init).mir_op;
       }
-      VARR_PUSH (MIR_op_t, pregen_vals, pv);
+      VARR_PUSH (MIR_op_t, pregen_vals, init_val);
     }
     for (size_t i = init_start; i < VARR_LENGTH (init_el_t, init_els); i++) {
       init_el = VARR_GET (init_el_t, init_els, i);
@@ -16775,10 +16777,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_STR16:
   case N_STR32: res = new_op (NULL, MIR_new_ref_op (ctx, get_string_data (c2m_ctx, r))); break;
   case N_STR:
-    res
-      = new_op (NULL,
-                MIR_new_str_op (ctx, (MIR_str_t){r->u.s.len, r->u.s.s}));  //???what to do with decl
-                                                                           // and str in initializer
+    res = new_op (NULL, MIR_new_str_op (ctx, (MIR_str_t) {r->u.s.len,
+                                                          r->u.s.s}));  //???what to do with decl
+                                                                        // and str in initializer
     break;
   case N_COMMA:
     gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
@@ -18164,9 +18165,15 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       }
       if (aggregate_type_p (type)) {
         if (desirable_dest == NULL) {
+          /* A struct/union va_arg used as an rvalue (no destination object)
+             still needs storage to receive the aggregate; allocate a frame
+             temporary and use its address.  Previously this was a stub that
+             moved 0 into res, so va_block_arg wrote the aggregate to address
+             0 (NULL) -- a miscompile / runtime crash. */
           res = get_new_temp (c2m_ctx, MIR_T_I64);
           MIR_append_insn (ctx, curr_func,
-                           MIR_new_insn (ctx, MIR_MOV, res.mir_op, MIR_new_int_op (ctx, 0)));
+                           MIR_new_insn (ctx, MIR_ALLOCA, res.mir_op,
+                                         MIR_new_int_op (ctx, type_size (c2m_ctx, type))));
         } else {
           assert (desirable_dest->mir_op.mode == MIR_OP_MEM);
           res = mem_to_address (c2m_ctx, *desirable_dest, TRUE);
@@ -18176,7 +18183,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                                        MIR_new_int_op (ctx, type_size (c2m_ctx, type)),
                                        MIR_new_int_op (ctx, target_get_blk_type (c2m_ctx, type)
                                                               - MIR_T_BLK)));
-        if (desirable_dest != NULL) res = *desirable_dest;
+        if (desirable_dest != NULL)
+          res = *desirable_dest;
+        else /* present the freshly allocated buffer as the aggregate lvalue */
+          res.mir_op = MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, res.mir_op.u.reg, 0, 1);
       } else {
         MIR_append_insn (ctx, curr_func,
                          MIR_new_insn (ctx, MIR_VA_ARG, op1.mir_op, op2.mir_op,
@@ -18493,30 +18503,25 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     node_t last_stmt = NL_TAIL (NL_EL (block->u.ops, 1)->u.ops);
     node_t saved_last_expr = stmtexpr_last_expr;
 
-    /* The value of the statement expression is its block's last expression.
-       Mark that expression so its expression-statement is gen'd in value
-       context (val_p): ops that only materialize their result when used --
-       post ++/-- -- otherwise leave an undef operand here.  Save/restore for
-       nested statement expressions. */
+    /* The value of the statement expression is its block's last expression.  Mark that expression
+       so its expression-statement is gen'd in value context (val_p): ops that only materialize
+       their result when used -- post ++/-- -- otherwise leave an undef operand here.  Save/restore
+       for nested statement expressions. */
     stmtexpr_last_expr
       = (last_stmt != NULL && last_stmt->code == N_EXPR) ? NL_EL (last_stmt->u.ops, 1) : NULL;
     gen (c2m_ctx, block, NULL, NULL, FALSE, NULL, NULL);
     stmtexpr_last_expr = saved_last_expr;
     res = top_gen_last_op;
-    /* A statement expression whose value is an aggregate yields the lvalue
-       of an in-block local, but that local's stack storage can be reused by a
-       sibling scope -- e.g. `({..A..}).x - ({..B..}).x`, where c2mir assigns
-       the A and B block-locals the same fp slot.  Because the member loads are
-       deferred to the enclosing operator, both would read whichever block ran
-       last (B), giving 0.  Copy the aggregate out into a fresh temporary so
-       each statement-expression value has independent storage, matching GCC. */
-    if (aggregate_type_p (stmtexpr_type)) {
+    /* A statement expression whose value is a struct/union yields the lvalue of an in-block local,
+       but that local's stack storage can be reused by a sibling scope -- e.g. `({..A..}).x -
+       ({..B..}).x`, where c2mir assigns the A and B block-locals the same fp slot.  Copy the
+       aggregate out into a frame slot reserved during the check phase so each value has independent
+       storage without a dynamic ALLOCA (safe in loops). */
+    if (stmtexpr_type->mode == TM_STRUCT || stmtexpr_type->mode == TM_UNION) {
       mir_size_t size = type_size (c2m_ctx, stmtexpr_type);
-      op_t addr = get_new_temp (c2m_ctx, MIR_T_I64);
-      op_t tmp;
-
-      emit2 (c2m_ctx, MIR_ALLOCA, addr.mir_op, MIR_new_int_op (ctx, size));
-      tmp = new_op (NULL, MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, addr.mir_op.u.reg, 0, 1));
+      struct expr *se = r->attr;
+      op_t tmp = new_op (NULL, MIR_new_mem_op (ctx, MIR_T_UNDEF, (MIR_disp_t) se->c.u_val,
+                                               MIR_reg (ctx, FP_NAME, curr_func->u.func), 0, 1));
       block_move (c2m_ctx, tmp, res, size);
       res = tmp;
     }
@@ -18896,16 +18901,16 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     break;
   }
   case N_EXPR: {
-    node_t expr_node = NL_EL (r->u.ops, 1);
+    node_t e = NL_EL (r->u.ops, 1);
 
     assert (false_label == NULL && true_label == NULL);
     emit_label (c2m_ctx, r);
-    if (expr_node == stmtexpr_last_expr)
+    if (e == stmtexpr_last_expr)
       /* Value-producing last expression of a statement expression: evaluate in
          value context so post ++/-- materialize their result (see N_STMTEXPR). */
-      top_gen_last_op = gen (c2m_ctx, expr_node, NULL, NULL, TRUE, NULL, NULL);
+      top_gen_last_op = gen (c2m_ctx, e, NULL, NULL, TRUE, NULL, NULL);
     else
-      top_gen (c2m_ctx, expr_node, NULL, NULL, NULL);
+      top_gen (c2m_ctx, e, NULL, NULL, NULL);
     break;
   }
   case N_ASM_STMT: {
