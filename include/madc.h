@@ -1561,6 +1561,13 @@ public:
     void showerror(int row=0, int col=0);
 };
 
+// Diagnostic source-echo helpers (lexer.cpp). show_error_source_line is the
+// one formatter for the offending-line + caret display; madc_show_file_error
+// rereads a non-live file (an #included header) from disk on the cold
+// diagnostic path and returns false when it cannot echo faithfully.
+void show_error_source_line(const std::string &ln, int col);
+bool madc_show_file_error(const char *fname, int row, int col);
+
 // very simple exception container
 class Exception: public std::exception
 {

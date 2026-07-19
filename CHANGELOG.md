@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+- **fix(diagnostics): errors inside #included files now attribute to the
+  header — file, line, AND source echo from ONE token provenance (task
+  #63).** An error raised while parsing an included file printed the
+  top-level TU's NAME with the header's LINE number and echoed the TU's
+  source text under the caret — three-way inconsistent.
+  `throwbuf::sync()` and the eight catch-site diagnostic recorders now
+  take the file from the token (`TokenBase::file`, the MC11-IR
+  provenance every token already carries), and the source echo rereads
+  the named file from disk on the cold diagnostic path when it isn't
+  the live Source buffer (embedded headers with no on-disk presence
+  skip the echo gracefully). One shared line+caret formatter
+  (`show_error_source_line`) serves both echo paths; `print_diagnostic`
+  gains the same foreign-file echo. Output now matches g++'s
+  attribution shape (`tmp/s63_hdr.h:3:18` + the header's line echoed).
+  New compile-error test `tests/testincluderr.mad` (+`.expect_err`,
+  helper header). This completes the #55 story: the SFINAE mute killed
+  the speculative noise, this makes the remaining REAL errors point at
+  the right file.
+
 - **fix(parser): sizeof/alignof with a template-id or qualified type
   operand (task #62).** `sizeof(Box<int>)` failed "Expecting
   identifier" even post-instantiation, and `sizeof(std::string)` failed

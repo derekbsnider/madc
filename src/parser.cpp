@@ -14312,6 +14312,11 @@ void Program::print_diagnostic(std::ostream &os, const Diagnostic &diag, const c
     os << ANSI_RESET << std::endl;
     if ( can_show_diagnostic_source(diag) )
 	source.showerror(diag.line, diag.column);
+    else if ( !diag.file.empty() && diag.line > 0 )
+	// Diagnostic from an #included file: the live Source buffer holds the
+	// top-level TU, so echo the named file from disk (cold path); embedded
+	// headers with no on-disk presence skip the echo gracefully.
+	madc_show_file_error(diag.file.c_str(), diag.line, diag.column);
 }
 
 void Program::print_last_diagnostic(std::ostream &os, const char *suffix)
@@ -51223,6 +51228,17 @@ void Program::dump_registered_names(FILE *out)
 	fprintf(out, "%s\n", it->c_str());
 }
 
+// The recorded diagnostic's FILE must match the token's provenance: an error
+// raised inside an #included file names the header (tokens carry file/line/col
+// — the MC11-IR law), not the top-level TU. Fall back to the TU name only for
+// tokens with no stamped file.
+static const char *diagnostic_file_for(TokenBase *tb, TokenProgram *tp)
+{
+    if ( tb && tb->file && *tb->file )
+	return tb->file;
+    return tp ? tp->source.c_str() : NULL;
+}
+
 // parse the token queue
 bool Program::parse(TokenProgram *tp)
 {
@@ -51296,19 +51312,19 @@ bool Program::parse(TokenProgram *tp)
     }
     catch(const char *err_msg)
     {
-	set_error(DiagnosticPhase::parser, err_msg ? err_msg : "(null error message)", tp ? tp->source.c_str() : NULL, tb ? tb->line : 0, tb ? tb->column : 0);
+	set_error(DiagnosticPhase::parser, err_msg ? err_msg : "(null error message)", diagnostic_file_for(tb, tp), tb ? tb->line : 0, tb ? tb->column : 0);
 	print_last_diagnostic(error());
 	return false;
     }
     catch(TokenIdent *ti)
     {
-	set_error(DiagnosticPhase::parser, std::string("use of undeclared identifier '") + ti->spelling() + '\'', tp ? tp->source.c_str() : NULL, ti->line, ti->column);
+	set_error(DiagnosticPhase::parser, std::string("use of undeclared identifier '") + ti->spelling() + '\'', diagnostic_file_for(ti, tp), ti->line, ti->column);
 	print_last_diagnostic(error());
 	return false;
     }
     catch(TokenBase *tb)
     {
-	set_error(DiagnosticPhase::parser, std::string("unexpected token type ") + std::to_string((int)tb->type()), tp ? tp->source.c_str() : NULL, tb->line, tb->column);
+	set_error(DiagnosticPhase::parser, std::string("unexpected token type ") + std::to_string((int)tb->type()), diagnostic_file_for(tb, tp), tb->line, tb->column);
 	print_last_diagnostic(error());
 	if ( tb->type() == TokenType::ttReal )
 	{
@@ -51324,7 +51340,7 @@ bool Program::parse(TokenProgram *tp)
 	{
 	    TokenBase *err_tb = Throw.token();
 	    set_error(DiagnosticPhase::parser, Throw.str().empty() ? e.what() : Throw.str(),
-		tp ? tp->source.c_str() : NULL,
+		diagnostic_file_for(err_tb, tp),
 		err_tb ? err_tb->line : 0,
 		err_tb ? err_tb->column : 0);
 	}
@@ -51392,7 +51408,7 @@ TokenBase *Program::parse_expression_unit(TokenProgram *tp)
     catch(const char *err_msg)
     {
 	set_error(DiagnosticPhase::parser, err_msg ? err_msg : "(null error message)",
-		  tp ? tp->source.c_str() : NULL,
+		  diagnostic_file_for(tb, tp),
 		  tb ? tb->line : 0, tb ? tb->column : 0);
 	print_last_diagnostic(error());
 	return NULL;
@@ -51401,7 +51417,7 @@ TokenBase *Program::parse_expression_unit(TokenProgram *tp)
     {
 	set_error(DiagnosticPhase::parser,
 		  std::string("use of undeclared identifier '") + ti->spelling() + '\'',
-		  tp ? tp->source.c_str() : NULL, ti->line, ti->column);
+		  diagnostic_file_for(ti, tp), ti->line, ti->column);
 	print_last_diagnostic(error());
 	return NULL;
     }
@@ -51409,7 +51425,7 @@ TokenBase *Program::parse_expression_unit(TokenProgram *tp)
     {
 	set_error(DiagnosticPhase::parser,
 		  std::string("unexpected token type ") + std::to_string((int)err_tb->type()),
-		  tp ? tp->source.c_str() : NULL, err_tb->line, err_tb->column);
+		  diagnostic_file_for(err_tb, tp), err_tb->line, err_tb->column);
 	print_last_diagnostic(error());
 	return NULL;
     }
@@ -51419,7 +51435,7 @@ TokenBase *Program::parse_expression_unit(TokenProgram *tp)
 	{
 	    TokenBase *err_tb = Throw.token();
 	    set_error(DiagnosticPhase::parser, Throw.str().empty() ? e.what() : Throw.str(),
-		      tp ? tp->source.c_str() : NULL,
+		      diagnostic_file_for(err_tb, tp),
 		      err_tb ? err_tb->line : 0,
 		      err_tb ? err_tb->column : 0);
 	}

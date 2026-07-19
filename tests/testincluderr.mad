@@ -1,0 +1,5 @@
+// Diagnostic attribution (task #63): an error inside an #included file must
+// name the HEADER's file:line:col and echo the HEADER's source line — the
+// g++ shape — not the top-level TU's name with the header's line number.
+#include "testincluderr_helper.h"
+int main() { return 0; }

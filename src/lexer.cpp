@@ -5993,14 +5993,7 @@ void Program::printt(TokenBase *tb)
 void Source::showerror(int row, int col)
 {
 //	std::cout << "showerror(" << row << ", " << col << ')' << std::endl;
-	char *env_columns = getenv("COLUMNS");
-	size_t term_columns;
 	std::string ln;
-
-	if ( env_columns )
-	    term_columns = atoi(env_columns);
-	else
-	    term_columns = 80;
 
 	if ( !row || !col )
 	{
@@ -6031,17 +6024,50 @@ void Source::showerror(int row, int col)
 	_gpos = saved_gpos;
 	_cr = saved_cr; _lf = saved_lf; _column = saved_column;
 
-	if ( ln.length()+5 > term_columns )
-	{
-	    ln = "  ..." + ln.substr(col);
-	    std::cerr << ln << std::endl;
-	    std::cerr << std::setw(4) << ' ' << "\e[1;32m^\e[m" << std::endl;
-	    return;
-	}
-	std::cerr << ln << std::endl;
-	if ( col > 1 )
-	    std::cerr << std::setw(col-1) << ' ';
-	std::cerr << "\e[1;32m^\e[m" << std::endl;
+	show_error_source_line(ln, col);
+}
+
+// Shared display tail for a diagnostic source echo: the offending line and a
+// caret under the column, truncated to the terminal width — one formatter for
+// both the live-Source echo and the reread-from-disk echo.
+void show_error_source_line(const std::string &ln, int col)
+{
+    char *env_columns = getenv("COLUMNS");
+    size_t term_columns = env_columns ? (size_t)atoi(env_columns) : 80;
+
+    if ( ln.length()+5 > term_columns )
+    {
+	std::string trunc = "  ..." + ln.substr(col);
+	std::cerr << trunc << std::endl;
+	std::cerr << std::setw(4) << ' ' << "\e[1;32m^\e[m" << std::endl;
+	return;
+    }
+    std::cerr << ln << std::endl;
+    if ( col > 1 )
+	std::cerr << std::setw(col-1) << ' ';
+    std::cerr << "\e[1;32m^\e[m" << std::endl;
+}
+
+// Echo line `row` of a file that is NOT the live Source buffer — a token from
+// an #included file. Diagnostics are a cold path, so reread from disk. Returns
+// false (echo skipped) when the file cannot be opened or is shorter than
+// `row` — e.g. an embedded header with no on-disk presence, or stale
+// provenance; skipping beats echoing the wrong file's text.
+bool madc_show_file_error(const char *fname, int row, int col)
+{
+    if ( !fname || !*fname || row <= 0 )
+	return false;
+    std::ifstream f(fname);
+    if ( !f.is_open() )
+	return false;
+    std::string ln;
+    int i = 0;
+    while ( i < row && std::getline(f, ln) )
+	++i;
+    if ( i != row )
+	return false;
+    show_error_source_line(ln, col);
+    return true;
 }
 
 int throwbuf::sync()
@@ -6049,10 +6075,19 @@ int throwbuf::sync()
     cerr << endl;
     if ( _tb )
     {
-	cerr << ANSI_WHITE << (_src ? _src->fname() : "???") << ':' << _tb->line << ':' << _tb->column 
+	// file, line, column, AND the echoed source line must all come from
+	// the SAME provenance — the token's. Before this, an error inside an
+	// #included file printed the top-level file's NAME with the header's
+	// LINE and echoed the top-level file's text (three-way inconsistent).
+	const char *tok_file = (_tb->file && *_tb->file) ? _tb->file : NULL;
+	const char *fname = tok_file ? tok_file
+			  : (_src ? _src->fname() : "???");
+	cerr << ANSI_WHITE << fname << ':' << _tb->line << ':' << _tb->column
 	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
-	if ( _src )
+	if ( _src && (!tok_file || strcmp(tok_file, _src->fname()) == 0) )
 	    _src->showerror(_tb->line, _tb->column);
+	else
+	    madc_show_file_error(fname, _tb->line, _tb->column);
     }
     else
     if ( _src )
