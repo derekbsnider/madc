@@ -27,6 +27,11 @@ extern thread_local bool madc_verbose;
 // JIT/codegen optimization level (0-3), set by the `-O<n>` CLI flag. Drives
 // both MIR_gen_set_optimize_level and c2mir's compile optimize_level. Default 1.
 extern thread_local int madc_opt_level;
+// `-g`: source-level debug info for the JIT lane. Stamps c2mir source
+// locations, forces debuggable codegen (O0, no inlining, spill-all), and
+// registers a GDB-JIT debug object after link so gdb can break/step/inspect
+// JIT'd code. Overrides madc_opt_level for MIR gen.
+extern thread_local bool madc_debug_info;
 // True only while the production parser is building an isolated class pattern.
 // DataDefs born in that scope retain speculative provenance after rollback.
 extern thread_local bool madc_class_pattern_capture_active;

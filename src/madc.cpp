@@ -545,6 +545,8 @@ static void print_usage(const char *prog)
 "Misc:\n"
 "  --show-stats            print input/token/timing stats (read, lex, parse,\n"
 "                          c2mir, execute) to stderr after the run\n"
+"  -g                      debug info: gdb can break/step/inspect the JIT'd\n"
+"                          program (forces -O0, no inlining, spill-all)\n"
 "  -v, --verbose           verbose / debug output\n"
 "  -h, -?, --help          show this help\n"
 "\n"
@@ -613,6 +615,9 @@ int main(int argc, char **argv)
                    (argv[i][2] >= '0' && argv[i][2] <= '3' && argv[i][3] == '\0'))) {
             // -O / -O0..-O3 : codegen optimization level (bare -O == -O1).
             madc_opt_level = (argv[i][2] == '\0') ? 1 : (argv[i][2] - '0');
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-g") == 0) {
+            madc_debug_info = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-object") == 0 && i + 1 < argc) {
             emit_object_path = argv[++i];

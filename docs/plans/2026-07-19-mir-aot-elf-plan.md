@@ -267,3 +267,79 @@ of truth and already flow into c2mir nodes.
 abs_address_locs producer + lref data cover every address escape, with two
 object-mode adjustments (disable the SSA REF fold; symbolic const-pool
 keying). No blocking unknowns for R1/R2.
+
+## R1 landing (2026-07-19, fork branch feature/aot-elf-claude)
+
+**Upstream sync first (owner directive mid-rung):** merged vnmakarov/mir
+master a8ab7c31 into the fork (fork commit ce43f1c1) — upstream had absorbed
+ten of our PRs (#444–#459, several with Makarov follow-up refinements we
+adopted: force_val addr_p narrowing, make_conventional_ssa simplification,
+check-phase stmt-expr frame-slot reservation replacing our dynamic ALLOCA)
+plus eight of cyanogilvie's fixes. 11 hunks / 4 files resolved; fork test
+battery green. Divergence audit vs cyanogilvie/debug-support: everything
+dispositioned — his remaining fixes were already ours, upstream's, or
+superseded; meson/INTERNALS/skill infra not taken. Mechanism was MERGE (not
+history rewrite): fork develop is published and MIR_COMMIT pins its SHAs.
+
+**Debug arc:** the 13 debug-support commits cherry-picked (-x provenance)
+onto the synced base — code_len (unified with our machine_code_len; his name
+won, madc_jit_symbolize updated), source-loc line maps + the two stale-loc
+fixes, MIR_set_inline_permission, spill-all + reg frame offsets, the
+mir-debug ELF/DWARF builder + GDB-JIT registration (context-bound lifetime),
+and the c2mir consumer: per-statement MIR_set_source_loc stamping + rich
+typed locals snapshot, gated on the new c2mir_options.debug_info_p. The R0
+concern "c2mir stamping absent" was already solved ON the branch — the
+stamping lives in c2mir's shared gen(), so madc's c2mir_compile_tree path
+inherits it; node positions flow from cir_node file/line (mc11-ir).
+
+**Beyond the branch — .debug_frame CFI (fork 39963953):** gdb's heuristic
+prologue analysis does not recognize MIR's FP prologue (mov/lea, no push),
+so bt could not leave frame 0 despite a canonical in-memory FP chain
+(verified by live frame inspection). mir-debug now emits a DWARF32 v1 CIE +
+template FDE per function (entry-byte signature match; prologue-less leaves
+keep the CIE row). This collapsed the plan's "unwind hardening" follow-up
+into R1 for the debug lane. x86-64 only.
+
+**#69 rode along (fork 60314fb4):** GNU integer _Complex now rejected with a
+positioned error at the specifier walk ("integer _Complex types are not
+supported") instead of the MIR-gen fatal "wrong type memory" — integer
+complex is a pure GNU extension and the fork's native complex support is
+deliberately FP-component only.
+
+**madc side:** `-g` CLI flag (madc_debug_info) → c2mir debug_info_p +
+debuggable codegen (O0, inline off, spill-all) + post-link
+c2mir_get_debug_object/MIR_debug_gdb_register in the one-shot and --project
+lanes; suite lock tests/testdebuginfo.mad (runs the whole -g pipeline,
+gdb-free). Gate verified interactively on tmp/r1_gate.mad:
+`break r1_gate.mad:10` → named typed frames (scale → JIT main at the right
+call line → CirJitSession::run_main → host main), info locals/args correct
+across loop iterations, `up` + caller locals (struct/double) correct.
+
+**The torture ladder caught an upstream follow-up bug:** Makarov's
+narrowing of our force_val extension fix (2a157cc2, addr_p-only) regressed
+pr34099-2 — an UNINITIALIZED narrow local's pseudo-reg was never written by
+an extending store, so unextended 64-bit garbage reached 32-bit arithmetic
+(c2m standalone aborted at -O0/-O1). Restored the unconditional extension
+(fork bde8658d); pr34099-2 is the counterexample to propose back upstream.
+
+**#69 outcome:** the "reject cleanly" arm was tried (blanket specifier-walk
+rejection) and REGRESSED two green suite tests (testcomplexushort,
+testcomplexunsigneddiveq) in the packed lane — c2mir currently types
+integer _Complex as its plain scalar base (semantic hole: imaginary
+components silently drop; the two tests pass only because their values
+cannot distinguish the semantics). Rejection reverted; per owner directive
+("push forward and fix"), #69 is re-scoped as the real feature —
+component-correct integer _Complex through madc parser (__real__/__imag__
+are ALSO missing there) + fork machinery, gcc as oracle. Findings in the
+task.
+
+Residues: -g + the packed/forest cache lane registers only eagerly-gen'd
+consumer funcs (cache bodies gen lazily, skipped by design —
+c2mir_get_debug_object guards machine_code NULL); epilogue CFI window (1-2
+insns) accepted; aarch64 CFI template TBD with the aarch64 object work.
+
+Landed: fork develop @b6a411fa (merge of feature/aot-elf-claude, pushed;
+MIR_COMMIT bumped in the same madc commit). Validation at landing: fork
+battery green; madc fulltest 727/0/0/14; packed 727/0/0/14 (forest_pack
+OK, bind cache == no-cache); torture 1610 / failset 12 byte-identical;
+SMAUG soak green dev + packed; gdb gate green on the final binaries.
