@@ -227,6 +227,13 @@ class CirBuilder {
 	// Rung 3: the Pass-0/collect-time storage decl node of each file-scope
 	// global (keyed by Variable) — links a ctor group to its decl node.
 	std::map<Variable *, node_t> m_global_decl_node;
+	// Wide string literals (parser addWideLiteral): the sanitized module
+	// symbol (__wlit_<n>) each synthetic __wliteral__ Variable emits under.
+	// The Variable's own name embeds the raw UTF-32 payload (binary-safe for
+	// parse-time dedup, NOT a valid C identifier). Populated by the
+	// translate_module pre-scan that also emits the definitions; read by
+	// var_emit_name. Cleared per module.
+	std::map<const Variable *, std::string> m_wide_literal_syms;
 	// Rung 3: the conditional-emission map. A node recorded here survives the
 	// end-of-translate referenced-surface filter only if referenced: TYPE
 	// nodes (is_type) by struct tag — or, for typedef-bearing decls, any of

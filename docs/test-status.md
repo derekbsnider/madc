@@ -27,6 +27,25 @@
 > warnings**. The packed artifact carries a readable 240-unit forest, is
 > **10,219,496 bytes**, and has `MADCSNAP` footer magic.
 >
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #73
+> wide string literals):** gcc-torture **1604 passed, 2 compile-failed, 16
+> runtime-failed, 0 timed out, 63 skipped** — name-set diff vs the post-#72
+> baseline is EXACTLY {20010325-1.c, widechar-3.c} removed, zero regressions;
+> `docs/parity/torture-failset-current.txt` refreshed to the **18** remaining
+> names (memcpy-a8 passed this sweep — the documented load-margin flake, never
+> in the failset). Fulltest **721/0/0/15** (+1: `tests/testwideconcat.mad`
+> lifted, its `.mir_skip` removed). The fix is the Tier-1 wide-literal
+> lowering in the CIR builder: content-hash-named
+> `static int __wlit_<fnv1a64>[]` definitions emitted from the parser's baked
+> UTF-32 data, uses routed through `var_emit_name`, the constant-scalar READ
+> fold now excludes fixed arrays, and each definition rides the rung-3
+> referenced-surface filter (`cond_mark_sym`) so dead literals from
+> live-parsed-but-unused template bodies can't break the `forest_bind_gate`
+> byte-identity oracle (caught by [strbind] during development, fixed before
+> landing). Gate math: 1604 + 7 remaining class-(a) (#74 ×2, va_list
+> delegation, VLA param bound, _Bool bitfield, strlen-4, struct-ret-1) =
+> 1611 ≥ 1608.
+>
 > **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #75
 > SMAUG --project soak restored):** the soak is GREEN again on the dev binary —
 > `Realms of Despair ready at address madc-dev on port 4000` under DEFAULT

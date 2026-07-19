@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+- **feat(cir): wide string literals lowered to static int arrays —
+  torture cluster 2 closed, testwideconcat lifted (task #73).** The
+  parser has always materialized `L"..."` (and mixed-width
+  concatenations, [lex.string]/C11 6.4.5p5) as a synthetic
+  `__wliteral__<payload>` Variable carrying the UTF-32 code points in
+  baked data — but the CIR builder never learned to emit it: every use
+  referenced an identifier that (a) was never defined and (b) embedded
+  raw UTF-32 bytes, i.e. was not even a valid C identifier
+  ("undeclared identifier __wliteral__a", an asmjit-era leftover —
+  that backend read `Variable::data` directly). Tier-1 lowering per
+  `lowering-vs-raising.md` (c2mir has no `wchar_t`): a
+  `translate_module` pre-scan assigns each wide-literal Variable a
+  content-derived symbol (`__wlit_<fnv1a64>`) and defines it up front
+  as `static int __wlit_<h>[] = { code points…, 0 };` (wchar_t == int
+  on this target); uses resolve through `var_emit_name`, and the array
+  decays to `int*` exactly like gcc's `wchar_t[]`. Two hardening
+  details found by the gates: the constant-scalar READ fold now
+  excludes fixed arrays (it would have folded a wide literal's value
+  use to element 0), and each definition is `cond_mark_sym`'d into the
+  rung-3 referenced-surface filter with a CONTENT-stable name — dead
+  literals minted by live-parsed-but-unused template bodies (libstdc++
+  vswprintf formats: `L"%ld"`, `L"%Lf"`, …) differ between the live
+  and bound lanes, and order-dependent naming broke the
+  `forest_bind_gate [strbind]` byte-identity oracle until both were
+  fixed. gcc-oracle reducer battery (subscript, value use + NUL,
+  `&L"…"[0]` byte view, `sizeof`, concat + `L'c'`) all byte-equal;
+  torture 20010325-1 + widechar-3 flip; `tests/testwideconcat.mir_skip`
+  removed (suite 720→721, skips 16→15).
+
 - **fix(cli): SMAUG `--project` soak restored — the 2 GB address-space
   guard was killing legitimate multi-TU builds, silently (P0 task #75).**
   Root cause was NOT cross-TU state: `install_resource_guards()` arms

@@ -253,6 +253,15 @@ node_t CirBuilder::id(const char *name, TokenBase *origin)
 
 std::string CirBuilder::var_emit_name(const Variable &v) const
 {
+	// A wide string literal's Variable name embeds its raw UTF-32 payload
+	// (not a valid C identifier) — emit the sanitized module symbol the
+	// translate_module pre-scan assigned (and defined) for it.
+	{
+		std::map<const Variable *, std::string>::const_iterator wi =
+			m_wide_literal_syms.find(&v);
+		if (wi != m_wide_literal_syms.end())
+			return wi->second;
+	}
 	if (v.storage_alias_name.empty() || !m_prog)
 		return v.name;
 	// storage_alias_name is overloaded: an __attribute__((alias("data")))
@@ -13845,10 +13854,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// constant expression, C++ [expr.const]) — fold it like an enum
 			// value; this is what lets `const int H = G + 3;` emit a constant
 			// file-scope initializer c2mir accepts.
+			// (fixed arrays excluded: a constant ARRAY read — e.g. a wide
+			// string literal's int[] — is an address use, not a scalar fold;
+			// get<int64_t>() would return element 0.)
 			if (tv->var.is_constant() && tv->var.data
 			    && (!(tv->var.flags & vfCONSTDECL)
 				|| (tv->var.flags & vfCONSTBAKED)) && tv->var.type
-			    && tv->var.type->is_integer() && !tv->var.type->is_pointer())
+			    && tv->var.type->is_integer() && !tv->var.type->is_pointer()
+			    && !tv->var.is_fixed_array())
 				return integer(tv->var.get<int64_t>(), tb);
 			if (tv->var.name.compare(0, 11, "__literal__") == 0) {
 				const std::string &content = tv->var.name.substr(11);
@@ -20012,6 +20025,60 @@ node_t CirBuilder::translate_module(Program *prog)
 
 	node_t module = simple(N_MODULE);
 	node_t top_list = list();
+
+	// Wide string literals (parser addWideLiteral): synthetic file-scope
+	// int arrays whose Variable NAME embeds the raw UTF-32 payload
+	// (binary-safe for parse-time dedup, not a valid C identifier). c2mir
+	// has no wide literals (no wchar_t — Tier 1 per lowering-vs-raising.md),
+	// so assign each a sanitized module symbol and define it up front:
+	//   static int __wlit_<hash>[] = { code points..., 0 };
+	// (wchar_t's underlying type is int on this target; the baked data
+	// already carries the NUL terminator.) Uses resolve through
+	// var_emit_name; the array decays to int* exactly like gcc's wchar_t[].
+	// The symbol derives from the CONTENT (FNV-1a 64), not creation order,
+	// and each decl is cond_mark_sym'd: the referenced-surface filter drops
+	// UNREFERENCED literals in both the live and bound lanes — creation-
+	// order/dead-literal differences between lanes (bind never re-runs the
+	// parse that minted a dead template body's literal) can't break the
+	// bind == live byte-identity oracle. A hash collision would emit two
+	// same-named definitions — a loud c2mir redefinition error, not silent
+	// data corruption.
+	m_wide_literal_syms.clear();
+	if (prog->tkProgram) {
+		for (Variable *v : prog->tkProgram->variables) {
+			if (!v || !v->data
+			    || v->name.compare(0, 12, "__wliteral__") != 0)
+				continue;
+			const std::string payload = v->name.substr(12);
+			uint64_t h = 1469598103934665603ULL; // FNV-1a 64
+			for (size_t i = 0; i < payload.size(); i++) {
+				h ^= (unsigned char)payload[i];
+				h *= 1099511628211ULL;
+			}
+			char sym[32];
+			snprintf(sym, sizeof(sym), "__wlit_%016llx",
+				 (unsigned long long)h);
+			m_wide_literal_syms[v] = sym;
+			node_t spec = list();
+			append(spec, simple(N_STATIC));
+			append(spec, simple(N_INT));
+			node_t dl = list();
+			append(dl, node3(N_ARR, ignore(), list(), ignore())); // [] sized by init
+			node_t decl = node2(N_DECL, id(sym), dl);
+			node_t inits = list();
+			const int32_t *cp = (const int32_t *)v->data;
+			for (uint32_t i = 0; i < v->count; i++)
+				append(inits, node2(N_INIT, list(), integer(cp[i])));
+			node_t sd = simple(N_SPEC_DECL);
+			append(sd, node1(N_SHARE, spec));
+			append(sd, decl);
+			append(sd, ignore());
+			append(sd, ignore());
+			append(sd, inits);
+			cond_mark_sym(sd, sym);
+			append(top_list, sd);
+		}
+	}
 
 	// Collect all TokenFunc entries
 	std::vector<TokenFunc *> funcs;

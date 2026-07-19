@@ -1,1 +1,0 @@
-Mixed-width literal concatenation L"a" "b": madc's wide-literal lowering emits a reference to undeclared __wliteral__a (producer in parser.cpp) — a madc-side lowering gap in the concat path; wchar_t itself also remains unsupported in c2mir. Audit 2026-07-19.
