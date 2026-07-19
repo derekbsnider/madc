@@ -1,0 +1,32 @@
+/* fn-ptr declarations whose RETURN type is spelled through a typedef:
+   the alias must not swallow the declarator (struct-ret-1 class). */
+typedef struct { char c[33], c1; } X;
+typedef int I;
+
+X f(void)
+{
+	X r;
+	r.c1 = 'R';
+	return r;
+}
+
+I g(void) { return 7; }
+
+X (*fp)(void) = &f;
+I (*gp)(void) = &g;
+
+struct holder {
+	I (*get)(void);
+};
+
+int main(void)
+{
+	X b;
+	b = (*fp)();
+	__builtin_printf("c1=%c\n", b.c1);
+	__builtin_printf("g=%d\n", (*gp)());
+	struct holder h;
+	h.get = g;
+	__builtin_printf("m=%d\n", h.get());
+	return 0;
+}

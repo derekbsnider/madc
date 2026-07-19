@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+- **fix(cir): two promote-gate singles — fn-ptr declarations with
+  typedef'd RETURN types, and `_Bool` bitfields (struct-ret-1,
+  20030714-1).** (1) `X (*fp)(void)` where `X` is a typedef emitted as
+  `X fp` — the alias swallowed the whole declarator (signature AND
+  pointer), because `var_decl`'s fn-ptr arm treated ANY typedef
+  spelling as "declared via a fn-ptr typedef alias" (`DO_FUN g`). New
+  `fnptr_alias_is_fn()` resolves the alias through `datatype_map`: the
+  alias-spec form now applies only when the typedef names the
+  function(-pointer) type itself; a return-type alias keeps the full
+  `ret (*name)(params)` declarator. Same guard applied to the fn-ptr
+  MEMBER arm, where `bool (*isTableCell)(args)` emitted `bool *m` — a
+  plain data pointer (`fnptr_alias_stars`' unknown-alias fallback).
+  (2) The bit-field signedness reconciliation prepended `N_UNSIGNED`
+  to unsigned bit-fields whose spec had no sign token — but `_Bool`
+  admits no sign qualifier (C11 6.7.2p2) and already zero-extends, so
+  `bool b : 1;` emitted `unsigned _Bool` and c2mir rejected all 21
+  declarations in 20030714-1. `N_BOOL` now counts as sign-complete.
+  New `tests/testfnptrtypedefret.mad` + `tests/testboolbitfield.mad`
+  (gcc-oracle byte-equal; the latter deliberately locks only VALUE
+  semantics — a pre-existing bitfield allocation-unit divergence,
+  `_Bool:1` followed by a wider type giving sizeof 8 vs gcc's 4, is
+  filed as task #76).
+
 - **fix(cir): the dead-branch fold no longer discards function-scope
   labels — torture cluster 3 closed (task #74).** `translate_if_core`
   folds a compile-time-constant condition and prunes the dead branch

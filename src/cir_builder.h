@@ -774,6 +774,7 @@ public:
 	// `DO_FUN *m` (alias is a function typedef) -> 1; `UNOP m` (alias already
 	// a pointer-to-function typedef) -> 0. Returns 1 when the alias is unknown.
 	int fnptr_alias_stars(const std::string &alias);
+	bool fnptr_alias_is_fn(const std::string &alias);
 
 	// ---- Declaration builders ----
 	// Recursively build an initializer value node: a scalar expression, or

@@ -27,6 +27,28 @@
 > warnings**. The packed artifact carries a readable 240-unit forest, is
 > **10,219,496 bytes**, and has `MADCSNAP` footer magic.
 >
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`,
+> promote-gate singles — 🏁 THE ≥1608 THRESHOLD IS MET):** gcc-torture
+> **1608 passed, 2 compile-failed, 12 runtime-failed, 0 timed out, 63
+> skipped** — name-set diff vs the post-#74 baseline is EXACTLY
+> {20030714-1.c, struct-ret-1.c} removed, zero regressions;
+> `docs/parity/torture-failset-current.txt` refreshed to the **14** remaining
+> names = 11 class-(b) GNU-ext + **3 class-(a) singles** (strlen-4,
+> 20041214-1 va_list delegation, pr22061-1 VLA param bound). Two fixes:
+> (1) fn-ptr declarations whose RETURN type is a typedef (`X (*fp)(void)`)
+> emitted `X fp` — the alias swallowed the declarator; new
+> `fnptr_alias_is_fn()` gates the alias-spec form to typedefs that name the
+> function type itself, applied to both the variable and MEMBER arms
+> (members emitted `bool *m` via the unknown-alias star fallback).
+> (2) `_Bool` bit-fields: the signedness reconciliation emitted
+> `unsigned _Bool` (rejected by c2mir, C11 6.7.2p2) — `N_BOOL` now counts
+> as sign-complete. Fulltest **724/0/0/15** (+2: `testfnptrtypedefret`,
+> `testboolbitfield` — the latter locks VALUE semantics only; the
+> pre-existing `_Bool:1`-then-wider-type allocation-unit divergence
+> (sizeof 8 vs gcc 4) is filed as task #76). The branching.md gate reads
+> "ALL class-(a) fixed (≥1608)": the NUMBER is met; 3 class-(a) singles
+> remain — the promote call is the owner's.
+>
 > **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #74
 > dead-branch fold keeps function-scope labels):** gcc-torture **1606 passed,
 > 2 compile-failed, 14 runtime-failed, 0 timed out, 63 skipped** — name-set

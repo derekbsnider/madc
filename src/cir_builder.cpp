@@ -5633,6 +5633,21 @@ int CirBuilder::fnptr_alias_stars(const std::string &alias)
 	return 1;
 }
 
+// True when `alias` resolves to a function(-pointer) typedef — the only case
+// where the alias can serve as a fn-ptr declaration's whole type spec
+// (`DO_FUN g`). A typedef that names a NON-function type is just the fn-ptr's
+// RETURN type (`X (*fp)(void)` — struct-ret-1; `bool (*m)(args)` members —
+// 20030714-1): the alias spec would erase both the signature and the pointer,
+// so those must keep the full `ret (*name)(params)` declarator. Unresolvable
+// aliases count as function form (matches fnptr_alias_stars' fallback).
+bool CirBuilder::fnptr_alias_is_fn(const std::string &alias)
+{
+	if (alias.empty() || !m_prog) return true;
+	flat_datatype_map_iter it = m_prog->datatype_map.find(alias);
+	if (it == m_prog->datatype_map.end() || !*it) return true;
+	return dynamic_cast<DataDefFPTR *>(&(*it)->definition) != NULL;
+}
+
 // -----------------------------------------------------------------------
 // Declaration builders
 // -----------------------------------------------------------------------
@@ -6297,8 +6312,12 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// the signature; build `ret (*fp)(params)` instead. (Array-of-fn-ptr
 	// variables are deferred; SMAUG's tables are struct-arrays with fn-ptr
 	// members, handled in member_node.)
-	DataDefFPTR *fnptr = v->typedef_name.empty()
-			? dynamic_cast<DataDefFPTR *>(v->type) : NULL;
+	// Declared through a typedef: the alias is the whole type spec ONLY when
+	// it names the function(-pointer) type itself — see fnptr_alias_is_fn.
+	DataDefFPTR *fnptr = dynamic_cast<DataDefFPTR *>(v->type);
+	if (fnptr && !v->typedef_name.empty()
+	    && fnptr_alias_is_fn(v->typedef_name))
+		fnptr = NULL;
 	node_t fnptr_decl_list = NULL;
 
 	// Emit ID("alias") for a variable declared via a typedef (matches c2m).
@@ -6818,7 +6837,11 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	if (DataDefFPTR *mfp = dynamic_cast<DataDefFPTR *>(mtype)) {
 		node_t mspec;
 		node_t mdl = list();
-		if (!mtypedef.empty()) {
+		// The alias-spec form applies only when the typedef names the
+		// function(-pointer) type itself; a RETURN-type alias
+		// (`bool (*isTableCell)(args)`, 20030714-1) would emit `bool *m` —
+		// a plain data pointer — so it expands the signature inline.
+		if (!mtypedef.empty() && fnptr_alias_is_fn(mtypedef)) {
 			mspec = type_list(mtype, mtypedef);
 			for (size_t d = 0; d < mdims.size(); d++)
 				append(mdl, node3(N_ARR, ignore(), list(), integer(mdims[d])));
@@ -6915,7 +6938,12 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 			for (int i = 0; ; i++) {
 				node_t sp = c2mir_node_op(mspec, i);
 				if (!sp) break;
-				if (sp->code == N_UNSIGNED || sp->code == N_SIGNED)
+				// _Bool admits no sign qualifier (C11 6.7.2p2) and
+				// already zero-extends — prepending N_UNSIGNED would
+				// emit `unsigned _Bool`, which c2mir rejects
+				// ("_Bool with sign qualifier", 20030714-1).
+				if (sp->code == N_UNSIGNED || sp->code == N_SIGNED
+				    || sp->code == N_BOOL)
 					has_sign_spec = true;
 			}
 			if (!has_sign_spec) {
