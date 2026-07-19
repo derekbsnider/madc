@@ -646,3 +646,17 @@ every madcdat storage/relation/contract unit suite green through the moved
 headers + packed release arbiter 717/0/0/16 blob-verified; tree restored to
 the =no baseline. NEXT in track C: C2 (intrinsic types) after B proves the
 substrate.
+
+**✅ TRACK B RECONCILIATION (2026-07-19, task #60 audit — supersedes the
+"NEXT: B4b" note in the B4a landing block above).** B4b and B4c had already
+landed under their own names: B4b @df7241f0 (parse-time grove availability +
+include recognition, flag-gated) → @9ee21881 (Phase-6 slice 2: `#include` of a
+forest header LOADS + restores, no re-parse); B4c @561cce34 (2026-07-08,
+default-on embedded-forest bind + v27 producer-config gate; `--no-forest-bind`
+opt-out; silent live-parse fallback). §10 acceptance measured on the release
+binary (iostream TU): default bind = 19 tokens lexed / 0.001 s parse /
+0.194 s in-process vs live = 150,246 tokens / 0.239 s parse / 0.441 s. The
+packed arbiter (717/0/0/16) runs the whole suite under forest-default. **Track
+B is COMPLETE; B4d (tsubst-from-frozen patterns) stays optional-parked with
+its go/no-go profile inputs recorded in the design doc. The C2–C4 feature
+tracks are UNBLOCKED per this plan's own ordering ("C2–C4 follow B").**
