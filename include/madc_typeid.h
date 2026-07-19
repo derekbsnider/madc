@@ -65,7 +65,12 @@ enum
     MADC_TYPEID_TEXT           = 31,
     MADC_TYPEID_BYTES          = 32,
     MADC_TYPEID_OBJECT         = 33,
-    MADC_TYPEID_PRIMITIVE_LAST = 33,
+    /* The compiler-owned SysV va_list (struct __madc_va_list_tag[1] —
+     * Program::builtin_va_list_type()). Pinned so a frozen typedef of
+     * __builtin_va_list resolves in any process; the tag STRUCT itself
+     * records as an ordinary aggregate. */
+    MADC_TYPEID_BUILTIN_VA_LIST = 34,
+    MADC_TYPEID_PRIMITIVE_LAST = 34,
 
     MADC_TYPEID_PRIMITIVE_END  = 0x100,
     MADC_TYPEID_SYSTEM_BASE    = 0x100

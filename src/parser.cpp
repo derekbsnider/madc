@@ -2080,6 +2080,9 @@ DataDef *Program::resolve_named_datadef(const std::string &name)
     if ( bmi != datatype_map.end() )
 	return &(*bmi)->definition;
 
+    if ( name == "__builtin_va_list" )
+	return use_builtin_va_list();	// per-Program: registers the tag struct
+
     if ( DataDef *dd = resolve_builtin_type_spelling(name) )
 	return dd;
 
@@ -2139,8 +2142,44 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
     if ( name == "LPSTR" ) return &ddLPSTR;
     if ( name == "array" ) return &ddARRAY;
     if ( name == "auto" ) return &ddAUTO;
+    if ( name == "__builtin_va_list" ) return builtin_va_list_type();
 
     return NULL;
+}
+
+// The compiler-owned x86-64 SysV va_list: struct __madc_va_list_tag[1] —
+// the SAME shape gcc, glibc, and c2mir's own mirc_x86_64_linux.h use. ONE
+// process singleton so `typedef __builtin_va_list va_list;` (bare, no
+// include) and the embedded <stdarg.h> (which aliases this builtin) resolve
+// to the identical type; the CIR emitter synthesizes the typedef's C when a
+// module references it (no source declaration exists to emit).
+DataDef *Program::builtin_va_list_type()
+{
+    static DataDefCArray *va_list_dd = NULL;
+    if ( !va_list_dd )
+    {
+	DataDefSTRUCT *tag = new DataDefSTRUCT("__madc_va_list_tag", 0);
+	tag->addMember("gp_offset", ddUINT32, 1);
+	tag->addMember("fp_offset", ddUINT32, 1);
+	tag->addMember("overflow_arg_area", ddVOIDptr, 1);
+	tag->addMember("reg_save_area", ddVOIDptr, 1);
+	tag->is_complete = true;
+	va_list_dd = new DataDefCArray(*tag, "__builtin_va_list", 1);
+    }
+    return va_list_dd;
+}
+
+// Per-Program entry point for a USE of the builtin: registers the tag struct
+// in struct_map so the CIR emitter's struct sweep (Pass 1.97) emits the
+// definition — a bare `typedef __builtin_va_list va_list;` has no parsed
+// struct declaration to emit otherwise.
+DataDef *Program::use_builtin_va_list()
+{
+    DataDef *dd = builtin_va_list_type();
+    DataDefCArray *ca = static_cast<DataDefCArray *>(dd);
+    if ( ca->element_type && !struct_map.count(ca->element_type->name) )
+	struct_map.set(ca->element_type->name, ca->element_type);
+    return dd;
 }
 
 bool Program::typedef_alias_matches_datadef(const std::string &alias, DataDef *dd)
@@ -12144,6 +12183,8 @@ DataDef *madc_primitive_for_slot(uint32_t slot)
 		case MADC_TYPEID_INT32_PTR:	return &ddINT32ptr;
 		case MADC_TYPEID_ARRAY:		return &ddARRAY;
 		case MADC_TYPEID_AUTO:		return &ddAUTO;
+		case MADC_TYPEID_BUILTIN_VA_LIST:
+			return Program::builtin_va_list_type();
 		default:			return NULL;
 	}
 }

@@ -57,3 +57,9 @@ basic_stringbuf_wchar_t_std__char_traits_wchar_t__std__allocator_wchar_t_____xfe
 fabs
 fabsf
 fabsl
+#
+# Class 5 — compiler-owned synthesized types: never parsed from any header
+# (no grove decl exists), re-created deterministically by the compiler in
+# any process. __madc_va_list_tag is Program::builtin_va_list_type()'s tag
+# struct, registered on first use of __builtin_va_list / <stdarg.h>.
+__madc_va_list_tag

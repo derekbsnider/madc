@@ -731,18 +731,17 @@ inline std::string &pop(std::string &result, madc::value &values) { return *__ru
 // corrupting the list; invoking the intrinsic on the user's own va_list
 // avoids the copy and the corruption.)
 
-typedef struct __madc_va_list_tag {
-	unsigned int gp_offset;
-	unsigned int fp_offset;
-	void *overflow_arg_area;
-	void *reg_save_area;
-} va_list[1];
+// ONE definition: the compiler owns the type (Program::builtin_va_list_type —
+// the SysV struct __madc_va_list_tag[1] singleton, resolved from the spelling
+// __builtin_va_list). This header only aliases it, exactly like real gcc
+// stdarg.h; the CIR emitter synthesizes the struct+typedef C when a module
+// references the type.
+typedef __builtin_va_list va_list;
 
 // GCC's name for the same underlying va_list ABI type. Real system headers
 // (e.g. glibc <wchar.h> under `#define __need___va_list`) reference it and then
-// do `typedef __gnuc_va_list va_list;`. Defined as a DIRECT typedef of the same
-// tagged struct so va_list above stays the intrinsic's expected struct typedef.
-typedef struct __madc_va_list_tag __gnuc_va_list[1];
+// do `typedef __gnuc_va_list va_list;`.
+typedef __builtin_va_list __gnuc_va_list;
 
 #define va_start(ap, last) __builtin_va_start(ap)
 #define va_end(ap) ((void)(ap))

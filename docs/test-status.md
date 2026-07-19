@@ -28,6 +28,30 @@
 > **10,219,496 bytes**, and has `MADCSNAP` footer magic.
 >
 > **Local branch update (2026-07-19, `feature/class-parse-once-codex`,
+> task #68 — real SysV `__builtin_va_list`, 20041214-1 flips):**
+> gcc-torture **1610 passed, 2 compile-failed, 10 runtime-failed, 0
+> timed out, 63 skipped** — name-set diff vs the post-#78 baseline is
+> EXACTLY {20041214-1.c}, zero regressions; failset refreshed to **12**
+> names = 11 class-(b) GNU-ext + **1 class-(a) single** (pr22061-1 VLA
+> param bound). The lexer's `__builtin_va_list` → `long` macro is gone:
+> the compiler owns the type (`Program::builtin_va_list_type()`, the
+> SysV `struct __madc_va_list_tag[1]` singleton), embedded <stdarg.h>
+> aliases it, va_end/va_copy macro bodies are array-correct, and the
+> singleton is PINNED as type-id slot 34 so frozen typedefs restore in
+> any process (the pre-pin packed run failed 10 varargs tests with
+> "undeclared identifier va_list"; packed is now **726/0/0/14 == dev**
+> with forest_pack OK). The synthesized tag is a Class-5
+> forest_index_allowlist entry. testbuiltinvalisttypedef reworked to
+> the gcc-parity `.expect_err` (`ap = 0` on an array-typed va_list must
+> reject; stale "ok" .expect + .mir_skip removed → +1 pass, −1 skip).
+> Fulltest **726/0/0/14**, tsubst ratchet green, SMAUG soak GREEN
+> dev+packed. Pre-existing and unchanged: testvarargsstructruntime
+> (c2mir lacks VLA-in-struct layout — fork work, pr41935/pr82210
+> family) and testvarargsstructcomplex (integer `_Complex` MIR-gen
+> fatal = task #69, fork-or-clean-reject) — both verified independent
+> of the va_list model.
+>
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`,
 > task #78 — array-typedef dims order + &array-lvalue typing, strlen-4
 > flips):** gcc-torture **1609 passed, 2 compile-failed, 11
 > runtime-failed, 0 timed out, 63 skipped** — name-set diff vs the

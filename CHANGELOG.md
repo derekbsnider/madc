@@ -2,7 +2,35 @@
 
 ## [Unreleased]
 
-- **fix(parser+fork): array-typedef dims order + &array-lvalue typing —
+- **fix(types): `__builtin_va_list` is the real SysV va_list — one
+  compiler-owned definition; 20041214-1 flips, torture 1610, failset 12
+  (task #68).** The lexer macro-rewrote `__builtin_va_list` to `long`,
+  cramming 24 bytes of x86-64 va_list state into 8 and passing a scalar
+  COPY on delegation — `g(s, ap)` then va_arg'd garbage (SIGSEGV in the
+  20041214-1 torture test; a textual macro can never express the
+  `[1]` array typedef since the suffix binds after the declarator).
+  Now the compiler OWNS the type: `Program::builtin_va_list_type()` is
+  a process singleton `struct __madc_va_list_tag {gp_offset, fp_offset,
+  overflow_arg_area, reg_save_area}[1]` — the same shape gcc, glibc,
+  and c2mir's own preamble use — resolved from the spelling by both the
+  lexer (make_datatype arm, like `__int128_t`) and the parser's builtin
+  spelling table; first use registers the tag in struct_map so the CIR
+  struct sweep (Pass 1.97) emits the definition. The embedded
+  <stdarg.h> now just ALIASES the builtin (`typedef __builtin_va_list
+  va_list;` + `__gnuc_va_list`) — one definition total. The
+  `__builtin_va_end`/`__builtin_va_copy` macro bodies are array-correct
+  (`(void)(ap)` / element copy). Freeze/restore: the singleton is
+  pinned as type-id slot 34 (`MADC_TYPEID_BUILTIN_VA_LIST`, the
+  designed append-only path; test_datadef pins updated) so a frozen
+  `typedef __builtin_va_list va_list;` resolves in any process — the
+  first packed run failed 10 varargs tests ("undeclared identifier
+  va_list") before the pin; packed suite now 726/0/0/14 == dev. The
+  compiler-synthesized tag is a Class-5 forest_index_allowlist entry
+  (never parsed from any grove). testbuiltinvalisttypedef reworked per
+  the gcc oracle: `ap = 0` on the array-typed va_list now REJECTS like
+  gcc/clang — stale "ok" .expect and .mir_skip removed, .expect_err
+  added (+1 suite, -1 skip). Torture 1609 -> 1610, name-set diff
+  exactly {20041214-1.c}; failset 12 = 11 class-(b) + pr22061-1.
   strlen-4 flips, torture 1609, failset 13 (task #78).** Two stacked
   bugs. (1) Parser: `typedef char A28[28]; A28 row[3]` produced dims
   `{28,3}` instead of C's `{3,28}` — `peel_carray_dimensions` ran before

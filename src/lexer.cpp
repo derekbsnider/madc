@@ -79,13 +79,6 @@ static DataDef *get_complex_compat_type(DataDef *base_type)
     return complex_type;
 }
 
-static bool builtin_alias_needs_retokenize(const std::string &word,
-					   const std::string &val)
-{
-    (void)val;
-    return word == "__builtin_va_list";
-}
-
 static bool is_prefixed_literal_token(const std::string &ident,
 				      const std::string &body,
 				      size_t pos)
@@ -1265,7 +1258,11 @@ void Program::_tokenizer_init()
     define_map["__UINT_FAST32_TYPE__"] = "unsigned long";
     define_map["__INT_FAST64_TYPE__"] = "long";
     define_map["__UINT_FAST64_TYPE__"] = "unsigned long";
-    define_map["__builtin_va_list"] = "long";
+    // __builtin_va_list is NOT a macro: it is a real compiler type
+    // (Program::builtin_va_list_type — the SysV __madc_va_list_tag[1]
+    // singleton) resolved via resolve_builtin_type_spelling, so
+    // `typedef __builtin_va_list va_list;` gets the true array-of-struct
+    // semantics a textual expansion can never express.
     define_map["__builtin_va_arg"] = "va_arg";
     define_map["__null"] = "0";
     // __builtin_va_start passes through to the CIR as a real c2mir intrinsic
@@ -1274,16 +1271,19 @@ void Program::_tokenizer_init()
     // the earlier `__ap = __va_args` master-copy expansion mis-set reg_save_area
     // in large frames. va_end stays a no-op (the stdarg.h va_end macro handles
     // it as `((void)(ap))`).
+    // va_list is the real __madc_va_list_tag[1] array type, so va_end is a
+    // no-op cast (an array lvalue cannot be assigned) and va_copy copies the
+    // one element — the same bodies the embedded stdarg.h macros use.
     {
 	MacroDef m;
 	m.params = {"__ap"};
-	m.body = "__ap = 0";
+	m.body = "((void)(__ap))";
 	macro_map["__builtin_va_end"] = m;
     }
     {
 	MacroDef m;
 	m.params = {"__dest", "__src"};
-	m.body = "__dest = __src";
+	m.body = "((__dest)[0] = (__src)[0])";
 	macro_map["__builtin_va_copy"] = m;
     }
     // Report the GCC version that compiled madc itself.
@@ -4723,8 +4723,7 @@ TokenBase *Program::_getToken()
 			// of re-entering the macro rescanner. Otherwise user macros
 			// like `#define strcmp __builtin_strcmp` recurse forever.
 			if ( word.compare(0, 10, "__builtin_") == 0
-			  && is_identifier_spelling(val)
-			  && !builtin_alias_needs_retokenize(word, val) )
+			  && is_identifier_spelling(val) )
 			    return make_ident(val);
 			source.pushback_macro(val, word);
 			return getToken(); // re-tokenize the substituted text
@@ -4822,6 +4821,12 @@ TokenBase *Program::_getToken()
 		    return make_datatype("__int128", ddINT128);
 		if ( word == "__uint128_t" )
 		    return make_datatype("unsigned __int128", ddUINT128);
+		// The compiler-owned SysV va_list (struct __madc_va_list_tag[1]
+		// singleton) — ATOMIC like __int128_t; the parser's spelling
+		// table (resolve_builtin_type_spelling) returns the same object.
+		if ( word == "__builtin_va_list" )
+		    return make_datatype("__builtin_va_list",
+					 *use_builtin_va_list());
 		// Compound type specifiers: any mix of unsigned/signed/long/
 		// short/int/char/double in any order (C99 6.7.2).
 		// Uses a bitmap accumulator (chibicc-style) so order doesn't

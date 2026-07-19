@@ -1609,7 +1609,8 @@ TEST_SUITE("type table (typeid) identity layer") {
         CHECK(MADC_TYPEID_TEXT == 31);
         CHECK(MADC_TYPEID_BYTES == 32);
         CHECK(MADC_TYPEID_OBJECT == 33);
-        CHECK(MADC_TYPEID_PRIMITIVE_LAST == 33);
+        CHECK(MADC_TYPEID_BUILTIN_VA_LIST == 34);
+        CHECK(MADC_TYPEID_PRIMITIVE_LAST == 34);
         CHECK(MADC_TYPEID_PRIMITIVE_LAST < MADC_TYPEID_PRIMITIVE_END);
         CHECK(MADC_TYPEID_PRIMITIVE_END == 0x100);
         CHECK(MADC_TYPEID_SYSTEM_BASE == 0x100);
@@ -1643,6 +1644,13 @@ TEST_SUITE("type table (typeid) identity layer") {
         CHECK(!ddINT128.is_real());
         CHECK(!ddINT128.is_unsigned());
         CHECK(ddUINT128.is_unsigned());
+        // the compiler-owned SysV va_list: struct __madc_va_list_tag[1]
+        {
+            DataDef *va = madc_primitive_for_slot(MADC_TYPEID_BUILTIN_VA_LIST);
+            REQUIRE(va != (DataDef *)NULL);
+            CHECK(va->type_id == MADC_TYPEID_BUILTIN_VA_LIST);
+            CHECK(va->size == 24);
+        }
         // reserved-but-unbacked slots resolve NULL until their P0 slice lands
         CHECK(madc_primitive_for_slot(MADC_TYPEID_LONG_DOUBLE) == (DataDef *)NULL);
         // dynamic value kinds have no compiler DataDef
