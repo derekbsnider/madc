@@ -1,1 +1,1 @@
-madc #load directive not in transpiler
+madc's dlcall() variadic dynamic-call builtin has no MIR-lane runtime implementation ("MIR error: import of undefined item dlcall"); dlopen/dlsym in the same test resolve fine via libc. Old "#load not in transpiler" reason wrong — this test has no #load. Follow-on task filed. Audit 2026-07-19.

@@ -1,17 +1,252 @@
 # Test Status
 
-> **Current (2026-07-14, bound columnar RECORDS bind @`cbcb79b6`):**
-> `make -C src fulltest` exits 0 with **695 passed, 0 failed, 0 timed out,
-> 16 skipped**. Every static and forest gate is green, including
+> **Current (2026-07-15, class-KIND parse-once B2 on
+> `feature/class-parse-once-codex`):**
+> The fulltest component matrix is green with **696 passed, 0 failed, 0 timed
+> out, 16 skipped**. Every static and forest gate is green, including
 > `forest_bind_gate [subbind]`, the full bind matrix, and both forest oracles.
-> The reducer corpus freezes with **308 pack drops**. `make -C src release`
-> exits 0 and appends 240 packed units; the full packed run
+> The initial fulltest invocation used the census cap (`MADC_CPU_LIMIT=30`), so
+> its final `testsubscript --freeze` process hit that cap; only the interrupted
+> forest bind gate and the two unreached tail oracles were resumed at the
+> documented `MADC_CPU_LIMIT=120`, and all passed.
+> `make -C src release` exits 0 and appends 240 packed units; the full packed run
 > (`MADC_BIN=bin/madc-release bash scripts/run_tests.sh`) is also
-> **695/0/0/16**. `bin/test_madcdis_snapshot` is **10/10** with **13,884
-> assertions**, including direct verification of the preserved byte-plane
-> layout; `bin/test_cir_freeze` is **36/36** with **690 assertions**. The
-> packed artifact carries a readable 240-unit forest and remains exactly
-> **9,708,520 bytes**.
+> **696/0/0/16**. `bin/test_class_pattern` is **2/2** with **159 assertions**,
+> covering structural-versus-legacy metadata equivalence, GCC/Clang Itanium
+> symbols, and loud rollback without parser retry. `bin/test_cir_freeze` is
+> **36/36** with **740 assertions**,
+> including class-pattern semantic/token fingerprint and forest round-trip
+> coverage; `bin/test_stringpool` is **7/7** with **10,032 assertions**,
+> including scoped keyed-map transactions. The tsubst matrix is **13/13** and
+> the suite ratchet remains **10 hit / 0 fallback**. The full class census is
+> pattern **3**, parse **48604**, cache **99334**, opaque **24431**. B2 admits
+> the narrow aliases/member/layout/simple-method/forward-completion subset;
+> every other shape stays on the single parser lane under a typed reason. Both
+> the debug/PIC build and the `-Wall -O2` release build emit **0 host compiler
+> warnings**; the source warning census compiles **712** tests with **0
+> warnings**. The packed artifact carries a readable 240-unit forest, is
+> **10,219,496 bytes**, and has `MADCSNAP` footer magic.
+>
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`,
+> task #68 — real SysV `__builtin_va_list`, 20041214-1 flips):**
+> gcc-torture **1610 passed, 2 compile-failed, 10 runtime-failed, 0
+> timed out, 63 skipped** — name-set diff vs the post-#78 baseline is
+> EXACTLY {20041214-1.c}, zero regressions; failset refreshed to **12**
+> names = 11 class-(b) GNU-ext + **1 class-(a) single** (pr22061-1 VLA
+> param bound). The lexer's `__builtin_va_list` → `long` macro is gone:
+> the compiler owns the type (`Program::builtin_va_list_type()`, the
+> SysV `struct __madc_va_list_tag[1]` singleton), embedded <stdarg.h>
+> aliases it, va_end/va_copy macro bodies are array-correct, and the
+> singleton is PINNED as type-id slot 34 so frozen typedefs restore in
+> any process (the pre-pin packed run failed 10 varargs tests with
+> "undeclared identifier va_list"; packed is now **726/0/0/14 == dev**
+> with forest_pack OK). The synthesized tag is a Class-5
+> forest_index_allowlist entry. testbuiltinvalisttypedef reworked to
+> the gcc-parity `.expect_err` (`ap = 0` on an array-typed va_list must
+> reject; stale "ok" .expect + .mir_skip removed → +1 pass, −1 skip).
+> Fulltest **726/0/0/14**, tsubst ratchet green, SMAUG soak GREEN
+> dev+packed. Pre-existing and unchanged: testvarargsstructruntime
+> (c2mir lacks VLA-in-struct layout — fork work, pr41935/pr82210
+> family) and testvarargsstructcomplex (integer `_Complex` MIR-gen
+> fatal = task #69, fork-or-clean-reject) — both verified independent
+> of the va_list model.
+>
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`,
+> task #78 — array-typedef dims order + &array-lvalue typing, strlen-4
+> flips):** gcc-torture **1609 passed, 2 compile-failed, 11
+> runtime-failed, 0 timed out, 63 skipped** — name-set diff vs the
+> post-singles baseline is EXACTLY {strlen-4.c} removed, zero
+> regressions; `docs/parity/torture-failset-current.txt` refreshed to
+> **13** names = 11 class-(b) GNU-ext + **2 class-(a) singles**
+> (20041214-1 va_list delegation, pr22061-1 VLA param bound). Two
+> stacked fixes: (1) parser dims order for `A28 row[3]` with
+> `typedef char A28[28]` — the declarator's dims are the OUTER
+> dimensions; the peeled typedef dims now rotate behind them
+> (`sizeof(row[0])` was 3, initializers truncated); (2) c2mir fork
+> @8a6a6c57 — `&a[i]` on a decayed array lvalue now constructs the true
+> pointer-to-array type instead of copying the decayed element pointer
+> (`*(&a[i] + k)` yielded a char scalar; strlen crashed at 0x31).
+> Fulltest **725/0/0/15** (+`testarraytypedef`, gcc-oracle byte-equal),
+> packed arbiter **725/0/0/15** with forest_pack OK (240 units, bind
+> cache == no-cache), SMAUG soak GREEN dev+packed. Adjacent gap filed
+> as #79: the CAST form `(char (*)[28])expr` is rejected by the fn-ptr
+> cast arm.
+>
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`,
+> task #77 — liberal default resource guards, owner directive):** the CLI's
+> self-limits no longer throttle legitimate work: `MADC_CPU_LIMIT` default
+> 60 s → **0 (disabled, opt-in)** — madc RUNS the program, so any finite
+> CPU default eventually kills a legitimate long-running server with
+> SIGXCPU; an armed CPU guard now trips LOUDLY (new SIGXCPU handler names
+> the knob via the crash-write plumbing, then re-raises so the shell sees
+> the real signal status). `MADC_MEM_LIMIT` base **2048 → 4096 MB**
+> (+128 MB/TU `--project` scaling and the knob-naming `bad_alloc`
+> attribution unchanged); both knobs are now documented in `--help`
+> (Environment section). Probes: `MADC_CPU_LIMIT=2` + spin → knob-named
+> trip, exit 152; **65-CPU-second spin survives the default env** (died
+> at 60 s before); malloc-loop NULLs at exactly the 4096 MB ceiling
+> (4032 MB allocated over a ~64 MB baseline) and honors a 256 MB override
+> (192 MB). Guards install only in `main()` — libmadc embedding hosts set
+> their own. Fulltest and the packed arbiter re-verified green (counts
+> unchanged: 724/0/0/15 dev + packed).
+>
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`,
+> promote-gate singles — 🏁 THE ≥1608 THRESHOLD IS MET):** gcc-torture
+> **1608 passed, 2 compile-failed, 12 runtime-failed, 0 timed out, 63
+> skipped** — name-set diff vs the post-#74 baseline is EXACTLY
+> {20030714-1.c, struct-ret-1.c} removed, zero regressions;
+> `docs/parity/torture-failset-current.txt` refreshed to the **14** remaining
+> names = 11 class-(b) GNU-ext + **3 class-(a) singles** (strlen-4,
+> 20041214-1 va_list delegation, pr22061-1 VLA param bound). Two fixes:
+> (1) fn-ptr declarations whose RETURN type is a typedef (`X (*fp)(void)`)
+> emitted `X fp` — the alias swallowed the declarator; new
+> `fnptr_alias_is_fn()` gates the alias-spec form to typedefs that name the
+> function type itself, applied to both the variable and MEMBER arms
+> (members emitted `bool *m` via the unknown-alias star fallback).
+> (2) `_Bool` bit-fields: the signedness reconciliation emitted
+> `unsigned _Bool` (rejected by c2mir, C11 6.7.2p2) — `N_BOOL` now counts
+> as sign-complete. Fulltest **724/0/0/15** (+2: `testfnptrtypedefret`,
+> `testboolbitfield` — the latter locks VALUE semantics only; the
+> pre-existing `_Bool:1`-then-wider-type allocation-unit divergence
+> (sizeof 8 vs gcc 4) is filed as task #76). The branching.md gate reads
+> "ALL class-(a) fixed (≥1608)": the NUMBER is met; 3 class-(a) singles
+> remain — the promote call is the owner's.
+>
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #74
+> dead-branch fold keeps function-scope labels):** gcc-torture **1606 passed,
+> 2 compile-failed, 14 runtime-failed, 0 timed out, 63 skipped** — name-set
+> diff vs the post-#73 baseline is EXACTLY {pr17078-1.c, vla-dealloc-1.c}
+> removed, zero regressions; `docs/parity/torture-failset-current.txt`
+> refreshed to the **16** remaining names (11 class-(b) GNU-ext + 5 class-(a)
+> singles). vla-dealloc-1's VLA-dealloc half already worked — the label drop
+> was its whole story. Fix: `stmt_contains_label()` walk guards BOTH constant
+> fold arms in `translate_if_core` (a label makes a dead arm a live goto
+> target, C11 6.2.1p3 — the fold falls through to the full N_IF, gcc -O0's
+> shape). Fulltest **722/0/0/15** (+1: new `tests/testgotodeadarm.mad`,
+> gcc-oracle byte-equal). Gate math: 1606 + 5 class-(a) singles (va_list
+> delegation 20041214-1, VLA param bound pr22061-1, _Bool bitfield
+> 20030714-1, strlen-4, struct-ret-1) = 1611 ≥ 1608 — TWO more singles cross
+> the promote gate.
+>
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #73
+> wide string literals):** gcc-torture **1604 passed, 2 compile-failed, 16
+> runtime-failed, 0 timed out, 63 skipped** — name-set diff vs the post-#72
+> baseline is EXACTLY {20010325-1.c, widechar-3.c} removed, zero regressions;
+> `docs/parity/torture-failset-current.txt` refreshed to the **18** remaining
+> names (memcpy-a8 passed this sweep — the documented load-margin flake, never
+> in the failset). Fulltest **721/0/0/15** (+1: `tests/testwideconcat.mad`
+> lifted, its `.mir_skip` removed). The fix is the Tier-1 wide-literal
+> lowering in the CIR builder: content-hash-named
+> `static int __wlit_<fnv1a64>[]` definitions emitted from the parser's baked
+> UTF-32 data, uses routed through `var_emit_name`, the constant-scalar READ
+> fold now excludes fixed arrays, and each definition rides the rung-3
+> referenced-surface filter (`cond_mark_sym`) so dead literals from
+> live-parsed-but-unused template bodies can't break the `forest_bind_gate`
+> byte-identity oracle (caught by [strbind] during development, fixed before
+> landing). Gate math: 1604 + 7 remaining class-(a) (#74 ×2, va_list
+> delegation, VLA param bound, _Bool bitfield, strlen-4, struct-ret-1) =
+> 1611 ≥ 1608.
+>
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #75
+> SMAUG --project soak restored):** the soak is GREEN again on the dev binary —
+> `Realms of Despair ready at address madc-dev on port 4000` under DEFAULT
+> guards. Root cause was madc's own `RLIMIT_AS` resource guard
+> (`install_resource_guards()`, fixed 2048 MB `MADC_MEM_LIMIT` default, commit
+> @1713e2ba 2026-04-30 — present while the soak was green): the `--project`
+> driver holds all 51 parsed Programs at once and legitimately peaks at
+> **~2.9 GB VA** (measured `VmPeak` 3,039,872 kB with the guard off; maxrss
+> only 985 MB — RLIMIT_AS counts address space, not residency), so natural
+> footprint growth crossed the 2 GB line at ~TU #44 (stances.c) and the
+> guard's ENOMEM surfaced as an UNPRINTED `std::bad_alloc`. NOT cross-TU state
+> poisoning (gdb catchpoint: healthy token arena, 452 × 1 MB chunks,
+> `malloc(1 MB)` → NULL; peak maps 105 of 65530). Fixes: workload-scaled
+> guard default (+128 MB per manifest TU; guards now install after argument
+> parsing since RLIMIT hard limits can never be raised), a `set_new_handler`
+> that names `MADC_MEM_LIMIT` when the guard trips (verified: `MADC_MEM_LIMIT=512`
+> prints the guard line + `comments.c:...: error: std::bad_alloc` + rc=1),
+> and `Program::print_unrendered_diagnostic()` in all four
+> `catch(std::exception&)` phase arms — a tokenize/parse failure can never
+> again exit silent.
+>
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #72
+> implicit-int/K&R function definitions):** gcc-torture **1601 passed, 2
+> compile-failed, 18 runtime-failed, 0 timed out (memcpy-a8 timed out under
+> box load during the sweep; verified passing 4× standalone at 3.6–4.1s vs the
+> 5s cap — load-margin flake, not counted), 63 skipped** — all **30** cluster-1
+> names flipped, zero regressions (byte-identical name-set diff);
+> `docs/parity/torture-failset-current.txt` refreshed to the **20** remaining
+> names. Fulltest **720/0/0/16** (+1 = `tests/testknrdef.mad`, gcc-oracle
+> byte-equal under `--std=c17`). The three arms all sit behind the existing
+> `knr_supported()` gate. Adjacent std-gating fix: C89 implicit function
+> declarations in expression context were gated on the `.c` filename
+> extension only — `--std=c17` on a `.mad` file now behaves as C17 (the
+> extension predicate stays for default-dialect C sources). ⚠️ The mandatory
+> SMAUG soak FAILED — and fails BYTE-IDENTICALLY at the pre-#72 baseline
+> (stash-rebuild A/B proof): "stances.c: tokenize failed" with no diagnostic,
+> only under --project after ~40 green TUs; standalone-with-flags compiles
+> clean. Pre-existing madc-side breakage (MadSMAUG tree untouched) — filed as
+> **P0 task #75**; #72 introduces no soak delta.
+>
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #64
+> gcc-torture re-baseline):** full sweep at HEAD @1aa53a4e via
+> `scripts/run_gcc_testsuite.py` (defaults: dev binary, `--std=c17`, formal
+> skip manifest): **1572 passed, 32 compile-failed, 18 runtime-failed, 0 timed
+> out, 63 skipped** — the 50-name failset is **byte-identical to
+> `docs/parity/torture-failset-current.txt`** (name-set diff empty both ways;
+> ZERO regressions across the #35–#63 span; the previously recorded
+> "1571/33, 51-name" banner was one stale against the file). Cluster refresh
+> of the 50: **39 class-(a)** + 11 class-(b) GNU-ext (aligned>16 ×3,
+> packed/misalign ×2, SIMD vector_size ×3, __sync_* ×1, empty-union ABI ×1,
+> one-void-arm conditional ×1). The class-(a) map COLLAPSED on evidence: the
+> old "implicit-decl forward call" cluster (5) is a SYMPTOM of implicit-int
+> definitions failing to parse (`mpn_print (){}` defines nothing → "import of
+> undefined item"), so ONE parser work item — implicit-int function
+> definitions (bare K&R identifier lists `f(x){}`, empty-parens `dummy(){}`,
+> and typed-param defs after first use misparsed as calls) — covers **30 of
+> 39**; the declaration-list K&R form `f(x) int x; {...}` ALREADY parses at
+> HEAD. Remainder: wide literals ×2 (undeclared `__wliteral__*`, same cause
+> as testwideconcat), labels-in-if-arm ×2 (pr17078-1 attributed to the CIR
+> builder — stock c2m passes it), va_list delegation ×1, VLA param bound ×1,
+> _Bool sign-qualifier bitfield ×1, strlen-4, struct-ret-1. Gate math:
+> 1572 + 39 = 1611 ≥ 1608 — the promote gate is reachable on class-(a) alone.
+> Follow-on tasks filed: #72 (the 30-test parser lever, SMAUG-soak-gated),
+> #73 (wide literals + testwideconcat lift), #74 (if-arm label drop).
+> Reducers banked: tmp/s64_knr.c, tmp/s64_implicitint.c, tmp/s64_wlit.c,
+> tmp/s64_labelscope.c (passing control), tmp/s64_failset_new.txt.
+>
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #61
+> mir_skip audit):** all **16** `tests/*.mir_skip` fixtures re-run at live HEAD
+> with runner-equivalent fixture handling — **all 16 still fail; zero lifted**;
+> the suite surface is unchanged (arbiter remains 717/0/0/16). Five recorded
+> reasons verified still-true (testbitfieldwidearith, testbuiltinllabsoverride,
+> teststructleadingattrmember, testunionscalarcast, testvarargsstructruntime);
+> **eleven fixtures reworded** because the recorded reason had drifted or was
+> wrong: `testvarargsstructcomplex` ("no _Complex" — stale; true cause is GNU
+> INTEGER complex `_Complex int` hitting a MIR gen fatal even as a scalar),
+> `testvlastructmember` (c2mir now accepts VLA struct members but miscompiles
+> the stmt-expr copy — runtime abort, not a reject),
+> `testfloattointclamp` (GCC itself saturates via front-end constant folding —
+> verified `gcc -O0` prints 2147483647, the .expect IS canon; c2mir converts at
+> runtime → INT_MIN), `testfinstrumentfunctions` (no inline asm in the test;
+> instrumentation IS implemented — `no_instrument_function` on a prototype
+> doesn't merge into the later definition), `testbuiltinframeaddress` /
+> `testbuiltinsetjmp` (both lower to runtime helpers in va_helpers.cpp that
+> execute in the helper's frame — structurally unable to satisfy
+> frame-address/returns-twice semantics), `testdlcall` (madc's `dlcall()`
+> builtin has no MIR-lane runtime; the test has no `#load`), `testdlopen`
+> (#load parses and lowers; the MIR import resolver just doesn't consult the
+> #load'd handles), `testbuiltinvalisttypedef` (the test is INVALID on x86-64 —
+> gcc and clang both reject `ap = 0` on the array-typed va_list; madc's
+> `__builtin_va_list` divergently accepts it), `testnestedpackedmember` (c2mir
+> packed nested-struct member offset not packed while sizeof is), and
+> `testwideconcat` (madc-side mixed-width concat lowering emits undeclared
+> `__wliteral__a`). Follow-on near-miss tasks filed: fold-spine float→int
+> overflow folding (lifts testfloattointclamp), prototype-attr merge for
+> `no_instrument_function`, #load/dlcall MIR import resolution, mapping
+> `__builtin_va_list` to the target's real type (then convert the test to
+> `.expect_err` and lift), and the fork-side `_Complex int` gen fatal.
+> Reducers banked: `tmp/s61_cx{A..E}.mad`, `tmp/s61_ftoi.c`,
+> `tmp/s61_valist.c`, `tmp/s61_packed.c`.
 >
 > **Local branch update (2026-06-28, `feature/front-end-performance-claude` @
 > Kind 3 dependent-member body tsubst slice):** fulltest

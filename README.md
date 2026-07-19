@@ -277,11 +277,11 @@ stable deterministic identities, call operands type by the rank-resolved
 callee, and a ladder of live correctness fixes ships (`*this = v`,
 stream manipulators, chained arrows, catch-parameter grammar, contextual
 `operator bool`). Both fulltest and the packed release suite are
-**695/0/0/16**; the bind gate holds bound == live == g++ at 18/18.
+**696/0/0/16**; the bind gate holds bound == live == g++ at 18/18.
 
 ### Recent Releases
 
-- **v0.35.0** — Small-binary + family-D: packed binary 101 MB → 9.26 MB (per-segment zstd, snapshot-v2 segment transforms, intern-spine pack compression; libzstd-dev now required); family-D campaign merged (drops 483 → 308, stable local-class hoist identity, ranked-callee typing, live-correctness ladder); fulltest + packed suite 695/0/0/16
+- **v0.35.0** — Small-binary + family-D: packed binary 101 MB → 9.26 MB (per-segment zstd, snapshot-v2 segment transforms, intern-spine pack compression; libzstd-dev now required); family-D campaign merged (drops 483 → 308, stable local-class hoist identity, ranked-callee typing, live-correctness ladder); fulltest + packed suite 696/0/0/16
 - **v0.34.0** — Pack-time deferred-body drain (rung 1): pack-side c2mir check gate (fork `c2mir_check_tree` @062dd97), error-tolerant reverts incl. body-span carry (packed stoi/stod restored), emission split + trap prebind; packed suite 681/681; dual dev/packed binaries; timing trend TSV; fulltest 681/0/0/16
 - **v0.33.0** — Parse-once campaign complete: seven copy-time KINDs (incl. the SET wall), first-skip flipped to production, re-parse machinery deleted (−123 lines); burndown 312/0; map-iteration for-init SIGSEGV fixed (+`testmapiter`); typed dtor externs make emit-C gcc-clean on containers; fulltest 677/0/0/16
 - **v0.32.0** — Rung-1 interning capstone: `TokenIdent::str` dropped (4-byte interned spelling_id; −43% token string ctors, −3.3% instructions); `Variable::name_sid` + finalize caches (−6.6% instructions); tsubst burndown root-caused to the dependent-member-type KIND

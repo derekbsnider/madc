@@ -1,0 +1,1 @@
+the type being destroyed is 'X', but the destructor refers to 'Y'

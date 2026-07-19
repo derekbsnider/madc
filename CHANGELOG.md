@@ -2,6 +2,523 @@
 
 ## [Unreleased]
 
+- **fix(types): `__builtin_va_list` is the real SysV va_list — one
+  compiler-owned definition; 20041214-1 flips, torture 1610, failset 12
+  (task #68).** The lexer macro-rewrote `__builtin_va_list` to `long`,
+  cramming 24 bytes of x86-64 va_list state into 8 and passing a scalar
+  COPY on delegation — `g(s, ap)` then va_arg'd garbage (SIGSEGV in the
+  20041214-1 torture test; a textual macro can never express the
+  `[1]` array typedef since the suffix binds after the declarator).
+  Now the compiler OWNS the type: `Program::builtin_va_list_type()` is
+  a process singleton `struct __madc_va_list_tag {gp_offset, fp_offset,
+  overflow_arg_area, reg_save_area}[1]` — the same shape gcc, glibc,
+  and c2mir's own preamble use — resolved from the spelling by both the
+  lexer (make_datatype arm, like `__int128_t`) and the parser's builtin
+  spelling table; first use registers the tag in struct_map so the CIR
+  struct sweep (Pass 1.97) emits the definition. The embedded
+  <stdarg.h> now just ALIASES the builtin (`typedef __builtin_va_list
+  va_list;` + `__gnuc_va_list`) — one definition total. The
+  `__builtin_va_end`/`__builtin_va_copy` macro bodies are array-correct
+  (`(void)(ap)` / element copy). Freeze/restore: the singleton is
+  pinned as type-id slot 34 (`MADC_TYPEID_BUILTIN_VA_LIST`, the
+  designed append-only path; test_datadef pins updated) so a frozen
+  `typedef __builtin_va_list va_list;` resolves in any process — the
+  first packed run failed 10 varargs tests ("undeclared identifier
+  va_list") before the pin; packed suite now 726/0/0/14 == dev. The
+  compiler-synthesized tag is a Class-5 forest_index_allowlist entry
+  (never parsed from any grove). testbuiltinvalisttypedef reworked per
+  the gcc oracle: `ap = 0` on the array-typed va_list now REJECTS like
+  gcc/clang — stale "ok" .expect and .mir_skip removed, .expect_err
+  added (+1 suite, -1 skip). Torture 1609 -> 1610, name-set diff
+  exactly {20041214-1.c}; failset 12 = 11 class-(b) + pr22061-1.
+  strlen-4 flips, torture 1609, failset 13 (task #78).** Two stacked
+  bugs. (1) Parser: `typedef char A28[28]; A28 row[3]` produced dims
+  `{28,3}` instead of C's `{3,28}` — `peel_carray_dimensions` ran before
+  the declarator suffix parse, leaving the typedef's dims at the FRONT
+  of `arr_dims` while the declarator's dims (the OUTER dimensions) were
+  appended after. Result: `sizeof(row[0])` = 3 (gcc: 28), string
+  initializers truncated to 3 bytes, and the CIR emitter's skip_tail
+  contract (which always assumed own-dims-leading) emitted `row[28]`.
+  Fix: record the alias-dim count at the peel and `std::rotate` the
+  alias dims behind the declarator's own dims once the declarator is
+  parsed — this also re-aligns `arr_dim_exprs` with `arr_dims`.
+  (2) c2mir fork @8a6a6c57 (MIR_COMMIT bumped): `N_ADDR` of an operand
+  that DECAYED from an array lvalue copied the decayed element pointer,
+  so `&a[i]` (a: `T[n][m]`) came out `T*` instead of `T(*)[m]`
+  (C11 6.5.3.2). Pointer arithmetic reads `arr_type` (stride was
+  right), but `N_DEREF` reads `u.ptr_type` — `*(&a[i] + k)` yielded the
+  element SCALAR, and strlen received the first char as an address
+  (SIGSEGV at 0x31). Proof it was c2mir: standalone `c2m -eg` on the
+  plain C text reproduced the warning + crash while gcc ran it fine.
+  Now `&a[i]` constructs the true pointer-to-array (the explicit
+  `T (*q)[m]` declarator path already produced exactly this type).
+  New `tests/testarraytypedef.mad` (gcc-oracle byte-equal: dims order,
+  layout, all four deref forms incl. `*(&row[2] - 1)`). Torture 1608 →
+  **1609**, name-set diff exactly {strlen-4.c}, failset 13 names
+  (11 class-(b) + 20041214-1 + pr22061-1). Found adjacent, filed #79:
+  the CAST form `(char (*)[28])expr` is rejected by the fn-ptr cast arm.
+
+- **feat(cli): liberal default resource guards — the CLI never
+  throttles legitimate work (task #77, owner directive).** madc is a
+  developer CLI that also RUNS the program; gcc/clang-style tools
+  impose no self-limits, and any finite CPU default eventually kills a
+  legitimate long-running program (a soaked SMAUG server died with
+  SIGXCPU at the old 60 s default). `MADC_CPU_LIMIT` is now **opt-in**
+  (default 0 = disabled; intended for embedding hosts and sandboxes),
+  and an armed CPU guard trips loudly: a new SIGXCPU handler names the
+  knob via the async-signal-safe crash-write plumbing, then re-raises
+  so the shell still sees the real signal status. `MADC_MEM_LIMIT`
+  stays armed by default (a pathological alloc should trip as a loud,
+  clean `bad_alloc` — not swap the host to death) but the base rises
+  2048 → 4096 MB, keeping the +128 MB/TU `--project` scaling and the
+  knob-naming new-handler attribution. The knobs are now documented in
+  `--help` (new Environment section). Probed: `MADC_CPU_LIMIT=2` trips
+  with the knob named and exit 152; a 65-CPU-second spin survives the
+  default env (died at 60 s before); malloc-loop hits NULL at exactly
+  the 4096 MB ceiling and honors overrides. Guards install only in the
+  CLI (`main`) — libmadc embedding hosts set their own.
+
+- **fix(cir): two promote-gate singles — fn-ptr declarations with
+  typedef'd RETURN types, and `_Bool` bitfields (struct-ret-1,
+  20030714-1).** (1) `X (*fp)(void)` where `X` is a typedef emitted as
+  `X fp` — the alias swallowed the whole declarator (signature AND
+  pointer), because `var_decl`'s fn-ptr arm treated ANY typedef
+  spelling as "declared via a fn-ptr typedef alias" (`DO_FUN g`). New
+  `fnptr_alias_is_fn()` resolves the alias through `datatype_map`: the
+  alias-spec form now applies only when the typedef names the
+  function(-pointer) type itself; a return-type alias keeps the full
+  `ret (*name)(params)` declarator. Same guard applied to the fn-ptr
+  MEMBER arm, where `bool (*isTableCell)(args)` emitted `bool *m` — a
+  plain data pointer (`fnptr_alias_stars`' unknown-alias fallback).
+  (2) The bit-field signedness reconciliation prepended `N_UNSIGNED`
+  to unsigned bit-fields whose spec had no sign token — but `_Bool`
+  admits no sign qualifier (C11 6.7.2p2) and already zero-extends, so
+  `bool b : 1;` emitted `unsigned _Bool` and c2mir rejected all 21
+  declarations in 20030714-1. `N_BOOL` now counts as sign-complete.
+  New `tests/testfnptrtypedefret.mad` + `tests/testboolbitfield.mad`
+  (gcc-oracle byte-equal; the latter deliberately locks only VALUE
+  semantics — a pre-existing bitfield allocation-unit divergence,
+  `_Bool:1` followed by a wider type giving sizeof 8 vs gcc's 4, is
+  filed as task #76).
+
+- **fix(cir): the dead-branch fold no longer discards function-scope
+  labels — torture cluster 3 closed (task #74).** `translate_if_core`
+  folds a compile-time-constant condition and prunes the dead branch
+  (the `__builtin_constant_p(...) link_error()` idiom needs it: neither
+  c2mir nor MIR eliminates `if (0)`, so an undefined extern in the dead
+  arm would fail at MIR link). But C labels have FUNCTION scope (C11
+  6.2.1p3): a label inside a constant-false arm keeps that arm a live
+  `goto` target, and pruning it produced "undefined label" at the c2mir
+  check (pr17078-1's `goto useless;` into `if (0) { useless: … }`).
+  New `stmt_contains_label()` walks the discarded branch's statement
+  structure (compound, if, do/while/for/range-for, switch cases +
+  default + pre-case decls, try/catch); when it finds a label the fold
+  falls through to the full `N_IF` translation — gcc -O0 emits the full
+  branch too. Both fold arms guarded (the integer/char-literal fold and
+  the `is_constant_evaluated` fold). Flips pr17078-1.c AND
+  vla-dealloc-1.c — the latter's VLA-dealloc half already worked; the
+  label drop was its whole story. New `tests/testgotodeadarm.mad`
+  (gcc-oracle byte-equal) locks goto-into-dead-then and
+  goto-back-into-dead-else.
+
+- **feat(cir): wide string literals lowered to static int arrays —
+  torture cluster 2 closed, testwideconcat lifted (task #73).** The
+  parser has always materialized `L"..."` (and mixed-width
+  concatenations, [lex.string]/C11 6.4.5p5) as a synthetic
+  `__wliteral__<payload>` Variable carrying the UTF-32 code points in
+  baked data — but the CIR builder never learned to emit it: every use
+  referenced an identifier that (a) was never defined and (b) embedded
+  raw UTF-32 bytes, i.e. was not even a valid C identifier
+  ("undeclared identifier __wliteral__a", an asmjit-era leftover —
+  that backend read `Variable::data` directly). Tier-1 lowering per
+  `lowering-vs-raising.md` (c2mir has no `wchar_t`): a
+  `translate_module` pre-scan assigns each wide-literal Variable a
+  content-derived symbol (`__wlit_<fnv1a64>`) and defines it up front
+  as `static int __wlit_<h>[] = { code points…, 0 };` (wchar_t == int
+  on this target); uses resolve through `var_emit_name`, and the array
+  decays to `int*` exactly like gcc's `wchar_t[]`. Two hardening
+  details found by the gates: the constant-scalar READ fold now
+  excludes fixed arrays (it would have folded a wide literal's value
+  use to element 0), and each definition is `cond_mark_sym`'d into the
+  rung-3 referenced-surface filter with a CONTENT-stable name — dead
+  literals minted by live-parsed-but-unused template bodies (libstdc++
+  vswprintf formats: `L"%ld"`, `L"%Lf"`, …) differ between the live
+  and bound lanes, and order-dependent naming broke the
+  `forest_bind_gate [strbind]` byte-identity oracle until both were
+  fixed. gcc-oracle reducer battery (subscript, value use + NUL,
+  `&L"…"[0]` byte view, `sizeof`, concat + `L'c'`) all byte-equal;
+  torture 20010325-1 + widechar-3 flip; `tests/testwideconcat.mir_skip`
+  removed (suite 720→721, skips 16→15).
+
+- **fix(cli): SMAUG `--project` soak restored — the 2 GB address-space
+  guard was killing legitimate multi-TU builds, silently (P0 task #75).**
+  Root cause was NOT cross-TU state: `install_resource_guards()` arms
+  `RLIMIT_AS` at a fixed 2048 MB default (`MADC_MEM_LIMIT`), while the
+  `--project` driver holds every TU's parsed `Program` simultaneously by
+  design — the 51-TU SMAUG manifest legitimately peaks at ~2.9 GB VA, so
+  the guard's ENOMEM surfaced as a `std::bad_alloc` at whatever
+  allocation crossed the line (~TU #44, stances.c, inside mud.h
+  tokenize; maxrss only 985 MB — the limit counts address space, not
+  residency). Standalone compiles stayed green because one TU sits far
+  under the limit. Three fixes, each at its own layer: (1) the guard
+  default now scales with the workload — `install_resource_guards()`
+  moved below argument parsing (RLIMIT hard limits can never be raised,
+  so the guard must know the workload before it arms) and gives each
+  manifest TU a 128 MB allowance on top of the single-file 2048 MB
+  default; `MADC_MEM_LIMIT` still overrides verbatim, `0` disables.
+  (2) When the guard DOES trip, it now says so: a `set_new_handler`
+  armed with the guard writes one actionable line naming
+  `MADC_MEM_LIMIT` (via the crash handler's no-alloc `write(2)`
+  plumbing) before the normal `bad_alloc` unwind — and
+  `madc::dis::arena::add_chunk` (a direct-`malloc` thrower that
+  bypasses `operator new`; the token arena was the very allocation
+  that failed) now honors the process new-handler contract on malloc
+  failure, so arena-path OOM gets the same attribution. (3) The failure is
+  never silent again: the `catch(std::exception&)` arms of `tokenize`,
+  `tokenize_buffer`, `parse`, and `parse_expression_unit` recorded the
+  error via `set_error` but — unlike their sibling arms — never printed
+  it (`throwbuf::sync()` renders only throwstream-originated
+  exceptions; a plain `bad_alloc` arrived unrendered). New
+  `Program::print_unrendered_diagnostic()` prints the recorded
+  diagnostic whenever the throwstream didn't already render one. Soak
+  green again: `Realms of Despair ready at address madc-dev on port
+  4000` under default guards; `MADC_MEM_LIMIT=512` proves the loud
+  path (guard line + `file:line: error: std::bad_alloc` + rc=1).
+
+- **feat(parser): implicit-int / K&R function definitions — the
+  promote-gate lever, +30 torture tests in one work item (task #72).**
+  gcc-torture 1572 → **1601** passed; failset 50 → **20** names (all 30
+  cluster names flipped, zero regressions — byte-identical name-set
+  diff). Three arms, all std-gated on the existing `knr_supported()`
+  (C78..C17; never C++ modes, never the madc dialect): (1) the BARE
+  K&R identifier list `f(x){…}` — the declaration-suffix predicate now
+  also accepts `{` directly after `)` (empty declaration list; the
+  decl-list machinery already defaulted undeclared params to int);
+  (2) implicit-int definitions of ALREADY-DECLARED names
+  (`dummy(); … dummy(){}` — a prior implicit call declaration or
+  prototype) no longer get eaten as call expressions: the implicit-int
+  definition arm was extracted into
+  `try_parse_implicit_int_function_definition()` (non-destructive shape
+  probe) and now runs before the known-identifier expression route;
+  (3) C89 implicit function DECLARATIONS in expression context are now
+  gated on the SELECTED STANDARD rather than only the `.c` filename
+  extension (a filename gate where the `--std=` gate belongs; the
+  extension predicate stays for C sources compiled under the default
+  dialect). New `tests/testknrdef.mad` (+`.flags` `--std=c17`,
+  `.expect` from the gcc oracle) locks all the shapes. The mandatory
+  SMAUG soak was run and is UNCHANGED by this work — it fails
+  identically at the pre-#72 baseline (proven by stash-rebuild A/B);
+  that pre-existing breakage is filed as P0 task #75.
+
+- **docs(parity): gcc-torture re-baseline at HEAD (task #64).** Full
+  sweep 1572/32/18/0/63 — the 50-name failset is **byte-identical** to
+  `docs/parity/torture-failset-current.txt`: ZERO regressions across
+  the entire #35–#63 correctness span. Cluster refresh: 39 class-(a)
+  remain, and the map COLLAPSED — the "implicit-decl forward call"
+  cluster is a symptom of implicit-int definitions failing to parse,
+  so one parser work item (bare K&R identifier lists + omitted return
+  types) covers 30 of the 39; pr17078-1's label drop attributed to the
+  CIR builder (stock c2m passes). Gate math: 1572 + 39 = 1611 ≥ 1608 —
+  the promote gate is reachable on class-(a) alone. Execution-ready
+  tasks filed: #72 (the 30-test lever), #73 (wide literals, lifts
+  testwideconcat), #74 (if-arm labels).
+
+- **fix(diagnostics): errors inside #included files now attribute to the
+  header — file, line, AND source echo from ONE token provenance (task
+  #63).** An error raised while parsing an included file printed the
+  top-level TU's NAME with the header's LINE number and echoed the TU's
+  source text under the caret — three-way inconsistent.
+  `throwbuf::sync()` and the eight catch-site diagnostic recorders now
+  take the file from the token (`TokenBase::file`, the MC11-IR
+  provenance every token already carries), and the source echo rereads
+  the named file from disk on the cold diagnostic path when it isn't
+  the live Source buffer (embedded headers with no on-disk presence
+  skip the echo gracefully). One shared line+caret formatter
+  (`show_error_source_line`) serves both echo paths; `print_diagnostic`
+  gains the same foreign-file echo. Output now matches g++'s
+  attribution shape (`tmp/s63_hdr.h:3:18` + the header's line echoed).
+  New compile-error test `tests/testincluderr.mad` (+`.expect_err`,
+  helper header). This completes the #55 story: the SFINAE mute killed
+  the speculative noise, this makes the remaining REAL errors point at
+  the right file.
+
+- **fix(parser): sizeof/alignof with a template-id or qualified type
+  operand (task #62).** `sizeof(Box<int>)` failed "Expecting
+  identifier" even post-instantiation, and `sizeof(std::string)` failed
+  "'string' is not a member of namespace 'std'" — the type-query
+  operand resolver (`resolve_type_query_datadef`) had bare-name lookups
+  only and could not consume `<...>` or a `::` chain. Both identifier
+  and datatype-token arms now route through the one declared-type
+  resolver (`resolve_declared_type_token` — the same path the
+  explicit-dtor name and dynamic_cast arms use), which instantiates on
+  demand ([expr.sizeof]) and consumes nothing on failure so the
+  `sizeof(expression)` fallback still sees an intact stream. Covers
+  sizeof/alignof, pointer suffix (`Box<int>*`), nested template args,
+  qualified template-ids (`std::vector<int>`), and the constant
+  context (`int arr[sizeof(Box<int>)]`) — all byte-equal to `g++ -O0`.
+  New `tests/testsizeoftpl.mad` (+`.expect`, `.expect_quiet`).
+  Residues filed, not fixed here (scope discipline): implicit COPY
+  ctor missing for `Box<Box<int>>`'s member-init (task #70) and the
+  C-style cast `(Box<int>)7` in the separate cast-detection arm
+  (task #71).
+
+- **test(skips): mir_skip audit — all 16 re-verified at live HEAD,
+  zero lifts, 11 reasons corrected (task #61).** Five reasons verified
+  still-true and date-stamped; eleven reworded to the actual cause at
+  HEAD, the notable drifts: `_Complex int` (GNU integer complex) MIR
+  gen fatal even as a scalar (the fork's native `_Complex` is
+  floating-only); VLA-struct-member copy now ACCEPTED but miscompiled;
+  GCC itself saturates overflowing float→int casts via front-end
+  constant folding (the `.expect` is canon; c2mir runtime-converts to
+  INT_MIN); `--finstrument-functions` works but prototype-borne
+  `no_instrument_function` doesn't merge into the definition;
+  `__builtin_frame_address`/`__builtin_setjmp` lower to runtime
+  helpers that execute in the helper's own frame (structural);
+  `#load` lowers fine but the MIR import resolver ignores the loaded
+  handles; `dlcall()` has no MIR-lane runtime; the
+  `__builtin_va_list` test is invalid on x86-64 (gcc+clang both
+  reject it). Near-miss follow-ons filed as tasks #65–#69.
+
+- **refactor(madcdis): C1 core-ification — the data-substrate interface
+  headers move `include/madcdat/` → `include/madcdis/` (task #58,
+  governing plan §6).** schema/mapper/query/relation/dataset/driver now
+  live in the madc::dis core surface; forwarding shims hold the old
+  paths for out-of-tree consumers (deletion horizon noted); all in-tree
+  consumers point at the new home; madcdat keeps external drivers +
+  source_adapter behind `--enable-madcdat`; `install-libmadc` now ships
+  `include/madcdis/`. Both configure modes build clean (=yes ran the
+  full bdb/gdbm/qdbm/sqlite unit suites through the moved headers);
+  fulltest + packed arbiter 717/0/0/16 in the =yes mode.
+
+- **feat(parser): explicit-destructor names — injected-class-name +
+  the [class.dtor] same-type check (task #57).** Verify-first: the
+  template-id (`p->~Box<int>()`) and typedef/alias (`q->~XT()`) forms
+  already worked at live HEAD. The two real gaps: `p->~Box()` (the
+  injected-class-name without template args, [expr.prim.id.dtor] —
+  now looked up against the receiver's class, works for madc templates
+  and library classes alike, `s->~basic_string()`); and the missing
+  same-type check — `q->~Y()` on an `X *` compiled silently, now the
+  g++-parity error "the type being destroyed is 'X', but the destructor
+  refers to 'Y'" (pointer-equality on the resolved DataDef, so
+  typedefs/aliases pass and even never-promoted plain structs are
+  caught; dependent/pattern parses skip). New `tests/testdtorname.mad`
+  (g++-oracle byte-equal) + `tests/testdtormismatch.mad`
+  (`.expect_err`). Incidental pre-existing gap noted:
+  `sizeof(Box<int>)` (template-id sizeof operand) fails to parse.
+  Suite 715 → 717, packed arbiter green.
+
+- **feat(class): stack class-array scope-exit destructors — per-element
+  REVERSE destruction (task #56).** `{ B a[3]; }` destroyed only
+  element 0: the cleanup attribute calls one function with `&a`, and it
+  named the scalar dtor. Now a per-(class,N) wrapper
+  `Cls__arr<N>___dtor(void*)` destroys all N in reverse ([class.dtor],
+  g++ byte-parity), demanded at the cleanup attach, the try-body unwind
+  push (throw now unwinds whole arrays), and the tsubst SPEC_DECL
+  cleanup re-resolution arm; definitions flush with the Pass 1.95 late
+  declarations. Freeze/forest-neutral (synthesized from live class
+  state). SIBLING BUG fixed: #51's construct loop strode a whole ROW
+  for multi-dim arrays (`B m[2][2]` decays to `B(*)[2]`) — elements
+  constructed out of bounds; `class_array_construct_loop` now flattens
+  with a `(struct Cls*)` cast. emit-C lane verified (gcc-compiled
+  output == g++ oracle, zero warnings). New `tests/testarraydtor.mad`
+  (dtor ORDER encoded as per-phase sequence lines, + `.expect_quiet`).
+  Suite 714 → 715, packed arbiter green.
+
+- **fix(tpl): speculative template instantiation is SFINAE-quiet —
+  `<math.h>` TUs compile with zero stderr (task #55).** All 32 noise
+  lines the #54 header-opening exposed mapped 1:1 onto FAILED
+  speculative fn-template instantiations during overload scoring
+  (`__enable_if<false,_>::__type` SFINAE candidates, `__promote_2`
+  substitution gaps) — failures g++ discards silently ([temp.deduct]/8).
+  The attempt site (`instantiate_fn_template_binding`) now mutes
+  `std::cerr` with the existing speculative-parse idiom and rolls back
+  the diagnostics ledger on failure; attempts nested inside constant
+  folds already ran muted. A genuinely-needed failing template still
+  errors loudly at the call site with correct attribution
+  (`MADC_DIAG_FNTPLTHROW` still bypasses the mute for developers). New
+  generic runner fixture `tests/foo.expect_quiet` (stderr must be
+  EMPTY, reported `NOISY(stderr):`) locks the hygiene:
+  `tests/testmathheader.mad` (g++-oracle byte-equal) + `.expect_quiet`
+  on `teststdcxx11`. Suite 713 → 714, packed arbiter green.
+
+- **fix(pp): `#if` expressions get the `?:` tier and `##` token pasting;
+  the strict `--std=c++11` lane compiles real headers (task #54).** The
+  recorded "feature-macro mismatch" was two evaluator holes: a ternary's
+  CONDITION value leaked out as the result (arms ignored) and
+  `__GLIBC_USE(F)`'s `__GLIBC_USE_ ## F` never pasted — glibc's
+  `__GLIBC_USE_DEPRECATED_GETS` chain took the wrong branch, so C++11's
+  `using ::gets` had nothing to import. Correct evaluation opened
+  math.h's typegeneric regions, which needed `(typeof(x))` CASTS in
+  expressions (a new typeof arm in the cast detection + a
+  `parse_typeof_datatype` double-`)` steal fix). Strict lane now
+  compiles `<cstdio>/<cstring>/<cstdlib>/<iostream>` == g++ -std=c++11;
+  default lane byte-equal answers now for the right reasons. New
+  `tests/teststdcxx11.mad` (`.flags` fixture) + `tests/testppternary.mad`.
+  Residue → task #55: math.h's now-open template overload regions print
+  non-fatal stderr parse errors (tests green). Suite 711 → 713, packed
+  arbiter green.
+
+- **feat(class): explicit destructor calls dispatch virtually; placement
+  new uses the complete-object assembler (task #53).** `vb->~VB()`
+  through a base pointer ran the base dtor statically (g++ runs the
+  most-derived chain) — the explicit-dtor arm now dispatches through the
+  vtable D1 slot via the `virtual_dtor_slot_call` helper extracted from
+  delete's D0 arm. Placement new on a class passed the RAW placement
+  address as `__this` and emitted nothing for ctorless classes — it now
+  routes through `complete_object_construct_stmts` at the typed address.
+  Converging surfaced an implicit old behavior now explicit: a
+  pack-expansion ctor-argument list can't be overload-scored, so the
+  no-match fallback admits it for the tsubst copy to expand. New
+  `tests/testexplicitdtor.mad`, green both lanes. Suite 710 → 711,
+  packed arbiter green.
+
+- **feat(class): pure virtual functions — `__cxa_pure_virtual` slots,
+  abstract-class errors, freeze flag (task #52).** `= 0` already parsed
+  (`FuncDef::pure_virtual`); the vtable slot now fills with
+  `__cxa_pure_virtual` when the final overrider is still pure (declared
+  ahead of Pass 1.5 — a global-init address constant needs the decl
+  first), instantiating an abstract class errors loudly at both
+  construction chokepoints (`class_pure_virtual_of`), and
+  `DF_PURE_VIRTUAL` (flag bit, no format bump) carries the flag through
+  freeze/restore. New `tests/testpurevirtual.mad` (diamond +
+  inherited-override shapes, both lanes) and `tests/testpureabstract.mad`
+  (`.expect_err`). Suite 708 → 710, packed arbiter green.
+
+- **fix(ctor): complete-object construction — class arrays, base chains,
+  heap vbases (task #51).** The #35-siblings audit found five real holes,
+  one KIND: `new D[3]` allocated ONE element (garbage vptrs, heap
+  corruption), `delete[]` never ran per-element dtors, stack class arrays
+  constructed only element 0, a ctorless class with a user-ctor BASE
+  never called it, and heap/member complete-object sites skipped
+  user-ctor virtual bases. One assembler now owns the shape
+  (`complete_object_construct_stmts`, Itanium C1 = vbases then C2): the
+  ctorless arm chains transitive non-virtual user-ctor base default
+  ctors before its vptr stamps; `new C[n]` allocates count+cookie
+  (Itanium element-count cookie iff non-trivial dtor) and constructs per
+  element; `delete[]` reads the cookie back and destroys in reverse;
+  stack arrays reuse the same loop. The ctorless-`new` duplicate block
+  and `member_default_construct_stmt` are deleted (parallel
+  implementations). Six reducers == g++; new `tests/testnewarray.mad` +
+  `tests/testctorlessbase.mad`, green on JIT AND emit-C lanes. Residue:
+  stack-array scope-exit dtors still run once on element 0 (cleanup attr
+  takes one fn). Suite 706 → 708, packed arbiter green.
+
+- **fix(emit-c): extern globals never get cleanup attributes; shim dtor
+  externs are typed (task #50).** Two pre-existing hygiene bugs blocked
+  gcc on the `--emit=c11` lane (c2mir tolerated both): extern class
+  globals (`extern ostream _ZSt4cout`) carried a `cleanup` attribute
+  naming a not-yet-declared dtor (gcc: "cleanup argument not a
+  function"; semantically a TU never destroys an object it doesn't own —
+  and the c2mir fork applies cleanup to automatic variables only, so the
+  attach was inert on the JIT lane), and the host-call shim registered
+  complete dtors as `void(void*)` externs that conflicted with the typed
+  madc definitions. `var_decl`'s cleanup gate now requires `!vfEXTERN`;
+  the shim uses the typed `ExternParam` form. Any `<iostream>`-globals
+  TU now compiles under gcc — `tests/testmanipview.mad` (task #48) is
+  emit-C-validated byte-identical to g++, and new
+  `tests/testglobalrefret.mad` covers the global + ref-returning-fn
+  shape task #47 had to keep out of the suite. Supersedes the old
+  "task #20 dtor-proto hygiene" ledger item. Suite 705 → 706, packed
+  arbiter green.
+
+- **fix(stream): concrete manipulators (`os << hex`) keep the lhs stream
+  pointer — the virtual-inheritance arc is closed.** The manipulator
+  lowering downcast the returned `ios_base&` back to the stream with a
+  static offset while the argument coercion is dynamic through the
+  virtual base — through a non-most-derived view (an `ostream&` over an
+  `ofstream`) the chain continued on a garbage stream and crashed. The
+  lowering now saves the lhs pointer once, applies the manipulator to
+  its coerced view, and yields the saved pointer (g++'s
+  `return *this` shape); the hand-emitted callee joins
+  `referenced_funcs` so the materialize-and-lower fixpoint derives its
+  body as before. New `tests/testmanipview.mad` (cout control +
+  ofstream-view chain with file readback). Closes #35 → #36 → #47 →
+  #48/#49. Newly recorded (pre-existing, task #50): the `--emit=c11`
+  lane rejects any `<iostream>`-globals TU — extern `cout` carries a
+  `cleanup` attribute naming an undeclared dtor. Suite 704 → 705,
+  packed arbiter green.
+
+- **fix(vbase): vbase-carrying classes without virtual functions get
+  their Itanium prologue-only vtables — and plain bases of polymorphic
+  classes get real typeinfo.** A class with virtual bases but no virtual
+  functions reserved its vptr slots (layout matched g++) but emitted no
+  vtable and never stamped the vptrs, so every view-adjust fell back to
+  wrong static offsets. New `has_any_vptr()` widens the eight
+  emission/stamp/adjust gates; the parser's group builder already
+  handled these classes. Emitting the vtables exposed a pre-existing
+  RTTI hole (zero coverage): `_ZTI<base>` of any vptr-less base was
+  externed but never defined — `base_ti_ref` now force-defines it
+  recursively. New `tests/testvbasenovirt.mad` (views, ref binds,
+  ctorless heap; g++ oracle, both lanes). No freeze-format change.
+  Suite 703 → 704, packed arbiter green. The virtual-inheritance arc is
+  now closed except task #48 (manipulator downcast).
+
+- **fix(vbase): ref-binds over ref-returning calls and the ref-return
+  upcast take the vbase adjust.** Two sibling holes where the derived
+  class hid behind a `DataDefREF`: binding `V &vr = get()` (a `D&`/`B&`-
+  returning call) or rebinding from a ref variable skipped the dynamic
+  vbase adjust (`expr_pointee_class` unwraps the reference now), and the
+  ref-return conversion itself (`B &getb(D &r) { return r; }`) never
+  adjusted at all — not even the static secondary-base offset
+  (`upcast_class_ref_addr` reads the referent's class). Both showed the
+  structural-luck signature: green vcalls through a wrong pointer, wrong
+  member reads. `testvbasediamond.mad` gains `refcall`/`retup` probes
+  (member reads paired with vcalls). Remaining vbase residues are now
+  tasks #48 (manipulator downcast restructure) and #49 (vptr-less
+  views). Suite 703, packed arbiter green.
+
+- **fix(vbase): dynamic member access through vbase views (slice 3) —
+  `ap->v` on a virtual-base-hosted member reads the vtable slot, and the
+  `member_vbase` provenance joins the freeze format (v32).** A pointer-view
+  member access whose static class hosts the member in a virtual base took
+  the view's flattened static offset — correct only for a most-derived
+  object; through an `A*` into a diamond `D` it read a sibling subobject
+  (and writes missed the real one). The access now routes the receiver
+  through the same vtable vbase-offset read as the slice-1/2 upcast sites
+  and resolves the member on the hosting base's own struct; direct object
+  values stay static (most-derived by construction, g++'s choice).
+  Because the fix reads `DataDefSTRUCT::member_vbase` — previously
+  parse-time-only state — the freeze format's `memberrec` grows a
+  `vbase_id` word so a restored header class carries the same provenance
+  (LOADED == parsed); `CIR_FOREST_FORMAT_VERSION` 31 → 32 rejects stale
+  corpora and the release repack re-freezes the blob.
+  `tests/testvbasediamond.mad` gains the member read/write probes (both
+  views, both lanes == g++). Suite 703, packed arbiter green.
+
+- **fix(vbase): Itanium virtual-base completion (slice 2) — madc-emitted
+  vtables carry vbase-offset slots, vbase groups, and the Itanium vcall
+  convention.** Building on slice 1's dynamic reads, madc's own vtables now
+  emit the per-group vbase-offset prologue (`vtable[-(3+i)]`), a vtable
+  group (with a stamped vptr and a `__vptr_<off>` struct field) for every
+  polymorphic virtual base, and generalized signed-delta thunks to the
+  final overrider — virtual dispatch passes the group-subobject pointer
+  (the old adjust-to-owner convention double-adjusted through non-most-
+  derived views). Upcasts, object-argument binding, and reference binds
+  (`V &vr = *bp;`) take the dynamic vbase adjust; ctor vptr stamps move
+  before the mem-init list ([class.base.init] order). A user-class diamond
+  accessed through `A*`/`B*`/`V*`/`V&` views now matches g++ on every
+  line (new `tests/testvbasediamond.mad`; JIT and `--emit=c11` lanes).
+  Known residue (task #36): direct member access through a vbase view is
+  still static. Suite 702 → 703, packed arbiter green.
+
+- **fix(vbase): dynamic Itanium vbase offsets, slice 1 — `while (s >> a)`
+  on a real stream no longer hangs.** An owner-subobject adjust into a
+  virtual base through a receiver whose static type is not most-derived
+  (`s >> a` yields `basic_istream&` over an `istringstream`) now reads the
+  real vbase offset from the vtable's vbase-offset slot at runtime
+  (`vtable[-(3+i)]`, Itanium) instead of the view class's static
+  `base_offset_of` — the v0.34.0 "honest boundary" stream-extraction loop
+  is fixed (new `tests/testvbasedyn.mad`). Slice 1 covers externally
+  defined (real libstdc++) view classes at the method/unary-operator
+  adjust sites; emitting the slots in madc's own vtables and lifting the
+  gate is the follow-on. Also this branch: cast-operand arrow chains
+  resolve `operator->` (`(int)it->second`, `tests/testcastarrow.mad`),
+  for-init/range-for declarations get loop scope
+  (`tests/testforinitscope.mad`, `tests/testforeachscope.mad`), and
+  implicit default construction cascades into member subobjects — a
+  polymorphic member's vptr is stamped, recursively, stack and heap
+  (`tests/testvptrmember.mad`). Suite 697 → 702, packed arbiter green.
+
 - **docs(plan): complete the Slice B class-KIND parse-once design.** The
   standalone plan inventories every aggregate parser side effect, defines an
   immutable class declaration/type pattern, a transactional structural

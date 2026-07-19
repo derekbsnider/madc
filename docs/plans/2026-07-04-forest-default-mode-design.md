@@ -1,6 +1,34 @@
 # Forest Default Mode — B4 design (parse-time grove binding)
 
-**Date:** 2026-07-04 · **Status:** DESIGN (the operative B4 design for the
+**Date:** 2026-07-04 · **Status:** ✅ B4a–B4c LANDED; B4d optional-parked
+(profile-gated). Audit 2026-07-19 (task #60), superseding the stale DESIGN
+banner:
+
+> **B4a** landed with the format-v2/pack/oracles/build-modes slice (see the
+> governing plan's landing history). **B4b** landed @df7241f0 (B4b.1
+> parse-time grove availability + include recognition, flag-gated) →
+> @9ee21881 (Phase-6 slice 2: `#include` of a forest header LOADS + restores,
+> no re-parse). **B4c** landed @561cce34 (2026-07-08): embedded-forest bind is
+> the DEFAULT (madc.cpp — silent fallback to live parse when no blob/pin
+> mismatch; `--no-forest-bind` is the opt-out/A-B lever; freeze modes
+> excluded), and the packed release suite — the arbiter, 717/0/0/16 as of the
+> audit — runs the ENTIRE suite under forest-default on the stripped `-O2`
+> binary, which is exactly B4c's gate.
+>
+> **§10 acceptance measured (release binary, `<iostream>` TU, 2026-07-19):**
+> default bind lexes 19 tokens, parse 0.001 s, decl-parse 0.000 s, total
+> in-process 0.194 s; `--no-forest-bind` live lexes 150,246 tokens, parse
+> 0.239 s, decl-parse 0.099 s, total 0.441 s. The decl-parse/lex tax is GONE
+> from the default lane; the remaining bind-lane cost (~0.14 s, attributed to
+> the lex bucket) is blob load + grove binding — that overhead plus the live
+> lane's class-instantiate profile (186 parse / 383 cache on this TU) is the
+> input for the **B4d go/no-go profile** (B4d = tsubst-from-frozen-pattern
+> trees; stays parked until a workload shows it pays).
+>
+> Original design text below is retained for the B4d rung and the fallback
+> matrix (§5) / branch-macro guard (§6) reference semantics.
+
+(the operative B4 design for the
 data-substrate governing plan §5 / forest execution plan Phase 4)
 
 > **Design-owner directive (2026-07-04):** use of the frozen forest is the

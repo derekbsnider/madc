@@ -1,1 +1,1 @@
-c2mir limitation or transpiler unsupported feature
+c2mir lays out the packed nested struct inconsistently: sizeof reports 3 (packed) but member x lands at ALIGNED offset 2 where GCC packs it at offset 1 — prints "3 170 187 52 18" vs GCC's "3 170 52 18 221". Concrete c2mir packed-offset bug (old vague reason replaced). Audit 2026-07-19.

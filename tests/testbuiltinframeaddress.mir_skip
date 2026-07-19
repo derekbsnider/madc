@@ -1,1 +1,1 @@
-emitter drops function call args — emits check_fa instead of check_fa(unused)
+__builtin_frame_address(0) lowers to the __madc_builtin_frame_address runtime helper (va_helpers.cpp), which returns the helper's OWN frame — GCC's cross-frame ordering property (caller local >= mid frame >= callee local) fails; prints 0. Old "emitter drops call args" reason no longer reproduces (emit-C shows check_fa(unused) intact). Audit 2026-07-19.

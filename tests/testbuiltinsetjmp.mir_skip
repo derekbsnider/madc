@@ -1,1 +1,1 @@
-__builtin_setjmp has different ABI from setjmp (5-word buffer vs full jmp_buf)
+__builtin_setjmp lowers to the __madc_builtin_setjmp runtime helper: setjmp executes in the helper's frame (dead by longjmp time — silent wrong control flow), and the test's 160-byte buffer is smaller than glibc's 200-byte jmp_buf. Returns-twice semantics need an in-frame setjmp (c2mir builtin or direct-MIR scalpel), not a helper call. Old "5-word buffer ABI" reason superseded. Audit 2026-07-19.

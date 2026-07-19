@@ -10,6 +10,25 @@ ruled NOT a madc builtin type (see work item 6). Gate edits landed in
 `docs/adr/0001-cir-c2mir-backend.md`, `.claude/rules/branching.md`,
 `docs/rules/branching.md`, ROADMAP Track 1.3.
 
+**RE-BASELINE 2026-07-19 (task #64, HEAD @1aa53a4e):** full sweep
+**1572/32/18/0/63**; the 50-name failset is byte-identical to
+`torture-failset-current.txt` (zero regressions across the #35–#63 span).
+Live cluster map of the 50: **39 class-(a)** + 11 class-(b); the class-(c)
+33 stay manifest-skipped. Two corrections to the tables below, on live
+evidence: (1) the "implicit-decl forward call" cluster (5 tests) is a
+SYMPTOM of implicit-int DEFINITIONS failing to parse (`mpn_print (){}`
+parses as nothing, so the call binds as an undefined import) — it merges
+into the K&R/implicit-int parser work item, which now covers 30 of the 39
+(the declaration-list form `f(x) int x; {...}` already parses; only the
+bare identifier list, empty-parens, and typed-param-after-use forms
+remain); (2) pr17078-1 (labels-have-function-scope) is attributed to the
+madc CIR builder, not c2mir — stock `c2m -eg` passes it; the `if (0)` arm
+fold drops the contained label. Gate math at this baseline:
+1572 + 39 class-(a) = 1611 ≥ 1608 — the gate is reachable on class-(a)
+alone. Execution-ready tasks filed: #72 (30-test parser lever,
+SMAUG-soak-gated), #73 (wide literals), #74 (if-arm label drop). Reducers:
+`tmp/s64_knr.c`, `tmp/s64_implicitint.c`, `tmp/s64_wlit.c`.
+
 ## Method
 
 Per test: read the source; re-run on CIR capturing the diagnostic

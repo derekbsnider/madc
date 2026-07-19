@@ -85,6 +85,8 @@ private:
     CirBuilder *builder;
     CirFrozenForest *forest;	// build_frozen(): owns the thawed node storage
     MIR_module_t mod;
+    MIR_module_t cache_mod;	// build(): the container's MIR cache module,
+				// loaded beside `mod` (rung 3); NULL = no cache
     std::map<std::string, void *> gen_cache;
     bool init_contexts(const char *source_name, bool dump_checked);
     bool load_and_link(const char *source_name, Program *prog);
@@ -132,9 +134,12 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 // per-unit segments, string-pool/position/type-name closure, link libs,
 // context-hash pin. `append` uses placement 2 (blob appended to an existing
 // binary, found from its EOF footer). Backs --freeze / --freeze-append.
+// `mir_cache` additionally compiles the assembled container's module and
+// packs its MIR binary form as an optional cache segment
+// (--freeze-mir-cache; blob failure never fails the freeze).
 // Returns 0 on success, -1 on failure.
 int madc_cir_freeze(Program *prog, const char *source_name,
-		    const char *out_path, bool append);
+		    const char *out_path, bool append, bool mir_cache = false);
 
 // Thaw + compile + run a frozen forest: from the container file at
 // `container_path`, or from the blob appended to the running executable

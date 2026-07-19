@@ -1,0 +1,16 @@
+# B2 suite-wide class-template parse ratchet (bin/madc, live parse).
+# `parse` may only decrease. `pattern` records structural-lane engagement.
+# `tests` prevents a partial/aborted scan passing. Reasons are only those seen
+# in this slice; a newly observed reason requires an intentional baseline edit.
+# Exact B2 census: 99,334 cache and 24,431 opaque in addition to the lanes below.
+tests 691
+mode-skipped 5
+pattern 3
+parse 48604
+reason pattern-parse-error
+reason unnormalizable-type
+reason dependent-value-expression
+reason unsupported-decl-kind
+reason unsupported-nested-definition
+reason unsupported-friend-definition
+reason requires-eager-body-parse

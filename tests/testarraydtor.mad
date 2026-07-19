@@ -1,0 +1,74 @@
+// Task #56: stack class-array scope-exit destructors. A fixed array of a
+// dtor-carrying class destroys ALL N elements in REVERSE at scope exit
+// ([class.dtor], g++ parity) via the per-(class,N) array-dtor wrapper the
+// cleanup attribute names — including multi-dim arrays (flattened element
+// stride), the exception (longjmp) unwind path, and elements with a
+// virtual base (complete-object dtor per element).
+//
+// Destruction ORDER is the assertion, so each phase accumulates its dtor
+// sequence into one printed line (the runner's .expect check is per-line
+// substring presence — order across lines would not be locked).
+#include <stdio.h>
+
+int g_seq = 0;
+char g_ord[128];
+int g_op = 0;
+
+struct B {
+	int id;
+	B() { id = ++g_seq; }
+	~B() { g_op += sprintf(g_ord + g_op, "%d.", id); }
+};
+
+struct VB { int v; VB() { v = 9; } ~VB() { g_op += sprintf(g_ord + g_op, "vb."); } };
+struct D : virtual VB {
+	int id;
+	D() { id = ++g_seq; }
+	~D() { g_op += sprintf(g_ord + g_op, "D%d,%d.", id, v); }
+};
+
+void phase_reset()
+{
+	g_seq = 0;
+	g_op = 0;
+	g_ord[0] = 0;
+}
+
+void nested()
+{
+	B m[2][2];
+	printf("nested %d\n", g_seq);
+}
+
+void unwind()
+{
+	try {
+		B a[3];
+		printf("try %d\n", g_seq);
+		throw 7;
+	} catch (int e) {
+		printf("caught %d\n", e);
+	}
+}
+
+int main()
+{
+	{
+		B a[3];
+		printf("scope %d\n", g_seq);
+	}
+	printf("ord1 %s\n", g_ord);
+	phase_reset();
+	nested();
+	printf("ord2 %s\n", g_ord);
+	phase_reset();
+	unwind();
+	printf("ord3 %s\n", g_ord);
+	phase_reset();
+	{
+		D d[2];
+		printf("vbscope %d\n", g_seq);
+	}
+	printf("ord4 %s\n", g_ord);
+	return 0;
+}

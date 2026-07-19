@@ -1,0 +1,47 @@
+/* Implicit-int / K&R function definitions (task #72) — std-gated to
+   C78..C17 via knr_supported(); this test runs under --std=c17 (.flags).
+   Shapes: bare identifier list, declaration-list form, and the
+   defined-after-use forms that previously parsed as call expressions. */
+#include <stdio.h>
+
+/* bare identifier list — parameters default to int */
+add1(x)
+{
+	return x + 1;
+}
+
+/* declaration-list form (already worked; regression lock) */
+mix(a, b)
+long b;
+{
+	return a + (int)b;
+}
+
+int main()
+{
+	printf("a %d\n", add1(41));
+	printf("b %d\n", mix(2, 3L));
+	printf("c %d\n", late(4));	/* implicit decl, defined below */
+	printf("d %d\n", tp(5u));	/* implicit decl, typed-param def below */
+	np();				/* implicit decl, empty-parens def below */
+	return 0;
+}
+
+/* empty parens + implicit-int return, defined after use */
+np()
+{
+	printf("e ok\n");
+	return 0;
+}
+
+/* bare identifier list, defined after use */
+late(x)
+{
+	return x * 2;
+}
+
+/* typed params + implicit-int return, defined after use */
+tp(unsigned int z)
+{
+	return (int)(z + 1);
+}

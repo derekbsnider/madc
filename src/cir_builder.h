@@ -227,6 +227,13 @@ class CirBuilder {
 	// Rung 3: the Pass-0/collect-time storage decl node of each file-scope
 	// global (keyed by Variable) — links a ctor group to its decl node.
 	std::map<Variable *, node_t> m_global_decl_node;
+	// Wide string literals (parser addWideLiteral): the sanitized module
+	// symbol (__wlit_<n>) each synthetic __wliteral__ Variable emits under.
+	// The Variable's own name embeds the raw UTF-32 payload (binary-safe for
+	// parse-time dedup, NOT a valid C identifier). Populated by the
+	// translate_module pre-scan that also emits the definitions; read by
+	// var_emit_name. Cleared per module.
+	std::map<const Variable *, std::string> m_wide_literal_syms;
 	// Rung 3: the conditional-emission map. A node recorded here survives the
 	// end-of-translate referenced-surface filter only if referenced: TYPE
 	// nodes (is_type) by struct tag — or, for typedef-bearing decls, any of
@@ -767,6 +774,7 @@ public:
 	// `DO_FUN *m` (alias is a function typedef) -> 1; `UNOP m` (alias already
 	// a pointer-to-function typedef) -> 0. Returns 1 when the alias is unknown.
 	int fnptr_alias_stars(const std::string &alias);
+	bool fnptr_alias_is_fn(const std::string &alias);
 
 	// ---- Declaration builders ----
 	// Recursively build an initializer value node: a scalar expression, or
@@ -873,7 +881,12 @@ public:
 	// (findMethod walks class -> base). Returns NULL when the class has no
 	// vtable. Must be emitted after the method prototypes it references.
 	node_t class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thunks);
-	node_t class_typeinfo_def(DataDefCLASS *cdd); // _ZTI/_ZTS objects; NULL if non-polymorphic (S5b)
+	// _ZTI/_ZTS objects; NULL for a vptr-less class unless forced — a
+	// vptr-less BASE referenced by an emitted class's typeinfo is forced
+	// (recursively, deduped via m_forced_base_typeinfos), else its _ZTI
+	// stays an undefined import. (S5b; task #49)
+	node_t class_typeinfo_def(DataDefCLASS *cdd, bool force = false);
+	std::set<DataDefCLASS *> m_forced_base_typeinfos;
 	// The vtable / typeinfo SYMBOL to reference for cdd: the madc-emitted
 	// `Cls__vtable` / `_ZTI<cls>` for a class madc defines, or the REAL
 	// libstdc++ `_ZTVSt.../_ZTISt...` for an externally-defined class (whose
@@ -884,6 +897,10 @@ public:
 	// emitted. For referencing an externally-defined class's real _ZTVSt.../_ZTISt...
 	node_t data_extern_decl(const std::string &sym);
 	void vbase_ctor_stmts(const std::string &objname, bool addr_of,
+			      DataDefCLASS *cdd, std::vector<node_t> &out, TokenBase *o);
+	// Core of vbase_ctor_stmts with a minted receiver address (a fresh node
+	// per vbase — array elements / heap temps have no bare object name).
+	void vbase_ctor_stmts_addr(const std::function<node_t()> &mint_addr,
 			      DataDefCLASS *cdd, std::vector<node_t> &out, TokenBase *o);
 	void vbase_dtor_stmts(const std::string &objname, bool addr_of,
 			      DataDefCLASS *cdd, std::vector<node_t> &out, TokenBase *o);
@@ -923,6 +940,47 @@ public:
 			       TokenBase *origin);
 	node_t class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin);
+	// Complete-object (Itanium C1-flavor) construction at a minted address:
+	// user-ctor virtual bases first (base-most order), then the C2-flavor
+	// construction (class_ctor_call_addr). `mint_addr` returns a FRESH typed
+	// address node per call (c2mir single parent link). Statements append
+	// to `out`. The one assembler behind heap and array-element sites.
+	void complete_object_construct_stmts(
+			       const std::function<node_t()> &mint_addr,
+			       DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin, std::vector<node_t> &out);
+	// Per-element complete-object construction loop over a class array:
+	// `for (long __ci = 0; __ci < <count>; __ci += 1)
+	//      <construct (arr_ptr + __ci)>;`
+	// NULL when the element class needs no construction (trivial).
+	node_t class_array_construct_loop(const char *arr_ptr,
+			       const std::function<node_t()> &mint_count,
+			       DataDefCLASS *cdd, TokenBase *origin);
+	// Itanium new[] cookie size: max(sizeof(size_t), alignof) when the
+	// element class has a non-trivial dtor (delete[] reads the element
+	// count back to run per-element dtors), else 0 — new[] and delete[]
+	// must agree, so both call this.
+	size_t class_array_cookie_size(DataDefCLASS *cdd);
+	// True when ctorless `cdd`'s implicit default ctor must construct base
+	// subobjects: some transitive NON-VIRTUAL base has a callable user
+	// default ctor (virtual bases are the complete-object site's duty).
+	bool class_needs_base_construction(DataDefCLASS *cdd);
+	// The pure-virtual slot (if any) that makes `cdd` abstract — the slot
+	// name whose most-derived resolution is still `= 0`; "" when concrete.
+	std::string class_pure_virtual_of(DataDefCLASS *cdd);
+	// Dispatch a destructor through the receiver's vtable dtor slot; sname
+	// is "~" (D1 complete — explicit p->~X()) or "~$deleting" (D0 —
+	// delete). recv_vptr/recv_arg = two independent receiver translations.
+	node_t virtual_dtor_slot_call(DataDefCLASS *cdd, const char *sname,
+			       node_t recv_vptr, node_t recv_arg,
+			       TokenBase *tb);
+	// Default-construct the non-virtual base subobjects of ctorless `cdd`
+	// through the named receiver pointer, recursing through ctorless
+	// layers with the accumulated offset.
+	void append_base_default_constructs(node_t items, const char *recv_ptr,
+			       DataDefCLASS *cdd, size_t off0,
 			       TokenBase *origin);
 	// The loud no-match result shared by both ctor-call builders: an
 	// error_node naming the class and the initializer argument types.
@@ -1066,12 +1124,30 @@ public:
 	// construction/destruction (so it requires a ctor/dtor even if the user
 	// wrote none).
 	bool class_has_object_members(DataDefCLASS *cdd);
-	// Append constructor statements (one per embedded object member) to the
-	// c2mir list node `items`. Used at a
-	// value class-instance declaration that has object members but no user
-	// constructor (the member access is `inst.member`, not `__this->member`).
-	void class_instance_member_ctors(const char *inst, DataDefCLASS *cdd,
-					 node_t items, TokenBase *origin);
+	// Default-construct every class-type member of `cdd` through the NAMED
+	// pointer variable `recv_ptr`, appending to the c2mir list node
+	// `items` (a fresh id() per member — c2mir nodes hold a single parent
+	// link, so a receiver node cannot be shared). Returns true when
+	// anything was emitted. The one member loop behind implicit default
+	// construction (class_ctor_call_addr's ctorless arm, the ctorless
+	// `new` path).
+	bool append_member_default_constructs(node_t items,
+					      const char *recv_ptr,
+					      DataDefCLASS *cdd,
+					      TokenBase *origin);
+	// True when ctorless `cdd`'s implicit default construction must emit
+	// member statements (some member has a callable default ctor or is a
+	// ctorless class that itself needs construction).
+	bool class_needs_member_construction(DataDefCLASS *cdd);
+	// Owner-subobject adjust through a VIRTUAL base, read from the
+	// vtable's vbase-offset slot at runtime (Itanium): a receiver whose
+	// STATIC class is not the object's most-derived type cannot use the
+	// static base_offset_of. Emits a stmt-expr consuming `this_arg`
+	// exactly once. NULL when not applicable (caller keeps the static
+	// adjust). Slice 1: externally-defined view classes only (real
+	// libstdc++ vtables carry the slots; madc-emitted ones do not yet).
+	node_t vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
+				    DataDefCLASS *owner, TokenBase *origin);
 	// True when a class needs an (implicit) destructor — the g++
 	// [class.dtor] TRANSITIVE test: a user dtor, an embedded object member
 	// whose class itself needs one, or a base that needs one. A class whose
@@ -1100,6 +1176,19 @@ public:
 	// instance (ClassName___dtor) — whether user-written or synthesized.
 	std::string class_dtor_symbol(DataDefCLASS *cdd);
 	std::string class_complete_dtor_symbol(DataDefCLASS *cdd);
+	// Per-(class,N) stack-array destructor wrapper `Cls__arr<N>___dtor`: the
+	// cleanup attribute calls ONE function with &arr, so a fixed array of a
+	// dtor-carrying class destroys its N elements in REVERSE through this
+	// wrapper (g++ [class.dtor] order; mirrors the delete[] cookie arm).
+	std::string class_array_dtor_symbol(DataDefCLASS *cdd, size_t n);
+	// Demand the wrapper: synthesize+record its definition once (emitted with
+	// the Pass 1.95 late declarations, ahead of every function definition),
+	// mark it referenced, and return its symbol.
+	std::string demand_array_dtor(DataDefCLASS *cdd, size_t n);
+	node_t synth_array_dtor_def(DataDefCLASS *cdd, size_t n,
+				    const std::string &sym);
+	// Wrapper defs demanded during body translation, flushed at Pass 1.95.
+	std::map<std::string, node_t> m_array_dtor_defs;
 	node_t synth_complete_dtor_def(DataDefCLASS *cdd);
 	node_t synth_deleting_dtor_def(DataDefCLASS *cdd);
 	node_t synth_dtor_proto(const std::string &sym, DataDefCLASS *cdd);
@@ -1181,13 +1270,17 @@ public:
 	// for the object `varname` (its dtor runs on the exception/longjmp unwind
 	// path). No-op outside a try body or for a class with no dtor. See P1.1c
 	// (docs/plans/refs/exceptions-sjlj.md).
+	// array_elems > 0 = the object is a fixed array of that many elements;
+	// the pushed dtor is then the per-(class,N) array wrapper.
 	void emit_try_body_cleanup_push(const char *varname, class DataDefCLASS *cdd,
-					node_t items, class TokenBase *origin);
+					node_t items, class TokenBase *origin,
+					size_t array_elems = 0);
 	// Range-based for over a madc array (madc::value): `for (T x : arr) body`. The loop
 	// variable is declared in the enclosing scope by the parser, so this only
 	// emits the index loop + per-iteration element fill (php_array_get /
 	// php_array_get_int) around the translated body.
 	node_t translate_foreach(class TokenFOREACH *fe);
+	node_t translate_foreach_loop(class TokenFOREACH *fe);
 	// Range-for over a user-defined class / template-instantiated container:
 	// `for (T x : c) body` -> index loop using c.size() and c[__i] (the
 	// class's size()/operator[] methods). The loop var is declared in the

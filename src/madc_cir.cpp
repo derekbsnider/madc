@@ -152,17 +152,17 @@ static void cir_dump_undefined_imports(MIR_context_t ctx)
 
 extern "C" void __madc_frozen_trap(const char *sym)
 {
-    fprintf(stderr, "madc: --run-frozen: reached unresolved drained-library "
-	    "symbol %s (outside the executed TU closure; a bound consumer "
-	    "derives it on use)\n", sym ? sym : "?");
+    fprintf(stderr, "madc: frozen module: reached unresolved drained-library "
+	    "symbol %s (outside the executed closure; a live compile derives "
+	    "it on use)\n", sym ? sym : "?");
     abort();
 }
 
 extern "C" void __madc_frozen_trap_vslot(const char *sym)
 {
-    fprintf(stderr, "madc: --run-frozen: virtual call through unmaterialized "
-	    "vtable %s (drained-library class outside the executed TU "
-	    "closure)\n", sym ? sym : "?");
+    fprintf(stderr, "madc: frozen module: virtual call through unmaterialized "
+	    "vtable %s (drained-library class outside the executed closure)\n",
+	    sym ? sym : "?");
     abort();
 }
 
@@ -175,9 +175,11 @@ static bool itanium_data_symbol(const std::string &nm)
 	|| nm.compare(0, 4, "_ZTS") == 0 || nm.compare(0, 4, "_ZGV") == 0;
 }
 
-static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
+// Named defs of a module, appended into `defined` (the trap scanners' "has a
+// real definition somewhere" set).
+static void cir_collect_module_defs(MIR_context_t ctx, MIR_module_t mod,
+				    std::set<std::string> &defined)
 {
-    std::set<std::string> defined;
     for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
 	 it = DLIST_NEXT(MIR_item_t, it)) {
 	switch (it->item_type) {
@@ -188,22 +190,13 @@ static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
 	default: break;
 	}
     }
-    std::vector<std::string> undef;
-    std::set<std::string> seen;
-    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
-	 it = DLIST_NEXT(MIR_item_t, it)) {
-	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
-	std::string nm = it->u.import_id;
-	if (defined.count(nm) || !seen.insert(nm).second) continue;
-	if (cir_import_resolver(nm.c_str())) continue;
-	undef.push_back(nm);
-    }
-    if (undef.empty()) return;
-    fprintf(stderr, "madc: --run-frozen: %zu unresolved drained-library "
-	    "import(s) bound to trap stubs (-v lists them)\n", undef.size());
-    DBG(for (const std::string &nm : undef)
-	    std::cerr << "  trap-bound: " << nm << std::endl);
+}
 
+// Build + load the per-symbol trap-stub module for `undef` (shared by the
+// --run-frozen whole-module lane and the bind lane's cache module).
+static void cir_bind_trap_module(MIR_context_t ctx,
+				 const std::vector<std::string> &undef)
+{
     MIR_new_module(ctx, "__madc_frozen_traps");
     MIR_item_t trap_proto = MIR_new_proto(ctx, "__madc_frozen_trap__proto",
 					  0, NULL, 1, MIR_T_P, "sym");
@@ -248,6 +241,65 @@ static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
     MIR_load_module(ctx, DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx)));
 }
 
+static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
+{
+    std::set<std::string> defined;
+    cir_collect_module_defs(ctx, mod, defined);
+    std::vector<std::string> undef;
+    std::set<std::string> seen;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
+	std::string nm = it->u.import_id;
+	if (defined.count(nm) || !seen.insert(nm).second) continue;
+	if (cir_import_resolver(nm.c_str())) continue;
+	undef.push_back(nm);
+    }
+    if (undef.empty()) return;
+    fprintf(stderr, "madc: --run-frozen: %zu unresolved drained-library "
+	    "import(s) bound to trap stubs (-v lists them)\n", undef.size());
+    DBG(for (const std::string &nm : undef)
+	    std::cerr << "  trap-bound: " << nm << std::endl);
+    cir_bind_trap_module(ctx, undef);
+}
+
+// Bind lane, rung 3: the loaded MIR cache module carries the whole drained
+// library, so it legitimately imports named data / drained-sibling symbols
+// outside this consumer's emitted surface (a tag global of a header the
+// consumer never references). Trap-bind ONLY the cache module's own
+// otherwise-unresolvable imports; a name the CONSUMER module also imports
+// stays strict — an unresolved consumer import is a live-compile correctness
+// signal and must keep failing exactly as it does without the cache.
+static void cir_prebind_cache_traps(MIR_context_t ctx, MIR_module_t cache_mod,
+				    MIR_module_t consumer_mod)
+{
+    std::set<std::string> defined;
+    cir_collect_module_defs(ctx, cache_mod, defined);
+    cir_collect_module_defs(ctx, consumer_mod, defined);
+    std::set<std::string> consumer_imports;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, consumer_mod->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it))
+	if (it->item_type == MIR_import_item && it->u.import_id)
+	    consumer_imports.insert(it->u.import_id);
+    std::vector<std::string> undef;
+    std::set<std::string> seen;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, cache_mod->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
+	std::string nm = it->u.import_id;
+	if (defined.count(nm) || consumer_imports.count(nm)
+	    || !seen.insert(nm).second) continue;
+	if (cir_import_resolver(nm.c_str())) continue;
+	undef.push_back(nm);
+    }
+    if (undef.empty()) return;
+    DBG(std::cout << "mir cache: " << undef.size() << " cache-only "
+	"import(s) bound to trap stubs" << std::endl);
+    DBG(for (const std::string &nm : undef)
+	    std::cerr << "  cache trap-bound: " << nm << std::endl);
+    cir_bind_trap_module(ctx, undef);
+}
+
 // -----------------------------------------------------------------------
 // MIR fatal-error containment
 // -----------------------------------------------------------------------
@@ -276,6 +328,28 @@ static void MIR_NO_RETURN cir_mir_error(MIR_error_type_t error_type,
     // default so the error is never silently swallowed.
     fprintf(stderr, "MIR fatal error: %s\n", cir_mir_error_text);
     exit(1);
+}
+
+// --- MIR module cache byte IO (no FILE*: a MIR fatal's longjmp must leave
+// nothing open; thread_local park spots for the with_func callbacks) ---
+
+// Byte sink for MIR_write_module_with_func — appends into the parked vector.
+static thread_local std::vector<uint8_t> *cir_mir_cache_sink = NULL;
+static int cir_mir_cache_write_byte(MIR_context_t, uint8_t b)
+{
+    cir_mir_cache_sink->push_back(b);
+    return 1;
+}
+
+// Byte source for MIR_read_with_func — fgetc semantics (EOF = -1).
+static thread_local const std::vector<uint8_t> *cir_mir_cache_read_src = NULL;
+static thread_local size_t cir_mir_cache_read_pos = 0;
+static int cir_mir_cache_read_byte(MIR_context_t)
+{
+    if (!cir_mir_cache_read_src
+	|| cir_mir_cache_read_pos >= cir_mir_cache_read_src->size())
+	return EOF;
+    return (*cir_mir_cache_read_src)[cir_mir_cache_read_pos++];
 }
 
 // -----------------------------------------------------------------------
@@ -418,6 +492,12 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     out_builder = NULL;
     out_stop = false;
 
+    // The tree build resolves token spellings / wide values / datadef ids via
+    // the process-global active-owner statics. --project parses every TU
+    // before building any (throwing calls stay outside the MIR bracket), so
+    // by the time this TU builds, another Program's pools are active.
+    prog->activate_token_pools();
+
     // CirBuilder (cir_node) is the sole backend. The builder owns its node
     // arena and must outlive cir_compile()/MIR_gen() — hence it is returned to
     // the caller. (The legacy static cir_translate() path was removed; it had
@@ -516,7 +596,8 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 }
 
 CirJitSession::CirJitSession()
-    : ctx(NULL), c2m(NULL), builder(NULL), forest(NULL), mod(NULL)
+    : ctx(NULL), c2m(NULL), builder(NULL), forest(NULL), mod(NULL),
+      cache_mod(NULL)
 {
 }
 
@@ -542,6 +623,7 @@ void CirJitSession::teardown()
     builder = NULL;
     forest = NULL;
     mod = NULL;
+    cache_mod = NULL;	// owned by ctx (MIR_finish freed it above)
     gen_cache.clear();
 }
 
@@ -576,10 +658,45 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	return false;
     }
     cir_mir_error_armed = true;
+    // MADC_MIR_CACHE_TIME=1: per-step wall laps for the cache lane (the
+    // decomposition that exposed the eager-gen link cost — keep it).
+    const bool mc_time = getenv("MADC_MIR_CACHE_TIME") != NULL;
+    auto mc_t0 = std::chrono::steady_clock::now();
+    auto mc_lap = [&](const char *what) {
+	if (!mc_time) return;
+	auto now = std::chrono::steady_clock::now();
+	fprintf(stderr, "[mc-time] %-18s %.3f s\n", what,
+		std::chrono::duration<double>(now - mc_t0).count());
+	mc_t0 = now;
+    };
+    // Rung 3: the privatized cache module loads FIRST; the consumer module's
+    // exports then win every env-level overlap (setup_global overwrites), and
+    // the cache's imports — including its privatized named data — resolve to
+    // the consumer's definitions at link.
+    if (cache_mod)
+	MIR_load_module(ctx, cache_mod);
+    mc_lap("load(cache_mod)");
     MIR_load_module(ctx, mod);
+    mc_lap("load(consumer)");
+    if (cache_mod)
+	cir_prebind_cache_traps(ctx, cache_mod, mod);
+    mc_lap("cache traps");
     cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
-    MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
+    if (cache_mod) {
+	// MIR_set_gen_interface is EAGER — it MIR_gen()s every loaded func at
+	// link, which for the 4290-func cache module costs ~0.8s per compile.
+	// Ride the lazy interface (first-call generation) and eagerly gen only
+	// the CONSUMER's funcs, so the consumer keeps exactly the no-cache
+	// lane's gen-fatal surface and wall; cache bodies generate on demand.
+	MIR_link(ctx, MIR_set_lazy_gen_interface, cir_import_resolver);
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it))
+	    if (it->item_type == MIR_func_item)
+		MIR_gen(ctx, it);
+    } else
+	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
     cir_active_host_regs = NULL;
+    mc_lap("MIR_link");
     cir_mir_error_armed = false;
     return true;
 }
@@ -594,6 +711,87 @@ bool CirJitSession::build(Program *prog, const char *source_name,
     if (!init_contexts(source_name, dump_checked))
 	return false;
 
+    // MIR module cache, rung 3 (bind lane): a container that provided the
+    // bound grove may carry its compiled MIR module. Stage it BEFORE
+    // translate — the export set steers the m&l fixpoint (forward proto
+    // instead of loaded def for cache-exported symbols; the call resolves as
+    // a MIR import against this module at link). Every fallible step runs
+    // here, pre-translate, so any failure discards the cache and the
+    // consumer emits everything itself, bit-for-bit.
+    //
+    // OPT-IN (MADC_MIR_CACHE_BIND=1): measured on testsubscript, the lane's
+    // fixed floor (MIR_read 0.08s + link-time simplify of all 4290 cache
+    // funcs ~0.15s) EXCEEDS what it saves a single-TU consumer (materialize
+    // + emit + gen of its referenced drained bodies, ~0.1s) — see the
+    // refutation note in docs/plans/2026-07-17-mir-module-cache-DESIGN.md.
+    // The win case is many consumers per load (--project) or a body-heavy
+    // consumer; --run-frozen's whole-module consumption (build_frozen) keeps
+    // its own economics and stays on by default. MADC_NO_MIR_CACHE=1 remains
+    // the master off-lever for both lanes.
+    cache_mod = NULL;
+    if (prog) prog->mir_cache_exports.clear();
+    if (prog && prog->bind_forest && !prog->forest_chain.empty()
+	&& getenv("MADC_MIR_CACHE_BIND")
+	&& !getenv("MADC_NO_MIR_CACHE")) {
+	std::vector<uint8_t> mblob;
+	auto mcs_t0 = std::chrono::steady_clock::now();
+	auto mcs_lap = [&](const char *what) {
+	    if (!getenv("MADC_MIR_CACHE_TIME")) return;
+	    auto now = std::chrono::steady_clock::now();
+	    fprintf(stderr, "[mc-time] %-18s %.3f s\n", what,
+		    std::chrono::duration<double>(now - mcs_t0).count());
+	    mcs_t0 = now;
+	};
+	if (prog->bind_forest->mir_module_bytes(mblob)) {
+	    mcs_lap("blob segment read");
+	    if (setjmp(cir_mir_error_jmp)) {
+		// bmir version check / corrupt blob — rebuild-path fallback.
+		cir_mir_error_armed = false;
+		cir_mir_cache_read_src = NULL;
+		cache_mod = NULL;
+		fprintf(stderr, "%s: mir cache: MIR_read failed: %s — "
+			"falling back to full emission\n",
+			source_name, cir_mir_error_text);
+	    } else {
+		cir_mir_error_armed = true;
+		cir_mir_cache_read_src = &mblob;
+		cir_mir_cache_read_pos = 0;
+		MIR_read_with_func(ctx, cir_mir_cache_read_byte);
+		cir_mir_cache_read_src = NULL;
+		cir_mir_error_armed = false;
+		cache_mod = DLIST_TAIL(MIR_module_t,
+				       *MIR_get_module_list(ctx));
+	    }
+	    mcs_lap("MIR_read");
+	    if (cache_mod) {
+		// The pack TU's entry points are never shared: the consumer
+		// defines its own. A module whose exported data heads a
+		// multi-item section can't be privatized — drop the cache
+		// now, while the fallback is still clean.
+		static const char *entry_syms[] = {"main", "__madc_global_init"};
+		if (MIR_module_privatize_for_link(ctx, cache_mod,
+						  entry_syms, 2)) {
+		    fprintf(stderr, "%s: mir cache: module has unsplittable "
+			    "exported data section(s) — falling back to full "
+			    "emission\n", source_name);
+		    cache_mod = NULL;	// stays in ctx unloaded; harmless
+		}
+	    }
+	    if (cache_mod) {
+		for (MIR_item_t it = DLIST_HEAD(MIR_item_t, cache_mod->items);
+		     it; it = DLIST_NEXT(MIR_item_t, it))
+		    if (it->item_type == MIR_func_item && it->export_p
+			&& it->u.func->name)
+			prog->mir_cache_exports.insert(it->u.func->name);
+		DBG(std::cout << "mir cache: bind module staged ("
+		    << mblob.size() << " bytes, "
+		    << prog->mir_cache_exports.size()
+		    << " importable bodies)" << std::endl);
+	    }
+	    mcs_lap("privatize+exports");
+	}
+    }
+
     bool stop = false;
     mod = build_tu_module(ctx, c2m, prog, source_name,
 			  dump_tree, dump_nodes, dump_checked,
@@ -604,6 +802,27 @@ bool CirJitSession::build(Program *prog, const char *source_name,
 	if (dump_stop) *dump_stop = stop;
 	teardown();
 	return false;
+    }
+
+    // Rung 3: the consumer wins every overlap. Un-export from the cache
+    // module any symbol this consumer module ALSO defines (an eagerly
+    // emitted user func in a full-program corpus; a proto-less fallback
+    // emission), so MIR_load_module can never hit a func redefinition.
+    // Privatize is idempotent — the entry points and data are already done.
+    if (cache_mod) {
+	std::vector<const char *> unexp;
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it))
+	    if (it->item_type == MIR_func_item && it->u.func->name
+		&& prog->mir_cache_exports.count(it->u.func->name))
+		unexp.push_back(it->u.func->name);
+	if (!unexp.empty()) {
+	    DBG(std::cout << "mir cache: " << unexp.size()
+		<< " consumer-defined overlap(s) un-exported from the cache "
+		"module" << std::endl);
+	    MIR_module_privatize_for_link(ctx, cache_mod,
+					  unexp.data(), unexp.size());
+	}
     }
 
     return load_and_link(source_name, prog);
@@ -635,35 +854,89 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
 	}
     }
 
-    cir_node *root = forest->root();
-    if (!root) {
-	fprintf(stderr, "%s: forest root failed to materialize\n", module_name);
-	teardown();
-	return false;
+    // MIR module cache: a container carrying its compiled module skips the
+    // node materialization + c2mir compile entirely — MIR_read the blob into
+    // this context. Any failure (no segment, stamp mismatch, bmir read error)
+    // falls through to the rebuild path bit-for-bit. MADC_NO_MIR_CACHE=1
+    // forces the rebuild (the equivalence gate's A/B lever).
+    mod = NULL;
+    if (!getenv("MADC_NO_MIR_CACHE")) {
+	std::vector<uint8_t> mblob;
+	if (forest->mir_module_bytes(mblob)) {
+	    if (setjmp(cir_mir_error_jmp)) {
+		// The bmir stream's internal version check (or a corrupt
+		// blob) fataled — fall back to the rebuild below.
+		cir_mir_error_armed = false;
+		cir_mir_cache_read_src = NULL;
+		mod = NULL;
+		fprintf(stderr, "%s: mir cache: MIR_read failed: %s — "
+			"falling back to node materialization\n",
+			module_name, cir_mir_error_text);
+	    } else {
+		cir_mir_error_armed = true;
+		cir_mir_cache_read_src = &mblob;
+		cir_mir_cache_read_pos = 0;
+		MIR_read_with_func(ctx, cir_mir_cache_read_byte);
+		cir_mir_cache_read_src = NULL;
+		cir_mir_error_armed = false;
+		mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+		DBG(std::cout << "mir cache: module loaded from container ("
+		    << mblob.size() << " bytes; node rebuild skipped)"
+		    << std::endl);
+	    }
+	}
     }
 
-    // The same validity gate as a live build: never hand c2mir a tree
-    // containing error/incomplete nodes.
-    if (int nerr = cir_report_errors(stderr, root->as_node())) {
-	fprintf(stderr, "%s: %d untranslatable node(s) in frozen tree; not compiling\n",
-		module_name, nerr);
-	teardown();
-	return false;
-    }
-
-    if (!cir_compile(ctx, c2m, root->as_node(), module_name)) {
-	fprintf(stderr, "%s: cir_compile failed\n", module_name);
-	teardown();
-	return false;
-    }
-    mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
     if (!mod) {
-	fprintf(stderr, "%s: no module produced\n", module_name);
-	teardown();
-	return false;
+	cir_node *root = forest->root();
+	if (!root) {
+	    fprintf(stderr, "%s: forest root failed to materialize\n", module_name);
+	    teardown();
+	    return false;
+	}
+
+	// The same validity gate as a live build: never hand c2mir a tree
+	// containing error/incomplete nodes.
+	if (int nerr = cir_report_errors(stderr, root->as_node())) {
+	    fprintf(stderr, "%s: %d untranslatable node(s) in frozen tree; not compiling\n",
+		    module_name, nerr);
+	    teardown();
+	    return false;
+	}
+
+	if (!cir_compile(ctx, c2m, root->as_node(), module_name)) {
+	    fprintf(stderr, "%s: cir_compile failed\n", module_name);
+	    teardown();
+	    return false;
+	}
+	mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+	if (!mod) {
+	    fprintf(stderr, "%s: no module produced\n", module_name);
+	    teardown();
+	    return false;
+	}
     }
     if (getenv("MADC_DUMP_MIR"))
 	MIR_output(ctx, stderr);
+
+    // MADC_MIR_CACHE_PROBE=<path>: serialize the compiled module (probe A of
+    // docs/plans/2026-07-17-mir-module-cache-DESIGN.md — GO/NO-GO size and
+    // read-time numbers only; no container integration).
+    if (const char *probe_path = getenv("MADC_MIR_CACHE_PROBE")) {
+	FILE *pf = fopen(probe_path, "wb");
+	if (pf) {
+	    auto _w0 = std::chrono::steady_clock::now();
+	    MIR_write_module(ctx, pf, mod);
+	    double wsecs = std::chrono::duration<double>(
+		std::chrono::steady_clock::now() - _w0).count();
+	    long sz = ftell(pf);
+	    fclose(pf);
+	    fprintf(stderr, "[mir-cache-probe] wrote %s: %ld bytes in %.3fs\n",
+		    probe_path, sz, wsecs);
+	} else
+	    fprintf(stderr, "[mir-cache-probe] cannot open %s for write\n",
+		    probe_path);
+    }
 
     // Rung 1: a drained module carries library bodies outside the TU's
     // executed closure — bind their unresolved imports to loud trap stubs
@@ -1100,13 +1373,13 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 	if (sdd->is_anonymous)           r.flags |= madc::dis::DF_IS_ANONYMOUS;
 	if (sdd->reverse_scalar_storage) r.flags |= madc::dis::DF_REVERSE_SCALAR;
 	if (sdd->has_anon_aggregate)     r.flags |= madc::dis::DF_HAS_ANON_AGG;
-	// v24 TU-root origin: the parse-time write-through runs at the aggregate's
-	// COMPLETION, where _parse_file IS the defining file (an instantiation
-	// product's cloned tokens carry the pattern header's file, so products
-	// classify include-origin). A RE-record (the freeze-time refresh, the
-	// struct->class promotion — both tid-keyed) PRESERVES the first stamp:
-	// _parse_file is stale by then.
-	{
+	// Known definition provenance is intrinsic to the aggregate. Unknown is
+	// retained for legacy/opaque paths and preserves the previous record before
+	// falling back to the ambient parser position.
+	if (sdd->definition_origin ==
+	    AggregateDefinitionOrigin::TranslationUnitRoot)
+		r.flags |= madc::dis::DF_TU_ROOT_ORIGIN;
+	else if (sdd->definition_origin == AggregateDefinitionOrigin::Unknown) {
 		madc::dis::defrec old;
 		if (forest_arena.get_def_at(tid, old) && old.kind != madc::dis::DK_NONE)
 			r.flags |= old.flags & madc::dis::DF_TU_ROOT_ORIGIN;
@@ -1150,6 +1423,12 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		// DK_FUNC param run stays contiguous.
 		forest_arena_record_fptr(sdd->members[i].second);
 	}
+	// v32: per-member virtual-base provenance (member_vbase), resolved before
+	// the run begins like every other cross-ref.
+	std::map<size_t, uint32_t> mvb;
+	for (std::map<size_t, DataDefCLASS *>::const_iterator vi = sdd->member_vbase.begin();
+	     vi != sdd->member_vbase.end(); ++vi)
+		mvb[vi->first] = forest_serialize_type_id(vi->second);
 	r.members_begin = (uint32_t)forest_arena.payload.size();
 	r.members_count = (uint32_t)sdd->members.size();
 	for (size_t i = 0; i < sdd->members.size(); ++i) {
@@ -1164,6 +1443,9 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		m.flags  = (i < sdd->member_array_flags.size() && sdd->member_array_flags[i]) ? 1u : 0u;
 		m.access = i < sdd->member_access.size() ? sdd->member_access[i] : 0u;
 		m.origin = i < sdd->member_origin.size() ? (int32_t)sdd->member_origin[i] : -1;
+		std::map<size_t, uint32_t>::const_iterator vbi = mvb.find(i);
+		if (vbi != mvb.end())
+			m.vbase_id = vbi->second;
 		if (i < sdd->member_bitfields.size() && sdd->member_bitfields[i].is_bitfield) {
 			const DataDefSTRUCT::BitFieldInfo &bf = sdd->member_bitfields[i];
 			m.bf_flags = 1u | (bf.is_unsigned ? 2u : 0u) | (bf.reverse_storage ? 4u : 0u);
@@ -1395,6 +1677,7 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 	if (fd->is_void_params)   r.flags |= madc::dis::DF_IS_VOID_PARAMS;
 	if (fd->declaration_only) r.flags |= madc::dis::DF_DECLARATION_ONLY;
 	if (fd->is_const_method)  r.flags |= madc::dis::DF_IS_CONST_METHOD;
+	if (fd->pure_virtual)     r.flags |= madc::dis::DF_PURE_VIRTUAL;
 	if (fd->is_member_template || !fd->template_param_names.empty())
 		r.flags |= madc::dis::DF_IS_MEMBER_TEMPLATE;	// load skips it (the v6 rule)
 	// FuncDef-intrinsic method metadata available at parse time (emit_symbol / display name).
@@ -1832,6 +2115,206 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	return r;
     };
 
+    auto pattern_words_of = [&](const Program::ClassPattern &pattern) {
+	std::vector<uint32_t> words;
+	auto word64 = [&](uint64_t value) {
+	    words.push_back((uint32_t)(value & 0xffffffffu));
+	    words.push_back((uint32_t)(value >> 32));
+	};
+	auto intern_spelling = [&](const std::string &value) -> uint32_t {
+	    return value.empty() ? 0 : pool.intern(value);
+	};
+	auto token_run = [&](const std::vector<TokenBase *> &tokens) {
+	    cir_forest_token_run run = run_of(tokens);
+	    words.push_back(run.tok_off);
+	    words.push_back(run.tok_bytes);
+	    words.push_back(run.tok_count);
+	    words.push_back(run.file_id);
+	};
+	words.push_back(CIR_CLASS_PATTERN_MAGIC);
+	words.push_back(CIR_CLASS_PATTERN_PAYLOAD_VERSION);
+	words.push_back((uint32_t)pattern.capture_reason);
+	word64(pattern.semantic_fingerprint);
+	words.push_back(intern_spelling(pattern.identity));
+	words.push_back(intern_spelling(pattern.class_name));
+	words.push_back(intern_spelling(pattern.defining_namespace));
+	words.push_back(pattern.is_partial_specialization ? 1u : 0u);
+	words.push_back((uint32_t)pattern.types.size());
+	for ( size_t i = 0; i < pattern.types.size(); ++i )
+	{
+	    const Program::ClassTypePattern &type = pattern.types[i];
+	    words.push_back((uint32_t)type.kind);
+	    words.push_back(type.flags);
+	    words.push_back(type.concrete_type_id);
+	    words.push_back(type.operand);
+	    words.push_back(type.secondary);
+	    words.push_back(type.template_param_index);
+	    words.push_back(type.nested_node_id);
+	    words.push_back(type.pack_param_index);
+	    words.push_back(intern_spelling(type.name));
+	    words.push_back((uint32_t)type.arguments.size());
+	    words.push_back((uint32_t)type.dimensions.size());
+	    for ( size_t a = 0; a < type.arguments.size(); ++a )
+		words.push_back(type.arguments[a]);
+	    for ( size_t d = 0; d < type.dimensions.size(); ++d )
+		word64(type.dimensions[d]);
+	}
+	words.push_back((uint32_t)pattern.nodes.size());
+	for ( size_t i = 0; i < pattern.nodes.size(); ++i )
+	{
+	    const Program::ClassAggregatePatternNode &node = pattern.nodes[i];
+	    words.push_back(node.local_id);
+	    words.push_back(node.parent_id);
+	    words.push_back((uint32_t)node.kind);
+	    words.push_back(intern_spelling(node.source_name));
+	    words.push_back(intern_spelling(node.canonical_spelling));
+	    words.push_back(node.complete ? 1u : 0u);
+	    words.push_back(node.from_system_header ? 1u : 0u);
+	    words.push_back((uint32_t)node.bases.size());
+	    for ( size_t b = 0; b < node.bases.size(); ++b )
+	    {
+		words.push_back(node.bases[b].type);
+		words.push_back(node.bases[b].access);
+		words.push_back(node.bases[b].is_virtual ? 1u : 0u);
+	    }
+	    words.push_back((uint32_t)node.declarations.size());
+	    for ( size_t d = 0; d < node.declarations.size(); ++d )
+		words.push_back((uint32_t)node.declarations[d]);
+	    words.push_back((uint32_t)node.aliases.size());
+	    for ( size_t a = 0; a < node.aliases.size(); ++a )
+	    {
+		words.push_back(intern_spelling(node.aliases[a].name));
+		words.push_back(node.aliases[a].type);
+	    }
+	    words.push_back((uint32_t)node.members.size());
+	    for ( size_t m = 0; m < node.members.size(); ++m )
+	    {
+		const Program::ClassMemberPattern &member = node.members[m];
+		words.push_back(intern_spelling(member.name));
+		words.push_back(member.type);
+		word64(member.count);
+		words.push_back(member.access);
+		words.push_back(member.is_array ? 1u : 0u);
+		words.push_back(member.is_bitfield ? 1u : 0u);
+		words.push_back(member.is_anonymous ? 1u : 0u);
+		word64(member.bit_width);
+		words.push_back((uint32_t)member.dimensions.size());
+		for ( size_t d = 0; d < member.dimensions.size(); ++d )
+		    word64(member.dimensions[d]);
+	    }
+	    words.push_back((uint32_t)node.methods.size());
+	    for ( size_t m = 0; m < node.methods.size(); ++m )
+	    {
+		const Program::ClassMethodPattern &method = node.methods[m];
+		words.push_back((uint32_t)method.kind);
+		words.push_back(intern_spelling(method.variable_name));
+		words.push_back(intern_spelling(method.display_name));
+		words.push_back(intern_spelling(method.storage_alias_name));
+		words.push_back(intern_spelling(method.local_emit_name)); // allowed-exception: pattern persistence field, not symbol build
+		words.push_back(intern_spelling(method.emit_symbol));
+		words.push_back(intern_spelling(method.return_typedef_name));
+		words.push_back(method.return_type);
+		words.push_back(method.flags);
+		words.push_back(method.is_varargs ? 1u : 0u);
+		words.push_back(method.is_void_params ? 1u : 0u);
+		words.push_back(method.declaration_only ? 1u : 0u);
+		words.push_back(method.defaulted_or_deleted ? 1u : 0u);
+		words.push_back(method.is_deleted ? 1u : 0u);
+		words.push_back(method.pure_virtual ? 1u : 0u);
+		words.push_back(method.is_const_method ? 1u : 0u);
+		words.push_back(method.is_member_template ? 1u : 0u);
+		words.push_back(method.has_eager_body ? 1u : 0u);
+		words.push_back((uint32_t)method.parameters.size());
+		for ( size_t p = 0; p < method.parameters.size(); ++p )
+		{
+		    const Program::ClassMethodParamPattern &param =
+			method.parameters[p];
+		    words.push_back(intern_spelling(param.name));
+		    words.push_back(param.type);
+		    words.push_back(param.flags);
+		    words.push_back(param.is_const ? 1u : 0u);
+		    words.push_back(param.template_param_spelled_directly ? 1u : 0u);
+		    words.push_back(intern_spelling(param.cpp_spelling));
+		    words.push_back(intern_spelling(param.typedef_name));
+		    token_run(param.default_tokens);
+		}
+		words.push_back((uint32_t)method.template_param_names.size());
+		for ( size_t p = 0; p < method.template_param_names.size(); ++p )
+		    words.push_back(intern_spelling(method.template_param_names[p]));
+		words.push_back((uint32_t)method.template_param_is_type.size());
+		for ( size_t p = 0; p < method.template_param_is_type.size(); ++p )
+		    words.push_back(method.template_param_is_type[p] ? 1u : 0u);
+		words.push_back((uint32_t)method.template_param_is_pack.size());
+		for ( size_t p = 0; p < method.template_param_is_pack.size(); ++p )
+		    words.push_back(method.template_param_is_pack[p] ? 1u : 0u);
+		words.push_back(intern_spelling(method.template_return_spelling));
+		words.push_back((uint32_t)method.template_param_spellings.size());
+		for ( size_t p = 0; p < method.template_param_spellings.size(); ++p )
+		    words.push_back(intern_spelling(method.template_param_spellings[p]));
+		token_run(method.body_tokens);
+		token_run(method.definition_tokens);
+		token_run(method.trailing_ret_tokens);
+		token_run(method.ctor_init_tokens);
+		token_run(method.member_template_decl);
+		token_run(method.member_template_return_tokens);
+	    }
+	    words.push_back((uint32_t)node.using_members.size());
+	    for ( size_t u = 0; u < node.using_members.size(); ++u )
+	    {
+		words.push_back(node.using_members[u].owner_type);
+		words.push_back(intern_spelling(node.using_members[u].name));
+	    }
+	    words.push_back((uint32_t)node.nested_templates.size());
+	    for ( size_t t = 0; t < node.nested_templates.size(); ++t )
+	    {
+		const Program::ClassNestedTemplatePattern &nested =
+		    node.nested_templates[t];
+		words.push_back((uint32_t)nested.kind);
+		words.push_back((uint32_t)nested.typeparams.size());
+		for ( size_t p = 0; p < nested.typeparams.size(); ++p )
+		    words.push_back(intern_spelling(nested.typeparams[p]));
+		words.push_back((uint32_t)nested.typeparam_defaults.size());
+		for ( size_t p = 0; p < nested.typeparam_defaults.size(); ++p )
+		    token_run(nested.typeparam_defaults[p]);
+		words.push_back((uint32_t)nested.typeparam_is_type.size());
+		for ( size_t p = 0; p < nested.typeparam_is_type.size(); ++p )
+		    words.push_back(nested.typeparam_is_type[p] ? 1u : 0u);
+		words.push_back((uint32_t)nested.typeparam_is_pack.size());
+		for ( size_t p = 0; p < nested.typeparam_is_pack.size(); ++p )
+		    words.push_back(nested.typeparam_is_pack[p] ? 1u : 0u);
+		words.push_back(nested.has_non_type_params ? 1u : 0u);
+		words.push_back(intern_spelling(nested.class_name));
+		token_run(nested.body);
+		words.push_back(intern_spelling(nested.defining_namespace));
+		words.push_back(nested.is_partial_specialization ? 1u : 0u);
+		words.push_back((uint32_t)nested.spec_pattern.size());
+		for ( size_t p = 0; p < nested.spec_pattern.size(); ++p )
+		    token_run(nested.spec_pattern[p]);
+		token_run(nested.constraint);
+		token_run(nested.target);
+	    }
+	    words.push_back((uint32_t)node.static_members.size());
+	    for ( size_t s = 0; s < node.static_members.size(); ++s )
+	    {
+		words.push_back(intern_spelling(node.static_members[s].first));
+		words.push_back(node.static_members[s].second);
+	    }
+	    words.push_back((uint32_t)node.static_values.size());
+	    for ( size_t s = 0; s < node.static_values.size(); ++s )
+	    {
+		words.push_back(intern_spelling(node.static_values[s].first));
+		word64((uint64_t)node.static_values[s].second);
+	    }
+	    words.push_back((uint32_t)node.friend_classes.size());
+	    for ( size_t fidx = 0; fidx < node.friend_classes.size(); ++fidx )
+		words.push_back(intern_spelling(node.friend_classes[fidx]));
+	    words.push_back((uint32_t)node.friend_functions.size());
+	    for ( size_t fidx = 0; fidx < node.friend_functions.size(); ++fidx )
+		words.push_back(intern_spelling(node.friend_functions[fidx]));
+	}
+	return words;
+    };
+
     // Emit one record: params first, then the positional run table
     // (body, constraint, per-param defaults, per-slot spec patterns) — both as
     // contiguous pod_append slices into f.template_payload.
@@ -1842,9 +2325,11 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		    const std::vector<bool> &is_type,
 		    const std::vector<bool> &is_pack,
 		    const std::vector<std::vector<TokenBase *> > &defaults,
-		    const std::vector<TokenBase *> &body,
-		    const std::vector<TokenBase *> &constraint,
-		    const std::vector<std::vector<TokenBase *> > &spec) {
+	    const std::vector<TokenBase *> &body,
+	    const std::vector<TokenBase *> &constraint,
+	    const std::vector<std::vector<TokenBase *> > &spec,
+	    const Program::ClassPattern *pattern,
+	    Program::ClassParseReason pattern_reason) {
 	cir_forest_template_record r;
 	memset(&r, 0, sizeof(r));
 	r.kind    = kind;
@@ -1854,6 +2339,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	r.extra_id = extra.empty() ? 0 : pool.intern(extra);
 	r.owner_type_id = owner ? forest_serialize_type_id(owner) : 0;
 	r.flags   = flags;
+	r.pattern_reason = (uint32_t)pattern_reason;
 	// v24: a pattern CAPTURED in the TU's root file (the program's own
 	// templates) is fenced from the bind restore. Provenance = the first
 	// body/decl token carrying a file.
@@ -1898,6 +2384,23 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		first = false;
 	    }
 	}
+	if (pattern) {
+	    std::vector<uint32_t> words = pattern_words_of(*pattern);
+	    r.pattern_begin = (uint32_t)f.template_payload.size();
+	    r.pattern_words = (uint32_t)words.size();
+	    f.template_payload.insert(f.template_payload.end(),
+		words.begin(), words.end());
+	}
+	{
+	    static const char *cpp_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
+	    if (cpp_probe && (name.find(cpp_probe) != std::string::npos
+			       || !strcmp(cpp_probe, "*")))
+		std::cerr << "[class-pattern-probe] freeze-emit: " << ns << "::"
+		    << name << " kind=" << kind
+		    << " reason=" << r.pattern_reason
+		    << " pattern=" << (pattern ? 1 : 0)
+		    << " words=" << r.pattern_words << std::endl;
+	}
 	f.templates.push_back(r);
     };
 
@@ -1905,33 +2408,104 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
     static const std::vector<TokenBase *> no_toks;
     static const std::vector<bool> no_bools;
 
-    prog->template_map.for_each([&](const char *key, std::vector<Program::TemplateDef> &v) {
-	for (Program::TemplateDef &td : v)
-	    emit(CIR_TMPLK_CLASS, key, td.class_name, td.defining_namespace,
-		 std::string(), td.owner_class,
-		 (td.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0)
-		 | (td.is_partial_specialization ? CIR_TMPLF_IS_PARTIAL_SPEC : 0),
-		 td.typeparams, td.typeparam_is_type, td.typeparam_is_pack,
-		 td.typeparam_defaults, td.body, td.constraint, td.spec_pattern);
+    // v31 serialized member-template keys used owner-name + US + bare-name.
+    // Keep that cold wire spelling for reader compatibility and closure-filter
+    // semantics; the live registry itself is keyed only by the bare-name id.
+    auto frozen_template_key = [](const char *bare_name,
+	    const std::string &template_name, DataDefCLASS *owner) {
+	if (!owner)
+	    return std::string(bare_name);
+	std::string key;
+	key.reserve(owner->name.size() + 1 + template_name.size());
+	key.append(owner->name);
+	key.push_back('\x1f');
+	key.append(template_name);
+	return key;
+    };
+
+    auto emit_class_registry = [&](uint32_t kind, const char *key,
+	    Program::template_registry_entry_t &registry) {
+	auto emit_variants = [&](std::vector<Program::TemplateDef> &variants) {
+	    for (Program::TemplateDef &td : variants) {
+		const std::string record_key = frozen_template_key(
+		    key, td.class_name, td.owner_class);
+		emit(kind, record_key.c_str(), td.class_name,
+		     td.defining_namespace,
+		     std::string(), td.owner_class,
+		     (td.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0)
+		     | (td.is_partial_specialization ? CIR_TMPLF_IS_PARTIAL_SPEC : 0),
+		     td.typeparams, td.typeparam_is_type, td.typeparam_is_pack,
+		     td.typeparam_defaults, td.body, td.constraint, td.spec_pattern,
+		     prog->materialize_class_pattern(td), td.class_pattern_reason);
+	    }
+	};
+	emit_variants(registry.namespace_variants);
+	std::vector<std::pair<std::string,
+	    std::vector<Program::TemplateDef> *> > owners;
+	for (std::unordered_map<DataDefCLASS *,
+		std::vector<Program::TemplateDef> >::iterator it =
+		registry.member_variants.begin();
+	     it != registry.member_variants.end(); ++it) {
+	    const std::string &canonical =
+		it->first->canonical_cpp_spelling();
+	    owners.push_back(std::make_pair(
+		canonical.empty() ? it->first->name : canonical, &it->second));
+	}
+	std::sort(owners.begin(), owners.end(),
+	    [](const std::pair<std::string,
+		       std::vector<Program::TemplateDef> *> &a,
+	       const std::pair<std::string,
+		       std::vector<Program::TemplateDef> *> &b) {
+		return a.first < b.first;
+	    });
+	for (size_t i = 0; i < owners.size(); ++i)
+	    emit_variants(*owners[i].second);
+    };
+    prog->template_map.for_each([&](const char *key,
+	    Program::template_registry_entry_t &registry) {
+	emit_class_registry(CIR_TMPLK_CLASS, key, registry);
 	return false;
     });
-    prog->partial_spec_map.for_each([&](const char *key, std::vector<Program::TemplateDef> &v) {
-	for (Program::TemplateDef &td : v)
-	    emit(CIR_TMPLK_PARTIAL, key, td.class_name, td.defining_namespace,
-		 std::string(), td.owner_class,
-		 (td.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0)
-		 | (td.is_partial_specialization ? CIR_TMPLF_IS_PARTIAL_SPEC : 0),
-		 td.typeparams, td.typeparam_is_type, td.typeparam_is_pack,
-		 td.typeparam_defaults, td.body, td.constraint, td.spec_pattern);
+    prog->partial_spec_map.for_each([&](const char *key,
+	    Program::template_registry_entry_t &registry) {
+	emit_class_registry(CIR_TMPLK_PARTIAL, key, registry);
 	return false;
     });
-    prog->template_alias_map.for_each([&](const char *key, std::vector<Program::TemplateAliasDef> &v) {
-	for (Program::TemplateAliasDef &ad : v)
-	    emit(CIR_TMPLK_ALIAS, key, ad.alias_name, ad.defining_namespace,
-		 std::string(), ad.owner_class,
-		 ad.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0,
-		 ad.typeparams, ad.typeparam_is_type, ad.typeparam_is_pack,
-		 ad.typeparam_defaults, ad.target, no_toks, no_multi);
+    prog->template_alias_map.for_each([&](const char *key,
+	    Program::template_alias_registry_entry_t &registry) {
+	auto emit_variants = [&](std::vector<Program::TemplateAliasDef> &variants) {
+	    for (Program::TemplateAliasDef &ad : variants) {
+		const std::string record_key = frozen_template_key(
+		    key, ad.alias_name, ad.owner_class);
+		emit(CIR_TMPLK_ALIAS, record_key.c_str(), ad.alias_name,
+		     ad.defining_namespace, std::string(), ad.owner_class,
+		     ad.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0,
+		     ad.typeparams, ad.typeparam_is_type, ad.typeparam_is_pack,
+		     ad.typeparam_defaults, ad.target, no_toks, no_multi, NULL,
+		     Program::ClassParseReason::None);
+	    }
+	};
+	emit_variants(registry.namespace_variants);
+	std::vector<std::pair<std::string,
+	    std::vector<Program::TemplateAliasDef> *> > owners;
+	for (std::unordered_map<DataDefCLASS *,
+		std::vector<Program::TemplateAliasDef> >::iterator it =
+		registry.member_variants.begin();
+	     it != registry.member_variants.end(); ++it) {
+	    const std::string &canonical =
+		it->first->canonical_cpp_spelling();
+	    owners.push_back(std::make_pair(
+		canonical.empty() ? it->first->name : canonical, &it->second));
+	}
+	std::sort(owners.begin(), owners.end(),
+	    [](const std::pair<std::string,
+		       std::vector<Program::TemplateAliasDef> *> &a,
+	       const std::pair<std::string,
+		       std::vector<Program::TemplateAliasDef> *> &b) {
+		return a.first < b.first;
+	    });
+	for (size_t i = 0; i < owners.size(); ++i)
+	    emit_variants(*owners[i].second);
 	return false;
     });
     prog->fn_template_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {
@@ -1940,7 +2514,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
-		 fd.typeparam_defaults, fd.decl, no_toks, no_multi);
+		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, NULL,
+		 Program::ClassParseReason::None);
 	return false;
     });
     prog->fn_template_decl_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {
@@ -1949,14 +2524,16 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
-		 fd.typeparam_defaults, fd.decl, no_toks, no_multi);
+		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, NULL,
+		 Program::ClassParseReason::None);
 	return false;
     });
     prog->var_template_map.for_each([&](const char *key, Program::VarTemplateDef &vd) {
 	emit(CIR_TMPLK_VAR, key, std::string(), vd.defining_namespace,
 	     std::string(), NULL, 0,
 	     vd.typeparams, no_bools, vd.typeparam_is_pack,
-	     no_multi, vd.init, no_toks, no_multi);
+	     no_multi, vd.init, no_toks, no_multi, NULL,
+	     Program::ClassParseReason::None);
 	return false;
     });
     for (std::map<std::string, Program::ConceptDef>::iterator ci =
@@ -1964,7 +2541,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	emit(CIR_TMPLK_CONCEPT, ci->first.c_str(), std::string(),
 	     ci->second.defining_namespace, std::string(), NULL, 0,
 	     ci->second.typeparams, no_bools, no_bools,
-	     no_multi, no_toks, ci->second.constraint, no_multi);
+	     no_multi, no_toks, ci->second.constraint, no_multi, NULL,
+	     Program::ClassParseReason::None);
 
     // v21: body-bearing MEMBER function templates — the pattern state
     // register_skipped_class_template_function leaves on a class's FuncDef
@@ -1990,7 +2568,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	     instance ? CIR_TMPLF_INSTANCE_METHOD : 0,
 	     fd->template_param_names, fd->template_param_is_type,
 	     fd->template_param_is_pack, no_multi,
-	     fd->member_template_decl, no_toks, no_multi);
+	     fd->member_template_decl, no_toks, no_multi, NULL,
+	     Program::ClassParseReason::None);
     }
 
     // v21: out-of-line member DEFINITIONS of class templates (vector.tcc's
@@ -2799,8 +3378,76 @@ static void cir_forest_arena_refresh(Program *prog,
 	}
 }
 
+// MIR module cache (2026-07-17 design): compile a just-assembled container
+// image to its MIR module in FRESH contexts — exactly the compile a consumer's
+// --run-frozen would run — and serialize it with MIR_write_module. Error-
+// contained: check-clean does NOT imply gen-clean (c2mir can still fatal on a
+// defective drained body — "undeclared func reg fp"), so a MIR fatal here
+// longjmps back, the pack carries no blob, and every consumer falls back to
+// node materialization bit-for-bit.
+static bool cir_forest_mir_cache_blob(const void *image, size_t image_len,
+				      const char *source_name,
+				      std::vector<uint8_t> &out)
+{
+    MIR_context_t ctx = MIR_init();
+    MIR_set_error_func(ctx, cir_mir_error);
+    c2mir_init(ctx);
+    c2m_ctx_t c2m = cir_init(ctx, /*debug_p=*/false);
+    bool ok = false;
+    {
+	CirFrozenForest forest;
+	do {
+	    if (!c2m)
+		break;
+	    if (!forest.open(image, image_len, c2m))
+		break;
+	    cir_node *root = forest.root();
+	    if (!root)
+		break;
+	    if (cir_report_errors(stderr, root->as_node()))
+		break;
+	    if (setjmp(cir_mir_error_jmp)) {
+		cir_mir_error_armed = false;
+		cir_mir_cache_sink = NULL;
+		fprintf(stderr, "%s: mir cache: MIR error during module "
+			"compile: %s — blob skipped (consumers fall back)\n",
+			source_name, cir_mir_error_text);
+		break;
+	    }
+	    cir_mir_error_armed = true;
+	    bool compiled = cir_compile(ctx, c2m, root->as_node(), "frozen");
+	    MIR_module_t mod = compiled
+		? DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx)) : NULL;
+	    if (!mod) {
+		cir_mir_error_armed = false;
+		fprintf(stderr, "%s: mir cache: module compile failed — "
+			"blob skipped (consumers fall back)\n", source_name);
+		break;
+	    }
+	    cir_forest_mir_header mh;
+	    mh.forest_version = CIR_FOREST_FORMAT_VERSION;
+	    mh.mir_api_x100 = (uint32_t)(_MIR_get_api_version() * 100.0 + 0.5);
+	    out.clear();
+	    out.insert(out.end(), (const uint8_t *)&mh,
+		       (const uint8_t *)&mh + sizeof(mh));
+	    cir_mir_cache_sink = &out;
+	    MIR_write_module_with_func(ctx, cir_mir_cache_write_byte, mod);
+	    cir_mir_cache_sink = NULL;
+	    cir_mir_error_armed = false;
+	    ok = out.size() > sizeof(mh);
+	} while (0);
+	if (c2m)
+	    cir_finish(c2m);
+    }
+    c2mir_finish(ctx);
+    MIR_finish(ctx);
+    if (!ok)
+	out.clear();
+    return ok;
+}
+
 int madc_cir_freeze(Program *prog, const char *source_name,
-		    const char *out_path, bool append)
+		    const char *out_path, bool append, bool mir_cache)
 {
     // The type graph rides the parse-populated DefArena (v18): a Program that
     // parsed with forest_arena_enabled OFF would freeze a type-less container
@@ -2960,7 +3607,31 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		// The intern spine compresses only in the appended pack
 		// (owner-approved ~7ms-per-process trade; dev freezes keep
 		// zero-copy binds).
-		if (!cir_forest_write(f, w, codec, append ? 15 : 0, append)) {
+		bool staged = cir_forest_write(f, w, codec, append ? 15 : 0,
+					       append);
+		// MIR module cache (--freeze-mir-cache): assemble the container
+		// in memory, thaw + compile that EXACT image (what a consumer's
+		// --run-frozen builds), and stage the serialized module as one
+		// more segment before the file is written. Blob failure never
+		// fails the freeze — the segment is simply absent and every
+		// consumer falls back to node materialization.
+		if (staged && mir_cache) {
+		    std::vector<uint8_t> image, mblob;
+		    if (w.build(image)
+			&& cir_forest_mir_cache_blob(image.data(), image.size(),
+						     source_name, mblob)) {
+			if (!w.add_segment(CIR_FOREST_SEG_MIR_MODULE,
+					   SNAP_KIND_CIR_MIR_MODULE,
+					   mblob.data(), mblob.size(), codec,
+					   append ? 15 : 0))
+			    fprintf(stderr, "%s: mir cache: segment add "
+				    "failed — blob skipped\n", source_name);
+			else
+			    fprintf(stderr, "%s: mir cache: %zu-byte module "
+				    "blob packed\n", source_name, mblob.size());
+		    }
+		}
+		if (!staged) {
 		    fprintf(stderr, "%s: forest container assembly failed\n",
 			    source_name);
 		} else if (!(append ? w.append_file(out_path)
@@ -3067,6 +3738,11 @@ int madc_cir_dump_forest(const char *container_path)
 	return -1;
 
     printf("forest\tunits=%u\n", forest.unit_count());
+    {
+	std::vector<uint8_t> mblob;
+	if (forest.mir_module_bytes(mblob))
+	    printf("mircache\tbytes=%zu\n", mblob.size());
+    }
     for (size_t i = 0; i < forest.libs().size(); ++i)
 	printf("lib\t%s\n", forest.libs()[i].c_str());
     const std::vector<uint32_t> &canon = forest.canon_order();
@@ -3140,7 +3816,8 @@ static bool is_c_source_file(const std::string &path)
 
 int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			 int user_argc, char **user_argv,
-			 bool forest_bind, const std::string &forest_bind_path)
+			 bool forest_bind, const std::string &forest_bind_path,
+			 bool class_pattern_live_capture)
 {
 	if (manifest.tus.empty()) {
 		fprintf(stderr, "madc_project_execute: empty manifest\n");
@@ -3167,6 +3844,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		// falls through to live parse when no container is present.
 		prog->forest_bind_enabled = forest_bind;
 		prog->forest_bind_path = forest_bind_path;
+		prog->class_pattern_live_capture = class_pattern_live_capture;
 		for (const std::string &inc : tu.include_dirs)
 			prog->add_include_dir(inc);
 		for (const std::string &d : tu.defines)
@@ -3199,6 +3877,13 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	// Phase 2: now that all parsing is done, enter the MIR bracket. No
 	// throwing call sits between MIR_init() and teardown().
 	MIR_context_t ctx = MIR_init();
+	// C++ TUs each emit their own copy of every template instantiation they
+	// use (ODR: the copies are identical). MIR treats a same-named exported
+	// func in a later module as a fatal redefinition; permit it so the last
+	// copy wins — the linkonce/COMDAT analogue for the multi-TU JIT.
+	// (Named DATA duplicates still get per-module addresses — split-state
+	// hazard for template statics; revisit when a corpus actually hits it.)
+	MIR_set_func_redef_permission(ctx, TRUE);
 	c2mir_init(ctx);
 	MIR_gen_init(ctx);
 	MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);

@@ -253,6 +253,15 @@ node_t CirBuilder::id(const char *name, TokenBase *origin)
 
 std::string CirBuilder::var_emit_name(const Variable &v) const
 {
+	// A wide string literal's Variable name embeds its raw UTF-32 payload
+	// (not a valid C identifier) — emit the sanitized module symbol the
+	// translate_module pre-scan assigned (and defined) for it.
+	{
+		std::map<const Variable *, std::string>::const_iterator wi =
+			m_wide_literal_syms.find(&v);
+		if (wi != m_wide_literal_syms.end())
+			return wi->second;
+	}
 	if (v.storage_alias_name.empty() || !m_prog)
 		return v.name;
 	// storage_alias_name is overloaded: an __attribute__((alias("data")))
@@ -706,10 +715,7 @@ static bool tsubst_local_function_body_empty(Program *prog, Variable *var)
 		if (matches_empty_body(dynamic_cast<TokenFunc *>(pb)))
 			return true;
 	}
-	std::queue<TokenBase *> q = prog->ast;
-	while (!q.empty()) {
-		TokenBase *tb = q.front();
-		q.pop();
+	for (TokenBase *tb : prog->ast) {
 		if (matches_empty_body(dynamic_cast<TokenFunc *>(tb)))
 			return true;
 	}
@@ -764,6 +770,7 @@ static bool clone_local_aggregate_members(
 	dst->is_complete = true;
 	dst->is_anonymous = false;
 	dst->reverse_scalar_storage = src->reverse_scalar_storage;
+	dst->definition_origin = src->definition_origin;
 
 	bool substituted_object_member = false;
 	for (size_t i = 0; i < src->members.size(); ++i) {
@@ -1557,6 +1564,40 @@ static bool attr_list_has_cleanup(node_t attrs)
 	return false;
 }
 
+// Fixed-array element count of a SPEC_DECL's declarator: the product of its
+// N_ARR dims when every dim is an integer-literal node. 0 = not a fixed array
+// (no N_ARR, or a non-constant dim — VLA/extern-[] shapes never carry a class
+// cleanup attribute, so 0 simply keeps the scalar-dtor path).
+static size_t spec_decl_fixed_array_elems(node_t spec_decl)
+{
+	node_t d = c2mir_node_op(spec_decl, 1);          // declarator (N_DECL)
+	if (!d || d->code != N_DECL)
+		return 0;
+	node_t dlist = c2mir_node_op(d, 1);              // suffix list
+	if (!dlist || dlist->code != N_LIST)
+		return 0;
+	size_t n = 1;
+	bool saw = false;
+	for (node_t op = c2mir_node_first_op(dlist); op;
+	     op = c2mir_node_next_op(op)) {
+		if (op->code != N_ARR)
+			continue;
+		node_t sz = c2mir_node_op(op, 2);        // N_ARR(static, quals, size)
+		if (!sz)
+			return 0;
+		if (sz->code == N_I || sz->code == N_L) {
+			cir_node *sn = CIR_NODE(sz);
+			if (sn->base.u.l <= 0)
+				return 0;
+			n *= (size_t)sn->base.u.l;
+			saw = true;
+		} else {
+			return 0;
+		}
+	}
+	return saw ? n : 0;
+}
+
 static bool node_is_deref_of_id(node_t n, const char *name)
 {
 	if (!n || n->code != N_DEREF)
@@ -1736,10 +1777,7 @@ static TokenFunc *find_ast_function_body(CirBuilder *cb, Program *prog,
 {
 	if (!cb || !prog || sym.empty())
 		return NULL;
-	std::queue<TokenBase *> q = prog->ast;
-	while (!q.empty()) {
-		TokenBase *tb = q.front();
-		q.pop();
+	for (TokenBase *tb : prog->ast) {
 		TokenFunc *tf = dynamic_cast<TokenFunc *>(tb);
 		FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
 		if (tf && fd && !tf->is_overridden && !fd->declaration_only
@@ -3585,8 +3623,17 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				DataDefCLASS *cdd = as_class_instance(concrete);
 				if (cdd) {
 					if (class_needs_dtor(cdd)) {
-						std::string dtor_sym =
-							class_complete_dtor_symbol(cdd);
+						// A fixed-array decl re-targets to the
+						// substituted class's per-(class,N)
+						// ARRAY wrapper, not the scalar dtor
+						// (task #56) — the pattern's attr was
+						// the exemplar class's wrapper.
+						size_t arr_n =
+							spec_decl_fixed_array_elems(
+								src->as_node());
+						std::string dtor_sym = arr_n
+							? demand_array_dtor(cdd, arr_n)
+							: class_complete_dtor_symbol(cdd);
 						referenced_funcs.insert(dtor_sym);
 						node_t attr_args = list();
 						append(attr_args,
@@ -4453,7 +4500,11 @@ static bool is_char_pointer(DataDef *dd)
 // without user-class layout metadata are deliberately excluded.
 static DataDefCLASS *pointee_user_class(DataDef *dd)
 {
-	if (!dd || !dd->is_pointer()) return NULL;
+	// A REFERENCE slot holds an address just like a pointer (DataDefREF
+	// IS-A DataDefPTR); its pointee is the referent class — so a `V &vr`
+	// initializer / a ref-valued rhs takes the same derived->base subobject
+	// adjustment as a `V *` (task #36).
+	if (!dd || (!dd->is_pointer() && !dd->is_reference())) return NULL;
 	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
 	if (!p) return NULL;
 	return as_user_class(p->base_type);
@@ -4462,12 +4513,36 @@ static DataDefCLASS *pointee_user_class(DataDef *dd)
 // The user-class a class-pointer-valued expression yields. `new B()` carries
 // its allocated class directly (TokenNEW::alloc_class, never reflected in
 // datadef()); any other expression is read through its `Cls *` datadef pointee.
+// An address-of token's declared pointer type may already be COERCED to a
+// bound reference's referent (`V &vr = *bp;` parses to a TokenAddrExpr typed
+// `V *` by reference_bind_address_expr), hiding the operand's real class —
+// read the pointee from the OPERAND lvalue, the class the address actually
+// points at, so the derived->base subobject adjust still fires (task #36).
 static DataDefCLASS *expr_pointee_class(TokenBase *tb)
 {
 	if (!tb) return NULL;
 	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb))
 		if (!tn->placement)
 			return as_user_class(tn->alloc_class);
+	if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(tb)) {
+		DataDef *idd = ta->expr ? ta->expr->datadef() : NULL;
+		if (DataDefCLASS *ic = as_user_class(idd))
+			return ic;
+		// The operand may itself be reference-valued (a ref-RETURNING
+		// call: `V &vr = get();` with get() yielding `D&`) — its datadef
+		// is a DataDefREF whose referent class is the real pointee
+		// (task #47 residue).
+		if (DataDefCLASS *ic = pointee_user_class(idd))
+			return ic;
+	}
+	if (TokenAddrOf *to = dynamic_cast<TokenAddrOf *>(tb)) {
+		if (DataDefCLASS *ic = as_user_class(to->var.type))
+			return ic;
+		// Same for a reference VARIABLE operand (`V &vr2 = vb;` with
+		// vb a `B&`): its declared type is a DataDefREF to the class.
+		if (DataDefCLASS *ic = pointee_user_class(to->var.type))
+			return ic;
+	}
 	return pointee_user_class(tb->datadef());
 }
 
@@ -4487,16 +4562,24 @@ node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rh
 	if (!base || !derived || base == derived) return value;
 	if (!derived->is_or_derives_from(base)) return value;
 	// Adjust the pointer to the base subobject. Single inheritance / primary base
-	// = offset 0 (a plain cast, byte-identical to before); a secondary or virtual
-	// base sits at a non-zero offset, so emit (Base*)((char*)value + offset).
-	size_t off = derived->base_offset_of(base);
+	// = offset 0 (a plain cast, byte-identical to before); a secondary base sits
+	// at a non-zero static offset, so emit (Base*)((char*)value + offset). A
+	// VIRTUAL base's position depends on the most-derived type — the pointer's
+	// static pointee class may be a less-derived view, so read the offset from
+	// the vtable's vbase-offset slot (task #36).
 	node_t adj = value;
+	node_t dyn = vbase_dynamic_adjust(value, derived, base, origin);
+	if (dyn) {
+		adj = dyn;
+	} else {
+	size_t off = derived->base_offset_of(base);
 	if (off != 0 && off != (size_t)-1) {
 		node_t charp = node2(N_CAST,
 			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 			value, origin);
 		adj = node2(N_ADD, charp, integer((long)off), origin);
+	}
 	}
 	return node2(N_CAST, class_ptr_type(base), adj, origin);
 }
@@ -4508,17 +4591,31 @@ node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rh
 node_t CirBuilder::upcast_class_ref_addr(node_t value, DataDefCLASS *base,
 					 TokenBase *rhs, TokenBase *origin)
 {
-	DataDefCLASS *derived = as_user_class(rhs ? rhs->datadef() : NULL);
+	DataDef *rdd = rhs ? rhs->datadef() : NULL;
+	DataDefCLASS *derived = as_user_class(rdd);
+	// A REFERENCE-typed lvalue (`B &f(D &r) { return r; }`): its address IS
+	// the referent's, so the derived class is the referent's class (task #47
+	// residue). Gated to references — a pointer-typed lvalue's address is a
+	// `T**`, not a class pointer.
+	if (!derived && rdd && rdd->is_reference())
+		derived = pointee_user_class(rdd);
 	if (!base || !derived || base == derived) return value;
 	if (!derived->is_or_derives_from(base)) return value;
-	size_t off = derived->base_offset_of(base);
+	// A virtual base's offset is read from the vtable slot — the returned
+	// lvalue's static class may be a less-derived view (task #36).
 	node_t adj = value;
+	node_t dyn = vbase_dynamic_adjust(value, derived, base, origin);
+	if (dyn) {
+		adj = dyn;
+	} else {
+	size_t off = derived->base_offset_of(base);
 	if (off != 0 && off != (size_t)-1) {
 		node_t charp = node2(N_CAST,
 			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 			value, origin);
 		adj = node2(N_ADD, charp, integer((long)off), origin);
+	}
 	}
 	return node2(N_CAST, class_ptr_type(base), adj, origin);
 }
@@ -4758,6 +4855,14 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 			node_t addr = node2(N_CAST, void_ptr_type(),
 					    node1(N_ADDR, translate_expr(arg), arg),
 					    arg);
+			// The call's static return class may be a less-derived
+			// view — a virtual-base bind reads the offset from the
+			// vtable slot (task #36).
+			if (rc != target) {
+				node_t dyn = vbase_dynamic_adjust(addr, rc,
+								  target, arg);
+				if (dyn) return dyn;
+			}
 			size_t off = rc != target ? rc->base_offset_of(target)
 						  : 0;
 			if (off != 0 && off != (size_t)-1) {
@@ -4792,11 +4897,14 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 	// the base at its byte offset. Without this, a derived arg fell into the
 	// converting-ctor temp fallback below, CONSTRUCTING a Base temp instead of
 	// binding. Offset 0 (single-inheritance primary base) emits the same
-	// own-address shape as before. Virtual bases keep the prior behavior
-	// (base_offset_of -1 -> no static adjustment), matching upcast_class_ptr.
+	// own-address shape as before. A VIRTUAL base bind reads the offset from
+	// the vtable slot — the arg's static class may be a less-derived view
+	// (task #36); static fallback matches upcast_class_ptr.
 	DataDefCLASS *own = as_class_instance(arg ? arg->datadef() : NULL);
 	if (own && own != target && own->is_or_derives_from(target)) {
 		node_t addr = object_arg_addr(arg, own);
+		node_t dyn = vbase_dynamic_adjust(addr, own, target, arg);
+		if (dyn) return dyn;
 		size_t off = own->base_offset_of(target);
 		if (off != 0 && off != (size_t)-1) {
 			node_t charp = node2(N_CAST,
@@ -5525,6 +5633,21 @@ int CirBuilder::fnptr_alias_stars(const std::string &alias)
 	return 1;
 }
 
+// True when `alias` resolves to a function(-pointer) typedef — the only case
+// where the alias can serve as a fn-ptr declaration's whole type spec
+// (`DO_FUN g`). A typedef that names a NON-function type is just the fn-ptr's
+// RETURN type (`X (*fp)(void)` — struct-ret-1; `bool (*m)(args)` members —
+// 20030714-1): the alias spec would erase both the signature and the pointer,
+// so those must keep the full `ret (*name)(params)` declarator. Unresolvable
+// aliases count as function form (matches fnptr_alias_stars' fallback).
+bool CirBuilder::fnptr_alias_is_fn(const std::string &alias)
+{
+	if (alias.empty() || !m_prog) return true;
+	flat_datatype_map_iter it = m_prog->datatype_map.find(alias);
+	if (it == m_prog->datatype_map.end() || !*it) return true;
+	return dynamic_cast<DataDefFPTR *>(&(*it)->definition) != NULL;
+}
+
 // -----------------------------------------------------------------------
 // Declaration builders
 // -----------------------------------------------------------------------
@@ -6189,8 +6312,12 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// the signature; build `ret (*fp)(params)` instead. (Array-of-fn-ptr
 	// variables are deferred; SMAUG's tables are struct-arrays with fn-ptr
 	// members, handled in member_node.)
-	DataDefFPTR *fnptr = v->typedef_name.empty()
-			? dynamic_cast<DataDefFPTR *>(v->type) : NULL;
+	// Declared through a typedef: the alias is the whole type spec ONLY when
+	// it names the function(-pointer) type itself — see fnptr_alias_is_fn.
+	DataDefFPTR *fnptr = dynamic_cast<DataDefFPTR *>(v->type);
+	if (fnptr && !v->typedef_name.empty()
+	    && fnptr_alias_is_fn(v->typedef_name))
+		fnptr = NULL;
 	node_t fnptr_decl_list = NULL;
 
 	// Emit ID("alias") for a variable declared via a typedef (matches c2m).
@@ -6286,9 +6413,10 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		//
 		// When declared via an array typedef alias (`HARD_REG_SET x[2]` with
 		// `typedef T HARD_REG_SET[2]`), the parser flattens the typedef's own
-		// dims into v->dims, so v->dims = [typedef-dims..., own-dims...]. The
-		// alias spec (ID("HARD_REG_SET")) already implies the typedef's dims,
-		// so emit only the variable's OWN leading dims here — skip the trailing
+		// dims into v->dims, so v->dims = [own-dims..., typedef-dims...] (the
+		// declarator's dims are the OUTER dimensions). The alias spec
+		// (ID("HARD_REG_SET")) already implies the typedef's dims, so emit
+		// only the variable's OWN leading dims here — skip the trailing
 		// dims contributed by the alias.
 		// NOTE: this flattening happens ONLY in the parser's non-pointer path.
 		// When the declarator has a pointer prefix (`A3_28 *paa[]`, is_ptr), the
@@ -6479,10 +6607,13 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		if (as && as->right)
 			init_expr = as->right;
 		init_node = translate_expr(init_expr);
-		// Derived->base pointer initializer (`A *p = new B();`, `A *p = bptr;`):
-		// emit an explicit `(A*)` cast so the conversion is explicit and c2mir
-		// does not warn. Single inheritance, base subobject at offset 0 — value
-		// unchanged.
+		// Derived->base pointer initializer (`A *p = new B();`, `A *p = bptr;`)
+		// — and, via pointee_user_class's reference handling, a class
+		// REFERENCE bound to a derived lvalue (`V &vr = *bp;`, the parser
+		// stores the initializer as the referent's address): emit an explicit
+		// `(A*)` cast so the conversion is explicit and c2mir does not warn.
+		// Single inheritance, base subobject at offset 0 — value unchanged;
+		// a virtual base reads the vtable's vbase-offset slot (task #36).
 		init_node = upcast_class_ptr(init_node, v->type,
 					     init_expr, origin);
 		}
@@ -6499,9 +6630,25 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// and the cleanup mechanism passes &v (a `struct Cls *`) — a type match.
 	node_t attr_node = ignore();
 	{
-		DataDefCLASS *cdd = (!is_ptr) ? as_class_instance(base_dd) : NULL;
+		// Never on an EXTERN declaration: the object is defined (and
+		// destroyed) elsewhere — a TU referencing `extern ostream cout`
+		// must not register a dtor for it (g++ parity). gcc also rejects
+		// the shape outright when the dtor symbol is not yet declared
+		// ("cleanup argument not a function"); the c2mir fork applies
+		// cleanup to automatic variables only, so this attach was inert
+		// for externs in the JIT lane anyway.
+		DataDefCLASS *cdd = (!is_ptr && !(v->flags & vfEXTERN))
+				    ? as_class_instance(base_dd) : NULL;
 		if (cdd && class_needs_dtor(cdd)) {
-			std::string dtor_sym = class_complete_dtor_symbol(cdd);
+			// A fixed ARRAY gets the per-(class,N) wrapper: the cleanup
+			// mechanism calls one function with &a (element 0), which
+			// destroyed only a[0] — g++ destroys all N in REVERSE
+			// (task #56; the VLA case stays on the free-only arm below).
+			std::string dtor_sym =
+				(v->is_fixed_array() && !v->is_vla()
+				 && v->total_elements() > 0)
+				? demand_array_dtor(cdd, v->total_elements())
+				: class_complete_dtor_symbol(cdd);
 			referenced_funcs.insert(dtor_sym);
 			node_t attr_args = list();
 			append(attr_args, id(dtor_sym.c_str(), origin));
@@ -6691,7 +6838,11 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	if (DataDefFPTR *mfp = dynamic_cast<DataDefFPTR *>(mtype)) {
 		node_t mspec;
 		node_t mdl = list();
-		if (!mtypedef.empty()) {
+		// The alias-spec form applies only when the typedef names the
+		// function(-pointer) type itself; a RETURN-type alias
+		// (`bool (*isTableCell)(args)`, 20030714-1) would emit `bool *m` —
+		// a plain data pointer — so it expands the signature inline.
+		if (!mtypedef.empty() && fnptr_alias_is_fn(mtypedef)) {
 			mspec = type_list(mtype, mtypedef);
 			for (size_t d = 0; d < mdims.size(); d++)
 				append(mdl, node3(N_ARR, ignore(), list(), integer(mdims[d])));
@@ -6788,7 +6939,12 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 			for (int i = 0; ; i++) {
 				node_t sp = c2mir_node_op(mspec, i);
 				if (!sp) break;
-				if (sp->code == N_UNSIGNED || sp->code == N_SIGNED)
+				// _Bool admits no sign qualifier (C11 6.7.2p2) and
+				// already zero-extends — prepending N_UNSIGNED would
+				// emit `unsigned _Bool`, which c2mir rejects
+				// ("_Bool with sign qualifier", 20030714-1).
+				if (sp->code == N_UNSIGNED || sp->code == N_SIGNED
+				    || sp->code == N_BOOL)
 					has_sign_spec = true;
 			}
 			if (!has_sign_spec) {
@@ -6954,9 +7110,9 @@ node_t CirBuilder::data_extern_decl(const std::string &sym)
 	return sd;
 }
 
-node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd)
+node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 {
-	if (!cdd || !cdd->has_vtable)
+	if (!cdd || (!force && !cdd->has_any_vptr()))
 		return NULL;
 	// libstdc++ owns an externally-defined class's typeinfo (see Pass 1.5).
 	if (cdd->is_externally_defined())
@@ -7037,6 +7193,15 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd)
 
 	auto base_ti_ref = [&](DataDefCLASS *b) -> node_t {
 		std::string bti = itanium_typeinfo_sym(b->name);
+		// A VPTR-LESS base is never reached by the Pass-1.5 sweep — define
+		// its typeinfo here (recursively, before the referencing _ZTI),
+		// else _ZTI<base> stays an undefined import (pre-existing hole for
+		// any plain base of a polymorphic class; exposed by task #49).
+		if (!b->has_any_vptr() && !b->is_externally_defined()
+		    && m_forced_base_typeinfos.insert(b).second) {
+			node_t bd = class_typeinfo_def(b, /*force=*/true);
+			if (bd) append(out, bd);
+		}
 		emit_data_extern(bti, /*void_ptr_elem=*/true); // extern void* _ZTI<base>[];
 		referenced_funcs.insert(bti);
 		return void_ptr_to(id(bti.c_str()));            // (void*)_ZTI<base> (array decays)
@@ -7081,22 +7246,36 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd)
 
 node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thunks)
 {
-	if (!cdd || !cdd->has_vtable || cdd->vtable_slots.empty())
+	// A vbase-carrying class WITHOUT virtual functions (has_vptr_slot only)
+	// still gets a vtable: prologue-only groups — [vbase offsets,
+	// offset_to_top, RTTI], no function slots (Itanium; task #49).
+	if (!cdd || !cdd->has_any_vptr())
 		return NULL;
 	// libstdc++ owns an externally-defined class's vtable (see Pass 1.5).
 	if (cdd->is_externally_defined())
 		return NULL;
 
-	// Build a this-adjusting thunk: a function with the override's signature whose
-	// body re-adjusts `this` from the secondary-base subobject back to the override's
-	// class, then tail-calls the override. Returns the thunk's symbol name.
-	//   RET Cls__thunk_<off>_<m>(__self, p1...) {
-	//       return Override((MOwner*)((char*)__self - off), p1...);
+	// Build a this-adjusting thunk: a function with the override's signature
+	// whose body re-adjusts `this` from the GROUP's subobject (the Itanium
+	// vcall convention — the caller passes the subobject whose vptr the slot
+	// was read from) to the final overrider's subobject, then tail-calls it.
+	// delta is SIGNED: base_offset_of(overrider owner) - group this_offset
+	// (a vbase-owned method entered via the primary vptr adjusts FORWARD to
+	// the hoisted vbase; an override at the top entered via a secondary vptr
+	// adjusts BACK). Deduped by name — two groups needing the same
+	// (delta, method) share one thunk. Returns the thunk's symbol name.
+	//   RET Cls__thunk_<delta>_<m>(__self, p1...) {
+	//       return Override((MOwner*)((char*)__self + delta), p1...);
 	//   }
+	std::set<std::string> emitted_thunks;
 	auto make_thunk = [&](FuncDef *ov, const std::string &target_sym,
-			      DataDefCLASS *mowner, size_t off,
+			      DataDefCLASS *mowner, long delta,
 			      const std::string &mname) -> std::string {
-		std::string tname = cdd->name + "__thunk_" + std::to_string(off) + "_" + mname;
+		std::string tname = cdd->name + "__thunk_"
+			+ (delta < 0 ? "m" : "")
+			+ std::to_string(delta < 0 ? -delta : delta) + "_" + mname;
+		if (!emitted_thunks.insert(tname).second)
+			return tname;
 		node_t ret_spec = list();
 		node_t throwaway = list();
 		fnptr_decl_pieces(ov, true, ret_spec, throwaway, std::vector<carray_dim_t>());
@@ -7107,12 +7286,12 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 		}
 		node_t tdecl = node2(N_DECL, id(tname.c_str()),
 				     node1(N_LIST, node1(N_FUNC, plist)));
-		// (char*)__self - off
+		// (char*)__self + delta
 		node_t charp = node2(N_CAST,
 			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 			id("__self"));
-		node_t adj = node2(N_SUB, charp, integer((long)off));
+		node_t adj = node2(N_ADD, charp, integer(delta));
 		// (MOwner*)adj
 		node_t ownerp = node2(N_CAST,
 			node2(N_TYPE, node1(N_LIST, class_tag_ref(mowner)),
@@ -7173,10 +7352,30 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 	node_t inits = list();
 	for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
 		const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
+		// Itanium vbase-offset slots precede [offset_to_top, RTTI]: one per
+		// virtual base of the GROUP's owner, reverse collect_vbases order in
+		// ascending memory (the first collected vbase lands nearest the
+		// address point, read back by vbase_dynamic_adjust as
+		// ((long*)vptr)[-(3+i)], i = collect_vbases position). Value =
+		// offset from this group's subobject to the vbase within the
+		// complete object. build_vtable_groups reserved 2 + n_vbases
+		// prologue slots per group. (task #36 slice 2)
+		std::vector<DataDefCLASS *> gvbs;
+		std::set<DataDefCLASS *> gvseen;
+		G.owner->collect_vbases(gvbs, gvseen);
+		for (size_t vb = gvbs.size(); vb-- > 0; ) {
+			size_t voff = cdd->base_offset_of(gvbs[vb]);
+			long vval = (voff == (size_t)-1)
+				? 0 : (long)voff - (long)G.this_offset;
+			node_t vbtype = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+					      node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			append(inits, node2(N_INIT, list(),
+					    node2(N_CAST, vbtype, integer(vval))));
+		}
 		// Itanium prologue for this address point: [offset_to_top, &type_info].
 		// offset_to_top = -(this_offset): how far back to the most-derived object
 		// (so __dynamic_cast / typeid can recover the complete object from any
-		// subobject vptr). build_vtable_groups reserved 2 slots per group. (S5a)
+		// subobject vptr). (S5a)
 		node_t vtype = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
 				     node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 		node_t otop = node2(N_CAST, vtype, integer(-(long)G.this_offset));
@@ -7213,11 +7412,37 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 				continue;
 			}
 			FuncDef *mfd = dynamic_cast<FuncDef *>(mv->type);
+			// A slot whose FINAL OVERRIDER is pure (`= 0`, no override
+			// anywhere below): Itanium fills it with __cxa_pure_virtual
+			// (libstdc++ aborts if it is ever reached). The class is
+			// abstract — instantiation is rejected at the construction
+			// sites (class_pure_virtual_of) — but its vtable is still
+			// emitted for derived-ctor intermediate states and RTTI.
+			if (mfd && mfd->pure_virtual) {
+				need_output_extern("__cxa_pure_virtual", false,
+						   std::vector<ExternParam>());
+				node_t pv_type = node2(N_TYPE,
+					node1(N_LIST, simple(N_VOID)),
+					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				append(inits, node2(N_INIT, list(),
+					node2(N_CAST, pv_type,
+					      id("__cxa_pure_virtual"))));
+				continue;
+			}
 			DataDefCLASS *mowner = (mfd && !mfd->parameters.empty())
 				? class_behind(mfd->parameters[0]) : NULL;
 			std::string symname = mv->name;
-			if (G.this_offset != 0 && mowner && mowner != G.owner && mfd)
-				symname = make_thunk(mfd, mv->name, mowner, G.this_offset, sname);
+			// The slot is entered with `this` = this GROUP's subobject
+			// (Itanium vcall convention); the final overrider expects its
+			// OWNER's subobject. thunk when they differ — including a
+			// vbase-owned method entered via the primary vptr (positive
+			// delta to the hoisted vbase). base_offset_of is correct here:
+			// emission is per-complete-type, cdd IS most-derived.
+			size_t moff = mowner ? cdd->base_offset_of(mowner) : (size_t)-1;
+			long tdelta = (moff != (size_t)-1)
+				? (long)moff - (long)G.this_offset : 0;
+			if (tdelta != 0 && mowner && mfd)
+				symname = make_thunk(mfd, mv->name, mowner, tdelta, sname);
 			else
 				referenced_funcs.insert(mv->name);
 			node_t vptr_type = node2(N_TYPE,
@@ -7243,6 +7468,53 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 	append(sd, ignore());
 	append(sd, inits);
 	return sd;
+}
+
+// Dispatch a destructor through the receiver's vtable dtor slot —
+// (void(*)(void*))(((void**)recv->__vptr_G)[slot])(recv_arg). sname picks
+// the arm: "~" = D1 complete (explicit p->~X(): most-derived destruction,
+// no free) or "~$deleting" = D0 (delete: D1 then free). recv_vptr and
+// recv_arg are two INDEPENDENT translations of the receiver (c2mir single
+// parent link), both `struct Cls *`-typed so the vptr field loads by name.
+// NULL when the class has no such virtual slot.
+node_t CirBuilder::virtual_dtor_slot_call(DataDefCLASS *cdd, const char *sname,
+					  node_t recv_vptr, node_t recv_arg,
+					  TokenBase *tb)
+{
+	size_t grp; int slot;
+	if (!cdd || !cdd->find_vslot(sname, grp, slot))
+		return NULL;
+	const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[grp];
+	std::string vfld = (G.this_offset == 0)
+		? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
+	// recv->__vptr — load the owning group's vptr field by name from
+	// the static-type pointer (already `struct Cls *`, no recast).
+	node_t vptr = node2(N_DEREF_FIELD, recv_vptr, id(vfld.c_str(), tb));
+	// (void**)vptr[slot]
+	node_t vpp_dl = list();
+	append(vpp_dl, pointer());
+	append(vpp_dl, pointer());
+	node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+				node2(N_DECL, ignore(), vpp_dl));
+	node_t vtab = node2(N_CAST, vpp_type, vptr, tb);
+	node_t slotref = node2(N_IND, vtab, integer(slot, tb), tb);
+	// Cast the slot to void(*)(void*) — the dtor signature. Suffix order
+	// matches fnptr_decl_pieces: POINTER first (the `(*)`), then FUNC (the
+	// `(void*)` params) — pointer-to-function, not fn-returning-pointer.
+	node_t fp_dl = list();
+	append(fp_dl, pointer());
+	append(fp_dl, node1(N_FUNC,
+		node1(N_LIST,
+		      node2(N_TYPE,
+			    node1(N_LIST, simple(N_VOID)),
+			    node2(N_DECL, ignore(),
+				  node1(N_LIST, pointer()))))));
+	node_t fp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+			       node2(N_DECL, ignore(), fp_dl));
+	node_t fn = node2(N_CAST, fp_type, slotref, tb);
+	node_t darg = list();
+	append(darg, recv_arg);
+	return node2(N_CALL, fn, darg, tb);
 }
 
 node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
@@ -7294,6 +7566,22 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 					fields.push_back(Field{cdd->bases[b].offset, 8, 0, 0, NULL});
 					break;
 				}
+		// A polymorphic VIRTUAL base carries its own vptr at its hoisted
+		// position (Itanium: one vtable group per vbase subobject) — emit
+		// its __vptr_<off> field so ctor stamping and V*-receiver dispatch
+		// address it by name. (task #36 slice 2)
+		{
+			std::vector<DataDefCLASS *> vvbs;
+			std::set<DataDefCLASS *> vvseen;
+			cdd->collect_vbases(vvbs, vvseen);
+			for (DataDefCLASS *vb : vvbs) {
+				if (!vb->has_vptr_slot) continue;
+				auto voi = cdd->vbase_offset.find(vb);
+				if (voi == cdd->vbase_offset.end() || voi->second == 0)
+					continue;
+				fields.push_back(Field{voi->second, 8, 0, 0, NULL});
+			}
+		}
 		std::set<size_t> anon_grouped_members;
 		for (const DataDefSTRUCT::AnonymousAggregateInfo &ag
 		     : cdd->anonymous_aggregates) {
@@ -7872,6 +8160,106 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	return call;
 }
 
+// Itanium vbase-offset slot of `owner` in `view`'s vtable: -(3 + i) words
+// before the address point, i = the position (in view's collect_vbases
+// order) of the virtual base HOSTING owner. Ascending memory order in the
+// vtable prologue is REVERSE declaration order, so position 0 sits nearest
+// the address point (probe tmp/vbase_probe2.cpp: D{virtual VA, virtual VB}
+// -> VA@[-3], VB@[-4]; istringstream's basic_ios @ [-3] = 120). `nv_extra`
+// receives the static non-virtual offset of owner WITHIN that hosting
+// vbase (0 when owner IS the vbase; e.g. ios_base inside basic_ios).
+// Returns -1 when owner is not reached through a virtual base of view.
+// Static offset of `target` within `cls` following ONLY non-virtual base
+// arms (a vbase-crossing resolution would bake the HOST's static idea of
+// the vbase position — exactly the wrong number the dynamic path replaces).
+static size_t nonvirtual_base_offset_of(DataDefCLASS *cls,
+					const DataDefCLASS *target)
+{
+	if (cls == target) return 0;
+	for (const BaseSpec &bs : cls->bases) {
+		if (bs.is_virtual || !bs.base) continue;
+		size_t inner = nonvirtual_base_offset_of(bs.base, target);
+		if (inner != (size_t)-1) return bs.offset + inner;
+	}
+	return (size_t)-1;
+}
+
+static int vbase_slot_index(DataDefCLASS *view, DataDefCLASS *owner,
+			    size_t &nv_extra)
+{
+	if (!view || !owner) return -1;
+	std::vector<DataDefCLASS *> vbs;
+	std::set<DataDefCLASS *> seen;
+	view->collect_vbases(vbs, seen);
+	for (size_t i = 0; i < vbs.size(); i++) {
+		size_t nv = nonvirtual_base_offset_of(vbs[i], owner);
+		if (nv == (size_t)-1) continue;
+		nv_extra = nv;
+		return (int)i;
+	}
+	return -1;
+}
+
+// Owner-subobject adjust through a VIRTUAL base, read from the vtable's
+// vbase-offset slot at runtime. A receiver whose STATIC class is not the
+// object's most-derived type (a basic_istream& returned by `s >> a` over
+// an istringstream) cannot use view->base_offset_of(owner): that value is
+// only correct for a most-derived view (the vbase is hoisted to the end
+// of the MOST-DERIVED object). Emits a GNU stmt-expr so the receiver
+// expression is consumed exactly once and stays inline (a while-condition
+// receiver must re-evaluate per iteration):
+//   ({ struct V *__madc_vbv_N = (struct V *)(recv);
+//      (void *)((char *)__madc_vbv_N
+//               + ((long *)__madc_vbv_N->__vptr)[-(3+i)] + nv); })
+// Applies to any vptr-carrying view: REAL libstdc++ vtables carry the
+// vbase-offset slots, madc-emitted vtables emit them too (slice 2 —
+// class_vtable_def prologue, same collect_vbases indexing), and a
+// vbase-only view WITHOUT virtual functions gets a prologue-only vtable
+// (has_vptr_slot, task #49). NULL = not applicable, caller keeps the
+// static adjust.
+node_t CirBuilder::vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
+					DataDefCLASS *owner, TokenBase *origin)
+{
+	if (!this_arg || !view || !owner || view == owner) return NULL;
+	if (!view->has_any_vptr()) return NULL;
+	size_t nv_extra = 0;
+	int slot = vbase_slot_index(view, owner, nv_extra);
+	if (slot < 0) return NULL;
+
+	char tmp[40];
+	snprintf(tmp, sizeof(tmp), "__madc_vbv_%d", m_strtmp_counter++);
+	// struct V *tmp = (struct V *)(this_arg);
+	node_t vp_type = node2(N_TYPE, node1(N_LIST, class_tag_ref(view)),
+			       node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+	node_t sd = simple(N_SPEC_DECL, origin);
+	append(sd, node1(N_SHARE, node1(N_LIST, class_tag_ref(view))));
+	node_t sd_dl = list();
+	append(sd_dl, pointer());
+	append(sd, node2(N_DECL, id(tmp, origin), sd_dl));
+	append(sd, ignore());
+	append(sd, ignore());
+	append(sd, node2(N_CAST, vp_type, this_arg, origin));
+	node_t items = list();
+	append(items, sd);
+	// ((long *)tmp->__vptr)[-(3 + slot)]
+	node_t vptr = node2(N_DEREF_FIELD, id(tmp, origin), id("__vptr", origin));
+	node_t lp_type = node2(N_TYPE, node1(N_LIST, simple(N_LONG)),
+			       node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+	node_t vboff = node2(N_IND, node2(N_CAST, lp_type, vptr, origin),
+			     integer(-(long)(3 + slot), origin), origin);
+	// (char *)tmp + vboff [+ nv_extra]
+	node_t charp = node2(N_CAST,
+		node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+		      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+		id(tmp, origin), origin);
+	node_t sum = node2(N_ADD, charp, vboff, origin);
+	if (nv_extra)
+		sum = node2(N_ADD, sum, integer((long)nv_extra, origin), origin);
+	append(items, node2(N_EXPR, list(),
+			    node2(N_CAST, void_ptr_type(), sum, origin), origin));
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
+}
+
 node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 {
 	DataDefCLASS *recv_class = NULL;
@@ -7974,7 +8362,54 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 
 	DataDefCLASS *owner = (callee && !callee->parameters.empty())
 				? class_behind(callee->parameters[0]) : NULL;
-	if (owner && recv_class && owner != recv_class) {
+	// Itanium vcall convention: a call dispatched through the vtable below
+	// receives the GROUP-subobject pointer — the same subobject whose vptr
+	// the slot is read from; the slot itself (class_vtable_def) carries any
+	// final-overrider `this` adjustment as a thunk. Adjusting to the method
+	// OWNER here would compose with the thunk and double-adjust (the diamond
+	// B-view bug). Externally-bound (emit_symbol) and member-template calls
+	// never reach the vcall arm — they early-return below with the owner
+	// adjust applied (direct-call convention).
+	size_t vgrp = 0;
+	int vslot = -1;
+	if (callee && callee->emit_symbol.empty()
+	    && !(callee->is_member_template && callee->declaration_only)) {
+		std::string vmn = (sym.size() > recv_class->name.size() + 2)
+					? sym.substr(recv_class->name.size() + 2) : sym;
+		size_t vg; int vs;
+		if (recv_class->find_vslot(vmn, vg, vs)) {
+			vgrp = vg;
+			vslot = vs;
+		}
+	}
+	if (vslot >= 0 && recv_class) {
+		// Group-subobject adjust: a non-virtual offset within recv_class
+		// (secondary groups use bs.offset), so it is view-invariant —
+		// static is safe here.
+		const DataDefCLASS::VtableGroup &VG = recv_class->vtable_groups[vgrp];
+		if (VG.this_offset != 0) {
+			node_t charp = node2(N_CAST,
+				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				this_arg, origin);
+			this_arg = node2(N_ADD, charp,
+					 integer((long)VG.this_offset, origin), origin);
+		}
+		if (owner)
+			this_arg = node2(N_CAST,
+				node2(N_TYPE,
+				      node1(N_LIST, class_tag_ref(owner)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				this_arg, origin);
+	} else if (owner && recv_class && owner != recv_class) {
+		node_t dyn = vbase_dynamic_adjust(this_arg, recv_class, owner,
+						  origin);
+		if (dyn) {
+			// Owner reached through a VIRTUAL base of a receiver
+			// whose static type may not be most-derived: the real
+			// offset is read from the vtable's vbase-offset slot.
+			this_arg = dyn;
+		} else {
 		size_t boff = recv_class->base_offset_of(owner);
 		if (boff != 0 && boff != (size_t)-1) {
 			// (void*)((char*)this_arg + boff)
@@ -7985,6 +8420,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 			this_arg = node2(N_CAST, void_ptr_type(),
 				node2(N_ADD, charp, integer((long)boff), origin),
 				origin);
+		}
 		}
 		// Cast even when the base subobject starts at offset 0: the C ABI
 		// prototype still expects the inherited method's owner pointer type
@@ -8115,15 +8551,15 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	//   ( (RET(*)(struct Owner*, params))
 	//       ((void**)recv->__vptr)[slot] )(args...)
 	// recv->__vptr is loaded from a freshly-derived receiver pointer (the
-	// this_arg node above is already consumed as the call's first argument).
-	std::string mname = (sym.size() > recv_class->name.size() + 2)
-				? sym.substr(recv_class->name.size() + 2) : sym;
-	// Grouped dispatch: find which vtable group (subobject) owns the method, load
-	// THAT group's vptr field from the most-derived receiver, index by the in-group
-	// slot (the vptr already points at the group's address point). Single
-	// inheritance = group 0 / "__vptr" / flat slot, reproducing the old lowering.
-	size_t grp; int slot;
-	if (recv_class->find_vslot(mname, grp, slot) && callee) {
+	// this_arg node above is already consumed as the call's first argument —
+	// adjusted to the GROUP subobject, the Itanium vcall convention).
+	// Grouped dispatch: the group/slot were resolved above (before the
+	// receiver adjust), load THAT group's vptr field from the receiver, index
+	// by the in-group slot (the vptr already points at the group's address
+	// point). Single inheritance = group 0 / "__vptr" / flat slot.
+	if (vslot >= 0 && callee) {
+		size_t grp = vgrp;
+		int slot = vslot;
 		DataDefCLASS *vowner = owner ? owner : recv_class;
 		const DataDefCLASS::VtableGroup &G = recv_class->vtable_groups[grp];
 		std::string vfld = (G.this_offset == 0)
@@ -8954,6 +9390,77 @@ node_t CirBuilder::synth_complete_dtor_def(DataDefCLASS *cdd)
 	return node4(N_FUNC_DEF, ret_type, decl, list(), body);
 }
 
+std::string CirBuilder::class_array_dtor_symbol(DataDefCLASS *cdd, size_t n)
+{
+	char buf[40];
+	snprintf(buf, sizeof(buf), "__arr%zu___dtor", n);
+	return cdd->name + buf;
+}
+
+std::string CirBuilder::demand_array_dtor(DataDefCLASS *cdd, size_t n)
+{
+	std::string sym = class_array_dtor_symbol(cdd, n);
+	referenced_funcs.insert(sym);
+	if (!m_array_dtor_defs.count(sym))
+		m_array_dtor_defs[sym] = synth_array_dtor_def(cdd, n, sym);
+	return sym;
+}
+
+// void Cls__arr<N>___dtor(void *p)
+// { struct Cls *q = (struct Cls *)p;
+//   for (long __ci = N-1; __ci >= 0; __ci -= 1) <complete-dtor>(q + __ci); }
+// The param is void*: the cleanup attribute passes &arr — a `Cls (*)[N]`,
+// which a `struct Cls *` param would take only through an
+// incompatible-pointer-type diagnostic (c2mir warns, gcc on emitted C11
+// warns). void* accepts it silently in both lanes; the body casts once.
+node_t CirBuilder::synth_array_dtor_def(DataDefCLASS *cdd, size_t n,
+					const std::string &sym)
+{
+	node_t ret_type = node1(N_LIST, simple(N_VOID));
+	node_t param = simple(N_SPEC_DECL);
+	append(param, node1(N_SHARE, node1(N_LIST, simple(N_VOID))));
+	append(param, node2(N_DECL, id("p"), node1(N_LIST, pointer())));
+	append(param, ignore());
+	append(param, ignore());
+	append(param, ignore());
+	node_t param_list = list();
+	append(param_list, param);
+	node_t decl = node2(N_DECL, id(sym.c_str()),
+			    node1(N_LIST, node1(N_FUNC, param_list)));
+	node_t items = list();
+	// struct Cls *q = (struct Cls *)p;
+	node_t qdecl = simple(N_SPEC_DECL);
+	append(qdecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
+	append(qdecl, node2(N_DECL, id("q"), node1(N_LIST, pointer())));
+	append(qdecl, ignore());
+	append(qdecl, ignore());
+	node_t cast_t = node2(N_TYPE, node1(N_LIST, class_tag_ref(cdd)),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+	append(qdecl, node2(N_CAST, cast_t, id("p")));
+	append(items, qdecl);
+	// for (long __ci = N-1; __ci >= 0; __ci -= 1) dtor(q + __ci);
+	std::string dsym = class_complete_dtor_symbol(cdd);
+	referenced_funcs.insert(dsym);
+	// TYPED forward proto — a void* extern conflicts with the typed madc
+	// definition (task #50 KIND). Suppressed when a typed proto exists.
+	need_output_extern(dsym.c_str(), false, { { {}, true, cdd } });
+	node_t idecl = simple(N_SPEC_DECL);
+	append(idecl, node1(N_SHARE, node1(N_LIST, simple(N_LONG))));
+	append(idecl, node2(N_DECL, id("__ci"), list()));
+	append(idecl, ignore());
+	append(idecl, ignore());
+	append(idecl, integer((long)n - 1));
+	node_t cond = node2(N_GE, id("__ci"), integer(0));
+	node_t step = node2(N_SUB_ASSIGN, id("__ci"), integer(1));
+	node_t dargs = list();
+	append(dargs, node2(N_ADD, id("q"), id("__ci")));
+	node_t dtor_call = node2(N_EXPR, list(),
+		node2(N_CALL, id(dsym.c_str()), dargs));
+	append(items, node5(N_FOR, list(), idecl, cond, step, dtor_call));
+	node_t body = node2(N_BLOCK, list(), items);
+	return node4(N_FUNC_DEF, ret_type, decl, list(), body);
+}
+
 // void Cls___dtor_deleting(struct Cls *__this) { <complete-dtor>(__this); free(__this); }
 // Itanium D0 (deleting) destructor: complete-object destruction, then operator
 // delete (free, for user classes). Referenced from the D0 vtable slot.
@@ -9014,32 +9521,124 @@ node_t CirBuilder::synth_dtor_proto(const std::string &sym, DataDefCLASS *cdd)
 	return proto;
 }
 
-void CirBuilder::class_instance_member_ctors(const char *inst,
-					     DataDefCLASS *cdd, node_t items,
-					     TokenBase *origin)
+// Default-construct every class-type member of `cdd` through the NAMED
+// pointer variable `recv_ptr` (`__this` / a bound receiver temp / a heap
+// pointer). Takes a name, not a node: c2mir nodes hold a single parent
+// link, so a receiver node cannot be reused across members — each member
+// mints a fresh id(). The one member loop behind implicit default
+// construction — class_ctor_call_addr's ctorless arm and the ctorless
+// `new` path both use it. Each member is a COMPLETE object, so it goes
+// through the complete-object assembler (user-ctor virtual bases + the
+// default ctor / ctorless cascade). A member class with ctors but no
+// default ctor emits nothing (the parser owns that diagnosis).
+bool CirBuilder::append_member_default_constructs(node_t items,
+						  const char *recv_ptr,
+						  DataDefCLASS *cdd,
+						  TokenBase *origin)
 {
-	if (!cdd) return;
+	if (!cdd) return false;
+	bool any = false;
 	for (const auto &m : cdd->members) {
 		DataDefCLASS *mc = as_class_instance(m.second);
 		if (!mc) continue;
-		FuncDef *ctor = class_default_ctor_def(mc);
-		if (!ctor) continue;
-		std::string sym = ctor_call_symbol(mc, ctor);
-		bool external = !ctor->emit_symbol.empty();
-		if (external)
-			need_output_extern(sym.c_str(), false, { { {N_VOID}, true } });
-		else
-			referenced_funcs.insert(sym);
-		node_t fld = node2(N_FIELD, id(inst, origin),
-				   id(m.first.c_str(), origin));
-		node_t addr = node1(N_ADDR, fld, origin);
-		if (external)
-			addr = node2(N_CAST, void_ptr_type(), addr, origin);
-		node_t a = list();
-		append(a, addr);
-		node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
-		append(items, node2(N_EXPR, list(), call, origin));
+		if (mc->has_user_ctor && !class_default_ctor_def(mc))
+			continue;
+		const std::string &mname = m.first;
+		std::vector<node_t> stmts;
+		complete_object_construct_stmts([&]() -> node_t {
+			return node1(N_ADDR,
+				node2(N_DEREF_FIELD, id(recv_ptr, origin),
+				      id(mname.c_str(), origin)),
+				origin);
+		}, mc, std::vector<TokenBase *>(), origin, stmts);
+		for (node_t s : stmts) {
+			append(items, s);
+			any = true;
+		}
 	}
+	return any;
+}
+
+// True when ctorless `cdd`'s implicit default ctor must construct base
+// subobjects: some transitive NON-VIRTUAL base has a callable user default
+// ctor. Virtual bases are the complete-object site's duty
+// (vbase_ctor_stmts_addr), exactly as in the user-ctor prologue model.
+bool CirBuilder::class_needs_base_construction(DataDefCLASS *cdd)
+{
+	if (!cdd) return false;
+	for (const auto &bs : cdd->bases) {
+		if (bs.is_virtual) continue;
+		DataDefCLASS *b = bs.base;
+		if (!b) continue;
+		if (b->has_user_ctor ? class_default_ctor_def(b) != NULL
+				     : class_needs_base_construction(b))
+			return true;
+	}
+	return false;
+}
+
+// Default-construct the NON-VIRTUAL base subobjects of ctorless `cdd`
+// through the named receiver pointer (the implicit default ctor's base
+// chain, mirroring the user-ctor prologue's). A user-ctor base's default
+// ctor owns its own subtree; a ctorless base contributes nothing itself
+// (its members are flattened into the derived and its vptr fields are
+// covered by the derived's group stamps) but may carry user-ctor bases
+// deeper — recurse with the accumulated offset. A user-ctor base without
+// a default ctor emits nothing (the parser owns that diagnosis).
+void CirBuilder::append_base_default_constructs(node_t items,
+						const char *recv_ptr,
+						DataDefCLASS *cdd, size_t off0,
+						TokenBase *origin)
+{
+	if (!cdd) return;
+	for (const auto &bs : cdd->bases) {
+		if (bs.is_virtual) continue;
+		DataDefCLASS *b = bs.base;
+		if (!b) continue;
+		size_t off = off0 + cdd->base_offset_of(b);
+		if (!b->has_user_ctor) {
+			append_base_default_constructs(items, recv_ptr, b,
+						       off, origin);
+			continue;
+		}
+		FuncDef *bctor = class_default_ctor_def(b);
+		if (!bctor) continue;
+		node_t self = id(recv_ptr, origin);
+		node_t adj = self;
+		if (off != 0) {
+			node_t charp = node2(N_CAST,
+				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				self, origin);
+			adj = node2(N_ADD, charp, integer((long)off, origin), origin);
+		}
+		node_t bt = node2(N_TYPE, node1(N_LIST, class_tag_ref(b)),
+				  node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t baddr = node2(N_CAST, bt, adj, origin);
+		node_t stmt = ctor_call_assemble(baddr, b, bctor,
+						 std::vector<node_t>(), origin);
+		if (stmt) append(items, stmt);
+	}
+}
+
+// True when the implicit default construction of ctorless `cdd` must emit
+// member statements: some class-type member either has a callable default
+// ctor, or is itself a ctorless class that needs construction (a vtable to
+// stamp, or members of its own — recursion bottoms out on finite member
+// nesting).
+bool CirBuilder::class_needs_member_construction(DataDefCLASS *cdd)
+{
+	if (!cdd) return false;
+	for (const auto &m : cdd->members) {
+		DataDefCLASS *mc = as_class_instance(m.second);
+		if (!mc) continue;
+		if (mc->has_user_ctor
+		    ? class_default_ctor_def(mc) != NULL
+		    : (mc->has_any_vptr() || class_needs_member_construction(mc)
+		       || class_needs_base_construction(mc)))
+			return true;
+	}
+	return false;
 }
 
 node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
@@ -9525,24 +10124,52 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 	if (!this_addr || !cdd) return NULL;
 
 	if (!cdd->has_user_ctor) {
-		if (!cdd->has_vtable) return NULL;
-		std::string vname = class_vtable_symbol(cdd);
+		bool members = class_needs_member_construction(cdd);
+		bool bases = class_needs_base_construction(cdd);
+		if (!cdd->has_any_vptr() && !members && !bases) return NULL;
+		// Bind the receiver ONCE into a scoped temp: c2mir nodes hold a
+		// single parent link, so the incoming this_addr node cannot be
+		// reused across the vptr stores and member constructions — every
+		// use below mints a fresh id(tmp) instead.
+		char tmp[32];
+		snprintf(tmp, sizeof(tmp), "__mdc%d", m_strtmp_counter++);
 		node_t blk = list();
-		for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
-			const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
-			std::string fld = (G.this_offset == 0)
-				? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
-			node_t lhs = node2(N_DEREF_FIELD, this_addr,
-				id(fld.c_str(), origin));
-			node_t vptr_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-			node_t tab = id(vname.c_str(), origin);
-			node_t ap = (G.addr_point == 0) ? tab
-				: node2(N_ADD, tab, integer((long)G.addr_point, origin), origin);
-			node_t vtab = node2(N_CAST, vptr_type, ap, origin);
-			append(blk, node2(N_EXPR, list(),
-				node2(N_ASSIGN, lhs, vtab, origin), origin));
+		node_t decl = simple(N_SPEC_DECL);
+		append(decl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
+		append(decl, node2(N_DECL, id(tmp, origin), node1(N_LIST, pointer())));
+		append(decl, ignore());
+		append(decl, ignore());
+		append(decl, this_addr);
+		append(blk, decl);
+		// Non-virtual bases with user default ctors — BEFORE the vptr
+		// stamps (the derived stamps must overwrite the base ctors'),
+		// [class.base.init] order via the user-ctor prologue model.
+		if (bases)
+			append_base_default_constructs(blk, tmp, cdd, 0, origin);
+		if (cdd->has_any_vptr()) {
+			std::string vname = class_vtable_symbol(cdd);
+			for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
+				const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
+				std::string fld = (G.this_offset == 0)
+					? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
+				node_t lhs = node2(N_DEREF_FIELD, id(tmp, origin),
+					id(fld.c_str(), origin));
+				node_t vptr_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				node_t tab = id(vname.c_str(), origin);
+				node_t ap = (G.addr_point == 0) ? tab
+					: node2(N_ADD, tab, integer((long)G.addr_point, origin), origin);
+				node_t vtab = node2(N_CAST, vptr_type, ap, origin);
+				append(blk, node2(N_EXPR, list(),
+					node2(N_ASSIGN, lhs, vtab, origin), origin));
+			}
 		}
+		// The implicit default ctor also constructs class-type MEMBERS
+		// ([class.default.ctor]) — a polymorphic member subobject gets
+		// its vptr stamped here, recursively through ctorless layers
+		// (task #35: `Mid m;` where Mid{Leaf lf} left lf's vptr garbage).
+		if (members)
+			append_member_default_constructs(blk, tmp, cdd, origin);
 		return node2(N_BLOCK, list(), blk, origin);
 	}
 
@@ -9554,7 +10181,12 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		if (node_t cc = try_implicit_copy_construct(dst, cdd, ctor_args,
 							    origin))
 			return cc;
-		if (cdd->ctors.empty() || ctor_args.empty()) {
+		// A PACK-EXPANSION argument list can never be overload-scored
+		// (pack arity is per-instantiation) — defer to the class-name
+		// ctor; the tsubst copy expands the arguments (the placement-new
+		// pattern shape, `new (p) T(std::forward<Args>(args)...)`).
+		if (cdd->ctors.empty() || ctor_args.empty()
+		    || tsubst_args_have_pack_expansion(ctor_args)) {
 			auto it = cdd->method_map.find(cdd->name);
 			if (it != cdd->method_map.end() && it->second)
 				ctor = dynamic_cast<FuncDef *>(it->second->type);
@@ -9656,38 +10288,168 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 	return node2(N_EXPR, list(), call, origin);
 }
 
+// The pure-virtual slot (if any) that makes `cdd` ABSTRACT: a vtable slot
+// whose most-derived resolution (findMethod — overrides win) is still a
+// `= 0` declaration. Returns the slot name, or "" for a concrete class.
+// Dtor slots resolve through the synthesized dtor chain, never pure here.
+std::string CirBuilder::class_pure_virtual_of(DataDefCLASS *cdd)
+{
+	if (!cdd || !cdd->has_vtable) return std::string();
+	for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
+		for (const std::string &slot : cdd->vtable_groups[g].slots) {
+			if (slot == "~" || slot == "~$deleting") continue;
+			Variable *mv = cdd->findMethod(slot);
+			FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+			if (fd && fd->pure_virtual)
+				return slot;
+		}
+	}
+	return std::string();
+}
+
+// Complete-object (Itanium C1-flavor) construction: user-ctor virtual bases
+// first, base-most order, then the C2-flavor construction
+// (class_ctor_call_addr: the user ctor call, or the ctorless arm's base
+// chain + vptr stamps + member constructions). The single assembler behind
+// the heap and array-element sites; the named-variable site
+// (class_ctor_call) keeps its equivalent objname-based assembly.
+// EXCEPTION (mirrors class_ctor_call): an externally-bound C1 ctor
+// (emit_symbol, e.g. std::basic_ofstream) constructs the ENTIRE object
+// inside libstdc++ — madc must not also construct the vbases.
+void CirBuilder::complete_object_construct_stmts(
+	const std::function<node_t()> &mint_addr, DataDefCLASS *cdd,
+	const std::vector<TokenBase *> &ctor_args, TokenBase *origin,
+	std::vector<node_t> &out)
+{
+	if (!cdd) return;
+	// ABSTRACT class ([class.abstract]): creating a complete object of a
+	// class with an unoverridden pure virtual is a compile error (heap
+	// new, array element, member subobject — the named-variable site has
+	// the same check). Pointers/references to it stay legal.
+	{
+		std::string pv = class_pure_virtual_of(cdd);
+		if (!pv.empty()) {
+			std::string msg = "cannot instantiate abstract class '"
+				+ cdd->name + "' (pure virtual '" + pv
+				+ "' has no overrider)";
+			out.push_back(error_node(msg.c_str(), origin));
+			return;
+		}
+	}
+	std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> vseen;
+	cdd->collect_vbases(vbs, vseen);
+	if (!vbs.empty()) {
+		FuncDef *ctor = cdd->has_user_ctor
+				? select_ctor_overload(cdd, ctor_args) : NULL;
+		if (!ctor || ctor->emit_symbol.empty())
+			vbase_ctor_stmts_addr(mint_addr, cdd, out, origin);
+	}
+	node_t cc = class_ctor_call_addr(mint_addr(), cdd, ctor_args, origin);
+	if (cc) out.push_back(cc);
+}
+
+// Itanium new[] cookie: max(sizeof(size_t), alignof(T)) bytes ahead of the
+// elements, holding the element count immediately before element 0, iff the
+// element class has a non-trivial dtor. new[] and delete[] both key off
+// this so allocation and cookie readback can never disagree.
+size_t CirBuilder::class_array_cookie_size(DataDefCLASS *cdd)
+{
+	if (!cdd || !class_needs_dtor(cdd)) return 0;
+	size_t a = cdd->alignment();
+	return a > sizeof(size_t) ? a : sizeof(size_t);
+}
+
+// `for (long __ci = 0; __ci < <count>; __ci += 1)
+//      <complete-object construct (arr_ptr + __ci)>;`
+// arr_ptr names an element pointer (or a fixed array, which decays in the
+// N_ADD); `mint_count` returns a fresh count expression node per call.
+// NULL when the element class needs no construction.
+node_t CirBuilder::class_array_construct_loop(
+	const char *arr_ptr, const std::function<node_t()> &mint_count,
+	DataDefCLASS *cdd, TokenBase *origin)
+{
+	char ci[32];
+	snprintf(ci, sizeof(ci), "__ci%d", m_strtmp_counter++);
+	std::vector<node_t> elem_stmts;
+	complete_object_construct_stmts([&]() -> node_t {
+		// (struct Cls *)arr + __ci: a MULTI-dim fixed array (`B m[2][2]`)
+		// decays to Cls(*)[M], whose +1 strides a whole ROW — elements
+		// constructed out of bounds, dtors reading garbage (task #56).
+		// The cast flattens to element stride for any dimensionality and
+		// is a no-op for 1D arrays and heap element pointers.
+		node_t flat = node2(N_CAST,
+			node2(N_TYPE, node1(N_LIST, class_tag_ref(cdd)),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			id(arr_ptr, origin), origin);
+		return node2(N_ADD, flat, id(ci, origin), origin);
+	}, cdd, std::vector<TokenBase *>(), origin, elem_stmts);
+	if (elem_stmts.empty()) return NULL;
+
+	// long __ci = 0;
+	node_t ispec = list();
+	append(ispec, simple(N_LONG, origin));
+	node_t init = simple(N_SPEC_DECL, origin);
+	append(init, node1(N_SHARE, ispec));
+	append(init, node2(N_DECL, id(ci, origin), list()));
+	append(init, ignore());
+	append(init, ignore());
+	append(init, integer(0, origin));
+
+	node_t cond = node2(N_LT, id(ci, origin), mint_count(), origin);
+	node_t incr = node2(N_ADD_ASSIGN, id(ci, origin), integer(1, origin), origin);
+	node_t body_items = list();
+	for (node_t s : elem_stmts) append(body_items, s);
+	node_t body = node2(N_BLOCK, list(), body_items, origin);
+	return node5(N_FOR, list(), init, cond, incr, body, origin);
+}
+
 node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 				   const std::vector<TokenBase *> &ctor_args,
 				   TokenBase *origin)
 {
 	if (!v || !cdd) return NULL;
 
-	// No user ctor, but a polymorphic class still needs its vptr(s) initialized so
-	// a virtual call through a base pointer to this (stack) object works — C++'s
-	// implicit default ctor sets the vptr. Emit the grouped vptr-init (same as the
-	// `new` path / user-ctor prologue). Non-polymorphic ctorless classes need
-	// nothing. (A vbase-only class with no virtual methods has no emitted vtable —
-	// its vbase-offset table is S4 — so gate on has_vtable, not has_vptr_slot.)
-	if (!cdd->has_user_ctor) {
-		if (!cdd->has_vtable) return NULL;
-		std::string vname = class_vtable_symbol(cdd);
-		node_t blk = list();
-		for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
-			const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
-			std::string fld = (G.this_offset == 0)
-				? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
-			node_t lhs = node2(N_DEREF_FIELD,
-				node1(N_ADDR, id(v->name.c_str(), origin), origin),
-				id(fld.c_str(), origin));
-			node_t vptr_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-			node_t tab = id(vname.c_str(), origin);
-			node_t ap = (G.addr_point == 0) ? tab
-				: node2(N_ADD, tab, integer((long)G.addr_point, origin), origin);
-			node_t vtab = node2(N_CAST, vptr_type, ap, origin);
-			append(blk, node2(N_EXPR, list(),
-				node2(N_ASSIGN, lhs, vtab, origin), origin));
+	// ABSTRACT class: declaring a variable of a type with an unoverridden
+	// pure virtual is a compile error (matches g++'s "cannot declare
+	// variable ... to be of abstract type"). The array/heap/member sites
+	// share the check via complete_object_construct_stmts.
+	{
+		std::string pv = class_pure_virtual_of(cdd);
+		if (!pv.empty()) {
+			std::string msg = "cannot declare variable '" + v->name
+				+ "' of abstract class '" + cdd->name
+				+ "' (pure virtual '" + pv + "' has no overrider)";
+			return error_node(msg.c_str(), origin);
 		}
+	}
+
+	// A fixed ARRAY of class objects (`B a[3];`): construct EVERY element
+	// (g++ semantics) — a single ctor call on &a constructed only element 0
+	// and left the rest with garbage vptrs (virtual call SIGSEGV). The
+	// array name decays to the element pointer inside the loop's N_ADD.
+	// Initializer-carrying class arrays keep their existing paths below.
+	if (v->is_fixed_array() && ctor_args.empty()) {
+		long n = (long)v->total_elements();
+		return class_array_construct_loop(v->name.c_str(),
+			[&]() -> node_t { return integer(n, origin); },
+			cdd, origin);
+	}
+
+	// No user ctor: the implicit default ctor still initializes vptr(s) (a
+	// virtual call through a base pointer to this stack object must work),
+	// default-constructs class-type members recursively, chains user-ctor
+	// BASE default ctors, and constructs user-ctor VIRTUAL bases (this is
+	// a complete-object site). Returns NULL when the class truly needs
+	// nothing.
+	if (!cdd->has_user_ctor) {
+		std::vector<node_t> stmts;
+		complete_object_construct_stmts([&]() -> node_t {
+			return node1(N_ADDR, id(v->name.c_str(), origin), origin);
+		}, cdd, ctor_args, origin, stmts);
+		if (stmts.empty()) return NULL;
+		if (stmts.size() == 1) return stmts[0];
+		node_t blk = list();
+		for (node_t s : stmts) append(blk, s);
 		return node2(N_BLOCK, list(), blk, origin);
 	}
 
@@ -9828,14 +10590,22 @@ void CirBuilder::vbase_ctor_stmts(const std::string &objname, bool addr_of,
 				  DataDefCLASS *cdd,
 				  std::vector<node_t> &out, TokenBase *o)
 {
+	vbase_ctor_stmts_addr([&]() -> node_t {
+		return addr_of ? node1(N_ADDR, id(objname.c_str(), o), o)
+			       : id(objname.c_str(), o);
+	}, cdd, out, o);
+}
+
+void CirBuilder::vbase_ctor_stmts_addr(const std::function<node_t()> &mint_addr,
+				       DataDefCLASS *cdd,
+				       std::vector<node_t> &out, TokenBase *o)
+{
 	std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> seen;
 	cdd->collect_vbases(vbs, seen);
 	for (DataDefCLASS *vb : vbs) {
 		if (!vb->has_user_ctor) continue;
 		size_t off = cdd->vbase_offset.count(vb) ? cdd->vbase_offset[vb] : 0;
-		node_t obj_addr = addr_of
-			? node1(N_ADDR, id(objname.c_str(), o), o)
-			: id(objname.c_str(), o);
+		node_t obj_addr = mint_addr();
 		node_t adj = obj_addr;
 		if (off != 0) {
 			node_t charp = node2(N_CAST,
@@ -11225,44 +11995,96 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 						|| lcls->is_or_derives_from(pcls)))
 					    ? lcls->base_offset_of(pcls)
 					    : (size_t)-1;
-				if (pcls && pcls == rcls && boff != (size_t)-1) {
-					// fname(<lhs>) through the normal call
-					// path: arg coercion (vbase-adjusted
-					// reference bind), on-use body
-					// derivation, ref-return auto-deref.
-					// The lhs is evaluated ONCE — inside
-					// the call's argument.
-					TokenCallFunc *mc =
-						new TokenCallFunc(rc->var);
-					mc->parameters.push_back(top->left);
-					mc->file = top->file;
-					mc->line = top->line;
-					mc->column = top->column;
-					node_t mval = translate_expr(mc);
-					// The call yields the BASE-subobject
-					// lvalue (ios_base&); the chain needs
-					// the STREAM. The manipulator returned
-					// its argument, so the static downcast
-					// recovers it (&* folds to the call's
-					// pointer value).
-					node_t addr = node1(N_ADDR, mval, origin);
-					if (boff) {
-						node_t charp = node2(N_CAST,
-							node2(N_TYPE,
-							      node1(N_LIST, simple(N_CHAR)),
-							      node2(N_DECL, ignore(),
-								    node1(N_LIST, pointer()))),
-							addr, origin);
-						addr = node2(N_SUB, charp,
-							integer((long)boff, origin),
-							origin);
-					}
-					addr = node2(N_CAST,
+				std::string csym = func_emit_name(rc->var, rfd);
+				if (pcls && pcls == rcls && boff != (size_t)-1
+				    && !csym.empty()) {
+					// The manipulator returns its ARGUMENT, so
+					// the SAVED lhs pointer IS the result —
+					// g++'s member operator<< shape applies the
+					// manipulator to *this and returns *this,
+					// never re-deriving the stream from the
+					// returned base view. (Downcasting the
+					// returned ios_base& by the static offset
+					// breaks when the lhs view is not
+					// most-derived: the argument coercion is
+					// DYNAMIC through the virtual base since
+					// task #36, and the vbase-offset mechanism
+					// has no inverse. task #48)
+					//   ({ struct L *__mstrm = &<lhs>;
+					//      fname(<base view of __mstrm>);
+					//      (void *)__mstrm; })
+					// The callee symbol joins referenced_funcs —
+					// the materialize-and-lower fixpoint derives
+					// the body on use, same as a TokenCallFunc
+					// route; the void* extern is flush-skipped
+					// when the typed local def lands
+					// (typed_proto_syms).
+					referenced_funcs.insert(csym);
+					need_output_extern(csym.c_str(), /*ret_ptr*/true,
+							   { { {N_VOID}, true } }, { N_VOID });
+					char tmp[40];
+					snprintf(tmp, sizeof(tmp), "__mstrm_%d",
+						 m_strtmp_counter++);
+					// struct L *tmp = (struct L *)&<lhs>;
+					// (lhs evaluated exactly ONCE)
+					node_t sd = simple(N_SPEC_DECL, origin);
+					append(sd, node1(N_SHARE,
+						node1(N_LIST, class_tag_ref(lcls))));
+					node_t sd_dl = list();
+					append(sd_dl, pointer());
+					append(sd, node2(N_DECL, id(tmp, origin), sd_dl));
+					append(sd, ignore());
+					append(sd, ignore());
+					append(sd, node2(N_CAST,
 						node2(N_TYPE,
 						      node1(N_LIST, class_tag_ref(lcls)),
 						      node2(N_DECL, ignore(),
 							    node1(N_LIST, pointer()))),
-						addr, origin);
+						object_arg_addr(top->left, lcls),
+						origin));
+					node_t items = list();
+					append(items, sd);
+					// fname(<base view of tmp>): dyn-first vbase
+					// adjust (the same subobject the normal arg
+					// coercion binds), static offset fallback.
+					node_t aarg = vbase_dynamic_adjust(
+						id(tmp, origin), lcls, pcls, origin);
+					if (!aarg) {
+						aarg = id(tmp, origin);
+						if (boff) {
+							node_t charp = node2(N_CAST,
+								node2(N_TYPE,
+								      node1(N_LIST, simple(N_CHAR)),
+								      node2(N_DECL, ignore(),
+									    node1(N_LIST, pointer()))),
+								aarg, origin);
+							aarg = node2(N_ADD, charp,
+								integer((long)boff, origin),
+								origin);
+						}
+					}
+					node_t margs = list();
+					append(margs, node2(N_CAST,
+						class_ptr_type(pcls), aarg, origin));
+					node_t mcall = node2(N_CALL,
+						id(csym.c_str(), origin), margs, origin);
+					CIR_NODE(mcall)->synth_from_origin = true;
+					append(items, node2(N_EXPR, list(), mcall,
+							    origin));
+					// The saved stream pointer is the value.
+					append(items, node2(N_EXPR, list(),
+						node2(N_CAST, void_ptr_type(),
+						      id(tmp, origin), origin),
+						origin));
+					node_t se = node1(N_STMTEXPR,
+						node2(N_BLOCK, list(), items, origin),
+						origin);
+					node_t addr = node2(N_CAST,
+						node2(N_TYPE,
+						      node1(N_LIST, class_tag_ref(lcls)),
+						      node2(N_DECL, ignore(),
+							    node1(N_LIST, pointer()))),
+						se, origin);
 					return node1(N_DEREF, addr, origin);
 				}
 			}
@@ -11896,13 +12718,20 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 
 	// An operator INHERITED from a base (the overload walk): __this must
 	// point at the OWNER's subobject. operator!/operator bool live on
-	// basic_ios — a VIRTUAL base: base_offset_of resolves it through the
-	// static vbase_offset. Offset 0 keeps the emitted shape unchanged.
+	// basic_ios — a VIRTUAL base: through a receiver whose static type may
+	// not be most-derived (`s >> a` yields basic_istream&, the object is an
+	// istringstream), the offset is read from the vtable's vbase-offset
+	// slot; otherwise base_offset_of's static resolution stands. Offset 0
+	// keeps the emitted shape unchanged.
 	DataDefCLASS *towner = callee->parameters.empty()
 				? NULL : class_behind(callee->parameters[0]);
 	bool from_base = towner && towner != cls
 			 && cls->is_or_derives_from(towner);
 	if (from_base) {
+		node_t dyn = vbase_dynamic_adjust(this_arg, cls, towner, origin);
+		if (dyn) {
+			this_arg = dyn;
+		} else {
 		size_t boff = cls->base_offset_of(towner);
 		if (boff != 0 && boff != (size_t)-1) {
 			node_t charp = node2(N_CAST,
@@ -11912,6 +12741,7 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 			this_arg = node2(N_CAST, void_ptr_type(),
 				node2(N_ADD, charp, integer((long)boff), origin),
 				origin);
+		}
 		}
 		// A madc-emitted owner body's prototype expects the OWNER pointer
 		// type (the external branch below void*-casts instead).
@@ -12619,56 +13449,26 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			auto addr = [&]() -> node_t { return translate_expr(tn->placement); };
 			node_t construct = NULL;
 			if (tn->alloc_class) {
+				// Complete-object construction at the (typed) placement
+				// address — the shared assembler: user ctor call (with
+				// default-arg completion), or the ctorless cascade (vptr
+				// stamps + base chain + members), plus user-ctor virtual
+				// bases. The raw placement expression may be char*/void*;
+				// the cast makes __this well-typed (c2mir pointer check).
 				DataDefCLASS *pc = tn->alloc_class;
-				if (pc->has_user_ctor) {
-					FuncDef *ctor = select_ctor_overload(pc, tn->ctor_args);
-					if (!ctor) {
-						auto it = pc->method_map.find(pc->name);
-						if (it != pc->method_map.end() && it->second)
-							ctor = dynamic_cast<FuncDef *>(it->second->type);
-					}
-					std::string csym = ctor_call_symbol(pc, ctor);
-					referenced_funcs.insert(csym);
-					node_t a = list();
-					append(a, addr());   // __this (already Class*)
-					for (size_t i = 0; i < tn->ctor_args.size(); i++) {
-						TokenBase *arg = tn->ctor_args[i];
-						size_t pi = i + 1;
-						DataDef *pt = (ctor && pi < ctor->parameters.size())
-								? ctor->parameters[pi] : NULL;
-						bool refp = ctor && ctor->is_ref_param(pi);
-						if (DataDefCLASS *pc = param_object_class(pt, refp))
-							append(a, object_arg_addr(arg, pc));
-						else if (DataDefCLASS *vc = as_class_instance(pt))
-							append(a, object_arg_value(arg, vc));
-						else if (refp)
-							append(a, ref_param_arg_addr(arg,
-								ref_param_referent(pt),
-								const_ref_param(ctor, pi)));
-						else
-							append(a, translate_expr(arg));
-					}
-					if (ctor && ctor->ctor_trailing_self)
-						append(a, addr());   // trailing allocator& == &this
-					if (ctor && !ctor->emit_symbol.empty()) {
-						std::vector<ExternParam> eparams;
-						eparams.push_back({ {N_VOID}, true });
-						for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
-							DataDef *pt = ctor->parameters[pi];
-							bool refp = ctor->is_ref_param(pi);
-							if (param_object_class(pt, refp) || refp)
-								eparams.push_back({ {N_VOID}, true });
-							else if (pt && pt->is_pointer())
-								eparams.push_back({ {N_CHAR}, true });
-							else
-								eparams.push_back({ {N_LONG}, false });
-						}
-						if (ctor->ctor_trailing_self)
-							eparams.push_back({ {N_VOID}, true });
-						need_output_extern(csym.c_str(), false, eparams);
-					}
-					construct = node2(N_CALL, id(csym.c_str(), tb), a, tb);
-				}
+				node_t pitems = list();
+				std::vector<node_t> cstmts;
+				complete_object_construct_stmts([&]() -> node_t {
+					return node2(N_CAST, class_ptr_type(pc),
+						     addr(), tb);
+				}, pc, tn->ctor_args, tb, cstmts);
+				for (node_t cs : cstmts)
+					append(pitems, cs);
+				append(pitems, node2(N_EXPR, list(),
+					node2(N_CAST, class_ptr_type(pc), addr(), tb),
+					tb));
+				return node1(N_STMTEXPR,
+					     node2(N_BLOCK, list(), pitems, tb), tb);
 			} else {
 				// Scalar T: *(T *)addr = arg (or zero-init when no args).
 				// Cast the placement address to the CONSTRUCTED type's
@@ -12695,7 +13495,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				construct = node2(N_ASSIGN, node1(N_DEREF, typed_addr, tb),
 						  rhs, tb);
 			}
-			// ({ <construct>; addr; }) — yields the placement address (T*).
+			// ({ <construct>; addr; }) — yields the placement address
+			// (the class arm returned above with its typed yield).
 			node_t items = list();
 			if (construct)
 				append(items, node2(N_EXPR, list(), construct, tb));
@@ -12776,6 +13577,82 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		need_output_extern("calloc", true,
 			{ { {N_UNSIGNED, N_LONG}, false },
 			  { {N_UNSIGNED, N_LONG}, false } });
+		// new C[n]: one zeroed block of `cookie + n*sizeof(struct C)`,
+		// the Itanium element-count cookie immediately before element 0
+		// (present iff the class has a non-trivial dtor — delete[] reads
+		// it back), and a per-element complete-object construction loop.
+		//   ({ long __anN = <n>;
+		//      char *__arN = (char *)calloc(1, CK + __anN * sizeof(struct C));
+		//      struct C *__newN = (struct C *)(__arN + CK);
+		//      [ *(unsigned long *)(__arN + CK - 8) = __anN; ]
+		//      for (long __ci = 0; __ci < __anN; __ci += 1) <construct>;
+		//      __newN; })
+		if (tn->array_size) {
+			size_t ck = class_array_cookie_size(cdd);
+			char ntmp[32], rtmp[32];
+			snprintf(ntmp, sizeof(ntmp), "__an%d", m_strtmp_counter++);
+			snprintf(rtmp, sizeof(rtmp), "__ar%d", m_strtmp_counter++);
+			node_t items = list();
+			// long __anN = (long)<count>;
+			node_t nspec = list();
+			append(nspec, simple(N_LONG, tb));
+			node_t ndecl = simple(N_SPEC_DECL);
+			append(ndecl, node1(N_SHARE, nspec));
+			append(ndecl, node2(N_DECL, id(ntmp, tb), list()));
+			append(ndecl, ignore());
+			append(ndecl, ignore());
+			append(ndecl, translate_expr(tn->array_size));
+			append(items, ndecl);
+			// char *__arN = (char *)calloc(1, CK + __anN * sizeof(struct C));
+			node_t nbytes = node2(N_MUL, id(ntmp, tb), node1(N_SIZEOF, struct_type(), tb), tb);
+			if (ck)
+				nbytes = node2(N_ADD, integer((long)ck, tb), nbytes, tb);
+			node_t cargs = list();
+			append(cargs, integer(1, tb));
+			append(cargs, nbytes);
+			node_t ccall = node2(N_CALL, id("calloc", tb), cargs, tb);
+			node_t char_ptr_type = node2(N_TYPE,
+				node1(N_LIST, simple(N_CHAR)),
+				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			node_t rdecl = simple(N_SPEC_DECL);
+			append(rdecl, node1(N_SHARE, node1(N_LIST, simple(N_CHAR))));
+			append(rdecl, node2(N_DECL, id(rtmp, tb), node1(N_LIST, pointer())));
+			append(rdecl, ignore());
+			append(rdecl, ignore());
+			append(rdecl, node2(N_CAST, char_ptr_type, ccall, tb));
+			append(items, rdecl);
+			// struct C *__newN = (struct C *)(__arN + CK);
+			node_t elem0 = id(rtmp, tb);
+			if (ck)
+				elem0 = node2(N_ADD, elem0, integer((long)ck, tb), tb);
+			node_t edecl = simple(N_SPEC_DECL);
+			append(edecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
+			append(edecl, node2(N_DECL, id(tmp, tb), node1(N_LIST, pointer())));
+			append(edecl, ignore());
+			append(edecl, ignore());
+			append(edecl, node2(N_CAST, ptr_type(), elem0, tb));
+			append(items, edecl);
+			if (ck) {
+				// *(unsigned long *)(__arN + CK - 8) = __anN;
+				node_t ul_specs = list();
+				append(ul_specs, simple(N_UNSIGNED, tb));
+				append(ul_specs, simple(N_LONG, tb));
+				node_t ul_ptr_type = node2(N_TYPE, ul_specs,
+					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				node_t cookie_at = node2(N_ADD, id(rtmp, tb),
+					integer((long)(ck - sizeof(size_t)), tb), tb);
+				node_t cookie = node1(N_DEREF,
+					node2(N_CAST, ul_ptr_type, cookie_at, tb), tb);
+				append(items, node2(N_EXPR, list(),
+					node2(N_ASSIGN, cookie, id(ntmp, tb), tb), tb));
+			}
+			node_t loop = class_array_construct_loop(tmp,
+				[&]() -> node_t { return id(ntmp, tb); }, cdd, tb);
+			if (loop) append(items, loop);
+			append(items, node2(N_EXPR, list(), id(tmp, tb), tb));
+			return node1(N_STMTEXPR,
+				     node2(N_BLOCK, list(), items, tb), tb);
+		}
 		node_t szof = node1(N_SIZEOF, struct_type(), tb);
 		node_t calloc_args = list();
 		append(calloc_args, integer(1, tb));
@@ -12792,79 +13669,18 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		append(decl, cast_alloc);
 		node_t items = list();
 		append(items, decl);
-		// C__C(__newN, args)  (the pointer is already __this-shaped)
-		if (cdd->has_user_ctor) {
-			FuncDef *ctor = select_ctor_overload(cdd, tn->ctor_args);
-			if (!ctor) {
-				auto it = cdd->method_map.find(cdd->name);
-				if (it != cdd->method_map.end() && it->second)
-					ctor = dynamic_cast<FuncDef *>(it->second->type);
-			}
-			std::string csym = ctor_call_symbol(cdd, ctor);
-			referenced_funcs.insert(csym);
-			node_t cargs = list();
-			append(cargs, id(tmp, tb));
-			for (size_t i = 0; i < tn->ctor_args.size(); i++) {
-				TokenBase *arg = tn->ctor_args[i];
-				size_t pi = i + 1;
-				DataDef *pt = (ctor && pi < ctor->parameters.size())
-						? ctor->parameters[pi] : NULL;
-				bool refp = ctor && ctor->is_ref_param(pi);
-				if (DataDefCLASS *pc = param_object_class(pt, refp))
-					append(cargs, object_arg_addr(arg, pc));
-				else if (DataDefCLASS *vc = as_class_instance(pt))
-					append(cargs, object_arg_value(arg, vc));
-				else if (refp)
-					append(cargs, ref_param_arg_addr(arg,
-						ref_param_referent(pt), const_ref_param(ctor, pi)));
-				else
-					append(cargs, translate_expr(arg));
-			}
-			if (ctor && ctor->ctor_trailing_self)
-				append(cargs, id(tmp, tb));   // trailing allocator& == this
-			if (ctor && !ctor->emit_symbol.empty()) {
-				std::vector<ExternParam> eparams;
-				eparams.push_back({ {N_VOID}, true });
-				for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
-					DataDef *pt = ctor->parameters[pi];
-					bool refp = ctor->is_ref_param(pi);
-					if (param_object_class(pt, refp) || refp)
-						eparams.push_back({ {N_VOID}, true });
-					else if (pt && pt->is_pointer())
-						eparams.push_back({ {N_CHAR}, true });
-					else
-						eparams.push_back({ {N_LONG}, false });
-				}
-				if (ctor->ctor_trailing_self)
-					eparams.push_back({ {N_VOID}, true });
-				need_output_extern(csym.c_str(), false, eparams);
-			}
-			node_t ccall = node2(N_CALL, id(csym.c_str(), tb), cargs, tb);
-			append(items, node2(N_EXPR, list(), ccall, tb));
-		} else if (cdd->has_vtable) {
-			// No user constructor, but a virtual (polymorphic) class: calloc
-			// zeroes the storage, leaving __vptr NULL — a virtual call would
-			// deref NULL and crash. A user ctor's body sets __vptr (func_def
-			// prologue); with no ctor we must set it here so `new B()` yields a
-			// usable polymorphic object. `__newN->__vptr = (void*)B__vtable`.
-			std::string vname = class_vtable_symbol(cdd);
-			for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
-				const auto &G = cdd->vtable_groups[g];
-				std::string fld = (G.this_offset == 0)
-					? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
-				node_t vptr_lhs = node2(N_DEREF_FIELD, id(tmp, tb),
-							id(fld.c_str(), tb));
-				node_t vptr_type = node2(N_TYPE,
-					node1(N_LIST, simple(N_VOID)),
-					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-				node_t tab = id(vname.c_str(), tb);
-				node_t ap = (G.addr_point == 0) ? tab
-					: node2(N_ADD, tab, integer((long)G.addr_point), tb);
-				node_t vtab = node2(N_CAST, vptr_type, ap, tb);
-				node_t asn = node2(N_ASSIGN, vptr_lhs, vtab, tb);
-				CIR_NODE(asn)->synth_from_origin = true;
-				append(items, node2(N_EXPR, list(), asn, tb));
-			}
+		// Complete-object construction through __newN: user-ctor virtual
+		// bases first, then the ctor call (or the ctorless arm's base
+		// chain + vptr stamps + member constructions) — the shared
+		// complete-object assembler, so heap construction can never
+		// diverge from the stack/array sites.
+		{
+			std::vector<node_t> cstmts;
+			complete_object_construct_stmts([&]() -> node_t {
+				return id(tmp, tb);
+			}, cdd, tn->ctor_args, tb, cstmts);
+			for (node_t cs : cstmts)
+				append(items, cs);
 		}
 		// __newN;  (value of the statement expression)
 		append(items, node2(N_EXPR, list(), id(tmp, tb), tb));
@@ -12881,54 +13697,101 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		// which runs the most-derived complete destructor AND frees. No
 		// separate free() — the D0 dtor owns the free.
 		if (cdd && !tdl->is_array && cdd->vtable_slot("~$deleting") >= 0) {
-			size_t grp; int slot;
-			cdd->find_vslot("~$deleting", grp, slot);
-			const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[grp];
-			std::string vfld = (G.this_offset == 0)
-				? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
-			// ptr->__vptr — load the owning group's vptr field by name from
-			// the static-type pointer (already `struct Cls *`, no recast).
-			node_t vptr = node2(N_DEREF_FIELD, translate_expr(tdl->expr),
-					    id(vfld.c_str(), tb));
-			// (void**)vptr[slot]
-			node_t vpp_dl = list();
-			append(vpp_dl, pointer());
-			append(vpp_dl, pointer());
-			node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-						node2(N_DECL, ignore(), vpp_dl));
-			node_t vtab = node2(N_CAST, vpp_type, vptr, tb);
-			node_t slotref = node2(N_IND, vtab, integer(slot, tb), tb);
-			// Cast the slot to void(*)(void*) — the deleting-dtor signature.
-			// Suffix order matches fnptr_decl_pieces: POINTER first (the
-			// `(*)`), then FUNC (the `(void*)` params) — i.e. pointer-to-
-			// function, not function-returning-pointer.
-			node_t fp_dl = list();
-			append(fp_dl, pointer());
-			append(fp_dl, node1(N_FUNC,
-				node1(N_LIST,
-				      node2(N_TYPE,
-					    node1(N_LIST, simple(N_VOID)),
-					    node2(N_DECL, ignore(),
-						  node1(N_LIST, pointer()))))));
-			node_t fp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-					       node2(N_DECL, ignore(), fp_dl));
-			node_t fn = node2(N_CAST, fp_type, slotref, tb);
-			node_t darg = list();
-			append(darg, translate_expr(tdl->expr));
-			node_t dcall = node2(N_CALL, fn, darg, tb);
+			node_t dcall = virtual_dtor_slot_call(cdd, "~$deleting",
+				translate_expr(tdl->expr),
+				translate_expr(tdl->expr), tb);
 			node_t items = list();
 			append(items, node2(N_EXPR, list(), dcall, tb));
 			append(items, node2(N_EXPR, list(), integer(0, tb), tb));
 			node_t block = node2(N_BLOCK, list(), items, tb);
 			return node1(N_STMTEXPR, block, tb);
 		}
+		// delete[] of a class with a non-trivial dtor: new[] stored the
+		// element count in the Itanium cookie ahead of element 0 — read it
+		// back, run the complete dtor per element in REVERSE construction
+		// order, and free the cookie base. Null-guarded (delete[] on a null
+		// pointer is a no-op).
+		//   ({ struct C *__dp = <ptr>;
+		//      if (__dp) {
+		//          long __dn = ((long *)__dp)[-1];
+		//          for (long __ci = __dn - 1; __ci >= 0; __ci -= 1)
+		//              C___dtor_complete(__dp + __ci);
+		//          free((char *)__dp - CK);
+		//      } 0; })
+		size_t ack = (cdd && tdl->is_array) ? class_array_cookie_size(cdd) : 0;
+		if (ack) {
+			char dp[32], dn[32], ci[32];
+			snprintf(dp, sizeof(dp), "__dp%d", m_strtmp_counter++);
+			snprintf(dn, sizeof(dn), "__dn%d", m_strtmp_counter++);
+			snprintf(ci, sizeof(ci), "__ci%d", m_strtmp_counter++);
+			std::string dsym = class_complete_dtor_symbol(cdd);
+			referenced_funcs.insert(dsym);
+			// TYPED forward proto (`void d(struct C *)`) — a void* extern
+			// conflicts with the typed madc definition (task #50 KIND).
+			need_output_extern(dsym.c_str(), false, { { {}, true, cdd } });
+			need_output_extern("free", false, { { {N_VOID}, true } });
+			node_t items = list();
+			// struct C *__dp = <ptr>;
+			node_t pdecl = simple(N_SPEC_DECL);
+			append(pdecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
+			append(pdecl, node2(N_DECL, id(dp, tb), node1(N_LIST, pointer())));
+			append(pdecl, ignore());
+			append(pdecl, ignore());
+			append(pdecl, translate_expr(tdl->expr));
+			append(items, pdecl);
+			node_t then_items = list();
+			// long __dn = ((long *)__dp)[-1];
+			node_t l_ptr_type = node2(N_TYPE,
+				node1(N_LIST, simple(N_LONG)),
+				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			node_t count_rd = node2(N_IND,
+				node2(N_CAST, l_ptr_type, id(dp, tb), tb),
+				integer(-1, tb), tb);
+			node_t ndecl = simple(N_SPEC_DECL);
+			append(ndecl, node1(N_SHARE, node1(N_LIST, simple(N_LONG))));
+			append(ndecl, node2(N_DECL, id(dn, tb), list()));
+			append(ndecl, ignore());
+			append(ndecl, ignore());
+			append(ndecl, count_rd);
+			append(then_items, ndecl);
+			// for (long __ci = __dn - 1; __ci >= 0; __ci -= 1) dtor(__dp + __ci);
+			node_t idecl = simple(N_SPEC_DECL);
+			append(idecl, node1(N_SHARE, node1(N_LIST, simple(N_LONG))));
+			append(idecl, node2(N_DECL, id(ci, tb), list()));
+			append(idecl, ignore());
+			append(idecl, ignore());
+			append(idecl, node2(N_SUB, id(dn, tb), integer(1, tb), tb));
+			node_t cond = node2(N_GE, id(ci, tb), integer(0, tb), tb);
+			node_t step = node2(N_SUB_ASSIGN, id(ci, tb), integer(1, tb), tb);
+			node_t dargs = list();
+			append(dargs, node2(N_ADD, id(dp, tb), id(ci, tb), tb));
+			node_t dtor_call = node2(N_EXPR, list(),
+				node2(N_CALL, id(dsym.c_str(), tb), dargs, tb), tb);
+			append(then_items, node5(N_FOR, list(), idecl, cond, step,
+						 dtor_call, tb));
+			// free((char *)__dp - CK);
+			node_t c_ptr_type = node2(N_TYPE,
+				node1(N_LIST, simple(N_CHAR)),
+				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			node_t base = node2(N_SUB,
+				node2(N_CAST, c_ptr_type, id(dp, tb), tb),
+				integer((long)ack, tb), tb);
+			node_t fargs2 = list();
+			append(fargs2, base);
+			append(then_items, node2(N_EXPR, list(),
+				node2(N_CALL, id("free", tb), fargs2, tb), tb));
+			node_t then_blk = node2(N_BLOCK, list(), then_items, tb);
+			append(items, node4(N_IF, list(), id(dp, tb), then_blk,
+					    ignore()));
+			append(items, node2(N_EXPR, list(), integer(0, tb), tb));
+			return node1(N_STMTEXPR,
+				     node2(N_BLOCK, list(), items, tb), tb);
+		}
 		node_t ptr = translate_expr(tdl->expr);
 		node_t items = list();
-		// Array delete of a class with a dtor needs the new[] element-count
-		// cookie to run the dtor per element; madc's `new` allocates a single
-		// object (no array cookie), so for `delete[]` we free only (running a
-		// single dtor on element[0] would be wrong). Trivial element types
-		// (cdd==NULL) free either way. See feature-drops-audit (delete[] row).
+		// Array delete of a TRIVIAL-dtor class has no cookie (new[] emitted
+		// none) — plain free. A dtor-carrying class takes the cookie arm
+		// above. See feature-drops-audit (delete[] row) for the history.
 		if (cdd && cdd->has_user_dtor && !tdl->is_array) {
 			std::string dsym = class_complete_dtor_symbol(cdd);
 			referenced_funcs.insert(dsym);
@@ -12966,6 +13829,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			}
 		}
 		DataDefCLASS *cdd = ted->dtor_class;
+		// Virtual dtor through a POINTER receiver: dispatch through the
+		// D1 (complete) slot — most-derived destruction, NO free (that is
+		// delete's D0 arm). A '.' receiver's dynamic type IS its static
+		// type, so it stays a devirtualized static call (g++ shape).
+		if (cdd && ted->is_arrow && cdd->vtable_slot("~") >= 0) {
+			node_t dcall = virtual_dtor_slot_call(cdd, "~",
+				translate_expr(ted->obj),
+				translate_expr(ted->obj), tb);
+			if (dcall)
+				return dcall;
+		}
 		node_t obj_ptr = ted->is_arrow
 			? translate_expr(ted->obj)
 			: node1(N_ADDR, translate_expr(ted->obj), tb);
@@ -13009,10 +13883,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// constant expression, C++ [expr.const]) — fold it like an enum
 			// value; this is what lets `const int H = G + 3;` emit a constant
 			// file-scope initializer c2mir accepts.
+			// (fixed arrays excluded: a constant ARRAY read — e.g. a wide
+			// string literal's int[] — is an address use, not a scalar fold;
+			// get<int64_t>() would return element 0.)
 			if (tv->var.is_constant() && tv->var.data
 			    && (!(tv->var.flags & vfCONSTDECL)
 				|| (tv->var.flags & vfCONSTBAKED)) && tv->var.type
-			    && tv->var.type->is_integer() && !tv->var.type->is_pointer())
+			    && tv->var.type->is_integer() && !tv->var.type->is_pointer()
+			    && !tv->var.is_fixed_array())
 				return integer(tv->var.get<int64_t>(), tb);
 			if (tv->var.name.compare(0, 11, "__literal__") == 0) {
 				const std::string &content = tv->var.name.substr(11);
@@ -13395,6 +14273,30 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				if (!deref_ok && odd && odd->is_struct())
 					return error_node("'->' applied to a non-pointer "
 						"struct value (use '.')", tb);
+				// Member hosted in a VIRTUAL base, accessed through a
+				// pointer-typed view: the view's flattened static offset
+				// is only correct for a most-derived object — the pointer
+				// may address a base subobject of something larger, so
+				// read the real vbase offset from the vtable (the
+				// member-access twin of the upcast sites, task #47). The
+				// adjusted pointer is the HOST's own type; the member
+				// resolves on its struct at the inner offset. A direct
+				// object value (N_FIELD) is most-derived by construction
+				// and keeps the static layout (g++'s choice too); a
+				// vptr-less view keeps the static adjust
+				// (vbase_dynamic_adjust answers NULL).
+				DataDefCLASS *view = tm->parent_expr
+					? expr_pointee_class(tm->parent_expr)
+					: pointee_user_class(tm->object.type);
+				DataDefCLASS *host = view
+					? view->member_vbase_host(tm->var.name) : NULL;
+				if (host && host != view) {
+					node_t dyn = vbase_dynamic_adjust(obj, view,
+									  host, tb);
+					if (dyn)
+						obj = node2(N_CAST, class_ptr_type(host),
+							    dyn, tb);
+				}
 			}
 			node_t fld = node2(code, obj, member, tb);
 			// A SCALAR reference MEMBER (`int& m`, lowered to a pointer slot)
@@ -14590,6 +15492,59 @@ node_t CirBuilder::translate_cond(TokenBase *cond)
 	return translate_expr(cond);
 }
 
+// C labels have FUNCTION scope (C11 6.2.1p3): a label inside a
+// constant-false branch still makes that branch a live goto target
+// (pr17078-1), so the dead-branch fold must not discard a subtree that
+// declares one — gcc -O0 emits the full branch too. Walks the STATEMENT
+// structure only: a label cannot appear in an expression, and GNU
+// statement-exprs carry their statements behind TokenCpnd, which is walked.
+static bool stmt_contains_label(TokenBase *tb)
+{
+	if (!tb)
+		return false;
+	if (dynamic_cast<TokenLabel *>(tb))
+		return true;
+	if (TokenCpnd *tc = dynamic_cast<TokenCpnd *>(tb)) {
+		for (TokenStmt *s : tc->statements)
+			if (stmt_contains_label(s))
+				return true;
+		return false;
+	}
+	if (TokenIF *ti = dynamic_cast<TokenIF *>(tb))
+		return stmt_contains_label(ti->statement)
+		    || stmt_contains_label(ti->elsestmt);
+	if (TokenDO *td = dynamic_cast<TokenDO *>(tb))
+		return stmt_contains_label(td->statement);
+	if (TokenWHILE *tw = dynamic_cast<TokenWHILE *>(tb))
+		return stmt_contains_label(tw->statement);
+	if (TokenFOR *tf = dynamic_cast<TokenFOR *>(tb))
+		return stmt_contains_label(tf->statement);
+	if (TokenFOREACH *tfe = dynamic_cast<TokenFOREACH *>(tb))
+		return stmt_contains_label(tfe->statement);
+	if (TokenSWITCH *ts = dynamic_cast<TokenSWITCH *>(tb)) {
+		for (TokenBase *p : ts->pre_case_stmts)
+			if (stmt_contains_label(p))
+				return true;
+		for (TokenCASE *c : ts->cases)
+			for (TokenBase *s : c->statements)
+				if (stmt_contains_label(s))
+					return true;
+		if (ts->defaultcase)
+			for (TokenBase *s : ts->defaultcase->statements)
+				if (stmt_contains_label(s))
+					return true;
+		return false;
+	}
+	if (TokenTRY *tt = dynamic_cast<TokenTRY *>(tb)) {
+		if (stmt_contains_label(tt->try_body))
+			return true;
+		for (TokenBase *cb : tt->catch_bodies)
+			if (stmt_contains_label(cb))
+				return true;
+	}
+	return false;
+}
+
 node_t CirBuilder::translate_if(TokenIF *ti)
 {
 	// C++17 init-statement: `if (init; cond) S else E` lowers to
@@ -14643,9 +15598,15 @@ node_t CirBuilder::translate_if_core(TokenIF *ti)
 	     ti->condition->type() == TokenType::ttChar)) {
 		bool taken = ti->condition->ival() != 0;
 		TokenBase *branch = taken ? ti->statement : ti->elsestmt;
-		return branch ? translate_stmt_required(branch) : ignore();
+		TokenBase *dead = taken ? ti->elsestmt : ti->statement;
+		// A function-scope label in the dead branch keeps it a goto
+		// target (stmt_contains_label) — fall through to the full
+		// N_IF translation instead of pruning.
+		if (!stmt_contains_label(dead))
+			return branch ? translate_stmt_required(branch) : ignore();
 	}
-	if (is_constant_evaluated_call(ti->condition))
+	if (is_constant_evaluated_call(ti->condition)
+	    && !stmt_contains_label(ti->statement))
 		return ti->elsestmt ? translate_stmt_required(ti->elsestmt) : ignore();
 	node_t cond = translate_cond(ti->condition);
 	// Temps materialized by the CONDITION must be emitted ahead of the IF
@@ -14685,36 +15646,42 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 		TokenDecl *td = dynamic_cast<TokenDecl *>(tf->initialize);
 		if (td && !tf->init_extras.empty()) {
 			// Typed multi-declarator init `for (int x=1, y=2, z=3; ...)`.
-			// Every declarator's variable is hoisted into the enclosing scope
-			// (the single-declarator case hoists too — `int i;` precedes the
-			// loop), so the for-init's job is purely to INITIALIZE. Lower it as
-			// the comma of the declarators' initializing assignments: a bare
-			// var_decl (N_SPEC_DECL) can't be folded into an N_COMMA, and no
-			// multi-declarator N_SPEC_DECL is built here, so the assignments to
-			// the already-hoisted vars are the faithful equivalent. (The old
-			// code dropped init_extras whenever `initialize` was a TokenDecl,
-			// leaving y/z uninitialized -> garbage / infinite loop:
-			// testfortypedcomma.)
-			std::vector<node_t> parts;
+			// The declarators' variables live in the for-init's own parse
+			// scope (C++ [stmt.for]; TokenFOR::parse pushes a compound the
+			// CIR never visits), so this lowering must DECLARE them, not
+			// just initialize. Emit decl + initializing assignment per
+			// declarator, in order, into the synthetic block wrapping the
+			// loop (built at the return below) — the same wrap the
+			// class-shape single-declarator arm uses. Class-shape
+			// declarators go through class_decl_stmts (decl + real
+			// construction + cleanup dtor).
+			class_init_items = list();
 			auto add_clause = [&](TokenBase *clause) {
-				if (TokenDecl *ctd = dynamic_cast<TokenDecl *>(clause)) {
-					if (ctd->initialize)
-						parts.push_back(translate_expr(ctd->initialize));
-					// no initializer: the var is hoisted; nothing to run
-				} else {
-					parts.push_back(translate_expr(clause));
+				TokenDecl *ctd = dynamic_cast<TokenDecl *>(clause);
+				if (!ctd) {
+					append(class_init_items, translate_expr(clause));
+					return;
 				}
+				if (DataDefCLASS *cdc = as_class_instance(ctd->var.type)) {
+					class_decl_stmts(ctd, cdc, class_init_items);
+					return;
+				}
+				if (is_array_object(ctd->var.type)) {
+					append(class_init_items, var_decl(&ctd->var, ctd));
+					append(class_init_items,
+					       array_ctor_call(ctd->var.name.c_str(), ctd));
+					return;
+				}
+				// Scalar declarator: var_decl folds ctd->initialize
+				// into the SPEC_DECL initializer (RHS-unwrapped), so
+				// no separate assignment — one would re-run a
+				// side-effecting initializer.
+				append(class_init_items, var_decl(&ctd->var, ctd));
 			};
 			add_clause(tf->initialize);
 			for (TokenBase *ex : tf->init_extras)
 				add_clause(ex);
-			if (parts.empty())
-				init = ignore();
-			else {
-				init = parts[0];
-				for (size_t i = 1; i < parts.size(); i++)
-					init = node2(N_COMMA, init, parts[i]);
-			}
+			init = ignore();
 		} else if (td && (as_class_instance(td->var.type)
 				  || is_array_object(td->var.type))) {
 			// Class-shape single declarator (`for (map<K,V>::iterator it =
@@ -14831,18 +15798,25 @@ node_t CirBuilder::translate_throw(TokenTHROW *th)
 // P1.1c.
 void CirBuilder::emit_try_body_cleanup_push(const char *varname,
 					    DataDefCLASS *cdd,
-					    node_t items, TokenBase *origin)
+					    node_t items, TokenBase *origin,
+					    size_t array_elems)
 {
 	if (m_try_body_depth <= 0 || !cdd || !class_needs_dtor(cdd))
 		return;
-	std::string dtor_sym = class_complete_dtor_symbol(cdd);
+	// A fixed array pushes the per-(class,N) wrapper so the longjmp unwind
+	// destroys all N elements in reverse, same as the scope-exit cleanup
+	// attribute (task #56).
+	std::string dtor_sym = array_elems
+		? demand_array_dtor(cdd, array_elems)
+		: class_complete_dtor_symbol(cdd);
 	// A user-class dtor is a madc-EMITTED function `void Cls___dtor(struct Cls*)`;
 	// referencing it (referenced_funcs) drives its emission and declaration with
 	// the real signature — re-declaring it here as `void f(void*)` would conflict.
 	// An externally-bound C++ dtor (emit_symbol set) has NO madc body, so it
 	// must be declared extern here so `(void*)dtor_sym` is a well-typed function
-	// address (not "undeclared").
-	bool dtor_is_external = (dtor_sym != cdd->name + "___dtor");
+	// address (not "undeclared"). The array wrapper is always madc-emitted.
+	bool dtor_is_external = !array_elems
+		&& (dtor_sym != cdd->name + "___dtor");
 	if (dtor_is_external)
 		need_output_extern(dtor_sym.c_str(), false, { { {N_VOID}, true } });
 	referenced_funcs.insert(dtor_sym);
@@ -15077,7 +16051,45 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 //   }
 // Class element -> php_array_get((void*)x, (void*)arr, __fe_i) (assigns into
 // the pre-constructed object). Numeric element -> x = php_array_get_int().
+// The element variable lives in the range-for's own parse scope (TokenFOR::parse
+// pushes a compound around the range-for — the #44 loop-scope model), so the
+// enclosing block's hoisted-variable walk no longer declares it. Declare it (plus
+// default construction for a class-shape element — the per-iteration fills assign
+// into a pre-constructed object) in a block wrapping the loop, using the same
+// decl shapes as translate_block's hoisted-variable walk.
 node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
+{
+	node_t loop = translate_foreach_loop(fe);
+	Variable *ev = fe->elemvar;
+	if (!loop || !ev)
+		return loop;
+	node_t items = list();
+	append(items, var_decl(ev, fe));
+	if (is_array_object(ev->type)) {
+		append(items, array_ctor_call(ev->name.c_str(), fe));
+	} else if (DataDefCLASS *edc = as_class_instance(ev->type)) {
+		// class_ctor_call owns implicit default construction end-to-end
+		// (user ctor call, or vptr stores + member construction for a
+		// ctorless class); NULL means nothing to construct.
+		node_t cc = class_ctor_call(ev, edc, std::vector<TokenBase *>(), fe);
+		if (cc)
+			append(items, cc);
+		// C++11 NSDMI on a ctorless instance (a user ctor applies them
+		// in its prologue) — including a polymorphic ctorless class,
+		// where cc is the vptr block.
+		if (!edc->has_user_ctor) {
+			std::vector<node_t> nsdmi_stmts;
+			if (emit_member_default_inits(edc, ev->name.c_str(), false,
+						      nsdmi_stmts, fe, NULL))
+				for (node_t s : nsdmi_stmts)
+					append(items, s);
+		}
+	}
+	append(items, loop);
+	return node2(N_BLOCK, list(), items, fe);
+}
+
+node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 {
 	if (!fe->container || !fe->elemtype)
 		return error_node("range-for missing container or element type", fe);
@@ -15867,54 +16879,55 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 	for (node_t p : m_pending_stmts)
 		append(items, p);
 	m_pending_stmts.clear();
+	// class_ctor_call owns implicit default construction end-to-end (user
+	// ctor call, or vptr stores + member construction for a ctorless
+	// class); NULL means nothing to construct.
 	if (cc) append(items, cc);
-	else {
-		// No user ctor but embedded object members: construct each
-		// member in place. With a
-		// user ctor, the ctor body's prologue constructs them.
-		if (class_has_object_members(cdcl))
-			class_instance_member_ctors(sdcl->var.name.c_str(),
-						    cdcl, items, sdcl);
-		// No ctor, no object members — a TRIVIAL class/struct with an
-		// initializer (`A z = makeA(9)`, `Point m = mid(a,b)`): emit the
-		// initialization `var = <init>` so the value is actually copied
-		// in. Without this the initializer was dropped and the object
-		// read garbage. A trivial struct has no dtor, so c2mir's native
-		// struct copy is correct (no double-free). (A class WITH object
-		// members needs copy-construction via the __retbuf ABI — handled
-		// by the object-returning-call path, not here.)
-		else if (!ctor_args.empty() && ctor_args[0]) {
-			DataDef *idd = ctor_args[0]->datadef();
-			if (idd && (idd->is_struct() || idd->is_object())
-			    && !idd->is_pointer()) {
-				node_t lhs = id(sdcl->var.name.c_str(), sdcl);
-				node_t rhs = translate_expr(ctor_args[0]);
-				// A sub-call may have queued pending temps; flush first.
-				for (node_t p : m_pending_stmts)
-					append(items, p);
-				m_pending_stmts.clear();
-				node_t asg = node2(N_ASSIGN, lhs, rhs, sdcl);
-				append(items, node2(N_EXPR, list(), asg, sdcl));
-			}
+	// No ctor, no object members — a TRIVIAL class/struct with an
+	// initializer (`A z = makeA(9)`, `Point m = mid(a,b)`): emit the
+	// initialization `var = <init>` so the value is actually copied
+	// in. Without this the initializer was dropped and the object
+	// read garbage. A trivial struct has no dtor, so c2mir's native
+	// struct copy is correct (no double-free). (A class WITH object
+	// members needs copy-construction via the __retbuf ABI — handled
+	// by the object-returning-call path, not here.)
+	if (!cc && !class_has_object_members(cdcl)
+	    && !ctor_args.empty() && ctor_args[0]) {
+		DataDef *idd = ctor_args[0]->datadef();
+		if (idd && (idd->is_struct() || idd->is_object())
+		    && !idd->is_pointer()) {
+			node_t lhs = id(sdcl->var.name.c_str(), sdcl);
+			node_t rhs = translate_expr(ctor_args[0]);
+			// A sub-call may have queued pending temps; flush first.
+			for (node_t p : m_pending_stmts)
+				append(items, p);
+			m_pending_stmts.clear();
+			node_t asg = node2(N_ASSIGN, lhs, rhs, sdcl);
+			append(items, node2(N_EXPR, list(), asg, sdcl));
 		}
-		// C++11 default member initializers on a DEFAULT-constructed
-		// no-ctor instance (`S s;` — incl. a scalar-only struct promoted
-		// to a class purely for its NSDMI). A whole-object initializer
-		// (the trivial-copy arm) supplies all members, so skip then.
-		if (ctor_args.empty()) {
-			std::vector<node_t> nsdmi_stmts;
-			if (emit_member_default_inits(cdcl,
-					sdcl->var.name.c_str(), false,
-					nsdmi_stmts, sdcl, NULL))
-				for (node_t ns : nsdmi_stmts)
-					append(items, ns);
-		}
+	}
+	// C++11 default member initializers on a DEFAULT-constructed
+	// no-ctor instance (`S s;` — incl. a scalar-only struct promoted
+	// to a class purely for its NSDMI, and a polymorphic ctorless
+	// class whose cc is the vptr block). A whole-object initializer
+	// (the trivial-copy arm) supplies all members, so skip then; a
+	// user ctor applies NSDMI in its prologue.
+	if (!cdcl->has_user_ctor && ctor_args.empty()) {
+		std::vector<node_t> nsdmi_stmts;
+		if (emit_member_default_inits(cdcl,
+				sdcl->var.name.c_str(), false,
+				nsdmi_stmts, sdcl, NULL))
+			for (node_t ns : nsdmi_stmts)
+				append(items, ns);
 	}
 	// In a try body, also register this object's dtor on the runtime
 	// cleanup stack so it runs on the exception (longjmp) unwind path
 	// (the cleanup attribute alone does not — P1.1c). No-op otherwise.
 	emit_try_body_cleanup_push(sdcl->var.name.c_str(),
-				   cdcl, items, sdcl);
+				   cdcl, items, sdcl,
+				   (sdcl->var.is_fixed_array()
+				    && !sdcl->var.is_vla())
+				   ? sdcl->var.total_elements() : 0);
 }
 
 node_t CirBuilder::translate_stmt_required(TokenBase *tb)
@@ -15980,23 +16993,21 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			append(items, array_ctor_call(v->name.c_str(), tc));
 		} else if (DataDefCLASS *cdd = as_class_instance(v->type)) {
 			// `Foo f;` / `string s;` — a class instance declared without an
-			// explicit constructor-call (no ctor args). Default-construct it;
-			// scope-exit destruction is via the cleanup attribute (var_decl). The
-			// argful form `Foo f(a,b)` parses to a TokenDecl statement handled below.
+			// explicit constructor-call (no ctor args). class_ctor_call owns
+			// implicit default construction end-to-end (user ctor call, or
+			// vptr stores + member construction for a ctorless class);
+			// scope-exit destruction is via the cleanup attribute (var_decl).
+			// The argful form `Foo f(a,b)` parses to a TokenDecl statement
+			// handled below.
 			node_t cc = class_ctor_call(v, cdd,
 						    std::vector<TokenBase *>(), tc);
 			if (cc) append(items, cc);
-			// A class with embedded object members but NO user ctor still
-			// needs each member constructed.
-			// (Member destruction is via the synthesized dtor referenced by
-			// the cleanup attribute — see class_struct_def / var_decl.)
-			else {
-				if (class_has_object_members(cdd))
-					class_instance_member_ctors(v->name.c_str(), cdd,
-								    items, tc);
-				// C++11 default member initializers on a no-ctor instance
-				// (incl. a scalar-only struct promoted to a class purely
-				// for its NSDMI): `recv.member = init` per declaration order.
+			// C++11 default member initializers on a ctorless instance
+			// (incl. a scalar-only struct promoted to a class purely for
+			// its NSDMI, and a polymorphic ctorless class whose cc is the
+			// vptr block): `recv.member = init` per declaration order. A
+			// user ctor applies NSDMI in its prologue.
+			if (!cdd->has_user_ctor) {
 				std::vector<node_t> nsdmi_stmts;
 				if (emit_member_default_inits(cdd, v->name.c_str(), false,
 							      nsdmi_stmts, tc, NULL))
@@ -17901,29 +18912,14 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 						      : b->name + "__" + b->name));
 				}
 			}
-		// Phase-5 slice 1 whole-ctor switch: a tsubst hit body that already
-		// carries the substituted mem-inits (at its head) owns them — the
-		// shell-token-side emission would double-initialize.
-		if (is_ctor && !delegating_ci && !m_tsubst_body_carries_meminits)
-			class_ctor_initializer_stmts(ocls, fd, prologue, tf);
-		// C++11 default member initializers (`int x = 5;`): applied for every
-		// member NOT given an explicit ctor member-init, after the ctor-init
-		// list (which overrides them via explicit_member_inits).
-		if (is_ctor && !delegating_ci)
-			emit_member_default_inits(ocls, "__this", true, prologue, tf,
-						  &explicit_member_inits);
-		// Construct embedded object members at ctor entry (after base ctor),
-		// destruct them at dtor exit (before base dtor) — C++ member lifetime.
-		if (is_ctor && !delegating_ci)
-			class_member_construct(ocls, prologue, tf, &explicit_member_inits);
-		if (is_dtor)
-			class_member_destruct(ocls, epilogue, tf);
-		if (is_ctor && !delegating_ci && ocls->has_vtable) {
+		// Set each subobject's vptr to its group's address point in the flat
+		// table: __this->__vptr[_<off>] = (void*)(Cls__vtable + addr_point).
+		// Stamped AFTER base construction and BEFORE the mem-init list /
+		// member construction (Itanium [class.base.init] order) — a member
+		// initializer that virtual-calls or vbase-adjusts through `this`
+		// (vtable vbase-offset reads, task #36) must see this class's vptr.
+		if (is_ctor && !delegating_ci && ocls->has_any_vptr()) {
 			std::string vname = class_vtable_symbol(ocls);
-			// Set each subobject's vptr to its group's address point in the flat
-			// table: __this->__vptr[_<off>] = (void*)(Cls__vtable + addr_point).
-			// Primary group (offset 0, addr_point 0) reproduces the old single
-			// assignment byte-for-byte.
 			for (size_t g = 0; g < ocls->vtable_groups.size(); g++) {
 				const auto &G = ocls->vtable_groups[g];
 				std::string fld = (G.this_offset == 0)
@@ -17941,6 +18937,23 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 					node2(N_ASSIGN, vptr_lhs, vtab, tf), tf));
 			}
 		}
+		// Phase-5 slice 1 whole-ctor switch: a tsubst hit body that already
+		// carries the substituted mem-inits (at its head) owns them — the
+		// shell-token-side emission would double-initialize.
+		if (is_ctor && !delegating_ci && !m_tsubst_body_carries_meminits)
+			class_ctor_initializer_stmts(ocls, fd, prologue, tf);
+		// C++11 default member initializers (`int x = 5;`): applied for every
+		// member NOT given an explicit ctor member-init, after the ctor-init
+		// list (which overrides them via explicit_member_inits).
+		if (is_ctor && !delegating_ci)
+			emit_member_default_inits(ocls, "__this", true, prologue, tf,
+						  &explicit_member_inits);
+		// Construct embedded object members at ctor entry (after base ctor),
+		// destruct them at dtor exit (before base dtor) — C++ member lifetime.
+		if (is_ctor && !delegating_ci)
+			class_member_construct(ocls, prologue, tf, &explicit_member_inits);
+		if (is_dtor)
+			class_member_destruct(ocls, epilogue, tf);
 		// Destroy NON-VIRTUAL bases in REVERSE declaration order (MI), offset-adjusted.
 		// Virtual bases are destroyed once by the complete-object dtor (_dtor_complete).
 		if (is_dtor)
@@ -18361,7 +19374,11 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		// The callee then constructs the result DIRECTLY into the cell;
 		// the cell's finalizer is the class's own complete-object dtor.
 		std::string dtor_sym = class_complete_dtor_symbol(ret_cdd);
-		std::vector<ExternParam> dparams{ { {N_VOID}, true } };
+		// TYPED forward proto (`void d(struct X *)`): a madc-emitted dtor's
+		// definition is typed, and a `void *` extern here is a conflicting
+		// declaration gcc rejects (c2mir tolerates it, so only the portable
+		// --emit=c11 output broke) — same shape as the explicit-dtor arm.
+		std::vector<ExternParam> dparams{ { {}, true, ret_cdd } };
 		need_output_extern(dtor_sym.c_str(), false, dparams);
 		referenced_funcs.insert(dtor_sym);
 		std::vector<ExternParam> mi_params{
@@ -18692,10 +19709,36 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 		// concrete classes keep madc's vptr-init construction, which already
 		// works. The dtor is virtual (in the vtable) so it's exported for both.
 		bool ctor_exported = cls.find('<') != std::string::npos;
+		// Env-gated probe (MADC_EXTSYM_PROBE=<substr>): the FuncDef state each
+		// ctor mangles from, at every run of this pass (translate + pack re-run).
+		static const char *xsp = ::getenv("MADC_EXTSYM_PROBE");
+		bool xsp_hit = xsp && *xsp && cls.find(xsp) != std::string::npos;
 		for (Variable *cv : ctor_exported ? cdd->ctors
 						  : std::vector<Variable *>()) {
 			FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+			if (xsp_hit && fd) {
+				std::string sp;
+				for (size_t i = 0; i < fd->param_cpp_spellings.size(); ++i) {
+					sp += i ? "," : "";
+					sp += fd->param_cpp_spellings[i].empty()
+						? "<empty>" : fd->param_cpp_spellings[i];
+				}
+				fprintf(stderr, "EXTSYM ctor %s fd=%p params=%zu"
+					" spellings=%zu [%s] emit_symbol=%s mt=%d\n",
+					cv->name.c_str(), (void *)fd,
+					fd->parameters.size(),
+					fd->param_cpp_spellings.size(), sp.c_str(),
+					fd->emit_symbol.empty() ? "<empty>"
+								: fd->emit_symbol.c_str(),
+					fd->is_member_template ? 1 : 0);
+			}
 			if (!fd || !fd->emit_symbol.empty() || fd->is_member_template) continue;
+			// A signature whose spelling array is absent or misaligned
+			// (a restore/serve gap) must NOT mangle: the fabricated name
+			// drops parameters (a 3-arg ctor mangles C1Ev) and C1Ev IS
+			// exported, so the wrong bind would succeed silently.
+			if (fd->param_cpp_spellings.size() != fd->parameters.size())
+				continue;
 			// Param spellings EXCLUDING the hidden __this (slot 0), same as
 			// bind_declared_cpp_symbol — so PKc / St13_Ios_Openmode match the ABI.
 			std::vector<std::string> psp;
@@ -18703,6 +19746,10 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 				psp.push_back(fd->mangle_param_spelling(i));
 			fd->spell_varargs_tail(psp);
 			std::string sym = itanium_mangle_ctor_sub(cls, psp);
+			if (xsp_hit)
+				fprintf(stderr, "EXTSYM ctor %s -> %s avail=%d\n",
+					cv->name.c_str(), sym.c_str(),
+					external_symbol_available(sym) ? 1 : 0);
 			if (external_symbol_available(sym))
 				fd->emit_symbol = sym;
 		}
@@ -18734,6 +19781,9 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 			if (!fd || !fd->emit_symbol.empty() || fd->is_member_template)
 				continue;
 			if (fd->defaulted_or_deleted || fd->pure_virtual)
+				continue;
+			// Same misaligned-spelling fence as the ctor loop above.
+			if (fd->param_cpp_spellings.size() != fd->parameters.size())
 				continue;
 			const std::string &dn = fd->method_display_name;
 			if (dn.empty() || dn[0] == '~')   // dtor handled above
@@ -19063,6 +20113,60 @@ node_t CirBuilder::translate_module(Program *prog)
 
 	node_t module = simple(N_MODULE);
 	node_t top_list = list();
+
+	// Wide string literals (parser addWideLiteral): synthetic file-scope
+	// int arrays whose Variable NAME embeds the raw UTF-32 payload
+	// (binary-safe for parse-time dedup, not a valid C identifier). c2mir
+	// has no wide literals (no wchar_t — Tier 1 per lowering-vs-raising.md),
+	// so assign each a sanitized module symbol and define it up front:
+	//   static int __wlit_<hash>[] = { code points..., 0 };
+	// (wchar_t's underlying type is int on this target; the baked data
+	// already carries the NUL terminator.) Uses resolve through
+	// var_emit_name; the array decays to int* exactly like gcc's wchar_t[].
+	// The symbol derives from the CONTENT (FNV-1a 64), not creation order,
+	// and each decl is cond_mark_sym'd: the referenced-surface filter drops
+	// UNREFERENCED literals in both the live and bound lanes — creation-
+	// order/dead-literal differences between lanes (bind never re-runs the
+	// parse that minted a dead template body's literal) can't break the
+	// bind == live byte-identity oracle. A hash collision would emit two
+	// same-named definitions — a loud c2mir redefinition error, not silent
+	// data corruption.
+	m_wide_literal_syms.clear();
+	if (prog->tkProgram) {
+		for (Variable *v : prog->tkProgram->variables) {
+			if (!v || !v->data
+			    || v->name.compare(0, 12, "__wliteral__") != 0)
+				continue;
+			const std::string payload = v->name.substr(12);
+			uint64_t h = 1469598103934665603ULL; // FNV-1a 64
+			for (size_t i = 0; i < payload.size(); i++) {
+				h ^= (unsigned char)payload[i];
+				h *= 1099511628211ULL;
+			}
+			char sym[32];
+			snprintf(sym, sizeof(sym), "__wlit_%016llx",
+				 (unsigned long long)h);
+			m_wide_literal_syms[v] = sym;
+			node_t spec = list();
+			append(spec, simple(N_STATIC));
+			append(spec, simple(N_INT));
+			node_t dl = list();
+			append(dl, node3(N_ARR, ignore(), list(), ignore())); // [] sized by init
+			node_t decl = node2(N_DECL, id(sym), dl);
+			node_t inits = list();
+			const int32_t *cp = (const int32_t *)v->data;
+			for (uint32_t i = 0; i < v->count; i++)
+				append(inits, node2(N_INIT, list(), integer(cp[i])));
+			node_t sd = simple(N_SPEC_DECL);
+			append(sd, node1(N_SHARE, spec));
+			append(sd, decl);
+			append(sd, ignore());
+			append(sd, ignore());
+			append(sd, inits);
+			cond_mark_sym(sd, sym);
+			append(top_list, sd);
+		}
+	}
 
 	// Collect all TokenFunc entries
 	std::vector<TokenFunc *> funcs;
@@ -19822,13 +20926,28 @@ node_t CirBuilder::translate_module(Program *prog)
 					fp.proto  = proto;
 					forest_lazy_protos.push_back(fp);
 				}
-				func_def_nodes.push_back(bn);
-				// Rung 3: a loaded system-header body survives only
-				// while referenced (methods here come from
-				// from_system_header classes; funcdef bodies from a
-				// non-system unit were exempted at collect time).
-				if (!forest_lazy_root.count(kv.first))
-					cond_mark_sym(bn, kv.first);
+				// MIR cache: a symbol the container's compiled
+				// module exports needs no def here — the forward
+				// proto types the call, c2mir emits an extern
+				// reference, and MIR_link resolves the import
+				// against the loaded cache module. (Emitting the
+				// def too would redefine the func at load.) A
+				// proto-less shape keeps its def; the session
+				// then un-exports the cache's copy.
+				if (proto && prog->mir_cache_exports.count(kv.first)) {
+					DBG(std::cout << "mir cache import: "
+					    << kv.first << std::endl);
+				} else {
+					func_def_nodes.push_back(bn);
+					// Rung 3: a loaded system-header body
+					// survives only while referenced (methods
+					// here come from from_system_header
+					// classes; funcdef bodies from a
+					// non-system unit were exempted at
+					// collect time).
+					if (!forest_lazy_root.count(kv.first))
+						cond_mark_sym(bn, kv.first);
+				}
 				grew = true;
 			}
 			for (auto &kv : lib_funcs) {
@@ -20168,6 +21287,35 @@ node_t CirBuilder::translate_module(Program *prog)
 		}
 	}
 
+	// Pass 1.48: `extern void __cxa_pure_virtual(void);` ahead of Pass 1.5 —
+	// an abstract class's vtable initializer references it as an address
+	// constant, and c2mir requires the declaration first (same reason as
+	// the Pass-1.45 dtor protos). typed_proto_syms keeps the late extern
+	// flush from emitting a duplicate.
+	{
+		bool have_pure = false;
+		std::set<DataDefCLASS *> seen_pv;
+		for (auto &kv : prog->struct_map) {
+			DataDefCLASS *cdd = as_user_class(kv.second);
+			if (!cdd || cdd->is_externally_defined()) continue;
+			if (!seen_pv.insert(cdd).second) continue;
+			if (!class_pure_virtual_of(cdd).empty()) {
+				have_pure = true;
+				break;
+			}
+		}
+		if (have_pure) {
+			need_output_extern("__cxa_pure_virtual", false,
+					   std::vector<ExternParam>());
+			auto pe = m_output_externs.find("__cxa_pure_virtual");
+			if (pe != m_output_externs.end()
+			    && !typed_proto_syms.count(pe->first)) {
+				append(top_list, pe->second);
+				typed_proto_syms.insert(pe->first);
+			}
+		}
+	}
+
 	// Pass 1.5: per-class virtual dispatch tables. Emitted after the method
 	// prototypes they reference (Pass 1) and before the function definitions
 	// (Pass 2) that initialize __vptr from them. Iterate struct_map once more,
@@ -20175,7 +21323,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	std::set<DataDefCLASS *> emitted_vtables;
 	for (auto &kv : prog->struct_map) {
 		DataDefCLASS *cdd = as_user_class(kv.second);
-		if (!cdd || !cdd->has_vtable) continue;
+		if (!cdd || !cdd->has_any_vptr()) continue;
 		if (emitted_vtables.count(cdd)) continue;
 		emitted_vtables.insert(cdd);
 		// An externally-defined class (a std:: library polymorphic class madc
@@ -20436,6 +21584,13 @@ node_t CirBuilder::translate_module(Program *prog)
 			append(top_list, kv.second);
 			cond_mark_sym(kv.second, kv.first);
 		}
+	// (c) Stack-array destructor wrappers demanded during body translation
+	//     (task #56). Definitions land here — after the element dtors' typed
+	//     protos above, ahead of every function definition (Pass 2) whose
+	//     cleanup attribute names them.
+	for (auto &kv : m_array_dtor_defs)
+		append(top_list, kv.second);
+	m_array_dtor_defs.clear();
 
 	// Synthesize `void __madc_global_init(void)` — the ONE home for the
 	// file-scope class-global ctor calls (collected by collect_global_ctors).

@@ -1,0 +1,36 @@
+// operator-> on a class object reached through a C-style cast operand:
+// `(int)it->second` parses the cast operand via parsePostfixChain, whose
+// arrow arm must apply the same operator-> rewrite as the main expression
+// parser (it used to accept raw pointers only and reject map iterators).
+#include <cstdio>
+#include <map>
+#include <set>
+#include <string>
+
+int main()
+{
+	std::map<std::string, int> a;
+	a["x"] = 1;
+	a["yy"] = 2;
+	std::map<std::string, std::string> b;
+	b["k"] = "value";
+
+	int total = 0;
+	for (std::map<std::string, int>::iterator it = a.begin();
+	     it != a.end(); ++it)
+	{
+		total += (int)it->second;          // cast + arrow, unchained
+		total += (int)it->first.size();    // cast + arrow + dot chain
+	}
+	for (std::map<std::string, std::string>::iterator it = b.begin();
+	     it != b.end(); ++it)
+		total += (int)it->second.size();   // class-valued member chain
+	std::set<std::string> s;
+	s.insert("one");
+	s.insert("three");
+	for (std::set<std::string>::iterator it = s.begin();
+	     it != s.end(); ++it)
+		total += (int)it->size();          // const_iterator operator->
+	printf("total=%d\n", total);
+	return 0;
+}

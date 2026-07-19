@@ -1319,6 +1319,38 @@ uint32_t CirFrozenForest::unit_anchor(uint32_t unit) const
 				    : CIR_FOREST_ANCHOR_NONE;
 }
 
+bool CirFrozenForest::mir_module_bytes(std::vector<uint8_t> &out) const
+{
+	const madc::dis::snapshot_segment *s =
+		_reader.find(CIR_FOREST_SEG_MIR_MODULE);
+	if (!s || s->kind != SNAP_KIND_CIR_MIR_MODULE
+	    || s->raw_size <= sizeof(cir_forest_mir_header))
+		return false;	// no cache segment: the normal blob-less case
+	std::vector<uint8_t> payload;
+	if (!_reader.read_segment(*s, payload)
+	    || payload.size() <= sizeof(cir_forest_mir_header)) {
+		fprintf(stderr, "madc: mir cache: malformed segment — "
+			"falling back to node materialization\n");
+		return false;
+	}
+	cir_forest_mir_header mh;
+	memcpy(&mh, payload.data(), sizeof(mh));
+	uint32_t api_x100 = (uint32_t)(_MIR_get_api_version() * 100.0 + 0.5);
+	if (mh.forest_version != CIR_FOREST_FORMAT_VERSION
+	    || mh.mir_api_x100 != api_x100) {
+		// A coupling bug, not routine fallback: the container-level
+		// version pin + context hash should have rejected this first.
+		fprintf(stderr, "madc: mir cache: stamp mismatch (forest v%u "
+			"vs v%u, MIR api %u vs %u) — falling back\n",
+			mh.forest_version, (unsigned)CIR_FOREST_FORMAT_VERSION,
+			mh.mir_api_x100, api_x100);
+		return false;
+	}
+	out.assign(payload.begin() + sizeof(cir_forest_mir_header),
+		   payload.end());
+	return true;
+}
+
 bool CirFrozenForest::unit_tokens(uint32_t unit, std::vector<uint8_t> &madh_payload,
 				  uint32_t &token_count)
 {
@@ -1463,6 +1495,11 @@ static DataDef *arena_swizzle(uint32_t tid,
 	return it != by_id.end() ? it->second : NULL;
 }
 
+DataDef *CirFrozenForest::restored_def_by_tid(uint32_t tid) const
+{
+	return arena_swizzle(tid, _defs_by_tid);
+}
+
 const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 {
 	if (_types_materialized)
@@ -1532,7 +1569,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			for (uint32_t m = 0; ok && m < r.members_count; ++m) {
 				madc::dis::memberrec mr;
 				if (!a.get_payload(r.members_begin, m, mr)
-				    || !arena_chain_ok(a, mr.type_id, tid, recordable))
+				    || !arena_chain_ok(a, mr.type_id, tid, recordable)
+				    || (mr.vbase_id && !recordable.count(mr.vbase_id)))
 					ok = false;
 			}
 			if (ok && r.kind == madc::dis::DK_CLASS) {
@@ -1570,9 +1608,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
 		std::string why = "?";
 		for (uint32_t m = 0; m < r.members_count; ++m) {
-			madc::dis::memberrec mr;
+			madc::dis::memberrec mr = {};
 			if (!a.get_payload(r.members_begin, m, mr)
-			    || !arena_chain_ok(a, mr.type_id, tid, recordable)) {
+			    || !arena_chain_ok(a, mr.type_id, tid, recordable)
+			    || (mr.vbase_id && !recordable.count(mr.vbase_id))) {
 				const char *mn = mr.name_id ? a.c_str(mr.name_id) : "?";
 				why = std::string("member ") + (mn ? mn : "?");
 				break;
@@ -1580,7 +1619,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		}
 		if (why == "?" && r.kind == madc::dis::DK_CLASS)
 			for (uint32_t b = 0; b < r.bases_count; ++b) {
-				madc::dis::baserec br;
+				madc::dis::baserec br = {};
 				if (!a.get_payload(r.bases_begin, b, br)
 				    || !recordable.count(br.base_id)) {
 					madc::dis::defrec bd;
@@ -1840,8 +1879,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	}
 
 	// Pass 1: allocate a DataDef per recordable aggregate, so forward member /
-	// base ids resolve in pass 2.
-	std::map<uint32_t, DataDef *> by_id;
+	// base ids resolve in pass 2. The map persists on the forest
+	// (_defs_by_tid) so post-restore consumers — lazy ClassPattern payload
+	// reads — can swizzle serialized producer tids.
+	std::map<uint32_t, DataDef *> &by_id = _defs_by_tid;
 	for (size_t i = 0; i < agg_ids.size(); ++i) {
 		uint32_t tid = agg_ids[i];
 		if (!recordable.count(tid))
@@ -1871,6 +1912,9 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			sdd = new DataDefSTRUCT(std::string(nm), r.size);
 			sdd->union_layout = (r.flags & madc::dis::DF_UNION_LAYOUT) != 0;
 		}
+		sdd->definition_origin = (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
+		? AggregateDefinitionOrigin::TranslationUnitRoot
+		: AggregateDefinitionOrigin::Included;
 		_mat_storage.push_back(sdd);
 		by_id[tid] = sdd;
 	}
@@ -2053,6 +2097,15 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				bf.storage_size    = mr.bf_storage_size;
 			}
 			sdd->member_bitfields.push_back(bf);
+			// v32: virtual-base provenance, swizzled like every class
+			// cross-ref. A dangling id means the closure failed — drop
+			// the aggregate rather than silently degrade to static.
+			if (mr.vbase_id) {
+				DataDefCLASS *vbc = dynamic_cast<DataDefCLASS *>(
+					arena_swizzle(mr.vbase_id, by_id));
+				if (!vbc) { ok = false; break; }
+				sdd->member_vbase[m] = vbc;
+			}
 		}
 		if (!ok)
 			continue;		// defensive: the closure should have dropped it
@@ -2242,6 +2295,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					DataDefPTR *thisp = new DataDefPTR(*cdd);
 					_mat_storage.push_back(thisp);
 					fd->parameters.push_back(thisp);
+					// hidden __this — excluded from mangling, but the
+					// spelling array must stay index-aligned with
+					// parameters (parseFunction parity).
+					fd->param_cpp_spellings.push_back(std::string());
 				}
 				bool pok = true;
 				// v23: a param's default-argument token run rides its
@@ -2259,6 +2316,16 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					DataDef *pd = arena_swizzle(pr.type_id, by_id);
 					if (!pd) { pok = false; break; }
 					fd->parameters.push_back(pd);
+					// The C++ param spelling rides the paramrec exactly
+					// as on the free-function arm below: without it a
+					// restored method's signature is NOT the parsed
+					// state, and a consumer-side Itanium re-mangle
+					// (bind_external_class_symbols) fabricates a
+					// parameter-less symbol (C1Ev) for a ctor whose
+					// pack-side binding stayed empty.
+					const char *psp = pr.cpp_spelling_id
+						        ? a.c_str(pr.cpp_spelling_id) : NULL;
+					fd->param_cpp_spellings.push_back(psp ? psp : "");
 					const uint8_t *db =
 						a.tok_run(pr.def_tok_off, pr.def_tok_bytes);
 					if (db && pr.def_tok_count) {
@@ -2281,6 +2348,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 						fd->emit_symbol = es;
 				fd->is_const_method =
 					(fr.flags & madc::dis::DF_IS_CONST_METHOD) != 0;
+				fd->pure_virtual =
+					(fr.flags & madc::dis::DF_PURE_VIRTUAL) != 0;
 				fd->is_varargs =
 					(fr.flags & madc::dis::DF_IS_VARARGS) != 0;
 				fd->is_void_params =
@@ -2877,6 +2946,18 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			rt.extra = t.extra_id ? pool_str(t.extra_id) : NULL;
 			rt.owner = NULL;
 			rt.flags = t.flags;
+			rt.pattern = NULL;
+			rt.pattern_words = 0;
+			rt.pattern_reason = t.pattern_reason;
+			if (t.pattern_words) {
+				size_t begin = t.pattern_begin;
+				size_t count = t.pattern_words;
+				if (begin > _template_payload.size()
+				    || count > _template_payload.size() - begin)
+					continue;
+				rt.pattern = _template_payload.data() + begin;
+				rt.pattern_words = t.pattern_words;
+			}
 			if (t.owner_type_id) {
 				DataDefCLASS *oc = dynamic_cast<DataDefCLASS *>(
 					arena_swizzle(t.owner_type_id, by_id));
@@ -2922,6 +3003,36 @@ const char *CirFrozenForest::type_name_for(uint32_t type_id) const
 {
 	std::map<uint32_t, const char *>::const_iterator it = _type_names.find(type_id);
 	return it != _type_names.end() ? it->second : NULL;
+}
+
+const char *CirFrozenForest::restored_template_string(uint32_t id) const
+{
+	if (!id)
+		return NULL;
+	uint32_t len = 0;
+	return pool_cstr(id, len);
+}
+
+CirRestoredTemplateRun CirFrozenForest::restored_template_run(
+	const cir_forest_token_run &run) const
+{
+	CirRestoredTemplateRun restored;
+	restored.bytes = NULL;
+	restored.len = 0;
+	restored.count = 0;
+	restored.file = NULL;
+	if (run.tok_count
+	    && (size_t)run.tok_off <= _template_tokens.size()
+	    && (size_t)run.tok_bytes <= _template_tokens.size() - run.tok_off) {
+		restored.bytes = _template_tokens.data() + run.tok_off;
+		restored.len = run.tok_bytes;
+		restored.count = run.tok_count;
+	}
+	if (run.file_id) {
+		uint32_t len = 0;
+		restored.file = pool_cstr(run.file_id, len);
+	}
+	return restored;
 }
 
 size_t CirFrozenForest::units_loaded() const

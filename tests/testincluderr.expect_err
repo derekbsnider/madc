@@ -1,0 +1,2 @@
+testincluderr_helper.h:3:18
+int broken_decl( = 5;

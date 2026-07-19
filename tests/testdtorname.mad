@@ -1,0 +1,53 @@
+// Task #57: explicit-destructor NAMES beyond the plain identifier. The name
+// after `~` may be a full template-id (`p->~Box<int>()`), the
+// injected-class-name without template args (`p->~Box()` — looked up in the
+// receiver's class scope, [expr.prim.id.dtor]/[temp.local]), a typedef/alias
+// denoting the same class (`q->~XT()`, alias-tolerant via type resolution),
+// or a real library class's injected name (`s->~basic_string()`).
+// A mismatched name is a compile error — tests/testdtormismatch.mad.
+#include <cstdio>
+#include <string>
+#include <new>
+
+int g_d = 0;
+
+template<class T>
+struct Box {
+	T v;
+	Box(T x) : v(x) {}
+	~Box() { g_d += (int)v; printf("~Box %d\n", (int)v); }
+};
+
+struct X {
+	int id;
+	X(int i) : id(i) {}
+	~X() { printf("~X %d\n", id); }
+};
+
+typedef X XT;
+
+int main()
+{
+	long m[8];
+	// full template-id
+	Box<int> *p = new ((void *)m) Box<int>(5);
+	p->~Box<int>();
+	printf("tpl %d\n", g_d);
+	// injected-class-name, no template args
+	p = new ((void *)m) Box<int>(3);
+	p->~Box();
+	printf("inj %d\n", g_d);
+	// typedef'd name, arrow and dot-over-deref
+	long m2[8];
+	XT *q = new ((void *)m2) X(7);
+	q->~XT();
+	q = new ((void *)m2) X(9);
+	(*q).~XT();
+	// real library class, injected name
+	long m3[8];
+	std::string *s = new ((void *)m3) std::string("hey");
+	printf("%s\n", s->c_str());
+	s->~basic_string();
+	printf("done\n");
+	return 0;
+}

@@ -168,6 +168,11 @@ enum DefFlags : uint32_t {
 						// TokenTEMPLATE::parse) — the restore reproduces
 						// the flat datatype_map + struct_map writes too,
 						// not just the namespace map
+	DF_PURE_VIRTUAL      = 1u << 25,	// FuncDef::pure_virtual (`= 0`): the class is
+						// abstract while this slot has no final
+						// overrider; the vtable slot fills with
+						// __cxa_pure_virtual. Flag-bit addition only —
+						// no record layout change, no version bump.
 	DF_FUNC_DEF_TOKENS   = 1u << 24,	// v26 piece (a): this WAS_BODIED free fn (no
 						// TRANSLATED def -> no DF_HAS_FOREST_BODY) has an
 						// ownerless DK_DEFBODY twin carrying its raw body
@@ -321,6 +326,11 @@ struct memberrec {
 	uint32_t bf_bit_width;
 	uint32_t bf_storage_offset;
 	uint32_t bf_storage_size;
+	// v32: member_vbase[i] — the VIRTUAL base this member belongs to, as a
+	// type-id (0 = not a virtual-base member). Member access through a vbase
+	// VIEW reads this to pick the dynamic (vtable-slot) adjust; without it a
+	// restored header class silently degraded to the static offset.
+	uint32_t vbase_id;
 };
 
 // A direct base (DataDefCLASS::bases -> BaseSpec).

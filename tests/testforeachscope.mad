@@ -1,0 +1,30 @@
+// Sibling range-fors reusing the element name with DIFFERENT types: each
+// element variable has loop scope ([stmt.ranged]); the second loop must get
+// a fresh variable, not the first loop's via same-block reuse (task #45,
+// sibling of the #44 typed-for-init scope fix). Covers scalar, class-shape
+// (string, ctor + cleanup), and reference element forms.
+#include <vector>
+#include <string>
+#include <cstdio>
+int main()
+{
+	std::vector<int> nums;
+	nums.push_back(2);
+	nums.push_back(3);
+	std::vector<std::string> words;
+	words.push_back("ab");
+	words.push_back("cde");
+	int total = 0;
+	for (int v : nums)
+		total += v;
+	for (std::string v : words)
+		total += (int)v.size();
+	for (std::string &v : words)
+		v += "!";
+	int excl = 0;
+	for (std::string v : words)
+		if (v[v.size() - 1] == '!')
+			excl++;
+	printf("total=%d excl=%d\n", total, excl);
+	return 0;
+}

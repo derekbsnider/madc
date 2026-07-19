@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <ucontext.h>
 #include <sys/resource.h>
+#include <new>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -38,7 +39,7 @@ extern int madc_cir_execute(Program *prog, const char *source_name,
 extern int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
                          CirEmitLang lang);
 extern int madc_cir_freeze(Program *prog, const char *source_name,
-                           const char *out_path, bool append);
+                           const char *out_path, bool append, bool mir_cache);
 extern int madc_cir_execute_frozen(const char *container_path,
                                    int user_argc, char **user_argv);
 extern int madc_cir_dump_forest(const char *container_path);
@@ -55,6 +56,28 @@ static Program *g_active_program = NULL;
 // if the address falls inside a generated function's code range.
 extern "C" int madc_jit_symbolize(void *addr, char *out, unsigned long n);
 
+static void crash_write(const char *data, size_t size)
+{
+    while ( size > 0 )
+    {
+	ssize_t written = write(STDERR_FILENO, data, size);
+	if ( written <= 0 )
+	    return;
+	data += written;
+	size -= (size_t)written;
+    }
+}
+
+static void crash_write_formatted(const char *data, int length, size_t capacity)
+{
+    if ( length <= 0 || capacity == 0 )
+	return;
+    size_t size = (size_t)length;
+    if ( size >= capacity )
+	size = capacity - 1;
+    crash_write(data, size);
+}
+
 // Async-signal-safe crash handler: writes signal name + backtrace to fd 2
 // (stderr) using only async-signal-safe libc calls. Re-raises the signal
 // with the default handler so core files still drop if enabled.
@@ -70,18 +93,18 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 	case SIGILL:  name = "SIGILL (illegal instruction)";	break;
     }
     const char *prefix = "\nmadc: caught ";
-    write(2, prefix, strlen(prefix));
-    write(2, name, strlen(name));
+    crash_write(prefix, strlen(prefix));
+    crash_write(name, strlen(name));
     if ( info && (sig == SIGSEGV || sig == SIGBUS) )
     {
 	char addrbuf[64];
 	int n = snprintf(addrbuf, sizeof(addrbuf), " at address %p", info->si_addr);
-	write(2, addrbuf, n);
+	crash_write_formatted(addrbuf, n, sizeof(addrbuf));
     }
-    write(2, "\n", 1);
+    crash_write("\n", 1);
 
     const char *btheader = "Backtrace:\n";
-    write(2, btheader, strlen(btheader));
+    crash_write(btheader, strlen(btheader));
 
     void *frames[64];
     int nf = backtrace(frames, 64);
@@ -95,7 +118,7 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 	if ( madc_jit_symbolize(frames[i], sym, sizeof(sym)) )
 	{
 	    int n = snprintf(line, sizeof(line), "  [%p] %s\n", frames[i], sym);
-	    write(2, line, n);
+	    crash_write_formatted(line, n, sizeof(line));
 	    continue;
 	}
 	Dl_info di;
@@ -104,12 +127,12 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 	    int n = snprintf(line, sizeof(line), "  [%p] %s+0x%lx\n", frames[i],
 			     di.dli_sname,
 			     (unsigned long)((char *)frames[i] - (char *)di.dli_saddr));
-	    write(2, line, n);
+	    crash_write_formatted(line, n, sizeof(line));
 	}
 	else
 	{
 	    int n = snprintf(line, sizeof(line), "  [%p] ??\n", frames[i]);
-	    write(2, line, n);
+	    crash_write_formatted(line, n, sizeof(line));
 	}
     }
 
@@ -160,16 +183,23 @@ double time_diff(struct timeval x , struct timeval y)
 	return diff;
 }
 
-// Resource guards. Defaults are generous enough for normal compile +
-// execute, strict enough that a runaway JIT loop or pathological alloc
-// trips well before the host gets noticeable. All overridable via env:
-//   MADC_CPU_LIMIT=<secs>   (default 60, 0 disables)
-//   MADC_MEM_LIMIT=<MB>     (default 2048, 0 disables) — virtual address
-//                            space (RLIMIT_AS), so includes JIT mappings
-//                            and dlopen()'d shared libs.
+// Resource guards — deliberately LIBERAL by default: madc is a developer
+// CLI that also RUNS the program, and gcc/clang-style tools impose no
+// self-limits. Tight limits are an embedding host's / sandbox's choice
+// (set the env knobs); the defaults must never throttle legitimate work:
+//   MADC_CPU_LIMIT=<secs>   (default 0 = disabled) — any finite default
+//                            eventually kills a legitimate long-running
+//                            program with SIGXCPU, so CPU is opt-in only
+//   MADC_MEM_LIMIT=<MB>     (default 4096, +128/TU in --project mode;
+//                            0 disables) — virtual address space
+//                            (RLIMIT_AS), so includes JIT mappings and
+//                            dlopen()'d shared libs. Kept armed so a
+//                            pathological alloc trips as a loud, clean
+//                            bad_alloc instead of swapping the host to
+//                            death.
 // Soft = limit, hard = limit+slop so the process can't extend itself.
-// Hitting RLIMIT_CPU sends SIGXCPU; hitting RLIMIT_AS makes the next
-// mmap/brk return ENOMEM (allocators usually abort()).
+// Every trip must name its knob (never-silent): SIGXCPU via
+// cpu_guard_handler, ENOMEM/bad_alloc via mem_guard_new_handler.
 static rlim_t env_rlim(const char *env_name, rlim_t fallback)
 {
     if ( const char *env = getenv(env_name) ) {
@@ -180,24 +210,83 @@ static rlim_t env_rlim(const char *env_name, rlim_t fallback)
     return fallback;
 }
 
-static void install_resource_guards(void)
+// Armed with the RLIMIT_AS guard: when operator new first fails, say WHY
+// (our own guard, and its knob) before the normal bad_alloc unwind —
+// otherwise the failure surfaces as a bare std::bad_alloc with no
+// actionable cause. An OOM handler must not allocate, so the message goes
+// out via the crash handler's write(2) plumbing.
+static rlim_t madc_mem_guard_mb = 0;
+
+static void mem_guard_new_handler(void)
 {
-    rlim_t cpu_secs = env_rlim("MADC_CPU_LIMIT", 60);
+    std::set_new_handler(NULL);	// print once; let bad_alloc propagate
+    char buf[192];
+    int n = snprintf(buf, sizeof(buf),
+                     "madc: memory allocation failed with the MADC_MEM_LIMIT=%llu"
+                     " MB address-space guard active; raise it or set"
+                     " MADC_MEM_LIMIT=0 to disable\n",
+                     (unsigned long long)madc_mem_guard_mb);
+    crash_write_formatted(buf, n, sizeof(buf));
+    throw std::bad_alloc();
+}
+
+// Armed with the (opt-in) RLIMIT_CPU guard: the default SIGXCPU disposition
+// kills silently, which reads as a mystery death instead of the guard doing
+// its job — name the knob first, then die with the real signal status.
+static rlim_t madc_cpu_guard_secs = 0;
+
+static void cpu_guard_handler(int sig)
+{
+    char buf[160];
+    int n = snprintf(buf, sizeof(buf),
+                     "madc: CPU time exceeded the MADC_CPU_LIMIT=%llu s guard;"
+                     " raise it or unset it to disable\n",
+                     (unsigned long long)madc_cpu_guard_secs);
+    crash_write_formatted(buf, n, sizeof(buf));
+    struct sigaction dfl;
+    memset(&dfl, 0, sizeof(dfl));
+    dfl.sa_handler = SIG_DFL;
+    sigaction(sig, &dfl, NULL);
+    raise(sig);
+}
+
+static void install_resource_guards(size_t project_tus)
+{
+    rlim_t cpu_secs = env_rlim("MADC_CPU_LIMIT", 0);
     if ( cpu_secs > 0 ) {
         struct rlimit rl;
         rl.rlim_cur = cpu_secs;
         rl.rlim_max = cpu_secs + 1;
         if ( setrlimit(RLIMIT_CPU, &rl) != 0 )
             perror("setrlimit(RLIMIT_CPU)");
+        else {
+            madc_cpu_guard_secs = cpu_secs;
+            struct sigaction sa;
+            memset(&sa, 0, sizeof(sa));
+            sa.sa_handler = cpu_guard_handler;
+            sigaction(SIGXCPU, &sa, NULL);
+        }
     }
 
-    rlim_t mem_mb = env_rlim("MADC_MEM_LIMIT", 2048);
+    // A --project build holds every TU's parsed state simultaneously (by
+    // design: all Programs live until the shared MIR module runs), so its
+    // legitimate address-space need scales with the manifest, not with any
+    // single file. Give each TU a 128 MB allowance on top of the single-file
+    // default: SMAUG's 51-TU manifest measures ~2.9 GB peak VA (~57 MB/TU),
+    // so 128 keeps ~2x headroom while a true runaway still trips.
+    // MADC_MEM_LIMIT overrides the computed default verbatim.
+    rlim_t default_mb = 4096 + (project_tus > 1 ? 128 * (rlim_t)project_tus : 0);
+    rlim_t mem_mb = env_rlim("MADC_MEM_LIMIT", default_mb);
     if ( mem_mb > 0 ) {
         struct rlimit rl;
         rl.rlim_cur = (rlim_t)mem_mb * 1024 * 1024;
         rl.rlim_max = rl.rlim_cur;
         if ( setrlimit(RLIMIT_AS, &rl) != 0 )
             perror("setrlimit(RLIMIT_AS)");
+        else {
+            madc_mem_guard_mb = mem_mb;
+            std::set_new_handler(mem_guard_new_handler);
+        }
     }
 }
 
@@ -429,6 +518,9 @@ static void print_usage(const char *prog)
 "                          into a forest snapshot container (no run)\n"
 "  --freeze-append=<bin>   same, but append the container to an existing\n"
 "                          binary (found later from its EOF footer)\n"
+"  --freeze-mir-cache      also compile the frozen module and pack its MIR\n"
+"                          binary form as a cache segment (consumers skip\n"
+"                          node rebuild + c2mir; absent = normal fallback)\n"
 "  --run-frozen[=<file>]   thaw + compile + run a frozen container; with no\n"
 "                          value, load the blob appended to this executable.\n"
 "                          Remaining arguments become the program's argv\n"
@@ -456,6 +548,14 @@ static void print_usage(const char *prog)
 "  -v, --verbose           verbose / debug output\n"
 "  -h, -?, --help          show this help\n"
 "\n"
+"Environment:\n"
+"  MADC_CPU_LIMIT=<secs>   arm an RLIMIT_CPU guard (default: off — madc also\n"
+"                          runs the program, so no finite default is safe;\n"
+"                          intended for embedding hosts and sandboxes)\n"
+"  MADC_MEM_LIMIT=<MB>     address-space guard (RLIMIT_AS, covers JIT\n"
+"                          mappings); default 4096 MB + 128 MB per --project\n"
+"                          TU; 0 disables. Trips name the knob.\n"
+"\n"
 "Note: AOT object/executable output (--emit-object/--emit-executable/-o) is not\n"
 "available on the CIR backend; emit C with --emit=c11 and compile with gcc/clang.\n";
 }
@@ -469,7 +569,6 @@ int main(int argc, char **argv)
     gettimeofday(&_t_main, NULL);
 
     install_crash_handler();
-    install_resource_guards();
 
     stringstream ss;
     MadcEngine engine;
@@ -496,6 +595,7 @@ int main(int argc, char **argv)
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
     bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
+    bool freeze_mir_cache = false;        // --freeze-mir-cache: pack the compiled MIR module blob
     bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
     bool freeze_run = false;              // --freeze-run: freeze, then re-exec fresh to run
@@ -607,6 +707,9 @@ int main(int argc, char **argv)
             freeze_path = argv[i] + 16;
             freeze_append = true;
             filearg = i + 1;
+        } else if (strcmp(argv[i], "--freeze-mir-cache") == 0) {
+            freeze_mir_cache = true;
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--freeze-run") == 0) {
             freeze_run = true;
             filearg = i + 1;
@@ -687,6 +790,13 @@ int main(int argc, char **argv)
         }
     }
 
+    prog->class_parse_observability = show_stats;
+    {
+	const char *live_capture = getenv("MADC_CLASS_PATTERN_LIVE");
+	if ( live_capture && *live_capture && strcmp(live_capture, "0") != 0 )
+	    prog->class_pattern_live_capture = true;
+    }
+
     if ( show_help )
     {
         print_usage(argv[0]);
@@ -708,6 +818,23 @@ int main(int argc, char **argv)
             ++filearg;   // remaining positionals become the program's argv
         }
     }
+
+    // Resource guards install AFTER argument parsing so the memory guard can
+    // scale with the workload (see install_resource_guards). The manifest is
+    // read here, once, for its TU count; the --project branch below reuses
+    // it. Order matters: RLIMIT hard limits can only be lowered, never
+    // raised, so the guard must know the workload before it arms.
+    ProjectManifest manifest;
+    if ( project_manifest )
+    {
+        std::string err;
+        if ( !read_compile_commands(project_manifest, manifest, err) )
+        {
+            std::cerr << "madc --project: " << err << std::endl;
+            return 1;
+        }
+    }
+    install_resource_guards(manifest.tus.size());
 
     // Embedded-forest default (Phase 4): with no explicit forest flag, bind
     // system #includes from the blob appended to this executable —
@@ -836,19 +963,13 @@ int main(int argc, char **argv)
 
     if ( project_manifest )
     {
-	ProjectManifest manifest;
-	std::string err;
-	if ( !read_compile_commands(project_manifest, manifest, err) )
-	{
-	    std::cerr << "madc --project: " << err << std::endl;
-	    return 1;
-	}
 	// Remaining positionals (filearg..argc) become the program's argv.
 	int run_argc = argc - filearg;
 	char **run_argv = argv + filearg;
 	int rc = madc_project_execute(engine, manifest, run_argc, run_argv,
 				      prog->forest_bind_enabled,
-				      prog->forest_bind_path);
+				      prog->forest_bind_path,
+				      prog->class_pattern_live_capture);
 	return (rc < 0) ? 1 : rc;
     }
 
@@ -934,7 +1055,11 @@ int main(int argc, char **argv)
 		"[stats] lex time ............ %.3f s  (%.0f tok/s)\n"
 		"[stats] parse time .......... %.3f s  (%.0f tok/s)\n"
 		"[stats]   instantiate ....... %.3f s  (%.0f%% of parse; %llu calls)\n"
+		"[stats]     call sites ...... class=%llu opaque=%llu alias=%llu fn=%llu member-fn=%llu member-ctor=%llu capture=%llu\n"
 		"[stats]   tsubst bodies ..... %llu hit / %llu fallback\n"
+		"[stats]   class instantiate . %llu pattern / %llu parse / %llu cache / %llu opaque\n"
+		"[stats]   class patterns .... %llu materialized / %llu deferred\n"
+		"[stats]   resolver memo ...... %llu hit / %llu miss / %llu published\n"
 		"[stats]   decl-parse ........ %.3f s  (PCH-cacheable share)\n"
 		"[stats] cir build ........... %.3f s  (AST -> cir_node)\n"
 		"[stats] c2mir compile ....... %.3f s\n"
@@ -952,8 +1077,24 @@ int main(int argc, char **argv)
 		parse_secs, parse_secs > 0 ? (double)prog->_tok_consumed / parse_secs : 0.0,
 		inst_secs,  parse_secs > 0 ? 100.0 * inst_secs / parse_secs : 0.0,
 		prog->_inst_count,
+		prog->_inst_class_count,
+		prog->_inst_opaque_count,
+		prog->_inst_alias_count,
+		prog->_inst_fn_count,
+		prog->_inst_member_fn_count,
+		prog->_inst_member_ctor_count,
+		prog->_inst_capture_count,
 		prog->_tsubst_body_hits,
 		prog->_tsubst_body_fallbacks,
+		prog->_class_inst_pattern,
+		prog->_class_inst_parse,
+		prog->_class_inst_cache,
+		prog->_class_inst_opaque,
+		prog->_class_pattern_restore_materialized,
+		prog->_class_pattern_restore_deferred,
+		prog->_class_pattern_resolver_memo_hits,
+		prog->_class_pattern_resolver_memo_misses,
+		prog->_class_pattern_resolver_memo_published,
 		decl_secs,
 		cir_secs,
 		c2mir_secs,
@@ -984,6 +1125,53 @@ int main(int argc, char **argv)
 				? "?" : rows[i].second.reason.c_str(),
 			    rows[i].second.sample.c_str());
 	    }
+	    if ( !prog->_class_parse_profile.empty() )
+	    {
+		typedef std::pair<Program::ClassParseProfileKey,
+			Program::ClassParseProfile> ClassProfileRow;
+		std::vector<ClassProfileRow> rows;
+		for (std::map<Program::ClassParseProfileKey,
+			Program::ClassParseProfile>::const_iterator it =
+			 prog->_class_parse_profile.begin();
+		     it != prog->_class_parse_profile.end(); ++it)
+		    rows.push_back(*it);
+		std::sort(rows.begin(), rows.end(),
+			  [](const ClassProfileRow &a, const ClassProfileRow &b) {
+			      if (a.second.count != b.second.count)
+				  return a.second.count > b.second.count;
+			      return a.first < b.first;
+			  });
+		fprintf(stderr, "[stats]   class parse profile (ranked):\n");
+		unsigned long long body_calls = 0;
+		unsigned long long base_specs = 0;
+		std::map<Program::ClassDeclKind, unsigned long long> decls;
+		for (size_t i = 0; i < rows.size(); ++i)
+		{
+		    fprintf(stderr,
+			"[stats]     %zu. %llu x %s [why: %s] sample=%s\n",
+			i + 1, rows[i].second.count,
+			rows[i].first.identity.c_str(),
+			Program::class_parse_reason_name(rows[i].first.reason),
+			rows[i].second.sample.c_str());
+		    body_calls += rows[i].second.body_calls;
+		    base_specs += rows[i].second.base_specs;
+		    for (std::map<Program::ClassDeclKind,
+			    unsigned long long>::const_iterator di =
+			    rows[i].second.decls.begin();
+			 di != rows[i].second.decls.end(); ++di)
+			decls[di->first] += di->second;
+		}
+		fprintf(stderr,
+			"[stats]   class parse census . %llu body / %llu base-spec\n",
+			body_calls, base_specs);
+		fprintf(stderr, "[stats]   class decl KINDs ....");
+		for (std::map<Program::ClassDeclKind,
+			unsigned long long>::const_iterator it = decls.begin();
+		     it != decls.end(); ++it)
+		    fprintf(stderr, " %s=%llu",
+			Program::class_decl_kind_name(it->first), it->second);
+		fprintf(stderr, "\n");
+	    }
 	};
 
 	if ( !parse_ok )
@@ -1001,6 +1189,7 @@ int main(int argc, char **argv)
 	if ( dump_registered )
 	{
 	    prog->dump_registered_names(stdout);
+	    print_stats();
 	    return 0;
 	}
 
@@ -1020,7 +1209,7 @@ int main(int argc, char **argv)
 	if ( freeze_path )
 	{
 	    int frc = madc_cir_freeze(prog.get(), argv[filearg], freeze_path,
-				      freeze_append);
+				      freeze_append, freeze_mir_cache);
 	    print_stats();
 	    return frc == 0 ? 0 : 1;
 	}
@@ -1039,7 +1228,8 @@ int main(int argc, char **argv)
 		return 1;
 	    }
 	    close(tfd);
-	    if ( madc_cir_freeze(prog.get(), argv[filearg], tmpl, false) != 0 )
+	    if ( madc_cir_freeze(prog.get(), argv[filearg], tmpl, false,
+				 freeze_mir_cache) != 0 )
 	    {
 		unlink(tmpl);
 		return 1;

@@ -79,13 +79,6 @@ static DataDef *get_complex_compat_type(DataDef *base_type)
     return complex_type;
 }
 
-static bool builtin_alias_needs_retokenize(const std::string &word,
-					   const std::string &val)
-{
-    (void)val;
-    return word == "__builtin_va_list";
-}
-
 static bool is_prefixed_literal_token(const std::string &ident,
 				      const std::string &body,
 				      size_t pos)
@@ -1095,8 +1088,7 @@ void Program::_tokenizer_init()
     // pre-computed spelling_id (uint32) instead of comparing strings.
     // Bind the active pool for TokenIdent::spelling() (interning Step 4). Compile is
     // sequential per-Program, so the currently-initializing Program owns the accessor.
-    TokenBase::_active_strpool = &strpool;
-    TokenBase::_active_valpool = &valpool;	// P0 slice 3: wide constants resolve via wival()
+    activate_token_pools();
     keyword_map.set_pool(&strpool);
     cpp_operator_map.set_pool(&strpool);
     define_map.set_pool(&strpool);
@@ -1266,7 +1258,11 @@ void Program::_tokenizer_init()
     define_map["__UINT_FAST32_TYPE__"] = "unsigned long";
     define_map["__INT_FAST64_TYPE__"] = "long";
     define_map["__UINT_FAST64_TYPE__"] = "unsigned long";
-    define_map["__builtin_va_list"] = "long";
+    // __builtin_va_list is NOT a macro: it is a real compiler type
+    // (Program::builtin_va_list_type — the SysV __madc_va_list_tag[1]
+    // singleton) resolved via resolve_builtin_type_spelling, so
+    // `typedef __builtin_va_list va_list;` gets the true array-of-struct
+    // semantics a textual expansion can never express.
     define_map["__builtin_va_arg"] = "va_arg";
     define_map["__null"] = "0";
     // __builtin_va_start passes through to the CIR as a real c2mir intrinsic
@@ -1275,16 +1271,19 @@ void Program::_tokenizer_init()
     // the earlier `__ap = __va_args` master-copy expansion mis-set reg_save_area
     // in large frames. va_end stays a no-op (the stdarg.h va_end macro handles
     // it as `((void)(ap))`).
+    // va_list is the real __madc_va_list_tag[1] array type, so va_end is a
+    // no-op cast (an array lvalue cannot be assigned) and va_copy copies the
+    // one element — the same bodies the embedded stdarg.h macros use.
     {
 	MacroDef m;
 	m.params = {"__ap"};
-	m.body = "__ap = 0";
+	m.body = "((void)(__ap))";
 	macro_map["__builtin_va_end"] = m;
     }
     {
 	MacroDef m;
 	m.params = {"__dest", "__src"};
-	m.body = "__dest = __src";
+	m.body = "((__dest)[0] = (__src)[0])";
 	macro_map["__builtin_va_copy"] = m;
     }
     // Report the GCC version that compiled madc itself.
@@ -3277,7 +3276,7 @@ TokenBase *Program::_getToken()
 				      << " — auto-load off, bound to global scope" << std::endl);
 		    }
 		    dlopen_map[ns_name] = handle;
-		    namespace_map[ns_name]; // create empty namespace
+		    namespace_variables_for_write(ns_name); // create empty namespace
 		    return getToken();
 		}
 		if ( directive == "define" )
@@ -4724,8 +4723,7 @@ TokenBase *Program::_getToken()
 			// of re-entering the macro rescanner. Otherwise user macros
 			// like `#define strcmp __builtin_strcmp` recurse forever.
 			if ( word.compare(0, 10, "__builtin_") == 0
-			  && is_identifier_spelling(val)
-			  && !builtin_alias_needs_retokenize(word, val) )
+			  && is_identifier_spelling(val) )
 			    return make_ident(val);
 			source.pushback_macro(val, word);
 			return getToken(); // re-tokenize the substituted text
@@ -4823,6 +4821,12 @@ TokenBase *Program::_getToken()
 		    return make_datatype("__int128", ddINT128);
 		if ( word == "__uint128_t" )
 		    return make_datatype("unsigned __int128", ddUINT128);
+		// The compiler-owned SysV va_list (struct __madc_va_list_tag[1]
+		// singleton) — ATOMIC like __int128_t; the parser's spelling
+		// table (resolve_builtin_type_spelling) returns the same object.
+		if ( word == "__builtin_va_list" )
+		    return make_datatype("__builtin_va_list",
+					 *use_builtin_va_list());
 		// Compound type specifiers: any mix of unsigned/signed/long/
 		// short/int/char/double in any order (C99 6.7.2).
 		// Uses a bitmap accumulator (chibicc-style) so order doesn't
@@ -5101,9 +5105,10 @@ TokenBase *Program::skipConditionalBlock()
     return NULL;
 }
 
-// evaluate #if condition: supports defined(NAME), !, &&, ||, identifiers,
-// and integer constants. This is enough for the header guards and platform
-// feature checks used by the imported SMAUG sources.
+// evaluate #if condition: supports defined(NAME), !, &&, ||, ?:, the
+// comparison/arithmetic/bitwise/shift tiers, identifiers, and integer
+// constants — the full C #if expression grammar real glibc/libstdc++
+// headers use.
 // Expand all #define macros in a #if/#elif expression string.
 // Simple defines are replaced with their values; undefined identifiers
 // (other than 'defined') become 0 per the C standard. Runs up to
@@ -5230,6 +5235,28 @@ std::string Program::expandIfMacros(const std::string &raw)
 			if ( !subst )
 			    expanded += bw;
 		    }
+		    // Token pasting: `A ## B` joins into ONE token after
+		    // parameter substitution — glibc's #if-consulted macros
+		    // are built this way (`__GLIBC_USE(F)` -> `__GLIBC_USE_
+		    // ## F`); without the join the evaluator saw two
+		    // undefined halves (0) and glibc feature conditions
+		    // (__GLIBC_USE (DEPRECATED_GETS)) took the wrong branch.
+		    // The joined name resolves on the next expansion pass.
+		    size_t hh;
+		    while ( (hh = expanded.find("##")) != std::string::npos )
+		    {
+			size_t lend = hh;
+			while ( lend > 0 && (expanded[lend-1] == ' '
+					  || expanded[lend-1] == '\t') )
+			    --lend;
+			size_t rstart = hh + 2;
+			while ( rstart < expanded.size()
+			     && (expanded[rstart] == ' '
+			      || expanded[rstart] == '\t') )
+			    ++rstart;
+			expanded = expanded.substr(0, lend)
+				 + expanded.substr(rstart);
+		    }
 		    out += "(" + expanded + ")";
 		    i = j;
 		    changed = true;
@@ -5271,6 +5298,7 @@ bool Program::evaluateIfCondition()
     };
 
     // Integer-valued recursive descent so comparisons work correctly.
+    std::function<int64_t()> parse_cond;
     std::function<int64_t()> parse_or;
     std::function<int64_t()> parse_and;
     std::function<int64_t()> parse_comparison;
@@ -5357,7 +5385,7 @@ bool Program::evaluateIfCondition()
 	if ( expr[pos] == '(' )
 	{
 	    ++pos;
-	    int64_t value = parse_or();
+	    int64_t value = parse_cond();
 	    skip_ws();
 	    if ( pos < expr.size() && expr[pos] == ')' )
 		++pos;
@@ -5680,7 +5708,30 @@ bool Program::evaluateIfCondition()
 	}
     };
 
-    return parse_or() != 0;
+    // Conditional operator (?:) — the lowest #if precedence tier
+    // (conditional-expression: logical-OR ? expression : conditional-expr,
+    // right-associative). Without this tier the ternary's CONDITION value
+    // leaked out as the result and both arms were ignored — glibc's
+    // features.h `defined __cplusplus ? __cplusplus >= 201402L : defined
+    // __USE_ISOC11` (__GLIBC_USE_DEPRECATED_GETS) took the wrong branch
+    // under --std=c++11, hiding ::gets from <cstdio>'s using-declaration.
+    parse_cond = [&]() -> int64_t {
+	int64_t cond = parse_or();
+	skip_ws();
+	if ( pos < expr.size() && expr[pos] == '?' )
+	{
+	    ++pos;
+	    int64_t then_v = parse_cond();
+	    skip_ws();
+	    if ( pos < expr.size() && expr[pos] == ':' )
+		++pos;
+	    int64_t else_v = parse_cond();
+	    return cond ? then_v : else_v;
+	}
+	return cond;
+    };
+
+    return parse_cond() != 0;
 }
 
 TokenBase *Program::getToken()
@@ -5947,14 +5998,7 @@ void Program::printt(TokenBase *tb)
 void Source::showerror(int row, int col)
 {
 //	std::cout << "showerror(" << row << ", " << col << ')' << std::endl;
-	char *env_columns = getenv("COLUMNS");
-	size_t term_columns;
 	std::string ln;
-
-	if ( env_columns )
-	    term_columns = atoi(env_columns);
-	else
-	    term_columns = 80;
 
 	if ( !row || !col )
 	{
@@ -5985,17 +6029,50 @@ void Source::showerror(int row, int col)
 	_gpos = saved_gpos;
 	_cr = saved_cr; _lf = saved_lf; _column = saved_column;
 
-	if ( ln.length()+5 > term_columns )
-	{
-	    ln = "  ..." + ln.substr(col);
-	    std::cerr << ln << std::endl;
-	    std::cerr << std::setw(4) << ' ' << "\e[1;32m^\e[m" << std::endl;
-	    return;
-	}
-	std::cerr << ln << std::endl;
-	if ( col > 1 )
-	    std::cerr << std::setw(col-1) << ' ';
-	std::cerr << "\e[1;32m^\e[m" << std::endl;
+	show_error_source_line(ln, col);
+}
+
+// Shared display tail for a diagnostic source echo: the offending line and a
+// caret under the column, truncated to the terminal width — one formatter for
+// both the live-Source echo and the reread-from-disk echo.
+void show_error_source_line(const std::string &ln, int col)
+{
+    char *env_columns = getenv("COLUMNS");
+    size_t term_columns = env_columns ? (size_t)atoi(env_columns) : 80;
+
+    if ( ln.length()+5 > term_columns )
+    {
+	std::string trunc = "  ..." + ln.substr(col);
+	std::cerr << trunc << std::endl;
+	std::cerr << std::setw(4) << ' ' << "\e[1;32m^\e[m" << std::endl;
+	return;
+    }
+    std::cerr << ln << std::endl;
+    if ( col > 1 )
+	std::cerr << std::setw(col-1) << ' ';
+    std::cerr << "\e[1;32m^\e[m" << std::endl;
+}
+
+// Echo line `row` of a file that is NOT the live Source buffer — a token from
+// an #included file. Diagnostics are a cold path, so reread from disk. Returns
+// false (echo skipped) when the file cannot be opened or is shorter than
+// `row` — e.g. an embedded header with no on-disk presence, or stale
+// provenance; skipping beats echoing the wrong file's text.
+bool madc_show_file_error(const char *fname, int row, int col)
+{
+    if ( !fname || !*fname || row <= 0 )
+	return false;
+    std::ifstream f(fname);
+    if ( !f.is_open() )
+	return false;
+    std::string ln;
+    int i = 0;
+    while ( i < row && std::getline(f, ln) )
+	++i;
+    if ( i != row )
+	return false;
+    show_error_source_line(ln, col);
+    return true;
 }
 
 int throwbuf::sync()
@@ -6003,10 +6080,19 @@ int throwbuf::sync()
     cerr << endl;
     if ( _tb )
     {
-	cerr << ANSI_WHITE << (_src ? _src->fname() : "???") << ':' << _tb->line << ':' << _tb->column 
+	// file, line, column, AND the echoed source line must all come from
+	// the SAME provenance — the token's. Before this, an error inside an
+	// #included file printed the top-level file's NAME with the header's
+	// LINE and echoed the top-level file's text (three-way inconsistent).
+	const char *tok_file = (_tb->file && *_tb->file) ? _tb->file : NULL;
+	const char *fname = tok_file ? tok_file
+			  : (_src ? _src->fname() : "???");
+	cerr << ANSI_WHITE << fname << ':' << _tb->line << ':' << _tb->column
 	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
-	if ( _src )
+	if ( _src && (!tok_file || strcmp(tok_file, _src->fname()) == 0) )
 	    _src->showerror(_tb->line, _tb->column);
+	else
+	    madc_show_file_error(fname, _tb->line, _tb->column);
     }
     else
     if ( _src )
@@ -6137,6 +6223,7 @@ TokenProgram *Program::tokenize(const char *fname)
     {
 	if ( !last_error.has_error )
 	    set_error(Program::DiagnosticPhase::lexer, Throw.str().empty() ? e.what() : Throw.str(), fname, source.line(), source.column());
+	print_unrendered_diagnostic();
 	return NULL;
     }
 
@@ -6213,6 +6300,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 	    set_error(Program::DiagnosticPhase::lexer,
 		      Throw.str().empty() ? e.what() : Throw.str(),
 		      fname, source.line(), source.column());
+	print_unrendered_diagnostic();
 	return NULL;
     }
 

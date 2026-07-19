@@ -22,3 +22,15 @@ date	commit	live_s	bound_s	live_derives	bound_derives	load1	note
 2026-07-13	2c6ccf1e	2.178	0.560	217	187	1.58	sliceA: mangle fixes 3a-3c (drops 515->472)
 2026-07-14	fdbb4d78	2.418	0.715	217	184	1.94	v0.35.0: recompressed pack (transforms+intern zstd); decode cost in bound wall
 2026-07-14	cbcb79b6	2.172	0.593	217	184	0.88	columnar RECORDS bind: lazy row reconstruction
+2026-07-15	3e99b9d4	9.624	0.999	217	184	3.07	B3-vector-closure-checkpoint
+2026-07-16	3863967d	2.194	0.619	217	184	1.15	class-pattern capture fixes: flagships unlocked at bind (77 pattern), pack fence, lazy live opt-in
+2026-07-16	ea4f4021	2.374	0.519	217	184	1.30	R1/R2 A/B baseline; live pattern opt-in, identical madcdat=no + zstd config
+2026-07-16	2acfaf60	2.446	0.539	217	184	1.44	R1+R2 landed A/B; live pattern opt-in; bound calls 3550->3542, wall net-negative
+2026-07-16	19b8e2b0	2.591	0.664	217	184	2.18	R1 rework b2b2cf5e: owner-id registry + owner-granular journal; live pattern opt-in
+2026-07-16	19b8e2b0	2.366	0.633	217	184	2.92	R3 resolver memo landed on owner-id registry; 38 hit/134 miss live; live pattern opt-in
+2026-07-16	0f979fb8	2.257	0.613	217	184	1.00	R4 fences lifted: registered-identity token parity, base-class deduction; pattern-lane pack
+2026-07-17	6e7bce07	2.200	0.627	217	184	1.07	task41: lazy-capture clone-position fix — flagships pattern-serve live (opt-in)
+2026-07-17	73089db2	2.181	0.615	217	184	1.07	MIR cache rung 3: bind lane OPT-IN (premise refuted: fixed floor 0.27 > body savings ~0.1; opt-in bound 0.89); default lanes flat
+2026-07-17	945c12b9	2.270	0.626	217	184	0.89	R5 slice 2 @434f7f2c: pattern-served ctor Itanium fidelity (serve qualifier carry-over + restore spelling round-trip + mangle fence); packed suite re-green 697/0/0/16
+2026-07-17	9685e748	2.270	0.665	217	184	1.13	metrics v2 seed: rusage (cpu/maxrss/flt/nivcsw) + callgrind Ir anchor (owner-directed after box-drift finding)
+2026-07-17	f11b0762	2.269	0.665	217	184	1.42	R5 s4 @2ccb63b7 + s5 @f11b0762: deferred nested-demand capture + friend-decl serve (3 depth fixes); default lanes FLAT; opt-in A/B 2.261/2.396 (+135ms, capture cost of big classes)

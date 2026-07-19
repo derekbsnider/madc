@@ -1,1 +1,1 @@
-c2mir bitfield width truncation differs from GCC for >32-bit fields
+c2mir bitfield width truncation differs from GCC for >32-bit fields (mul33 prints 2^40 unmasked; GCC masks to the 33-bit field width). Verified at HEAD, audit 2026-07-19.

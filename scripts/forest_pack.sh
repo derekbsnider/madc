@@ -31,7 +31,7 @@ TU=tmp/forest_pack_tu.cpp
 cp "$BIN" tmp/forest_packer_madc
 
 ulimit -t 900
-timeout 900 tmp/forest_packer_madc --freeze-append="$BIN" "$TU"
+timeout 900 tmp/forest_packer_madc --freeze-mir-cache --freeze-append="$BIN" "$TU"
 
 # Verify: the blob reads back from the packed binary itself (context-hash pin
 # + directory), and the stripped+appended binary still runs a frozen module —
@@ -40,4 +40,15 @@ timeout 120 "$BIN" --dump-forest > tmp/forest_pack_dump.txt
 grep -q '^forest	units=' tmp/forest_pack_dump.txt
 timeout 120 "$BIN" --run-frozen
 
-echo "forest_pack: OK ($(grep -c '^unit	' tmp/forest_pack_dump.txt) units appended to $BIN)"
+# MIR-cache bind-lane equivalence (rung 3, opt-in lane): the packed binary
+# compiling a real test with MADC_MIR_CACHE_BIND=1 must (a) actually engage
+# the cache lane — a silent fallback would pass every equality check while
+# testing nothing — and (b) produce byte-identical output vs the default
+# (lane off) run: the blob is DERIVED state, never semantic.
+MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" -v tests/testfreezerun.mad 2>/dev/null \
+    | grep -aq 'mir cache: bind module staged'
+out_cache=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
+out_nocache=$(timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
+[ "$out_cache" = "$out_nocache" ]
+
+echo "forest_pack: OK ($(grep -c '^unit	' tmp/forest_pack_dump.txt) units appended to $BIN; bind cache == no-cache)"

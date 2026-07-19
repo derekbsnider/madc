@@ -2201,6 +2201,9 @@ TEST_CASE("#23: restored class methods register as funcdef_map[method-id] + prog
 // ---------------------------------------------------------------------------
 
 TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and restores") {
+	uint64_t producer_primary_fingerprint = 0;
+	uint64_t producer_partial_fingerprint = 0;
+	uint64_t producer_nested_fingerprint = 0;
 	std::string inc_path = std::string("/tmp/madc_v20t_inc_")
 			     + std::to_string((long)getpid()) + ".h";
 	std::string main_path = std::string("/tmp/madc_v20t_main_")
@@ -2212,10 +2215,28 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 	{
 		std::ofstream inc(inc_path.c_str());
 		inc << "template<typename T, typename U = T> struct W2Box {\n"
+		       "    typedef T value_type;\n"
 		       "    T v; U u;\n"
+		       "    void direct(T);\n"
+		       "    void aliased(value_type);\n"
 		       "    T get() { return v; }\n"
 		       "};\n"
 		       "template<typename T> struct W2Box<T*, T*> { T *p; };\n"
+		       "struct W2Owner {\n"
+		       "    template<typename T> struct Inner { T value; };\n"
+		       "};\n"
+		       "struct W2AnonBefore { union { int before; }; };\n"
+		       "template<typename T> struct W2AnonPattern {\n"
+		       "    union { T value; int other; };\n"
+		       "};\n"
+		       "struct W2AnonAfter { union { int after; }; };\n"
+		       "template<typename T> struct W2UnusedAlias {\n"
+		       "    using W2CaptureOnlyAlias = T;\n"
+		       "};\n"
+		       "template<typename L, typename R>\n"
+		       "struct W2DependentChain : W2DependentChain<L*, R> {};\n"
+		       "template<typename L, typename R>\n"
+		       "struct W2DependentBase : W2DependentChain<L, R> {};\n"
 		       "template<typename T> using W2Same = W2Box<T, T>;\n";
 	}
 	{
@@ -2235,6 +2256,106 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 		TokenProgram *tpA = progA->tokenize(main_path.c_str());
 		REQUIRE(tpA != nullptr);
 		REQUIRE(progA->parse(tpA));
+		const Program::TemplateDef *live_primary = progA->find_template("W2Box");
+		REQUIRE(live_primary != nullptr);
+		REQUIRE(live_primary->class_pattern_id != 0);
+		const Program::ClassPattern *live_primary_pattern =
+			progA->class_pattern_arena.get(live_primary->class_pattern_id);
+		REQUIRE(live_primary_pattern != nullptr);
+		CHECK(live_primary_pattern->capture_reason ==
+		      Program::ClassParseReason::None);
+		producer_primary_fingerprint =
+			live_primary_pattern->semantic_fingerprint;
+		bool live_direct = false;
+		bool live_aliased = false;
+		for (size_t i = 0;
+		     i < live_primary_pattern->nodes[0].methods.size(); ++i) {
+			const Program::ClassMethodPattern &method =
+				live_primary_pattern->nodes[0].methods[i];
+			if (method.parameters.empty()) continue;
+			if (method.display_name == "direct")
+				live_direct = method.parameters.back()
+					.template_param_spelled_directly;
+			if (method.display_name == "aliased")
+				live_aliased = !method.parameters.back()
+					.template_param_spelled_directly;
+		}
+		CHECK(live_direct);
+		CHECK(live_aliased);
+		Program::template_registry_entry_t *live_partial_registry =
+			progA->partial_spec_map.find("W2Box");
+		std::vector<Program::TemplateDef> *live_partials =
+			live_partial_registry
+			? live_partial_registry->find(NULL) : NULL;
+		REQUIRE(live_partials != nullptr);
+		REQUIRE(live_partials->size() == 1);
+		INFO("partial capture reason="
+		     << (uint32_t)(*live_partials)[0].class_pattern_reason);
+		REQUIRE((*live_partials)[0].class_pattern_id != 0);
+		CHECK((*live_partials)[0].class_pattern_id !=
+		      live_primary->class_pattern_id);
+		const Program::ClassPattern *live_partial_pattern =
+			progA->class_pattern_arena.get(
+				(*live_partials)[0].class_pattern_id);
+		REQUIRE(live_partial_pattern != nullptr);
+		CHECK(live_partial_pattern->capture_reason ==
+		      Program::ClassParseReason::None);
+		producer_partial_fingerprint =
+			live_partial_pattern->semantic_fingerprint;
+		datadef_map_citer owner_it = progA->struct_map.find("W2Owner");
+		REQUIRE(owner_it != progA->struct_map.end());
+		DataDefCLASS *live_owner = dynamic_cast<DataDefCLASS *>(owner_it->second);
+		REQUIRE(live_owner != nullptr);
+		for (std::map<std::string, DataDef *>::const_iterator it =
+		     live_owner->type_aliases.begin();
+		     it != live_owner->type_aliases.end(); ++it)
+			CHECK(it->first.find("__madc_class_pattern_") == std::string::npos);
+		Program::TemplateDef *live_nested = progA->find_template(
+			"Inner", std::string(), live_owner);
+		REQUIRE(live_nested != nullptr);
+		REQUIRE(live_nested->class_pattern_id != 0);
+		const Program::ClassPattern *live_nested_pattern =
+			progA->class_pattern_arena.get(live_nested->class_pattern_id);
+		REQUIRE(live_nested_pattern != nullptr);
+		producer_nested_fingerprint =
+			live_nested_pattern->semantic_fingerprint;
+		datadef_map_citer anon_before_it =
+			progA->struct_map.find("W2AnonBefore");
+		datadef_map_citer anon_after_it =
+			progA->struct_map.find("W2AnonAfter");
+		REQUIRE(anon_before_it != progA->struct_map.end());
+		REQUIRE(anon_after_it != progA->struct_map.end());
+		DataDefSTRUCT *anon_before =
+			dynamic_cast<DataDefSTRUCT *>(anon_before_it->second);
+		DataDefSTRUCT *anon_after =
+			dynamic_cast<DataDefSTRUCT *>(anon_after_it->second);
+		REQUIRE(anon_before != nullptr);
+		REQUIRE(anon_after != nullptr);
+		REQUIRE(anon_before->anonymous_aggregates.size() == 1);
+		REQUIRE(anon_after->anonymous_aggregates.size() == 1);
+		const std::string &before_name =
+			anon_before->anonymous_aggregates[0].aggregate->name;
+		const std::string &after_name =
+			anon_after->anonymous_aggregates[0].aggregate->name;
+		REQUIRE(before_name.find("__anon_") == 0);
+		REQUIRE(after_name.find("__anon_") == 0);
+		CHECK(std::stoull(after_name.substr(7)) ==
+		      std::stoull(before_name.substr(7)) + 1);
+		CHECK(progA->user_typedef_names.count("W2CaptureOnlyAlias") == 0);
+		const Program::TemplateDef *dependent_base =
+			progA->find_template("W2DependentBase");
+		REQUIRE(dependent_base != nullptr);
+		REQUIRE(dependent_base->class_pattern_id != 0);
+		const Program::ClassPattern *dependent_base_pattern =
+			progA->class_pattern_arena.get(
+				dependent_base->class_pattern_id);
+		REQUIRE(dependent_base_pattern != nullptr);
+		// A dependent base no longer poisons the pattern at capture:
+		// the resolver instantiates TemplateId dependencies through
+		// the full dispatch at binding time, so the dependency's own
+		// state is not contagious and this pattern captures clean.
+		CHECK(dependent_base_pattern->capture_reason ==
+		      Program::ClassParseReason::None);
 		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
 					snap_path.c_str(), /*append=*/false) == 0);
 	}
@@ -2264,6 +2385,10 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 	CHECK(std::string(primary->params[0].first) == "T");
 	CHECK((primary->params[0].second & CIR_TMPLP_IS_TYPE) != 0);
 	CHECK(primary->body.count > 0);			// the captured class body
+	CHECK(primary->pattern != NULL);
+	CHECK(primary->pattern_words > 0);
+	CHECK(primary->pattern_reason ==
+	      (uint32_t)Program::ClassParseReason::None);
 	REQUIRE(primary->defaults.size() == 2);
 	CHECK(primary->defaults[0].count == 0);		// T has no default
 	CHECK(primary->defaults[1].count > 0);		// U = T
@@ -2276,6 +2401,8 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 	CHECK((partial->flags & CIR_TMPLF_IS_PARTIAL_SPEC) != 0);
 	CHECK(partial->spec.size() == 2);		// one pattern run per arg slot
 	CHECK(partial->body.count > 0);
+	CHECK(partial->pattern != NULL);
+	CHECK(partial->pattern_words > 0);
 	REQUIRE(alias != NULL);
 	CHECK(alias->body.count > 0);			// the alias TARGET tokens
 
@@ -2288,17 +2415,62 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 	std::remove(cons_path.c_str());
 	progB->forest_restore_decls(forest);
 
-	Program::TemplateDef *td = progB->find_template("W2Box");
+	const Program::TemplateDef *td = progB->find_template("W2Box");
 	REQUIRE(td != nullptr);
 	REQUIRE(td->typeparams.size() == 2);
 	CHECK(td->typeparams[0] == "T");
 	CHECK(td->typeparams[1] == "U");
 	CHECK(td->typeparam_is_type[0]);
 	CHECK(!td->body.empty());
+	CHECK(td->class_pattern_id == 0);
+	REQUIRE(td->frozen_class_pattern != NULL);
+	REQUIRE(td->frozen_class_pattern_words > 0);
+	size_t pattern_count = progB->class_pattern_arena.size();
+	const Program::ClassPattern *restored_primary_pattern =
+		progB->materialize_class_pattern(*td);
+	REQUIRE(restored_primary_pattern != nullptr);
+	CHECK(progB->class_pattern_arena.size() == pattern_count + 1);
+	CHECK(progB->materialize_class_pattern(*td) == restored_primary_pattern);
+	CHECK(progB->class_pattern_arena.size() == pattern_count + 1);
+	CHECK(restored_primary_pattern->semantic_fingerprint ==
+	      producer_primary_fingerprint);
+	CHECK(progB->class_pattern_fingerprint(*restored_primary_pattern) ==
+	      producer_primary_fingerprint);
+	bool restored_direct = false;
+	bool restored_aliased = false;
+	for (size_t i = 0;
+	     i < restored_primary_pattern->nodes[0].methods.size(); ++i) {
+		const Program::ClassMethodPattern &method =
+			restored_primary_pattern->nodes[0].methods[i];
+		if (method.parameters.empty()) continue;
+		if (method.display_name == "direct")
+			restored_direct = method.parameters.back()
+				.template_param_spelled_directly;
+		if (method.display_name == "aliased")
+			restored_aliased = !method.parameters.back()
+				.template_param_spelled_directly;
+	}
+	CHECK(restored_direct);
+	CHECK(restored_aliased);
 	REQUIRE(td->typeparam_defaults.size() == 2);
 	CHECK(td->typeparam_defaults[0].empty());
 	CHECK(!td->typeparam_defaults[1].empty());
 	CHECK(progB->template_with_body("W2Box") != nullptr);
+	datadef_map_citer restored_owner_it =
+		progB->struct_map.find("W2Owner");
+	REQUIRE(restored_owner_it != progB->struct_map.end());
+	DataDefCLASS *restored_owner = dynamic_cast<DataDefCLASS *>(
+		restored_owner_it->second);
+	REQUIRE(restored_owner != nullptr);
+	Program::TemplateDef *restored_nested = progB->find_template(
+		"Inner", std::string(), restored_owner);
+	REQUIRE(restored_nested != nullptr);
+	CHECK(restored_nested->class_pattern_id == 0);
+	const Program::ClassPattern *restored_nested_pattern =
+		progB->materialize_class_pattern(*restored_nested);
+	REQUIRE(restored_nested_pattern != nullptr);
+	CHECK(restored_nested_pattern->semantic_fingerprint ==
+	      producer_nested_fingerprint);
 	{
 		// Restored body tokens carry the header's file (provenance drives
 		// from_system_header classification + error attribution at
@@ -2313,13 +2485,27 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 	}
 	CHECK(progB->partial_spec_map.count("W2Box") == 1);
 	{
-		std::vector<Program::TemplateDef> *psv =
+		Program::template_registry_entry_t *partial_registry =
 			progB->partial_spec_map.find("W2Box");
+		std::vector<Program::TemplateDef> *psv =
+			partial_registry ? partial_registry->find(NULL) : NULL;
 		REQUIRE(psv != nullptr);
 		REQUIRE(psv->size() == 1);
 		CHECK((*psv)[0].is_partial_specialization);
 		CHECK((*psv)[0].spec_pattern.size() == 2);
+		CHECK((*psv)[0].class_pattern_id == 0);
+		const Program::ClassPattern *restored_partial_pattern =
+			progB->materialize_class_pattern((*psv)[0]);
+		REQUIRE(restored_partial_pattern != nullptr);
+		CHECK(restored_partial_pattern != restored_primary_pattern);
+		CHECK(restored_partial_pattern->semantic_fingerprint ==
+		      producer_partial_fingerprint);
+		CHECK(progB->class_pattern_fingerprint(*restored_partial_pattern) ==
+		      producer_partial_fingerprint);
 	}
+	CHECK(progB->_class_pattern_restore_materialized == 3);
+	CHECK(progB->_class_pattern_restore_deferred >
+	      progB->_class_pattern_restore_materialized);
 	CHECK(progB->template_alias_map.count("W2Same") == 1);
 	std::remove(inc_path.c_str());
 }

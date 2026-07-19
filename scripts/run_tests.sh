@@ -15,6 +15,10 @@
 #                      (stderr) must contain every line listed here as
 #                      a substring. The EXE pass skips these — the
 #                      source does not compile by design.
+#   tests/foo.expect_quiet — if present (content ignored), the JIT run
+#                      must produce EMPTY stderr — locks diagnostic
+#                      hygiene (no leaked warnings/errors) for tests
+#                      that compile real system headers.
 #
 # No test names are hard-coded here.
 #
@@ -54,6 +58,7 @@ for t in tests/*.mad; do
     argv_file="tests/$base.argv"
     expect_file="tests/$base.expect"
     expect_err_file="tests/$base.expect_err"
+    expect_quiet_file="tests/$base.expect_quiet"
     flags_file="tests/$base.flags"
     mir_skip_file="tests/$base.mir_skip"
     timeout_file="tests/$base.timeout"
@@ -102,10 +107,13 @@ for t in tests/*.mad; do
             done < "$expect_err_file"
         fi
     else
+        # stderr goes to a scratch file so an .expect_quiet fixture can
+        # assert it is empty; without the fixture it is simply discarded.
+        errf="/tmp/madc_test_stderr_${base}_$$"
         if [ -f "$input_file" ]; then
-            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>/dev/null)
+            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>"$errf")
         else
-            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>/dev/null)
+            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>"$errf")
         fi
         rc=$?
 
@@ -116,16 +124,23 @@ for t in tests/*.mad; do
             timed_out=1
         elif [ $rc -ne 0 ]; then
             ok=0
-        elif [ -f "$expect_file" ]; then
-            while IFS= read -r line; do
-                [ -z "$line" ] && continue
-                # Each expected line must appear somewhere in the output.
-                if ! grep -qF -- "$line" <<< "$out"; then
-                    ok=0
-                    break
-                fi
-            done < "$expect_file"
+        else
+            if [ -f "$expect_file" ]; then
+                while IFS= read -r line; do
+                    [ -z "$line" ] && continue
+                    # Each expected line must appear somewhere in the output.
+                    if ! grep -qF -- "$line" <<< "$out"; then
+                        ok=0
+                        break
+                    fi
+                done < "$expect_file"
+            fi
+            if [ $ok -eq 1 ] && [ -f "$expect_quiet_file" ] && [ -s "$errf" ]; then
+                echo "NOISY(stderr): $t"
+                ok=0
+            fi
         fi
+        rm -f "$errf"
     fi
 
     if [ $ok -eq 1 ]; then

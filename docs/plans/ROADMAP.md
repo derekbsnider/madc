@@ -1,9 +1,8 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-07-14 (family-D forest
-drain-gap campaign closed; bound RECORDS decode no longer eagerly rebuilds
-untouched rows; Slice B class-KIND parse-once design complete, implementation
-not started; live/packed suites 695/0/0/16).
+Master plan linking all workstreams. Updated 2026-07-15 (class-KIND parse-once
+B2 complete; live/packed suites 696/0/0/16; host and source warning censuses
+clean; B3 vector closure next).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -29,7 +28,7 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Slice B class-KIND parse-once (2026-07-14): DESIGN COMPLETE.** The
+- **Slice B class-KIND parse-once (2026-07-15): B2 COMPLETE; B3 NEXT.** The
   standalone design in
   `docs/plans/2026-07-14-class-kind-parse-once-DESIGN.md` inventories the
   complete `TokenSTRUCT`/`TokenCLASS` output contract and specifies one-time
@@ -38,10 +37,22 @@ high-level" — the answer is both.**
   pattern-vs-sole-parse ratchet. Eligibility is decided before instantiation:
   an ineligible pattern uses today's token parser as its only tallied lane; an
   admitted pattern rolls back and fails loudly rather than retrying through the
-  parser. No implementation landed in the design sitting. Next: B0 shared
-  helpers/journal/counters/vector census. Before B1, owner review is required
-  for the format-version bump and extension of the existing class-template
-  `TEMPLATE_PAYLOAD`; bind-time reparse is forbidden.
+  parser. B0 @`c6f05b48` landed the shared registration/completion helpers,
+  transactional journal, class-lane counters, ratchet, and vector census. B1
+  captures and normalizes primary/partial `ClassPattern`s once, fingerprints
+  them, and carries/restores them directly through the owner-approved existing
+  class-template `TEMPLATE_PAYLOAD` in CIR forest format v28. Bind-time reparse
+  is absent. After owner approval of B1, B2 admits the narrow structural subset:
+  unary concrete/template-param types, aliases, scalar/pointer/array members,
+  simple declaration-only methods, and forward completion. Structural and
+  forced-legacy metadata, runtime, C11, MIR, layout, and GCC/Clang Itanium
+  symbols agree; an admitted failure rolls back and fails loudly without a
+  parser retry. Gates: live and packed release **696/0/0/16**, bind **18/18**,
+  tsubst **10 hit / 0 fallback**, compiler warnings **0**, source warning census
+  **712/0**. The exact class census is pattern 3, parse 48604, cache 99334,
+  opaque 24431. Next: B3 closes the measured vector declaration/type surfaces
+  and must materially shift `testsubscript` parses to the pattern lane while
+  reducing both live and bound instantiate/total time.
 - **Bound forest RECORDS decode (2026-07-14, `cbcb79b6`): CLOSED, merged to
   `develop` (independently verified).** Callgrind found the new bound CIR
   regression below `CirFrozenForest::unit_segment`: whole-frame
@@ -299,9 +310,13 @@ high-level" — the answer is both.**
   `get/set_global`, string call marshalling, fork/limits, the policy tail
   (the 38 `test_libmadc_program` skips; see
   `docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md`).
-- **AOT (native object/executable):** deferred, low priority. Near-term native
-  builds come from emit-`.c` + an external compiler; `save_object` /
-  `save_executable` are stubbed (signatures kept) for a later MIR-based revisit.
+- **AOT (native object/executable):** PLANNED — owner pulled it forward
+  2026-07-18 as a MIR-fork feature (ELF `.o` writer + gen object-capture mode
+  + the `cyanogilvie/debug-support` DWARF/gdb integration). Design:
+  [2026-07-19-mir-aot-elf-plan.md](2026-07-19-mir-aot-elf-plan.md) (rungs
+  R0–R6; `run_tests.sh --exe` becomes the AOT arbiter; restores
+  asmjit-master `-o` parity). Near-term native builds still come from
+  emit-`.c` + an external compiler until R4 lands.
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target
   the CIR path is climbing back to — NOT the current state.

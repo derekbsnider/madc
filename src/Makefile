@@ -150,11 +150,13 @@ install-libmadc: libmadc
 	$(INSTALL_DIR) $(DESTDIR)$(libdir)
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)/libmadc
+	$(INSTALL_DIR) $(DESTDIR)$(includedir)/madcdis
 	$(INSTALL_PROGRAM) $(LIBMADC_SHARED) $(DESTDIR)$(libdir)/libmadc.so.$(MADC_VERSION)
 	cd $(DESTDIR)$(libdir) && ln -sf libmadc.so.$(MADC_VERSION) libmadc.so.$(MADC_SOVERSION)
 	cd $(DESTDIR)$(libdir) && ln -sf libmadc.so.$(MADC_SOVERSION) libmadc.so
 	$(INSTALL_DATA) ../include/madc_api.h $(DESTDIR)$(includedir)/madc_api.h
 	@for h in $(LIBMADDHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/libmadc/; done
+	@for h in $(MADCDISHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/madcdis/; done
 	@if [ -f ../libmadc.pc ]; then $(INSTALL_DIR) $(DESTDIR)$(pkgconfigdir) && $(INSTALL_DATA) ../libmadc.pc $(DESTDIR)$(pkgconfigdir)/libmadc.pc; fi
 
 ifeq ($(HAVE_MADCDAT),1)
@@ -222,8 +224,10 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) test
 	@cd .. && bash scripts/warn_census.sh --check
 	@cd .. && bash scripts/tag_arith_burndown.sh --check
 	@cd .. && bash scripts/tsubst_flagon_gate.sh --check
+	@cd .. && bash scripts/class_pattern_equivalence.sh
 	@cd .. && bash scripts/forest_selfexe_gate.sh
 	@cd .. && bash scripts/forest_bind_gate.sh
+	@cd .. && bash scripts/project_gate.sh
 	@cd .. && bash scripts/forest_index_oracle.sh
 	@cd .. && bash scripts/forest_dm_oracle.sh
 

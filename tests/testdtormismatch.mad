@@ -1,0 +1,17 @@
+// Task #57: an explicit destructor call naming a DIFFERENT type than the
+// receiver's class is a compile error ([class.dtor]; g++: "the type being
+// destroyed is 'X', but the destructor refers to 'Y'").
+struct X {
+	int id;
+	X(int i) : id(i) {}
+	~X() {}
+};
+struct Y { int a; };
+
+int main()
+{
+	X x(7);
+	X *q = &x;
+	q->~Y();
+	return 0;
+}

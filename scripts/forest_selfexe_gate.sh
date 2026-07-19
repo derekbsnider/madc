@@ -24,7 +24,7 @@ mkdir -p tmp
 rm -f "$BIN"
 cp bin/madc "$BIN"
 
-if ! timeout 120 bin/madc --freeze-append="$BIN" "$SRC" >/dev/null 2>&1; then
+if ! timeout 300 bin/madc --freeze-mir-cache --freeze-append="$BIN" "$SRC" >/dev/null 2>&1; then
     echo "forest_selfexe_gate: --freeze-append FAILED"
     rm -f "$BIN"
     exit 1
@@ -32,10 +32,19 @@ fi
 
 out=$(timeout 60 "$BIN" --run-frozen 2>/dev/null)
 rc=$?
+
+# MIR-cache equivalence leg: the same run with the cache lane disabled must
+# produce byte-identical output (the blob is DERIVED state, never semantic).
+out_nocache=$(MADC_NO_MIR_CACHE=1 timeout 60 "$BIN" --run-frozen 2>/dev/null)
+rc_nocache=$?
 rm -f "$BIN"
 
 if [ $rc -ne 0 ]; then
     echo "forest_selfexe_gate: --run-frozen FAILED (rc=$rc)"
+    exit 1
+fi
+if [ $rc_nocache -ne 0 ] || [ "$out" != "$out_nocache" ]; then
+    echo "forest_selfexe_gate: MIR-cache output != no-cache output (rc=$rc_nocache)"
     exit 1
 fi
 
@@ -54,5 +63,5 @@ if [ $fail -ne 0 ]; then
     exit 1
 fi
 
-echo "forest_selfexe_gate: GREEN — appended forest ran from /proc/self/exe"
+echo "forest_selfexe_gate: GREEN — appended forest ran from /proc/self/exe (MIR cache == no-cache)"
 exit 0

@@ -1,0 +1,52 @@
+// Task #51(a): class array-new / delete[] and stack class arrays.
+// `new D[3]` must allocate n elements (not one), construct EVERY element
+// (vptr stamps + base/member cascade), store the Itanium element-count
+// cookie when the class has a non-trivial dtor, and `delete[]` must read
+// it back, destroy per element in reverse, and free the cookie base.
+// Stack arrays (`B sa[2]`) construct per element too. Oracle: g++ -O0.
+#include <cstdio>
+
+int g_dtors = 0;
+
+struct B {
+	int x;
+	B() : x(7) {}
+	virtual int f() { return 1; }
+	virtual ~B() { g_dtors++; }
+};
+struct D : B {
+	int d;
+	D() { d = 3; }
+	int f() { return 2; }
+};
+// vbase-only, no virtual functions (prologue-only vtables, task #49):
+// the upcast through an element reads that element's vbase-offset slot.
+struct V { int v; };
+struct W : virtual V { int w; };
+
+int main()
+{
+	D *arr = new D[3];
+	int sum = 0;
+	for (int i = 0; i < 3; i++) {
+		B *bp = &arr[i];
+		sum += bp->f();
+		sum += arr[i].x;
+		arr[i].d = i;
+		sum += arr[i].d;
+	}
+	printf("sum %d\n", sum);
+	delete[] arr;
+	printf("dtors %d\n", g_dtors);
+	W *wa = new W[3];
+	for (int i = 0; i < 3; i++) {
+		wa[i].v = i + 1;
+		wa[i].w = 10 * (i + 1);
+	}
+	V *vp = &wa[1];
+	printf("up %d\n", vp->v);
+	delete[] wa;
+	B sa[2];
+	printf("stack %d %d\n", sa[0].x, sa[1].f());
+	return 0;
+}

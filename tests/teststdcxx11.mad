@@ -1,0 +1,19 @@
+// Task #54: the strict --std=c++11 lane against real glibc/libstdc++
+// headers. <cstdio> used to fail with "'gets' is not a declaration in
+// '::'": glibc's __GLIBC_USE_DEPRECATED_GETS condition is a TERNARY in
+// #if (`defined __cplusplus ? __cplusplus >= 201402L : defined
+// __USE_ISOC11`) and the evaluator had no ?: tier — the condition's
+// value leaked as the result, gets went undeclared, and <cstdio>'s
+// C++11-only `using ::gets` had nothing to import. Oracle: g++ -std=c++11.
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+
+int main()
+{
+	printf("ok %ld\n", (long)__cplusplus);
+	char b[8];
+	strcpy(b, "hi");
+	printf("%s %d\n", b, atoi("42"));
+	return 0;
+}

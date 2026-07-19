@@ -2,6 +2,7 @@
 #define __MADCDIS_INTERN_TABLE_H 1
 
 #include <cstdint>
+#include <cassert>
 #include <cstring>
 #include <vector>
 #include <string>
@@ -69,6 +70,12 @@ private:
 	}
     }
 public:
+    struct transaction_state {
+	size_t bytes_size;
+	size_t entries_size;
+	transaction_state() : bytes_size(0), entries_size(0) {}
+    };
+
     intern_table()
     {
 	reserve(1u << 16, 1u << 12);  // decent default: avoid early realloc churn
@@ -133,6 +140,19 @@ public:
     uint32_t intern(const char *s, uint32_t len) const { return len ? intern(s, len, hash_bytes(s, len)) : 0; }
     uint32_t intern(const std::string &s) const { return intern(s.data(), (uint32_t)s.size()); }
     uint32_t intern(const char *s)        const { return intern(s, (uint32_t)strlen(s)); }
+
+    void begin_transaction(transaction_state &state) const
+    {
+	state.bytes_size = _bytes.size();
+	state.entries_size = _entries.size();
+    }
+    void commit_transaction(transaction_state &) const {}
+    void rollback_transaction(const transaction_state &state) const
+    {
+	_bytes.resize(state.bytes_size);
+	_entries.resize(state.entries_size);
+	rehash(_buckets.size());
+    }
 
     const char *c_str(uint32_t id)  const { return &_bytes[_entries[id].off]; }
     uint32_t    length(uint32_t id) const { return _entries[id].len; }
@@ -250,8 +270,94 @@ class intern_keyed_map
     intern_table        *_pool = nullptr;
     size_t               _live = 0;
 public:
+    // Temporary parser work needs map entries to remain visible during a
+    // production parse, then disappear atomically. Mutable access saves the
+    // original value once; rollback restores touched keys and truncates inserts.
+    struct transaction_state
+    {
+	struct saved_value
+	{
+	    uint32_t id;
+	    int32_t slot;
+	    V value;
+	    saved_value(uint32_t i, int32_t s, const V &v)
+		: id(i), slot(s), value(v) {}
+	};
+	size_t slot_size;
+	size_t vals_size;
+	size_t live;
+	std::vector<saved_value> saved;
+	std::vector<uint32_t> inserted;
+	transaction_state() : slot_size(0), vals_size(0), live(0) {}
+    };
+private:
+    transaction_state   *_transaction = nullptr;
+
+    void save_transaction_value(uint32_t id)
+    {
+	if ( !_transaction || id >= _slot.size() || _slot[id] < 0
+	  || (size_t)_slot[id] >= _transaction->vals_size )
+	    return;
+	for ( size_t i = 0; i < _transaction->saved.size(); ++i )
+	    if ( _transaction->saved[i].id == id )
+		return;
+	_transaction->saved.push_back(typename transaction_state::saved_value(
+	    id, _slot[id], _vals[(size_t)_slot[id]]));
+    }
+public:
     typedef V *iterator;          // find() returns a pointer to the value, NULL = absent
+    typedef const V *const_iterator;
+    intern_keyed_map() {}
+    intern_keyed_map(const intern_keyed_map &other)
+	: _slot(other._slot), _vals(other._vals), _pool(other._pool),
+	  _live(other._live), _transaction(nullptr) {}
+    intern_keyed_map &operator=(const intern_keyed_map &other)
+    {
+	if ( this == &other )
+	    return *this;
+	assert(!_transaction);
+	_slot = other._slot;
+	_vals = other._vals;
+	_pool = other._pool;
+	_live = other._live;
+	return *this;
+    }
     void set_pool(intern_table *p) { _pool = p; }
+
+    void begin_transaction(transaction_state &state)
+    {
+	assert(!_transaction);
+	state.slot_size = _slot.size();
+	state.vals_size = _vals.size();
+	state.live = _live;
+	state.saved.clear();
+	state.inserted.clear();
+	_transaction = &state;
+    }
+
+    void commit_transaction(transaction_state &state)
+    {
+	assert(_transaction == &state);
+	_transaction = nullptr;
+    }
+
+    void rollback_transaction(transaction_state &state)
+    {
+	assert(_transaction == &state);
+	_vals.resize(state.vals_size);
+	_slot.resize(state.slot_size, -1);
+	for ( size_t i = 0; i < state.inserted.size(); ++i )
+	    if ( state.inserted[i] < _slot.size() )
+		_slot[state.inserted[i]] = -1;
+	for ( size_t i = 0; i < state.saved.size(); ++i )
+	{
+	    const typename transaction_state::saved_value &saved = state.saved[i];
+	    _vals[(size_t)saved.slot] = saved.value;
+	    _slot[saved.id] = saved.slot;
+	}
+	_live = state.live;
+	_transaction = nullptr;
+    }
 
     // Pre-size the dense storage. Reserving the value pool up front means it
     // does not relocate as entries are added, so a value held by reference or
@@ -269,8 +375,27 @@ public:
     // uint32 (hot) — O(1) flat array index; no tree, no node alloc, no compare
     V *find(uint32_t id)
     {
-	if ( id < _slot.size() && _slot[id] >= 0 ) return &_vals[(size_t)_slot[id]];
+	if ( id < _slot.size() && _slot[id] >= 0 )
+	{
+	    save_transaction_value(id);
+	    return &_vals[(size_t)_slot[id]];
+	}
 	return nullptr;
+    }
+    // Existing parent value, with rollback owned by a narrower subvalue
+    // journal. This prevents copying a large grouped value merely to mutate
+    // one independently journaled child. New parent keys must still use
+    // operator[] so the normal transaction records their insertion.
+    V *find_for_subvalue_write(uint32_t id, transaction_state &state)
+    {
+	assert(_transaction == &state);
+	return id < _slot.size() && _slot[id] >= 0
+	    ? &_vals[(size_t)_slot[id]] : nullptr;
+    }
+    const V *find_readonly(uint32_t id) const
+    {
+	return id < _slot.size() && _slot[id] >= 0
+	    ? &_vals[(size_t)_slot[id]] : nullptr;
     }
     size_t count(uint32_t id) const
     {
@@ -278,14 +403,23 @@ public:
     }
     V &operator[](uint32_t id)
     {
+	save_transaction_value(id);
 	if ( id >= _slot.size() ) _slot.resize(id + 1, -1);
-	if ( _slot[id] < 0 ) { _slot[id] = (int32_t)_vals.size(); _vals.emplace_back(); ++_live; }
+	if ( _slot[id] < 0 )
+	{
+	    if ( _transaction )
+		_transaction->inserted.push_back(id);
+	    _slot[id] = (int32_t)_vals.size();
+	    _vals.emplace_back();
+	    ++_live;
+	}
 	return _vals[(size_t)_slot[id]];
     }
     size_t erase(uint32_t id)
     {
 	if ( id < _slot.size() && _slot[id] >= 0 )
 	{
+	    save_transaction_value(id);
 	    _vals[(size_t)_slot[id]] = V();  // tombstone the value; pool slot is left (erase is rare)
 	    _slot[id] = -1;
 	    --_live;
@@ -296,6 +430,8 @@ public:
 
     // string overloads — intern the key; keep every existing insert / cold call site working
     V     *find(const std::string &k)        { return find(_pool->intern(k)); }
+    const V *find_readonly(const std::string &k) const
+	{ return find_readonly(_pool->intern(k)); }
     size_t count(const std::string &k)       { return count(_pool->intern(k)); }
     V     &operator[](const std::string &k)  { return (*this)[_pool->intern(k)]; }
     size_t erase(const std::string &k)       { return erase(_pool->intern(k)); }
@@ -312,8 +448,11 @@ public:
     {
 	for ( uint32_t id = 0; id < _slot.size(); ++id )
 	    if ( _slot[id] >= 0 )
+	    {
+		save_transaction_value(id);
 		if ( fn(_pool->c_str(id), _vals[(size_t)_slot[id]]) )
 		    return;
+	    }
     }
 
     // find() returns NULL for "not found"; end() is provided so legacy
@@ -321,7 +460,16 @@ public:
     iterator end() { return nullptr; }
     bool   empty() const { return _live == 0; }
     size_t size()  const { return _live; }
-    void   clear()       { _slot.clear(); _vals.clear(); _live = 0; }
+    void clear()
+    {
+	if ( _transaction )
+	    for ( uint32_t id = 0; id < _slot.size(); ++id )
+		if ( _slot[id] >= 0 )
+		    save_transaction_value(id);
+	_slot.clear();
+	_vals.clear();
+	_live = 0;
+    }
 };
 
 } // namespace dis
