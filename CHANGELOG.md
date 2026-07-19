@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+- **fix(parser): sizeof/alignof with a template-id or qualified type
+  operand (task #62).** `sizeof(Box<int>)` failed "Expecting
+  identifier" even post-instantiation, and `sizeof(std::string)` failed
+  "'string' is not a member of namespace 'std'" — the type-query
+  operand resolver (`resolve_type_query_datadef`) had bare-name lookups
+  only and could not consume `<...>` or a `::` chain. Both identifier
+  and datatype-token arms now route through the one declared-type
+  resolver (`resolve_declared_type_token` — the same path the
+  explicit-dtor name and dynamic_cast arms use), which instantiates on
+  demand ([expr.sizeof]) and consumes nothing on failure so the
+  `sizeof(expression)` fallback still sees an intact stream. Covers
+  sizeof/alignof, pointer suffix (`Box<int>*`), nested template args,
+  qualified template-ids (`std::vector<int>`), and the constant
+  context (`int arr[sizeof(Box<int>)]`) — all byte-equal to `g++ -O0`.
+  New `tests/testsizeoftpl.mad` (+`.expect`, `.expect_quiet`).
+  Residues filed, not fixed here (scope discipline): implicit COPY
+  ctor missing for `Box<Box<int>>`'s member-init (task #70) and the
+  C-style cast `(Box<int>)7` in the separate cast-detection arm
+  (task #71).
+
+- **test(skips): mir_skip audit — all 16 re-verified at live HEAD,
+  zero lifts, 11 reasons corrected (task #61).** Five reasons verified
+  still-true and date-stamped; eleven reworded to the actual cause at
+  HEAD, the notable drifts: `_Complex int` (GNU integer complex) MIR
+  gen fatal even as a scalar (the fork's native `_Complex` is
+  floating-only); VLA-struct-member copy now ACCEPTED but miscompiled;
+  GCC itself saturates overflowing float→int casts via front-end
+  constant folding (the `.expect` is canon; c2mir runtime-converts to
+  INT_MIN); `--finstrument-functions` works but prototype-borne
+  `no_instrument_function` doesn't merge into the definition;
+  `__builtin_frame_address`/`__builtin_setjmp` lower to runtime
+  helpers that execute in the helper's own frame (structural);
+  `#load` lowers fine but the MIR import resolver ignores the loaded
+  handles; `dlcall()` has no MIR-lane runtime; the
+  `__builtin_va_list` test is invalid on x86-64 (gcc+clang both
+  reject it). Near-miss follow-ons filed as tasks #65–#69.
+
 - **refactor(madcdis): C1 core-ification — the data-substrate interface
   headers move `include/madcdat/` → `include/madcdis/` (task #58,
   governing plan §6).** schema/mapper/query/relation/dataset/driver now

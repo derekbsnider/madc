@@ -1,0 +1,22 @@
+// sizeof/alignof with a template-id type operand (task #62).
+// Oracle: g++ -O0 prints exactly these values (x86-64).
+#include <cstdio>
+#include <vector>
+
+template<class T> struct Box { T v; Box(T x) : v(x) {} ~Box() {} };
+template<class T> struct Wrap { T v; };
+
+int main()
+{
+    Box<int> b(1);
+    printf("a %d\n", (int)sizeof(Box<int>));          // instantiated template-id
+    printf("b %d\n", (int)sizeof(b));                 // variable of that type
+    printf("c %d\n", (int)alignof(Box<int>));         // alignof sibling
+    printf("d %d\n", (int)sizeof(Box<int>*));         // pointer declarator suffix
+    printf("e %d\n", (int)sizeof(Box<double>));       // instantiate-on-demand
+    printf("f %d\n", (int)sizeof(Wrap<Box<int> >));   // nested template args
+    printf("g %d\n", (int)sizeof(std::vector<int>));  // qualified template-id
+    int arr[sizeof(Box<int>)];                        // constant-context sibling
+    printf("h %d\n", (int)(sizeof(arr) / sizeof(arr[0])));
+    return 0;
+}

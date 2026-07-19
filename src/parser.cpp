@@ -9121,7 +9121,19 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
     }
 
     if ( type_tb->type() == TokenType::ttDataType )
+    {
+	// Template-id operand whose template name lexed as a datatype
+	// (sizeof(vector<int>) after the bare name registered): the one
+	// declared-type resolver consumes and instantiates '<...>' — the
+	// same path the explicit-dtor name and dynamic_cast arms use.
+	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+	{
+	    if ( TokenDataType *tdt =
+		    resolve_declared_type_token(type_tb, true, true) )
+		return &tdt->definition;
+	}
 	dd = &((TokenDataType *)type_tb)->definition;
+    }
     else if ( type_tb->type() == TokenType::ttIdentifier )
     {
 	std::string tname = ((TokenIdent *)type_tb)->spelling();
@@ -9168,6 +9180,23 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	    dd = resolve_current_class_type_alias(tname);
 	    if ( !dd )
 		dd = resolve_named_datadef(tname);
+	    // Template-id or qualified type as the operand — sizeof(Box<int>),
+	    // alignof(std::vector<int>), sizeof(Tmpl<X>::member): the bare-name
+	    // lookups above cannot consume '<...>' or a '::' chain. Route
+	    // through the one declared-type resolver — the same path the
+	    // explicit-dtor name and dynamic_cast arms use; it instantiates on
+	    // demand ([expr.sizeof] requires a complete type) and consumes
+	    // nothing when it fails, so the sizeof(expression) fallback still
+	    // sees an intact stream. Variables already won above, so a
+	    // less-than expression (sizeof(v < 3)) never reaches this arm.
+	    if ( !dd && peekToken()
+	      && (peekToken()->id() == TokenID::tkLT
+	       || peekToken()->id() == TokenID::tkNS) )
+	    {
+		if ( TokenDataType *tdt =
+			resolve_declared_type_token(type_tb, true, true) )
+		    dd = &tdt->definition;
+	    }
 	}
     }
     else if ( type_tb->type() == TokenType::ttKeyword
