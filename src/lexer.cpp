@@ -6218,6 +6218,7 @@ TokenProgram *Program::tokenize(const char *fname)
     {
 	if ( !last_error.has_error )
 	    set_error(Program::DiagnosticPhase::lexer, Throw.str().empty() ? e.what() : Throw.str(), fname, source.line(), source.column());
+	print_unrendered_diagnostic();
 	return NULL;
     }
 
@@ -6294,6 +6295,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 	    set_error(Program::DiagnosticPhase::lexer,
 		      Throw.str().empty() ? e.what() : Throw.str(),
 		      fname, source.line(), source.column());
+	print_unrendered_diagnostic();
 	return NULL;
     }
 

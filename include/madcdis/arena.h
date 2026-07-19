@@ -51,7 +51,20 @@ class arena
 	size_t cap = need > _default_cap ? need : _default_cap;
 	char *base = (char *)::malloc(cap);
 	if ( !base )
-	    throw std::bad_alloc();
+	{
+	    // Honor the process new-handler contract before giving up, the
+	    // way operator new does: the installed handler may report context
+	    // (e.g. which resource guard tripped) and/or free memory. If it
+	    // returns, retry once.
+	    std::new_handler h = std::get_new_handler();
+	    if ( h )
+	    {
+		h();	// may throw; may free memory and return
+		base = (char *)::malloc(cap);
+	    }
+	    if ( !base )
+		throw std::bad_alloc();
+	}
 	Chunk c; c.base = base; c.used = 0; c.cap = cap;
 	_chunks.push_back(c);
     }

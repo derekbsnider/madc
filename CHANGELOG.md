@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+- **fix(cli): SMAUG `--project` soak restored — the 2 GB address-space
+  guard was killing legitimate multi-TU builds, silently (P0 task #75).**
+  Root cause was NOT cross-TU state: `install_resource_guards()` arms
+  `RLIMIT_AS` at a fixed 2048 MB default (`MADC_MEM_LIMIT`), while the
+  `--project` driver holds every TU's parsed `Program` simultaneously by
+  design — the 51-TU SMAUG manifest legitimately peaks at ~2.9 GB VA, so
+  the guard's ENOMEM surfaced as a `std::bad_alloc` at whatever
+  allocation crossed the line (~TU #44, stances.c, inside mud.h
+  tokenize; maxrss only 985 MB — the limit counts address space, not
+  residency). Standalone compiles stayed green because one TU sits far
+  under the limit. Three fixes, each at its own layer: (1) the guard
+  default now scales with the workload — `install_resource_guards()`
+  moved below argument parsing (RLIMIT hard limits can never be raised,
+  so the guard must know the workload before it arms) and gives each
+  manifest TU a 128 MB allowance on top of the single-file 2048 MB
+  default; `MADC_MEM_LIMIT` still overrides verbatim, `0` disables.
+  (2) When the guard DOES trip, it now says so: a `set_new_handler`
+  armed with the guard writes one actionable line naming
+  `MADC_MEM_LIMIT` (via the crash handler's no-alloc `write(2)`
+  plumbing) before the normal `bad_alloc` unwind — and
+  `madc::dis::arena::add_chunk` (a direct-`malloc` thrower that
+  bypasses `operator new`; the token arena was the very allocation
+  that failed) now honors the process new-handler contract on malloc
+  failure, so arena-path OOM gets the same attribution. (3) The failure is
+  never silent again: the `catch(std::exception&)` arms of `tokenize`,
+  `tokenize_buffer`, `parse`, and `parse_expression_unit` recorded the
+  error via `set_error` but — unlike their sibling arms — never printed
+  it (`throwbuf::sync()` renders only throwstream-originated
+  exceptions; a plain `bad_alloc` arrived unrendered). New
+  `Program::print_unrendered_diagnostic()` prints the recorded
+  diagnostic whenever the throwstream didn't already render one. Soak
+  green again: `Realms of Despair ready at address madc-dev on port
+  4000` under default guards; `MADC_MEM_LIMIT=512` proves the loud
+  path (guard line + `file:line: error: std::bad_alloc` + rc=1).
+
 - **feat(parser): implicit-int / K&R function definitions — the
   promote-gate lever, +30 torture tests in one work item (task #72).**
   gcc-torture 1572 → **1601** passed; failset 50 → **20** names (all 30

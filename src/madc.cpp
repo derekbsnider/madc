@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <ucontext.h>
 #include <sys/resource.h>
+#include <new>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -202,7 +203,27 @@ static rlim_t env_rlim(const char *env_name, rlim_t fallback)
     return fallback;
 }
 
-static void install_resource_guards(void)
+// Armed with the RLIMIT_AS guard: when operator new first fails, say WHY
+// (our own guard, and its knob) before the normal bad_alloc unwind —
+// otherwise the failure surfaces as a bare std::bad_alloc with no
+// actionable cause. An OOM handler must not allocate, so the message goes
+// out via the crash handler's write(2) plumbing.
+static rlim_t madc_mem_guard_mb = 0;
+
+static void mem_guard_new_handler(void)
+{
+    std::set_new_handler(NULL);	// print once; let bad_alloc propagate
+    char buf[192];
+    int n = snprintf(buf, sizeof(buf),
+                     "madc: memory allocation failed with the MADC_MEM_LIMIT=%llu"
+                     " MB address-space guard active; raise it or set"
+                     " MADC_MEM_LIMIT=0 to disable\n",
+                     (unsigned long long)madc_mem_guard_mb);
+    crash_write_formatted(buf, n, sizeof(buf));
+    throw std::bad_alloc();
+}
+
+static void install_resource_guards(size_t project_tus)
 {
     rlim_t cpu_secs = env_rlim("MADC_CPU_LIMIT", 60);
     if ( cpu_secs > 0 ) {
@@ -213,13 +234,25 @@ static void install_resource_guards(void)
             perror("setrlimit(RLIMIT_CPU)");
     }
 
-    rlim_t mem_mb = env_rlim("MADC_MEM_LIMIT", 2048);
+    // A --project build holds every TU's parsed state simultaneously (by
+    // design: all Programs live until the shared MIR module runs), so its
+    // legitimate address-space need scales with the manifest, not with any
+    // single file. Give each TU a 128 MB allowance on top of the single-file
+    // default: SMAUG's 51-TU manifest measures ~2.9 GB peak VA (~57 MB/TU),
+    // so 128 keeps ~2x headroom while a true runaway still trips.
+    // MADC_MEM_LIMIT overrides the computed default verbatim.
+    rlim_t default_mb = 2048 + (project_tus > 1 ? 128 * (rlim_t)project_tus : 0);
+    rlim_t mem_mb = env_rlim("MADC_MEM_LIMIT", default_mb);
     if ( mem_mb > 0 ) {
         struct rlimit rl;
         rl.rlim_cur = (rlim_t)mem_mb * 1024 * 1024;
         rl.rlim_max = rl.rlim_cur;
         if ( setrlimit(RLIMIT_AS, &rl) != 0 )
             perror("setrlimit(RLIMIT_AS)");
+        else {
+            madc_mem_guard_mb = mem_mb;
+            std::set_new_handler(mem_guard_new_handler);
+        }
     }
 }
 
@@ -494,7 +527,6 @@ int main(int argc, char **argv)
     gettimeofday(&_t_main, NULL);
 
     install_crash_handler();
-    install_resource_guards();
 
     stringstream ss;
     MadcEngine engine;
@@ -745,6 +777,23 @@ int main(int argc, char **argv)
         }
     }
 
+    // Resource guards install AFTER argument parsing so the memory guard can
+    // scale with the workload (see install_resource_guards). The manifest is
+    // read here, once, for its TU count; the --project branch below reuses
+    // it. Order matters: RLIMIT hard limits can only be lowered, never
+    // raised, so the guard must know the workload before it arms.
+    ProjectManifest manifest;
+    if ( project_manifest )
+    {
+        std::string err;
+        if ( !read_compile_commands(project_manifest, manifest, err) )
+        {
+            std::cerr << "madc --project: " << err << std::endl;
+            return 1;
+        }
+    }
+    install_resource_guards(manifest.tus.size());
+
     // Embedded-forest default (Phase 4): with no explicit forest flag, bind
     // system #includes from the blob appended to this executable —
     // ensure_bind_forest() falls through silently to live parse when no blob
@@ -872,13 +921,6 @@ int main(int argc, char **argv)
 
     if ( project_manifest )
     {
-	ProjectManifest manifest;
-	std::string err;
-	if ( !read_compile_commands(project_manifest, manifest, err) )
-	{
-	    std::cerr << "madc --project: " << err << std::endl;
-	    return 1;
-	}
 	// Remaining positionals (filearg..argc) become the program's argv.
 	int run_argc = argc - filearg;
 	char **run_argv = argv + filearg;

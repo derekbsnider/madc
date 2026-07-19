@@ -14326,6 +14326,18 @@ void Program::print_last_diagnostic(std::ostream &os, const char *suffix)
 	print_diagnostic(os, *diag, suffix);
 }
 
+void Program::print_unrendered_diagnostic()
+{
+    // throwbuf::sync() renders its own file:line + source echo to stderr
+    // before throwing std::exception, but a plain std::exception
+    // (bad_alloc, out_of_range, ...) arrives unrendered. Throw's buffer
+    // is only non-empty when sync() ran — when it is empty, nothing was
+    // printed yet, so print the recorded diagnostic; a phase failure must
+    // never be silent.
+    if ( Throw.str().empty() )
+	print_last_diagnostic(error());
+}
+
 MadcEngine::MadcEngine()
     : input_stream(&std::cin),
       output_stream(&std::cout),
@@ -51371,7 +51383,6 @@ bool Program::parse(TokenProgram *tp)
     }
     catch(std::exception &e)
     {
-	// throwbuf::sync() already printed the formatted error to stderr before throwing
 	if ( !last_error.has_error )
 	{
 	    TokenBase *err_tb = Throw.token();
@@ -51380,6 +51391,7 @@ bool Program::parse(TokenProgram *tp)
 		err_tb ? err_tb->line : 0,
 		err_tb ? err_tb->column : 0);
 	}
+	print_unrendered_diagnostic();
 	return false;
     }
 
@@ -51475,6 +51487,7 @@ TokenBase *Program::parse_expression_unit(TokenProgram *tp)
 		      err_tb ? err_tb->line : 0,
 		      err_tb ? err_tb->column : 0);
 	}
+	print_unrendered_diagnostic();
 	return NULL;
     }
 

@@ -3794,6 +3794,7 @@ public:
     bool can_show_diagnostic_source(const Diagnostic &diag) const;
     void print_diagnostic(std::ostream &os, const Diagnostic &diag, const char *suffix=NULL);
     void print_last_diagnostic(std::ostream &os, const char *suffix=NULL);
+    void print_unrendered_diagnostic();
     void populate_builtin_registry();
     bool is_builtin_disabled(const std::string &name) const;
     void populate_namespace_registry();

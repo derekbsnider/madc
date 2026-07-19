@@ -27,6 +27,27 @@
 > warnings**. The packed artifact carries a readable 240-unit forest, is
 > **10,219,496 bytes**, and has `MADCSNAP` footer magic.
 >
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #75
+> SMAUG --project soak restored):** the soak is GREEN again on the dev binary —
+> `Realms of Despair ready at address madc-dev on port 4000` under DEFAULT
+> guards. Root cause was madc's own `RLIMIT_AS` resource guard
+> (`install_resource_guards()`, fixed 2048 MB `MADC_MEM_LIMIT` default, commit
+> @1713e2ba 2026-04-30 — present while the soak was green): the `--project`
+> driver holds all 51 parsed Programs at once and legitimately peaks at
+> **~2.9 GB VA** (measured `VmPeak` 3,039,872 kB with the guard off; maxrss
+> only 985 MB — RLIMIT_AS counts address space, not residency), so natural
+> footprint growth crossed the 2 GB line at ~TU #44 (stances.c) and the
+> guard's ENOMEM surfaced as an UNPRINTED `std::bad_alloc`. NOT cross-TU state
+> poisoning (gdb catchpoint: healthy token arena, 452 × 1 MB chunks,
+> `malloc(1 MB)` → NULL; peak maps 105 of 65530). Fixes: workload-scaled
+> guard default (+128 MB per manifest TU; guards now install after argument
+> parsing since RLIMIT hard limits can never be raised), a `set_new_handler`
+> that names `MADC_MEM_LIMIT` when the guard trips (verified: `MADC_MEM_LIMIT=512`
+> prints the guard line + `comments.c:...: error: std::bad_alloc` + rc=1),
+> and `Program::print_unrendered_diagnostic()` in all four
+> `catch(std::exception&)` phase arms — a tokenize/parse failure can never
+> again exit silent.
+>
 > **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #72
 > implicit-int/K&R function definitions):** gcc-torture **1601 passed, 2
 > compile-failed, 18 runtime-failed, 0 timed out (memcpy-a8 timed out under
