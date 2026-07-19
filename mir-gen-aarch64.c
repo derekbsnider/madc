@@ -2493,6 +2493,7 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
         exit (1);
       } else {
         gen_assert (replacement != NULL);
+        gen_record_line (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
         out_insn (gen_ctx, insn, replacement, NULL);
       }
     }

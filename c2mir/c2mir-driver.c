@@ -54,9 +54,12 @@ typedef pthread_attr_t mir_thread_attr_t;
 #include "c2mir.h"
 #include "mir-gen.h"
 #include "mir-int128-helper.h"
+#include "mir-debug.h"
 #include "real-time.h"
 
 #include "mir-alloc-default.c"
+
+extern int default_mem_protect (void *addr, size_t len, MIR_mem_protect_t prot, void *user_data);
 
 struct lib {
   char *name;
@@ -66,7 +69,29 @@ struct lib {
 typedef struct lib lib_t;
 
 #if defined(__unix__)
-#if UINTPTR_MAX == 0xffffffff
+#if defined(__linux__) && !defined(__GLIBC__)
+/* A non-glibc Linux libc, e.g. musl on Alpine: libc, libm, libpthread, and
+   libdl all live in one shared object, installed as the dynamic loader
+   /lib/ld-musl-<arch>.so.1 on musl.  */
+#if defined(__x86_64__)
+#define MUSL_LIB_ARCH "x86_64"
+#elif defined(__aarch64__)
+#define MUSL_LIB_ARCH "aarch64"
+#elif defined(__PPC64__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define MUSL_LIB_ARCH "powerpc64le"
+#elif defined(__PPC64__)
+#define MUSL_LIB_ARCH "powerpc64"
+#elif defined(__s390x__)
+#define MUSL_LIB_ARCH "s390x"
+#elif defined(__riscv)
+#define MUSL_LIB_ARCH "riscv64"
+#else
+#error cannot recognize the non-glibc linux target
+#endif
+static lib_t std_libs[]
+  = {{"/lib/ld-musl-" MUSL_LIB_ARCH ".so.1", NULL}, {"/usr/lib/libc.so", NULL}};
+static const char *std_lib_dirs[] = {"/lib", "/usr/lib"};
+#elif UINTPTR_MAX == 0xffffffff
 static lib_t std_libs[]
   = {{"/lib/libc.so", NULL},         {"/lib/libm.so", NULL},          {"/lib/libc.so.6", NULL},
      {"/lib32/libc.so.6", NULL},     {"/lib/libm.so.6", NULL},        {"/lib32/libm.so.6", NULL},
@@ -298,6 +323,8 @@ static void init_options (int argc, char *argv[]) {
       options.asm_p = TRUE;
     } else if (strcmp (argv[i], "-c") == 0) {
       options.object_p = TRUE;
+    } else if (strcmp (argv[i], "-g") == 0) {
+      options.debug_info_p = TRUE;
     } else if (strcmp (argv[i], "-w") == 0) {
       options.ignore_warnings_p = TRUE;
     } else if (strcmp (argv[i], "-v") == 0) {
@@ -406,6 +433,7 @@ static void init_options (int argc, char *argv[]) {
   options.macro_commands_num = VARR_LENGTH (macro_command_t, macro_commands);
   options.macro_commands = VARR_ADDR (macro_command_t, macro_commands);
   if (!C2MIR_PARALLEL || threads_num <= 1) threads_num = 0;
+  if (options.debug_info_p) threads_num = 0; /* single-threaded: shared debug file registry */
 }
 
 static int t_getc (void *data) {
@@ -454,6 +482,7 @@ static void *import_resolver (const char *name) {
 #if defined(__APPLE__) && defined(__aarch64__)
     if (strcmp (name, "__nan") == 0) return __nan;
     if (strcmp (name, "_MIR_set_code") == 0) return _MIR_set_code;
+    if (strcmp (name, "default_mem_protect") == 0) return default_mem_protect;
 #endif
 #endif
     if ((sym = MIR_int128_helper_resolver (name)) != NULL) return sym;
@@ -462,6 +491,19 @@ static void *import_resolver (const char *name) {
     exit (1);
   }
   return sym;
+}
+
+/* Build the GDB-JIT DWARF object for the generated functions (function symbols,
+   line program, and rich-typed variable DIEs -- c2mir assembles it from its live
+   type/decl info, see c2mir_get_debug_object) and register it so an attached gdb
+   can step the source, break by file:line, and `print`/`info locals`.  Called
+   after the eager link, while the per-function line maps and spill-all frame
+   slots are valid. */
+static void register_source_debug (MIR_context_t ctx) {
+  void *buf;
+  size_t size;
+
+  if (c2mir_get_debug_object (ctx, &buf, &size) == 0) MIR_debug_gdb_register (ctx, buf, size);
 }
 
 static int mir_read_func (MIR_context_t ctx MIR_UNUSED) { return t_getc (&curr_input); }
@@ -914,6 +956,14 @@ int main (int argc, char *argv[], char *env[]) {
           fprintf (stderr, "MIR gen init finish         -- %.0f usec\n",
                    real_usec_time () - start_time);
         if (optimize_level >= 0) MIR_gen_set_optimize_level (main_ctx, (unsigned) optimize_level);
+        if (options.debug_info_p && gen_exec_p) {
+          /* Debuggable codegen: O0 (clean stepping), no inlining (one frame per
+             function), spill every local to a stable frame slot (so a debugger
+             can locate it). */
+          MIR_gen_set_optimize_level (main_ctx, 0);
+          MIR_set_inline_permission (main_ctx, 0);
+          MIR_set_spill_all (main_ctx, 1);
+        }
         if (gen_debug_level >= 0) {
           MIR_gen_set_debug_file (main_ctx, stderr);
           MIR_gen_set_debug_level (main_ctx, gen_debug_level);
@@ -925,6 +975,7 @@ int main (int argc, char *argv[], char *env[]) {
                   import_resolver);
         if (options.verbose_p)
           fprintf (stderr, "MIR link finish        -- %.0f usec\n", real_usec_time () - start_time);
+        if (options.debug_info_p && gen_exec_p) register_source_debug (main_ctx);
         fun_addr = main_func->addr;
         start_time = real_usec_time ();
         result_code = (int) fun_addr (fun_argc, fun_argv, env);

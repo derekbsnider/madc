@@ -306,8 +306,27 @@ struct MIR_insn {
   DLIST_LINK (MIR_insn_t) insn_link;
   MIR_insn_code_t code : 32;
   unsigned int nops : 32; /* number of operands */
+  uint32_t file_id;       /* frontend source file id (0 = none); see MIR_set_source_loc */
+  uint32_t line;          /* frontend source line (0 = none) */
   MIR_op_t ops[1];
 };
+
+/* One generated-code-offset -> source-location mapping, in code-offset order;
+   the function's line map (MIR_func.line_map) is filled by MIR_gen when the
+   frontend stamped insns via MIR_set_source_loc.  Enables DWARF .debug_line. */
+typedef struct MIR_line_map {
+  uint32_t code_offset; /* byte offset into the function's machine code */
+  uint32_t file_id;     /* frontend file id at this offset */
+  uint32_t line;        /* frontend line at this offset */
+} MIR_line_map_t;
+
+/* Frame location of a function-local register, recorded by MIR_gen in
+   spill-all mode (see MIR_set_spill_all).  fp_offset is relative to the frame
+   pointer.  Queried with MIR_reg_frame_offset to describe locals to a debugger. */
+typedef struct MIR_reg_loc {
+  uint32_t reg;      /* 1-based function register number */
+  int64_t fp_offset; /* byte offset of the register's stack home from the frame pointer */
+} MIR_reg_loc_t;
 
 /* Definition of double list of insns */
 DEF_DLIST (MIR_insn_t, insn_link);
@@ -334,10 +353,14 @@ typedef struct MIR_func {
   VARR (MIR_var_t) * vars;        /* args and locals but temps */
   VARR (MIR_var_t) * global_vars; /* can be NULL */
   void *machine_code;             /* address of generated machine code or NULL */
-  size_t machine_code_len;        /* length of generated machine code in bytes */
   void *call_addr; /* address to call the function, it can be the same as machine_code */
+  size_t code_len; /* byte length of the generated machine code at machine_code; 0 if not generated */
   void *internal;  /* internal data structure */
   struct MIR_lref_data *first_lref; /* label addr data of the func: defined by module load */
+  MIR_line_map_t *line_map; /* code-offset -> source-loc map, or NULL; filled by MIR_gen */
+  size_t line_map_len;      /* number of entries in line_map */
+  MIR_reg_loc_t *reg_locs;  /* local reg -> frame slot, or NULL; filled by MIR_gen in spill-all mode */
+  size_t reg_locs_len;      /* number of entries in reg_locs */
 } *MIR_func_t;
 
 typedef struct MIR_proto {
@@ -565,12 +588,36 @@ extern MIR_alloc_t MIR_get_alloc (MIR_context_t ctx);
 
 extern int MIR_get_func_redef_permission_p (MIR_context_t ctx);
 extern void MIR_set_func_redef_permission (MIR_context_t ctx, int flag_p);
+/* Whether MIR_link inlines calls to small defined functions (default: yes).
+   Disable for debuggable code so each function keeps its own frames/lines. */
+extern int MIR_get_inline_permission_p (MIR_context_t ctx);
+extern void MIR_set_inline_permission (MIR_context_t ctx, int enable_p);
+/* When enabled, the generator homes every local in a dedicated stack slot
+   instead of a register (naive, libtcc-like codegen).  Slower, but every
+   variable then has a stable in-memory location whose frame offset can be
+   queried with MIR_reg_frame_offset -- needed to describe locals to a debugger.
+   Pair with optimize level 0.  Default off. */
+extern int MIR_get_spill_all_p (MIR_context_t ctx);
+extern void MIR_set_spill_all (MIR_context_t ctx, int enable_p);
+/* If reg (1-based function register) was homed in a stack slot by MIR_gen
+   (spill-all mode), set *offset to its frame-pointer-relative byte offset and
+   return 1; otherwise return 0.  Valid after the function is generated. */
+extern int MIR_reg_frame_offset (MIR_func_t func, MIR_reg_t reg, int64_t *offset);
+/* Internal hook used by mir-debug-gdb to bind GDB-JIT debug objects to a
+   context's lifetime: MIR_finish calls `finish` (if set) to unregister them
+   before freeing the code they describe.  Not for general use. */
+extern void _MIR_set_gdb_jit_finish (MIR_context_t ctx, void (*finish) (MIR_context_t ctx));
 
 extern MIR_insn_t MIR_new_insn_arr (MIR_context_t ctx, MIR_insn_code_t code, size_t nops,
                                     MIR_op_t *ops);
 extern MIR_insn_t MIR_new_insn (MIR_context_t ctx, MIR_insn_code_t code, ...);
 extern MIR_insn_t MIR_new_call_insn (MIR_context_t ctx, size_t nops, ...);
 extern MIR_insn_t MIR_new_jcall_insn (MIR_context_t ctx, size_t nops, ...);
+/* Set the source location stamped onto every insn created afterwards (until the
+   next call), so a frontend can publish debug info: file_id is an opaque
+   frontend file index, line a 1-based source line; both 0 means "no location".
+   The generator carries these through its passes and fills MIR_func.line_map. */
+extern void MIR_set_source_loc (MIR_context_t ctx, uint32_t file_id, uint32_t line);
 extern MIR_insn_t MIR_new_ret_insn (MIR_context_t ctx, size_t nops, ...);
 extern MIR_insn_t MIR_copy_insn (MIR_context_t ctx, MIR_insn_t insn);
 

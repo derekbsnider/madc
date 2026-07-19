@@ -35,6 +35,8 @@ struct MIR_context {
   MIR_alloc_t alloc;
   MIR_code_alloc_t code_alloc;
   int func_redef_permission_p;        /* when true loaded func can be redfined lately */
+  int no_inline_p;                    /* when true MIR_link does not inline calls (e.g. for debug) */
+  int spill_all_p;                    /* when true the generator homes every local in the stack (debug) */
   VARR (size_t) * insn_nops;          /* constant after initialization */
   VARR (MIR_proto_t) * unspec_protos; /* protos of unspec insns (set only during initialization) */
   VARR (char) * temp_string;
@@ -44,6 +46,7 @@ struct MIR_context {
   struct MIR_module environment_module;
   MIR_module_t curr_module;
   MIR_func_t curr_func;
+  uint32_t curr_source_file_id, curr_source_line; /* stamped onto new insns; see MIR_set_source_loc */
   size_t curr_label_num;
   DLIST (MIR_module_t) all_modules;
   VARR (MIR_module_t) * modules_to_link;
@@ -59,10 +62,17 @@ struct MIR_context {
   struct interp_ctx *interp_ctx;
   void *setjmp_addr;      /* used in interpreter to call setjmp directly not from a shim and FFI */
   void *wrapper_end_addr; /* used by generator */
+  /* Installed by mir-debug-gdb when a GDB-JIT debug object is registered for
+     this context; MIR_finish calls it to unregister those objects (the code
+     they describe is freed here).  NULL unless gdb registration is used, so
+     mir.c never references -- and never force-links -- mir-debug-gdb. */
+  void (*gdb_jit_finish) (MIR_context_t ctx);
 };
 
 #define error_func ctx->error_func
 #define func_redef_permission_p ctx->func_redef_permission_p
+#define no_inline_p ctx->no_inline_p
+#define spill_all_p ctx->spill_all_p
 #define unspec_protos ctx->unspec_protos
 #define insn_nops ctx->insn_nops
 #define temp_string ctx->temp_string
@@ -404,8 +414,7 @@ static void check_and_prepare_insn_descs (MIR_context_t ctx) {
   VARR_CREATE (size_t, insn_nops, ctx->alloc, 0);
   for (i = 0; i < MIR_INSN_BOUND; i++) {
     mir_assert (insn_descs[i].code == i);
-    for (j = 0; insn_descs[i].op_modes[j] != MIR_OP_BOUND; j++)
-      ;
+    for (j = 0; insn_descs[i].op_modes[j] != MIR_OP_BOUND; j++);
     VARR_PUSH (size_t, insn_nops, j);
   }
 }
@@ -488,7 +497,7 @@ static struct string get_ctx_string (MIR_context_t ctx, MIR_str_t str) {
 }
 
 static const char *get_ctx_str (MIR_context_t ctx, const char *string) {
-  return get_ctx_string (ctx, (MIR_str_t){strlen (string) + 1, string}).str.s;
+  return get_ctx_string (ctx, (MIR_str_t) {strlen (string) + 1, string}).str.s;
 }
 
 static void string_finish (MIR_alloc_t alloc, VARR (string_t) * *strs, HTAB (string_t) * *str_tab) {
@@ -516,7 +525,7 @@ struct alias_ctx {
 
 MIR_alias_t MIR_alias (MIR_context_t ctx, const char *name) {
   return (MIR_alias_t) string_store (ctx, &aliases, &alias_tab,
-                                     (MIR_str_t){strlen (name) + 1, name})
+                                     (MIR_str_t) {strlen (name) + 1, name})
     .num;
 }
 
@@ -624,9 +633,11 @@ static void func_regs_init (MIR_context_t ctx, MIR_func_t func) {
     MIR_get_error_func (ctx) (MIR_alloc_error, "Not enough memory for func regs info");
   VARR_CREATE (reg_desc_t, func_regs->reg_descs, ctx->alloc, 50);
   VARR_PUSH (reg_desc_t, func_regs->reg_descs, rd); /* for 0 reg */
-  HTAB_CREATE (size_t, func_regs->name2rdn_tab, ctx->alloc, 100, name2rdn_hash, name2rdn_eq, func_regs);
+  HTAB_CREATE (size_t, func_regs->name2rdn_tab, ctx->alloc, 100, name2rdn_hash, name2rdn_eq,
+               func_regs);
   HTAB_CREATE (size_t, func_regs->hrn2rdn_tab, ctx->alloc, 10, hrn2rdn_hash, hrn2rdn_eq, func_regs);
-  HTAB_CREATE (size_t, func_regs->reg2rdn_tab, ctx->alloc, 100, reg2rdn_hash, reg2rdn_eq, func_regs);
+  HTAB_CREATE (size_t, func_regs->reg2rdn_tab, ctx->alloc, 100, reg2rdn_hash, reg2rdn_eq,
+               func_regs);
 }
 
 static int target_locs_num (MIR_reg_t loc, MIR_type_t type);
@@ -682,8 +693,7 @@ static MIR_reg_t create_func_reg (MIR_context_t ctx, MIR_func_t func, const char
       return rd_ref->reg;
     }
     func_module = func->func_item->module;
-    if (func_module->data == NULL)
-      func_module->data = bitmap_create2 (ctx->alloc, 128);
+    if (func_module->data == NULL) func_module->data = bitmap_create2 (ctx->alloc, 128);
     bitmap_set_bit_p (func_module->data, hr); /* hard regs used for globals */
   }
   *name_ptr = rd.name;
@@ -768,6 +778,31 @@ void MIR_set_func_redef_permission (MIR_context_t ctx, int enable_p) {  // ?? at
   func_redef_permission_p = enable_p;
 }
 
+int MIR_get_inline_permission_p (MIR_context_t ctx) { return !no_inline_p; }
+
+void MIR_set_inline_permission (MIR_context_t ctx, int enable_p) { no_inline_p = !enable_p; }
+
+int MIR_get_spill_all_p (MIR_context_t ctx) { return spill_all_p; }
+
+void MIR_set_spill_all (MIR_context_t ctx, int enable_p) { spill_all_p = enable_p; }
+
+/* Internal: mir-debug-gdb installs its per-context unregister sweep here so
+   MIR_finish can drop this context's GDB-JIT debug objects.  Kept as a hook
+   (rather than a direct call) so mir.c does not reference mir-debug-gdb, which
+   would force-link its process-global __jit_debug_descriptor into every build. */
+void _MIR_set_gdb_jit_finish (MIR_context_t ctx, void (*finish) (MIR_context_t ctx)) {
+  ctx->gdb_jit_finish = finish;
+}
+
+int MIR_reg_frame_offset (MIR_func_t func, MIR_reg_t reg, int64_t *offset) {
+  for (size_t i = 0; i < func->reg_locs_len; i++)
+    if (func->reg_locs[i].reg == reg) {
+      if (offset != NULL) *offset = func->reg_locs[i].fp_offset;
+      return 1;
+    }
+  return 0;
+}
+
 static htab_hash_t item_hash (MIR_item_t it, void *arg MIR_UNUSED) {
   return (htab_hash_t) mir_hash_finish (
     mir_hash_step (mir_hash_step (mir_hash_init (28), (uint64_t) MIR_item_name (NULL, it)),
@@ -822,10 +857,8 @@ static void hard_reg_name_finish (MIR_context_t ctx);
 MIR_context_t _MIR_init (MIR_alloc_t alloc, MIR_code_alloc_t code_alloc) {
   MIR_context_t ctx;
 
-  if (alloc == NULL)
-    alloc = &default_alloc;
-  if (code_alloc == NULL)
-    code_alloc = &default_code_alloc;
+  if (alloc == NULL) alloc = &default_alloc;
+  if (code_alloc == NULL) code_alloc = &default_code_alloc;
 
   mir_assert (MIR_OP_BOUND < OUT_FLAG);
   if ((ctx = MIR_malloc (alloc, sizeof (struct MIR_context))) == NULL)
@@ -845,6 +878,9 @@ MIR_context_t _MIR_init (MIR_alloc_t alloc, MIR_code_alloc_t code_alloc) {
   ctx->alloc = alloc;
   ctx->code_alloc = code_alloc;
   error_func = default_error;
+  no_inline_p = FALSE;
+  spill_all_p = FALSE;
+  ctx->gdb_jit_finish = NULL;
   func_redef_permission_p = FALSE;
   curr_module = NULL;
   curr_func = NULL;
@@ -916,6 +952,8 @@ static void remove_item (MIR_context_t ctx, MIR_item_t item) {
        ("fix: guard against NULL vars/internal during module teardown"). */
     if (item->u.func->vars != NULL) VARR_DESTROY (MIR_var_t, item->u.func->vars);
     if (item->u.func->global_vars != NULL) VARR_DESTROY (MIR_var_t, item->u.func->global_vars);
+    if (item->u.func->line_map != NULL) MIR_free (ctx->alloc, item->u.func->line_map);
+    if (item->u.func->reg_locs != NULL) MIR_free (ctx->alloc, item->u.func->reg_locs);
     if (item->u.func->internal != NULL) func_regs_finish (ctx, item->u.func);
     MIR_free (ctx->alloc, item->u.func);
     break;
@@ -927,34 +965,28 @@ static void remove_item (MIR_context_t ctx, MIR_item_t item) {
   case MIR_export_item:
   case MIR_forward_item: break;
   case MIR_data_item:
-    if (item->addr != NULL && item->section_head_p)
-      MIR_free (ctx->alloc, item->addr);
+    if (item->addr != NULL && item->section_head_p) MIR_free (ctx->alloc, item->addr);
     MIR_free (ctx->alloc, item->u.data);
     break;
   case MIR_ref_data_item:
-    if (item->addr != NULL && item->section_head_p)
-      MIR_free (ctx->alloc, item->addr);
+    if (item->addr != NULL && item->section_head_p) MIR_free (ctx->alloc, item->addr);
     MIR_free (ctx->alloc, item->u.ref_data);
     break;
   case MIR_lref_data_item:
-    if (item->addr != NULL && item->section_head_p)
-      MIR_free (ctx->alloc, item->addr);
+    if (item->addr != NULL && item->section_head_p) MIR_free (ctx->alloc, item->addr);
     MIR_free (ctx->alloc, item->u.lref_data);
     break;
   case MIR_expr_data_item:
-    if (item->addr != NULL && item->section_head_p)
-      MIR_free (ctx->alloc, item->addr);
+    if (item->addr != NULL && item->section_head_p) MIR_free (ctx->alloc, item->addr);
     MIR_free (ctx->alloc, item->u.expr_data);
     break;
   case MIR_bss_item:
-    if (item->addr != NULL && item->section_head_p)
-      MIR_free (ctx->alloc, item->addr);
+    if (item->addr != NULL && item->section_head_p) MIR_free (ctx->alloc, item->addr);
     MIR_free (ctx->alloc, item->u.bss);
     break;
   default: mir_assert (FALSE);
   }
-  if (item->data != NULL)
-    MIR_free (ctx->alloc, item->data);
+  if (item->data != NULL) MIR_free (ctx->alloc, item->data);
   MIR_free (ctx->alloc, item);
 }
 
@@ -965,10 +997,8 @@ static void remove_module (MIR_context_t ctx, MIR_module_t module, int free_modu
     DLIST_REMOVE (MIR_item_t, module->items, item);
     remove_item (ctx, item);
   }
-  if (module->data != NULL)
-    bitmap_destroy (module->data);
-  if (free_module_p)
-    MIR_free (ctx->alloc, module);
+  if (module->data != NULL) bitmap_destroy (module->data);
+  if (free_module_p) MIR_free (ctx->alloc, module);
 }
 
 static void remove_all_modules (MIR_context_t ctx) {
@@ -982,6 +1012,9 @@ static void remove_all_modules (MIR_context_t ctx) {
 }
 
 void MIR_finish (MIR_context_t ctx) {
+  /* Unregister any GDB-JIT debug objects for this context before its machine
+     code is freed below -- their addresses become stale. */
+  if (ctx->gdb_jit_finish != NULL) ctx->gdb_jit_finish (ctx);
   interp_finish (ctx);
   remove_all_modules (ctx);
   HTAB_DESTROY (MIR_item_t, module_item_tab);
@@ -1395,7 +1428,8 @@ MIR_item_t MIR_new_expr_data (MIR_context_t ctx, const char *name, MIR_item_t ex
 static MIR_proto_t create_proto (MIR_context_t ctx, const char *name, size_t nres,
                                  MIR_type_t *res_types, size_t nargs, int vararg_p,
                                  MIR_var_t *args) {
-  MIR_proto_t proto = MIR_malloc (ctx->alloc, sizeof (struct MIR_proto) + nres * sizeof (MIR_type_t));
+  MIR_proto_t proto
+    = MIR_malloc (ctx->alloc, sizeof (struct MIR_proto) + nres * sizeof (MIR_type_t));
   MIR_var_t arg;
 
   if (proto == NULL)
@@ -1516,7 +1550,13 @@ static MIR_item_t new_func_arr (MIR_context_t ctx, const char *name, size_t nres
   func->expr_p = func->jret_p = FALSE;
   func->n_inlines = 0;
   func->machine_code = func->call_addr = NULL;
+  func->code_len = 0;
   func->first_lref = NULL;
+  func->line_map = NULL;
+  func->line_map_len = 0;
+  func->reg_locs = NULL;
+  func->reg_locs_len = 0;
+  ctx->curr_source_file_id = ctx->curr_source_line = 0; /* don't bleed across functions */
   func_regs_init (ctx, func);
   for (size_t i = 0; i < nargs; i++) {
     char *stored_name;
@@ -2203,7 +2243,7 @@ void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_
     for (item = DLIST_HEAD (MIR_item_t, m->items); item != NULL;
          item = DLIST_NEXT (MIR_item_t, item)) {
       if (item->item_type == MIR_func_item && item->data != NULL) {
-        process_inlines (ctx, item);
+        if (!no_inline_p) process_inlines (ctx, item);
         item->data = NULL;
 #if 0
         fprintf (stderr, "+++++ Function after inlining:\n");
@@ -2383,7 +2423,14 @@ static MIR_insn_t create_insn (MIR_context_t ctx, size_t nops, MIR_insn_code_t c
 #endif
   insn->code = code;
   insn->data = NULL;
+  insn->file_id = ctx->curr_source_file_id;
+  insn->line = ctx->curr_source_line;
   return insn;
+}
+
+void MIR_set_source_loc (MIR_context_t ctx, uint32_t file_id, uint32_t line) {
+  ctx->curr_source_file_id = file_id;
+  ctx->curr_source_line = line;
 }
 
 static MIR_insn_t new_insn1 (MIR_context_t ctx, MIR_insn_code_t code) {
@@ -2570,9 +2617,7 @@ static MIR_insn_t create_label (MIR_context_t ctx, int64_t label_num) {
 
 MIR_insn_t MIR_new_label (MIR_context_t ctx) { return create_label (ctx, ++curr_label_num); }
 
-void _MIR_free_insn (MIR_context_t ctx MIR_UNUSED, MIR_insn_t insn) {
-  MIR_free (ctx->alloc, insn);
-}
+void _MIR_free_insn (MIR_context_t ctx MIR_UNUSED, MIR_insn_t insn) { MIR_free (ctx->alloc, insn); }
 
 static MIR_reg_t new_temp_reg (MIR_context_t ctx, MIR_type_t type, MIR_func_t func) {
   char reg_name[30];
@@ -3272,7 +3317,7 @@ void _MIR_output_data_item_els (MIR_context_t ctx, FILE *f, MIR_item_t item, int
   }
   if (data->el_type == MIR_T_U8 && data->nel != 0 && data->u.els[data->nel - 1] == '\0') {
     fprintf (f, c_p ? "/* " : " # "); /* print possible string as a comment */
-    MIR_output_str (ctx, f, (MIR_str_t){data->nel, (char *) data->u.els});
+    MIR_output_str (ctx, f, (MIR_str_t) {data->nel, (char *) data->u.els});
     if (c_p) fprintf (f, " */");
   }
 }
@@ -3912,6 +3957,10 @@ static int simplify_func (MIR_context_t ctx, MIR_item_t func_item, int mem_float
     MIR_get_error_func (ctx) (MIR_wrong_param_value_error, "MIR_remove_simplify: wrong func item");
   vn_empty (ctx);
   func = func_item->u.func;
+  /* The arg-extension insns below are inserted at the function head; don't let
+     them inherit a stale source line (the prologue would adopt it as the func's
+     first line).  Leave them unlocated; the per-insn loop restamps the rest. */
+  ctx->curr_source_file_id = ctx->curr_source_line = 0;
   for (size_t i = 0; i < func->nargs; i++) {
     MIR_var_t var = VARR_GET (MIR_var_t, func->vars, i);
 
@@ -3938,6 +3987,9 @@ static int simplify_func (MIR_context_t ctx, MIR_item_t func_item, int mem_float
   for (insn = DLIST_HEAD (MIR_insn_t, func->insns); insn != NULL; insn = next_insn) {
     MIR_insn_code_t code = insn->code;
     MIR_op_t temp_op;
+    /* Insns simplify creates for this insn inherit its source location. */
+    ctx->curr_source_file_id = insn->file_id;
+    ctx->curr_source_line = insn->line;
 
     if ((code == MIR_MOV || code == MIR_FMOV || code == MIR_DMOV || code == MIR_LDMOV)
         && insn->ops[0].mode == MIR_OP_MEM && insn->ops[1].mode == MIR_OP_MEM) {
@@ -4564,9 +4616,7 @@ MIR_item_t _MIR_builtin_func (MIR_context_t ctx, MIR_module_t module, const char
 #include <sys/mman.h>
 #include <unistd.h>
 
-static size_t mem_page_size () {
-  return sysconf (_SC_PAGE_SIZE);
-}
+static size_t mem_page_size () { return sysconf (_SC_PAGE_SIZE); }
 #else
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -4661,9 +4711,8 @@ void _MIR_flush_code_cache (void *start, void *bound) {
 }
 
 #if !defined(MIR_BOOTSTRAP) || !defined(__APPLE__) || !defined(__aarch64__)
-void _MIR_set_code (MIR_code_alloc_t code_alloc, size_t prot_start, size_t prot_len,
-                    uint8_t *base, size_t nloc, const MIR_code_reloc_t *relocs,
-                    size_t reloc_size) {
+void _MIR_set_code (MIR_code_alloc_t code_alloc, size_t prot_start, size_t prot_len, uint8_t *base,
+                    size_t nloc, const MIR_code_reloc_t *relocs, size_t reloc_size) {
   MIR_mem_protect (code_alloc, (uint8_t *) prot_start, prot_len, PROT_WRITE_EXEC);
   if (reloc_size == 0) {
     for (size_t i = 0; i < nloc; i++)
@@ -4684,7 +4733,8 @@ static uint8_t *add_code (MIR_context_t ctx MIR_UNUSED, code_holder_t *ch_ptr, c
   MIR_code_reloc_t reloc;
   reloc.offset = 0;
   reloc.value = code;
-  _MIR_set_code (ctx->code_alloc, (size_t) ch_ptr->start, ch_ptr->bound - ch_ptr->start, mem, 1, &reloc, code_len);
+  _MIR_set_code (ctx->code_alloc, (size_t) ch_ptr->start, ch_ptr->bound - ch_ptr->start, mem, 1,
+                 &reloc, code_len);
   _MIR_flush_code_cache (mem, ch_ptr->free);
   return mem;
 }
@@ -5066,11 +5116,11 @@ static size_t write_str (MIR_context_t ctx, writer_func_t writer, MIR_str_t str)
   return write_str_tag (ctx, writer, str, TAG_STR1);
 }
 static size_t write_name (MIR_context_t ctx, writer_func_t writer, const char *name) {
-  return write_str_tag (ctx, writer, (MIR_str_t){strlen (name) + 1, name}, TAG_NAME1);
+  return write_str_tag (ctx, writer, (MIR_str_t) {strlen (name) + 1, name}, TAG_NAME1);
 }
 
 static size_t write_reg (MIR_context_t ctx, writer_func_t writer, const char *reg_name) {
-  size_t len = write_str_tag (ctx, writer, (MIR_str_t){strlen (reg_name) + 1, reg_name}, TAG_REG1);
+  size_t len = write_str_tag (ctx, writer, (MIR_str_t) {strlen (reg_name) + 1, reg_name}, TAG_REG1);
 
   output_regs_len += len;
   return len;
@@ -6408,7 +6458,7 @@ static void scan_string (MIR_context_t ctx, token_t *t, int c, int get_char (MIR
   t->code = TC_STR;
   t->u.str
     = string_store (ctx, &strings, &string_tab,
-                    (MIR_str_t){VARR_LENGTH (char, temp_string), VARR_ADDR (char, temp_string)})
+                    (MIR_str_t) {VARR_LENGTH (char, temp_string), VARR_ADDR (char, temp_string)})
         .str;
 }
 
@@ -6439,8 +6489,7 @@ static void scan_token (MIR_context_t ctx, token_t *token, int (*get_char) (MIR_
     case ' ':
     case '\t': break;
     case '#':
-      while ((ch = get_char (ctx)) != '\n' && ch != EOF)
-        ;
+      while ((ch = get_char (ctx)) != '\n' && ch != EOF);
       /* falls through */
     case '\n': token->code = TC_NL; return;
     case '(': token->code = TC_LEFT_PAR; return;
@@ -7141,7 +7190,8 @@ static void scan_init (MIR_context_t ctx) {
   VARR_CREATE (MIR_op_t, scan_insn_ops, ctx->alloc, 0);
   VARR_CREATE (label_name_t, label_names, ctx->alloc, 0);
   HTAB_CREATE (label_desc_t, label_desc_tab, ctx->alloc, 100, label_hash, label_eq, NULL);
-  HTAB_CREATE (insn_name_t, insn_name_tab, ctx->alloc, MIR_INSN_BOUND, insn_name_hash, insn_name_eq, NULL);
+  HTAB_CREATE (insn_name_t, insn_name_tab, ctx->alloc, MIR_INSN_BOUND, insn_name_hash, insn_name_eq,
+               NULL);
   for (i = 0; i < MIR_INSN_BOUND; i++) {
     in.code = i;
     in.name = MIR_insn_name (ctx, i);
@@ -7281,7 +7331,8 @@ static void hard_reg_name_init (MIR_context_t ctx) {
 
   if ((ctx->hard_reg_ctx = MIR_malloc (ctx->alloc, sizeof (struct hard_reg_ctx))) == NULL)
     MIR_get_error_func (ctx) (MIR_alloc_error, "Not enough memory for ctx");
-  HTAB_CREATE (hard_reg_desc_t, hard_reg_desc_tab, ctx->alloc, 200, hard_reg_desc_hash, hard_reg_desc_eq, NULL);
+  HTAB_CREATE (hard_reg_desc_t, hard_reg_desc_tab, ctx->alloc, 200, hard_reg_desc_hash,
+               hard_reg_desc_eq, NULL);
   for (size_t i = 0; i * sizeof (char *) < sizeof (target_hard_reg_names); i++) {
     desc.num = (int) i;
     desc.name = target_hard_reg_names[i];

@@ -830,7 +830,10 @@ static void target_machinize (gen_ctx_t gen_ctx) {
   func = curr_func_item->u.func;
   block_arg_func_p = FALSE;
   start_sp_from_bp_offset = 8;
-  keep_fp_p = func->vararg_p;
+  /* In spill-all (debug) mode keep the frame pointer so each local's recorded
+     stack home (MIR_func.reg_locs) has a stable FP-relative base a debugger can
+     point DWARF at; otherwise simple frames omit FP and home slots off SP. */
+  keep_fp_p = func->vararg_p || MIR_get_spill_all_p (ctx);
   for (i = 0; i < func->nargs; i++) {
     /* Argument extensions is already done in simplify */
     /* Prologue: generate arg_var = hard_reg|stack mem|stack addr ... */
@@ -3192,6 +3195,7 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
       if (MIR_branch_code_p (insn->code)) /* possible replacement change */
         ind = find_insn_pattern (gen_ctx, insn, NULL);
       gen_assert (ind >= 0);
+      gen_record_line (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
 #ifndef NDEBUG
       size_t len_before = VARR_LENGTH (uint8_t, result_code);
 #endif
