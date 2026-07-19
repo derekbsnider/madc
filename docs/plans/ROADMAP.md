@@ -310,9 +310,13 @@ high-level" — the answer is both.**
   `get/set_global`, string call marshalling, fork/limits, the policy tail
   (the 38 `test_libmadc_program` skips; see
   `docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md`).
-- **AOT (native object/executable):** deferred, low priority. Near-term native
-  builds come from emit-`.c` + an external compiler; `save_object` /
-  `save_executable` are stubbed (signatures kept) for a later MIR-based revisit.
+- **AOT (native object/executable):** PLANNED — owner pulled it forward
+  2026-07-18 as a MIR-fork feature (ELF `.o` writer + gen object-capture mode
+  + the `cyanogilvie/debug-support` DWARF/gdb integration). Design:
+  [2026-07-19-mir-aot-elf-plan.md](2026-07-19-mir-aot-elf-plan.md) (rungs
+  R0–R6; `run_tests.sh --exe` becomes the AOT arbiter; restores
+  asmjit-master `-o` parity). Near-term native builds still come from
+  emit-`.c` + an external compiler until R4 lands.
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target
   the CIR path is climbing back to — NOT the current state.
