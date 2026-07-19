@@ -183,16 +183,23 @@ double time_diff(struct timeval x , struct timeval y)
 	return diff;
 }
 
-// Resource guards. Defaults are generous enough for normal compile +
-// execute, strict enough that a runaway JIT loop or pathological alloc
-// trips well before the host gets noticeable. All overridable via env:
-//   MADC_CPU_LIMIT=<secs>   (default 60, 0 disables)
-//   MADC_MEM_LIMIT=<MB>     (default 2048, 0 disables) — virtual address
-//                            space (RLIMIT_AS), so includes JIT mappings
-//                            and dlopen()'d shared libs.
+// Resource guards — deliberately LIBERAL by default: madc is a developer
+// CLI that also RUNS the program, and gcc/clang-style tools impose no
+// self-limits. Tight limits are an embedding host's / sandbox's choice
+// (set the env knobs); the defaults must never throttle legitimate work:
+//   MADC_CPU_LIMIT=<secs>   (default 0 = disabled) — any finite default
+//                            eventually kills a legitimate long-running
+//                            program with SIGXCPU, so CPU is opt-in only
+//   MADC_MEM_LIMIT=<MB>     (default 4096, +128/TU in --project mode;
+//                            0 disables) — virtual address space
+//                            (RLIMIT_AS), so includes JIT mappings and
+//                            dlopen()'d shared libs. Kept armed so a
+//                            pathological alloc trips as a loud, clean
+//                            bad_alloc instead of swapping the host to
+//                            death.
 // Soft = limit, hard = limit+slop so the process can't extend itself.
-// Hitting RLIMIT_CPU sends SIGXCPU; hitting RLIMIT_AS makes the next
-// mmap/brk return ENOMEM (allocators usually abort()).
+// Every trip must name its knob (never-silent): SIGXCPU via
+// cpu_guard_handler, ENOMEM/bad_alloc via mem_guard_new_handler.
 static rlim_t env_rlim(const char *env_name, rlim_t fallback)
 {
     if ( const char *env = getenv(env_name) ) {
@@ -223,15 +230,42 @@ static void mem_guard_new_handler(void)
     throw std::bad_alloc();
 }
 
+// Armed with the (opt-in) RLIMIT_CPU guard: the default SIGXCPU disposition
+// kills silently, which reads as a mystery death instead of the guard doing
+// its job — name the knob first, then die with the real signal status.
+static rlim_t madc_cpu_guard_secs = 0;
+
+static void cpu_guard_handler(int sig)
+{
+    char buf[160];
+    int n = snprintf(buf, sizeof(buf),
+                     "madc: CPU time exceeded the MADC_CPU_LIMIT=%llu s guard;"
+                     " raise it or unset it to disable\n",
+                     (unsigned long long)madc_cpu_guard_secs);
+    crash_write_formatted(buf, n, sizeof(buf));
+    struct sigaction dfl;
+    memset(&dfl, 0, sizeof(dfl));
+    dfl.sa_handler = SIG_DFL;
+    sigaction(sig, &dfl, NULL);
+    raise(sig);
+}
+
 static void install_resource_guards(size_t project_tus)
 {
-    rlim_t cpu_secs = env_rlim("MADC_CPU_LIMIT", 60);
+    rlim_t cpu_secs = env_rlim("MADC_CPU_LIMIT", 0);
     if ( cpu_secs > 0 ) {
         struct rlimit rl;
         rl.rlim_cur = cpu_secs;
         rl.rlim_max = cpu_secs + 1;
         if ( setrlimit(RLIMIT_CPU, &rl) != 0 )
             perror("setrlimit(RLIMIT_CPU)");
+        else {
+            madc_cpu_guard_secs = cpu_secs;
+            struct sigaction sa;
+            memset(&sa, 0, sizeof(sa));
+            sa.sa_handler = cpu_guard_handler;
+            sigaction(SIGXCPU, &sa, NULL);
+        }
     }
 
     // A --project build holds every TU's parsed state simultaneously (by
@@ -241,7 +275,7 @@ static void install_resource_guards(size_t project_tus)
     // default: SMAUG's 51-TU manifest measures ~2.9 GB peak VA (~57 MB/TU),
     // so 128 keeps ~2x headroom while a true runaway still trips.
     // MADC_MEM_LIMIT overrides the computed default verbatim.
-    rlim_t default_mb = 2048 + (project_tus > 1 ? 128 * (rlim_t)project_tus : 0);
+    rlim_t default_mb = 4096 + (project_tus > 1 ? 128 * (rlim_t)project_tus : 0);
     rlim_t mem_mb = env_rlim("MADC_MEM_LIMIT", default_mb);
     if ( mem_mb > 0 ) {
         struct rlimit rl;
@@ -513,6 +547,14 @@ static void print_usage(const char *prog)
 "                          c2mir, execute) to stderr after the run\n"
 "  -v, --verbose           verbose / debug output\n"
 "  -h, -?, --help          show this help\n"
+"\n"
+"Environment:\n"
+"  MADC_CPU_LIMIT=<secs>   arm an RLIMIT_CPU guard (default: off — madc also\n"
+"                          runs the program, so no finite default is safe;\n"
+"                          intended for embedding hosts and sandboxes)\n"
+"  MADC_MEM_LIMIT=<MB>     address-space guard (RLIMIT_AS, covers JIT\n"
+"                          mappings); default 4096 MB + 128 MB per --project\n"
+"                          TU; 0 disables. Trips name the knob.\n"
 "\n"
 "Note: AOT object/executable output (--emit-object/--emit-executable/-o) is not\n"
 "available on the CIR backend; emit C with --emit=c11 and compile with gcc/clang.\n";

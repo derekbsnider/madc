@@ -28,6 +28,24 @@
 > **10,219,496 bytes**, and has `MADCSNAP` footer magic.
 >
 > **Local branch update (2026-07-19, `feature/class-parse-once-codex`,
+> task #77 — liberal default resource guards, owner directive):** the CLI's
+> self-limits no longer throttle legitimate work: `MADC_CPU_LIMIT` default
+> 60 s → **0 (disabled, opt-in)** — madc RUNS the program, so any finite
+> CPU default eventually kills a legitimate long-running server with
+> SIGXCPU; an armed CPU guard now trips LOUDLY (new SIGXCPU handler names
+> the knob via the crash-write plumbing, then re-raises so the shell sees
+> the real signal status). `MADC_MEM_LIMIT` base **2048 → 4096 MB**
+> (+128 MB/TU `--project` scaling and the knob-naming `bad_alloc`
+> attribution unchanged); both knobs are now documented in `--help`
+> (Environment section). Probes: `MADC_CPU_LIMIT=2` + spin → knob-named
+> trip, exit 152; **65-CPU-second spin survives the default env** (died
+> at 60 s before); malloc-loop NULLs at exactly the 4096 MB ceiling
+> (4032 MB allocated over a ~64 MB baseline) and honors a 256 MB override
+> (192 MB). Guards install only in `main()` — libmadc embedding hosts set
+> their own. Fulltest and the packed arbiter re-verified green (counts
+> unchanged: 724/0/0/15 dev + packed).
+>
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`,
 > promote-gate singles — 🏁 THE ≥1608 THRESHOLD IS MET):** gcc-torture
 > **1608 passed, 2 compile-failed, 12 runtime-failed, 0 timed out, 63
 > skipped** — name-set diff vs the post-#74 baseline is EXACTLY

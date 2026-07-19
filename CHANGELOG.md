@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- **feat(cli): liberal default resource guards — the CLI never
+  throttles legitimate work (task #77, owner directive).** madc is a
+  developer CLI that also RUNS the program; gcc/clang-style tools
+  impose no self-limits, and any finite CPU default eventually kills a
+  legitimate long-running program (a soaked SMAUG server died with
+  SIGXCPU at the old 60 s default). `MADC_CPU_LIMIT` is now **opt-in**
+  (default 0 = disabled; intended for embedding hosts and sandboxes),
+  and an armed CPU guard trips loudly: a new SIGXCPU handler names the
+  knob via the async-signal-safe crash-write plumbing, then re-raises
+  so the shell still sees the real signal status. `MADC_MEM_LIMIT`
+  stays armed by default (a pathological alloc should trip as a loud,
+  clean `bad_alloc` — not swap the host to death) but the base rises
+  2048 → 4096 MB, keeping the +128 MB/TU `--project` scaling and the
+  knob-naming new-handler attribution. The knobs are now documented in
+  `--help` (new Environment section). Probed: `MADC_CPU_LIMIT=2` trips
+  with the knob named and exit 152; a 65-CPU-second spin survives the
+  default env (died at 60 s before); malloc-loop hits NULL at exactly
+  the 4096 MB ceiling and honors overrides. Guards install only in the
+  CLI (`main`) — libmadc embedding hosts set their own.
+
 - **fix(cir): two promote-gate singles — fn-ptr declarations with
   typedef'd RETURN types, and `_Bool` bitfields (struct-ret-1,
   20030714-1).** (1) `X (*fp)(void)` where `X` is a typedef emitted as
