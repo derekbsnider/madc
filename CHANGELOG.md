@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **docs(parity): gcc-torture re-baseline at HEAD (task #64).** Full
+  sweep 1572/32/18/0/63 — the 50-name failset is **byte-identical** to
+  `docs/parity/torture-failset-current.txt`: ZERO regressions across
+  the entire #35–#63 correctness span. Cluster refresh: 39 class-(a)
+  remain, and the map COLLAPSED — the "implicit-decl forward call"
+  cluster is a symptom of implicit-int definitions failing to parse,
+  so one parser work item (bare K&R identifier lists + omitted return
+  types) covers 30 of the 39; pr17078-1's label drop attributed to the
+  CIR builder (stock c2m passes). Gate math: 1572 + 39 = 1611 ≥ 1608 —
+  the promote gate is reachable on class-(a) alone. Execution-ready
+  tasks filed: #72 (the 30-test lever), #73 (wide literals, lifts
+  testwideconcat), #74 (if-arm labels).
+
 - **fix(diagnostics): errors inside #included files now attribute to the
   header — file, line, AND source echo from ONE token provenance (task
   #63).** An error raised while parsing an included file printed the

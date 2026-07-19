@@ -27,6 +27,33 @@
 > warnings**. The packed artifact carries a readable 240-unit forest, is
 > **10,219,496 bytes**, and has `MADCSNAP` footer magic.
 >
+> **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #64
+> gcc-torture re-baseline):** full sweep at HEAD @1aa53a4e via
+> `scripts/run_gcc_testsuite.py` (defaults: dev binary, `--std=c17`, formal
+> skip manifest): **1572 passed, 32 compile-failed, 18 runtime-failed, 0 timed
+> out, 63 skipped** — the 50-name failset is **byte-identical to
+> `docs/parity/torture-failset-current.txt`** (name-set diff empty both ways;
+> ZERO regressions across the #35–#63 span; the previously recorded
+> "1571/33, 51-name" banner was one stale against the file). Cluster refresh
+> of the 50: **39 class-(a)** + 11 class-(b) GNU-ext (aligned>16 ×3,
+> packed/misalign ×2, SIMD vector_size ×3, __sync_* ×1, empty-union ABI ×1,
+> one-void-arm conditional ×1). The class-(a) map COLLAPSED on evidence: the
+> old "implicit-decl forward call" cluster (5) is a SYMPTOM of implicit-int
+> definitions failing to parse (`mpn_print (){}` defines nothing → "import of
+> undefined item"), so ONE parser work item — implicit-int function
+> definitions (bare K&R identifier lists `f(x){}`, empty-parens `dummy(){}`,
+> and typed-param defs after first use misparsed as calls) — covers **30 of
+> 39**; the declaration-list K&R form `f(x) int x; {...}` ALREADY parses at
+> HEAD. Remainder: wide literals ×2 (undeclared `__wliteral__*`, same cause
+> as testwideconcat), labels-in-if-arm ×2 (pr17078-1 attributed to the CIR
+> builder — stock c2m passes it), va_list delegation ×1, VLA param bound ×1,
+> _Bool sign-qualifier bitfield ×1, strlen-4, struct-ret-1. Gate math:
+> 1572 + 39 = 1611 ≥ 1608 — the promote gate is reachable on class-(a) alone.
+> Follow-on tasks filed: #72 (the 30-test parser lever, SMAUG-soak-gated),
+> #73 (wide literals + testwideconcat lift), #74 (if-arm label drop).
+> Reducers banked: tmp/s64_knr.c, tmp/s64_implicitint.c, tmp/s64_wlit.c,
+> tmp/s64_labelscope.c (passing control), tmp/s64_failset_new.txt.
+>
 > **Local branch update (2026-07-19, `feature/class-parse-once-codex`, task #61
 > mir_skip audit):** all **16** `tests/*.mir_skip` fixtures re-run at live HEAD
 > with runner-equivalent fixture handling — **all 16 still fail; zero lifted**;
