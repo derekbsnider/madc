@@ -12854,7 +12854,15 @@ static op_t force_val (c2m_ctx_t c2m_ctx, op_t op, int arr_p) {
     /* an array -- use a pointer: */
     return mem_to_address (c2m_ctx, op, FALSE);
   }
-  if (op.decl != NULL && op.decl->addr_p && op.mir_op.mode == MIR_OP_REG
+  /* Extend ALL narrow integer reg values, not only address-taken ones: an
+     UNINITIALIZED narrow local was never written by a well-formed (extending)
+     store, so its pseudo-reg carries stale 64-bit garbage; reading it
+     unextended feeds full-width garbage into e.g. 32-bit division and
+     gcc.c-torture pr34099-2 (char x; x/1000 must be 0 for any char) aborts
+     at -O0/-O1.  This restores the original fix for issue #458 that the
+     upstream follow-up (2a157cc2) narrowed to addr_p; pr34099-2 is the
+     counterexample to that narrowing -- propose it back upstream. */
+  if (op.decl != NULL && op.mir_op.mode == MIR_OP_REG
       && integer_type_p (op.decl->decl_spec.type)) {
     t = get_mir_type (c2m_ctx, op.decl->decl_spec.type);
     if (t == MIR_T_I8 || t == MIR_T_U8 || t == MIR_T_I16 || t == MIR_T_U16)
