@@ -688,6 +688,76 @@ typedef struct {
   uint64_t size;
 } dwsec_t;
 
+/* ===== .debug_frame (CFI) ================================================ */
+/* Authoritative unwind info for the JIT frames (x86-64 only for now).  gdb's
+   heuristic prologue analysis does not recognize MIR's FP prologue
+   (mov %rbp,-8(%rsp); lea -8(%rsp),%rbp -- no push), so without CFI a
+   backtrace cannot leave frame 0 even though the in-memory FP chain is
+   canonical (saved rbp at [rbp], return address at [rbp+8]).  Debug codegen
+   (spill-all) forces keep_fp_p, so every function with a prologue gets the
+   same fixed shape and needs only a template FDE: CFA=rsp+8 at entry, rbp
+   saved at CFA-16 after insn 1 (+5), CFA=rbp+16 after insn 2 (+10).  A
+   function whose entry bytes do not match the signature (a prologue-less
+   leaf) keeps the CIE default row, which is exact for it.  The 1-2 insn
+   epilogue window where the restored rbp mislabels the CFA is accepted
+   debug-tier imprecision. */
+enum {
+  DW_CFA_nop = 0x00,
+  DW_CFA_def_cfa = 0x0c, /* ULEB reg, ULEB offset */
+  DW_CFA_advance_loc = 0x40, /* low 6 bits = code delta */
+  DW_CFA_offset = 0x80, /* low 6 bits = reg; ULEB factored offset */
+};
+
+static void buf_patch_u32 (dwbuf_t *b, size_t pos, uint32_t v) { memcpy (b->p + pos, &v, 4); }
+
+static void emit_frame (MIR_debug_t d, dwbuf_t *b) {
+#if defined(__x86_64__)
+  static const uint8_t fp_prologue[] = {0x48, 0x89, 0x6c, 0x24, 0xf8,  /* mov %rbp,-0x8(%rsp) */
+                                        0x48, 0x8d, 0x6c, 0x24, 0xf8}; /* lea -0x8(%rsp),%rbp */
+  /* CIE (DWARF32 .debug_frame v1): CFA = rsp+8, return address at CFA-8 */
+  size_t cie_off = b->len, len_pos = b->len;
+  buf_u32 (b, 0); /* length, backpatched */
+  buf_u32 (b, 0xffffffff); /* CIE id */
+  buf_u8 (b, 1); /* version */
+  buf_u8 (b, 0); /* augmentation "" */
+  buf_uleb (b, 1); /* code alignment factor */
+  buf_sleb (b, -8); /* data alignment factor */
+  buf_u8 (b, 16); /* return address register (rip) */
+  buf_u8 (b, DW_CFA_def_cfa);
+  buf_uleb (b, 7); /* rsp */
+  buf_uleb (b, 8); /* CFA = rsp+8 */
+  buf_u8 (b, DW_CFA_offset | 16);
+  buf_uleb (b, 1); /* ra at CFA + 1*(-8) */
+  while ((b->len - len_pos) % 8 != 0) buf_u8 (b, DW_CFA_nop);
+  buf_patch_u32 (b, len_pos, (uint32_t) (b->len - len_pos - 4));
+
+  for (int i = 0; i < d->n_funcs; i++) {
+    dwfunc_t *fn = &d->funcs[i];
+    if (fn->addr == NULL || fn->size == 0) continue;
+    size_t fde_len_pos = b->len;
+    buf_u32 (b, 0); /* length, backpatched */
+    buf_u32 (b, (uint32_t) cie_off); /* CIE pointer (section offset) */
+    buf_u64 (b, (uint64_t) (uintptr_t) fn->addr); /* initial location (absolute) */
+    buf_u64 (b, (uint64_t) fn->size); /* address range */
+    if (fn->size >= sizeof (fp_prologue)
+        && memcmp (fn->addr, fp_prologue, sizeof (fp_prologue)) == 0) {
+      buf_u8 (b, DW_CFA_advance_loc | 5);
+      buf_u8 (b, DW_CFA_offset | 6); /* rbp saved... */
+      buf_uleb (b, 2); /* ...at CFA + 2*(-8) */
+      buf_u8 (b, DW_CFA_advance_loc | 5);
+      buf_u8 (b, DW_CFA_def_cfa);
+      buf_uleb (b, 6); /* rbp */
+      buf_uleb (b, 16); /* CFA = rbp+16 */
+    }
+    while ((b->len - fde_len_pos) % 8 != 0) buf_u8 (b, DW_CFA_nop);
+    buf_patch_u32 (b, fde_len_pos, (uint32_t) (b->len - fde_len_pos - 4));
+  }
+#else
+  (void) d;
+  (void) b;
+#endif
+}
+
 int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
   if (buf != NULL) *buf = NULL;
   if (size != NULL) *size = 0;
@@ -704,7 +774,7 @@ int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
   uint64_t text_base = lo, text_size = hi > lo ? (uint64_t) (hi - lo) : 0;
 
   /* section bodies */
-  dwbuf_t strtab = {0}, symtab = {0}, abbrev = {0}, info = {0}, line = {0};
+  dwbuf_t strtab = {0}, symtab = {0}, abbrev = {0}, info = {0}, line = {0}, frame = {0};
   buf_u8 (&strtab, 0);
   Elf64_Sym z = {0};
   buf_bytes (&symtab, &z, sizeof z);
@@ -728,6 +798,7 @@ int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
   emit_abbrev (&abbrev);
   emit_info (d, &info, text_base, text_size, cu_name);
   emit_line (d, &line);
+  emit_frame (d, &frame);
 
   dwsec_t S[16];
   int ns = 0;
@@ -743,6 +814,8 @@ int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
   S[ns++] = (dwsec_t){".debug_abbrev", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &abbrev, abbrev.len};
   S[ns++] = (dwsec_t){".debug_info", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &info, info.len};
   S[ns++] = (dwsec_t){".debug_line", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &line, line.len};
+  if (frame.len != 0)
+    S[ns++] = (dwsec_t){".debug_frame", SHT_PROGBITS, 0, 0, 8, 0, 0, 0, &frame, frame.len};
   int i_shstr = ns;
   dwbuf_t shstr = {0};
   buf_u8 (&shstr, 0);
@@ -767,7 +840,8 @@ int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
 
   unsigned char *p = calloc (1, total);
   if (p == NULL) {
-    free (strtab.p); free (symtab.p); free (abbrev.p); free (info.p); free (line.p); free (shstr.p);
+    free (strtab.p); free (symtab.p); free (abbrev.p); free (info.p); free (line.p); free (frame.p);
+    free (shstr.p);
     return -1;
   }
   Elf64_Ehdr *eh = (Elf64_Ehdr *) p;
@@ -803,7 +877,8 @@ int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
     sh[i].sh_addralign = S[i].align;
     sh[i].sh_entsize = S[i].entsize;
   }
-  free (strtab.p); free (symtab.p); free (abbrev.p); free (info.p); free (line.p); free (shstr.p);
+  free (strtab.p); free (symtab.p); free (abbrev.p); free (info.p); free (line.p); free (frame.p);
+  free (shstr.p);
   *buf = p;
   *size = total;
   return 0;
