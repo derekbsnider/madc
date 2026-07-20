@@ -147,8 +147,11 @@ symtab). One writer, one section/DWARF encoder — no parallel implementation.
 - **R1 — debug-support merge + madc JIT `-g`.** Gate: gdb `break file:line`,
   named frames, `info locals` on a `.mad` test via the JIT; fulltest
   unaffected; `MIR_COMMIT` bump in the same madc commit.
-- **R2 — object-capture mode in gen (x86-64).** Delivered with a `c2m -c`
-  flag so it is testable inside the MIR repo (upstream-facing). Gate: a
+- **R2 — object-capture mode in gen (x86-64).** The deliverable is the
+  library API (`MIR_gen_set_object_mode`-style, D1) — madc consumes it
+  in-process via libmir/c2mir like every other gen knob, never via a CLI.
+  A `c2m -c` flag is added only as the MIR-repo-internal test driver for
+  the mode (and upstream-facing packaging). Gate: a
   mir-tests/c-tests subset compiles to `.o`, links with gcc, runs == JIT
   output; JIT lanes byte-identical with mode off; c2mir-test suite green.
 - **R3 — ELF-writer unification.** mir-debug's gdb object and the `.o` writer
