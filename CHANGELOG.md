@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+- **feat(aot): MIR object-capture mode — linkable ELF `.o` from the JIT
+  pipeline (AOT R2, task #83).** The MIR fork's generator (develop
+  @dc01374b, `MIR_COMMIT` bumped in the same commit) gained an
+  object-capture mode exposed as a library API at BOTH layers — libmir
+  (`MIR_gen_set_object_mode` + `MIR_gen_object_emit`) and c2mir
+  (`c2mir_options.native_object_p` + `c2mir_get_native_object`), with
+  `c2m -fobject` as a thin CLI test driver (madc consumes c2mir
+  in-process, never a CLI). With the mode on, gen captures each
+  function's translated blob instead of publishing executable code and
+  converts every address-escape channel into ELF relocations (imm64
+  movabs, const-pool call slots, computed-goto tables, lref data;
+  the SSA REF const-fold is disabled so no address escapes the ledger);
+  data items emit from item structures alone — the `.o` never reads
+  load-time memory. One ELF writer: `elf_assemble`, factored from the
+  R1 GDB-JIT debug-object emitter (byte-identical debug output), now
+  serves both consumers — largely closing R3 by construction. The
+  `mir.*` gen builtins are exported from libmir via asm-name aliases so
+  linked objects resolve them. Non-PIC posture until the R6 PIC rung
+  (`-no-pie` executables; `.so` needs `-z notext`). Validation: new
+  fork object lane (compile `-fobject` → link → run → compare) green on
+  the whole corpus — 1139 tests, 0 failures; full fork battery green
+  (mode-off byte-identity); madc fulltest + packed arbiter 729/0/0/13;
+  torture failset name-identical; SMAUG soak green dev + packed.
+  madc code untouched this rung — madc-side `-c`/`-o`/`-shared`
+  (gcc/clang CLI vocabulary) is R4, execute-`.o`-as-cache is R4b.
+
 - **feat(complex): component-correct GNU integer `_Complex` (task #69).** Integer-element
   complex previously degraded SILENTLY in c2mir to its scalar base — imaginary parts
   vanished (four in-scope torture tests false-passed on degenerate comparisons) and
