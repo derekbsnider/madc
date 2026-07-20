@@ -177,6 +177,18 @@ symtab). One writer, one section/DWARF encoder — no parallel implementation.
 - **R6 — stretch, in any order:** gcc-torture through the AOT lane; direct-ld
   experiment; aarch64 object mode; PIC mode; COMDAT groups.
 
+**Shared-library output (owner ask 2026-07-20 — promoted from stretch):**
+`.so` lands in two steps. (a) With R4's link driver, `--emit-shared` is nearly
+free: `cc -shared x.o -o x.so` — but R2 object code carries absolute 64-bit
+text relocations (imm64, computed-goto slots, const-pool address slots), so
+such a `.so` needs `-z notext` and is loader-patched (no text page sharing).
+Ship it in R4 with that caveat documented. (b) Production `.so` = the PIC-mode
+rung (was R6 stretch, now a real R6 deliverable): MIR's call architecture is
+already GOT-shaped (`call *disp32(rip)` through an address pool), so PIC mode
+routes the pool + address materialization through GOT-relative patterns
+instead of imm64. madc surface: `--emit-shared` (and `-fPIC` analogue once
+(b) exists).
+
 ## Risks / open questions
 
 - **Redefinable functions:** weak-symbol mapping needs the R0 survey to
