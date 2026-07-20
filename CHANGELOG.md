@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+- **feat(aot): `madc -c` / `-o` — native objects and RUNNABLE EXECUTABLES
+  with no external toolchain (AOT R4, task #85).** madc now emits native
+  artifacts itself using the standard gcc/clang CLI vocabulary: `madc -c
+  x.mad` writes a relocatable ELF `.o`; `madc -o prog x.mad` writes a
+  complete dynamic executable **assembled by MIR directly** — no cc, no
+  ld, no crt1.o (owner directive: external linking was only ever the test
+  that the `.o` is a proper object; the fork's cc-linking battery keeps
+  that oracle role). The fork (develop @5c461803, `MIR_COMMIT` bumped in
+  the same commit) grew direct ET_EXEC emission behind the same
+  format-neutral `MIR_object` builder as R2 — synthesized `_start` via
+  `__libc_start_main`, `PT_INTERP`/`.dynamic` (`DT_NEEDED` +
+  `DT_RUNPATH`), SysV `.hash`, eager `.rela.dyn` over the ABS64 ledger
+  (no PLT/GOT — MIR's calls already route through address slots),
+  `DT_TEXTREL` until the PIC rung — exposed at both API layers
+  (`MIR_object_emit_executable` / `MIR_gen_object_emit_executable` /
+  `c2mir_get_native_executable`). `-shared` emits a `.so` (via the last
+  remaining test scaffold until the direct ET_DYN slice). First-ever
+  `run_tests.sh --exe` sweeps: 708/729 via the cc oracle, then **709/729
+  via direct emission** (testint128 lifted by asm-alias-exporting the
+  `__mir_*oti` int128 helpers; an SSE pool-constant alignment bug and a
+  latent `libmadc.so`-staleness Makefile bug fixed en route). Remaining
+  exe-lane burndown: 5× `--project` (per-TU contexts, next slice), 2×
+  structurally JIT-only, 3× deref cluster. Fulltest == packed 729/0/0/13;
+  fork object lane 1139/0; full fork battery mode-off byte-identity.
+
 - **feat(aot): MIR object-capture mode — linkable ELF `.o` from the JIT
   pipeline (AOT R2, task #83).** The MIR fork's generator (develop
   @dc01374b, `MIR_COMMIT` bumped in the same commit) gained an
