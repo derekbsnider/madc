@@ -63,4 +63,13 @@ int c2mir_get_debug_object (MIR_context_t ctx, void **buf, size_t *size);
    it. */
 int c2mir_get_native_object (MIR_context_t ctx, void **buf, size_t *size);
 
+/* Same preconditions, but assemble a complete ET_EXEC dynamic executable (no
+   external toolchain): MIR synthesizes _start and the dynamic-linking
+   apparatus around the captured code.  params is a MIR_object_exec_params
+   (mir-debug.h): PT_INTERP path, DT_NEEDED sonames, and the entry symbol
+   __libc_start_main receives.  Write the buffer out 0755 and free it. */
+struct MIR_object_exec_params;
+int c2mir_get_native_executable (MIR_context_t ctx, const struct MIR_object_exec_params *params,
+                                 void **buf, size_t *size);
+
 #endif

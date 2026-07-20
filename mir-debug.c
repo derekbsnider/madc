@@ -1150,6 +1150,422 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   free (rela_data.p);
   return rc;
 }
+
+/* ===== AOT executable emitter (ET_EXEC, x86-64 Linux) ==================== */
+/* The third consumer of the object builder: a complete dynamic executable
+   with no external toolchain.  This lays out segments/vaddrs by hand -- a
+   different concern from elf_assemble's link-view section table (ET_REL,
+   no program headers), so it is a sibling stage over the SAME builder data,
+   not a parallel builder.  Model (from madc-master's proven in-house writer,
+   simplified by MIR's exact reloc ledgers):
+     - fixed load base 0x400000, identity file-offset<->vaddr mapping;
+     - two PT_LOADs (R+X: headers/interp/hash/dynsym/dynstr/rela.dyn/text;
+       R+W: data/.dynamic/bss tail) + PT_INTERP + PT_DYNAMIC;
+     - internal relocations resolve at emit; imports become eager
+       R_X86_64_64 slot relocations in .rela.dyn (no PLT/GOT: MIR calls
+       already go through address slots) => DT_TEXTREL until the PIC rung;
+     - synthesized _start: SysV stack -> __libc_start_main (entry, argc,
+       argv, init=0, fini=0, rtld_fini) through its own reloc slot. */
+
+#define OBJX_BASE_ADDR 0x400000ull
+#define OBJX_PAGE 0x1000ull
+
+/* _start: xor ebp; mov rdx->r9; pop rsi (argc); mov rsp->rdx (argv);
+   align rsp; push rax; push rsp; r8=0 (fini); ecx=0 (init);
+   mov $entry,%edi (imm32 @0x15); call *disp32(%rip) (@0x19, disp @0x1b)
+   through the 8-byte __libc_start_main slot right after the stub; hlt. */
+static const uint8_t objx_start_stub[]
+  = {0x31, 0xed, 0x49, 0x89, 0xd1, 0x5e, 0x48, 0x89, 0xe2, 0x48, 0x83,
+     0xe4, 0xf0, 0x50, 0x54, 0x45, 0x31, 0xc0, 0x31, 0xc9, 0xbf, 0x00,
+     0x00, 0x00, 0x00, 0xff, 0x15, 0x00, 0x00, 0x00, 0x00, 0xf4};
+#define OBJX_STUB_ENTRY_IMM 21   /* imm32 of mov $entry,%edi */
+#define OBJX_STUB_CALL_DISP 27   /* disp32 of call *(%rip) */
+#define OBJX_STUB_SIZE 32
+#define OBJX_LSM_SLOT OBJX_STUB_SIZE /* 8-byte __libc_start_main slot */
+/* stub + slot padded to 16 so the captured text keeps the 16-byte alignment
+   it was generated under (SSE pool constants: movaps/xorpd fault otherwise) */
+#define OBJX_TEXT_BIAS 48
+
+static uint32_t objx_elf_hash (const char *name) {
+  uint32_t h = 0, g;
+  for (; *name; ++name) {
+    h = (h << 4) + (uint8_t) *name;
+    g = h & 0xf0000000;
+    if (g) h ^= g >> 24;
+    h &= ~g;
+  }
+  return h;
+}
+
+int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *params,
+                                void **buf, size_t *size) {
+  if (buf != NULL) *buf = NULL;
+  if (size != NULL) *size = 0;
+  if (obj == NULL || params == NULL || buf == NULL || size == NULL || MIR_DEBUG_EM != EM_X86_64)
+    return -1;
+  const char *interp = params->interp != NULL ? params->interp : "/lib64/ld-linux-x86-64.so.2";
+  const char *entry_nm = params->entry != NULL ? params->entry : "main";
+
+  /* the entry symbol must be a defined text function */
+  size_t n = obj->n_syms;
+  size_t entry_i = n;
+  for (size_t i = 0; i < n; i++)
+    if (obj->syms[i].name != NULL && obj->syms[i].defined_p && obj->syms[i].sec == MIR_OBJ_SEC_TEXT
+        && strcmp (obj->syms[i].name, entry_nm) == 0) {
+      entry_i = i;
+      break;
+    }
+  if (entry_i == n) return -1;
+
+  /* dynsym = every undefined (imported) symbol, plus __libc_start_main for
+     the _start slot if the module does not already import it */
+  uint32_t *dyn_idx = calloc (n ? n : 1, sizeof (uint32_t)); /* 0 = not imported */
+  if (dyn_idx == NULL) return -1;
+  dwbuf_t dynstr = {0}, dynsym = {0}, hash = {0}, symtab = {0}, strtab = {0}, shstr = {0};
+  int rc = -1;
+  unsigned char *p = NULL;
+  uint32_t *lib_name_off = NULL;
+  buf_u8 (&dynstr, 0);
+  Elf64_Sym z = {0};
+  buf_bytes (&dynsym, &z, sizeof z);
+  lib_name_off = calloc (params->n_needed ? params->n_needed : 1, sizeof (uint32_t));
+  if (lib_name_off == NULL) goto done;
+  for (size_t i = 0; i < params->n_needed; i++) {
+    lib_name_off[i] = (uint32_t) dynstr.len;
+    buf_str (&dynstr, params->needed[i]);
+  }
+  uint32_t runpath_off = 0;
+  if (params->runpath != NULL) {
+    runpath_off = (uint32_t) dynstr.len;
+    buf_str (&dynstr, params->runpath);
+  }
+  uint32_t ndyn = 1, lsm_idx = 0;
+  const char **dyn_names = calloc (n + 1, sizeof (char *));
+  if (dyn_names == NULL) goto done;
+  for (size_t i = 0; i < n; i++) {
+    objsym_t *s = &obj->syms[i];
+    if (s->defined_p || s->name == NULL) continue;
+    Elf64_Sym es = {0};
+    es.st_name = (Elf64_Word) dynstr.len;
+    buf_str (&dynstr, s->name);
+    es.st_info = ELF64_ST_INFO (STB_GLOBAL, s->func_p ? STT_FUNC : STT_NOTYPE);
+    buf_bytes (&dynsym, &es, sizeof es);
+    dyn_names[ndyn] = s->name;
+    dyn_idx[i] = ndyn++;
+    if (strcmp (s->name, "__libc_start_main") == 0) lsm_idx = dyn_idx[i];
+  }
+  if (lsm_idx == 0) {
+    Elf64_Sym es = {0};
+    es.st_name = (Elf64_Word) dynstr.len;
+    buf_str (&dynstr, "__libc_start_main");
+    es.st_info = ELF64_ST_INFO (STB_GLOBAL, STT_FUNC);
+    buf_bytes (&dynsym, &es, sizeof es);
+    dyn_names[ndyn] = "__libc_start_main";
+    lsm_idx = ndyn++;
+  }
+
+  { /* SysV .hash over the dynsyms */
+    uint32_t nbucket = ndyn, nchain = ndyn;
+    uint32_t *buckets = calloc (nbucket, sizeof (uint32_t));
+    uint32_t *chains = calloc (nchain, sizeof (uint32_t));
+    if (buckets == NULL || chains == NULL) {
+      free (buckets);
+      free (chains);
+      free ((void *) dyn_names);
+      goto done;
+    }
+    for (uint32_t i = 1; i < ndyn; i++) {
+      uint32_t h = objx_elf_hash (dyn_names[i]) % nbucket;
+      chains[i] = buckets[h];
+      buckets[h] = i;
+    }
+    buf_u32 (&hash, nbucket);
+    buf_u32 (&hash, nchain);
+    for (uint32_t i = 0; i < nbucket; i++) buf_u32 (&hash, buckets[i]);
+    for (uint32_t i = 0; i < nchain; i++) buf_u32 (&hash, chains[i]);
+    free (buckets);
+    free (chains);
+  }
+  free ((void *) dyn_names);
+
+  /* import relocations survive to .rela.dyn; internal ones resolve below */
+  size_t n_import_rel = 1; /* the __libc_start_main slot */
+  for (size_t i = 0; i < obj->n_rels; i++) {
+    objreloc_t *r = &obj->rels[i];
+    if (r->kind != MIR_OBJ_RELOC_ABS64 || r->sym < 0 || (size_t) r->sym >= n) goto done;
+    if (!obj->syms[r->sym].defined_p) n_import_rel++;
+  }
+
+  /* ---- layout: identity file-offset<->vaddr mapping from OBJX_BASE_ADDR */
+#define OBJX_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
+  uint64_t off = sizeof (Elf64_Ehdr);
+  uint64_t phdr_off = off;
+  const int n_phdrs = 4;
+  off += (uint64_t) n_phdrs * sizeof (Elf64_Phdr);
+  uint64_t interp_off = off, interp_size = strlen (interp) + 1;
+  off = OBJX_ALIGN (interp_off + interp_size, 8);
+  uint64_t hash_off = off;
+  off = OBJX_ALIGN (hash_off + hash.len, 8);
+  uint64_t dynsym_off = off;
+  off = OBJX_ALIGN (dynsym_off + dynsym.len, 1);
+  uint64_t dynstr_off = off;
+  off = OBJX_ALIGN (dynstr_off + dynstr.len, 8);
+  uint64_t rela_off = off, rela_size = (uint64_t) n_import_rel * sizeof (Elf64_Rela);
+  off = OBJX_ALIGN (rela_off + rela_size, 16);
+  uint64_t text_off = off, text_size = OBJX_TEXT_BIAS + obj->text.len;
+  off = OBJX_ALIGN (text_off + text_size, OBJX_PAGE);
+  uint64_t rx_filesz = text_off + text_size; /* the R+X segment: file start..text end */
+  uint64_t rw_off = off;                     /* page-aligned R+W segment start */
+  size_t data_align = obj->data_align > 8 ? obj->data_align : 8;
+  if (data_align > OBJX_PAGE) goto done; /* congruence bound; nothing emits >4K aligns */
+  uint64_t data_off = rw_off;
+  off = OBJX_ALIGN (data_off + obj->data.len, 8);
+  uint64_t dynamic_off = off;
+  /* NEEDED*n [+RUNPATH] + STRTAB/STRSZ/SYMTAB/SYMENT/HASH + RELA/RELASZ/RELAENT
+     + TEXTREL (the lsm slot is in text) + NULL */
+  uint64_t n_dyntags = params->n_needed + (params->runpath != NULL ? 1 : 0) + 9 + 1;
+  uint64_t dynamic_size = n_dyntags * sizeof (Elf64_Dyn);
+  off = dynamic_off + dynamic_size;
+  uint64_t rw_filesz = off - rw_off;
+  size_t bss_align = obj->bss_align > 8 ? obj->bss_align : 8;
+  uint64_t bss_vaddr = OBJX_ALIGN (OBJX_BASE_ADDR + off, bss_align);
+  uint64_t rw_memsz = bss_vaddr + obj->bss_size - (OBJX_BASE_ADDR + rw_off);
+  uint64_t text_vaddr = OBJX_BASE_ADDR + text_off;
+  uint64_t data_vaddr = OBJX_BASE_ADDR + data_off;
+  uint64_t code_vaddr = text_vaddr + OBJX_TEXT_BIAS; /* the builder's .text offset 0 */
+
+  /* section vaddr for a defined symbol/section id */
+#define OBJX_SEC_VADDR(sec) \
+  ((sec) == MIR_OBJ_SEC_TEXT ? code_vaddr : (sec) == MIR_OBJ_SEC_DATA ? data_vaddr : bss_vaddr)
+
+  /* ---- .symtab / .strtab (debug view: resolved vaddrs) */
+  static const Elf64_Section objx_shndx[3] = {6, 7, 9}; /* text/data/bss shdr indexes */
+  buf_u8 (&strtab, 0);
+  buf_bytes (&symtab, &z, sizeof z);
+  uint32_t n_locals = 0, next = 1;
+  for (int pass = 0; pass < 2; pass++)
+    for (size_t i = 0; i < n; i++) {
+      objsym_t *s = &obj->syms[i];
+      int local = s->local_p || s->section_p;
+      if ((pass == 0) != (local != 0)) continue;
+      Elf64_Sym es = {0};
+      if (s->name != NULL) {
+        es.st_name = (Elf64_Word) strtab.len;
+        buf_str (&strtab, s->name);
+      }
+      unsigned char bind = local ? STB_LOCAL : s->weak_p ? STB_WEAK : STB_GLOBAL;
+      unsigned char type = s->section_p ? STT_SECTION
+                           : !s->defined_p ? STT_NOTYPE
+                           : s->func_p ? STT_FUNC
+                                       : STT_OBJECT;
+      es.st_info = ELF64_ST_INFO (bind, type);
+      es.st_shndx = s->defined_p ? objx_shndx[s->sec] : SHN_UNDEF;
+      es.st_value = s->defined_p ? OBJX_SEC_VADDR (s->sec) + s->value : 0;
+      es.st_size = s->size;
+      buf_bytes (&symtab, &es, sizeof es);
+      if (pass == 0) n_locals++;
+      next++;
+    }
+  (void) next;
+
+  /* ---- assemble the image */
+  const int n_secs = 13; /* see shdr table below */
+  uint32_t shname[13];
+  static const char *objx_sec_names[13]
+    = {"",      ".interp", ".hash",    ".dynsym", ".dynstr", ".rela.dyn", ".text",
+       ".data", ".dynamic", ".bss",    ".symtab", ".strtab", ".shstrtab"};
+  buf_u8 (&shstr, 0);
+  shname[0] = 0;
+  for (int i = 1; i < n_secs; i++) {
+    shname[i] = (uint32_t) shstr.len;
+    buf_str (&shstr, objx_sec_names[i]);
+  }
+  uint64_t symtab_off = OBJX_ALIGN (off, 8);
+  uint64_t strtab_off = symtab_off + symtab.len;
+  uint64_t shstr_off = strtab_off + strtab.len;
+  uint64_t shoff = OBJX_ALIGN (shstr_off + shstr.len, 8);
+  uint64_t total = shoff + (uint64_t) n_secs * sizeof (Elf64_Shdr);
+
+  p = calloc (1, (size_t) total);
+  if (p == NULL) goto done;
+  memcpy (p + interp_off, interp, interp_size);
+  memcpy (p + hash_off, hash.p, hash.len);
+  memcpy (p + dynsym_off, dynsym.p, dynsym.len);
+  memcpy (p + dynstr_off, dynstr.p, dynstr.len);
+  memcpy (p + text_off, objx_start_stub, OBJX_STUB_SIZE);
+  {
+    uint64_t entry_vaddr = code_vaddr + obj->syms[entry_i].value;
+    uint32_t imm = (uint32_t) entry_vaddr; /* base 0x400000: fits imm32 */
+    memcpy (p + text_off + OBJX_STUB_ENTRY_IMM, &imm, 4);
+    /* call *disp32(%rip): rip = stub end (+31); slot at +32 */
+    uint32_t disp = (uint32_t) (OBJX_LSM_SLOT - (OBJX_STUB_CALL_DISP + 4));
+    memcpy (p + text_off + OBJX_STUB_CALL_DISP, &disp, 4);
+  }
+  if (obj->text.len != 0) memcpy (p + text_off + OBJX_TEXT_BIAS, obj->text.p, obj->text.len);
+  if (obj->data.len != 0) memcpy (p + data_off, obj->data.p, obj->data.len);
+
+  /* relocations: internal resolve in place; imports go to .rela.dyn */
+  {
+    Elf64_Rela *er = (Elf64_Rela *) (p + rela_off);
+    er->r_offset = text_vaddr + OBJX_LSM_SLOT;
+    er->r_info = ELF64_R_INFO ((uint64_t) lsm_idx, R_X86_64_64);
+    er->r_addend = 0;
+    er++;
+    for (size_t i = 0; i < obj->n_rels; i++) {
+      objreloc_t *r = &obj->rels[i];
+      uint64_t slot_off = (r->sec == MIR_OBJ_SEC_TEXT ? text_off + OBJX_TEXT_BIAS : data_off)
+                          + r->offset;
+      objsym_t *s = &obj->syms[r->sym];
+      if (s->defined_p) {
+        uint64_t v = OBJX_SEC_VADDR (s->sec) + s->value + (uint64_t) r->addend;
+        memcpy (p + slot_off, &v, 8);
+      } else {
+        er->r_offset = OBJX_BASE_ADDR + slot_off;
+        er->r_info = ELF64_R_INFO ((uint64_t) dyn_idx[r->sym], R_X86_64_64);
+        er->r_addend = r->addend;
+        er++;
+      }
+    }
+  }
+
+  { /* .dynamic */
+    Elf64_Dyn *d = (Elf64_Dyn *) (p + dynamic_off);
+    for (size_t i = 0; i < params->n_needed; i++) {
+      d->d_tag = DT_NEEDED;
+      d->d_un.d_val = lib_name_off[i];
+      d++;
+    }
+#define OBJX_DYN(tag, val)  \
+  do {                      \
+    d->d_tag = (tag);       \
+    d->d_un.d_val = (val);  \
+    d++;                    \
+  } while (0)
+    if (params->runpath != NULL) OBJX_DYN (DT_RUNPATH, runpath_off);
+    OBJX_DYN (DT_STRTAB, OBJX_BASE_ADDR + dynstr_off);
+    OBJX_DYN (DT_STRSZ, dynstr.len);
+    OBJX_DYN (DT_SYMTAB, OBJX_BASE_ADDR + dynsym_off);
+    OBJX_DYN (DT_SYMENT, sizeof (Elf64_Sym));
+    OBJX_DYN (DT_HASH, OBJX_BASE_ADDR + hash_off);
+    OBJX_DYN (DT_RELA, OBJX_BASE_ADDR + rela_off);
+    OBJX_DYN (DT_RELASZ, rela_size);
+    OBJX_DYN (DT_RELAENT, sizeof (Elf64_Rela));
+    OBJX_DYN (DT_TEXTREL, 0);
+    OBJX_DYN (DT_NULL, 0);
+#undef OBJX_DYN
+  }
+
+  memcpy (p + symtab_off, symtab.p, symtab.len);
+  memcpy (p + strtab_off, strtab.p, strtab.len);
+  memcpy (p + shstr_off, shstr.p, shstr.len);
+
+  { /* ELF header */
+    Elf64_Ehdr *eh = (Elf64_Ehdr *) p;
+    eh->e_ident[EI_MAG0] = ELFMAG0;
+    eh->e_ident[EI_MAG1] = ELFMAG1;
+    eh->e_ident[EI_MAG2] = ELFMAG2;
+    eh->e_ident[EI_MAG3] = ELFMAG3;
+    eh->e_ident[EI_CLASS] = ELFCLASS64;
+    eh->e_ident[EI_DATA] = ELFDATA2LSB;
+    eh->e_ident[EI_VERSION] = EV_CURRENT;
+    eh->e_ident[EI_OSABI] = ELFOSABI_SYSV;
+    eh->e_type = ET_EXEC;
+    eh->e_machine = EM_X86_64;
+    eh->e_version = EV_CURRENT;
+    eh->e_entry = text_vaddr; /* the _start stub heads .text */
+    eh->e_phoff = phdr_off;
+    eh->e_shoff = shoff;
+    eh->e_ehsize = sizeof (Elf64_Ehdr);
+    eh->e_phentsize = sizeof (Elf64_Phdr);
+    eh->e_phnum = (Elf64_Half) n_phdrs;
+    eh->e_shentsize = sizeof (Elf64_Shdr);
+    eh->e_shnum = (Elf64_Half) n_secs;
+    eh->e_shstrndx = 12;
+  }
+  { /* program headers: LOAD R+X, LOAD R+W, INTERP, DYNAMIC */
+    Elf64_Phdr *ph = (Elf64_Phdr *) (p + phdr_off);
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_flags = PF_R | PF_X;
+    ph[0].p_offset = 0;
+    ph[0].p_vaddr = ph[0].p_paddr = OBJX_BASE_ADDR;
+    ph[0].p_filesz = ph[0].p_memsz = rx_filesz;
+    ph[0].p_align = OBJX_PAGE;
+    ph[1].p_type = PT_LOAD;
+    ph[1].p_flags = PF_R | PF_W;
+    ph[1].p_offset = rw_off;
+    ph[1].p_vaddr = ph[1].p_paddr = OBJX_BASE_ADDR + rw_off;
+    ph[1].p_filesz = rw_filesz;
+    ph[1].p_memsz = rw_memsz;
+    ph[1].p_align = OBJX_PAGE;
+    ph[2].p_type = PT_INTERP;
+    ph[2].p_flags = PF_R;
+    ph[2].p_offset = interp_off;
+    ph[2].p_vaddr = ph[2].p_paddr = OBJX_BASE_ADDR + interp_off;
+    ph[2].p_filesz = ph[2].p_memsz = interp_size;
+    ph[2].p_align = 1;
+    ph[3].p_type = PT_DYNAMIC;
+    ph[3].p_flags = PF_R | PF_W;
+    ph[3].p_offset = dynamic_off;
+    ph[3].p_vaddr = ph[3].p_paddr = OBJX_BASE_ADDR + dynamic_off;
+    ph[3].p_filesz = ph[3].p_memsz = dynamic_size;
+    ph[3].p_align = 8;
+  }
+  { /* section headers (readelf/gdb view; the loader uses only phdrs) */
+    Elf64_Shdr *sh = (Elf64_Shdr *) (p + shoff);
+    struct {
+      uint32_t type, link, info, align;
+      uint64_t flags, off, vaddr_p, sz, entsize;
+    } T[13] = {
+      {0, 0, 0, 0, 0, 0, 0, 0, 0},
+      {SHT_PROGBITS, 0, 0, 1, SHF_ALLOC, interp_off, 1, interp_size, 0},
+      {SHT_HASH, 3, 0, 8, SHF_ALLOC, hash_off, 1, hash.len, 4},
+      {SHT_DYNSYM, 4, 1, 8, SHF_ALLOC, dynsym_off, 1, dynsym.len, sizeof (Elf64_Sym)},
+      {SHT_STRTAB, 0, 0, 1, SHF_ALLOC, dynstr_off, 1, dynstr.len, 0},
+      {SHT_RELA, 3, 0, 8, SHF_ALLOC, rela_off, 1, rela_size, sizeof (Elf64_Rela)},
+      {SHT_PROGBITS, 0, 0, 16, SHF_ALLOC | SHF_EXECINSTR, text_off, 1, text_size, 0},
+      {SHT_PROGBITS, 0, 0, (uint32_t) data_align, SHF_ALLOC | SHF_WRITE, data_off, 1,
+       obj->data.len, 0},
+      {SHT_DYNAMIC, 4, 0, 8, SHF_ALLOC | SHF_WRITE, dynamic_off, 1, dynamic_size,
+       sizeof (Elf64_Dyn)},
+      {SHT_NOBITS, 0, 0, (uint32_t) bss_align, SHF_ALLOC | SHF_WRITE, off, 2, obj->bss_size, 0},
+      {SHT_SYMTAB, 11, n_locals + 1, 8, 0, symtab_off, 0, symtab.len, sizeof (Elf64_Sym)},
+      {SHT_STRTAB, 0, 0, 1, 0, strtab_off, 0, strtab.len, 0},
+      {SHT_STRTAB, 0, 0, 1, 0, shstr_off, 0, shstr.len, 0},
+    };
+    for (int i = 1; i < n_secs; i++) {
+      sh[i].sh_name = shname[i];
+      sh[i].sh_type = T[i].type;
+      sh[i].sh_flags = T[i].flags;
+      sh[i].sh_addr = T[i].vaddr_p == 1 ? OBJX_BASE_ADDR + T[i].off
+                      : T[i].vaddr_p == 2 ? bss_vaddr
+                                          : 0;
+      sh[i].sh_offset = T[i].off;
+      sh[i].sh_size = T[i].sz;
+      sh[i].sh_link = T[i].link;
+      sh[i].sh_info = T[i].info;
+      sh[i].sh_addralign = T[i].align;
+      sh[i].sh_entsize = T[i].entsize;
+    }
+  }
+  *buf = p;
+  *size = (size_t) total;
+  p = NULL;
+  rc = 0;
+#undef OBJX_SEC_VADDR
+#undef OBJX_ALIGN
+
+done:
+  free (p);
+  free (lib_name_off);
+  free (dyn_idx);
+  free (dynstr.p);
+  free (dynsym.p);
+  free (hash.p);
+  free (symtab.p);
+  free (strtab.p);
+  free (shstr.p);
+  return rc;
+}
 #else
 int MIR_debug_emit (MIR_debug_t d MIR_UNUSED, void **buf, size_t *size) {
   if (buf != NULL) *buf = NULL;
@@ -1187,6 +1603,13 @@ void MIR_object_add_reloc (MIR_object_t obj MIR_UNUSED, int sec MIR_UNUSED,
                            uint64_t offset MIR_UNUSED, int sym_id MIR_UNUSED,
                            int64_t addend MIR_UNUSED, int kind MIR_UNUSED) {}
 int MIR_object_emit (MIR_object_t obj MIR_UNUSED, void **buf, size_t *size) {
+  if (buf != NULL) *buf = NULL;
+  if (size != NULL) *size = 0;
+  return -1;
+}
+int MIR_object_emit_executable (MIR_object_t obj MIR_UNUSED,
+                                const MIR_object_exec_params *params MIR_UNUSED, void **buf,
+                                size_t *size) {
   if (buf != NULL) *buf = NULL;
   if (size != NULL) *size = 0;
   return -1;

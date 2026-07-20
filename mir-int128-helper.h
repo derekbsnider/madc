@@ -75,6 +75,26 @@ static long MIR_int128_umuloti (void *res, unsigned __int128 a, unsigned __int12
   memcpy (res, &r, 16);
   return ov;
 }
+
+/* AOT: the __mir_*oti overflow helpers have no libgcc equivalent (the
+   __divti3 family resolves from libgcc_s in a linked process), so a linked
+   .o/executable needs them under their import names as dynamic symbols.
+   Exported from exactly ONE including TU (c2mir.c defines the macro) via
+   asm-name aliases, mirroring the mir.* builtin exports. */
+#if defined(MIR_INT128_EXPORT_ALIASES) && defined(__GNUC__) && !defined(_WIN32)
+extern __typeof (MIR_int128_addoti) MIR_int128_addoti_export asm ("__mir_addoti")
+  __attribute__ ((alias ("MIR_int128_addoti"), used));
+extern __typeof (MIR_int128_uaddoti) MIR_int128_uaddoti_export asm ("__mir_uaddoti")
+  __attribute__ ((alias ("MIR_int128_uaddoti"), used));
+extern __typeof (MIR_int128_suboti) MIR_int128_suboti_export asm ("__mir_suboti")
+  __attribute__ ((alias ("MIR_int128_suboti"), used));
+extern __typeof (MIR_int128_usuboti) MIR_int128_usuboti_export asm ("__mir_usuboti")
+  __attribute__ ((alias ("MIR_int128_usuboti"), used));
+extern __typeof (MIR_int128_muloti) MIR_int128_muloti_export asm ("__mir_muloti")
+  __attribute__ ((alias ("MIR_int128_muloti"), used));
+extern __typeof (MIR_int128_umuloti) MIR_int128_umuloti_export asm ("__mir_umuloti")
+  __attribute__ ((alias ("MIR_int128_umuloti"), used));
+#endif
 #endif
 
 static void *MIR_int128_helper_resolver (const char *name) {

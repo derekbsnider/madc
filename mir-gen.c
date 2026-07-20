@@ -278,6 +278,7 @@ struct gen_ctx {
   MIR_object_t object; /* the captured object model (mir-debug.h builder) */
   HTAB (obj_item_sym_t) * obj_item_sym_tab; /* MIR item -> object symbol id */
   VARR (obj_lref_val_t) * obj_lref_vals;    /* lref values recorded during capture */
+  int obj_data_emitted_p; /* the module-data walk ran (emit entries are one-shot) */
 };
 
 #define optimize_level gen_ctx->optimize_level
@@ -325,6 +326,7 @@ struct gen_ctx {
 #define gen_object gen_ctx->object
 #define obj_item_sym_tab gen_ctx->obj_item_sym_tab
 #define obj_lref_vals gen_ctx->obj_lref_vals
+#define obj_data_emitted_p gen_ctx->obj_data_emitted_p
 
 #define LOOP_COST_FACTOR 5
 
@@ -9902,17 +9904,38 @@ static void obj_emit_module_data (gen_ctx_t gen_ctx, MIR_module_t m) {
   }
 }
 
-int MIR_gen_object_emit (MIR_context_t ctx, void **buf, size_t *size) {
+/* Shared head of the emit entries: validate the capture state and run the
+   module-data walk exactly once (both entries may be called on one capture,
+   e.g. a .o alongside an executable). */
+static gen_ctx_t gen_obj_emit_prepare (MIR_context_t ctx, void **buf, size_t *size) {
   gen_ctx_t gen_ctx = *gen_ctx_loc (ctx);
 
   if (buf != NULL) *buf = NULL;
   if (size != NULL) *size = 0;
   if (gen_ctx == NULL || !object_mode_p || gen_object == NULL || buf == NULL || size == NULL)
-    return -1;
-  for (MIR_module_t m = DLIST_HEAD (MIR_module_t, *MIR_get_module_list (ctx)); m != NULL;
-       m = DLIST_NEXT (MIR_module_t, m))
-    obj_emit_module_data (gen_ctx, m);
+    return NULL;
+  if (!obj_data_emitted_p) {
+    for (MIR_module_t m = DLIST_HEAD (MIR_module_t, *MIR_get_module_list (ctx)); m != NULL;
+         m = DLIST_NEXT (MIR_module_t, m))
+      obj_emit_module_data (gen_ctx, m);
+    obj_data_emitted_p = TRUE;
+  }
+  return gen_ctx;
+}
+
+int MIR_gen_object_emit (MIR_context_t ctx, void **buf, size_t *size) {
+  gen_ctx_t gen_ctx = gen_obj_emit_prepare (ctx, buf, size);
+
+  if (gen_ctx == NULL) return -1;
   return MIR_object_emit (gen_object, buf, size);
+}
+
+int MIR_gen_object_emit_executable (MIR_context_t ctx, const MIR_object_exec_params *params,
+                                    void **buf, size_t *size) {
+  gen_ctx_t gen_ctx = gen_obj_emit_prepare (ctx, buf, size);
+
+  if (gen_ctx == NULL) return -1;
+  return MIR_object_emit_executable (gen_object, params, buf, size);
 }
 
 void MIR_gen_set_debug_file (MIR_context_t ctx, FILE *f) {
@@ -10065,6 +10088,7 @@ void MIR_gen_init (MIR_context_t ctx) {
   gen_object = NULL;
   obj_item_sym_tab = NULL;
   obj_lref_vals = NULL;
+  obj_data_emitted_p = FALSE;
 #if !MIR_NO_GEN_DEBUG
   debug_file = NULL;
   debug_level = 100;
