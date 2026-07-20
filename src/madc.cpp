@@ -32,17 +32,7 @@
 #include "cir_emit_c.h"   // CirEmitLang
 #include "madc_project.h" // --project: compile_commands.json multi-TU driver
 
-extern int madc_cir_execute(Program *prog, const char *source_name,
-                             int user_argc, char **user_argv,
-                             bool dump_tree = false, bool dump_nodes = false,
-                             bool dump_checked = false);
-extern int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
-                         CirEmitLang lang);
-extern int madc_cir_freeze(Program *prog, const char *source_name,
-                           const char *out_path, bool append, bool mir_cache);
-extern int madc_cir_execute_frozen(const char *container_path,
-                                   int user_argc, char **user_argv);
-extern int madc_cir_dump_forest(const char *container_path);
+#include "madc_cir.h"     // madc_cir_execute/emit/freeze/emit_native + MadcNativeKind
 
 using namespace std;
 
@@ -558,8 +548,16 @@ static void print_usage(const char *prog)
 "                          mappings); default 4096 MB + 128 MB per --project\n"
 "                          TU; 0 disables. Trips name the knob.\n"
 "\n"
-"Note: AOT object/executable output (--emit-object/--emit-executable/-o) is not\n"
-"available on the CIR backend; emit C with --emit=c11 and compile with gcc/clang.\n";
+"AOT output (gcc vocabulary; do not run):\n"
+"  -c [-o file.o]          compile to a relocatable native object\n"
+"                          (default: <source-base>.o in the current dir)\n"
+"  -o prog                 compile and link a native executable via the host\n"
+"                          cc ($CC overrides) against libmadc; -no-pie (the\n"
+"                          object code carries absolute relocations until the\n"
+"                          PIC rung)\n"
+"  -shared [-o file.so]    link a shared object (cc -shared -z notext)\n"
+"  --emit-object/--emit-executable <path> are aliases of -c -o / -o.\n"
+"  -l<name> becomes a host-link -l<name> in AOT mode (dlopen otherwise).\n";
 }
 
 int main(int argc, char **argv)
@@ -593,6 +591,9 @@ int main(int argc, char **argv)
     CirEmitLang emit_lang = celC11;
     const char *project_manifest = NULL;  // --project <compile_commands.json>
     std::vector<std::string> link_libs;   // -l<name>: dlopen lib<name>.so (RTLD_GLOBAL)
+    std::vector<std::string> cc_link_args; // -l<name> forwarded to the AOT link line
+    bool compile_object = false;          // -c: emit a relocatable .o, no run
+    bool emit_shared = false;             // -shared: emit a .so via the host cc
     bool show_help = false;               // --help / -h / -?
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
@@ -619,10 +620,20 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "-g") == 0) {
             madc_debug_info = true;
             filearg = i + 1;
+        } else if (strcmp(argv[i], "-c") == 0) {
+            // gcc vocabulary: compile to a relocatable native .o, do not run.
+            compile_object = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-shared") == 0) {
+            // gcc vocabulary: produce a shared object via the host cc.
+            emit_shared = true;
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-object") == 0 && i + 1 < argc) {
+            // alias for -c -o <path>
             emit_object_path = argv[++i];
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-executable") == 0 && i + 1 < argc) {
+            // alias for -o <path>
             emit_executable_path = argv[++i];
             filearg = i + 1;
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
@@ -769,7 +780,12 @@ int main(int argc, char **argv)
             std::string lib(argv[i] + 2);
             if ( lib.find('/') == std::string::npos
               && (lib.size() < 3 || lib.compare(lib.size() - 3, 3, ".so") != 0) )
+            {
                 lib = "lib" + lib + ".so";
+                cc_link_args.push_back(argv[i]);   // AOT: forward as -l<name>
+            }
+            else
+                cc_link_args.push_back(lib);       // AOT: verbatim path input
             link_libs.push_back(lib);
             filearg = i + 1;
         } else if (strncmp(argv[i], "--emit=", 7) == 0) {
@@ -855,12 +871,23 @@ int main(int argc, char **argv)
     else if ( !prog->forest_bind_enabled && !freeze_path && !freeze_run )
         prog->forest_bind_enabled = true;
 
+    // AOT (-c / -shared / -o / --emit-*): compile through gen object-capture
+    // mode and write a native artifact instead of running. -o without -c or
+    // -shared means a linked executable (gcc semantics); --emit-pch keeps its
+    // own -o meaning (.madh output path).
+    bool emit_native = compile_object || emit_shared || emit_object_path
+                    || emit_executable_path
+                    || (generic_output_path && !emit_pch);
+
     // -l<name>: dlopen each requested library (RTLD_GLOBAL) so the import
     // resolver (dlsym(RTLD_DEFAULT, ...)) finds its symbols at link time. Done
     // before any compile/run so it applies to both the single-file and
-    // --project paths.
+    // --project paths. In AOT mode nothing reads import addresses (they become
+    // undefined ELF symbols) — the libs go to the host link line instead.
     for ( const std::string &lib : link_libs )
     {
+        if ( emit_native )
+            break;
         if ( !dlopen(lib.c_str(), RTLD_NOW | RTLD_GLOBAL) )
         {
             std::cerr << "madc: -l: failed to load " << lib << ": "
@@ -894,18 +921,11 @@ int main(int argc, char **argv)
         return (rc < 0) ? 1 : 0;
     }
 
-    if ( generic_output_path && !emit_pch )
+    if ( generic_output_path && !emit_pch && !compile_object && !emit_shared )
 	emit_executable_path = generic_output_path;
 
-    if ( emit_object_path || emit_executable_path )
+    if ( emit_native )
 	prog->aot_tracking = true;
-
-    if (emit_object_path || emit_executable_path) {
-	std::cerr << "AOT object/executable output is not available on the CIR "
-	             "backend; emit C with --emit-c and compile with gcc/clang"
-	          << std::endl;
-	return 1;
-    }
 
     // --emit-pch: lex the input file and write a .madh pre-compiled header
     if ( emit_pch && filearg < argc )
@@ -968,6 +988,14 @@ int main(int argc, char **argv)
 
     if ( project_manifest )
     {
+	if ( emit_native )
+	{
+	    // Per-TU .o emission needs one MIR context per TU (object capture
+	    // is context-wide); the project lane shares one. Next R4 slice.
+	    std::cerr << "madc: -c/-o/-shared with --project is not implemented"
+	                 " yet; AOT single translation units for now" << std::endl;
+	    return 1;
+	}
 	// Remaining positionals (filearg..argc) become the program's argv.
 	int run_argc = argc - filearg;
 	char **run_argv = argv + filearg;
@@ -1263,6 +1291,55 @@ int main(int argc, char **argv)
 		return 1;
 	    }
 	    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+	}
+
+	// AOT: -c → .o, -shared → .so, -o → linked executable; do not run.
+	// (gcc CLI vocabulary; --emit-object/--emit-executable are aliases.)
+	if ( emit_native )
+	{
+	    MadcNativeKind kind;
+	    const char *explicit_out = NULL;
+	    const char *dflt_suffix = NULL;
+	    if ( compile_object || emit_object_path )
+	    {
+		kind = mnkObject;
+		explicit_out = emit_object_path ? emit_object_path
+						: generic_output_path;
+		dflt_suffix = ".o";
+	    }
+	    else if ( emit_shared )
+	    {
+		kind = mnkShared;
+		explicit_out = generic_output_path;
+		dflt_suffix = ".so";
+	    }
+	    else
+	    {
+		kind = mnkExecutable;
+		explicit_out = emit_executable_path;   // -o / --emit-executable
+	    }
+	    std::string outpath;
+	    if ( explicit_out )
+		outpath = explicit_out;
+	    else if ( dflt_suffix )
+	    {
+		// gcc semantics: strip the directory and extension, land the
+		// artifact in the current directory (foo.mad -> foo.o / foo.so).
+		outpath = argv[filearg];
+		size_t slash = outpath.rfind('/');
+		if ( slash != std::string::npos )
+		    outpath = outpath.substr(slash + 1);
+		size_t dot = outpath.rfind('.');
+		if ( dot != std::string::npos && dot > 0 )
+		    outpath = outpath.substr(0, dot);
+		outpath += dflt_suffix;
+	    }
+	    else
+		outpath = "a.out";
+	    int erc = madc_cir_emit_native(prog.get(), argv[filearg], kind,
+					   outpath.c_str(), cc_link_args);
+	    print_stats();
+	    return erc == 0 ? 0 : 1;
 	}
 
 	struct timeval before, after;
