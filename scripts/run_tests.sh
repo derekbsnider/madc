@@ -155,8 +155,11 @@ for t in tests/*.mad; do
         fi
     fi
 
-    # EXE pass: compile to native and run
-    if [ $RUN_EXE -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ]; then
+    # EXE pass: compile to native and run. tests/foo.exe_skip marks a test
+    # as structurally JIT-only (freeze re-exec machinery, in-process host
+    # callbacks) — skipped here, not counted as an exe failure.
+    if [ $RUN_EXE -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ] \
+       && [ ! -f "tests/$base.exe_skip" ]; then
         exe_path="/tmp/madc_test_exe_${base}"
         # -o BEFORE the fixture flags: a positional .json manifest (project
         # auto-detect) ends madc's flag parsing — everything after it is the

@@ -13,6 +13,8 @@
   - `tests/foo.expect_quiet` — JIT run must produce EMPTY stderr (content
     of the fixture file is ignored; presence enables the check)
   - `tests/foo.mir_skip` — skip this test when running with `--backend=mir`
+  - `tests/foo.exe_skip` — skip this test in the `--exe` native-executable
+    pass (content = one line saying why the test is structurally JIT-only)
   - `tests/foo.timeout` — per-test wall-clock cap in seconds (default 5); raise it for a legitimately slow test (e.g. a real-libstdc++-header compile, no PCH yet)
 - When a test needs stdin, use a `.input` fixture file with shell
   redirection (`prog < foo.input`). Never use `echo ... | prog` inline in

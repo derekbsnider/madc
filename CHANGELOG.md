@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **feat(aot): exe-lane burndown to ZERO — `void main` lowering + `exe_skip`
+  fixture (task #85 slice 3).** The three "deref cluster" exe failures were
+  never deref bugs: the tests declare `void main()`, fall off the end, and
+  the native executable faithfully returns the last call's `%eax` (gcc
+  does exactly the same; the JIT's exit 0 was accidental). `void main` is
+  accepted madc dialect, so it is now DEFINED: the CIR builder lowers
+  main's C return type void→int and c2mir supplies C11's implicit
+  `return 0` — both lanes exit 0 by construction, and `--emit=c11` output
+  improves to standard `int main`. New generic `tests/foo.exe_skip`
+  fixture marks structurally-JIT-only tests (testfreezerun,
+  testmadcevalexprctx) with a one-line reason. **`--exe`: 717 passed,
+  0 failed** — every JIT-green test that can structurally be a native
+  executable compiles, runs, and matches. Fulltest + packed arbiter
+  729/0/0/13.
+
 - **feat(aot): `--project` native emission — per-TU `.o` and whole-program
   executables; a NATIVE SMAUG BOOTS (task #85).** `madc_project_emit_native`
   is the `--project` twin of the single-TU entry: `-c` emits one `.o` per TU
