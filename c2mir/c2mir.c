@@ -25,6 +25,7 @@
 #include <limits.h>
 #include "mir-alloc.h"
 #include "mir.h"
+#define MIR_INT128_EXPORT_ALIASES 1 /* AOT: c2mir.c is the one exporting TU */
 #include "mir-int128-helper.h"
 #include "time.h"
 
@@ -17073,6 +17074,11 @@ int c2mir_get_debug_object (MIR_context_t ctx, void **buf, size_t *size) {
     }
   }
   return MIR_debug_emit (c2m_dbg, buf, size);
+}
+
+int c2mir_get_native_executable (MIR_context_t ctx, const struct MIR_object_exec_params *params,
+                                 void **buf, size_t *size) {
+  return MIR_gen_object_emit_executable (ctx, params, buf, size);
 }
 
 int c2mir_get_native_object (MIR_context_t ctx, void **buf, size_t *size) {

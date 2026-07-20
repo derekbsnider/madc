@@ -201,6 +201,26 @@ extern void MIR_object_add_reloc (MIR_object_t obj, int sec, uint64_t offset, in
    nonzero on failure / unsupported host. */
 extern int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size);
 
+/* Direct executable emission (no external toolchain): assemble the captured
+   object as a complete ET_EXEC dynamic executable.  MIR synthesizes _start
+   (SysV stack -> __libc_start_main (entry, argc, argv)) -- no crt1.o -- and
+   the whole dynamic-linking apparatus (PT_INTERP, .dynamic with the given
+   DT_NEEDED list, .dynsym/.dynstr/.hash, .rela.dyn).  Internal references
+   are resolved at emit (fixed load base); imported symbols become R_X86_64_64
+   slot relocations the dynamic loader fills eagerly at load -- MIR's call
+   model already routes imports through address slots, so no PLT/GOT is
+   built.  Slots inside .text make the executable carry DT_TEXTREL until the
+   PIC rung.  x86-64 Linux only. */
+typedef struct MIR_object_exec_params {
+  const char *interp;        /* PT_INTERP path; NULL = /lib64/ld-linux-x86-64.so.2 */
+  const char *const *needed; /* DT_NEEDED sonames, emitted in order */
+  size_t n_needed;
+  const char *entry;   /* defined text symbol __libc_start_main receives; NULL = "main" */
+  const char *runpath; /* DT_RUNPATH library search path; NULL = omit */
+} MIR_object_exec_params;
+extern int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *params,
+                                       void **buf, size_t *size);
+
 #ifdef __cplusplus
 }
 #endif

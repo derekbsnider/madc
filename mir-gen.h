@@ -32,6 +32,13 @@ extern void MIR_gen_get_code (MIR_context_t ctx, MIR_item_t func_item,
    builder these feed. */
 extern void MIR_gen_set_object_mode (MIR_context_t ctx, int on_p);
 extern int MIR_gen_object_emit (MIR_context_t ctx, void **buf, size_t *size);
+/* Assemble the capture as a complete ET_EXEC dynamic executable instead (no
+   external toolchain; see MIR_object_emit_executable in mir-debug.h for the
+   params and the model).  Same preconditions as MIR_gen_object_emit. */
+struct MIR_object_exec_params;
+extern int MIR_gen_object_emit_executable (MIR_context_t ctx,
+                                           const struct MIR_object_exec_params *params, void **buf,
+                                           size_t *size);
 extern void MIR_set_gen_interface (MIR_context_t ctx, MIR_item_t func_item);
 extern void MIR_set_lazy_gen_interface (MIR_context_t ctx, MIR_item_t func_item);
 extern void MIR_set_lazy_bb_gen_interface (MIR_context_t ctx, MIR_item_t func_item);
