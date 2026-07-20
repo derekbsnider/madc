@@ -1151,7 +1151,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   return rc;
 }
 
-/* ===== AOT executable emitter (ET_EXEC, x86-64 Linux) ==================== */
+/* ===== AOT executable emitter (ET_EXEC/ET_DYN, x86-64 Linux) ============= */
 /* The third consumer of the object builder: a complete dynamic executable
    with no external toolchain.  This lays out segments/vaddrs by hand -- a
    different concern from elf_assemble's link-view section table (ET_REL,
@@ -1165,7 +1165,14 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
        R_X86_64_64 slot relocations in .rela.dyn (no PLT/GOT: MIR calls
        already go through address slots) => DT_TEXTREL until the PIC rung;
      - synthesized _start: SysV stack -> __libc_start_main (entry, argc,
-       argv, init=0, fini=0, rtld_fini) through its own reloc slot. */
+       argv, init=0, fini=0, rtld_fini) through its own reloc slot.
+   shared_p flips the same layout to an ET_DYN shared object: base 0 (the
+   loader picks the bias, so .dynamic/.rela.dyn/.dynsym values stay link-time
+   vaddrs the loader rebases), no PT_INTERP/_start/entry, defined globals
+   exported in .dynsym, and EVERY relocation kept dynamic -- internal targets
+   as R_X86_64_RELATIVE (bias + link vaddr; -Bsymbolic semantics), imports as
+   R_X86_64_64.  DT_INIT (params->init, when defined) covers load-time
+   initializers for dlopen'd modules that have no main to call them. */
 
 #define OBJX_BASE_ADDR 0x400000ull
 #define OBJX_PAGE 0x1000ull
@@ -1203,22 +1210,38 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   if (size != NULL) *size = 0;
   if (obj == NULL || params == NULL || buf == NULL || size == NULL || MIR_DEBUG_EM != EM_X86_64)
     return -1;
+  int shared_p = params->shared_p != 0;
+  uint64_t base = shared_p ? 0 : OBJX_BASE_ADDR;
   const char *interp = params->interp != NULL ? params->interp : "/lib64/ld-linux-x86-64.so.2";
   const char *entry_nm = params->entry != NULL ? params->entry : "main";
+  static const Elf64_Section objx_shndx[3] = {6, 7, 9}; /* text/data/bss shdr indexes */
 
-  /* the entry symbol must be a defined text function */
+  /* the entry symbol must be a defined text function (executables only) */
   size_t n = obj->n_syms;
   size_t entry_i = n;
-  for (size_t i = 0; i < n; i++)
-    if (obj->syms[i].name != NULL && obj->syms[i].defined_p && obj->syms[i].sec == MIR_OBJ_SEC_TEXT
-        && strcmp (obj->syms[i].name, entry_nm) == 0) {
-      entry_i = i;
-      break;
-    }
-  if (entry_i == n) return -1;
+  if (!shared_p) {
+    for (size_t i = 0; i < n; i++)
+      if (obj->syms[i].name != NULL && obj->syms[i].defined_p
+          && obj->syms[i].sec == MIR_OBJ_SEC_TEXT && strcmp (obj->syms[i].name, entry_nm) == 0) {
+        entry_i = i;
+        break;
+      }
+    if (entry_i == n) return -1;
+  }
+  /* optional DT_INIT symbol; a module without one is valid -- omit the tag */
+  size_t init_i = n;
+  if (params->init != NULL)
+    for (size_t i = 0; i < n; i++)
+      if (obj->syms[i].name != NULL && obj->syms[i].defined_p
+          && obj->syms[i].sec == MIR_OBJ_SEC_TEXT && strcmp (obj->syms[i].name, params->init) == 0) {
+        init_i = i;
+        break;
+      }
 
   /* dynsym = every undefined (imported) symbol, plus __libc_start_main for
-     the _start slot if the module does not already import it */
+     the _start slot if the module does not already import it (executables);
+     shared objects additionally export their defined globals (st_value gets
+     the resolved link vaddr patched in after layout) */
   uint32_t *dyn_idx = calloc (n ? n : 1, sizeof (uint32_t)); /* 0 = not imported */
   if (dyn_idx == NULL) return -1;
   dwbuf_t dynstr = {0}, dynsym = {0}, hash = {0}, symtab = {0}, strtab = {0}, shstr = {0};
@@ -1244,17 +1267,25 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   if (dyn_names == NULL) goto done;
   for (size_t i = 0; i < n; i++) {
     objsym_t *s = &obj->syms[i];
-    if (s->defined_p || s->name == NULL) continue;
+    if (s->name == NULL) continue;
+    if (s->defined_p && (!shared_p || s->local_p || s->section_p)) continue;
     Elf64_Sym es = {0};
     es.st_name = (Elf64_Word) dynstr.len;
     buf_str (&dynstr, s->name);
-    es.st_info = ELF64_ST_INFO (STB_GLOBAL, s->func_p ? STT_FUNC : STT_NOTYPE);
+    if (s->defined_p) { /* shared-object export; st_value patched after layout */
+      es.st_info = ELF64_ST_INFO (s->weak_p ? STB_WEAK : STB_GLOBAL,
+                                  s->func_p ? STT_FUNC : STT_OBJECT);
+      es.st_shndx = objx_shndx[s->sec];
+      es.st_size = s->size;
+    } else {
+      es.st_info = ELF64_ST_INFO (STB_GLOBAL, s->func_p ? STT_FUNC : STT_NOTYPE);
+    }
     buf_bytes (&dynsym, &es, sizeof es);
     dyn_names[ndyn] = s->name;
     dyn_idx[i] = ndyn++;
-    if (strcmp (s->name, "__libc_start_main") == 0) lsm_idx = dyn_idx[i];
+    if (!shared_p && strcmp (s->name, "__libc_start_main") == 0) lsm_idx = dyn_idx[i];
   }
-  if (lsm_idx == 0) {
+  if (!shared_p && lsm_idx == 0) {
     Elf64_Sym es = {0};
     es.st_name = (Elf64_Word) dynstr.len;
     buf_str (&dynstr, "__libc_start_main");
@@ -1288,21 +1319,23 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   }
   free ((void *) dyn_names);
 
-  /* import relocations survive to .rela.dyn; internal ones resolve below */
-  size_t n_import_rel = 1; /* the __libc_start_main slot */
+  /* executables: import relocations survive to .rela.dyn, internal ones
+     resolve below; shared objects: the load bias is unknown, so EVERY
+     relocation stays dynamic */
+  size_t n_dyn_rel = shared_p ? 0 : 1; /* the __libc_start_main slot */
   for (size_t i = 0; i < obj->n_rels; i++) {
     objreloc_t *r = &obj->rels[i];
     if (r->kind != MIR_OBJ_RELOC_ABS64 || r->sym < 0 || (size_t) r->sym >= n) goto done;
-    if (!obj->syms[r->sym].defined_p) n_import_rel++;
+    if (shared_p || !obj->syms[r->sym].defined_p) n_dyn_rel++;
   }
 
   /* ---- layout: identity file-offset<->vaddr mapping from OBJX_BASE_ADDR */
 #define OBJX_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
   uint64_t off = sizeof (Elf64_Ehdr);
   uint64_t phdr_off = off;
-  const int n_phdrs = 4;
+  const int n_phdrs = shared_p ? 3 : 4; /* shared objects carry no PT_INTERP */
   off += (uint64_t) n_phdrs * sizeof (Elf64_Phdr);
-  uint64_t interp_off = off, interp_size = strlen (interp) + 1;
+  uint64_t interp_off = off, interp_size = shared_p ? 0 : strlen (interp) + 1;
   off = OBJX_ALIGN (interp_off + interp_size, 8);
   uint64_t hash_off = off;
   off = OBJX_ALIGN (hash_off + hash.len, 8);
@@ -1310,9 +1343,12 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   off = OBJX_ALIGN (dynsym_off + dynsym.len, 1);
   uint64_t dynstr_off = off;
   off = OBJX_ALIGN (dynstr_off + dynstr.len, 8);
-  uint64_t rela_off = off, rela_size = (uint64_t) n_import_rel * sizeof (Elf64_Rela);
+  uint64_t rela_off = off, rela_size = (uint64_t) n_dyn_rel * sizeof (Elf64_Rela);
   off = OBJX_ALIGN (rela_off + rela_size, 16);
-  uint64_t text_off = off, text_size = OBJX_TEXT_BIAS + obj->text.len;
+  /* no _start stub/slot in a .so; text_off's 16-alignment already preserves
+     the captured code's SSE-constant alignment on its own */
+  uint64_t text_bias = shared_p ? 0 : OBJX_TEXT_BIAS;
+  uint64_t text_off = off, text_size = text_bias + obj->text.len;
   off = OBJX_ALIGN (text_off + text_size, OBJX_PAGE);
   uint64_t rx_filesz = text_off + text_size; /* the R+X segment: file start..text end */
   uint64_t rw_off = off;                     /* page-aligned R+W segment start */
@@ -1321,25 +1357,25 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   uint64_t data_off = rw_off;
   off = OBJX_ALIGN (data_off + obj->data.len, 8);
   uint64_t dynamic_off = off;
-  /* NEEDED*n [+RUNPATH] + STRTAB/STRSZ/SYMTAB/SYMENT/HASH + RELA/RELASZ/RELAENT
-     + TEXTREL (the lsm slot is in text) + NULL */
-  uint64_t n_dyntags = params->n_needed + (params->runpath != NULL ? 1 : 0) + 9 + 1;
+  /* NEEDED*n [+RUNPATH] [+INIT] + STRTAB/STRSZ/SYMTAB/SYMENT/HASH
+     + RELA/RELASZ/RELAENT + TEXTREL (address slots live in text) + NULL */
+  uint64_t n_dyntags
+    = params->n_needed + (params->runpath != NULL ? 1 : 0) + (init_i < n ? 1 : 0) + 9 + 1;
   uint64_t dynamic_size = n_dyntags * sizeof (Elf64_Dyn);
   off = dynamic_off + dynamic_size;
   uint64_t rw_filesz = off - rw_off;
   size_t bss_align = obj->bss_align > 8 ? obj->bss_align : 8;
-  uint64_t bss_vaddr = OBJX_ALIGN (OBJX_BASE_ADDR + off, bss_align);
-  uint64_t rw_memsz = bss_vaddr + obj->bss_size - (OBJX_BASE_ADDR + rw_off);
-  uint64_t text_vaddr = OBJX_BASE_ADDR + text_off;
-  uint64_t data_vaddr = OBJX_BASE_ADDR + data_off;
-  uint64_t code_vaddr = text_vaddr + OBJX_TEXT_BIAS; /* the builder's .text offset 0 */
+  uint64_t bss_vaddr = OBJX_ALIGN (base + off, bss_align);
+  uint64_t rw_memsz = bss_vaddr + obj->bss_size - (base + rw_off);
+  uint64_t text_vaddr = base + text_off;
+  uint64_t data_vaddr = base + data_off;
+  uint64_t code_vaddr = text_vaddr + text_bias; /* the builder's .text offset 0 */
 
   /* section vaddr for a defined symbol/section id */
 #define OBJX_SEC_VADDR(sec) \
   ((sec) == MIR_OBJ_SEC_TEXT ? code_vaddr : (sec) == MIR_OBJ_SEC_DATA ? data_vaddr : bss_vaddr)
 
-  /* ---- .symtab / .strtab (debug view: resolved vaddrs) */
-  static const Elf64_Section objx_shndx[3] = {6, 7, 9}; /* text/data/bss shdr indexes */
+  /* ---- .symtab / .strtab (debug view: resolved link-time vaddrs) */
   buf_u8 (&strtab, 0);
   buf_bytes (&symtab, &z, sizeof z);
   uint32_t n_locals = 0, next = 1;
@@ -1388,12 +1424,17 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
 
   p = calloc (1, (size_t) total);
   if (p == NULL) goto done;
-  memcpy (p + interp_off, interp, interp_size);
   memcpy (p + hash_off, hash.p, hash.len);
   memcpy (p + dynsym_off, dynsym.p, dynsym.len);
   memcpy (p + dynstr_off, dynstr.p, dynstr.len);
-  memcpy (p + text_off, objx_start_stub, OBJX_STUB_SIZE);
-  {
+  if (shared_p) { /* exported definitions: patch the resolved link-time vaddrs */
+    Elf64_Sym *ds = (Elf64_Sym *) (p + dynsym_off);
+    for (size_t i = 0; i < n; i++)
+      if (dyn_idx[i] != 0 && obj->syms[i].defined_p)
+        ds[dyn_idx[i]].st_value = OBJX_SEC_VADDR (obj->syms[i].sec) + obj->syms[i].value;
+  } else {
+    memcpy (p + interp_off, interp, interp_size);
+    memcpy (p + text_off, objx_start_stub, OBJX_STUB_SIZE);
     uint64_t entry_vaddr = code_vaddr + obj->syms[entry_i].value;
     uint32_t imm = (uint32_t) entry_vaddr; /* base 0x400000: fits imm32 */
     memcpy (p + text_off + OBJX_STUB_ENTRY_IMM, &imm, 4);
@@ -1401,26 +1442,35 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     uint32_t disp = (uint32_t) (OBJX_LSM_SLOT - (OBJX_STUB_CALL_DISP + 4));
     memcpy (p + text_off + OBJX_STUB_CALL_DISP, &disp, 4);
   }
-  if (obj->text.len != 0) memcpy (p + text_off + OBJX_TEXT_BIAS, obj->text.p, obj->text.len);
+  if (obj->text.len != 0) memcpy (p + text_off + text_bias, obj->text.p, obj->text.len);
   if (obj->data.len != 0) memcpy (p + data_off, obj->data.p, obj->data.len);
 
-  /* relocations: internal resolve in place; imports go to .rela.dyn */
+  /* relocations: executables resolve internal targets in place and send
+     imports to .rela.dyn; shared objects send everything to .rela.dyn --
+     internal targets as R_X86_64_RELATIVE (loader writes bias + addend) */
   {
     Elf64_Rela *er = (Elf64_Rela *) (p + rela_off);
-    er->r_offset = text_vaddr + OBJX_LSM_SLOT;
-    er->r_info = ELF64_R_INFO ((uint64_t) lsm_idx, R_X86_64_64);
-    er->r_addend = 0;
-    er++;
+    if (!shared_p) {
+      er->r_offset = text_vaddr + OBJX_LSM_SLOT;
+      er->r_info = ELF64_R_INFO ((uint64_t) lsm_idx, R_X86_64_64);
+      er->r_addend = 0;
+      er++;
+    }
     for (size_t i = 0; i < obj->n_rels; i++) {
       objreloc_t *r = &obj->rels[i];
-      uint64_t slot_off = (r->sec == MIR_OBJ_SEC_TEXT ? text_off + OBJX_TEXT_BIAS : data_off)
+      uint64_t slot_off = (r->sec == MIR_OBJ_SEC_TEXT ? text_off + text_bias : data_off)
                           + r->offset;
       objsym_t *s = &obj->syms[r->sym];
-      if (s->defined_p) {
+      if (s->defined_p && shared_p) {
+        er->r_offset = base + slot_off;
+        er->r_info = ELF64_R_INFO (0, R_X86_64_RELATIVE);
+        er->r_addend = (int64_t) (OBJX_SEC_VADDR (s->sec) + s->value + (uint64_t) r->addend);
+        er++;
+      } else if (s->defined_p) {
         uint64_t v = OBJX_SEC_VADDR (s->sec) + s->value + (uint64_t) r->addend;
         memcpy (p + slot_off, &v, 8);
       } else {
-        er->r_offset = OBJX_BASE_ADDR + slot_off;
+        er->r_offset = base + slot_off;
         er->r_info = ELF64_R_INFO ((uint64_t) dyn_idx[r->sym], R_X86_64_64);
         er->r_addend = r->addend;
         er++;
@@ -1442,12 +1492,13 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     d++;                    \
   } while (0)
     if (params->runpath != NULL) OBJX_DYN (DT_RUNPATH, runpath_off);
-    OBJX_DYN (DT_STRTAB, OBJX_BASE_ADDR + dynstr_off);
+    if (init_i < n) OBJX_DYN (DT_INIT, code_vaddr + obj->syms[init_i].value);
+    OBJX_DYN (DT_STRTAB, base + dynstr_off);
     OBJX_DYN (DT_STRSZ, dynstr.len);
-    OBJX_DYN (DT_SYMTAB, OBJX_BASE_ADDR + dynsym_off);
+    OBJX_DYN (DT_SYMTAB, base + dynsym_off);
     OBJX_DYN (DT_SYMENT, sizeof (Elf64_Sym));
-    OBJX_DYN (DT_HASH, OBJX_BASE_ADDR + hash_off);
-    OBJX_DYN (DT_RELA, OBJX_BASE_ADDR + rela_off);
+    OBJX_DYN (DT_HASH, base + hash_off);
+    OBJX_DYN (DT_RELA, base + rela_off);
     OBJX_DYN (DT_RELASZ, rela_size);
     OBJX_DYN (DT_RELAENT, sizeof (Elf64_Rela));
     OBJX_DYN (DT_TEXTREL, 0);
@@ -1469,10 +1520,10 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     eh->e_ident[EI_DATA] = ELFDATA2LSB;
     eh->e_ident[EI_VERSION] = EV_CURRENT;
     eh->e_ident[EI_OSABI] = ELFOSABI_SYSV;
-    eh->e_type = ET_EXEC;
+    eh->e_type = shared_p ? ET_DYN : ET_EXEC;
     eh->e_machine = EM_X86_64;
     eh->e_version = EV_CURRENT;
-    eh->e_entry = text_vaddr; /* the _start stub heads .text */
+    eh->e_entry = shared_p ? 0 : text_vaddr; /* the _start stub heads .text */
     eh->e_phoff = phdr_off;
     eh->e_shoff = shoff;
     eh->e_ehsize = sizeof (Elf64_Ehdr);
@@ -1482,33 +1533,37 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     eh->e_shnum = (Elf64_Half) n_secs;
     eh->e_shstrndx = 12;
   }
-  { /* program headers: LOAD R+X, LOAD R+W, INTERP, DYNAMIC */
+  { /* program headers: LOAD R+X, LOAD R+W, [INTERP,] DYNAMIC */
     Elf64_Phdr *ph = (Elf64_Phdr *) (p + phdr_off);
     ph[0].p_type = PT_LOAD;
     ph[0].p_flags = PF_R | PF_X;
     ph[0].p_offset = 0;
-    ph[0].p_vaddr = ph[0].p_paddr = OBJX_BASE_ADDR;
+    ph[0].p_vaddr = ph[0].p_paddr = base;
     ph[0].p_filesz = ph[0].p_memsz = rx_filesz;
     ph[0].p_align = OBJX_PAGE;
     ph[1].p_type = PT_LOAD;
     ph[1].p_flags = PF_R | PF_W;
     ph[1].p_offset = rw_off;
-    ph[1].p_vaddr = ph[1].p_paddr = OBJX_BASE_ADDR + rw_off;
+    ph[1].p_vaddr = ph[1].p_paddr = base + rw_off;
     ph[1].p_filesz = rw_filesz;
     ph[1].p_memsz = rw_memsz;
     ph[1].p_align = OBJX_PAGE;
-    ph[2].p_type = PT_INTERP;
-    ph[2].p_flags = PF_R;
-    ph[2].p_offset = interp_off;
-    ph[2].p_vaddr = ph[2].p_paddr = OBJX_BASE_ADDR + interp_off;
-    ph[2].p_filesz = ph[2].p_memsz = interp_size;
-    ph[2].p_align = 1;
-    ph[3].p_type = PT_DYNAMIC;
-    ph[3].p_flags = PF_R | PF_W;
-    ph[3].p_offset = dynamic_off;
-    ph[3].p_vaddr = ph[3].p_paddr = OBJX_BASE_ADDR + dynamic_off;
-    ph[3].p_filesz = ph[3].p_memsz = dynamic_size;
-    ph[3].p_align = 8;
+    Elf64_Phdr *pd = &ph[2];
+    if (!shared_p) {
+      ph[2].p_type = PT_INTERP;
+      ph[2].p_flags = PF_R;
+      ph[2].p_offset = interp_off;
+      ph[2].p_vaddr = ph[2].p_paddr = base + interp_off;
+      ph[2].p_filesz = ph[2].p_memsz = interp_size;
+      ph[2].p_align = 1;
+      pd = &ph[3];
+    }
+    pd->p_type = PT_DYNAMIC;
+    pd->p_flags = PF_R | PF_W;
+    pd->p_offset = dynamic_off;
+    pd->p_vaddr = pd->p_paddr = base + dynamic_off;
+    pd->p_filesz = pd->p_memsz = dynamic_size;
+    pd->p_align = 8;
   }
   { /* section headers (readelf/gdb view; the loader uses only phdrs) */
     Elf64_Shdr *sh = (Elf64_Shdr *) (p + shoff);
@@ -1536,7 +1591,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
       sh[i].sh_name = shname[i];
       sh[i].sh_type = T[i].type;
       sh[i].sh_flags = T[i].flags;
-      sh[i].sh_addr = T[i].vaddr_p == 1 ? OBJX_BASE_ADDR + T[i].off
+      sh[i].sh_addr = T[i].vaddr_p == 1 ? base + T[i].off
                       : T[i].vaddr_p == 2 ? bss_vaddr
                                           : 0;
       sh[i].sh_offset = T[i].off;

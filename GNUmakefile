@@ -369,7 +369,7 @@ clean-adt-tests:
 $(BUILD_DIR)/mir-tests:
 	mkdir -p $@
 
-$(BUILD_DIR)/run-test$(EXE): $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(SRC_DIR)/mir-tests/run-test.c | $(BUILD_DIR)/mir-tests
+$(BUILD_DIR)/run-test$(EXE): $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-debug.$(OBJSUFF) $(SRC_DIR)/mir-tests/run-test.c | $(BUILD_DIR)/mir-tests
 	$(COMPILE_AND_LINK) $^ $(LDLIBS) $(EXEO)$@
 
 .PHONY: clean-mir-tests
@@ -383,7 +383,7 @@ clean-mir-tests: clean-mir-utility-tests clean-mir-interp-tests clean-mir-gen-te
 simplify-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(SRC_DIR)/mir-tests/simplify.c
 	$(COMPILE_AND_LINK) $^ $(EXEO)$(BUILD_DIR)/simplify-test $(LDLIBS) && $(BUILD_DIR)/simplify-test$(EXE)
 
-hello-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(SRC_DIR)/mir-tests/hello.c
+hello-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-debug.$(OBJSUFF) $(SRC_DIR)/mir-tests/hello.c
 	$(COMPILE_AND_LINK) $^ $(EXEO)$(BUILD_DIR)/hello-test $(LDLIBS) && $(BUILD_DIR)/hello-test$(EXE)
 
 scan-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(SRC_DIR)/mir-tests/scan-test.c
@@ -486,19 +486,19 @@ clean-mir-interp-tests:
 gen-test: gen-test-loop gen-test-sieve gen-test-get-thunk-addr gen-issue219-test gen-test1 gen-test2 gen-test3 gen-test4 gen-test5 gen-test6 gen-test7\
           gen-test8 gen-test9 gen-test10 gen-test11 gen-test12 gen-test13 gen-test14 gen-test15 gen-test16 gen-test17
 
-gen-test-loop: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(SRC_DIR)/mir-tests/loop-sieve-gen.c | $(BUILD_DIR)/mir-tests
+gen-test-loop: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-debug.$(OBJSUFF) $(SRC_DIR)/mir-tests/loop-sieve-gen.c | $(BUILD_DIR)/mir-tests
 	$(COMPILE_AND_LINK) -DTEST_GEN_LOOP -DTEST_GEN_DEBUG=1 $^ $(LDLIBS) $(EXEO)$(BUILD_DIR)/mir-tests/gen-loop-test$(EXE)
 	$(BUILD_DIR)/mir-tests/gen-loop-test
 
-gen-test-sieve: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(SRC_DIR)/mir-tests/loop-sieve-gen.c | $(BUILD_DIR)/mir-tests
+gen-test-sieve: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-debug.$(OBJSUFF) $(SRC_DIR)/mir-tests/loop-sieve-gen.c | $(BUILD_DIR)/mir-tests
 	$(COMPILE_AND_LINK) -DTEST_GEN_SIEVE -DTEST_GEN_DEBUG=1 $^ $(LDLIBS) $(EXEO)$(BUILD_DIR)/mir-tests/gen-sieve-test$(EXE)
 	$(BUILD_DIR)/mir-tests/gen-sieve-test
 
-gen-issue219-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(SRC_DIR)/mir-tests/issue219.c | $(BUILD_DIR)/mir-tests
+gen-issue219-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-debug.$(OBJSUFF) $(SRC_DIR)/mir-tests/issue219.c | $(BUILD_DIR)/mir-tests
 	$(COMPILE_AND_LINK) -DTEST_GEN_SIEVE -DTEST_GEN_DEBUG=1 $^ $(LDLIBS) $(EXEO)$(BUILD_DIR)/mir-tests/issue219$(EXE)
 	$(BUILD_DIR)/mir-tests/issue219
 
-gen-test-get-thunk-addr: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(SRC_DIR)/mir-tests/get-thunk-addr.c | $(BUILD_DIR)/mir-tests
+gen-test-get-thunk-addr: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-debug.$(OBJSUFF) $(SRC_DIR)/mir-tests/get-thunk-addr.c | $(BUILD_DIR)/mir-tests
 	$(COMPILE_AND_LINK) $^ $(LDLIBS) $(EXEO)$(BUILD_DIR)/mir-tests/gen-get-thunk-addr-test$(EXE)
 	$(BUILD_DIR)/mir-tests/gen-get-thunk-addr-test
 
@@ -577,6 +577,7 @@ mir-bin-run-test: $(BUILD_DIR)/mir-bin-run$(EXE) $(BUILD_DIR)/c2m$(EXE)
 .PHONY: readme-example-test clean-readme-example-test
 
 readme-example-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF)\
+                           $(BUILD_DIR)/mir-debug.$(OBJSUFF)\
                            $(SRC_DIR)/mir-tests/readme-example.c | $(BUILD_DIR)/mir-tests
 	$(COMPILE_AND_LINK) $^ $(LDLIBS) $(EXEO)$(BUILD_DIR)/mir-tests/readme-example-test$(EXE)
 	$(BUILD_DIR)/mir-tests/readme-example-test$(EXE)
@@ -757,7 +758,7 @@ interp-bench: $(BUILD_DIR)/mir.$(OBJSUFF) $(SRC_DIR)/mir-tests/loop-interp.c
 	$(COMPILE_AND_LINK) $^ $(EXEO)$(BUILD_DIR)/interp-bench$(EXE) $(LDLIBS)
 	$(BUILD_DIR)/interp-bench && size $(BUILD_DIR)/interp-bench
 
-gen-bench: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(SRC_DIR)/mir-tests/loop-sieve-gen.c
+gen-bench: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-debug.$(OBJSUFF) $(SRC_DIR)/mir-tests/loop-sieve-gen.c
 	$(COMPILE_AND_LINK) -DTEST_GEN_LOOP $^ $(EXEO)$(BUILD_DIR)/gen-bench$(EXE) $(LDLIBS)
 	$(BUILD_DIR)/gen-bench && size $(BUILD_DIR)/gen-bench
 	$(COMPILE_AND_LINK) -DTEST_GEN_SIEVE $^ $(EXEO)$(BUILD_DIR)/gen-bench$(EXE) $(LDLIBS)
@@ -775,7 +776,7 @@ gen-bench2: $(BUILD_DIR)/c2m # Ignore M1 MacOs as it needs another procedure to 
 	  done;\
 	fi
 
-gen-speed: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(SRC_DIR)/mir-tests/loop-sieve-gen.c
+gen-speed: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-debug.$(OBJSUFF) $(SRC_DIR)/mir-tests/loop-sieve-gen.c
 	if type valgrind  > /dev/null 2>&1; then \
 	  $(COMPILE_AND_LINK) -DTEST_GEN_SIEVE -DTEST_GENERATION_ONLY $^ $(LDLIBS) $(EXEO)$(BUILD_DIR)/gen-speed$(EXE)\
 	  && valgrind --tool=lackey $(BUILD_DIR)/gen-speed; \

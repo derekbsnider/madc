@@ -210,13 +210,25 @@ extern int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size);
    slot relocations the dynamic loader fills eagerly at load -- MIR's call
    model already routes imports through address slots, so no PLT/GOT is
    built.  Slots inside .text make the executable carry DT_TEXTREL until the
-   PIC rung.  x86-64 Linux only. */
+   PIC rung.  x86-64 Linux only.
+
+   With shared_p set the same emitter produces an ET_DYN shared object
+   (dlopen/DT_NEEDED-consumable): load base 0, no PT_INTERP/_start/entry;
+   defined global symbols are exported through .dynsym/.hash; internal
+   references cannot resolve at emit (unknown load bias) so EVERY relocation
+   lands in .rela.dyn -- R_X86_64_RELATIVE for internal targets (-Bsymbolic
+   semantics: internal references never interpose), R_X86_64_64 for imports. */
 typedef struct MIR_object_exec_params {
-  const char *interp;        /* PT_INTERP path; NULL = /lib64/ld-linux-x86-64.so.2 */
+  const char *interp;        /* PT_INTERP path; NULL = /lib64/ld-linux-x86-64.so.2 (executables only) */
   const char *const *needed; /* DT_NEEDED sonames, emitted in order */
   size_t n_needed;
-  const char *entry;   /* defined text symbol __libc_start_main receives; NULL = "main" */
+  const char *entry;   /* defined text symbol __libc_start_main receives; NULL = "main"
+                          (executables only) */
   const char *runpath; /* DT_RUNPATH library search path; NULL = omit */
+  int shared_p;        /* nonzero: emit an ET_DYN shared object instead of ET_EXEC */
+  const char *init;    /* optional text symbol emitted as DT_INIT (the loader runs it
+                          at load); silently omitted when NULL or not defined -- "no
+                          initializers" is a valid module state, not an error */
 } MIR_object_exec_params;
 extern int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *params,
                                        void **buf, size_t *size);
