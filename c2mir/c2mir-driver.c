@@ -213,6 +213,7 @@ DEF_VARR (char_ptr_t);
 static VARR (char_ptr_t) * headers;
 
 static int interp_exec_p, gen_exec_p, lazy_gen_exec_p, lazy_bb_gen_exec_p;
+static const char *run_object_path; /* -run-object: execute an emitted .o in-process */
 static VARR (char_ptr_t) * exec_argv;
 static VARR (char_ptr_t) * source_file_names;
 
@@ -392,6 +393,18 @@ static void init_options (int argc, char *argv[]) {
         lazy_bb_gen_exec_p = TRUE;
       VARR_PUSH (char_ptr_t, exec_argv, "c2m");
       for (i++; i < argc; i++) VARR_PUSH (char_ptr_t, exec_argv, argv[i]);
+    } else if (strcmp (argv[i], "-run-object") == 0) {
+      /* Execute a MIR-emitted relocatable object in-process (MIR_object_load):
+         the .o-as-precompiled-cache lane.  Same trailing-argv convention as
+         the -e* modes -- everything after the object path is program argv. */
+      if (i + 1 >= argc) {
+        fprintf (stderr, "-run-object without an object file -- goodbye\n");
+        exit (1);
+      }
+      run_object_path = argv[++i];
+      VARR_TRUNC (char_ptr_t, exec_argv, 0);
+      VARR_PUSH (char_ptr_t, exec_argv, run_object_path);
+      for (i++; i < argc; i++) VARR_PUSH (char_ptr_t, exec_argv, argv[i]);
     } else if (strcmp (argv[i], "-s") == 0 && i + 1 < argc) { /* C code from cmd line */
       curr_input.code = (uint8_t *) argv[++i];
       curr_input.code_len = strlen ((char *) curr_input.code);
@@ -424,6 +437,9 @@ static void init_options (int argc, char *argv[]) {
       fprintf (stderr, "  -eg -- execute code generated with given options\n");
       fprintf (stderr, "  -el -- execute code lazily generated code with given options\n");
       fprintf (stderr, "  -eb -- execute code lazily generated BB code with given options\n");
+      fprintf (stderr,
+               "  -run-object file.o -- execute an emitted relocatable object in-process\n");
+      fprintf (stderr, "         (all trailing args are passed to the program)\n");
       fprintf (stderr, "%s version commit=%s\n", argv[0], STRING (GITCOMMIT));
       exit (0);
     } else {
@@ -495,6 +511,46 @@ static void *import_resolver (const char *name) {
     exit (1);
   }
   return sym;
+}
+
+/* -run-object: the .o-as-precompiled-cache lane.  Load a MIR-emitted
+   relocatable object into this process (MIR_object_load) resolving imports
+   through the same chain the JIT lanes use, and run its main with the
+   trailing argv.  The image is deliberately not unloaded: the program may
+   have registered atexit handlers pointing into it. */
+static void *run_object_resolve (const char *name, void *env MIR_UNUSED) {
+  return import_resolver (name);
+}
+
+static int run_object_file (char *env[]) {
+  FILE *f = fopen (run_object_path, "rb");
+  if (f == NULL) {
+    fprintf (stderr, "can not open %s -- goodbye\n", run_object_path);
+    return 1;
+  }
+  VARR (uint8_t) * obj_buf;
+  VARR_CREATE (uint8_t, obj_buf, &default_alloc, 65536);
+  int c;
+  while ((c = getc (f)) != EOF) VARR_PUSH (uint8_t, obj_buf, c);
+  fclose (f);
+  open_std_libs ();
+  char err[256];
+  MIR_object_loaded_t lo
+    = MIR_object_load (VARR_ADDR (uint8_t, obj_buf), VARR_LENGTH (uint8_t, obj_buf),
+                       run_object_resolve, NULL, err, sizeof (err));
+  VARR_DESTROY (uint8_t, obj_buf);
+  if (lo == NULL) {
+    fprintf (stderr, "%s: can not load object: %s -- goodbye\n", run_object_path, err);
+    return 1;
+  }
+  typedef int (*main_t) (int, char **, char **);
+  main_t entry = (main_t) MIR_object_loaded_sym (lo, "main");
+  if (entry == NULL) {
+    fprintf (stderr, "%s: no defined main in object -- goodbye\n", run_object_path);
+    return 1;
+  }
+  fflush (stdout);
+  return entry ((int) VARR_LENGTH (char_ptr_t, exec_argv), VARR_ADDR (char_ptr_t, exec_argv), env);
 }
 
 /* -fobject: AOT object emission consumes no import addresses (imports become
@@ -770,6 +826,7 @@ int main (int argc, char *argv[], char *env[]) {
   VARR_CREATE (input_t, inputs_to_compile, &default_alloc, 32);
   options.prepro_output_file = NULL;
   init_options (argc, argv);
+  if (run_object_path != NULL) exit (run_object_file (env));
   main_ctx = MIR_init ();
   if (!C2MIR_PARALLEL || threads_num <= 0) c2mir_init (main_ctx);
   init_compilers ();

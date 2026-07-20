@@ -1,0 +1,11 @@
+# ! /bin/sh
+# AOT load-object lane: c2m compiles to a relocatable .o (-fobject), then
+# executes it IN-PROCESS via MIR_object_load (-run-object) -- the
+# .o-as-precompiled-cache path.  Emit and load are both MIR's own machinery
+# (no external toolchain anywhere); output must match the JIT lanes.
+compiler=$1
+shift
+$compiler $* -fobject -o tttlo.o && $compiler -run-object tttlo.o
+code=$?
+rm -f tttlo.o
+exit $code
