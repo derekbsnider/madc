@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [v0.36.0] — 2026-07-20
+
+The native-compiler release: MIR becomes a real AOT back end — `madc -c`
+writes ELF `.o` objects and `madc -o` writes runnable ELF executables
+assembled entirely in-house (no gcc/clang/ld), plus source-level gdb on
+the JIT lane (`-g`), component-correct integer `_Complex`, and the
+gcc-torture promote gate held at 1614 with the failset name-identical.
+
 - **feat(aot): `madc -c` / `-o` — native objects and RUNNABLE EXECUTABLES
   with no external toolchain (AOT R4, task #85).** madc now emits native
   artifacts itself using the standard gcc/clang CLI vocabulary: `madc -c

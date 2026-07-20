@@ -257,35 +257,34 @@ user-signed failset classification audit
 33 gcc-internal/torture-only tests are formally skipped
 (`docs/parity/torture-skip-manifest.txt`) and 14 real-world GNU extensions
 are roadmap items, not gate blockers. In-process `eval`/exec runs on the CIR
-JIT (`CirJitSession`); the REPL and native AOT output remain deferred.
+JIT (`CirJitSession`); native AOT output is live as of v0.36.0 (`-c`/`-o`);
+the REPL remains deferred.
 
-**Branch state:** `develop` carries v0.35.0 (CIR backend). `master` still holds
+**Branch state:** `develop` carries v0.36.0 (CIR backend). `master` still holds
 the v0.24.0 asmjit/Gecko backend at full C89 coverage (419 pass / 0 fail) —
 develop is **not** promoted to master until the CIR path reaches feature parity.
 
 ### Current Release
 
-**v0.35.0** is the small-binary + family-D release. The packed release
-binary drops **101 MB → 9.26 MB** (under the 10 MB product target): every
-forest segment compresses with per-segment zstd, the new snapshot-v2
-transform vocabulary re-codes the heavy per-unit kinds (children u32-delta,
-records byte-plane with an SSE2 tile transpose), and the intern spine
-compresses in the release pack (owner-approved ~7 ms/process rebind; dev
-freezes keep zero-copy binds). Alongside it, the family-D drain-gap
-campaign lands: pack drops fall 483 → 308, function-local class hoists get
-stable deterministic identities, call operands type by the rank-resolved
-callee, and a ladder of live correctness fixes ships (`*this = v`,
-stream manipulators, chained arrows, catch-parameter grammar, contextual
-`operator bool`). Both fulltest and the packed release suite are
-**696/0/0/16**; the bind gate holds bound == live == g++ at 18/18.
+**v0.36.0** is the native-compiler release: MIR becomes a real AOT back
+end. `madc -c x.mad` writes a standards-conforming ELF `.o` (validated by
+compiling, linking, and running the entire fork corpus through the object
+lane, 1139/0) and `madc -o prog x.mad` writes a **runnable ELF executable
+assembled entirely by MIR** — no gcc, no ld, no crt files — with the
+standard gcc/clang CLI vocabulary. The native-executable test lane is
+live at 709/729 on day one. The same arc ships `madc -g` (full
+source-level gdb on JIT'd programs: `break file:line`, named typed
+frames, `info locals`, CFI backtraces) and component-correct GNU integer
+`_Complex`. Fulltest and the packed suite hold **729/0/0/13**; the
+gcc-torture promote threshold stays met at 1614.
 
 ### Recent Releases
 
+- **v0.36.0** — Native compiler: `madc -c` → ELF `.o`, `madc -o` → MIR-assembled executables (no external toolchain), `-shared`, gcc-style CLI; `--exe` lane live 709/729; `madc -g` source-level gdb on the JIT; integer `_Complex` component-correct; fulltest + packed 729/0/0/13; torture 1614 (gate met)
 - **v0.35.0** — Small-binary + family-D: packed binary 101 MB → 9.26 MB (per-segment zstd, snapshot-v2 segment transforms, intern-spine pack compression; libzstd-dev now required); family-D campaign merged (drops 483 → 308, stable local-class hoist identity, ranked-callee typing, live-correctness ladder); fulltest + packed suite 696/0/0/16
 - **v0.34.0** — Pack-time deferred-body drain (rung 1): pack-side c2mir check gate (fork `c2mir_check_tree` @062dd97), error-tolerant reverts incl. body-span carry (packed stoi/stod restored), emission split + trap prebind; packed suite 681/681; dual dev/packed binaries; timing trend TSV; fulltest 681/0/0/16
 - **v0.33.0** — Parse-once campaign complete: seven copy-time KINDs (incl. the SET wall), first-skip flipped to production, re-parse machinery deleted (−123 lines); burndown 312/0; map-iteration for-init SIGSEGV fixed (+`testmapiter`); typed dtor externs make emit-C gcc-clean on containers; fulltest 677/0/0/16
 - **v0.32.0** — Rung-1 interning capstone: `TokenIdent::str` dropped (4-byte interned spelling_id; −43% token string ctors, −3.3% instructions); `Variable::name_sid` + finalize caches (−6.6% instructions); tsubst burndown root-caused to the dependent-member-type KIND
-- **v0.31.0** — Tag-arithmetic encoding retired (structural derivation only); `madc::dis` substrate primitives + `datatype_map` re-key; `-O2` default front-end speedup; c2mir warnings 97 → 0; lambda `[&]` capture; fulltest 673/0/0/16
 
 ## Roadmap
 

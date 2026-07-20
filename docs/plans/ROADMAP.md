@@ -310,13 +310,16 @@ high-level" — the answer is both.**
   `get/set_global`, string call marshalling, fork/limits, the policy tail
   (the 38 `test_libmadc_program` skips; see
   `docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md`).
-- **AOT (native object/executable):** PLANNED — owner pulled it forward
-  2026-07-18 as a MIR-fork feature (ELF `.o` writer + gen object-capture mode
-  + the `cyanogilvie/debug-support` DWARF/gdb integration). Design:
-  [2026-07-19-mir-aot-elf-plan.md](2026-07-19-mir-aot-elf-plan.md) (rungs
-  R0–R6; `run_tests.sh --exe` becomes the AOT arbiter; restores
-  asmjit-master `-o` parity). Near-term native builds still come from
-  emit-`.c` + an external compiler until R4 lands.
+- **AOT (native object/executable):** **LIVE as of v0.36.0** — `madc -c`
+  emits ELF `.o` objects and `madc -o` emits runnable executables
+  **assembled by MIR itself** (no external toolchain; owner directive), with
+  `madc -g` gdb debugging of the JIT lane from the same arc. Plan + landing
+  blocks: [2026-07-19-mir-aot-elf-plan.md](2026-07-19-mir-aot-elf-plan.md)
+  (R0–R2 + R4 landed; `run_tests.sh --exe` is the live AOT arbiter at
+  709/729). Remaining rungs: direct ET_DYN `-shared`, `--project` per-TU
+  objects, R4b execute-`.o`-as-cache (asmjit-master parity), R5 DWARF in
+  the `.o`, R6 PIC; Mach-O / PE assemblers later behind the same
+  `MIR_object` seam.
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target
   the CIR path is climbing back to — NOT the current state.
