@@ -178,6 +178,14 @@ symtab). One writer, one section/DWARF encoder — no parallel implementation.
 - **R4 — madc `--emit-object` + `-o` link driver.** Gate: full madc suite
   under `run_tests.sh --exe` green and byte-identical to the JIT lane; packed
   arbiter unaffected; `-o` parity line item closed against asmjit-master.
+- **R4b — execute `.o` directly (owner 2026-07-20, master-parity item):**
+  asmjit-master madc could EXECUTE madc-generated `.o` files as precompiled
+  cache files; retain that. In-process ET_REL loader: map `.text`/`.data`/
+  `.bss`, apply the relocations (R2 emits only R_X86_64_64), resolve UNDEF
+  symbols through the JIT lane's existing resolution chain (dlsym/RTLD_DEFAULT
+  + libmadc runtime), enter via `main`/`__madc_global_init`. Scope: objects
+  madc/MIR emitted (our reloc subset), not arbitrary compiler output. This is
+  the native-code cache complement to the forest front-end cache.
 - **R5 — DWARF in the `.o`.** `.debug_line` first, locals/types second.
   Gate: gdb `break file:line` + `bt` names in an AOT executable.
 - **R6 — stretch, in any order:** gcc-torture through the AOT lane; direct-ld
