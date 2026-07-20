@@ -24,8 +24,7 @@
 #include <setjmp.h>
 #include <dlfcn.h>
 #include <chrono>
-#include <unistd.h>	// -o/-shared link driver: fork/execvp/readlink; -c: mkstemps
-#include <sys/wait.h>
+#include <unistd.h>	// cir_selfexe_libdir: readlink(/proc/self/exe)
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
 
@@ -1108,7 +1107,8 @@ bool CirJitSession::emit_native_object(const char *out_path)
 
 bool CirJitSession::emit_native_executable(const char *out_path,
 					   const std::vector<std::string> &needed,
-					   const std::string &runpath)
+					   const std::string &runpath,
+					   bool shared)
 {
     if (!ctx || !mod) return false;
     std::vector<const char *> libs;
@@ -1118,13 +1118,23 @@ bool CirJitSession::emit_native_executable(const char *out_path,
     memset(&xp, 0, sizeof xp);
     xp.needed = libs.data();
     xp.n_needed = libs.size();
-    xp.entry = "main";
+    if (shared) {
+	// A dlopen'd module has no main to run the file-scope ctors:
+	// DT_INIT does it at load (once-guarded, so a host that also
+	// calls it explicitly stays correct). Omitted when the module
+	// has no ctors — the emitter skips undefined init symbols.
+	xp.shared_p = 1;
+	xp.init = "__madc_global_init";
+    } else
+	xp.entry = "main";
     xp.runpath = runpath.empty() ? NULL : runpath.c_str();
     void *buf = NULL;
     size_t size = 0;
     if (c2mir_get_native_executable(ctx, &xp, &buf, &size) != 0 || !buf) {
-	fprintf(stderr, "madc: native executable emission failed"
-			" (is main() defined?)\n");
+	fprintf(stderr, shared
+		? "madc: native shared-object emission failed\n"
+		: "madc: native executable emission failed"
+		  " (is main() defined?)\n");
 	return false;
     }
     FILE *f = fopen(out_path, "wb");
@@ -1137,7 +1147,7 @@ bool CirJitSession::emit_native_executable(const char *out_path,
     bool ok = fwrite(buf, 1, size, f) == size;
     if (fclose(f) != 0) ok = false;
     free(buf);
-    if (ok && chmod(out_path, 0755) != 0) {
+    if (ok && !shared && chmod(out_path, 0755) != 0) {
 	fprintf(stderr, "madc: chmod %s: %s\n", out_path, strerror(errno));
 	ok = false;
     }
@@ -1163,69 +1173,6 @@ static std::string cir_selfexe_libdir(void)
     return d.substr(0, slash) + "/../lib";
 }
 
-// TEMPORARY TEST SCAFFOLD (owner 2026-07-20): external linking is a test
-// oracle, never the product path. -o executables are MIR-assembled directly
-// (emit_native_executable); only -shared still routes here until the direct
-// ET_DYN slice lands, at which point this dies (no-parallel-implementations).
-static int cir_run_link(const char *obj_path, const char *out_path,
-			bool shared, const std::vector<std::string> &user_libs)
-{
-    std::string libdir = cir_selfexe_libdir();
-    const char *cc = getenv("CC");
-    if (!cc || !cc[0]) cc = "cc";
-
-    std::vector<std::string> args;
-    args.push_back(cc);
-    args.push_back(obj_path);
-    args.push_back("-o");
-    args.push_back(out_path);
-    if (shared) {
-	args.push_back("-shared");
-	args.push_back("-Wl,-z,notext");
-    } else
-	args.push_back("-no-pie");
-    if (!libdir.empty()) {
-	args.push_back("-L" + libdir);
-	args.push_back("-Wl,-rpath," + libdir);
-    }
-    args.push_back("-L/usr/local/lib");
-    args.push_back("-Wl,-rpath,/usr/local/lib");
-    args.push_back("-lmadc");
-    for (const std::string &l : user_libs)
-	args.push_back(l);
-    args.push_back("-lstdc++");
-    args.push_back("-lm");
-    args.push_back("-ldl");
-    args.push_back("-lpthread");
-
-    std::vector<char *> argv;
-    for (std::string &a : args)
-	argv.push_back((char *)a.c_str());
-    argv.push_back(NULL);
-    DBG({ std::cerr << "madc: link:"; for (const std::string &a : args)
-	      std::cerr << ' ' << a; std::cerr << std::endl; });
-
-    pid_t pid = fork();
-    if (pid == 0) {
-	execvp(argv[0], argv.data());
-	fprintf(stderr, "madc: cannot exec %s: %s\n", argv[0],
-		strerror(errno));
-	_exit(127);
-    }
-    if (pid < 0) {
-	fprintf(stderr, "madc: link: fork: %s\n", strerror(errno));
-	return -1;
-    }
-    int status = 0;
-    waitpid(pid, &status, 0);
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-	fprintf(stderr, "madc: link with %s failed (status %d)\n", cc,
-		WIFEXITED(status) ? WEXITSTATUS(status) : -1);
-	return -1;
-    }
-    return 0;
-}
-
 int madc_cir_emit_native(Program *prog, const char *source_name,
 			 MadcNativeKind kind, const char *out_path,
 			 const std::vector<std::string> &user_libs)
@@ -1240,45 +1187,30 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
     if (kind == mnkObject)
 	return session.emit_native_object(out_path) ? 0 : -1;
 
-    if (kind == mnkExecutable) {
-	// MIR assembles the executable directly — no external toolchain.
-	// DT_NEEDED: the madc runtime (its dependency closure brings libmir's
-	// builtin exports, libz/libzstd, libpthread), the C++/C runtimes, and
-	// the user's -l libraries ("-lfoo" → the same lib<foo>.so spelling the
-	// JIT dlopen lane uses; a path form passes through verbatim).
-	std::vector<std::string> needed;
-	needed.push_back("libmadc.so.0");
-	needed.push_back("libstdc++.so.6");
-	needed.push_back("libm.so.6");
-	needed.push_back("libc.so.6");
-	for (const std::string &l : user_libs) {
-	    if (l.compare(0, 2, "-l") == 0)
-		needed.push_back("lib" + l.substr(2) + ".so");
-	    else
-		needed.push_back(l);
-	}
-	std::string runpath = cir_selfexe_libdir();
-	if (!runpath.empty())
-	    runpath += ":/usr/local/lib";
+    // MIR assembles the executable (-o) or shared object (-shared)
+    // directly — no external toolchain.
+    // DT_NEEDED: the madc runtime (its dependency closure brings libmir's
+    // builtin exports, libz/libzstd, libpthread), the C++/C runtimes, and
+    // the user's -l libraries ("-lfoo" → the same lib<foo>.so spelling the
+    // JIT dlopen lane uses; a path form passes through verbatim).
+    std::vector<std::string> needed;
+    needed.push_back("libmadc.so.0");
+    needed.push_back("libstdc++.so.6");
+    needed.push_back("libm.so.6");
+    needed.push_back("libc.so.6");
+    for (const std::string &l : user_libs) {
+	if (l.compare(0, 2, "-l") == 0)
+	    needed.push_back("lib" + l.substr(2) + ".so");
 	else
-	    runpath = "/usr/local/lib";
-	return session.emit_native_executable(out_path, needed, runpath) ? 0 : -1;
+	    needed.push_back(l);
     }
-
-    // -shared: still on the external-link TEST SCAFFOLD until the direct
-    // ET_DYN slice lands (see cir_run_link's banner).
-    char tmpl[] = "/tmp/madc_aot_XXXXXX.o";
-    int tfd = mkstemps(tmpl, 2);
-    if (tfd < 0) {
-	fprintf(stderr, "madc: mkstemps: %s\n", strerror(errno));
-	return -1;
-    }
-    close(tfd);
-    int rc = -1;
-    if (session.emit_native_object(tmpl))
-	rc = cir_run_link(tmpl, out_path, true, user_libs);
-    unlink(tmpl);
-    return rc;
+    std::string runpath = cir_selfexe_libdir();
+    if (!runpath.empty())
+	runpath += ":/usr/local/lib";
+    else
+	runpath = "/usr/local/lib";
+    return session.emit_native_executable(out_path, needed, runpath,
+					  kind == mnkShared) ? 0 : -1;
 }
 
 // --- B4a: grove payload v2 fill (pack-time recording -> forest payloads) ---

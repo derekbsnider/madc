@@ -551,13 +551,13 @@ static void print_usage(const char *prog)
 "AOT output (gcc vocabulary; do not run):\n"
 "  -c [-o file.o]          compile to a relocatable native object\n"
 "                          (default: <source-base>.o in the current dir)\n"
-"  -o prog                 compile and link a native executable via the host\n"
-"                          cc ($CC overrides) against libmadc; -no-pie (the\n"
-"                          object code carries absolute relocations until the\n"
-"                          PIC rung)\n"
-"  -shared [-o file.so]    link a shared object (cc -shared -z notext)\n"
+"  -o prog                 compile to a native executable — MIR assembles\n"
+"                          the ELF directly (no external toolchain); needs\n"
+"                          libmadc.so at run time (DT_RUNPATH is set)\n"
+"  -shared [-o file.so]    compile to a shared object (ET_DYN, MIR-assembled;\n"
+"                          dlopen/#load-consumable; TEXTREL until the PIC rung)\n"
 "  --emit-object/--emit-executable <path> are aliases of -c -o / -o.\n"
-"  -l<name> becomes a host-link -l<name> in AOT mode (dlopen otherwise).\n";
+"  -l<name> becomes a DT_NEEDED lib<name>.so in AOT mode (dlopen otherwise).\n";
 }
 
 int main(int argc, char **argv)
@@ -591,9 +591,9 @@ int main(int argc, char **argv)
     CirEmitLang emit_lang = celC11;
     const char *project_manifest = NULL;  // --project <compile_commands.json>
     std::vector<std::string> link_libs;   // -l<name>: dlopen lib<name>.so (RTLD_GLOBAL)
-    std::vector<std::string> cc_link_args; // -l<name> forwarded to the AOT link line
+    std::vector<std::string> cc_link_args; // -l<name> → DT_NEEDED in AOT mode
     bool compile_object = false;          // -c: emit a relocatable .o, no run
-    bool emit_shared = false;             // -shared: emit a .so via the host cc
+    bool emit_shared = false;             // -shared: emit an ET_DYN .so, no run
     bool show_help = false;               // --help / -h / -?
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
@@ -625,7 +625,7 @@ int main(int argc, char **argv)
             compile_object = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "-shared") == 0) {
-            // gcc vocabulary: produce a shared object via the host cc.
+            // gcc vocabulary: produce a MIR-assembled ET_DYN shared object.
             emit_shared = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-object") == 0 && i + 1 < argc) {

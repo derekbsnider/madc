@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+- **feat(aot): `madc -shared` emits ET_DYN directly — the external-toolchain
+  scaffold is DELETED (task #85 tail slice 1).** `-shared` now routes through
+  the same MIR assembler as `-o`: `MIR_object_emit_executable` grew a
+  `shared_p` mode (load base 0, no `PT_INTERP`/`_start`/entry, defined
+  globals exported via `.dynsym`/`.hash`, every relocation dynamic —
+  `R_X86_64_RELATIVE` internals + `R_X86_64_64` imports) and a `DT_INIT`
+  hook, which madc points at `__madc_global_init` so dlopen'd modules run
+  file-scope C++ ctors at load. `cir_run_link` — the fork/execvp host-cc
+  driver and the LAST product-path cc user — is deleted per
+  no-parallel-implementations; cc/ld remain test oracles only. New
+  `tests/unit/test_native_shared.cpp` covers the lane in-process (emit →
+  dlopen `RTLD_NOW` → call exports) with no external toolchain at test
+  time. Fork develop @c0cb2b47 pinned in the same commit (also fixes the
+  latent R2-era GNUmakefile bug: nine recipes linked `mir-gen.o` without
+  its `mir-debug.o` dependency). Validation: fulltest + packed arbiter
+  729/0/0/13; `--exe` 709/10 failset-identical; fork object lane
+  1139/2278 + battery green; ET_EXEC output byte-identical to v0.36.0.
+
 ## [v0.36.0] — 2026-07-20
 
 The native-compiler release: MIR becomes a real AOT back end — `madc -c`
