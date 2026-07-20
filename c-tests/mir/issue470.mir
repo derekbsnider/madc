@@ -1,4 +1,5 @@
 M0:	module
+	export	main
 main:	func i64
 	local	i64:num
 	mov num, 0x100000000

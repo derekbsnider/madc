@@ -131,6 +131,76 @@ typedef struct MIR_debug_jit_entry *MIR_debug_jit_t;
 extern MIR_debug_jit_t MIR_debug_gdb_register (MIR_context_t ctx, void *buf, size_t size);
 extern void MIR_debug_gdb_unregister (MIR_debug_jit_t entry);
 
+/* --- AOT relocatable-object builder --------------------------------------
+   The second consumer of this file's ELF emission core (one writer serves
+   both the GDB-JIT debug object above and the AOT `.o`).  mir-gen.c's object
+   mode (MIR_gen_set_object_mode) captures machine code, data, symbols and
+   relocations here instead of publishing to executable memory;
+   MIR_object_emit then assembles an on-disk relocatable ELF object
+   (ET_REL, x86-64 first).  Unlike the debug object -- which describes
+   already-resolved JIT addresses -- everything here is section-relative and
+   unresolved: .text/.data carry the real bytes, .rela.text/.rela.data carry
+   the relocations the system linker applies. */
+
+typedef struct MIR_object *MIR_object_t;
+
+/* Section identifiers (fixed section-header indexes 1..3 in the emitted
+   object).  MIR_OBJ_SEC_UNDEF marks an imported (undefined) symbol. */
+enum {
+  MIR_OBJ_SEC_UNDEF = -1,
+  MIR_OBJ_SEC_TEXT = 0,
+  MIR_OBJ_SEC_DATA = 1,
+  MIR_OBJ_SEC_BSS = 2,
+};
+
+/* Relocation kinds (mapped to the arch-specific ELF type at emit). */
+enum {
+  MIR_OBJ_RELOC_ABS64 = 0, /* absolute 64-bit address: R_X86_64_64 */
+};
+
+/* Create a builder, or NULL if the host is not a supported ELF target. */
+extern MIR_object_t MIR_object_create (void);
+extern void MIR_object_destroy (MIR_object_t obj);
+
+/* Append len code bytes to .text (start padded to 16-byte alignment);
+   returns the .text offset the bytes landed at. */
+extern size_t MIR_object_text_append (MIR_object_t obj, const void *bytes, size_t len);
+/* Append len bytes to .data at the given power-of-2 alignment (bytes == NULL
+   appends zero fill); returns the .data offset. */
+extern size_t MIR_object_data_append (MIR_object_t obj, const void *bytes, size_t len,
+                                      size_t align);
+/* Reserve len bytes in .bss at the given power-of-2 alignment; returns the
+   .bss offset. */
+extern size_t MIR_object_bss_reserve (MIR_object_t obj, size_t len, size_t align);
+
+/* Define (sec >= 0, at section offset value with the given size) or import
+   (sec == MIR_OBJ_SEC_UNDEF) a symbol.  func_p selects STT_FUNC vs
+   STT_OBJECT; binding is STB_GLOBAL unless local_p (STB_LOCAL) or weak_p
+   (STB_WEAK).  Returns a stable symbol id for MIR_object_add_reloc, or -1 on
+   failure. */
+extern int MIR_object_add_symbol (MIR_object_t obj, const char *name, int sec, uint64_t value,
+                                  uint64_t size, int func_p, int local_p, int weak_p);
+/* Turn an existing symbol (typically created as MIR_OBJ_SEC_UNDEF when it was
+   first referenced by a relocation) into a definition.  Referencing before
+   defining is the normal capture order for forward calls. */
+extern void MIR_object_symbol_define (MIR_object_t obj, int sym_id, int sec, uint64_t value,
+                                      uint64_t size, int func_p, int local_p, int weak_p);
+/* The STT_SECTION symbol id for sec (created on first use) -- the target for
+   section-relative relocations (label addresses, lref data). */
+extern int MIR_object_section_symbol (MIR_object_t obj, int sec);
+/* Nonzero if the symbol has been defined (not just referenced). */
+extern int MIR_object_symbol_defined_p (MIR_object_t obj, int sym_id);
+/* Add a relocation of the given kind in section sec (TEXT or DATA) at offset,
+   against sym_id with the given addend.  The relocated slot's bytes should be
+   left zero: RELA addends carry the whole value. */
+extern void MIR_object_add_reloc (MIR_object_t obj, int sec, uint64_t offset, int sym_id,
+                                  int64_t addend, int kind);
+
+/* Assemble the relocatable object.  On success returns 0 and sets *buf
+   (malloc'd, caller-owned; write it out and free it) and *size.  Returns
+   nonzero on failure / unsupported host. */
+extern int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size);
+
 #ifdef __cplusplus
 }
 #endif

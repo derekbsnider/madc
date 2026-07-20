@@ -11,6 +11,7 @@
 # unnamed in the proto: riscv64 passes variadic FP args in GPRs, so a
 # proto naming them would change their ABI class.)
 m_bba2:	module
+	export	main
 pv:	proto	i64, i64:a0, i64:a1, ...
 vf:	func	i64, i64:i0, i64:i1, ...
 	local	i64:va, i64:p, i64:bs, i64:bs2, i64:t, i64:x, d:dv, d:dx

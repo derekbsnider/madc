@@ -1,4 +1,5 @@
 test: module
+      export main
 main: func i64
       ret 0
       endfunc

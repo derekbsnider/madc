@@ -669,6 +669,28 @@ static const char *VA_ARG = "mir.va_arg";
 static const char *VA_BLOCK_ARG_P = "mir.va_block_arg.p";
 static const char *VA_BLOCK_ARG = "mir.va_block_arg";
 
+#if defined(__ELF__) && defined(__GNUC__)
+/* AOT object mode: generated code calls these builtins through the "mir.*"
+   import items above, which become undefined symbols in an emitted .o --
+   export them from libmir under those exact ELF names so the link resolves.
+   (va_arg_builtin / va_block_arg_builtin get theirs in mir-x86_64.c.) */
+extern __typeof (mir_ui2f) mir_ui2f_obj_export asm ("mir.ui2f")
+  __attribute__ ((alias ("mir_ui2f"), used));
+extern __typeof (mir_ui2d) mir_ui2d_obj_export asm ("mir.ui2d")
+  __attribute__ ((alias ("mir_ui2d"), used));
+extern __typeof (mir_ui2ld) mir_ui2ld_obj_export asm ("mir.ui2ld")
+  __attribute__ ((alias ("mir_ui2ld"), used));
+extern __typeof (mir_ld2i) mir_ld2i_obj_export asm ("mir.ld2i")
+  __attribute__ ((alias ("mir_ld2i"), used));
+/* "mir.arg_memcpy" (block-argument copies) is bound to libc memcpy at gen
+   time; give it a linkable definition of its own. */
+static void *mir_arg_memcpy (void *dest, const void *src, size_t n) {
+  return memcpy (dest, src, n);
+}
+extern __typeof (mir_arg_memcpy) mir_arg_memcpy_obj_export asm ("mir.arg_memcpy")
+  __attribute__ ((alias ("mir_arg_memcpy"), used));
+#endif
+
 static void get_builtin (gen_ctx_t gen_ctx, MIR_insn_code_t code, MIR_item_t *proto_item,
                          MIR_item_t *func_import_item) {
   MIR_context_t ctx = gen_ctx->ctx;
@@ -728,6 +750,8 @@ DEF_VARR (insn_pattern_info_t);
 struct const_ref {
   int call_p;            /* flag that constant from call insn */
   MIR_item_t func_item;  /* non-null for constant representing reference to func item */
+  MIR_item_t ref_item;   /* object mode: the referenced item (any kind) whose address the
+                            pool slot holds; NULL for pure-value constants */
   size_t pc;             /* where rel32 address should be in code */
   size_t next_insn_disp; /* displacement of the next insn */
   size_t const_num;
@@ -758,6 +782,16 @@ struct call_ref {
 typedef struct call_ref call_ref_t;
 DEF_VARR (call_ref_t);
 
+/* Object mode: an item address embedded as an imm64 in the code text
+   (a movabs source) -- becomes an R_X86_64_64 text relocation. */
+struct text_ref {
+  size_t offset; /* of the imm64 in result_code */
+  MIR_item_t item;
+};
+
+typedef struct text_ref text_ref_t;
+DEF_VARR (text_ref_t);
+
 struct target_ctx {
   unsigned char alloca_p, block_arg_func_p, leaf_p, keep_fp_p;
   int start_sp_from_bp_offset;
@@ -772,6 +806,7 @@ struct target_ctx {
   VARR (uint64_t) * abs_address_locs;
   VARR (MIR_code_reloc_t) * relocs;
   VARR (call_ref_t) * call_refs;
+  VARR (text_ref_t) * text_refs; /* object mode: imm64 item addresses in code text */
 };
 
 #define alloca_p gen_ctx->target_ctx->alloca_p
@@ -790,6 +825,7 @@ struct target_ctx {
 #define label_refs gen_ctx->target_ctx->label_refs
 #define abs_address_locs gen_ctx->target_ctx->abs_address_locs
 #define relocs gen_ctx->target_ctx->relocs
+#define text_refs gen_ctx->target_ctx->text_refs
 
 static void prohibit_omitting_fp (gen_ctx_t gen_ctx) { keep_fp_p = TRUE; }
 
@@ -2233,6 +2269,10 @@ static int pattern_match_p (gen_ctx_t gen_ctx, const struct pattern *pat, MIR_in
         return FALSE;
       ch = *++p;
       gen_assert ('0' <= ch && ch <= '3');
+      /* Object mode: an item address is a link-time value -- it must never
+         match a narrow immediate (or displacement) slot, only imm64/pool
+         patterns that can carry a relocation. */
+      if (op_ref->mode == MIR_OP_REF && object_mode_p && ch != '3') return FALSE;
       int64_t n = int_value (gen_ctx, op_ref);
       if ((ch == '0' && !int8_p (n)) || (ch == '1' && !int16_p (n)) || (ch == '2' && !int32_p (n)))
         return FALSE;
@@ -2558,7 +2598,7 @@ static size_t add_to_const_pool (struct gen_ctx *gen_ctx, uint64_t v) {
 }
 
 static int setup_imm_addr (struct gen_ctx *gen_ctx, uint64_t v, int *mod, int *rm, int64_t *disp32,
-                           int call_p, MIR_item_t func_item) {
+                           int call_p, MIR_item_t func_item, MIR_item_t ref_item) {
   const_ref_t cr;
   size_t n;
 
@@ -2566,6 +2606,7 @@ static int setup_imm_addr (struct gen_ctx *gen_ctx, uint64_t v, int *mod, int *r
   setup_rip_rel_addr (0, mod, rm, disp32);
   cr.call_p = call_p;
   cr.func_item = func_item;
+  cr.ref_item = ref_item;
   cr.pc = 0;
   cr.next_insn_disp = 0;
   cr.const_num = n;
@@ -2757,6 +2798,7 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
     int64_t disp32 = -1, imm32 = -1;
     int imm64_p = FALSE;
     uint64_t imm64 = 0, v;
+    MIR_item_t imm64_item = NULL; /* object mode: REF item behind the imm64 */
     const MIR_op_t *op_ref;
     int const_ref_num = -1, label_ref_num = -1, switch_table_addr_p = FALSE;
 
@@ -2902,6 +2944,7 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
         } else {
           imm64_p = TRUE;
           imm64 = (uint64_t) n;
+          if (object_mode_p && op_ref->mode == MIR_OP_REF) imm64_item = op_ref->u.ref;
         }
         break;
       case 'T': {
@@ -2950,7 +2993,9 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
         MIR_item_t func_item
           = op_ref->mode != MIR_OP_REF || op_ref->u.ref->item_type != MIR_func_item ? NULL
                                                                                     : op_ref->u.ref;
-        const_ref_num = setup_imm_addr (gen_ctx, v, &mod, &rm, &disp32, TRUE, func_item);
+        const_ref_num
+          = setup_imm_addr (gen_ctx, v, &mod, &rm, &disp32, TRUE, func_item,
+                            op_ref->mode == MIR_OP_REF ? op_ref->u.ref : NULL);
         break;
       case '/':
         ch = *++p;
@@ -2977,7 +3022,7 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
         ++p;
         v = read_hex (&p);
         gen_assert (const_ref_num < 0 && disp32 < 0);
-        const_ref_num = setup_imm_addr (gen_ctx, v, &mod, &rm, &disp32, FALSE, NULL);
+        const_ref_num = setup_imm_addr (gen_ctx, v, &mod, &rm, &disp32, FALSE, NULL, NULL);
         break;
       case 'h':
         ++p;
@@ -3047,7 +3092,13 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
     if (disp32 >= 0) put_uint64 (gen_ctx, disp32, 4);
     if (imm8 >= 0) put_byte (gen_ctx, imm8);
     if (imm32 >= 0) put_uint64 (gen_ctx, imm32, 4);
-    if (imm64_p) put_uint64 (gen_ctx, imm64, 8);
+    if (imm64_p) {
+      if (imm64_item != NULL) {
+        text_ref_t tr = {VARR_LENGTH (uint8_t, result_code), imm64_item};
+        VARR_PUSH (text_ref_t, text_refs, tr);
+      }
+      put_uint64 (gen_ctx, imm64, 8);
+    }
 
     if (switch_table_addr_p) {
       switch_table_addr_start_offset = (int) VARR_LENGTH (uint8_t, result_code);
@@ -3104,6 +3155,7 @@ static void translate_init (gen_ctx_t gen_ctx) {
   VARR_TRUNC (const_ref_t, const_refs, 0);
   VARR_TRUNC (label_ref_t, label_refs, 0);
   VARR_TRUNC (uint64_t, abs_address_locs, 0);
+  VARR_TRUNC (text_ref_t, text_refs, 0);
 }
 
 static uint8_t *translate_finish (gen_ctx_t gen_ctx, size_t *len) {
@@ -3256,6 +3308,63 @@ static void target_rebase (gen_ctx_t gen_ctx, uint8_t *base) {
   gen_setup_lrefs (gen_ctx, base);
 }
 
+/* Object mode replacement for publish + target_rebase: land the blob in
+   .text and turn the target ledgers into relocations.  Label refs and the
+   const-pool disp32s are already section-internal (translate_finish resolved
+   them inside the blob, and the pool rides along in .text exactly as in the
+   JIT layout); only 8-byte absolute slots need relocs.  Relocated slot bytes
+   are zeroed -- the RELA addends carry everything.  The JIT-only
+   change_calls / call_refs (redef) machinery is skipped: the emitted module
+   is emit-final. */
+#define TARGET_HAS_OBJECT_CAPTURE 1
+static void target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code_len) {
+  MIR_object_t obj = gen_object;
+  size_t i;
+
+  /* abs label slots (computed goto, switch tables): the slot holds the
+     in-function label displacement; save (offset, disp) then zero */
+  VARR_TRUNC (MIR_code_reloc_t, relocs, 0);
+  for (i = 0; i < VARR_LENGTH (uint64_t, abs_address_locs); i++) {
+    MIR_code_reloc_t reloc;
+    reloc.offset = VARR_GET (uint64_t, abs_address_locs, i);
+    reloc.value = (void *) (uintptr_t) get_int64 (code + reloc.offset, 8);
+    VARR_PUSH (MIR_code_reloc_t, relocs, reloc);
+    memset (code + reloc.offset, 0, 8);
+  }
+  /* const-pool slots holding item addresses: locate each ref's slot through
+     its already-resolved rip-relative disp32 */
+  for (i = 0; i < VARR_LENGTH (const_ref_t, const_refs); i++) {
+    const_ref_t cr = VARR_GET (const_ref_t, const_refs, i);
+    if (cr.ref_item == NULL) continue;
+    size_t slot_off = cr.next_insn_disp + (size_t) get_int64 (code + cr.pc, 4);
+    text_ref_t tr = {slot_off, cr.ref_item};
+    VARR_PUSH (text_ref_t, text_refs, tr);
+  }
+  /* zero every item-address slot (imm64s in text + pool slots) */
+  for (i = 0; i < VARR_LENGTH (text_ref_t, text_refs); i++)
+    memset (code + VARR_GET (text_ref_t, text_refs, i).offset, 0, 8);
+
+  size_t func_off = MIR_object_text_append (obj, code, code_len);
+  int sym = gen_obj_item_sym (gen_ctx, curr_func_item);
+  MIR_object_symbol_define (obj, sym, MIR_OBJ_SEC_TEXT, func_off, code_len, TRUE,
+                            !curr_func_item->export_p, FALSE);
+
+  int text_sec_sym = MIR_object_section_symbol (obj, MIR_OBJ_SEC_TEXT);
+  for (i = 0; i < VARR_LENGTH (MIR_code_reloc_t, relocs); i++) {
+    MIR_code_reloc_t reloc = VARR_GET (MIR_code_reloc_t, relocs, i);
+    MIR_object_add_reloc (obj, MIR_OBJ_SEC_TEXT, func_off + reloc.offset, text_sec_sym,
+                          (int64_t) func_off + (int64_t) (uintptr_t) reloc.value,
+                          MIR_OBJ_RELOC_ABS64);
+  }
+  VARR_TRUNC (MIR_code_reloc_t, relocs, 0);
+  for (i = 0; i < VARR_LENGTH (text_ref_t, text_refs); i++) {
+    text_ref_t tr = VARR_GET (text_ref_t, text_refs, i);
+    MIR_object_add_reloc (obj, MIR_OBJ_SEC_TEXT, func_off + tr.offset,
+                          gen_obj_item_sym (gen_ctx, tr.item), 0, MIR_OBJ_RELOC_ABS64);
+  }
+  gen_obj_record_lrefs (gen_ctx, func_off);
+}
+
 static void target_change_to_direct_calls (MIR_context_t ctx) {
   gen_ctx_t gen_ctx = *gen_ctx_loc (ctx);
   size_t len = VARR_LENGTH (call_ref_t, gen_ctx->target_ctx->call_refs);
@@ -3318,6 +3427,7 @@ static void target_bb_translate_start (gen_ctx_t gen_ctx) {
   VARR_TRUNC (const_ref_t, const_refs, 0);
   VARR_TRUNC (label_ref_t, label_refs, 0);
   VARR_TRUNC (uint64_t, abs_address_locs, 0);
+  VARR_TRUNC (text_ref_t, text_refs, 0);
 }
 
 static void target_bb_insn_translate (gen_ctx_t gen_ctx, MIR_insn_t insn, void **jump_addrs) {
@@ -3424,6 +3534,7 @@ static void target_init (gen_ctx_t gen_ctx) {
   VARR_CREATE (uint64_t, abs_address_locs, alloc, 0);
   VARR_CREATE (MIR_code_reloc_t, relocs, alloc, 0);
   VARR_CREATE (call_ref_t, gen_ctx->target_ctx->call_refs, alloc, 0);
+  VARR_CREATE (text_ref_t, text_refs, alloc, 0);
   MIR_type_t res = MIR_T_D;
   MIR_var_t args[] = {{MIR_T_D, "src", 0}};
   _MIR_register_unspec_insn (gen_ctx->ctx, MOVDQA_CODE, "movdqa", 1, &res, 1, FALSE, args);
@@ -3444,6 +3555,7 @@ static void target_finish (gen_ctx_t gen_ctx) {
   VARR_DESTROY (uint64_t, abs_address_locs);
   VARR_DESTROY (MIR_code_reloc_t, relocs);
   VARR_DESTROY (call_ref_t, gen_ctx->target_ctx->call_refs);
+  VARR_DESTROY (text_ref_t, text_refs);
   MIR_free (alloc, gen_ctx->target_ctx);
   gen_ctx->target_ctx = NULL;
 }

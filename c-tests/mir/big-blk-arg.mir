@@ -5,6 +5,7 @@
 # emits such calls (it lowers big aggregates itself), so this needs a raw
 # MIR test.  Expected result: 1.5+2.25+10+20+30+40+100+4.25 = 208.0.
 m_bba:  module
+        export main
 pf:     proto d, d:d1, d:d2, i64:i1, i64:i2, i64:i3, i64:i4, blk:200(b), d:d3
 fsum:   func d, d:d1, d:d2, i64:i1, i64:i2, i64:i3, i64:i4, blk:200(b), d:d3
         local i64:t, i64:tc, d:s, d:td

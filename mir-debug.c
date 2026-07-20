@@ -688,6 +688,89 @@ typedef struct {
   uint64_t size;
 } dwsec_t;
 
+#define DWSEC_MAX 16
+
+/* Assemble an ELF object from section descriptors S[0..ns-1] (S[0] must be
+   the zeroed null section).  Appends the .shstrtab section itself, so the
+   caller must leave one free slot (ns + 1 <= DWSEC_MAX).  On success returns
+   0 and sets *buf (malloc'd, caller-owned) and *size.  This is the one ELF
+   writer core -- it serves both the GDB-JIT debug object (MIR_debug_emit) and
+   the AOT relocatable object (MIR_object_emit). */
+static int elf_assemble (dwsec_t *S, int ns, uint16_t e_machine, void **buf, size_t *size) {
+  dwbuf_t shstr = {0};
+  uint32_t name_off[DWSEC_MAX];
+
+  if (ns + 1 > DWSEC_MAX) return -1;
+  buf_u8 (&shstr, 0);
+  name_off[0] = 0;
+  for (int i = 1; i < ns; i++) {
+    name_off[i] = (uint32_t) shstr.len;
+    buf_str (&shstr, S[i].name);
+  }
+  int i_shstr = ns;
+  name_off[i_shstr] = (uint32_t) shstr.len;
+  buf_str (&shstr, ".shstrtab");
+  S[ns++] = (dwsec_t) {".shstrtab", SHT_STRTAB, 0, 0, 1, 0, 0, 0, &shstr, shstr.len};
+
+  size_t off = sizeof (Elf64_Ehdr);
+  uint64_t sec_off[DWSEC_MAX] = {0};
+  for (int i = 1; i < ns; i++) {
+    if (S[i].type == SHT_NOBITS) {
+      sec_off[i] = off;
+      continue;
+    }
+    size_t align = S[i].align > 8 ? S[i].align : 8;
+    off = (off + align - 1) & ~(align - 1);
+    sec_off[i] = off;
+    off += S[i].size;
+  }
+  off = (off + 7) & ~(size_t) 7;
+  size_t shoff = off, total = shoff + (size_t) ns * sizeof (Elf64_Shdr);
+
+  unsigned char *p = calloc (1, total);
+  if (p == NULL) {
+    free (shstr.p);
+    return -1;
+  }
+  Elf64_Ehdr *eh = (Elf64_Ehdr *) p;
+  eh->e_ident[EI_MAG0] = ELFMAG0;
+  eh->e_ident[EI_MAG1] = ELFMAG1;
+  eh->e_ident[EI_MAG2] = ELFMAG2;
+  eh->e_ident[EI_MAG3] = ELFMAG3;
+  eh->e_ident[EI_CLASS] = ELFCLASS64;
+  eh->e_ident[EI_DATA] = ELFDATA2LSB;
+  eh->e_ident[EI_VERSION] = EV_CURRENT;
+  eh->e_ident[EI_OSABI] = ELFOSABI_SYSV;
+  eh->e_type = ET_REL;
+  eh->e_machine = e_machine;
+  eh->e_version = EV_CURRENT;
+  eh->e_shoff = shoff;
+  eh->e_ehsize = sizeof (Elf64_Ehdr);
+  eh->e_shentsize = sizeof (Elf64_Shdr);
+  eh->e_shnum = (Elf64_Half) ns;
+  eh->e_shstrndx = (Elf64_Half) i_shstr;
+
+  Elf64_Shdr *sh = (Elf64_Shdr *) (p + shoff);
+  for (int i = 1; i < ns; i++) {
+    if (S[i].type != SHT_NOBITS && S[i].body != NULL && S[i].size)
+      memcpy (p + sec_off[i], S[i].body->p, S[i].size);
+    sh[i].sh_name = name_off[i];
+    sh[i].sh_type = S[i].type;
+    sh[i].sh_flags = S[i].flags;
+    sh[i].sh_addr = S[i].addr;
+    sh[i].sh_offset = (S[i].type == SHT_NOBITS) ? 0 : sec_off[i];
+    sh[i].sh_size = S[i].size;
+    sh[i].sh_link = S[i].link;
+    sh[i].sh_info = S[i].info;
+    sh[i].sh_addralign = S[i].align;
+    sh[i].sh_entsize = S[i].entsize;
+  }
+  free (shstr.p);
+  *buf = p;
+  *size = total;
+  return 0;
+}
+
 /* ===== .debug_frame (CFI) ================================================ */
 /* Authoritative unwind info for the JIT frames (x86-64 only for now).  gdb's
    heuristic prologue analysis does not recognize MIR's FP prologue
@@ -800,7 +883,7 @@ int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
   emit_line (d, &line);
   emit_frame (d, &frame);
 
-  dwsec_t S[16];
+  dwsec_t S[DWSEC_MAX];
   int ns = 0;
   S[ns++] = (dwsec_t){0};
   S[ns++] = (dwsec_t){".text", SHT_NOBITS, 0, 0, 16, SHF_ALLOC | SHF_EXECINSTR, text_base, 0,
@@ -816,78 +899,297 @@ int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
   S[ns++] = (dwsec_t){".debug_line", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &line, line.len};
   if (frame.len != 0)
     S[ns++] = (dwsec_t){".debug_frame", SHT_PROGBITS, 0, 0, 8, 0, 0, 0, &frame, frame.len};
-  int i_shstr = ns;
-  dwbuf_t shstr = {0};
-  buf_u8 (&shstr, 0);
-  uint32_t name_off[16];
-  name_off[0] = 0;
-  for (int i = 1; i < ns; i++) { name_off[i] = (uint32_t) shstr.len; buf_str (&shstr, S[i].name); }
-  uint32_t name_shstr = (uint32_t) shstr.len;
-  buf_str (&shstr, ".shstrtab");
-  S[ns++] = (dwsec_t){".shstrtab", SHT_STRTAB, 0, 0, 1, 0, 0, 0, &shstr, shstr.len};
-  name_off[i_shstr] = name_shstr;
-
-  size_t off = sizeof (Elf64_Ehdr);
-  uint64_t sec_off[16] = {0};
-  for (int i = 1; i < ns; i++) {
-    if (S[i].type == SHT_NOBITS) { sec_off[i] = off; continue; }
-    off = (off + 7) & ~(size_t) 7;
-    sec_off[i] = off;
-    off += S[i].size;
-  }
-  off = (off + 7) & ~(size_t) 7;
-  size_t shoff = off, total = shoff + (size_t) ns * sizeof (Elf64_Shdr);
-
-  unsigned char *p = calloc (1, total);
-  if (p == NULL) {
-    free (strtab.p); free (symtab.p); free (abbrev.p); free (info.p); free (line.p); free (frame.p);
-    free (shstr.p);
-    return -1;
-  }
-  Elf64_Ehdr *eh = (Elf64_Ehdr *) p;
-  eh->e_ident[EI_MAG0] = ELFMAG0;
-  eh->e_ident[EI_MAG1] = ELFMAG1;
-  eh->e_ident[EI_MAG2] = ELFMAG2;
-  eh->e_ident[EI_MAG3] = ELFMAG3;
-  eh->e_ident[EI_CLASS] = ELFCLASS64;
-  eh->e_ident[EI_DATA] = ELFDATA2LSB;
-  eh->e_ident[EI_VERSION] = EV_CURRENT;
-  eh->e_ident[EI_OSABI] = ELFOSABI_SYSV;
-  eh->e_type = ET_REL;
-  eh->e_machine = MIR_DEBUG_EM;
-  eh->e_version = EV_CURRENT;
-  eh->e_shoff = shoff;
-  eh->e_ehsize = sizeof (Elf64_Ehdr);
-  eh->e_shentsize = sizeof (Elf64_Shdr);
-  eh->e_shnum = (Elf64_Half) ns;
-  eh->e_shstrndx = (Elf64_Half) i_shstr;
-
-  Elf64_Shdr *sh = (Elf64_Shdr *) (p + shoff);
-  for (int i = 1; i < ns; i++) {
-    if (S[i].type != SHT_NOBITS && S[i].body != NULL && S[i].size)
-      memcpy (p + sec_off[i], S[i].body->p, S[i].size);
-    sh[i].sh_name = name_off[i];
-    sh[i].sh_type = S[i].type;
-    sh[i].sh_flags = S[i].flags;
-    sh[i].sh_addr = S[i].addr;
-    sh[i].sh_offset = (S[i].type == SHT_NOBITS) ? 0 : sec_off[i];
-    sh[i].sh_size = S[i].size;
-    sh[i].sh_link = S[i].link;
-    sh[i].sh_info = S[i].info;
-    sh[i].sh_addralign = S[i].align;
-    sh[i].sh_entsize = S[i].entsize;
-  }
+  int rc = elf_assemble (S, ns, MIR_DEBUG_EM, buf, size);
   free (strtab.p); free (symtab.p); free (abbrev.p); free (info.p); free (line.p); free (frame.p);
-  free (shstr.p);
-  *buf = p;
-  *size = total;
-  return 0;
+  return rc;
+}
+
+/* ===== AOT relocatable-object builder (MIR_object_*) ===================== */
+/* The second consumer of the ELF core above (see mir-debug.h).  Everything is
+   section-relative and unresolved; the system linker applies the .rela.*
+   entries.  Fixed section-header indexes: 1 .text, 2 .data, 3 .bss (then
+   .symtab/.strtab and any .rela.* / .shstrtab). */
+
+typedef struct {
+  char *name; /* copied; NULL for section symbols and anonymous items */
+  int sec;    /* MIR_OBJ_SEC_* or MIR_OBJ_SEC_UNDEF */
+  uint64_t value, size;
+  unsigned char func_p, local_p, weak_p, section_p, defined_p;
+} objsym_t;
+
+typedef struct {
+  int sec; /* MIR_OBJ_SEC_TEXT or MIR_OBJ_SEC_DATA */
+  uint64_t offset;
+  int sym;
+  int64_t addend;
+  int kind;
+} objreloc_t;
+
+struct MIR_object {
+  dwbuf_t text, data;
+  uint64_t bss_size;
+  size_t data_align, bss_align;
+  objsym_t *syms;
+  size_t n_syms, cap_syms;
+  objreloc_t *rels;
+  size_t n_rels, cap_rels;
+  int sec_sym[3]; /* section-symbol ids for TEXT/DATA/BSS; -1 until created */
+};
+
+static void buf_zeros (dwbuf_t *b, size_t n) {
+  if (buf_reserve (b, n)) return;
+  memset (b->p + b->len, 0, n);
+  b->len += n;
+}
+
+static char *obj_strdup (const char *s) {
+  size_t n = strlen (s) + 1;
+  char *p = malloc (n);
+  if (p != NULL) memcpy (p, s, n);
+  return p;
+}
+
+MIR_object_t MIR_object_create (void) {
+  if (MIR_DEBUG_EM != EM_X86_64) return NULL; /* x86-64 first: the reloc mapping */
+  MIR_object_t obj = calloc (1, sizeof (struct MIR_object));
+  if (obj == NULL) return NULL;
+  obj->data_align = obj->bss_align = 1;
+  obj->sec_sym[0] = obj->sec_sym[1] = obj->sec_sym[2] = -1;
+  return obj;
+}
+
+void MIR_object_destroy (MIR_object_t obj) {
+  if (obj == NULL) return;
+  for (size_t i = 0; i < obj->n_syms; i++) free (obj->syms[i].name);
+  free (obj->syms);
+  free (obj->rels);
+  free (obj->text.p);
+  free (obj->data.p);
+  free (obj);
+}
+
+size_t MIR_object_text_append (MIR_object_t obj, const void *bytes, size_t len) {
+  while (obj->text.len % 16 != 0) buf_u8 (&obj->text, 0);
+  size_t off = obj->text.len;
+  buf_bytes (&obj->text, bytes, len);
+  return off;
+}
+
+size_t MIR_object_data_append (MIR_object_t obj, const void *bytes, size_t len, size_t align) {
+  if (align > obj->data_align) obj->data_align = align;
+  if (align > 1)
+    while (obj->data.len % align != 0) buf_u8 (&obj->data, 0);
+  size_t off = obj->data.len;
+  if (bytes == NULL)
+    buf_zeros (&obj->data, len);
+  else
+    buf_bytes (&obj->data, bytes, len);
+  return off;
+}
+
+size_t MIR_object_bss_reserve (MIR_object_t obj, size_t len, size_t align) {
+  if (align > obj->bss_align) obj->bss_align = align;
+  if (align > 1) obj->bss_size = (obj->bss_size + align - 1) & ~((uint64_t) align - 1);
+  size_t off = (size_t) obj->bss_size;
+  obj->bss_size += len;
+  return off;
+}
+
+int MIR_object_add_symbol (MIR_object_t obj, const char *name, int sec, uint64_t value,
+                           uint64_t size, int func_p, int local_p, int weak_p) {
+  if (obj->n_syms >= obj->cap_syms) {
+    size_t c = obj->cap_syms ? obj->cap_syms * 2 : 64;
+    void *np = realloc (obj->syms, c * sizeof (objsym_t));
+    if (np == NULL) return -1;
+    obj->syms = np;
+    obj->cap_syms = c;
+  }
+  objsym_t *s = &obj->syms[obj->n_syms];
+  memset (s, 0, sizeof *s);
+  if (name != NULL && (s->name = obj_strdup (name)) == NULL) return -1;
+  s->sec = sec;
+  s->value = value;
+  s->size = size;
+  s->func_p = func_p != 0;
+  s->local_p = local_p != 0;
+  s->weak_p = weak_p != 0;
+  s->defined_p = sec != MIR_OBJ_SEC_UNDEF;
+  return (int) obj->n_syms++;
+}
+
+void MIR_object_symbol_define (MIR_object_t obj, int sym_id, int sec, uint64_t value,
+                               uint64_t size, int func_p, int local_p, int weak_p) {
+  if (sym_id < 0 || (size_t) sym_id >= obj->n_syms) return;
+  objsym_t *s = &obj->syms[sym_id];
+  s->sec = sec;
+  s->value = value;
+  s->size = size;
+  s->func_p = func_p != 0;
+  s->local_p = local_p != 0;
+  s->weak_p = weak_p != 0;
+  s->defined_p = sec != MIR_OBJ_SEC_UNDEF;
+}
+
+int MIR_object_section_symbol (MIR_object_t obj, int sec) {
+  if (sec < MIR_OBJ_SEC_TEXT || sec > MIR_OBJ_SEC_BSS) return -1;
+  if (obj->sec_sym[sec] < 0) {
+    int id = MIR_object_add_symbol (obj, NULL, sec, 0, 0, 0, 1, 0);
+    if (id >= 0) obj->syms[id].section_p = 1;
+    obj->sec_sym[sec] = id;
+  }
+  return obj->sec_sym[sec];
+}
+
+int MIR_object_symbol_defined_p (MIR_object_t obj, int sym_id) {
+  if (sym_id < 0 || (size_t) sym_id >= obj->n_syms) return 0;
+  return obj->syms[sym_id].defined_p;
+}
+
+void MIR_object_add_reloc (MIR_object_t obj, int sec, uint64_t offset, int sym_id, int64_t addend,
+                           int kind) {
+  if (obj->n_rels >= obj->cap_rels) {
+    size_t c = obj->cap_rels ? obj->cap_rels * 2 : 64;
+    void *np = realloc (obj->rels, c * sizeof (objreloc_t));
+    if (np == NULL) return;
+    obj->rels = np;
+    obj->cap_rels = c;
+  }
+  obj->rels[obj->n_rels++] = (objreloc_t) {sec, offset, sym_id, addend, kind};
+}
+
+int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
+  if (buf != NULL) *buf = NULL;
+  if (size != NULL) *size = 0;
+  if (obj == NULL || buf == NULL || size == NULL || MIR_DEBUG_EM != EM_X86_64) return -1;
+
+  /* Final symtab order: null, locals (incl. section symbols), then
+     globals/weak.  Relocations hold stable ids; map them here. */
+  size_t n = obj->n_syms;
+  uint32_t *final_idx = calloc (n ? n : 1, sizeof (uint32_t));
+  if (final_idx == NULL) return -1;
+  dwbuf_t strtab = {0}, symtab = {0}, rela_text = {0}, rela_data = {0};
+  buf_u8 (&strtab, 0);
+  Elf64_Sym z = {0};
+  buf_bytes (&symtab, &z, sizeof z);
+  static const int sec_shndx[3] = {1, 2, 3};
+  uint32_t next = 1, n_locals = 0;
+  for (int pass = 0; pass < 2; pass++)
+    for (size_t i = 0; i < n; i++) {
+      objsym_t *s = &obj->syms[i];
+      int local = s->local_p || s->section_p;
+      if ((pass == 0) != (local != 0)) continue;
+      Elf64_Sym es = {0};
+      if (s->name != NULL) {
+        es.st_name = (Elf64_Word) strtab.len;
+        buf_str (&strtab, s->name);
+      }
+      unsigned char bind = local ? STB_LOCAL : s->weak_p ? STB_WEAK : STB_GLOBAL;
+      unsigned char type = s->section_p ? STT_SECTION
+                           : !s->defined_p ? STT_NOTYPE
+                           : s->func_p ? STT_FUNC
+                                       : STT_OBJECT;
+      es.st_info = ELF64_ST_INFO (bind, type);
+      es.st_other = STV_DEFAULT;
+      es.st_shndx = s->defined_p ? (Elf64_Section) sec_shndx[s->sec] : SHN_UNDEF;
+      es.st_value = s->defined_p ? s->value : 0;
+      es.st_size = s->size;
+      buf_bytes (&symtab, &es, sizeof es);
+      if (pass == 0) n_locals++;
+      final_idx[i] = next++;
+    }
+
+  int bad_p = 0;
+  for (size_t i = 0; i < obj->n_rels; i++) {
+    objreloc_t *r = &obj->rels[i];
+    if (r->kind != MIR_OBJ_RELOC_ABS64 || r->sym < 0 || (size_t) r->sym >= n
+        || (r->sec != MIR_OBJ_SEC_TEXT && r->sec != MIR_OBJ_SEC_DATA)) {
+      bad_p = 1;
+      break;
+    }
+    Elf64_Rela er;
+    er.r_offset = r->offset;
+    er.r_info = ELF64_R_INFO ((uint64_t) final_idx[r->sym], R_X86_64_64);
+    er.r_addend = r->addend;
+    buf_bytes (r->sec == MIR_OBJ_SEC_TEXT ? &rela_text : &rela_data, &er, sizeof er);
+  }
+
+  int rc = -1;
+  if (!bad_p) {
+    dwsec_t S[DWSEC_MAX];
+    int ns = 0;
+    S[ns++] = (dwsec_t) {0};
+    S[ns++] = (dwsec_t) {".text", SHT_PROGBITS, 0, 0, 16, SHF_ALLOC | SHF_EXECINSTR, 0, 0,
+                         &obj->text, obj->text.len};
+    S[ns++] = (dwsec_t) {".data", SHT_PROGBITS, 0, 0,
+                         (uint32_t) (obj->data_align > 8 ? obj->data_align : 8),
+                         SHF_ALLOC | SHF_WRITE, 0, 0, &obj->data, obj->data.len};
+    S[ns++] = (dwsec_t) {".bss", SHT_NOBITS, 0, 0,
+                         (uint32_t) (obj->bss_align > 8 ? obj->bss_align : 8),
+                         SHF_ALLOC | SHF_WRITE, 0, 0, NULL, obj->bss_size};
+    int i_symtab = ns;
+    S[ns++] = (dwsec_t) {".symtab", SHT_SYMTAB, 0, n_locals + 1, 8, 0, 0, sizeof (Elf64_Sym),
+                         &symtab, symtab.len};
+    int i_strtab = ns;
+    S[ns++] = (dwsec_t) {".strtab", SHT_STRTAB, 0, 0, 1, 0, 0, 0, &strtab, strtab.len};
+    S[i_symtab].link = (uint32_t) i_strtab;
+    if (rela_text.len != 0)
+      S[ns++] = (dwsec_t) {".rela.text", SHT_RELA, (uint32_t) i_symtab, 1, 8, SHF_INFO_LINK, 0,
+                           sizeof (Elf64_Rela), &rela_text, rela_text.len};
+    if (rela_data.len != 0)
+      S[ns++] = (dwsec_t) {".rela.data", SHT_RELA, (uint32_t) i_symtab, 2, 8, SHF_INFO_LINK, 0,
+                           sizeof (Elf64_Rela), &rela_data, rela_data.len};
+    /* non-executable stack marker (its absence makes ld assume an executable
+       stack and warn) */
+    S[ns++] = (dwsec_t) {".note.GNU-stack", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, NULL, 0};
+    rc = elf_assemble (S, ns, EM_X86_64, buf, size);
+  }
+  free (final_idx);
+  free (strtab.p);
+  free (symtab.p);
+  free (rela_text.p);
+  free (rela_data.p);
+  return rc;
 }
 #else
 int MIR_debug_emit (MIR_debug_t d MIR_UNUSED, void **buf, size_t *size) {
   if (buf != NULL) *buf = NULL;
   if (size != NULL) *size = 0;
   return -1; /* no <elf.h> on this host */
+}
+
+MIR_object_t MIR_object_create (void) { return NULL; }
+void MIR_object_destroy (MIR_object_t obj MIR_UNUSED) {}
+size_t MIR_object_text_append (MIR_object_t obj MIR_UNUSED, const void *bytes MIR_UNUSED,
+                               size_t len MIR_UNUSED) {
+  return 0;
+}
+size_t MIR_object_data_append (MIR_object_t obj MIR_UNUSED, const void *bytes MIR_UNUSED,
+                               size_t len MIR_UNUSED, size_t align MIR_UNUSED) {
+  return 0;
+}
+size_t MIR_object_bss_reserve (MIR_object_t obj MIR_UNUSED, size_t len MIR_UNUSED,
+                               size_t align MIR_UNUSED) {
+  return 0;
+}
+int MIR_object_add_symbol (MIR_object_t obj MIR_UNUSED, const char *name MIR_UNUSED,
+                           int sec MIR_UNUSED, uint64_t value MIR_UNUSED,
+                           uint64_t size MIR_UNUSED, int func_p MIR_UNUSED,
+                           int local_p MIR_UNUSED, int weak_p MIR_UNUSED) {
+  return -1;
+}
+void MIR_object_symbol_define (MIR_object_t obj MIR_UNUSED, int sym_id MIR_UNUSED,
+                               int sec MIR_UNUSED, uint64_t value MIR_UNUSED,
+                               uint64_t size MIR_UNUSED, int func_p MIR_UNUSED,
+                               int local_p MIR_UNUSED, int weak_p MIR_UNUSED) {}
+int MIR_object_section_symbol (MIR_object_t obj MIR_UNUSED, int sec MIR_UNUSED) { return -1; }
+int MIR_object_symbol_defined_p (MIR_object_t obj MIR_UNUSED, int sym_id MIR_UNUSED) { return 0; }
+void MIR_object_add_reloc (MIR_object_t obj MIR_UNUSED, int sec MIR_UNUSED,
+                           uint64_t offset MIR_UNUSED, int sym_id MIR_UNUSED,
+                           int64_t addend MIR_UNUSED, int kind MIR_UNUSED) {}
+int MIR_object_emit (MIR_object_t obj MIR_UNUSED, void **buf, size_t *size) {
+  if (buf != NULL) *buf = NULL;
+  if (size != NULL) *size = 0;
+  return -1;
 }
 #endif
 

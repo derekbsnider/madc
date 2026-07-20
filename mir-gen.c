@@ -112,6 +112,7 @@ static void varr_error (const char *message) { util_error (NULL, message); }
 #include "mir-htab.h"
 #include "mir-hash.h"
 #include "mir-gen.h"
+#include "mir-debug.h" /* MIR_object_*: the AOT object-capture builder */
 
 /* Functions used by target dependent code: */
 static MIR_alloc_t gen_alloc (gen_ctx_t gen_ctx);
@@ -130,6 +131,9 @@ static void setup_call_hard_reg_args (gen_ctx_t gen_ctx, MIR_insn_t call_insn, M
 static uint64_t get_ref_value (gen_ctx_t gen_ctx, const MIR_op_t *ref_op);
 static void gen_setup_lrefs (gen_ctx_t gen_ctx, uint8_t *func_code);
 static int64_t gen_int_log2 (int64_t i);
+/* AOT object mode (used by target object capture): */
+static int gen_obj_item_sym (gen_ctx_t gen_ctx, MIR_item_t item);
+static void gen_obj_record_lrefs (gen_ctx_t gen_ctx, uint64_t func_text_off);
 
 #define SWAP(v1, v2, temp) \
   do {                     \
@@ -206,6 +210,24 @@ DEF_VARR (MIR_insn_t);
 DEF_VARR (MIR_line_map_t);
 DEF_VARR (MIR_reg_loc_t);
 
+/* AOT object mode: MIR item -> object-symbol id */
+typedef struct obj_item_sym {
+  MIR_item_t item;
+  int sym;
+} obj_item_sym_t;
+
+DEF_HTAB (obj_item_sym_t);
+
+/* AOT object mode: an lref value captured while the function's label
+   displacements are still available (they die with the func's gen data). */
+typedef struct obj_lref_val {
+  MIR_lref_data_t lref;
+  int64_t value; /* .text offset (abs_p) or label-difference constant */
+  char abs_p;
+} obj_lref_val_t;
+
+DEF_VARR (obj_lref_val_t);
+
 struct gen_ctx {
   MIR_context_t ctx;
   unsigned optimize_level; /* 0:fast gen; 1:RA+combiner; 2: +GVN/CCP (default); >=3: everything  */
@@ -252,6 +274,10 @@ struct gen_ctx {
   void *bb_wrapper;                /* to jump to lazy basic block generation */
   VARR (spot_attr_t) * spot2attr;  /* map: spot number -> spot_attr */
   VARR (spot_attr_t) * spot_attrs; /* spot attrs wit only non-zero properies */
+  int object_mode_p;   /* AOT object-capture mode: capture code + relocs, publish nothing */
+  MIR_object_t object; /* the captured object model (mir-debug.h builder) */
+  HTAB (obj_item_sym_t) * obj_item_sym_tab; /* MIR item -> object symbol id */
+  VARR (obj_lref_val_t) * obj_lref_vals;    /* lref values recorded during capture */
 };
 
 #define optimize_level gen_ctx->optimize_level
@@ -295,6 +321,10 @@ struct gen_ctx {
 #define bb_wrapper gen_ctx->bb_wrapper
 #define spot_attrs gen_ctx->spot_attrs
 #define spot2attr gen_ctx->spot2attr
+#define object_mode_p gen_ctx->object_mode_p
+#define gen_object gen_ctx->object
+#define obj_item_sym_tab gen_ctx->obj_item_sym_tab
+#define obj_lref_vals gen_ctx->obj_lref_vals
 
 #define LOOP_COST_FACTOR 5
 
@@ -353,6 +383,15 @@ static void gen_record_line (gen_ctx_t gen_ctx, size_t code_offset, MIR_insn_t i
 #include "mir-gen-riscv64.c"
 #else
 #error "undefined or unsupported generation target"
+#endif
+
+#ifndef TARGET_HAS_OBJECT_CAPTURE
+/* Targets without AOT object-capture support: MIR_gen_set_object_mode fails
+   before this can ever be reached (MIR_object_create is x86-64-only). */
+static void target_object_capture (gen_ctx_t gen_ctx MIR_UNUSED, uint8_t *code MIR_UNUSED,
+                                   size_t code_len MIR_UNUSED) {
+  gen_assert (FALSE);
+}
 #endif
 
 typedef struct bb_stub *bb_stub_t;
@@ -811,6 +850,64 @@ static void gen_setup_lrefs (gen_ctx_t gen_ctx, uint8_t *func_code) {
     *(void **) lref->load_addr
       = lref->label2 == NULL ? (void *) (func_code + disp)
                              : (void *) (disp - (int64_t) get_label_disp (gen_ctx, lref->label2));
+  }
+}
+
+/* ---- AOT object mode: item symbols and lref capture ---------------------- */
+
+static htab_hash_t obj_item_sym_hash (obj_item_sym_t el, void *arg MIR_UNUSED) {
+  return (htab_hash_t) mir_hash_finish (mir_hash_step (mir_hash_init (0x42), (uint64_t) el.item));
+}
+
+static int obj_item_sym_eq (obj_item_sym_t el1, obj_item_sym_t el2, void *arg MIR_UNUSED) {
+  return el1.item == el2.item;
+}
+
+/* Follow export/forward/import indirections to the item that actually defines
+   the name in this context; a name with no definition here stays an import
+   (an undefined ELF symbol resolved by the system linker). */
+static MIR_item_t obj_canonical_item (MIR_item_t item) {
+  while ((item->item_type == MIR_export_item || item->item_type == MIR_forward_item
+          || item->item_type == MIR_import_item)
+         && item->ref_def != NULL && item->ref_def != item)
+    item = item->ref_def;
+  return item;
+}
+
+/* The object-symbol id for a MIR item, creating an undefined placeholder on
+   first reference; the capture (funcs) or the emit walk (data) turns it into
+   a definition via MIR_object_symbol_define. */
+static int gen_obj_item_sym (gen_ctx_t gen_ctx, MIR_item_t item) {
+  obj_item_sym_t el, tab_el;
+  item = obj_canonical_item (item);
+  el.item = item;
+  el.sym = -1;
+  if (HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)) return tab_el.sym;
+  const char *name = MIR_item_name (gen_ctx->ctx, item);
+  /* imports stay undefined and must bind globally; definitions get their
+     final binding from MIR_object_symbol_define */
+  el.sym = MIR_object_add_symbol (gen_object, name, MIR_OBJ_SEC_UNDEF, 0, 0, 0, 0, 0);
+  HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_INSERT, tab_el);
+  return el.sym;
+}
+
+/* Record the current function's lref values while its label displacements are
+   still alive; the emit-time data walk consumes them when it places the
+   lref_data slots. */
+static void gen_obj_record_lrefs (gen_ctx_t gen_ctx, uint64_t func_text_off) {
+  for (MIR_lref_data_t lref = curr_func_item->u.func->first_lref; lref != NULL;
+       lref = lref->next) {
+    obj_lref_val_t lv;
+    int64_t disp = (int64_t) get_label_disp (gen_ctx, lref->label) + lref->disp;
+    lv.lref = lref;
+    if (lref->label2 == NULL) {
+      lv.value = (int64_t) func_text_off + disp;
+      lv.abs_p = TRUE;
+    } else {
+      lv.value = disp - (int64_t) get_label_disp (gen_ctx, lref->label2);
+      lv.abs_p = FALSE;
+    }
+    VARR_PUSH (obj_lref_val_t, obj_lref_vals, lv);
   }
 }
 
@@ -5633,7 +5730,10 @@ static int get_int_const (gen_ctx_t gen_ctx, MIR_op_t *op_ref, int64_t *c) {
   }
   if (op_ref->mode == MIR_OP_INT || op_ref->mode == MIR_OP_UINT) {
     *c = op_ref->u.i;
-  } else if (op_ref->mode == MIR_OP_REF && op_ref->u.ref->item_type != MIR_func_item) {
+  } else if (op_ref->mode == MIR_OP_REF && op_ref->u.ref->item_type != MIR_func_item
+             && !object_mode_p) {
+    /* In object mode an item address is a link-time value: folding it into
+       arithmetic would lose the relocation. */
     *c = get_ref_value (gen_ctx, op_ref);
   } else {
     return FALSE;
@@ -9584,8 +9684,15 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
   if (machine_code_p) {
     VARR_TRUNC (MIR_line_map_t, gen_line_map, 0);
     code = target_translate (gen_ctx, &code_len);
-    machine_code = func_item->u.func->call_addr = _MIR_publish_code (ctx, code, code_len);
-    target_rebase (gen_ctx, func_item->u.func->call_addr);
+    if (object_mode_p) {
+      /* Capture the blob + relocations instead of publishing; no rebase, no
+         thunk redirect -- nothing may depend on run-time addresses. */
+      target_object_capture (gen_ctx, code, code_len);
+      machine_code = NULL;
+    } else {
+      machine_code = func_item->u.func->call_addr = _MIR_publish_code (ctx, code, code_len);
+      target_rebase (gen_ctx, func_item->u.func->call_addr);
+    }
     { /* Hand the collected (code_offset -> source loc) map to the func for debug info. */
       size_t lm_len = VARR_LENGTH (MIR_line_map_t, gen_line_map);
       if (func_item->u.func->line_map != NULL) {
@@ -9617,10 +9724,10 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
     func_item->u.func->call_addr = _MIR_get_wrapper (ctx, func_item, print_and_execute_wrapper);
 #endif
     DEBUG (2, {
-      _MIR_dump_code (NULL, machine_code, code_len);
+      if (machine_code != NULL) _MIR_dump_code (NULL, machine_code, code_len);
       fprintf (debug_file, "code size = %lu:\n", (unsigned long) code_len);
     });
-    _MIR_redirect_thunk (ctx, func_item->addr, func_item->u.func->call_addr);
+    if (!object_mode_p) _MIR_redirect_thunk (ctx, func_item->addr, func_item->u.func->call_addr);
   }
   if (optimize_level != 0) destroy_loop_tree (gen_ctx, curr_cfg->root_loop_node);
   destroy_func_cfg (gen_ctx);
@@ -9650,6 +9757,162 @@ void MIR_gen_get_code (MIR_context_t ctx, MIR_item_t func_item,
   mir_assert (func_item != NULL && func_item->item_type == MIR_func_item);
   *code_ptr = (const uint8_t *) func_item->u.func->machine_code;
   *code_size = func_item->u.func->code_len;
+}
+
+/* ---- AOT object mode: public API ----------------------------------------- */
+
+void MIR_gen_set_object_mode (MIR_context_t ctx, int on_p) {
+  gen_ctx_t gen_ctx = *gen_ctx_loc (ctx);
+
+  if (gen_ctx == NULL) {
+    fprintf (stderr, "Calling MIR_gen_set_object_mode before MIR_gen_init -- good bye\n");
+    exit (1);
+  }
+  if (!on_p) {
+    object_mode_p = FALSE;
+    return;
+  }
+  if (gen_object == NULL && (gen_object = MIR_object_create ()) == NULL)
+    (*MIR_get_error_func (ctx)) (MIR_func_error,
+                                 "AOT object mode is not supported on this target/host");
+  if (obj_item_sym_tab == NULL)
+    HTAB_CREATE (obj_item_sym_t, obj_item_sym_tab, gen_alloc (gen_ctx), 512, obj_item_sym_hash,
+                 obj_item_sym_eq, gen_ctx);
+  if (obj_lref_vals == NULL) VARR_CREATE (obj_lref_val_t, obj_lref_vals, gen_alloc (gen_ctx), 0);
+  object_mode_p = TRUE;
+}
+
+static int obj_data_item_p (MIR_item_t item) {
+  return (item->item_type == MIR_bss_item || item->item_type == MIR_data_item
+          || item->item_type == MIR_ref_data_item || item->item_type == MIR_lref_data_item
+          || item->item_type == MIR_expr_data_item);
+}
+
+/* Place one module's data items.  Layout mirrors load_bss_data_section: a
+   data-ish item heads a contiguous section continued by following anonymous
+   data-ish items.  Content comes from the item structures (data element
+   bytes, ref item + disp, captured lref values) -- never from load-time
+   memory.  An all-bss section goes to .bss; a mixed one to .data with the
+   bss parts zero-filled. */
+static void obj_emit_module_data (gen_ctx_t gen_ctx, MIR_module_t m) {
+  MIR_context_t ctx = gen_ctx->ctx;
+
+  for (MIR_item_t item = DLIST_HEAD (MIR_item_t, m->items); item != NULL;) {
+    if (item->item_type == MIR_func_item) {
+      obj_item_sym_t el, tab_el;
+      el.item = item;
+      if (!HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)
+          || !MIR_object_symbol_defined_p (gen_object, tab_el.sym))
+        (*MIR_get_error_func (ctx)) (MIR_func_error,
+                                     "AOT object mode: function %s was not generated before "
+                                     "MIR_gen_object_emit",
+                                     item->u.func->name);
+      item = DLIST_NEXT (MIR_item_t, item);
+      continue;
+    }
+    if (!obj_data_item_p (item)) {
+      item = DLIST_NEXT (MIR_item_t, item);
+      continue;
+    }
+    MIR_item_t g_end = DLIST_NEXT (MIR_item_t, item);
+    int bss_only_p = item->item_type == MIR_bss_item;
+    while (g_end != NULL && obj_data_item_p (g_end) && MIR_item_name (ctx, g_end) == NULL) {
+      if (g_end->item_type != MIR_bss_item) bss_only_p = FALSE;
+      g_end = DLIST_NEXT (MIR_item_t, g_end);
+    }
+    int sec = bss_only_p ? MIR_OBJ_SEC_BSS : MIR_OBJ_SEC_DATA;
+    int first_p = TRUE;
+    uint64_t head_off = 0, group_end = 0;
+    for (MIR_item_t ci = item; ci != g_end; ci = DLIST_NEXT (MIR_item_t, ci), first_p = FALSE) {
+      size_t align = first_p ? 16 : 1;
+      uint64_t off = 0;
+      size_t len = 0;
+      switch (ci->item_type) {
+      case MIR_bss_item:
+        len = ci->u.bss->len;
+        off = bss_only_p ? MIR_object_bss_reserve (gen_object, len, align)
+                         : MIR_object_data_append (gen_object, NULL, len, align);
+        break;
+      case MIR_data_item:
+        len = ci->u.data->nel * _MIR_type_size (ctx, ci->u.data->el_type);
+        off = MIR_object_data_append (gen_object, ci->u.data->u.els, len, align);
+        break;
+      case MIR_ref_data_item: {
+        len = _MIR_type_size (ctx, MIR_T_P);
+        off = MIR_object_data_append (gen_object, NULL, len, align);
+        int rsym = gen_obj_item_sym (gen_ctx, ci->u.ref_data->ref_item);
+        MIR_object_add_reloc (gen_object, MIR_OBJ_SEC_DATA, off, rsym, ci->u.ref_data->disp,
+                              MIR_OBJ_RELOC_ABS64);
+        break;
+      }
+      case MIR_lref_data_item: {
+        obj_lref_val_t *lv = NULL;
+        for (size_t i = 0; i < VARR_LENGTH (obj_lref_val_t, obj_lref_vals); i++)
+          if (VARR_ADDR (obj_lref_val_t, obj_lref_vals)[i].lref == ci->u.lref_data) {
+            lv = &VARR_ADDR (obj_lref_val_t, obj_lref_vals)[i];
+            break;
+          }
+        if (lv == NULL)
+          (*MIR_get_error_func (ctx)) (MIR_func_error,
+                                       "AOT object mode: lref data has no captured value (its "
+                                       "function was not generated)");
+        len = _MIR_type_size (ctx, MIR_T_P);
+        if (lv->abs_p) {
+          off = MIR_object_data_append (gen_object, NULL, len, align);
+          MIR_object_add_reloc (gen_object, MIR_OBJ_SEC_DATA, off,
+                                MIR_object_section_symbol (gen_object, MIR_OBJ_SEC_TEXT),
+                                lv->value, MIR_OBJ_RELOC_ABS64);
+        } else {
+          int64_t v = lv->value;
+          off = MIR_object_data_append (gen_object, &v, len, align);
+        }
+        break;
+      }
+      case MIR_expr_data_item:
+        (*MIR_get_error_func (ctx)) (MIR_binary_io_error,
+                                     "AOT object mode does not support expr data");
+        break;
+      default: break;
+      }
+      if (first_p) head_off = off;
+      group_end = off + len;
+      /* a continuation item (always anonymous) gets its own symbol only if
+         something referenced it; the head's symbol is defined after the loop
+         so its size covers the whole contiguous group (a multi-element
+         initializer arrives as a named head + anonymous continuations) */
+      if (!first_p) {
+        obj_item_sym_t el, tab_el;
+        el.item = ci;
+        if (HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)) {
+          int sym = gen_obj_item_sym (gen_ctx, ci);
+          MIR_object_symbol_define (gen_object, sym, sec, off, len, 0, !ci->export_p, 0);
+        }
+      }
+    }
+    const char *head_nm = MIR_item_name (ctx, item);
+    obj_item_sym_t el, tab_el;
+    el.item = item;
+    int referenced_p = HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el);
+    if (head_nm != NULL || referenced_p) {
+      int sym = gen_obj_item_sym (gen_ctx, item);
+      MIR_object_symbol_define (gen_object, sym, sec, head_off, group_end - head_off, 0,
+                                !item->export_p, 0);
+    }
+    item = g_end;
+  }
+}
+
+int MIR_gen_object_emit (MIR_context_t ctx, void **buf, size_t *size) {
+  gen_ctx_t gen_ctx = *gen_ctx_loc (ctx);
+
+  if (buf != NULL) *buf = NULL;
+  if (size != NULL) *size = 0;
+  if (gen_ctx == NULL || !object_mode_p || gen_object == NULL || buf == NULL || size == NULL)
+    return -1;
+  for (MIR_module_t m = DLIST_HEAD (MIR_module_t, *MIR_get_module_list (ctx)); m != NULL;
+       m = DLIST_NEXT (MIR_module_t, m))
+    obj_emit_module_data (gen_ctx, m);
+  return MIR_object_emit (gen_object, buf, size);
 }
 
 void MIR_gen_set_debug_file (MIR_context_t ctx, FILE *f) {
@@ -9798,6 +10061,10 @@ void MIR_gen_init (MIR_context_t ctx) {
   gen_ctx->lr_ctx = NULL;
   gen_ctx->ra_ctx = NULL;
   gen_ctx->combine_ctx = NULL;
+  object_mode_p = FALSE;
+  gen_object = NULL;
+  obj_item_sym_tab = NULL;
+  obj_lref_vals = NULL;
 #if !MIR_NO_GEN_DEBUG
   debug_file = NULL;
   debug_level = 100;
@@ -9858,6 +10125,12 @@ void MIR_gen_finish (MIR_context_t ctx) {
     fprintf (stderr, "Calling MIR_gen_finish before MIR_gen_init -- good bye\n");
     exit (1);
   }
+  if (gen_object != NULL) {
+    MIR_object_destroy (gen_object);
+    gen_object = NULL;
+  }
+  if (obj_item_sym_tab != NULL) HTAB_DESTROY (obj_item_sym_t, obj_item_sym_tab);
+  if (obj_lref_vals != NULL) VARR_DESTROY (obj_lref_val_t, obj_lref_vals);
   finish_data_flow (gen_ctx);
   finish_ssa (gen_ctx);
   finish_gvn (gen_ctx);
