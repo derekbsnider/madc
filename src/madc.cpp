@@ -990,11 +990,34 @@ int main(int argc, char **argv)
     {
 	if ( emit_native )
 	{
-	    // Per-TU .o emission needs one MIR context per TU (object capture
-	    // is context-wide); the project lane shares one. Next R4 slice.
-	    std::cerr << "madc: -c/-o/-shared with --project is not implemented"
-	                 " yet; AOT single translation units for now" << std::endl;
-	    return 1;
+	    // AOT over the whole project: -c → one .o per TU (object capture
+	    // is context-wide, so each TU compiles in its own context; gcc
+	    // semantics for names and for rejecting -c -o with many TUs);
+	    // -o / -shared → ONE MIR-assembled native image of every TU
+	    // (whole-program capture in one shared context — the same
+	    // granularity the JIT project lane uses).
+	    MadcNativeKind kind = (compile_object || emit_object_path) ? mnkObject
+				: emit_shared ? mnkShared
+				: mnkExecutable;
+	    const char *explicit_out =
+		  kind == mnkObject ? (emit_object_path ? emit_object_path
+						        : generic_output_path)
+		: kind == mnkShared ? generic_output_path
+		: emit_executable_path;
+	    if ( kind == mnkObject && explicit_out && manifest.tus.size() > 1 )
+	    {
+		std::cerr << "madc: cannot specify -o with -c and multiple"
+			     " translation units" << std::endl;
+		return 1;
+	    }
+	    const char *outpath = explicit_out ? explicit_out
+			        : kind == mnkObject ? NULL   // per-TU naming
+			        : "a.out";
+	    int erc = madc_project_emit_native(engine, manifest, kind, outpath,
+					       cc_link_args,
+					       prog->forest_bind_enabled,
+					       prog->forest_bind_path);
+	    return erc == 0 ? 0 : 1;
 	}
 	// Remaining positionals (filearg..argc) become the program's argv.
 	int run_argc = argc - filearg;

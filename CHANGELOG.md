@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- **feat(aot): `--project` native emission — per-TU `.o` and whole-program
+  executables; a NATIVE SMAUG BOOTS (task #85).** `madc_project_emit_native`
+  is the `--project` twin of the single-TU entry: `-c` emits one `.o` per TU
+  (object capture is context-wide, so each TU compiles in its own session;
+  gcc naming semantics), while `-o`/`-shared` emit ONE MIR-assembled image
+  of every TU — the same shared-context bracket the JIT project lane uses,
+  in object-capture mode with the sentinel resolver. Milestone: `madc
+  -lcrypt -o smaug compile_commands.json` over SMAUG's 51 TUs (158k LOC
+  C89) produces a 5.0 MB ELF executable assembled entirely by MIR that
+  boots ("Realms of Despair ready") and serves its login screen over TCP.
+  The exe test lane now passes `-o` before fixture flags (a positional
+  `.json` manifest ends flag parsing), lifting all five `testproject*`
+  exe failures: `--exe` 709→714 passed / 5 failed (the remainder is the
+  classified deref + JIT-only burndown). Fulltest + packed arbiter
+  729/0/0/13; no fork changes.
+
 - **feat(aot): `madc -shared` emits ET_DYN directly — the external-toolchain
   scaffold is DELETED (task #85 tail slice 1).** `-shared` now routes through
   the same MIR assembler as `-o`: `MIR_object_emit_executable` grew a

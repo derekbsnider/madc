@@ -161,6 +161,21 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
 			 MadcNativeKind kind, const char *out_path,
 			 const std::vector<std::string> &user_libs);
 
+// The --project twin of madc_cir_emit_native. mnkObject: one .o per TU
+// (gcc semantics: <TU-base>.o in the current directory; out_path overrides
+// only for a single-TU manifest — the caller rejects -c -o with many TUs).
+// mnkExecutable/mnkShared: ONE MIR-assembled native image of the whole
+// project (all TUs captured in one shared context). No execution.
+// Returns 0 on success, -1 on failure.
+class MadcEngine;
+struct ProjectManifest;
+int madc_project_emit_native(MadcEngine &engine,
+			     const ProjectManifest &manifest,
+			     MadcNativeKind kind, const char *out_path,
+			     const std::vector<std::string> &user_libs,
+			     bool forest_bind,
+			     const std::string &forest_bind_path);
+
 // Freeze the parsed Program's module tree (PRE-check — c2mir's checker
 // mutates trees it compiles) into a forest snapshot container at out_path:
 // per-unit segments, string-pool/position/type-name closure, link libs,

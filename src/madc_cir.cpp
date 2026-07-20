@@ -1105,12 +1105,13 @@ bool CirJitSession::emit_native_object(const char *out_path)
     return ok;
 }
 
-bool CirJitSession::emit_native_executable(const char *out_path,
-					   const std::vector<std::string> &needed,
-					   const std::string &runpath,
-					   bool shared)
+// The one writer for -o/-shared images: pull the finished whole-context
+// capture out of ctx and write it to disk. Shared by the single-TU session
+// (emit_native_executable) and the --project whole-program lane.
+static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
+				   const std::vector<std::string> &needed,
+				   const std::string &runpath, bool shared)
 {
-    if (!ctx || !mod) return false;
     std::vector<const char *> libs;
     for (const std::string &l : needed)
 	libs.push_back(l.c_str());
@@ -1156,6 +1157,15 @@ bool CirJitSession::emit_native_executable(const char *out_path,
     return ok;
 }
 
+bool CirJitSession::emit_native_executable(const char *out_path,
+					   const std::vector<std::string> &needed,
+					   const std::string &runpath,
+					   bool shared)
+{
+    if (!ctx || !mod) return false;
+    return cir_write_native_image(ctx, out_path, needed, runpath, shared);
+}
+
 // bin/madc lives in <root>/bin; the runtime lives in <root>/lib. An
 // installed madc pairs with /usr/local/lib — both go on the produced
 // binary's library search path so it works from either layout.
@@ -1171,6 +1181,33 @@ static std::string cir_selfexe_libdir(void)
     if (slash == std::string::npos)
 	return std::string();
     return d.substr(0, slash) + "/../lib";
+}
+
+// DT_NEEDED / DT_RUNPATH for every produced binary — shared by the
+// single-TU and --project native-emit entries.
+// DT_NEEDED: the madc runtime (its dependency closure brings libmir's
+// builtin exports, libz/libzstd, libpthread), the C++/C runtimes, and
+// the user's -l libraries ("-lfoo" → the same lib<foo>.so spelling the
+// JIT dlopen lane uses; a path form passes through verbatim).
+static void cir_native_link_env(const std::vector<std::string> &user_libs,
+				std::vector<std::string> &needed,
+				std::string &runpath)
+{
+    needed.push_back("libmadc.so.0");
+    needed.push_back("libstdc++.so.6");
+    needed.push_back("libm.so.6");
+    needed.push_back("libc.so.6");
+    for (const std::string &l : user_libs) {
+	if (l.compare(0, 2, "-l") == 0)
+	    needed.push_back("lib" + l.substr(2) + ".so");
+	else
+	    needed.push_back(l);
+    }
+    runpath = cir_selfexe_libdir();
+    if (!runpath.empty())
+	runpath += ":/usr/local/lib";
+    else
+	runpath = "/usr/local/lib";
 }
 
 int madc_cir_emit_native(Program *prog, const char *source_name,
@@ -1189,26 +1226,9 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
 
     // MIR assembles the executable (-o) or shared object (-shared)
     // directly — no external toolchain.
-    // DT_NEEDED: the madc runtime (its dependency closure brings libmir's
-    // builtin exports, libz/libzstd, libpthread), the C++/C runtimes, and
-    // the user's -l libraries ("-lfoo" → the same lib<foo>.so spelling the
-    // JIT dlopen lane uses; a path form passes through verbatim).
     std::vector<std::string> needed;
-    needed.push_back("libmadc.so.0");
-    needed.push_back("libstdc++.so.6");
-    needed.push_back("libm.so.6");
-    needed.push_back("libc.so.6");
-    for (const std::string &l : user_libs) {
-	if (l.compare(0, 2, "-l") == 0)
-	    needed.push_back("lib" + l.substr(2) + ".so");
-	else
-	    needed.push_back(l);
-    }
-    std::string runpath = cir_selfexe_libdir();
-    if (!runpath.empty())
-	runpath += ":/usr/local/lib";
-    else
-	runpath = "/usr/local/lib";
+    std::string runpath;
+    cir_native_link_env(user_libs, needed, runpath);
     return session.emit_native_executable(out_path, needed, runpath,
 					  kind == mnkShared) ? 0 : -1;
 }
@@ -4000,28 +4020,26 @@ static bool is_c_source_file(const std::string &path)
 	return path.size() >= 2 && path.compare(path.size() - 2, 2, ".c") == 0;
 }
 
-int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
-			 int user_argc, char **user_argv,
-			 bool forest_bind, const std::string &forest_bind_path,
-			 bool class_pattern_live_capture)
-{
-	if (manifest.tus.empty()) {
-		fprintf(stderr, "madc_project_execute: empty manifest\n");
-		return -1;
-	}
+struct CirParsedTU {
+	std::unique_ptr<Program> prog;
+	std::string name;
+};
 
-	// Phase 1: tokenize + parse EVERY TU before any MIR/c2m context exists.
-	// tokenize()/parse() can throw in this codebase; doing them here keeps
-	// every throwing call OUTSIDE the MIR_init()->teardown() bracket below,
-	// so a parse failure can never leak the MIR + c2m contexts. (This matches
-	// madc_cir_execute's ordering, where tokenize/parse run in main() before
-	// the MIR bracket is ever entered.) Programs own the arenas their modules
-	// will be built from, so they are held for the whole call.
-	struct ParsedTU {
-		std::unique_ptr<Program> prog;
-		std::string name;
-	};
-	std::vector<ParsedTU> parsed;
+// Phase 1 of every project lane (run + native-emit): tokenize + parse EVERY
+// TU before any MIR/c2m context exists. tokenize()/parse() can throw in this
+// codebase; doing them first keeps every throwing call OUTSIDE the callers'
+// MIR_init()->teardown() brackets, so a parse failure can never leak the MIR
+// + c2m contexts. (This matches madc_cir_execute's ordering, where
+// tokenize/parse run in main() before the MIR bracket is ever entered.)
+// Programs own the arenas their modules will be built from, so the caller
+// holds `parsed` for its whole compile.
+static bool project_parse_all(MadcEngine &engine,
+			      const ProjectManifest &manifest,
+			      bool forest_bind,
+			      const std::string &forest_bind_path,
+			      bool class_pattern_live_capture,
+			      std::vector<CirParsedTU> &parsed)
+{
 	for (const ProjectTU &tu : manifest.tus) {
 		std::unique_ptr<Program> prog = engine.create_program();
 		prog->colors = true;
@@ -4047,18 +4065,36 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		TokenProgram *tp = prog->tokenize(tu.file.c_str());
 		if (!tp) {
 			fprintf(stderr, "%s: tokenize failed\n", tu.file.c_str());
-			return -1;	// no MIR/c2m created yet — nothing to tear down
+			return false;
 		}
 		if (!prog->parse(tp)) {
 			fprintf(stderr, "%s: parse failed\n", tu.file.c_str());
-			return -1;	// no MIR/c2m created yet — nothing to tear down
+			return false;
 		}
 
-		ParsedTU pt;
+		CirParsedTU pt;
 		pt.prog = std::move(prog);
 		pt.name = tu.file;
 		parsed.push_back(std::move(pt));
 	}
+	return true;
+}
+
+int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
+			 int user_argc, char **user_argv,
+			 bool forest_bind, const std::string &forest_bind_path,
+			 bool class_pattern_live_capture)
+{
+	if (manifest.tus.empty()) {
+		fprintf(stderr, "madc_project_execute: empty manifest\n");
+		return -1;
+	}
+
+	// Phase 1: tokenize + parse EVERY TU before any MIR/c2m context exists.
+	std::vector<CirParsedTU> parsed;
+	if (!project_parse_all(engine, manifest, forest_bind, forest_bind_path,
+			       class_pattern_live_capture, parsed))
+		return -1;	// no MIR/c2m created yet — nothing to tear down
 
 	// Phase 2: now that all parsing is done, enter the MIR bracket. No
 	// throwing call sits between MIR_init() and teardown().
@@ -4097,7 +4133,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		MIR_finish(ctx);
 	};
 
-	for (ParsedTU &pt : parsed) {
+	for (CirParsedTU &pt : parsed) {
 		CirBuilder *builder = NULL;
 		bool stop = false;
 		MIR_module_t mod = build_tu_module(ctx, c2m, pt.prog.get(),
@@ -4148,6 +4184,118 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 
 	teardown();
 	return result;
+}
+
+// Native AOT over a whole project (task #85): the project twin of
+// madc_cir_emit_native. mnkObject emits one .o per TU — object capture is
+// context-wide, so each TU gets its own session/context (gcc semantics:
+// <TU-base>.o in the current directory; out_path overrides only for a
+// single-TU manifest, enforced by the caller). mnkExecutable/mnkShared
+// emit ONE native image of every TU: here the shared context is the RIGHT
+// granularity — all TU modules land in one capture, cross-TU references
+// resolve internally at emit, and only genuine runtime imports stay UNDEF
+// (the sentinel resolver, exactly as in the single-TU lane).
+int madc_project_emit_native(MadcEngine &engine,
+			     const ProjectManifest &manifest,
+			     MadcNativeKind kind, const char *out_path,
+			     const std::vector<std::string> &user_libs,
+			     bool forest_bind,
+			     const std::string &forest_bind_path)
+{
+	if (manifest.tus.empty()) {
+		fprintf(stderr, "madc_project_emit_native: empty manifest\n");
+		return -1;
+	}
+	madc_object_mode = true;   // one-shot CLI path; process exits after
+
+	std::vector<CirParsedTU> parsed;
+	if (!project_parse_all(engine, manifest, forest_bind, forest_bind_path,
+			       false, parsed))
+		return -1;	// no MIR/c2m created yet — nothing to tear down
+
+	if (kind == mnkObject) {
+		for (CirParsedTU &pt : parsed) {
+			CirJitSession session;
+			bool stop = false;
+			if (!session.build(pt.prog.get(), pt.name.c_str(),
+					   false, false, false, &stop))
+				return -1;
+			std::string out;
+			if (out_path && *out_path && parsed.size() == 1)
+				out = out_path;
+			else {
+				out = pt.name;
+				size_t slash = out.rfind('/');
+				if (slash != std::string::npos)
+					out = out.substr(slash + 1);
+				size_t dot = out.rfind('.');
+				if (dot != std::string::npos && dot > 0)
+					out = out.substr(0, dot);
+				out += ".o";
+			}
+			if (!session.emit_native_object(out.c_str()))
+				return -1;
+		}
+		return 0;
+	}
+
+	// One image (-o / -shared): the same MIR bracket shape as
+	// madc_project_execute, in object-capture mode, emitting instead of
+	// running. cir_init reads madc_object_mode → native_object_p.
+	MIR_context_t ctx = MIR_init();
+	MIR_set_func_redef_permission(ctx, TRUE);   // C++ ODR linkonce analogue
+	c2mir_init(ctx);
+	MIR_gen_init(ctx);
+	MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
+	MIR_gen_set_object_mode(ctx, 1);
+	if (madc_debug_info)
+		cir_set_debug_codegen(ctx);   // -g codegen shape; DWARF-in-.o = R5
+
+	c2m_ctx_t c2m = cir_init(ctx, false);
+	if (!c2m) {
+		fprintf(stderr, "madc_project_emit_native: cir_init failed\n");
+		MIR_gen_finish(ctx);
+		c2mir_finish(ctx);
+		MIR_finish(ctx);
+		return -1;
+	}
+
+	std::vector<CirBuilder *> builders;
+	std::vector<MIR_module_t> modules;
+	auto teardown = [&]() {
+		for (CirBuilder *b : builders) delete b;
+		cir_finish(c2m);
+		MIR_gen_finish(ctx);
+		c2mir_finish(ctx);
+		MIR_finish(ctx);
+	};
+
+	for (CirParsedTU &pt : parsed) {
+		CirBuilder *builder = NULL;
+		bool stop = false;
+		MIR_module_t mod = build_tu_module(ctx, c2m, pt.prog.get(),
+						   pt.name.c_str(),
+						   false, false, false,
+						   builder, stop);
+		builders.push_back(builder);
+		if (!mod) {
+			teardown();
+			return -1;
+		}
+		modules.push_back(mod);
+	}
+
+	for (MIR_module_t m : modules)
+		MIR_load_module(ctx, m);
+	MIR_link(ctx, MIR_set_gen_interface, cir_object_import_resolver);
+
+	std::vector<std::string> needed;
+	std::string runpath;
+	cir_native_link_env(user_libs, needed, runpath);
+	bool ok = cir_write_native_image(ctx, out_path, needed, runpath,
+					 kind == mnkShared);
+	teardown();
+	return ok ? 0 : -1;
 }
 
 // Build the cir_node tree and render it as C source (no compile/run).

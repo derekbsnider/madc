@@ -158,7 +158,10 @@ for t in tests/*.mad; do
     # EXE pass: compile to native and run
     if [ $RUN_EXE -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ]; then
         exe_path="/tmp/madc_test_exe_${base}"
-        if "$MADC" "${flags[@]}" -o "$exe_path" "$t" >/dev/null 2>&1; then
+        # -o BEFORE the fixture flags: a positional .json manifest (project
+        # auto-detect) ends madc's flag parsing — everything after it is the
+        # program's argv, so a trailing -o would never reach madc.
+        if "$MADC" -o "$exe_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
                 exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
