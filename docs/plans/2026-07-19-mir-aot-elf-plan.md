@@ -138,6 +138,12 @@ symtab). One writer, one section/DWARF encoder — no parallel implementation.
 
 ### D4 — madc integration
 
+- **CLI convention (owner 2026-07-20): madc uses the standard gcc/clang
+  parameter vocabulary wherever possible** — `madc -c x.mad -o x.o` (compile
+  to object), `madc x.mad -o prog` (executable), `madc -shared -o x.so`,
+  alongside the existing gcc-shaped `-g`/`-On`. The `--emit-*` spellings
+  below are at most aliases. (madc's `-c` is free, unlike c2m's, which
+  already means "write .bmir" upstream — c2m grew `-fobject` instead.)
 - `--emit-object`: normal pipeline, gen object mode, write the `.o`. One `.o`
   per TU; `--project` loops TUs (combined-module option later).
 - `-o` / `--emit-executable`: emit temp `.o`, link via host `cc`:
