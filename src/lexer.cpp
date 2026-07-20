@@ -68,15 +68,7 @@ static bool push_precompiled_header_tokens(Program &pgm,
 
 static DataDef *get_complex_compat_type(DataDef *base_type)
 {
-    static std::map<DataDef *, DataDefCOMPLEX *> cache;
-    if ( !base_type )
-	base_type = &ddDOUBLE;
-    std::map<DataDef *, DataDefCOMPLEX *>::iterator it = cache.find(base_type);
-    if ( it != cache.end() )
-	return it->second;
-    DataDefCOMPLEX *complex_type = new DataDefCOMPLEX(*base_type);
-    cache[base_type] = complex_type;
-    return complex_type;
+    return Program::complex_type_of(base_type);
 }
 
 static bool is_prefixed_literal_token(const std::string &ident,
@@ -4143,7 +4135,11 @@ TokenBase *Program::_getToken()
 		    {
 			TokenInt *ti = (TokenInt *)make_int((int64_t)(uint64_t)v);
 			ti->source_text = lit_text;
-			ti->setDataType(get_complex_compat_type(&ddINT64));
+			// gcc types an integer imaginary constant by the plain
+			// decimal ladder: `4i` is _Complex int, not _Complex long.
+			ti->setDataType(get_complex_compat_type(
+			    v <= 0x7fffffffULL ? (DataDef *)&ddINT32
+					       : (DataDef *)&ddINT64));
 			return ti;
 		    }
 		    eat_int_suffix();

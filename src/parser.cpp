@@ -295,15 +295,9 @@ thread_local Program *g_runtime_program = NULL;
 
 DataDef *complex_builtin_type(DataDef *base_type)
 {
-    static std::map<DataDef *, DataDefCOMPLEX *> cache;
     if ( !base_type )
 	return &ddVOID;
-    std::map<DataDef *, DataDefCOMPLEX *>::iterator it = cache.find(base_type);
-    if ( it != cache.end() )
-	return it->second;
-    DataDefCOMPLEX *complex_type = new DataDefCOMPLEX(*base_type);
-    cache[base_type] = complex_type;
-    return complex_type;
+    return Program::complex_type_of(base_type);
 }
 
 FuncDef *make_implicit_complex_builtin_func(const std::string &fname)
@@ -1604,6 +1598,7 @@ static bool reverse_scalar_storage_requested(const std::string &order_name)
 
 static bool is_contextual_identifier_token(TokenBase *tb);
 static std::string contextual_identifier_name(TokenBase *tb);
+static void copy_token_location(TokenBase *dst, TokenBase *src);
 static bool token_origin_allows_c89_implicit_function(TokenBase *tb)
 {
     if ( !tb || !tb->file )
@@ -1764,6 +1759,63 @@ static bool is_imagpart_identifier(const std::string &name)
 static TokenBase *make_complex_component_token(TokenBase *expr, bool imag_part)
 {
     return new TokenComplexPart(expr, imag_part);
+}
+
+// Parse the operand of a `__real__` / `__imag__` component op and wrap it in
+// a TokenComplexPart. `anchor` is the component keyword's token (diagnostics).
+// Shared by the main identifier-expression arm and the cast-operand dispatch
+// (`(int)__real__ d`), which bypasses the main arm.
+TokenBase *Program::parse_complex_component_operand(bool want_imag, TokenBase *anchor)
+{
+    TokenBase *next_tb = nextToken();
+    if ( !next_tb )
+	Throw(anchor) << "Expecting expression after "
+		      << (want_imag ? "__imag__" : "__real__") << flush;
+    TokenBase *component_expr = NULL;
+    if ( next_tb->id() == TokenID::tkOpBrk )
+    {
+	TokenBase *inner_tb = nextToken();
+	component_expr = parseExpression(inner_tb, true, false, true, 1);
+    }
+    else if ( is_contextual_identifier_token(next_tb) || next_tb->type() == TokenType::ttIdentifier )
+    {
+	bool has_postfix_chain = peekToken()
+	    && (peekToken()->id() == TokenID::tkDot
+	     || peekToken()->id() == TokenID::tkDeRef
+	     || peekToken()->id() == TokenID::tkOpSqr);
+	if ( has_postfix_chain )
+	    component_expr = parsePostfixChain(next_tb);
+	else
+	{
+	    std::string name = contextual_identifier_name(next_tb);
+	    TokenIdent component_ident(name);
+	    copy_token_location(&component_ident, next_tb);
+	    Variable *component_var = findVariable(name);
+	    if ( component_var )
+	    {
+		component_expr = new TokenVar(*component_var);
+		copy_token_location(component_expr, next_tb);
+	    }
+	    else
+		component_expr = resolve_expression_context_identifier(&component_ident);
+	}
+	TokenVar *tv = dynamic_cast<TokenVar *>(component_expr);
+	if ( tv && peekToken() && peekToken()->id() == TokenID::tkOpBrk
+	  && tv->var.type && tv->var.type->is_function() )
+	{
+	    Variable *call_var = runtime_eval_scope_target(&tv->var);
+	    TokenCallFunc *tc = new TokenCallFunc(*call_var);
+	    TokenBase *call_tb = nextToken();
+	    tc->line = call_tb->line;
+	    tc->column = call_tb->column;
+	    parseCallFunc(tc);
+	    component_expr = tc;
+	}
+    }
+    if ( !component_expr )
+	Throw(next_tb) << "Unsupported operand for "
+		       << (want_imag ? "__imag__" : "__real__") << flush;
+    return make_complex_component_token(component_expr, want_imag);
 }
 
 std::string Program::hoisted_decl_symbol(const std::string &owner_symbol,
@@ -2167,6 +2219,22 @@ DataDef *Program::builtin_va_list_type()
 	va_list_dd = new DataDefCArray(*tag, "__builtin_va_list", 1);
     }
     return va_list_dd;
+}
+
+// The single DataDefCOMPLEX-per-element factory (lexer/parser/CIR builder all
+// route here so complex types compare by pointer identity — the previous
+// per-file static caches could mint two `_Complex double`s).
+DataDef *Program::complex_type_of(DataDef *elem)
+{
+    static std::map<DataDef *, DataDefCOMPLEX *> cache;
+    if ( !elem )
+	elem = &ddDOUBLE;
+    std::map<DataDef *, DataDefCOMPLEX *>::iterator it = cache.find(elem);
+    if ( it != cache.end() )
+	return it->second;
+    DataDefCOMPLEX *complex_type = new DataDefCOMPLEX(*elem);
+    cache[elem] = complex_type;
+    return complex_type;
 }
 
 // Per-Program entry point for a USE of the builtin: registers the tag struct
@@ -24894,53 +24962,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		  || is_imagpart_identifier(ident_tb->spelling()) )
 		{
 		    bool want_imag = is_imagpart_identifier(ident_tb->spelling());
-		    TokenBase *next_tb = nextToken();
-		    if ( !next_tb )
-			Throw(tb) << "Expecting expression after " << ident_tb->spelling() << flush;
-		    TokenBase *component_expr = NULL;
-		    if ( next_tb->id() == TokenID::tkOpBrk )
-		    {
-			TokenBase *inner_tb = nextToken();
-			component_expr = parseExpression(inner_tb, true, false, true, 1);
-		    }
-		    else if ( is_contextual_identifier_token(next_tb) || next_tb->type() == TokenType::ttIdentifier )
-		    {
-			bool has_postfix_chain = peekToken()
-			    && (peekToken()->id() == TokenID::tkDot
-			     || peekToken()->id() == TokenID::tkDeRef
-			     || peekToken()->id() == TokenID::tkOpSqr);
-			if ( has_postfix_chain )
-			    component_expr = parsePostfixChain(next_tb);
-			else
-			{
-			    std::string name = contextual_identifier_name(next_tb);
-			    TokenIdent component_ident(name);
-			    copy_token_location(&component_ident, next_tb);
-			    Variable *component_var = findVariable(name);
-			    if ( component_var )
-			    {
-				component_expr = new TokenVar(*component_var);
-				copy_token_location(component_expr, next_tb);
-			    }
-			    else
-				component_expr = resolve_expression_context_identifier(&component_ident);
-			}
-			TokenVar *tv = dynamic_cast<TokenVar *>(component_expr);
-			if ( tv && peekToken() && peekToken()->id() == TokenID::tkOpBrk
-			  && tv->var.type && tv->var.type->is_function() )
-			{
-			    Variable *call_var = runtime_eval_scope_target(&tv->var);
-			    TokenCallFunc *tc = new TokenCallFunc(*call_var);
-			    TokenBase *call_tb = nextToken();
-			    tc->line = call_tb->line;
-			    tc->column = call_tb->column;
-			    parseCallFunc(tc);
-			    component_expr = tc;
-			}
-		    }
-		    if ( !component_expr )
-			Throw(next_tb) << "Unsupported operand for " << ident_tb->spelling() << flush;
-		    exStack.push(make_complex_component_token(component_expr, want_imag));
+		    exStack.push(parse_complex_component_operand(want_imag, tb));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// type-trait builtins (__is_class, __is_base_of, …) — fold to a
@@ -27523,6 +27545,18 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    // trailing binary operator so `(uint64)f() << 32` widens
 			    // before the shift.
 		    if ( cast_expr_tb
+		      && cast_expr_tb->type() == TokenType::ttIdentifier
+		      && (is_realpart_identifier(((TokenIdent *)cast_expr_tb)->spelling())
+		       || is_imagpart_identifier(((TokenIdent *)cast_expr_tb)->spelling())) )
+		    {
+			// (int)__real__ d — the component op is part of the cast
+			// operand; the plain identifier arms below would resolve
+			// `__real__` as a variable ("undeclared identifier").
+			cast_expr = parse_complex_component_operand(
+			    is_imagpart_identifier(((TokenIdent *)cast_expr_tb)->spelling()),
+			    cast_expr_tb);
+		    }
+		    else if ( cast_expr_tb
 		      && cast_expr_tb->type() == TokenType::ttIdentifier
 		      && peekToken() && peekToken()->id() == TokenID::tkOpBrk
 		      && (cast_expr = parse_cast_function_call_operand(cast_expr_tb)) )

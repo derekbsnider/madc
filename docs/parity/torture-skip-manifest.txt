@@ -45,10 +45,6 @@ pr41935.c	VLA-in-struct + variable-index offsetof
 pr22061-3.c	nested fn + VLA param
 pr22061-4.c	nested fn + VLA param
 
-# integer _Complex (GCC extension; C99 mandates float/double/ld only)
-20050121-1.c	integer _Complex
-complex-6.c	integer _Complex
-pr38151.c	integer _Complex
 
 # scalar_storage_order (gcc-only; clang rejects)
 20230630-2.c	scalar_storage_order + bitfields

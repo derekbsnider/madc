@@ -402,8 +402,16 @@ node_t CirBuilder::real_float(float val, TokenBase *origin)
 node_t CirBuilder::complex_literal(double val, DataDef *complex_dd, TokenBase *origin)
 {
 	DataDef *elem = NULL;
-	if (DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_dd))
+	if (DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_dd)) {
+		// An INTEGER imaginary literal (`4i`) is lowered complex: emit
+		// the struct value {0, v} (a compound literal — usable in any
+		// expression; static initializers fold before reaching here).
+		if (!cdd->is_native())
+			return int_complex_compound(integer(0, origin),
+						    integer((long)val, origin),
+						    cdd, origin);
 		elem = cdd->element_type;
+	}
 	DataType edt = elem ? elem->rawtype() : DataType::dtDOUBLE;
 	if (edt == DataType::dtFLOAT) {
 		cir_node *cn = make(N_CF, origin);
@@ -3853,6 +3861,19 @@ static DataDefCLASS *as_user_class(DataDef *dd)
 	return dynamic_cast<DataDefCLASS *>(dd);
 }
 
+// Integer-element _Complex (GNU extension): c2mir carries no native integer
+// complex (and rejects the specifier), so the CIR builder lowers it onto the
+// struct spine — DataDefCOMPLEX already IS struct{__re,__im} of the
+// element type, and the SysV ABI of integer _Complex equals that struct's.
+// Floating-element complex stays on c2mir's native _Complex path and returns
+// NULL here.
+static DataDefCOMPLEX *as_lowered_complex(DataDef *dd)
+{
+	DataDefCOMPLEX *cdd =
+		dynamic_cast<DataDefCOMPLEX *>(dd ? unqualified_type(dd) : NULL);
+	return (cdd && !cdd->is_native()) ? cdd : NULL;
+}
+
 static const DataDefCLASS *as_user_class(const DataDef *dd)
 {
 	dd = unqualified_type(dd);
@@ -4074,8 +4095,15 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 	// c2mir natively supports _Complex (spec list e.g. [N_DOUBLE, N_COMPLEX]).
 	// DataDefCOMPLEX IS-A DataDefSTRUCT, so callers must route it here rather
 	// than into the N_STRUCT path (which would emit a bogus `struct double _Complex`).
+	// The integer-element form (GNU extension) instead lowers to its own
+	// struct{__re,__im} — c2mir rejects an integer _Complex specifier.
 	if (dd->is_complex()) {
-		append_type_specs(lst, ((DataDefCOMPLEX *)dd)->element_type);
+		DataDefCOMPLEX *cdd = (DataDefCOMPLEX *)dd;
+		if (DataDefCOMPLEX *low = as_lowered_complex(cdd)) {
+			append(lst, int_complex_struct_ref(low));
+			return;
+		}
+		append_type_specs(lst, cdd->element_type);
 		append(lst, simple(N_COMPLEX));
 		return;
 	}
@@ -5289,6 +5317,30 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 			append(args, object_cstr_arg(arg));
 		else if (is_size1_pointer(pt) && is_class_object_value(arg))
 			append(args, object_arg_addr(arg, NULL));
+		else if (DataDefCOMPLEX *plow = as_lowered_complex(pt)) {
+			// Lowered-complex formal: a same-type arg passes by value
+			// (plain struct); a scalar / other-complex arg converts.
+			DataDefCOMPLEX *alow = as_lowered_complex(
+				arg && arg->datadef()
+				? unqualified_type(arg->datadef()) : NULL);
+			if (alow == plow)
+				append(args, translate_expr(arg));
+			else
+				append(args, int_complex_value(arg, plow, arg));
+		}
+		else if (pt && pt->is_numeric()
+			 && as_lowered_complex(arg && arg->datadef()
+					       ? unqualified_type(arg->datadef())
+					       : NULL)) {
+			// Lowered-complex arg into a scalar formal (real part) or
+			// a native-complex formal (promote componentwise).
+			DataDefCOMPLEX *alow = as_lowered_complex(
+				unqualified_type(arg->datadef()));
+			node_t av = translate_expr(arg);
+			append(args, pt->is_complex()
+			       ? int_complex_to_native(av, alow, pt, arg)
+			       : int_complex_to_scalar(av, alow, arg));
+		}
 		else
 			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
 			// make the implicit upcast explicit so c2mir does not warn.
@@ -6101,6 +6153,22 @@ void CirBuilder::need_output_extern_unprototyped(
 	m_output_externs[symbol] = proto;
 }
 
+// The declared type a positional initializer slot targets (array element /
+// struct member), or NULL when unknown. Sibling of init_slot_is_aggregate.
+DataDef *CirBuilder::init_slot_type(DataDef *dd, size_t idx)
+{
+	if (!dd)
+		return NULL;
+	if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd))
+		return ca->element_type;
+	if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd)) {
+		if (sdd->is_complex() || idx >= sdd->members.size())
+			return NULL;
+		return sdd->members[idx].second;
+	}
+	return NULL;
+}
+
 bool CirBuilder::init_slot_is_aggregate(DataDef *dd, size_t idx)
 {
 	if (!dd)
@@ -6585,10 +6653,23 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 				append(lst, node2(N_INIT, list(), integer(ev)));
 			}
 		} else {
-			for (size_t i = 0; i < tdecl->init_list.size(); i++)
+			for (size_t i = 0; i < tdecl->init_list.size(); i++) {
+				// A lowered-complex slot with a constant complex
+				// initializer folds to a nested {re, im} list —
+				// the runtime stmt-expr lowering is not a constant
+				// expression (testcomplexushort's global gs).
+				long fre, fim;
+				if (as_lowered_complex(init_slot_type(base_dd, i))
+				    && int_complex_const_fold(tdecl->init_list[i],
+							      fre, fim)) {
+					append(lst, node2(N_INIT, list(),
+						int_complex_init_list(fre, fim, origin)));
+					continue;
+				}
 				append(lst, node2(N_INIT, list(),
 						  init_value(tdecl->init_list[i],
 							     init_slot_is_aggregate(base_dd, i))));
+			}
 		}
 		init_node = lst;
 	} else if (tdecl && tdecl->initialize) {
@@ -6606,6 +6687,17 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		} else {
 		if (as && as->right)
 			init_expr = as->right;
+		long fre, fim;
+		DataDefCOMPLEX *low = as_lowered_complex(v->type);
+		if (low && int_complex_const_fold(init_expr, fre, fim))
+			// Constant complex init folds to {re, im} — required at
+			// static/file scope, exact everywhere.
+			init_node = int_complex_init_list(fre, fim, origin);
+		else if (low)
+			// Runtime initializer (scalar, other complex, expression):
+			// convert to this lowered type.
+			init_node = int_complex_value(init_expr, low, origin);
+		else
 		init_node = translate_expr(init_expr);
 		// Derived->base pointer initializer (`A *p = new B();`, `A *p = bptr;`)
 		// — and, via pointee_user_class's reference handling, a class
@@ -7059,6 +7151,18 @@ node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
 	append(spec_decl, ignore());
 	append(spec_decl, ignore());
 	return spec_decl;
+}
+
+// Tag reference for a LOWERED (integer-element) _Complex — and the single
+// registration point that puts its struct{__re,__im} definition into
+// struct_map so the late-struct sweep (Pass 1.97) emits it, deps-first (the
+// #68 use_builtin_va_list pattern). DataDefCOMPLEX carries a clean tag name
+// (__madc_complex_<elem>) for exactly this emission.
+node_t CirBuilder::int_complex_struct_ref(DataDefCOMPLEX *cdd)
+{
+	if (m_prog && !m_prog->struct_map.count(cdd->name))
+		m_prog->struct_map.set(cdd->name, cdd);
+	return node2(N_STRUCT, id(cdd->name.c_str()), ignore());
 }
 
 static DataDefCLASS *class_behind(DataDef *dd); // defined below; used by the thunk path
@@ -12570,6 +12674,528 @@ node_t CirBuilder::three_way_builtin_lowering(TokenOperator *top, TokenBase *ori
 	return id(oname, origin);   // the category-typed object lvalue
 }
 
+// -----------------------------------------------------------------------
+// GNU integer _Complex — componentwise lowering on the struct spine
+//
+// c2mir has no integer complex (the fork REJECTS the specifier rather than
+// silently degrading it to the scalar base, which dropped the imaginary
+// part). DataDefCOMPLEX already IS struct{__re,__im} of the element
+// type, and the SysV ABI of integer _Complex equals that struct's, so
+// storage/copy/call/return come from the ordinary struct machinery; only
+// the OPERATIONS need lowering. Semantics are gcc's own middle-end lowering
+// (gcc/tree-complex.cc): plain formulas for +,-,*; Smith's div_wide IN
+// INTEGER ARITHMETIC for / (verified against the gcc oracle — the naive
+// exact formula gives DIFFERENT results, e.g. (7-3i)/(-2+5i) is (0,-1) in
+// gcc, not the exact (-1,-1)); componentwise ==/!=; ~ negates __imag.
+// Floating-element complex never routes here (as_lowered_complex gates).
+// -----------------------------------------------------------------------
+
+node_t CirBuilder::int_complex_compound(node_t re, node_t im,
+					DataDefCOMPLEX *cdd, TokenBase *origin)
+{
+	node_t spec = list();
+	append(spec, int_complex_struct_ref(cdd));
+	node_t type = node2(N_TYPE, spec, node2(N_DECL, ignore(), list()));
+	node_t inits = list();
+	append(inits, node2(N_INIT, list(), re, origin));
+	append(inits, node2(N_INIT, list(), im, origin));
+	return node2(N_COMPOUND_LITERAL, type, inits, origin);
+}
+
+std::string CirBuilder::int_complex_temp(node_t items, DataDef *dd,
+					 TokenBase *origin)
+{
+	char name[40];
+	snprintf(name, sizeof(name), "__madc_cxtmp_%d", m_strtmp_counter++);
+	Variable *v = new Variable(name, *dd, 1, NULL, false);
+	v->flags |= vfLOCAL;
+	append(items, var_decl(v, origin));
+	return name;
+}
+
+// The block-local statement idioms shared by the lowering emitters.
+static node_t icx_expr_stmt(CirBuilder *cb, node_t e, TokenBase *o)
+{
+	return cb->node2(N_EXPR, cb->list(), e, o);
+}
+
+node_t CirBuilder::int_complex_from_node(node_t val, DataDef *src_dd,
+					 DataDefCOMPLEX *to, TokenBase *origin)
+{
+	src_dd = unqualified_type(src_dd);
+	DataDefCOMPLEX *sc = as_lowered_complex(src_dd);
+	if (sc == to)
+		return val;
+	if (!sc && !(src_dd && src_dd->is_complex()))
+		// Scalar -> complex: {v, 0}. The compound literal evaluates v
+		// exactly once; element conversion happens in the initializer.
+		return int_complex_compound(val, integer(0, origin), to, origin);
+	node_t items = list();
+	std::string tname = int_complex_temp(items, to, origin);
+	if (sc) {
+		// lowered -> lowered (element width/signedness change):
+		// componentwise via a source temp (single evaluation).
+		std::string sname = int_complex_temp(items, sc, origin);
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN, id(sname.c_str(), origin), val, origin), origin));
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN,
+			      node2(N_FIELD, id(tname.c_str(), origin), id("__re", origin), origin),
+			      node2(N_FIELD, id(sname.c_str(), origin), id("__re", origin), origin),
+			      origin), origin));
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN,
+			      node2(N_FIELD, id(tname.c_str(), origin), id("__im", origin), origin),
+			      node2(N_FIELD, id(sname.c_str(), origin), id("__im", origin), origin),
+			      origin), origin));
+	} else {
+		// native complex -> lowered: components via N_REALPART/N_IMAGPART.
+		std::string sname = int_complex_temp(items, src_dd, origin);
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN, id(sname.c_str(), origin), val, origin), origin));
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN,
+			      node2(N_FIELD, id(tname.c_str(), origin), id("__re", origin), origin),
+			      node1(N_REALPART, id(sname.c_str(), origin), origin),
+			      origin), origin));
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN,
+			      node2(N_FIELD, id(tname.c_str(), origin), id("__im", origin), origin),
+			      node1(N_IMAGPART, id(sname.c_str(), origin), origin),
+			      origin), origin));
+	}
+	append(items, icx_expr_stmt(this, id(tname.c_str(), origin), origin));
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
+}
+
+node_t CirBuilder::int_complex_value(TokenBase *src, DataDefCOMPLEX *to,
+				     TokenBase *origin)
+{
+	return int_complex_from_node(translate_expr(src), src->datadef(), to,
+				     origin);
+}
+
+// Compile-time fold of an integer-complex constant expression to its (re,im)
+// pair — static initializers need a brace list ({re, im}), not the runtime
+// statement-expression lowering. Handles integer/imaginary literals, +, -, *,
+// unary - and ~ (division never appears in a constant complex initializer in
+// practice; a non-foldable expr returns false and the caller falls through to
+// the runtime path, which the checker rejects loudly at file scope).
+bool CirBuilder::int_complex_const_fold(TokenBase *tb, long &re, long &im)
+{
+	if (!tb)
+		return false;
+	if (tb->type() == TokenType::ttInteger) {
+		if (tb->datadef() && tb->datadef()->is_complex()) {
+			re = 0;
+			im = (long)tb->ival();
+		} else {
+			re = (long)tb->ival();
+			im = 0;
+		}
+		return true;
+	}
+	// A real-spelled imaginary literal (`2.0i`) converting into an integer
+	// complex target: components convert per C conversion rules.
+	if (tb->type() == TokenType::ttReal && tb->datadef()
+	    && tb->datadef()->is_complex()) {
+		re = 0;
+		im = (long)tb->dval();
+		return true;
+	}
+	TokenOperator *top = dynamic_cast<TokenOperator *>(tb);
+	if (!top)
+		return false;
+	if (top->argc() == 1 && top->right) {
+		long r, i;
+		if (!int_complex_const_fold(top->right, r, i))
+			return false;
+		if (tb->id() == TokenID::tkNeg) { re = -r; im = -i; return true; }
+		if (tb->id() == TokenID::tkBnot) { re = r; im = -i; return true; }
+		return false;
+	}
+	if (!top->left || !top->right)
+		return false;
+	long lr, li, rr, ri;
+	if (!int_complex_const_fold(top->left, lr, li)
+	    || !int_complex_const_fold(top->right, rr, ri))
+		return false;
+	switch (tb->id()) {
+	case TokenID::tkAdd: re = lr + rr; im = li + ri; return true;
+	case TokenID::tkSub: re = lr - rr; im = li - ri; return true;
+	case TokenID::tkMul:
+		re = lr * rr - li * ri;
+		im = lr * ri + li * rr;
+		return true;
+	default:
+		return false;
+	}
+}
+
+// The {re, im} brace list for a folded complex constant initializer.
+node_t CirBuilder::int_complex_init_list(long re, long im, TokenBase *origin)
+{
+	node_t sub = list();
+	append(sub, node2(N_INIT, list(), integer(re, origin), origin));
+	append(sub, node2(N_INIT, list(), integer(im, origin), origin));
+	return sub;
+}
+
+node_t CirBuilder::int_complex_to_native(node_t val, DataDefCOMPLEX *from,
+					 DataDef *native_dd, TokenBase *origin)
+{
+	// ({ C __s = val; __s.__real + __s.__imag * 1.0i; }) — the imaginary
+	// unit's width (N_CF/N_CD/N_CLD) is picked from native_dd.
+	node_t items = list();
+	std::string sname = int_complex_temp(items, from, origin);
+	append(items, icx_expr_stmt(this,
+		node2(N_ASSIGN, id(sname.c_str(), origin), val, origin), origin));
+	node_t expr = node2(N_ADD,
+		node2(N_FIELD, id(sname.c_str(), origin), id("__re", origin), origin),
+		node2(N_MUL,
+		      node2(N_FIELD, id(sname.c_str(), origin), id("__im", origin), origin),
+		      complex_literal(1.0, native_dd, origin), origin), origin);
+	append(items, icx_expr_stmt(this, expr, origin));
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
+}
+
+node_t CirBuilder::int_complex_to_scalar(node_t val, DataDefCOMPLEX *from,
+					 TokenBase *origin)
+{
+	node_t items = list();
+	std::string sname = int_complex_temp(items, from, origin);
+	append(items, icx_expr_stmt(this,
+		node2(N_ASSIGN, id(sname.c_str(), origin), val, origin), origin));
+	append(items, icx_expr_stmt(this,
+		node2(N_FIELD, id(sname.c_str(), origin), id("__re", origin), origin),
+		origin));
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
+}
+
+namespace {
+// Fresh-node component builders (c2mir nodes hold ONE parent link — every
+// use site needs a newly built tree, so components are closures, not nodes).
+typedef std::function<node_t()> icx_comp_t;
+
+icx_comp_t icx_field(CirBuilder *cb, const std::string &var, const char *member,
+		     TokenBase *o)
+{
+	return [cb, var, member, o]() {
+		return cb->node2(N_FIELD, cb->id(var.c_str(), o),
+				 cb->id(member, o), o);
+	};
+}
+
+icx_comp_t icx_deref_field(CirBuilder *cb, const std::string &var,
+			   const char *member, TokenBase *o)
+{
+	return [cb, var, member, o]() {
+		return cb->node2(N_DEREF_FIELD, cb->id(var.c_str(), o),
+				 cb->id(member, o), o);
+	};
+}
+
+icx_comp_t icx_var(CirBuilder *cb, const std::string &var, TokenBase *o)
+{
+	return [cb, var, o]() { return cb->id(var.c_str(), o); };
+}
+
+// |x| for the Smith branch test: unsigned elements are their own magnitude;
+// signed emit (x < 0 ? -x : x).
+node_t icx_abs(CirBuilder *cb, const icx_comp_t &x, bool is_unsigned, TokenBase *o)
+{
+	if (is_unsigned)
+		return x();
+	return cb->node3(N_COND,
+			 cb->node2(N_LT, x(), cb->integer(0, o), o),
+			 cb->node1(N_SUB, x(), o), x(), o);
+}
+}  // namespace
+
+// Emit the componentwise statements computing `lhs <op> rhs` into the
+// result temp `tname` (all of type C), appending to `items`. op is one of
+// tkAdd/tkSub/tkMul/tkDiv (the compound-assign forms map to these).
+void CirBuilder::int_complex_emit_op(node_t items, TokenID op,
+				     DataDefCOMPLEX *C,
+				     const std::function<node_t()> &ar,
+				     const std::function<node_t()> &ai,
+				     const std::function<node_t()> &br,
+				     const std::function<node_t()> &bi,
+				     const std::string &tname, TokenBase *tb)
+{
+	icx_comp_t tre = icx_field(this, tname, "__re", tb);
+	icx_comp_t tim = icx_field(this, tname, "__im", tb);
+	switch (op) {
+	case TokenID::tkAdd:
+	case TokenID::tkSub: {
+		c2mir_node_code_t code = (op == TokenID::tkAdd) ? N_ADD : N_SUB;
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN, tre(), node2(code, ar(), br(), tb), tb), tb));
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN, tim(), node2(code, ai(), bi(), tb), tb), tb));
+		return;
+	}
+	case TokenID::tkMul:
+		// (ar*br - ai*bi, ar*bi + ai*br) — gcc's straight expansion.
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN, tre(),
+			      node2(N_SUB, node2(N_MUL, ar(), br(), tb),
+				    node2(N_MUL, ai(), bi(), tb), tb), tb), tb));
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN, tim(),
+			      node2(N_ADD, node2(N_MUL, ar(), bi(), tb),
+				    node2(N_MUL, ai(), br(), tb), tb), tb), tb));
+		return;
+	case TokenID::tkDiv: {
+		// Smith's algorithm in the element's integer arithmetic — gcc's
+		// expand_complex_div_wide (tree-complex.cc), which is NOT the
+		// exact formula (integer ratio truncation is observable).
+		DataDef *E = C->element_type;
+		bool uns = E && E->is_unsigned();
+		std::string rat = int_complex_temp(items, E, tb);
+		std::string den = int_complex_temp(items, E, tb);
+		std::string tr = int_complex_temp(items, E, tb);
+		std::string ti = int_complex_temp(items, E, tb);
+		icx_comp_t vrat = icx_var(this, rat, tb), vden = icx_var(this, den, tb);
+		icx_comp_t vtr = icx_var(this, tr, tb), vti = icx_var(this, ti, tb);
+		// |br| < |bi| branch: ratio=br/bi; den=br*ratio+bi;
+		//                     tr=ar*ratio+ai; ti=ai*ratio-ar
+		node_t titems = list();
+		append(titems, icx_expr_stmt(this, node2(N_ASSIGN, vrat(),
+			node2(N_DIV, br(), bi(), tb), tb), tb));
+		append(titems, icx_expr_stmt(this, node2(N_ASSIGN, vden(),
+			node2(N_ADD, node2(N_MUL, br(), vrat(), tb), bi(), tb), tb), tb));
+		append(titems, icx_expr_stmt(this, node2(N_ASSIGN, vtr(),
+			node2(N_ADD, node2(N_MUL, ar(), vrat(), tb), ai(), tb), tb), tb));
+		append(titems, icx_expr_stmt(this, node2(N_ASSIGN, vti(),
+			node2(N_SUB, node2(N_MUL, ai(), vrat(), tb), ar(), tb), tb), tb));
+		// else: ratio=bi/br; den=bi*ratio+br; tr=ai*ratio+ar; ti=ai-ar*ratio
+		node_t eitems = list();
+		append(eitems, icx_expr_stmt(this, node2(N_ASSIGN, vrat(),
+			node2(N_DIV, bi(), br(), tb), tb), tb));
+		append(eitems, icx_expr_stmt(this, node2(N_ASSIGN, vden(),
+			node2(N_ADD, node2(N_MUL, bi(), vrat(), tb), br(), tb), tb), tb));
+		append(eitems, icx_expr_stmt(this, node2(N_ASSIGN, vtr(),
+			node2(N_ADD, node2(N_MUL, ai(), vrat(), tb), ar(), tb), tb), tb));
+		append(eitems, icx_expr_stmt(this, node2(N_ASSIGN, vti(),
+			node2(N_SUB, ai(), node2(N_MUL, ar(), vrat(), tb), tb), tb), tb));
+		node_t cond = node2(N_LT, icx_abs(this, br, uns, tb),
+				    icx_abs(this, bi, uns, tb), tb);
+		append(items, node4(N_IF, list(), cond,
+				    node2(N_BLOCK, list(), titems, tb),
+				    node2(N_BLOCK, list(), eitems, tb), tb));
+		append(items, icx_expr_stmt(this, node2(N_ASSIGN, tre(),
+			node2(N_DIV, vtr(), vden(), tb), tb), tb));
+		append(items, icx_expr_stmt(this, node2(N_ASSIGN, tim(),
+			node2(N_DIV, vti(), vden(), tb), tb), tb));
+		return;
+	}
+	default:
+		append(items, error_node("unsupported integer-_Complex operator", tb));
+		return;
+	}
+}
+
+node_t CirBuilder::int_complex_binop(TokenOperator *top, TokenBase *tb)
+{
+	TokenBase *L = top->left, *R = top->right;
+	DataDef *ldd = L->datadef() ? unqualified_type(L->datadef()) : NULL;
+	DataDef *rdd = R->datadef() ? unqualified_type(R->datadef()) : NULL;
+	DataDefCOMPLEX *lc = as_lowered_complex(ldd);
+	DataDefCOMPLEX *rc = as_lowered_complex(rdd);
+	if (!lc && !rc)
+		return NULL;
+	bool lnat = ldd && ldd->is_complex() && !lc;
+	bool rnat = rdd && rdd->is_complex() && !rc;
+	bool lfp = ldd && ldd->is_real();
+	bool rfp = rdd && rdd->is_real();
+	// The native complex type driving a mixed lowered/floating operation
+	// (usual arithmetic conversions: any floating operand promotes the
+	// whole operation to floating complex).
+	DataDef *native_dd = lnat ? ldd
+			   : rnat ? rdd
+			   : lfp ? Program::complex_type_of(ldd)
+			   : rfp ? Program::complex_type_of(rdd) : NULL;
+	TokenID op = tb->id();
+
+	// ---- assignment family ----
+	if (op == TokenID::tkAssign) {
+		if (lc)
+			return node2(N_ASSIGN, translate_expr(L),
+				     int_complex_value(R, lc, tb), tb);
+		// complex value into a native-complex or scalar target
+		node_t rv = translate_expr(R);
+		node_t conv = lnat
+			? int_complex_to_native(rv, rc, ldd, tb)
+			: int_complex_to_scalar(rv, rc, tb);
+		return node2(N_ASSIGN, translate_expr(L), conv, tb);
+	}
+	bool compound = op == TokenID::tkAddEq || op == TokenID::tkSubEq
+		     || op == TokenID::tkMulEq || op == TokenID::tkDivEq;
+	if (compound && lc) {
+		TokenID base_op = op == TokenID::tkAddEq ? TokenID::tkAdd
+			       : op == TokenID::tkSubEq ? TokenID::tkSub
+			       : op == TokenID::tkMulEq ? TokenID::tkMul
+							: TokenID::tkDiv;
+		// ({ C *__p = &L; C __r = (C)R; C __t; <op>; *__p = __t; *__p; })
+		// — the target lvalue is evaluated exactly once.
+		static std::map<DataDefCOMPLEX *, DataDefPTR *> ptr_cache;
+		DataDefPTR *&pt = ptr_cache[lc];
+		if (!pt) pt = new DataDefPTR(*lc);
+		node_t items = list();
+		std::string pname = int_complex_temp(items, pt, tb);
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN, id(pname.c_str(), tb),
+			      node1(N_ADDR, translate_expr(L), tb), tb), tb));
+		std::string rname = int_complex_temp(items, lc, tb);
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN, id(rname.c_str(), tb),
+			      int_complex_value(R, lc, tb), tb), tb));
+		std::string tname = int_complex_temp(items, lc, tb);
+		int_complex_emit_op(items, base_op, lc,
+				    icx_deref_field(this, pname, "__re", tb),
+				    icx_deref_field(this, pname, "__im", tb),
+				    icx_field(this, rname, "__re", tb),
+				    icx_field(this, rname, "__im", tb),
+				    tname, tb);
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN, node1(N_DEREF, id(pname.c_str(), tb), tb),
+			      id(tname.c_str(), tb), tb), tb));
+		append(items, icx_expr_stmt(this,
+			node1(N_DEREF, id(pname.c_str(), tb), tb), tb));
+		return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
+	}
+	if (compound && !lc && rc && lnat) {
+		// native-complex target <op>= lowered value: promote the RHS.
+		c2mir_node_code_t code = op == TokenID::tkAddEq ? N_ADD_ASSIGN
+				       : op == TokenID::tkSubEq ? N_SUB_ASSIGN
+				       : op == TokenID::tkMulEq ? N_MUL_ASSIGN
+								: N_DIV_ASSIGN;
+		return node2(code, translate_expr(L),
+			     int_complex_to_native(translate_expr(R), rc, ldd, tb),
+			     tb);
+	}
+
+	// ---- equality ----
+	if (op == TokenID::tkEquals || op == TokenID::tkNotEq) {
+		if (native_dd) {
+			node_t lv = lc ? int_complex_to_native(translate_expr(L), lc,
+							       native_dd, tb)
+				       : translate_expr(L);
+			node_t rv = rc ? int_complex_to_native(translate_expr(R), rc,
+							       native_dd, tb)
+				       : translate_expr(R);
+			return node2(op == TokenID::tkEquals ? N_EQ : N_NE,
+				     lv, rv, tb);
+		}
+		DataDefCOMPLEX *CL = lc ? lc : rc;
+		DataDefCOMPLEX *CR = rc ? rc : lc;
+		node_t items = list();
+		std::string lname = int_complex_temp(items, CL, tb);
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN, id(lname.c_str(), tb),
+			      int_complex_value(L, CL, tb), tb), tb));
+		std::string rname = int_complex_temp(items, CR, tb);
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN, id(rname.c_str(), tb),
+			      int_complex_value(R, CR, tb), tb), tb));
+		bool eq = op == TokenID::tkEquals;
+		node_t cre = node2(eq ? N_EQ : N_NE,
+			node2(N_FIELD, id(lname.c_str(), tb), id("__re", tb), tb),
+			node2(N_FIELD, id(rname.c_str(), tb), id("__re", tb), tb), tb);
+		node_t cim = node2(eq ? N_EQ : N_NE,
+			node2(N_FIELD, id(lname.c_str(), tb), id("__im", tb), tb),
+			node2(N_FIELD, id(rname.c_str(), tb), id("__im", tb), tb), tb);
+		append(items, icx_expr_stmt(this,
+			node2(eq ? N_ANDAND : N_OROR, cre, cim, tb), tb));
+		return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
+	}
+
+	// ---- arithmetic ----
+	if (op == TokenID::tkAdd || op == TokenID::tkSub
+	    || op == TokenID::tkMul || op == TokenID::tkDiv) {
+		DataDefCOMPLEX *C = as_lowered_complex(top->datadef());
+		if (native_dd) {
+			// Mixed with floating: compute natively (usual arithmetic
+			// conversions), then convert back if the token stays lowered.
+			c2mir_node_code_t code = op == TokenID::tkAdd ? N_ADD
+					       : op == TokenID::tkSub ? N_SUB
+					       : op == TokenID::tkMul ? N_MUL : N_DIV;
+			node_t lv = lc ? int_complex_to_native(translate_expr(L), lc,
+							       native_dd, tb)
+				       : translate_expr(L);
+			node_t rv = rc ? int_complex_to_native(translate_expr(R), rc,
+							       native_dd, tb)
+				       : translate_expr(R);
+			node_t res = node2(code, lv, rv, tb);
+			if (C)
+				res = int_complex_from_node(res, native_dd, C, tb);
+			return res;
+		}
+		if (!C)
+			C = lc ? lc : rc;
+		node_t items = list();
+		std::string lname = int_complex_temp(items, C, tb);
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN, id(lname.c_str(), tb),
+			      int_complex_value(L, C, tb), tb), tb));
+		std::string rname = int_complex_temp(items, C, tb);
+		append(items, icx_expr_stmt(this,
+			node2(N_ASSIGN, id(rname.c_str(), tb),
+			      int_complex_value(R, C, tb), tb), tb));
+		std::string tname = int_complex_temp(items, C, tb);
+		int_complex_emit_op(items, op, C,
+				    icx_field(this, lname, "__re", tb),
+				    icx_field(this, lname, "__im", tb),
+				    icx_field(this, rname, "__re", tb),
+				    icx_field(this, rname, "__im", tb),
+				    tname, tb);
+		append(items, icx_expr_stmt(this, id(tname.c_str(), tb), tb));
+		return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
+	}
+
+	// Anything else (relational, %, shifts, ...) is invalid on complex in
+	// gcc too — fall through so the generic path reports it loudly.
+	return NULL;
+}
+
+node_t CirBuilder::int_complex_unary(TokenOperator *top, TokenBase *tb)
+{
+	DataDefCOMPLEX *oc = as_lowered_complex(top->right ? top->right->datadef()
+						 : NULL);
+	if (!oc)
+		return NULL;
+	TokenID op = tb->id();
+	if (op != TokenID::tkNeg && op != TokenID::tkBnot && op != TokenID::tkLnot)
+		return NULL;
+	node_t items = list();
+	std::string sname = int_complex_temp(items, oc, tb);
+	append(items, icx_expr_stmt(this,
+		node2(N_ASSIGN, id(sname.c_str(), tb),
+		      translate_expr(top->right), tb), tb));
+	icx_comp_t sre = icx_field(this, sname, "__re", tb);
+	icx_comp_t sim = icx_field(this, sname, "__im", tb);
+	if (op == TokenID::tkLnot) {
+		// !z: true iff both components are zero.
+		append(items, icx_expr_stmt(this,
+			node2(N_ANDAND,
+			      node2(N_EQ, sre(), integer(0, tb), tb),
+			      node2(N_EQ, sim(), integer(0, tb), tb), tb), tb));
+		return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
+	}
+	std::string tname = int_complex_temp(items, oc, tb);
+	icx_comp_t tre = icx_field(this, tname, "__re", tb);
+	icx_comp_t tim = icx_field(this, tname, "__im", tb);
+	// -z = (-re, -im); ~z (conjugate) = (re, -im).
+	append(items, icx_expr_stmt(this,
+		node2(N_ASSIGN, tre(),
+		      op == TokenID::tkNeg ? node1(N_SUB, sre(), tb) : sre(), tb), tb));
+	append(items, icx_expr_stmt(this,
+		node2(N_ASSIGN, tim(), node1(N_SUB, sim(), tb), tb), tb));
+	append(items, icx_expr_stmt(this, id(tname.c_str(), tb), tb));
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
+}
+
 // A side-effect-free literal constant token: numeric / char / string
 // literal (TokenNullptr is a TokenInt). Identifier reads are excluded —
 // only true literals are folded by strict_equality_lowering below.
@@ -14373,6 +14999,30 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// ref-return lowerings still see an addressable object.
 			if (cast_dd && cast_dd->is_reference())
 				return translate_expr(tc->expr);
+			// Integer-_Complex casts (struct spine): to a lowered
+			// target — componentwise conversion; from a lowered
+			// operand — real part (scalar) / promotion (native),
+			// then the ordinary cast applies.
+			if (DataDefCOMPLEX *clow = as_lowered_complex(cast_dd))
+				return int_complex_value(tc->expr, clow, tb);
+			if (cast_dd && !cast_dd->is_pointer()) {
+				DataDefCOMPLEX *elow = as_lowered_complex(
+					tc->expr && tc->expr->datadef()
+					? unqualified_type(tc->expr->datadef())
+					: NULL);
+				if (elow) {
+					node_t v = translate_expr(tc->expr);
+					if (cast_dd->is_complex())
+						return int_complex_to_native(v, elow,
+									     cast_dd, tb);
+					v = int_complex_to_scalar(v, elow, tb);
+					node_t ctl = type_list(cast_dd);
+					return node2(N_CAST,
+						node2(N_TYPE, ctl,
+						      node2(N_DECL, ignore(), list())),
+						v, tb);
+				}
+			}
 			if (DataDefCLASS *cast_class = as_class_instance(cast_dd))
 				return object_arg_value(tc->expr, cast_class);
 			// Function-pointer cast `(RET (*)(params)) expr` (qsort comparator,
@@ -14518,6 +15168,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				if (node_t ov = class_unary_operator_call(uop, top->right, tb))
 					return ov;
 			}
+			// Lowered integer-_Complex operand: -z / ~z (conjugate) /
+			// !z lower componentwise (struct spine).
+			if (node_t icx = int_complex_unary(top, tb))
+				return icx;
 			// `!obj` with no user operator! (the overload call above
 			// returned NULL): [conv]/4 contextual conversion — negate
 			// the operator bool result.
@@ -14558,6 +15212,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						return error_node(msg.c_str(), tb);
 					}
 				}
+			}
+
+			// GNU integer-_Complex operand(s): componentwise lowering
+			// on the struct spine (gcc tree-complex.cc semantics) —
+			// c2mir rejects the native integer-complex specifier.
+			if (as_lowered_complex(top->left->datadef())
+			    || as_lowered_complex(top->right->datadef())) {
+				if (node_t icx = int_complex_binop(top, tb))
+					return icx;
 			}
 
 			// Operator overloading on a class lvalue: `c <op> rhs` where c's
@@ -14989,9 +15652,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// __real__ / __imag__ <expr>  ->  c2mir N_REALPART / N_IMAGPART (native
 	// complex support in the madc MIR fork). Yields the scalar component and is
 	// an lvalue when the operand is, so `&(__real dc)` and `__real__ x = v` work.
-	if (TokenComplexPart *tcp = dynamic_cast<TokenComplexPart *>(tb))
+	// A LOWERED (integer-element) complex operand is struct{__re,__im}, so
+	// the component is a plain member select — equally lvalue-capable.
+	if (TokenComplexPart *tcp = dynamic_cast<TokenComplexPart *>(tb)) {
+		if (as_lowered_complex(tcp->expr ? tcp->expr->datadef() : NULL))
+			return node2(N_FIELD, translate_expr(tcp->expr),
+				     id(tcp->imag_part ? "__im" : "__re", tb), tb);
 		return node1(tcp->imag_part ? N_IMAGPART : N_REALPART,
 			     translate_expr(tcp->expr), tb);
+	}
 
 	// GNU label address `&&label` -> N_LABEL_ADDR(N_ID) — a void* usable as a
 	// computed-goto target (see the N_INDIRECT_GOTO statement form).
@@ -15293,6 +15962,24 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		}
 	} else
 		expr = tr->returns ? translate_expr(tr->returns) : ignore();
+	// Integer-_Complex return conversions (GNU ext, struct spine): a complex
+	// value returned from a scalar function takes its real part; from a
+	// native-complex function it promotes; a scalar (or other complex)
+	// returned from a lowered-complex function converts componentwise.
+	if (tr->returns && !m_cur_func_returns_ref) {
+		DataDef *edd = tr->returns->datadef()
+			? unqualified_type(tr->returns->datadef()) : NULL;
+		DataDef *rdd = m_cur_func_ret_spec_dd
+			? unqualified_type(m_cur_func_ret_spec_dd) : NULL;
+		DataDefCOMPLEX *ec = as_lowered_complex(edd);
+		DataDefCOMPLEX *fc = as_lowered_complex(rdd);
+		if (ec && !fc && rdd && rdd->is_complex())
+			expr = int_complex_to_native(expr, ec, rdd, tr);
+		else if (ec && !fc && rdd && rdd->is_numeric())
+			expr = int_complex_to_scalar(expr, ec, tr);
+		else if (fc && edd && ec != fc)
+			expr = int_complex_from_node(expr, edd, fc, tr);
+	}
 	// A bare `return;` in a non-void function: gcc (gnu89/c11) warns but accepts
 	// it, returning an indeterminate value. c2mir requires a value, so emit a
 	// typed zero of the function's scalar C return type — a conformant lowering
