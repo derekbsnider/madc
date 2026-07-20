@@ -1,0 +1,1 @@
+multi-TU --project test — a single .o cannot carry the program (multi-object loading is a future rung)

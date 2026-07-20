@@ -25,16 +25,21 @@
 # Options:
 #   --exe   Also compile each test to a native executable and run it.
 #           Failures are reported as "FAIL(exe): ..." separately.
+#   --obj   Also compile each test to a relocatable .o and execute it via
+#           the in-process loader (`madc foo.o` — the precompiled-cache
+#           lane). Failures are reported as "FAIL(obj): ..." separately.
 #
 # MADC_BIN (env): the madc binary to test (default bin/madc). Generic
 # runner capability — lets the suite run against e.g. a forest-packed
 # copy (tmp/madc_packed) without touching the tree's binary.
 RUN_EXE=0
+RUN_OBJ=0
 BACKEND_FLAG=""
 MADC="${MADC_BIN:-bin/madc}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --exe) RUN_EXE=1; shift ;;
+        --obj) RUN_OBJ=1; shift ;;
         --backend=*) BACKEND_FLAG="$1"; shift ;;
         *) break ;;
     esac
@@ -50,6 +55,8 @@ TIMEOUTS=0
 SKIP=0
 EXE_PASS=0
 EXE_FAIL=0
+OBJ_PASS=0
+OBJ_FAIL=0
 for t in tests/*.mad; do
     base=$(basename "$t" .mad)
     [ "$base" = "include_helper" ] && continue
@@ -155,6 +162,50 @@ for t in tests/*.mad; do
         fi
     fi
 
+    # OBJ pass: compile to a relocatable .o, then execute it through the
+    # in-process loader (`madc foo.o` — the precompiled-cache lane). The
+    # exe_skip fixture covers ALL native-artifact lanes: a structurally
+    # JIT-only test is skipped here too. obj_skip additionally marks tests
+    # outside the single-object domain (multi-TU --project programs) that
+    # the EXE lane still covers. Fixture flags are passed to both
+    # invocations — the compile needs them, and the run honors -l (the
+    # dlopen happens before the .o dispatch).
+    if [ $RUN_OBJ -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ] \
+       && [ ! -f "tests/$base.exe_skip" ] && [ ! -f "tests/$base.obj_skip" ]; then
+        obj_path="/tmp/madc_test_obj_${base}.o"
+        # -o BEFORE fixture flags — same positional rule as the EXE pass.
+        if "$MADC" -c -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+            if [ -f "$input_file" ]; then
+                obj_out=$(timeout 5 "$MADC" "${flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
+            else
+                obj_out=$(timeout 5 "$MADC" "${flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
+            fi
+            obj_rc=$?
+            obj_ok=1
+            if [ $obj_rc -ne 0 ]; then
+                obj_ok=0
+            elif [ -f "$expect_file" ]; then
+                while IFS= read -r line; do
+                    [ -z "$line" ] && continue
+                    if ! grep -qF -- "$line" <<< "$obj_out"; then
+                        obj_ok=0
+                        break
+                    fi
+                done < "$expect_file"
+            fi
+            if [ $obj_ok -eq 1 ]; then
+                OBJ_PASS=$((OBJ_PASS+1))
+            else
+                echo "FAIL(obj): $t"
+                OBJ_FAIL=$((OBJ_FAIL+1))
+            fi
+            rm -f "$obj_path"
+        else
+            echo "FAIL(obj-build): $t"
+            OBJ_FAIL=$((OBJ_FAIL+1))
+        fi
+    fi
+
     # EXE pass: compile to native and run. tests/foo.exe_skip marks a test
     # as structurally JIT-only (freeze re-exec machinery, in-process host
     # callbacks) — skipped here, not counted as an exe failure.
@@ -199,6 +250,9 @@ done
 echo "$PASS passed, $FAIL failed, $TIMEOUTS timed out, $SKIP skipped"
 if [ $RUN_EXE -eq 1 ]; then
     echo "EXE: $EXE_PASS passed, $EXE_FAIL failed (of $PASS JIT-passing tests)"
+fi
+if [ $RUN_OBJ -eq 1 ]; then
+    echo "OBJ: $OBJ_PASS passed, $OBJ_FAIL failed (of $PASS JIT-passing tests)"
 fi
 [ $FAIL -eq 0 ] || exit 1
 [ $TIMEOUTS -eq 0 ] || exit 1

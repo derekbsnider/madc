@@ -1233,6 +1233,63 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
 					  kind == mnkShared) ? 0 : -1;
 }
 
+// R4b resolver: the JIT lane's chain (host-callback regs → dlsym; bin/madc
+// links -rdynamic, so the madc runtime, mir.* builtin exports, and
+// __mir_*oti helpers are all dlsym-visible). The loader consults it for
+// EVERY undefined symbol before failing, so each miss is named here —
+// never just the first.
+static void *cir_run_object_resolve(const char *name, void *env)
+{
+    void *addr = cir_import_resolver(name);
+    if (!addr)
+	fprintf(stderr, "madc: %s: unresolved symbol: %s\n",
+		(const char *)env, name);
+    return addr;
+}
+
+extern char **environ;
+
+int madc_cir_run_object(const char *path, int argc, char **argv)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+	fprintf(stderr, "madc: cannot open %s: %s\n", path, strerror(errno));
+	return 1;
+    }
+    std::vector<unsigned char> bytes;
+    unsigned char chunk[65536];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof chunk, f)) > 0)
+	bytes.insert(bytes.end(), chunk, chunk + n);
+    bool read_err = ferror(f) != 0;
+    fclose(f);
+    if (read_err) {
+	fprintf(stderr, "madc: read error on %s\n", path);
+	return 1;
+    }
+
+    char err[256];
+    MIR_object_loaded_t lo = MIR_object_load(bytes.data(), bytes.size(),
+					     cir_run_object_resolve,
+					     (void *)path, err, sizeof err);
+    if (!lo) {
+	fprintf(stderr, "madc: %s: cannot load object: %s\n", path, err);
+	return 1;
+    }
+    typedef int (*cir_main_fn)(int, char **, char **);
+    cir_main_fn entry = (cir_main_fn)MIR_object_loaded_sym(lo, "main");
+    if (!entry) {
+	fprintf(stderr, "madc: %s: no main() defined in object\n", path);
+	return 1;
+    }
+    // Global ctors run from inside main (the builder injects the
+    // __madc_global_init call there), so entering main is the whole
+    // contract. The image is deliberately never unloaded: the program may
+    // have registered atexit handlers pointing into it.
+    fflush(stdout);
+    return entry(argc, argv, environ);
+}
+
 // --- B4a: grove payload v2 fill (pack-time recording -> forest payloads) ---
 // The bridge between the Program's lex/parse-time pack recording and the
 // container format: buckets the token stream per unit (absolute _buf order —

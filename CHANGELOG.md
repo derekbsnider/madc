@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+- **feat(aot): `madc foo.o` — execute a `.o` as a precompiled cache (AOT
+  R4b, task #86).** asmjit-master `load_object` parity on the MIR backend:
+  a positional `.o` input loads through the fork's new in-process ET_REL
+  loader (`MIR_object_load` — map `.text`/`.data`/`.bss`, apply the
+  ABS64-only reloc subset, W^X text) and runs `main` directly, skipping
+  parse + translate + gen entirely (testsubscript: ~2.3 s JIT → ~5 ms,
+  ~500×). Imports resolve through the JIT lane's exact chain; every
+  unresolved symbol is named. Foreign objects are rejected loudly by
+  section/reloc kind. Freshness stays the build system's concern (make
+  semantics) — no implicit `.mad`→`.o` probing; the forest/MIR-module
+  cache (front end) and this lane (native back end) cache different
+  stages, one loader, one emitter. New generic runner lane
+  `run_tests.sh --obj` (**713 passed, 0 failed**, dev and packed binaries
+  alike; new `obj_skip` fixture exempts the four multi-TU `--project`
+  tests until multi-object loading) + fork lane `c2mir-load-object-test`
+  (1139 tests / 2278 successes — tally identical to the cc-linked object
+  lane) + unit test `test_object_load.cpp`. Fork pin → `fc554f0d`
+  (`MIR_object_load` + `c2m -run-object`).
+
 - **feat(aot): exe-lane burndown to ZERO — `void main` lowering + `exe_skip`
   fixture (task #85 slice 3).** The three "deref cluster" exe failures were
   never deref bugs: the tests declare `void main()`, fall off the end, and

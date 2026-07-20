@@ -312,10 +312,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **28 rules, 741 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **28 rules, 761 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~363 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1113 lines.**
+- **Grand total loaded by Claude Code per turn: ~1133 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the
