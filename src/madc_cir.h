@@ -161,6 +161,17 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
 			 MadcNativeKind kind, const char *out_path,
 			 const std::vector<std::string> &user_libs);
 
+// R4b, the .o-as-precompiled-cache lane (`madc foo.o [args...]`): load a
+// madc-emitted relocatable object back into this process via the fork
+// loader (MIR_object_load — maps text/data/bss, applies the ABS64-only
+// reloc subset), resolve imports through the SAME chain the JIT lane uses
+// (host-callback regs, then dlsym(RTLD_DEFAULT)), and run its main(argc,
+// argv, environ). argv[0] is the object path. Skips parse + translate +
+// gen entirely. Freshness is the build system's concern (make semantics),
+// exactly as with gcc-produced objects. Returns main's exit status, or 1
+// on load failure (every unresolved symbol is reported by name).
+int madc_cir_run_object(const char *path, int argc, char **argv);
+
 // The --project twin of madc_cir_emit_native. mnkObject: one .o per TU
 // (gcc semantics: <TU-base>.o in the current directory; out_path overrides
 // only for a single-TU manifest — the caller rejects -c -o with many TUs).

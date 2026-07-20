@@ -474,6 +474,9 @@ static void print_usage(const char *prog)
 "                          translation unit, link the modules, run the entry\n"
 "  <file.json>             a .json source is treated as a project manifest\n"
 "                          (implicit --project; gcc/clang-style by extension)\n"
+"  <file.o>                execute a madc-compiled relocatable object (-c\n"
+"                          output) as a precompiled cache: MIR's in-process\n"
+"                          loader maps and relocates it — no recompilation\n"
 "  -E                      preprocess only (print the expanded source)\n"
 "\n"
 "Language / preprocessor (gcc/clang-style):\n"
@@ -840,6 +843,23 @@ int main(int argc, char **argv)
         }
     }
 
+    // A .o input runs as a precompiled native cache (AOT R4b): load the
+    // madc-emitted relocatable object in-process and execute its main — no
+    // parse, no codegen. Freshness is the build system's concern (make
+    // semantics), exactly as with any compiler's .o. Same extension
+    // convention and --run-frozen exclusion as the .json arm above.
+    const char *run_object_path = NULL;
+    if ( !project_manifest && !run_frozen && filearg < argc )
+    {
+        const char *f = argv[filearg];
+        size_t flen = strlen(f);
+        if ( flen >= 2 && strcmp(f + flen - 2, ".o") == 0 )
+        {
+            run_object_path = f;
+            ++filearg;   // remaining positionals become the program's argv
+        }
+    }
+
     // Resource guards install AFTER argument parsing so the memory guard can
     // scale with the workload (see install_resource_guards). The manifest is
     // read here, once, for its TU count; the --project branch below reuses
@@ -879,6 +899,14 @@ int main(int argc, char **argv)
                     || emit_executable_path
                     || (generic_output_path && !emit_pch);
 
+    if ( run_object_path && emit_native )
+    {
+        std::cerr << "madc: a .o input is executed, not compiled; "
+                     "-c/-o/-shared do not apply "
+                     "(multi-object linking is a future rung)" << std::endl;
+        return 1;
+    }
+
     // -l<name>: dlopen each requested library (RTLD_GLOBAL) so the import
     // resolver (dlsym(RTLD_DEFAULT, ...)) finds its symbols at link time. Done
     // before any compile/run so it applies to both the single-file and
@@ -895,6 +923,21 @@ int main(int argc, char **argv)
             return 1;
         }
         prog->loaded_lib_paths.push_back(lib);   // the frozen-forest link closure
+    }
+
+    // .o input (AOT R4b): execute the madc-emitted relocatable object as a
+    // precompiled cache — no parse, no translate, no gen. Placed after the
+    // -l loop so `madc -lcrypt foo.o` resolves the same way the JIT lane
+    // would. argv[0] is the object path (the JIT lane's source-path
+    // convention); remaining positionals are the program's argv.
+    if ( run_object_path )
+    {
+        std::vector<char *> oargv;
+        oargv.push_back((char *)run_object_path);
+        for ( int i = filearg; i < argc; ++i )
+            oargv.push_back(argv[i]);
+        return madc_cir_run_object(run_object_path,
+                                   (int)oargv.size(), oargv.data());
     }
 
     // --run-frozen: thaw + compile + run a frozen forest container — no

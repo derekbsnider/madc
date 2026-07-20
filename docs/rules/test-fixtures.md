@@ -76,13 +76,26 @@ test-specific knowledge.
 
 ## Why `exe_skip` exists (2026-07-20)
 
-The `--exe` lane compiles every JIT-green test to a native executable and
-byte-compares the run. A few tests exercise machinery that only exists
-inside a live madc process — `testfreezerun` re-executes the freeze/thaw
-container path, `testmadcevalexprctx` drives in-process libmadc host
-callback eval contexts. A native standalone binary has no analogue for
-these, so failing them would be noise, and hard-coding their names into
-the runner would violate the no-per-test-logic rule. The fixture file's
-content is a one-line justification, so every skip is self-documenting —
-an empty or vague `exe_skip` in review is a red flag that someone is
-hiding a real failure.
+The native-artifact lanes compile every JIT-green test to a native
+artifact and byte-compare the run: `--exe` links a standalone executable,
+`--obj` (AOT R4b) emits a relocatable `.o` and executes it through the
+in-process loader (`madc foo.o`). A few tests exercise machinery that only
+exists inside a live, freshly-compiled madc program — `testfreezerun`
+re-executes the freeze/thaw container path, `testmadcevalexprctx` drives
+in-process libmadc host callback eval contexts. The native lanes have no
+analogue for these, so failing them would be noise, and hard-coding their
+names into the runner would violate the no-per-test-logic rule. One
+fixture covers all native lanes — the skip reason ("structurally
+JIT-only") is a property of the test, not of any one artifact format. The
+fixture file's content is a one-line justification, so every skip is
+self-documenting — an empty or vague `exe_skip` in review is a red flag
+that someone is hiding a real failure.
+
+`obj_skip` is the narrower sibling: it exempts a test from the `--obj`
+pass only. The four `--project` tests need it because a multi-TU program
+has no single-`.o` form — `-c` on a project correctly emits one object
+per TU, and running any one of them is not the program. The `--exe` lane
+still covers those tests (a whole-project executable IS a single
+artifact), which is exactly why they must not use `exe_skip`. When
+multi-object loading lands (the declared future rung), these four
+fixtures are the removal checklist.

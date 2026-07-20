@@ -661,3 +661,66 @@ host-callback eval).
 under --exe green + byte-identical to JIT") is MET. Fulltest + packed
 arbiter 729/0/0/13. The R4 rung is COMPLETE; remaining AOT rungs are
 R4b (execute-.o-as-cache), R5 (DWARF in the .o), R6 (PIC).
+
+---
+
+## R4b LANDED — `.o` as precompiled cache (2026-07-20, task #86)
+
+madc executes its own relocatable objects: `madc foo.o [args…]` loads the
+`.o` through the fork's new in-process ET_REL loader and runs `main` —
+parse, translate, and gen all skipped (testsubscript, a real-libstdc++-
+header compile: ~2.3 s JIT → ~5 ms load-and-run, ~500×). asmjit-master
+`load_object` parity on the MIR backend (master: madc_elf.cpp:1037-1257;
+ours is fork-side and W^X).
+
+**Design decisions (the three questions filed on task #86):**
+- **Loader home = fork (`mir-debug.c`), beside the emitter.**
+  `MIR_object_load(buf, size, resolver, env, err, errlen)` /
+  `MIR_object_loaded_sym` / `MIR_object_loaded_unload`. The third
+  consumer of the ELF core: parses exactly the subset `MIR_object_emit`
+  writes (`.text`/`.data`/`.bss`, `.rela.text`/`.rela.data`,
+  R_X86_64_64 only), one anonymous mapping with page-aligned regions,
+  relocate, then `mprotect` text R+X (master's RWX shortcut deliberately
+  not copied). The dotted `mir.*` builtins resolve INSIDE the loader —
+  they are the emitter's own contract (weak asm-label refs, so
+  GDB-JIT-only embedders still link); everything else is the caller's
+  resolver, consulted for EVERY undefined symbol so a logging resolver
+  reports the complete miss list. Defensive: any alloc section beyond
+  the fixed three fails loudly — a gcc `.o` is rejected by name
+  ("unsupported extra alloc section .note.gnu.property"), never
+  silently mis-loaded.
+- **Freshness = build-system concern (make semantics).** Explicit
+  artifact execution, like gcc: no implicit `.mad`→`.o` probing, no hash
+  keying. An implicit lane would key like the module-cache precedent
+  (format version + MIR API level + source hash) — deferred deliberately.
+- **One cache story, two layers.** The forest/MIR-module cache is the
+  FRONT-END cache (packed corpus; skips parse+translate; still gens at
+  load; keyed inside the container). The `.o` is the NATIVE BACK-END
+  cache for user programs (skips everything; explicit artifact). One
+  loader, one emitter — no parallel machinery.
+
+**madc surface:** positional `.o` detection (same extension convention +
+`--run-frozen` exclusion as the `.json` arm); dispatch after the `-l`
+loop so `madc -lcrypt foo.o` resolves like the JIT lane; resolver = the
+JIT chain (`cir_import_resolver`, every miss named); `-c/-o/-shared`
+with a `.o` input rejected loudly (multi-object linking = future rung —
+that rung also lifts the four `obj_skip` fixtures). `c2m -run-object`
+is the fork-internal thin CLI (the D1 both-layers pattern, as with R2's
+`-fobject`).
+
+**Gates at landing:**
+- Fork load-object lane (NEW `make c2mir-load-object-test`: emit + load +
+  run, no external toolchain anywhere): 1139 tests / 2278 successes —
+  tally identical to the cc-linked object lane, which is unchanged.
+  Fork `make test` green.
+- madc `--obj` sweep (NEW generic runner lane; `exe_skip` covers all
+  native-artifact lanes, new `obj_skip` narrows out the four multi-TU
+  `--project` tests): **713 / 0** on the dev binary AND on the packed
+  release binary.
+- fulltest 729/0/0/13 + all gates; `--exe` 717/0 unchanged; packed
+  arbiter 729/0/0/13; zero new warnings.
+- Unit: `tests/unit/test_object_load.cpp` (production entries:
+  `madc_cir_emit_native` → `MIR_object_load` → `madc_cir_run_object`).
+
+Commits: fork @fc554f0d (pinned in MIR_COMMIT), madc = the
+feature/aot-r4b-load-object-claude commit this block ships in.
