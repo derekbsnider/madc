@@ -233,6 +233,29 @@ typedef struct MIR_object_exec_params {
 extern int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *params,
                                        void **buf, size_t *size);
 
+/* --- In-process loader for MIR-emitted relocatable objects ---------------
+   The .o-as-precompiled-cache lane: load an ET_REL object previously
+   produced by MIR_object_emit back into THIS process and prepare it for
+   execution -- .text/.data copied into a fresh anonymous mapping (.bss
+   zero-filled), the emitter's R_X86_64_64-only relocation subset applied,
+   .text then remapped read+execute.  Undefined symbols resolve through the
+   emitter's own dotted mir.* builtin exports first (they are this library's
+   AOT contract), then through the caller's resolver (return NULL for "not
+   found"; the loader fails after consulting it for EVERY undefined symbol,
+   so a logging resolver sees the complete miss list).  Not a general ELF
+   loader: objects from other compilers are out of scope.  On failure
+   returns NULL and, when err_msg != NULL, writes a diagnostic there. */
+typedef struct MIR_object_loaded *MIR_object_loaded_t;
+typedef void *(*MIR_object_resolver_t) (const char *name, void *env);
+extern MIR_object_loaded_t MIR_object_load (const void *buf, size_t size,
+                                            MIR_object_resolver_t resolver, void *env,
+                                            char *err_msg, size_t err_len);
+/* Address of a defined global (or weak) symbol in the loaded image, or NULL. */
+extern void *MIR_object_loaded_sym (MIR_object_loaded_t lo, const char *name);
+/* Unmap the image and free the handle.  Must not be called while code from
+   the image can still run -- including atexit handlers it registered. */
+extern void MIR_object_loaded_unload (MIR_object_loaded_t lo);
+
 #ifdef __cplusplus
 }
 #endif
