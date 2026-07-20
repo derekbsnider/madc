@@ -147,11 +147,25 @@ symtab). One writer, one section/DWARF encoder — no parallel implementation.
   already means "write .bmir" upstream — c2m grew `-fobject` instead.)
 - `--emit-object`: normal pipeline, gen object mode, write the `.o`. One `.o`
   per TU; `--project` loops TUs (combined-module option later).
-- `-o` / `--emit-executable`: emit temp `.o`, link via host `cc`:
-  `cc x.o -o prog -L<libdir> -lmadc -lstdc++ -lm -ldl -lpthread [-lzstd]`
-  (+rpath or `--static-madc` linking `libmadc.a` for a hermetic binary —
-  default decided in R4 by measuring; the embedding/sandbox story favors
-  static). `main` + `__madc_global_init` are already in the module.
+- `-o` / `--emit-executable`: **OWNER DIRECTIVE 2026-07-20 — no external
+  toolchain, ever.** madc/MIR generates the final binary ITSELF: no cc, no
+  gcc/clang, no ld. The R2 ELF writer grows direct ET_DYN/ET_EXEC emission —
+  program headers (PT_LOAD), PT_INTERP + .dynamic (DT_NEEDED libc.so.6 /
+  libmadc.so.0 / libstdc++ / user -l set), the ABS64 reloc ledger emitted as
+  .rela.dyn for ld.so to patch at load (textrel permitted until PIC), and a
+  synthesized `_start` (SysV stack → argc/argv → call main → exit) so no
+  crt1.o is needed. asmjit-master's `libmadc_elf_executable` is the in-house
+  precedent — port its approach onto MIR_object. "No external dependencies"
+  = build-time toolchain independence; the binary keeps normal RUNTIME
+  DT_NEEDED libs (a fully-static no-libc binary is a separate later rung —
+  needs a musl-vs-glibc decision). **cc/ld's only legitimate role is as a
+  TEST ORACLE** (owner clarification 2026-07-20): the fork's object-lane
+  battery keeps cc-linking the `.o`s to validate their correctness, but no
+  product path in madc invokes an external toolchain. The host-`cc` link
+  driver that landed with the R4a CLI (2026-07-20) is therefore a TEMPORARY
+  test scaffold with a deletion deadline: it dies when the direct emitter
+  goes green on the --exe sweep (no-parallel-implementations rule). `main` +
+  `__madc_global_init` are already in the module.
 - `scripts/run_tests.sh --exe` flips live: every green JIT test must compile,
   link, run, and byte-match the JIT lane. That is the AOT arbiter.
 
@@ -189,8 +203,27 @@ symtab). One writer, one section/DWARF encoder — no parallel implementation.
   the native-code cache complement to the forest front-end cache.
 - **R5 — DWARF in the `.o`.** `.debug_line` first, locals/types second.
   Gate: gdb `break file:line` + `bt` names in an AOT executable.
-- **R6 — stretch, in any order:** gcc-torture through the AOT lane; direct-ld
-  experiment; aarch64 object mode; PIC mode; COMDAT groups.
+- **R6 — stretch, in any order:** gcc-torture through the AOT lane; aarch64
+  object mode; PIC mode; COMDAT groups. (The former "direct-ld experiment"
+  is superseded: direct binary emission IS the R4 deliverable per the owner
+  directive above.)
+
+**Why this arc exists (owner, 2026-07-20):** madc could already emit C and
+hand it to gcc — that lane proves nothing new. The point of THIS plan is to
+turn MIR into a **proper compiler back end**: JIT, `.o`, `.so`, and runnable
+executables from the same generator with no external toolchain. Master
+parity (master = libasmjit madc) specifically requires in-house `.o` files
+and ELF binaries.
+
+**Multi-platform trajectory (owner, 2026-07-20 — future rungs):** after
+Linux/ELF, the same lane grows **macOS (Mach-O)** and **Windows (PE/COFF)**
+output. The R2 layering already puts the format seam in the right place:
+`MIR_object` collects sections/symbols/relocs format-neutrally
+(`MIR_OBJ_SEC_*`, ABS64 kind); `elf_assemble` is the only ELF-specific
+stage. Mach-O / PE land as sibling assemblers behind the SAME builder — the
+ABS64-only ledger maps 1:1 (`R_X86_64_64` / `X86_64_RELOC_UNSIGNED` /
+`IMAGE_REL_AMD64_ADDR64`). Keep every new executable-emission feature on
+the builder side of that seam unless it is genuinely format-specific.
 
 **Shared-library output (owner ask 2026-07-20 — promoted from stretch):**
 `.so` lands in two steps. (a) With R4's link driver, `--emit-shared` is nearly

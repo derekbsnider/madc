@@ -24,6 +24,9 @@
 #include <setjmp.h>
 #include <dlfcn.h>
 #include <chrono>
+#include <unistd.h>	// -o/-shared link driver: fork/execvp/readlink; -c: mkstemps
+#include <sys/wait.h>
+#include <errno.h>
 
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -48,6 +51,7 @@ extern "C" {
 extern thread_local bool madc_verbose;
 extern thread_local int madc_opt_level;
 extern thread_local bool madc_debug_info;
+extern thread_local bool madc_object_mode;
 
 // -----------------------------------------------------------------------
 // Public API
@@ -64,6 +68,9 @@ c2m_ctx_t cir_init(MIR_context_t mir_ctx, bool debug_p)
     // -g: stamp source locations on MIR insns and snapshot each function's
     // typed locals while compiling (consumed by cir_register_source_debug).
     opts->debug_info_p = madc_debug_info ? 1 : 0;
+    // -c/-o/-shared: gen captures relocatable object code instead of
+    // publishing executable code (consumed by c2mir_get_native_object).
+    opts->native_object_p = madc_object_mode ? 1 : 0;
     return c2mir_init_compile(mir_ctx, opts);
 }
 
@@ -122,6 +129,16 @@ static void *cir_import_resolver(const char *name)
     if (!addr)
 	DBG(std::cerr << "cir_import_resolver: unresolved: " << name << std::endl);
     return addr;
+}
+
+// Object mode (-c/-o/-shared): import addresses are never read — gen captures
+// relocatable code and imports become undefined ELF symbols resolved by the
+// system linker. Any non-NULL address satisfies MIR_link's presence check.
+static void *cir_object_import_resolver(const char *name)
+{
+    (void)name;
+    static char undef_sentinel;
+    return &undef_sentinel;
 }
 
 // Diagnostic: report every MIR import that no loaded module defines and the
@@ -662,6 +679,8 @@ bool CirJitSession::init_contexts(const char *source_name, bool dump_checked)
     c2mir_init(ctx);
     MIR_gen_init(ctx);
     MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
+    if (madc_object_mode)
+	MIR_gen_set_object_mode(ctx, 1);
     if (madc_debug_info)
 	cir_set_debug_codegen(ctx);
 
@@ -724,10 +743,12 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	    if (it->item_type == MIR_func_item)
 		MIR_gen(ctx, it);
     } else
-	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
+	MIR_link(ctx, MIR_set_gen_interface,
+		 madc_object_mode ? cir_object_import_resolver
+				  : cir_import_resolver);
     cir_active_host_regs = NULL;
     mc_lap("MIR_link");
-    if (madc_debug_info)
+    if (madc_debug_info && !madc_object_mode)   // AOT DWARF is the R5 rung
 	cir_register_source_debug(ctx);
     cir_mir_error_armed = false;
     return true;
@@ -763,6 +784,7 @@ bool CirJitSession::build(Program *prog, const char *source_name,
     cache_mod = NULL;
     if (prog) prog->mir_cache_exports.clear();
     if (prog && prog->bind_forest && !prog->forest_chain.empty()
+	&& !madc_object_mode   // object emit captures everything itself
 	&& getenv("MADC_MIR_CACHE_BIND")
 	&& !getenv("MADC_NO_MIR_CACHE")) {
 	std::vector<uint8_t> mblob;
@@ -1057,6 +1079,134 @@ int madc_cir_execute(Program *prog, const char *source_name,
 	return -1;
     }
     return result;
+}
+
+bool CirJitSession::emit_native_object(const char *out_path)
+{
+    if (!ctx || !mod) return false;
+    void *buf = NULL;
+    size_t size = 0;
+    if (c2mir_get_native_object(ctx, &buf, &size) != 0 || !buf) {
+	fprintf(stderr, "madc: native object emission failed\n");
+	return false;
+    }
+    FILE *f = fopen(out_path, "wb");
+    if (!f) {
+	fprintf(stderr, "madc: cannot open %s: %s\n", out_path,
+		strerror(errno));
+	free(buf);
+	return false;
+    }
+    bool ok = fwrite(buf, 1, size, f) == size;
+    if (fclose(f) != 0) ok = false;
+    free(buf);
+    if (!ok)
+	fprintf(stderr, "madc: short write to %s\n", out_path);
+    return ok;
+}
+
+// The -o/-shared link step: hand the freshly emitted .o to the host C
+// driver ($CC, default cc) against libmadc + the C++/C runtimes. R2 objects
+// carry absolute 64-bit text relocations (non-PIC until the R6 PIC rung),
+// hence -no-pie for executables and -z notext for shared objects.
+static int cir_run_link(const char *obj_path, const char *out_path,
+			bool shared, const std::vector<std::string> &user_libs)
+{
+    // bin/madc lives in <root>/bin; the runtime lives in <root>/lib. An
+    // installed madc pairs with /usr/local/lib — put both on the search and
+    // run paths so the produced binary works from either layout.
+    std::string libdir;
+    char exe[4096];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0) {
+	exe[n] = '\0';
+	std::string d(exe);
+	size_t slash = d.rfind('/');
+	if (slash != std::string::npos)
+	    libdir = d.substr(0, slash) + "/../lib";
+    }
+    const char *cc = getenv("CC");
+    if (!cc || !cc[0]) cc = "cc";
+
+    std::vector<std::string> args;
+    args.push_back(cc);
+    args.push_back(obj_path);
+    args.push_back("-o");
+    args.push_back(out_path);
+    if (shared) {
+	args.push_back("-shared");
+	args.push_back("-Wl,-z,notext");
+    } else
+	args.push_back("-no-pie");
+    if (!libdir.empty()) {
+	args.push_back("-L" + libdir);
+	args.push_back("-Wl,-rpath," + libdir);
+    }
+    args.push_back("-L/usr/local/lib");
+    args.push_back("-Wl,-rpath,/usr/local/lib");
+    args.push_back("-lmadc");
+    for (const std::string &l : user_libs)
+	args.push_back(l);
+    args.push_back("-lstdc++");
+    args.push_back("-lm");
+    args.push_back("-ldl");
+    args.push_back("-lpthread");
+
+    std::vector<char *> argv;
+    for (std::string &a : args)
+	argv.push_back((char *)a.c_str());
+    argv.push_back(NULL);
+    DBG({ std::cerr << "madc: link:"; for (const std::string &a : args)
+	      std::cerr << ' ' << a; std::cerr << std::endl; });
+
+    pid_t pid = fork();
+    if (pid == 0) {
+	execvp(argv[0], argv.data());
+	fprintf(stderr, "madc: cannot exec %s: %s\n", argv[0],
+		strerror(errno));
+	_exit(127);
+    }
+    if (pid < 0) {
+	fprintf(stderr, "madc: link: fork: %s\n", strerror(errno));
+	return -1;
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+	fprintf(stderr, "madc: link with %s failed (status %d)\n", cc,
+		WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+	return -1;
+    }
+    return 0;
+}
+
+int madc_cir_emit_native(Program *prog, const char *source_name,
+			 MadcNativeKind kind, const char *out_path,
+			 const std::vector<std::string> &user_libs)
+{
+    madc_object_mode = true;	// one-shot CLI path; process exits after this
+
+    CirJitSession session;
+    bool stop = false;
+    if (!session.build(prog, source_name, false, false, false, &stop))
+	return -1;
+
+    if (kind == mnkObject)
+	return session.emit_native_object(out_path) ? 0 : -1;
+
+    // Executable / shared object: emit the .o to a temp file, link, clean up.
+    char tmpl[] = "/tmp/madc_aot_XXXXXX.o";
+    int tfd = mkstemps(tmpl, 2);
+    if (tfd < 0) {
+	fprintf(stderr, "madc: mkstemps: %s\n", strerror(errno));
+	return -1;
+    }
+    close(tfd);
+    int rc = -1;
+    if (session.emit_native_object(tmpl))
+	rc = cir_run_link(tmpl, out_path, kind == mnkShared, user_libs);
+    unlink(tmpl);
+    return rc;
 }
 
 // --- B4a: grove payload v2 fill (pack-time recording -> forest payloads) ---

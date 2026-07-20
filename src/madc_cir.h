@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <map>
 #include <string>
+#include <vector>
 #include "mir.h"
 #include "cir_emit_c.h"   // CirEmitLang
 
@@ -79,6 +80,11 @@ public:
     // (the main() call itself, incl. lazy MIR_gen of functions it calls).
     int run_main(int argc, char **argv, bool *ok = 0, double *out_secs = 0);
 
+    // Object mode (-c/-o/-shared): write the captured relocatable ELF object
+    // to out_path. Valid after build() with madc_object_mode set (gen ran in
+    // object-capture mode at link). False on emission/IO failure.
+    bool emit_native_object(const char *out_path);
+
 private:
     MIR_context_t ctx;
     c2m_ctx_t c2m;
@@ -128,6 +134,21 @@ int madc_cir_execute(Program *prog, const char *source_name,
 // Backs --emit=c11|mc11. Returns 0 on success, -1 on build failure.
 int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 		  CirEmitLang lang);
+
+// Native AOT output kind for madc_cir_emit_native (gcc CLI vocabulary):
+// -c = relocatable .o, -o = linked executable, -shared = shared object.
+enum MadcNativeKind { mnkObject, mnkExecutable, mnkShared };
+
+// AOT (-c/-o/-shared): full pipeline through gen OBJECT-CAPTURE mode —
+// translate + c2mir compile + MIR_link with a sentinel import resolver
+// (imports become undefined ELF symbols), then write the relocatable .o
+// (mnkObject) or link it via the host C driver ($CC, default cc) against
+// libmadc (mnkExecutable: -no-pie; mnkShared: -shared -z notext — absolute
+// text relocs until the PIC rung). user_libs are extra -l<name> link args.
+// No execution. Returns 0 on success, -1 on failure.
+int madc_cir_emit_native(Program *prog, const char *source_name,
+			 MadcNativeKind kind, const char *out_path,
+			 const std::vector<std::string> &user_libs);
 
 // Freeze the parsed Program's module tree (PRE-check — c2mir's checker
 // mutates trees it compiles) into a forest snapshot container at out_path:
