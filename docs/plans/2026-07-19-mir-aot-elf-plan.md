@@ -553,3 +553,49 @@ MIR_COMMIT → 5c461803 in this same madc commit.
 burndown; then R4b (execute `.o` as cache) and R5 (DWARF in the `.o`).
 Mach-O / PE assemblers slot behind the same `MIR_object` seam (see the
 multi-platform trajectory block above).
+## ET_DYN `-shared` landing (2026-07-20, task #85 tail slice 1) — the external-toolchain scaffold is DELETED
+
+`madc -shared` now emits the `.so` through the same MIR assembler as `-o`
+— `cir_run_link` (the fork/execvp host-cc driver, the LAST external-
+toolchain user) is deleted per no-parallel-implementations; cc/ld remain
+test oracles only, satisfying the owner directive completely.
+
+Fork (@c0cb2b47, feature/aot-r4-etdyn-claude @5b8b6f34 → develop; also
+fixes the latent R2-era GNUmakefile bug — nine hand-listed recipes linked
+mir-gen.o without its mir-debug.o object-builder dependency, so `make
+test` died at readme-example-test; reproduced pre-existing at the pinned
+baseline before fixing):
+- `MIR_object_exec_params` grows `shared_p` + `init`.
+- `MIR_object_emit_executable` with `shared_p`: ET_DYN, load base 0 (the
+  loader rebases link-time vaddrs), no PT_INTERP/`_start`/entry (3 phdrs),
+  defined globals exported through `.dynsym`/SysV `.hash`, EVERY reloc
+  dynamic — internal targets as `R_X86_64_RELATIVE` (bias + link vaddr;
+  -Bsymbolic semantics: internal refs never interpose), imports as
+  `R_X86_64_64`. `DT_INIT` emitted when `params->init` is defined in the
+  module (silently omitted otherwise — "no initializers" is a valid state).
+- ET_EXEC arm byte-identical: `bin/madc-release` (pre-change) vs new
+  binary produce bit-equal executables on the same source.
+
+madc:
+- `emit_native_executable(..., shared)` sets `shared_p` +
+  `init="__madc_global_init"` — dlopen'd modules run file-scope C++ ctors
+  at load; the init's once-guard keeps a host that also calls main correct.
+- `mnkShared` and `mnkExecutable` share one arm (DT_NEEDED base set +
+  user `-l`, DT_RUNPATH exedir/../lib:/usr/local/lib).
+- `tests/unit/test_native_shared.cpp`: drives the production entry
+  (`madc_cir_emit_native` mnkShared) and dlopens the result in-process
+  under RTLD_NOW — `-shared` covered with no external toolchain at test
+  time.
+
+Validation: fulltest 729/0/0/13; unit lane 20/20 binaries (the new
+test's first run exposed a harness-side static+dlopen interposition
+split-brain — libmadc.a-with--rdynamic host dlopening a .so that needs
+libmadc.so.0 — fixed with RTLD_DEEPBIND in the test); --exe sweep 709
+passed / 10 failed, failset name-identical to the R4 baseline; packed
+arbiter (bin/madc-release) 729/0/0/13; fork object lane 1139/2278 +
+`make test` green; reducers: `.so` dlopen RTLD_NOW (exports,
+RELATIVE-reloc module data, DT_INIT ctor prints at load, once only);
+ET_EXEC output BYTE-IDENTICAL to the pre-change v0.36.0 release binary.
+
+Remaining #85 tail: --project per-TU .o contexts (SMAUG exe) → deref
+burndown + exe_skip fixture. Then R4b/R5/R6.

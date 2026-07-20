@@ -88,9 +88,12 @@ public:
     // -o: write the capture as a complete ET_EXEC dynamic executable (mode
     // 0755) — MIR assembles it directly, no external toolchain. needed =
     // DT_NEEDED sonames; runpath ("" = omit) = DT_RUNPATH search path.
+    // shared: ET_DYN shared object instead (dlopen/#load-consumable; exports
+    // the module's globals, DT_INIT runs the file-scope ctors at load).
     bool emit_native_executable(const char *out_path,
 				const std::vector<std::string> &needed,
-				const std::string &runpath);
+				const std::string &runpath,
+				bool shared = false);
 
 private:
     MIR_context_t ctx;
@@ -148,11 +151,12 @@ enum MadcNativeKind { mnkObject, mnkExecutable, mnkShared };
 
 // AOT (-c/-o/-shared): full pipeline through gen OBJECT-CAPTURE mode —
 // translate + c2mir compile + MIR_link with a sentinel import resolver
-// (imports become undefined ELF symbols), then write the relocatable .o
-// (mnkObject) or link it via the host C driver ($CC, default cc) against
-// libmadc (mnkExecutable: -no-pie; mnkShared: -shared -z notext — absolute
-// text relocs until the PIC rung). user_libs are extra -l<name> link args.
-// No execution. Returns 0 on success, -1 on failure.
+// (imports become undefined ELF symbols), then MIR assembles the output
+// itself (no external toolchain): relocatable .o (mnkObject), ET_EXEC
+// dynamic executable (mnkExecutable), or ET_DYN shared object (mnkShared;
+// DT_TEXTREL until the PIC rung). user_libs ("-l<name>" or a path) join
+// the DT_NEEDED list for the linked kinds. No execution. Returns 0 on
+// success, -1 on failure.
 int madc_cir_emit_native(Program *prog, const char *source_name,
 			 MadcNativeKind kind, const char *out_path,
 			 const std::vector<std::string> &user_libs);
