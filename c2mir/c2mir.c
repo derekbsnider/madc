@@ -8094,6 +8094,18 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
       type->u.basic_type = sign >= 0 ? TP_LLONG : TP_ULLONG;
     }
   }
+  /* GNU integer _Complex (e.g. `_Complex int`) has no native representation
+     here: only the floating complex types exist (TP_CFLOAT/TP_CDOUBLE/
+     TP_CLDOUBLE).  Silently dropping complex_p used to degrade the type to
+     its scalar base — the imaginary part vanished without a diagnostic.
+     Reject loudly instead; a front end must lower integer complex itself
+     (e.g. to a two-member struct — the SysV ABI classification is
+     identical). */
+  if (complex_p
+      && !(type->mode == TM_BASIC
+           && (type->u.basic_type == TP_CFLOAT || type->u.basic_type == TP_CDOUBLE
+               || type->u.basic_type == TP_CLDOUBLE)))
+    error (c2m_ctx, POS (r), "integer _Complex is not supported (lower it in the front end)");
   set_type_qual (c2m_ctx, r, &type->type_qual, type->mode);
   apply_vector_attr_list (c2m_ctx, r, &res->type);
   type = res->type;
@@ -9925,6 +9937,16 @@ static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
       scope = decl->scope;
       ns->stack_var_p = TRUE;
       start_offset = ns->offset;
+      /* Statement-expression struct/union result slots were carved from this
+         scope's SIZE at check time (N_STMTEXPR check arm), before this layout
+         runs.  Lay the scope's own decls AFTER those reservations and keep
+         them inside the size accounting (start_offset 0), or the first decls
+         alias the slots — `struct S y = ({...});` wrote its copy-out over the
+         earlier local `x` (reducer tmp/s69_sxinit.c vs gcc). */
+      if (ns->size > ns->offset) {
+        ns->offset = ns->size;
+        start_offset = 0;
+      }
     }
     ns->offset = round_size (ns->offset, var_align (c2m_ctx, type));
     decl->offset = ns->offset;
@@ -17441,8 +17463,20 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       MIR_insn_code_t ne_ic = cct == MIR_T_F ? MIR_FNE : cct == MIR_T_D ? MIR_DNE : MIR_LDNE;
       op_t a_re, a_im, b_re, b_im, cmp_re, cmp_im;
 
-      op1 = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
-      op2 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, FALSE, NULL, NULL);
+      op1 = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, !complex_type_p (type1), NULL, NULL);
+      op2 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, !complex_type_p (type2), NULL, NULL);
+      /* Bring both operands to the common complex type BEFORE loading
+         components: a scalar promotes to {v, 0}; a narrower complex converts
+         componentwise (loading a _Complex float's memory as double read
+         garbage — `cf == 1.0 - 2.0i` was always false, complex-6). */
+      if (!complex_type_p (type1))
+        op1 = scalar_to_complex (c2m_ctx, op1, get_mir_type (c2m_ctx, type1), cbt);
+      else if (type1->u.basic_type != cbt)
+        op1 = complex_to_complex (c2m_ctx, op1, type1->u.basic_type, cbt);
+      if (!complex_type_p (type2))
+        op2 = scalar_to_complex (c2m_ctx, op2, get_mir_type (c2m_ctx, type2), cbt);
+      else if (type2->u.basic_type != cbt)
+        op2 = complex_to_complex (c2m_ctx, op2, type2->u.basic_type, cbt);
       a_re = complex_load (c2m_ctx, op1, cct, 0);
       a_im = complex_load (c2m_ctx, op1, cct, cimag);
       b_re = complex_load (c2m_ctx, op2, cct, 0);
