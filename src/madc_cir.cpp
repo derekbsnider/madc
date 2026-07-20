@@ -26,6 +26,7 @@
 #include <chrono>
 #include <unistd.h>	// -o/-shared link driver: fork/execvp/readlink; -c: mkstemps
 #include <sys/wait.h>
+#include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
 
 
@@ -1105,26 +1106,71 @@ bool CirJitSession::emit_native_object(const char *out_path)
     return ok;
 }
 
-// The -o/-shared link step: hand the freshly emitted .o to the host C
-// driver ($CC, default cc) against libmadc + the C++/C runtimes. R2 objects
-// carry absolute 64-bit text relocations (non-PIC until the R6 PIC rung),
-// hence -no-pie for executables and -z notext for shared objects.
+bool CirJitSession::emit_native_executable(const char *out_path,
+					   const std::vector<std::string> &needed,
+					   const std::string &runpath)
+{
+    if (!ctx || !mod) return false;
+    std::vector<const char *> libs;
+    for (const std::string &l : needed)
+	libs.push_back(l.c_str());
+    MIR_object_exec_params xp;
+    memset(&xp, 0, sizeof xp);
+    xp.needed = libs.data();
+    xp.n_needed = libs.size();
+    xp.entry = "main";
+    xp.runpath = runpath.empty() ? NULL : runpath.c_str();
+    void *buf = NULL;
+    size_t size = 0;
+    if (c2mir_get_native_executable(ctx, &xp, &buf, &size) != 0 || !buf) {
+	fprintf(stderr, "madc: native executable emission failed"
+			" (is main() defined?)\n");
+	return false;
+    }
+    FILE *f = fopen(out_path, "wb");
+    if (!f) {
+	fprintf(stderr, "madc: cannot open %s: %s\n", out_path,
+		strerror(errno));
+	free(buf);
+	return false;
+    }
+    bool ok = fwrite(buf, 1, size, f) == size;
+    if (fclose(f) != 0) ok = false;
+    free(buf);
+    if (ok && chmod(out_path, 0755) != 0) {
+	fprintf(stderr, "madc: chmod %s: %s\n", out_path, strerror(errno));
+	ok = false;
+    }
+    if (!ok)
+	fprintf(stderr, "madc: short write to %s\n", out_path);
+    return ok;
+}
+
+// bin/madc lives in <root>/bin; the runtime lives in <root>/lib. An
+// installed madc pairs with /usr/local/lib — both go on the produced
+// binary's library search path so it works from either layout.
+static std::string cir_selfexe_libdir(void)
+{
+    char exe[4096];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0)
+	return std::string();
+    exe[n] = '\0';
+    std::string d(exe);
+    size_t slash = d.rfind('/');
+    if (slash == std::string::npos)
+	return std::string();
+    return d.substr(0, slash) + "/../lib";
+}
+
+// TEMPORARY TEST SCAFFOLD (owner 2026-07-20): external linking is a test
+// oracle, never the product path. -o executables are MIR-assembled directly
+// (emit_native_executable); only -shared still routes here until the direct
+// ET_DYN slice lands, at which point this dies (no-parallel-implementations).
 static int cir_run_link(const char *obj_path, const char *out_path,
 			bool shared, const std::vector<std::string> &user_libs)
 {
-    // bin/madc lives in <root>/bin; the runtime lives in <root>/lib. An
-    // installed madc pairs with /usr/local/lib — put both on the search and
-    // run paths so the produced binary works from either layout.
-    std::string libdir;
-    char exe[4096];
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n > 0) {
-	exe[n] = '\0';
-	std::string d(exe);
-	size_t slash = d.rfind('/');
-	if (slash != std::string::npos)
-	    libdir = d.substr(0, slash) + "/../lib";
-    }
+    std::string libdir = cir_selfexe_libdir();
     const char *cc = getenv("CC");
     if (!cc || !cc[0]) cc = "cc";
 
@@ -1194,7 +1240,33 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
     if (kind == mnkObject)
 	return session.emit_native_object(out_path) ? 0 : -1;
 
-    // Executable / shared object: emit the .o to a temp file, link, clean up.
+    if (kind == mnkExecutable) {
+	// MIR assembles the executable directly — no external toolchain.
+	// DT_NEEDED: the madc runtime (its dependency closure brings libmir's
+	// builtin exports, libz/libzstd, libpthread), the C++/C runtimes, and
+	// the user's -l libraries ("-lfoo" → the same lib<foo>.so spelling the
+	// JIT dlopen lane uses; a path form passes through verbatim).
+	std::vector<std::string> needed;
+	needed.push_back("libmadc.so.0");
+	needed.push_back("libstdc++.so.6");
+	needed.push_back("libm.so.6");
+	needed.push_back("libc.so.6");
+	for (const std::string &l : user_libs) {
+	    if (l.compare(0, 2, "-l") == 0)
+		needed.push_back("lib" + l.substr(2) + ".so");
+	    else
+		needed.push_back(l);
+	}
+	std::string runpath = cir_selfexe_libdir();
+	if (!runpath.empty())
+	    runpath += ":/usr/local/lib";
+	else
+	    runpath = "/usr/local/lib";
+	return session.emit_native_executable(out_path, needed, runpath) ? 0 : -1;
+    }
+
+    // -shared: still on the external-link TEST SCAFFOLD until the direct
+    // ET_DYN slice lands (see cir_run_link's banner).
     char tmpl[] = "/tmp/madc_aot_XXXXXX.o";
     int tfd = mkstemps(tmpl, 2);
     if (tfd < 0) {
@@ -1204,7 +1276,7 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
     close(tfd);
     int rc = -1;
     if (session.emit_native_object(tmpl))
-	rc = cir_run_link(tmpl, out_path, kind == mnkShared, user_libs);
+	rc = cir_run_link(tmpl, out_path, true, user_libs);
     unlink(tmpl);
     return rc;
 }

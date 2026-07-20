@@ -85,6 +85,13 @@ public:
     // object-capture mode at link). False on emission/IO failure.
     bool emit_native_object(const char *out_path);
 
+    // -o: write the capture as a complete ET_EXEC dynamic executable (mode
+    // 0755) — MIR assembles it directly, no external toolchain. needed =
+    // DT_NEEDED sonames; runpath ("" = omit) = DT_RUNPATH search path.
+    bool emit_native_executable(const char *out_path,
+				const std::vector<std::string> &needed,
+				const std::string &runpath);
+
 private:
     MIR_context_t ctx;
     c2m_ctx_t c2m;

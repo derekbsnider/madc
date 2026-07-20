@@ -492,3 +492,64 @@ fork object battery 1139/0; full fork battery (6 JIT lanes + bootstrap cmp)
 madc fulltest 729/0/0/13; packed arbiter 729/0/0/13; torture 1614 /
 failset name-identical (11); SMAUG soak green dev + packed ("ready at"
 under default guards, plus owner playtesting on the dev boot).
+
+## R4 landing (2026-07-20, fork feature/aot-r4-direct-elf-claude + madc feature/aot-r4-emit-claude)
+
+**Two slices in one day. R4a (madc @e760d4e4):** the gcc-vocabulary CLI —
+`-c` (relocatable `.o` via the R2 object mode, no execution), `-o`
+(executable), `-shared`; `--emit-object`/`--emit-executable` demoted to
+aliases; the "AOT unavailable on CIR" stub deleted. Wiring mirrors R1's `-g`
+end to end: `madc_object_mode` → `c2mir_options.native_object_p` →
+`MIR_gen_set_object_mode` in `init_contexts` → object arm in
+`load_and_link` (sentinel import resolver — imports become undefined ELF
+symbols; MIR-cache staging and debug-object registration skipped in-mode) →
+`CirJitSession::emit_native_object`. `-l` forwards to the link set in AOT
+mode instead of dlopen. AOT + `--project` errors loudly (per-TU contexts =
+next slice). R4a validated with a host-cc link as the TEST ORACLE:
+first-ever `run_tests.sh --exe` sweep, EXE 708/729.
+
+**R4 proper (fork develop @5c461803, merge of @ef89761d): direct ET_EXEC
+emission — the owner directive delivered.** `madc -o` produces the
+executable with NO external toolchain: `MIR_object_emit_executable`
+(+`MIR_gen_object_emit_executable`, `c2mir_get_native_executable` — API at
+both layers again) assembles base-0x400000 ET_EXEC images: two PT_LOADs
+(R+X headers/dynamic-tables/text, R+W data/.dynamic/bss tail), PT_INTERP,
+PT_DYNAMIC (DT_NEEDED list + optional DT_RUNPATH + SysV DT_HASH +
+RELA/RELASZ/RELAENT + DT_TEXTREL until the PIC rung), synthesized 32-byte
+`_start` → `__libc_start_main(entry, argc, argv)` through its own reloc
+slot (no crt1.o), internal relocations resolved at emit, imports as eager
+R_X86_64_64 entries in `.rela.dyn` (no PLT/GOT — MIR calls already route
+through address slots). Modeled on madc-master's in-house `madc_elf.cpp`
+(recon: `tmp/master-elf-writer-recon.md`) minus its fragilities: no byte
+scanning (exact ledgers), no live-memory data copying (data from IR items —
+master's std::string/SSO patch-up machinery is structurally unnecessary),
+no hand-built PLT. madc side: DT_NEEDED {libmadc.so.0, libstdc++.so.6,
+libm.so.6, libc.so.6} + user `-l`; RUNPATH `<exedir>/../lib:/usr/local/lib`;
+0755. **cc/ld remain only as test oracles** (fork object-lane battery);
+`cir_run_link` survives solely for `-shared` with a deletion deadline at
+the direct ET_DYN slice.
+
+**Fixes the lane surfaced, each at its deepest layer:** captured text keeps
+its 16-byte alignment in the executable (`_start` block pads to 48 — SSE
+pool constants faulted at bias 40, found via testdoublestore SIGSEGV →
+`xorpd 0x95(%rip)`); the six `__mir_*oti` int128 overflow helpers (JIT-
+resolver-only, no libgcc equivalent) now asm-alias-export from `c2mir.o`
+(`MIR_INT128_EXPORT_ALIASES`) — lifts testint128 in the exe lane, which the
+cc scaffold ALSO failed; madc's `lib/libmadc.so` Makefile rule gained the
+missing `$(MIRLIB)` prerequisite (it silently never relinked on fork
+changes — latent staleness bug).
+
+**Validation at landing:** reducers byte-identical to JIT (C++ global
+ctors, mangled-direct libstdc++); `run_tests.sh --exe` EXE **709/729** —
+one better than the scaffold baseline, remaining 10 = classified burndown
+(5× `--project` deferral, 2× structurally JIT-only [need an exe-skip
+fixture], 3× deref cluster: test_errno_deref / test_get_argv_deref /
+test_ptr_fn_deref); fulltest 729/0/0/13; packed arbiter 729/0/0/13; fork
+object lane 1139/0; full fork battery 0 FAIL (mode-off identity).
+MIR_COMMIT → 5c461803 in this same madc commit.
+
+**Remaining in the rung:** direct ET_DYN `-shared` (kills `cir_run_link`);
+`--project` per-TU `.o` contexts; the deref-cluster + exe-skip-fixture
+burndown; then R4b (execute `.o` as cache) and R5 (DWARF in the `.o`).
+Mach-O / PE assemblers slot behind the same `MIR_object` seam (see the
+multi-platform trajectory block above).
