@@ -1,4 +1,5 @@
 mod: module
+	export	main
 malloc_proto: proto p, i64:size
 import malloc
 box_nullable_proto: proto p, p, blk0:8(arg0)

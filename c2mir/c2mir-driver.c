@@ -323,6 +323,8 @@ static void init_options (int argc, char *argv[]) {
       options.asm_p = TRUE;
     } else if (strcmp (argv[i], "-c") == 0) {
       options.object_p = TRUE;
+    } else if (strcmp (argv[i], "-fobject") == 0) {
+      options.native_object_p = TRUE;
     } else if (strcmp (argv[i], "-g") == 0) {
       options.debug_info_p = TRUE;
     } else if (strcmp (argv[i], "-w") == 0) {
@@ -413,6 +415,7 @@ static void init_options (int argc, char *argv[]) {
       fprintf (stderr, "  -fpedantic -- assume strict standard input C code\n");
       fprintf (stderr, "  -w -- do not print any warnings\n");
       fprintf (stderr, "  -S, -c -- generate corresponding textual or binary MIR files\n");
+      fprintf (stderr, "  -fobject -- generate a native relocatable object (ELF .o)\n");
       fprintf (stderr, "  -o file -- put output code into given file\n");
       fprintf (stderr, "  -On -- use given optimization level in MIR-generator\n");
       fprintf (stderr, "  -p[n] -- use given parallelism level in C2MIR and MIR-generator\n");
@@ -434,6 +437,7 @@ static void init_options (int argc, char *argv[]) {
   options.macro_commands = VARR_ADDR (macro_command_t, macro_commands);
   if (!C2MIR_PARALLEL || threads_num <= 1) threads_num = 0;
   if (options.debug_info_p) threads_num = 0; /* single-threaded: shared debug file registry */
+  if (options.native_object_p) threads_num = 0; /* single-threaded: one gen ctx captures all */
 }
 
 static int t_getc (void *data) {
@@ -491,6 +495,14 @@ static void *import_resolver (const char *name) {
     exit (1);
   }
   return sym;
+}
+
+/* -fobject: AOT object emission consumes no import addresses (imports become
+   undefined ELF symbols resolved by the system linker), but MIR_link requires
+   a non-NULL resolution -- hand it a sentinel that nothing ever reads. */
+static void *object_import_resolver (const char *name MIR_UNUSED) {
+  static char undef_sentinel;
+  return &undef_sentinel;
 }
 
 /* Build the GDB-JIT DWARF object for the generated functions (function symbols,
@@ -901,7 +913,40 @@ int main (int argc, char *argv[], char *env[]) {
           main_func = func;
       MIR_load_module (main_ctx, module);
     }
-    if (main_func == NULL) {
+    if (options.native_object_p) { /* -fobject: emit a native relocatable object */
+      const char *file_name = options.output_file_name == NULL ? "a.o" : options.output_file_name;
+      void *obuf;
+      size_t osize;
+
+      MIR_gen_init (main_ctx);
+      if (optimize_level >= 0) MIR_gen_set_optimize_level (main_ctx, (unsigned) optimize_level);
+      MIR_gen_set_object_mode (main_ctx, TRUE);
+      start_time = real_usec_time ();
+      MIR_link (main_ctx, MIR_set_gen_interface, object_import_resolver);
+      if (options.verbose_p)
+        fprintf (stderr, "MIR object link+gen    -- %.0f usec\n", real_usec_time () - start_time);
+      if (c2mir_get_native_object (main_ctx, &obuf, &osize) != 0) {
+        fprintf (stderr, "failed to emit native object %s\n", file_name);
+        result_code = 1;
+      } else {
+        FILE *f = fopen (file_name, "wb");
+
+        if (f == NULL) {
+          fprintf (stderr, "cannot open file %s\n", file_name);
+          result_code = 1;
+        } else {
+          fwrite (obuf, 1, osize, f);
+          if (ferror (f) || fclose (f)) {
+            fprintf (stderr, "error in writing file %s\n", file_name);
+            result_code = 1;
+          } else if (options.verbose_p) {
+            fprintf (stderr, "native object %s: %lu bytes\n", file_name, (unsigned long) osize);
+          }
+        }
+        free (obuf);
+      }
+      MIR_gen_finish (main_ctx);
+    } else if (main_func == NULL) {
       fprintf (stderr, "cannot link program w/o main function\n");
       result_code = 1;
     } else if (!interp_exec_p && !gen_exec_p && !lazy_gen_exec_p && !lazy_bb_gen_exec_p) {

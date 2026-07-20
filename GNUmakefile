@@ -598,6 +598,7 @@ clean-mir2c-test:
 
 .PHONY: c2mir-test c2mir-simple-test c2mir-full-test c2mir-interp-test
 .PHONY: c2mir-gen-test c2mir-parallel-gen-test c2mir-gen-test0 c2mir-gen-test1 c2mir-gen-test3
+.PHONY: c2mir-object-test
 
 c2mir-test: c2mir-simple-test c2mir-full-test
 
@@ -620,6 +621,8 @@ c2mir-gen-test1: $(BUILD_DIR)/c2m$(EXE)
 	$(SHELL) $(SRC_DIR)/c-tests/runtests.sh $(SRC_DIR)/c-tests/use-c2m-gen-O1 $(BUILD_DIR)/c2m$(EXE)
 c2mir-gen-test3: $(BUILD_DIR)/c2m$(EXE)
 	$(SHELL) $(SRC_DIR)/c-tests/runtests.sh $(SRC_DIR)/c-tests/use-c2m-gen-O3 $(BUILD_DIR)/c2m$(EXE)
+c2mir-object-test: $(BUILD_DIR)/c2m$(EXE)
+	$(SHELL) $(SRC_DIR)/c-tests/runtests.sh $(SRC_DIR)/c-tests/use-c2m-object $(BUILD_DIR)/c2m$(EXE)
 
 # ------------------ c2m bootstrap tests ----------------
 

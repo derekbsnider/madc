@@ -1,4 +1,5 @@
 m: module
+   export main
 callee_proto:	proto	p
 callee2:	func	p
 	local	i64:exception, i64:si0, i64:ti0

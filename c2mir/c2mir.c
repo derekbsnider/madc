@@ -30,6 +30,7 @@
 
 #include "c2mir.h"
 #include "mir-debug.h"
+#include "mir-gen.h" /* MIR_gen_object_emit for c2mir_get_native_object */
 
 #if defined(__x86_64__) || defined(_M_AMD64)
 #include "x86_64/cx86_64.h"
@@ -17072,6 +17073,12 @@ int c2mir_get_debug_object (MIR_context_t ctx, void **buf, size_t *size) {
     }
   }
   return MIR_debug_emit (c2m_dbg, buf, size);
+}
+
+int c2mir_get_native_object (MIR_context_t ctx, void **buf, size_t *size) {
+  /* The c2mir-API surface of the MIR-gen object mode: all capture state lives
+     in the gen context, so this is a thin delegation (see c2mir.h). */
+  return MIR_gen_object_emit (ctx, buf, size);
 }
 
 static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_t false_label,

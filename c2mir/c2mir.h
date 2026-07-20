@@ -20,7 +20,12 @@ struct c2mir_options {
   FILE *message_file;
   int debug_p, verbose_p, ignore_warnings_p, no_prepro_p, prepro_only_p;
   int syntax_only_p, pedantic_p, asm_p, object_p;
-  int debug_info_p; /* stamp source locations for gdb debug info (see mir-debug.h) */
+  int debug_info_p;     /* stamp source locations for gdb debug info (see mir-debug.h) */
+  int native_object_p;  /* AOT: emit a native relocatable object (ELF .o) instead of
+                           executing -- distinct from object_p, which writes binary MIR
+                           (.bmir).  The driver compiles + loads + links with
+                           MIR_gen_set_object_mode and retrieves the object through
+                           c2mir_get_native_object (c2m flag: -fobject). */
   size_t module_num;
   FILE *prepro_output_file; /* non-null for prepro_only_p */
   const char *output_file_name;
@@ -48,5 +53,14 @@ size_t c2mir_get_source_files (MIR_context_t ctx, const char ***names);
    ownership) and *size; returns nonzero if there is nothing to emit or the host
    is unsupported.  Single-threaded compiles only. */
 int c2mir_get_debug_object (MIR_context_t ctx, void **buf, size_t *size);
+
+/* For a native_object_p compile, after MIR_load_module / MIR_link generated
+   every function under MIR_gen_set_object_mode: assemble the relocatable
+   native object (ELF .o, x86-64 first).  On success returns 0 and sets *buf
+   (malloc'd, caller-owned -- write it out and free it) and *size; returns
+   nonzero on failure or unsupported host.  This is the c2mir-API surface of
+   the MIR-gen object mode (see mir-gen.h); c2m's -fobject is a thin CLI over
+   it. */
+int c2mir_get_native_object (MIR_context_t ctx, void **buf, size_t *size);
 
 #endif
