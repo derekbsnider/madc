@@ -105,6 +105,17 @@ A new generator mode (`MIR_gen_set_object_mode(ctx, 1)`-style), x86-64 first:
   → `LOCAL`; redef-permitted (linkonce) → `WEAK`.
 - Mode OFF = today's JIT behavior, byte-for-byte — the mode is additive and
   CI-visible (R2 gate runs both).
+- **API exposure at BOTH layers (owner directive 2026-07-20):** the gen mode
+  is a public libmir API (`MIR_gen_set_object_mode`-style), AND the feature
+  is surfaced through **c2mir's API** — a `c2mir_options` flag plus access to
+  the emitted object (file via `output_file_name` and/or an in-memory getter),
+  following the existing `asm_p`/`object_p` option precedent and the R1
+  `debug_info_p` + `c2mir_get_debug_object(ctx, &buf, &size)` pattern. madc
+  consumes the c2mir interface (it never invokes `c2m`); `c2m -c` and any
+  other binaries are thin CLIs over the same c2mir API — no functionality may
+  live only in a driver binary. (Naming note: upstream `object_p` already
+  means "write `.bmir`" — the native-object flag must be distinct, e.g.
+  `native_object_p`; settle naming in R2.)
 
 ### D2 — one ELF writer
 
@@ -148,10 +159,12 @@ symtab). One writer, one section/DWARF encoder — no parallel implementation.
   named frames, `info locals` on a `.mad` test via the JIT; fulltest
   unaffected; `MIR_COMMIT` bump in the same madc commit.
 - **R2 — object-capture mode in gen (x86-64).** The deliverable is the
-  library API (`MIR_gen_set_object_mode`-style, D1) — madc consumes it
-  in-process via libmir/c2mir like every other gen knob, never via a CLI.
-  A `c2m -c` flag is added only as the MIR-repo-internal test driver for
-  the mode (and upstream-facing packaging). Gate: a
+  library API at both layers (D1 exposure bullet): the libmir gen mode
+  (`MIR_gen_set_object_mode`-style) AND the c2mir-API surface (options flag
+  + emitted-object access) — madc consumes it in-process via c2mir/libmir,
+  never via a CLI. A `c2m -c` flag is added only as a thin CLI over that
+  c2mir API — the MIR-repo-internal test driver for the mode (and
+  upstream-facing packaging). Gate: a
   mir-tests/c-tests subset compiles to `.o`, links with gcc, runs == JIT
   output; JIT lanes byte-identical with mode off; c2mir-test suite green.
 - **R3 — ELF-writer unification.** mir-debug's gdb object and the `.o` writer
