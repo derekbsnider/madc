@@ -1,6 +1,27 @@
 # Test Status
 
-> **Current (2026-07-19, `develop` @daed32ce — AOT R1: madc `-g`
+> **Current (2026-07-20, `develop` @71a36e9d — component-correct GNU
+> integer `_Complex`, task #69):**
+> fulltest **729 passed, 0 failed, 0 timed out, 13 skipped** (+2:
+> `testcomplexint` — the integer-complex lock, JIT and
+> gcc-on-emitted-C both green — and `testvarargsstructcomplex`, its
+> `mir_skip` lifted). Packed suite (`MADC_BIN=bin/madc-release bash
+> scripts/run_tests.sh`) also **729/0/0/13**; `forest_pack: OK (240
+> units; bind cache == no-cache)`. gcc-torture **1614 passed**
+> steady-state, failset **11 names** in
+> `docs/parity/torture-failset-current.txt` (3 integer-complex tests
+> UNSKIPPED — skip manifest 33 → 30 — and `20020227-1` FIXED by the
+> fork's complex-compare conversion fix; `memclr`/`memcpy-a*` run
+> 3.4–3.7 s against the 5 s cap and can flap under neighbor load —
+> they pass solo). MIR fork test battery green at fork develop
+> @a4a7aa32 (integer-complex specifier rejection + stmt-expr
+> init-slot layout fix + mixed-width complex compare conversions, each
+> with a c-tests/new regression test). SMAUG `--project` soak green on
+> both binaries ("ready at address"). The `--exe` lane is structurally
+> unavailable on the CIR backend (`-o` says so explicitly) until AOT
+> R4 lands `--emit-object`.
+
+> **Previous (2026-07-19, `develop` @daed32ce — AOT R1: madc `-g`
 > source-level gdb on the JIT lane, task #82):**
 > fulltest **727 passed, 0 failed, 0 timed out, 14 skipped** (+1:
 > `testdebuginfo`, the `-g` pipeline lock). Packed suite

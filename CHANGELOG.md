@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **feat(complex): component-correct GNU integer `_Complex` (task #69).** Integer-element
+  complex previously degraded SILENTLY in c2mir to its scalar base — imaginary parts
+  vanished (four in-scope torture tests false-passed on degenerate comparisons) and
+  `_Complex int` arithmetic hit a MIR gen fatal. madc now lowers integer complex onto the
+  struct spine (`struct{__re,__im}` per element type — SysV ABI of integer `_Complex` ==
+  `struct{T,T}`) with gcc's `tree-complex.cc` semantics, including **Smith's division in
+  integer arithmetic** (`(7-3i)/(-2+5i)` = `(0,-1)`, not the exact `(-1,-1)`; clang's
+  straight formula differs — gcc is the parity arbiter). `__real__`/`__imag__` are
+  lvalue-capable member selects and now parse in cast-operand position. The fork REJECTS
+  a native integer-complex specifier loudly, and gained two bug fixes the new coverage
+  exposed: stmt-expr result slots trampled by function-scope decl layout, and complex
+  comparisons loading mixed-width operands unconverted (`complex-6`). Torture: 3 tests
+  unskipped (skip manifest 33→30); `testvarargsstructcomplex` mir_skip lifted; new suite
+  lock `testcomplexint.mad` (JIT + gcc-on-emitted-C). Fork @a4a7aa32 pinned.
+
 - **feat(debug): `madc -g` — source-level gdb on the JIT lane (AOT R1,
   task #82).** `bin/madc -g prog.mad` gives a real debugger experience
   on JIT'd code: `break prog.mad:42` (pending breakpoints resolve via
