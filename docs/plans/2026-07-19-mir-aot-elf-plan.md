@@ -599,3 +599,39 @@ ET_EXEC output BYTE-IDENTICAL to the pre-change v0.36.0 release binary.
 
 Remaining #85 tail: --project per-TU .o contexts (SMAUG exe) → deref
 burndown + exe_skip fixture. Then R4b/R5/R6.
+
+## --project native-emission landing (2026-07-20, task #85 tail slice 2) — NATIVE SMAUG BOOTS
+
+`madc_project_emit_native` (madc-only; fork pin unchanged @c0cb2b47):
+
+- `-c` → one `.o` per TU. Object capture is context-wide, so each TU
+  compiles in its own `CirJitSession`/context (gcc semantics: `<TU-base>.o`
+  in the current directory; `-c -o` with many TUs rejected like gcc).
+- `-o` / `-shared` → ONE MIR-assembled image of every TU: the same MIR
+  bracket shape as `madc_project_execute` (func-redef permission, per-TU
+  `build_tu_module`, one `MIR_link`) but in object-capture mode with the
+  sentinel resolver, emitting instead of running. The shared context is the
+  RIGHT granularity here — cross-TU references resolve internally at emit.
+- Factors (one implementation per concern): `project_parse_all` (phase-1
+  shared by run + emit), `cir_write_native_image` (image writer shared by
+  session + project lanes), `cir_native_link_env` (DT_NEEDED/RUNPATH).
+- Runner: the exe lane passes `-o` BEFORE fixture flags (a positional
+  `.json` manifest ends madc flag parsing — a trailing `-o` never reached
+  madc, which JIT-ran instead of emitting).
+
+**MILESTONE:** `madc -lcrypt -o smaug compile_commands.json` over MadSMAUG's
+51 TUs (158k LOC C89) emits a 5.0 MB ET_EXEC assembled entirely by MIR that
+BOOTS ("Realms of Despair ready … port 4998") and serves the login screen
+over TCP — the native `smaug.exe` the owner flagged, with no external
+toolchain anywhere.
+
+Validation: fulltest 729/0/0/13; `--exe` 709→714/5 (ALL five testproject*
+lifted; remainder = slice-3 burndown: 3× deref + 2× JIT-only); packed
+arbiter 729/0/0/13; testproject corpus: whole-program exe byte-correct
+(cross-TU calls, colliding file-local statics distinct), per-TU `.o` pair
+links+runs under the cc TEST ORACLE, whole-project `.so` dlopens with
+cross-TU internal calls.
+
+Remaining #85 tail: slice 3 — deref cluster (test_errno_deref /
+test_get_argv_deref / test_ptr_fn_deref) + generic `tests/foo.exe_skip`
+fixture (testfreezerun, testmadcevalexprctx). Then R4b/R5/R6.
