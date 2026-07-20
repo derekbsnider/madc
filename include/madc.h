@@ -4644,6 +4644,13 @@ public:
     static DataDef *resolve_builtin_type_spelling(const std::string &name);
     static DataDef *builtin_va_list_type();
     DataDef *use_builtin_va_list();
+    // The one DataDefCOMPLEX per element type (process-wide cache) — lexer,
+    // parser, and CIR builder all resolve `_Complex <elem>` through here so
+    // complex types compare by pointer identity. NULL elem -> _Complex double.
+    static DataDef *complex_type_of(DataDef *elem);
+    // Parse the operand of __real__/__imag__ into a TokenComplexPart (shared
+    // by the identifier-expression arm and the cast-operand dispatch).
+    TokenBase *parse_complex_component_operand(bool want_imag, TokenBase *anchor);
     bool typedef_alias_matches_datadef(const std::string &alias, DataDef *dd);
     DataDef *resolve_current_class_type_alias(const std::string &name);
     bool resolve_current_class_static_member_const_value(const std::string &name, int64_t &out);

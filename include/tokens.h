@@ -335,10 +335,13 @@ public:
     virtual inline int precedence() const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    // Propagate unsigned operand type so -1U is uint32, not ddINT
+    // Propagate unsigned operand type so -1U is uint32, not ddINT;
+    // propagate a complex operand so -z stays complex (like the binary ops).
     virtual DataDef *datadef() const override {
 	if ( resolved_type ) return resolved_type;
 	if ( right && right->datadef() && right->datadef()->is_unsigned() )
+	    return right->datadef();
+	if ( right && right->datadef() && right->datadef()->is_complex() )
 	    return right->datadef();
 	return TokenOperator::datadef();
     }
@@ -583,10 +586,13 @@ public:
     TokenBnot() : TokenOperator('~') {}
     virtual TokenID id() const { return TokenID::tkBnot; }
     virtual TokenBase *clone() { TokenBnot *to = new TokenBnot(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
-    // Propagate operand type so ~0U is uint32, not the default ddINT.
+    // Propagate operand type so ~0U is uint32, not the default ddINT;
+    // propagate a complex operand — ~z is the complex conjugate (GNU).
     virtual DataDef *datadef() const override {
 	if ( resolved_type ) return resolved_type;
 	if ( right && right->datadef() && right->datadef()->is_integer() && right->datadef() != &ddINT )
+	    return right->datadef();
+	if ( right && right->datadef() && right->datadef()->is_complex() )
 	    return right->datadef();
 	return TokenOperator::datadef();
     }

@@ -36,6 +36,7 @@ class Variable;
 class DataDef;
 class DataDefTemplateParam;
 class DataDefSTRUCT;
+class DataDefCOMPLEX;
 class FuncDef;
 class Method;
 
@@ -743,6 +744,46 @@ public:
 	// Build type specifier LIST. If typedef_alias is non-empty, emit
 	// ID("alias") — c2mir's checker resolves it from the typedef SPEC_DECL.
 	void append_type_specs(node_t list, DataDef *dd);
+	// ---- GNU integer-_Complex lowering (struct spine) ----
+	// c2mir carries no integer complex (and rejects the specifier), so every
+	// integer-element DataDefCOMPLEX value/op lowers componentwise here,
+	// with gcc's tree-complex.cc semantics (Smith division in integer
+	// arithmetic). as_lowered_complex() (cir_builder.cpp) gates every hook;
+	// floating-element complex stays on c2mir's native path.
+	// Tag reference + struct_map registration for the late-struct sweep
+	// (Pass 1.97) — the #68 use_builtin_va_list pattern.
+	node_t int_complex_struct_ref(DataDefCOMPLEX *cdd);
+	// (struct C){re, im} compound literal — re/im nodes are adopted.
+	node_t int_complex_compound(node_t re, node_t im, DataDefCOMPLEX *cdd,
+				    TokenBase *origin);
+	// Declare a block-local temp of dd into `items`; returns its name.
+	std::string int_complex_temp(node_t items, DataDef *dd, TokenBase *origin);
+	// Convert an already-translated value of src_dd to the lowered type
+	// `to` (componentwise; scalar -> {v,0}; native -> {creal,cimag}).
+	node_t int_complex_from_node(node_t val, DataDef *src_dd,
+				     DataDefCOMPLEX *to, TokenBase *origin);
+	// Translate a token and convert it to the lowered type `to`.
+	node_t int_complex_value(TokenBase *src, DataDefCOMPLEX *to,
+				 TokenBase *origin);
+	// Lowered -> native complex: (re + im * 1.0i), imaginary-unit width
+	// picked from native_dd. Lowered -> scalar: the real component.
+	node_t int_complex_to_native(node_t val, DataDefCOMPLEX *from,
+				     DataDef *native_dd, TokenBase *origin);
+	node_t int_complex_to_scalar(node_t val, DataDefCOMPLEX *from,
+				    TokenBase *origin);
+	// Componentwise statements for `<ar,ai> op <br,bi>` into temp `tname`
+	// (component builders are closures — c2mir nodes hold ONE parent link,
+	// so every use site must construct a fresh tree).
+	void int_complex_emit_op(node_t items, TokenID op, DataDefCOMPLEX *C,
+				 const std::function<node_t()> &ar,
+				 const std::function<node_t()> &ai,
+				 const std::function<node_t()> &br,
+				 const std::function<node_t()> &bi,
+				 const std::string &tname, TokenBase *tb);
+	// Binary/unary interception from translate_expr's operator arms.
+	// Return NULL when not applicable (caller falls through).
+	node_t int_complex_binop(TokenOperator *top, TokenBase *tb);
+	node_t int_complex_unary(TokenOperator *top, TokenBase *tb);
 	node_t simd_vector_attrs(size_t vector_bytes, TokenBase *origin = NULL);
 	// Build the type-specifier list for a compound-literal element/object type:
 	// emits ID(alias) for a typedef, N_STRUCT/N_UNION for a tagged aggregate,
@@ -785,6 +826,13 @@ public:
 	// fixed array or nested struct/union) — used so a designated-init GAP on
 	// that slot emits a nested zero-init `{}` instead of a scalar 0.
 	bool init_slot_is_aggregate(DataDef *dd, size_t idx);
+	// The declared type behind a positional initializer slot (array element
+	// / struct member); NULL when unknown.
+	DataDef *init_slot_type(DataDef *dd, size_t idx);
+	// Compile-time (re,im) fold of an integer-complex constant expression,
+	// and the {re, im} brace list it emits into a static initializer.
+	bool int_complex_const_fold(TokenBase *tb, long &re, long &im);
+	node_t int_complex_init_list(long re, long im, TokenBase *origin);
 	// C99 compound literal `(T){ init... }` -> N_COMPOUND_LITERAL(type, list).
 	node_t translate_struct_lit(class TokenStructLit *slit);
 	node_t var_decl(Variable *v, TokenBase *origin = NULL);

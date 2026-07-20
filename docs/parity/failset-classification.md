@@ -102,7 +102,7 @@ bitfld-5 itself stays (c).
 | **by-value struct ABI (empty union / zero-len array)** | pr23324 (1) | Trigger is GNU (empty `union {}`), but the SysV by-value classification bug underneath could bite standard structs. Keep in the fix column. |
 | **one-void-arm conditional** | pr46309 (1) | `c ? abort() : 0` — GNU (gcc -pedantic rejects; verified), pervasive in assert-style macros; trivial Tier-1 lowering. Second blocker is its empty asm barrier (see skip-list note). |
 
-## Class (c) — formally skip (33)
+## Class (c) — formally skip (30)
 
 | cluster | tests | rationale |
 |---|---|---|
@@ -111,7 +111,6 @@ bitfld-5 itself stays (c).
 | **reduced-precision bitfield arithmetic** | bitfld-3, bitfld-5, pr32244-1, pr34971 (4) | gcc computes oversized-bitfield (`:40`) arithmetic in declared width; **clang aborts on all of bitfld-3/pr32244-1/pr34971 too (verified live)** — under the two-canon rule, matching clang is equally valid. Implementation-defined territory. (bitfld-5's embedded tag-shadow parse bug extracted to (a) above.) |
 | **VLA-in-struct / variably-modified members** | 20040423-1, align-nest, 20020412-1, 20041218-2, 20070919-1, pr82210, pr41935 (7) | ISO C forbids variably-modified struct members (C99 6.7.2.1); GNU ext with ~zero real-world use (the kernel purged VLAs), and these tests stack it with by-value `va_arg`, packed `sizeof`, stmt-expr aggregates, variable-index `__builtin_offsetof`. (pr41935's first diagnostic exposes a function-local VLA-typedef parse gap worth a separate reducer someday — the test stays skipped.) |
 | **nested fn + VLA param** | pr22061-3, pr22061-4 (2) | GNU nested functions whose params are VLAs with side-effecting bounds mutating the enclosing scope. asmjit also fails both. |
-| **integer `_Complex`** | 20050121-1, complex-6, pr38151 (3) | `_Complex int/char/…` is a GCC ext (C99 mandates float/double/ld only — those pass). Previously scoped: ~132-site Tier-2 fork feature, poor ROI. |
 | **`scalar_storage_order`** | 20230630-2, 20230630-4 (2) | gcc-only (clang rejects), bitfield-reversal variant. |
 | **UB probes** | 20031003-1 (1) | Out-of-range float→int is UB (C99 6.3.1.4); test pins gcc's compile-time fold against x86 cvttss2si. madc makes a different UB choice. |
 | **builtin-recognition** | 20021127-1 (1) | Redefines `llabs` to `abort()`; passes only if the compiler ignores the user's definition. Redefining reserved identifiers is UB; madc's honest call is defensible. |
@@ -192,3 +191,18 @@ compiles via `--project`).
 After sign-off, the gate edits land in `docs/adr/0001-cir-c2mir-backend.md`,
 `.claude/rules/branching.md`, `docs/rules/branching.md`, and ROADMAP Track
 1.3 (per the handoff deliverable list).
+
+## 2026-07-19 amendment — integer `_Complex` UNSKIPPED (task #69)
+
+The 3-test integer-`_Complex` cluster (20050121-1, complex-6, pr38151) moved
+out of class (c): madc now lowers integer-element complex componentwise onto
+the struct spine (Tier-1; SysV ABI of `_Complex int` == `struct{T,T}`), with
+gcc's tree-complex.cc semantics — including Smith's division in integer
+arithmetic ((7-3i)/(-2+5i) = (0,-1), where clang's straight formula gives
+(-1,-1); gcc is the arbiter here). c2mir now REJECTS a native integer-complex
+specifier instead of silently degrading it to the scalar base (the old
+behavior silently dropped imaginary parts — 20041124-1, 20041201-1, pr104604
+and pr56837 "passed" only because both sides of their comparisons degraded
+identically). Suite lock: tests/testcomplexint.mad. The owner's clang
+cross-reference rule (clang-rejected GNU features are out of scope) keeps
+this IN scope: clang supports integer `_Complex`.

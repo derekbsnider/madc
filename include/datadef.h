@@ -1251,14 +1251,41 @@ class DataDefCOMPLEX : public DataDefSTRUCT
 public:
     DataDef *element_type;
 
-    DataDefCOMPLEX(DataDef &elem)
-	: DataDefSTRUCT(elem.name + " _Complex", 0), element_type(&elem)
+    // Floating-element complex is NATIVE (c2mir/MIR carry _Complex float/
+    // double/long double); integer-element complex (GNU extension) is LOWERED
+    // by the CIR builder to this struct{__re,__im} shape (SysV ABI of
+    // integer _Complex == struct{T,T}). The lowered form is emitted as a real
+    // struct definition, so its tag must be a clean C identifier; the native
+    // form is never emitted by name.
+    static std::string type_name(DataDef &elem)
     {
-	addMember("__real", elem, 1);
-	addMember("__imag", elem, 1);
+	if ( elem.is_real() )
+	    return elem.name + " _Complex";
+	std::string tag = "__madc_complex_" + elem.name;
+	for ( size_t i = 0; i < tag.size(); ++i )
+	    if ( tag[i] == ' ' )
+		tag[i] = '_';
+	return tag;
+    }
+
+    DataDefCOMPLEX(DataDef &elem)
+	: DataDefSTRUCT(type_name(elem), 0), element_type(&elem)
+    {
+	// Member names must not be `__real`/`__imag` — those are gcc/clang
+	// KEYWORDS, and the lowered form's struct def is emitted into C.
+	addMember("__re", elem, 1);
+	addMember("__im", elem, 1);
+	// Only the LOWERED (integer-element) form is a real emittable struct;
+	// marking the native form complete would make the struct-dep walkers
+	// emit a bogus `struct double _Complex` definition.
+	is_complete = !is_native();
     }
 
     virtual bool is_complex() const { return true; }
+    // True: c2mir represents the type natively (TP_CFLOAT/TP_CDOUBLE/
+    // TP_CLDOUBLE). False: integer element — the CIR builder lowers to the
+    // struct spine (c2mir rejects integer _Complex).
+    bool is_native() const { return element_type && element_type->is_real(); }
 
     virtual bool is_compatible(DataDef &d)
     {
@@ -1270,7 +1297,7 @@ public:
 
     size_t component_offset(bool imag_part) const
     {
-	std::string member = imag_part ? "__imag" : "__real";
+	std::string member = imag_part ? "__im" : "__re";
 	return const_cast<DataDefCOMPLEX *>(this)->m_offset(member);
     }
 };
