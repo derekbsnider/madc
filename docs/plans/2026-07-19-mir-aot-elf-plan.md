@@ -111,11 +111,12 @@ A new generator mode (`MIR_gen_set_object_mode(ctx, 1)`-style), x86-64 first:
   the emitted object (file via `output_file_name` and/or an in-memory getter),
   following the existing `asm_p`/`object_p` option precedent and the R1
   `debug_info_p` + `c2mir_get_debug_object(ctx, &buf, &size)` pattern. madc
-  consumes the c2mir interface (it never invokes `c2m`); `c2m -c` and any
-  other binaries are thin CLIs over the same c2mir API — no functionality may
-  live only in a driver binary. (Naming note: upstream `object_p` already
-  means "write `.bmir`" — the native-object flag must be distinct, e.g.
-  `native_object_p`; settle naming in R2.)
+  consumes the c2mir interface (it never invokes `c2m`); `c2m -fobject` and
+  any other binaries are thin CLIs over the same c2mir API — no functionality
+  may live only in a driver binary. (Naming, settled in R2: upstream
+  `object_p` already means "write `.bmir`" — the c2mir flag is
+  `native_object_p`, and c2m's CLI spelling is `-fobject` since `-c` was
+  taken by `.bmir`.)
 
 ### D2 — one ELF writer
 
@@ -168,8 +169,8 @@ symtab). One writer, one section/DWARF encoder — no parallel implementation.
   library API at both layers (D1 exposure bullet): the libmir gen mode
   (`MIR_gen_set_object_mode`-style) AND the c2mir-API surface (options flag
   + emitted-object access) — madc consumes it in-process via c2mir/libmir,
-  never via a CLI. A `c2m -c` flag is added only as a thin CLI over that
-  c2mir API — the MIR-repo-internal test driver for the mode (and
+  never via a CLI. A `c2m -fobject` flag is added only as a thin CLI over
+  that c2mir API — the MIR-repo-internal test driver for the mode (and
   upstream-facing packaging). Gate: a
   mir-tests/c-tests subset compiles to `.o`, links with gcc, runs == JIT
   output; JIT lanes byte-identical with mode off; c2mir-test suite green.
@@ -216,8 +217,8 @@ instead of imm64. madc surface: `--emit-shared` (and `-fPIC` analogue once
 - **Text relocations** from `abs_address_locs` are legal in a `.o`/static exe;
   the count should still be surveyed — if dominant, prefer routing those
   through the addrpool instead (quality, not correctness).
-- **Fork divergence:** ~2–4k lines estimate. Mitigation: `c2m -c` makes it a
-  self-contained upstreamable feature; PR upstream after R4 proves it.
+- **Fork divergence:** ~2–4k lines estimate. Mitigation: `c2m -fobject` makes
+  it a self-contained upstreamable feature; PR upstream after R4 proves it.
 
 ## Landing conventions
 
@@ -385,3 +386,76 @@ MIR_COMMIT bumped in the same madc commit). Validation at landing: fork
 battery green; madc fulltest 727/0/0/14; packed 727/0/0/14 (forest_pack
 OK, bind cache == no-cache); torture 1610 / failset 12 byte-identical;
 SMAUG soak green dev + packed; gdb gate green on the final binaries.
+
+## R2 landing (2026-07-20, fork branch feature/aot-r2-claude @187e41c6)
+
+**Library API at both layers (the owner directive is the deliverable):**
+- libmir: `MIR_gen_set_object_mode (ctx, on)` + `MIR_gen_object_emit (ctx,
+  &buf, &size)` (mir-gen.h). Mode on: `generate_func_code` captures each
+  function's translated blob instead of publishing (no rebase, no thunk
+  redirect, `machine_code` stays NULL) and converts the target ledgers into
+  relocations; `MIR_gen_object_emit` then walks every module's data items and
+  assembles a relocatable ELF object.
+- c2mir: `c2mir_options.native_object_p` + `c2mir_get_native_object (ctx,
+  &buf, &size)` — thin delegation (capture state lives in the gen context),
+  mirroring the R1 `debug_info_p`/`c2mir_get_debug_object` pattern.
+- c2m: `-fobject` (the plan's original `c2m -c` was impossible — `-c`
+  already means "write .bmir" upstream). Loads all modules, links with a
+  sentinel import resolver (imports become undefined ELF symbols; the
+  sentinel is never consumed), writes the `.o`. Forces threads_num=0.
+
+**Address-escape coverage — every channel from the R0 survey plus two found
+in implementation:** matcher case `'i'` refuses REF for narrow imm/disp slots
+in object mode (falls to imm64/`'P'` patterns, which carry relocs); imm64-
+in-text via a new `text_refs` ledger; const-pool call slots via `const_ref_t
+.ref_item` provenance (any item kind); `abs_address_locs` → R_X86_64_64 vs
+the `.text` section symbol (addend = func_off + label disp); lref values
+captured at gen time (label disps die with the func's gen data) and placed
+as section relocs or link-time constants; the SSA `get_int_const` REF fold
+disabled in object mode; `change_calls`/call_refs (JIT redef) skipped —
+emit-final.
+
+**Deliberate deviation from D2's sketch: the const pool stays inside
+`.text`** exactly as the JIT lays it out (translate_finish appends it to
+each function's blob with resolved rip-relative disp32s) — no
+`.mir.addrpool`/`.rodata` section, no PC32 relocs, JIT-identical layout;
+only the 16-byte per-ref address slots get R_X86_64_64. Slot bytes are
+zeroed; RELA addends carry everything.
+
+**Data emission** mirrors `load_bss_data_section`'s grouping (named head
+item + anonymous continuations = one contiguous section; head symbol size
+spans the group) but reads only item structures — never load-time memory.
+All-bss groups → `.bss`; mixed → `.data` with zero-fill. Import/export/
+forward chains canonicalize through `ref_def` so cross-module refs bind to
+defining items and true externals stay UNDEF. `expr_data` rejects loudly.
+
+**One ELF writer (R3 largely satisfied by construction):** mir-debug.c's
+emission core factored into `elf_assemble`, shared by the GDB-JIT debug
+object (byte-identical output) and the new `MIR_object` builder — ET_REL
+x86-64, `.text/.data/.bss/.symtab/.strtab/.rela.*/.note.GNU-stack`,
+locals-first symtab, STT_SECTION symbols.
+
+**Builtin closure:** the `mir.*` gen builtins (ui2f/ui2d/ui2ld/ld2i/va_arg/
+va_block_arg/arg_memcpy) are exported from libmir under their exact import
+names via asm-name aliases so a linked `.o` resolves them.
+
+**Non-PIC posture:** object code carries absolute 64-bit text relocations
+(imm64, computed-goto slots, pool address slots) — executables link with
+`-no-pie`; `.so` needs `-z notext` until the R6 PIC rung (documented above).
+
+**Tests:** new `c-tests/use-c2m-object` lane (compile `-fobject`, link
+`cc -no-pie` vs libmir.a, run, compare) + `make c2mir-object-test`:
+**1139 tests, 0 FAIL** — the whole c-tests corpus + `.mir` tests through
+the object lane, far beyond the gate's "subset". Six `.mir` tests that
+predate linkage mattering got explicit `export main` (the JIT driver finds
+main by name ignoring linkage; the object lane makes linkage real, and
+unexported→LOCAL must stay correct for C `static`); issue223 (scanner-error
+test, no main) scoped to exec lanes via the `.opt` sidecar convention.
+
+Landed: fork develop @dc01374b (merge of feature/aot-r2-claude @187e41c6,
+pushed; MIR_COMMIT bumped in this same madc commit). Validation at landing:
+fork object battery 1139/0; full fork battery (6 JIT lanes + bootstrap cmp)
+0 FAIL — mode-off byte-identity; madc build warning-free vs R2 libmir;
+madc fulltest 729/0/0/13; packed arbiter 729/0/0/13; torture 1614 /
+failset name-identical (11); SMAUG soak green dev + packed ("ready at"
+under default guards, plus owner playtesting on the dev boot).
