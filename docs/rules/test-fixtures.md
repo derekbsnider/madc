@@ -73,3 +73,16 @@ convention — e.g. `tests/foo.flags` with whitespace-split CLI flags or
 `tests/foo.env` with `KEY=value` lines — and extend
 the runner's per-test block to discover it. The runner remains free of
 test-specific knowledge.
+
+## Why `exe_skip` exists (2026-07-20)
+
+The `--exe` lane compiles every JIT-green test to a native executable and
+byte-compares the run. A few tests exercise machinery that only exists
+inside a live madc process — `testfreezerun` re-executes the freeze/thaw
+container path, `testmadcevalexprctx` drives in-process libmadc host
+callback eval contexts. A native standalone binary has no analogue for
+these, so failing them would be noise, and hard-coding their names into
+the runner would violate the no-per-test-logic rule. The fixture file's
+content is a one-line justification, so every skip is self-documenting —
+an empty or vague `exe_skip` in review is a red flag that someone is
+hiding a real failure.

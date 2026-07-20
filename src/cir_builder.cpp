@@ -13684,12 +13684,30 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	return spec_decl;
 }
 
+// `void main()` is accepted madc dialect, but C requires int main and the
+// suite locks exit status 0 (JIT parity — a native exe would otherwise
+// return whatever the last call left in the return register). Lower main's
+// C return type to int: c2mir supplies the implicit `return 0` when main
+// falls off its end (C11 5.1.2.2.3), and the bare-`return;` typed-zero
+// lowering (m_cur_func_scalar_ret) covers explicit returns. func_proto and
+// translate_func must agree, so both bind ret_dd through this helper.
+static DataDef *main_ret_normalized(TokenFunc *tf, DataDef *ret_dd)
+{
+	// name-only match: the same discriminator func_def's global-ctor
+	// wrapper uses for main (tf->method is populated for plain top-level
+	// functions too, so it cannot distinguish a class method here)
+	if (ret_dd && ret_dd->rawtype() == DataType::dtVOID
+	    && tf->var.name == "main")
+		return &ddINT;
+	return ret_dd;
+}
+
 node_t CirBuilder::func_proto(TokenFunc *tf)
 {
 	FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
 	if (!fd) return NULL;
 
-	DataDef *ret_dd = &fd->return_value_type();
+	DataDef *ret_dd = main_ret_normalized(tf, &fd->return_value_type());
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
 	bool ret_is_ref = fd->returns_reference();   // T& -> returned by address (one more *)
 	int ret_star_depth = dd_peel_pointers(ret_dd);
@@ -19209,7 +19227,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	std::vector<TokenCpnd *> saved_defer_scopes;
 	saved_defer_scopes.swap(m_defer_scopes);
 
-	DataDef *ret_dd = &fd->return_value_type();
+	DataDef *ret_dd = main_ret_normalized(tf, &fd->return_value_type());
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
 	bool ret_is_ref = fd->returns_reference();   // T& -> returned by address (one more *)
 	int ret_star_depth = dd_peel_pointers(ret_dd);
@@ -19256,7 +19274,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// address) — a bare return there is already nonsensical and rare.
 	m_cur_func_scalar_ret = (!ret_via_retbuf && !ret_is_ref && !m_cur_func_returns_void
 				 && !ret_is_multi)
-				? &fd->return_value_type() : NULL;
+				? main_ret_normalized(tf, &fd->return_value_type()) : NULL;
 
 	// A function whose return type is a function pointer — `RET (*f(params))
 	// (fp-params)` (e.g. an instantiated std::for_each returning its functor

@@ -635,3 +635,29 @@ cross-TU internal calls.
 Remaining #85 tail: slice 3 — deref cluster (test_errno_deref /
 test_get_argv_deref / test_ptr_fn_deref) + generic `tests/foo.exe_skip`
 fixture (testfreezerun, testmadcevalexprctx). Then R4b/R5/R6.
+
+## Exe-lane burndown landing (2026-07-20, task #85 tail slice 3) — --exe CLEAN at 717/0
+
+The "deref cluster" (test_errno_deref / test_get_argv_deref /
+test_ptr_fn_deref) was never deref or TLS: all three declare `void main()`,
+fall off the end, and the native exe faithfully returns the last call's
+%eax — putchar's return, so rc = the printed character (gcc-compiled
+equivalents exit identically; verified 104=='h'). The JIT's exit 0 was
+accidental. Fix at the deepest layer (the C-emission lowering, keeping
+madc-side FuncDef void): `main_ret_normalized` in cir_builder lowers
+main's C return type void→int at func_proto + func_def + the bare-return
+typed-zero binding; c2mir supplies C11 5.1.2.2.3's implicit `return 0`.
+Diagnosis trap for the record: `tf->method` is populated for plain
+top-level functions (cannot discriminate methods); main matching is
+name-only like the global-ctor wrapper. Also: DBG() is thread_local-dead
+on builder worker threads — the env-gated fprintf probe found it.
+
+Generic `tests/foo.exe_skip` fixture (runner + rules + docs): marks a test
+structurally JIT-only for the --exe pass, content = one-line reason.
+Applied: testfreezerun (freeze re-exec), testmadcevalexprctx (in-process
+host-callback eval).
+
+**Result: `--exe` 717 passed / 0 FAILED** — the R4 gate ("full madc suite
+under --exe green + byte-identical to JIT") is MET. Fulltest + packed
+arbiter 729/0/0/13. The R4 rung is COMPLETE; remaining AOT rungs are
+R4b (execute-.o-as-cache), R5 (DWARF in the .o), R6 (PIC).
