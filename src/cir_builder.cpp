@@ -9789,6 +9789,46 @@ node_t CirBuilder::synth_array_dtor_def(DataDefCLASS *cdd, size_t n,
 	return node4(N_FUNC_DEF, ret_type, decl, list(), body);
 }
 
+// void __madc_cyg_exit_thunk(void *p)
+// { __cyg_profile_func_exit(*(void **)p, (void *)0); }
+// --finstrument-functions (task #66): the cleanup-attribute handler behind
+// every instrumented function's exit hook. The attribute passes
+// &__madc_instr_self — a void** — into the void* param (the same silent-
+// accept convention as synth_array_dtor_def); the body reads the stored
+// self address and forwards it to the (possibly user-defined) exit hook.
+node_t CirBuilder::synth_instr_exit_thunk()
+{
+	node_t ret_type = node1(N_LIST, simple(N_VOID));
+	node_t param = simple(N_SPEC_DECL);
+	append(param, node1(N_SHARE, node1(N_LIST, simple(N_VOID))));
+	append(param, node2(N_DECL, id("p"), node1(N_LIST, pointer())));
+	append(param, ignore());
+	append(param, ignore());
+	append(param, ignore());
+	node_t param_list = list();
+	append(param_list, param);
+	node_t decl = node2(N_DECL, id("__madc_cyg_exit_thunk"),
+			    node1(N_LIST, node1(N_FUNC, param_list)));
+	referenced_funcs.insert("__cyg_profile_func_exit");
+	need_output_extern("__cyg_profile_func_exit", false,
+			   { { {N_VOID}, true }, { {N_VOID}, true } });
+	// *(void **)p
+	node_t stars = list();
+	append(stars, pointer());
+	append(stars, pointer());
+	node_t vpp = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+			   node2(N_DECL, ignore(), stars));
+	node_t self = node1(N_DEREF, node2(N_CAST, vpp, id("p")));
+	node_t args = list();
+	append(args, self);
+	append(args, node2(N_CAST, void_ptr_type(), integer(0)));
+	node_t call = node2(N_CALL, id("__cyg_profile_func_exit"), args);
+	node_t items = list();
+	append(items, node2(N_EXPR, list(), call));
+	node_t body = node2(N_BLOCK, list(), items);
+	return node4(N_FUNC_DEF, ret_type, decl, list(), body);
+}
+
 // void Cls___dtor_deleting(struct Cls *__this) { <complete-dtor>(__this); free(__this); }
 // Itanium D0 (deleting) destructor: complete-object destruction, then operator
 // delete (free, for user classes). Referenced from the D0 vtable slot.
@@ -14139,6 +14179,45 @@ static std::string overflow_helper_name(const std::string &generic,
 // Expression translation
 // -----------------------------------------------------------------------
 
+// Compile-time floating value of a cast operand, for the gcc-parity
+// float->int saturating fold in the TokenCast arm (task #65). Recurses
+// through nested REAL casts re-rounding at each precision — the rounding
+// is load-bearing: (float)2147483647 rounds UP to 2^31, and that rounded
+// value is what makes the outer int cast overflow — and admits integer
+// literals under a real cast. Returns false for any other operand shape.
+static bool constant_real_operand(TokenBase *t, long double &out)
+{
+	if (!t) return false;
+	if (t->type() == TokenType::ttReal && t->is_constant()) {
+		DataDef *dt = t->datadef();
+		if (dt && dt->rawtype() == DataType::dtFLOAT)
+			out = (long double)(float)t->dval();
+		else
+			out = (long double)t->dval();
+		return true;
+	}
+	if (TokenCast *c = dynamic_cast<TokenCast *>(t)) {
+		DataDef *ct = c->cast_type ? unqualified_type(c->cast_type) : NULL;
+		if (!ct || !ct->is_real() || ct->is_complex() || ct->is_pointer())
+			return false;
+		long double v;
+		if (!constant_real_operand(c->expr, v)) {
+			if (c->expr && c->expr->type() == TokenType::ttInteger
+			    && c->expr->is_constant())
+				v = (long double)c->expr->wival();
+			else
+				return false;
+		}
+		switch (ct->rawtype()) {
+		case DataType::dtFLOAT:  out = (long double)(float)v; break;
+		case DataType::dtDOUBLE: out = (long double)(double)v; break;
+		default:                 out = v; break;   // long double
+		}
+		return true;
+	}
+	return false;
+}
+
 node_t CirBuilder::translate_expr(TokenBase *tb)
 {
 	if (!tb) return ignore();
@@ -15318,6 +15397,59 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					node2(N_DECL, ignore(), fdecl_list));
 				return node2(N_CAST, type_node,
 					     translate_expr(tc->expr), tb);
+			}
+			// GCC front-end parity (task #65): an out-of-range CONSTANT
+			// float->int cast folds at compile time with saturation —
+			// finite positive overflow -> target max, finite negative ->
+			// target min (0 for unsigned). gcc leaves ±inf/NaN to the
+			// runtime conversion, and so does this fold (probe
+			// scratchpad/foldprobe.c: (int)(1.0/0.0) prints INT_MIN even
+			// under gcc). Without the fold, c2mir converts at runtime
+			// (cvttss2si -> INT_MIN "indefinite"), diverging from gcc's
+			// folded value. In-range constants keep the ordinary cast —
+			// the runtime conversion is identical for those. Saturating
+			// on the RAW value matches the truncated compare everywhere
+			// it matters: values in (max, max+1) fold to max, the same
+			// integer the runtime cast produces.
+			if (cast_dd && !cast_dd->is_pointer() && cast_dd->is_integer()
+			    && cast_dd->rawtype() != DataType::dtBOOL
+			    && cast_dd->size >= 1 && cast_dd->size <= 8) {
+				long double cv;
+				if (constant_real_operand(tc->expr, cv)
+				    && cv - cv == 0.0L) {   // finite only
+					bool uns = cast_dd->is_unsigned();
+					unsigned bits = (unsigned)cast_dd->size * 8;
+					long slo = 0, shi = 0;
+					unsigned long uhi = 0;
+					long double lo, hi;
+					if (uns) {
+						uhi = (bits == 64) ? ~0UL
+						      : ((1UL << bits) - 1);
+						lo = 0.0L;
+						hi = (long double)uhi;
+					} else {
+						shi = (bits == 64)
+						      ? (long)((~0UL) >> 1)
+						      : (long)((1L << (bits - 1)) - 1);
+						slo = (bits == 64)
+						      ? -(long)((~0UL) >> 1) - 1
+						      : -(long)(1L << (bits - 1));
+						lo = (long double)slo;
+						hi = (long double)shi;
+					}
+					if (cv < lo || cv > hi) {
+						long sat = (cv < lo)
+							   ? (uns ? 0L : slo)
+							   : (uns ? (long)uhi : shi);
+						node_t stl = type_list(cast_dd);
+						node_t stn = node2(N_TYPE, stl,
+							node2(N_DECL, ignore(), list()));
+						node_t fold = node2(N_CAST, stn,
+								    integer(sat, tb), tb);
+						CIR_NODE(fold)->synth_from_origin = true;
+						return fold;
+					}
+				}
 			}
 			bool cast_is_ptr = cast_dd && cast_dd->is_pointer();
 			// Peel ALL pointer levels and emit that many '*' — a `(char **)`
@@ -19968,6 +20100,58 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// runtime init — both paths share the one implementation. (Scope-exit
 	// destruction of file-scope objects stays deferred: program teardown
 	// reclaims the memory.)
+	// --finstrument-functions (task #66): gcc-parity __cyg_profile hooks.
+	// The enter call is the body's first statement; the exit hook rides a
+	// cleanup-attributed pointer variable declared FIRST, so it fires LAST
+	// on every exit path (all returns + fall-off-end), after user dtors —
+	// gcc's epilogue order. The exit thunk is synthesized once per module
+	// (m_instr_thunk_def, flushed at Pass 1.95) and calls the possibly
+	// user-defined hook. no_instrument_function (parseFunction merges it
+	// from a prototype into the definition's FuncDef) opts a function out;
+	// the hooks themselves must carry it in user code, as with gcc. For
+	// main, the prologue block below wraps THIS block, so global init
+	// still precedes the enter hook (C++ runtime order).
+	if (m_prog && m_prog->instrument_functions
+	    && fd && !fd->no_instrument_function) {
+		if (!m_instr_thunk_def)
+			m_instr_thunk_def = synth_instr_exit_thunk();
+		referenced_funcs.insert("__cyg_profile_func_enter");
+		need_output_extern("__cyg_profile_func_enter", false,
+				   { { {N_VOID}, true }, { {N_VOID}, true } });
+		// void *__madc_instr_self __attribute__((cleanup(
+		//     __madc_cyg_exit_thunk))) = (void *)<self>;
+		node_t ispec = list();
+		append(ispec, simple(N_VOID, tf));
+		node_t idecl_list = list();
+		append(idecl_list, pointer());
+		node_t isd = simple(N_SPEC_DECL, tf);
+		append(isd, node1(N_SHARE, ispec));
+		append(isd, node2(N_DECL, id("__madc_instr_self", tf),
+				  idecl_list));
+		node_t iattr_args = list();
+		append(iattr_args, id("__madc_cyg_exit_thunk", tf));
+		node_t iattrs = list();
+		append(iattrs, node2(N_ATTR, id("cleanup", tf), iattr_args, tf));
+		append(isd, iattrs);
+		append(isd, ignore());   // asm
+		append(isd, node2(N_CAST, void_ptr_type(),
+				  id(tf->var.name.c_str(), tf), tf));
+		CIR_NODE(isd)->synth_from_origin = true;
+		// __cyg_profile_func_enter((void *)<self>, (void *)0);
+		node_t eargs = list();
+		append(eargs, node2(N_CAST, void_ptr_type(),
+				    id(tf->var.name.c_str(), tf), tf));
+		append(eargs, node2(N_CAST, void_ptr_type(), integer(0, tf), tf));
+		node_t ecall = node2(N_CALL,
+				     id("__cyg_profile_func_enter", tf), eargs, tf);
+		CIR_NODE(ecall)->synth_from_origin = true;
+		node_t iouter = list();
+		append(iouter, isd);
+		append(iouter, node2(N_EXPR, list(), ecall, tf));
+		append(iouter, body);
+		body = node2(N_BLOCK, list(), iouter, tf);
+	}
+
 	// madc::sys (task #91): a TU that included <ns_madc> populates the
 	// host system object from main's real arguments — ONE injected
 	// __madc_sys_init(argc, argv) call serves the JIT and native lanes
@@ -22638,6 +22822,13 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (auto &kv : m_array_dtor_defs)
 		append(top_list, kv.second);
 	m_array_dtor_defs.clear();
+	// (c2) --finstrument-functions exit thunk (task #66) — same slot: its
+	//      definition must precede every function whose cleanup attribute
+	//      names it.
+	if (m_instr_thunk_def) {
+		append(top_list, m_instr_thunk_def);
+		m_instr_thunk_def = NULL;
+	}
 
 	// Synthesize `void __madc_global_init(void)` — the ONE home for the
 	// file-scope class-global ctor calls (collected by collect_global_ctors).

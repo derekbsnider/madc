@@ -1257,6 +1257,12 @@ public:
 				    const std::string &sym);
 	// Wrapper defs demanded during body translation, flushed at Pass 1.95.
 	std::map<std::string, node_t> m_array_dtor_defs;
+	// --finstrument-functions (task #66): the once-per-module exit thunk
+	// `__madc_cyg_exit_thunk` — the cleanup attribute's handler that calls
+	// __cyg_profile_func_exit with the instrumented function's own address.
+	// Demanded by the first instrumented func_def, flushed at Pass 1.95.
+	node_t m_instr_thunk_def = NULL;
+	node_t synth_instr_exit_thunk();
 	node_t synth_complete_dtor_def(DataDefCLASS *cdd);
 	node_t synth_deleting_dtor_def(DataDefCLASS *cdd);
 	node_t synth_dtor_proto(const std::string &sym, DataDefCLASS *cdd);
