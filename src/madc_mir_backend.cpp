@@ -27,6 +27,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "libmadc/sysinfo.h"
 
 extern "C" {
 #include "mir.h"
@@ -71,6 +72,12 @@ long madarray_size(void *ptr)
 	madc::value *v = (madc::value *)ptr;
 	return v->is_array() ? (long)v->as_array().size() : 0;
     }
+
+// madc::sys population (task #91) — injected by the CIR builder at main
+// entry, BEFORE the __madc_global_init call, in TUs that included
+// <ns_madc>. Serves the JIT and native lanes through this one path.
+void __madc_sys_init(long argc, void *argv)
+    { madc::sys_populate_args((int)argc, (char **)argv); }
 
 
 } // extern "C"

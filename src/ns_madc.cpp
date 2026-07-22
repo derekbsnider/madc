@@ -22,9 +22,63 @@
 #include <iostream>
 #include <map>
 #include <vector>
+#include <unistd.h>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "ns_common.h"
+#include "libmadc/sysinfo.h"
+
+// ---- madc::sys — the system object (task #91) ----------------------------
+namespace madc {
+
+static const char *sys_detect_platform()
+{
+#if defined(__APPLE__)
+    return "darwin";
+#elif defined(_WIN32)
+    return "win32";
+#elif defined(__FreeBSD__)
+    return "freebsd";
+#elif defined(__linux__)
+    return "linux";
+#else
+    return "unknown";
+#endif
+}
+
+static const char *sys_detect_hostname()
+{
+    static char buf[256];
+    if ( gethostname(buf, sizeof(buf) - 1) != 0 )
+	buf[0] = '\0';
+    buf[sizeof(buf) - 1] = '\0';
+    return buf;
+}
+
+// The facts initialize once at load (dynamic init of this TU); argv/path
+// are filled by sys_populate_args from the injected __madc_sys_init call.
+SysInfo sys = { value(), value(), sys_detect_platform(), MADC_VERSION_STR,
+		sys_detect_hostname() };
+
+void sys_populate_args(int argc, char **argv)
+{
+    sys.argv = value::make_array();
+    for ( int i = 0; i < argc && argv; i++ )
+	sys.argv.array().push_back(value(argv[i] ? argv[i] : ""));
+    // Initial search-path seed (future #load/eval honor mutations — the
+    // Python one-way semantics): the script's directory, then cwd.
+    sys.path = value::make_array();
+    if ( argc > 0 && argv && argv[0] )
+    {
+	std::string a0(argv[0]);
+	size_t sl = a0.rfind('/');
+	if ( sl != std::string::npos && sl > 0 )
+	    sys.path.array().push_back(value(a0.substr(0, sl)));
+    }
+    sys.path.array().push_back(value("."));
+}
+
+} // namespace madc
 
 namespace madc {
 

@@ -1,0 +1,10 @@
+#!/usr/bin/env madc
+// Task #91: madc::sys in SCRIPT MODE — top-level statements reading the
+// system object (Python-script shape: `import sys` == #include <ns_madc>).
+#include <iostream>
+#include <ns_php>
+#include <ns_madc>
+using namespace std;
+
+cout << "n=" << php::count(madc::sys.argv) << endl;
+cout << "a1=" << madc::sys.argv[1] << endl;

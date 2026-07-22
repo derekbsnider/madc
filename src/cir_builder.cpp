@@ -6507,12 +6507,15 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		} else if (anon_sdd) {
 			append(new_list, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
 					       ignore(), anon_members_list(anon_sdd)));
-		} else if (base_dd && base_dd->is_struct() && !base_dd->is_complex()) {
+		} else if (base_dd && !base_dd->is_complex()
+			   && !base_dd->is_madc_array()
+			   && dynamic_cast<DataDefSTRUCT *>(base_dd)) {
+			// Struct OR class tag ref (a DataDefCLASS IS-A
+			// DataDefSTRUCT — the old is_struct() gate was
+			// btStruct-only, so an extern of CLASS type degraded to
+			// `extern int`, e.g. the madc::sys SysInfo instance).
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
-			if (sdd)
-				append(new_list, node2(sdd->union_layout ? N_UNION : N_STRUCT, id(sdd->name.c_str()), ignore()));
-			else
-				append_type_specs(new_list, base_dd);
+			append(new_list, node2(sdd->union_layout ? N_UNION : N_STRUCT, id(sdd->name.c_str()), ignore()));
 		} else {
 			append_type_specs(new_list, base_dd);
 		}
@@ -15111,7 +15114,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// selection below is unchanged — `(*name)` is the struct lvalue).
 				obj = node1(N_DEREF, id(tm->object.name.c_str(), tb), tb);
 			else
-				obj = id(tm->object.name.c_str(), tb);
+				// var_emit_name resolves a namespace extern's Itanium
+				// storage alias (madc::sys -> _ZN4madc3sysE), matching
+				// the subscript path and the extern decl's own id.
+				obj = id(var_emit_name(tm->object).c_str(), tb);
 			node_t member = id(tm->var.name.c_str(), tb);
 			// `.` requires a struct lvalue; `->` requires a pointer. The
 			// object's declared type drives this: a pointer-typed object uses
@@ -15465,6 +15471,18 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					if (ltv->var.is_constant()) {
 						std::string msg = "assignment of read-only variable '"
 							+ ltv->var.name + "'";
+						return error_node(msg.c_str(), tb);
+					}
+				}
+				// A const-qualified DATA MEMBER (`const char *const
+				// platform` — the madc::sys facts, task #91): the member
+				// view carries vfCONSTANT or a DataDefCONST-wrapped type.
+				// gcc canon: "assignment of read-only member 'm'".
+				if (TokenMember *ltm = dynamic_cast<TokenMember *>(top->left)) {
+					if (ltm->var.is_constant()
+					    || dynamic_cast<DataDefCONST *>(ltm->var.type)) {
+						std::string msg = "assignment of read-only member '"
+							+ ltm->var.name + "'";
 						return error_node(msg.c_str(), tb);
 					}
 				}
@@ -19933,11 +19951,47 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// runtime init — both paths share the one implementation. (Scope-exit
 	// destruction of file-scope objects stays deferred: program teardown
 	// reclaims the memory.)
-	if (tf->var.name == "main" && !m_global_ctor_stmts.empty()) {
+	// madc::sys (task #91): a TU that included <ns_madc> populates the
+	// host system object from main's real arguments — ONE injected
+	// __madc_sys_init(argc, argv) call serves the JIT and native lanes
+	// alike, and it runs BEFORE __madc_global_init so dynamic global
+	// initializers may read sys.*. A main declared without parameters
+	// initializes an empty argv. The facts (platform/version/hostname)
+	// initialize at host load and need no call here.
+	bool want_sys_init = tf->var.name == "main"
+			     && m_prog && m_prog->_include_ns_madc;
+	if (tf->var.name == "main"
+	    && (want_sys_init || !m_global_ctor_stmts.empty())) {
 		node_t outer = list();
-		node_t icall = node2(N_CALL, id("__madc_global_init", tf), list(), tf);
-		CIR_NODE(icall)->synth_from_origin = true;
-		append(outer, node2(N_EXPR, list(), icall, tf));
+		if (want_sys_init) {
+			need_output_extern("__madc_sys_init", false,
+					   { { {N_LONG}, false },
+					     { {N_VOID}, true } });
+			node_t sargs = list();
+			if (tf->method && tf->method->parameters.size() >= 2
+			    && tf->method->parameters[0]
+			    && tf->method->parameters[1]) {
+				append(sargs, id(tf->method->parameters[0]
+						 ->name.c_str(), tf));
+				append(sargs, node2(N_CAST, void_ptr_type(),
+					id(tf->method->parameters[1]
+					   ->name.c_str(), tf), tf));
+			} else {
+				append(sargs, integer(0, tf));
+				append(sargs, node2(N_CAST, void_ptr_type(),
+						    integer(0, tf), tf));
+			}
+			node_t scall = node2(N_CALL,
+				id("__madc_sys_init", tf), sargs, tf);
+			CIR_NODE(scall)->synth_from_origin = true;
+			append(outer, node2(N_EXPR, list(), scall, tf));
+		}
+		if (!m_global_ctor_stmts.empty()) {
+			node_t icall = node2(N_CALL,
+				id("__madc_global_init", tf), list(), tf);
+			CIR_NODE(icall)->synth_from_origin = true;
+			append(outer, node2(N_EXPR, list(), icall, tf));
+		}
 		append(outer, body);
 		body = node2(N_BLOCK, list(), outer, tf);
 		// Re-emit with the wrapped body; the prologue runs once at main entry.

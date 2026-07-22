@@ -181,6 +181,23 @@ namespace madc {
     void context_set_real(array &ctx, std::string &key, double value);
     void context_set_string(array &ctx, std::string &key, const char *value);
     void context_set_array(array &ctx, std::string &key, array &value);
+
+    // The system object (Python `sys` convention — include this header
+    // like Python's `import sys`). sys.argv / sys.path are mutable madc
+    // arrays (argv[0] = script path; path mutations steer FUTURE
+    // #load/eval only); platform / version / hostname are immutable
+    // facts (sys.version == MADC_VERSION). The one instance lives in the
+    // host (_ZN4madc3sysE); argv/path fill at main entry via the
+    // injected __madc_sys_init. LAYOUT CONTRACT with
+    // include/libmadc/sysinfo.h — append-only, keep both in sync.
+    struct SysInfo {
+	array argv;
+	array path;
+	const char *const platform;
+	const char *const version;
+	const char *const hostname;
+    };
+    extern SysInfo sys;
 }
 )EMBED"},
     {"ns_perl", R"EMBED(extern "C" {

@@ -3621,6 +3621,7 @@ public:
     bool _include_iostream;		// #include <iostream> was seen during tokenization
     bool _include_stdio;		// #include <stdio.h> was seen during tokenization
     bool _include_string;		// #include <string> was seen during tokenization
+    bool _include_ns_madc;		// #include <ns_madc> was seen — main gets the __madc_sys_init injection
     // Intern file paths so TokenBase::file pointers stay stable for
     // the program's lifetime. Lexer used to store `c_str()` of a
     // stack-local std::string into tokens — the pointer dangled the

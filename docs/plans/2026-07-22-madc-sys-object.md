@@ -92,16 +92,24 @@ against the open ledger. Follow-on to script mode (task #90, v0.37.0).
   not viral: copies of a frozen value are mutable (Python parity —
   protecting the slot, not the data). Move-assignment onto a frozen
   value is not checked (noexcept); it is host misuse.
-- **Fact members are `const char *` struct members in v1** (not
-  madc::value, not std::string): zero lifecycle, bakeable at emit time,
-  chars naturally immutable; reads work in every string context
-  (streams, string ctor/assign via the literal model). Rebinding
-  (`sys.platform = ...`) is guarded at compile time by the const member
-  qualification — scope the const-member-assignment rejection check if
-  the DataDefCONST Phase-1 state doesn't already provide it (probe at
-  R2). Python parity note: this is already STRICTER than Python (which
-  allows rebinding module attrs); the owner asked for facts to be
-  immutable.
+- **Fact members are `const char *const` struct members in v1** (not
+  madc::value, not std::string): zero lifecycle, chars naturally
+  immutable; reads work in every string context.
+  **R2 probe result (2026-07-22):** the parser currently DROPS member
+  const qualifiers (the struct-body parse skips trailing cv-quals at
+  parser.cpp ~31220; a const typedef doesn't survive onto the member
+  type either), so compile-time rejection of `sys.platform = ...` is
+  NOT enforceable yet without new per-member const state — which would
+  also have to survive forest freeze/restore (record-family territory).
+  **Decision:** v1 ships with Python-level semantics — rebinding is
+  possible and memory-safe (a pointer-sized store; Python itself allows
+  `sys.platform = ...`), matching the owner's "not stricter than
+  Python" guidance. The write-side enforcement arm IS already in place
+  in the CIR builder (assignment to a member whose view carries
+  vfCONSTANT / a DataDefCONST type → "assignment of read-only member")
+  and fires as soon as DataDefCONST Phase 2+ preserves member
+  constness; the ready-made compile-error fixture is parked at
+  tmp/testsysreadonly.{mad,expect_err}.
 - In v1 nothing frozen is script-reachable as an array (`argv`/`path`
   are mutable, facts are not value-backed), so the frozen runtime guard
   is the general embedding primitive; the sys-facts enforcement is the

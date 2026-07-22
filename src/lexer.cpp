@@ -571,6 +571,8 @@ void Program::mark_embedded_include_flag(const std::string &incfile)
 	_include_stdio = true;
     if ( incfile == "string" )
 	_include_string = true;
+    if ( incfile == "ns_madc" )
+	_include_ns_madc = true;
 }
 
 bool Program::auto_include_standard_identifier(const std::string &word)
@@ -1124,6 +1126,7 @@ void Program::_tokenizer_init()
     _include_iostream = false;
     _include_stdio = false;
     _include_string = false;
+    _include_ns_madc = false;
     included_files.clear();
     include_guard_by_file.clear();
     pending_auto_include_headers.clear();
@@ -1708,6 +1711,10 @@ void Program::_tokenizer_init()
 	if ( const char *sv = stdc_version_for_std() )
 	    define_map["__STDC_VERSION__"] = sv;
     }
+    // madc's own version identity, #if-testable: MADC_VERSION expands to the
+    // build's version as a string literal. sys.version (<ns_madc>) is the
+    // runtime spelling of the same value.
+    define_map["MADC_VERSION"] = std::string("\"") + MADC_VERSION_STR + "\"";
     // Compiler feature-test macros madc provides itself, gated by the std
     // floor (the build-time capture can't know them — they describe THIS
     // compiler's features, not the host's). <compare> requires
