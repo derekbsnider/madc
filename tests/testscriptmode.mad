@@ -1,0 +1,18 @@
+// Script mode: top-level statements interleaved with declarations, calling
+// functions defined in the file (owner plan 2026-07-21-script-mode-auto-main).
+#include <stdio.h>
+
+int greetings = 3;
+
+void greet(int n)
+{
+	printf("greeting %d\n", n);
+}
+
+puts("script start");
+for (int i = 0; i < greetings; i++)
+	greet(i + 1);
+
+int extra = greetings * 2;
+printf("extra=%d\n", extra);
+puts("script end");

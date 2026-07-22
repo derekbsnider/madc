@@ -17651,6 +17651,10 @@ Variable *Program::findVariable(TokenCpnd *code, const std::string &id)
     }
     if ( !(var=tkProgram->findVariable(strpool, qsid, id)) )
     {
+	// Script mode: argc/argv resolve as the synthesized main's params
+	// while a file-scope script statement is being parsed.
+	if ( (var = script_param_lookup(id)) )
+	    return var;
 	DBG(std::cout << "Program::findVariable(code, " << id << ") not found" << std::endl);
 	return NULL;
     }
@@ -17679,6 +17683,9 @@ Variable *Program::findVariable(const std::string &s)
 
     if ( !(var=tkProgram->findVariable(strpool, s)) )
     {
+	// Script mode: see the (code, id) overload above.
+	if ( (var = script_param_lookup(s)) )
+	    return var;
 	DBG(std::cout << "Program::findVariable(" << s << ") not found" << std::endl);
 	return NULL;
     }
@@ -46539,6 +46546,16 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		HoistedDeclKind::NestedFunction, id, prevToken()).symbol;
 
     DBG(cout << "parseFunction(" << dd.name << ' ' << id << ") START" << endl);
+
+    // Script mode: an explicit main cannot coexist with adopted top-level
+    // statements (owner plan 2026-07-21, semantics #3). ensure_script_main
+    // catches a main declared BEFORE the first statement; this catches one
+    // declared after.
+    if ( script_main_tf && !owner_class && id == "main" )
+	Throw(prevToken()) << "top-level statements conflict with an explicit main() (first top-level statement at "
+	    << (script_main_tf->file ? script_main_tf->file : "?") << ':'
+	    << script_main_tf->line << ')' << flush;
+
     cur_func_name = id; // for __FUNCTION__/__func__ expansion in the lexer
     pack_tap_name(id, pdkFunction);	// B4a: decl-index tap (funcdef_map key)
 
@@ -51389,6 +51406,247 @@ static const char *diagnostic_file_for(TokenBase *tb, TokenProgram *tp)
     return tp ? tp->source.c_str() : NULL;
 }
 
+// ---- Script mode (STD_MADC): file-scope statements → synthesized main ----
+// Owner plan docs/plans/2026-07-21-script-mode-auto-main.md.
+
+// Keyword ids that BEGIN a (non-declaration) statement. tkFOR also covers
+// foreach (TokenFOREACH shares tkFOR). tkELSE/tkCASE/tkCATCH/tkDEFAULT
+// cannot begin a valid statement and stay on the normal error paths.
+static bool is_statement_keyword_id(TokenID id)
+{
+    switch ( id )
+    {
+	case TokenID::tkIF:     case TokenID::tkFOR:   case TokenID::tkWHILE:
+	case TokenID::tkDO:     case TokenID::tkSWITCH:
+	case TokenID::tkRETURN: case TokenID::tkGOTO:  case TokenID::tkBREAK:
+	case TokenID::tkCONT:   case TokenID::tkTRY:   case TokenID::tkTHROW:
+	case TokenID::tkDEFER:
+	    return true;
+	default:
+	    return false;
+    }
+}
+
+// True when the token was lexed from the top-level translation unit itself
+// (not from an #include). Tokens without position info (synthesized) count
+// as TU-origin.
+bool Program::token_is_tu_origin(TokenBase *tb) const
+{
+    if ( !tb || !tb->file || !tkProgram )
+	return true;
+    return tkProgram->source == tb->file;
+}
+
+// Pre-parse classification: does this file-scope token BEGIN a statement
+// that can never be a declaration? Arming happens only for unambiguous
+// starts; everything else takes the normal path and is classified by its
+// parse RESULT (script_statement_result) — there is deliberately no second
+// statement-vs-declaration disambiguator, parseStatement's own dispatch
+// stays the decider. Under an explicit --std=c*/c++* this never arms; the
+// result classifier produces the standard error instead.
+bool Program::file_scope_statement_starter(TokenBase *tb)
+{
+    if ( language_std != STD_MADC || !tb )
+	return false;
+    if ( !token_is_tu_origin(tb) )
+	return false;	// include-origin: adopt_script_statement rejects loudly
+    switch ( tb->type() )
+    {
+	case TokenType::ttKeyword:
+	    return is_statement_keyword_id(tb->id());
+	// A literal can only begin an expression statement.
+	case TokenType::ttInteger:
+	case TokenType::ttReal:
+	case TokenType::ttString:
+	case TokenType::ttChar:
+	    return true;
+	case TokenType::ttIdentifier:
+	{
+	    // Identifier arms that are declarations in disguise keep the
+	    // normal path (static_assert, typeof, __label__, inline
+	    // namespace, GNU attributes). knr_supported() is false in
+	    // STD_MADC, so `name(` cannot be an implicit-int definition here.
+	    TokenIdent *ti = (TokenIdent *)tb;
+	    if ( is_attribute_identifier_token(tb)
+	      || is_static_assert_identifier(ti->spelling())
+	      || is_typeof_identifier(ti->spelling())
+	      || ti->spelling_is("__label__")
+	      || ti->spelling_is("inline") )
+		return false;
+	    TokenBase *pk = peekToken();
+	    if ( !pk )
+		return false;
+	    switch ( pk->id() )
+	    {
+		case TokenID::tkAssign: case TokenID::tkOpBrk:
+		case TokenID::tkOpSqr:  case TokenID::tkInc:
+		case TokenID::tkDec:    case TokenID::tkDot:
+		case TokenID::tkDeRef:
+		case TokenID::tkAddEq:  case TokenID::tkSubEq:
+		case TokenID::tkMulEq:  case TokenID::tkDivEq:
+		case TokenID::tkModEq:  case TokenID::tkBandEq:
+		case TokenID::tkBorEq:  case TokenID::tkXorEq:
+		case TokenID::tkBSLEq:  case TokenID::tkBSREq:
+		case TokenID::tkTerC:	// label definition `name:`
+		    return true;
+		default:
+		    return false;	// tkNS-qualified etc.: result-classified
+	    }
+	}
+	default:
+	    // '(' and prefix operators can never begin a declaration.
+	    switch ( tb->id() )
+	    {
+		case TokenID::tkOpBrk: case TokenID::tkInc: case TokenID::tkDec:
+		case TokenID::tkMul:   case TokenID::tkSub: case TokenID::tkAdd:
+		case TokenID::tkNot:   case TokenID::tkLnot:
+		case TokenID::tkBnot:  case TokenID::tkNeg:
+		case TokenID::tkBand:
+		    return true;
+		default:
+		    return false;
+	    }
+    }
+}
+
+// Post-parse classification: is this parseStatement RESULT a statement (vs
+// a declaration/typedef/struct-def/compound)? Positive list only — unknown
+// result kinds keep today's file-scope handling, so exotic constructs are
+// never misrouted.
+bool Program::script_statement_result(TokenBase *ts) const
+{
+    if ( !ts )
+	return false;
+    if ( ts->type() == TokenType::ttKeyword )
+	return is_statement_keyword_id(ts->id());
+    if ( dynamic_cast<TokenLabel *>((TokenBase *)ts) )
+	return true;
+    switch ( ts->type() )
+    {
+	// Expression-statement results (parseExprStmt returns the raw
+	// expression tree).
+	case TokenType::ttCallFunc:
+	case TokenType::ttCallMethod:
+	case TokenType::ttOperator:
+	case TokenType::ttMultiOp:
+	case TokenType::ttSubscript:
+	case TokenType::ttMember:
+	    return true;
+	default:
+	    return false;
+    }
+}
+
+// Create-or-return one of the synthesized main's parameter Variables.
+// Ungated — ensure_script_main uses it directly; resolution goes through
+// script_param_lookup below.
+Variable *Program::script_param_var(const std::string &id)
+{
+    if ( id == "argc" )
+    {
+	if ( !script_argc_var )
+	{
+	    script_argc_var = new Variable("argc", ddINT32, 1, NULL, false);
+	    script_argc_var->flags |= vfPARAM | vfLOCAL;
+	}
+	return script_argc_var;
+    }
+    if ( id == "argv" )
+    {
+	if ( !script_argv_var )
+	{
+	    script_argv_var = new Variable("argv",
+		*getPointerType(&ddCHARptr), 1, NULL, false);
+	    script_argv_var->flags |= vfPARAM | vfLOCAL;
+	}
+	return script_argv_var;
+    }
+    return NULL;
+}
+
+// argc/argv resolve as the synthesized main's parameters ONLY while a
+// file-scope script statement is being parsed — never inside function
+// bodies, never in declaration initializers (a dynamic global initializer
+// runs in __madc_global_init, where main's parameters do not exist).
+Variable *Program::script_param_lookup(const std::string &id)
+{
+    if ( !parsing_script_statement || language_std != STD_MADC )
+	return NULL;
+    return script_param_var(id);
+}
+
+// Lazily build the synthesized `int main(int argc, char **argv)` — the same
+// registration shape parseFunction gives a parsed definition (FuncDef +
+// funcdef_map + global name Variable + Method with param Variables +
+// TokenFunc), so the CIR builder, __madc_global_init injection, --emit=c11
+// and the native lanes all see an ordinary main.
+void Program::ensure_script_main(TokenBase *loc)
+{
+    if ( script_main_tf )
+	return;
+    // Semantics #3 (owner plan): top-level statements and an explicit main
+    // in the same program is a hard error. This arm catches a main declared
+    // BEFORE the first statement; parseFunction's entry check catches one
+    // declared after.
+    if ( funcdef_map.count("main") )
+	Throw(loc) << "top-level statements conflict with an explicit main()" << flush;
+    DBG(cout << "ensure_script_main(): synthesizing int main(int argc, char **argv)" << endl);
+    FuncDef *func = new FuncDef(returnDecl(ddINT32, false));
+    func->parameters.push_back(&ddINT32);
+    func->parameters.push_back(getPointerType(&ddCHARptr));
+    funcdef_map["main"] = func;
+    Variable *var = addVariable(NULL, *func, "main");
+    script_main_method = new Method(*var);
+    var->data = (void *)script_main_method;
+    // Adopt the param Variables (created here, or earlier by
+    // script_param_lookup when the first statement referenced them).
+    script_main_method->parameters.push_back(script_param_var("argc"));
+    script_main_method->parameters.push_back(script_param_var("argv"));
+    script_main_tf = new TokenFunc(*var);
+    script_main_tf->method = script_main_method;
+    script_main_tf->parent = NULL;
+    if ( loc )
+    {
+	script_main_tf->file = loc->file;
+	script_main_tf->line = loc->line;
+	script_main_tf->column = loc->column;
+	func->decl_file = loc->file;
+    }
+}
+
+// Route a classified file-scope statement into the synthesized main.
+// Returns true when adopted; false = caller keeps today's handling (the
+// C-dialect file-scope expression results that C89 implicit declarations
+// rely on stay ignored, exactly as before script mode).
+bool Program::adopt_script_statement(TokenBase *ts)
+{
+    if ( language_std != STD_MADC )
+    {
+	// A control-flow statement can never be a C/C++ declaration —
+	// reject it the standard way (gcc/clang error here too).
+	if ( ts->type() == TokenType::ttKeyword )
+	    Throw(ts) << "expected a declaration at file scope (top-level statements require the madc dialect)" << flush;
+	return false;
+    }
+    if ( !token_is_tu_origin(ts) )
+	Throw(ts) << "file-scope statement in an included file (top-level statements are allowed only in the main source file)" << flush;
+    ensure_script_main(ts);
+    script_main_tf->statements.push_back((TokenStmt *)ts);
+    return true;
+}
+
+// Seal the synthesized main at end of TU parse: hand it to the same queues
+// a parsed definition uses (parseFunction's tail shape).
+void Program::finalize_script_main()
+{
+    if ( !script_main_tf )
+	return;
+    DBG(cout << "finalize_script_main(): " << script_main_tf->statements.size()
+	     << " top-level statement(s) → synthesized main" << endl);
+    ast.push_back(script_main_tf);
+    pending_funcs.push_back(script_main_tf);
+}
+
 // parse the token queue
 bool Program::parse(TokenProgram *tp)
 {
@@ -51442,11 +51700,22 @@ bool Program::parse(TokenProgram *tp)
 		}
 	    }
 #if 1
+	    // Script mode: an unambiguous statement start arms argc/argv
+	    // resolution for this one top-level parse (STD_MADC only).
+	    bool script_stmt = file_scope_statement_starter(tb);
+	    if ( script_stmt )
+		parsing_script_statement = true;
 	    ts = parseStatement(tb);
+	    parsing_script_statement = false;
 	    pack_close_toplevel_decl();
 	    if ( ts )
 	    {
-		if ( ts->type() != TokenType::ttCompound )
+		if ( (script_stmt || script_statement_result(ts))
+		  && adopt_script_statement(ts) )
+		{
+		    DBG(cout << "Program::parse() adopted file-scope script statement" << endl);
+		}
+		else if ( ts->type() != TokenType::ttCompound )
 		{
 		    DBG(cout << "Program::parse() calling tp->statements.push_back" << endl);
 		    tp->statements.push_back((TokenStmt *)ts);
@@ -51459,6 +51728,8 @@ bool Program::parse(TokenProgram *tp)
 	    }
 #endif
         }
+	// Script mode: seal the synthesized main once the whole TU parsed.
+	finalize_script_main();
     }
     catch(const char *err_msg)
     {

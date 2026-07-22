@@ -1,0 +1,9 @@
+// Script mode: a top-level `return expr;` returns from the synthesized main
+// (exit status). Run with no extra args, argc == 1, so the status is 0.
+// The stderr line after the return must NOT execute — the .expect_quiet
+// fixture asserts stderr stays empty.
+#include <stdio.h>
+
+puts("before return");
+return argc - 1;
+fprintf(stderr, "FAIL: statement after top-level return executed\n");

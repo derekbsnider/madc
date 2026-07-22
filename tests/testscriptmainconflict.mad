@@ -1,0 +1,11 @@
+// Script mode semantics #3: file-scope statements AND an explicit main in
+// the same program is a hard compile error.
+#include <stdio.h>
+
+puts("top-level");
+
+int main(int argc, char **argv)
+{
+	puts("explicit main");
+	return 0;
+}

@@ -1,0 +1,1 @@
+stderr must be empty: the statement after the top-level return must not run

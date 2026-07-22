@@ -1475,7 +1475,9 @@ int main(int argc, char **argv)
 	gettimeofday(&after, NULL);
 	DBG(std::cout << "CIR elapsed time: " << time_diff(before, after) << std::endl);
 	print_stats();
-	return (result < 0) ? 1 : 0;
+	// main()'s return value IS the process exit status (gcc parity:
+	// `./prog; echo $?`). Negative = infrastructure failure → 1.
+	return (result < 0) ? 1 : result;
     }
     std::cout << "Usage: madc [-v|--verbose] [-E] [--finstrument-functions] [-fno-builtin-name] <file.mad>" << std::endl;
 

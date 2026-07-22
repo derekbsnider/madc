@@ -1,0 +1,11 @@
+// Script mode is a madc-dialect feature: under an explicit --std=c17 (via
+// the .flags fixture) a file-scope statement stays the standard error.
+#include <stdio.h>
+
+for (int i = 0; i < 3; i++)
+	puts("nope");
+
+int main(void)
+{
+	return 0;
+}

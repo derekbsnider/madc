@@ -228,6 +228,16 @@ class CirBuilder {
 	// Rung 3: the Pass-0/collect-time storage decl node of each file-scope
 	// global (keyed by Variable) — links a ctor group to its decl node.
 	std::map<Variable *, node_t> m_global_decl_node;
+	// C++ dynamic initialization (g++ model): file-scope globals whose
+	// scalar initializer is NOT a C11 constant expression (it reads a
+	// variable or calls a function). var_decl emits their storage without
+	// the initializer; collect_global_ctors queues the full source
+	// assignment into __madc_global_init, in declaration order.
+	std::set<Variable *> m_dynamic_global_inits;
+	// True while var_decl emits a FILE-SCOPE declaration (the dkGlobalVar
+	// pass) — the only context where the dynamic-init routing applies;
+	// block-scope declarations take runtime initializers natively.
+	bool m_file_scope_decl = false;
 	// Wide string literals (parser addWideLiteral): the sanitized module
 	// symbol (__wlit_<n>) each synthetic __wliteral__ Variable emits under.
 	// The Variable's own name embeds the raw UTF-32 payload (binary-safe for
