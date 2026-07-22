@@ -10,6 +10,22 @@ ruled NOT a madc builtin type (see work item 6). Gate edits landed in
 `docs/adr/0001-cir-c2mir-backend.md`, `.claude/rules/branching.md`,
 `docs/rules/branching.md`, ROADMAP Track 1.3.
 
+**RE-VERIFY 2026-07-22 (owner request, HEAD @a7ed44be — post v0.37.0
+script mode + task #91 R0/R1):** full sweep **1614/1/10/0/60**; the
+11-name failset is byte-identical to `torture-failset-current.txt` —
+zero torture regressions across the #64→#91 span (v0.37.0 release, array
+struct members, subscript element reads, frozen values, stream-starter
+rider). All 11 remaining are the classified class-(b) GNU-extension
+roadmap items (SIMD >16-byte: simd-1/2, pr23135, pr92904, pr46309;
+aligned>16/misalign: 20010904-1/2, misalign; pr23324; float→int
+saturation pr122000 = task #65; VLA-param stride pr22061-1 = task #80).
+**The promote gate (≥1608 class-(a) clean) is MET at live HEAD: 1614 ≥
+1608, zero class-(a) failures outstanding.** Same-day companion gates:
+dev fulltest 737/0/0/13, `--exe` 723/0, packed arbiter (bin/madc-release)
+737/0/0/13. Promote develop→master is the owner's call; on promote, the
+MIR fork's `master` begins tracking madc's `master`
+(`.claude/rules/build.md` branch correspondence).
+
 **RE-BASELINE 2026-07-19 (task #64, HEAD @1aa53a4e):** full sweep
 **1572/32/18/0/63**; the 50-name failset is byte-identical to
 `torture-failset-current.txt` (zero regressions across the #35–#63 span).
