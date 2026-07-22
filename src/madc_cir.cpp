@@ -118,6 +118,11 @@ static void cir_register_source_debug(MIR_context_t ctx)
 // MIR_link by the session/one-shot build paths (same single-threaded session
 // discipline as the fatal-containment state below).
 static thread_local const std::vector<Program::HostCallbackReg> *cir_active_host_regs = NULL;
+// #load'd namespace functions (task #67): the Program's __dl_<ns>_<member>
+// import-name -> dlsym'd-address table, set around MIR_link exactly like the
+// host-callback registrations above — dlsym(RTLD_DEFAULT) can never find
+// these madc-synthesized names.
+static thread_local const std::map<std::string, void *> *cir_active_dl_syms = NULL;
 
 static void *cir_import_resolver(const char *name)
 {
@@ -125,6 +130,12 @@ static void *cir_import_resolver(const char *name)
 	for (const Program::HostCallbackReg &r : *cir_active_host_regs)
 	    if (r.entry && r.import_sym == name)
 		return (void *)r.entry;
+    if (cir_active_dl_syms) {
+	std::map<std::string, void *>::const_iterator it =
+	    cir_active_dl_syms->find(name);
+	if (it != cir_active_dl_syms->end())
+	    return it->second;
+    }
     void *addr = dlsym(RTLD_DEFAULT, name);
     if (!addr)
 	DBG(std::cerr << "cir_import_resolver: unresolved: " << name << std::endl);
@@ -703,6 +714,7 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	// them all, untruncated (host-regs still set for accurate resolution).
 	cir_dump_undefined_imports(ctx);
 	cir_active_host_regs = NULL;
+	cir_active_dl_syms = NULL;
 	teardown();
 	return false;
     }
@@ -731,6 +743,7 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	cir_prebind_cache_traps(ctx, cache_mod, mod);
     mc_lap("cache traps");
     cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
+    cir_active_dl_syms = prog ? &prog->dl_symbol_map : NULL;
     if (cache_mod) {
 	// MIR_set_gen_interface is EAGER — it MIR_gen()s every loaded func at
 	// link, which for the 4290-func cache module costs ~0.8s per compile.
@@ -747,6 +760,7 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 		 madc_object_mode ? cir_object_import_resolver
 				  : cir_import_resolver);
     cir_active_host_regs = NULL;
+    cir_active_dl_syms = NULL;
     mc_lap("MIR_link");
     if (madc_debug_info) {
 	// -g: JIT lane registers the GDB-JIT object; object mode attaches

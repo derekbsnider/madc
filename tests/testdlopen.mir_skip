@@ -1,1 +1,0 @@
-#load now parses and lowers (namespace calls emit as __dl_libc_* imports) but the MIR import resolver does not consult the #load'd library handles — "import of undefined item __dl_libc_abs". Old "#load directive not in transpiler" reason drifted; the residue is resolver-side. Follow-on task filed. Audit 2026-07-19.

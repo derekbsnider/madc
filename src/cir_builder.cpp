@@ -5317,6 +5317,20 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 			append(args, object_cstr_arg(arg));
 		else if (is_size1_pointer(pt) && is_class_object_value(arg))
 			append(args, object_arg_addr(arg, NULL));
+		else if ((!pt || (callee && callee->is_varargs
+				  && pi + 1 >= callee->parameters.size()))
+			 && is_class_object_value(arg))
+			// No declared formal — a varargs tail (`printf("%s", s)`;
+			// an is_varargs FuncDef's LAST parameter is the varargs
+			// MARKER, so the tail starts at size()-1) or a #load'd
+			// zero-declared-param external (`libc::atoi(num)`): a
+			// class-object value whose class has c_str() (a madc
+			// string) auto-coerces to const char* — the documented
+			// #load convention (task #67). Classes without c_str keep
+			// their previous lowering (object_cstr_arg falls back to
+			// translate_expr); plain C structs never reach here
+			// (is_class_object_value is user-class-gated).
+			append(args, object_cstr_arg(arg));
 		else if (DataDefCOMPLEX *plow = as_lowered_complex(pt)) {
 			// Lowered-complex formal: a same-type arg passes by value
 			// (plain struct); a scalar / other-complex arg converts.
@@ -15978,6 +15992,36 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						append(a, translate_expr(p));
 				}
 				return node2(N_CALL, id(rt, tb), a, tb);
+			}
+			// dlcall(fn, a, b, ...) — the script-level dynamic-call
+			// builtin (task #67; the parser's two variadic-call arms
+			// already key it by this name — same convention). Lower to a
+			// typed INDIRECT call, `((long (*)())fn)(a, b, ...)`: no
+			// runtime helper exists or is needed — every lane (JIT /
+			// native / --emit=c11) performs the real call through the
+			// pointer value, and c2mir accepts unprototyped fn-ptr calls
+			// (K&R model). String args coerce to char* (object_cstr_arg),
+			// matching the #load variadic convention.
+			if (tcf->var.name == "dlcall" && !tcf->parameters.empty()) {
+				node_t fnexpr = translate_expr(tcf->parameters[0]);
+				node_t fdecl = list();
+				append(fdecl, pointer());
+				append(fdecl, node1(N_FUNC, list()));
+				node_t fptr_t = node2(N_TYPE,
+					node1(N_LIST, simple(N_LONG, tb)),
+					node2(N_DECL, ignore(), fdecl));
+				node_t callee = node2(N_CAST, fptr_t, fnexpr, tb);
+				node_t dargs = list();
+				for (size_t i = 1; i < tcf->parameters.size(); i++) {
+					TokenBase *p = tcf->parameters[i];
+					if (is_class_object_value(p))
+						append(dargs, object_cstr_arg(p));
+					else
+						append(dargs, translate_expr(p));
+				}
+				node_t dcall = node2(N_CALL, callee, dargs, tb);
+				CIR_NODE(dcall)->synth_from_origin = true;
+				return dcall;
 			}
 			// Callee selection. A normal call names a function by
 			// identifier. A call through a function-pointer held in a

@@ -20183,6 +20183,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 		    std::string func_id = "__dl_" + aname + "_" + member_name;
 		    ns_var = addFunction(func_id,
 			datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)sym);
+		    dl_symbol_map[func_id] = sym;
 		    namespace_variables_for_write(aname)[member_name] = ns_var;
 		}
 	    }
@@ -26189,6 +26190,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    (fVOIDFUNC)sym);
 			if ( !var )
 			    Throw(member_tb) << "Failed to register dlsym function '" << member_name << "'" << flush;
+			dl_symbol_map[func_id] = sym;
 			// Cache the resolved symbol for the next qualified call.
 			namespace_variables_for_write(ns_name)[member_name] = var;
 			DBG(cout << "parseExpression() dlsym resolved " << ns_name << "::" << member_name << " at " << (uint64_t)sym << endl);

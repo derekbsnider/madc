@@ -3193,6 +3193,11 @@ public:
     bool parsing_defaulted_member_template_constructor;
     std::vector<std::string> namespace_preference; // ordered namespace lookup; "c" means normal lexical/global resolution
     std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
+    // #load'd namespace functions (task #67): __dl_<ns>_<member> import name
+    // -> the dlsym'd host address. The MIR import resolver consults this
+    // per-link (cir_active_dl_syms) — dlsym(RTLD_DEFAULT) cannot see symbols
+    // private to a #load'd handle, and the import name is madc-synthesized.
+    std::map<std::string, void *> dl_symbol_map;
     std::vector<std::string> loaded_lib_paths;	// library names actually dlopen'd
 						// (#load / -l) — the link-environment
 						// closure a frozen forest re-loads
