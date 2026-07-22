@@ -36,3 +36,22 @@ that c2mir compiles to MIR. The backend dependency is therefore the MIR
 library (libmir + c2mir) at `/workspace/mir`, on the madc fork's `develop`
 branch and pinned by the repo-root `MIR_COMMIT` file. The old asmjit link flags
 no longer exist.
+
+## Release tag pairing — why
+
+The fork has no version identity of its own — it exists to serve madc,
+so its versioning is madc's (owner decision, 2026-07-22). Two mechanisms
+carry that pairing, each doing one job:
+
+- **`MIR_COMMIT`** is the machine pin: exact, per-commit, what the build
+  actually checks out. It moves whenever madc starts depending on new
+  fork work, which can be many times between releases.
+- **The annotated `madc-vX.Y.Z` tag** on the fork is the human-readable
+  release correspondence: "this fork state is what madc vX.Y.Z shipped
+  against." One tag per madc release, placed on the commit `MIR_COMMIT`
+  pins at release time, pushed alongside the release.
+
+Restating the pin's VALUE in prose (rules files, AGENTS.md) proved to be
+a drift trap — the literal `2ffebff` sat stale in two documents while
+the real pin had moved twice. Hence the rule: the file is the single
+source of truth; documents reference the file, never the value.

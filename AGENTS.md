@@ -140,14 +140,16 @@ Source lives in `src/`, headers in `include/`, output in `bin/` and
 Build requires `clang++` (or `g++`) with C++11 support and the **madc MIR
 fork** (libmir + c2mir) at `/workspace/mir` —
 [github.com/derekbsnider/mir](https://github.com/derekbsnider/mir), branch
-**`develop`** (pinned at commit `2ffebff` — see `MIR_COMMIT`), **not** upstream
+**`develop`** (pinned at the commit in the repo-root `MIR_COMMIT` file — the
+single source of truth for the pin), **not** upstream
 MIR (it carries native C99 `_Complex`, `__attribute__((cleanup))`, the
 scope-depth auto-local layout fix, the struct/union statement-expression
 copy-out fix, ≤16-byte SIMD/vector (`vector_size`/`ext_vector_type`) support,
 and the SysV-varargs / `_Complex` / `_Alignas`
 ABI fixes the CIR backend depends on). The fork's `develop` tracks madc's
-`develop`; once madc reaches master parity, the fork's `master` tracks madc's
-`master`.
+`develop` and its `master` tracks madc's `master`; each madc release is
+paired by an annotated `madc-vX.Y.Z` tag on the fork (see
+`.claude/rules/build.md`).
 
 ## Architecture
 

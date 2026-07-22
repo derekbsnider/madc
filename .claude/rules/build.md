@@ -15,14 +15,19 @@
 - The backend is CIR → c2mir → MIR. asmjit was removed.
 - The MIR library (libmir + c2mir) lives at `/workspace/mir` and is the
   **madc MIR fork** (github.com/derekbsnider/mir, branch **`develop`**, pinned at
-  the commit in the repo-root `MIR_COMMIT` file — currently `2ffebff`) — NOT
+  the commit in the repo-root `MIR_COMMIT` file — that file is the single
+  source of truth for the pin; never restate its value elsewhere) — NOT
   upstream MIR. It carries native C99 `_Complex`, `__attribute__((cleanup))`,
   ≤16-byte SIMD/vector (`vector_size`/`ext_vector_type`) support, and
   ABI/codegen fixes the CIR backend depends on.
-- **Branch correspondence:** the fork's `develop` tracks madc's `develop`; once
-  madc reaches master parity, the fork's `master` tracks madc's `master`. A MIR
+- **Branch correspondence:** the fork's `develop` tracks madc's `develop`; the
+  fork's `master` tracks madc's `master` (started at the v0.38.0 promotion). A MIR
   *feature* branch is cut only when a madc feature actually needs new MIR work,
   and merges to MIR `develop` in lockstep with the madc feature merging to develop.
 - **Pin discipline:** when madc starts depending on new fork commits, merge them
   to MIR `develop`, push, and bump `MIR_COMMIT` in the SAME madc commit. Never let
   madc depend on un-pushed or unpinned fork work.
+- **Release tag pairing:** every madc release gets an annotated tag
+  `madc-vX.Y.Z` on the fork at the commit `MIR_COMMIT` pins, pushed with the
+  release. `MIR_COMMIT` stays the machine pin; the tag is the human-readable
+  version pairing.
