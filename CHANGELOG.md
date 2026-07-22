@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+## [v0.37.0] — 2026-07-22
+
+Script-mode release: madc runs PHP-style scripts — top-level statements with a
+synthesized `int main(int argc, char **argv)` — plus C++ dynamic global
+initialization and JIT exit-status parity, and the demand-driven forest bind
+that cut packed trivial-C startup 94 → 38 ms.
+
+- **feat(parser): script mode — PHP-style top-level statements (task #90).**
+  In the madc dialect a program no longer needs `main`: non-declaration
+  statements at file scope are adopted, in source order, into a lazily
+  synthesized `int main(int argc, char **argv)` (a real parser-built
+  function, so the JIT, `--emit=c11`, `--dump-cir`, and the native
+  `-c`/`-o` lanes all see an ordinary main with zero backend changes).
+  `argc`/`argv` are in scope for top-level statements; a top-level
+  `return expr;` sets the exit status; dynamic global initializers run
+  first (`__madc_global_init` at main entry), then the script body.
+  Statements plus an explicit `main` is a hard error (each order cites
+  the other location); a statement in an `#include`d file is an error at
+  its own position; under explicit `--std=c*`/`c++*` a file-scope
+  control-flow statement stays the standard "expected a declaration"
+  error and expression results keep their pre-script handling (C89
+  implicit-declaration side effects preserved). There is deliberately no
+  second statement-vs-declaration disambiguator — the top level already
+  shares `parseStatement`'s dispatch; an unambiguous-start pre-classifier
+  plus a positive-list result classifier do the routing. Five new tests
+  (`testscriptmode/argv/return/mainconflict/std`) with fixtures.
+
+- **fix(cir): C++ dynamic global initialization (g++ model).** A
+  file-scope scalar initializer that reads a variable or calls a function
+  (`int scaled = base * 2;`) previously died at the c2mir check
+  ("initializer ... should be a constant expression") in every C++
+  presenting mode. The builder now classifies the translated initializer
+  (call or value-context identifier ⇒ dynamic; address formation, sizeof,
+  casts of constants stay static), emits bare storage, and queues the
+  full source assignment into `__madc_global_init` in declaration order,
+  interleaved with class ctors. Explicit C modes keep the standard
+  constant-only diagnosis.
+
+- **fix(jit): main's return value is the process exit status.** The JIT
+  lane squashed every non-negative `main` return to 0; `./prog; echo $?`
+  is now gcc-parity (the native lane always was). Infrastructure failures
+  still exit 1.
+
 - **perf(startup): demand-driven forest bind — trivial-C startup on the
   packed release binary 94 → 38 ms (startup-latency C-lane R0+R1, task
   #89).** The eager bind tax is gone: `--show-stats` grew a full forest

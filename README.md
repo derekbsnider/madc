@@ -266,25 +266,26 @@ develop is **not** promoted to master until the CIR path reaches feature parity.
 
 ### Current Release
 
-**v0.36.0** is the native-compiler release: MIR becomes a real AOT back
-end. `madc -c x.mad` writes a standards-conforming ELF `.o` (validated by
-compiling, linking, and running the entire fork corpus through the object
-lane, 1139/0) and `madc -o prog x.mad` writes a **runnable ELF executable
-assembled entirely by MIR** — no gcc, no ld, no crt files — with the
-standard gcc/clang CLI vocabulary. The native-executable test lane is
-live at 709/729 on day one. The same arc ships `madc -g` (full
-source-level gdb on JIT'd programs: `break file:line`, named typed
-frames, `info locals`, CFI backtraces) and component-correct GNU integer
-`_Complex`. Fulltest and the packed suite hold **729/0/0/13**; the
-gcc-torture promote threshold stays met at 1614.
+**v0.37.0** is the script-mode release: madc runs PHP-style scripts. A
+program no longer needs `main` — top-level statements are adopted, in
+source order, into a synthesized `int main(int argc, char **argv)`, with
+command-line arguments in scope and a top-level `return` setting the
+exit status. Declarations keep their file-scope meaning and interleave
+freely; the same script runs identically on the JIT, through
+`--emit=c11`, and as a native `-o` executable. The release also lands
+C++ dynamic global initialization (non-constant file-scope initializers
+now run at startup, the g++ model), gcc-parity exit status from the JIT
+lane, and the startup-latency campaign's demand-driven forest bind
+(packed trivial-C startup **94 → 38 ms**). Fulltest and the packed suite
+hold **734/0/0/13**; the native `--exe` lane is at **720/0**.
 
 ### Recent Releases
 
+- **v0.37.0** — Script mode: top-level statements → synthesized `int main(int argc, char **argv)` (madc dialect; conflict/header/std guard rails, 5 new tests); C++ dynamic global init (g++ model); JIT exit-status parity; demand-driven forest bind (packed C hello 94 → 38 ms, c17 45 → 15); fulltest + packed 734/0/0/13, `--exe` 720/0
 - **v0.36.0** — Native compiler: `madc -c` → ELF `.o`, `madc -o` → MIR-assembled executables (no external toolchain), `-shared`, gcc-style CLI; `--exe` lane live 709/729; `madc -g` source-level gdb on the JIT; integer `_Complex` component-correct; fulltest + packed 729/0/0/13; torture 1614 (gate met)
 - **v0.35.0** — Small-binary + family-D: packed binary 101 MB → 9.26 MB (per-segment zstd, snapshot-v2 segment transforms, intern-spine pack compression; libzstd-dev now required); family-D campaign merged (drops 483 → 308, stable local-class hoist identity, ranked-callee typing, live-correctness ladder); fulltest + packed suite 696/0/0/16
 - **v0.34.0** — Pack-time deferred-body drain (rung 1): pack-side c2mir check gate (fork `c2mir_check_tree` @062dd97), error-tolerant reverts incl. body-span carry (packed stoi/stod restored), emission split + trap prebind; packed suite 681/681; dual dev/packed binaries; timing trend TSV; fulltest 681/0/0/16
 - **v0.33.0** — Parse-once campaign complete: seven copy-time KINDs (incl. the SET wall), first-skip flipped to production, re-parse machinery deleted (−123 lines); burndown 312/0; map-iteration for-init SIGSEGV fixed (+`testmapiter`); typed dtor externs make emit-C gcc-clean on containers; fulltest 677/0/0/16
-- **v0.32.0** — Rung-1 interning capstone: `TokenIdent::str` dropped (4-byte interned spelling_id; −43% token string ctors, −3.3% instructions); `Variable::name_sid` + finalize caches (−6.6% instructions); tsubst burndown root-caused to the dependent-member-type KIND
 
 ## Roadmap
 
