@@ -724,3 +724,69 @@ is the fork-internal thin CLI (the D1 both-layers pattern, as with R2's
 
 Commits: fork @fc554f0d (pinned in MIR_COMMIT), madc = the
 feature/aot-r4b-load-object-claude commit this block ships in.
+
+---
+
+## R5 LANDED — DWARF in the native artifacts (2026-07-22, task #87)
+
+`madc -g` + `-c/-o/-shared/--project` emits artifacts carrying
+`.debug_line`/`.debug_info`/`.debug_abbrev`/`.debug_frame`. **The R5 gate
+is MET on a MIR-assembled executable:**
+
+```
+$ bin/madc -g -o tmp/r5_dbg tmp/r5_dbg.mad && gdb -batch \
+    -ex "break r5_dbg.mad:4" -ex run -ex bt -ex "info locals" tmp/r5_dbg
+Breakpoint 1, compute (a=6, b=7) at tmp/r5_dbg.mad:4
+#0  compute (a=6, b=7) at tmp/r5_dbg.mad:4
+#1  0x00000000004004d8 in main () at tmp/r5_dbg.mad:12
+sum = 13
+```
+
+**One writer, four consumers** (the no-parallel-implementations core of
+this rung): the mir-debug DWARF generators take a `dwgen_t` parameter
+({bias, code_base, offset_mode, addr-slot recorder}) —
+- GDB-JIT (`MIR_debug_emit`): bias 0, absolute JIT addresses; R1
+  semantics unchanged (re-proven: bt under the JIT names
+  `main () at r5_dbg.mad:13`).
+- `.o`: function addresses are `.text` offsets; every 8-byte code-address
+  slot (CU/subprogram low/high_pc, `DW_LNE_set_address`, FDE
+  initial_location) is zeroed and relocated via
+  `.rela.debug_info`/`.rela.debug_line`/`.rela.debug_frame` against the
+  `.text` section symbol — the external-ld oracle proves placement
+  correctness (cc-linked `-g` `.o` → gdb breaks at `main`, reads `x = 6`;
+  `readelf --debug-dump=decodedline` shows real post-link addresses).
+  One CU per object: `stmt_list` stays 0 without a relocation.
+- ET_EXEC: same generation biased to `code_vaddr` (identity layout →
+  runtime addresses). ET_DYN: link vaddrs; gdb rebases.
+- The R4b cache loader executes `-g` objects unchanged (relocations
+  against non-alloc sections are skipped — GDB-JIT is the in-process
+  debug story).
+
+Traps encoded: `emit_frame` peeks at machine code for prologue detection
+— in offset mode that read goes through `code_base + offset`, never
+`fn->addr`; offset 0 is a valid function (the NULL-addr skip is
+JIT-mode-only); the exec emitter's shdr table appends debug rows AFTER
+the fixed 13 (e_shstrndx stays 12); `struct objx_shrow` is named because
+c2m's self-bootstrap builds mir-debug.c without GNU typeof.
+
+Plumbing: `MIR_gen_get_object` (live capture builder),
+`MIR_object_find_symbol` (name → section offset),
+`c2mir_object_attach_debug` (the R1 walk — shared `c2m_dbg_populate` —
+with offsets from the capture's symbol table), `c2m -g -fobject`, madc
+attach at both MIR_link sites (session + whole-program project). The -g
+codegen shape (O0/no-inline/spill-all) already applied since R4.
+
+**Gates at landing:** no `-g` → artifacts BYTE-IDENTICAL to pre-R5
+(cmp oracle vs the R4b-vintage release binary, ET_EXEC and ET_REL);
+fulltest 729/0/0/13; `--exe` 717/0; `--obj` 713/0; packed arbiter
+729/0/0/13 + packed `--obj` 713/0; fork object + load-object lanes
+1139/2278 each + `make test` green.
+
+Left deliberately on the table: locals in plain `c2m -g -fobject` output
+show only with spill-all codegen (madc applies it; c2m doesn't force
+it); `.eh_frame`-based unwinding (we emit `.debug_frame`, enough for
+gdb); a CI-wired gdb harness (the gate commands above are the manual
+recipe).
+
+Commits: fork @f354664c (pinned in MIR_COMMIT), madc = the
+feature/aot-r5-dwarf-claude commit this block ships in.

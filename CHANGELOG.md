@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **feat(aot): `madc -g` native artifacts carry DWARF — source-level gdb
+  on AOT output (R5, task #87).** One writer serves every consumer: the
+  mir-debug DWARF generators grew a bias/offset-mode parameterization, so
+  the same builder that feeds the GDB-JIT lane now emits into the native
+  artifacts. ET_EXEC (the R5 gate): `break file:line` hits, `bt` shows
+  named frames with typed args, `info locals`/`print` read real values on
+  a MIR-assembled executable. `.o`: DWARF relocated via `.rela.debug_*`
+  against the `.text` section symbol (external-ld oracle proven: a
+  cc-linked `-g` `.o` debugs correctly); the R4b cache loader still
+  executes `-g` objects. `.so`: link-vaddr DWARF, gdb rebases. Without
+  `-g`, artifacts stay **byte-identical** to pre-R5 output (cmp oracle).
+  Fork pin → `f354664c`.
+
 - **feat(aot): `madc foo.o` — execute a `.o` as a precompiled cache (AOT
   R4b, task #86).** asmjit-master `load_object` parity on the MIR backend:
   a positional `.o` input loads through the fork's new in-process ET_REL
