@@ -345,6 +345,12 @@ public:
 	}
 	return false;
     }
+    // A madc `array` VALUE object (the script-level `array` = madc::value) —
+    // not a pointer to one.
+    bool is_madc_array() const
+    {
+	return rawtype() == DataType::dtARRAY && !is_pointer();
+    }
     virtual bool has_ostream()
     {
 	return false;

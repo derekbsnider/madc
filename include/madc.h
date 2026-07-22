@@ -4692,6 +4692,9 @@ public:
     // a current-class type alias, a variable matching a contextual type name, and
     // the class scope an expression name resolves to.
     DataDef *resolve_named_datadef(const std::string &name);
+    // Element type for madc `array` subscript READS (string-first — the
+    // Python/PHP element model; long fallback when no string class is known).
+    DataDef *madc_array_element_type();
     static DataDef *resolve_builtin_type_spelling(const std::string &name);
     static DataDef *builtin_va_list_type();
     DataDef *use_builtin_va_list();

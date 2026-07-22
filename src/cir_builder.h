@@ -1165,6 +1165,16 @@ public:
 	bool class_member_construct(DataDefCLASS *cdd, std::vector<node_t> &out,
 				    TokenBase *origin,
 				    const std::set<std::string> *skip = NULL);
+	// `sym((void*)recv->member)` expression statement — madarray_construct /
+	// madarray_destruct on a madc `array` (madc::value) data member.
+	node_t array_member_runtime_call(const char *sym, bool returns_value,
+					 const char *recv_ptr,
+					 const std::string &mname,
+					 TokenBase *origin);
+	// madc `array` element READ (`arr[i]`): string temp filled from
+	// __php_array_get_cstr (string typing) or __php_array_get_int value.
+	node_t madc_array_subscript_read(node_t container_void, node_t index_node,
+					 DataDefCLASS *scls, TokenBase *origin);
 	bool class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 				    std::vector<node_t> &out, TokenBase *origin);
 	// Apply C++11 default member initializers (NSDMI: `int x = 5;`) for any

@@ -657,6 +657,11 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 	case N_AUTO:         fputs("auto", f); break;
 	case N_REGISTER:     fputs("register", f); break;
 	case N_THREAD_LOCAL: fputs("_Thread_local", f); break;
+	case N_ALIGNAS:
+		// _Alignas(N) in a specifier list (e.g. the madc `array` member's
+		// alignof(madc::value) buffer).
+		fputs("_Alignas(", f); emit(f, op(n, 0), lang); fputc(')', f);
+		break;
 	case N_DOTS:         fputs("...", f); break;
 	case N_IGNORE: break;
 	default:

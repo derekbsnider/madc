@@ -2142,6 +2142,22 @@ DataDef *Program::resolve_named_datadef(const std::string &name)
     return lazy_resolve_type(name);
 }
 
+// The element type a madc `array` (madc::value) subscript READ produces.
+// String-first — the Python/PHP element model (`sys.argv[1]`, `arr[i]` in
+// string contexts): typed as the real std::string class when <string> has
+// been seen. Falls back to the legacy long typing otherwise, which keeps
+// numeric reads working in string-less TUs. Numeric reads under the string
+// typing are a LOUD type error (never a silent raw-buffer word read); use
+// range-for or the php:: getters for mixed numeric access.
+DataDef *Program::madc_array_element_type()
+{
+    DataDef *dd = resolve_named_datadef("string");
+    if ( dd && dd->basetype() == BaseType::btClass
+      && dd->rawtype() == DataType::dtRESERVED && !dd->is_pointer() )
+	return dd;
+    return &ddINT64;
+}
+
 // The ONE builtin-spelling -> canonical-DataDef table. Every C/C++ source
 // spelling of a builtin scalar resolves to the SAME canonical object the
 // lexer's type-specifier path emits (`int` -> ddINT32), so identity-sensitive
@@ -19711,6 +19727,10 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		DataDefSIMD *vdd = static_cast<DataDefSIMD *>(base_type);
 		elem_type = vdd->element_type ? vdd->element_type : &ddINT64;
 	    }
+	    else if ( !handled_fixed_array && base_type && base_type->is_madc_array() )
+		// madc array member chain (`s.a[0]`): element read,
+		// string-first typing (madc_array_element_type).
+		elem_type = madc_array_element_type();
 	    else if ( !handled_fixed_array && base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
 		elem_type = unwrap_subscript_element_type(base_type);
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);
@@ -26945,7 +26965,12 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			DBG(cout << "parseExpression: subscript on " << tv->var.name << endl);
-			exStack.push(new TokenSubscript(tv->var, idx));
+			TokenSubscript *tsn = new TokenSubscript(tv->var, idx);
+			// madc array element read: string-first typing (the
+			// Python/PHP element model — see madc_array_element_type).
+			if ( tv->var.type && tv->var.type->is_madc_array() )
+			    tsn->setDataType(madc_array_element_type());
+			exStack.push(tsn);
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    // Widened detection: complex value-producing expressions
@@ -27033,6 +27058,10 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			// SIMD vector subscript: v[i] yields the lane element type.
 			if ( elem_type && elem_type->is_simd() )
 			    elem_type = static_cast<DataDefSIMD *>(elem_type)->element_type;
+			// madc array member (`s.a[0]`, `sys.argv[1]`): element
+			// read, string-first typing (madc_array_element_type).
+			if ( elem_type && elem_type->is_madc_array() )
+			    elem_type = madc_array_element_type();
 			// Fixed-array decay: when the base was widened via the
 			// fixed-array fallback, the chain's datadef() reports the
 			// element type (TokenVar of fixed-array does so), and

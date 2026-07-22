@@ -7051,6 +7051,34 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		return mmember;
 	}
 
+	// A madc `array` (madc::value) member: the member-field form of
+	// obj_storage_decl's local lowering — an opaque
+	// _Alignas(alignof(madc::value)) long[] buffer. Construction and
+	// destruction are driven by the enclosing class's ctor/dtor paths
+	// (class-hood is guaranteed: dtARRAY is_object() promotes the owner),
+	// so like a class member it carries no independent cleanup attribute.
+	// User dims (if any) stay outermost, as in the class-object arm above.
+	if (is_array_object(mtype)) {
+		node_t mspec = list();
+		if (alignof(madc::value) > alignof(long))
+			append(mspec, node1(N_ALIGNAS,
+				integer((long)alignof(madc::value), m.origin)));
+		append(mspec, simple(N_LONG, m.origin));
+		node_t mdecl_list = list();
+		if (m_flexible)
+			append(mdecl_list, node3(N_ARR, ignore(), list(), ignore()));
+		for (size_t d = 0; d < mdims.size(); d++)
+			append(mdecl_list, node3(N_ARR, ignore(), list(), integer(mdims[d])));
+		append(mdecl_list, node3(N_ARR, ignore(), list(),
+					 integer((long)array_obj_words(), m.origin)));
+		node_t mmember = simple(N_MEMBER, m.origin);
+		append(mmember, node1(N_SHARE, mspec));
+		append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), mdecl_list));
+		append(mmember, ignore());
+		append(mmember, ignore());
+		return mmember;
+	}
+
 	// Type specifier. A member declared via a typedef emits ID("alias")
 	// regardless of pointer-ness — the stars belong on the declarator, not
 	// the type spec (matches c2m). The star count is the explicit indirection
@@ -8885,6 +8913,86 @@ void CirBuilder::flush_pending_stmts(std::vector<node_t> &out)
 	m_pending_stmts.clear();
 }
 
+// `sym((void*)recv->member)` as an expression statement — the runtime
+// ctor/dtor call for a madc `array` (madc::value) DATA MEMBER. The member's
+// long[] buffer field decays to its address under the void* cast (the
+// member-field form of obj_default_ctor_call / the local cleanup dtor).
+node_t CirBuilder::array_member_runtime_call(const char *sym, bool returns_value,
+					     const char *recv_ptr,
+					     const std::string &mname,
+					     TokenBase *origin)
+{
+	need_output_extern(sym, returns_value, { { {N_VOID}, true } });
+	node_t fld = node2(N_DEREF_FIELD, id(recv_ptr, origin),
+			   id(mname.c_str(), origin));
+	node_t args = list();
+	append(args, node2(N_CAST, void_ptr_type(), fld, origin));
+	node_t call = node2(N_CALL, id(sym, origin), args, origin);
+	return node2(N_EXPR, list(), call, origin);
+}
+
+// A madc `array` (madc::value) element READ — `arr[i]`, `sys.argv[1]`,
+// `s.a[0]`. Elements are tagged madc::value entries with no stable typed
+// lvalue to alias, so reads materialize through the runtime getters (the
+// range-for element-fill model as an expression):
+//   string-typed (the parser's string-first element typing, scls != NULL):
+//   a scope-lived default-constructed string temp filled via
+//   operator=(char*) from __php_array_get_cstr; the expression is the
+//   temp's lvalue (decl/ctor/fill ride m_pending_stmts, which the block
+//   translator flushes ahead of the consuming statement).
+//   long-typed (legacy / no-<string> fallback): __php_array_get_int value.
+// container_void: (void*)-cast node addressing the array object.
+node_t CirBuilder::madc_array_subscript_read(node_t container_void,
+					     node_t index_node,
+					     DataDefCLASS *scls,
+					     TokenBase *origin)
+{
+	if (!scls) {
+		need_output_extern("__php_array_get_int", false,
+				   { { {N_VOID}, true }, { {N_LONG}, false } },
+				   std::vector<c2mir_node_code_t>{N_LONG});
+		referenced_funcs.insert("__php_array_get_int");
+		node_t a = list();
+		append(a, container_void);
+		append(a, index_node);
+		return node2(N_CALL, id("__php_array_get_int", origin), a, origin);
+	}
+	FuncDef *op = class_assign_cstr_operator_def(scls);
+	if (!op)
+		return error_node("madc array element read requires "
+				  "operator=(char*) on the element type", origin);
+	char name[32];
+	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
+	Variable *tmp = new Variable(name, *scls, 1, NULL, false);
+	tmp->flags |= vfLOCAL;
+	m_pending_stmts.push_back(var_decl(tmp, origin));
+	node_t cc = class_ctor_call(tmp, scls, std::vector<TokenBase *>(), origin);
+	if (cc) m_pending_stmts.push_back(cc);
+	need_output_extern("__php_array_get_cstr", true,
+			   { { {N_VOID}, true }, { {N_LONG}, false } });
+	node_t ga = list();
+	append(ga, container_void);
+	append(ga, index_node);
+	node_t getcall = node2(N_CALL, id("__php_array_get_cstr", origin), ga,
+			       origin);
+	std::string sym = class_method_call_symbol(scls, op, "operator=");
+	bool external = !op->emit_symbol.empty();
+	if (external)
+		need_output_extern(sym.c_str(), true,
+				   { { {N_VOID}, true }, { {N_CHAR}, true } });
+	else
+		referenced_funcs.insert(sym);
+	node_t fa = list();
+	node_t dst = node1(N_ADDR, id(name, origin), origin);
+	if (external)
+		dst = node2(N_CAST, void_ptr_type(), dst, origin);
+	append(fa, dst);
+	append(fa, getcall);
+	m_pending_stmts.push_back(node2(N_EXPR, list(),
+		node2(N_CALL, id(sym.c_str(), origin), fa, origin), origin));
+	return id(name, origin);
+}
+
 bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
 					std::vector<node_t> &out, TokenBase *origin,
 					const std::set<std::string> *skip)
@@ -8893,6 +9001,14 @@ bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
 	bool any = false;
 	for (const auto &m : cdd->members) {
 		if (skip && skip->count(m.first)) continue;
+		if (is_array_object(m.second)) {
+			flush_pending_stmts(out);
+			out.push_back(array_member_runtime_call(
+				"madarray_construct", true, "__this", m.first,
+				origin));
+			any = true;
+			continue;
+		}
 		DataDefCLASS *mc = as_class_instance(m.second);
 		if (!mc) continue;
 #ifdef MADC_DEBUG_CTORINIT
@@ -9108,8 +9224,11 @@ bool CirBuilder::emit_member_default_inits(DataDefCLASS *cdd, const char *recv,
 	for (const auto &m : cdd->members) {
 		// Object members value-init through the existing member-construction
 		// path; an NSDMI `= T()` on such a member IS that same value-init, so
-		// it carries no translatable scalar initializer here.
-		if (as_class_instance(m.second)) continue;
+		// it carries no translatable scalar initializer here. A madc `array`
+		// member is such an object too — a scalar assign into its buffer
+		// would corrupt the placement-new'd madc::value.
+		if (as_class_instance(m.second) || is_array_object(m.second))
+			continue;
 		std::map<std::string, TokenBase *>::const_iterator di =
 			cdd->member_default_inits.find(m.first);
 		if (di == cdd->member_default_inits.end() || !di->second) continue;
@@ -9133,6 +9252,13 @@ bool CirBuilder::class_member_destruct(DataDefCLASS *cdd,
 	// Destruct in reverse declaration order (mirrors C++ member teardown).
 	for (size_t i = cdd->members.size(); i-- > 0; ) {
 		const auto &m = cdd->members[i];
+		if (is_array_object(m.second)) {
+			out.push_back(array_member_runtime_call(
+				"madarray_destruct", false, "__this", m.first,
+				origin));
+			any = true;
+			continue;
+		}
 		DataDefCLASS *mc = as_class_instance(m.second);
 		if (!mc || !class_needs_dtor(mc)) continue;
 		std::string sym = class_dtor_symbol(mc);
@@ -9187,6 +9313,9 @@ bool CirBuilder::class_needs_dtor(DataDefCLASS *cdd)
 	m_needs_dtor_memo[cdd] = false;
 	bool needs = false;
 	for (const auto &m : cdd->members) {
+		// A madc `array` (madc::value) member always needs destruction
+		// (refcounted cells released via madarray_destruct).
+		if (is_array_object(m.second)) { needs = true; break; }
 		DataDefCLASS *mc = as_class_instance(m.second);
 		if (mc && class_needs_dtor(mc)) { needs = true; break; }
 	}
@@ -9718,6 +9847,13 @@ bool CirBuilder::append_member_default_constructs(node_t items,
 	if (!cdd) return false;
 	bool any = false;
 	for (const auto &m : cdd->members) {
+		if (is_array_object(m.second)) {
+			append(items, array_member_runtime_call(
+				"madarray_construct", true, recv_ptr, m.first,
+				origin));
+			any = true;
+			continue;
+		}
 		DataDefCLASS *mc = as_class_instance(m.second);
 		if (!mc) continue;
 		if (mc->has_user_ctor && !class_default_ctor_def(mc))
@@ -9809,6 +9945,9 @@ bool CirBuilder::class_needs_member_construction(DataDefCLASS *cdd)
 {
 	if (!cdd) return false;
 	for (const auto &m : cdd->members) {
+		// A madc `array` (madc::value) member always needs construction
+		// (placement-new via madarray_construct).
+		if (is_array_object(m.second)) return true;
 		DataDefCLASS *mc = as_class_instance(m.second);
 		if (!mc) continue;
 		if (mc->has_user_ctor
@@ -14834,6 +14973,19 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			} else {
 				base = id(var_emit_name(tsub->object).c_str(), tb);
 			}
+			// madc array element read (`arr[i]`): route through the
+			// runtime getters — a raw N_IND would index the value
+			// object's long[] buffer words.
+			if (is_array_object(tsub->object.type)) {
+				if (!tsub->extra_indices.empty())
+					return error_node("multi-dimensional subscript is "
+							  "not supported on a madc array",
+							  tb);
+				return madc_array_subscript_read(
+					node2(N_CAST, void_ptr_type(), base, tb),
+					translate_expr(tsub->index),
+					as_class_instance(tsub->datadef()), tb);
+			}
 			node_t n = node2(N_IND, base,
 				translate_expr(tsub->index), tb);
 			// Multi-dim fixed array: a[i][j] -> IND(IND(a,i),j)
@@ -14868,6 +15020,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						       ? node1(N_DEREF, addr, tb) : addr;
 				}
 			}
+			// madc array element read on an expression base
+			// (`s.a[0]`, `sys.argv[1]`): route through the runtime
+			// getters — a raw N_IND would index the value object's
+			// long[] buffer words.
+			if (tse->base_expr && tse->base_expr->datadef()
+			    && is_array_object(tse->base_expr->datadef()))
+				return madc_array_subscript_read(
+					node2(N_CAST, void_ptr_type(),
+					      translate_expr(tse->base_expr), tb),
+					translate_expr(tse->index),
+					as_class_instance(tse->datadef()), tb);
 			// Multi-dim VLA `M1[i0][i1]...[ik]` parses as a NESTED
 			// TokenSubscriptExpr(...(TokenSubscript(M1,i0))...,ik) because M1 is
 			// a flat malloc'd pointer (c2mir has no VLA types), so the nested
