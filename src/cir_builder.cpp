@@ -6321,6 +6321,60 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 	return cl;
 }
 
+// File-scope initializer classification for the C++ dynamic-init lowering:
+// a C11 static initializer must be a constant expression, so an initializer
+// that READS a variable or CALLS a function has to run at startup instead
+// (queued into __madc_global_init — the g++ dynamic-initialization model).
+// Address formation stays static (&global, &s.f, &a[3] are address
+// constants); an index expression under & returns to value context. Erring
+// toward "dynamic" is safe (same value, initialized at startup); erring
+// toward "static" is a c2mir check error — so only known-constant shapes
+// stay static.
+static bool init_expr_needs_dynamic_init(node_t n, bool addr_ctx)
+{
+	if (!n)
+		return false;
+	switch (n->code) {
+	case N_CALL:
+		return true;
+	case N_ID:
+		return !addr_ctx;	// a value read; under & it is an address constant
+	case N_ADDR:
+		return init_expr_needs_dynamic_init(c2mir_node_op(n, 0), true);
+	case N_IND: {
+		// a[i]: the array operand keeps its context, the index is a value.
+		if (init_expr_needs_dynamic_init(c2mir_node_op(n, 0), addr_ctx))
+			return true;
+		return init_expr_needs_dynamic_init(c2mir_node_op(n, 1), false);
+	}
+	case N_FIELD:
+		// s.f — the base keeps its context; the member NAME id is not a read.
+		return init_expr_needs_dynamic_init(c2mir_node_op(n, 0), addr_ctx);
+	case N_DEREF_FIELD:
+		// p->f reads the pointer value regardless of context.
+		return init_expr_needs_dynamic_init(c2mir_node_op(n, 0), false);
+	case N_CAST:
+		// The type-name subtree may carry typedef N_IDs — only the
+		// operand expression matters.
+		return init_expr_needs_dynamic_init(c2mir_node_op(n, 1), addr_ctx);
+	case N_SIZEOF:
+	case N_EXPR_SIZEOF:
+	case N_ALIGNOF:
+		return false;	// unevaluated operand; always a constant
+	default:
+		break;
+	}
+	if (n->code > N_ID)
+		for (int i = 0;; i++) {
+			node_t op = c2mir_node_op(n, i);
+			if (!op)
+				break;
+			if (init_expr_needs_dynamic_init(op, false))
+				return true;
+		}
+	return false;
+}
+
 node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 {
 	// Runtime-object classes flow through the general class-instance path below:
@@ -6546,6 +6600,10 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 
 	node_t var_decl_node = node2(N_DECL, var_id, decl_list);
 	node_t init_node = ignore();
+	// Set when a file-scope non-constant initializer is rerouted to
+	// __madc_global_init (dynamic init) — skips the upcast on the
+	// placeholder init_node.
+	bool init_deferred = false;
 	TokenDecl *tdecl = dynamic_cast<TokenDecl *>(origin);
 
 	// C99 variable-length array local (`int a[n]`, runtime `n`). The parser
@@ -6697,8 +6755,25 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			// Runtime initializer (scalar, other complex, expression):
 			// convert to this lowered type.
 			init_node = int_complex_value(init_expr, low, origin);
-		else
+		else {
+		size_t pending_before = m_pending_stmts.size();
 		init_node = translate_expr(init_expr);
+		// File-scope C++ dynamic init (g++ model): a non-constant
+		// initializer cannot live in the SPEC_DECL (c2mir checks it) —
+		// drop it here (back to the N_IGNORE placeholder), discard its
+		// pending temps, and let collect_global_ctors queue the full
+		// source assignment into __madc_global_init in declaration
+		// order. C modes keep the standard behavior (constant-only;
+		// c2mir diagnoses).
+		if (m_file_scope_decl && m_prog && m_prog->presents_as_cpp()
+		    && init_expr_needs_dynamic_init(init_node, false)) {
+			m_dynamic_global_inits.insert(v);
+			m_pending_stmts.resize(pending_before);
+			init_node = ignore();
+			init_deferred = true;
+		}
+		}
+		if (!init_deferred)
 		// Derived->base pointer initializer (`A *p = new B();`, `A *p = bptr;`)
 		// — and, via pointee_user_class's reference handling, a class
 		// REFERENCE bound to a derived lvalue (`V &vr = *bp;`, the parser
@@ -19795,7 +19870,36 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		// An extern is a reference to a definition elsewhere — no storage, no ctor.
 		if (v->flags & vfEXTERN) continue;
 		DataDefCLASS *cdd = as_class_instance(v->type);
-		if (!cdd) continue;
+		if (!cdd) {
+			// Non-class global with a dynamic (non-constant) scalar
+			// initializer: var_decl emitted bare storage; queue the
+			// full source assignment here so it runs at main entry
+			// in declaration order, interleaved with class ctors
+			// (the g++ dynamic-initialization model).
+			if (!m_dynamic_global_inits.count(v))
+				continue;
+			TokenDecl *sdecl = NULL;
+			for (auto &td : prog->top_decls)
+				if (td.kind == Program::DeclKind::dkGlobalVar
+				    && td.var == v) { sdecl = td.decl; break; }
+			if (!sdecl || !sdecl->initialize)
+				continue;
+			node_t as = translate_expr(sdecl->initialize);
+			m_ctor_groups.push_back(std::make_pair(
+				v, std::vector<node_t>()));
+			std::vector<node_t> &sgrp = m_ctor_groups.back().second;
+			for (node_t p : m_pending_stmts) {
+				m_global_ctor_stmts.push_back(p);
+				sgrp.push_back(p);
+			}
+			m_pending_stmts.clear();
+			if (as) {
+				node_t st = node2(N_EXPR, list(), as);
+				m_global_ctor_stmts.push_back(st);
+				sgrp.push_back(st);
+			}
+			continue;
+		}
 		bool already_emitted = emitted_globals.count(v->name) != 0;
 		TokenDecl *decl = NULL;
 		if (!already_emitted) {
@@ -21070,7 +21174,11 @@ node_t CirBuilder::translate_module(Program *prog)
 				// global's init in its SPEC_DECL — the single source for
 				// the CIR backend (tkProgram->statements is not walked here).
 				// Deferred until after the function prototypes (see above).
+				// m_file_scope_decl arms the dynamic-init routing for
+				// non-constant scalar initializers (C++ modes).
+				m_file_scope_decl = true;
 				node_t gd = var_decl(td.var, td.decl);
+				m_file_scope_decl = false;
 				if (gd) {
 					stamp(gd, td);
 					deferred_globals.push_back(gd);
