@@ -792,6 +792,20 @@ struct text_ref {
 typedef struct text_ref text_ref_t;
 DEF_VARR (text_ref_t);
 
+/* Object mode (R6 PIC): a switch table emitted with the current function --
+   the capture moves its 8-byte absolute label slots into .mir.addrpool and
+   turns the table-address disp32 into a PC32 reference. */
+struct switch_table_desc {
+  size_t disp32_pc; /* where the table-address disp32 sits in result_code */
+  size_t table_off; /* table start in result_code */
+  size_t n_slots;   /* 8-byte label slots */
+};
+
+typedef struct switch_table_desc switch_table_desc_t;
+DEF_VARR (switch_table_desc_t);
+
+DEF_VARR (MIR_item_t);
+
 struct target_ctx {
   unsigned char alloca_p, block_arg_func_p, leaf_p, keep_fp_p;
   int start_sp_from_bp_offset;
@@ -801,12 +815,17 @@ struct target_ctx {
   VARR (insn_pattern_info_t) * insn_pattern_info;
   VARR (uint8_t) * result_code;
   VARR (uint64_t) * const_pool;
+  VARR (MIR_item_t) * const_pool_items; /* parallel to const_pool: the referenced item for
+                                           address entries, NULL for pure values -- dedup keys
+                                           (value, item) so two imports sharing a resolver
+                                           sentinel value never share a slot */
   VARR (const_ref_t) * const_refs;
   VARR (label_ref_t) * label_refs;
   VARR (uint64_t) * abs_address_locs;
   VARR (MIR_code_reloc_t) * relocs;
   VARR (call_ref_t) * call_refs;
   VARR (text_ref_t) * text_refs; /* object mode: imm64 item addresses in code text */
+  VARR (switch_table_desc_t) * switch_table_descs; /* object mode: tables to move to the pool */
 };
 
 #define alloca_p gen_ctx->target_ctx->alloca_p
@@ -821,11 +840,13 @@ struct target_ctx {
 #define insn_pattern_info gen_ctx->target_ctx->insn_pattern_info
 #define result_code gen_ctx->target_ctx->result_code
 #define const_pool gen_ctx->target_ctx->const_pool
+#define const_pool_items gen_ctx->target_ctx->const_pool_items
 #define const_refs gen_ctx->target_ctx->const_refs
 #define label_refs gen_ctx->target_ctx->label_refs
 #define abs_address_locs gen_ctx->target_ctx->abs_address_locs
 #define relocs gen_ctx->target_ctx->relocs
 #define text_refs gen_ctx->target_ctx->text_refs
+#define switch_table_descs gen_ctx->target_ctx->switch_table_descs
 
 static void prohibit_omitting_fp (gen_ctx_t gen_ctx) { keep_fp_p = TRUE; }
 
@@ -1522,6 +1543,8 @@ struct pattern {
      h[0-31] - hard register with given number
      z - operand is zero
      i[0-3] - immediate (including refs) of size 8,16,32,64-bits
+     j - item reference in object (PIC) mode -- materialized through a
+         .mir.addrpool slot ('p' replacement) instead of an in-text imm64
      s - immediate 1, 2, 4, or 8 (scale)
      c<number> - immediate integer <number>
      m[0-3] - int (signed or unsigned) type memory of size 8,16,32,64-bits
@@ -1557,6 +1580,8 @@ struct pattern {
      I[0-2] - n-th operand in 4 byte immediate (should be imm of type i32)
      J[0-2] - n-th operand in 8 byte immediate
      P[0-2] - n-th operand is 64-bit call address in memory pool
+     p[0-2] - n-th operand is a 64-bit value read from the memory pool (not a
+              call: the JIT direct-call rewrite ignores it)
      T     - relative switch table address
      q     - mod==0, rm==5 (ip-relative addressing)
      L[0-2] - n-th operand-label in 32-bit
@@ -1763,6 +1788,7 @@ static struct pattern patterns[] = {
   {MIR_MOV, "m3 r", "X 89 r1 m0", 0},     /* mov m0,r1 */
   {MIR_MOV, "r i2", "X C7 /0 R0 I1", 0},  /* mov r0,i32 */
   {MIR_MOV, "m3 i2", "X C7 /0 m0 I1", 0}, /* mov m0,i32 */
+  {MIR_MOV, "r j", "X 8B r0 p1", 0},      /* PIC object mode: mov r0,pool[ref] */
   {MIR_MOV, "r i3", "X B8 +0 J1", 0},     /* mov r0,i64 */
 
   {MIR_MOV, "m0 r", "Z 88 r1 m0", 0},    /* mov m0, r1 */
@@ -2278,6 +2304,12 @@ static int pattern_match_p (gen_ctx_t gen_ctx, const struct pattern *pat, MIR_in
         return FALSE;
       break;
     }
+    case 'j':
+      /* Object mode (PIC) only: an item reference to be materialized through
+         a .mir.addrpool slot instead of an in-text imm64.  Listed before the
+         movabs pattern so it wins whenever it applies. */
+      if (op_ref->mode != MIR_OP_REF || !object_mode_p) return FALSE;
+      break;
     case 's':
       if ((op_ref->mode != MIR_OP_INT && op_ref->mode != MIR_OP_UINT)
           || (op_ref->u.i != 1 && op_ref->u.i != 2 && op_ref->u.i != 4 && op_ref->u.i != 8))
@@ -2587,13 +2619,19 @@ static int64_t get_int64 (uint8_t *addr, int nb) {
   return v;
 }
 
-static size_t add_to_const_pool (struct gen_ctx *gen_ctx, uint64_t v) {
+/* Dedup on (value, referenced item): in object mode several unresolved
+   imports may share one resolver sentinel VALUE while needing distinct,
+   individually-relocated slots; keying the item keeps them apart (in JIT
+   mode distinct items never share an address, so the extra key is inert). */
+static size_t add_to_const_pool (struct gen_ctx *gen_ctx, uint64_t v, MIR_item_t ref_item) {
   uint64_t *addr = VARR_ADDR (uint64_t, const_pool);
+  MIR_item_t *items = VARR_ADDR (MIR_item_t, const_pool_items);
   size_t n, len = VARR_LENGTH (uint64_t, const_pool);
 
   for (n = 0; n < len; n++)
-    if (addr[n] == v) return n;
+    if (addr[n] == v && items[n] == ref_item) return n;
   VARR_PUSH (uint64_t, const_pool, v);
+  VARR_PUSH (MIR_item_t, const_pool_items, ref_item);
   return len;
 }
 
@@ -2602,7 +2640,7 @@ static int setup_imm_addr (struct gen_ctx *gen_ctx, uint64_t v, int *mod, int *r
   const_ref_t cr;
   size_t n;
 
-  n = add_to_const_pool (gen_ctx, v);
+  n = add_to_const_pool (gen_ctx, v, ref_item);
   setup_rip_rel_addr (0, mod, rm, disp32);
   cr.call_p = call_p;
   cr.func_item = func_item;
@@ -2711,6 +2749,7 @@ static int get_max_insn_size (gen_ctx_t gen_ctx MIR_UNUSED, const char *replacem
         gen_assert ('0' <= ch && ch <= '2');
         break;
       case 'P':
+      case 'p':
         ch = *++p;
         gen_assert ('0' <= ch && ch <= '7');
         modrm_p = TRUE;
@@ -2983,6 +3022,11 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
         VARR_PUSH (label_ref_t, label_refs, lr);
         break;
       case 'P':
+      case 'p': {
+        /* 'P': 64-bit call/jump target read through a pool slot; 'p': the
+           same pool-slot read as a plain value load (PIC ref materialization
+           -- never a call, so the JIT's direct-call rewrite must skip it) */
+        int pool_call_p = start_ch == 'P';
         ch = *++p;
         gen_assert ('0' <= ch && ch <= '7');
         op_ref = &insn->ops[ch - '0'];
@@ -2994,9 +3038,10 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
           = op_ref->mode != MIR_OP_REF || op_ref->u.ref->item_type != MIR_func_item ? NULL
                                                                                     : op_ref->u.ref;
         const_ref_num
-          = setup_imm_addr (gen_ctx, v, &mod, &rm, &disp32, TRUE, func_item,
+          = setup_imm_addr (gen_ctx, v, &mod, &rm, &disp32, pool_call_p, func_item,
                             op_ref->mode == MIR_OP_REF ? op_ref->u.ref : NULL);
         break;
+      }
       case '/':
         ch = *++p;
         gen_assert ('0' <= ch && ch <= '7');
@@ -3116,8 +3161,20 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
   while (VARR_LENGTH (uint8_t, result_code) % 8 != 0) put_byte (gen_ctx, 0); /* align the table */
   gen_assert (insn->code == MIR_SWITCH
               && (int) VARR_LENGTH (uint8_t, result_code) > switch_table_addr_start_offset);
-  set_int64 (&VARR_ADDR (uint8_t, result_code)[switch_table_addr_start_offset],
-             (int64_t) VARR_LENGTH (uint8_t, result_code) - switch_table_addr_start_offset - 4, 4);
+  if (object_mode_p) {
+    /* PIC: the capture moves the table into .mir.addrpool -- the disp32
+       stays zero for its PC32 relocation, the in-blob table bytes become
+       dead padding (the indirect jump never falls through them). */
+    switch_table_desc_t std;
+    std.disp32_pc = (size_t) switch_table_addr_start_offset;
+    std.table_off = VARR_LENGTH (uint8_t, result_code);
+    std.n_slots = insn->nops - 1;
+    VARR_PUSH (switch_table_desc_t, switch_table_descs, std);
+  } else {
+    set_int64 (&VARR_ADDR (uint8_t, result_code)[switch_table_addr_start_offset],
+               (int64_t) VARR_LENGTH (uint8_t, result_code) - switch_table_addr_start_offset - 4,
+               4);
+  }
   for (size_t i = 1; i < insn->nops; i++) {
     gen_assert (insn->ops[i].mode == MIR_OP_LABEL);
     lr.abs_addr_p = TRUE;
@@ -3152,10 +3209,12 @@ static int target_insn_ok_p (gen_ctx_t gen_ctx, MIR_insn_t insn) {
 static void translate_init (gen_ctx_t gen_ctx) {
   VARR_TRUNC (uint8_t, result_code, 0);
   VARR_TRUNC (uint64_t, const_pool, 0);
+  VARR_TRUNC (MIR_item_t, const_pool_items, 0);
   VARR_TRUNC (const_ref_t, const_refs, 0);
   VARR_TRUNC (label_ref_t, label_refs, 0);
   VARR_TRUNC (uint64_t, abs_address_locs, 0);
   VARR_TRUNC (text_ref_t, text_refs, 0);
+  VARR_TRUNC (switch_table_desc_t, switch_table_descs, 0);
 }
 
 static uint8_t *translate_finish (gen_ctx_t gen_ctx, size_t *len) {
@@ -3176,16 +3235,21 @@ static uint8_t *translate_finish (gen_ctx_t gen_ctx, size_t *len) {
                  (int64_t) get_label_disp (gen_ctx, lr.u.label) - (int64_t) lr.next_insn_disp, 4);
     }
   }
-  while (VARR_LENGTH (uint8_t, result_code) % 16 != 0) /* Align the pool */
-    VARR_PUSH (uint8_t, result_code, 0);
-  for (size_t i = 0; i < VARR_LENGTH (const_ref_t, const_refs); i++) { /* Add pool constants */
-    const_ref_t cr = VARR_GET (const_ref_t, const_refs, i);
+  if (!object_mode_p) {
+    while (VARR_LENGTH (uint8_t, result_code) % 16 != 0) /* Align the pool */
+      VARR_PUSH (uint8_t, result_code, 0);
+    for (size_t i = 0; i < VARR_LENGTH (const_ref_t, const_refs); i++) { /* Add pool constants */
+      const_ref_t cr = VARR_GET (const_ref_t, const_refs, i);
 
-    set_int64 (VARR_ADDR (uint8_t, result_code) + cr.pc,
-               VARR_LENGTH (uint8_t, result_code) - cr.next_insn_disp, 4);
-    put_uint64 (gen_ctx, VARR_GET (uint64_t, const_pool, cr.const_num), 8);
-    put_uint64 (gen_ctx, 0, 8); /* keep 16 bytes align */
+      set_int64 (VARR_ADDR (uint8_t, result_code) + cr.pc,
+                 VARR_LENGTH (uint8_t, result_code) - cr.next_insn_disp, 4);
+      put_uint64 (gen_ctx, VARR_GET (uint64_t, const_pool, cr.const_num), 8);
+      put_uint64 (gen_ctx, 0, 8); /* keep 16 bytes align */
+    }
   }
+  /* Object mode (PIC): the pool lives in .mir.addrpool, one slot per unique
+     (value, item) entry; the capture resolves every disp32 through a PC32
+     relocation, so nothing is appended to the code here. */
   *len = VARR_LENGTH (uint8_t, result_code);
   return VARR_ADDR (uint8_t, result_code);
 }
@@ -3309,20 +3373,34 @@ static void target_rebase (gen_ctx_t gen_ctx, uint8_t *base) {
 }
 
 /* Object mode replacement for publish + target_rebase: land the blob in
-   .text and turn the target ledgers into relocations.  Label refs and the
-   const-pool disp32s are already section-internal (translate_finish resolved
-   them inside the blob, and the pool rides along in .text exactly as in the
-   JIT layout); only 8-byte absolute slots need relocs.  Relocated slot bytes
-   are zeroed -- the RELA addends carry everything.  The JIT-only
-   change_calls / call_refs (redef) machinery is skipped: the emitted module
-   is emit-final. */
+   .text and turn the target ledgers into relocations.  The output is PIC
+   (R6): NOTHING absolute stays in text.  The const pool -- skipped by
+   translate_finish in object mode -- lands in .mir.addrpool, one 16-byte
+   slot per unique (value, item) entry (value entries keep their bytes; item
+   entries are zeroed under an ABS64 relocation), and every referencing
+   disp32 becomes a PC32 relocation into the pool.  Switch tables move the
+   same way: their 8-byte label slots become pool ABS64s against the text
+   section symbol, the table-address disp32 a PC32, and the dead in-blob
+   table bytes are zeroed (the indirect jump never executes them).  imm64
+   item refs cannot occur -- the 'j'/'p' pool pattern covers every
+   object-mode REF materialization -- and a leak is a loud error, not a
+   silent text relocation.  The JIT-only change_calls / call_refs (redef)
+   machinery is skipped: the emitted module is emit-final. */
 #define TARGET_HAS_OBJECT_CAPTURE 1
 static void target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code_len) {
+  MIR_context_t ctx = gen_ctx->ctx;
   MIR_object_t obj = gen_object;
-  size_t i;
+  size_t i, j;
 
-  /* abs label slots (computed goto, switch tables): the slot holds the
-     in-function label displacement; save (offset, disp) then zero */
+  if (VARR_LENGTH (text_ref_t, text_refs) != 0)
+    (*MIR_get_error_func (ctx)) (MIR_func_error,
+                                 "AOT object mode: an item reference escaped the PIC address "
+                                 "pool into a text imm64 (func %s)",
+                                 curr_func_item->u.func->name);
+
+  /* switch-table label slots: the slot holds the in-function label
+     displacement; save (offset, disp) then zero the dead bytes -- this must
+     happen before the blob is copied into .text */
   VARR_TRUNC (MIR_code_reloc_t, relocs, 0);
   for (i = 0; i < VARR_LENGTH (uint64_t, abs_address_locs); i++) {
     MIR_code_reloc_t reloc;
@@ -3331,37 +3409,63 @@ static void target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code
     VARR_PUSH (MIR_code_reloc_t, relocs, reloc);
     memset (code + reloc.offset, 0, 8);
   }
-  /* const-pool slots holding item addresses: locate each ref's slot through
-     its already-resolved rip-relative disp32 */
-  for (i = 0; i < VARR_LENGTH (const_ref_t, const_refs); i++) {
-    const_ref_t cr = VARR_GET (const_ref_t, const_refs, i);
-    if (cr.ref_item == NULL) continue;
-    size_t slot_off = cr.next_insn_disp + (size_t) get_int64 (code + cr.pc, 4);
-    text_ref_t tr = {slot_off, cr.ref_item};
-    VARR_PUSH (text_ref_t, text_refs, tr);
-  }
-  /* zero every item-address slot (imm64s in text + pool slots) */
-  for (i = 0; i < VARR_LENGTH (text_ref_t, text_refs); i++)
-    memset (code + VARR_GET (text_ref_t, text_refs, i).offset, 0, 8);
 
   size_t func_off = MIR_object_text_append (obj, code, code_len);
   int sym = gen_obj_item_sym (gen_ctx, curr_func_item);
   MIR_object_symbol_define (obj, sym, MIR_OBJ_SEC_TEXT, func_off, code_len, TRUE,
                             !curr_func_item->export_p, FALSE);
-
   int text_sec_sym = MIR_object_section_symbol (obj, MIR_OBJ_SEC_TEXT);
-  for (i = 0; i < VARR_LENGTH (MIR_code_reloc_t, relocs); i++) {
-    MIR_code_reloc_t reloc = VARR_GET (MIR_code_reloc_t, relocs, i);
-    MIR_object_add_reloc (obj, MIR_OBJ_SEC_TEXT, func_off + reloc.offset, text_sec_sym,
-                          (int64_t) func_off + (int64_t) (uintptr_t) reloc.value,
-                          MIR_OBJ_RELOC_ABS64);
+  int pool_sec_sym = MIR_object_section_symbol (obj, MIR_OBJ_SEC_ADDRPOOL);
+
+  /* const pool -> .mir.addrpool, entry n at pool_base + n*16 (the JIT pool
+     layout, so the SSE-constant 16-byte alignment survives the move) */
+  size_t pool_base = 0, n_pool = VARR_LENGTH (uint64_t, const_pool);
+  for (i = 0; i < n_pool; i++) {
+    MIR_item_t it = VARR_GET (MIR_item_t, const_pool_items, i);
+    uint64_t ent[2];
+    ent[0] = it != NULL ? 0 : VARR_GET (uint64_t, const_pool, i);
+    ent[1] = 0;
+    size_t off = MIR_object_addrpool_append (obj, ent, 16, 16);
+    if (i == 0) pool_base = off;
+    gen_assert (off == pool_base + i * 16);
+    if (it != NULL)
+      MIR_object_add_reloc (obj, MIR_OBJ_SEC_ADDRPOOL, off, gen_obj_item_sym (gen_ctx, it), 0,
+                            MIR_OBJ_RELOC_ABS64);
   }
+  /* every pool reference: PC32 into the entry.  The CPU's rip is the insn
+     END (cr.next_insn_disp), the relocation is applied at cr.pc -- the
+     addend bridges the difference for insns with fields after the disp32. */
+  for (i = 0; i < VARR_LENGTH (const_ref_t, const_refs); i++) {
+    const_ref_t cr = VARR_GET (const_ref_t, const_refs, i);
+    int64_t addend
+      = (int64_t) (pool_base + cr.const_num * 16) - (int64_t) (cr.next_insn_disp - cr.pc);
+    MIR_object_add_reloc (obj, MIR_OBJ_SEC_TEXT, func_off + cr.pc, pool_sec_sym, addend,
+                          MIR_OBJ_RELOC_PC32);
+  }
+
+  /* switch tables -> .mir.addrpool: the saved (offset, disp) pairs are
+     consumed in emission order, table by table */
+  size_t rel_i = 0;
+  for (i = 0; i < VARR_LENGTH (switch_table_desc_t, switch_table_descs); i++) {
+    switch_table_desc_t std = VARR_GET (switch_table_desc_t, switch_table_descs, i);
+    size_t toff = MIR_object_addrpool_append (obj, NULL, std.n_slots * 8, 8);
+    for (j = 0; j < std.n_slots; j++, rel_i++) {
+      gen_assert (rel_i < VARR_LENGTH (MIR_code_reloc_t, relocs));
+      MIR_code_reloc_t reloc = VARR_GET (MIR_code_reloc_t, relocs, rel_i);
+      gen_assert (reloc.offset == std.table_off + j * 8);
+      MIR_object_add_reloc (obj, MIR_OBJ_SEC_ADDRPOOL, toff + j * 8, text_sec_sym,
+                            (int64_t) func_off + (int64_t) (uintptr_t) reloc.value,
+                            MIR_OBJ_RELOC_ABS64);
+    }
+    MIR_object_add_reloc (obj, MIR_OBJ_SEC_TEXT, func_off + std.disp32_pc, pool_sec_sym,
+                          (int64_t) toff - 4, MIR_OBJ_RELOC_PC32);
+  }
+  if (rel_i != VARR_LENGTH (MIR_code_reloc_t, relocs))
+    (*MIR_get_error_func (ctx)) (MIR_func_error,
+                                 "AOT object mode: an absolute address slot in text is not "
+                                 "covered by a switch table (func %s)",
+                                 curr_func_item->u.func->name);
   VARR_TRUNC (MIR_code_reloc_t, relocs, 0);
-  for (i = 0; i < VARR_LENGTH (text_ref_t, text_refs); i++) {
-    text_ref_t tr = VARR_GET (text_ref_t, text_refs, i);
-    MIR_object_add_reloc (obj, MIR_OBJ_SEC_TEXT, func_off + tr.offset,
-                          gen_obj_item_sym (gen_ctx, tr.item), 0, MIR_OBJ_RELOC_ABS64);
-  }
   gen_obj_record_lrefs (gen_ctx, func_off);
 }
 
@@ -3424,10 +3528,12 @@ static void target_init_bb_version_data (target_bb_version_t data) {
 static void target_bb_translate_start (gen_ctx_t gen_ctx) {
   VARR_TRUNC (uint8_t, result_code, 0);
   VARR_TRUNC (uint64_t, const_pool, 0);
+  VARR_TRUNC (MIR_item_t, const_pool_items, 0);
   VARR_TRUNC (const_ref_t, const_refs, 0);
   VARR_TRUNC (label_ref_t, label_refs, 0);
   VARR_TRUNC (uint64_t, abs_address_locs, 0);
   VARR_TRUNC (text_ref_t, text_refs, 0);
+  VARR_TRUNC (switch_table_desc_t, switch_table_descs, 0);
 }
 
 static void target_bb_insn_translate (gen_ctx_t gen_ctx, MIR_insn_t insn, void **jump_addrs) {
@@ -3529,12 +3635,14 @@ static void target_init (gen_ctx_t gen_ctx) {
   VARR_CREATE (uint8_t, result_code, alloc, 0);
   VARR_CREATE (int, insn_pattern_indexes, alloc, 0);
   VARR_CREATE (uint64_t, const_pool, alloc, 0);
+  VARR_CREATE (MIR_item_t, const_pool_items, alloc, 0);
   VARR_CREATE (const_ref_t, const_refs, alloc, 0);
   VARR_CREATE (label_ref_t, label_refs, alloc, 0);
   VARR_CREATE (uint64_t, abs_address_locs, alloc, 0);
   VARR_CREATE (MIR_code_reloc_t, relocs, alloc, 0);
   VARR_CREATE (call_ref_t, gen_ctx->target_ctx->call_refs, alloc, 0);
   VARR_CREATE (text_ref_t, text_refs, alloc, 0);
+  VARR_CREATE (switch_table_desc_t, switch_table_descs, alloc, 0);
   MIR_type_t res = MIR_T_D;
   MIR_var_t args[] = {{MIR_T_D, "src", 0}};
   _MIR_register_unspec_insn (gen_ctx->ctx, MOVDQA_CODE, "movdqa", 1, &res, 1, FALSE, args);
@@ -3550,12 +3658,14 @@ static void target_finish (gen_ctx_t gen_ctx) {
   VARR_DESTROY (uint8_t, result_code);
   VARR_DESTROY (int, insn_pattern_indexes);
   VARR_DESTROY (uint64_t, const_pool);
+  VARR_DESTROY (MIR_item_t, const_pool_items);
   VARR_DESTROY (const_ref_t, const_refs);
   VARR_DESTROY (label_ref_t, label_refs);
   VARR_DESTROY (uint64_t, abs_address_locs);
   VARR_DESTROY (MIR_code_reloc_t, relocs);
   VARR_DESTROY (call_ref_t, gen_ctx->target_ctx->call_refs);
   VARR_DESTROY (text_ref_t, text_refs);
+  VARR_DESTROY (switch_table_desc_t, switch_table_descs);
   MIR_free (alloc, gen_ctx->target_ctx);
   gen_ctx->target_ctx = NULL;
 }
