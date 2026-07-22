@@ -153,8 +153,10 @@ enum MadcNativeKind { mnkObject, mnkExecutable, mnkShared };
 // translate + c2mir compile + MIR_link with a sentinel import resolver
 // (imports become undefined ELF symbols), then MIR assembles the output
 // itself (no external toolchain): relocatable .o (mnkObject), ET_EXEC
-// dynamic executable (mnkExecutable), or ET_DYN shared object (mnkShared;
-// DT_TEXTREL until the PIC rung). user_libs ("-l<name>" or a path) join
+// dynamic executable (mnkExecutable), or ET_DYN shared object (mnkShared).
+// All output is PIC (R6): address slots live in the .mir.addrpool data
+// section, .text carries no relocations, no DT_TEXTREL.
+// user_libs ("-l<name>" or a path) join
 // the DT_NEEDED list for the linked kinds. No execution. Returns 0 on
 // success, -1 on failure.
 int madc_cir_emit_native(Program *prog, const char *source_name,

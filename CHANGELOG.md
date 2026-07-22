@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- **feat(aot): PIC native artifacts — DT_TEXTREL is dead (AOT R6, task
+  #88).** All native output (`-c`/`-o`/`-shared`/`--project`) is now
+  position-independent: `.text` carries zero relocations. Every address
+  slot — const-pool entries (one shared slot per unique (value, item)
+  target per function, keyed so same-sentinel imports never fuse), the
+  former movabs item refs (now rip-relative pool loads via a new MOV
+  pattern), switch tables, and even the synthesized `_start`
+  `__libc_start_main` slot — lives in a GOT-shaped `.mir.addrpool` data
+  section reached by `R_X86_64_PC32` references that resolve wherever
+  layout is fixed (external ld / the exec emitter / the R4b cache
+  loader). `readelf -d` on a `madc -shared` `.so` shows **no TEXTREL**;
+  text pages are shareable, hardened dlopen profiles work, and PIE is
+  now a layout flip. Gates: `--exe` 717/0, `--obj` 713/0 (dev + packed),
+  fulltest == packed 729/0/0/13, fork object + load lanes green, gdb
+  `-g` gate re-proven on PIC output. Fork pin → `40fdf81b`.
+
 - **feat(aot): `madc -g` native artifacts carry DWARF — source-level gdb
   on AOT output (R5, task #87).** One writer serves every consumer: the
   mir-debug DWARF generators grew a bias/offset-mode parameterization, so

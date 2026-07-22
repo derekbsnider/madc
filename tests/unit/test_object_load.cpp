@@ -93,6 +93,22 @@ void *dlsym_resolver(const char *name, void *)
     return dlsym(RTLD_DEFAULT, name);
 }
 
+// Two import targets deliberately invisible to dlsym (static, not in the
+// dynamic symbol table): at emit time madc's sentinel resolver hands BOTH
+// the same &undef_sentinel value, so the address pool's (value, item) slot
+// keying is what keeps their .mir.addrpool slots — and relocations — apart.
+static int r6_ext_a_impl() { return 111; }
+static int r6_ext_b_impl() { return 222; }
+
+void *two_import_resolver(const char *name, void *)
+{
+    if (std::strcmp(name, "r6_test_ext_a") == 0)
+	return (void *)&r6_ext_a_impl;
+    if (std::strcmp(name, "r6_test_ext_b") == 0)
+	return (void *)&r6_ext_b_impl;
+    return dlsym(RTLD_DEFAULT, name);
+}
+
 } // namespace
 
 TEST_SUITE("madc_cir_run_object") {
@@ -139,6 +155,39 @@ TEST_SUITE("madc_cir_run_object") {
 
 	char *oargv[] = { (char *)obj_path.c_str(), NULL };
 	CHECK(madc_cir_run_object(obj_path.c_str(), 1, oargv) == 42);
+	std::remove(obj_path.c_str());
+    }
+
+    TEST_CASE("two same-sentinel imports keep distinct pool slots (R6)") {
+	// Both prototypes are unresolvable at emit (static impls above are
+	// not dlsym-visible), so the sentinel resolver hands them one shared
+	// VALUE; the object must still carry one relocated slot per import.
+	std::string obj_path = emit_object(
+	    "int r6_test_ext_a();\n"
+	    "int r6_test_ext_b();\n"
+	    "int combine() { return r6_test_ext_a() * 1000 + r6_test_ext_b(); }\n"
+	    "int main() { return 0; }\n");
+
+	std::ifstream f(obj_path.c_str(), std::ios::binary);
+	REQUIRE(f.good());
+	std::vector<char> bytes((std::istreambuf_iterator<char>(f)),
+				std::istreambuf_iterator<char>());
+	f.close();
+	REQUIRE(!bytes.empty());
+
+	char err[256] = "";
+	MIR_object_loaded_t lo = MIR_object_load(bytes.data(), bytes.size(),
+						 two_import_resolver, NULL,
+						 err, sizeof err);
+	if (!lo)
+	    MESSAGE("MIR_object_load: " << err);
+	REQUIRE(lo != NULL);
+
+	int (*combine)() = (int (*)())MIR_object_loaded_sym(lo, "combine");
+	REQUIRE(combine != NULL);
+	CHECK(combine() == 111222); // a fused slot would give 111111 or 222222
+
+	MIR_object_loaded_unload(lo);
 	std::remove(obj_path.c_str());
     }
 }
