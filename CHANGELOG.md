@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+- **feat(sys): `madc::sys` — the system object (task #91).** Python
+  `sys` convention: one typed host-side C++ object with dot members —
+  `sys.argv` / `sys.path` (mutable madc arrays), `sys.platform` /
+  `sys.version` / `sys.hostname` (immutable facts) — declared by the
+  `<ns_madc>` embedded header (include it like Python's `import sys`)
+  and resolved mangled-direct to the host's `_ZN4madc3sysE`. ONE
+  population path serves every lane: the CIR builder injects
+  `__madc_sys_init(argc, argv)` at `main` entry before
+  `__madc_global_init` in TUs that included the header; `-shared`
+  artifacts get facts + empty argv. There is deliberately no
+  `sys.argc` (the array is self-sizing; bare `argc`/`argv` remain the
+  raw C door). `MADC_VERSION` is now a preprocessor macro carrying the
+  build's version string literal — `sys.version` is its runtime
+  spelling. `sys.path` seeds `[script-dir, "."]` with Python's one-way
+  semantics. Docs: `docs/language/sys-object.md`.
+
+- **feat(array): native `count()`/`size()` methods (task #91).** The
+  builtin `array` is the generic polyglot value object (the
+  `php::`/`perl::`/… functions are language skins over it); it now
+  carries native methods. Both spellings lower to the existing
+  `madarray_size` runtime entry through the same emit_symbol-bound
+  external-method path `string`'s `length()`/`size()` ride, on every
+  receiver shape — bare locals, struct members,
+  `madc::sys.argv.count()` — across JIT, native, and `--emit=c11`.
+  Fuller method surface (`.push()`, …) lands with the
+  array-as-real-class retirement.
+
+- **feat(lang): general fixes surfaced by the sys campaign.** Array
+  struct members (`struct S { array a; }`) now lay out, construct, and
+  destruct correctly; madc-array subscript reads (`a[i]`, `s.a[0]`)
+  route through the runtime getters with string-first element typing
+  (raw buffer-word reads abolished); frozen madc::value slots
+  (`MADC_VF_CONST`) enforce read-only values at every mutation entry
+  point; extern variables of class type emit a proper struct tag (was
+  `extern int`); member access on a namespace extern routes through
+  the Itanium storage alias; bare `cout << argv[1];` works as a
+  top-level script statement.
+
 ## [v0.37.0] — 2026-07-22
 
 Script-mode release: madc runs PHP-style scripts — top-level statements with a

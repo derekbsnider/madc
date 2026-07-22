@@ -3993,6 +3993,7 @@ public:
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
     void add_madc_namespace();
+    void add_array_methods();	// native count()/size() on the builtin array (ddARRAY)
     bool is_namespace_registration_enabled(const std::string &name) const;
     bool is_dynamic_library_loading_enabled() const;
     bool is_auto_library_loading_enabled() const;

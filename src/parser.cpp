@@ -17302,6 +17302,38 @@ void Program::add_madc_namespace()
     DBG(std::cout << "add_madc_namespace() registered madc:: with " << madc_ns.size() << " members" << std::endl);
 }
 
+// Native methods on the builtin madc `array` (the generic polyglot value
+// object — the php::/perl::/… namespace functions are skins over it):
+// count()/size() bind to the madarray_size runtime entry via emit_symbol,
+// the same external-binding path string's length()/size() ride. ddARRAY is
+// a process-global singleton, so registration is once-guarded and every
+// allocation is process-lifetime (addFunction isMethod=true touches no
+// Program-owned map — nothing dangles across Programs).
+void Program::add_array_methods()
+{
+    if ( ddARRAY.method_map.count("count") )
+	return;
+    for ( const char *name : { "count", "size" } )
+    {
+	Variable *var = addFunction(name,
+	    datatype_vec_t{DataType::dtINT64, ptr_of(ddARRAY)}, NULL, true);
+	if ( !var )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	if ( fd )
+	{
+	    fd->declaration_only = true;
+	    fd->emit_symbol = "madarray_size";
+	    fd->method_display_name = name;
+	}
+	Method *md = static_cast<Method *>(var->data);
+	if ( md )
+	    md->owner_class = &ddARRAY;
+	ddARRAY.methods.push_back(var);
+	ddARRAY.method_map[name] = var;
+    }
+}
+
 // Declare each libmadc host-callback registration as an ordinary function
 // prototype so script calls resolve and type-check through the normal
 // machinery. The CIR builder synthesizes the trampoline DEFINITION
@@ -17343,6 +17375,7 @@ void Program::_parser_init()
     add_functions();
     add_globals();
     add_host_callbacks();
+    add_array_methods();
     // populate lazy_map for included headers (actual registration deferred to first use)
     if ( _include_iostream ) add_iostream();
     if ( _include_stdio )   add_stdio();

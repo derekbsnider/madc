@@ -8173,6 +8173,17 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 	if (tm->parent_expr) {
 		recv_type = tm->parent_expr->datadef();
 		recv_class = class_behind(recv_type);
+		// madc-array receiver via a sub-expression (`s.a.count()`,
+		// `madc::sys.argv.count()`): ddARRAY IS-A DataDefCLASS but is
+		// deliberately not a user class (as_user_class rejects dtARRAY).
+		// The translated array lvalue decays to the value-buffer address —
+		// the same receiver convention as the subscript path.
+		if (!recv_class && is_array_object(recv_type)) {
+			recv_class = dynamic_cast<DataDefCLASS *>(
+				unqualified_type(recv_type));
+			if (recv_class)
+				return translate_expr(tm->parent_expr);
+		}
 		if (!recv_class) return NULL;
 		// A by-value object-returning CALL receiver (`*begin()` — begin()
 		// returns the iterator by value) is a prvalue; `&call` is not an lvalue
@@ -8206,6 +8217,12 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 	recv_node = id(tm->object.name.c_str(), origin);
 	from_var = true;
 	recv_class = class_behind(recv_type);
+	// madc-array receiver as a named variable (`a.count()`): same deliberate
+	// as_user_class exclusion; object_var_addr below addresses the value
+	// buffer (capture-safe, and &buffer == the decayed buffer address).
+	if (!recv_class && is_array_object(recv_type))
+		recv_class = dynamic_cast<DataDefCLASS *>(
+			unqualified_type(recv_type));
 	if (!recv_class) return NULL;
 	// A NAMED object variable uses the unified addressing rule (a by-value /
 	// by-ref `string` param is stored AS the object address, so its `this` is

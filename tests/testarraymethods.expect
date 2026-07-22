@@ -1,0 +1,10 @@
+empty_count: 0
+count: 3
+size: 3
+as_long: 4
+member_count: 2
+argv_count: 3
+elem: one
+elem: two
+elem: three
+after_foreach: 3

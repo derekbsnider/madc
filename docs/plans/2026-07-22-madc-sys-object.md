@@ -198,6 +198,30 @@ against the open ledger. Follow-on to script mode (task #90, v0.37.0).
   basic_string mangled-direct stores. The R1 frozen guard is a handful of
   checks at the madc::value mutation entry points, not a scatter.
 
+## Rider: native array methods (owner, 2026-07-22)
+
+- **Owner:** the builtin `array` is a *generic polyglot object* — the
+  `php::`/`perl::`/… functions are language-flavored skins over it — so
+  it carries native methods of its own: `.count()` and `.size()` land
+  in THIS campaign (both lower to `madarray_size`); the fuller method
+  surface (`.push()`, `.pop()`, …) is a fast-follow filed with the
+  array-as-real-class retirement.
+- **Governing principle (owner, same discussion):** madc is primarily C
+  under the hood (C++ lowered to C); under-the-hood conventions should
+  most closely resemble C/C++ whenever possible, bending only when
+  otherwise not possible (`madc::value`/`madc::array` are the
+  sanctioned bends). Applied here: `ddARRAY` already IS-A
+  `DataDefCLASS`, so the methods register as ordinary emit_symbol-bound
+  external methods (the `string::length()/size()` path) and dispatch
+  through the standard method machinery — one plain C runtime call
+  underneath, identical in JIT / native / `--emit=c11`.
+- Implementation: `Program::add_array_methods()` (once-guarded,
+  process-lifetime allocations on the global singleton) +
+  two madc-array receiver arms in `CirBuilder::class_this_arg` (the
+  only gap — `as_user_class` deliberately rejects dtARRAY). Test:
+  `testarraymethods` (locals, struct members, `sys.argv`, foreach
+  interop).
+
 ## Non-goals (v1)
 
 - `sys.env` / `executable` / cwd (future members, append when needed).

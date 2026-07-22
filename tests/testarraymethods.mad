@@ -1,0 +1,37 @@
+// Native polyglot methods on the builtin madc array: count()/size()
+// (both lower to the madarray_size runtime entry). Receivers covered:
+// bare local, struct member, and madc::sys.argv (namespace extern member).
+#include <iostream>
+#include <ns_php>
+#include <ns_madc>
+using namespace std;
+
+struct Holder
+{
+	array items;
+};
+
+int main(int argc, char **argv)
+{
+	array a;
+	cout << "empty_count: " << a.count() << endl;
+	php::array_push(a, "one");
+	php::array_push(a, "two");
+	php::array_push(a, "three");
+	cout << "count: " << a.count() << endl;
+	cout << "size: " << a.size() << endl;
+	long n = a.count();
+	cout << "as_long: " << n + 1 << endl;
+
+	Holder h;
+	php::array_push(h.items, "x");
+	php::array_push(h.items, "y");
+	cout << "member_count: " << h.items.count() << endl;
+
+	cout << "argv_count: " << madc::sys.argv.count() << endl;
+
+	for ( string s : a )
+		cout << "elem: " << s << endl;
+	cout << "after_foreach: " << a.size() << endl;
+	return 0;
+}
