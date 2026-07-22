@@ -154,9 +154,27 @@ static void report_kind_mismatch(const madc::value &v, const char *who,
 		  << ", not " << wanted << " — write ignored" << std::endl;
 }
 
+// Frozen (MADC_VF_CONST) target: the LOUD write-rejection path for script
+// runtime wrappers. Mirrors the kind-mismatch convention (stderr + redirect
+// to a dummy) so no C++ exception crosses the extern-C boundary into JIT
+// frames; the madc::value methods themselves throw for C++ hosts.
+static void report_frozen(const char *who)
+{
+	std::cerr << (who ? who : "madc array helper")
+		  << ": value is frozen (read-only) — write ignored"
+		  << std::endl;
+}
+
 std::vector<madc::value> &value_array_for_write(madc::value &v,
 						const char *who)
 {
+	if ( v.is_frozen() )
+	{
+		report_frozen(who);
+		thread_local madc::value dummy;
+		dummy = madc::value::make_array();
+		return dummy.array();
+	}
 	if ( v.is_null() || v.is_array() )
 		return v.array();
 	report_kind_mismatch(v, who, "an array");
@@ -168,6 +186,13 @@ std::vector<madc::value> &value_array_for_write(madc::value &v,
 std::map<std::string, madc::value> &value_object_for_write(madc::value &v,
 							    const char *who)
 {
+	if ( v.is_frozen() )
+	{
+		report_frozen(who);
+		thread_local madc::value dummy;
+		dummy = madc::value::make_object();
+		return dummy.object();
+	}
 	if ( v.is_null() || v.is_object() )
 		return v.object();
 	report_kind_mismatch(v, who, "an object");

@@ -11,6 +11,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <stdexcept>
 
 // --- madc_cell runtime (refcounted payload cells) --------------------------
@@ -482,6 +483,7 @@ value::value(const value &other)
 {
     madc_value_init(&_v);
     madc_value_copy(&_v, &other._v);
+    _v.flags &= ~MADC_VF_CONST;		// freeze is slot-local: copies are mutable
     if ( other._array )
 	_array.reset(new std::vector<value>(*other._array));
     if ( other._object )
@@ -500,7 +502,10 @@ value &value::operator=(const value &other)
 {
     if ( this == &other )
 	return *this;
+    if ( _v.flags & MADC_VF_CONST )
+	throw std::runtime_error("madc::value: assignment to frozen value");
     madc_value_copy(&_v, &other._v);
+    _v.flags &= ~MADC_VF_CONST;		// freeze is slot-local: copies are mutable
     if ( other._array )
 	_array.reset(new std::vector<value>(*other._array));
     else
@@ -516,6 +521,17 @@ value &value::operator=(value &&other) noexcept
 {
     if ( this == &other )
 	return *this;
+    // Frozen target: refuse WITHOUT throwing (this operator must stay
+    // noexcept — std::vector<value> growth uses move_if_noexcept, so
+    // dropping it would pessimize every array push). Loud stderr + the
+    // value left unchanged, mirroring the script runtime's write-ignored
+    // convention; copy-assignment onto frozen throws for C++ hosts.
+    if ( _v.flags & MADC_VF_CONST )
+    {
+	std::cerr << "madc::value: move-assignment to frozen value ignored"
+		  << std::endl;
+	return *this;
+    }
     madc_value_clear(&_v);
     _v = other._v;
     madc_value_init(&other._v);
@@ -564,6 +580,8 @@ void *value::instance_data()
 {
     if ( type() != kind::instance || !(_v.flags & MADC_VF_HEAP) )
 	throw std::runtime_error("madc::value::instance_data: kind is not instance");
+    if ( _v.flags & MADC_VF_CONST )
+	throw std::runtime_error("madc::value::instance_data: value is frozen");
     return _v.data_ptr;
 }
 
@@ -613,6 +631,8 @@ const std::map<std::string, value> &value::as_object() const
 
 std::vector<value> &value::array()
 {
+    if ( _v.flags & MADC_VF_CONST )
+	throw std::runtime_error("madc::value::array: value is frozen");
     if ( type() == kind::null )
 	_v.type_id = MADC_TYPEID_ARRAY;     // vivify: null -> empty array
     if ( type() != kind::array )
@@ -624,6 +644,8 @@ std::vector<value> &value::array()
 
 std::map<std::string, value> &value::object()
 {
+    if ( _v.flags & MADC_VF_CONST )
+	throw std::runtime_error("madc::value::object: value is frozen");
     if ( type() == kind::null )
 	_v.type_id = MADC_TYPEID_OBJECT;    // vivify: null -> empty object
     if ( type() != kind::object )

@@ -285,6 +285,45 @@ TEST_SUITE("madc_value 32-byte ABI") {
         CHECK(MADC_VF_CONST == 32u);
     }
 
+    TEST_CASE("freeze: mutation entry points reject, reads unaffected") {
+	value a = value::make_array();
+	a.array().push_back(value("alpha"));
+	a.freeze();
+	CHECK(a.is_frozen());
+	CHECK_THROWS(a.array());                 // mutable accessor rejected
+	CHECK(a.as_array().size() == 1);         // const read unaffected
+	CHECK(a.as_array()[0].as_string() == "alpha");
+	value src = value::make_array();
+	CHECK_THROWS(a = src);                   // copy-assign onto frozen
+	value s("hello");
+	s.freeze();
+	CHECK(s.as_string() == "hello");         // frozen SSO string readable
+	value w("world");
+	CHECK_THROWS(s = w);                     // copy-assign onto frozen throws
+	s = value("moved");                      // move-assign: noexcept, refused loudly
+	CHECK(s.as_string() == "hello");         // ...and the value is unchanged
+    }
+
+    TEST_CASE("freeze is slot-local: copies of a frozen value are mutable") {
+	value a = value::make_array();
+	a.array().push_back(value(int64_t(1)));
+	a.freeze();
+	value b = a;                             // copy ctor strips CONST
+	CHECK(!b.is_frozen());
+	b.array().push_back(value(int64_t(2)));  // mutable copy
+	CHECK(b.as_array().size() == 2);
+	CHECK(a.as_array().size() == 1);         // original untouched
+	value c;
+	c = b;                                   // copy-assign FROM non-frozen
+	CHECK(!c.is_frozen());
+	b.freeze();
+	value d;
+	d = b;                                   // copy-assign FROM frozen
+	CHECK(!d.is_frozen());
+	d.array().push_back(value(int64_t(3)));
+	CHECK(d.as_array().size() == 3);
+    }
+
     TEST_CASE("cell runtime: retain/release/saturation") {
         void *p = madc_cell_alloc(8);
         REQUIRE(p != (void *)NULL);

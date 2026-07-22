@@ -72,21 +72,43 @@ against the open ledger. Follow-on to script mode (task #90, v0.37.0).
 
 ## Immutability enforcement (facts only)
 
-- **Compile time:** `platform`/`version`/`hostname` declare `const` in
-  the embedded header — direct assignment is a normal const-violation
-  diagnostic (rides the DataDefCONST campaign; scope any needed slice).
-- **Runtime backstop:** implement the RESERVED `frozen` bit in
-  `madc_cell.cell_flags` (`include/madc_value_cell.h` — the 2026-06-12
-  value-ABI design reserved it for exactly this; first consumer). Only
-  the fact-members' cells are frozen. Every runtime mutation entry point
-  (the array/string store/push/resize family) checks the bit and raises
-  a LOUD runtime error naming the object — never a silent no-op.
-  `argv`/`path` cells are NOT frozen.
+**Revised by R1 recon (2026-07-22, decisions per owner meta-directive):**
+
+- The runtime frozen bit lives at the **VALUE level — `MADC_VF_CONST` in
+  `madc_value.flags`** (the 2026-06-12 design's reserved read-only bit),
+  NOT in `madc_cell.cell_flags`: array/object kinds carry C++ container
+  backing (no cell) and short strings are SSO (no cell), so a cell bit
+  cannot guard the actual members. The cell `frozen` slot stays reserved
+  for the pool tier.
+- **R1 (landed with this slice):** `madc::value::freeze()/is_frozen()`;
+  mutation entry points guarded — `array()`, `object()`,
+  `instance_data()`, copy-assignment onto a frozen value throw for C++
+  hosts (the class's established exception discipline); the script
+  runtime's write choke points (`value_array_for_write` /
+  `value_object_for_write`) pre-check and reject with the established
+  loud-stderr + write-ignored convention, so no exception crosses the
+  extern-C boundary into JIT frames. The C-API setter gate
+  (`value_accepts_kind`) already rejected CONST. Freeze is slot-local,
+  not viral: copies of a frozen value are mutable (Python parity —
+  protecting the slot, not the data). Move-assignment onto a frozen
+  value is not checked (noexcept); it is host misuse.
+- **Fact members are `const char *` struct members in v1** (not
+  madc::value, not std::string): zero lifecycle, bakeable at emit time,
+  chars naturally immutable; reads work in every string context
+  (streams, string ctor/assign via the literal model). Rebinding
+  (`sys.platform = ...`) is guarded at compile time by the const member
+  qualification — scope the const-member-assignment rejection check if
+  the DataDefCONST Phase-1 state doesn't already provide it (probe at
+  R2). Python parity note: this is already STRICTER than Python (which
+  allows rebinding module attrs); the owner asked for facts to be
+  immutable.
+- In v1 nothing frozen is script-reachable as an array (`argv`/`path`
+  are mutable, facts are not value-backed), so the frozen runtime guard
+  is the general embedding primitive; the sys-facts enforcement is the
+  compile-time const. `testsysreadonly`'s runtime-error fixture applies
+  once a frozen value is script-reachable (embedding tier), not v1.
 - **Populate-then-freeze order** in every lane: host/`__madc_sys_init`
   fills values first, then sets frozen.
-- Side effect: `MADC_CELL_FROZEN` becomes a general immutability
-  primitive (frozen user arrays, interned pools, embedding hosts handing
-  read-only data into sandboxed scripts).
 
 ## Rungs
 

@@ -118,6 +118,19 @@ public:
     bool operator==(const value &other) const;
     bool operator!=(const value &other) const { return !(*this == other); }
 
+    // Freeze: mark this value read-only (MADC_VF_CONST — the value-ABI
+    // design's reserved read-only bit; first consumer: the immutability
+    // primitive behind madc::sys facts and embedding hosts handing
+    // read-only data into scripts). Mutation entry points — array(),
+    // object(), instance_data(), copy-assignment ONTO this value, and the
+    // C-API setters (value_accepts_kind) — reject writes loudly; reads
+    // are unaffected. Slot-local, not viral: copies of a frozen value are
+    // mutable. Move-assignment onto a frozen value cannot throw (noexcept
+    // — vector<value> growth relies on it): it reports to stderr and
+    // leaves the value unchanged.
+    void freeze()          { _v.flags |= MADC_VF_CONST; }
+    bool is_frozen() const { return (_v.flags & MADC_VF_CONST) != 0; }
+
     static const char *kind_name(kind k);
 
     // The raw 32-byte interchange struct (C-API bridges; the array and
