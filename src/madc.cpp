@@ -558,7 +558,7 @@ static void print_usage(const char *prog)
 "                          the ELF directly (no external toolchain); needs\n"
 "                          libmadc.so at run time (DT_RUNPATH is set)\n"
 "  -shared [-o file.so]    compile to a shared object (ET_DYN, MIR-assembled;\n"
-"                          dlopen/#load-consumable; TEXTREL until the PIC rung)\n"
+"                          dlopen/#load-consumable; PIC, no TEXTREL)\n"
 "  --emit-object/--emit-executable <path> are aliases of -c -o / -o.\n"
 "  -l<name> becomes a DT_NEEDED lib<name>.so in AOT mode (dlopen otherwise).\n";
 }

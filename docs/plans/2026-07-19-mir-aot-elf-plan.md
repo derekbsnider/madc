@@ -790,3 +790,85 @@ recipe).
 
 Commits: fork @f354664c (pinned in MIR_COMMIT), madc = the
 feature/aot-r5-dwarf-claude commit this block ships in.
+
+---
+
+## R6 LANDED — PIC output, DT_TEXTREL dead (2026-07-22, task #88)
+
+All native output (`-c`/`-o`/`-shared`/`--project`) is now
+position-independent: **.text carries zero relocations**. `readelf -d` on
+`madc -shared` output shows no TEXTREL and every dynamic relocation lands
+in the R+W segment — text pages are shareable and TEXTREL-hostile
+hardening profiles can dlopen the artifacts. PIE executables are now a
+layout flip away (ET_DYN + entry), not a codegen project.
+
+**The design: `.mir.addrpool` (MIR_OBJ_SEC_ADDRPOOL, `.o` shndx 4) IS the
+GOT.** Every address slot moved out of text into it:
+
+- **Const pool**: no longer appended to the function blob
+  (translate_finish skips it in object mode). One 16-byte slot per unique
+  *(value, item)* pool entry per function — value entries (SSE constants)
+  keep their bytes and 16-byte stride, item entries are zeroed under an
+  ABS64 relocation. Call sites SHARE their target's slot (the JIT layout
+  duplicates per reference — a .so of the R5 vintage carried 4 slots for
+  one import); the item key stops two unresolved imports that share
+  madc's resolver sentinel VALUE from fusing into one mis-bound slot
+  (unit test test_object_load case 3: two dlsym-invisible imports resolve
+  to distinct functions through MIR_object_load and both dispatch
+  correctly).
+- **imm64 item refs are extinct**: new pattern `MIR_MOV "r j" → X 8B r0
+  p1` (constraint 'j' = REF in object mode, ordered before the movabs
+  form; replacement 'p' = the 'P' pool read with call_p off) makes every
+  object-mode REF materialization a rip-relative pool load. A ref
+  escaping into a text imm64 is a loud gen error.
+- **Switch tables**: out_insn records {disp32_pc, table_off, n_slots}
+  descriptors; the capture copies each table into the pool (slots →
+  ABS64 against the text section symbol, table-address disp32 → PC32)
+  and zeroes the dead in-blob bytes.
+
+**MIR_OBJ_RELOC_PC32** (R_X86_64_PC32) carries every text→pool reference
+and is never dynamic — PC distances are load-bias-invariant, so each
+layout owner resolves it: the external linker for a `.o`
+(`.rela.mir.addrpool` + PC32 entries in `.rela.text`), the executable
+emitter at emit time (ET_EXEC and ET_DYN alike), and the R4b cache
+loader at map time (fourth mapped region, classified by section NAME —
+its flags alone would say "data"). The general PC32 addend is
+`slot_off − (next_insn_disp − pc)` — the CPU's rip is the insn END, and
+disp32 is not always the last field.
+
+**The bug the rung flushed out:** the first PIC executable SEGFAULTED
+INSIDE ld.so — `_dl_relocate_object` writing the synthesized `_start`
+stub's `__libc_start_main` slot at text_vaddr+32. With DT_TEXTREL
+(correctly) gone, the loader no longer remaps text writable, and that
+slot was the ONE dynamic text reloc the `obj->rels` scan could not see
+because the emitter synthesizes it. Fix: the slot is an address slot, so
+it lives with the pool — placed after the pool content in the R+W
+segment (the `.mir.addrpool` section view covers it), stub disp32
+computed cross-segment, OBJX_TEXT_BIAS 48 → 32 (the stub alone, still
+16-aligned). TRAP: TEXTREL sources = the reloc ledger AND everything the
+emitter synthesizes. DT_TEXTREL is now emitted only if a dynamic slot
+actually targets the RX segment — zero today, kept as a loud tripwire.
+
+Exec/so image changes: pool sits between `.data` and `.dynamic`; fixed
+shdr rows 13 → 14 (`.mir.addrpool` = row 8, `.dynamic` 9, `.bss` 10),
+**e_shstrndx 12 → 13**, debug rows now 14–17. `.o`: shndx 1–3
+(text/data/bss) stay pinned for the loader; addrpool = 4; DWSEC_MAX 24
+holds (18 max sections).
+
+**Gates at landing:** madc fulltest 729/0/0/13; `--exe` 717/0 (every PIC
+executable byte-matches JIT); `--obj` 713/0; packed arbiter 729/0/0/13 +
+packed `--obj` 713/0; fork object + load-object lanes 2278 OK / 0 fail
+each + `make test` green; gdb R5 gate re-proven on PIC `-g` output
+(break file:line, `compute (a=6, b=7)`, named bt, `sum = 13`); unit
+suite green incl. the new two-imports case. The byte-identity oracle is
+retired for artifacts this rung — PIC changes codegen by design; the
+suite lanes + JIT-parity are the arbiter (the JIT publish path itself is
+untouched: every change is object-mode-gated).
+
+Deliberately on the table: PIE executables (ET_DYN + PT_INTERP + entry —
+the codegen prerequisite is done); a read-only split of the pure-constant
+pool entries (`.mir.rodata`) — they are currently writable data, correct
+but not minimal; RELRO for the pool.
+
+Commits: fork @40fdf81b (pinned in MIR_COMMIT), madc = the
+feature/aot-r6-pic-claude merge this block ships in.
