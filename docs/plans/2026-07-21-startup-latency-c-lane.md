@@ -170,6 +170,58 @@ actual bind; (c) make materialize + register closure-proportional (fixpoint
 over the demand-filtered reachable set, not the whole arena). The include-
 keyed unit bind itself needs no change.
 
+## R1 results (2026-07-22, feature/startup-latency-claude) — GATE MET
+
+| Probe | before (R0) | after R1 | gate |
+|---|---:|---:|---|
+| C hello (default, packed) | 94 ms | **38 ms** | ≤ 40 ms ✅ |
+| C hello `--std=c17` | 45 ms | **15 ms** | (bind-off floor 14) ✅ |
+| C++ hello | 203 ms | **204 ms** | ≤ 226 ms ✅ |
+| ret0 | 6 ms | 6 ms | — |
+
+Counters after (C hello): open 15 ms, bind ~0 (26/240 units), restore 12 ms
+(sweep 4 + materialize 7 + register 1), decode 9.6 MiB. C++ hello keeps its
+full surface (184 units, restore 88 ms, 2512 template patterns).
+
+What landed (all demand-keyed, no semantic change — bind == live oracles):
+
+1. **Config gate before the heavy open.** `CirFrozenForest::open` split into
+   `open_header` (footer + pin + directory, cheap) and `complete_open`
+   (pools/arena/global segments, memoized); `ensure_bind_forest` checks the
+   v27 producer-config words after the header stage, so a mismatched compile
+   (`--std=c17` against the madc-mode pack) pays ~nothing.
+2. **Demand-built indexes.** The extern-decl index builds on the first
+   `extern_loc_for` query; the typeid→name closure derives per-query from
+   the arena record (the eager whole-arena maps at open are gone).
+3. **Template state is demand-gated.** TEMPLATE_PAYLOAD + TEMPLATE_TOKENS
+   (5.3 MB raw) decode lazily at the first surviving template record (or a
+   late ClassPattern run read); the record loop applies the same rung-2a
+   verdict the admitted-set seeding uses, after an owner-restore fence.
+   A pure-C bind restores 0 template patterns (was 682) and never decodes
+   the segments.
+4. **The admitted-set seeds are attributed.** Three seed classes had dragged
+   the C++ instantiation universe into pure-C binds; each now has a typed
+   rule: (a) an unindexed free function that WAS BODIED at freeze is an
+   instantiation product and does not seed its param/return chains; (b) a
+   member-template record seeds its owner only on a bound-declared (+1)
+   verdict; (c) a function-local class (new `DF_CLASS_FN_LOCAL` flag,
+   stamped by the freeze recorder from `function_local_class_identity`)
+   never seeds by name — it is admitted STRUCTURALLY after the pull closure
+   converges, when its member/base chains already resolve inside the
+   admitted set (exactly when its owner's world materialized — the
+   [subbind] `basic_string::_M_construct` Guard case), iterated with the
+   pull drain to a fixpoint.
+
+R2 (std-aware unit selection) dissolves as predicted: the c17 case is at
+the bind-off floor via the early config gate, and default-dialect C now
+binds a proportional closure. R3 not needed (gate met). R4 (context-gating
+continuation on pure-C parse overhead) remains open as an independent,
+ungated follow-on.
+
+Validation: fulltest green (729/0/0/13; forest_bind_gate 18/18 incl.
+subbind; selfexe + project gates); packed-suite arbiter green on the
+rebuilt release; unit suites green.
+
 ## Success criteria
 
 - C hello (default dialect, packed release, no flags): ≤ 40 ms on this host.
