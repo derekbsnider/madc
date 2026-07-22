@@ -382,6 +382,53 @@ void MIR_debug_add_var (MIR_debug_t d, const char *name, int is_param, MIR_debug
 
 /* ===== DWARF emission ==================================================== */
 
+/* How the generators interpret dwfunc_t.addr and where address values land.
+   The GDB-JIT path (MIR_debug_emit) uses absolute JIT addresses; the AOT
+   paths (MIR_object_set_debug) store .text section offsets and bias them to
+   the artifact's address space -- 0 for the .o (the slots then carry section
+   offsets and get .rela.debug_* relocations), the final link-time text vaddr
+   for executables / shared objects (gdb rebases ET_DYN itself). */
+typedef struct {
+  uint64_t bias;            /* added to every emitted address value */
+  const uint8_t *code_base; /* readable code bytes in offset mode (the frame
+                               emitter's prologue detection); NULL: fn->addr
+                               is itself the readable pointer */
+  int offset_mode_p;        /* fn->addr holds a .text offset; offset 0 is a
+                               valid function, not the "no code" sentinel */
+  /* When non-NULL, called for every 8-byte code-address slot: sec is
+     0 .debug_info / 1 .debug_line / 2 .debug_frame, pos the slot's offset in
+     that section, value the pre-bias address value.  The .o emitter turns
+     these into relocations against the .text section symbol. */
+  void (*addr_slot) (void *env, int sec, size_t pos, uint64_t value);
+  void *env;
+} dwgen_t;
+
+static void dw_addr (const dwgen_t *g, dwbuf_t *b, int sec, uint64_t value) {
+  if (g->addr_slot != NULL) g->addr_slot (g->env, sec, b->len, value);
+  buf_u64 (b, g->bias + value);
+}
+
+static int dw_func_skip_p (const dwgen_t *g, const dwfunc_t *fn) {
+  return !g->offset_mode_p && fn->addr == NULL;
+}
+
+/* [text_lo, text_lo + text_size) over the described functions, in the addr
+   space fn->addr uses (absolute or section offsets). */
+static void dw_text_range (MIR_debug_t d, const dwgen_t *g, uint64_t *text_lo,
+                           uint64_t *text_size) {
+  uint64_t lo = UINT64_MAX, hi = 0;
+  for (int i = 0; i < d->n_funcs; i++) {
+    if (dw_func_skip_p (g, &d->funcs[i])) continue;
+    uint64_t a = (uint64_t) (uintptr_t) d->funcs[i].addr;
+    uint64_t e = a + (d->funcs[i].size ? d->funcs[i].size : 1);
+    if (a < lo) lo = a;
+    if (e > hi) hi = e;
+  }
+  if (lo == UINT64_MAX) lo = hi = 0;
+  *text_lo = lo;
+  *text_size = hi > lo ? hi - lo : 0;
+}
+
 static void ab_hdr (dwbuf_t *b, int code, int tag, int children) {
   buf_uleb (b, code);
   buf_uleb (b, tag);
@@ -497,8 +544,8 @@ typedef struct {
   uint32_t target;
 } tfix_t;
 
-static void emit_info (MIR_debug_t d, dwbuf_t *b, uint64_t text_base, uint64_t text_size,
-                       const char *cu_name) {
+static void emit_info (MIR_debug_t d, dwbuf_t *b, const dwgen_t *g, uint64_t text_lo,
+                       uint64_t text_size, const char *cu_name) {
   size_t unit_len_pos = b->len;
   buf_u32 (b, 0);
   size_t after_len = b->len;
@@ -510,9 +557,9 @@ static void emit_info (MIR_debug_t d, dwbuf_t *b, uint64_t text_base, uint64_t t
   buf_u16 (b, DW_LANG_C99);
   buf_str (b, cu_name ? cu_name : "");
   buf_str (b, "");
-  buf_u64 (b, text_base);
-  buf_u64 (b, text_base + text_size);
-  buf_u32 (b, 0); /* stmt_list */
+  dw_addr (g, b, 0, text_lo);
+  dw_addr (g, b, 0, text_lo + text_size);
+  buf_u32 (b, 0); /* stmt_list (single CU: .debug_line offset 0) */
 
   uint32_t *toff = d->n_types ? calloc ((size_t) d->n_types, sizeof (uint32_t)) : NULL;
   tfix_t *fix = NULL;
@@ -585,11 +632,11 @@ static void emit_info (MIR_debug_t d, dwbuf_t *b, uint64_t text_base, uint64_t t
 
   for (int i = 0; i < d->n_funcs; i++) {
     dwfunc_t *fn = &d->funcs[i];
-    if (fn->addr == NULL) continue;
+    if (dw_func_skip_p (g, fn)) continue;
     buf_uleb (b, A_SUBPROG);
     buf_str (b, fn->name);
-    buf_u64 (b, (uint64_t) (uintptr_t) fn->addr);
-    buf_u64 (b, (uint64_t) (uintptr_t) fn->addr + fn->size);
+    dw_addr (g, b, 0, (uint64_t) (uintptr_t) fn->addr);
+    dw_addr (g, b, 0, (uint64_t) (uintptr_t) fn->addr + fn->size);
     buf_u8 (b, 1); buf_u8 (b, MIR_DEBUG_FP_OP);
     buf_u8 (b, 1);
     for (int v = fn->first_var; v >= 0; v = d->vars[v].next) {
@@ -618,7 +665,7 @@ static void emit_info (MIR_debug_t d, dwbuf_t *b, uint64_t text_base, uint64_t t
 #undef REF
 }
 
-static void emit_line (MIR_debug_t d, dwbuf_t *b) {
+static void emit_line (MIR_debug_t d, dwbuf_t *b, const dwgen_t *g) {
   size_t unit_len_pos = b->len;
   buf_u32 (b, 0);
   size_t after_len = b->len;
@@ -645,9 +692,9 @@ static void emit_line (MIR_debug_t d, dwbuf_t *b) {
 
   for (int i = 0; i < d->n_funcs; i++) {
     dwfunc_t *fn = &d->funcs[i];
-    if (fn->addr == NULL || fn->line_map == NULL || fn->line_map_len == 0) continue;
+    if (dw_func_skip_p (g, fn) || fn->line_map == NULL || fn->line_map_len == 0) continue;
     buf_u8 (b, 0); buf_uleb (b, 9); buf_u8 (b, DW_LNE_set_address);
-    buf_u64 (b, (uint64_t) (uintptr_t) fn->addr);
+    dw_addr (g, b, 1, (uint64_t) (uintptr_t) fn->addr);
     uint32_t cur_off = 0, cur_line = 1, cur_file = 1;
     /* entry-point row carrying the first statement's line + prologue_end */
     {
@@ -694,7 +741,7 @@ typedef struct {
   uint64_t size;
 } dwsec_t;
 
-#define DWSEC_MAX 16
+#define DWSEC_MAX 24
 
 /* Assemble an ELF object from section descriptors S[0..ns-1] (S[0] must be
    the zeroed null section).  Appends the .shstrtab section itself, so the
@@ -799,7 +846,7 @@ enum {
 
 static void buf_patch_u32 (dwbuf_t *b, size_t pos, uint32_t v) { memcpy (b->p + pos, &v, 4); }
 
-static void emit_frame (MIR_debug_t d, dwbuf_t *b) {
+static void emit_frame (MIR_debug_t d, dwbuf_t *b, const dwgen_t *g) {
 #if defined(__x86_64__)
   static const uint8_t fp_prologue[] = {0x48, 0x89, 0x6c, 0x24, 0xf8,  /* mov %rbp,-0x8(%rsp) */
                                         0x48, 0x8d, 0x6c, 0x24, 0xf8}; /* lea -0x8(%rsp),%rbp */
@@ -822,14 +869,18 @@ static void emit_frame (MIR_debug_t d, dwbuf_t *b) {
 
   for (int i = 0; i < d->n_funcs; i++) {
     dwfunc_t *fn = &d->funcs[i];
-    if (fn->addr == NULL || fn->size == 0) continue;
+    if (dw_func_skip_p (g, fn) || fn->size == 0) continue;
     size_t fde_len_pos = b->len;
     buf_u32 (b, 0); /* length, backpatched */
     buf_u32 (b, (uint32_t) cie_off); /* CIE pointer (section offset) */
-    buf_u64 (b, (uint64_t) (uintptr_t) fn->addr); /* initial location (absolute) */
+    dw_addr (g, b, 2, (uint64_t) (uintptr_t) fn->addr); /* initial location */
     buf_u64 (b, (uint64_t) fn->size); /* address range */
+    /* prologue detection peeks at the machine code: in offset mode fn->addr
+       is a .text offset, readable only through the builder's code bytes */
+    const uint8_t *fbytes = g->code_base != NULL ? g->code_base + (uintptr_t) fn->addr
+                                                 : (const uint8_t *) fn->addr;
     if (fn->size >= sizeof (fp_prologue)
-        && memcmp (fn->addr, fp_prologue, sizeof (fp_prologue)) == 0) {
+        && memcmp (fbytes, fp_prologue, sizeof (fp_prologue)) == 0) {
       buf_u8 (b, DW_CFA_advance_loc | 5);
       buf_u8 (b, DW_CFA_offset | 6); /* rbp saved... */
       buf_uleb (b, 2); /* ...at CFA + 2*(-8) */
@@ -844,6 +895,7 @@ static void emit_frame (MIR_debug_t d, dwbuf_t *b) {
 #else
   (void) d;
   (void) b;
+  (void) g;
 #endif
 }
 
@@ -852,15 +904,10 @@ int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
   if (size != NULL) *size = 0;
   if (d == NULL || buf == NULL || size == NULL || MIR_DEBUG_EM == 0) return -1;
 
-  uintptr_t lo = UINTPTR_MAX, hi = 0;
-  for (int i = 0; i < d->n_funcs; i++) {
-    if (d->funcs[i].addr == NULL) continue;
-    uintptr_t a = (uintptr_t) d->funcs[i].addr, e = a + (d->funcs[i].size ? d->funcs[i].size : 1);
-    if (a < lo) lo = a;
-    if (e > hi) hi = e;
-  }
-  if (lo == UINTPTR_MAX) lo = hi = 0;
-  uint64_t text_base = lo, text_size = hi > lo ? (uint64_t) (hi - lo) : 0;
+  /* GDB-JIT mode: absolute JIT addresses, fn->addr readable directly */
+  dwgen_t g = {0, NULL, 0, NULL, NULL};
+  uint64_t text_base, text_size;
+  dw_text_range (d, &g, &text_base, &text_size);
 
   /* section bodies */
   dwbuf_t strtab = {0}, symtab = {0}, abbrev = {0}, info = {0}, line = {0}, frame = {0};
@@ -885,9 +932,9 @@ int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
   }
   const char *cu_name = d->n_files ? d->files[0] : "";
   emit_abbrev (&abbrev);
-  emit_info (d, &info, text_base, text_size, cu_name);
-  emit_line (d, &line);
-  emit_frame (d, &frame);
+  emit_info (d, &info, &g, text_base, text_size, cu_name);
+  emit_line (d, &line, &g);
+  emit_frame (d, &frame, &g);
 
   dwsec_t S[DWSEC_MAX];
   int ns = 0;
@@ -939,7 +986,9 @@ struct MIR_object {
   size_t n_syms, cap_syms;
   objreloc_t *rels;
   size_t n_rels, cap_rels;
-  int sec_sym[3]; /* section-symbol ids for TEXT/DATA/BSS; -1 until created */
+  int sec_sym[3];    /* section-symbol ids for TEXT/DATA/BSS; -1 until created */
+  MIR_debug_t debug; /* borrowed builder with .text-offset func addrs (R5);
+                        NULL = no debug sections in the artifacts */
 };
 
 static void buf_zeros (dwbuf_t *b, size_t n) {
@@ -1063,10 +1112,59 @@ void MIR_object_add_reloc (MIR_object_t obj, int sec, uint64_t offset, int sym_i
   obj->rels[obj->n_rels++] = (objreloc_t) {sec, offset, sym_id, addend, kind};
 }
 
+int MIR_object_find_symbol (MIR_object_t obj, const char *name, int *sec, uint64_t *value,
+                            uint64_t *size) {
+  if (obj == NULL || name == NULL) return 0;
+  for (size_t i = 0; i < obj->n_syms; i++) {
+    objsym_t *s = &obj->syms[i];
+    if (!s->defined_p || s->name == NULL || strcmp (s->name, name) != 0) continue;
+    if (sec != NULL) *sec = s->sec;
+    if (value != NULL) *value = s->value;
+    if (size != NULL) *size = s->size;
+    return 1;
+  }
+  return 0;
+}
+
+void MIR_object_set_debug (MIR_object_t obj, MIR_debug_t d) {
+  if (obj != NULL) obj->debug = d;
+}
+
+/* Address-slot recorder for the .o's DWARF: collects every 8-byte code
+   address the generators write, so the emitter below can zero the slots and
+   emit .rela.debug_* relocations against the .text section symbol. */
+typedef struct {
+  int sec; /* 0 .debug_info / 1 .debug_line / 2 .debug_frame */
+  size_t pos;
+  uint64_t value;
+} dwslot_t;
+
+typedef struct {
+  dwslot_t *v;
+  int n, cap;
+} dwslots_t;
+
+static void dwslot_record (void *env, int sec, size_t pos, uint64_t value) {
+  dwslots_t *s = env;
+  if (s->n == s->cap) {
+    s->cap = s->cap ? s->cap * 2 : 64;
+    s->v = realloc (s->v, (size_t) s->cap * sizeof (dwslot_t));
+  }
+  if (s->v == NULL) return; /* OOM: slots lost; the emit below degrades */
+  s->v[s->n].sec = sec;
+  s->v[s->n].pos = pos;
+  s->v[s->n].value = value;
+  s->n++;
+}
+
 int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   if (buf != NULL) *buf = NULL;
   if (size != NULL) *size = 0;
   if (obj == NULL || buf == NULL || size == NULL || MIR_DEBUG_EM != EM_X86_64) return -1;
+
+  /* DWARF relocations bind to the .text section symbol -- make sure it
+     exists before the symbol count is snapshotted below. */
+  if (obj->debug != NULL) MIR_object_section_symbol (obj, MIR_OBJ_SEC_TEXT);
 
   /* Final symtab order: null, locals (incl. section symbols), then
      globals/weak.  Relocations hold stable ids; map them here. */
@@ -1119,6 +1217,38 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     buf_bytes (r->sec == MIR_OBJ_SEC_TEXT ? &rela_text : &rela_data, &er, sizeof er);
   }
 
+  /* DWARF sections (R5): section-offset addresses, each 8-byte code-address
+     slot zeroed and relocated against the .text section symbol so an
+     external linker's placement fixes the debug info exactly like the code.
+     (The CU's stmt_list stays 0 without a relocation -- one CU per object.) */
+  dwbuf_t dw_abbrev = {0}, dw_info = {0}, dw_line = {0}, dw_frame = {0};
+  dwbuf_t rela_dw_info = {0}, rela_dw_line = {0}, rela_dw_frame = {0};
+  if (obj->debug != NULL && !bad_p) {
+    dwslots_t slots = {0};
+    dwgen_t g = {0, obj->text.p, 1, dwslot_record, &slots};
+    uint64_t text_lo, text_size;
+    dw_text_range (obj->debug, &g, &text_lo, &text_size);
+    emit_abbrev (&dw_abbrev);
+    emit_info (obj->debug, &dw_info, &g, text_lo, text_size,
+               obj->debug->n_files ? obj->debug->files[0] : "");
+    emit_line (obj->debug, &dw_line, &g);
+    emit_frame (obj->debug, &dw_frame, &g);
+    uint32_t text_sym_idx = final_idx[obj->sec_sym[MIR_OBJ_SEC_TEXT]];
+    for (int i = 0; i < slots.n; i++) {
+      dwbuf_t *tgt = slots.v[i].sec == 0 ? &dw_info : slots.v[i].sec == 1 ? &dw_line : &dw_frame;
+      dwbuf_t *rel = slots.v[i].sec == 0   ? &rela_dw_info
+                     : slots.v[i].sec == 1 ? &rela_dw_line
+                                           : &rela_dw_frame;
+      memset (tgt->p + slots.v[i].pos, 0, 8);
+      Elf64_Rela er;
+      er.r_offset = slots.v[i].pos;
+      er.r_info = ELF64_R_INFO ((uint64_t) text_sym_idx, R_X86_64_64);
+      er.r_addend = (int64_t) slots.v[i].value;
+      buf_bytes (rel, &er, sizeof er);
+    }
+    free (slots.v);
+  }
+
   int rc = -1;
   if (!bad_p) {
     dwsec_t S[DWSEC_MAX];
@@ -1144,6 +1274,32 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     if (rela_data.len != 0)
       S[ns++] = (dwsec_t) {".rela.data", SHT_RELA, (uint32_t) i_symtab, 2, 8, SHF_INFO_LINK, 0,
                            sizeof (Elf64_Rela), &rela_data, rela_data.len};
+    if (obj->debug != NULL) {
+      S[ns++] = (dwsec_t) {".debug_abbrev", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &dw_abbrev,
+                           dw_abbrev.len};
+      uint32_t i_dw_info = (uint32_t) ns;
+      S[ns++] = (dwsec_t) {".debug_info", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &dw_info, dw_info.len};
+      uint32_t i_dw_line = (uint32_t) ns;
+      S[ns++] = (dwsec_t) {".debug_line", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &dw_line, dw_line.len};
+      uint32_t i_dw_frame = 0;
+      if (dw_frame.len != 0) {
+        i_dw_frame = (uint32_t) ns;
+        S[ns++]
+          = (dwsec_t) {".debug_frame", SHT_PROGBITS, 0, 0, 8, 0, 0, 0, &dw_frame, dw_frame.len};
+      }
+      if (rela_dw_info.len != 0)
+        S[ns++] = (dwsec_t) {".rela.debug_info", SHT_RELA, (uint32_t) i_symtab, i_dw_info, 8,
+                             SHF_INFO_LINK, 0, sizeof (Elf64_Rela), &rela_dw_info,
+                             rela_dw_info.len};
+      if (rela_dw_line.len != 0)
+        S[ns++] = (dwsec_t) {".rela.debug_line", SHT_RELA, (uint32_t) i_symtab, i_dw_line, 8,
+                             SHF_INFO_LINK, 0, sizeof (Elf64_Rela), &rela_dw_line,
+                             rela_dw_line.len};
+      if (rela_dw_frame.len != 0)
+        S[ns++] = (dwsec_t) {".rela.debug_frame", SHT_RELA, (uint32_t) i_symtab, i_dw_frame, 8,
+                             SHF_INFO_LINK, 0, sizeof (Elf64_Rela), &rela_dw_frame,
+                             rela_dw_frame.len};
+    }
     /* non-executable stack marker (its absence makes ld assume an executable
        stack and warn) */
     S[ns++] = (dwsec_t) {".note.GNU-stack", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, NULL, 0};
@@ -1154,6 +1310,13 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   free (symtab.p);
   free (rela_text.p);
   free (rela_data.p);
+  free (dw_abbrev.p);
+  free (dw_info.p);
+  free (dw_line.p);
+  free (dw_frame.p);
+  free (rela_dw_info.p);
+  free (rela_dw_line.p);
+  free (rela_dw_frame.p);
   return rc;
 }
 
@@ -1251,6 +1414,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   uint32_t *dyn_idx = calloc (n ? n : 1, sizeof (uint32_t)); /* 0 = not imported */
   if (dyn_idx == NULL) return -1;
   dwbuf_t dynstr = {0}, dynsym = {0}, hash = {0}, symtab = {0}, strtab = {0}, shstr = {0};
+  dwbuf_t dw_abbrev = {0}, dw_info = {0}, dw_line = {0}, dw_frame = {0}; /* R5 DWARF */
   int rc = -1;
   unsigned char *p = NULL;
   uint32_t *lib_name_off = NULL;
@@ -1381,6 +1545,21 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
 #define OBJX_SEC_VADDR(sec) \
   ((sec) == MIR_OBJ_SEC_TEXT ? code_vaddr : (sec) == MIR_OBJ_SEC_DATA ? data_vaddr : bss_vaddr)
 
+  /* ---- DWARF (R5): the builder's .text offsets biased to the final
+     link-time vaddrs -- ET_EXEC's identity layout makes them the runtime
+     addresses; for ET_DYN gdb applies the load bias itself.  Non-alloc file
+     content, laid out after the load segments below. */
+  if (obj->debug != NULL) {
+    dwgen_t g = {code_vaddr, obj->text.p, 1, NULL, NULL};
+    uint64_t text_lo, dbg_text_size;
+    dw_text_range (obj->debug, &g, &text_lo, &dbg_text_size);
+    emit_abbrev (&dw_abbrev);
+    emit_info (obj->debug, &dw_info, &g, text_lo, dbg_text_size,
+               obj->debug->n_files ? obj->debug->files[0] : "");
+    emit_line (obj->debug, &dw_line, &g);
+    emit_frame (obj->debug, &dw_frame, &g);
+  }
+
   /* ---- .symtab / .strtab (debug view: resolved link-time vaddrs) */
   buf_u8 (&strtab, 0);
   buf_bytes (&symtab, &z, sizeof z);
@@ -1411,17 +1590,27 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   (void) next;
 
   /* ---- assemble the image */
-  const int n_secs = 13; /* see shdr table below */
-  uint32_t shname[13];
-  static const char *objx_sec_names[13]
+  int n_secs = 13; /* fixed table below; + up to 4 appended .debug_* */
+  uint32_t shname[17];
+  static const char *objx_sec_names[17]
     = {"",      ".interp", ".hash",    ".dynsym", ".dynstr", ".rela.dyn", ".text",
-       ".data", ".dynamic", ".bss",    ".symtab", ".strtab", ".shstrtab"};
+       ".data", ".dynamic", ".bss",    ".symtab", ".strtab", ".shstrtab",
+       ".debug_abbrev", ".debug_info", ".debug_line", ".debug_frame"};
+  int n_dbg_secs = obj->debug != NULL ? (dw_frame.len != 0 ? 4 : 3) : 0;
+  n_secs += n_dbg_secs;
   buf_u8 (&shstr, 0);
   shname[0] = 0;
   for (int i = 1; i < n_secs; i++) {
     shname[i] = (uint32_t) shstr.len;
     buf_str (&shstr, objx_sec_names[i]);
   }
+  /* debug sections: non-alloc file content between the load image and the
+     symtab (indexes 13.. so the fixed table above keeps its numbering) */
+  uint64_t dw_abbrev_off = OBJX_ALIGN (off, 8);
+  uint64_t dw_info_off = dw_abbrev_off + dw_abbrev.len;
+  uint64_t dw_line_off = dw_info_off + dw_info.len;
+  uint64_t dw_frame_off = OBJX_ALIGN (dw_line_off + dw_line.len, 8);
+  if (n_dbg_secs != 0) off = dw_frame_off + dw_frame.len;
   uint64_t symtab_off = OBJX_ALIGN (off, 8);
   uint64_t strtab_off = symtab_off + symtab.len;
   uint64_t shstr_off = strtab_off + strtab.len;
@@ -1450,6 +1639,12 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   }
   if (obj->text.len != 0) memcpy (p + text_off + text_bias, obj->text.p, obj->text.len);
   if (obj->data.len != 0) memcpy (p + data_off, obj->data.p, obj->data.len);
+  if (n_dbg_secs != 0) {
+    if (dw_abbrev.len != 0) memcpy (p + dw_abbrev_off, dw_abbrev.p, dw_abbrev.len);
+    if (dw_info.len != 0) memcpy (p + dw_info_off, dw_info.p, dw_info.len);
+    if (dw_line.len != 0) memcpy (p + dw_line_off, dw_line.p, dw_line.len);
+    if (dw_frame.len != 0) memcpy (p + dw_frame_off, dw_frame.p, dw_frame.len);
+  }
 
   /* relocations: executables resolve internal targets in place and send
      imports to .rela.dyn; shared objects send everything to .rela.dyn --
@@ -1573,10 +1768,11 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   }
   { /* section headers (readelf/gdb view; the loader uses only phdrs) */
     Elf64_Shdr *sh = (Elf64_Shdr *) (p + shoff);
-    struct {
+    /* named type: c2m's self-bootstrap builds this file without GNU typeof */
+    struct objx_shrow {
       uint32_t type, link, info, align;
       uint64_t flags, off, vaddr_p, sz, entsize;
-    } T[13] = {
+    } T[17] = {
       {0, 0, 0, 0, 0, 0, 0, 0, 0},
       {SHT_PROGBITS, 0, 0, 1, SHF_ALLOC, interp_off, 1, interp_size, 0},
       {SHT_HASH, 3, 0, 8, SHF_ALLOC, hash_off, 1, hash.len, 4},
@@ -1593,6 +1789,13 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
       {SHT_STRTAB, 0, 0, 1, 0, strtab_off, 0, strtab.len, 0},
       {SHT_STRTAB, 0, 0, 1, 0, shstr_off, 0, shstr.len, 0},
     };
+    if (n_dbg_secs != 0) { /* appended after the fixed table (e_shstrndx stays 12) */
+      T[13] = (struct objx_shrow) {SHT_PROGBITS, 0, 0, 1, 0, dw_abbrev_off, 0, dw_abbrev.len, 0};
+      T[14] = (struct objx_shrow) {SHT_PROGBITS, 0, 0, 1, 0, dw_info_off, 0, dw_info.len, 0};
+      T[15] = (struct objx_shrow) {SHT_PROGBITS, 0, 0, 1, 0, dw_line_off, 0, dw_line.len, 0};
+      if (dw_frame.len != 0)
+        T[16] = (struct objx_shrow) {SHT_PROGBITS, 0, 0, 8, 0, dw_frame_off, 0, dw_frame.len, 0};
+    }
     for (int i = 1; i < n_secs; i++) {
       sh[i].sh_name = shname[i];
       sh[i].sh_type = T[i].type;
@@ -1625,6 +1828,10 @@ done:
   free (symtab.p);
   free (strtab.p);
   free (shstr.p);
+  free (dw_abbrev.p);
+  free (dw_info.p);
+  free (dw_line.p);
+  free (dw_frame.p);
   return rc;
 }
 
@@ -1834,9 +2041,18 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
   char first_unresolved[128] = "";
   for (int ri = 1; ri < eh->e_shnum; ri++) {
     if (sh[ri].sh_type != SHT_RELA) continue;
+    if (sh[ri].sh_info >= eh->e_shnum) {
+      OBJLOAD_ERR ("relocation section %d targets an out-of-range section", ri);
+      goto fail_unmap;
+    }
+    /* Relocations against sections the loader does not map -- the .debug_*
+       sections of a -g object -- are irrelevant in-process (GDB-JIT is the
+       in-process debug story); skip them.  Only an unmapped ALLOC target is
+       an error. */
+    if ((sh[sh[ri].sh_info].sh_flags & SHF_ALLOC) == 0) continue;
     uint8_t *tgt_base;
     size_t tgt_size;
-    if (sh[ri].sh_info >= eh->e_shnum || !OBJLOAD_REGION (sh[ri].sh_info, &tgt_base, &tgt_size)) {
+    if (!OBJLOAD_REGION (sh[ri].sh_info, &tgt_base, &tgt_size)) {
       OBJLOAD_ERR ("relocation section %d targets an unsupported section", ri);
       goto fail_unmap;
     }
@@ -1990,6 +2206,12 @@ int MIR_object_symbol_defined_p (MIR_object_t obj MIR_UNUSED, int sym_id MIR_UNU
 void MIR_object_add_reloc (MIR_object_t obj MIR_UNUSED, int sec MIR_UNUSED,
                            uint64_t offset MIR_UNUSED, int sym_id MIR_UNUSED,
                            int64_t addend MIR_UNUSED, int kind MIR_UNUSED) {}
+int MIR_object_find_symbol (MIR_object_t obj MIR_UNUSED, const char *name MIR_UNUSED,
+                            int *sec MIR_UNUSED, uint64_t *value MIR_UNUSED,
+                            uint64_t *size MIR_UNUSED) {
+  return 0;
+}
+void MIR_object_set_debug (MIR_object_t obj MIR_UNUSED, MIR_debug_t d MIR_UNUSED) {}
 int MIR_object_emit (MIR_object_t obj MIR_UNUSED, void **buf, size_t *size) {
   if (buf != NULL) *buf = NULL;
   if (size != NULL) *size = 0;

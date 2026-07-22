@@ -196,6 +196,24 @@ extern int MIR_object_symbol_defined_p (MIR_object_t obj, int sym_id);
 extern void MIR_object_add_reloc (MIR_object_t obj, int sec, uint64_t offset, int sym_id,
                                   int64_t addend, int kind);
 
+/* Look up a symbol by name.  Returns nonzero and fills sec/value/size when a
+   DEFINED symbol with that name exists (value is its section offset). */
+extern int MIR_object_find_symbol (MIR_object_t obj, const char *name, int *sec, uint64_t *value,
+                                   uint64_t *size);
+
+/* Attach a debug builder (AOT R5): MIR_object_emit and
+   MIR_object_emit_executable will generate .debug_abbrev/.debug_info/
+   .debug_line (and .debug_frame on x86-64) from it into the artifact.
+   Function addresses in the builder must be .text SECTION OFFSETS (cast to
+   the addr pointer; offset 0 is valid), typically taken from
+   MIR_object_find_symbol.  The .o carries R_X86_64_64 relocations against
+   the .text section symbol for every code address, so an external linker
+   relocates the DWARF correctly; executables and shared objects get the
+   final link-time vaddrs baked in (gdb rebases ET_DYN itself).  The builder
+   is borrowed -- it must stay alive across the emit calls -- and may not be
+   the target of MIR_debug_emit afterwards (address interpretation differs). */
+extern void MIR_object_set_debug (MIR_object_t obj, MIR_debug_t d);
+
 /* Assemble the relocatable object.  On success returns 0 and sets *buf
    (malloc'd, caller-owned; write it out and free it) and *size.  Returns
    nonzero on failure / unsupported host. */

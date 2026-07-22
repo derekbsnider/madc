@@ -982,6 +982,8 @@ int main (int argc, char *argv[], char *env[]) {
       MIR_link (main_ctx, MIR_set_gen_interface, object_import_resolver);
       if (options.verbose_p)
         fprintf (stderr, "MIR object link+gen    -- %.0f usec\n", real_usec_time () - start_time);
+      /* -g: the .o carries source-level DWARF (R5) */
+      if (options.debug_info_p) c2mir_object_attach_debug (main_ctx);
       if (c2mir_get_native_object (main_ctx, &obuf, &osize) != 0) {
         fprintf (stderr, "failed to emit native object %s\n", file_name);
         result_code = 1;

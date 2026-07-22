@@ -39,6 +39,11 @@ struct MIR_object_exec_params;
 extern int MIR_gen_object_emit_executable (MIR_context_t ctx,
                                            const struct MIR_object_exec_params *params, void **buf,
                                            size_t *size);
+/* The live capture builder (object mode only; NULL otherwise) -- for
+   consumers that annotate the capture before emitting, e.g. attaching a
+   debug builder (MIR_object_set_debug) or mapping function names to their
+   .text offsets (MIR_object_find_symbol).  Borrowed; owned by gen. */
+extern struct MIR_object *MIR_gen_get_object (MIR_context_t ctx);
 extern void MIR_set_gen_interface (MIR_context_t ctx, MIR_item_t func_item);
 extern void MIR_set_lazy_gen_interface (MIR_context_t ctx, MIR_item_t func_item);
 extern void MIR_set_lazy_bb_gen_interface (MIR_context_t ctx, MIR_item_t func_item);
