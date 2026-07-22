@@ -9923,6 +9923,13 @@ static gen_ctx_t gen_obj_emit_prepare (MIR_context_t ctx, void **buf, size_t *si
   return gen_ctx;
 }
 
+struct MIR_object *MIR_gen_get_object (MIR_context_t ctx) {
+  gen_ctx_t gen_ctx = *gen_ctx_loc (ctx);
+
+  if (gen_ctx == NULL || !object_mode_p) return NULL;
+  return gen_object;
+}
+
 int MIR_gen_object_emit (MIR_context_t ctx, void **buf, size_t *size) {
   gen_ctx_t gen_ctx = gen_obj_emit_prepare (ctx, buf, size);
 

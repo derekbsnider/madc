@@ -72,4 +72,15 @@ struct MIR_object_exec_params;
 int c2mir_get_native_executable (MIR_context_t ctx, const struct MIR_object_exec_params *params,
                                  void **buf, size_t *size);
 
+/* R5, debug_info_p + native_object_p compiles: attach the source-level debug
+   info (the same builder the GDB-JIT path emits) to the object capture, so
+   the subsequent c2mir_get_native_object / c2mir_get_native_executable calls
+   carry .debug_line/.debug_info/.debug_frame -- section-offset relocated in
+   the .o, final link-time vaddrs in executables and shared objects.  Call
+   after every function is generated and before the native getter; the
+   attached state stays valid until c2mir_finish.  Returns 0 on success,
+   nonzero when there is nothing to attach (no -g, no functions) or the
+   capture is absent.  Single-threaded compiles only. */
+int c2mir_object_attach_debug (MIR_context_t ctx);
+
 #endif

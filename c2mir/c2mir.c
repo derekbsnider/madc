@@ -17040,17 +17040,34 @@ static MIR_reg_t c2m_dbg_find_reg (MIR_func_t func, const char *name) {
   return 0;
 }
 
-int c2mir_get_debug_object (MIR_context_t ctx, void **buf, size_t *size) {
+/* Shared populate for both debug consumers: files + subprogram/variable
+   records for every recorded function with generated code.  obj == NULL is
+   the GDB-JIT path -- addresses are the published JIT machine_code
+   pointers.  obj != NULL is the AOT path (R5) -- object capture never
+   publishes machine_code, so the address is the function's .text offset
+   from the capture's symbol table (offset 0 is a valid function). */
+static int c2m_dbg_populate (MIR_object_t obj) {
   if (c2m_dbg == NULL || c2m_dbg_nfuncrecs == 0) return 1;
   for (size_t i = 0; i < c2m_dbg_nfiles; i++) MIR_debug_add_file (c2m_dbg, c2m_dbg_files[i]);
   for (size_t i = 0; i < c2m_dbg_nfuncrecs; i++) {
     MIR_item_t it = c2m_dbg_funcrecs[i].item;
     MIR_func_t func;
+    void *addr;
 
     if (it == NULL || it->item_type != MIR_func_item) continue;
     func = it->u.func;
-    if (func->machine_code == NULL) continue;
-    MIR_debug_add_func (c2m_dbg, func->name, func->machine_code, func->code_len, func->line_map,
+    if (obj == NULL) {
+      if (func->machine_code == NULL) continue;
+      addr = func->machine_code;
+    } else {
+      uint64_t off;
+      int sec;
+
+      if (!MIR_object_find_symbol (obj, func->name, &sec, &off, NULL) || sec != MIR_OBJ_SEC_TEXT)
+        continue;
+      addr = (void *) (uintptr_t) off;
+    }
+    MIR_debug_add_func (c2m_dbg, func->name, addr, func->code_len, func->line_map,
                         func->line_map_len);
     for (size_t v = c2m_dbg_funcrecs[i].first_var;
          v < c2m_dbg_funcrecs[i].first_var + c2m_dbg_funcrecs[i].n_vars; v++) {
@@ -17073,7 +17090,21 @@ int c2mir_get_debug_object (MIR_context_t ctx, void **buf, size_t *size) {
       MIR_debug_add_var (c2m_dbg, dv->name, dv->is_param, dv->type, slot, deref_p, member);
     }
   }
+  return 0;
+}
+
+int c2mir_get_debug_object (MIR_context_t ctx, void **buf, size_t *size) {
+  (void) ctx;
+  if (c2m_dbg_populate (NULL) != 0) return 1;
   return MIR_debug_emit (c2m_dbg, buf, size);
+}
+
+int c2mir_object_attach_debug (MIR_context_t ctx) {
+  MIR_object_t obj = (MIR_object_t) MIR_gen_get_object (ctx);
+
+  if (obj == NULL || c2m_dbg_populate (obj) != 0) return 1;
+  MIR_object_set_debug (obj, c2m_dbg);
+  return 0;
 }
 
 int c2mir_get_native_executable (MIR_context_t ctx, const struct MIR_object_exec_params *params,
