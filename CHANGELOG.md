@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+- **perf(startup): demand-driven forest bind — trivial-C startup on the
+  packed release binary 94 → 38 ms (startup-latency C-lane R0+R1, task
+  #89).** The eager bind tax is gone: `--show-stats` grew a full forest
+  startup breakdown (map/open, per-include bind, restore split, unit
+  loads, zstd decode traffic — R0), and R1 made every stage proportional
+  to the include set actually used. Two-stage container open
+  (`open_header`/`complete_open`) checks the v27 producer-config gate on
+  the directory header before any heavy work (`--std=c17` 45 → 15 ms —
+  the bind-off floor); the extern-decl index and typeid→name closure
+  build on first query; the template payload/token segments (5.3 MB)
+  decode lazily behind the rung-2a demand verdict + an owner-restore
+  fence (a pure-C bind restores 0 template patterns, was 682); and the
+  admitted-set seeds are attributed — instantiation-product free
+  functions no longer seed their signature chains, member-template
+  records seed owners only on bound-declared verdicts, and function-local
+  classes (new `DF_CLASS_FN_LOCAL` flag) admit structurally after the
+  pull closure converges instead of by name. C++ iostream hello stays at
+  204 ms (its full 184-unit surface restores as before). Gates:
+  fulltest + packed arbiter 729/0/0/13, forest_bind_gate 18/18 (incl.
+  the subbind owner's bar), selfexe + project gates green.
+
 - **feat(aot): PIC native artifacts — DT_TEXTREL is dead (AOT R6, task
   #88).** All native output (`-c`/`-o`/`-shared`/`--project`) is now
   position-independent: `.text` carries zero relocations. Every address
