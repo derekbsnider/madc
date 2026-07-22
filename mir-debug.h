@@ -139,23 +139,34 @@ extern void MIR_debug_gdb_unregister (MIR_debug_jit_t entry);
    MIR_object_emit then assembles an on-disk relocatable ELF object
    (ET_REL, x86-64 first).  Unlike the debug object -- which describes
    already-resolved JIT addresses -- everything here is section-relative and
-   unresolved: .text/.data carry the real bytes, .rela.text/.rela.data carry
-   the relocations the system linker applies. */
+   unresolved: .text/.data/.mir.addrpool carry the real bytes, their .rela.*
+   siblings carry the relocations the system linker applies. */
 
 typedef struct MIR_object *MIR_object_t;
 
-/* Section identifiers (fixed section-header indexes 1..3 in the emitted
-   object).  MIR_OBJ_SEC_UNDEF marks an imported (undefined) symbol. */
+/* Section identifiers (fixed section-header indexes 1..4 in the emitted
+   object).  MIR_OBJ_SEC_UNDEF marks an imported (undefined) symbol.
+   ADDRPOOL (".mir.addrpool", R6 PIC) is the GOT-shaped address-slot
+   section: every 8-byte address the generated code materializes or calls
+   through -- const-pool entries and switch tables -- lives here instead of
+   .text, reached by rip-relative PC32 references, so .text carries no
+   relocations at all (no DT_TEXTREL in executables/shared objects). */
 enum {
   MIR_OBJ_SEC_UNDEF = -1,
   MIR_OBJ_SEC_TEXT = 0,
   MIR_OBJ_SEC_DATA = 1,
   MIR_OBJ_SEC_BSS = 2,
+  MIR_OBJ_SEC_ADDRPOOL = 3,
 };
 
 /* Relocation kinds (mapped to the arch-specific ELF type at emit). */
 enum {
   MIR_OBJ_RELOC_ABS64 = 0, /* absolute 64-bit address: R_X86_64_64 */
+  MIR_OBJ_RELOC_PC32 = 1,  /* rip-relative 32-bit: R_X86_64_PC32 (S+A-P).
+                              Never dynamic: resolved by whoever fixes the
+                              section layout (external linker for a .o, the
+                              executable emitter at emit time, the in-process
+                              loader at map time). */
 };
 
 /* Create a builder, or NULL if the host is not a supported ELF target. */
@@ -172,6 +183,12 @@ extern size_t MIR_object_data_append (MIR_object_t obj, const void *bytes, size_
 /* Reserve len bytes in .bss at the given power-of-2 alignment; returns the
    .bss offset. */
 extern size_t MIR_object_bss_reserve (MIR_object_t obj, size_t len, size_t align);
+/* Append len bytes to .mir.addrpool at the given power-of-2 alignment
+   (bytes == NULL appends zero fill); returns the pool offset.  Slots that
+   hold link-time addresses should be left zero and covered by an ABS64
+   relocation in MIR_OBJ_SEC_ADDRPOOL. */
+extern size_t MIR_object_addrpool_append (MIR_object_t obj, const void *bytes, size_t len,
+                                          size_t align);
 
 /* Define (sec >= 0, at section offset value with the given size) or import
    (sec == MIR_OBJ_SEC_UNDEF) a symbol.  func_p selects STT_FUNC vs
@@ -190,9 +207,9 @@ extern void MIR_object_symbol_define (MIR_object_t obj, int sym_id, int sec, uin
 extern int MIR_object_section_symbol (MIR_object_t obj, int sec);
 /* Nonzero if the symbol has been defined (not just referenced). */
 extern int MIR_object_symbol_defined_p (MIR_object_t obj, int sym_id);
-/* Add a relocation of the given kind in section sec (TEXT or DATA) at offset,
-   against sym_id with the given addend.  The relocated slot's bytes should be
-   left zero: RELA addends carry the whole value. */
+/* Add a relocation of the given kind in section sec (TEXT, DATA or ADDRPOOL)
+   at offset, against sym_id with the given addend.  The relocated slot's
+   bytes should be left zero: RELA addends carry the whole value. */
 extern void MIR_object_add_reloc (MIR_object_t obj, int sec, uint64_t offset, int sym_id,
                                   int64_t addend, int kind);
 
@@ -227,8 +244,9 @@ extern int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size);
    are resolved at emit (fixed load base); imported symbols become R_X86_64_64
    slot relocations the dynamic loader fills eagerly at load -- MIR's call
    model already routes imports through address slots, so no PLT/GOT is
-   built.  Slots inside .text make the executable carry DT_TEXTREL until the
-   PIC rung.  x86-64 Linux only.
+   built (.mir.addrpool in the R+W segment IS the GOT; .text is clean of
+   relocations, so no DT_TEXTREL -- the tag would only reappear, loudly, if
+   a future capture put a dynamic slot back in text).  x86-64 Linux only.
 
    With shared_p set the same emitter produces an ET_DYN shared object
    (dlopen/DT_NEEDED-consumable): load base 0, no PT_INTERP/_start/entry;
@@ -254,8 +272,9 @@ extern int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_p
 /* --- In-process loader for MIR-emitted relocatable objects ---------------
    The .o-as-precompiled-cache lane: load an ET_REL object previously
    produced by MIR_object_emit back into THIS process and prepare it for
-   execution -- .text/.data copied into a fresh anonymous mapping (.bss
-   zero-filled), the emitter's R_X86_64_64-only relocation subset applied,
+   execution -- .text/.data/.mir.addrpool copied into a fresh anonymous
+   mapping (.bss zero-filled), the emitter's relocation subset applied
+   (R_X86_64_64 slots + R_X86_64_PC32 text->pool references),
    .text then remapped read+execute.  Undefined symbols resolve through the
    emitter's own dotted mir.* builtin exports first (they are this library's
    AOT contract), then through the caller's resolver (return NULL for "not
