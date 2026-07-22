@@ -3669,6 +3669,27 @@ public:
     bool parsing_const_decl = false;	// current declaration originated from `const` — set vfCONSTANT on the variable
     bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
 
+    // ---- Script mode: STD_MADC file-scope statements → synthesized main.
+    // Owner plan docs/plans/2026-07-21-script-mode-auto-main.md. The parser
+    // adopts non-declaration top-level statements into a lazily created
+    // `int main(int argc, char **argv)` — a real TokenFunc, so every
+    // downstream surface (CIR, --emit=c11, native AOT, --dump-cir) sees an
+    // ordinary function. Dialect-gated in file_scope_statement_starter /
+    // adopt_script_statement; declarations keep their file-scope meaning.
+    TokenFunc *script_main_tf = NULL;	// the synthesized main (created at first adopted statement)
+    Method *script_main_method = NULL;
+    Variable *script_argc_var = NULL;	// main's params; also created on first
+    Variable *script_argv_var = NULL;	// argc/argv resolution inside a statement
+    bool parsing_script_statement = false;	// arms argc/argv resolution (script_param_lookup)
+    bool file_scope_statement_starter(TokenBase *tb);
+    bool script_statement_result(TokenBase *ts) const;
+    bool adopt_script_statement(TokenBase *ts);
+    void ensure_script_main(TokenBase *loc);
+    void finalize_script_main();
+    Variable *script_param_var(const std::string &id);
+    Variable *script_param_lookup(const std::string &id);
+    bool token_is_tu_origin(TokenBase *tb) const;
+
     std::stack<int> _pack_stack;	// #pragma pack(push, N) / pop stack
     int pack_stack_top() { return _pack_stack.empty() ? 0 : _pack_stack.top(); }
 

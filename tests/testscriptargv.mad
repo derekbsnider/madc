@@ -1,0 +1,7 @@
+// Script mode: argc/argv are in scope for top-level statements — the
+// synthesized main is int main(int argc, char **argv).
+#include <stdio.h>
+
+printf("argc=%d\n", argc);
+for (int i = 1; i < argc; i++)
+	printf("arg %d: %s\n", i, argv[i]);
