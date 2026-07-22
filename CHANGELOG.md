@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [v0.38.0] — 2026-07-22
+
+The system-object release: `madc::sys` (Python `sys` convention) live in every
+lane, native `count()`/`size()` methods on the polyglot array, frozen-value
+enforcement, and the general array-member/subscript fixes the campaign surfaced.
+
 - **feat(sys): `madc::sys` — the system object (task #91).** Python
   `sys` convention: one typed host-side C++ object with dot members —
   `sys.argv` / `sys.path` (mutable madc arrays), `sys.platform` /
