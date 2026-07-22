@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <dlfcn.h>
 #include <iostream>
 #include <iomanip>
@@ -1764,25 +1765,39 @@ std::string Program::current_source_directory()
 // A missing/mismatched container leaves bind_forest NULL: every include then
 // live-parses. The mapping is never unmapped — the forest reads from it for the
 // process lifetime.
+// --show-stats wall clock (R0 startup instrumentation).
+static double forest_stat_now(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec + tv.tv_usec / 1e6;
+}
+
 CirFrozenForest *Program::ensure_bind_forest()
 {
     if ( bind_forest_tried )
 	return bind_forest;
     bind_forest_tried = true;
+    double _t0 = forest_stat_now();
     const void *image = NULL;
     size_t image_len = 0;
     const char *path = forest_bind_path.empty() ? NULL : forest_bind_path.c_str();
     if ( !cir_forest_map_image(path, image, image_len) )
     {
+	_forest_map_seconds = forest_stat_now() - _t0;
 	DBG(std::cout << "forest-bind: no container at "
 	    << (path ? path : "/proc/self/exe") << " — live parse" << std::endl);
 	return NULL;
     }
+    _forest_map_seconds = forest_stat_now() - _t0;
     CirFrozenForest *f = new CirFrozenForest();
-    if ( !f->open(image, image_len, /*c2m=*/NULL, /*quiet_missing=*/true) )
+    double _t1 = forest_stat_now();
+    if ( !f->open_header(image, image_len, /*quiet_missing=*/true) )
     {
-	// open() printed real corruption / pin mismatch; a blob-less binary
-	// (the default-on probe of /proc/self/exe) fell through silently.
+	_forest_open_seconds = forest_stat_now() - _t1;
+	// open_header() printed real corruption / pin mismatch; a blob-less
+	// binary (the default-on probe of /proc/self/exe) fell through
+	// silently.
 	delete f;
 	return NULL;
     }
@@ -1791,18 +1806,56 @@ CirFrozenForest *Program::ensure_bind_forest()
     // container parsed under a different config must not bind — fall through
     // silently to live parse (the packed-binary default relies on this: a C
     // compile resolves the same real glibc paths a C++ corpus carries).
+    // Gated on the directory header BEFORE the heavy pool/arena binds (R1):
+    // a mismatched compile pays only the footer + directory read.
     if ( f->language_std() != madc_forest_config_word(this)
       || f->defines_hash() != madc_forest_defines_hash(this) )
     {
+	_forest_open_seconds = forest_stat_now() - _t1;
 	DBG(std::cout << "forest-bind: producer config mismatch (std/defines)"
 	    << " — live parse" << std::endl);
 	delete f;
 	return NULL;
     }
+    if ( !f->complete_open(/*c2m=*/NULL) )
+    {
+	_forest_open_seconds = forest_stat_now() - _t1;
+	delete f;
+	return NULL;
+    }
+    _forest_open_seconds = forest_stat_now() - _t1;
     bind_forest = f;
     DBG(std::cout << "forest-bind: opened container (" << f->unit_count()
 	<< " units)" << std::endl);
     return bind_forest;
+}
+
+// --show-stats (R0): flatten the forest-bind counters (Program-side timers +
+// the forest/reader-owned decode counters) into the plain struct the stats
+// display reads — no CirFrozenForest type leaks to the caller.
+Program::ForestBindStats Program::forest_bind_stats() const
+{
+    ForestBindStats s;
+    s.map_secs     = _forest_map_seconds;
+    s.open_secs    = _forest_open_seconds;
+    s.bind_secs    = _forest_bind_seconds;
+    s.restore_secs = _forest_restore_seconds;
+    s.declidx_secs = _forest_declidx_seconds;
+    s.units_bound  = forest_chain.size();
+    if ( bind_forest )
+    {
+	s.opened         = true;
+	s.units_total    = bind_forest->unit_count();
+	s.unitload_secs  = bind_forest->_stat_unitload_secs;
+	s.unitload_count = bind_forest->_stat_unitload_count;
+	s.mat_secs       = bind_forest->_stat_mat_secs;
+	s.zstd_frames    = bind_forest->stat_zstd_frames();
+	s.zstd_bytes     = bind_forest->stat_zstd_bytes_out();
+	s.zstd_secs      = bind_forest->stat_zstd_secs();
+	s.copy_calls     = bind_forest->stat_copy_calls();
+	s.copy_bytes     = bind_forest->stat_copy_bytes();
+    }
+    return s;
 }
 
 // Map a system include spelling to a frozen grove unit index (-1 = miss). Tries
@@ -1836,14 +1889,25 @@ void Program::forest_bind_include(uint32_t unit)
     if ( forest_chain_set.count(unit) || forest_bind_walking.count(unit) )
 	return;
     forest_bind_walking.insert(unit);
+    // --show-stats (R0): per-unit SELF cost — edge decode + PP install,
+    // recursion excluded — so the accumulated total sums cleanly.
+    double _t0 = forest_stat_now();
     std::vector<uint32_t> edges;
-    if ( bind_forest->unit_edges(unit, edges) )
+    bool have_edges = bind_forest->unit_edges(unit, edges);
+    double _self = forest_stat_now() - _t0;
+    if ( have_edges )
 	for ( size_t i = 0; i < edges.size(); ++i )
 	    forest_bind_include(edges[i]);
+    double _t1 = forest_stat_now();
     forest_install_pp(unit);
     forest_chain.push_back(unit);
     forest_chain_set.insert(unit);
     forest_bind_walking.erase(unit);
+    _self += forest_stat_now() - _t1;
+    _forest_bind_seconds += _self;
+    const char *nm = bind_forest->unit_name(unit);
+    _forest_unit_bind_costs.push_back(
+	std::make_pair(std::string(nm ? nm : "?"), _self));
 }
 
 // Apply one unit's frozen PP-export delta to the live macro tables, replaying

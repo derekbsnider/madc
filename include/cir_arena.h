@@ -194,6 +194,14 @@ enum DefFlags : uint32_t {
 						// is_dependent_placeholder + opaque_concrete_tag
 						// so the consumer's dependence classification
 						// matches a live parse (LOADED == parsed)
+	DF_CLASS_FN_LOCAL    = 1u << 28,	// aggregate: a FUNCTION-LOCAL class (hoisted
+						// local class of a fn/method body — Guard,
+						// _Save_errno). C++ scoping makes it unnameable
+						// outside its function, so a bound consumer can
+						// never DEMAND it by name: it must not seed the
+						// admitted-set chase (startup R1); it stays
+						// reachable through reference pulls / its owner
+						// body's use.
 	DF_BODY_IN_INSTANTIATION = 1u << 26,	// v27: the captured DEFBODY tokens were parsed
 						// inside a fn-template INSTANTIATION
 						// (fn_template_instantiation_depth > 0 — an

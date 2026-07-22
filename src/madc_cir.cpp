@@ -1643,6 +1643,14 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 	if (sdd->is_anonymous)           r.flags |= madc::dis::DF_IS_ANONYMOUS;
 	if (sdd->reverse_scalar_storage) r.flags |= madc::dis::DF_REVERSE_SCALAR;
 	if (sdd->has_anon_aggregate)     r.flags |= madc::dis::DF_HAS_ANON_AGG;
+	// Function-local class (hoisted local class of a fn/method body):
+	// unnameable outside its function, so a bound consumer can never
+	// demand it — the bind-side admitted-set seeding skips it (R1).
+	{
+		HoistedDeclIdentity hid;
+		if (cdd && function_local_class_identity(cdd, hid))
+			r.flags |= madc::dis::DF_CLASS_FN_LOCAL;
+	}
 	// Known definition provenance is intrinsic to the aggregate. Unknown is
 	// retained for legacy/opaque paths and preserves the previous record before
 	// falling back to the ambient parser position.

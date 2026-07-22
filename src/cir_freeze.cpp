@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 // mir-code-alloc.h (reached via cir_node.h -> c2mir headers) redefines
 // MAP_FAILED to NULL for its own allocator; drop the glibc define so that
@@ -1012,14 +1013,29 @@ static const uint8_t *forest_pool_block(const madc::dis::snapshot_reader &r,
 	return own.data();
 }
 
+// --show-stats wall clock (R0 startup instrumentation).
+static double forest_now(void)
+{
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return tv.tv_sec + tv.tv_usec / 1e6;
+}
+
 bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m,
 			   bool quiet_missing)
 {
-	_c2m = c2m;
-	if (!TokenBase::_active_strpool) {
-		fprintf(stderr, "madc: forest thaw requires a live string pool\n");
+	if (!open_header(image, len, quiet_missing))
 		return false;
-	}
+	return complete_open(c2m);
+}
+
+// R1 stage 1: footer + context-hash pin + directory only. Cheap (one small
+// segment decode) — the bind path config-gates on language_std()/
+// defines_hash() after this and skips complete_open() on a mismatch.
+bool CirFrozenForest::open_header(const void *image, size_t len,
+				  bool quiet_missing)
+{
+	double _t0 = forest_now();
 	if (!_reader.open(image, len)) {
 		if (!quiet_missing)
 			fprintf(stderr, "madc: no forest container found\n");
@@ -1056,6 +1072,47 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m,
 	_language_std = hdr.language_std;	// v27 producer config (bind gate)
 	_defines_hash = hdr.defines_hash;
 
+	// Root sanity against the directory.
+	_root_unit = hdr.root_unit;
+	_root_idx  = hdr.root_idx;
+	if (_root_unit >= hdr.unit_count
+	    || _root_idx >= _units[_root_unit].record_count) {
+		fprintf(stderr, "madc: forest root out of range\n");
+		return false;
+	}
+
+	// Required-library name IDS (the link-environment closure) — the names
+	// resolve through the container pool in complete_open.
+	const uint8_t *libp = dir.data() + sizeof(hdr)
+			    + hdr.unit_count * sizeof(cir_forest_dir_unit);
+	for (uint32_t i = 0; i < hdr.lib_count; ++i) {
+		uint32_t id;
+		memcpy(&id, libp + i * sizeof(uint32_t), sizeof(uint32_t));
+		_lib_ids.push_back(id);
+	}
+
+	_header_opened = true;
+	_stat_open_secs += forest_now() - _t0;
+	return true;
+}
+
+// R1 stage 2: everything open() historically did past the directory —
+// string-pool/arena binds, the container-global segments, the unit-name
+// index. Memoized; needs the live string pool. The extern-decl index is no
+// longer built here — it builds on the first extern_loc_for query.
+bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
+{
+	if (_fully_opened)
+		return true;
+	if (!_header_opened)
+		return false;
+	double _t0 = forest_now();
+	_c2m = c2m;
+	if (!TokenBase::_active_strpool) {
+		fprintf(stderr, "madc: forest thaw requires a live string pool\n");
+		return false;
+	}
+
 	// The container's own string pool (A1 frozen view).
 	size_t nbytes = 0, nentries = 0, nbuckets = 0;
 	const uint8_t *pb = forest_pool_block(_reader, CIR_FOREST_SEG_STR_BYTES,
@@ -1083,23 +1140,11 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m,
 		return false;
 	}
 
-	// Root sanity against the directory.
-	_root_unit = hdr.root_unit;
-	_root_idx  = hdr.root_idx;
-	if (_root_unit >= hdr.unit_count
-	    || _root_idx >= _units[_root_unit].record_count) {
-		fprintf(stderr, "madc: forest root out of range\n");
-		return false;
-	}
-
-	// Required libraries (the link-environment closure).
-	const uint8_t *libp = dir.data() + sizeof(hdr)
-			    + hdr.unit_count * sizeof(cir_forest_dir_unit);
-	for (uint32_t i = 0; i < hdr.lib_count; ++i) {
-		uint32_t id;
-		memcpy(&id, libp + i * sizeof(uint32_t), sizeof(uint32_t));
+	// Required libraries (the link-environment closure) — resolve the
+	// header-stage name IDS through the now-bound container pool.
+	for (size_t i = 0; i < _lib_ids.size(); ++i) {
 		uint32_t slen = 0;
-		const char *s = pool_cstr(id, slen);
+		const char *s = pool_cstr(_lib_ids[i], slen);
 		if (!s) {
 			fprintf(stderr, "madc: forest library list corrupt\n");
 			return false;
@@ -1139,46 +1184,33 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m,
 		if (!d.empty())
 			memcpy(_templates.data(), d.data(), d.size());
 	}
+	// R1: the template payload + token segments (the heavy pair) are
+	// shape-validated here (directory metadata only, no decode) and
+	// decoded lazily by ensure_template_payload() on first demand.
 	if (const madc::dis::snapshot_segment *tp =
 		_reader.find(CIR_FOREST_SEG_TEMPLATE_PAYLOAD)) {
-		std::vector<uint8_t> d;
 		if (tp->kind != SNAP_KIND_CIR_TEMPLATE_PAYLOAD
-		    || !_reader.read_segment(*tp, d) || d.size() % sizeof(uint32_t)) {
+		    || tp->raw_size % sizeof(uint32_t)) {
 			fprintf(stderr, "madc: forest template payload corrupt\n");
 			return false;
 		}
-		_template_payload.resize(d.size() / sizeof(uint32_t));
-		if (!d.empty())
-			memcpy(_template_payload.data(), d.data(), d.size());
 	}
 	if (const madc::dis::snapshot_segment *tt =
 		_reader.find(CIR_FOREST_SEG_TEMPLATE_TOKENS)) {
-		if (tt->kind != SNAP_KIND_CIR_TEMPLATE_TOKENS
-		    || !_reader.read_segment(*tt, _template_tokens)) {
+		if (tt->kind != SNAP_KIND_CIR_TEMPLATE_TOKENS) {
 			fprintf(stderr, "madc: forest template tokens corrupt\n");
 			return false;
 		}
 	}
-	// v20 container-global: the extern-decl index (symbol -> frozen loc).
+	// v20 container-global: the extern-decl index. R1: shape-validate only
+	// (directory metadata, no decode) — the map builds on the first
+	// extern_loc_for query, so a compile that never asks pays nothing.
 	if (const madc::dis::snapshot_segment *xs =
 		_reader.find(CIR_FOREST_SEG_EXTERN_LOCS)) {
-		std::vector<uint8_t> d;
 		if (xs->kind != SNAP_KIND_CIR_EXTERN_LOCS
-		    || !_reader.read_segment(*xs, d)
-		    || d.size() % sizeof(cir_forest_extern_loc)) {
+		    || xs->raw_size % sizeof(cir_forest_extern_loc)) {
 			fprintf(stderr, "madc: forest extern index corrupt\n");
 			return false;
-		}
-		size_t n = d.size() / sizeof(cir_forest_extern_loc);
-		for (size_t i = 0; i < n; ++i) {
-			cir_forest_extern_loc xl;
-			memcpy(&xl, d.data() + i * sizeof(xl), sizeof(xl));
-			uint32_t nlen = 0;
-			const char *nm = pool_cstr(xl.name_id, nlen);
-			if (!nm || !nlen)
-				continue;
-			_extern_by_name[std::string(nm, nlen)] =
-				std::make_pair(xl.unit, xl.idx);
 		}
 	}
 	// v18 container-global: the B3 DefArena dump — THE type-graph serialization.
@@ -1233,17 +1265,10 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m,
 					" failed validation\n");
 				return false;
 			}
-			// Derive the typeid -> name closure (type_name_for) from
-			// the arena records — the arena is id-addressed by project
-			// slot, so a def's arena id IS the freeze-time typeid.
-			for (uint32_t s = 0; s < _arena.def_slots(); ++s) {
-				uint32_t tid = madc::dis::arena_id_of(s);
-				madc::dis::defrec r;
-				if (!_arena.get_def_at(tid, r) || !r.name_id)
-					continue;
-				if (const char *nm = _arena.c_str(r.name_id))
-					_type_names[tid] = nm;
-			}
+			// (The typeid -> name closure derives per-query in
+			// type_name_for — the arena is id-addressed by project
+			// slot, so a def's arena id IS the freeze-time typeid;
+			// no eager whole-arena map (R1).)
 		}
 	}
 
@@ -1272,7 +1297,7 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m,
 		if (!c.empty())
 			memcpy(_canon_order.data(), c.data(), c.size());
 		for (size_t i = 0; i < _canon_order.size(); ++i)
-			if (_canon_order[i] >= hdr.unit_count) {
+			if (_canon_order[i] >= _units.size()) {
 				fprintf(stderr, "madc: forest canonical order out of range\n");
 				return false;
 			}
@@ -1281,14 +1306,16 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m,
 	// The writer dedups unit names, so a name maps to one unit; a stray
 	// duplicate keeps the first (bind is order-insensitive for a conforming
 	// closure).
-	for (uint32_t u = 0; u < hdr.unit_count; ++u) {
+	for (uint32_t u = 0; u < (uint32_t)_units.size(); ++u) {
 		uint32_t slen = 0;
 		const char *nm = pool_cstr(_units[u].unit_name_id, slen);
 		if (nm)
 			_unit_by_name.emplace(std::string(nm, slen), u);
 	}
 
-	_segs.assign(hdr.unit_count, (CirFrozenSegment *)NULL);
+	_segs.assign(_units.size(), (CirFrozenSegment *)NULL);
+	_fully_opened = true;
+	_stat_open_secs += forest_now() - _t0;
 	return true;
 }
 
@@ -1505,6 +1532,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	if (_types_materialized)
 		return _restored;
 	_types_materialized = true;
+	double _t0 = forest_now();
 
 	// A type-less freeze binds an empty arena view: every aggregate pass
 	// below no-ops (nslots == 0) and only pinned-typed globals restore.
@@ -1730,7 +1758,19 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			madc::dis::defrec r;
 			if (!a.get_def_at(tid, r))
 				continue;
+			// R1: a function-local class is unnameable outside its
+			// function — it can never be a consumer DEMAND. It must
+			// not seed the chase (its members pulled the whole C++
+			// instantiation universe into pure-C binds); it stays
+			// admittable through reference pulls.
+			if (r.flags & madc::dis::DF_CLASS_FN_LOCAL)
+				continue;
 			if (record_kept(r)) {
+				DBG(fprintf(stderr,
+					    "forest agg seed name=%s ns=%s canon=%s\n",
+					    r.name_id ? a.c_str(r.name_id) : "-",
+					    r.ns_id ? a.c_str(r.ns_id) : "-",
+					    r.canon_id ? a.c_str(r.canon_id) : "-"));
 				admitted.insert(tid);
 				work.push_back(tid);
 			}
@@ -1752,8 +1792,16 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
 				continue;
 			if (r.kind == madc::dis::DK_TYPEDEF) {
-				if (name_verdict(r.name_id, r.ns_id) >= 0)
+				if (name_verdict(r.name_id, r.ns_id) >= 0) {
+					DBG(fprintf(stderr,
+						    "forest td seed v=%d name=%s ns=%s"
+						    " flags=%x\n",
+						    name_verdict(r.name_id, r.ns_id),
+						    r.name_id ? a.c_str(r.name_id) : "-",
+						    r.ns_id ? a.c_str(r.ns_id) : "-",
+						    (unsigned)r.flags));
 					tq.push_back(r.ref0);
+				}
 			} else if (r.kind == madc::dis::DK_FUNC
 				   && (r.flags & madc::dis::DF_IS_FREE_FUNC)) {
 				int v = name_verdict(r.name_id, 0);
@@ -1761,6 +1809,27 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					v = name_verdict(r.disp_id, r.ns_id);
 				if (v < 0)
 					continue;
+				// R1: an UNINDEXED free function that was
+				// BODIED at freeze is an instantiation
+				// product (an __oN overload instance, a
+				// member-fn instance, a builtin shim) — not a
+				// declared header surface. It must not seed
+				// the reference chase: at live parse its
+				// types exist only when the bound headers'
+				// own machinery creates them, and seeding it
+				// dragged the C++ instantiation universe into
+				// pure-C binds. Its restore self-gates below
+				// (types never admitted -> the swizzle lacks).
+				if (v == 0 && (r.flags & madc::dis::DF_WAS_BODIED))
+					continue;
+				DBG(fprintf(stderr,
+					    "forest fn seed v=%d name=%s disp=%s ns=%s"
+					    " flags=%x\n",
+					    v,
+					    r.name_id ? a.c_str(r.name_id) : "-",
+					    r.disp_id ? a.c_str(r.disp_id) : "-",
+					    r.ns_id ? a.c_str(r.ns_id) : "-",
+					    (unsigned)r.flags));
 				tq.push_back(r.ref0);
 				for (uint32_t p = 0; p < r.params_count; ++p) {
 					madc::dis::paramrec pr;
@@ -1786,15 +1855,30 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			uint32_t kl = 0, sl = 0;
 			const char *key = pool_cstr(t.key_id, kl);
 			const char *ns = t.ns_id ? pool_cstr(t.ns_id, sl) : NULL;
-			if (verdict_str(key, ns) >= 0)
+			// R1: only a BOUND-DECLARED (+1) member template seeds
+			// its owner. A derived (unindexed, 0) record is an
+			// instantiation product — its rebind/member keys seeded
+			// every instantiated owner (allocator<char>, …) into
+			// pure-C binds, defeating the owner fence; it now rides
+			// the owner's own admission (the build loop's fence).
+			if (verdict_str(key, ns) > 0)
 				tq.push_back(t.owner_type_id);
 		}
 		auto admit_agg = [&](uint32_t tid) {
 			if (recordable.count(tid) && !admitted.count(tid)) {
+				DBG({
+					madc::dis::defrec ar;
+					if (a.get_def_at(tid, ar))
+						fprintf(stderr,
+							"forest admit pull name=%s\n",
+							ar.name_id ? a.c_str(ar.name_id)
+								   : "-");
+				});
 				admitted.insert(tid);
 				work.push_back(tid);
 			}
 		};
+		auto drain_pulls = [&]() {
 		while (!work.empty() || !tq.empty()) {
 			if (!tq.empty()) {
 				uint32_t tid = tq.back();
@@ -1870,6 +1954,49 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 						tq.push_back(pr.type_id);
 				}
 			}
+		}
+		};	// drain_pulls
+		drain_pulls();
+		// R1 completion: fn-local classes admit by STRUCTURE, not by
+		// name — they are unnameable outside their function, so they
+		// never seed, but a bound inline body references its local
+		// class (basic_string::_M_construct's Guard) and its types
+		// must swizzle. Admit each fn-local class whose every member /
+		// base chain already resolves inside the admitted set (true
+		// exactly when its owner's world materialized), then drain the
+		// pulls it opens; iterate to a fixpoint.
+		for (bool fnl_grew = true; fnl_grew; ) {
+			fnl_grew = false;
+			for (size_t i = 0; i < agg_ids.size(); ++i) {
+				uint32_t tid = agg_ids[i];
+				if (!recordable.count(tid) || admitted.count(tid))
+					continue;
+				madc::dis::defrec r;
+				if (!a.get_def_at(tid, r)
+				    || !(r.flags & madc::dis::DF_CLASS_FN_LOCAL))
+					continue;
+				bool ok = true;
+				for (uint32_t m = 0; ok && m < r.members_count; ++m) {
+					madc::dis::memberrec mr;
+					if (!a.get_payload(r.members_begin, m, mr)
+					    || !arena_chain_ok(a, mr.type_id, tid, admitted)
+					    || (mr.vbase_id && !admitted.count(mr.vbase_id)))
+						ok = false;
+				}
+				for (uint32_t b = 0; ok && b < r.bases_count; ++b) {
+					madc::dis::baserec br;
+					if (!a.get_payload(r.bases_begin, b, br)
+					    || !admitted.count(br.base_id))
+						ok = false;
+				}
+				if (!ok)
+					continue;
+				admitted.insert(tid);
+				work.push_back(tid);
+				fnl_grew = true;
+			}
+			if (fnl_grew)
+				drain_pulls();
 		}
 		DBG(std::cout << "materialize filter: " << admitted.size()
 			      << " of " << recordable.size()
@@ -2938,6 +3065,42 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			const char *key = pool_cstr(t.key_id, klen);
 			if (!key || !*key)
 				continue;
+			// Owner fence FIRST (R1): a member-template pattern
+			// without its restored class cannot instantiate, and
+			// judging it before any payload touch keeps the
+			// segment decode demand-driven — every derived
+			// (unindexed) member-template record of an
+			// unmaterialized instantiated class drops here.
+			DataDefCLASS *oc = NULL;
+			if (t.owner_type_id) {
+				oc = dynamic_cast<DataDefCLASS *>(
+					arena_swizzle(t.owner_type_id, by_id));
+				if (!oc)
+					continue;	// owner did not restore -> cleanly lack
+			}
+			// Rung-2a parity for template state (R1): the SAME
+			// verdict the admitted-set seeding applies (key under
+			// its ns, unindexed = derived = keep) gates the
+			// record — and the payload/token segments decode only
+			// at the first surviving record, so a TU whose bound
+			// closure declares no templates (trivial C) never
+			// pays their zstd cost.
+			if (_mat_filter.active) {
+				uint32_t sl = 0;
+				const char *tns = t.ns_id ? pool_cstr(t.ns_id, sl)
+							  : NULL;
+				int tv = verdict_str(key, tns);
+				DBG(fprintf(stderr,
+					    "forest template verdict %d key=%s ns=%s"
+					    " kind=%u owner=%u\n",
+					    tv, key, tns ? tns : "-",
+					    (unsigned)t.kind,
+					    (unsigned)t.owner_type_id));
+				if (tv < 0)
+					continue;
+			}
+			if (!ensure_template_payload())
+				continue;
 			CirRestoredTemplate rt;
 			rt.kind  = t.kind;
 			rt.key   = key;
@@ -2958,13 +3121,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				rt.pattern = _template_payload.data() + begin;
 				rt.pattern_words = t.pattern_words;
 			}
-			if (t.owner_type_id) {
-				DataDefCLASS *oc = dynamic_cast<DataDefCLASS *>(
-					arena_swizzle(t.owner_type_id, by_id));
-				if (!oc)
-					continue;	// owner did not restore -> cleanly lack
-				rt.owner = oc;
-			}
+			rt.owner = oc;	// swizzled by the owner fence above (NULL = ns-scope)
 			bool ok = true;
 			for (uint32_t p = 0; p < t.param_count; ++p) {
 				cir_forest_template_param pr;
@@ -2996,13 +3153,60 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		}
 	}
 
+	_stat_mat_secs = forest_now() - _t0;
 	return _restored;
 }
 
+// Typeid -> arena name, derived per query (R1): the arena is id-addressed
+// by project slot, so a def's arena id IS the freeze-time typeid — an O(1)
+// record read replaces the old eager whole-arena map built at open.
 const char *CirFrozenForest::type_name_for(uint32_t type_id) const
 {
-	std::map<uint32_t, const char *>::const_iterator it = _type_names.find(type_id);
-	return it != _type_names.end() ? it->second : NULL;
+	madc::dis::defrec r;
+	if (!_arena.get_def_at(type_id, r) || !r.name_id)
+		return NULL;
+	return _arena.c_str(r.name_id);
+}
+
+// v20 extern-decl index, built on FIRST query (R1) from the shape-validated
+// segment: one symbol -> (unit, idx) entry per producer top-level extern. A
+// decode failure logs loud and leaves the index empty (misses resolve like
+// an unindexed symbol).
+bool CirFrozenForest::extern_loc_for(const std::string &sym,
+				     uint32_t &unit, uint32_t &idx)
+{
+	if (!_extern_index_built && _fully_opened) {
+		// (Gated on _fully_opened: name ids resolve through the pool
+		// complete_open binds — never memoize an empty index early.)
+		_extern_index_built = true;
+		const madc::dis::snapshot_segment *xs =
+			_reader.find(CIR_FOREST_SEG_EXTERN_LOCS);
+		std::vector<uint8_t> d;
+		if (xs && xs->kind == SNAP_KIND_CIR_EXTERN_LOCS
+		    && _reader.read_segment(*xs, d)
+		    && d.size() % sizeof(cir_forest_extern_loc) == 0) {
+			size_t n = d.size() / sizeof(cir_forest_extern_loc);
+			for (size_t i = 0; i < n; ++i) {
+				cir_forest_extern_loc xl;
+				memcpy(&xl, d.data() + i * sizeof(xl), sizeof(xl));
+				uint32_t nlen = 0;
+				const char *nm = pool_cstr(xl.name_id, nlen);
+				if (!nm || !nlen)
+					continue;
+				_extern_by_name[std::string(nm, nlen)] =
+					std::make_pair(xl.unit, xl.idx);
+			}
+		} else if (xs) {
+			fprintf(stderr, "madc: forest extern index corrupt\n");
+		}
+	}
+	std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator
+		it = _extern_by_name.find(sym);
+	if (it == _extern_by_name.end())
+		return false;
+	unit = it->second.first;
+	idx  = it->second.second;
+	return true;
 }
 
 const char *CirFrozenForest::restored_template_string(uint32_t id) const
@@ -3013,9 +3217,43 @@ const char *CirFrozenForest::restored_template_string(uint32_t id) const
 	return pool_cstr(id, len);
 }
 
+// R1: decode the TEMPLATE_PAYLOAD + TEMPLATE_TOKENS segments on first
+// demand (memoized) — from materialize's first filter-surviving template
+// record, or a late ClassPattern token-run read. A decode failure logs
+// loud and leaves the pair empty: every run read then cleanly lacks.
+bool CirFrozenForest::ensure_template_payload() const
+{
+	if (_template_payload_loaded)
+		return true;
+	_template_payload_loaded = true;
+	if (const madc::dis::snapshot_segment *tp =
+		_reader.find(CIR_FOREST_SEG_TEMPLATE_PAYLOAD)) {
+		std::vector<uint8_t> d;
+		if (tp->kind != SNAP_KIND_CIR_TEMPLATE_PAYLOAD
+		    || !_reader.read_segment(*tp, d) || d.size() % sizeof(uint32_t)) {
+			fprintf(stderr, "madc: forest template payload corrupt\n");
+			return false;
+		}
+		_template_payload.resize(d.size() / sizeof(uint32_t));
+		if (!d.empty())
+			memcpy(_template_payload.data(), d.data(), d.size());
+	}
+	if (const madc::dis::snapshot_segment *tt =
+		_reader.find(CIR_FOREST_SEG_TEMPLATE_TOKENS)) {
+		if (tt->kind != SNAP_KIND_CIR_TEMPLATE_TOKENS
+		    || !_reader.read_segment(*tt, _template_tokens)) {
+			_template_tokens.clear();
+			fprintf(stderr, "madc: forest template tokens corrupt\n");
+			return false;
+		}
+	}
+	return true;
+}
+
 CirRestoredTemplateRun CirFrozenForest::restored_template_run(
 	const cir_forest_token_run &run) const
 {
+	ensure_template_payload();
 	CirRestoredTemplateRun restored;
 	restored.bytes = NULL;
 	restored.len = 0;
@@ -3055,6 +3293,7 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 		return NULL;
 	if (_segs[unit])
 		return _segs[unit];
+	double _t0 = forest_now();
 
 	uint32_t base = CIR_FOREST_SEG_UNIT_BASE + unit * CIR_FOREST_SEGS_PER_UNIT;
 	const madc::dis::snapshot_segment *recs = _reader.find(base + 0);
@@ -3165,6 +3404,8 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 						   record_count, this, _c2m);
 	else
 		_segs[unit] = new CirFrozenSegment(std::move(fu), this, _c2m);
+	_stat_unitload_secs += forest_now() - _t0;
+	_stat_unitload_count += 1;
 	return _segs[unit];
 }
 

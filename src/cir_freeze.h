@@ -841,8 +841,7 @@ class CirFrozenForest
 	std::vector<cir_forest_dir_unit> _units;
 	std::vector<CirFrozenSegment *> _segs;	// lazily constructed per unit
 	std::vector<std::string> _libs;
-	std::map<uint32_t, const char *> _type_names;	// typeid -> arena c_str (derived
-							// from arena defrec.name_id at open)
+	std::vector<uint32_t> _lib_ids;	// dir lib name-ids (resolved in complete_open)
 	std::map<uint32_t, uint32_t> _live_ids;	// frozen str id -> live pool id
 	std::map<std::string, uint32_t> _unit_by_name;	// unit-name spelling -> index (Phase 6 bind)
 	uint32_t _root_unit, _root_idx;
@@ -881,11 +880,26 @@ class CirFrozenForest
 	// bytes load at open(); _restored_templates (names resolved, owner
 	// swizzled, runs exposed as spans) is built by materialize_from_arena.
 	std::vector<cir_forest_template_record> _templates;
-	std::vector<uint32_t> _template_payload;
-	std::vector<uint8_t>  _template_tokens;
+	// R1: the template payload + token-byte segments (the heavy pair —
+	// ~5 MB raw on the packed corpus) decode LAZILY via
+	// ensure_template_payload(): at the first filter-surviving template
+	// record in materialize, or at a late ClassPattern run read. A TU
+	// whose bound closure declares no templates (trivial C) never pays.
+	// Mutable: restored_template_run is a const reader.
+	mutable std::vector<uint32_t> _template_payload;
+	mutable std::vector<uint8_t>  _template_tokens;
+	mutable bool _template_payload_loaded = false;
+	bool ensure_template_payload() const;
 	std::vector<CirRestoredTemplate> _restored_templates;
 	// v20 container-global: extern-decl index (symbol -> frozen location).
+	// R1 (startup latency): built LAZILY on the first extern_loc_for query
+	// — a compile that never asks (trivial C) never decodes the segment.
 	std::map<std::string, std::pair<uint32_t, uint32_t> > _extern_by_name;
+	bool _extern_index_built = false;
+	// R1: two-stage open. open_header = footer + pin + directory (cheap);
+	// complete_open = pools/arena/global segments (heavy, memoized).
+	bool _header_opened = false;
+	bool _fully_opened = false;
 	// v18 container-global: the B3 DefArena dump (segments 10-14) — THE type-graph
 	// serialization — bound read-only at open: in place when a segment is
 	// uncompressed, else into the owned buffers. A type-less freeze binds an
@@ -929,6 +943,16 @@ public:
 	bool open(const void *image, size_t len, c2m_ctx_t c2m,
 		  bool quiet_missing = false);
 
+	// R1 (startup latency): the cheap header stage of open() — footer,
+	// context-hash pin, and the directory (unit table, root, v27
+	// producer-config words). Enough for the bind path to config-gate
+	// BEFORE paying the pool/arena binds; a mismatch then costs ~nothing.
+	// complete_open() finishes the job (memoized; needs the live string
+	// pool). open() remains the one-call composition of both.
+	bool open_header(const void *image, size_t len,
+			 bool quiet_missing = false);
+	bool complete_open(c2m_ctx_t c2m);
+
 	// Rebind the c2m used to materialize nodes. The parse-time bind forest is
 	// opened with c2m=NULL (it restores only types/PP, never node segments), so
 	// the session c2m is set here before the first node materialization (inline
@@ -946,6 +970,20 @@ public:
 
 	uint32_t unit_count() const { return (uint32_t)_units.size(); }
 	size_t units_loaded() const;			// laziness observability
+
+	// --show-stats observability (startup-latency R0): where forest wall
+	// time goes, split by owner. The reader's decode counters (zstd frames
+	// / bytes / secs, codec-None copies) are forwarded so consumers never
+	// need the reader itself.
+	double _stat_open_secs = 0.0;	// open(): dir + pools + arena bind + name indexes
+	double _stat_unitload_secs = 0.0;	// unit_segment(): node-record decode + validate
+	unsigned long long _stat_unitload_count = 0;
+	double _stat_mat_secs = 0.0;	// materialize_from_arena(): DataDef rebuild
+	unsigned long long stat_zstd_frames() const { return _reader.stat_zstd_frames; }
+	unsigned long long stat_zstd_bytes_out() const { return _reader.stat_zstd_bytes_out; }
+	double             stat_zstd_secs() const { return _reader.stat_zstd_secs; }
+	unsigned long long stat_copy_calls() const { return _reader.stat_copy_calls; }
+	unsigned long long stat_copy_bytes() const { return _reader.stat_copy_bytes; }
 	// v27 producer config (bind gate: both must equal the consumer's).
 	uint32_t language_std() const { return _language_std; }
 	uint32_t defines_hash() const { return _defines_hash; }
@@ -1023,18 +1061,10 @@ public:
 	{ return _restored_param_defaults; }
 	// v20: the frozen location of the producer's top-level extern decl for
 	// `sym` (false = none indexed). The bind layer loads the decl node via
-	// node_for when a loaded body references the symbol.
+	// node_for when a loaded body references the symbol. The index builds
+	// on the first query (R1) — see _extern_by_name.
 	bool extern_loc_for(const std::string &sym,
-			    uint32_t &unit, uint32_t &idx) const
-	{
-		std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator
-			it = _extern_by_name.find(sym);
-		if (it == _extern_by_name.end())
-			return false;
-		unit = it->second.first;
-		idx  = it->second.second;
-		return true;
-	}
+			    uint32_t &unit, uint32_t &idx);
 	// The read-only view over the dumped B3 DefArena (an empty view on a
 	// type-less freeze).
 	const madc::dis::FrozenDefArena &arena() const { return _arena; }

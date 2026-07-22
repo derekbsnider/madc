@@ -1271,6 +1271,65 @@ int main(int argc, char **argv)
 			Program::class_decl_kind_name(it->first), it->second);
 		fprintf(stderr, "\n");
 	    }
+	    // Forest-bind startup breakdown (startup-latency R0): map + open
+	    // (once per process), the per-#include bind walks, the one-shot
+	    // decl restore (decl-index sweep / arena materialize / the
+	    // registration remainder), node-segment loads, and the reader's
+	    // decode traffic. Printed whenever the bind was attempted — a
+	    // blob-less binary shows just the probe cost.
+	    {
+		Program::ForestBindStats fs = prog->forest_bind_stats();
+		if ( prog->bind_forest_tried )
+		    fprintf(stderr,
+			"[stats] forest map+open ..... %.3f + %.3f s  (%s)\n",
+			fs.map_secs, fs.open_secs,
+			fs.opened ? "container bound" : "no container — live parse");
+		if ( fs.opened )
+		{
+		    double reg_secs = fs.restore_secs - fs.declidx_secs - fs.mat_secs;
+		    if ( reg_secs < 0 ) reg_secs = 0;
+		    fprintf(stderr,
+			"[stats] forest bind ......... %.3f s  (%llu units bound / %u packed)\n"
+			"[stats] forest restore ...... %.3f s  (decl-index sweep %.3f + materialize %.3f + register %.3f)\n"
+			"[stats] forest unit loads ... %.3f s  (%llu node-record segments)\n"
+			"[stats] forest decode ....... %.3f s  (%llu zstd frames -> %.1f KiB; %llu copies, %.1f KiB)\n",
+			fs.bind_secs, fs.units_bound, fs.units_total,
+			fs.restore_secs, fs.declidx_secs, fs.mat_secs, reg_secs,
+			fs.unitload_secs, fs.unitload_count,
+			fs.zstd_secs, fs.zstd_frames, fs.zstd_bytes / 1024.0,
+			fs.copy_calls, fs.copy_bytes / 1024.0);
+		    if ( !prog->_forest_unit_bind_costs.empty() )
+		    {
+			std::vector<std::pair<std::string, double> > rows =
+			    prog->_forest_unit_bind_costs;
+			std::sort(rows.begin(), rows.end(),
+				  [](const std::pair<std::string, double> &a,
+				     const std::pair<std::string, double> &b) {
+				      if (a.second != b.second)
+					  return a.second > b.second;
+				      return a.first < b.first;
+				  });
+			fprintf(stderr, "[stats]   bind units (self cost, ranked):\n");
+			size_t shown = 0;
+			double rest = 0.0;
+			for (size_t i = 0; i < rows.size(); ++i)
+			{
+			    if (rows[i].second >= 0.0005)
+			    {
+				fprintf(stderr, "[stats]     %.3f s  %s\n",
+					rows[i].second, rows[i].first.c_str());
+				++shown;
+			    }
+			    else
+				rest += rows[i].second;
+			}
+			if (shown < rows.size())
+			    fprintf(stderr,
+				"[stats]     %.3f s  (+%zu units under 0.5 ms)\n",
+				rest, rows.size() - shown);
+		    }
+		}
+	    }
 	};
 
 	if ( !parse_ok )
