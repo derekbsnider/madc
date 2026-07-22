@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <utility>
+#include <sys/time.h>
 
 #ifdef __SSE2__
 #include <emmintrin.h>
@@ -391,11 +392,22 @@ bool snapshot_reader::read_segment_transformed(const snapshot_segment &seg,
     {
 	if ( seg.raw_size )
 	    memcpy(out.data(), payload, (size_t)seg.raw_size);
+	stat_copy_calls += 1;
+	stat_copy_bytes += seg.raw_size;
     }
-    else if ( !madc_pch::decompress(payload, (size_t)seg.comp_size,
-				    out.data(), (size_t)seg.raw_size,
-				    (PchCompression)seg.codec) )
-	return false;
+    else
+    {
+	struct timeval t0, t1;
+	gettimeofday(&t0, NULL);
+	if ( !madc_pch::decompress(payload, (size_t)seg.comp_size,
+				   out.data(), (size_t)seg.raw_size,
+				   (PchCompression)seg.codec) )
+	    return false;
+	gettimeofday(&t1, NULL);
+	stat_zstd_frames += 1;
+	stat_zstd_bytes_out += seg.raw_size;
+	stat_zstd_secs += (t1.tv_sec - t0.tv_sec) + (t1.tv_usec - t0.tv_usec) / 1e6;
+    }
     return true;
 }
 

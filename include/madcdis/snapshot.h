@@ -181,6 +181,16 @@ public:
     // Zero-copy payload pointer for codec None segments (bind-in-place path);
     // NULL for compressed or transformed segments.
     const uint8_t *raw_ptr(const snapshot_segment &seg) const;
+
+    // --show-stats observability (accumulated across the reader's lifetime;
+    // mutable because read_segment is const). The zstd trio counts real codec
+    // frames only; the copy pair counts the codec-None memcpy path. raw_ptr
+    // binds are zero-copy and uncounted.
+    mutable unsigned long long stat_zstd_frames = 0;   // compressed payloads decoded
+    mutable unsigned long long stat_zstd_bytes_out = 0; // raw bytes those produced
+    mutable double             stat_zstd_secs = 0.0;    // wall seconds in the codec
+    mutable unsigned long long stat_copy_calls = 0;    // codec-None payload copies
+    mutable unsigned long long stat_copy_bytes = 0;
 };
 
 } // namespace dis

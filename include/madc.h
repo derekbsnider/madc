@@ -3304,6 +3304,36 @@ public:
     // Set by the CIR backend (madc_cir.cpp); printed by madc.cpp.
     double _c2mir_seconds = 0.0;
     double _exec_seconds  = 0.0;
+    // --show-stats: forest-bind startup breakdown (startup-latency R0). Map =
+    // container discovery + mmap (cir_forest_map_image); open = directory +
+    // string-pool/arena binds + name indexes (CirFrozenForest::open); bind =
+    // the per-#include forest_bind_include walks (aux-segment decode + PP
+    // install), with the per-unit self-cost list alongside; restore =
+    // forest_restore_decls total, of which declidx is the all-units decl-index
+    // demand-verdict sweep (materialize + unit-load time is forest-owned:
+    // CirFrozenForest::_stat_mat_secs / _stat_unitload_secs).
+    double _forest_map_seconds = 0.0;
+    double _forest_open_seconds = 0.0;
+    double _forest_bind_seconds = 0.0;
+    double _forest_restore_seconds = 0.0;
+    double _forest_declidx_seconds = 0.0;
+    std::vector<std::pair<std::string, double> > _forest_unit_bind_costs;
+    // Plain snapshot of the above plus the forest-owned counters (unit loads,
+    // arena materialize, reader decode) so display code needs no
+    // CirFrozenForest type. Implemented beside ensure_bind_forest (lexer.cpp).
+    struct ForestBindStats {
+	bool opened = false;			// a container bound this compile
+	uint32_t units_total = 0;		// packed units in the container
+	unsigned long long units_bound = 0;	// forest_chain closure size
+	double map_secs = 0.0, open_secs = 0.0, bind_secs = 0.0;
+	double restore_secs = 0.0, declidx_secs = 0.0;
+	double unitload_secs = 0.0, mat_secs = 0.0;
+	unsigned long long unitload_count = 0;
+	unsigned long long zstd_frames = 0, zstd_bytes = 0;
+	double zstd_secs = 0.0;
+	unsigned long long copy_calls = 0, copy_bytes = 0;
+    };
+    ForestBindStats forest_bind_stats() const;
     // --show-stats: template-instantiation time + count, carved out of parse
     // time. _inst_seconds is depth-guarded (only the OUTERMOST instantiation
     // subtree accumulates wall time, so nested instantiations are not double

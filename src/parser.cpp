@@ -14,6 +14,7 @@
 #include <math.h>
 #include <ctype.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <syslog.h>
 #include <time.h>
 #include <dlfcn.h>
@@ -15890,8 +15891,17 @@ const Program::ClassPattern *Program::materialize_class_pattern(
     return class_pattern_arena.get(id);
 }
 
+// --show-stats wall clock (R0 startup instrumentation).
+static double forest_restore_now(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec + tv.tv_usec / 1e6;
+}
+
 void Program::forest_restore_decls(CirFrozenForest &forest)
 {
+    double _t_restore0 = forest_restore_now();
     // Phase 6 / B3 (v18): LOAD the serialized type graph (do NOT re-derive).
     // materialize_from_arena reconstructs the DataDef objects (forest-owned)
     // from the dumped DefArena, swizzling every member type id back to a
@@ -15928,6 +15938,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // surface, exactly like live.
     std::unordered_map<std::string, bool> forest_declared_system;
     const bool forest_closure_filter = !forest_chain_set.empty();
+    double _t_declidx0 = forest_restore_now();
     if ( forest_closure_filter )
     {
 	std::vector<cir_forest_decl_entry> ents;
@@ -15958,6 +15969,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	mf.declared_bound = forest_declared_bound;
 	forest.set_materialize_filter(std::move(mf));
     }
+    _forest_declidx_seconds = forest_restore_now() - _t_declidx0;
 
     // Rung 3: the system-origin verdict lookup — qualified form first, then
     // bare (a namespaced decl may be indexed only as "std::name"), the same
@@ -16622,6 +16634,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     }
     DBG(std::cout << "forest_restore_decls: " << tmpls.size()
 	<< " template pattern(s) restored" << std::endl);
+    _forest_restore_seconds = forest_restore_now() - _t_restore0;
 }
 
 // v21: the flush hydrates a verbatim-restored member-template placeholder with

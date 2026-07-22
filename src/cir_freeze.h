@@ -946,6 +946,20 @@ public:
 
 	uint32_t unit_count() const { return (uint32_t)_units.size(); }
 	size_t units_loaded() const;			// laziness observability
+
+	// --show-stats observability (startup-latency R0): where forest wall
+	// time goes, split by owner. The reader's decode counters (zstd frames
+	// / bytes / secs, codec-None copies) are forwarded so consumers never
+	// need the reader itself.
+	double _stat_open_secs = 0.0;	// open(): dir + pools + arena bind + name indexes
+	double _stat_unitload_secs = 0.0;	// unit_segment(): node-record decode + validate
+	unsigned long long _stat_unitload_count = 0;
+	double _stat_mat_secs = 0.0;	// materialize_from_arena(): DataDef rebuild
+	unsigned long long stat_zstd_frames() const { return _reader.stat_zstd_frames; }
+	unsigned long long stat_zstd_bytes_out() const { return _reader.stat_zstd_bytes_out; }
+	double             stat_zstd_secs() const { return _reader.stat_zstd_secs; }
+	unsigned long long stat_copy_calls() const { return _reader.stat_copy_calls; }
+	unsigned long long stat_copy_bytes() const { return _reader.stat_copy_bytes; }
 	// v27 producer config (bind gate: both must equal the consumer's).
 	uint32_t language_std() const { return _language_std; }
 	uint32_t defines_hash() const { return _defines_hash; }

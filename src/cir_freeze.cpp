@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 // mir-code-alloc.h (reached via cir_node.h -> c2mir headers) redefines
 // MAP_FAILED to NULL for its own allocator; drop the glibc define so that
@@ -1012,9 +1013,18 @@ static const uint8_t *forest_pool_block(const madc::dis::snapshot_reader &r,
 	return own.data();
 }
 
+// --show-stats wall clock (R0 startup instrumentation).
+static double forest_now(void)
+{
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return tv.tv_sec + tv.tv_usec / 1e6;
+}
+
 bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m,
 			   bool quiet_missing)
 {
+	double _t0 = forest_now();
 	_c2m = c2m;
 	if (!TokenBase::_active_strpool) {
 		fprintf(stderr, "madc: forest thaw requires a live string pool\n");
@@ -1289,6 +1299,7 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m,
 	}
 
 	_segs.assign(hdr.unit_count, (CirFrozenSegment *)NULL);
+	_stat_open_secs = forest_now() - _t0;
 	return true;
 }
 
@@ -1505,6 +1516,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	if (_types_materialized)
 		return _restored;
 	_types_materialized = true;
+	double _t0 = forest_now();
 
 	// A type-less freeze binds an empty arena view: every aggregate pass
 	// below no-ops (nslots == 0) and only pinned-typed globals restore.
@@ -2996,6 +3008,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		}
 	}
 
+	_stat_mat_secs = forest_now() - _t0;
 	return _restored;
 }
 
@@ -3055,6 +3068,7 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 		return NULL;
 	if (_segs[unit])
 		return _segs[unit];
+	double _t0 = forest_now();
 
 	uint32_t base = CIR_FOREST_SEG_UNIT_BASE + unit * CIR_FOREST_SEGS_PER_UNIT;
 	const madc::dis::snapshot_segment *recs = _reader.find(base + 0);
@@ -3165,6 +3179,8 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 						   record_count, this, _c2m);
 	else
 		_segs[unit] = new CirFrozenSegment(std::move(fu), this, _c2m);
+	_stat_unitload_secs += forest_now() - _t0;
+	_stat_unitload_count += 1;
 	return _segs[unit];
 }
 
