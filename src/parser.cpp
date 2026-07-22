@@ -51516,6 +51516,11 @@ bool Program::file_scope_statement_starter(TokenBase *tb)
 		case TokenID::tkModEq:  case TokenID::tkBandEq:
 		case TokenID::tkBorEq:  case TokenID::tkXorEq:
 		case TokenID::tkBSLEq:  case TokenID::tkBSREq:
+		// Stream statements (`cout << ...;` / `cin >> ...;`): no
+		// declaration starts `identifier <<` or `identifier >>` (a
+		// template-id's `<` / `>>` never directly follows the FIRST
+		// identifier of a declaration).
+		case TokenID::tkBSL:    case TokenID::tkBSR:
 		case TokenID::tkTerC:	// label definition `name:`
 		    return true;
 		default:

@@ -1,0 +1,10 @@
+#!/usr/bin/env madc
+// Task #91 rider: bare stream statements at file scope in script mode.
+// `identifier <<` / `identifier >>` joined the statement-starter
+// continuation set, so the parse is ARMED and argc/argv resolve inside
+// stream statements (the residual corner from task #90).
+#include <iostream>
+using namespace std;
+
+cout << "argc=" << argc << endl;
+cout << "arg1=" << argv[1] << endl;
