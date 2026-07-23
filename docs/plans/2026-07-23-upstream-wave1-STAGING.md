@@ -31,29 +31,39 @@ zero per-read extensions (unchanged); uninitialized — exactly one
 
 ### Issue draft (file first; PR says "Fixes #NNN")
 
-> **Title:** c2mir: reading an uninitialized narrow local yields an
+> **Title:** c2mir: reading an uninitialized narrow local can yield an
 > out-of-range value under MIR-gen (-O0/-O1)
 >
-> `char x; x / 1000` can return nonzero: whatever indeterminate value
-> `x` holds must still be within char range, but the read yields the
-> backing reg's stale 64-bit garbage.
+> First, thank you for the quick handling of #458 and for the
+> follow-up that kept reads of narrow register values extension-free —
+> that is clearly the right call for generated-code quality, and we
+> have adopted the same approach.
 >
-> Reproducer: gcc.c-torture `execute/pr34099-2.c` aborts with
-> `./c2m -O0 pr34099-2.c -eg` (also `-O1`; `-O2` passes because the
-> folds mask it).
+> While testing against gcc.c-torture we found one corner case that
+> slips past it: `char x; x / 1000` can return nonzero, although
+> whatever indeterminate value `x` holds should still be within char
+> range. `execute/pr34099-2.c` aborts with
+> `./c2m -O0 pr34099-2.c -eg` (also `-O1`; `-O2` happens to pass
+> because constant folding masks it).
 >
-> Cause: since the issue-458 follow-up, reads of narrow reg-homed
-> decls emit no extension, relying on the invariant that a narrow reg
-> value is born from an extending operation. An uninitialized local's
-> pseudo-reg was never stored to, so the invariant does not hold for
-> it. The invariant itself is good — the repair belongs at the birth
-> site (PR follows).
+> The extension-free reads rely on a narrow reg value always being
+> born from an extending operation. An uninitialized local's
+> pseudo-reg was never stored to at all, so it carries whatever stale
+> 64-bit value the register held. The invariant itself seems well
+> worth keeping — a small proposed fix that repairs this at the
+> declaration site follows in a PR, and of course we are happy to
+> rework it if you would prefer a different approach.
 
 ### PR body draft
 
+> Thank you for the feedback on #459 — you were right that extending
+> at every read was too conservative, and this follow-up tries to
+> address the one remaining corner within the approach you chose
+> there.
+>
 > Reading an uninitialized narrow (`i8`/`u8`/`i16`/`u16`) auto local
-> can yield a value outside the type's range: its backing reg holds
-> stale 64-bit garbage, and since the issue-458 follow-up reads of
+> can yield a value outside the type's range: its backing reg was
+> never stored to, so it holds a stale 64-bit value, and reads of
 > narrow reg-homed decls are (rightly) extension-free.
 > gcc.c-torture `execute/pr34099-2.c` (`char x; x/1000` must stay in
 > char range) aborts under MIR-gen at `-O0`/`-O1`.
@@ -61,12 +71,11 @@ zero per-read extensions (unchanged); uninitialized — exactly one
 > ## Fix
 >
 > Emit a single sign/zero extension for an uninitialized narrow auto
-> local at its declaration point, so every read keeps relying on the
-> invariant that a narrow reg value is born extended. Generated code
-> is otherwise unchanged: initialized variables get no new
+> local at its declaration point, so every read can keep relying on
+> the invariant that a narrow reg value is born extended. Generated
+> code is otherwise unchanged: initialized variables get no new
 > instructions, and the cost is one insn per uninitialized narrow
-> local (instead of one per read, the concern with the original #459
-> approach).
+> local rather than one per read.
 >
 > ## Reproducer (fail before, pass after)
 >
@@ -78,6 +87,9 @@ zero per-read extensions (unchanged); uninitialized — exactly one
 > Test added as `c-tests/new/uninit-narrow-local.c` (original code,
 > covers char/signed char/unsigned char/short/unsigned short with a
 > reg-dirtying helper so the failure is deterministic).
+>
+> Happy to rework the placement or the gating if you would prefer a
+> different shape for this.
 >
 > Fixes #NNN.
 >
@@ -92,12 +104,13 @@ behavioral to report; owner may prefer an issue anyway — say so).
 
 ### PR body draft
 
-> `_MIR_init` allocates `ctx->alias_ctx` with
-> `sizeof (struct string_ctx)` — a copy-paste from the `string_ctx`
-> allocation in the same condition. The two structs are currently
-> layout-identical (a `VARR` pointer plus an `HTAB` pointer), so the
-> bug is latent, but any field added to `struct alias_ctx` would
-> silently overflow the allocation.
+> A tiny one we noticed in passing: `_MIR_init` allocates
+> `ctx->alias_ctx` with `sizeof (struct string_ctx)` (presumably an
+> accidental carry-over from the `string_ctx` allocation in the same
+> condition). It is harmless today — the two structs are
+> layout-identical (a `VARR` pointer plus an `HTAB` pointer) — but a
+> future field added to `struct alias_ctx` would silently overflow
+> the allocation, so it seemed worth fixing while it is still latent.
 >
 > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
