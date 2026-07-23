@@ -1,7 +1,11 @@
 # Upstream wave 1 — staged PRs (OWNER REVIEW before submission)
 
-**Date:** 2026-07-23 · **Status:** staged, validation in progress —
-NOTHING submitted yet. Worktree: `/workspace/mir-up` (upstream/master
+**Date:** 2026-07-23 · **Status:** ✅ SUBMITTED (owner-approved, same
+day): issue [vnmakarov/mir#461](https://github.com/vnmakarov/mir/issues/461),
+PR 1 = [#462](https://github.com/vnmakarov/mir/pull/462) (@07be0f1c,
+amended with Fixes #461), PR 2 =
+[#463](https://github.com/vnmakarov/mir/pull/463) (@b62c2ae4). Awaiting
+Vladimir's response. Worktree: `/workspace/mir-up` (upstream/master
 @a8ab7c31). Probe doc: `2026-07-23-mir-upstream-probe.md`.
 
 Dedup result (owner's "not already fixed" bar, verified by
