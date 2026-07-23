@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+- **fix(layout): SysV bitfield packing — shared windows across declared
+  types (task #76).** `allocateBitField` opened a new allocation unit
+  whenever the declared type's size changed; SysV/gcc place a bitfield
+  at the next free bit constrained only by its own type's aligned
+  window, so `{_Bool b:1; unsigned x:5;}` is 4 bytes, not 8 (c2mir
+  already matched gcc — the divergence was madc's own sizeof fold and
+  layout consumers). Struct size now counts occupied bytes;
+  `setReverseScalarStorage` flips per-field state instead of replaying
+  run bookkeeping. New `testbitfieldunit` (8 shapes, sizes + value
+  round-trips, JIT + emit-C byte-equal to gcc); the seven existing
+  bitfield tests unchanged.
+- **chore(git): remote branch hygiene (task #84).** 45 madc + 11 MIR
+  fork remote branches deleted — every one fully merged into develop
+  (verified `--merged`); both remotes now carry exactly develop +
+  master. The only unmerged content anywhere — map/set campaign
+  journal updates 40–46 stranded on `feature/retire-embedded-shims-claude`
+  by a branch mix-up — was salvaged verbatim into
+  `docs/plans/2026-06-18-map-set-campaign.md` first.
+
 - **fix(parser,cir): cast to pointer-to-array `(T (*)[N])expr` (task
   #79).** The fn-ptr cast arm required '(' after '(*)'; the array
   declarator suffix now parses via the new shared
