@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **fork(c2mir): uninitialized narrow locals extend at birth, reads
+  stay extension-free (fork @9c7e7f3b, pin bumped).** Supersedes the
+  July re-widening of `force_val` (bde8658d): the addr_p read gate from
+  upstream's issue-458 follow-up is restored, and the one counterexample
+  — an uninitialized narrow auto local (gcc pr34099-2) — is repaired
+  with a single extension at its declaration. Better codegen than the
+  re-widened form (no per-read extensions); fork `make test`, madc
+  battery (751/0/0/9, exe 735/0, packed), and the torture baseline
+  (1614/1/9/0/61) all green. Staged for upstream as wave 1 with the
+  `alias_ctx` allocation one-liner —
+  `docs/plans/2026-07-23-upstream-wave1-STAGING.md` (owner review
+  gates submission).
+
 - **fix(cir): VLA partial subscript yields the row pointer.** Follow-up
   to #80's flat lowering: a partial access on a runtime-sized array —
   `a[i]` on `int a[n][m]`, `a[i][j]` on a 3-D VLA — fell through to raw
