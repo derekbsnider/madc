@@ -2511,3 +2511,230 @@ nested unqualified alias lookup lacks a namespace scope in
 let them block W2–W5.
 
 NEXT = W2 (non-type parameter packs `size_t... _Indexes` at 0/1 elements).
+
+---
+
+## Salvaged updates 40–46 (2026-06-19)
+
+*Salvaged 2026-07-23 from `feature/retire-embedded-shims-claude`, where a
+branch mix-up stranded them (the branch's own Update 46 notes the
+correction). They continue Update 39's tuple-instantiation path — the
+layer-5-through-9 story that ended with map compiling, linking, and the
+layer-9 pointer-type findings. Kept verbatim; commit refs point at
+`wip/tuple-instantiation-claude`.*
+
+### Update 40 — tuple instantiation: layer-5 SOLVED, layer-6 found; exploration preserved on a WIP branch.
+
+Continued the Update-39 fix path. Re-applied the four fixes AND added a fifth
+(layer-5 solution), confirming the testtuple regression and map's remaining
+error are ONE root cause (both `Failed to find type when parsing function
+parameters`, in `_Tuple_impl<0,const int&>`'s ctor `_Tuple_impl(const _Head&
+__head, const _Tail&... __tail)` at tuple:284 with an EMPTY `_Tail`):
+
+- **Layer 5 (SOLVED in the WIP)**: the body-clone empty-pack handling
+  (parser.cpp ~3499) only elided a pack name immediately before `,`/`...`. A
+  function-PARAMETER pack with a declarator suffix (`const _Tail&... __tail`)
+  left `const & ... __tail` (a stray `&`). Fix: in the empty-pack branch, detect
+  `packname [&|&&|*|const|volatile]+ ...` and elide the WHOLE parameter — pop the
+  leading cv + separating comma already in `inj`, skip the suffix + `...` +
+  param name forward, balancing exactly one comma. After this, testtuple +
+  mapii PARSE past it.
+- **Layer 6 (NEXT)**: a ctor BODY mem-initializer expands the VALUE pack
+  (`_Inherited(__tail...)`); with the param `__tail` elided, the empty
+  value-pack expansion `__tail...` must also vanish, else "use of undeclared
+  identifier '__tail'". This is value-pack (not type-pack) body expansion —
+  different machinery (the ctor body IS parsed here, not deferred). After layer
+  6, testtuple still showed 2 c2mir errors to chase.
+
+CONCLUSION: fully instantiating libstdc++ `std::tuple` (its recursive
+`_Tuple_impl`/`_Head_base` hierarchy + member set) is a genuine MULTI-LAYER
+FEATURE (6 layers peeled, each revealing the next), not a single fix. Making it
+real-instantiate REGRESSES testtuple.mad until ALL layers are done, because
+testtuple exercises the same member set. So the four+one fixes cannot land on
+develop piecemeal — they must complete end-to-end.
+
+PRESERVED: the full exploratory patch (all 5 fixes + #ifdef MADC_DEBUG_TUPLE
+debug aids) is committed + pushed on branch **wip/tuple-instantiation-claude**
+(commit 97e4178). Next session: `git checkout wip/tuple-instantiation-claude`,
+solve layer 6 (empty value-pack body expansion) and the residual c2mir errors,
+keep iterating until BOTH testtuple.mad passes AND map compiles, THEN squash
+onto the feature branch. The feature branch stays clean at the committed lvalue
+fix (ea6ffb9); map remains at 1 c2mir error there.
+
+### Update 41 — tuple WIP: layers 6+7 (branch wip/tuple-instantiation-claude @3e9913e).
+
+Continued on the WIP branch (Stop-hook goal = std::map working). Two more layers:
+
+- **Layer 6 (SOLVED)**: empty function-parameter pack's VALUE expansion in a
+  ctor body / mem-initializer (`_Tuple_impl(...) : _Inherited(__tail...)` with
+  empty `_Tail`). The param `__tail` was elided (layer 5) but the body still
+  named it -> "use of undeclared identifier '__tail'". Fix: the empty-param-pack
+  elision records the elided param NAME; the body clone then drops a later
+  `name...` value-pack expansion + one balancing comma (`_Inherited(__tail...)`
+  -> `_Inherited()`). map<int,int> + testtuple now PARSE fully and reach c2mir.
+
+- **Layer 7 (FOUND, next)**: the instantiated tuple classes
+  (`tuple_const_int32_t_`, `_Tuple_impl_0_int32_t_`, `_Head_base_0_int32_t__0`)
+  are NOT in `prog->struct_map` at emit time — the EMIT-driver trace
+  (cir_builder.cpp:12074) shows only the empty `tuple` / `tuple__empty_pack`.
+  These deeply-nested instantiations register their class into a TRANSIENT scope
+  during the nested system-header instantiation and never reach the global
+  struct_map, so the CIR emitter emits no struct body -> c2mir "storage size of
+  __madc_objtmp_6 isn't known". This is the SAME observable error as session
+  start, now from EMISSION (the class is complete internally) rather than from
+  failed instantiation — internal progress, same surface symptom.
+
+STATUS: std::map still does NOT compile. 7 layers peeled; this is a genuine
+multi-session feature (full libstdc++ std::tuple bring-up). All progress is on
+wip/tuple-instantiation-claude (3e9913e); the feature branch stays clean at the
+committed lvalue fix (ea6ffb9), map at 1 c2mir error. NEXT: layer 7 = ensure a
+nested-template class instantiation lands in the global struct_map (then re-check
+emission); after that the gcc-strict duplicate-prototype "conflicting types" for
+the _Auto_node / _M_emplace_hint ctors (c2mir tolerates, but worth cleaning) and
+runtime correctness. Each step gated on testtuple.mad going green AND map
+compiling before squashing to the feature branch.
+
+### Update 42 — MILESTONE: map<int,int>; m[1]=2 now COMPILES through c2mir; fails only at MIR LINK (layer 8). (wip @9627b8f)
+
+Layer 7 SOLVED (cir_builder Pass 1.97): a final struct_map sweep before the
+function bodies emits the struct defs of classes instantiated LATE during the
+lazy-body reachability fixpoint (std::tuple<const int&> -> _Tuple_impl -> 
+_Head_base). The "incomplete struct / storage size unknown" c2mir error is GONE.
+
+map<int,int>; m[1]=2 now **passes c2mir entirely** and reaches MIR linking,
+failing with ONE undefined symbol:
+  import of undefined item _ZNSt8_Rb_treeI...E14_M_lower_boundE...
+
+Layer 8 (NEXT): madc instantiates the PUBLIC `_Rb_tree::lower_bound(const _Key&)`
+(madc-mangled body), but that body calls the INTERNAL 3-arg
+`_Rb_tree::_M_lower_bound(_Link_type, _Base_ptr, const _Key&)` via a
+mangled-direct ITANIUM symbol (`_ZNSt8_Rb_tree...14_M_lower_bound...`) instead of
+instantiating it. `_M_lower_bound` is defined OUT-OF-LINE in stl_tree.h; madc
+must instantiate that body (like it does the public members / _M_emplace_hint),
+not treat it as an externally-provided libstdc++ symbol. (The emitted Itanium
+name is even a HYBRID — it embeds madc-internal type tags
+`P46_Rb_tree_node_std__pair_const_int32_t_int32_t_` — so it could never match a
+real libstdc++ export anyway: mangled-direct is unambiguously wrong here.)
+Expect a CASCADE of similar out-of-line _Rb_tree helpers (_M_get_insert_*,
+_M_insert_*, _M_erase, ...) behind it.
+
+PROGRESS ARC this session: map went from "1 c2mir error: incomplete tuple
+(couldn't instantiate)" -> tuple fully instantiates (layers 1-7) -> COMPILES
+through c2mir -> now a LINK-stage out-of-line-member-instantiation gap (layer 8).
+Still does NOT link/run, so std::map is not yet working. All on
+wip/tuple-instantiation-claude (9627b8f); feature branch clean at ea6ffb9.
+
+### Update 43 — layer 8 root cause: multi-overload out-of-line member attach (wip @d2696eb).
+
+map<int,int> COMPILES (Update 42); the one MIR-link undefined item
+(`_M_lower_bound`) is root-caused: `std::_Rb_tree` captures 39 out-of-line member
+defs and `register_outofline_member_instantiations` DOES attach `_M_lower_bound`'s
+body + clear its Itanium emit_symbol (parser.cpp:28948-28958). But `_M_lower_bound`
+has TWO overloads (`iterator _M_lower_bound(_Link_type,_Base_ptr,const _Key&)` and
+`const_iterator ... const`). The attach uses `findMethod(name)` (returns ONE
+overload) and guards on `deferred_lazy_bodies.count(mvar->name)` — the SAME mvar
+for both overloads — so only one overload gets a body + emit_symbol clear; the
+OTHER (the one map::lower_bound calls) keeps its Itanium emit_symbol -> undefined
+import at link.
+
+FIX (next session): make the out-of-line attach OVERLOAD-AWARE — match each
+out-of-line def to its specific overload by parameter signature (not findMethod's
+first result), attach the body + clear emit_symbol per-overload, and key the
+deferred body per-overload (the madc overload-unique __oN symbol) so two overloads
+don't collide in deferred_lazy_bodies. EXPECT A CASCADE of other out-of-line
+_Rb_tree helpers (_M_get_insert_unique_pos, _M_insert_, _M_erase, _M_copy, ...)
+once _M_lower_bound links — each an out-of-line member, several with overloads.
+After ALL link, runtime correctness (does m[1]=2 actually insert+read 2?) is the
+final gate.
+
+SESSION SUMMARY (8 layers): map went from "1 c2mir error: can't instantiate
+tuple" -> full tuple/_Tuple_impl/_Head_base instantiation (layers 1-6) -> late
+struct emission (layer 7) -> COMPILES through c2mir -> link-stage out-of-line
+overload attach (layer 8, root-caused). std::map does NOT yet link/run. All on
+wip/tuple-instantiation-claude (d2696eb); feature branch clean+green at ea6ffb9.
+This is a confirmed multi-session feature; each layer is committed + documented.
+
+### Update 44 — MILESTONE: map COMPILES + LINKS (layer 8 done); layer 9 = runtime pointer-type correctness. (wip @ec2ecf1)
+
+Layer 8 SOLVED — out-of-line _Rb_tree members now madc-instantiated (two fixes):
+- `bind_declared_cpp_symbol`: don't bind a declaration_only member to the external
+  Itanium symbol when madc instantiates the class itself AND a captured out-of-line
+  def exists (gated off is_extern_template_instantiated / is_externally_defined, so
+  library-provided classes still link external).
+- `register_outofline_member_instantiations`: OVERLOAD-AWARE attach — match each
+  out-of-line def to the overload with the same display name AND const-ness (the
+  const + non-const `_M_lower_bound` each get their own body; findMethod returned
+  only one).
+
+`map<int,int>; m[1]=2` now **passes c2mir AND MIR-links** — no undefined imports.
+It SEGFAULTS at runtime (executing m[1]=2; gdb shows the crash in JIT'd code, no
+symbols). Layer 9 = runtime correctness: 16 `stl_tree.h:427 incompatible argument
+type for pointer type parameter` warnings (+ tuple:261/746, node_handle.h:64) =
+the generated _Rb_tree calls conflate the node-pointer type hierarchy
+(_Rb_tree_node_base* / _Rb_tree_node<_Val>* / _Link_type / _Base_ptr / _Const_*),
+passing a wrong-typed pointer -> memory corruption at run time. Fixing it is
+node-pointer-type modeling/coercion in the generated _Rb_tree member calls
+(gcc-parity territory). Likely more behind it before m[1]=2 reads back 2 correctly.
+
+REGRESSION SCOPE (fulltest 655/6 vs baseline 656/5): the WIP regresses ONLY
+testtuple.mad — the bind-skip + overload-aware-attach changes are otherwise
+broadly SAFE (no unrelated test breaks). So the approach is sound; it just needs
+layer 9 finished so BOTH testtuple and map pass before squashing to the feature
+branch.
+
+SESSION ARC (9 layers): "can't instantiate tuple" -> tuple/_Tuple_impl/_Head_base
+instantiate (1-6) -> late struct emission (7) -> COMPILES through c2mir ->
+out-of-line overload-aware member instantiation (8) -> LINKS -> runtime
+pointer-type correctness (9, open). std::map does NOT yet run correctly. All on
+wip/tuple-instantiation-claude (ec2ecf1); feature branch clean+green at ea6ffb9.
+
+### Update 45 — layer 9 detail: _Rb_tree node-pointer member typedefs partially resolve to `int` fallback.
+
+The runtime segfault root, via `--emit=c11` + `gcc -Wall` on map.c: the worst
+mismatch is at the `pair<_Base_ptr,_Base_ptr>` construction inside
+`_M_get_insert_unique_pos` — gcc: "expected `struct _Rb_tree_node_base **` but
+argument is of type `int *`". A local that should be `_Base_ptr`
+(= `_Rb_tree_node_base*`) is typed `int` (madc's unresolved-type fallback), so
+`&local` is `int*` where `_Rb_tree_node_base**` is needed. Other mismatches:
+`_Rb_tree_node_base*` passed where `_Rb_tree_node<_Val>*` expected (base/derived
+node-pointer conflation, 7×), `_S_key` and the pair/_Tuple_impl ctor args.
+
+So layer 9 = make `_Rb_tree`'s internal node-pointer member typedefs resolve
+correctly during instantiation: `_Base_ptr`=`_Rb_tree_node_base*`,
+`_Link_type`=`_Rb_tree_node<_Val>*`, the `_Const_*` variants, AND model the
+`_Rb_tree_node<_Val> : _Rb_tree_node_base` inheritance so up/down-casts (`_S_key`,
+`_M_begin`, node link traversal) are layout-correct. Some of these typedefs
+currently fall back to `int`. This is type-resolution work in the instantiation
+machinery (likely the member-typedef resolution for a dependent base-ptr type),
+gcc/clang-parity verified. NOT a one-liner; possibly more behind it before
+`m[1]=2` inserts + reads back 2 correctly. wip/tuple-instantiation-claude
+(ec2ecf1); feature branch clean+green at ea6ffb9.
+
+### Update 46 — layer-9 progress + a methodology CORRECTION. (wip @3c5ee99)
+
+CORRECTION: in mid-investigation I briefly tested on the FEATURE branch (which
+has none of the layer 1-9 WIP) and wrongly concluded the layer-7 milestone was a
+"debug-build artifact" / map "doesn't compile". That was a branch mix-up. Re-
+verified on a CLEAN wip/tuple-instantiation-claude build (no -DMADC_DEBUG_TUPLE):
+`map<int,int>; m[1]=2` COMPILES + MIR-LINKS and SEGFAULTS at runtime — the
+Update-42/44 milestone holds.
+
+LAYER-9 FIX (committed @3c5ee99, valid): `ref_param_arg_addr` now types the
+materialized temp by the PARAMETER's referent type when it differs from the arg
+(new expected_referent arg + ref_param_referent helper; wired at the class-ctor
+arg + default-arg sites). Fixes `_Rb_tree::_Res(__j._M_node, 0)` — the `0`/null
+bound to `_Base_ptr&` was an `int` temp (`&temp` a 4-byte int* where the callee
+reads an 8-byte _Rb_tree_node_base**). Verified: that temp is now a pointer and
+ALL int->pointer mismatches are GONE.
+
+STILL SEGFAULTS. Remaining layer-9 mismatches (gcc -Wall on emitted C) are
+base/derived NODE-pointer conflation: `_Rb_tree_node_base*` passed where
+`_Rb_tree_node<_Val>*` is expected (7× at the cloned _Rb_tree body) and at `_S_key`
+/ the `pair<_Base_ptr,_Base_ptr>` ctors. _Rb_tree_node<_Val> derives from
+_Rb_tree_node_base (single-inheritance, offset 0, so the cast is identity — these
+may be benign), so the actual crash may instead be in the _M_emplace_hint_unique /
+_Auto_node / node-allocation+insert path (m[1]=2 on an empty map inserts via the
+piecewise tuple). NEXT: runtime-trace the insert path (the crash is in JIT'd code,
+no symbols — instrument or bisect the generated _Rb_tree calls) to find the wild
+pointer. std::map still does NOT run correctly. Feature branch clean+green at
+ea6ffb9; all layers on wip/tuple-instantiation-claude (3c5ee99).
