@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+- **fix(cir): VLA parameter bounds — flat pointer lowering + entry-time
+  capture (task #80, pr22061-1 — the last open ledger item).** A
+  VLA-typed parameter (`char a[2][N]`, C11 6.7.6.2) was miscompiled:
+  the subscript linearizer already strode by the runtime bound, but
+  `param_decl` fell through to the default `int` spec for the
+  runtime-sized pointee chain (`int *a`), scaling every linearized
+  index by 4. Now: flat scalar-element pointer lowering
+  (`vla_param_flat_elem`), chain-wide linearize gate (constant outer
+  dims like `int a[2][3][N]` included), explicit call-site casts to
+  the flat type (kills c2mir's pointer-compat warning), and runtime
+  param dims captured into hidden entry-time locals (the block-scope
+  `__madc_vla_dim_*` machinery) so the stride keeps its on-entry value
+  even when the body assigns the bound variable — bound side effects
+  still run exactly once. NO fork raise — c2mir never sees a VLA type,
+  the same Tier-1 stance as block-scope VLAs. clang 18 confirms the
+  construct is standard C99/C11 (not gcc-only). gcc.c-torture
+  pr22061-1 passes; the failset drops 11 → 10, all class-(b)
+  GNU-extension roadmap items (pr122000 stays for its separate
+  `__sync_add_and_fetch` builtin gap — #65 fixed only its saturation
+  half). New `testvlaparam` (5 shapes; JIT + emitted-C + native-exe
+  all byte-equal to the gcc oracle).
+
 - **fix(layout): SysV bitfield packing — shared windows across declared
   types (task #76).** `allocateBitField` opened a new allocation unit
   whenever the declared type's size changed; SysV/gcc place a bitfield

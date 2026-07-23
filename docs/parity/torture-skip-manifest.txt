@@ -14,6 +14,7 @@ pr65053-1.c	inline-asm
 pr65053-2.c	inline-asm
 pr88904.c	inline-asm
 stkalign.c	inline-asm + stack-alignment probing
+990413-2.c	inline-asm (x87 fpatan/fsqrt compute the checked value; the historical pass was accidental — the asm statement is skipped and the uninitialized result happened to be ±0.0 on the devbox host)
 
 # gcc stack/apply builtins (builtin setjmp/longjmp 5-word contract,
 # frame-address probing, __builtin_apply*, __builtin_va_arg_pack)

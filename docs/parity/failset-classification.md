@@ -10,6 +10,29 @@ ruled NOT a madc builtin type (see work item 6). Gate edits landed in
 `docs/adr/0001-cir-c2mir-backend.md`, `.claude/rules/branching.md`,
 `docs/rules/branching.md`, ROADMAP Track 1.3.
 
+**UPDATE 2026-07-23 (task #80, @9a48a7fc):** pr22061-1 FIXED — VLA
+parameter bounds now lower to a flat scalar pointer with entry-time
+dim capture (pure madc-side Tier-1; no fork raise — stock c2m rejects
+ALL VLAs, params included, so c2mir was never going to see one).
+Verified through `scripts/run_gcc_testsuite.py` at HEAD. The failset
+drops 11 → **10**, all genuine class-(b) GNU-extension roadmap items
+(SIMD >16B: simd-1/2, pr23135, pr92904, pr46309; aligned>16/misalign:
+20010904-1/2, misalign; pr23324; pr122000). pr122000 STAYS: batch 1's
+#65 fixed its float→int saturation half, but the test also requires
+the `__sync_add_and_fetch` atomic builtin (undefined MIR import) — a
+separate class-(b) builtin gap. Notes: (1) the 2026-07-22 paragraph
+below loosely bucketed pr22061-1 with the class-(b) leftovers; the
+class-(a) table row (C99, "must fix") was the correct classification —
+clang 18 accepts and correctly executes the construct under
+`-pedantic-errors`, so the clang scope filter never applied.
+(2) Torture sweeps now run on the desktop container (QNAP retired from
+suites); first container sweep exposed 990413-2's historical pass as
+accidental — its x87 `fpatan`/`fsqrt` asm is skipped by the parser and
+the uninitialized checked value happened to be ±0.0 on the devbox —
+so it moved to the inline-asm skip manifest (60 → 61 skips). Sweep
+counts at this stamp (container): **1614/1/9/0/61**, failset exactly
+the 10 names above.
+
 **RE-VERIFY 2026-07-22 (owner request, HEAD @a7ed44be — post v0.37.0
 script mode + task #91 R0/R1):** full sweep **1614/1/10/0/60**; the
 11-name failset is byte-identical to `torture-failset-current.txt` —
