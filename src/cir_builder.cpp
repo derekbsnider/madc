@@ -10487,10 +10487,18 @@ bool CirBuilder::class_trivially_copyable(DataDefCLASS *cdd)
 // copyable class that is a member-wise bit copy, expressed as a struct
 // assignment into the destination lvalue. A class WITH a user copy ctor
 // never takes this fallback — its no-match stays a loud error (bit-copying
-// past a real copy ctor would mask an overload-scoring bug). Non-trivially-
-// copyable classes need member-wise copy-construction; deferred — they
-// declare copy ctors in practice. Returns NULL when the fallback does not
-// apply.
+// past a real copy ctor would mask an overload-scoring bug).
+// A NON-trivially-copyable class WITHOUT a user copy ctor (task #70:
+// `Box<T>` with a user ctor + dtor — `Box(T x)` member-init `v(x)` copies a
+// Box<int>) gets the memberwise implicit copy: bind both objects into
+// pointer temps, whole-object bit-copy (scalar bytes at every depth), then
+// re-invoke the user copy ctor of every nested class member that declares
+// one. Deliberate boundaries, kept LOUD (return NULL -> no_ctor_match_error)
+// rather than silently wrong: polymorphic classes (a sliced src's bit-copied
+// vptr would carry the derived vtable — re-stamping is not modeled here) and
+// non-trivially-copyable BASES (base subobject field paths not modeled;
+// matches the retbuf copy fallback's members-only scope). Returns NULL when
+// the fallback does not apply.
 node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 					       DataDefCLASS *cdd,
 					       const std::vector<TokenBase *> &ctor_args,
@@ -10503,10 +10511,109 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 	// resolved callees) — the raw token datadef may be a stale overload-set
 	// binding (move_iterator's `: _M_current(std::move(__i))`).
 	if (as_class_instance(ctor_arg_datadef(ctor_args[0])) != cdd) return NULL;
-	if (!class_trivially_copyable(cdd)) return NULL;
-	node_t src = translate_expr(ctor_args[0]);
-	node_t asgn = node2(N_ASSIGN, dst_lvalue, src, origin);
-	return node2(N_EXPR, list(), asgn, origin);
+	if (class_trivially_copyable(cdd)) {
+		node_t src = translate_expr(ctor_args[0]);
+		node_t asgn = node2(N_ASSIGN, dst_lvalue, src, origin);
+		return node2(N_EXPR, list(), asgn, origin);
+	}
+	if (class_copy_ctor_def(cdd)) return NULL;
+	if (cdd->has_any_vptr()) return NULL;
+	for (const BaseSpec &bs : cdd->bases)
+		if (bs.base && !class_trivially_copyable(bs.base)) return NULL;
+	if (cdd->base_class && !class_trivially_copyable(cdd->base_class))
+		return NULL;
+	// Bind dst/src ONCE into scoped pointer temps: c2mir nodes hold a single
+	// parent link, and re-translating an rvalue src (a cast/call temp) per
+	// member would materialize divergent copies.
+	char lt[32], rt[32];
+	snprintf(lt, sizeof(lt), "__mdc%d", m_strtmp_counter++);
+	snprintf(rt, sizeof(rt), "__mdc%d", m_strtmp_counter++);
+	node_t blk = list();
+	node_t ldecl = simple(N_SPEC_DECL);
+	append(ldecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
+	append(ldecl, node2(N_DECL, id(lt, origin), node1(N_LIST, pointer())));
+	append(ldecl, ignore());
+	append(ldecl, ignore());
+	append(ldecl, node1(N_ADDR, dst_lvalue, origin));
+	append(blk, ldecl);
+	node_t rdecl = simple(N_SPEC_DECL);
+	append(rdecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
+	append(rdecl, node2(N_DECL, id(rt, origin), node1(N_LIST, pointer())));
+	append(rdecl, ignore());
+	append(rdecl, ignore());
+	append(rdecl, object_arg_addr(ctor_args[0], cdd));
+	append(blk, rdecl);
+	node_t bitcopy = node2(N_ASSIGN,
+			       node1(N_DEREF, id(lt, origin), origin),
+			       node1(N_DEREF, id(rt, origin), origin), origin);
+	append(blk, node2(N_EXPR, list(), bitcopy, origin));
+	// Union layout: memberwise reconstruction is undefined for overlapping
+	// members — the bit-copy is the whole implicit copy.
+	if (!cdd->union_layout) {
+		std::vector<node_t> fixes;
+		std::vector<std::string> path;
+		implicit_copy_member_reconstructs(cdd, lt, rt, path, fixes,
+						  origin);
+		for (node_t f : fixes)
+			append(blk, f);
+	}
+	return node2(N_BLOCK, list(), blk, origin);
+}
+
+// See cir_builder.h: post-bit-copy walk re-invoking nested USER copy ctors
+// (`lname->path` from `rname->path`); copy-ctor-less non-trivial members
+// recurse. Member subobjects cannot be sliced, so a vptr'd member's
+// bit-copied vptr is already the correct vtable — recursion only skips
+// union-layout members (overlap). Mirrors the retbuf copy fallback's call
+// shape (extern decl + void* casts for emit_symbol ctors).
+void CirBuilder::implicit_copy_member_reconstructs(DataDefCLASS *cdd,
+						   const char *lname,
+						   const char *rname,
+						   std::vector<std::string> &path,
+						   std::vector<node_t> &out,
+						   TokenBase *origin)
+{
+	for (const auto &m : cdd->members) {
+		DataDefCLASS *mc = as_class_instance(m.second);
+		if (!mc) continue;
+		path.push_back(m.first);
+		FuncDef *copy_ctor = class_copy_ctor_def(mc);
+		if (copy_ctor) {
+			std::string sym = ctor_call_symbol(mc, copy_ctor);
+			bool external = !copy_ctor->emit_symbol.empty();
+			if (external)
+				need_output_extern(sym.c_str(), false,
+						   { { {N_VOID}, true }, { {N_VOID}, true } });
+			else
+				referenced_funcs.insert(sym);
+			auto field_chain = [&](const char *base) -> node_t {
+				node_t lv = node2(N_DEREF_FIELD,
+						  id(base, origin),
+						  id(path[0].c_str(), origin));
+				for (size_t i = 1; i < path.size(); i++)
+					lv = node2(N_FIELD, lv,
+						   id(path[i].c_str(), origin));
+				return lv;
+			};
+			node_t dst = node1(N_ADDR, field_chain(lname), origin);
+			node_t srcp = node1(N_ADDR, field_chain(rname), origin);
+			if (external) {
+				dst = node2(N_CAST, void_ptr_type(), dst, origin);
+				srcp = node2(N_CAST, void_ptr_type(), srcp, origin);
+			}
+			node_t a = list();
+			append(a, dst);
+			append(a, srcp);
+			node_t call = node2(N_CALL, id(sym.c_str(), origin), a,
+					    origin);
+			CIR_NODE(call)->synth_from_origin = true;
+			out.push_back(node2(N_EXPR, list(), call, origin));
+		} else if (!class_trivially_copyable(mc) && !mc->union_layout) {
+			implicit_copy_member_reconstructs(mc, lname, rname,
+							  path, out, origin);
+		}
+		path.pop_back();
+	}
 }
 
 node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,

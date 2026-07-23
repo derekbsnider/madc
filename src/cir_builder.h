@@ -1053,6 +1053,16 @@ public:
 	node_t try_implicit_copy_construct(node_t dst_lvalue, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin);
+	// Memberwise reconstruction walk for the implicit copy ctor's
+	// NON-trivial arm (task #70): after the whole-object bit-copy,
+	// re-invoke the USER copy ctor of every (possibly nested) class
+	// member that declares one — `lname->path` from `rname->path`.
+	// Copy-ctor-less non-trivial members recurse; scalar bytes are
+	// already correct from the bit-copy.
+	void implicit_copy_member_reconstructs(DataDefCLASS *cdd,
+			       const char *lname, const char *rname,
+			       std::vector<std::string> &path,
+			       std::vector<node_t> &out, TokenBase *origin);
 	// Recursive trivial-copyability ([class.prop] subset): no own user
 	// dtor, no user copy ctor, no vtable, members/bases recursively so.
 	bool class_trivially_copyable(DataDefCLASS *cdd);

@@ -1,0 +1,33 @@
+// Implicit copy constructor ([class.copy.ctor], task #70): a class with
+// user ctors (and a user dtor) but NO user copy ctor still copy-constructs
+// — memberwise. Covers direct copy-construction, copy-init, member-init
+// copies inside a synthesized ctor, template instances (the filed
+// Box<Box<int>> shape), and a nested std::string member whose USER copy
+// ctor must run (bit-copy would alias the heap buffer: wrong value after
+// source mutation and a double-free at scope exit). Oracle: g++ -O0.
+#include <cstdio>
+#include <string>
+
+template<class T> struct Box { T v; Box(T x) : v(x) {} ~Box() {} };
+
+struct P { int v; P(int x) : v(x) {} ~P() {} };
+struct Q { P p; int t; Q(P x, int y) : p(x), t(y) {} };
+struct S { std::string s; int n; S(const char *c, int k) : s(c), n(k) {} ~S() {} };
+
+int main()
+{
+    P a(7);
+    P b(a);                          // direct copy-construction
+    P c = a;                         // copy-init
+    printf("a %d %d %d\n", a.v, b.v, c.v);
+    Q q(a, 3);                       // by-value class param + member-init copy
+    printf("b %d %d\n", q.p.v, q.t);
+    Box<int> inner(5);
+    Box<Box<int> > outer(inner);     // the filed #70 shape
+    printf("c %d\n", outer.v.v);
+    S s1("hello world, long enough to defeat SSO buffers", 1);
+    S s2(s1);                        // string member must deep-copy
+    s1.s = "changed";
+    printf("d %s %d\n", s2.s.c_str(), s2.n);
+    return 0;
+}
