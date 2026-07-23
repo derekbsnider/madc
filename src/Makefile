@@ -188,6 +188,31 @@ release:
 	strip ../bin/madc-release
 	cd .. && bash scripts/forest_pack.sh bin/madc-release
 
+# Install the release artifacts under $(PREFIX) (DESTDIR-aware). Same layout
+# as the distribution packages (scripts/package_release.sh): the stripped
+# release binary as plain `madc`, the runtime as libmadc.so.0 + dev symlink
+# (madc -o output DT_NEEDs the soname), the man page. Depends on `release`
+# so lib/libmadc.so is guaranteed to be the -O2 release flavor (.libmode
+# stamp) and bin/madc-release is stripped + forest-packed.
+PREFIX ?= /usr/local
+INSTALL_LIBDIR ?= $(PREFIX)/lib
+install: release
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(INSTALL_LIBDIR) \
+		$(DESTDIR)$(PREFIX)/share/man/man1
+	install -m 755 ../bin/madc-release $(DESTDIR)$(PREFIX)/bin/madc
+	install -m 644 ../lib/libmadc.so $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0
+	strip --strip-unneeded $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0
+	ln -sf libmadc.so.0 $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so
+	gzip -9n < ../docs/man/madc.1 > $(DESTDIR)$(PREFIX)/share/man/man1/madc.1.gz
+	@if [ -z "$(DESTDIR)" ]; then ldconfig 2>/dev/null || true; fi
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/madc
+	rm -f $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0
+	rm -f $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so
+	rm -f $(DESTDIR)$(PREFIX)/share/man/man1/madc.1.gz
+	@if [ -z "$(DESTDIR)" ]; then ldconfig 2>/dev/null || true; fi
+
 clean:
 	rm -rf ../obj/develop ../obj/debug ../obj/release
 	rm -f ../obj/*.o ../obj/*.d ../obj/pic/*.o ../obj/pic/*.d
