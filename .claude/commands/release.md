@@ -47,6 +47,12 @@ Perform the full release workflow:
      `MIR_COMMIT` points at it, then
      `git tag -a v<MIR_VERSION> <MIR_COMMIT commit> -m "MIR fork release <MIR_VERSION>"`
      and push the tag
+   - If `gh auth status` succeeds, also publish the GitHub Release:
+     `gh release create v<MIR_VERSION> --repo derekbsnider/mir --title
+     "<MIR_VERSION> — the MIR madc vX.Y.Z ships against" --notes-file <notes> --latest`
+     (notes: what changed in the fork since its previous release, +
+     "Consumed by madc vX.Y.Z"). If gh is not authed, note it in the
+     report and continue.
    - If the fork is UNCHANGED since the previous release: leave
      `MIR_VERSION` untouched, cut no fork tag
 
