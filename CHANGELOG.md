@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **infra: packaged releases — .deb + .rpm (`scripts/package_release.sh`)
+  + man page (`docs/man/madc.1`).** Installs `/usr/bin/madc`
+  (bin/madc-release under its public name), `libmadc.so.0` in the system
+  lib dir (AOT `-o` executables reference it at run time — packaged
+  output now runs anywhere), the man page, and MPL-2.0 copyright. The
+  DISTRIBUTION configuration is `--enable-madcdat=no` (drops the
+  libdb/gdbm/qdbm/sqlite dependency tail; qdbm isn't packaged on
+  Fedora) — the script clean-rebuilds in that configuration, runs the
+  FULL packed suite against the exact packaged binary (750/0/0/9 at
+  v0.38.0), packages, then restores the tree. deb Depends: libc6 ≥
+  2.38, libstdc++6, zlib1g, libzstd1 only. First artifacts uploaded to
+  the v0.38.0 GitHub Release. Gotcha codified: GNU chmod numeric modes
+  preserve directory setgid bits — dpkg-deb rejects 2755; clear with
+  `chmod g-s` first.
+
 - **infra: MIR fork release versioning (owner convention).** Fork
   releases are now `<upstream-base>-madc.<madc-version>` — retroactive
   first release `v1.0-madc.0.38.0` tagged on the fork (same commit the

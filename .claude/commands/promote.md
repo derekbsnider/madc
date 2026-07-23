@@ -26,6 +26,12 @@ Merges develop into master, tags the release, and pushes.
      `gh release create vX.Y.Z --title "vX.Y.Z — <one-line theme>"
      --notes-file docs/release-notes/vX.Y.Z.md --latest`
      (if gh is not authed, note it in the report and continue)
+   - Build and attach the distribution packages: run
+     `bash scripts/package_release.sh` on the build container (it
+     rebuilds in the distribution configuration, runs the packed suite
+     against the exact packaged binary, and restores the tree), pull
+     `dist/` back, then
+     `gh release upload vX.Y.Z dist/madc_*.deb dist/madc-*.rpm dist/SHA256SUMS`
 
 5. **Promote the MIR fork in lockstep** (`/workspace/mir` — branch
    correspondence: the fork's `master` tracks madc's `master`):
