@@ -2,6 +2,51 @@
 
 ## [Unreleased]
 
+- **fix(cir): VLA partial subscript yields the row pointer.** Follow-up
+  to #80's flat lowering: a partial access on a runtime-sized array —
+  `a[i]` on `int a[n][m]`, `a[i][j]` on a 3-D VLA — fell through to raw
+  scalar N_INDs (2-D shape read one element as the "pointer"; 3-D shape
+  hard-failed c2mir check). New `CirBuilder::vla_flat_subscript` serves
+  both subscript paths: full chains keep the single linearized element
+  IND, partial chains emit scaled pointer arithmetic
+  (`a + lin(i…) * prod(remaining dims)`), matching C's row-pointer
+  semantics under the flat representation. The chain unwind also learns
+  a bare TokenVar root (`(int *)a[1]` parses the cast operand without a
+  TokenSubscript node — previously bypassed linearization and produced
+  a NULL pointer at runtime). Params and malloc'd locals alike; fixed
+  arrays untouched. New `testvlapartial` (gcc oracle; JIT, `-o`, and
+  `--emit=c11`→gcc all byte-match; `.expect_quiet` guards the old c2mir
+  warnings). Boundaries noted: `sizeof a[i]` and `&a[i]` on a partial
+  row remain open.
+
+- **feat(aot): conditional DT_NEEDED — runtime-free executables drop
+  `libmadc.so.0`.** The native image writer now classifies every
+  module-unsatisfied import by resolving it in-process and mapping the
+  address to its defining object (dladdr): if all imports are covered
+  by the base C/C++ and user `-l` DT_NEEDED entries, the libmadc
+  dependency is omitted — a plain C (or plain madc-dialect) executable
+  now runs on hosts with no madc installed. Any uncovered import — a
+  madc runtime symbol or one only reachable through libmadc's
+  dependency closure — keeps it (conservative). `-shared` objects keep
+  the dependency by design (their host-callable shims import the
+  madc_value ABI). Unit-tested in `test_native_shared` (byte-scan of
+  .dynstr both ways); man page `-o` note updated.
+
+- **feat(build): `make -C src install` / `uninstall`.** PREFIX
+  (default /usr/local) + DESTDIR staging: stripped forest-packed
+  release binary as plain `madc`, `libmadc.so.0` + dev symlink, gzipped
+  man page; depends on `release` so the installed .so is always the
+  -O2 flavor; ldconfig only on real installs. Same layout convention as
+  the distro packages.
+
+- **docs(plans): MIR upstream probe
+  (`docs/plans/2026-07-23-mir-upstream-probe.md`).** Fix-tier
+  classification of the fork's 164 commits over upstream (zero upstream
+  drift since the merge-base — cherry-picks apply clean): Tier A
+  standalone bugfix PRs, Tier B feature RFCs (SIMD, _Complex, cleanup,
+  debug stack), Tier C madc-specific. Owner decision pending; no
+  commitments.
+
 - **infra: packaged releases — .deb + .rpm (`scripts/package_release.sh`)
   + man page (`docs/man/madc.1`).** Installs `/usr/bin/madc`
   (bin/madc-release under its public name), `libmadc.so.0` in the system
