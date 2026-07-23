@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+- **feat(cir): `--finstrument-functions` emission (task #66).** The flag
+  previously had no consumer anywhere. Instrumented functions now emit a
+  `__cyg_profile_func_enter` call plus a cleanup-attributed
+  `__madc_instr_self` local declared first so `__cyg_profile_func_exit`
+  fires last on every exit path (gcc epilogue order, fork-native
+  `cleanup` attribute); a once-per-module `__madc_cyg_exit_thunk` is
+  synthesized on demand. `no_instrument_function` respected across
+  prototype→definition merge. Lifts `testfinstrumentfunctions`.
+- **feat(cir): constant float→int overflow casts fold with GCC
+  saturation semantics (task #65).** Finite out-of-range constants
+  saturate to the target's max/min (0 for unsigned underflow) at the
+  CIR cast arm, re-rounding through cast chains per precision;
+  ±inf/NaN stay runtime, matching gcc. Lifts `testfloattointclamp`.
+- **feat(jit): `#load` namespace calls + `dlcall` resolve in the MIR
+  lane (task #67).** `__dl_<ns>_<member>` imports resolve from
+  `Program::dl_symbol_map` via the import resolver (data-driven — no
+  name parsing); `dlcall(fn, args…)` lowers to a typed indirect call
+  `((long (*)())fn)(args…)` in every lane; varargs-tail madc-string
+  arguments coerce to `const char*` (fixes `libc::atoi(num)` and
+  `printf("%s", s)`). Lifts `testdlopen` + `testdlcall` (JIT);
+  `testdlopen` gains an `exe_skip` (native `#load` is a follow-on).
+- **infra: `scripts/remote_build.sh`** — build + test batteries offload
+  to the desktop container over the reverse SSH tunnel (rsync delta →
+  ccache/clang-ready 20-core build → fulltest/exe/release/packed with
+  per-stage rc's). The NAS is no longer the build/test host.
+
 ## [v0.38.0] — 2026-07-22
 
 The system-object release: `madc::sys` (Python `sys` convention) live in every
