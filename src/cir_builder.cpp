@@ -14426,6 +14426,50 @@ static bool constant_real_operand(TokenBase *t, long double &out)
 	return false;
 }
 
+// Linearized access on a flat VLA pointer. A runtime-sized array (VLA param
+// or malloc'd VLA local) is represented as `T *root` whose pointee DataDef
+// keeps the INNER dims d1..dk as a CArray chain (the outermost dim is decayed
+// away / held in vla_size_expr). With indices i0..i_{n-1} (outermost-first in
+// idxs, the subscript-unwind order):
+//   full access  (n == k+1): element lvalue IND(root, ((i0*d1+i1)*d2+...)+ik)
+//   partial access (n <= k): C's row pointer (`a[i]` on `int a[n][m]` has
+//     type int(*)[m]) — under the flat lowering that is scaled pointer
+//     arithmetic: root + lin(i0..i_{n-1}) * (d_n * .. * dk).
+// Returns NULL when root is not a flat runtime-sized chain (fixed arrays and
+// plain pointers keep their native paths) or the access is over-subscripted.
+node_t CirBuilder::vla_flat_subscript(Variable *root,
+				      const std::vector<TokenBase *> &idxs,
+				      TokenBase *origin)
+{
+	DataDefPTR *rp = root ? dynamic_cast<DataDefPTR *>(root->type) : NULL;
+	DataDefCArray *rc = rp ? dynamic_cast<DataDefCArray *>(rp->base_type)
+			       : NULL;
+	// Any runtime dim ANYWHERE in the chain forces the linearized form
+	// (`char a[2][3][N]` — the outer dims are constant but the flat
+	// pointer still strides by N).
+	if (!rc || !carray_chain_has_runtime(rc) || idxs.empty())
+		return NULL;
+	std::vector<node_t> dims; // d1..dk (inner dims)
+	for (DataDefCArray *c = rc; c;
+	     c = dynamic_cast<DataDefCArray *>(c->element_type))
+		dims.push_back(c->has_runtime_size()
+			       ? translate_expr(c->count_expr)
+			       : integer((int64_t)c->count));
+	size_t ni = idxs.size();
+	if (ni > dims.size() + 1)
+		return NULL;
+	node_t lin = translate_expr(idxs[ni - 1]); // i0 (root index)
+	for (size_t m = 1; m < ni; m++)
+		lin = node2(N_ADD, node2(N_MUL, lin, dims[m - 1], origin),
+			    translate_expr(idxs[ni - 1 - m]), origin);
+	node_t rbase = id(var_emit_name(*root).c_str(), origin);
+	if (ni == dims.size() + 1)
+		return node2(N_IND, rbase, lin, origin);
+	for (size_t m = ni - 1; m < dims.size(); m++)
+		lin = node2(N_MUL, lin, dims[m], origin);
+	return node2(N_ADD, rbase, lin, origin);
+}
+
 node_t CirBuilder::translate_expr(TokenBase *tb)
 {
 	if (!tb) return ignore();
@@ -15278,6 +15322,19 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// capture pointer param (`(*name)[i]`).
 				base = node1(N_DEREF, id(tsub->object.name.c_str(), tb), tb);
 			} else {
+				// Flat VLA pointer (runtime-sized param or malloc'd
+				// local): route through the linearizer. A single-index
+				// access on a multi-dim chain is C's row POINTER
+				// (`a[i]` on `int a[n][m]` == a + i*m under the flat
+				// lowering); the generic scalar IND below would mis-read
+				// one element instead.
+				std::vector<TokenBase *> idxs; // outermost-first
+				for (size_t k = tsub->extra_indices.size(); k > 0; k--)
+					idxs.push_back(tsub->extra_indices[k - 1]);
+				idxs.push_back(tsub->index);
+				if (node_t flat = vla_flat_subscript(&tsub->object,
+								     idxs, tb))
+					return flat;
 				base = id(var_emit_name(tsub->object).c_str(), tb);
 			}
 			// madc array element read (`arr[i]`): route through the
@@ -15358,33 +15415,22 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					idxs.push_back(ts0->index); // i0 (innermost root index)
 					root = &ts0->object;
 				}
+			} else if (TokenVar *tv0 = dynamic_cast<TokenVar *>(cur)) {
+				// Some contexts (a cast operand: `(int *)a[1]`) parse the
+				// base as a bare TokenVar under the SubscriptExpr instead
+				// of a TokenSubscript root — all indices are already in
+				// idxs.
+				root = &tv0->var;
 			}
-			DataDefPTR *rp = root ? dynamic_cast<DataDefPTR *>(root->type) : NULL;
-			DataDefCArray *rc = rp ? dynamic_cast<DataDefCArray *>(rp->base_type)
-					       : NULL;
-			// Any runtime dim ANYWHERE in the chain forces the
-			// linearized form (`char a[2][3][N]` — the outer dims are
-			// constant but the flat pointer still strides by N).
-			if (root && rc && carray_chain_has_runtime(rc)) {
-				std::vector<node_t> dims; // d1..dk (inner dims)
-				for (DataDefCArray *c = rc; c;
-				     c = dynamic_cast<DataDefCArray *>(c->element_type))
-					dims.push_back(c->has_runtime_size()
-						       ? translate_expr(c->count_expr)
-						       : integer((int64_t)c->count));
-				size_t ni = idxs.size();
-				// Only flatten a FULL access (one index per dimension =
-				// 1 outer + k inner). idxs is outermost-first, so idxs[ni-1]
-				// is the root index i0.
-				if (ni == dims.size() + 1) {
-					node_t flat = translate_expr(idxs[ni - 1]); // i0
-					for (size_t m = 1; m < ni; m++)
-						flat = node2(N_ADD,
-							     node2(N_MUL, flat, dims[m - 1], tb),
-							     translate_expr(idxs[ni - 1 - m]), tb);
-					node_t rbase = id(var_emit_name(*root).c_str(), tb);
-					return node2(N_IND, rbase, flat, tb);
-				}
+			// vla_flat_subscript linearizes a FULL access (one index per
+			// dimension = 1 outer + k inner) to a single element IND, and
+			// a PARTIAL access (`a[i][j]` on `int a[n][m][k]`) to the row
+			// pointer a + (i*m+j)*k. idxs is outermost-first, so
+			// idxs[ni-1] is the root index i0.
+			if (root) {
+				node_t flat = vla_flat_subscript(root, idxs, tb);
+				if (flat)
+					return flat;
 			}
 			return node2(N_IND,
 				translate_expr(tse->base_expr),

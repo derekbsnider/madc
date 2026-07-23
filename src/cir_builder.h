@@ -541,6 +541,13 @@ class CirBuilder {
 	// and expression-receiver subscript paths; recv_addr = receiver address.
 	node_t class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 				       TokenBase *index, TokenBase *origin);
+	// Linearized access on a flat VLA pointer (runtime-sized param or
+	// malloc'd local): full index chains yield the element lvalue, partial
+	// chains yield C's row pointer as scaled pointer arithmetic. idxs is
+	// outermost-first; NULL when root is not a flat runtime-sized chain.
+	node_t vla_flat_subscript(class Variable *root,
+				  const std::vector<TokenBase *> &idxs,
+				  TokenBase *origin);
 	// True when `arg` is `obj[i]` on a class whose operator[] yields a class
 	// object element reached through the returned address.
 	static bool class_subscript_is_object(TokenBase *arg);
