@@ -1,0 +1,185 @@
+.TH MADC 1 "2026-07-23" "madc 0.38.0" "User Commands"
+.SH NAME
+madc \- My Advanced Dialect of C: C/C++ JIT compiler, native toolchain, and script runner
+.SH SYNOPSIS
+.B madc
+[\fIoptions\fR] \fIsource\fR [\fIprogram-args\fR...]
+.br
+.B madc
+\fB\-\-project\fR \fIcompile_commands.json\fR [\fIoptions\fR]
+.br
+.B madc
+\fB\-o\fR \fIprog\fR | \fB\-c\fR | \fB\-shared\fR [\fIoptions\fR] \fIsource\fR
+.SH DESCRIPTION
+.B madc
+parses a C/C++ dialect into an intermediate C11 tree, lowers it through
+c2mir to MIR, and JIT-executes it \(em or compiles it ahead of time to a
+native ELF executable, relocatable object, or shared library with no
+external assembler or linker. It can also emit portable C11 source.
+.PP
+Programs run like scripts: a file of top-level statements needs no
+.BR main ()
+(one is synthesized), a
+.B #!/usr/bin/env madc
+shebang works, and common library identifiers such as
+.BR printf ()
+resolve without any #include via auto-header inclusion. Standard C and
+POSIX headers are embedded in the binary. Helper namespaces
+(php::, perl::, python::, ruby::, js::, rust::) bring familiar functions
+from other languages into native C code.
+.PP
+Arguments after the source file are passed to the program as
+.IR argc / argv .
+.SH INPUT MODES
+.TP
+.I file
+Compile and JIT-run a single source file.
+.TP
+.BI \-\-project " db.json"
+Build from a
+.IR compile_commands.json :
+compile each translation unit, link the modules in-process, and run the
+entry point. A bare
+.I .json
+argument implies \fB\-\-project\fR.
+.TP
+.I file.o
+Execute a madc-compiled relocatable object (\fB\-c\fR output) as a
+precompiled cache \(em no recompilation.
+.TP
+.B \-E
+Preprocess only (print the expanded source).
+.SH LANGUAGE / PREPROCESSOR OPTIONS
+.TP
+.BI \-\-std= std
+Language standard:
+.BR c89 / c90 / c99 / c11 / c17 / c23
+(\fBc\fR = c11), \fBc++\fR\fINN\fR, or \fBmadc\fR (the default dialect;
+C++ keywords reserved). A
+.I .c
+translation unit under \fB\-\-project\fR defaults to C mode.
+.TP
+.BI \-D name\fR[=\fIvalue\fR]
+Define a preprocessor macro.
+.TP
+.BI \-I dir
+Add an include search directory.
+.TP
+.BI \-l name
+dlopen
+.IB lib name .so
+(RTLD_GLOBAL) so its symbols resolve at link time (e.g. \fB\-lcrypt\fR).
+In AOT mode this becomes a DT_NEEDED entry instead.
+.TP
+.B \-\-no\-auto\-load
+Do not act on #load directives; link explicitly via \fB\-l\fR.
+.TP
+.B \-\-no\-includes
+Do not process #include directives.
+.TP
+.B \-\-no\-embedded\-headers
+Disable the baked-in headers; use real system headers.
+.SH CODEGEN OPTIONS
+.TP
+.BR \-O ", " \-O0 " .. " \-O3
+JIT optimization level (bare \fB\-O\fR = \fB\-O1\fR).
+.TP
+.B \-g
+Debug info: gdb can break, step, and inspect the JIT'd or AOT-compiled
+program (forces \fB\-O0\fR).
+.TP
+.BI \-fno\-builtin\- name
+Disable a specific builtin.
+.TP
+.B \-\-finstrument\-functions
+Emit __cyg_profile instrumentation hooks.
+.SH AOT OUTPUT (do not run)
+.TP
+.BR \-c " [" \-o " \fIfile.o\fR]"
+Compile to a relocatable native object (default:
+.IR source-base .o).
+.TP
+.BI \-o " prog"
+Compile to a native executable \(em MIR assembles the ELF directly.
+The produced program needs
+.B libmadc.so.0
+at run time.
+.TP
+.BR \-shared " [" \-o " \fIfile.so\fR]"
+Compile to a shared object (ET_DYN; dlopen/#load-consumable; PIC).
+.SH SOURCE OUTPUT (do not run)
+.TP
+.B \-\-emit=c11\fR|\fBmc11
+Render the program as portable C11 (or MC11) source on stdout.
+.TP
+.B \-\-emit\-pch
+Write a .madh precompiled header.
+.TP
+.BI \-\-emit\-function " name"
+Print one function's source.
+.TP
+.B \-dM
+Preprocess, then print the effective macro table (gcc \fB\-dM \-E\fR
+analogue).
+.SH MISC OPTIONS
+.TP
+.B \-\-show\-stats
+Print input/token/timing stats to stderr after the run.
+.TP
+.BR \-v ", " \-\-verbose
+Verbose / debug output.
+.TP
+.BR \-h ", " \-? ", " \-\-help
+Show the full option list, including the frozen-forest (compile-once)
+and dump/diagnostic options not listed here.
+.SH ENVIRONMENT
+.TP
+.BI MADC_CPU_LIMIT= secs
+Arm an RLIMIT_CPU guard. Default: off \(em madc also runs the program,
+so no finite default is safe. Intended for embedding hosts and
+sandboxes.
+.TP
+.BI MADC_MEM_LIMIT= MB
+Address-space guard (RLIMIT_AS, covers JIT mappings). Default: 4096 MB
+plus 128 MB per \fB\-\-project\fR translation unit; 0 disables. A
+tripped guard names the knob in its error message.
+.SH EXAMPLES
+Run a file as a script (no main, no includes needed):
+.PP
+.nf
+    $ echo 'printf("%d\\n", 6 * 7);' > answer.mad
+    $ madc answer.mad
+    42
+.fi
+.PP
+Run a C program with arguments:
+.PP
+.nf
+    $ madc \-\-std=c17 prog.c arg1 arg2
+.fi
+.PP
+Build and run a multi-file project, then ship it as one native binary:
+.PP
+.nf
+    $ madc \-\-project compile_commands.json
+    $ madc \-\-project compile_commands.json \-o app
+.fi
+.PP
+Transpile to portable C11:
+.PP
+.nf
+    $ madc \-\-emit=c11 prog.mad > prog.c
+.fi
+.SH SEE ALSO
+Project wiki:
+.UR https://github.com/derekbsnider/madc/wiki
+.UE
+.br
+Source and issues:
+.UR https://github.com/derekbsnider/madc
+.UE
+.SH AUTHOR
+Derek Snider, with AI-assisted development.
+.SH LICENSE
+Mozilla Public License 2.0. The MIR backend is the madc fork of
+Vladimir Makarov's MIR (see the repository's MIR_VERSION).
