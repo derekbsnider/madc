@@ -203,7 +203,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.34.0, develop): 695 integration tests pass (0 failing, 0 timed out, 16 skipped) through both the live and packed release binaries. Every forest gate is green, including bound-surface `[subbind]`; the current reducer corpus is 308 pack drops. The gcc.c-torture promote gate and formally skipped cases are tracked in [`docs/parity/failset-classification.md`](docs/parity/failset-classification.md). SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.38.0): 749 integration tests pass (0 failing, 0 timed out, 9 skipped) through both the live and packed release binaries; the native `--exe` lane is at 734/0. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -244,35 +244,6 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.34.0 (2026-07-11)** — the pack-time drain release: Phase 2 rung 1 of the
-embedded-header-forest work. A `--freeze` parse drains every deferred header
-body to fixpoint and freezes fully-evaluated state, guarded by a pack-side
-c2mir check gate (fork API `c2mir_check_tree`, pinned `062dd97`) with
-error-tolerant reverts — a parser gap in a body nobody calls can never poison
-a pack. The packed binary runs the whole integration suite **681/681** and
-beats the previous -O2 live-parse wall on the headline test. Dev and packed
-binaries now coexist (`bin/madc` / `bin/madc-release`), and
-`docs/perf/forest-timings.tsv` tracks the timing trend per release. See
-[`docs/release-notes/v0.34.0.md`](docs/release-notes/v0.34.0.md).
-
-CIR baseline (2026-07-14): **695 integration pass / 0 fail / 0 timeout /
-16 skip** (packed suite 695/695; zero known reds, all forest gates GREEN) and **gcc.c-torture 1567
-of 1652 in-scope (95.0%) at `-O1` and `-O2`** — the develop→master promote
-gate is **all 41 remaining standard-C failures fixed (≥1608)**, per the
-user-signed failset classification audit
-([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)):
-33 gcc-internal/torture-only tests are formally skipped
-(`docs/parity/torture-skip-manifest.txt`) and 14 real-world GNU extensions
-are roadmap items, not gate blockers. In-process `eval`/exec runs on the CIR
-JIT (`CirJitSession`); native AOT output is live as of v0.36.0 (`-c`/`-o`);
-the REPL remains deferred.
-
-**Branch state:** `develop` carries v0.36.0 (CIR backend). `master` still holds
-the v0.24.0 asmjit/Gecko backend at full C89 coverage (419 pass / 0 fail) —
-develop is **not** promoted to master until the CIR path reaches feature parity.
-
-### Current Release
-
 **v0.38.0** is the system-object release: `madc::sys` brings the Python
 `sys` convention to madc — `sys.argv` and `sys.path` as mutable madc
 arrays, `sys.platform` / `sys.version` / `sys.hostname` as immutable
@@ -286,6 +257,12 @@ members, madc-array subscript reads, extern-of-class emission. Fulltest
 and the packed suite hold **740/0/0/13**; the native `--exe` lane is at
 **726/0**; the gcc-torture master-promotion gate is met (1614 ≥ 1608,
 zero class-(a) failures).
+
+**Branch state:** `master` was promoted to v0.38.0 on 2026-07-23 (tree
+identical to `develop` at promotion) and now tracks releases; `develop`
+carries active work. The [MIR fork](https://github.com/derekbsnider/mir)'s
+`master` tracks madc's `master` in lockstep; fork releases pair with madc's
+(see [`MIR_VERSION`](MIR_VERSION)).
 
 ### Recent Releases
 

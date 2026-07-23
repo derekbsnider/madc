@@ -31,9 +31,12 @@ Perform the full release workflow:
    - Link to the full changelog: `See [CHANGELOG.md](../../CHANGELOG.md) for full details.`
 
 7. **Update README.md**:
-   - Find the `## Roadmap` section
-   - Add/update a `### Current Release` sub-section right before the Roadmap table with a paragraph summary of vX.Y.Z
-   - Add/update a `### Recent Releases` sub-section with one-line summaries of the last 5 releases (read from `docs/release-notes/`)
+   - There is exactly ONE `## Current Release` section — REPLACE its
+     paragraph with the vX.Y.Z summary (search the whole file for stray
+     older "Current Release" headers first; never add a second one)
+   - Update the "Branch state" line in that section if branch facts changed
+   - Update the `### Recent Releases` sub-section with one-line summaries of the last 5 releases (read from `docs/release-notes/`)
+   - Update the bold "Current status" test-counts line near the Testing section
 
 8. **Release the MIR fork alongside** (only if the fork changed since the
    last madc release — compare the commit in `MIR_COMMIT` against the commit
