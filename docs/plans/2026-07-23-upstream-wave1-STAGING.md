@@ -122,10 +122,14 @@ re-widened form. `MIR_COMMIT` bump rides the same madc push.
 - [x] madc battery green: 751/0/0/9, exe 735/0, packed 751/0/0/9
 - [x] gcc torture sweep: 1614/1/9/0/61 — baseline byte-identical
 - [x] fork develop committed @9c7e7f3b + pushed; `MIR_COMMIT` bumped
-- [ ] PR branches: build + `make test` + new test fail-before/pass-after
-      at upstream HEAD
-- [ ] OWNER final review → file issue, rename nothing (test name is
-      descriptive), `gh pr create` from fork branches
+- [x] PR branch 1: FAIL-BEFORE at upstream-master c2m proven at ALL
+      levels (-O0/-O1/-O2, -eg AND -ei — stronger than pr34099-2, which
+      -O2 masks); PASS-AFTER all six combos; pr34099-2 passes; full
+      upstream `make test` green (all bootstrap lanes; the new test
+      auto-rides every c-tests engine lane via runtests.sh new/ glob)
+- [x] PR branch 2: builds clean at upstream HEAD; gen + interp smoke OK
+      (the allocation runs in every c2m invocation)
+- [ ] OWNER final review → file issue, `gh pr create` from fork branches
 
 ## Submission mechanics (after owner OK)
 
