@@ -1,0 +1,32 @@
+#!/../bin/madc
+// C++14 lambda return-type deduction: a lambda with no explicit [T] return
+// type deduces its return type from the body's first value-bearing return.
+#include <iostream>
+using namespace std;
+
+int main()
+{
+    // deduced int, used via `auto f = ...; f(args)`
+    auto twice = [](int n) { return n * 2; };
+    cout << twice(21) << endl;
+
+    // deduced double (usual arithmetic conversions: double / double -> double)
+    auto half = [](double x) { return x / 2.0; };
+    cout << half(7.0) << endl;
+
+    // deduced bool from a comparison
+    auto isbig = [](int n) { return n > 10; };
+    cout << isbig(20) << endl;
+    cout << isbig(5) << endl;
+
+    // deduced return reached inside an if branch
+    auto sign = [](int n) { if (n < 0) { return -1; } return 1; };
+    cout << sign(-5) << endl;
+    cout << sign(5) << endl;
+
+    // explicit [int] return-type form still works unchanged
+    auto add = [int](int a, int b) { return a + b; };
+    cout << add(17, 25) << endl;
+
+    return 0;
+}

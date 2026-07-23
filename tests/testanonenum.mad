@@ -1,0 +1,18 @@
+// Class/struct-scoped anonymous enums (the libstdc++ `enum { __value = N };`
+// idiom) + qualified class-scoped constants and template-id constants in
+// constant-expression context. Output matches g++ -std=c++17.
+#include <stdio.h>
+struct S { enum { sa = 1 << 0, sb = 1 << 1, sall = sa | sb }; };
+class C { public: enum { ca = 5, cb = 6 }; };
+template<class T> struct W { enum { v = sizeof(T) }; };
+int main()
+{
+	// expression context
+	printf("%d %d %d %d %d\n", S::sa, S::sb, S::sall, C::ca, C::cb);
+	// qualified class-scoped constant in a constant-expression (array dim)
+	int arr[S::sall];                 // size 3
+	// template-id class-scoped constant in a constant-expression (array dim)
+	int warr[W<int>::v];              // size 4 (sizeof(int))
+	printf("%d %d\n", (int)(sizeof(arr)/sizeof(int)), (int)(sizeof(warr)/sizeof(int)));
+	return 0;
+}

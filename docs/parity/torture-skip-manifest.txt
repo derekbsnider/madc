@@ -1,0 +1,58 @@
+# gcc.c-torture formal skip manifest — class (c) of the 2026-06-11 failset
+# classification audit (docs/parity/failset-classification.md, user-signed).
+# One test basename per line, followed by the skip reason (cluster).
+# Read by scripts/run_gcc_testsuite.py; pass --include-manifest-skips to run
+# these tests anyway. Lines starting with # and blank lines are ignored.
+#
+# These tests exercise gcc-internal contracts, gcc-only extensions with no
+# real-world use, or undefined behavior where madc's choice is as defensible
+# as gcc's. They are NOT compliance bugs and NOT part of the promote gate.
+
+# inline asm (c2mir/MIR have no inline asm — documented floor)
+pr40657.c	inline-asm
+pr65053-1.c	inline-asm
+pr65053-2.c	inline-asm
+pr88904.c	inline-asm
+stkalign.c	inline-asm + stack-alignment probing
+990413-2.c	inline-asm (x87 fpatan/fsqrt compute the checked value; the historical pass was accidental — the asm statement is skipped and the uninitialized result happened to be ±0.0 on the devbox host)
+
+# gcc stack/apply builtins (builtin setjmp/longjmp 5-word contract,
+# frame-address probing, __builtin_apply*, __builtin_va_arg_pack)
+built-in-setjmp.c	gcc-internal builtins
+frame-address.c	gcc-internal builtins (asmjit also fails)
+pr64242.c	gcc-internal builtins (deliberately corrupted jmp_buf)
+pr60003.c	gcc-internal builtins
+pr47237.c	gcc-internal builtins (asmjit also fails)
+va-arg-pack-1.c	gcc-internal builtins (asmjit also fails)
+
+# reduced-precision oversized-bitfield arithmetic (clang diverges from gcc
+# too — verified live; implementation-defined territory)
+bitfld-3.c	gcc reduced-precision bitfield arithmetic
+bitfld-5.c	gcc reduced-precision bitfield arithmetic
+pr32244-1.c	gcc reduced-precision bitfield arithmetic
+pr34971.c	gcc reduced-precision bitfield arithmetic
+
+# VLA-in-struct / variably-modified members (ISO C forbids; clang: "will
+# never be supported"; gcc-only)
+20040423-1.c	VLA-in-struct
+align-nest.c	VLA-in-struct
+20020412-1.c	VLA-in-struct (by-value va_arg of variable-size type)
+20041218-2.c	VLA-in-struct
+20070919-1.c	VLA-in-struct
+pr82210.c	VLA-in-struct
+pr41935.c	VLA-in-struct + variable-index offsetof
+
+# GNU nested functions with side-effecting VLA params (asmjit also fails)
+pr22061-3.c	nested fn + VLA param
+pr22061-4.c	nested fn + VLA param
+
+
+# scalar_storage_order (gcc-only; clang rejects)
+20230630-2.c	scalar_storage_order + bitfields
+20230630-4.c	scalar_storage_order + bitfields
+
+# UB probes / builtin-recognition / profiling / cast-to-union
+20031003-1.c	UB float-to-int fold probe
+20021127-1.c	builtin-recognition (user-redefined llabs)
+eeprof-1.c	-finstrument-functions profiling hooks
+960416-1.c	cast-to-union (GNU)

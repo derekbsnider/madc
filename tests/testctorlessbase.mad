@@ -1,0 +1,37 @@
+// Task #51(b): a CTORLESS class whose BASE has a user ctor — the implicit
+// default construction must run B's user ctor on a direct stack decl, as a
+// member subobject, via new, and (polymorphic variant) stamp the derived
+// vptr AFTER the base ctor's. Plus the heap complete-object site must
+// construct user-ctor VIRTUAL bases (`new DV` used to skip V()).
+// Oracle: g++ -O0.
+#include <cstdio>
+
+struct B { int x; B() : x(7) {} };
+struct D2 : B { int d; };
+struct Outer { D2 m; };
+struct PB {
+	int x;
+	PB() : x(7) {}
+	virtual int f() { return 1; }
+};
+struct PD : PB { int f() { return 2; } };
+struct V { int v; V() : v(9) {} };
+struct DV : virtual V { int d; DV() : d(2) {} };
+
+int main()
+{
+	D2 v;
+	printf("stack %d\n", v.x);
+	Outer o;
+	printf("member %d\n", o.m.x);
+	D2 *p = new D2;
+	printf("heap %d\n", p->x);
+	delete p;
+	PD pv;
+	PB *bp = &pv;
+	printf("poly %d %d\n", bp->f(), pv.x);
+	DV *hv = new DV;
+	printf("vheap %d %d\n", hv->v, hv->d);
+	delete hv;
+	return 0;
+}

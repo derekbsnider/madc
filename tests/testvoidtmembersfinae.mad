@@ -1,0 +1,27 @@
+// __void_t SFINAE detection where the partial spec yields a DIFFERENT type than the
+// primary, and the detection probe involves a TEMPLATE MEMBER
+// (`typename T::template rebind<U>::other`) — the allocator_traits<>::__rebind shape.
+// The void_t spec must be selected (T has a member template rebind), giving
+// withrebind<char>, NOT the primary's int. Verified vs g++ AND clang++.
+// (No <iostream>/using-namespace-std: a user `void_t` would clash with std::void_t.)
+#include <cstdio>
+
+template<typename...> using void_t = void;
+
+template<typename T, typename U, typename = void>
+struct pick { using type = int; };
+template<typename T, typename U>
+struct pick<T, U, void_t<typename T::template rebind<U>::other> >
+{ using type = typename T::template rebind<U>::other; };
+
+template<typename T> struct withrebind {
+	int tag;
+	template<typename U> struct rebind { using other = withrebind<U>; };
+};
+
+int main() {
+	pick<withrebind<int>, char>::type a;   // spec -> withrebind<char> (has .tag)
+	a.tag = 90;
+	printf("voidt=%d\n", a.tag);           // 90  (would not compile if primary=int chosen)
+	return 0;
+}

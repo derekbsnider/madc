@@ -1,0 +1,29 @@
+#!/../bin/madc
+// std::string operator+ — concatenation returning a new string by value, bound
+// to the extern-C runtime wrapper string_concat (libstdc++'s std::operator+ for
+// strings is a weak template, not dlsym-able — like operator==).
+#include <iostream>
+#include <string>
+using namespace std;
+
+int main() {
+    string a = "Hello, ";
+    string b = "world";
+
+    // a + b -> new string by value, copy-constructed into c
+    string c = a + b;
+    cout << c << endl;            // "Hello, world"
+
+    // a + const char* literal
+    string d = a + "there";
+    cout << d << endl;            // "Hello, there"
+
+    // chained a + b + literal (each + yields a string object consumed next)
+    string e = a + b + "!";
+    cout << e << endl;            // "Hello, world!"
+
+    // print a + b directly (rvalue string object through cout <<)
+    cout << (a + b) << endl;      // "Hello, world"
+
+    return 0;
+}

@@ -1,0 +1,31 @@
+#!../bin/madc
+// Unqualified class-member access must outrank a using-directive namespace
+// symbol. With `using namespace std`, C++17 pulls in free functions named
+// data/size/begin/end/swap/empty/… — common member names. Inside a method an
+// unqualified `data` must resolve to `this->data` (the member), NOT std::data.
+// g++ and clang both resolve the member (block+class scope beat a
+// using-directive's namespace scope, [basic.lookup.unqual]). madc used to
+// resolve it to std::data -> "Missing operand" / undefined __ns_std_data.
+#include <iostream>
+using namespace std;
+
+class Box {
+    int* data;          // collides with std::data
+    long size;          // collides with std::size
+    int  buf[4];
+public:
+    Box() { data = buf; size = 0; }
+    void push(int v) { data[size] = v; size = size + 1; }   // unqualified members
+    int  get(long i) { return data[i]; }
+    long count() { return size; }
+};
+
+int main()
+{
+    Box b;
+    b.push(11);
+    b.push(22);
+    b.push(33);
+    cout << b.get(0) << " " << b.get(2) << " " << b.count() << endl;  // 11 33 3
+    return 0;
+}

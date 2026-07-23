@@ -1,0 +1,48 @@
+#!../bin/madc
+// A REFERENCE data member (`T& m`) must (1) initialize by BINDING to its
+// initializer's address — `m(e)` means `m = &e`, not a value copy into the
+// pointer slot — and (2) resolve member/method access through the referent
+// class — `m.x` / `m.f()` is `m->x` / `m->f()`. Before these fixes a reference
+// member emitted "incompatible types in assignment to a pointer" (init copied a
+// struct value into the pointer slot) and "member reference is not a structure
+// or union" (the member-access path checked is_object() on the reference type
+// without unwrapping it). This is the shape of std::_Rb_tree::_Auto_node's
+// `_Rb_tree& _M_t` member and its `_M_t._M_insert_node(...)` use.
+#include <cstdio>
+
+struct A { int v; };
+
+// Plain reference member, accessed by member and bound from a reference arg.
+struct B {
+    A& a;
+    B(A& x) : a(x) { }
+    int get() { return a.v; }
+};
+
+// Reference member referencing the ENCLOSING class template, in a NESTED
+// helper class — the _Auto_node shape (method call through the reference).
+template<typename T>
+struct Outer {
+    T val;
+    T read() { return val; }
+    struct Helper {
+        Outer& o;
+        Helper(Outer& oo) : o(oo) { }
+        T via_member() { return o.val; }
+        T via_method() { return o.read(); }
+    };
+    T use() { Helper h(*this); return h.via_member() + h.via_method(); }
+};
+
+int main()
+{
+    A obj;
+    obj.v = 42;
+    B b(obj);
+    printf("b: %d\n", b.get());
+
+    Outer<int> x;
+    x.val = 5;
+    printf("outer: %d\n", x.use());
+    return 0;
+}

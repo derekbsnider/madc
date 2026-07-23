@@ -1,0 +1,24 @@
+// Regression: an instance member function TEMPLATE returning a POINTER must
+// instantiate with the pointer return type preserved (not collapsed to a
+// by-value struct return) AND keep its hidden `__this`. A `static` local in
+// the body must not be mistaken for a `static` storage specifier on the method.
+#include <cstdio>
+struct Node { int v; };
+struct Box {
+	int base;
+	Box(int b) : base(b) {}
+	template<typename Arg>
+	Node *make(Arg&& a) const
+	{
+		static Node n;
+		n.v = base + a;
+		return &n;
+	}
+};
+int main()
+{
+	Box b(10);
+	Node *p = b.make(5);   // 15
+	printf("%d\n", p->v);
+	return 0;
+}

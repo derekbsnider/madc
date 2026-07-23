@@ -1,0 +1,16 @@
+// Two fixed-array typedefs of the SAME tagged struct must emit the struct
+// body exactly once: the first typedef defines it, the second references the
+// tag. A prior emitter bug re-emitted the full body for the second array
+// typedef, so c2mir rejected it ("tag X redeclaration"). This is the shape
+// real glibc <wchar.h> relies on (va_list and __gnuc_va_list are both
+// `struct __va_list_tag[1]`).
+typedef struct Pt { int x; int y; } PtArr[1];
+typedef struct Pt PtArr2[1];
+
+int main()
+{
+	PtArr a; a[0].x = 3; a[0].y = 4;
+	PtArr2 b; b[0].x = 5; b[0].y = 6;
+	printf("%d %d\n", a[0].x + a[0].y, b[0].x + b[0].y);
+	return 0;
+}

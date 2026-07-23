@@ -1,0 +1,9 @@
+// <=> is gated at the C++20 std floor (and the madc dialect). Below the
+// floor the sequence lexes as `<=` then `>`, which cannot parse in an
+// expression — exactly how pre-C++20 compilers reject it. See .expect_err.
+int main()
+{
+	int a = 3, b = 7;
+	int r = (a <=> b);
+	return r;
+}

@@ -1,0 +1,88 @@
+# tsubst flag-on gate baseline — per-test "name hit fallback" under
+# MADC_XTEST_DEP_PARSE=1. Maintained by scripts/tsubst_flagon_gate.sh --check.
+# RED if any test crashes (nonzero exit), hit drops, or fallback rises.
+# On PROGRESS (hits up / fallback down) LOWER the numbers here in the same commit.
+# Rationale + the regression that motivated this gate:
+#   docs/plans/2026-07-01-tsubst-kind3-wip-verification-FINDINGS.md
+# Baseline recorded at HEAD 114d81b8 (v0.32.0), 2026-07-01.
+# testlocalclassraii bumped 0/1 -> 1/0 by the step-2 2A local-class call-rebind.
+# All container tests bumped +1 hit / -1 fallback by step-2 2B (comparison-`<`
+# classifier + the local-class canonical-spelling fix): the basic_string
+# iterator-range ctor is now a tsubst hit. Then map/subscript/containerdtor/
+# madc_ns bumped again by the deferred-construction slice (Kind-4): a local
+# declaration whose ctor args contain a pack expansion defers in the pattern
+# and re-lowers at tsubst copy (_Rb_tree::_M_emplace_hint_unique _Auto_node).
+# Then map/subscript/containerdtor/madc_ns bumped by the empty-body multi-pack
+# slice: std::pair's piecewise + indexed ctors (>1 type pack, non-type value
+# packs) are hits — shell-side template-ids no longer disqualify (hybrid B),
+# and an empty body admits multi-pack / non-type-pack params. testmap and
+# testsubscript are now FULLY parse-once flag-on (0 fallback).
+# Then the slice-4b member-call rebuild KIND (receiver-aware, at copy time):
+# nested member-template calls in tsubst'd bodies re-resolve STRUCTURALLY per
+# instantiation (op0 IS the callee — no order-dependent spelling match against
+# local_emit_name enrichment), their instances are created at copy time and
+# drained via the entry-snapshot pending_funcs watermark: +1 set/map, +2
+# vector, +4 subscript/containerdtor/madc_ns.
+# Then the slice-4b deferred-arg formal re-selection KIND: (a) std::forward's
+# parse-time-baked overload formal no longer drives the bind-vs-convert
+# deferral (the marker bakes the arg's OWN dependent type — identity bake);
+# (b) a STATIC member-template call (_Alloc_traits::construct) re-selects in
+# its member_template_owner class at copy time; (c) the call-rebuild arm fans
+# a top-level pack argument out itself, pairing element e with formal fi+e
+# under that element's subst: +2 vector, +2 subscript/containerdtor/madc_ns
+# (_M_construct_node bodies tsubst instead of bail-degrading).
+# Then the 4b FLIP (first-skip = production): the two member-lane arming sites
+# drop the tsubst_body_instantiated_once condition — FIRST instantiations skip
+# the eager body parse too. Vector-lane hits DROP -2 (19->17, 41->39, 40->38,
+# 40->38) because the eager first parse was OVER-instantiating: it side-
+# instantiated allocator_traits::construct overload instances (int __o2,
+# string __o3) for arg shapes the program never lowers (for int, the two
+# instances had the IDENTICAL C-level signature). Post-flip instantiation is
+# by-need (the standard's lazy model); verified by pre/post --emit=c11
+# defined-symbol diff on testvector: only those two redundant instances
+# vanish (the _Guard ctor/dtor pair just renames to the materializer's
+# <owner>__<local> naming), every call resolves, zero c2mir warnings, all
+# outputs fixture-verified. A hit DROP from eliminating redundant instances
+# is progress here, not regression — fallbacks stay 0 everywhere.
+testset 10 0
+testmap 11 0
+testvector 15 0
+testsubscript 35 0
+testcontainerdtor 34 0
+testmadc_ns 34 0
+testlocalclassraii 1 0
+# Then the scalar-ref-param slice: the blanket reference-param guard deleted
+# (untyped N_DEREF types from the concrete shell decl) + is_size1_pointer no
+# longer bakes the GNU void* (char*) rewrite for a DEPENDENT pointee into a
+# shared pattern. Gate list gains the two scalar-ref-param reducers.
+# Then set/containerdtor/madc_ns bumped +1/-1 by the forward-carve-out slice:
+# _Rb_tree::_Alloc_node::operator()<_Arg> is a hit (explicit-template-arg CALL
+# eligibility carve-out + identity-refcast "forward" builtin kind unwrapped by
+# the deferred-arg binding marker). The dependent FUNCTOR-CALL hazard
+# (_M_insert_'s `__node_gen(...)`) is now its own named eligibility reject.
+testfunctortmploperator 1 0
+testmembertmplptrret 1 0
+# Then the 100%-burndown slice (dependent functor-call parse + concrete
+# template-id carve-out + owner-first member-typedef lookup + poison for the
+# dependent-call swallow): set 10/0, containerdtor 34/0, madc_ns 34/0 —
+# EVERY gate test is now fully parse-once flag-on; suite-wide burndown is
+# 268 hit / 0 fallback (re-parse unreachable across the suite).
+# Then the flip-track compound-balance fix (parseFunction unwinds its pushed
+# compounds on THROW): the 4 flag-on-only failures are green, pinned here so
+# the leaked-compound nested-misclassification class (undefined imports of
+# plain member symbols) stays caught by the run_rc check.
+testfstream 1 0
+teststdstringconv 1 0
+testifconstexpr 0 0
+testinvocable 0 0
+# Then the member-template instantiation IDENTITY memo (one instantiation per
+# (template, binding) — the g++ model; FnTemplateDef::inst_identity) + the
+# tsubst re-derivation of dependent-DERIVED placeholders (X__deref opaques
+# re-derive to the concrete element type under the instance substitution
+# instead of minting no-op husk instances like _Destroy<_ForwardIterator__
+# deref>): duplicate and husk instances are no longer created, so their
+# redundant tsubst copies vanish. Hit DROP from eliminating redundant
+# instances is progress (see the 4b-FLIP entry above) — fallbacks stay 0,
+# run_rc 0, outputs fixture-verified, warn census GREEN (the husk family WAS
+# the 7-warning red): set 11->10, map 12->11, vector 17->15, subscript
+# 39->35, containerdtor 38->34, madc_ns 38->34.

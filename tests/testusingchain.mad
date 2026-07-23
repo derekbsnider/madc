@@ -1,0 +1,26 @@
+#!/../bin/madc
+// Multi-level using-declaration of a member from a NESTED namespace
+// (C++17 `namespace A::B { }` + `using A::B::member;`), plus enclosing-scope
+// namespace lookup (referencing `B::x` from a sibling namespace resolves
+// outward). This is the shape libstdc++ uses in <bits/iterator_concepts.h>
+// (`namespace __detail { using ranges::__detail::__is_signed_integer_like; }`).
+#include <cstdio>
+
+namespace outer::inner {
+    inline int base_value() { return 40; }
+}
+
+namespace outer {
+    namespace consumer {
+        // multi-level using of a nested-namespace member
+        using outer::inner::base_value;
+        inline int compute() { return base_value() + 2; }
+    }
+}
+
+int main()
+{
+    int v = outer::consumer::compute();
+    printf("value: %d\n", v);
+    return 0;
+}

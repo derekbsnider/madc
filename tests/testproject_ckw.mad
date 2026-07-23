@@ -1,0 +1,1 @@
+// project-mode C-keyword regression test; build driven by .cc.json via .flags

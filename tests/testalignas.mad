@@ -1,0 +1,28 @@
+#!../bin/madc
+// C++11 `alignas(N)` / `alignas(type)` alignment-specifier on a data member.
+// madc consumes the specifier (and its parens) like the C11 `_Alignas` spelling
+// and the GNU `__attribute__((aligned(N)))` form; the member declaration that
+// follows parses normally. libstdc++ uses the bare `alignas` keyword in
+// __aligned_membuf (the std::_Rb_tree / set / map node storage), so without
+// this the very first set/map instantiation failed with "Unsupported
+// parenthesized member declarator in class definition".
+#include <iostream>
+using namespace std;
+
+struct S {
+    alignas(16) unsigned char buf[8];
+    int x;
+};
+
+struct T {
+    alignas(double) char storage[sizeof(double)];
+    int y;
+};
+
+int main()
+{
+    S s; s.x = 42;
+    T t; t.y = 7;
+    cout << s.x << " " << t.y << endl;   // 42 7
+    return 0;
+}

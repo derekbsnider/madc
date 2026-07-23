@@ -1,0 +1,6 @@
+script start
+greeting 1
+greeting 2
+greeting 3
+extra=6
+script end

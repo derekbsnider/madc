@@ -23,6 +23,8 @@ struct MadcCleanupEntry {
     void *obj_ptr;               // object (this) pointer
     uint8_t *guard;              // guard byte on JIT stack (NULL if unguarded)
     uint8_t is_chain_tail;       // 1 = last in dtor chain for this object, clear guard
+    void *dtor_direct;           // direct dtor fn pointer (used when fn_indirect == NULL)
+    uint8_t heap_alloc;          // 1 = malloc'd by __madc_cleanup_push_dtor, free on remove
     MadcCleanupEntry *prev;      // toward older entries
 };
 
@@ -50,6 +52,14 @@ static thread_local MadcCleanupEntry *madc_cleanup_stack = nullptr;
 
 extern "C" {
 
+// Byte size of MadcTryContext, so the CIR lowering can allocate an opaque,
+// correctly-sized local for a try block without hard-coding jmp_buf internals
+// (the struct is private to this TU). The lowering rounds up to a long[] count.
+unsigned long __madc_try_context_size(void)
+{
+    return (unsigned long)sizeof(MadcTryContext);
+}
+
 // Push a try context onto the stack, return pointer to its jmp_buf
 void *__madc_try_push(MadcTryContext *ctx)
 {
@@ -75,24 +85,72 @@ void __madc_cleanup_unwind_to(void *mark)
 	madc_cleanup_stack = e->prev;
 	if ( !e->guard || *e->guard )
 	{
-	    void (*fn)(void *) = (void (*)(void *))*e->fn_indirect;
-	    fn(e->obj_ptr);
+	    void (*fn)(void *) = e->fn_indirect
+		? (void (*)(void *))*e->fn_indirect
+		: (void (*)(void *))e->dtor_direct;
+	    if ( fn )
+		fn(e->obj_ptr);
 	    if ( e->guard && e->is_chain_tail )
 		*e->guard = 0;
 	}
+	if ( e->heap_alloc )
+	    free(e);
     }
 }
 
-// Discard cleanup entries down to mark WITHOUT calling destructors
+// Discard cleanup entries down to mark WITHOUT calling destructors (freeing any
+// heap-allocated entries — the dtors already ran via the cleanup attribute on
+// the normal scope-exit path).
 void __madc_cleanup_discard_to(void *mark)
 {
-    madc_cleanup_stack = (MadcCleanupEntry *)mark;
+    while ( madc_cleanup_stack != (MadcCleanupEntry *)mark )
+    {
+	MadcCleanupEntry *e = madc_cleanup_stack;
+	madc_cleanup_stack = e->prev;
+	if ( e->heap_alloc )
+	    free(e);
+    }
+}
+
+// Current cleanup-stack top — a mark the try lowering captures before the body
+// so it can discard exactly the try-body entries on the NORMAL exit path (the
+// cleanup attribute already ran their dtors at C-block scope exit). On the
+// exception path __madc_throw_* unwinds to the same mark instead. P1.1c.
+void *__madc_cleanup_top(void)
+{
+    return (void *)madc_cleanup_stack;
+}
+
+// Push a HEAP-ALLOCATED cleanup entry naming a destructor by VALUE (not via a
+// double-indirect fn slot). The lowering passes `(void*)Cls___dtor` and
+// `(void*)&obj` directly — no caller-provided entry storage and no per-object
+// stack locals in the try body. This matters for the JIT path: adding stack
+// arrays/locals inside a try body perturbs the MIR frame allocation and can make
+// the try-context overlap an object (observed 2026-05-31, P1.1c) — passing only
+// immediate call arguments avoids that. The entry is freed by unwind/discard/pop.
+// `dtor` has the shape `void (*)(void *this)` — the same single-`this` shape the
+// cleanup attribute and the class dtor symbol use. P1.1c.
+void __madc_cleanup_push_dtor(void *dtor, void *obj)
+{
+    MadcCleanupEntry *entry = (MadcCleanupEntry *)malloc(sizeof(MadcCleanupEntry));
+    if ( !entry )
+	return;
+    entry->fn_indirect = nullptr;
+    entry->obj_ptr = obj;
+    entry->guard = nullptr;
+    entry->is_chain_tail = 0;
+    entry->dtor_direct = dtor;   // direct function pointer (fn_indirect == NULL)
+    entry->heap_alloc = 1;
+    entry->prev = madc_cleanup_stack;
+    madc_cleanup_stack = entry;
 }
 
 // Push a cleanup entry onto the cleanup stack
 void __madc_cleanup_push(MadcCleanupEntry *entry, void **fn_indirect,
 			 void *obj, uint8_t *guard, uint8_t is_chain_tail)
 {
+    entry->dtor_direct = nullptr;
+    entry->heap_alloc = 0;
     entry->fn_indirect = fn_indirect;
     entry->obj_ptr = obj;
     entry->guard = guard;
@@ -105,7 +163,12 @@ void __madc_cleanup_push(MadcCleanupEntry *entry, void **fn_indirect,
 void __madc_cleanup_pop()
 {
     if ( madc_cleanup_stack )
-	madc_cleanup_stack = madc_cleanup_stack->prev;
+    {
+	MadcCleanupEntry *e = madc_cleanup_stack;
+	madc_cleanup_stack = e->prev;
+	if ( e->heap_alloc )
+	    free(e);
+    }
 }
 
 // Throw an integer exception
@@ -212,5 +275,22 @@ void __madc_rethrow()
     __madc_cleanup_unwind_to(ctx->cleanup_mark);
     longjmp(ctx->jbuf, 1);
 }
+
+// ── Atomic builtins ──────────────────────────────────────────────────────────
+// gcc/clang INLINE the `__atomic_*` builtins (they are not real symbols — only
+// the unprefixed C11 `atomic_thread_fence` lives in libatomic). c2mir does not
+// inline them; it emits external calls that fail to link. madc's cir_builder
+// lowers `__atomic_thread_fence` / `__atomic_fetch_add` to these real-symbol
+// wrappers (resolved via dlsym(RTLD_DEFAULT) at MIR-link), implemented here with
+// the genuine builtins — this runtime TU is gcc/clang-compiled, so they become
+// real atomic instructions / fences. libstdc++'s <ext/atomicity.h> refcount path
+// (the read/write memory barriers and __exchange_and_add) reaches them through
+// <memory>, which the vector reallocation chain pulls in.
+void __madc_atomic_thread_fence(int memorder) { __atomic_thread_fence(memorder); }
+void __madc_atomic_signal_fence(int memorder) { __atomic_signal_fence(memorder); }
+int  __madc_atomic_fetch_add_i(int *p, int v, int memorder)
+{ return __atomic_fetch_add(p, v, memorder); }
+long __madc_atomic_fetch_add_l(long *p, long v, int memorder)
+{ return __atomic_fetch_add(p, v, memorder); }
 
 } // extern "C"

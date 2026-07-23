@@ -1,0 +1,17 @@
+#!/../bin/madc
+// Placement new through a `void *` address — `::new((void *)p) T(v)`. The CIR
+// scalar placement-new store must cast the address to the CONSTRUCTED type's
+// pointer (T*), not store through the raw `void *` (which gave a c2mir
+// "assignment of incompatible value"). This is exactly the libstdc++
+// allocator / __new_allocator::construct shape `::new((void *)__p) _Up(args...)`
+// — the link in std::vector<int>::push_back this unblocks.
+#include <new>
+#include <iostream>
+using namespace std;
+int main()
+{
+    int buf = 0;
+    ::new((void *)&buf) int(42);     // store 42 into buf through a void* address
+    cout << "v=" << buf << endl;
+    return 0;
+}

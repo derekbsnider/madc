@@ -1,0 +1,15 @@
+// 2b-ii: string + "literal" — libstdc++ does NOT export
+// operator+(const basic_string&, const _CharT*), so the retained operator
+// template's BODY must instantiate (operator+ -> __str_concat -> append).
+// Also chains the exported literal-lhs shape on the instantiated result.
+#include <string>
+#include <iostream>
+int main()
+{
+    std::string a = "foo";
+    std::string b = a + "bar";
+    std::cout << b << std::endl;
+    std::string c = "pre" + b;
+    std::cout << c << std::endl;
+    return 0;
+}

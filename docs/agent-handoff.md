@@ -14,7 +14,7 @@ At the start of a session, read sources in this order:
    features, gaps, rules, and design decisions.
 4. `claude_status.json` — mirrored repo snapshot for branch, tests, phase,
    known issues, and near-term focus.
-5. `TODO.md` — mirrored actionable backlog and open gaps.
+5. `docs/plans/ROADMAP.md` — mirrored actionable backlog and open gaps.
 6. `CHANGELOG.md` — mirrored landed-work history.
 7. `docs/test-status.md` — detailed test inventory when validation context
    matters.
@@ -28,7 +28,7 @@ Use these ownership rules when sources overlap:
 | `AGENTS.md` | Rules, architecture, process | Canonical for agent behavior |
 | `madc-knowledge` KG | Phases, features, gaps, rules, decisions | Canonical project-memory source |
 | `claude_status.json` | Current snapshot | Mirror of KG + live repo validation state |
-| `TODO.md` | Actionable backlog | Mirror of KG open work and priorities |
+| `docs/plans/ROADMAP.md` | Actionable backlog | Mirror of KG open work and priorities |
 | `CHANGELOG.md` | Historical record | Mirror of landed work recorded from KG / repo changes |
 | `docs/test-status.md` | Detailed test coverage | Canonical for per-test baseline |
 
@@ -37,7 +37,7 @@ If sources disagree, resolve conflicts in this order:
 1. Live repo state: current branch, working tree, and actual test/build output.
 2. `AGENTS.md` for process and rule behavior.
 3. `madc-knowledge` for project memory.
-4. `claude_status.json`, `TODO.md`, and `CHANGELOG.md` as repo mirrors.
+4. `claude_status.json`, `docs/plans/ROADMAP.md`, and `CHANGELOG.md` as repo mirrors.
 
 Do not create new ad hoc status files when an existing source can be
 updated instead.
@@ -51,7 +51,7 @@ friction for out-of-workspace, network, or destructive operations.
 - Confirm the live branch and working-tree status.
 - Query `madc-knowledge` first for the current phase, open gaps, recent
   decisions, and any relevant rule nodes.
-- Read `claude_status.json`, `TODO.md`, and `CHANGELOG.md` as mirrors of that
+- Read `claude_status.json`, `docs/plans/ROADMAP.md`, and `CHANGELOG.md` as mirrors of that
   state and as repo-local working summaries.
 - Decide early whether the task is core-only or `madcdat`-affecting.
   For core-only work, prefer a workspace configured with
@@ -108,7 +108,7 @@ handing off:
   - Update `branch` if the live branch changed.
   - Update build/test counts if they changed or were revalidated.
   - Add newly completed features, open issues, or current focus.
-- `TODO.md`
+- `docs/plans/ROADMAP.md`
   - Sync it from the updated KG gaps / open work.
   - Remove completed items.
   - Add newly discovered gaps or regressions.

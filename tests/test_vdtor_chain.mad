@@ -1,0 +1,13 @@
+#include <iostream>
+using namespace std;
+class A { public: virtual ~A() { cout << "~A" << endl; } };
+class B : public A { public: ~B() { cout << "~B" << endl; } };
+class C : public B { public: ~C() { cout << "~C" << endl; } };
+class Plain { public: ~Plain() { cout << "~Plain" << endl; } };   // non-virtual dtor
+int main() {
+    A *a = new C();
+    delete a;                 // ~C ~B ~A
+    Plain *p = new Plain();
+    delete p;                 // ~Plain (static path, unchanged)
+    return 0;
+}

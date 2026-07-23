@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "madc_typeid.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -18,23 +20,49 @@ typedef enum madc_result_code
     MADC_EXCEPTION = -2
 } madc_result_code;
 
-typedef enum madc_value_kind
-{
-    MADC_VALUE_NULL = 0,
-    MADC_VALUE_BOOLEAN = 1,
-    MADC_VALUE_INTEGER = 2,
-    MADC_VALUE_REAL = 3,
-    MADC_VALUE_STRING = 4
-} madc_value_kind;
+/* Value kinds are typeid slots (madc_typeid.h) — one vocabulary. The old
+ * MADC_VALUE_* names are aliases kept for readability at call sites. */
+typedef uint32_t madc_value_kind;
+#define MADC_VALUE_NULL    ((madc_value_kind)MADC_TYPEID_INVALID)
+#define MADC_VALUE_BOOLEAN ((madc_value_kind)MADC_TYPEID_BOOL)
+#define MADC_VALUE_INTEGER ((madc_value_kind)MADC_TYPEID_INT64)
+#define MADC_VALUE_REAL    ((madc_value_kind)MADC_TYPEID_DOUBLE)
+#define MADC_VALUE_STRING  ((madc_value_kind)MADC_TYPEID_TEXT)
 
-typedef struct madc_value
+/* madc_value.flags bits. Storage discriminators + gradual typing
+ * (docs/plans/2026-06-12-type-table-value-abi-design.md §4). All other
+ * bits reserved-zero. */
+enum
 {
-    madc_value_kind kind;
-    int boolean_value;
-    int64_t integer_value;
-    double real_value;
-    char *string_value;
-    size_t string_length;
+    MADC_VF_HEAP        = 1u << 0,  /* payload is a refcounted cell */
+    MADC_VF_INLINE_TEXT = 1u << 1,  /* payload is SSO inline_text */
+    MADC_VF_TYPE_LOCKED = 1u << 2,  /* re-tag is an error */
+    MADC_VF_TYPE_COERCE = 1u << 3,  /* assignments convert to current type_id */
+    MADC_VF_NULLABLE    = 1u << 4,  /* null ok even when LOCKED/COERCE */
+    MADC_VF_CONST       = 1u << 5   /* value is read-only */
+};
+
+/* The 32-byte interchange value (design doc §3). type_id is the canonical
+ * type identity; size is per-kind (text/bytes length, array count, struct
+ * byte size, sizeof for scalars); the 16-byte payload inlines every madc
+ * primitive. Text: <= 15 bytes lives in inline_text NUL-terminated
+ * (MADC_VF_INLINE_TEXT); longer text lives in a NUL-terminated refcounted
+ * cell (MADC_VF_HEAP). Copy with madc_value_copy (retains the cell),
+ * release with madc_value_clear; read text uniformly via madc_value_text. */
+typedef struct __attribute__((aligned(16))) madc_value
+{
+    uint32_t type_id;
+    uint32_t flags;
+    uint64_t size;
+    union
+    {
+	int64_t  integer_value;   /* bool folds in; type_id distinguishes */
+	double   real_value;
+	char    *text_value;      /* cell payload when MADC_VF_HEAP */
+	void    *data_ptr;        /* array/object/oversize-struct cell */
+	char     inline_text[16]; /* SSO when MADC_VF_INLINE_TEXT */
+	uint64_t wide_value[2];   /* __int128/_Complex/v128 (P0) */
+    };
 } madc_value;
 
 typedef enum madc_authority_mode
@@ -73,8 +101,7 @@ typedef enum madc_native_type
     MADC_NATIVE_BOOLEAN = 1,
     MADC_NATIVE_INTEGER = 2,
     MADC_NATIVE_REAL = 3,
-    MADC_NATIVE_C_STRING = 4,
-    MADC_NATIVE_STRING_OBJECT = 5
+    MADC_NATIVE_C_STRING = 4
 } madc_native_type;
 
 /* ------------------------------------------------------------------ */
@@ -347,10 +374,34 @@ int madc_value_set_null(madc_value *value);
 int madc_value_set_bool(madc_value *value, int boolean_value);
 int madc_value_set_integer(madc_value *value, int64_t integer_value);
 int madc_value_set_real(madc_value *value, double real_value);
-int madc_value_set_string(madc_value *value, const char *string_value);
+int madc_value_set_string(madc_value *value, const char *text_value);
 int madc_value_set_string_n(madc_value *value,
-			    const char *string_value,
-			    size_t string_length);
+			    const char *text_value,
+			    size_t text_length);
+/* Deep-copy semantics at struct level, shared cell underneath: clears dst,
+ * struct-assigns, retains the payload cell when present. */
+int madc_value_copy(madc_value *dst, const madc_value *src);
+/* Uniform text accessor (SSO or cell; NUL-terminated either way). NULL when
+ * the value holds no text. text_length out-param is optional. */
+const char *madc_value_text(const madc_value *value, size_t *text_length);
+/* Raw bytes payload: copies `size` bytes into a refcounted cell. */
+int madc_value_set_bytes_n(madc_value *value, const void *data, size_t size);
+/* A typed INSTANCE of any table type: allocates a zeroed refcounted cell
+ * of `size` bytes tagged `type_id`, finalized by `destroy` when the last
+ * reference drops (NULL for trivially-destructible instances — the cell
+ * never knows what it holds, only how to let it go). Returns the payload
+ * pointer for the caller to construct into; NULL on failure. */
+void *madc_value_make_instance(madc_value *value, uint32_t type_id,
+			       uint64_t size, void (*destroy)(void *payload));
+/* Generic payload accessor: text / bytes / instance payload pointer
+ * (NULL for inline scalars and null). size out-param is optional. */
+const void *madc_value_data(const madc_value *value, size_t *size);
+/* Payload getters (shim/adapter-facing; safe defaults on kind mismatch —
+ * adapters validate type_id first via madc_value_get_type_id). */
+uint32_t madc_value_get_type_id(const madc_value *value);
+int64_t madc_value_get_integer(const madc_value *value);   /* INT64|BOOL */
+double madc_value_get_real(const madc_value *value);       /* DOUBLE; coerces INT64/BOOL */
+int madc_value_get_bool(const madc_value *value);          /* BOOL|INT64 */
 
 const char *madc_value_kind_name(madc_value_kind kind);
 const char *madc_error_severity_name(madc_error_severity severity);

@@ -1,0 +1,28 @@
+// C-style cast to pointer-to-array: (T (*)[N])expr (task #79).
+// The '(*)' declarator suffix in a cast may be an array declarator, not
+// only a function-pointer parameter list. Oracle: gcc -std=c17 -O0.
+#include <stdio.h>
+#include <string.h>
+
+static char row[3][28] = { "one", "two", "three" };
+static int grid[2][3] = { {1,2,3}, {4,5,6} };
+
+int main()
+{
+	char (*q)[28] = (char (*)[28])row;          /* init position */
+	printf("q1=%s q2=%s\n", q[1], q[2]);
+	printf("len=%lu\n", (unsigned long)strlen(*((char (*)[28])row + 2)));
+	void *vp = row;
+	char (*r)[28];
+	r = (char (*)[28])vp;                        /* assignment position */
+	printf("r0=%s\n", r[0]);
+	int (*g)[3] = (int (*)[3])grid;              /* int element type */
+	printf("g=%d %d\n", g[0][2], g[1][0]);
+	long total = 0;
+	int (*gg)[2][3] = (int (*)[2][3])grid;       /* multi-dim suffix */
+	for ( int i = 0; i < 2; i++ )
+		for ( int j = 0; j < 3; j++ )
+			total += (*gg)[i][j];
+	printf("total=%ld\n", total);
+	return 0;
+}

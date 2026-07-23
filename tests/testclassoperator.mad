@@ -1,0 +1,62 @@
+#!/../bin/madc
+// P1.3a: a user class can declare methods/operators that take or return its
+// OWN (still-being-defined) type. Requires the class self-type to be
+// registered before the member/method body loop. Once parsed, the operator
+// rides the existing class_operator_call dispatch — no new operator codegen.
+#include <iostream>
+using namespace std;
+
+// operator+ returning int: bare member `n` + const-ref self-param `o.n`
+class Counter {
+public:
+    int n;
+    int operator+(const Counter& o) { return n + o.n; }
+};
+
+// operator+ returning the class BY VALUE
+class V {
+public:
+    int x;
+    int y;
+    V operator+(const V& o) {
+        V r;
+        r.x = x + o.x;
+        r.y = y + o.y;
+        return r;
+    }
+};
+
+// by-value self-param method `C add(C o)`
+class C {
+public:
+    int n;
+    int add(C o) { return n + o.n; }
+};
+
+int main()
+{
+    Counter a;
+    Counter b;
+    a.n = 10;
+    b.n = 32;
+    cout << (a + b) << endl;        // 42
+
+    V u;
+    V w;
+    u.x = 1;
+    u.y = 2;
+    w.x = 10;
+    w.y = 20;
+    V c;
+    c = u + w;
+    cout << c.x << endl;            // 11
+    cout << c.y << endl;            // 22
+
+    C p;
+    C q;
+    p.n = 5;
+    q.n = 7;
+    cout << p.add(q) << endl;       // 12
+
+    return 0;
+}

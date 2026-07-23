@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 class Shape {
+public:
 	virtual int area()
 	{
 		return 0;
@@ -14,6 +15,7 @@ class Shape {
 };
 
 class Rect : public Shape {
+public:
 	int w;
 	int h;
 
@@ -35,6 +37,7 @@ class Rect : public Shape {
 };
 
 class Circle : public Shape {
+public:
 	int r;
 
 	Circle(int rr)

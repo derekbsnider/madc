@@ -1,0 +1,1 @@
+structurally JIT-only: --run-frozen re-executes the freeze machinery in-process; no native-executable analogue.

@@ -1,0 +1,27 @@
+#!../bin/madc
+// A std::integral_constant (and any trait derived from it: true_type,
+// is_same<>, etc.) used as a value-initialized temporary `Trait{}` in a
+// constant-expression context converts to its static `value` — the same
+// constant the `Trait::value` form reads. Before this, `static_assert(
+// is_same<int,int>{})` / `true_type{}` threw "Expecting integer constant
+// expression" (only the `::value` form folded). This is the
+// `static_assert(__is_invocable<...>{}, ...)` shape std::map's _Rb_tree::_S_key
+// uses (though __is_invocable's truth value additionally needs __invoke_result).
+#include <type_traits>
+#include <cstdio>
+using namespace std;
+
+int main()
+{
+    // `Trait{}` value-init folds to the trait's `value` in constant context.
+    static_assert(true_type{}, "true_type{} is true");
+    static_assert(is_same<int, int>{}, "is_same<int,int>{} is true");
+    static_assert(is_void<void>{}, "is_void<void>{} is true");
+    static_assert(!is_same<int, char>{}, "is_same<int,char>{} is false");
+
+    // The `::value` form still works alongside it.
+    static_assert(is_same<int, int>::value, "::value still works");
+
+    printf("ok\n");
+    return 0;
+}

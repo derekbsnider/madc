@@ -3,272 +3,6 @@
 #include <string>
 
 static std::map<std::string, std::string> embedded_headers = {
-    {"alloca.h", R"EMBED(// madc embedded alloca.h
-// alloca() allocates on the stack — madc maps it to malloc for now.
-// True stack allocation would need compiler intrinsic support.
-#define alloca(size) malloc(size)
-)EMBED"},
-    {"arpa/inet.h", R"EMBED(// madc embedded arpa/inet.h — IPv4/IPv6 address conversion
-// Functions (inet_addr, inet_aton, inet_ntoa, inet_pton, inet_ntop,
-//            htons, htonl, ntohs, ntohl) available via dlsym fallback
-
-#define INET_ADDRSTRLEN  16
-#define INET6_ADDRSTRLEN 46
-)EMBED"},
-    {"arpa/telnet.h", R"EMBED(// madc embedded arpa/telnet.h — minimal TELNET protocol constants
-// Mirrors the BSD/glibc subset used by typical text-MUD codebases.
-
-#define IAC          255  // interpret as command
-#define DONT         254
-#define DO           253
-#define WONT         252
-#define WILL         251
-#define SB           250  // sub-option begin
-#define GA           249  // go-ahead
-#define EL           248  // erase line
-#define EC           247  // erase character
-#define AYT          246  // are you there
-#define AO           245  // abort output
-#define IP           244  // interrupt process
-#define BREAK        243
-#define DM           242  // data mark
-#define NOP          241
-#define SE           240  // sub-option end
-#define EOR          239  // end of record
-#define ABORT        238
-#define SUSP         237
-#define xEOF         236
-
-#define TELOPT_BINARY     0
-#define TELOPT_ECHO       1
-#define TELOPT_RCP        2
-#define TELOPT_SGA        3
-#define TELOPT_NAMS       4
-#define TELOPT_STATUS     5
-#define TELOPT_TM         6
-#define TELOPT_RCTE       7
-#define TELOPT_NAOL       8
-#define TELOPT_NAOP       9
-#define TELOPT_NAOCRD    10
-#define TELOPT_NAOHTS    11
-#define TELOPT_NAOHTD    12
-#define TELOPT_NAOFFD    13
-#define TELOPT_NAOVTS    14
-#define TELOPT_NAOVTD    15
-#define TELOPT_NAOLFD    16
-#define TELOPT_XASCII    17
-#define TELOPT_LOGOUT    18
-#define TELOPT_BM        19
-#define TELOPT_DET       20
-#define TELOPT_TTYPE     24
-#define TELOPT_NAWS      31
-#define TELOPT_TSPEED    32
-#define TELOPT_LFLOW     33
-#define TELOPT_LINEMODE  34
-#define TELOPT_AUTHENTICATION 37
-#define TELOPT_ENCRYPT   38
-#define TELOPT_NEW_ENVIRON 39
-#define NTELOPTS         40
-#define TELOPT_EXOPL     255
-)EMBED"},
-    {"assert.h", R"EMBED(// madc embedded assert.h — runtime assertions
-
-#ifndef __MADC_ASSERT_H
-#define __MADC_ASSERT_H 1
-
-#load "libc.so.6" as __libc;
-
-#ifdef NDEBUG
-#define assert(expr) ((void)0)
-#else
-#define assert(expr) ((expr) ? (void)0 : abort())
-#endif
-
-#endif
-)EMBED"},
-    {"crypt.h", R"EMBED(// madc embedded crypt.h — POSIX password crypt
-// libcrypt.so isn't part of glibc's RTLD_DEFAULT search, so #load it
-// explicitly. Once loaded with RTLD_GLOBAL, dlsym(RTLD_DEFAULT, "crypt")
-// resolves and the typed extern decl below routes the call through the
-// existing dlsym late-bind path with proper char* return typing.
-
-#load "libcrypt.so" as crypt_lib;
-
-extern char *crypt(char *key, char *salt);
-)EMBED"},
-    {"ctype.h", R"EMBED(// madc embedded ctype.h — character classification and conversion
-// All functions available via dlsym fallback (libc always loaded):
-//   isalnum, isalpha, isblank, iscntrl, isdigit, isgraph,
-//   islower, isprint, ispunct, isspace, isupper, isxdigit,
-//   tolower, toupper, toascii
-)EMBED"},
-    {"dirent.h", R"EMBED(// madc embedded dirent.h — directory entry constants and struct layout.
-// Functions (opendir, readdir, closedir, rewinddir, telldir, seekdir)
-// available via dlsym fallback. DIR * is an opaque glibc type; treat the
-// opendir return value as a void * / int64 handle and pass it verbatim to
-// readdir / closedir.
-
-// `DIR` is the opaque directory-handle type returned by opendir(). glibc
-// exposes it via typedef but the underlying struct is implementation-
-// internal; madc code only holds pointers to it, so a zero-size struct
-// alias is sufficient — `DIR *dp;` parses as `struct __dir_opaque *dp;`.
-typedef struct __dir_opaque DIR;
-
-// d_type values (linux-specific, not portable across Unix — fall back to
-// stat() if a value is DT_UNKNOWN).
-#define DT_UNKNOWN 0
-#define DT_FIFO    1
-#define DT_CHR     2
-#define DT_DIR     4
-#define DT_BLK     6
-#define DT_REG     8
-#define DT_LNK     10
-#define DT_SOCK    12
-#define DT_WHT     14
-
-// glibc x86-64 struct dirent — 280 bytes total (275 active + 5 trailing
-// pad to the 8-byte struct alignment). d_name is declared as char[256]
-// matching NAME_MAX + 1; readdir guarantees a null terminator.
-struct dirent {
-    uint64_t d_ino;      // inode number
-    int64_t  d_off;      // offset to next dirent (opaque — do not interpret)
-    uint16_t d_reclen;   // length of this record
-    uint8_t  d_type;     // DT_* file-type hint (DT_UNKNOWN if not provided)
-    char     d_name[256]; // null-terminated filename
-};
-)EMBED"},
-    {"dlfcn.h", R"EMBED(// madc embedded dlfcn.h — dynamic linking constants
-// Note: dlopen/dlsym/dlclose/dlerror are first-class in madc via #load
-// These constants are for use with explicit dlopen() calls
-
-#define RTLD_LAZY     0x00001
-#define RTLD_NOW      0x00002
-#define RTLD_GLOBAL   0x00100
-#define RTLD_LOCAL    0x00000
-#define RTLD_NOLOAD   0x00004
-#define RTLD_DEEPBIND 0x00008
-#define RTLD_NODELETE 0x01000
-)EMBED"},
-    {"errno.h", R"EMBED(// madc embedded errno.h — POSIX error constants
-// glibc exposes errno via __errno_location(), so mirror the usual macro.
-// Keep the function undeclared here and let madc resolve it through the
-// normal external-call path when the macro expands.
-#define errno (*(__errno_location()))
-
-// Base POSIX errors
-#define EPERM             1
-#define ENOENT            2
-#define ESRCH             3
-#define EINTR             4
-#define EIO               5
-#define ENXIO             6
-#define E2BIG             7
-#define ENOEXEC           8
-#define EBADF             9
-#define ECHILD            10
-#define EAGAIN            11
-#define EWOULDBLOCK       11
-#define ENOMEM            12
-#define EACCES            13
-#define EFAULT            14
-#define EBUSY             16
-#define EEXIST            17
-#define EXDEV             18
-#define ENODEV            19
-#define ENOTDIR           20
-#define EISDIR            21
-#define EINVAL            22
-#define ENFILE            23
-#define EMFILE            24
-#define ENOTTY            25
-#define ETXTBSY           26
-#define EFBIG             27
-#define ENOSPC            28
-#define ESPIPE            29
-#define EROFS             30
-#define EMLINK            31
-#define EPIPE             32
-#define EDOM              33
-#define ERANGE            34
-
-// System V / extended POSIX errors
-#define EDEADLK           35
-#define ENAMETOOLONG      36
-#define ENOLCK            37
-#define ENOSYS            38
-#define ENOTEMPTY         39
-#define ELOOP             40
-#define ENOMSG            42
-#define ENODATA           61
-#define EOVERFLOW         75
-#define EILSEQ            84
-
-// Socket / network errors (Linux x86-64 values)
-#define EUSERS            87
-#define ENOTSOCK          88
-#define EDESTADDRREQ      89
-#define EMSGSIZE          90
-#define EPROTOTYPE        91
-#define ENOPROTOOPT       92
-#define EPROTONOSUPPORT   93
-#define ESOCKTNOSUPPORT   94
-#define EOPNOTSUPP        95
-#define EPFNOSUPPORT      96
-#define EAFNOSUPPORT      97
-#define EADDRINUSE        98
-#define EADDRNOTAVAIL     99
-#define ENETDOWN          100
-#define ENETUNREACH       101
-#define ENETRESET         102
-#define ECONNABORTED      103
-#define ECONNRESET        104
-#define ENOBUFS           105
-#define EISCONN           106
-#define ENOTCONN          107
-#define ESHUTDOWN         108
-#define ETIMEDOUT         110
-#define ECONNREFUSED      111
-#define EHOSTDOWN         112
-#define EHOSTUNREACH      113
-#define EALREADY          114
-#define EINPROGRESS       115
-#define ESTALE            116
-#define EDQUOT            122
-)EMBED"},
-    {"fcntl.h", R"EMBED(// madc embedded fcntl.h — file control constants (Linux x86-64 values)
-// Functions (open, creat, fcntl) available via dlsym fallback
-
-#define O_RDONLY     0
-#define O_WRONLY     1
-#define O_RDWR       2
-#define O_CREAT      64
-#define O_EXCL       128
-#define O_NOCTTY     256
-#define O_TRUNC      512
-#define O_APPEND     1024
-#define O_NONBLOCK   2048
-#define O_NDELAY     2048
-#define O_DSYNC      4096
-#define O_ASYNC      8192
-#define O_DIRECTORY  65536
-#define O_NOFOLLOW   131072
-#define O_SYNC       1052672
-#define O_CLOEXEC    524288
-
-#define F_DUPFD           0
-#define F_GETFD           1
-#define F_SETFD           2
-#define F_GETFL           3
-#define F_SETFL           4
-#define F_GETLK           5
-#define F_SETLK           6
-#define F_SETLKW          7
-#define F_SETOWN          8
-#define F_GETOWN          9
-#define F_DUPFD_CLOEXEC   1030
-
-#define FD_CLOEXEC   1
-)EMBED"},
     {"float.h", R"EMBED(// madc embedded float.h — floating-point characteristics for host x86-64
 
 #ifndef __MADC_FLOAT_H
@@ -316,54 +50,6 @@ struct dirent {
 
 #endif
 )EMBED"},
-    {"fnmatch.h", R"EMBED(// madc embedded fnmatch.h — filename pattern matching
-// Functions (fnmatch) available via dlsym fallback
-
-// fnmatch() flags
-#define FNM_NOESCAPE    0x01
-#define FNM_PATHNAME    0x02
-#define FNM_PERIOD      0x04
-#define FNM_FILE_NAME   0x02
-#define FNM_LEADING_DIR 0x08
-#define FNM_CASEFOLD    0x10
-#define FNM_EXTMATCH    0x20
-
-// fnmatch() return values
-#define FNM_NOMATCH 1
-)EMBED"},
-    {"glob.h", R"EMBED(// madc embedded glob.h — filename expansion
-// Functions (glob, globfree) available via dlsym fallback
-// struct glob_t access deferred
-
-// glob() flags
-#define GLOB_ERR      0x0001
-#define GLOB_MARK     0x0002
-#define GLOB_NOSORT   0x0004
-#define GLOB_DOOFFS   0x0008
-#define GLOB_NOCHECK  0x0010
-#define GLOB_APPEND   0x0020
-#define GLOB_NOESCAPE 0x0040
-#define GLOB_PERIOD   0x0080
-#define GLOB_ALTDIRFUNC 0x0100
-#define GLOB_BRACE    0x0200
-#define GLOB_NOMAGIC  0x0400
-#define GLOB_TILDE    0x0800
-#define GLOB_ONLYDIR  0x1000
-#define GLOB_TILDE_CHECK 0x2000
-
-// glob() return values (success = 0)
-#define GLOB_NOSPACE 1
-#define GLOB_ABORTED 2
-#define GLOB_NOMATCH 3
-)EMBED"},
-    {"grp.h", R"EMBED(// madc embedded grp.h — group database
-// Functions (getgrgid, getgrnam, getgrent, setgrent, endgrent)
-// available via dlsym fallback
-// struct group access deferred
-)EMBED"},
-    {"iostream", R"EMBED(// madc embedded iostream — registers cout, cin, cerr, endl
-// The actual registration is handled by add_iostream() callback
-)EMBED"},
     {"limits.h", R"EMBED(// madc embedded limits.h — integer limit constants
 
 #define CHAR_BIT  8
@@ -387,354 +73,704 @@ struct dirent {
 #define PATH_MAX  4096
 #define NAME_MAX  255
 )EMBED"},
-    {"locale.h", R"EMBED(// madc embedded locale.h — locale constants
-// Functions (setlocale, localeconv) available via dlsym fallback
+    {"ns_js", R"EMBED(extern "C" {
+    std::string *__js_btoa(std::string *, const char *);
+    std::string *__js_atob(std::string *, const char *);
+    std::string *__js_encodeURIComponent(std::string *, const char *);
+    std::string *__js_decodeURIComponent(std::string *, const char *);
+    long __js_parseInt(const char *, long);
+    std::string *__js_stringify(std::string *, array *);
+}
 
-#define LC_ALL       6
-#define LC_COLLATE   3
-#define LC_CTYPE     0
-#define LC_MESSAGES  5
-#define LC_MONETARY  4
-#define LC_NUMERIC   1
-#define LC_TIME      2
+namespace js {
+    std::string &btoa(std::string &result, const char *input) { return *__js_btoa(&result, input); }
+    std::string &atob(std::string &result, const char *input) { return *__js_atob(&result, input); }
+    std::string &encodeURIComponent(std::string &result, const char *input) { return *__js_encodeURIComponent(&result, input); }
+    std::string &decodeURIComponent(std::string &result, const char *input) { return *__js_decodeURIComponent(&result, input); }
+    long parseInt(const char *text, long radix) { return __js_parseInt(text, radix); }
+    std::string &stringify(std::string &result, array &values) { return *__js_stringify(&result, &values); }
+}
 )EMBED"},
-    {"malloc.h", R"EMBED(// madc embedded malloc.h — memory allocation
-// malloc/free/realloc/calloc are already available via dlsym fallback.
-// This stub satisfies #include <malloc.h>.
+    {"ns_js.h", R"EMBED(#ifndef MADC_NS_JS_H
+#define MADC_NS_JS_H
 
-#ifndef __MADC_MALLOC_H
-#define __MADC_MALLOC_H 1
+#ifdef __cplusplus
 
-#include <stdlib.h>
+#include <cstdint>
+#include <string>
+#include "datadef.h"
+
+extern "C" {
+std::string *__js_btoa(std::string *, const char *);
+std::string *__js_atob(std::string *, const char *);
+std::string *__js_encodeURIComponent(std::string *, const char *);
+std::string *__js_decodeURIComponent(std::string *, const char *);
+int64_t __js_parseInt(const char *, int64_t);
+std::string *__js_stringify(std::string *, madc::value *);
+}
+
+namespace js {
+inline std::string &btoa(std::string &result, const char *input) { return *__js_btoa(&result, input); }
+inline std::string &atob(std::string &result, const char *input) { return *__js_atob(&result, input); }
+inline std::string &encodeURIComponent(std::string &result, const char *input) { return *__js_encodeURIComponent(&result, input); }
+inline std::string &decodeURIComponent(std::string &result, const char *input) { return *__js_decodeURIComponent(&result, input); }
+inline int64_t parseInt(const char *text, int64_t radix) { return __js_parseInt(text, radix); }
+inline std::string &stringify(std::string &result, madc::value &values) { return *__js_stringify(&result, &values); }
+}
+
+#endif
 
 #endif
 )EMBED"},
-    {"math.h", R"EMBED(// madc embedded math.h — auto-loads libm and defines math constants
-#load "libm.so.6" as libm;
+    {"ns_madc", R"EMBED(// madc embedded <ns_madc> — script-level runtime eval + expression eval.
+// Declaration-only: the madc:: publics below resolve mangled-direct
+// (Itanium symbols) to the real namespace madc implementations in the
+// host, src/ns_madc.cpp (cpp-first-api.md — script namespace publics are
+// never routed through extern-C wrappers; the C-linkage __madc_*_runtime
+// surface is the API for C hosts only). `array` is the script alias of
+// madc::value, so array& parameters bind to the host madc::value&
+// symbols.
+// Security: the runtime honours the engine's madc_runtime_eval_policy;
+// scope-access variants are gated by the parser's scope-access hooks.
 
-#define M_PI       3.14159265358979323846
-#define M_PI_2     1.57079632679489661923
-#define M_PI_4     0.78539816339744830962
-#define M_E        2.71828182845904523536
-#define M_LOG2E    1.44269504088896340736
-#define M_LOG10E   0.43429448190325182765
-#define M_LN2      0.69314718055994530942
-#define M_LN10     2.30258509299404568402
-#define M_SQRT2    1.41421356237309504880
-#define M_SQRT1_2  0.70710678118654752440
-#define HUGE_VAL   __builtin_huge_val()
-#define INFINITY   __builtin_inf()
+namespace madc {
+    // Full-program eval: the source must define (or be wrapped into)
+    // `__madc_eval()`; the rendered result text lands in `out`.
+    std::string &eval_unit(std::string &out, std::string &source);
+    bool eval_bool(std::string &source);
+    long eval_int(std::string &source);
+    long eval_int(const char *source);
+    double eval_double(std::string &source);
+    std::string &eval_string(std::string &out, std::string &source);
+
+    // Expression eval: a single expression, no function calls unless the
+    // engine's expression policy allows them.
+    bool eval_expression_bool(const char *expr);
+    long eval_expression_int(const char *expr);
+    double eval_expression_double(const char *expr);
+    std::string &eval_expression_string(std::string &out, const char *expr);
+
+    // Typed out-parameter forms (overloaded on the destination). The
+    // string-destination form RENDERS any result type ("42", "4.000000",
+    // "echo"); eval_expression_string above is the strict string-typed
+    // coercion.
+    void eval_expression(long &out, const char *expr);
+    void eval_expression(double &out, const char *expr);
+    void eval_expression(std::string &out, const char *expr);
+
+    // Context-carrying expression forms: `ctx` is a madc array of nested
+    // key/value entries built with the context_set_* helpers below.
+    std::string &eval_expression_ctx(std::string &out, const char *expr, array &ctx);
+    bool eval_expression_bool_ctx(const char *expr, array &ctx);
+    long eval_expression_int_ctx(const char *expr, array &ctx);
+    double eval_expression_double_ctx(const char *expr, array &ctx);
+    std::string &eval_expression_string_ctx(std::string &out, const char *expr, array &ctx);
+    void eval_expression_ctx(long &out, const char *expr, array &ctx);
+    void eval_expression_ctx(double &out, const char *expr, array &ctx);
+
+    // Context-carrying full-eval forms — the rebind targets for call-site
+    // scope capture.
+    std::string &eval_unit_ctx(std::string &out, std::string &source, array &ctx);
+    bool eval_bool_ctx(std::string &source, array &ctx);
+    long eval_int_ctx(std::string &source, array &ctx);
+    long eval_int_ctx(const char *source, array &ctx);
+    double eval_double_ctx(std::string &source, array &ctx);
+    std::string &eval_string_ctx(std::string &out, std::string &source, array &ctx);
+
+    void context_set_int(array &ctx, std::string &key, long value);
+    void context_set_real(array &ctx, std::string &key, double value);
+    void context_set_string(array &ctx, std::string &key, const char *value);
+    void context_set_array(array &ctx, std::string &key, array &value);
+
+    // The system object (Python `sys` convention — include this header
+    // like Python's `import sys`). sys.argv / sys.path are mutable madc
+    // arrays (argv[0] = script path; path mutations steer FUTURE
+    // #load/eval only); platform / version / hostname are immutable
+    // facts (sys.version == MADC_VERSION). The one instance lives in the
+    // host (_ZN4madc3sysE); argv/path fill at main entry via the
+    // injected __madc_sys_init. LAYOUT CONTRACT with
+    // include/libmadc/sysinfo.h — append-only, keep both in sync.
+    struct SysInfo {
+	array argv;
+	array path;
+	const char *const platform;
+	const char *const version;
+	const char *const hostname;
+    };
+    extern SysInfo sys;
+}
 )EMBED"},
-    {"netdb.h", R"EMBED(// madc embedded netdb.h — network database constants
-// Functions (getaddrinfo, freeaddrinfo, gai_strerror, getnameinfo,
-//            gethostbyname, getservbyname, getservbyport, gethostname)
-// available via dlsym fallback
-// struct addrinfo / hostent access deferred
+    {"ns_perl", R"EMBED(extern "C" {
+    long __perl_chop(std::string *);
+    long __perl_chomp(std::string *);
+    void __perl_grep(array *, const char *, array *);
+    void __perl_glob(array *, const char *);
+    long __perl_scalar(array *);
+    void __perl_push(array *, const char *);
+    std::string *__perl_pop(std::string *, array *);
+    std::string *__perl_shift(std::string *, array *);
+    void __perl_unshift(array *, const char *);
+    std::string *__perl_join(std::string *, const char *, array *);
+    void __perl_split(array *, const char *, const char *);
+    std::string *__perl_reverse(std::string *);
+    std::string *__perl_lc(std::string *);
+    std::string *__perl_uc(std::string *);
+    std::string *__perl_ucfirst(std::string *);
+    std::string *__perl_lcfirst(std::string *);
+    long __perl_index(const char *, const char *);
+    long __perl_rindex(const char *, const char *);
+    long __perl_length(const char *);
+    std::string *__perl_substr(std::string *, const char *, long, long);
+}
 
-// getaddrinfo() flags
-#define AI_PASSIVE      0x0001
-#define AI_CANONNAME    0x0002
-#define AI_NUMERICHOST  0x0004
-#define AI_V4MAPPED     0x0008
-#define AI_ALL          0x0010
-#define AI_ADDRCONFIG   0x0020
-#define AI_NUMERICSERV  0x0400
-
-// getnameinfo() flags
-#define NI_NUMERICHOST  1
-#define NI_NUMERICSERV  2
-#define NI_NOFQDN       4
-#define NI_NAMEREQD     8
-#define NI_DGRAM        16
-#define NI_MAXHOST      1025
-#define NI_MAXSERV      32
-
-// getaddrinfo() error codes
-#define EAI_BADFLAGS    -1
-#define EAI_NONAME      -2
-#define EAI_AGAIN       -3
-#define EAI_FAIL        -4
-#define EAI_FAMILY      -6
-#define EAI_SOCKTYPE    -7
-#define EAI_SERVICE     -8
-#define EAI_MEMORY      -10
-#define EAI_SYSTEM      -11
-#define EAI_OVERFLOW    -12
-
-// glibc x86-64 struct hostent — 32 bytes, natural C ABI alignment.
-// Returned by gethostbyname() / gethostbyaddr().
-struct hostent {
-    char  *h_name;          // official name of host
-    char **h_aliases;       // NULL-terminated alias list
-    int    h_addrtype;      // host address type (AF_INET / AF_INET6)
-    int    h_length;        // length of address (4 for v4, 16 for v6)
-    char **h_addr_list;     // NULL-terminated array of pointers to addresses
-};
-#define h_addr h_addr_list[0]   // legacy single-address alias
-
-// glibc x86-64 struct servent — 32 bytes, natural C ABI alignment.
-// Returned by getservbyname() / getservbyport(). s_port holds the port
-// in network byte order — use ntohs() to get a host-order integer.
-// s_aliases is a NULL-terminated array of alternate service names.
-// s_proto is typically "tcp" or "udp".
-struct servent {
-    char  *s_name;      // official service name
-    char **s_aliases;   // NULL-terminated list of aliases
-    int    s_port;      // port number (network byte order)
-    char  *s_proto;     // protocol name
-};
+namespace perl {
+    long chop(std::string &s) { return __perl_chop(&s); }
+    long chomp(std::string &s) { return __perl_chomp(&s); }
+    void grep(array &dest, const char *needle, array &src) { __perl_grep(&dest, needle, &src); }
+    void glob(array &out, const char *pattern) { __perl_glob(&out, pattern); }
+    long scalar(array &values) { return __perl_scalar(&values); }
+    void push(array &values, const char *text) { __perl_push(&values, text); }
+    std::string &pop(std::string &result, array &values) { return *__perl_pop(&result, &values); }
+    std::string &shift(std::string &result, array &values) { return *__perl_shift(&result, &values); }
+    void unshift(array &values, const char *text) { __perl_unshift(&values, text); }
+    std::string &join(std::string &result, const char *separator, array &values) { return *__perl_join(&result, separator, &values); }
+    void split(array &out, const char *pattern, const char *text) { __perl_split(&out, pattern, text); }
+    std::string &reverse(std::string &s) { return *__perl_reverse(&s); }
+    std::string &lc(std::string &s) { return *__perl_lc(&s); }
+    std::string &uc(std::string &s) { return *__perl_uc(&s); }
+    std::string &ucfirst(std::string &s) { return *__perl_ucfirst(&s); }
+    std::string &lcfirst(std::string &s) { return *__perl_lcfirst(&s); }
+    long index(const char *haystack, const char *needle) { return __perl_index(haystack, needle); }
+    long rindex(const char *haystack, const char *needle) { return __perl_rindex(haystack, needle); }
+    long length(const char *text) { return __perl_length(text); }
+    std::string &substr(std::string &result, const char *text, long offset, long length) { return *__perl_substr(&result, text, offset, length); }
+}
 )EMBED"},
-    {"netinet/in.h", R"EMBED(// madc embedded netinet/in.h — IP protocol constants and struct layouts.
-// Functions (htons, htonl, ntohs, ntohl, inet_addr, inet_ntoa) available
-// via dlsym fallback.
+    {"ns_perl.h", R"EMBED(#ifndef MADC_NS_PERL_H
+#define MADC_NS_PERL_H
 
-// IP protocols
-#define IPPROTO_IP      0
-#define IPPROTO_ICMP    1
-#define IPPROTO_TCP     6
-#define IPPROTO_UDP     17
-#define IPPROTO_IPV6    41
-#define IPPROTO_RAW     255
+#ifdef __cplusplus
 
-// Special IPv4 addresses (network byte order — use htonl() at runtime)
-#define INADDR_ANY       0x00000000
-#define INADDR_BROADCAST 0xffffffff
-#define INADDR_LOOPBACK  0x7f000001
-#define INADDR_NONE      0xffffffff
+#include <cstdint>
+#include <string>
+#include "datadef.h"
 
-// IPv6 address length
-#define IN6ADDR_ANY_INIT 0
+extern "C" {
+int64_t __perl_chop(std::string *);
+int64_t __perl_chomp(std::string *);
+void __perl_grep(madc::value *, const char *, madc::value *);
+void __perl_glob(madc::value *, const char *);
+int64_t __perl_scalar(madc::value *);
+void __perl_push(madc::value *, const char *);
+std::string *__perl_pop(std::string *, madc::value *);
+std::string *__perl_shift(std::string *, madc::value *);
+void __perl_unshift(madc::value *, const char *);
+std::string *__perl_join(std::string *, const char *, madc::value *);
+void __perl_split(madc::value *, const char *, const char *);
+std::string *__perl_reverse(std::string *);
+std::string *__perl_lc(std::string *);
+std::string *__perl_uc(std::string *);
+std::string *__perl_ucfirst(std::string *);
+std::string *__perl_lcfirst(std::string *);
+int64_t __perl_index(const char *, const char *);
+int64_t __perl_rindex(const char *, const char *);
+int64_t __perl_length(const char *);
+std::string *__perl_substr(std::string *, const char *, int64_t, int64_t);
+}
 
-// Port range
-#define IPPORT_RESERVED 1024
+namespace perl {
+inline int64_t chop(std::string &s) { return __perl_chop(&s); }
+inline int64_t chomp(std::string &s) { return __perl_chomp(&s); }
+inline void grep(madc::value &dest, const char *needle, madc::value &src) { __perl_grep(&dest, needle, &src); }
+inline void glob(madc::value &out, const char *pattern) { __perl_glob(&out, pattern); }
+inline int64_t scalar(madc::value &values) { return __perl_scalar(&values); }
+inline void push(madc::value &values, const char *text) { __perl_push(&values, text); }
+inline std::string &pop(std::string &result, madc::value &values) { return *__perl_pop(&result, &values); }
+inline std::string &shift(std::string &result, madc::value &values) { return *__perl_shift(&result, &values); }
+inline void unshift(madc::value &values, const char *text) { __perl_unshift(&values, text); }
+inline std::string &join(std::string &result, const char *separator, madc::value &values) { return *__perl_join(&result, separator, &values); }
+inline void split(madc::value &out, const char *pattern, const char *text) { __perl_split(&out, pattern, text); }
+inline std::string &reverse(std::string &s) { return *__perl_reverse(&s); }
+inline std::string &lc(std::string &s) { return *__perl_lc(&s); }
+inline std::string &uc(std::string &s) { return *__perl_uc(&s); }
+inline std::string &ucfirst(std::string &s) { return *__perl_ucfirst(&s); }
+inline std::string &lcfirst(std::string &s) { return *__perl_lcfirst(&s); }
+inline int64_t index(const char *haystack, const char *needle) { return __perl_index(haystack, needle); }
+inline int64_t rindex(const char *haystack, const char *needle) { return __perl_rindex(haystack, needle); }
+inline int64_t length(const char *text) { return __perl_length(text); }
+inline std::string &substr(std::string &result, const char *text, int64_t offset, int64_t length) { return *__perl_substr(&result, text, offset, length); }
+}
 
-// TCP socket options (for setsockopt with IPPROTO_TCP)
-#define TCP_NODELAY     1
-#define TCP_MAXSEG      2
-#define TCP_KEEPIDLE    4
-#define TCP_KEEPINTVL   5
-#define TCP_KEEPCNT     6
-
-// POSIX type aliases for network-order field widths.
-#define sa_family_t uint16_t
-#define in_port_t   uint16_t
-#define in_addr_t   uint32_t
-#define socklen_t   uint32_t
-
-// glibc x86-64 struct in_addr — 4 bytes: a single uint32 in network order.
-struct in_addr {
-    uint32_t s_addr;
-};
-
-// glibc x86-64 struct sockaddr_in — 16 bytes, natural C ABI alignment.
-// sin_addr occupies 4 bytes starting at offset 4; sin_zero is the 8-byte
-// padding that makes sockaddr_in and sockaddr (BSD base) the same size for
-// the traditional bind()/connect() cast trick.
-struct sockaddr_in {
-    uint16_t sin_family;    // AF_INET
-    uint16_t sin_port;      // network byte order — use htons()
-    struct in_addr sin_addr;
-    int64_t  sin_zero;      // glibc declares as char[8]; same 8-byte padding
-};
-)EMBED"},
-    {"netinet/in_systm.h", R"EMBED(// madc embedded netinet/in_systm.h — Internet system types
-// Historical BSD networking compatibility header. Most code only
-// needs the n_* type aliases.
-
-#define n_short  int16_t
-#define n_long   int32_t
-#define n_time   int32_t
-)EMBED"},
-    {"netinet/ip.h", R"EMBED(// madc embedded netinet/ip.h — minimal IP header stub
-// Most user code that includes this just expects the protocol
-// constants; the struct ip layout is only needed by raw-socket code.
-// Pull in netinet/in.h for the protocol numbers.
-
-#include <netinet/in.h>
-)EMBED"},
-    {"poll.h", R"EMBED(// madc embedded poll.h — poll() I/O multiplexing
-// Functions (poll, ppoll) available via dlsym fallback
-// struct pollfd access deferred (requires struct interop)
-
-// Events to poll for (events / revents bitmask)
-#define POLLIN   0x001
-#define POLLPRI  0x002
-#define POLLOUT  0x004
-#define POLLERR  0x008
-#define POLLHUP  0x010
-#define POLLNVAL 0x020
-#define POLLRDHUP 0x2000
-)EMBED"},
-    {"pthread.h", R"EMBED(// madc embedded pthread.h — POSIX threads
-// On Linux (glibc 2.34+) pthread functions are in libc — dlsym fallback works.
-// On older systems, use: #load "libpthread.so.0" as pthread;
-// Functions: pthread_create, pthread_join, pthread_detach, pthread_self,
-//            pthread_exit, pthread_cancel, pthread_equal,
-//            pthread_mutex_init, pthread_mutex_lock, pthread_mutex_trylock,
-//            pthread_mutex_unlock, pthread_mutex_destroy,
-//            pthread_cond_init, pthread_cond_wait, pthread_cond_signal,
-//            pthread_cond_broadcast, pthread_cond_destroy,
-//            pthread_attr_init, pthread_attr_destroy,
-//            pthread_attr_setdetachstate, pthread_attr_getstacksize,
-//            pthread_rwlock_init, pthread_rwlock_rdlock,
-//            pthread_rwlock_wrlock, pthread_rwlock_unlock,
-//            pthread_rwlock_destroy
-// struct pthread_mutex_t / pthread_cond_t / pthread_attr_t deferred
-
-// Thread creation attributes
-#define PTHREAD_CREATE_JOINABLE  0
-#define PTHREAD_CREATE_DETACHED  1
-
-// Mutex type attributes
-#define PTHREAD_MUTEX_TIMED_NP     0
-#define PTHREAD_MUTEX_DEFAULT      0
-#define PTHREAD_MUTEX_RECURSIVE    1
-#define PTHREAD_MUTEX_ERRORCHECK   2
-#define PTHREAD_MUTEX_ADAPTIVE_NP  3
-
-// Process sharing
-#define PTHREAD_PROCESS_PRIVATE 0
-#define PTHREAD_PROCESS_SHARED  1
-
-// Cancellation
-#define PTHREAD_CANCEL_ENABLE   0
-#define PTHREAD_CANCEL_DISABLE  1
-#define PTHREAD_CANCEL_DEFERRED 0
-#define PTHREAD_CANCEL_ASYNCHRONOUS 1
-#define PTHREAD_CANCELED ((int64_t)-1)
-
-// Scope
-#define PTHREAD_SCOPE_SYSTEM  0
-#define PTHREAD_SCOPE_PROCESS 1
-
-// pthread_t type alias
-#define pthread_t int64_t
-)EMBED"},
-    {"pwd.h", R"EMBED(// madc embedded pwd.h — password database
-// Functions (getpwuid, getpwnam, getpwent, setpwent, endpwent, getlogin)
-// available via dlsym fallback
-
-#ifndef _PWD_H
-#define _PWD_H 1
-
-typedef unsigned int __uid_t;
-typedef unsigned int __gid_t;
-
-struct passwd
-{
-  char *pw_name;
-  char *pw_passwd;
-  __uid_t pw_uid;
-  __gid_t pw_gid;
-  char *pw_gecos;
-  char *pw_dir;
-  char *pw_shell;
-};
+#endif
 
 #endif
 )EMBED"},
-    {"regex.h", R"EMBED(#ifndef __MADC_REGEX_H
-#define __MADC_REGEX_H 1
+    {"ns_php", R"EMBED(extern "C" {
+    std::string *__php_trim(std::string *);
+    std::string *__php_ltrim(std::string *);
+    std::string *__php_rtrim(std::string *);
+    std::string *__php_chop(std::string *);
+    std::string *__php_ucfirst(std::string *);
+    std::string *__php_lcfirst(std::string *);
+    std::string *__php_str_repeat(std::string *, long);
+    std::string *__php_str_replace(std::string *, std::string *, std::string *);
+    std::string *__php_str_pad(std::string *, long, std::string *);
+    long __php_str_word_count(std::string *);
+    std::string *__php_nl2br(std::string *);
+    std::string *__php_str_rot13(std::string *);
+    std::string *__php_chunk_split(std::string *, long, std::string *);
+    std::string *__php_number_format(std::string *, long, std::string *);
+    std::string *__php_wordwrap(std::string *, long, std::string *);
 
-#include <sys/types.h>
+    void __php_explode(array *, const char *, const char *);
+    std::string *__php_implode(std::string *, const char *, array *);
+    long __php_count(array *);
+    void __php_array_push(array *, const char *);
+    void __php_array_push_int(array *, long);
+    void __php_array_push_array(array *, array *);
+    std::string *__php_array_pop(std::string *, array *);
+    std::string *__php_array_get(std::string *, array *, long);
+    long __php_array_get_int(array *, long);
+    const char *__php_array_get_cstr(array *, long);
+    void __php_array_reverse(array *);
+    long __php_in_array(const char *, array *);
+    long __php_array_search(const char *, array *);
+    void __php_array_unique(array *);
+    std::string *__php_array_shift(std::string *, array *);
+    void __php_array_unshift(array *, const char *);
+    void __php_sort(array *);
+    void __php_rsort(array *);
+    void __php_array_slice(array *, array *, long, long);
+    void __php_array_merge(array *, array *);
+    void __php_array_column(array *, array *, long);
+}
 
-/*
- * Minimal POSIX regex declarations for source compatibility.
- * Extend this if upstream code starts using regex_t/regcomp/regexec directly.
- */
+namespace php {
+    std::string &trim(std::string &s);
+    std::string &ltrim(std::string &s);
+    std::string &rtrim(std::string &s);
+    std::string &chop(std::string &s);
+    std::string &ucfirst(std::string &s);
+    std::string &lcfirst(std::string &s);
+    std::string &str_repeat(std::string &s, long count);
+    std::string &str_replace(std::string &search, std::string &replace, std::string &subject);
+    std::string &str_pad(std::string &s, long length, std::string &pad);
+    long str_word_count(std::string &s);
+    std::string &nl2br(std::string &s);
+    std::string &str_rot13(std::string &s);
+    std::string &chunk_split(std::string &s, long chunklen, std::string &separator);
+    std::string &number_format(std::string &result, long number, std::string &separator);
+    std::string &wordwrap(std::string &s, long width, std::string &separator);
 
-typedef long regoff_t;
+    void explode(array &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
+    std::string &implode(std::string &result, const char *glue, array &values) { return *__php_implode(&result, glue, &values); }
+    long count(array &values) { return __php_count(&values); }
+    void array_push(array &values, const char *text) { __php_array_push(&values, text); }
+    void array_push_int(array &values, long value) { __php_array_push_int(&values, value); }
+    void array_push_array(array &values, array &nested) { __php_array_push_array(&values, &nested); }
+    std::string &array_pop(std::string &result, array &values) { return *__php_array_pop(&result, &values); }
+    std::string &array_get(std::string &result, array &values, long index) { return *__php_array_get(&result, &values, index); }
+    long array_get_int(array &values, long index) { return __php_array_get_int(&values, index); }
+    const char *array_get_cstr(array &values, long index) { return __php_array_get_cstr(&values, index); }
+    void array_reverse(array &values) { __php_array_reverse(&values); }
+    long in_array(const char *needle, array &values) { return __php_in_array(needle, &values); }
+    long array_search(const char *needle, array &values) { return __php_array_search(needle, &values); }
+    void array_unique(array &values) { __php_array_unique(&values); }
+    std::string &array_shift(std::string &result, array &values) { return *__php_array_shift(&result, &values); }
+    void array_unshift(array &values, const char *text) { __php_array_unshift(&values, text); }
+    void sort(array &values) { __php_sort(&values); }
+    void rsort(array &values) { __php_rsort(&values); }
+    void array_slice(array &dest, array &src, long offset, long length) { __php_array_slice(&dest, &src, offset, length); }
+    void array_merge(array &dest, array &src) { __php_array_merge(&dest, &src); }
+    void array_column(array &dest, array &src, long column_index) { __php_array_column(&dest, &src, column_index); }
+}
+)EMBED"},
+    {"ns_php.h", R"EMBED(#ifndef MADC_NS_PHP_H
+#define MADC_NS_PHP_H
 
-typedef struct
-{
-    regoff_t rm_so;
-    regoff_t rm_eo;
-} regmatch_t;
+#ifdef __cplusplus
 
-typedef struct
-{
-    void *buffer;
-    size_t allocated;
-    size_t used;
-    uint32_t re_nsub;
-} regex_t;
+#include <cstdint>
+#include <string>
+#include "datadef.h"
 
-#define REG_EXTENDED 1
-#define REG_ICASE 2
-#define REG_NOSUB 4
-#define REG_NEWLINE 8
+extern "C" {
+std::string *__php_trim(std::string *);
+std::string *__php_ltrim(std::string *);
+std::string *__php_rtrim(std::string *);
+std::string *__php_chop(std::string *);
+std::string *__php_ucfirst(std::string *);
+std::string *__php_lcfirst(std::string *);
+std::string *__php_str_repeat(std::string *, int64_t);
+std::string *__php_str_replace(std::string *, std::string *, std::string *);
+std::string *__php_str_pad(std::string *, int64_t, std::string *);
+int64_t __php_str_word_count(std::string *);
+std::string *__php_nl2br(std::string *);
+std::string *__php_str_rot13(std::string *);
+std::string *__php_chunk_split(std::string *, int64_t, std::string *);
+std::string *__php_number_format(std::string *, int64_t, std::string *);
+std::string *__php_wordwrap(std::string *, int64_t, std::string *);
+void __php_explode(madc::value *, const char *, const char *);
+std::string *__php_implode(std::string *, const char *, madc::value *);
+int64_t __php_count(madc::value *);
+void __php_array_push(madc::value *, const char *);
+void __php_array_push_int(madc::value *, int64_t);
+void __php_array_push_array(madc::value *, madc::value *);
+std::string *__php_array_pop(std::string *, madc::value *);
+std::string *__php_array_get(std::string *, madc::value *, int64_t);
+int64_t __php_array_get_int(madc::value *, int64_t);
+const char *__php_array_get_cstr(madc::value *, int64_t);
+void __php_array_reverse(madc::value *);
+int64_t __php_in_array(const char *, madc::value *);
+int64_t __php_array_search(const char *, madc::value *);
+void __php_array_unique(madc::value *);
+std::string *__php_array_shift(std::string *, madc::value *);
+void __php_array_unshift(madc::value *, const char *);
+void __php_sort(madc::value *);
+void __php_rsort(madc::value *);
+void __php_array_slice(madc::value *, madc::value *, int64_t, int64_t);
+void __php_array_merge(madc::value *, madc::value *);
+void __php_array_column(madc::value *, madc::value *, int64_t);
+}
 
-#define REG_NOTBOL 1
-#define REG_NOTEOL 2
+namespace php {
+inline std::string &trim(std::string &s) { return *__php_trim(&s); }
+inline std::string &ltrim(std::string &s) { return *__php_ltrim(&s); }
+inline std::string &rtrim(std::string &s) { return *__php_rtrim(&s); }
+inline std::string &chop(std::string &s) { return *__php_chop(&s); }
+inline std::string &ucfirst(std::string &s) { return *__php_ucfirst(&s); }
+inline std::string &lcfirst(std::string &s) { return *__php_lcfirst(&s); }
+inline std::string &str_repeat(std::string &s, int64_t count) { return *__php_str_repeat(&s, count); }
+inline std::string &str_replace(std::string &search, std::string &replace, std::string &subject) { return *__php_str_replace(&search, &replace, &subject); }
+inline std::string &str_pad(std::string &s, int64_t length, std::string &pad) { return *__php_str_pad(&s, length, &pad); }
+inline int64_t str_word_count(std::string &s) { return __php_str_word_count(&s); }
+inline std::string &nl2br(std::string &s) { return *__php_nl2br(&s); }
+inline std::string &str_rot13(std::string &s) { return *__php_str_rot13(&s); }
+inline std::string &chunk_split(std::string &s, int64_t chunklen, std::string &separator) { return *__php_chunk_split(&s, chunklen, &separator); }
+inline std::string &number_format(std::string &result, int64_t number, std::string &separator) { return *__php_number_format(&result, number, &separator); }
+inline std::string &wordwrap(std::string &s, int64_t width, std::string &separator) { return *__php_wordwrap(&s, width, &separator); }
+inline void explode(madc::value &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
+inline std::string &implode(std::string &result, const char *glue, madc::value &values) { return *__php_implode(&result, glue, &values); }
+inline int64_t count(madc::value &values) { return __php_count(&values); }
+inline void array_push(madc::value &values, const char *text) { __php_array_push(&values, text); }
+inline void array_push_int(madc::value &values, int64_t value) { __php_array_push_int(&values, value); }
+inline void array_push_array(madc::value &values, madc::value &nested) { __php_array_push_array(&values, &nested); }
+inline std::string &array_pop(std::string &result, madc::value &values) { return *__php_array_pop(&result, &values); }
+inline std::string &array_get(std::string &result, madc::value &values, int64_t index) { return *__php_array_get(&result, &values, index); }
+inline int64_t array_get_int(madc::value &values, int64_t index) { return __php_array_get_int(&values, index); }
+inline const char *array_get_cstr(madc::value &values, int64_t index) { return __php_array_get_cstr(&values, index); }
+inline void array_reverse(madc::value &values) { __php_array_reverse(&values); }
+inline int64_t in_array(const char *needle, madc::value &values) { return __php_in_array(needle, &values); }
+inline int64_t array_search(const char *needle, madc::value &values) { return __php_array_search(needle, &values); }
+inline void array_unique(madc::value &values) { __php_array_unique(&values); }
+inline std::string &array_shift(std::string &result, madc::value &values) { return *__php_array_shift(&result, &values); }
+inline void array_unshift(madc::value &values, const char *text) { __php_array_unshift(&values, text); }
+inline void sort(madc::value &values) { __php_sort(&values); }
+inline void rsort(madc::value &values) { __php_rsort(&values); }
+inline void array_slice(madc::value &dest, madc::value &src, int64_t offset, int64_t length) { __php_array_slice(&dest, &src, offset, length); }
+inline void array_merge(madc::value &dest, madc::value &src) { __php_array_merge(&dest, &src); }
+inline void array_column(madc::value &dest, madc::value &src, int64_t column_index) { __php_array_column(&dest, &src, column_index); }
+}
 
-#define REG_NOERROR 0
-#define REG_NOMATCH 1
-
-int regcomp(regex_t *preg, const char *pattern, int cflags);
-int regexec(const regex_t *preg, const char *string, size_t nmatch, regmatch_t pmatch[], int eflags);
-size_t regerror(int errcode, const regex_t *preg, char *errbuf, size_t errbuf_size);
-void regfree(regex_t *preg);
+#endif
 
 #endif
 )EMBED"},
-    {"resolv.h", R"EMBED(// madc embedded resolv.h — DNS resolver
-// b64_ntop / b64_pton and resolver functions available via dlsym.
+    {"ns_python", R"EMBED(extern "C" {
+    std::string *__py_title(std::string *);
+    std::string *__py_swapcase(std::string *);
+    std::string *__py_center(std::string *, long, const char *);
+    std::string *__py_ljust(std::string *, long, const char *);
+    std::string *__py_rjust(std::string *, long, const char *);
+    std::string *__py_zfill(std::string *, long);
+    long __py_count(const char *, const char *);
+    long __py_startswith(const char *, const char *);
+    long __py_endswith(const char *, const char *);
+    long __py_isdigit(const char *);
+    long __py_isalpha(const char *);
+    long __py_isalnum(const char *);
+    long __py_isspace(const char *);
+    std::string *__py_replace(std::string *, const char *, const char *);
+    std::string *__py_format(std::string *, const char *, array *);
+}
 
-#ifndef __MADC_RESOLV_H
-#define __MADC_RESOLV_H 1
+namespace python {
+    std::string &title(std::string &s) { return *__py_title(&s); }
+    std::string &swapcase(std::string &s) { return *__py_swapcase(&s); }
+    std::string &center(std::string &s, long width, const char *fill) { return *__py_center(&s, width, fill); }
+    std::string &ljust(std::string &s, long width, const char *fill) { return *__py_ljust(&s, width, fill); }
+    std::string &rjust(std::string &s, long width, const char *fill) { return *__py_rjust(&s, width, fill); }
+    std::string &zfill(std::string &s, long width) { return *__py_zfill(&s, width); }
+    long count(const char *haystack, const char *needle) { return __py_count(haystack, needle); }
+    long startswith(const char *text, const char *prefix) { return __py_startswith(text, prefix); }
+    long endswith(const char *text, const char *suffix) { return __py_endswith(text, suffix); }
+    long isdigit(const char *text) { return __py_isdigit(text); }
+    long isalpha(const char *text) { return __py_isalpha(text); }
+    long isalnum(const char *text) { return __py_isalnum(text); }
+    long isspace(const char *text) { return __py_isspace(text); }
+    std::string &replace(std::string &s, const char *old_text, const char *new_text) { return *__py_replace(&s, old_text, new_text); }
+    std::string &format(std::string &result, const char *fmt, array &args) { return *__py_format(&result, fmt, &args); }
+}
+)EMBED"},
+    {"ns_python.h", R"EMBED(#ifndef MADC_NS_PYTHON_H
+#define MADC_NS_PYTHON_H
 
-#include <sys/types.h>
+#ifdef __cplusplus
 
-extern int b64_ntop(const unsigned char *src, int srclength,
-                    char *target, int targsize);
-extern int b64_pton(const char *src, unsigned char *target, int targsize);
+#include <cstdint>
+#include <string>
+#include "datadef.h"
+
+extern "C" {
+std::string *__py_title(std::string *);
+std::string *__py_swapcase(std::string *);
+std::string *__py_center(std::string *, int64_t, const char *);
+std::string *__py_ljust(std::string *, int64_t, const char *);
+std::string *__py_rjust(std::string *, int64_t, const char *);
+std::string *__py_zfill(std::string *, int64_t);
+int64_t __py_count(const char *, const char *);
+int64_t __py_startswith(const char *, const char *);
+int64_t __py_endswith(const char *, const char *);
+int64_t __py_isdigit(const char *);
+int64_t __py_isalpha(const char *);
+int64_t __py_isalnum(const char *);
+int64_t __py_isspace(const char *);
+std::string *__py_replace(std::string *, const char *, const char *);
+std::string *__py_format(std::string *, const char *, madc::value *);
+}
+
+namespace python {
+inline std::string &title(std::string &s) { return *__py_title(&s); }
+inline std::string &swapcase(std::string &s) { return *__py_swapcase(&s); }
+inline std::string &center(std::string &s, int64_t width, const char *fill) { return *__py_center(&s, width, fill); }
+inline std::string &ljust(std::string &s, int64_t width, const char *fill) { return *__py_ljust(&s, width, fill); }
+inline std::string &rjust(std::string &s, int64_t width, const char *fill) { return *__py_rjust(&s, width, fill); }
+inline std::string &zfill(std::string &s, int64_t width) { return *__py_zfill(&s, width); }
+inline int64_t count(const char *haystack, const char *needle) { return __py_count(haystack, needle); }
+inline int64_t startswith(const char *text, const char *prefix) { return __py_startswith(text, prefix); }
+inline int64_t endswith(const char *text, const char *suffix) { return __py_endswith(text, suffix); }
+inline int64_t isdigit(const char *text) { return __py_isdigit(text); }
+inline int64_t isalpha(const char *text) { return __py_isalpha(text); }
+inline int64_t isalnum(const char *text) { return __py_isalnum(text); }
+inline int64_t isspace(const char *text) { return __py_isspace(text); }
+inline std::string &replace(std::string &s, const char *old_text, const char *new_text) { return *__py_replace(&s, old_text, new_text); }
+inline std::string &format(std::string &result, const char *fmt, madc::value &args) { return *__py_format(&result, fmt, &args); }
+}
+
+#endif
 
 #endif
 )EMBED"},
-    {"signal.h", R"EMBED(// madc embedded signal.h — POSIX signal constants (Linux values)
-// Functions (kill, signal, raise, sigaction) available via dlsym fallback
+    {"ns_ruby", R"EMBED(extern "C" {
+    std::string *__rb_squeeze(std::string *);
+    std::string *__rb_tr(std::string *, const char *, const char *);
+    void __rb_chars(array *, const char *);
+    std::string *__rb_capitalize(std::string *);
+    std::string *__rb_delete(std::string *, const char *);
+    long __rb_count(const char *, const char *);
+    long __rb_include(const char *, const char *);
+    std::string *__rb_gsub(std::string *, const char *, const char *);
+    std::string *__rb_sub(std::string *, const char *, const char *);
+    void __rb_rotate(array *, long);
+    void __rb_compact(array *);
+    void __rb_flatten(array *, const char *);
+}
 
-#define SIGHUP  1
-#define SIGINT  2
-#define SIGQUIT 3
-#define SIGILL  4
-#define SIGTRAP 5
-#define SIGABRT 6
-#define SIGBUS  7
-#define SIGFPE  8
-#define SIGKILL 9
-#define SIGUSR1 10
-#define SIGSEGV 11
-#define SIGUSR2 12
-#define SIGPIPE 13
-#define SIGALRM 14
-#define SIGTERM 15
-#define SIGCHLD 17
-#define SIGCONT 18
-#define SIGSTOP 19
-#define SIGTSTP 20
+namespace ruby {
+    std::string &squeeze(std::string &s) { return *__rb_squeeze(&s); }
+    std::string &tr(std::string &s, const char *from, const char *to) { return *__rb_tr(&s, from, to); }
+    void chars(array &out, const char *text) { __rb_chars(&out, text); }
+    std::string &capitalize(std::string &s) { return *__rb_capitalize(&s); }
+    std::string &delete(std::string &s, const char *chars) { return *__rb_delete(&s, chars); }
+    long count(const char *text, const char *chars) { return __rb_count(text, chars); }
+    long include(const char *text, const char *substr) { return __rb_include(text, substr); }
+    std::string &gsub(std::string &s, const char *pattern, const char *replacement) { return *__rb_gsub(&s, pattern, replacement); }
+    std::string &sub(std::string &s, const char *pattern, const char *replacement) { return *__rb_sub(&s, pattern, replacement); }
+    void rotate(array &values, long n) { __rb_rotate(&values, n); }
+    void compact(array &values) { __rb_compact(&values); }
+    void flatten(array &values, const char *text) { __rb_flatten(&values, text); }
+}
+)EMBED"},
+    {"ns_ruby.h", R"EMBED(#ifndef MADC_NS_RUBY_H
+#define MADC_NS_RUBY_H
 
-// Signal dispositions (passed as handler arg to signal())
-#define SIG_DFL 0
-#define SIG_IGN 1
+#ifdef __cplusplus
+
+#include <cstdint>
+#include <string>
+#include "datadef.h"
+
+extern "C" {
+std::string *__rb_squeeze(std::string *);
+std::string *__rb_tr(std::string *, const char *, const char *);
+void __rb_chars(madc::value *, const char *);
+std::string *__rb_capitalize(std::string *);
+std::string *__rb_delete(std::string *, const char *);
+int64_t __rb_count(const char *, const char *);
+int64_t __rb_include(const char *, const char *);
+std::string *__rb_gsub(std::string *, const char *, const char *);
+std::string *__rb_sub(std::string *, const char *, const char *);
+void __rb_rotate(madc::value *, int64_t);
+void __rb_compact(madc::value *);
+void __rb_flatten(madc::value *, const char *);
+}
+
+namespace ruby {
+inline std::string &squeeze(std::string &s) { return *__rb_squeeze(&s); }
+inline std::string &tr(std::string &s, const char *from, const char *to) { return *__rb_tr(&s, from, to); }
+inline void chars(madc::value &out, const char *text) { __rb_chars(&out, text); }
+inline std::string &capitalize(std::string &s) { return *__rb_capitalize(&s); }
+inline std::string &delete_chars(std::string &s, const char *chars) { return *__rb_delete(&s, chars); }
+inline int64_t count(const char *text, const char *chars) { return __rb_count(text, chars); }
+inline int64_t include(const char *text, const char *substr) { return __rb_include(text, substr); }
+inline std::string &gsub(std::string &s, const char *pattern, const char *replacement) { return *__rb_gsub(&s, pattern, replacement); }
+inline std::string &sub(std::string &s, const char *pattern, const char *replacement) { return *__rb_sub(&s, pattern, replacement); }
+inline void rotate(madc::value &values, int64_t n) { __rb_rotate(&values, n); }
+inline void compact(madc::value &values) { __rb_compact(&values); }
+inline void flatten(madc::value &values, const char *text) { __rb_flatten(&values, text); }
+}
+
+#endif
+
+#endif
+)EMBED"},
+    {"ns_rust", R"EMBED(extern "C" {
+    long __rust_contains(const char *, const char *);
+    long __rust_starts_with(const char *, const char *);
+    long __rust_ends_with(const char *, const char *);
+    std::string *__rust_trim(std::string *);
+    std::string *__rust_trim_start(std::string *);
+    std::string *__rust_trim_end(std::string *);
+    std::string *__rust_replace(std::string *, const char *, const char *);
+    std::string *__rust_repeat(std::string *, long);
+    long __rust_len(const char *);
+    long __rust_is_empty(const char *);
+    void __rust_split(array *, const char *, const char *);
+    void __rust_split_whitespace(array *, const char *);
+    std::string *__rust_join(std::string *, array *, const char *);
+    std::string *__rust_first(std::string *, array *);
+    std::string *__rust_last(std::string *, array *);
+    std::string *__rust_get(std::string *, array *, long);
+    void __rust_push(array *, const char *);
+    std::string *__rust_pop(std::string *, array *);
+}
+
+namespace rust {
+    long contains(const char *text, const char *needle) { return __rust_contains(text, needle); }
+    long starts_with(const char *text, const char *prefix) { return __rust_starts_with(text, prefix); }
+    long ends_with(const char *text, const char *suffix) { return __rust_ends_with(text, suffix); }
+    std::string &trim(std::string &s) { return *__rust_trim(&s); }
+    std::string &trim_start(std::string &s) { return *__rust_trim_start(&s); }
+    std::string &trim_end(std::string &s) { return *__rust_trim_end(&s); }
+    std::string &replace(std::string &s, const char *from, const char *to) { return *__rust_replace(&s, from, to); }
+    std::string &repeat(std::string &s, long count) { return *__rust_repeat(&s, count); }
+    long len(const char *text) { return __rust_len(text); }
+    long is_empty(const char *text) { return __rust_is_empty(text); }
+    void split(array &out, const char *text, const char *delim) { __rust_split(&out, text, delim); }
+    void split_whitespace(array &out, const char *text) { __rust_split_whitespace(&out, text); }
+    std::string &join(std::string &result, array &values, const char *sep) { return *__rust_join(&result, &values, sep); }
+    std::string &first(std::string &result, array &values) { return *__rust_first(&result, &values); }
+    std::string &last(std::string &result, array &values) { return *__rust_last(&result, &values); }
+    std::string &get(std::string &result, array &values, long idx) { return *__rust_get(&result, &values, idx); }
+    void push(array &values, const char *value) { __rust_push(&values, value); }
+    std::string &pop(std::string &result, array &values) { return *__rust_pop(&result, &values); }
+}
+)EMBED"},
+    {"ns_rust.h", R"EMBED(#ifndef MADC_NS_RUST_H
+#define MADC_NS_RUST_H
+
+#ifdef __cplusplus
+
+#include <cstdint>
+#include <string>
+#include "datadef.h"
+
+extern "C" {
+int64_t __rust_contains(const char *, const char *);
+int64_t __rust_starts_with(const char *, const char *);
+int64_t __rust_ends_with(const char *, const char *);
+std::string *__rust_trim(std::string *);
+std::string *__rust_trim_start(std::string *);
+std::string *__rust_trim_end(std::string *);
+std::string *__rust_replace(std::string *, const char *, const char *);
+std::string *__rust_repeat(std::string *, int64_t);
+int64_t __rust_len(const char *);
+int64_t __rust_is_empty(const char *);
+void __rust_split(madc::value *, const char *, const char *);
+void __rust_split_whitespace(madc::value *, const char *);
+std::string *__rust_join(std::string *, madc::value *, const char *);
+std::string *__rust_first(std::string *, madc::value *);
+std::string *__rust_last(std::string *, madc::value *);
+std::string *__rust_get(std::string *, madc::value *, int64_t);
+void __rust_push(madc::value *, const char *);
+std::string *__rust_pop(std::string *, madc::value *);
+}
+
+namespace rust {
+inline int64_t contains(const char *text, const char *needle) { return __rust_contains(text, needle); }
+inline int64_t starts_with(const char *text, const char *prefix) { return __rust_starts_with(text, prefix); }
+inline int64_t ends_with(const char *text, const char *suffix) { return __rust_ends_with(text, suffix); }
+inline std::string &trim(std::string &s) { return *__rust_trim(&s); }
+inline std::string &trim_start(std::string &s) { return *__rust_trim_start(&s); }
+inline std::string &trim_end(std::string &s) { return *__rust_trim_end(&s); }
+inline std::string &replace(std::string &s, const char *from, const char *to) { return *__rust_replace(&s, from, to); }
+inline std::string &repeat(std::string &s, int64_t count) { return *__rust_repeat(&s, count); }
+inline int64_t len(const char *text) { return __rust_len(text); }
+inline int64_t is_empty(const char *text) { return __rust_is_empty(text); }
+inline void split(madc::value &out, const char *text, const char *delim) { __rust_split(&out, text, delim); }
+inline void split_whitespace(madc::value &out, const char *text) { __rust_split_whitespace(&out, text); }
+inline std::string &join(std::string &result, madc::value &values, const char *sep) { return *__rust_join(&result, &values, sep); }
+inline std::string &first(std::string &result, madc::value &values) { return *__rust_first(&result, &values); }
+inline std::string &last(std::string &result, madc::value &values) { return *__rust_last(&result, &values); }
+inline std::string &get(std::string &result, madc::value &values, int64_t idx) { return *__rust_get(&result, &values, idx); }
+inline void push(madc::value &values, const char *value) { __rust_push(&values, value); }
+inline std::string &pop(std::string &result, madc::value &values) { return *__rust_pop(&result, &values); }
+}
+
+#endif
+
+#endif
 )EMBED"},
     {"stdarg.h", R"EMBED(// madc embedded stdarg.h — variadic function support
 //
-// va_list is an int64_t pointer to a packed argument buffer.
-// va_start sets it to the hidden __va_args parameter injected by the compiler.
-// va_arg is a compiler intrinsic (parsed specially in parseExpression).
-// vsprintf/vsnprintf/vfprintf/vprintf are redirected to madc helpers that unpack the buffer.
+// Matches the x86-64 System V ABI exactly as gcc/c2mir set it up (see
+// c2mir's mirc_x86_64_stdarg.h): va_list is the real __va_list_tag[1] struct,
+// and the ABI work is done by the compiler intrinsic __builtin_va_start.
+//
+// The user's
+//   va_list ap; va_start(ap, last);
+// lowers directly to c2mir's intrinsic __builtin_va_start(ap), which takes the
+// va_list alone and derives the named-argument count from the enclosing
+// function's signature — exactly c2mir's own mirc_x86_64_stdarg.h idiom.
+// (An earlier model primed a hidden function-entry `__va_args` master and
+// copied it per use site — `(ap)[0] = (__va_args)[0]` — but that extra
+// va_list struct copy left reg_save_area mis-set in large/complex frames,
+// corrupting the list; invoking the intrinsic on the user's own va_list
+// avoids the copy and the corruption.)
 
-typedef long va_list;
+// ONE definition: the compiler owns the type (Program::builtin_va_list_type —
+// the SysV struct __madc_va_list_tag[1] singleton, resolved from the spelling
+// __builtin_va_list). This header only aliases it, exactly like real gcc
+// stdarg.h; the CIR emitter synthesizes the struct+typedef C when a module
+// references the type.
+typedef __builtin_va_list va_list;
 
-#define va_start(ap, last) ap = __va_args
+// GCC's name for the same underlying va_list ABI type. Real system headers
+// (e.g. glibc <wchar.h> under `#define __need___va_list`) reference it and then
+// do `typedef __gnuc_va_list va_list;`.
+typedef __builtin_va_list __gnuc_va_list;
+
+#define va_start(ap, last) __builtin_va_start(ap)
 #define va_end(ap) ((void)(ap))
-#define va_copy(dest, src) dest = src
+#define va_copy(dest, src) ((dest)[0] = (src)[0])
 
-#define vsprintf __madc_vsprintf
-#define vsnprintf __madc_vsnprintf
-#define vfprintf __madc_vfprintf
-#define vprintf __madc_vprintf
+// va_list is now the real ABI struct, so the v*printf family resolve to the
+// real libc functions (which take a va_list) — not the old __madc_* helpers
+// that unpacked a custom int64_t[] buffer.
+int vsprintf(char *, const char *, va_list);
+int vsnprintf(char *, unsigned long, const char *, va_list);
+int vfprintf(void *, const char *, va_list);
+int vprintf(const char *, va_list);
 )EMBED"},
     {"stdbool.h", R"EMBED(// madc embedded stdbool.h
 
@@ -787,803 +823,6 @@ typedef int wchar_t;
 
 typedef long int intptr_t;
 typedef unsigned long int uintptr_t;
-)EMBED"},
-    {"stdio.h", R"EMBED(// madc embedded stdio.h — C standard I/O
-// printf/fprintf/sprintf/snprintf are available via dlsym fallback (libc is always loaded)
-// FILE is treated as an opaque pointer-like type in madc source.
-
-#define EOF    -1
-#define SEEK_SET 0
-#define SEEK_CUR 1
-#define SEEK_END 2
-#define BUFSIZ 8192
-#define NULL 0
-#define FILE void
-#ifndef _SIZE_T_DEFINED
-#define _SIZE_T_DEFINED
-#define size_t uint64_t
-#endif
-)EMBED"},
-    {"stdlib.h", R"EMBED(// madc embedded stdlib.h — standard library constants
-// Functions (malloc, free, exit, atoi, atof, rand, srand, abs, etc.) via dlsym fallback
-
-#ifndef NULL
-#define NULL ((void *)0)
-#endif
-
-#define EXIT_SUCCESS 0
-#define EXIT_FAILURE 1
-#define RAND_MAX     2147483647
-)EMBED"},
-    {"string", R"EMBED(// madc embedded <string> — std::string helpers and conversions
-// The actual registration is handled by add_namespaces() callbacks.
-)EMBED"},
-    {"string.h", R"EMBED(// madc embedded string.h — C string functions
-// Most functions resolve through the dlsym fallback at parse time
-// (which registers them with a generic int64 return signature). The
-// extern declarations below give the parser proper return types so
-// `*(strchr(...)) = 0` works without explicit user-side `extern`.
-
-#ifndef NULL
-#define NULL ((void *)0)
-#endif
-
-extern char *strchr(char *s, int c);
-extern char *strrchr(char *s, int c);
-extern char *strstr(char *haystack, char *needle);
-extern char *strdup(char *s);
-extern char *strpbrk(char *s, char *accept);
-extern char *strtok(char *s, char *delim);
-extern char *strndup(char *s, int n);
-)EMBED"},
-    {"strings.h", R"EMBED(// madc embedded strings.h — POSIX string functions
-// Most functions resolve through the dlsym fallback.
-// This stub satisfies #include <strings.h> for code that uses
-// bcopy, bzero, strcasecmp, strncasecmp, etc.
-
-#ifndef __MADC_STRINGS_H
-#define __MADC_STRINGS_H 1
-
-#include <string.h>
-
-// POSIX strings.h functions — available via dlsym fallback
-extern int strcasecmp(const char *s1, const char *s2);
-extern int strncasecmp(const char *s1, const char *s2, int n);
-
-#endif
-)EMBED"},
-    {"sys/cdefs.h", R"EMBED(#ifndef __MADC_SYS_CDEFS_H
-#define __MADC_SYS_CDEFS_H 1
-
-/*
- * Minimal glibc-style cdefs shim for embedded-header consumers.
- * Extend this only as upstream code or embedded headers require more.
- */
-
-#define __P(args) args
-#define __PMT(args) args
-
-#define __CONCAT(x, y) x ## y
-#define __STRING(x) #x
-
-#define __ptr_t void *
-
-#ifdef __cplusplus
-#define __BEGIN_DECLS extern "C" {
-#define __END_DECLS }
-#else
-#define __BEGIN_DECLS
-#define __END_DECLS
-#endif
-
-#define __THROW
-#define __THROWNL
-#define __NTH(fct) fct
-#define __NTHNL(fct) fct
-#define __LEAF
-#define __LEAF_ATTR
-#define __COLD
-
-#ifndef __inline
-#define __inline inline
-#endif
-
-#endif
-)EMBED"},
-    {"sys/file.h", R"EMBED(// madc embedded sys/file.h — BSD/POSIX file locking constants.
-// Functions (flock) available via dlsym fallback.
-
-#define LOCK_SH 1
-#define LOCK_EX 2
-#define LOCK_NB 4
-#define LOCK_UN 8
-)EMBED"},
-    {"sys/ioctl.h", R"EMBED(// madc embedded sys/ioctl.h — minimal stubs for IMC sources.
-// ioctl() resolves via dlsym. Common request codes that IMC uses
-// (TIOCINQ, TIOCOUTQ, FIONREAD) match glibc x86-64 values.
-
-#define FIONREAD 0x541B
-#define TIOCINQ  FIONREAD
-#define TIOCOUTQ 0x5411
-)EMBED"},
-    {"sys/ipc.h", R"EMBED(// madc embedded sys/ipc.h — System V IPC constants
-// Used with sys/shm.h, sys/msg.h, sys/sem.h
-
-#define IPC_PRIVATE 0
-
-// Creation flags (for shmget/msgget/semget)
-#define IPC_CREAT   0x0200
-#define IPC_EXCL    0x0400
-#define IPC_NOWAIT  0x0800
-
-// Control commands (for shmctl/msgctl/semctl)
-#define IPC_RMID 0
-#define IPC_SET  1
-#define IPC_STAT 2
-#define IPC_INFO 3
-)EMBED"},
-    {"sys/mman.h", R"EMBED(// madc embedded sys/mman.h — memory mapping constants (Linux x86-64)
-// Functions (mmap, munmap, mprotect, msync, madvise, mlockall, munlockall)
-// available via dlsym fallback
-// Note: mmap returns void* (use int64_t to hold the address)
-
-// Memory protection flags (prot param to mmap/mprotect)
-#define PROT_NONE  0x0
-#define PROT_READ  0x1
-#define PROT_WRITE 0x2
-#define PROT_EXEC  0x4
-
-// Mapping type flags (flags param to mmap)
-#define MAP_SHARED     0x01
-#define MAP_PRIVATE    0x02
-#define MAP_FIXED      0x10
-#define MAP_ANONYMOUS  0x20
-#define MAP_ANON       0x20
-#define MAP_GROWSDOWN  0x0100
-#define MAP_DENYWRITE  0x0800
-#define MAP_EXECUTABLE 0x1000
-#define MAP_LOCKED     0x2000
-#define MAP_NORESERVE  0x4000
-#define MAP_POPULATE   0x8000
-#define MAP_NONBLOCK   0x10000
-#define MAP_HUGETLB    0x40000
-
-// mmap failure return value
-#define MAP_FAILED -1
-
-// msync flags
-#define MS_ASYNC      1
-#define MS_SYNC       4
-#define MS_INVALIDATE 2
-
-// madvise flags
-#define MADV_NORMAL     0
-#define MADV_RANDOM     1
-#define MADV_SEQUENTIAL 2
-#define MADV_WILLNEED   3
-#define MADV_DONTNEED   4
-#define MADV_FREE       8
-)EMBED"},
-    {"sys/resource.h", R"EMBED(// madc embedded sys/resource.h — resource limits and usage
-// Functions (getrlimit, setrlimit, getrusage, getpriority, setpriority)
-// available via dlsym fallback
-// struct rlimit / rusage access deferred
-
-// Resource limit types (first arg to getrlimit/setrlimit)
-#define RLIMIT_CPU     0
-#define RLIMIT_FSIZE   1
-#define RLIMIT_DATA    2
-#define RLIMIT_STACK   3
-#define RLIMIT_CORE    4
-#define RLIMIT_RSS     5
-#define RLIMIT_NPROC   6
-#define RLIMIT_NOFILE  7
-#define RLIMIT_MEMLOCK 8
-#define RLIMIT_AS      9
-#define RLIMIT_LOCKS   10
-#define RLIMIT_SIGPENDING 11
-#define RLIMIT_MSGQUEUE   12
-#define RLIMIT_NICE       13
-#define RLIMIT_RTPRIO     14
-#define RLIM_INFINITY -1
-
-// getrusage() who values
-#define RUSAGE_SELF     0
-#define RUSAGE_CHILDREN -1
-#define RUSAGE_THREAD   1
-
-// getpriority/setpriority which values
-#define PRIO_PROCESS 0
-#define PRIO_PGRP    1
-#define PRIO_USER    2
-)EMBED"},
-    {"sys/select.h", R"EMBED(// madc embedded sys/select.h — select() multiplexing with fd_set support
-// Functions (select, pselect) available via dlsym fallback.
-// FD_SETSIZE is 1024; fd_set holds 1024 bits in 16 int64 slots (128 bytes),
-// matching glibc x86-64 layout exactly. The FD_* macros forward to built-in
-// C helpers (__madc_fd_zero/set/clr/isset) bundled into the madc binary.
-
-#define FD_SETSIZE 1024
-
-#ifndef __MADC_FD_SET_DEFINED
-#define __MADC_FD_SET_DEFINED
-
-// 128-byte bit array laid out as 16 int64_t slots. Field names are internal
-// and not intended for direct access — use the FD_* macros.
-struct fd_set {
-    int64_t __b0;
-    int64_t __b1;
-    int64_t __b2;
-    int64_t __b3;
-    int64_t __b4;
-    int64_t __b5;
-    int64_t __b6;
-    int64_t __b7;
-    int64_t __b8;
-    int64_t __b9;
-    int64_t __b10;
-    int64_t __b11;
-    int64_t __b12;
-    int64_t __b13;
-    int64_t __b14;
-    int64_t __b15;
-};
-
-// Bare `fd_set` (typedef alias) is the C-portable spelling used by
-// most network code. Without it, `fd_set in_set;` fails with "use of
-// undeclared identifier 'fd_set'".
-typedef struct fd_set fd_set;
-
-#endif
-
-// FD_* macros take a `fd_set *` (a pointer), matching glibc. Callers
-// pass either `&local_set` or an existing `fd_set *` parameter; both
-// expand cleanly without a stray `&(&...)` doubling. Earlier versions
-// of these macros baked `&(set)` into the body, which made the
-// pointer form `FD_CLR(fd, &in_set)` fail with "expecting addressable
-// expression after '&('".
-#define FD_ZERO(setp)      __madc_fd_zero((setp))
-#define FD_SET(fd, setp)   __madc_fd_set((fd), (setp))
-#define FD_CLR(fd, setp)   __madc_fd_clr((fd), (setp))
-#define FD_ISSET(fd, setp) __madc_fd_isset((fd), (setp))
-)EMBED"},
-    {"sys/shm.h", R"EMBED(// madc embedded sys/shm.h — shared memory IPC
-// Functions (shmget, shmat, shmdt, shmctl) available via dlsym fallback
-// struct shmid_ds access deferred
-
-// shmat() flags
-#define SHM_RDONLY  0x01000
-#define SHM_RND    0x02000
-#define SHM_REMAP  0x04000
-#define SHM_EXEC   0x08000
-
-// shmctl() commands (in addition to IPC_* from sys/ipc.h)
-#define SHM_LOCK   11
-#define SHM_UNLOCK 12
-#define SHM_STAT   13
-#define SHM_INFO   14
-)EMBED"},
-    {"sys/socket.h", R"EMBED(// madc embedded sys/socket.h — POSIX socket constants and base struct.
-// Functions (socket, bind, connect, listen, accept, send, recv,
-//            sendto, recvfrom, setsockopt, getsockopt, shutdown,
-//            getpeername, getsockname) available via dlsym fallback.
-// struct sockaddr is the 16-byte generic base used to cast specific
-// sockaddr_in / sockaddr_in6 / sockaddr_un / etc. for bind()/connect().
-// sa_data is declared as two 56-bit opaque chunks here; the concrete
-// family-specific layout lives in netinet/in.h and friends.
-
-struct sockaddr {
-    uint16_t sa_family;  // AF_* (AF_INET, AF_INET6, ...)
-    int16_t  __sa_pad0;
-    int32_t  __sa_pad1;
-    int64_t  __sa_pad2;  // 16 bytes total, matches glibc sockaddr
-};
-
-// Address families
-#define AF_UNSPEC  0
-#define AF_UNIX    1
-#define AF_LOCAL   1
-#define AF_INET    2
-#define AF_INET6   10
-#define AF_PACKET  17
-
-// Protocol families (aliases for AF_*)
-#define PF_UNSPEC  0
-#define PF_UNIX    1
-#define PF_LOCAL   1
-#define PF_INET    2
-#define PF_INET6   10
-
-// Socket types
-#define SOCK_STREAM    1
-#define SOCK_DGRAM     2
-#define SOCK_RAW       3
-#define SOCK_SEQPACKET 5
-#define SOCK_NONBLOCK  2048
-#define SOCK_CLOEXEC   524288
-
-// Socket-level option (for setsockopt/getsockopt level param)
-#define SOL_SOCKET 1
-
-// Socket options (SO_*)
-#define SO_DEBUG        1
-#define SO_REUSEADDR    2
-#define SO_TYPE         3
-#define SO_ERROR        4
-#define SO_DONTROUTE    5
-#define SO_BROADCAST    6
-#define SO_SNDBUF       7
-#define SO_RCVBUF       8
-#define SO_KEEPALIVE    9
-#define SO_OOBINLINE    10
-#define SO_LINGER       13
-#define SO_RCVLOWAT     18
-#define SO_SNDLOWAT     19
-#define SO_RCVTIMEO     20
-#define SO_SNDTIMEO     21
-#define SO_REUSEPORT    15
-#define SO_PASSCRED     16
-#define SO_PEERCRED     17
-
-// Shutdown how values
-#define SHUT_RD   0
-#define SHUT_WR   1
-#define SHUT_RDWR 2
-
-// Send/recv flags
-#define MSG_OOB        1
-#define MSG_PEEK       2
-#define MSG_DONTROUTE  4
-#define MSG_CTRUNC     8
-#define MSG_PROXY      16
-#define MSG_TRUNC      32
-#define MSG_DONTWAIT   64
-#define MSG_EOR        128
-#define MSG_WAITALL    256
-#define MSG_NOSIGNAL   16384
-#define MSG_MORE       32768
-)EMBED"},
-    {"sys/stat.h", R"EMBED(// madc embedded sys/stat.h — file-status constants and struct layout.
-// Functions (stat, fstat, lstat, chmod, mkdir, mkfifo) available via dlsym
-// fallback. Use `(struct stat *)` to attach field access to a caller-allocated
-// buffer, or `struct stat sbuf; stat(path, &sbuf);` directly.
-
-// File-type bits (for st_mode)
-#define S_IFMT   0xF000
-#define S_IFREG  0x8000
-#define S_IFDIR  0x4000
-#define S_IFLNK  0xA000
-#define S_IFBLK  0x6000
-#define S_IFCHR  0x2000
-#define S_IFIFO  0x1000
-#define S_IFSOCK 0xC000
-
-// Permission bits
-#define S_ISUID  0x800
-#define S_ISGID  0x400
-#define S_ISVTX  0x200
-
-#define S_IRUSR  0x100
-#define S_IWUSR  0x80
-#define S_IXUSR  0x40
-#define S_IRWXU  0x1C0
-
-#define S_IRGRP  0x20
-#define S_IWGRP  0x10
-#define S_IXGRP  0x8
-#define S_IRWXG  0x38
-
-#define S_IROTH  0x4
-#define S_IWOTH  0x2
-#define S_IXOTH  0x1
-#define S_IRWXO  0x7
-
-// File-type predicate macros (C-library style, evaluate st_mode).
-#define S_ISREG(m)  (((m) & S_IFMT) == S_IFREG)
-#define S_ISDIR(m)  (((m) & S_IFMT) == S_IFDIR)
-#define S_ISLNK(m)  (((m) & S_IFMT) == S_IFLNK)
-#define S_ISBLK(m)  (((m) & S_IFMT) == S_IFBLK)
-#define S_ISCHR(m)  (((m) & S_IFMT) == S_IFCHR)
-#define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
-#define S_ISSOCK(m) (((m) & S_IFMT) == S_IFSOCK)
-
-// Type aliases (glibc x86-64 LP64).
-#define mode_t    uint32_t
-#define uid_t     uint32_t
-#define gid_t     uint32_t
-#define dev_t     uint64_t
-#define ino_t     uint64_t
-#define nlink_t   uint64_t
-#define off_t     int64_t
-#define blksize_t int64_t
-#define blkcnt_t  int64_t
-
-// struct timespec — 16 bytes, glibc x86-64 layout (shared with time.h).
-struct timespec {
-    int64_t tv_sec;      // seconds
-    int64_t tv_nsec;     // nanoseconds
-};
-
-// glibc x86-64 struct stat — 144 bytes total, natural C ABI alignment.
-// Layout matches <bits/stat.h>: nlink comes before mode, with a 4-byte __pad0
-// between st_gid and st_rdev; timespec triplet at the tail followed by 3 x
-// reserved int64 slots. madc's natural field alignment inserts the __pad0
-// automatically (st_rdev aligns to 8 after three 4-byte fields).
-struct stat {
-    uint64_t st_dev;     // device ID
-    uint64_t st_ino;     // inode number
-    uint64_t st_nlink;   // hard-link count
-    uint32_t st_mode;    // file-type + permissions
-    uint32_t st_uid;     // owner user ID
-    uint32_t st_gid;     // owner group ID
-    int32_t  __pad0;     // explicit; natural alignment would pad anyway
-    uint64_t st_rdev;    // device ID (if special file)
-    int64_t  st_size;    // size in bytes
-    int64_t  st_blksize; // preferred I/O block size
-    int64_t  st_blocks;  // 512-byte blocks allocated
-    struct timespec st_atim;  // last access
-    struct timespec st_mtim;  // last modification
-    struct timespec st_ctim;  // last status change
-    int64_t  __glibc_reserved0;
-    int64_t  __glibc_reserved1;
-    int64_t  __glibc_reserved2;
-};
-
-// Legacy field aliases. glibc exposes these as macros pointing at the tv_sec
-// of the corresponding timespec, so `sbuf.st_mtime` yields an int64 seconds.
-#define st_atime st_atim.tv_sec
-#define st_mtime st_mtim.tv_sec
-#define st_ctime st_ctim.tv_sec
-)EMBED"},
-    {"sys/time.h", R"EMBED(// madc embedded sys/time.h — POSIX time structures and constants
-// Functions (gettimeofday, settimeofday, getitimer, setitimer) available
-// via dlsym fallback. Use `(struct timeval *)` cast to access fields on
-// the caller-allocated buffer.
-
-// Interval timer types
-#define ITIMER_REAL    0
-#define ITIMER_VIRTUAL 1
-#define ITIMER_PROF    2
-
-// fd_set is commonly surfaced alongside <sys/time.h> on older Unix codepaths.
-// Keep this in sync with embedded sys/select.h so code that only includes
-// <sys/time.h> can still declare select() sets.
-#define FD_SETSIZE 1024
-
-#ifndef __MADC_FD_SET_DEFINED
-#define __MADC_FD_SET_DEFINED
-
-struct fd_set {
-    int64_t __b0;
-    int64_t __b1;
-    int64_t __b2;
-    int64_t __b3;
-    int64_t __b4;
-    int64_t __b5;
-    int64_t __b6;
-    int64_t __b7;
-    int64_t __b8;
-    int64_t __b9;
-    int64_t __b10;
-    int64_t __b11;
-    int64_t __b12;
-    int64_t __b13;
-    int64_t __b14;
-    int64_t __b15;
-};
-typedef struct fd_set fd_set;
-
-#endif
-
-// FD_* macros take a `fd_set *` (pointer), matching glibc — see
-// sys/select.h for rationale.
-#define FD_ZERO(setp)      __madc_fd_zero((setp))
-#define FD_SET(fd, setp)   __madc_fd_set((fd), (setp))
-#define FD_CLR(fd, setp)   __madc_fd_clr((fd), (setp))
-#define FD_ISSET(fd, setp) __madc_fd_isset((fd), (setp))
-
-// time_t is int64_t on glibc x86-64.
-#define time_t int64_t
-
-// suseconds_t is signed long on glibc x86-64.
-#define suseconds_t int64_t
-
-// glibc x86-64 struct timeval — 16 bytes.
-struct timeval {
-    int64_t tv_sec;     // seconds
-    int64_t tv_usec;    // microseconds
-};
-
-#define timerisset __madc_timerisset
-#define timerclear __madc_timerclear
-#define timercmp(left_ptr, right_ptr, cmp_token) ((__madc_timeval_sec((left_ptr)) == __madc_timeval_sec((right_ptr))) ? (__madc_timeval_usec((left_ptr)) cmp_token __madc_timeval_usec((right_ptr))) : (__madc_timeval_sec((left_ptr)) cmp_token __madc_timeval_sec((right_ptr))))
-#define timeradd __madc_timeradd
-#define timersub __madc_timersub
-
-// struct timezone — deprecated by POSIX; glibc still accepts NULL for it.
-struct timezone {
-    int32_t tz_minuteswest;
-    int32_t tz_dsttime;
-};
-)EMBED"},
-    {"sys/types.h", R"EMBED(// madc embedded sys/types.h — POSIX type aliases
-// These supplement the aliases in unistd.h
-
-#define pid_t    int
-#define uid_t    int
-#define gid_t    int
-#define off_t    int64_t
-#define off64_t  int64_t
-#define size_t   uint64_t
-#define ssize_t  int64_t
-#define mode_t   int
-#define dev_t    int64_t
-#define ino_t    uint64_t
-#define nlink_t  int64_t
-#define blksize_t int64_t
-#define blkcnt_t  int64_t
-#define socklen_t int
-#define sa_family_t int
-)EMBED"},
-    {"sys/un.h", R"EMBED(// madc embedded sys/un.h — UNIX domain socket support
-// AF_UNIX / AF_LOCAL = 1 (defined in sys/socket.h)
-// struct sockaddr_un access deferred (requires struct interop)
-// Functions via dlsym fallback (same as sys/socket.h: socket, bind, connect, etc.)
-)EMBED"},
-    {"sys/vfs.h", R"EMBED(// madc embedded sys/vfs.h — filesystem statistics
-// statfs() is available via dlsym fallback.
-
-#ifndef __MADC_SYS_VFS_H
-#define __MADC_SYS_VFS_H 1
-
-#include <sys/types.h>
-
-struct statfs {
-    long f_type;
-    long f_bsize;
-    long f_blocks;
-    long f_bfree;
-    long f_bavail;
-    long f_files;
-    long f_ffree;
-    long f_fsid[2];
-    long f_namelen;
-    long f_frsize;
-    long f_flags;
-    long f_spare[4];
-};
-
-extern int statfs(const char *path, struct statfs *buf);
-
-#endif
-)EMBED"},
-    {"sys/wait.h", R"EMBED(// madc embedded sys/wait.h — process wait constants
-// Functions (wait, waitpid) available via dlsym fallback
-
-#define WNOHANG   1
-#define WUNTRACED 2
-#define WCONTINUED 8
-
-// Macros to extract status from waitpid() result
-// (implemented as simple integer expressions)
-#define WIFEXITED(s)    (((s) & 0x7f) == 0)
-#define WEXITSTATUS(s)  (((s) >> 8) & 0xff)
-#define WIFSIGNALED(s)  (((s) & 0x7f) != 0 && ((s) & 0x7f) != 0x7f)
-#define WTERMSIG(s)     ((s) & 0x7f)
-#define WIFSTOPPED(s)   (((s) & 0xff) == 0x7f)
-#define WSTOPSIG(s)     (((s) >> 8) & 0xff)
-)EMBED"},
-    {"syslog.h", R"EMBED(// madc embedded syslog.h — system logging constants
-// Functions (openlog, syslog, closelog, setlogmask) available via dlsym fallback
-
-// Priorities (severity levels)
-#define LOG_EMERG   0
-#define LOG_ALERT   1
-#define LOG_CRIT    2
-#define LOG_ERR     3
-#define LOG_WARNING 4
-#define LOG_NOTICE  5
-#define LOG_INFO    6
-#define LOG_DEBUG   7
-
-// Facilities
-#define LOG_KERN    0
-#define LOG_USER    8
-#define LOG_MAIL    16
-#define LOG_DAEMON  24
-#define LOG_AUTH    32
-#define LOG_SYSLOG  40
-#define LOG_LPR     48
-#define LOG_NEWS    56
-#define LOG_UUCP    64
-#define LOG_CRON    72
-#define LOG_AUTHPRIV 80
-#define LOG_FTP     88
-#define LOG_LOCAL0  128
-#define LOG_LOCAL1  136
-#define LOG_LOCAL2  144
-#define LOG_LOCAL3  152
-#define LOG_LOCAL4  160
-#define LOG_LOCAL5  168
-#define LOG_LOCAL6  176
-#define LOG_LOCAL7  184
-
-// openlog() options
-#define LOG_PID     1
-#define LOG_CONS    2
-#define LOG_ODELAY  4
-#define LOG_NDELAY  8
-#define LOG_NOWAIT  16
-#define LOG_PERROR  32
-)EMBED"},
-    {"termios.h", R"EMBED(// madc embedded termios.h — terminal I/O constants (Linux x86-64)
-// Functions (tcgetattr, tcsetattr, tcsendbreak, tcdrain, tcflush,
-//            tcflow, cfgetispeed, cfgetospeed, cfsetispeed, cfsetospeed,
-//            isatty, ttyname) available via dlsym fallback
-// struct termios access deferred
-
-// tcsetattr() action flags
-#define TCSANOW   0
-#define TCSADRAIN 1
-#define TCSAFLUSH 2
-
-// tcflush() queue selectors
-#define TCIFLUSH  0
-#define TCOFLUSH  1
-#define TCIOFLUSH 2
-
-// tcflow() action values
-#define TCOOFF 0
-#define TCOON  1
-#define TCIOFF 2
-#define TCION  3
-
-// c_lflag bits
-#define ISIG    0000001
-#define ICANON  0000002
-#define ECHO    0000010
-#define ECHOE   0000020
-#define ECHOK   0000040
-#define ECHONL  0000100
-#define NOFLSH  0000200
-#define TOSTOP  0000400
-#define IEXTEN  0100000
-
-// c_iflag bits
-#define IGNBRK  0000001
-#define BRKINT  0000002
-#define IGNPAR  0000004
-#define PARMRK  0000010
-#define INPCK   0000020
-#define ISTRIP  0000040
-#define INLCR   0000100
-#define IGNCR   0000200
-#define ICRNL   0000400
-#define IXON    0002000
-#define IXOFF   0010000
-
-// c_oflag bits
-#define OPOST   0000001
-#define ONLCR   0000004
-#define OCRNL   0000010
-#define ONOCR   0000020
-#define ONLRET  0000040
-
-// Baud rates
-#define B0       0
-#define B50      1
-#define B75      2
-#define B110     3
-#define B134     4
-#define B150     5
-#define B200     6
-#define B300     7
-#define B600     8
-#define B1200    9
-#define B1800    10
-#define B2400    11
-#define B4800    12
-#define B9600    13
-#define B19200   14
-#define B38400   15
-#define B57600   4097
-#define B115200  4098
-#define B230400  4099
-#define B460800  4100
-#define B921600  4103
-
-// ioctl TIOCGWINSZ / TIOCSWINSZ (get/set window size)
-#define TIOCGWINSZ 0x5413
-#define TIOCSWINSZ 0x5414
-)EMBED"},
-    {"time.h", R"EMBED(// madc embedded time.h — POSIX time constants, types, and struct tm.
-// Functions (time, clock, difftime, mktime, localtime, gmtime, strftime,
-// nanosleep) available via dlsym fallback. Use `(struct tm *)` cast on
-// the return value of localtime/gmtime to attach field access.
-
-// Clocks
-#define CLOCKS_PER_SEC 1000000
-#define CLOCK_REALTIME  0
-#define CLOCK_MONOTONIC 1
-#define CLOCK_PROCESS_CPUTIME_ID 2
-#define CLOCK_THREAD_CPUTIME_ID  3
-
-// Time type aliases
-#define time_t  int64_t
-#define clock_t int64_t
-
-// glibc x86-64 struct tm layout — 56 bytes total, natural C ABI alignment.
-// All int fields are 32-bit (C int) to match glibc; tm_gmtoff is long (64-bit
-// on LP64); tm_zone is const char *. The 4-byte pad between tm_isdst and
-// tm_gmtoff is inserted automatically by madc's natural field alignment.
-struct tm {
-    int32_t tm_sec;     // seconds  [0, 60]
-    int32_t tm_min;     // minutes  [0, 59]
-    int32_t tm_hour;    // hours    [0, 23]
-    int32_t tm_mday;    // day of month  [1, 31]
-    int32_t tm_mon;     // months since Jan [0, 11]
-    int32_t tm_year;    // years since 1900
-    int32_t tm_wday;    // days since Sunday [0, 6]
-    int32_t tm_yday;    // days since Jan 1  [0, 365]
-    int32_t tm_isdst;   // DST flag
-    int64_t tm_gmtoff;  // seconds east of UTC
-    char   *tm_zone;    // timezone abbreviation
-};
-)EMBED"},
-    {"unistd.h", R"EMBED(// madc embedded unistd.h — POSIX constants and type aliases
-// Functions (read, write, close, lseek, fork, execvp, pipe, dup2,
-//           getcwd, chdir, unlink, rmdir, access, getpid, getuid, sleep)
-// available via dlsym fallback
-
-// Standard file descriptors
-#define STDIN_FILENO  0
-#define STDOUT_FILENO 1
-#define STDERR_FILENO 2
-
-// access() mode flags
-#define F_OK 0
-#define X_OK 1
-#define W_OK 2
-#define R_OK 4
-
-// lseek() whence values (mirrors stdio.h SEEK_*)
-#define SEEK_SET 0
-#define SEEK_CUR 1
-#define SEEK_END 2
-
-// POSIX type aliases — substituted at tokenization time via #define
-#define pid_t    int
-#define uid_t    int
-#define gid_t    int
-#define off_t    int64_t
-#define size_t   uint64_t
-#define ssize_t  int64_t
-#define mode_t   int
-#define dev_t    int64_t
-#define ino_t    uint64_t
-#define nlink_t  int64_t
-#define intptr_t  int64_t
-#define uintptr_t uint64_t
-)EMBED"},
-    {"zlib.h", R"EMBED(// madc embedded zlib.h — minimal stub for z_stream pointer members.
-// Full zlib functionality requires linking against libz.
-
-typedef struct z_stream_s {
-    void *next_in;
-    unsigned int avail_in;
-    unsigned long total_in;
-    void *next_out;
-    unsigned int avail_out;
-    unsigned long total_out;
-    void *msg;
-    void *state;
-    void *zalloc;
-    void *zfree;
-    void *opaque;
-    int data_type;
-    unsigned long adler;
-    unsigned long reserved;
-} z_stream;
 )EMBED"}
 };
 

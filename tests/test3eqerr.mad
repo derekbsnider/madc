@@ -1,0 +1,15 @@
+// Same class, no operator=== and no operator== — strict equality must be
+// a LOUD compile error (spec §2.2), not a silent constant. See .expect_err.
+class Bare {
+public:
+	int v;
+	Bare(int x) : v(x) {}
+};
+
+int main()
+{
+	Bare b1(1);
+	Bare b2(1);
+	int r = (b1 === b2);
+	return r;
+}

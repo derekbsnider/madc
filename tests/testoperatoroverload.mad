@@ -1,0 +1,95 @@
+#!/../bin/madc
+// P2.1: operator-overload DISPATCH completeness on the unified class machinery.
+//   - Phase 1: extend binop_overload_symbol to the full binary set the parser
+//     can declare (compound-assign, bitwise, shift, logical). A class overloads
+//     ONLY the operators it DECLARES; an undeclared operator falls through to
+//     the built-in (the lookup-based invariant).
+//   - Phase 2: unary operators (- ! ~) and prefix ++ / -- dispatch.
+// Built-in int arithmetic, the cout << stream path, and the existing string
+// operators must all keep normal semantics (negative controls below).
+#include <iostream>
+using namespace std;
+
+// Binary operators: -, *, +=, & (bitwise), << (NOT the stream path — a real
+// user operator<< on a non-stream class object), | (bitwise), the comparison
+// family rides the same dispatch.
+class Vec {
+public:
+    int x;
+    int operator-(const Vec& o) { return x - o.x; }
+    int operator*(const Vec& o) { return x * o.x; }
+    int operator+=(const Vec& o) { x = x + o.x; return x; }
+    int operator&(const Vec& o) { return x & o.x; }
+    int operator|(const Vec& o) { return x | o.x; }
+    int operator<<(const Vec& o) { return x << o.x; }
+};
+
+// Unary operators on a distinct class (a unary operator- coexisting with a
+// binary operator- on the SAME class is a separate parser overload gap — see
+// the report; kept apart here so the dispatch is exercised cleanly).
+class Neg {
+public:
+    int v;
+    int operator-() { return -v; }
+    int operator!() { return v == 0; }
+    int operator~() { return ~v; }
+};
+
+// Prefix ++ / -- dispatch.
+class Ctr {
+public:
+    int v;
+    int operator++() { v = v + 1; return v; }
+    int operator--() { v = v - 1; return v; }
+};
+
+// Negative control: a class declaring NO operators. Built-in operators on its
+// members still work; the class itself never synthesizes an operator.
+class Plain {
+public:
+    int v;
+};
+
+int main()
+{
+    // --- Phase 1: binary operators ---
+    Vec a;
+    Vec b;
+    a.x = 50;
+    b.x = 8;
+    cout << (a - b) << endl;      // 42
+    cout << (a * b) << endl;      // 400
+    cout << (a & b) << endl;      // 0
+    cout << (a | b) << endl;      // 58
+    cout << (a << b) << endl;     // 12800
+    a += b;
+    cout << a.x << endl;          // 58
+
+    // --- Phase 2: unary operators ---
+    Neg n;
+    n.v = 7;
+    cout << (-n) << endl;         // -7
+    cout << (!n) << endl;         // 0
+    cout << (~n) << endl;         // -8
+
+    // --- Phase 2: prefix ++ / -- ---
+    Ctr c;
+    c.v = 5;
+    cout << (++c) << endl;        // 6
+    cout << (--c) << endl;        // 5
+
+    // --- Negative controls: built-in semantics unaffected ---
+    Plain p;
+    p.v = 10;
+    cout << p.v << endl;          // 10  (plain member access)
+    int i = 6;
+    int j = 3;
+    cout << (i - j) << endl;      // 3   (built-in int -)
+    cout << (-i) << endl;         // -6  (built-in unary -)
+    cout << (i & j) << endl;      // 2   (built-in bitwise &)
+    cout << (i << j) << endl;     // 48  (built-in shift)
+    cout << ((i > 1) && (j > 1)) << endl;  // 1 (built-in logical)
+    cout << "stream still works" << endl;  // cout << path intact
+
+    return 0;
+}

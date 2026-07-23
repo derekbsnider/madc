@@ -1,5 +1,6 @@
 .mcp.json
 .claude/settings.local.json
+.claude/statusline-state.json
 *~
 claude_status.json
 Makefile
@@ -11,6 +12,7 @@ aclocal.m4
 configure
 include/config.h
 include/config.h.in
+src/sys_include_paths.cpp
 
 tmp/
 
@@ -23,3 +25,4 @@ smaug.tgz
 smaug1.8/
 ftp_game.org
 inbox/
+src/predefined_macros.cpp

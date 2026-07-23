@@ -1,0 +1,28 @@
+// gcc-13 type-trait builtins madc implements faithfully (the <type_traits>
+// conformance foundation): __is_class/__is_union/__is_enum/__is_base_of/__is_same.
+// Only the gcc builtins madc can answer EXACTLY are recognized — wrong answers
+// would silently corrupt SFINAE, so the rest stay unimplemented (clear error).
+// Output matches g++ -std=c++17 exactly.
+#include <stdio.h>
+
+struct S {};
+struct D : S {};
+struct D2 : D {};
+union U { int a; float b; };
+enum E { X };
+
+int main()
+{
+	printf("%d%d%d%d%d %d%d %d%d %d%d%d%d %d%d\n",
+	    __is_class(S), __is_class(D), __is_class(int), __is_class(U), __is_class(E),
+	    __is_union(U), __is_union(S),
+	    __is_enum(E), __is_enum(int),
+	    __is_base_of(S, D), __is_base_of(S, D2), __is_base_of(D, S), __is_base_of(S, S),
+	    __is_same(int, int), __is_same(int, char));
+	// Traits also fold in CONSTANT-expression context (array dims / non-type
+	// template args / static-member initializers).
+	int a[__is_class(S) ? 4 : 1];
+	int b[__is_enum(E) ? 7 : 1];
+	printf("%zu %zu\n", sizeof(a) / sizeof(int), sizeof(b) / sizeof(int));
+	return 0;
+}

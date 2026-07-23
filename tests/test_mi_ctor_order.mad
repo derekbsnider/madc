@@ -1,0 +1,6 @@
+#!/../bin/madc
+// Every base ctor runs (declaration order), then derived; dtors reverse.
+class A { public: A() { printf("A+"); } ~A() { printf("A-"); } };
+class B { public: B() { printf("B+"); } ~B() { printf("B-"); } };
+class C : public A, public B { public: C() { printf("C+"); } ~C() { printf("C-"); } };
+int main() { { C c; } printf("\n"); return 0; }

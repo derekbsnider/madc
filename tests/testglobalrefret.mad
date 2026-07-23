@@ -1,0 +1,24 @@
+// Task #50: a GLOBAL class object (vbase-carrying, dtor-registered) plus a
+// ref-RETURNING accessor over it, in an <iostream> TU. This exact shape used
+// to break the --emit=c11 lane twice over: the shim's make_instance dtor
+// registration emitted a `void(void*)` extern conflicting with the typed
+// madc dtor definition, and the extern `cout` declaration carried a cleanup
+// attribute gcc rejects. Both lanes must agree with g++ -O0.
+#include <iostream>
+
+struct V { int v; virtual ~V() {} };
+struct D : virtual V { int d; };
+
+D gobj;
+
+D &get() { return gobj; }
+
+int main()
+{
+	gobj.d = 4;
+	gobj.v = 5;
+	D &r = get();
+	r.d = 7;
+	std::cout << gobj.d << " " << r.v << std::endl;
+	return 0;
+}

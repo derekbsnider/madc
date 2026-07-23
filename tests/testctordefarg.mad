@@ -1,0 +1,12 @@
+#include <stdio.h>
+class Box {
+public:
+	int n;
+	Box(int v, int extra = 5) { n = v + extra; }
+};
+int main() {
+	Box a(10);       // extra defaulted to 5 -> 15
+	Box b(10, 20);   // -> 30
+	printf("%d %d\n", a.n, b.n);
+	return 0;
+}

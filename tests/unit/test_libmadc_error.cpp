@@ -16,8 +16,6 @@ thread_local bool madc_verbose = false;
 #include <string>
 #include <vector>
 
-#include <asmjit/x86.h>
-
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"

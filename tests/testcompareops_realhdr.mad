@@ -1,0 +1,24 @@
+// <compare> hidden-friend operator bodies (P2.15 slice 2b): the category
+// types' friend operators (operator<(strong_ordering, __cmp_cat::__unspec)
+// etc.) are TU-local — not exported from libstdc++ — so madc hoists the
+// friend DEFINITIONS to namespace scope, grants them friendship, and
+// dispatches `r < 0` to the compiled body. Literal 0 is consumed by
+// __unspec's ctor via the null-pointer-constant conversion.
+#include <compare>
+#include <cstdio>
+int main()
+{
+	std::strong_ordering r = std::strong_ordering::less;
+	if (r < 0)  printf("lt\n");
+	if (r <= 0) printf("le\n");
+	if (0 > r)  printf("rev-gt\n");
+	std::strong_ordering e = std::strong_ordering::equal;
+	if (e == 0) printf("eq\n");
+	if (e >= 0) printf("ge\n");
+	std::partial_ordering u = std::partial_ordering::unordered;
+	if (!(u < 0) && !(u > 0) && !(u == 0))
+		printf("unordered\n");
+	std::weak_ordering w = std::weak_ordering::greater;
+	if (w > 0)  printf("w-gt\n");
+	return 0;
+}

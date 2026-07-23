@@ -1,0 +1,36 @@
+# forest_pack_headers.txt — the packaged standard-header set, in CANONICAL
+# ORDER (the versioned pack-order artifact; design doc
+# 2026-07-04-forest-default-mode-design.md §6). This order is what the
+# container's canonical-order segment records; the B4c auto-sort pass keys
+# off it. Foundational/config headers first, containers, then streams —
+# the same discipline glibc/libstdc++'s internal ordering encodes.
+#
+# LIST VERSION 2 (2026-07-08). Grow deliberately: every header here must
+# compile QUIETLY (exit 0, zero diagnostics) in this combined order — the
+# pack step is a release gate. algorithm CLEARED at v26 HEAD (quiet after
+# streams; the B4a istreambuf_iterator arity blocker is gone). Known
+# blockers, revisit when fixed (all pre-existing LIVE-parse bugs — parser
+# track, not forest):
+#   cstdint     — `using ::int_fast8_t` is not a declaration in '::'
+#   cmath       — `Expecting a type argument to __promote<>` (exits 0 but
+#                 not quiet) in combination with stream headers
+#   iomanip     — `Expecting member name in class definition`
+cstddef
+climits
+cctype
+cstring
+cstdio
+cstdlib
+ctime
+cerrno
+string
+vector
+list
+map
+set
+utility
+memory
+sstream
+iostream
+fstream
+algorithm

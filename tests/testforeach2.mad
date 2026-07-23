@@ -1,5 +1,8 @@
 #!/../bin/madc
 #include <iostream>
+#include <string>
+#include <vector>
+#include <algorithm>
 using namespace std;
 void print_name(string name)
 {
@@ -8,17 +11,17 @@ void print_name(string name)
 
 int main()
 {
-    array names;
-    php::array_push(names, "Alice");
-    php::array_push(names, "Bob");
-    php::array_push(names, "Charlie");
+    vector<string> names;
+    names.push_back("Alice");
+    names.push_back("Bob");
+    names.push_back("Charlie");
 
-    // std::for_each with named function pointer
+    // std::for_each (3-arg iterator form) with a named function pointer
     auto fn = print_name;
-    std::for_each(names, fn);
+    std::for_each(names.begin(), names.end(), fn);
 
-    // std::for_each with lambda
-    std::for_each(names, [](string name) {
+    // std::for_each with a lambda
+    std::for_each(names.begin(), names.end(), [](string name) {
         cout << "Hi " << name << endl;
     });
 

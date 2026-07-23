@@ -1,0 +1,26 @@
+// Template-template-parameter partial specialization with a NESTED inner argument
+// ([temp.class.spec]). `replace_first_arg<C<A>, U>` must deduce C and A even when
+// the concrete first argument's inner type is ITSELF a template-id
+// (`box<wrapper<long>>` -> C=box, A=wrapper<long>), yielding `box<U>`. This is the
+// shape libstdc++ allocator-rebind hits (`__replace_first_arg<allocator<node<T>>,U>`).
+// Verified vs g++ AND clang++.
+#include <iostream>
+using namespace std;
+
+template<typename T, typename U> struct replace_first_arg;
+template<template<typename> class C, typename A, typename U>
+	struct replace_first_arg<C<A>, U> { using type = C<U>; };
+
+template<typename T> struct wrapper { T w; };
+template<typename T> struct box { T val; };
+
+template<typename A, typename U>
+	using rebind_t = typename replace_first_arg<A, U>::type;
+
+int main() {
+	// nested inner arg box<wrapper<long>>: deduce C=box, A=wrapper<long>; yield box<int>.
+	rebind_t<box<wrapper<long> >, int> b;
+	b.val = 42;
+	cout << "nested=" << b.val << endl;   // 42
+	return 0;
+}

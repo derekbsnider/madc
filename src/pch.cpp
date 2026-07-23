@@ -22,7 +22,6 @@
 #include <sstream>
 
 #include <zlib.h>
-#include <asmjit/x86.h>
 
 extern thread_local bool madc_verbose;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -137,18 +136,171 @@ struct Reader
     }
 };
 
+// Materialize a payload-free TokenBase shell from its TokenID. Shared with the
+// lexer pop-1 token factory (Program::make_token) so there is ONE
+// materialize-from-kind switch — see docs/plans/2026-06-23-token-arena-*.
+TokenBase *token_from_id(TokenID ti)
+{
+    switch ( ti )
+    {
+    case TokenID::tkSpace: return new TokenSpace(1);
+    case TokenID::tkTab: return new TokenTab(1);
+    case TokenID::tkEOL: return new TokenEOL(1);
+    case TokenID::tkREM: return new TokenREM("");
+    case TokenID::tkHash: return new TokenHash();
+    case TokenID::tkAssign: return new TokenAssign();
+    case TokenID::tkEquals: return new TokenEquals();
+    case TokenID::tk3Eq: return new Token3Eq();
+    case TokenID::tk3NotEq: return new Token3NotEq();
+    case TokenID::tkPlus: return new TokenAdd();
+    case TokenID::tkInc: return new TokenInc();
+    case TokenID::tkSub: return new TokenSub();
+    case TokenID::tkDec: return new TokenDec();
+    case TokenID::tkMul: return new TokenMul();
+    case TokenID::tkSlash: return new TokenDiv();
+    case TokenID::tkBslsh: return new TokenBslsh();
+    case TokenID::tkOpBrc: return new TokenOpBrc();
+    case TokenID::tkClBrc: return new TokenClBrc();
+    case TokenID::tkOpBrk: return new TokenOpBrk();
+    case TokenID::tkClBrk: return new TokenClBrk();
+    case TokenID::tkOpSqr: return new TokenOpSqr();
+    case TokenID::tkClSqr: return new TokenClSqr();
+    case TokenID::tkNeg: return new TokenNeg();
+    case TokenID::tkNot: return new TokenLnot();
+    case TokenID::tkBand: return new TokenBand();
+    case TokenID::tkLand: return new TokenLand();
+    case TokenID::tkBor: return new TokenBor();
+    case TokenID::tkLor: return new TokenLor();
+    case TokenID::tkXor: return new TokenXor();
+    case TokenID::tkMod: return new TokenMod();
+    case TokenID::tkQmark: return new TokenTerQ();
+    case TokenID::tkColon: return new TokenTerC();
+    case TokenID::tkNS: return new TokenNS();
+    case TokenID::tkSemi: return new TokenSemi();
+    case TokenID::tkComma: return new TokenComma();
+    case TokenID::tkDot: return new TokenDot();
+    case TokenID::tkDeRef: return new TokenDeRef();
+    case TokenID::tkQuote: return new TokenQuote();
+    case TokenID::tkApost: return new TokenApost();
+    case TokenID::tkGT: return new TokenGT();
+    case TokenID::tkLT: return new TokenLT();
+    case TokenID::tkBSL: return new TokenBSL();
+    case TokenID::tkBSR: return new TokenBSR();
+    case TokenID::tkAddEq: return new TokenAddEq();
+    case TokenID::tkBSLEq: return new TokenBSLEq();
+    case TokenID::tkBSREq: return new TokenBSREq();
+    case TokenID::tkBandEq: return new TokenBandEq();
+    case TokenID::tkBnot: return new TokenBnot();
+    case TokenID::tkBorEq: return new TokenBorEq();
+    case TokenID::tkDivEq: return new TokenDivEq();
+    case TokenID::tkFuncOp: return new TokenFuncOp();
+    case TokenID::tkGE: return new TokenGE();
+    case TokenID::tkLE: return new TokenLE();
+    case TokenID::tkLnot: return new TokenLnot();
+    case TokenID::tkModEq: return new TokenModEq();
+    case TokenID::tkMulEq: return new TokenMulEq();
+    case TokenID::tk3Way: return new Token3Way();
+    case TokenID::tkNotEq: return new TokenNotEq();
+    case TokenID::tkSubEq: return new TokenSubEq();
+    case TokenID::tkXorEq: return new TokenXorEq();
+    case TokenID::tkColEq: return new TokenColEq();
+    case TokenID::tkArrayOp: return new TokenArrayOp();
+    case TokenID::tkFatArrow: return new TokenFatArrow();
+
+    case TokenID::tkDO: return new TokenDO();
+    case TokenID::tkIF: return new TokenIF();
+    case TokenID::tkFOR: return new TokenFOR();
+    case TokenID::tkELSE: return new TokenELSE();
+    case TokenID::tkRETURN: return new TokenRETURN();
+    case TokenID::tkGOTO: return new TokenGOTO();
+    case TokenID::tkCASE: return new TokenCASE();
+    case TokenID::tkBREAK: return new TokenBREAK();
+    case TokenID::tkCONT: return new TokenCONT();
+    case TokenID::tkTRY: return new TokenTRY();
+    case TokenID::tkCATCH: return new TokenCATCH();
+    case TokenID::tkTHROW: return new TokenTHROW();
+    case TokenID::tkSWITCH: return new TokenSWITCH();
+    case TokenID::tkWHILE: return new TokenWHILE();
+    case TokenID::tkCLASS: return new TokenCLASS();
+    case TokenID::tkSTRUCT: return new TokenSTRUCT();
+    case TokenID::tkDEFAULT: return new TokenDEFAULT();
+    case TokenID::tkTYPEDEF: return new TokenTYPEDEF();
+    case TokenID::tkOPEROVER: return new TokenOPEROVER();
+    case TokenID::tkREGISTER: return new TokenREGISTER();
+    case TokenID::tkUSING: return new TokenUSING();
+    case TokenID::tkNAMESPACE: return new TokenNAMESPACE();
+    case TokenID::tkPREFER: return new TokenPREFER();
+    case TokenID::tkDEFER: return new TokenDEFER();
+    case TokenID::tkSTATIC: return new TokenSTATIC();
+    case TokenID::tkCONST: return new TokenCONST();
+    case TokenID::tkEXTERN: return new TokenEXTERN();
+    case TokenID::tkENUM: return new TokenENUM();
+    case TokenID::tkRESTRICT: return new TokenRESTRICT();
+    case TokenID::tkVOLATILE: return new TokenVOLATILE();
+    case TokenID::tkTEMPLATE: return new TokenTEMPLATE();
+    case TokenID::tkMATCH: return new TokenMatch();
+    case TokenID::tkUNION: return new TokenUNION();
+    case TokenID::tkNEW: return new TokenNEW();
+    case TokenID::tkDELETE: return new TokenDELETE();
+    case TokenID::tkDynamicCast: return new TokenDynamicCast();
+    case TokenID::tkTypeid: return new TokenTypeid();
+    case TokenID::tkFRIEND: return new TokenFRIEND();
+    default: return NULL;
+    }
+}
+
+static DataDef *builtin_datadef_from_spelling(const std::string &s)
+{
+    if ( s == "void" ) return &ddVOID;
+    if ( s == "bool" ) return &ddBOOL;
+    if ( s == "_Bool" ) return &ddBOOL;
+    if ( s == "char" ) return &ddCHAR;
+    if ( s == "signed char" ) return &ddINT8;
+    if ( s == "unsigned char" ) return &ddUINT8;
+    if ( s == "short" || s == "short int" || s == "signed short"
+      || s == "signed short int" ) return &ddINT16;
+    if ( s == "unsigned short" || s == "unsigned short int" ) return &ddUINT16;
+    if ( s == "int" || s == "signed" || s == "signed int" ) return &ddINT32;
+    if ( s == "unsigned" || s == "unsigned int" ) return &ddUINT32;
+    if ( s == "long" || s == "long int" || s == "signed long"
+      || s == "signed long int" || s == "long long" || s == "long long int"
+      || s == "signed long long" || s == "signed long long int" ) return &ddINT64;
+    if ( s == "unsigned long" || s == "unsigned long int"
+      || s == "unsigned long long" || s == "unsigned long long int" ) return &ddUINT64;
+    if ( s == "__int128" || s == "signed __int128" ) return &ddINT128;
+    if ( s == "unsigned __int128" ) return &ddUINT128;
+    if ( s == "float" || s == "_Float32" ) return &ddFLOAT;
+    if ( s == "double" || s == "long double"
+      || s == "_Float64" || s == "_Float128"
+      || s == "_Float32x" || s == "_Float64x" ) return &ddDOUBLE;
+    if ( s == "int8_t" ) return &ddINT8;
+    if ( s == "int16_t" ) return &ddINT16;
+    if ( s == "int32_t" ) return &ddINT32;
+    if ( s == "int64_t" ) return &ddINT64;
+    if ( s == "uint8_t" ) return &ddUINT8;
+    if ( s == "uint16_t" ) return &ddUINT16;
+    if ( s == "uint32_t" ) return &ddUINT32;
+    if ( s == "uint64_t" ) return &ddUINT64;
+    if ( s == "size_t" ) return &ddUINT64;
+    if ( s == "ptrdiff_t" ) return &ddINT64;
+    if ( s == "wchar_t" ) return &ddINT32;
+    if ( s == "char16_t" ) return &ddUINT16;
+    if ( s == "char32_t" ) return &ddUINT32;
+    if ( s == "max_align_t" ) return &ddMAX_ALIGN_T;
+    if ( s == "LPSTR" ) return &ddLPSTR;
+    if ( s == "array" ) return &ddARRAY;
+    if ( s == "auto" ) return &ddAUTO;
+    return NULL;
+}
+
 // --- Serialization ---
 
-bool serialize_tokens(const std::deque<TokenBase *> &tokens,
-		      std::vector<uint8_t> &out)
+// One token in .madh record form — the shared body of serialize_tokens
+// (whole-stream .madh write) and serialize_token_seq (B4a per-unit forest
+// token slices). Kind + position + payload; see deserialize_tokens.
+static void serialize_one_token(TokenBase *tb, std::vector<uint8_t> &out)
 {
-    out.clear();
-    out.reserve(tokens.size() * 16); // rough estimate
-
-    for ( TokenBase *tb : tokens )
     {
-	if ( !tb ) continue;
-
 	TokenType tt = tb->type();
 	TokenID   ti = tb->id();
 
@@ -199,7 +351,7 @@ bool serialize_tokens(const std::deque<TokenBase *> &tokens,
 	{
 	    TokenIdent *ti_tok = dynamic_cast<TokenIdent *>(tb);
 	    write_u8(out, (uint8_t)PchValueType::String);
-	    write_str(out, ti_tok ? ti_tok->str : "");
+	    write_str(out, ti_tok ? ti_tok->spelling() : "");
 	    break;
 	}
 	case TokenType::ttKeyword:
@@ -210,7 +362,7 @@ bool serialize_tokens(const std::deque<TokenBase *> &tokens,
 	    if ( TokenIdent *ki = dynamic_cast<TokenIdent *>(tb) )
 	    {
 		write_u8(out, (uint8_t)PchValueType::String);
-		write_str(out, ki->str);
+		write_str(out, ki->spelling());
 	    }
 	    else
 	    {
@@ -224,7 +376,27 @@ bool serialize_tokens(const std::deque<TokenBase *> &tokens,
 	    break;
 	}
     }
+}
 
+bool serialize_tokens(const TokenStream &tokens,
+		      std::vector<uint8_t> &out)
+{
+    out.clear();
+    out.reserve(tokens.size() * 16); // rough estimate
+    for ( TokenBase *tb : tokens )
+	if ( tb )
+	    serialize_one_token(tb, out);
+    return true;
+}
+
+bool serialize_token_seq(const std::vector<TokenBase *> &tokens,
+			 std::vector<uint8_t> &out)
+{
+    out.clear();
+    out.reserve(tokens.size() * 16);
+    for ( size_t i = 0; i < tokens.size(); ++i )
+	if ( tokens[i] )
+	    serialize_one_token(tokens[i], out);
     return true;
 }
 
@@ -283,9 +455,19 @@ bool deserialize_tokens(const uint8_t *data, size_t len,
 		tb = new TokenIdent(s);
 	    else if ( tt == TokenType::ttKeyword || tt == TokenType::ttDataType )
 	    {
-		// Keywords/datatypes with string content — create as
-		// identifier and let the parser resolve the keyword.
-		tb = new TokenIdent(s);
+		if ( tt == TokenType::ttDataType )
+		{
+		    if ( DataDef *dd = builtin_datadef_from_spelling(s) )
+			tb = new TokenDataType(s.c_str(), *dd);
+		}
+		// A version-gated reserved keyword shares one TokenID; the
+		// spelling IS its identity, so token_from_id cannot rebuild it.
+		if ( !tb && ti == TokenID::tkCPPKEYWORD )
+		    tb = new TokenCppKeyword(s);
+		if ( !tb )
+		    tb = token_from_id(ti);
+		if ( !tb )
+		    tb = new TokenIdent(s);
 	    }
 	    else
 		tb = new TokenIdent(s);
@@ -294,7 +476,9 @@ bool deserialize_tokens(const uint8_t *data, size_t len,
 	case PchValueType::None:
 	default:
 	    // Reconstruct from TokenID — operators, punctuation, keywords
-	    tb = new TokenBase((int64_t)ti);
+	    tb = token_from_id(ti);
+	    if ( !tb )
+		tb = new TokenBase((int64_t)ti);
 	    break;
 	}
 
@@ -313,7 +497,7 @@ bool deserialize_tokens(const uint8_t *data, size_t len,
 
 bool compress(const std::vector<uint8_t> &in,
 	      std::vector<uint8_t> &out,
-	      PchCompression method)
+	      PchCompression method, int level)
 {
     if ( method == PchCompression::None )
     {
@@ -326,7 +510,8 @@ bool compress(const std::vector<uint8_t> &in,
     {
 	size_t bound = ZSTD_compressBound(in.size());
 	out.resize(bound);
-	size_t result = ZSTD_compress(out.data(), bound, in.data(), in.size(), 3);
+	size_t result = ZSTD_compress(out.data(), bound, in.data(), in.size(),
+				      level ? level : 3);
 	if ( ZSTD_isError(result) )
 	    return false;
 	out.resize(result);
@@ -380,7 +565,7 @@ bool decompress(const uint8_t *in, size_t in_len,
 // --- File I/O ---
 
 bool write_madh(const char *path,
-		const std::deque<TokenBase *> &tokens,
+		const TokenStream &tokens,
 		uint64_t source_hash,
 		PchCompression method)
 {
@@ -470,7 +655,7 @@ uint64_t compiler_hash()
     {
 	const char *sig = "madh-v1-tt" // token type enum
 			  "-ti"        // token id enum
-			  "-2026a";    // format generation
+			  "-2026b";    // format generation
 	cached = hash_content(sig, strlen(sig));
     }
     return cached;

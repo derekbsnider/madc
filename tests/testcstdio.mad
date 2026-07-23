@@ -1,0 +1,16 @@
+// Regression: DEFAULT-mode (embedded headers) `#include <cstdio>`.
+// Real libstdc++ <cstdio> sits over madc's embedded stdio.h shim and imports
+// the whole C89 stdio surface with `namespace std { using ::fpos_t; using
+// ::clearerr; ... }` — every one of those names needs a global-scope
+// declaration in the shim to bind to (this errored "'fpos_t' is not a
+// declaration in '::'" before the shim declared the type + full surface).
+#include <cstdio>
+#include <string>
+int main(){
+    std::string a = "foo";
+    std::string b = "bar";
+    std::string c = a + b;
+    printf("c=%s len=%d\n", c.c_str(), (int)c.size());
+    std::printf("std hi\n");
+    return 0;
+}

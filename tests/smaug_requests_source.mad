@@ -46,7 +46,9 @@ void check_requests( )
 #endif
 }
 
+#ifndef SMAUG_REQUESTS_INCLUDED
 int main()
 {
     return 0;
 }
+#endif

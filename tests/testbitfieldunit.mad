@@ -1,0 +1,32 @@
+// Bitfield allocation units, SysV/gcc packing (task #76): a bitfield is
+// placed at the next free bit and may share bytes with a preceding
+// bitfield of a DIFFERENT declared type, constrained only by not crossing
+// a sizeof(T)-aligned window of its own type. Value semantics were already
+// locked by testboolbitfield; this locks the LAYOUT. Oracle: gcc -O0.
+#include <stdio.h>
+
+struct A { _Bool b:1; unsigned x:5; };            /* shared window */
+struct B { _Bool b:1; unsigned x:20; };           /* wider, still fits */
+struct C { _Bool b:1; int y; };                   /* plain member follows */
+struct D { char c:2; long l:30; };                /* long window absorbs */
+struct E { unsigned a:20; unsigned b:20; };       /* crosses -> next window */
+struct F { _Bool b:1; int :0; unsigned x:5; };    /* :0 forces new unit */
+struct G { char a:3; char b:3; char c:3; };       /* third crosses byte */
+struct H { unsigned char a:7; short s:9; };       /* short window packs */
+
+int main()
+{
+	printf("A %zu B %zu C %zu D %zu\n", sizeof(struct A),
+	       sizeof(struct B), sizeof(struct C), sizeof(struct D));
+	printf("E %zu F %zu G %zu H %zu\n", sizeof(struct E),
+	       sizeof(struct F), sizeof(struct G), sizeof(struct H));
+	struct A a; a.b = 1; a.x = 21;
+	struct B v; v.b = 1; v.x = 777777;
+	struct D d; d.c = -2; d.l = -12345678;
+	struct G g; g.a = -3; g.b = 2; g.c = -1;
+	struct H h; h.a = 99; h.s = -200;
+	printf("a %d %u v %d %u\n", (int)a.b, a.x, (int)v.b, v.x);
+	printf("d %d %ld g %d %d %d h %u %d\n", (int)d.c, (long)d.l,
+	       (int)g.a, (int)g.b, (int)g.c, (unsigned)h.a, (int)h.s);
+	return 0;
+}

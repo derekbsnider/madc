@@ -1,0 +1,20 @@
+#include <stdio.h>
+
+// Predefined compiler macros seeded from the build toolchain (gcc -dM). Uses
+// only x86-64-stable values. The madc dialect presents to system headers as
+// g++ (presents_as_cpp()), so __cplusplus IS defined in the default mode this
+// test runs in; explicit C modes stay plain gcc (see testpredefmacros_c17).
+int main(void)
+{
+	printf("int=%d long=%d ptr=%d\n",
+	       __SIZEOF_INT__, __SIZEOF_LONG__, __SIZEOF_POINTER__);
+#ifdef __STDC_HOSTED__
+	printf("hosted\n");
+#endif
+#ifdef __cplusplus
+	printf("cplusplus defined\n");
+#else
+	printf("no cplusplus (unexpected in madc dialect mode)\n");
+#endif
+	return 0;
+}

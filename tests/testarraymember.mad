@@ -1,0 +1,31 @@
+#!/usr/bin/env madc
+// Task #91 R0: madc `array` (madc::value) as a STRUCT MEMBER — layout
+// (aligned opaque buffer, not a scalar), implicit construction
+// (madarray_construct), member access through php:: helpers, range-for
+// over the member, subscript reads, and implicit destruction
+// (madarray_destruct via the synthesized dtor) without crashing.
+#include <iostream>
+#include <string>
+#include <ns_php>
+using namespace std;
+
+struct S
+{
+	array a;
+	int n;
+};
+
+int main()
+{
+	S s;
+	php::array_push(s.a, "alpha");
+	php::array_push(s.a, "beta");
+	s.n = php::count(s.a);
+	cout << "count: " << s.n << endl;
+	for (string x : s.a)
+		cout << "item: " << x << endl;
+	string first = s.a[0];
+	cout << "first: " << first << endl;
+	cout << "second: " << s.a[1] << endl;
+	return 0;
+}

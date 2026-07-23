@@ -1,0 +1,58 @@
+// Regression: two class templates that each spell their hidden-friend
+// comparison operators through a per-class `_Self` typedef must register as
+// DISTINCT free operators, not collapse into one.
+//
+// Overload IDENTITY must be by RESOLVED type, not surface text. A parameter
+// named through a class-scope typedef (`_Self`) spells identically across
+// DIFFERENT classes, so `RIter`'s and `CIter`'s `operator!=(const _Self&,
+// const _Self&)` both read `_Self`. Comparing raw spellings merged the two as
+// one overload (the second reused the first's symbol) — the const-iterator's
+// `!=` was lost and `find(x) != end()` fell back to a raw struct `!=` that
+// c2mir rejects ("invalid types of comparison operands").
+//
+// This is exactly std::set's _Rb_tree_iterator / _Rb_tree_const_iterator pair,
+// both hidden-friend `operator!=` spelling `_Self`.
+#include <cstdio>
+
+template<typename T> struct CIter;
+
+template<typename T> struct RIter {
+	typedef RIter<T> _Self;
+	T* p;
+	RIter(T* q) : p(q) {}
+	friend bool operator==(const _Self& a, const _Self& b) { return a.p == b.p; }
+	friend bool operator!=(const _Self& a, const _Self& b) { return a.p != b.p; }
+};
+
+template<typename T> struct CIter {
+	typedef CIter<T> _Self;
+	typedef RIter<T> iterator;
+	const T* p;
+	CIter(const T* q) : p(q) {}
+	CIter(const iterator& it) : p(it.p) {}   // iterator -> const_iterator
+	friend bool operator==(const _Self& a, const _Self& b) { return a.p == b.p; }
+	friend bool operator!=(const _Self& a, const _Self& b) { return a.p != b.p; }
+};
+
+template<typename T> struct Tree {
+	typedef RIter<T> iterator;
+	typedef CIter<T> const_iterator;
+	T s1, s2;
+	iterator find(T v) { s1 = v; return iterator(&s1); }
+	const_iterator end() { return const_iterator((const T*)&s2); }
+};
+
+template<typename T> struct Box {
+	typedef Tree<T> _Rep_type;
+	_Rep_type _M_t;
+	typedef typename _Rep_type::const_iterator iterator;
+	iterator find(T v) { return _M_t.find(v); }   // RIter -> CIter on return
+	iterator end() { return _M_t.end(); }
+};
+
+int main()
+{
+	Box<int> b;
+	printf("%s\n", (b.find(5) != b.end()) ? "ne" : "eq");   // distinct nodes -> ne
+	return 0;
+}

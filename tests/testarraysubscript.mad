@@ -1,0 +1,33 @@
+#!/usr/bin/env madc
+// Task #91 R0: madc `array` subscript READS — string-first element typing
+// (the Python/PHP element model behind sys.argv[i]). Covers: string
+// copy-init from an element, direct streaming of an element, an element as
+// a string method receiver context (via the temp lvalue), and the int
+// range-for staying intact beside the string-first subscript typing.
+#include <iostream>
+#include <string>
+#include <ns_php>
+using namespace std;
+
+int main()
+{
+	array a;
+	php::array_push(a, "alpha");
+	php::array_push(a, "beta");
+	string first = a[0];
+	cout << "first: " << first << endl;
+	cout << "second: " << a[1] << endl;
+
+	string joined = a[0];
+	joined = a[1];
+	cout << "reassigned: " << joined << endl;
+
+	array nums;
+	php::array_push_int(nums, 40);
+	php::array_push_int(nums, 2);
+	int sum = 0;
+	for (int n : nums)
+		sum = sum + n;
+	cout << "sum: " << sum << endl;
+	return 0;
+}

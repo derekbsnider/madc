@@ -5,7 +5,9 @@ using namespace std;
 string hello;
 string bye = "Goodbye, cruel World!";
 
-hello = "Hello, World!";
+// (a file-scope `hello = ...;` statement lived here pre-script-mode; it was
+// never executed, and script mode makes statements + explicit main a hard
+// error — owner plan 2026-07-21-script-mode-auto-main, semantics #3)
 
 int main()
 {

@@ -1,0 +1,19 @@
+#!/../bin/madc
+// A variable template used in a CONSTANT-EXPRESSION context (static_assert) —
+// e.g. `is_floating_point_v<double>` as enable_if's condition inside the
+// std::numbers constants. The constant-expression parser resolves the variable
+// template by folding its arg-substituted initializer (`is_floating_point<T>
+// ::value`). This is the std::numbers `e_v`/`pi_v` keystone.
+#include <type_traits>
+#include <cstdio>
+using namespace std;
+
+static_assert(is_floating_point_v<double>, "double is floating point");
+static_assert(is_floating_point_v<float>, "float is floating point");
+static_assert(!is_floating_point_v<int>, "int is not floating point");
+
+int main()
+{
+    printf("ok\n");
+    return 0;
+}

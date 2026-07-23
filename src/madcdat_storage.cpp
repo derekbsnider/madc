@@ -3,8 +3,8 @@
 // - DataDriverRegistry
 // - built-in dsv:// driver
 
-#include "madcdat/driver.h"
-#include "madcdat/query.h"
+#include "madcdis/driver.h"
+#include "madcdis/query.h"
 
 #include <algorithm>
 #include <cctype>
@@ -278,6 +278,7 @@ std::string value_to_text(const value &v)
 	case value::kind::bytes:
 	case value::kind::array:
 	case value::kind::object:
+	case value::kind::instance:
 	    throw std::runtime_error("dsv driver only supports scalar field values");
     }
     return std::string();

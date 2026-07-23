@@ -216,7 +216,7 @@ TEST_SUITE("libmadc storage contract") {
 	CHECK(spec.ordered_key_compare() == madc::SchemaInfo::key_compare::none);
 	CHECK(spec.field_names().empty());
 	CHECK(spec.excluded_fields().empty());
-	CHECK(spec.string_limits().empty());
+	CHECK(spec.text_limits().empty());
     }
 
     TEST_CASE("MappingSpec can express DSV logical mapping with key and field renames") {
@@ -255,19 +255,19 @@ TEST_SUITE("libmadc storage contract") {
 	madc::MappingSpec<StorageProbe> spec;
 	spec.fixed_record_size(48,
 			       madc::MappingSpec<StorageProbe>::overflow_policy::truncate)
-	    .string_field_limit("short_name", 15)
-	    .string_field_limit("title",
+	    .text_field_limit("short_name", 15)
+	    .text_field_limit("title",
 				31,
 				madc::MappingSpec<StorageProbe>::overflow_policy::truncate);
 
 	CHECK(spec.record_layout() == madc::MappingSpec<StorageProbe>::layout_mode::fixed_record);
 	CHECK(spec.record_size() == 48);
 	CHECK(spec.record_overflow_policy() == madc::MappingSpec<StorageProbe>::overflow_policy::truncate);
-	REQUIRE(spec.string_limits().count("short_name") == 1);
-	REQUIRE(spec.string_limits().count("title") == 1);
-	CHECK(spec.string_limits().at("short_name").max_bytes == 15);
-	CHECK(spec.string_limits().at("title").max_bytes == 31);
-	CHECK(spec.string_limits().at("title").policy == madc::MappingSpec<StorageProbe>::overflow_policy::truncate);
+	REQUIRE(spec.text_limits().count("short_name") == 1);
+	REQUIRE(spec.text_limits().count("title") == 1);
+	CHECK(spec.text_limits().at("short_name").max_bytes == 15);
+	CHECK(spec.text_limits().at("title").max_bytes == 31);
+	CHECK(spec.text_limits().at("title").policy == madc::MappingSpec<StorageProbe>::overflow_policy::truncate);
     }
 
     TEST_CASE("MappingSpec can express VLR intent for variable-sized records") {

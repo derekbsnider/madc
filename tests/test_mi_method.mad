@@ -1,0 +1,13 @@
+#!/../bin/madc
+// Base-method this-adjust: getp2() lives in P2 (subobject @ offset 8 in MIc);
+// calling it on an MIc must adjust `this` by +8 or it reads p1 instead of p2.
+class P1 { public: long p1; long getp1() { return this.p1; } };
+class P2 { public: long p2; long getp2() { return this.p2; } };
+class MIc : public P1, public P2 { public: long c; };
+int main()
+{
+    MIc m;
+    m.p1 = 100; m.p2 = 200; m.c = 300;
+    printf("%ld %ld\n", m.getp1(), m.getp2());
+    return 0;
+}

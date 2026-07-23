@@ -1,0 +1,24 @@
+#include <iostream>
+using namespace std;
+
+// Regression: gcc-13 compiler builtins __is_pod(T) and __is_standard_layout(T).
+// libstdc++'s _Rb_tree_impl (bits/stl_tree.h) selects an EBO layout via a defaulted
+// non-type template arg `bool = __is_pod(_Key_compare)`, so std::map / std::set need
+// __is_pod to fold in a constant context. POD == trivial AND standard-layout.
+// Verified against g++ -std=c++17 (PodS=1, NonTrivial=0, MixedAccess=0).
+
+struct PodS { int a; int b; };
+struct NonTrivial { NonTrivial() {} int a; };          // user ctor -> not trivial
+struct MixedAccess { public: int a; private: int b; };  // mixed access -> not std-layout
+
+int main()
+{
+	static_assert(__is_pod(int), "scalar is POD");
+	static_assert(__is_pod(PodS), "trivial std-layout struct is POD");
+	static_assert(!__is_pod(NonTrivial), "user-ctor struct is not POD");
+	static_assert(!__is_pod(MixedAccess), "mixed-access struct is not POD");
+	static_assert(__is_standard_layout(PodS), "PodS is standard-layout");
+	static_assert(!__is_standard_layout(MixedAccess), "MixedAccess is not standard-layout");
+	cout << "pod traits ok" << endl;
+	return 0;
+}

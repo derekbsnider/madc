@@ -1,0 +1,18 @@
+#!/../bin/madc
+#include <iostream>
+#include <string>
+#include <ns_php>
+#include "foreach_header_helper.mah"
+using namespace std;
+
+void print_header_name(string name) {
+	cout << "Header: " << name << endl;
+}
+
+int main() {
+	array names;
+	php::array_push(names, "Ada");
+	php::array_push(names, "Bjarne");
+	header_for_each(names, print_header_name);
+	return 0;
+}

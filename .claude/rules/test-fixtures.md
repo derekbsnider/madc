@@ -8,6 +8,19 @@
   - `tests/foo.input` — redirected to stdin
   - `tests/foo.argv` — whitespace-split, appended as argv
   - `tests/foo.expect` — each non-empty line must appear in the output
+  - `tests/foo.expect_err` — compile-error test: must exit nonzero (not a
+    timeout) and stderr must contain each non-empty line; EXE pass skips it
+  - `tests/foo.expect_quiet` — JIT run must produce EMPTY stderr (content
+    of the fixture file is ignored; presence enables the check)
+  - `tests/foo.mir_skip` — skip this test when running with `--backend=mir`
+  - `tests/foo.exe_skip` — skip this test in the native-artifact passes
+    (`--exe` and `--obj`; content = one line saying why the test is
+    structurally JIT-only)
+  - `tests/foo.obj_skip` — skip this test in the `--obj` pass only
+    (content = one line saying why it is outside the single-object
+    domain, e.g. a multi-TU `--project` program; the `--exe` pass still
+    covers it)
+  - `tests/foo.timeout` — per-test wall-clock cap in seconds (default 5); raise it for a legitimately slow test (e.g. a real-libstdc++-header compile, no PCH yet)
 - When a test needs stdin, use a `.input` fixture file with shell
   redirection (`prog < foo.input`). Never use `echo ... | prog` inline in
   the runner.

@@ -1,0 +1,17 @@
+// std::stof/stod ride __gnu_cxx::__stoa with an EMPTY _Base... pack
+// (strtod has no base param) — pins fn-template empty-pack ELISION.
+#include <string>
+#include <iostream>
+using namespace std;
+
+int main()
+{
+	string s = "3.14";
+	double d = stod(s);
+	cout << d << endl;
+	float f = stof(s);
+	cout << f << endl;
+	string i = "42";
+	cout << stoi(i) << endl;	// non-empty pack control (works today)
+	return 0;
+}

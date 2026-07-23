@@ -1,0 +1,61 @@
+0
+0
+# tag-arithmetic retirement burndown baseline (scripts/tag_arith_burndown.sh --check).
+# The first two number-only lines are the two ratcheted metrics:
+#   line 1 = RAW-TAG sites: rtPtr/rtRef/rtDePtr/rtDeRef construction + raw
+#            10000/20000 comparisons, outside the core encoding (include/datadef.h).
+#   line 2 = CONSUMER sites: dt*ptr/dt*ref named-constant uses (type()==dtCHARptr,
+#            switch cases, signature literals) + reftype() band-reads — the sites
+#            that READ the offset indirectly and break when it is dropped, but are
+#            invisible to the raw-tag count. Migrate to is_pointer()/is_reference()/
+#            rawtype() (representation-agnostic; correct for both the structural
+#            DataDefPTR objects and the plain tagged DataDefs today).
+# Lower the relevant line in the SAME commit that migrates a site; the gate fails
+# if either count RISES. When BOTH reach 0, a final commit removes the core
+# encoding from datadef.h (the enum dt*ptr/dt*ref ranges + rt* macros + the offset
+# math in the accessors) and this gate becomes a finish-line check.
+# Plan: docs/plans/2026-06-30-tag-arithmetic-retirement-plan.md
+#
+# RAW-TAG history:
+#   25 (2026-06-30, Phase 0): initial baseline.
+#   3  (2026-06-30, Cluster A done): the 18 builtin-signature rtPtr() sites
+#      migrated to ptr_of(ddX) (structural, resolved via getPointerType —
+#      representation-identical to the dtXptr tag). Remaining 3 = Cluster B
+#      (same_representation: rtDeRef @ 9055/9057, raw >= 20000 @ 13127), coupled to
+#      the core-removal phase (compares tag-only types), NOT independent.
+# CONSUMER history:
+#   17 (2026-06-30): initial measurement of the consumer surface. Includes 3 missed
+#      Cluster-A signature literals (madc_program 416/417, parser 11838 use the
+#      named constant dtCHARptr inside datatype_vec_t{} rather than rtPtr(dtCHAR)).
+#   14 (2026-06-30): the 3 missed Cluster-A signature literals migrated to
+#      ptr_of(ddCHAR) (resolve_data_type -> getPointerType(ddCHAR) == ddCHARptr,
+#      representation-identical to the dtCHARptr tag). strcmp's two char* params +
+#      get_argv's char* return. Behavior-identical; torture byte-identical.
+#   7  (2026-06-30, core step 3): the 6 `type()==dtCHARptr` cstr consumers migrated
+#      to the new structural DataDef::is_cstr() (cir_builder 11116/15414/15446/
+#      15503, madc_program 404 + the 2194 switch case pulled ahead of is_integer),
+#      and parser 19266's `|| type()==dtCHARptr` deleted (redundant — is_pointer()
+#      already covers every char*). is_cstr() is value-equivalent to the tag
+#      compare for all types and survives the tag drop. Remaining 7 = reftype()
+#      readers (cir 2527/2537 dead guards, 16105 logging, parser 9058/9060 Cluster
+#      B) + dtARRAYref (cir 4277) + the dtCHARptr return-type PRODUCER (parser
+#      12236) — all handled in the core-flip step.
+#   5  (2026-06-30, flip groundwork): the last two NON-reftype consumers cleared.
+#      parser 12236 producer -> returns typespec_t, char* via ptr_of(ddCHAR)
+#      (behavior-identical, like Cluster A). cir 4277 `|| dtARRAYref` deleted as
+#      DEAD (rawtype() always strips the band, never returns a 20000+ value). The
+#      remaining 5 are ALL reftype() readers: cir 16109 (logging), cir 2527/2537
+#      (dead-defensive guards), parser 9058/9060 (same_representation Cluster B) —
+#      handled by the flip (structural reftype on the plain types + Cluster B
+#      rewrite). The raw-tag metric's 3 are the same_representation tag tail.
+#   0 / 0 (2026-06-30, ATOMIC CORE FLIP): the encoding is GONE. datadef.h dropped
+#      the dt*ptr/dt*ref enum bands, the rt{None,Val,Ptr,Ref,DePtr,DeRef} macros,
+#      the static rawtype(DataType) overload + setRef(), and made the base
+#      is_pointer()/rawtype()/reftype() bodies structural; DataDefPTR's ctor no
+#      longer adds +10000. ddVOIDref (the last plain-tag global) became a real
+#      DataDefREF(ddVOID). same_representation's tag tail is now is_pointer()/
+#      type(); resolve_data_type's dead banded-tag branch was deleted. Two extra
+#      pointer-guards were needed because a pointer's type() is now its pointee
+#      scalar: cir synth_call_shim_var (void* return no longer aliases dtVOID) and
+#      native_type_from_datadef (pointers bail to integer before the scalar
+#      switch). This gate is now a FINISH-LINE check: both metrics must stay 0.

@@ -1,0 +1,27 @@
+#!/../bin/madc
+// Regression guard for the late-drained free-fn-template forward-prototype fix
+// (docs/plans/2026-06-15-late-instantiation-prototype-plan.md, Approach A).
+//
+// Default-constructing std::set / std::map instantiates the full
+// <bits/node_handle.h> _Rb_tree/_Node_handle closure. A method body
+// materialized late (_Node_handle_common::release) calls a free-fn-template
+// instantiation (std::move -> __ns_std_move__o2) that drains through
+// translate_module's pending_funcs loop. Before the fix, that instantiation
+// got a DEFINITION but no forward PROTOTYPE, so the earlier-emitted release
+// body called it before its declaration and c2mir applied the C K&R
+// implicit-int rule (`int()`) -> "invalid type argument of unary *" +
+// "conflicting types". The fix records pending_funcs-drained instantiations in
+// materialized_funcs so Pass 1.95(a) emits their forward prototypes.
+//
+// Bare default-construction keeps this off the separate empty-_Rb_tree-dtor
+// wall (which only triggers when <iostream> is included): the point of THIS
+// guard is that the closure COMPILES (the proto gap is closed) and the program
+// runs to exit 0.
+#include <set>
+using namespace std;
+
+int main()
+{
+	set<int> s;
+	return 0;
+}

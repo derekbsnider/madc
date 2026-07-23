@@ -1,7 +1,45 @@
 -include ../config.mk
 
-CXX ?= g++
-CXXFLAGS ?= -std=c++11 -Wall
+CC ?= clang
+CXX ?= clang++
+# --- Build modes (B4a; docs/plans/2026-07-04-forest-default-mode-design.md §7)
+# make            -> develop: -O0 -> bin/madc. Optimize madc's *algorithms*
+#                    first, and keep the binary unoptimized so profiling/gdb
+#                    attribution is honest (the long-standing dev contract).
+# make debug      -> -O0 -ggdb, unstripped -> bin/madc-debug.
+# make release    -> -O2 -> bin/madc-release (the "last-lap switch"), then
+#                    strip BEFORE the forest pack is appended (strip rewrites
+#                    the ELF image and discards trailing bytes; plain strip
+#                    keeps .dynsym, which the dlsym import resolver needs),
+#                    then pack + append + verify via scripts/forest_pack.sh.
+#                    Packed suite: MADC_BIN=bin/madc-release scripts/run_tests.sh
+# Modes NEVER share objects OR the output binary: each compiles into its own
+# obj/<mode>/ tree and links its own bin/ name, so dev and packed-release
+# binaries coexist (-MMD tracks headers, not flags — mixing -g/-O2/-O0
+# objects silently skews; a shared bin path silently skips cross-mode
+# relinks). lib/libmadc.{a,so} stay one path — the .libmode stamp below
+# forces their relink on a mode switch.
+MODE ?= develop
+ifeq ($(MODE),release)
+MODE_OPTFLAGS = -O2
+else ifeq ($(MODE),debug)
+MODE_OPTFLAGS = -O0 -ggdb
+else
+MODE_OPTFLAGS = -O0
+endif
+# Modes never share the OUTPUT BINARY either: each mode links its own name,
+# so `make release` (packed -O2) and `make` (develop -O0) coexist and can
+# never clobber each other. (Before this, all modes linked ../bin/madc and
+# make's timestamp logic silently SKIPPED the develop relink after a release
+# build — bin/madc stayed the packed release binary while claiming dev.)
+ifeq ($(MODE),release)
+BIN = ../bin/madc-release
+else ifeq ($(MODE),debug)
+BIN = ../bin/madc-debug
+else
+BIN = ../bin/madc
+endif
+CXXFLAGS ?= -std=c++11 -Wall $(MODE_OPTFLAGS)
 PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC
 AR ?= ar
 ARFLAGS ?= rcs
@@ -11,25 +49,38 @@ INSTALL_PROGRAM ?= $(INSTALL) -m 755
 INSTALL_DIR ?= $(INSTALL) -d
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-CORE_OFILES = lexer.o parser.o typesafe.o compiler.o compiler_builtins.o compiler_control_flow.o compiler_operators.o madc_ir.o madc_elf.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o exception_runtime.o pch.o embedded_headers.o precompiled_headers.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o exception_runtime.o pch.o madcdis_snapshot.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
+# Regenerate embedded_headers.cpp NOW, at Makefile parse time, before any target
+# is evaluated — so an edited/added/DELETED embedded header is reflected in
+# embedded_headers.o within a SINGLE make. The generator is idempotent (rewrites
+# only on real content change), so this does not churn mtimes or force rebuilds.
+EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
 MADDATHDRS = $(wildcard ../include/madcdat/*.h)
+# madc::dis substrate headers: tokens.h/madc.h include these, so they MUST be in
+# DEPENDS or editing one silently leaves stale objects.
+MADCDISHDRS = $(wildcard ../include/madcdis/*.h)
 INCDIR	= ../include
 BINDIR	= ../bin
 LIBDIR	= ../lib
-OBJDIR	= ../obj
-PICOBJDIR = ../obj/pic
+OBJDIR	= ../obj/$(MODE)
+PICOBJDIR = $(OBJDIR)/pic
 FEATURE_DEFINES ?=
 OPTIONAL_CPPFLAGS ?=
 OPTIONAL_LIBS ?=
 MADC_STORAGE_DB_OFILES ?= madcdat_storage.o
 HAVE_MADCDAT ?= 1
-DEFINES	= -I$(INCDIR) $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS)
+MIRDIR	= /workspace/mir
+# MADC_VERSION (computed below from ../VERSION) is threaded into the binary as a
+# string literal so the built-in MADC_VERSION macro tracks the release version —
+# single source of truth, no hardcoded copy in the lexer.
+DEFINES	= -I$(INCDIR) -I$(MIRDIR) -I$(MIRDIR)/c2mir $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS) -DMADC_VERSION_STR='"$(MADC_VERSION)"'
 #LIBS	= -lreadline -lasmjit
-LIBS	= -L/usr/local/lib -Wl,-rpath,/usr/local/lib -rdynamic -lasmjit -ldl -lz $(OPTIONAL_LIBS)
-DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS)
+LIBS	= -rdynamic -ldl -lz -lm -lpthread $(OPTIONAL_LIBS)
+MIRLIB	= $(MIRDIR)/libmir.a
+DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS) $(MADCDISHDRS)
 
 ifeq ($(HAVE_MADCDAT),1)
 OFILES = $(CORE_OFILES) $(MADDAT_OFILES)
@@ -44,6 +95,9 @@ MADDAT_ARCHIVE = $(LIBDIR)/libmadcdat.a
 MADC_VERSION ?= $(shell cat ../VERSION 2>/dev/null || echo 0.0.0)
 MADC_SOVERSION ?= $(firstword $(subst ., ,$(MADC_VERSION)))
 LIBMADC_SHARED = $(LIBDIR)/libmadc.so
+LIBMADC_STATIC = $(LIBDIR)/libmadc.a
+# Objects for the library: everything except the main() driver
+LIBMADC_STATIC_OBJS = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
 pkgconfigdir ?= $(libdir)/pkgconfig
 
 TESTDIR  = ../tests/unit
@@ -63,11 +117,26 @@ LIBMADC_STAGE_ROOT ?= /tmp/madc-libstage
 LIBMADC_STAGE_CPP_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_cpp_smoke
 LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 
+# Build the unit-test binaries as part of the DEFAULT build so they can never be
+# stale relative to the library/objects. Previously `all` built only the lib +
+# bin/madc; the test binaries were relinked solely by the `test` target, so
+# running `bin/test_*` directly after a bare `make` silently used a STALE binary
+# (false pass/fail — this cost several phantom-failure debugging detours). The
+# test-binary rule already depends on $(LIBMADC_STATIC), so make relinks each one
+# only when the library actually changed. For a fast lib/madc-only iteration
+# build when you are NOT about to run unit tests, pass BUILD_TESTS=0.
+BUILD_TESTS ?= 1
+ifeq ($(BUILD_TESTS),1)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(BIN) $(LIBMADC_SHARED) $(TESTBINS)
+else
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(BIN) $(LIBMADC_SHARED)
+endif
+
 all:
-	$(MAKE) ../bin/madc $(LIBMADC_SHARED)
+	$(MAKE) $(DEFAULT_TARGETS)
 
 libmadc:
-	$(MAKE) $(LIBMADC_SHARED)
+	$(MAKE) $(LIBMADC_STATIC) $(LIBMADC_SHARED)
 
 libmadc-smoke:
 	rm -rf $(LIBMADC_STAGE_ROOT)
@@ -81,11 +150,13 @@ install-libmadc: libmadc
 	$(INSTALL_DIR) $(DESTDIR)$(libdir)
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)/libmadc
+	$(INSTALL_DIR) $(DESTDIR)$(includedir)/madcdis
 	$(INSTALL_PROGRAM) $(LIBMADC_SHARED) $(DESTDIR)$(libdir)/libmadc.so.$(MADC_VERSION)
 	cd $(DESTDIR)$(libdir) && ln -sf libmadc.so.$(MADC_VERSION) libmadc.so.$(MADC_SOVERSION)
 	cd $(DESTDIR)$(libdir) && ln -sf libmadc.so.$(MADC_SOVERSION) libmadc.so
 	$(INSTALL_DATA) ../include/madc_api.h $(DESTDIR)$(includedir)/madc_api.h
 	@for h in $(LIBMADDHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/libmadc/; done
+	@for h in $(MADCDISHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/madcdis/; done
 	@if [ -f ../libmadc.pc ]; then $(INSTALL_DIR) $(DESTDIR)$(pkgconfigdir) && $(INSTALL_DATA) ../libmadc.pc $(DESTDIR)$(pkgconfigdir)/libmadc.pc; fi
 
 ifeq ($(HAVE_MADCDAT),1)
@@ -106,20 +177,64 @@ install-madcdat: libmadcdat
 endif
 
 debug:
-	$(MAKE) CXXFLAGS="-std=c++11 -Wall -g -O0" ../bin/madc
+	$(MAKE) MODE=debug ../bin/madc-debug
+
+# Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
+# the ELF and would destroy an already-appended forest blob). Pack failure =
+# build failure; the verify step proves the appended blob reads back (pin OK)
+# and survives the stripped binary's dlsym resolver path.
+release:
+	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc-release $(LIBMADC_SHARED)
+	strip ../bin/madc-release
+	cd .. && bash scripts/forest_pack.sh bin/madc-release
+
 clean:
-	rm -f $(OBJECTS)
-	rm -f ../obj/madcdat_storage.o ../obj/madcdat_storage_bdb.o ../obj/madcdat_storage_gdbm.o ../obj/madcdat_storage_qdbm.o ../obj/madcdat_storage_sqlite.o
-	rm -f ../obj/pic/*.o
+	rm -rf ../obj/develop ../obj/debug ../obj/release
+	rm -f ../obj/*.o ../obj/*.d ../obj/pic/*.o ../obj/pic/*.d
 	rm -f $(ALL_TESTBINS)
 	rm -f $(MADDAT_ARCHIVE)
+	rm -f $(LIBMADC_STATIC)
 	rm -f $(LIBMADC_SHARED)
+	rm -f sys_include_paths.cpp
+	rm -f predefined_macros.cpp
 
+# Each unit binary runs under a CPU cap (ulimit -t, survives even if SIGTERM is
+# ignored) AND a wall-clock timeout. A hung unit test (e.g. an infinite loop in
+# generated/interpreted code) is then KILLED and fails the suite, instead of
+# spinning forever and pegging the host — see the 2026-06-01 test_cir incident.
+TEST_CPU_LIMIT ?= 120
+TEST_WALL_LIMIT ?= 180
 test: $(TESTBINS)
-	@for t in $(TESTBINS); do echo "Running $$t..."; LD_LIBRARY_PATH="$(LIBDIR):/usr/local/lib:$$LD_LIBRARY_PATH" $$t || exit $$?; done
+	@for t in $(TESTBINS); do \
+		echo "Running $$t..."; \
+		( ulimit -t $(TEST_CPU_LIMIT); LD_LIBRARY_PATH="$(LIBDIR):/usr/local/lib:$$LD_LIBRARY_PATH" timeout $(TEST_WALL_LIMIT) "$$t" ); \
+		rc=$$?; \
+		if [ $$rc -eq 124 ] || [ $$rc -eq 137 ]; then \
+			echo "*** $$t hit the time/CPU cap (rc=$$rc) — a hanging unit test was killed before it could peg the host. Failing the suite."; \
+			exit 1; \
+		elif [ $$rc -ne 0 ]; then \
+			exit $$rc; \
+		fi; \
+	done
 
 fulltest: ../bin/madc $(LIBMADC_SHARED) test
 	@cd .. && bash scripts/run_tests.sh
+	@cd .. && bash scripts/check-no-std-hardcoding.sh
+	@cd .. && bash scripts/check-call-emit-symbol.sh
+	@cd .. && bash scripts/warn_census.sh --check
+	@cd .. && bash scripts/tag_arith_burndown.sh --check
+	@cd .. && bash scripts/tsubst_flagon_gate.sh --check
+	@cd .. && bash scripts/class_pattern_equivalence.sh
+	@cd .. && bash scripts/forest_selfexe_gate.sh
+	@cd .. && bash scripts/forest_bind_gate.sh
+	@cd .. && bash scripts/project_gate.sh
+	@cd .. && bash scripts/forest_index_oracle.sh
+	@cd .. && bash scripts/forest_dm_oracle.sh
+
+# CIR renderer fidelity gate over the whole corpus (diagnostic; localizes
+# missing renderer constructs and gcc-vs-emitted asm divergences).
+cirfidelity: ../bin/madc
+	@cd .. && bash scripts/cir_fidelity.sh --all
 
 gcctest: ../bin/madc
 	@cd .. && scripts/run_gcc_testsuite.py
@@ -127,27 +242,74 @@ gcctest: ../bin/madc
 gcctest-smoke: ../bin/madc
 	@cd .. && scripts/run_gcc_testsuite.py --limit 25
 
-$(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(TESTOBJ)
-	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(TESTOBJ) $(LIBS)
+# Runtime helpers (__madc_* in va_helpers, the file-stream wrappers, the
+# exception runtime, namespace builtins, etc.) are resolved at runtime by
+# the CIR/MIR backend via dlsym(RTLD_DEFAULT) and consulted at parse time
+# the same way. Nothing references them at link time, so plain archive
+# semantics would drop those objects. Force the whole libmadc archive in
+# (with -rdynamic) so every runtime symbol is present in the dynamic table.
+WHOLE_ARCHIVE_BEGIN = -Wl,--whole-archive
+WHOLE_ARCHIVE_END   = -Wl,--no-whole-archive
 
-../bin/madc: $(OBJECTS)
-	$(CXX) -o $@ $^ $(CXXFLAGS) $(DEFINES) $(LIBS)
+$(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB)
+	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(LIBS)
 
-$(LIBMADC_SHARED): $(LIBMADC_OBJECTS)
+$(BIN): $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB)
+	$(CXX) -o $@ $(OBJDIR)/madc.o $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
+
+# lib/libmadc.{a,so} keep ONE path across modes, so make's timestamps alone
+# would silently leave the OTHER mode's libs in place after a mode switch
+# (the same skew per-mode obj trees prevent for objects). The stamp file
+# records which mode built the libs; switching modes recreates it (newer
+# than the libs), forcing a relink from the new mode's objects. The recipes
+# name their object lists explicitly so the stamp never enters the archive.
+LIBMODE_STAMP = $(LIBDIR)/.libmode-$(MODE)
+$(LIBMODE_STAMP):
+	@mkdir -p $(LIBDIR)
+	@rm -f $(LIBDIR)/.libmode-*
+	@touch $@
+
+$(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS) $(LIBMODE_STAMP)
 	mkdir -p $(LIBDIR)
-	$(CXX) -shared -Wl,-soname,libmadc.so.$(MADC_SOVERSION) -o $@ $^ $(CXXFLAGS) $(DEFINES) $(LIBS)
+	rm -f $@
+	$(AR) $(ARFLAGS) $@ $(LIBMADC_STATIC_OBJS)
+
+$(LIBMADC_SHARED): $(LIBMADC_OBJECTS) $(MIRLIB) $(LIBMODE_STAMP)
+	mkdir -p $(LIBDIR)
+	$(CXX) -shared -Wl,-soname,libmadc.so.$(MADC_SOVERSION) -o $@ $(LIBMADC_OBJECTS) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
 
 $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
 	mkdir -p $(LIBDIR)
 	rm -f $@
 	$(AR) $(ARFLAGS) $@ $^
 
-embedded_headers.cpp: $(MADHDRS)
-	../scripts/gen_embedded_headers.sh
+# embedded_headers.cpp is regenerated at PARSE time (see EMBED_GEN near the top),
+# not by a recipe rule: a recipe-time prereq updates the file too late — make has
+# already stat'd embedded_headers.o against the OLD mtime when evaluating the
+# graph, so a changed/added/deleted embedded header would not rebuild the object
+# until the NEXT make. Parse-time generation makes it correct in one invocation.
+
+# Host system include search paths, captured from the configured compiler.
+# Host-specific + gitignored, so generate it if missing (a fresh checkout has
+# none); `make clean` removes it to force a refresh when the toolchain changes.
+sys_include_paths.cpp:
+	CXX="$(CXX)" ../scripts/gen_sys_includes.sh
+
+# Host predefined compiler macros, captured from the configured compiler.
+# Same host-specific/gitignored/regenerate-if-missing treatment as above.
+predefined_macros.cpp:
+	CXX="$(CXX)" ../scripts/gen_predefined_macros.sh
 
 $(OBJDIR)/%.o: %.cpp $(DEPENDS)
-	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) $<
+	@mkdir -p $(OBJDIR)
+	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
 $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)
-	mkdir -p $(PICOBJDIR)
-	$(CXX) -c -o $@ $(PIC_CXXFLAGS) $(DEFINES) $<
+	@mkdir -p $(PICOBJDIR)
+	$(CXX) -c -o $@ $(PIC_CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+
+# Auto-generated per-object header dependencies (from -MMD -MP above). A changed
+# .h rebuilds every .o that includes it, preventing stale-object ABI skew (e.g.
+# a layout change in cir_builder.h not recompiling madc_cir.o). Missing on a
+# clean build (regenerated during it); -include ignores the absent files.
+-include $(wildcard $(OBJDIR)/*.d $(PICOBJDIR)/*.d)

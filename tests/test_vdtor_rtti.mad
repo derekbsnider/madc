@@ -1,0 +1,13 @@
+#include <iostream>
+#include <typeinfo>
+using namespace std;
+class Base { public: virtual ~Base() {} };
+class Derived : public Base { public: int x; };
+int main() {
+    Base *b = new Derived();
+    cout << (typeid(*b) == typeid(Derived)) << endl;   // 1
+    Derived *d = dynamic_cast<Derived *>(b);
+    cout << (d != 0) << endl;                           // 1
+    delete b;
+    return 0;
+}

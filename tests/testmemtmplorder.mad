@@ -1,0 +1,20 @@
+#!/../bin/madc
+// [temp.func.order] for static member function templates: a pointer-specialized
+// overload (take(U*)) must beat the generic one (take(P)) for a pointer arg,
+// regardless of declaration order — overload selected after args are known.
+#include <iostream>
+using namespace std;
+struct C {
+    template<typename P>
+    static int take(P p, int v) { return 1; }       // generic, declared first
+    template<typename U>
+    static int take(U* p, int v) { *p = v; return 2; } // more specialized
+};
+int main()
+{
+    int x = 0;
+    int which = C::take(&x, 42);   // must pick take(U*): which=2, x=42
+    cout << "which=" << which << endl;
+    cout << "x=" << x << endl;
+    return 0;
+}

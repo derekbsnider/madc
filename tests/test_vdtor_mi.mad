@@ -1,0 +1,10 @@
+#include <iostream>
+using namespace std;
+class A { public: virtual void fa() {} virtual ~A() { cout << "~A" << endl; } };
+class B { public: virtual void fb() {} virtual ~B() { cout << "~B" << endl; } };
+class C : public A, public B { public: ~C() { cout << "~C" << endl; } };
+int main() {
+    B *b = new C();           // points at the B subobject
+    delete b;                 // most-derived first
+    return 0;
+}

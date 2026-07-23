@@ -1,0 +1,25 @@
+/* _Bool bitfields: no sign qualifier may be emitted (C11 6.7.2p2). */
+typedef _Bool bool;
+
+struct flags {
+	bool a : 1;
+	bool b : 1;
+	unsigned u : 2;
+	int s : 3;
+};
+
+int main(void)
+{
+	struct flags f;
+	f.a = 1;
+	f.b = 0;
+	f.u = 3;
+	f.s = -2;
+	__builtin_printf("a=%d b=%d u=%u s=%d\n", f.a, f.b, f.u, f.s);
+	f.b = f.a;
+	/* sizeof(struct flags) deliberately NOT locked: madc's bitfield
+	   allocation opens a new unit when the base type widens after a
+	   _Bool field (8 vs gcc's 4) — filed as task #76. */
+	__builtin_printf("b=%d\n", f.b);
+	return 0;
+}

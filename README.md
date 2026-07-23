@@ -1,6 +1,6 @@
 # madc — Mad-C Programming Language
 
-**My jit-Assembled Dialect of C** — a C-like scripting language that JIT-compiles directly to x86-64 machine code using [asmjit](https://asmjit.com/). No bytecode, no interpreter, no separate compilation step.
+**My Advanced Dialect of C** — a C-like scripting language built around the **MC11-IR**: a `cir_node` AST tree that *derives from* [c2mir](https://github.com/vnmakarov/mir)'s `node_t`, so it feeds c2mir → MIR and executes in-process — no bytecode, no separate compilation step. The same tree also carries its originating tokens, so it renders back to source (`.c` / `.mc11`) and forward to other targets from one representation.
 
 The "Mad" in Mad-C: mix functions from multiple programming languages in a single program.
 
@@ -164,10 +164,21 @@ Plus `#load` for any shared library via dlopen.
 ## Building
 
 Requires:
-- `g++` with C++11 support
-- asmjit v1.14 installed at `/usr/local/` (see [`docs/build.md`](docs/build.md))
+- `clang++` (or `g++`) with C++11 support
+- The **madc MIR fork** — [github.com/derekbsnider/mir](https://github.com/derekbsnider/mir)
+  (branch **`develop`**, pinned at commit `4aa628b` — see [`MIR_COMMIT`](MIR_COMMIT)),
+  built at `/workspace/mir`. madc links `libmir.a` + c2mir from there. This is
+  **not** upstream MIR: the fork carries native C99 `_Complex`,
+  `__attribute__((cleanup))`, and the ABI/codegen fixes the CIR backend depends
+  on. The fork's `develop` tracks madc's `develop` (and `master`↔`master` once
+  madc reaches parity).
 
 ```bash
+# Build the MIR fork first (libmir + c2mir):
+git clone -b develop https://github.com/derekbsnider/mir /workspace/mir
+git -C /workspace/mir checkout "$(cat MIR_COMMIT)"   # pin to the verified commit
+make -C /workspace/mir
+
 make -C src           # build bin/madc
 make -C src clean     # clean objects
 make -C src test      # run unit tests
@@ -185,7 +196,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 452 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). GCC torture test parity: 1649/1685 (97.9%). (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
+**Current status (v0.34.0, develop): 695 integration tests pass (0 failing, 0 timed out, 16 skipped) through both the live and packed release binaries. Every forest gate is green, including bound-surface `[subbind]`; the current reducer corpus is 308 pack drops. The gcc.c-torture promote gate and formally skipped cases are tracked in [`docs/parity/failset-classification.md`](docs/parity/failset-classification.md). SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -212,7 +223,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | [`docs/language/regex.md`](docs/language/regex.md) | Regex functions |
 | [`docs/language/multiple-returns.md`](docs/language/multiple-returns.md) | Go-style multiple return values |
 | [`docs/language/ternary-operator.md`](docs/language/ternary-operator.md) | Ternary operator |
-| [`docs/build.md`](docs/build.md) | Build requirements, asmjit setup |
+| [`docs/build.md`](docs/build.md) | Build requirements + the madc MIR fork |
 | [`docs/plans/data-storage-federation.md`](docs/plans/data-storage-federation.md) | Exploratory `madcdat` storage/federation design (`madc::DataSource` stays core, `DataSet<T>`, `Relation<A,B>`, automatic mapping, SQL/GQL front-ends, current `--enable-madcdat` build gate, future separate `libmadcdat` boundary) |
 | [`docs/architecture.md`](docs/architecture.md) | Compiler internals |
 | [`docs/testing.md`](docs/testing.md) | Test guide |
@@ -226,17 +237,63 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.21.1** (2026-05-25) — **Const enforcement, access control, MIR backend plan.** Top-level const and const ref enforcement, public/private/protected access control, automatic token position inheritance, and JIT IR architecture research leading to the decision to adopt MIR as the optimizing backend (replacing asmjit). 475 tests, 0 failures.
+**v0.34.0 (2026-07-11)** — the pack-time drain release: Phase 2 rung 1 of the
+embedded-header-forest work. A `--freeze` parse drains every deferred header
+body to fixpoint and freezes fully-evaluated state, guarded by a pack-side
+c2mir check gate (fork API `c2mir_check_tree`, pinned `062dd97`) with
+error-tolerant reverts — a parser gap in a body nobody calls can never poison
+a pack. The packed binary runs the whole integration suite **681/681** and
+beats the previous -O2 live-parse wall on the headline test. Dev and packed
+binaries now coexist (`bin/madc` / `bin/madc-release`), and
+`docs/perf/forest-timings.tsv` tracks the timing trend per release. See
+[`docs/release-notes/v0.34.0.md`](docs/release-notes/v0.34.0.md).
+
+CIR baseline (2026-07-14): **695 integration pass / 0 fail / 0 timeout /
+16 skip** (packed suite 695/695; zero known reds, all forest gates GREEN) and **gcc.c-torture 1567
+of 1652 in-scope (95.0%) at `-O1` and `-O2`** — the develop→master promote
+gate is **all 41 remaining standard-C failures fixed (≥1608)**, per the
+user-signed failset classification audit
+([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)):
+33 gcc-internal/torture-only tests are formally skipped
+(`docs/parity/torture-skip-manifest.txt`) and 14 real-world GNU extensions
+are roadmap items, not gate blockers. In-process `eval`/exec runs on the CIR
+JIT (`CirJitSession`); native AOT output is live as of v0.36.0 (`-c`/`-o`);
+the REPL remains deferred.
+
+**Branch state:** `develop` carries v0.36.0 (CIR backend). `master` still holds
+the v0.24.0 asmjit/Gecko backend at full C89 coverage (419 pass / 0 fail) —
+develop is **not** promoted to master until the CIR path reaches feature parity.
+
+### Current Release
+
+**v0.38.0** is the system-object release: `madc::sys` brings the Python
+`sys` convention to madc — `sys.argv` and `sys.path` as mutable madc
+arrays, `sys.platform` / `sys.version` / `sys.hostname` as immutable
+facts — declared by `#include <ns_madc>` (the `import sys` parallel)
+and identical across the JIT, native artifacts, `--emit=c11`, and
+script mode. The polyglot `array` gained native `count()`/`size()`
+methods, `MADC_VERSION` is now a preprocessor macro, and frozen
+`madc::value` slots enforce read-only values at every mutation entry
+point. The campaign's recon also fixed general gaps: array struct
+members, madc-array subscript reads, extern-of-class emission. Fulltest
+and the packed suite hold **740/0/0/13**; the native `--exe` lane is at
+**726/0**; the gcc-torture master-promotion gate is met (1614 ≥ 1608,
+zero class-(a) failures).
 
 ### Recent Releases
 
-- **v0.21.1** — Const enforcement, access control, token position, MIR backend architecture decision
-- **v0.21.0** — C++ class model: ctors/dtors, operators, refs, new/delete, inheritance, vtables, exceptions + unwinding
-- **v0.20.1** — Code cleanup Phase A: compiler file split, builtin dispatch table, --emit-function tool
-- **v0.20.0** — GCC parity 91.2% (1536/1685); std namespace cleanup, std::vector, overflow_p builtins
-- **v0.19.0** — GCC parity 89.3% (1505/1685); frame_address, stdio/string builtins
+- **v0.38.0** — System object: `madc::sys` (Python `sys` convention — argv/path arrays, platform/version/hostname facts, all lanes); native array `count()`/`size()`; `MADC_VERSION` macro; frozen-value enforcement; array struct-member + subscript-read fixes; fork release-tag pairing; fulltest + packed 740/0/0/13, `--exe` 726/0; promote gate met
+- **v0.37.0** — Script mode: top-level statements → synthesized `int main(int argc, char **argv)` (madc dialect; conflict/header/std guard rails, 5 new tests); C++ dynamic global init (g++ model); JIT exit-status parity; demand-driven forest bind (packed C hello 94 → 38 ms, c17 45 → 15); fulltest + packed 734/0/0/13, `--exe` 720/0
+- **v0.36.0** — Native compiler: `madc -c` → ELF `.o`, `madc -o` → MIR-assembled executables (no external toolchain), `-shared`, gcc-style CLI; `--exe` lane live 709/729; `madc -g` source-level gdb on the JIT; integer `_Complex` component-correct; fulltest + packed 729/0/0/13; torture 1614 (gate met)
+- **v0.35.0** — Small-binary + family-D: packed binary 101 MB → 9.26 MB (per-segment zstd, snapshot-v2 segment transforms, intern-spine pack compression; libzstd-dev now required); family-D campaign merged (drops 483 → 308, stable local-class hoist identity, ranked-callee typing, live-correctness ladder); fulltest + packed suite 696/0/0/16
+- **v0.34.0** — Pack-time deferred-body drain (rung 1): pack-side c2mir check gate (fork `c2mir_check_tree` @062dd97), error-tolerant reverts incl. body-span carry (packed stoi/stod restored), emission split + trap prebind; packed suite 681/681; dual dev/packed binaries; timing trend TSV; fulltest 681/0/0/16
 
 ## Roadmap
+
+Canonical roadmap: [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md). The phases
+below were achieved on the **old asmjit/Gecko backend** (now removed); the
+current focus is re-establishing them on the `cir_node` → c2mir → MIR path
+(integration baseline 227/193/56).
 
 | Phase | Goal | Status |
 |-------|------|--------|
@@ -259,15 +316,36 @@ feeds them stdin and argv respectively and asserts on their output.)
 ## Architecture
 
 ```
-Source (.mad file)
+Source (.mad / .mc11 / C / C++)
     |
-    v src/lexer.cpp      — tokenize source (#include, #load handled here)
+    v src/lexer.cpp       — tokenize source (#include, #load handled here)
     |
-    v src/parser.cpp     — build AST, namespace resolution, type registration
+    v src/parser.cpp      — build the token parse tree (file/line/col retained)
     |
-    v src/compiler.cpp   — walk AST, emit x86-64 via asmjit
+    v src/cir_builder.cpp — build the MC11-IR: a cir_node AST tree derived from
+    |                       c2mir's node_t, each node carrying its originating
+    |                       tokens + parse subtree
     |
-    v JIT execute        — run machine code in-process
+    v c2mir               — consume the lowered C11 view of the MC11-IR
+    |
+    v MIR                 — execute in-process (native object/executable later)
 ```
+
+### MC11-IR — the one intermediate representation (SET IN STONE)
+
+The primary in-memory representation is the **Mad-enhanced-C11 IR (MC11-IR)** —
+the `cir_node` AST tree. It is **both** lowered and high-level by construction:
+
+- `cir_node` **derives from c2mir's `node_t`**, so c2mir consumes the lowered
+  C11 view of the tree directly (classes already struct + functions, etc.).
+- Every `cir_node` also **carries its originating lexed tokens and parse
+  subtree**, with `file`/`line`/`column`, so madc retains the original
+  high-level structure — not reconstructed from comments, but kept.
+
+So one tree serves c2mir (lowered) and madc (high-level) at once. The `.mc11`
+text form (C11 + `madc`-namespaced pragmas) is the on-disk serialization of the
+extra info; render targets (C11, MC11, C++, madc) share the `--std=` language
+enum and pick which view of the one IR to emit. See
+[`docs/rules/mc11-ir.md`](docs/rules/mc11-ir.md).
 
 Namespace implementations: `src/ns_php.cpp`, `src/ns_perl.cpp`, `src/ns_python.cpp`, `src/ns_ruby.cpp`, `src/ns_js.cpp`, `src/ns_stl.cpp`

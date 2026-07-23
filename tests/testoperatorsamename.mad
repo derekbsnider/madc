@@ -1,0 +1,46 @@
+// P2.1b gaps 3 & 4 — same-name operator overloads of different arity.
+//
+// gap 4: a class with BOTH unary operator-() AND binary operator-(const C&).
+// gap 3: a class with BOTH prefix operator++() AND postfix operator++(int)
+//        (and the same for --). The default ClassName__operatorX name would
+//        collide; the nullary (unary/prefix) overload gets an arity-distinct
+//        symbol so both register and dispatch by arity.
+#include <iostream>
+using namespace std;
+
+class Num {
+public:
+    int v;
+    int operator-() { return -v; }              // unary
+    int operator-(const Num& o) { return v - o.v; }  // binary
+};
+
+class Ctr {
+public:
+    int v;
+    int operator++() { v = v + 1; return v; }       // prefix: returns new
+    int operator++(int) { int old = v; v = v + 1; return old; }  // postfix: returns old
+    int operator--() { v = v - 1; return v; }       // prefix
+    int operator--(int) { int old = v; v = v - 1; return old; }  // postfix
+};
+
+int main()
+{
+    Num a;
+    Num b;
+    a.v = 30;
+    b.v = 12;
+    cout << (-a) << endl;       // -30 (unary)
+    cout << (a - b) << endl;    // 18  (binary)
+
+    Ctr c;
+    c.v = 5;
+    cout << (c++) << endl;      // 5   (postfix returns old)
+    cout << c.v << endl;        // 6
+    cout << (++c) << endl;      // 7   (prefix returns new)
+    cout << (c--) << endl;      // 7   (postfix returns old)
+    cout << c.v << endl;        // 6
+    cout << (--c) << endl;      // 5   (prefix returns new)
+
+    return 0;
+}

@@ -1,0 +1,40 @@
+// Empty-statement bodies in loop/conditional contexts must lower to a
+// valid c2mir empty statement (EXPR(LIST, IGNORE)), not a NULL operand.
+// Regression: CirBuilder fed a NULL body to c2mir_op_append → segfault.
+// An empty `;` in a plain block is still correctly dropped (matches c2m).
+
+int main()
+{
+	int i = 0;
+
+	// empty-body while: side effect lives in the condition
+	while ( ++i < 5 )
+		;
+	printf("while_i=%d\n", i);
+
+	// empty-body for: counter advances in the increment clause
+	int j;
+	for ( j = 0; j < 3; j++ )
+		;
+	printf("for_j=%d\n", j);
+
+	// empty-body do/while
+	int k = 0;
+	do
+		;
+	while ( ++k < 4 );
+	printf("do_k=%d\n", k);
+
+	// empty-body if (and empty else)
+	if ( i > 100 )
+		;
+	else
+		;
+	printf("if_done\n");
+
+	// stray empty statements in a block are dropped, not errors
+	; ;
+	printf("block_ok\n");
+
+	return 0;
+}

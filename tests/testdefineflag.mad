@@ -1,0 +1,20 @@
+#include <stdio.h>
+
+// Command-line -D defines (see testdefineflag.flags): FOO=42, BAR (bare -> 1),
+// BAZ=7. Exercises -DNAME=VALUE, bare -DNAME, and multiple -D in one invocation.
+int main(void)
+{
+#ifdef FOO
+	printf("FOO=%d\n", FOO);
+#else
+	printf("no FOO\n");
+#endif
+#ifdef BAR
+	printf("BAR=%d\n", BAR);
+#endif
+#ifndef QUUX
+	printf("no QUUX\n");
+#endif
+	printf("sum=%d\n", FOO + BAR + BAZ);
+	return 0;
+}

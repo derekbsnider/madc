@@ -1,5 +1,10 @@
 #!/../bin/madc
 #include <iostream>
+#include <string>
+#include <ns_php>
+#include <ns_python>
+#include <ns_ruby>
+#include <ns_js>
 using namespace std;
 
 int main()

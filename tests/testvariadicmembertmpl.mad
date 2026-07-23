@@ -1,0 +1,19 @@
+#!/../bin/madc
+// A STATIC member function TEMPLATE with a parameter pack
+// (`template<typename U, typename... Args>`) must instantiate from a call's
+// trailing args ([temp.variadic]) instead of emitting a bare undefined extern.
+// Pack-ness is threaded through register_skipped_class_template_function into
+// the B-feature instantiation (instantiate_member_fn_template_for_call).
+#include <iostream>
+using namespace std;
+struct Sink {
+    template<typename U, typename... Args>
+    static void store(U* p, Args... args) { *p = 5; }
+};
+int main()
+{
+    int x = 0;
+    Sink::store(&x, 10);          // variadic member template instantiates + runs
+    cout << "x=" << x << endl;
+    return 0;
+}

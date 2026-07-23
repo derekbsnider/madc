@@ -1,0 +1,11 @@
+#include <stddef.h>
+
+int printf(const char *, ...);
+
+int main()
+{
+    size_t n = 11;
+
+    printf("%lu\n", (unsigned long)n);
+    return 0;
+}

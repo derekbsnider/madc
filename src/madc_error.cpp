@@ -13,7 +13,6 @@
 extern thread_local bool madc_verbose;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
-#include <asmjit/x86.h>
 
 #include "datadef.h"
 #include "tokens.h"

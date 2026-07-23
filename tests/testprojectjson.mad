@@ -1,0 +1,4 @@
+// Implicit project-mode test: a .json source defaults to --project (no flag).
+// testprojectjson.flags lists the .cc.json path WITHOUT --project; madc must
+// treat the .json positional as a compile_commands manifest by extension.
+// This .mad is the ignored trailing positional (becomes the program's argv[0]).

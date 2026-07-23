@@ -2,6 +2,17 @@
 #include <iostream>
 using namespace std;
 
+// Basic struct: definition + member assignment + read-back. `teststruct`
+// used to be a built-in DataDefSTRUCT baked into the compiler (ddTESTSTRUCT);
+// it is now defined here like any ordinary struct (the built-in was legacy
+// cruft removed alongside this change).
+struct teststruct
+{
+    const char *name;
+    int         id;
+    int         age;
+};
+
 int main()
 {
     struct teststruct test;

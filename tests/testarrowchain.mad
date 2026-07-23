@@ -1,0 +1,55 @@
+// Chained arrow method calls: a pointer-returning CALL expression as the
+// arrow receiver (`p->mid()->leaf()->get()` — the libstdc++ stream-body
+// shape `this->rdbuf()->sgetc()`). The parser passes any expression-backed
+// receiver as parent_expr (class_this_arg translates it and passes the
+// pointer value as __this), same contract as subscript/operator-> receivers.
+// Receiver-once canon (g++): the receiver of a VIRTUAL chained call is read
+// twice by the vcall lowering (__this + vptr load) — it must still be
+// EVALUATED exactly once (`calls=1` below guards the materialized temp).
+// 3-oracled vs g++.
+#include <cstdio>
+
+class Node {
+public:
+  int v;
+  int calls;
+  Node* self() { calls++; return this; }
+  int get() { return v; }
+  virtual int vget() { return v * 2; }
+};
+
+class Leaf {
+public:
+  int val;
+  int get() { return val; }
+};
+
+class Mid {
+public:
+  Leaf lf;
+  Leaf* leaf() { return &lf; }
+};
+
+class Top {
+public:
+  Mid md;
+  Mid* mid() { return &md; }
+};
+
+int main() {
+  Top t;
+  t.md.lf.val = 9;
+  Top* p = &t;
+  printf("two: %d\n", p->mid()->leaf()->get());
+  printf("dot: %d\n", t.mid()->leaf()->get());
+
+  Node n;
+  n.v = 7;
+  n.calls = 0;
+  Node* q = &n;
+  printf("virt: %d\n", q->self()->vget());
+  printf("calls: %d\n", n.calls);
+  printf("plain: %d\n", q->self()->get());
+  printf("calls: %d\n", n.calls);
+  return 0;
+}

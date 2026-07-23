@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 class Animal {
+public:
 	int legs;
 
 	Animal()
@@ -21,6 +22,7 @@ class Animal {
 };
 
 class Dog : public Animal {
+public:
 	int tricks;
 
 	Dog(int t)

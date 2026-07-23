@@ -1,0 +1,20 @@
+#!/../bin/madc
+// A decl-specifier (constexpr/inline) AFTER the return type in a member function
+// declaration — the decl-specifier-seq is unordered, so `void constexpr f()` is
+// valid. libstdc++ uses this in <bits/uses_allocator.h>:
+//   struct _Sink { void _GLIBCXX20_CONSTEXPR operator=(const void*){} } _M_a;
+#include <cstdio>
+
+struct Widget {
+    int n;
+    void constexpr set(int v) { n = v; }
+    int  inline    get() const { return n; }
+};
+
+int main()
+{
+    Widget w;
+    w.set(33);
+    printf("spec: %d\n", w.get());   // 33
+    return 0;
+}

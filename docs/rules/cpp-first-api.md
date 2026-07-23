@@ -66,3 +66,35 @@ This rule does not reject a C shim. It only fixes the order:
 
 That ordering keeps `libmadc` clean for native hosts while still leaving a
 stable bridge for Node and other non-C++ environments.
+
+## Script-facing namespace surfaces resolve mangled-direct (2026-06-10)
+
+The same ordering applies to the embedded namespace headers the *scripts*
+consume (`<ns_madc>`, `<ns_php>`, …). The first `<ns_madc>` landing declared
+extern-C `__madc_eval_*_runtime` prototypes in the script header and wrote
+`madc::` wrapper bodies over them. The user corrected this twice: the
+extern-C exports exist exclusively so a **C programmer** linking
+libmadc.a/.so has a callable surface — they were never meant to be the path
+a *script's* `madc::eval_int(...)` call resolves through.
+
+Routing scripts through the C ABI loses exactly what the C++-first rule
+protects: reference parameters flatten to pointers, overload sets collapse
+into name suffixes, and every call pays a wrapper body that exists only to
+undo the flattening. The correct shape (the php:: precedent, 2026-06-04):
+
+- the script header declares `madc::eval_int_ctx(const char *, array &)`
+  declaration-only — no body, no extern-C twin in the header
+- declaration-only namespace functions mangle to their Itanium symbols by
+  default, and `cir_import_resolver` finds them via dlsym/-rdynamic
+- the real implementation is an ordinary `namespace madc { … }` C++
+  function in the host binary — the single real implementation
+- the extern-C export, where wanted, is a thin shim over that C++ function,
+  declared in the C API surface for C hosts — not in the script header
+
+The exception is deliberate: symbols the CIR builder itself emits as
+lowering machinery (`__madc_scope_set_*`, `__madc_vla_free`) are not
+user-resolved functions; they stay extern-C like any other runtime support
+symbol, so the builder can name them without a mangler round-trip.
+
+Design spec where this was settled:
+`docs/superpowers/specs/2026-06-10-eval-leftovers-design.md`.

@@ -2,6 +2,4629 @@
 
 ## [Unreleased]
 
+- **infra: MIR fork release versioning (owner convention).** Fork
+  releases are now `<upstream-base>-madc.<madc-version>` — retroactive
+  first release `v1.0-madc.0.38.0` tagged on the fork (same commit the
+  superseded `madc-v0.38.0` tag names). New repo-root `MIR_VERSION`
+  declares the fork release madc depends on (`MIR_COMMIT` remains the
+  machine pin). `/release` now cuts the paired fork release whenever
+  the fork changed; `/promote` now fast-forwards the fork's master in
+  lockstep (both command docs previously predated the pairing scheme
+  entirely).
+- **fix(cli): lexer-phase errors now exit nonzero.** A failed
+  `#include` (or any diagnostic thrown during tokenization) printed
+  its error and aborted compilation, but the CLI's
+  `if (!tokenize()) return 0;` reported SUCCESS to the shell — build
+  scripts never saw the failure (found via the torture runner
+  classifying 5 include-dependent tests as compile-failed while madc's
+  exit code claimed 0). Parse/compile/runtime phases already exited
+  nonzero; the `--emit-pch` path already handled the same NULL
+  correctly. New `testincludefail` (`.expect_err`). Verified as a
+  targeted micro-batch per owner: the 90 suite tests whose pass
+  criterion is exit-0-alone all still exit 0 (the only other rc
+  consumers), plus parse-error/good-program sanity; full battery rides
+  the next batch.
+
+- **fix(cir): VLA parameter bounds — flat pointer lowering + entry-time
+  capture (task #80, pr22061-1 — the last open ledger item).** A
+  VLA-typed parameter (`char a[2][N]`, C11 6.7.6.2) was miscompiled:
+  the subscript linearizer already strode by the runtime bound, but
+  `param_decl` fell through to the default `int` spec for the
+  runtime-sized pointee chain (`int *a`), scaling every linearized
+  index by 4. Now: flat scalar-element pointer lowering
+  (`vla_param_flat_elem`), chain-wide linearize gate (constant outer
+  dims like `int a[2][3][N]` included), explicit call-site casts to
+  the flat type (kills c2mir's pointer-compat warning), and runtime
+  param dims captured into hidden entry-time locals (the block-scope
+  `__madc_vla_dim_*` machinery) so the stride keeps its on-entry value
+  even when the body assigns the bound variable — bound side effects
+  still run exactly once. NO fork raise — c2mir never sees a VLA type,
+  the same Tier-1 stance as block-scope VLAs. clang 18 confirms the
+  construct is standard C99/C11 (not gcc-only). gcc.c-torture
+  pr22061-1 passes; the failset drops 11 → 10, all class-(b)
+  GNU-extension roadmap items (pr122000 stays for its separate
+  `__sync_add_and_fetch` builtin gap — #65 fixed only its saturation
+  half). New `testvlaparam` (5 shapes; JIT + emitted-C + native-exe
+  all byte-equal to the gcc oracle).
+
+- **fix(layout): SysV bitfield packing — shared windows across declared
+  types (task #76).** `allocateBitField` opened a new allocation unit
+  whenever the declared type's size changed; SysV/gcc place a bitfield
+  at the next free bit constrained only by its own type's aligned
+  window, so `{_Bool b:1; unsigned x:5;}` is 4 bytes, not 8 (c2mir
+  already matched gcc — the divergence was madc's own sizeof fold and
+  layout consumers). Struct size now counts occupied bytes;
+  `setReverseScalarStorage` flips per-field state instead of replaying
+  run bookkeeping. New `testbitfieldunit` (8 shapes, sizes + value
+  round-trips, JIT + emit-C byte-equal to gcc); the seven existing
+  bitfield tests unchanged.
+- **chore(git): remote branch hygiene (task #84).** 45 madc + 11 MIR
+  fork remote branches deleted — every one fully merged into develop
+  (verified `--merged`); both remotes now carry exactly develop +
+  master. The only unmerged content anywhere — map/set campaign
+  journal updates 40–46 stranded on `feature/retire-embedded-shims-claude`
+  by a branch mix-up — was salvaged verbatim into
+  `docs/plans/2026-06-18-map-set-campaign.md` first.
+
+- **fix(parser,cir): cast to pointer-to-array `(T (*)[N])expr` (task
+  #79).** The fn-ptr cast arm required '(' after '(*)'; the array
+  declarator suffix now parses via the new shared
+  `parse_ptr_array_suffix()` (one implementation serving the
+  declaration, parameter, and cast arms — two duplicated dim loops
+  deleted). The CIR TokenCast lowering emits the pointee's CArray dims
+  as `[POINTER, ARR]` declarator suffixes instead of collapsing the
+  type to `(int *)` (which strode wrong and fed an int to strlen —
+  SIGSEGV). New `testptrarrcast` (JIT + emit-C byte-equal to gcc).
+- **fix(parser): C-style cast to a template-id — `(Box<int>)7` (task
+  #71).** A template name + balanced `<...>` + `)`/`*` in cast
+  position resolves through `resolve_declared_type_token` (the #62
+  sizeof path — instantiates on demand, consumes nothing on failure),
+  before both the identifier and datatype-token dispatch arms.
+  Functional casts `Name<...>(...)` keep the grouping path. Covers
+  pointer forms and alias templates. New `testtplcast`.
+- **fix(cir): implicit copy ctor for non-trivially-copyable classes
+  (task #70).** Filed for template instances, but general: any class
+  with user ctors + a user dtor and no copy ctor could not
+  copy-construct (`P b(a)` errored). The memberwise arm of
+  `try_implicit_copy_construct` now binds both objects to pointer
+  temps, whole-object bit-copies, then recursively re-invokes nested
+  members' USER copy ctors (std::string members deep-copy). Loud
+  boundaries kept: own user copy ctor, polymorphic classes (vptr
+  re-stamp unmodeled), non-trivial bases. Fires only where the loud
+  no-match error fired before. New `testimplcopy`.
+- **infra: `remote_build.sh` gains a `pull` stage** — rsyncs the
+  container-built `bin/madc` / `bin/madc-release` back to the NAS
+  (userlands are ABI-identical; proven by running pulled binaries on
+  the QNAP). The QNAP no longer compiles or runs suites at all (owner
+  directive 2026-07-23).
+
+- **feat(cir): `--finstrument-functions` emission (task #66).** The flag
+  previously had no consumer anywhere. Instrumented functions now emit a
+  `__cyg_profile_func_enter` call plus a cleanup-attributed
+  `__madc_instr_self` local declared first so `__cyg_profile_func_exit`
+  fires last on every exit path (gcc epilogue order, fork-native
+  `cleanup` attribute); a once-per-module `__madc_cyg_exit_thunk` is
+  synthesized on demand. `no_instrument_function` respected across
+  prototype→definition merge. Lifts `testfinstrumentfunctions`.
+- **feat(cir): constant float→int overflow casts fold with GCC
+  saturation semantics (task #65).** Finite out-of-range constants
+  saturate to the target's max/min (0 for unsigned underflow) at the
+  CIR cast arm, re-rounding through cast chains per precision;
+  ±inf/NaN stay runtime, matching gcc. Lifts `testfloattointclamp`.
+- **feat(jit): `#load` namespace calls + `dlcall` resolve in the MIR
+  lane (task #67).** `__dl_<ns>_<member>` imports resolve from
+  `Program::dl_symbol_map` via the import resolver (data-driven — no
+  name parsing); `dlcall(fn, args…)` lowers to a typed indirect call
+  `((long (*)())fn)(args…)` in every lane; varargs-tail madc-string
+  arguments coerce to `const char*` (fixes `libc::atoi(num)` and
+  `printf("%s", s)`). Lifts `testdlopen` + `testdlcall` (JIT);
+  `testdlopen` gains an `exe_skip` (native `#load` is a follow-on).
+- **infra: `scripts/remote_build.sh`** — build + test batteries offload
+  to the desktop container over the reverse SSH tunnel (rsync delta →
+  ccache/clang-ready 20-core build → fulltest/exe/release/packed with
+  per-stage rc's). The NAS is no longer the build/test host.
+
+## [v0.38.0] — 2026-07-22
+
+The system-object release: `madc::sys` (Python `sys` convention) live in every
+lane, native `count()`/`size()` methods on the polyglot array, frozen-value
+enforcement, and the general array-member/subscript fixes the campaign surfaced.
+
+- **feat(sys): `madc::sys` — the system object (task #91).** Python
+  `sys` convention: one typed host-side C++ object with dot members —
+  `sys.argv` / `sys.path` (mutable madc arrays), `sys.platform` /
+  `sys.version` / `sys.hostname` (immutable facts) — declared by the
+  `<ns_madc>` embedded header (include it like Python's `import sys`)
+  and resolved mangled-direct to the host's `_ZN4madc3sysE`. ONE
+  population path serves every lane: the CIR builder injects
+  `__madc_sys_init(argc, argv)` at `main` entry before
+  `__madc_global_init` in TUs that included the header; `-shared`
+  artifacts get facts + empty argv. There is deliberately no
+  `sys.argc` (the array is self-sizing; bare `argc`/`argv` remain the
+  raw C door). `MADC_VERSION` is now a preprocessor macro carrying the
+  build's version string literal — `sys.version` is its runtime
+  spelling. `sys.path` seeds `[script-dir, "."]` with Python's one-way
+  semantics. Docs: `docs/language/sys-object.md`.
+
+- **feat(array): native `count()`/`size()` methods (task #91).** The
+  builtin `array` is the generic polyglot value object (the
+  `php::`/`perl::`/… functions are language skins over it); it now
+  carries native methods. Both spellings lower to the existing
+  `madarray_size` runtime entry through the same emit_symbol-bound
+  external-method path `string`'s `length()`/`size()` ride, on every
+  receiver shape — bare locals, struct members,
+  `madc::sys.argv.count()` — across JIT, native, and `--emit=c11`.
+  Fuller method surface (`.push()`, …) lands with the
+  array-as-real-class retirement.
+
+- **feat(lang): general fixes surfaced by the sys campaign.** Array
+  struct members (`struct S { array a; }`) now lay out, construct, and
+  destruct correctly; madc-array subscript reads (`a[i]`, `s.a[0]`)
+  route through the runtime getters with string-first element typing
+  (raw buffer-word reads abolished); frozen madc::value slots
+  (`MADC_VF_CONST`) enforce read-only values at every mutation entry
+  point; extern variables of class type emit a proper struct tag (was
+  `extern int`); member access on a namespace extern routes through
+  the Itanium storage alias; bare `cout << argv[1];` works as a
+  top-level script statement.
+
+## [v0.37.0] — 2026-07-22
+
+Script-mode release: madc runs PHP-style scripts — top-level statements with a
+synthesized `int main(int argc, char **argv)` — plus C++ dynamic global
+initialization and JIT exit-status parity, and the demand-driven forest bind
+that cut packed trivial-C startup 94 → 38 ms.
+
+- **feat(parser): script mode — PHP-style top-level statements (task #90).**
+  In the madc dialect a program no longer needs `main`: non-declaration
+  statements at file scope are adopted, in source order, into a lazily
+  synthesized `int main(int argc, char **argv)` (a real parser-built
+  function, so the JIT, `--emit=c11`, `--dump-cir`, and the native
+  `-c`/`-o` lanes all see an ordinary main with zero backend changes).
+  `argc`/`argv` are in scope for top-level statements; a top-level
+  `return expr;` sets the exit status; dynamic global initializers run
+  first (`__madc_global_init` at main entry), then the script body.
+  Statements plus an explicit `main` is a hard error (each order cites
+  the other location); a statement in an `#include`d file is an error at
+  its own position; under explicit `--std=c*`/`c++*` a file-scope
+  control-flow statement stays the standard "expected a declaration"
+  error and expression results keep their pre-script handling (C89
+  implicit-declaration side effects preserved). There is deliberately no
+  second statement-vs-declaration disambiguator — the top level already
+  shares `parseStatement`'s dispatch; an unambiguous-start pre-classifier
+  plus a positive-list result classifier do the routing. Five new tests
+  (`testscriptmode/argv/return/mainconflict/std`) with fixtures.
+
+- **fix(cir): C++ dynamic global initialization (g++ model).** A
+  file-scope scalar initializer that reads a variable or calls a function
+  (`int scaled = base * 2;`) previously died at the c2mir check
+  ("initializer ... should be a constant expression") in every C++
+  presenting mode. The builder now classifies the translated initializer
+  (call or value-context identifier ⇒ dynamic; address formation, sizeof,
+  casts of constants stay static), emits bare storage, and queues the
+  full source assignment into `__madc_global_init` in declaration order,
+  interleaved with class ctors. Explicit C modes keep the standard
+  constant-only diagnosis.
+
+- **fix(jit): main's return value is the process exit status.** The JIT
+  lane squashed every non-negative `main` return to 0; `./prog; echo $?`
+  is now gcc-parity (the native lane always was). Infrastructure failures
+  still exit 1.
+
+- **perf(startup): demand-driven forest bind — trivial-C startup on the
+  packed release binary 94 → 38 ms (startup-latency C-lane R0+R1, task
+  #89).** The eager bind tax is gone: `--show-stats` grew a full forest
+  startup breakdown (map/open, per-include bind, restore split, unit
+  loads, zstd decode traffic — R0), and R1 made every stage proportional
+  to the include set actually used. Two-stage container open
+  (`open_header`/`complete_open`) checks the v27 producer-config gate on
+  the directory header before any heavy work (`--std=c17` 45 → 15 ms —
+  the bind-off floor); the extern-decl index and typeid→name closure
+  build on first query; the template payload/token segments (5.3 MB)
+  decode lazily behind the rung-2a demand verdict + an owner-restore
+  fence (a pure-C bind restores 0 template patterns, was 682); and the
+  admitted-set seeds are attributed — instantiation-product free
+  functions no longer seed their signature chains, member-template
+  records seed owners only on bound-declared verdicts, and function-local
+  classes (new `DF_CLASS_FN_LOCAL` flag) admit structurally after the
+  pull closure converges instead of by name. C++ iostream hello stays at
+  204 ms (its full 184-unit surface restores as before). Gates:
+  fulltest + packed arbiter 729/0/0/13, forest_bind_gate 18/18 (incl.
+  the subbind owner's bar), selfexe + project gates green.
+
+- **feat(aot): PIC native artifacts — DT_TEXTREL is dead (AOT R6, task
+  #88).** All native output (`-c`/`-o`/`-shared`/`--project`) is now
+  position-independent: `.text` carries zero relocations. Every address
+  slot — const-pool entries (one shared slot per unique (value, item)
+  target per function, keyed so same-sentinel imports never fuse), the
+  former movabs item refs (now rip-relative pool loads via a new MOV
+  pattern), switch tables, and even the synthesized `_start`
+  `__libc_start_main` slot — lives in a GOT-shaped `.mir.addrpool` data
+  section reached by `R_X86_64_PC32` references that resolve wherever
+  layout is fixed (external ld / the exec emitter / the R4b cache
+  loader). `readelf -d` on a `madc -shared` `.so` shows **no TEXTREL**;
+  text pages are shareable, hardened dlopen profiles work, and PIE is
+  now a layout flip. Gates: `--exe` 717/0, `--obj` 713/0 (dev + packed),
+  fulltest == packed 729/0/0/13, fork object + load lanes green, gdb
+  `-g` gate re-proven on PIC output. Fork pin → `40fdf81b`.
+
+- **feat(aot): `madc -g` native artifacts carry DWARF — source-level gdb
+  on AOT output (R5, task #87).** One writer serves every consumer: the
+  mir-debug DWARF generators grew a bias/offset-mode parameterization, so
+  the same builder that feeds the GDB-JIT lane now emits into the native
+  artifacts. ET_EXEC (the R5 gate): `break file:line` hits, `bt` shows
+  named frames with typed args, `info locals`/`print` read real values on
+  a MIR-assembled executable. `.o`: DWARF relocated via `.rela.debug_*`
+  against the `.text` section symbol (external-ld oracle proven: a
+  cc-linked `-g` `.o` debugs correctly); the R4b cache loader still
+  executes `-g` objects. `.so`: link-vaddr DWARF, gdb rebases. Without
+  `-g`, artifacts stay **byte-identical** to pre-R5 output (cmp oracle).
+  Fork pin → `f354664c`.
+
+- **feat(aot): `madc foo.o` — execute a `.o` as a precompiled cache (AOT
+  R4b, task #86).** asmjit-master `load_object` parity on the MIR backend:
+  a positional `.o` input loads through the fork's new in-process ET_REL
+  loader (`MIR_object_load` — map `.text`/`.data`/`.bss`, apply the
+  ABS64-only reloc subset, W^X text) and runs `main` directly, skipping
+  parse + translate + gen entirely (testsubscript: ~2.3 s JIT → ~5 ms,
+  ~500×). Imports resolve through the JIT lane's exact chain; every
+  unresolved symbol is named. Foreign objects are rejected loudly by
+  section/reloc kind. Freshness stays the build system's concern (make
+  semantics) — no implicit `.mad`→`.o` probing; the forest/MIR-module
+  cache (front end) and this lane (native back end) cache different
+  stages, one loader, one emitter. New generic runner lane
+  `run_tests.sh --obj` (**713 passed, 0 failed**, dev and packed binaries
+  alike; new `obj_skip` fixture exempts the four multi-TU `--project`
+  tests until multi-object loading) + fork lane `c2mir-load-object-test`
+  (1139 tests / 2278 successes — tally identical to the cc-linked object
+  lane) + unit test `test_object_load.cpp`. Fork pin → `fc554f0d`
+  (`MIR_object_load` + `c2m -run-object`).
+
+- **feat(aot): exe-lane burndown to ZERO — `void main` lowering + `exe_skip`
+  fixture (task #85 slice 3).** The three "deref cluster" exe failures were
+  never deref bugs: the tests declare `void main()`, fall off the end, and
+  the native executable faithfully returns the last call's `%eax` (gcc
+  does exactly the same; the JIT's exit 0 was accidental). `void main` is
+  accepted madc dialect, so it is now DEFINED: the CIR builder lowers
+  main's C return type void→int and c2mir supplies C11's implicit
+  `return 0` — both lanes exit 0 by construction, and `--emit=c11` output
+  improves to standard `int main`. New generic `tests/foo.exe_skip`
+  fixture marks structurally-JIT-only tests (testfreezerun,
+  testmadcevalexprctx) with a one-line reason. **`--exe`: 717 passed,
+  0 failed** — every JIT-green test that can structurally be a native
+  executable compiles, runs, and matches. Fulltest + packed arbiter
+  729/0/0/13.
+
+- **feat(aot): `--project` native emission — per-TU `.o` and whole-program
+  executables; a NATIVE SMAUG BOOTS (task #85).** `madc_project_emit_native`
+  is the `--project` twin of the single-TU entry: `-c` emits one `.o` per TU
+  (object capture is context-wide, so each TU compiles in its own session;
+  gcc naming semantics), while `-o`/`-shared` emit ONE MIR-assembled image
+  of every TU — the same shared-context bracket the JIT project lane uses,
+  in object-capture mode with the sentinel resolver. Milestone: `madc
+  -lcrypt -o smaug compile_commands.json` over SMAUG's 51 TUs (158k LOC
+  C89) produces a 5.0 MB ELF executable assembled entirely by MIR that
+  boots ("Realms of Despair ready") and serves its login screen over TCP.
+  The exe test lane now passes `-o` before fixture flags (a positional
+  `.json` manifest ends flag parsing), lifting all five `testproject*`
+  exe failures: `--exe` 709→714 passed / 5 failed (the remainder is the
+  classified deref + JIT-only burndown). Fulltest + packed arbiter
+  729/0/0/13; no fork changes.
+
+- **feat(aot): `madc -shared` emits ET_DYN directly — the external-toolchain
+  scaffold is DELETED (task #85 tail slice 1).** `-shared` now routes through
+  the same MIR assembler as `-o`: `MIR_object_emit_executable` grew a
+  `shared_p` mode (load base 0, no `PT_INTERP`/`_start`/entry, defined
+  globals exported via `.dynsym`/`.hash`, every relocation dynamic —
+  `R_X86_64_RELATIVE` internals + `R_X86_64_64` imports) and a `DT_INIT`
+  hook, which madc points at `__madc_global_init` so dlopen'd modules run
+  file-scope C++ ctors at load. `cir_run_link` — the fork/execvp host-cc
+  driver and the LAST product-path cc user — is deleted per
+  no-parallel-implementations; cc/ld remain test oracles only. New
+  `tests/unit/test_native_shared.cpp` covers the lane in-process (emit →
+  dlopen `RTLD_NOW` → call exports) with no external toolchain at test
+  time. Fork develop @c0cb2b47 pinned in the same commit (also fixes the
+  latent R2-era GNUmakefile bug: nine recipes linked `mir-gen.o` without
+  its `mir-debug.o` dependency). Validation: fulltest + packed arbiter
+  729/0/0/13; `--exe` 709/10 failset-identical; fork object lane
+  1139/2278 + battery green; ET_EXEC output byte-identical to v0.36.0.
+
+## [v0.36.0] — 2026-07-20
+
+The native-compiler release: MIR becomes a real AOT back end — `madc -c`
+writes ELF `.o` objects and `madc -o` writes runnable ELF executables
+assembled entirely in-house (no gcc/clang/ld), plus source-level gdb on
+the JIT lane (`-g`), component-correct integer `_Complex`, and the
+gcc-torture promote gate held at 1614 with the failset name-identical.
+
+- **feat(aot): `madc -c` / `-o` — native objects and RUNNABLE EXECUTABLES
+  with no external toolchain (AOT R4, task #85).** madc now emits native
+  artifacts itself using the standard gcc/clang CLI vocabulary: `madc -c
+  x.mad` writes a relocatable ELF `.o`; `madc -o prog x.mad` writes a
+  complete dynamic executable **assembled by MIR directly** — no cc, no
+  ld, no crt1.o (owner directive: external linking was only ever the test
+  that the `.o` is a proper object; the fork's cc-linking battery keeps
+  that oracle role). The fork (develop @5c461803, `MIR_COMMIT` bumped in
+  the same commit) grew direct ET_EXEC emission behind the same
+  format-neutral `MIR_object` builder as R2 — synthesized `_start` via
+  `__libc_start_main`, `PT_INTERP`/`.dynamic` (`DT_NEEDED` +
+  `DT_RUNPATH`), SysV `.hash`, eager `.rela.dyn` over the ABS64 ledger
+  (no PLT/GOT — MIR's calls already route through address slots),
+  `DT_TEXTREL` until the PIC rung — exposed at both API layers
+  (`MIR_object_emit_executable` / `MIR_gen_object_emit_executable` /
+  `c2mir_get_native_executable`). `-shared` emits a `.so` (via the last
+  remaining test scaffold until the direct ET_DYN slice). First-ever
+  `run_tests.sh --exe` sweeps: 708/729 via the cc oracle, then **709/729
+  via direct emission** (testint128 lifted by asm-alias-exporting the
+  `__mir_*oti` int128 helpers; an SSE pool-constant alignment bug and a
+  latent `libmadc.so`-staleness Makefile bug fixed en route). Remaining
+  exe-lane burndown: 5× `--project` (per-TU contexts, next slice), 2×
+  structurally JIT-only, 3× deref cluster. Fulltest == packed 729/0/0/13;
+  fork object lane 1139/0; full fork battery mode-off byte-identity.
+
+- **feat(aot): MIR object-capture mode — linkable ELF `.o` from the JIT
+  pipeline (AOT R2, task #83).** The MIR fork's generator (develop
+  @dc01374b, `MIR_COMMIT` bumped in the same commit) gained an
+  object-capture mode exposed as a library API at BOTH layers — libmir
+  (`MIR_gen_set_object_mode` + `MIR_gen_object_emit`) and c2mir
+  (`c2mir_options.native_object_p` + `c2mir_get_native_object`), with
+  `c2m -fobject` as a thin CLI test driver (madc consumes c2mir
+  in-process, never a CLI). With the mode on, gen captures each
+  function's translated blob instead of publishing executable code and
+  converts every address-escape channel into ELF relocations (imm64
+  movabs, const-pool call slots, computed-goto tables, lref data;
+  the SSA REF const-fold is disabled so no address escapes the ledger);
+  data items emit from item structures alone — the `.o` never reads
+  load-time memory. One ELF writer: `elf_assemble`, factored from the
+  R1 GDB-JIT debug-object emitter (byte-identical debug output), now
+  serves both consumers — largely closing R3 by construction. The
+  `mir.*` gen builtins are exported from libmir via asm-name aliases so
+  linked objects resolve them. Non-PIC posture until the R6 PIC rung
+  (`-no-pie` executables; `.so` needs `-z notext`). Validation: new
+  fork object lane (compile `-fobject` → link → run → compare) green on
+  the whole corpus — 1139 tests, 0 failures; full fork battery green
+  (mode-off byte-identity); madc fulltest + packed arbiter 729/0/0/13;
+  torture failset name-identical; SMAUG soak green dev + packed.
+  madc code untouched this rung — madc-side `-c`/`-o`/`-shared`
+  (gcc/clang CLI vocabulary) is R4, execute-`.o`-as-cache is R4b.
+
+- **feat(complex): component-correct GNU integer `_Complex` (task #69).** Integer-element
+  complex previously degraded SILENTLY in c2mir to its scalar base — imaginary parts
+  vanished (four in-scope torture tests false-passed on degenerate comparisons) and
+  `_Complex int` arithmetic hit a MIR gen fatal. madc now lowers integer complex onto the
+  struct spine (`struct{__re,__im}` per element type — SysV ABI of integer `_Complex` ==
+  `struct{T,T}`) with gcc's `tree-complex.cc` semantics, including **Smith's division in
+  integer arithmetic** (`(7-3i)/(-2+5i)` = `(0,-1)`, not the exact `(-1,-1)`; clang's
+  straight formula differs — gcc is the parity arbiter). `__real__`/`__imag__` are
+  lvalue-capable member selects and now parse in cast-operand position. The fork REJECTS
+  a native integer-complex specifier loudly, and gained two bug fixes the new coverage
+  exposed: stmt-expr result slots trampled by function-scope decl layout, and complex
+  comparisons loading mixed-width operands unconverted (`complex-6`). Torture: 3 tests
+  unskipped (skip manifest 33→30); `testvarargsstructcomplex` mir_skip lifted; new suite
+  lock `testcomplexint.mad` (JIT + gcc-on-emitted-C). Fork @a4a7aa32 pinned.
+
+- **feat(debug): `madc -g` — source-level gdb on the JIT lane (AOT R1,
+  task #82).** `bin/madc -g prog.mad` gives a real debugger experience
+  on JIT'd code: `break prog.mad:42` (pending breakpoints resolve via
+  the GDB JIT interface), named+typed frames across the whole stack
+  (JIT frames with correct source lines, then host frames), and
+  `info locals`/`info args` in any frame including unwound callers.
+  The MIR fork (develop @b6a411fa, `MIR_COMMIT` bumped in the same
+  commit) gained: an upstream sync with vnmakarov/mir master a8ab7c31
+  (our ten accepted PRs round-tripped with Makarov's follow-ups; his
+  force_val addr_p narrowing was reverted with counterexample
+  pr34099-2 — uninitialized narrow locals need the unconditional
+  extension; caught by the torture ladder, propose back upstream); the
+  13 cyanogilvie debug-support commits (insn source locations →
+  per-function line maps, inline permission, spill-all + reg frame
+  offsets, the mir-debug ELF/DWARF builder + context-bound GDB-JIT
+  registration, c2mir `-g` stamping + rich typed locals); and NEW
+  `.debug_frame` CFI in the debug object (template FDE per function) —
+  gdb's heuristic analyzer cannot unwind MIR's mov/lea FP prologue, so
+  without CFI `bt` could not leave frame 0. madc side: `-g` flag →
+  c2mir `debug_info_p` + debuggable codegen (O0, no inlining,
+  spill-all) + post-link debug-object registration in the one-shot and
+  `--project` lanes; `tests/testdebuginfo.mad` locks the pipeline.
+  En route, #69 (integer `_Complex`) was investigated: c2mir types it
+  as the plain scalar base (imaginary parts silently drop); a blanket
+  rejection regressed two green suite tests and was reverted —
+  re-scoped as the real component-correct feature per owner directive.
+  Suite 727/0/0/14 dev == packed; torture 1610, failset 12
+  byte-identical; SMAUG soak green both binaries.
+
+- **fix(types): `__builtin_va_list` is the real SysV va_list — one
+  compiler-owned definition; 20041214-1 flips, torture 1610, failset 12
+  (task #68).** The lexer macro-rewrote `__builtin_va_list` to `long`,
+  cramming 24 bytes of x86-64 va_list state into 8 and passing a scalar
+  COPY on delegation — `g(s, ap)` then va_arg'd garbage (SIGSEGV in the
+  20041214-1 torture test; a textual macro can never express the
+  `[1]` array typedef since the suffix binds after the declarator).
+  Now the compiler OWNS the type: `Program::builtin_va_list_type()` is
+  a process singleton `struct __madc_va_list_tag {gp_offset, fp_offset,
+  overflow_arg_area, reg_save_area}[1]` — the same shape gcc, glibc,
+  and c2mir's own preamble use — resolved from the spelling by both the
+  lexer (make_datatype arm, like `__int128_t`) and the parser's builtin
+  spelling table; first use registers the tag in struct_map so the CIR
+  struct sweep (Pass 1.97) emits the definition. The embedded
+  <stdarg.h> now just ALIASES the builtin (`typedef __builtin_va_list
+  va_list;` + `__gnuc_va_list`) — one definition total. The
+  `__builtin_va_end`/`__builtin_va_copy` macro bodies are array-correct
+  (`(void)(ap)` / element copy). Freeze/restore: the singleton is
+  pinned as type-id slot 34 (`MADC_TYPEID_BUILTIN_VA_LIST`, the
+  designed append-only path; test_datadef pins updated) so a frozen
+  `typedef __builtin_va_list va_list;` resolves in any process — the
+  first packed run failed 10 varargs tests ("undeclared identifier
+  va_list") before the pin; packed suite now 726/0/0/14 == dev. The
+  compiler-synthesized tag is a Class-5 forest_index_allowlist entry
+  (never parsed from any grove). testbuiltinvalisttypedef reworked per
+  the gcc oracle: `ap = 0` on the array-typed va_list now REJECTS like
+  gcc/clang — stale "ok" .expect and .mir_skip removed, .expect_err
+  added (+1 suite, -1 skip). Torture 1609 -> 1610, name-set diff
+  exactly {20041214-1.c}; failset 12 = 11 class-(b) + pr22061-1.
+  strlen-4 flips, torture 1609, failset 13 (task #78).** Two stacked
+  bugs. (1) Parser: `typedef char A28[28]; A28 row[3]` produced dims
+  `{28,3}` instead of C's `{3,28}` — `peel_carray_dimensions` ran before
+  the declarator suffix parse, leaving the typedef's dims at the FRONT
+  of `arr_dims` while the declarator's dims (the OUTER dimensions) were
+  appended after. Result: `sizeof(row[0])` = 3 (gcc: 28), string
+  initializers truncated to 3 bytes, and the CIR emitter's skip_tail
+  contract (which always assumed own-dims-leading) emitted `row[28]`.
+  Fix: record the alias-dim count at the peel and `std::rotate` the
+  alias dims behind the declarator's own dims once the declarator is
+  parsed — this also re-aligns `arr_dim_exprs` with `arr_dims`.
+  (2) c2mir fork @8a6a6c57 (MIR_COMMIT bumped): `N_ADDR` of an operand
+  that DECAYED from an array lvalue copied the decayed element pointer,
+  so `&a[i]` (a: `T[n][m]`) came out `T*` instead of `T(*)[m]`
+  (C11 6.5.3.2). Pointer arithmetic reads `arr_type` (stride was
+  right), but `N_DEREF` reads `u.ptr_type` — `*(&a[i] + k)` yielded the
+  element SCALAR, and strlen received the first char as an address
+  (SIGSEGV at 0x31). Proof it was c2mir: standalone `c2m -eg` on the
+  plain C text reproduced the warning + crash while gcc ran it fine.
+  Now `&a[i]` constructs the true pointer-to-array (the explicit
+  `T (*q)[m]` declarator path already produced exactly this type).
+  New `tests/testarraytypedef.mad` (gcc-oracle byte-equal: dims order,
+  layout, all four deref forms incl. `*(&row[2] - 1)`). Torture 1608 →
+  **1609**, name-set diff exactly {strlen-4.c}, failset 13 names
+  (11 class-(b) + 20041214-1 + pr22061-1). Found adjacent, filed #79:
+  the CAST form `(char (*)[28])expr` is rejected by the fn-ptr cast arm.
+
+- **feat(cli): liberal default resource guards — the CLI never
+  throttles legitimate work (task #77, owner directive).** madc is a
+  developer CLI that also RUNS the program; gcc/clang-style tools
+  impose no self-limits, and any finite CPU default eventually kills a
+  legitimate long-running program (a soaked SMAUG server died with
+  SIGXCPU at the old 60 s default). `MADC_CPU_LIMIT` is now **opt-in**
+  (default 0 = disabled; intended for embedding hosts and sandboxes),
+  and an armed CPU guard trips loudly: a new SIGXCPU handler names the
+  knob via the async-signal-safe crash-write plumbing, then re-raises
+  so the shell still sees the real signal status. `MADC_MEM_LIMIT`
+  stays armed by default (a pathological alloc should trip as a loud,
+  clean `bad_alloc` — not swap the host to death) but the base rises
+  2048 → 4096 MB, keeping the +128 MB/TU `--project` scaling and the
+  knob-naming new-handler attribution. The knobs are now documented in
+  `--help` (new Environment section). Probed: `MADC_CPU_LIMIT=2` trips
+  with the knob named and exit 152; a 65-CPU-second spin survives the
+  default env (died at 60 s before); malloc-loop hits NULL at exactly
+  the 4096 MB ceiling and honors overrides. Guards install only in the
+  CLI (`main`) — libmadc embedding hosts set their own.
+
+- **fix(cir): two promote-gate singles — fn-ptr declarations with
+  typedef'd RETURN types, and `_Bool` bitfields (struct-ret-1,
+  20030714-1).** (1) `X (*fp)(void)` where `X` is a typedef emitted as
+  `X fp` — the alias swallowed the whole declarator (signature AND
+  pointer), because `var_decl`'s fn-ptr arm treated ANY typedef
+  spelling as "declared via a fn-ptr typedef alias" (`DO_FUN g`). New
+  `fnptr_alias_is_fn()` resolves the alias through `datatype_map`: the
+  alias-spec form now applies only when the typedef names the
+  function(-pointer) type itself; a return-type alias keeps the full
+  `ret (*name)(params)` declarator. Same guard applied to the fn-ptr
+  MEMBER arm, where `bool (*isTableCell)(args)` emitted `bool *m` — a
+  plain data pointer (`fnptr_alias_stars`' unknown-alias fallback).
+  (2) The bit-field signedness reconciliation prepended `N_UNSIGNED`
+  to unsigned bit-fields whose spec had no sign token — but `_Bool`
+  admits no sign qualifier (C11 6.7.2p2) and already zero-extends, so
+  `bool b : 1;` emitted `unsigned _Bool` and c2mir rejected all 21
+  declarations in 20030714-1. `N_BOOL` now counts as sign-complete.
+  New `tests/testfnptrtypedefret.mad` + `tests/testboolbitfield.mad`
+  (gcc-oracle byte-equal; the latter deliberately locks only VALUE
+  semantics — a pre-existing bitfield allocation-unit divergence,
+  `_Bool:1` followed by a wider type giving sizeof 8 vs gcc's 4, is
+  filed as task #76).
+
+- **fix(cir): the dead-branch fold no longer discards function-scope
+  labels — torture cluster 3 closed (task #74).** `translate_if_core`
+  folds a compile-time-constant condition and prunes the dead branch
+  (the `__builtin_constant_p(...) link_error()` idiom needs it: neither
+  c2mir nor MIR eliminates `if (0)`, so an undefined extern in the dead
+  arm would fail at MIR link). But C labels have FUNCTION scope (C11
+  6.2.1p3): a label inside a constant-false arm keeps that arm a live
+  `goto` target, and pruning it produced "undefined label" at the c2mir
+  check (pr17078-1's `goto useless;` into `if (0) { useless: … }`).
+  New `stmt_contains_label()` walks the discarded branch's statement
+  structure (compound, if, do/while/for/range-for, switch cases +
+  default + pre-case decls, try/catch); when it finds a label the fold
+  falls through to the full `N_IF` translation — gcc -O0 emits the full
+  branch too. Both fold arms guarded (the integer/char-literal fold and
+  the `is_constant_evaluated` fold). Flips pr17078-1.c AND
+  vla-dealloc-1.c — the latter's VLA-dealloc half already worked; the
+  label drop was its whole story. New `tests/testgotodeadarm.mad`
+  (gcc-oracle byte-equal) locks goto-into-dead-then and
+  goto-back-into-dead-else.
+
+- **feat(cir): wide string literals lowered to static int arrays —
+  torture cluster 2 closed, testwideconcat lifted (task #73).** The
+  parser has always materialized `L"..."` (and mixed-width
+  concatenations, [lex.string]/C11 6.4.5p5) as a synthetic
+  `__wliteral__<payload>` Variable carrying the UTF-32 code points in
+  baked data — but the CIR builder never learned to emit it: every use
+  referenced an identifier that (a) was never defined and (b) embedded
+  raw UTF-32 bytes, i.e. was not even a valid C identifier
+  ("undeclared identifier __wliteral__a", an asmjit-era leftover —
+  that backend read `Variable::data` directly). Tier-1 lowering per
+  `lowering-vs-raising.md` (c2mir has no `wchar_t`): a
+  `translate_module` pre-scan assigns each wide-literal Variable a
+  content-derived symbol (`__wlit_<fnv1a64>`) and defines it up front
+  as `static int __wlit_<h>[] = { code points…, 0 };` (wchar_t == int
+  on this target); uses resolve through `var_emit_name`, and the array
+  decays to `int*` exactly like gcc's `wchar_t[]`. Two hardening
+  details found by the gates: the constant-scalar READ fold now
+  excludes fixed arrays (it would have folded a wide literal's value
+  use to element 0), and each definition is `cond_mark_sym`'d into the
+  rung-3 referenced-surface filter with a CONTENT-stable name — dead
+  literals minted by live-parsed-but-unused template bodies (libstdc++
+  vswprintf formats: `L"%ld"`, `L"%Lf"`, …) differ between the live
+  and bound lanes, and order-dependent naming broke the
+  `forest_bind_gate [strbind]` byte-identity oracle until both were
+  fixed. gcc-oracle reducer battery (subscript, value use + NUL,
+  `&L"…"[0]` byte view, `sizeof`, concat + `L'c'`) all byte-equal;
+  torture 20010325-1 + widechar-3 flip; `tests/testwideconcat.mir_skip`
+  removed (suite 720→721, skips 16→15).
+
+- **fix(cli): SMAUG `--project` soak restored — the 2 GB address-space
+  guard was killing legitimate multi-TU builds, silently (P0 task #75).**
+  Root cause was NOT cross-TU state: `install_resource_guards()` arms
+  `RLIMIT_AS` at a fixed 2048 MB default (`MADC_MEM_LIMIT`), while the
+  `--project` driver holds every TU's parsed `Program` simultaneously by
+  design — the 51-TU SMAUG manifest legitimately peaks at ~2.9 GB VA, so
+  the guard's ENOMEM surfaced as a `std::bad_alloc` at whatever
+  allocation crossed the line (~TU #44, stances.c, inside mud.h
+  tokenize; maxrss only 985 MB — the limit counts address space, not
+  residency). Standalone compiles stayed green because one TU sits far
+  under the limit. Three fixes, each at its own layer: (1) the guard
+  default now scales with the workload — `install_resource_guards()`
+  moved below argument parsing (RLIMIT hard limits can never be raised,
+  so the guard must know the workload before it arms) and gives each
+  manifest TU a 128 MB allowance on top of the single-file 2048 MB
+  default; `MADC_MEM_LIMIT` still overrides verbatim, `0` disables.
+  (2) When the guard DOES trip, it now says so: a `set_new_handler`
+  armed with the guard writes one actionable line naming
+  `MADC_MEM_LIMIT` (via the crash handler's no-alloc `write(2)`
+  plumbing) before the normal `bad_alloc` unwind — and
+  `madc::dis::arena::add_chunk` (a direct-`malloc` thrower that
+  bypasses `operator new`; the token arena was the very allocation
+  that failed) now honors the process new-handler contract on malloc
+  failure, so arena-path OOM gets the same attribution. (3) The failure is
+  never silent again: the `catch(std::exception&)` arms of `tokenize`,
+  `tokenize_buffer`, `parse`, and `parse_expression_unit` recorded the
+  error via `set_error` but — unlike their sibling arms — never printed
+  it (`throwbuf::sync()` renders only throwstream-originated
+  exceptions; a plain `bad_alloc` arrived unrendered). New
+  `Program::print_unrendered_diagnostic()` prints the recorded
+  diagnostic whenever the throwstream didn't already render one. Soak
+  green again: `Realms of Despair ready at address madc-dev on port
+  4000` under default guards; `MADC_MEM_LIMIT=512` proves the loud
+  path (guard line + `file:line: error: std::bad_alloc` + rc=1).
+
+- **feat(parser): implicit-int / K&R function definitions — the
+  promote-gate lever, +30 torture tests in one work item (task #72).**
+  gcc-torture 1572 → **1601** passed; failset 50 → **20** names (all 30
+  cluster names flipped, zero regressions — byte-identical name-set
+  diff). Three arms, all std-gated on the existing `knr_supported()`
+  (C78..C17; never C++ modes, never the madc dialect): (1) the BARE
+  K&R identifier list `f(x){…}` — the declaration-suffix predicate now
+  also accepts `{` directly after `)` (empty declaration list; the
+  decl-list machinery already defaulted undeclared params to int);
+  (2) implicit-int definitions of ALREADY-DECLARED names
+  (`dummy(); … dummy(){}` — a prior implicit call declaration or
+  prototype) no longer get eaten as call expressions: the implicit-int
+  definition arm was extracted into
+  `try_parse_implicit_int_function_definition()` (non-destructive shape
+  probe) and now runs before the known-identifier expression route;
+  (3) C89 implicit function DECLARATIONS in expression context are now
+  gated on the SELECTED STANDARD rather than only the `.c` filename
+  extension (a filename gate where the `--std=` gate belongs; the
+  extension predicate stays for C sources compiled under the default
+  dialect). New `tests/testknrdef.mad` (+`.flags` `--std=c17`,
+  `.expect` from the gcc oracle) locks all the shapes. The mandatory
+  SMAUG soak was run and is UNCHANGED by this work — it fails
+  identically at the pre-#72 baseline (proven by stash-rebuild A/B);
+  that pre-existing breakage is filed as P0 task #75.
+
+- **docs(parity): gcc-torture re-baseline at HEAD (task #64).** Full
+  sweep 1572/32/18/0/63 — the 50-name failset is **byte-identical** to
+  `docs/parity/torture-failset-current.txt`: ZERO regressions across
+  the entire #35–#63 correctness span. Cluster refresh: 39 class-(a)
+  remain, and the map COLLAPSED — the "implicit-decl forward call"
+  cluster is a symptom of implicit-int definitions failing to parse,
+  so one parser work item (bare K&R identifier lists + omitted return
+  types) covers 30 of the 39; pr17078-1's label drop attributed to the
+  CIR builder (stock c2m passes). Gate math: 1572 + 39 = 1611 ≥ 1608 —
+  the promote gate is reachable on class-(a) alone. Execution-ready
+  tasks filed: #72 (the 30-test lever), #73 (wide literals, lifts
+  testwideconcat), #74 (if-arm labels).
+
+- **fix(diagnostics): errors inside #included files now attribute to the
+  header — file, line, AND source echo from ONE token provenance (task
+  #63).** An error raised while parsing an included file printed the
+  top-level TU's NAME with the header's LINE number and echoed the TU's
+  source text under the caret — three-way inconsistent.
+  `throwbuf::sync()` and the eight catch-site diagnostic recorders now
+  take the file from the token (`TokenBase::file`, the MC11-IR
+  provenance every token already carries), and the source echo rereads
+  the named file from disk on the cold diagnostic path when it isn't
+  the live Source buffer (embedded headers with no on-disk presence
+  skip the echo gracefully). One shared line+caret formatter
+  (`show_error_source_line`) serves both echo paths; `print_diagnostic`
+  gains the same foreign-file echo. Output now matches g++'s
+  attribution shape (`tmp/s63_hdr.h:3:18` + the header's line echoed).
+  New compile-error test `tests/testincluderr.mad` (+`.expect_err`,
+  helper header). This completes the #55 story: the SFINAE mute killed
+  the speculative noise, this makes the remaining REAL errors point at
+  the right file.
+
+- **fix(parser): sizeof/alignof with a template-id or qualified type
+  operand (task #62).** `sizeof(Box<int>)` failed "Expecting
+  identifier" even post-instantiation, and `sizeof(std::string)` failed
+  "'string' is not a member of namespace 'std'" — the type-query
+  operand resolver (`resolve_type_query_datadef`) had bare-name lookups
+  only and could not consume `<...>` or a `::` chain. Both identifier
+  and datatype-token arms now route through the one declared-type
+  resolver (`resolve_declared_type_token` — the same path the
+  explicit-dtor name and dynamic_cast arms use), which instantiates on
+  demand ([expr.sizeof]) and consumes nothing on failure so the
+  `sizeof(expression)` fallback still sees an intact stream. Covers
+  sizeof/alignof, pointer suffix (`Box<int>*`), nested template args,
+  qualified template-ids (`std::vector<int>`), and the constant
+  context (`int arr[sizeof(Box<int>)]`) — all byte-equal to `g++ -O0`.
+  New `tests/testsizeoftpl.mad` (+`.expect`, `.expect_quiet`).
+  Residues filed, not fixed here (scope discipline): implicit COPY
+  ctor missing for `Box<Box<int>>`'s member-init (task #70) and the
+  C-style cast `(Box<int>)7` in the separate cast-detection arm
+  (task #71).
+
+- **test(skips): mir_skip audit — all 16 re-verified at live HEAD,
+  zero lifts, 11 reasons corrected (task #61).** Five reasons verified
+  still-true and date-stamped; eleven reworded to the actual cause at
+  HEAD, the notable drifts: `_Complex int` (GNU integer complex) MIR
+  gen fatal even as a scalar (the fork's native `_Complex` is
+  floating-only); VLA-struct-member copy now ACCEPTED but miscompiled;
+  GCC itself saturates overflowing float→int casts via front-end
+  constant folding (the `.expect` is canon; c2mir runtime-converts to
+  INT_MIN); `--finstrument-functions` works but prototype-borne
+  `no_instrument_function` doesn't merge into the definition;
+  `__builtin_frame_address`/`__builtin_setjmp` lower to runtime
+  helpers that execute in the helper's own frame (structural);
+  `#load` lowers fine but the MIR import resolver ignores the loaded
+  handles; `dlcall()` has no MIR-lane runtime; the
+  `__builtin_va_list` test is invalid on x86-64 (gcc+clang both
+  reject it). Near-miss follow-ons filed as tasks #65–#69.
+
+- **refactor(madcdis): C1 core-ification — the data-substrate interface
+  headers move `include/madcdat/` → `include/madcdis/` (task #58,
+  governing plan §6).** schema/mapper/query/relation/dataset/driver now
+  live in the madc::dis core surface; forwarding shims hold the old
+  paths for out-of-tree consumers (deletion horizon noted); all in-tree
+  consumers point at the new home; madcdat keeps external drivers +
+  source_adapter behind `--enable-madcdat`; `install-libmadc` now ships
+  `include/madcdis/`. Both configure modes build clean (=yes ran the
+  full bdb/gdbm/qdbm/sqlite unit suites through the moved headers);
+  fulltest + packed arbiter 717/0/0/16 in the =yes mode.
+
+- **feat(parser): explicit-destructor names — injected-class-name +
+  the [class.dtor] same-type check (task #57).** Verify-first: the
+  template-id (`p->~Box<int>()`) and typedef/alias (`q->~XT()`) forms
+  already worked at live HEAD. The two real gaps: `p->~Box()` (the
+  injected-class-name without template args, [expr.prim.id.dtor] —
+  now looked up against the receiver's class, works for madc templates
+  and library classes alike, `s->~basic_string()`); and the missing
+  same-type check — `q->~Y()` on an `X *` compiled silently, now the
+  g++-parity error "the type being destroyed is 'X', but the destructor
+  refers to 'Y'" (pointer-equality on the resolved DataDef, so
+  typedefs/aliases pass and even never-promoted plain structs are
+  caught; dependent/pattern parses skip). New `tests/testdtorname.mad`
+  (g++-oracle byte-equal) + `tests/testdtormismatch.mad`
+  (`.expect_err`). Incidental pre-existing gap noted:
+  `sizeof(Box<int>)` (template-id sizeof operand) fails to parse.
+  Suite 715 → 717, packed arbiter green.
+
+- **feat(class): stack class-array scope-exit destructors — per-element
+  REVERSE destruction (task #56).** `{ B a[3]; }` destroyed only
+  element 0: the cleanup attribute calls one function with `&a`, and it
+  named the scalar dtor. Now a per-(class,N) wrapper
+  `Cls__arr<N>___dtor(void*)` destroys all N in reverse ([class.dtor],
+  g++ byte-parity), demanded at the cleanup attach, the try-body unwind
+  push (throw now unwinds whole arrays), and the tsubst SPEC_DECL
+  cleanup re-resolution arm; definitions flush with the Pass 1.95 late
+  declarations. Freeze/forest-neutral (synthesized from live class
+  state). SIBLING BUG fixed: #51's construct loop strode a whole ROW
+  for multi-dim arrays (`B m[2][2]` decays to `B(*)[2]`) — elements
+  constructed out of bounds; `class_array_construct_loop` now flattens
+  with a `(struct Cls*)` cast. emit-C lane verified (gcc-compiled
+  output == g++ oracle, zero warnings). New `tests/testarraydtor.mad`
+  (dtor ORDER encoded as per-phase sequence lines, + `.expect_quiet`).
+  Suite 714 → 715, packed arbiter green.
+
+- **fix(tpl): speculative template instantiation is SFINAE-quiet —
+  `<math.h>` TUs compile with zero stderr (task #55).** All 32 noise
+  lines the #54 header-opening exposed mapped 1:1 onto FAILED
+  speculative fn-template instantiations during overload scoring
+  (`__enable_if<false,_>::__type` SFINAE candidates, `__promote_2`
+  substitution gaps) — failures g++ discards silently ([temp.deduct]/8).
+  The attempt site (`instantiate_fn_template_binding`) now mutes
+  `std::cerr` with the existing speculative-parse idiom and rolls back
+  the diagnostics ledger on failure; attempts nested inside constant
+  folds already ran muted. A genuinely-needed failing template still
+  errors loudly at the call site with correct attribution
+  (`MADC_DIAG_FNTPLTHROW` still bypasses the mute for developers). New
+  generic runner fixture `tests/foo.expect_quiet` (stderr must be
+  EMPTY, reported `NOISY(stderr):`) locks the hygiene:
+  `tests/testmathheader.mad` (g++-oracle byte-equal) + `.expect_quiet`
+  on `teststdcxx11`. Suite 713 → 714, packed arbiter green.
+
+- **fix(pp): `#if` expressions get the `?:` tier and `##` token pasting;
+  the strict `--std=c++11` lane compiles real headers (task #54).** The
+  recorded "feature-macro mismatch" was two evaluator holes: a ternary's
+  CONDITION value leaked out as the result (arms ignored) and
+  `__GLIBC_USE(F)`'s `__GLIBC_USE_ ## F` never pasted — glibc's
+  `__GLIBC_USE_DEPRECATED_GETS` chain took the wrong branch, so C++11's
+  `using ::gets` had nothing to import. Correct evaluation opened
+  math.h's typegeneric regions, which needed `(typeof(x))` CASTS in
+  expressions (a new typeof arm in the cast detection + a
+  `parse_typeof_datatype` double-`)` steal fix). Strict lane now
+  compiles `<cstdio>/<cstring>/<cstdlib>/<iostream>` == g++ -std=c++11;
+  default lane byte-equal answers now for the right reasons. New
+  `tests/teststdcxx11.mad` (`.flags` fixture) + `tests/testppternary.mad`.
+  Residue → task #55: math.h's now-open template overload regions print
+  non-fatal stderr parse errors (tests green). Suite 711 → 713, packed
+  arbiter green.
+
+- **feat(class): explicit destructor calls dispatch virtually; placement
+  new uses the complete-object assembler (task #53).** `vb->~VB()`
+  through a base pointer ran the base dtor statically (g++ runs the
+  most-derived chain) — the explicit-dtor arm now dispatches through the
+  vtable D1 slot via the `virtual_dtor_slot_call` helper extracted from
+  delete's D0 arm. Placement new on a class passed the RAW placement
+  address as `__this` and emitted nothing for ctorless classes — it now
+  routes through `complete_object_construct_stmts` at the typed address.
+  Converging surfaced an implicit old behavior now explicit: a
+  pack-expansion ctor-argument list can't be overload-scored, so the
+  no-match fallback admits it for the tsubst copy to expand. New
+  `tests/testexplicitdtor.mad`, green both lanes. Suite 710 → 711,
+  packed arbiter green.
+
+- **feat(class): pure virtual functions — `__cxa_pure_virtual` slots,
+  abstract-class errors, freeze flag (task #52).** `= 0` already parsed
+  (`FuncDef::pure_virtual`); the vtable slot now fills with
+  `__cxa_pure_virtual` when the final overrider is still pure (declared
+  ahead of Pass 1.5 — a global-init address constant needs the decl
+  first), instantiating an abstract class errors loudly at both
+  construction chokepoints (`class_pure_virtual_of`), and
+  `DF_PURE_VIRTUAL` (flag bit, no format bump) carries the flag through
+  freeze/restore. New `tests/testpurevirtual.mad` (diamond +
+  inherited-override shapes, both lanes) and `tests/testpureabstract.mad`
+  (`.expect_err`). Suite 708 → 710, packed arbiter green.
+
+- **fix(ctor): complete-object construction — class arrays, base chains,
+  heap vbases (task #51).** The #35-siblings audit found five real holes,
+  one KIND: `new D[3]` allocated ONE element (garbage vptrs, heap
+  corruption), `delete[]` never ran per-element dtors, stack class arrays
+  constructed only element 0, a ctorless class with a user-ctor BASE
+  never called it, and heap/member complete-object sites skipped
+  user-ctor virtual bases. One assembler now owns the shape
+  (`complete_object_construct_stmts`, Itanium C1 = vbases then C2): the
+  ctorless arm chains transitive non-virtual user-ctor base default
+  ctors before its vptr stamps; `new C[n]` allocates count+cookie
+  (Itanium element-count cookie iff non-trivial dtor) and constructs per
+  element; `delete[]` reads the cookie back and destroys in reverse;
+  stack arrays reuse the same loop. The ctorless-`new` duplicate block
+  and `member_default_construct_stmt` are deleted (parallel
+  implementations). Six reducers == g++; new `tests/testnewarray.mad` +
+  `tests/testctorlessbase.mad`, green on JIT AND emit-C lanes. Residue:
+  stack-array scope-exit dtors still run once on element 0 (cleanup attr
+  takes one fn). Suite 706 → 708, packed arbiter green.
+
+- **fix(emit-c): extern globals never get cleanup attributes; shim dtor
+  externs are typed (task #50).** Two pre-existing hygiene bugs blocked
+  gcc on the `--emit=c11` lane (c2mir tolerated both): extern class
+  globals (`extern ostream _ZSt4cout`) carried a `cleanup` attribute
+  naming a not-yet-declared dtor (gcc: "cleanup argument not a
+  function"; semantically a TU never destroys an object it doesn't own —
+  and the c2mir fork applies cleanup to automatic variables only, so the
+  attach was inert on the JIT lane), and the host-call shim registered
+  complete dtors as `void(void*)` externs that conflicted with the typed
+  madc definitions. `var_decl`'s cleanup gate now requires `!vfEXTERN`;
+  the shim uses the typed `ExternParam` form. Any `<iostream>`-globals
+  TU now compiles under gcc — `tests/testmanipview.mad` (task #48) is
+  emit-C-validated byte-identical to g++, and new
+  `tests/testglobalrefret.mad` covers the global + ref-returning-fn
+  shape task #47 had to keep out of the suite. Supersedes the old
+  "task #20 dtor-proto hygiene" ledger item. Suite 705 → 706, packed
+  arbiter green.
+
+- **fix(stream): concrete manipulators (`os << hex`) keep the lhs stream
+  pointer — the virtual-inheritance arc is closed.** The manipulator
+  lowering downcast the returned `ios_base&` back to the stream with a
+  static offset while the argument coercion is dynamic through the
+  virtual base — through a non-most-derived view (an `ostream&` over an
+  `ofstream`) the chain continued on a garbage stream and crashed. The
+  lowering now saves the lhs pointer once, applies the manipulator to
+  its coerced view, and yields the saved pointer (g++'s
+  `return *this` shape); the hand-emitted callee joins
+  `referenced_funcs` so the materialize-and-lower fixpoint derives its
+  body as before. New `tests/testmanipview.mad` (cout control +
+  ofstream-view chain with file readback). Closes #35 → #36 → #47 →
+  #48/#49. Newly recorded (pre-existing, task #50): the `--emit=c11`
+  lane rejects any `<iostream>`-globals TU — extern `cout` carries a
+  `cleanup` attribute naming an undeclared dtor. Suite 704 → 705,
+  packed arbiter green.
+
+- **fix(vbase): vbase-carrying classes without virtual functions get
+  their Itanium prologue-only vtables — and plain bases of polymorphic
+  classes get real typeinfo.** A class with virtual bases but no virtual
+  functions reserved its vptr slots (layout matched g++) but emitted no
+  vtable and never stamped the vptrs, so every view-adjust fell back to
+  wrong static offsets. New `has_any_vptr()` widens the eight
+  emission/stamp/adjust gates; the parser's group builder already
+  handled these classes. Emitting the vtables exposed a pre-existing
+  RTTI hole (zero coverage): `_ZTI<base>` of any vptr-less base was
+  externed but never defined — `base_ti_ref` now force-defines it
+  recursively. New `tests/testvbasenovirt.mad` (views, ref binds,
+  ctorless heap; g++ oracle, both lanes). No freeze-format change.
+  Suite 703 → 704, packed arbiter green. The virtual-inheritance arc is
+  now closed except task #48 (manipulator downcast).
+
+- **fix(vbase): ref-binds over ref-returning calls and the ref-return
+  upcast take the vbase adjust.** Two sibling holes where the derived
+  class hid behind a `DataDefREF`: binding `V &vr = get()` (a `D&`/`B&`-
+  returning call) or rebinding from a ref variable skipped the dynamic
+  vbase adjust (`expr_pointee_class` unwraps the reference now), and the
+  ref-return conversion itself (`B &getb(D &r) { return r; }`) never
+  adjusted at all — not even the static secondary-base offset
+  (`upcast_class_ref_addr` reads the referent's class). Both showed the
+  structural-luck signature: green vcalls through a wrong pointer, wrong
+  member reads. `testvbasediamond.mad` gains `refcall`/`retup` probes
+  (member reads paired with vcalls). Remaining vbase residues are now
+  tasks #48 (manipulator downcast restructure) and #49 (vptr-less
+  views). Suite 703, packed arbiter green.
+
+- **fix(vbase): dynamic member access through vbase views (slice 3) —
+  `ap->v` on a virtual-base-hosted member reads the vtable slot, and the
+  `member_vbase` provenance joins the freeze format (v32).** A pointer-view
+  member access whose static class hosts the member in a virtual base took
+  the view's flattened static offset — correct only for a most-derived
+  object; through an `A*` into a diamond `D` it read a sibling subobject
+  (and writes missed the real one). The access now routes the receiver
+  through the same vtable vbase-offset read as the slice-1/2 upcast sites
+  and resolves the member on the hosting base's own struct; direct object
+  values stay static (most-derived by construction, g++'s choice).
+  Because the fix reads `DataDefSTRUCT::member_vbase` — previously
+  parse-time-only state — the freeze format's `memberrec` grows a
+  `vbase_id` word so a restored header class carries the same provenance
+  (LOADED == parsed); `CIR_FOREST_FORMAT_VERSION` 31 → 32 rejects stale
+  corpora and the release repack re-freezes the blob.
+  `tests/testvbasediamond.mad` gains the member read/write probes (both
+  views, both lanes == g++). Suite 703, packed arbiter green.
+
+- **fix(vbase): Itanium virtual-base completion (slice 2) — madc-emitted
+  vtables carry vbase-offset slots, vbase groups, and the Itanium vcall
+  convention.** Building on slice 1's dynamic reads, madc's own vtables now
+  emit the per-group vbase-offset prologue (`vtable[-(3+i)]`), a vtable
+  group (with a stamped vptr and a `__vptr_<off>` struct field) for every
+  polymorphic virtual base, and generalized signed-delta thunks to the
+  final overrider — virtual dispatch passes the group-subobject pointer
+  (the old adjust-to-owner convention double-adjusted through non-most-
+  derived views). Upcasts, object-argument binding, and reference binds
+  (`V &vr = *bp;`) take the dynamic vbase adjust; ctor vptr stamps move
+  before the mem-init list ([class.base.init] order). A user-class diamond
+  accessed through `A*`/`B*`/`V*`/`V&` views now matches g++ on every
+  line (new `tests/testvbasediamond.mad`; JIT and `--emit=c11` lanes).
+  Known residue (task #36): direct member access through a vbase view is
+  still static. Suite 702 → 703, packed arbiter green.
+
+- **fix(vbase): dynamic Itanium vbase offsets, slice 1 — `while (s >> a)`
+  on a real stream no longer hangs.** An owner-subobject adjust into a
+  virtual base through a receiver whose static type is not most-derived
+  (`s >> a` yields `basic_istream&` over an `istringstream`) now reads the
+  real vbase offset from the vtable's vbase-offset slot at runtime
+  (`vtable[-(3+i)]`, Itanium) instead of the view class's static
+  `base_offset_of` — the v0.34.0 "honest boundary" stream-extraction loop
+  is fixed (new `tests/testvbasedyn.mad`). Slice 1 covers externally
+  defined (real libstdc++) view classes at the method/unary-operator
+  adjust sites; emitting the slots in madc's own vtables and lifting the
+  gate is the follow-on. Also this branch: cast-operand arrow chains
+  resolve `operator->` (`(int)it->second`, `tests/testcastarrow.mad`),
+  for-init/range-for declarations get loop scope
+  (`tests/testforinitscope.mad`, `tests/testforeachscope.mad`), and
+  implicit default construction cascades into member subobjects — a
+  polymorphic member's vptr is stamped, recursively, stack and heap
+  (`tests/testvptrmember.mad`). Suite 697 → 702, packed arbiter green.
+
+- **docs(plan): complete the Slice B class-KIND parse-once design.** The
+  standalone plan inventories every aggregate parser side effect, defines an
+  immutable class declaration/type pattern, a transactional structural
+  substitution path, pre-decided pattern eligibility with a tallied sole-parse
+  lane, forest persistence, semantic equivalence gates, and vector/string/map
+  widening slices. No implementation is included; owner review of the existing
+  class-template payload extension is the checkpoint before durable pattern
+  carry.
+
+- **perf(forest): keep bound RECORDS columnar and reconstruct rows lazily.**
+  The packed reader can now return a decoded segment without inverting its
+  recorded byte-stream transform. Forest units retain byte-plane RECORDS,
+  validate every record/child/connector bound directly from the two linkage
+  planes, and rebuild a complete `cir_frozen_record` only when that node is
+  touched. Callgrind removes the 404.9 M-instruction whole-record
+  `byteplane_inv` from unit loading; quiet-host `testsubscript` `cir build`
+  drops 0.361 -> 0.270 s and the packed five-run wall median drops
+  0.715 -> 0.593 s. The snapshot format and compression design are unchanged,
+  and `bin/madc-release` remains exactly 9,708,520 bytes. Validation:
+  fulltest and packed suite 695/0/0/16, bind gate 18/18 (independently
+  re-verified before merge).
+
+## [v0.35.0] — 2026-07-14
+
+The small-binary + family-D release: the packed release binary shrinks
+101 MB → 9.26 MB (per-segment zstd + snapshot-v2 segment transforms +
+intern-spine pack compression), and the family-D drain-gap campaign
+lands (pack drops 483 → 308, stable local-class hoist identity, a
+ladder of live parser/CIR correctness fixes); fulltest and packed
+suite both 695/0/0/16.
+
+- **feat(forest): segment transforms + intern-spine pack compression —
+  packed release binary 15.6 -> 9.26 MB; the <10 MB owner target is
+  met (task #37 complete, @295615a5).** The planned ZDICT dictionary
+  slice was measured on the real pack frames first and refuted (net
+  ~-0.3 MB for +13 s pack CPU; a children dictionary was net negative).
+  Landed instead: (1) container-level segment TRANSFORMS (snapshot
+  format v2 — the reserved per-segment `flags` field names a reversible
+  byte-stream re-coding applied before compression and inverted by
+  read_segment; raw_ptr refuses transformed segments; v1 blobs stay
+  readable): CHILDREN u32-delta (near-sequential record indices,
+  1.68 -> 0.09 MB stored) and RECORDS byte-plane at the 80-byte record
+  stride (columnar redundancy, 2.05 -> 0.89 MB stored, and the pack
+  compresses ~3x faster) — the bulk transposes through 16x16 SSE2 tiles
+  (~2.4 GB/s; the scalar loop cost bound compiles +110 ms) with scalar
+  tails and a reused thread_local decode scratch. (2) Owner-approved
+  intern-spine compression in the RELEASE pack only: the three intern
+  blocks 3.74 -> 0.81 MB, consumers rebind through the pre-existing
+  forest_pool_block owned-buffer fallback (~7 ms once per process);
+  dev/standalone freezes keep the zero-copy raw spine. Honest cost:
+  bound testsubscript (worst case) 0.62 -> 0.70 s; no-include compiles
+  unaffected. Gates: unit tests (+ transform round-trip / misfit /
+  corrupt-open cases), forest_bind_gate 18/18 (bound == live == g++),
+  fulltest 695/0/0/16, packed suite 695/0/0/16 with the 3.8 MB blob
+  verified by census.
+
+- **feat(forest): per-segment zstd compression — packed release binary
+  101 MB -> 15.6 MB (-85%).** Implements the container design as written
+  (2026-07-04 plan: zstd frames + per-segment codec directory; zlib is
+  the explicit fallback only): the forest pack now compresses every
+  segment with zstd EXCEPT the INTERN pool blocks, which stay raw — they
+  are the zero-copy bind-in-place spine (keyed on SNAP_KIND_INTERN_*, not
+  seg-ids). Per-unit payloads already load on demand (unit_segment), so a
+  consumer decodes only the units it binds. CIR_RECORDS compress 30x
+  (61.8 -> 2.05 MB). Level by placement: the appended release pack pays
+  zstd-15 once per release build (level 19 measured 53s CPU on this
+  corpus — over the dev box's ~120s per-process kill; 15 costs ~5s for
+  ~97% of the plain-level ratio); dev/standalone freezes keep the fast
+  codec default so the drain-ladder loop is untaxed. Build: configure now
+  REQUIRES libzstd-dev (hard error, --without-zstd is the loud opt-out;
+  the silent HAVE_ZSTD-undefined degradation to zlib is how the pack
+  quietly regressed to raw in the first place). Honest cost: a bound
+  compile decodes its closure — worst case (testsubscript, closure spans
+  the corpus) 0.57 -> 0.62s (+~50ms); small TUs pay proportionally less.
+  Gates: fulltest 695/0/0/16 (self-exe gate green), release pack rc=0,
+  packed suite 695/0/0/16 with the blob present. Follow-up (task #37):
+  shared trained ZDICT dictionary (cross-unit redundancy — the
+  whole-file-vs-per-segment experiments show the headroom) toward the
+  <10 MB binary target.
+
+- **fix(parser+cir): stable function-local declaration identity closes the
+  family-D forest carry campaign.** Function-local classes, GNU nested
+  functions, and dependent-pattern bodies now mint hoisted symbols from the
+  enclosing definition's emission symbol, source spelling, and a per-body
+  declaration ordinal instead of global parse-order counters. Pattern-local
+  classes carry that identity through tsubst and remap it to the concrete
+  enclosing function; computed-name collisions fail loudly rather than being
+  silently uniquified. This keeps the local-class forest records introduced by
+  the carry slice while restoring LOADED == PARSED for grove-bound consumers.
+  `tests/testlocalclassidentity.mad` covers two same-named local classes in
+  sibling scopes, with live and packed output `15` matching GCC and clang;
+  `testlocalclassraii` remains 1 tsubst hit / 0 fallback. Final gates: reducer
+  **308** drops, fulltest **695/0/0/16** with every forest gate green,
+  release pack rc=0 with 240 units, and packed suite **695/0/0/16**.
+
+- **fix(cir): ref-return of a class assignment + ranked-callee operand
+  typing** (Slice A family D, rung 11). Two stacked root causes under
+  the drained `assign(basic_string&& __str) { return *this =
+  std::move(__str); }` family (x9). (1) A ref-returning function whose
+  return operand is a class-to-class `=` wrapped N_ADDR around a
+  non-lvalue (the trivial bit-copy N_ASSIGN / the memberwise
+  stmt-expr) — "lvalue required as unary & operand". translate_return
+  now diverts the implicit-operator= shapes: emit the assignment as a
+  statement, return the lhs ADDRESS (the expression's value is the lhs
+  itself per [expr.ass]); a USER-declared operator= keeps its existing
+  flow (the call IS the value). (2) Beneath it, the rhs
+  `std::move(__str)` TYPED as `allocator<C>&`: a late-bound overload
+  set's parse-bound Variable is an arbitrary set member (whichever
+  `move` instantiation registered last — the allocator one from
+  operator=(&&)'s __alloc_on_move, drained just before), and
+  CirBuilder::operand_object_class read that raw datadef.
+  operand_object_class now types CALL operands by the RANKED callee's
+  return (call_target_funcdef → return_value_type) — the same rule
+  Program::operand_value_datadef and ref_returning_call_type already
+  follow — so operator= selection and the memberwise guard see the
+  real class. Also: the pack check gate now prints each defective
+  item's SYMBOL (pack_gate_note reuses cir_top_item_symbol), which is
+  what made the mis-attribution visible ("9 errors" belonged to
+  _M_construct mti items, not assign). Live test
+  tests/testrefclassassign.mad (trivial / non-trivial / user
+  operator=, reference identity checked — == g++). Ladder: reducer
+  corpus 480 -> 471 drops (check drops 50 -> 41; assign__o2 x9
+  ELIMINATED, zero new drops); release corpus 518 -> 509.
+
+- **fix(parser): `*this = sv` — deref-this as assignment lhs**
+  (Slice A family D, rung 10). The unary-`*` bare-head arm — the one
+  whose own `dname == "this"` → `__this` resolution has existed all
+  along — required a ttIdentifier head, but `this` is a KEYWORD token
+  (tkCPPKEYWORD), so `*this = sv` (the trivial-class swap shape;
+  string_view's `swap(*this)` self-assign helpers) skipped the arm
+  AND the rung-9 chain arm (no postfix follower) and fell to the
+  parseExpression fallback, which swallowed `= sv` into the operand:
+  `*(this = sv)` — a struct assigned to the pointer `this`
+  ("incompatible types in assignment to a pointer"). The head test
+  now also accepts `this` — ONLY `this`, via
+  contextual_identifier_name: other contextual keywords (`new`, the
+  named casts) are expression leaders the fallback must keep owning.
+  LIVE compile error fixed too (tests/testswapself.mad: user-class
+  member swap via `*this` — "bb 2 aa 1" == g++). Ladder: reducer
+  corpus 483 -> 480 drops (check-error drops 55 -> 50; the
+  basic_string_view swap x5 family eliminated); release corpus
+  521 -> 518.
+
+- **fix(parser): `*this->ptr() = c` — deref-of-method-call as
+  assignment lhs** (Slice A family D, rung 9). The unary-`*` operand
+  arm that parses ONLY the postfix chain (so trailing binary operators
+  don't get swallowed) required a ttIdentifier head — but `this` is a
+  KEYWORD token, so `*this->pptr() = __c` (streambuf's sputc, the
+  fstream.tcc underflow/overflow `*this->gptr()` family) fell to the
+  full-parseExpression fallback, which swallowed `= __c` into the
+  deref operand: the assignment's lhs became the raw CALL ("lvalue
+  required as left operand of assignment" + int-to-pointer warning).
+  The head test now matches parsePostfixChain's own contract
+  (contextual identifiers included). LIVE compile error fixed too
+  (tests/testderefcall.mad: user-class `*this->ptr() = c` — "hi" ==
+  g++). Ladder: reducer corpus 487 -> 483 drops; the whole
+  "lvalue required as left operand" family (streambuf x4 +
+  fstream.tcc x6) eliminated — only 3 unrelated unary-& onesies
+  remain in the lvalue census.
+
+- **fix(parser+cir): stream manipulators — `cout << hex << 255` works**
+  (Slice A family D, rung 8b). Two stacked fixes. (1) PARSE: the
+  identifier arm consumed the token after a parenless function name
+  and silently dropped it unless it was `(`/`;`/`...` — the second
+  `<<` in `cout << hex << 255` vanished and the expression tree
+  mis-reduced (ANY manipulator in non-terminal chain position broke,
+  including `cout << endl << "x"`; endl-LAST worked only because `;`
+  empties the operator stack cleanly; a previous instance of this
+  same swallow had been patched around by extending the fn-address
+  decay set per-operator). The looked-at token is now pushed back;
+  the shunting-yard finalizes the pending 0-arg call as an operand
+  exactly as it always did at `;`. (2) CIR: concrete-manipulator arm
+  in try_free_operator_call — hex/dec/oct/fixed/... are inline-only
+  (never exported, unlike endl/flush's mangled-direct W2 template
+  path), so `os << hex` lowers as `hex(&os)` through the NORMAL call
+  machinery (vbase-adjusted reference bind via rung 8a, on-use body
+  derivation, whose setf -> operator|= chain rung 7 unblocked), with
+  a static downcast recovering the STREAM lvalue for chaining (the
+  manipulator contract: it returns its argument). Guarded on the
+  1-ref-param/same-class-ref-return shape; operator>> included.
+  Tests: testmanip.mad (hex/dec/oct transitions, fixed, ostringstream
+  — madc == g++ byte-for-byte). Pack-neutral (487 drops) — the value
+  is live correctness. Pre-existing (NOT this rung): --emit=c11 of
+  any <iostream> TU emits a bogus `cleanup` attribute on the extern
+  cout declaration ("cleanup argument not a function").
+
+- **fix(parser): transitive virtual-base subobject offsets** (Slice A
+  family D, rung 8a). base_offset_of returned -1 for a non-virtual
+  base OF a virtual base (ios_base within basic_ios within ostream),
+  so the method owner-adjust and reference-binding paths silently
+  skipped the subobject adjustment: cout.setf() / std::hex(cout)
+  wrote flag bits at the stream's own offset 0 (printed "     255").
+  Direct vbase-map hits resolve first; then the transitive arm
+  composes vbase offset + the non-virtual inner walk. Static offsets
+  (correct for most-derived views; the dynamic-view gap is the vtable
+  vbase-offset-slot work). Test testvbasemanip.mad (ff == g++).
+  Companion (inert until the parse rung lands): concrete-manipulator
+  arm in try_free_operator_call — `os << hex` routing written; the
+  REAL blocker found one layer deeper: parseExpression pops a 0-arg
+  namespace-fn call token off the operator stack when a following <<
+  arrives (ANY manipulator in non-terminal chain position breaks,
+  incl. `cout << endl << "x"`). Probe MADC_MANIP_PROBE.
+
+- **fix(cir): ref-returning `return <assignment>;` lowers via a
+  hoisted lvalue-address temp** (Slice A family D, rung 7). C++
+  assignment yields the assigned LVALUE ([expr.ass]); C11's yields an
+  rvalue, so the ref-return arm's `return &(__a = __a | __b)` was
+  invalid C — the ios_base fmtflags `operator|=`/`&=`/`^=` drain
+  family (×9) and `<cstddef>`'s `std::byte` compound operators (×3),
+  and a LIVE compile error for any user `T& f(T& v) {
+  return v = ...; }` (tests/testrefassign.mad: "lvalue required as
+  unary & operand" pre-fix; now 3 3 9 9 on JIT == emitted-C-via-gcc ==
+  g++). translate_return now detects a top-level SCALAR
+  (compound-)assignment operand of a ref-returning function, hoists
+  the lhs address ONCE into a `__madc_refret_N` temp of the function's
+  C return type (m_cur_func_ret_spec_dd/_stars — set per-function in
+  func_def), assigns through the temp (plain + all compound forms via
+  assign_op_node_code), and returns the temp — the g++ shape (store,
+  then return &lhs), single evaluation of the lhs. Class operands are
+  excluded (class assignment dispatches through operator= /
+  memberwise machinery, untouched). Ladder: reducer corpus 499 -> 487
+  drops; release corpus 541 -> 529. Remaining "lvalue" census after
+  this rung: streambuf/fstream.tcc "left operand of assignment" ×10
+  (a DIFFERENT defect — the assignment's lhs itself), plus three
+  onesies (nested_exception, locale_facets, basic_string).
+
+- **fix(parser+cir): member-template returns keep their reference
+  declarator; mangled-direct mti calls pass reference args by address**
+  (Slice A family D, rung 6). `skipped_template_function_return_type`'s
+  backward scan counted `*` declarators but silently skipped `&`/`&&`,
+  so every skipped member function template with a reference return
+  registered it as the base type BY VALUE — on both the
+  declaration-only placeholder and the `__mti` instantiated definition
+  (the instantiation parse feeds through the same scanner).
+  `member_template_method_call` then saw `returns_reference()` false:
+  no N_DEREF wrap on the call, and the drained stream one-liners
+  `{ return _M_extract(__n); }` lowered as `return &(call)` — the
+  "lvalue required as unary & operand" ×68 istream/ostream drain family
+  (38+30 at the class-head anchors). LIVE wrong-answer too, not just
+  drain: chained member-template calls through a reference return
+  mutated a temporary — tests/testmtref.mad printed 0 where g++ prints
+  8. Fix at the scanner: fold trailing declarator tokens (`&`, `&&`,
+  `*`, cv) off the return-type range, resolve the base, wrap
+  getPointerType/getReferenceType back on; the template-id branch now
+  also sees through trailing declarators (`vector<T>& f(` no longer
+  falls into the backward scan's grab-inside-angles trap). Companion
+  fix the first one UNMASKED (bodies that used to drop at the c2mir
+  check now reach MIR gen): member_template_method_call passed
+  reference parameters BY VALUE (`translate_expr`) — a float value in
+  the pointer slot is a MIR fatal ("in instruction 'call': wrong type
+  memory", release pack DIED in operator>>__o16); reference params
+  (trailing `&` in the substituted spelling) now pass through
+  ref_param_arg_addr — lvalues by address, caller ref-params forwarded,
+  cast rvalues (`_M_insert(static_cast<long>(__n))`) spilled to a temp.
+  New env-gated probes MADC_MTCALL_PROBE / MADC_RETPROBE (the family's
+  diagnostic toolkit). Ladder: reducer corpus 515 -> 499 drops;
+  istream/ostream 60:67 check family 68 -> 0; pack check-gate items
+  167 -> 103. HONEST FINDING: __cerb ×108 / __n ×45 secondaries
+  UNCHANGED — the "one-liners feed them" hypothesis is REFUTED; they
+  ride the .tcc definition drains. Also surfaced live (banked, next
+  rungs): `cout << std::hex` fails (non-template manipulators are
+  inline-only, need local derivation) and `return __a = __a | __b;`
+  ref-returns of assignments (ios_base ×9) need the assignment-lvalue
+  lowering.
+
+- **feat(cir): contextual conversion to bool — `operator bool` in boolean
+  contexts** (Slice A family D, rung 5). Conversion operators parsed and
+  registered but had ZERO consumers — `if (obj)` on a class with
+  `explicit operator bool()` emitted the raw struct as the condition
+  (c2mir: "if-expr should be of a scalar type"). [conv]/4 contextual
+  conversion now applies in every boolean context — if/while/do/for
+  conditions, ternary condition, `!` operand, `&&`/`||` operands — via a
+  `translate_cond` seam: the condition builds a synthetic TokenCallMethod
+  on the class's `operator bool` and routes through class_method_call, so
+  inherited conversions (basic_ios's, through the VIRTUAL base) get the
+  owner-subobject __this adjustment and all receiver shapes reuse the
+  normal machinery. CIR-time by necessity: a template pattern's
+  `if (__cerb)` can only resolve per-instantiation. Fixed in the same
+  change (class_this_arg): a REFERENCE-returning CALL receiver passed the
+  DEREF'd struct lvalue as __this — a hard c2mir error under the
+  virtual-base owner adjust, and the source of the long-standing
+  "incompatible argument type for pointer type parameter" warnings on
+  every chained receiver; the receiver pointer is now `&(*call)`. Live
+  wins: `if (stream)` / `if (!file)` state checks (test
+  teststreambool.mad), user-class conversions incl. virtual-base +
+  ref-returning-call receivers (test testopbool.mad, both byte-identical
+  to g++), and the drained-body `if (__cerb)` sentry shape. Two
+  bound-path (forest) defects fixed in the same change, found because the
+  packed suite — not the live one — caught them: (1) the conversion-op
+  registration never set `method_display_name`, and the freeze writes the
+  method_map key from it (madc_cir.cpp methodrec disp_key_id) — a
+  conversion operator never restored at all (LOADED != parsed); (2) the
+  conversion lookup used method_map, which live registration FLATTENS
+  with base entries but the restore rebuilds from each class's OWN
+  records — inherited conversions (basic_ios's operator bool two levels
+  up through the virtual base) resolved live and missed bound. The lookup
+  is now a methods-vector + base-class walk (one mechanism, identical on
+  both paths — the same lesson as the inherited-operator walk). HONEST
+  BOUNDARY: `while (s >> a)` on REAL streams still hangs — the receiver's
+  static type (basic_istream&) is not the object's most-derived type
+  (istringstream), and madc's vbase model is fully STATIC
+  (parser.cpp vbase_offset maps); the owner adjust reads the wrong offset
+  in real-libstdc++ layouts. The fix is dynamic Itanium vbase offsets
+  (vtable vbase-offset slots) — banked as its own rung.
+
+- **fix(parser+cir): chained arrow method calls — call-expression receivers**
+  (Slice A family D, rung 4). `p->mid()->leaf()->get()` (the libstdc++
+  stream-body shape `this->rdbuf()->sgetc()`) threw "chained arrow method
+  call not yet supported": the arrow method-call arm accepted only
+  subscript / operator-> / member / variable receivers. Any
+  expression-backed receiver now passes as parent_expr — class_this_arg
+  already translates it and passes the pointer value as __this
+  (recv_is_ptr), the same contract the subscript/operator-> arms use.
+  The newly-reachable path exposed a latent defect fixed in the same
+  change: the VIRTUAL dispatch lowering reads the receiver twice (the
+  __this argument and the vptr load), which would evaluate a
+  call-expression receiver twice (double side effects). A virtual chained
+  call now materializes the receiver once into a typed temp
+  (`__madc_vrecv_N`) read by both; g++ canon `calls=1` guarded in the new
+  test tests/testarrowchain.mad (byte-identical to g++). The chained-arrow
+  ×36 drain family is eliminated (ladder: <fstream> reducer corpus
+  552 → 574 drops as unblocked bodies advance; DEFBODY reverts,
+  correctness-neutral). BANKED separately (task #35): a PRE-EXISTING live
+  crash uncovered by the bisect — a polymorphic OBJECT MEMBER's vptr is
+  never initialized by the enclosing class's construction
+  (`class Mid { Leaf lf; }` → `(&m.lf)->vget()` crashes; reducer
+  tmp/red_arrow_8.mad; standalone `Leaf l;` works).
+
+- **fix(parser): full exception-declaration grammar in catch parameters**
+  (Slice A family D, rung 3). `TokenTRY::parse` accepted only
+  `catch(single-token-type [name])` — the type head was resolved from a
+  PEEKED token (misaligning `resolve_declared_type_token`'s stream-suffix
+  consumption, so qualified names like `__cxxabiv1::__forced_unwind`
+  could never resolve) and no declarator was consumed (`catch (T&)`
+  failed with "Expected ')' after catch parameter"). The libstdc++
+  `__catch(__cxxabiv1::__forced_unwind&)` clause in every stream body hit
+  this (the catch-param ×43 drain family — now eliminated). The catch
+  parameter now parses the real grammar: cv-qualifiers, consumed head +
+  qualified/template-id resolution, `*`/`&`/`&&` declarators, optional
+  name. Dispatch canon (g++): madc's runtime throws int/double/cstr only,
+  so a class- or pointer-typed clause is unmatchable — it gets tag 4
+  (produced by no throw; the existing tag-equality guard never fires) and
+  a thrown int correctly falls through to a later `catch(...)`. Named
+  class catches register the variable with its REAL type so the handler
+  body type-checks (CIR skips the scalar exception-value rebind for tag
+  4). New test tests/testcatchparam.mad (byte-identical to g++). Ladder:
+  <fstream> reducer corpus 538 → 552 drops (unblocked bodies advance to
+  the `__cerb`/chained-arrow/`__n` rungs; DEFBODY reverts,
+  correctness-neutral). Recon banked: the `__n` ×45 family is a
+  SECONDARY failure — drain parse #1 succeeds, the lowering fails the
+  c2mir check ("incompatible argument type" families on fstream.tcc
+  bodies), the drop reverts to DEFBODY, and the consumer's re-derive
+  parse #2 then fails `__n` — the primary defect is the check-rejected
+  lowering, not the parse.
+
+- **fix(parser): out-of-line nested-class definitions of class templates +
+  qualified member-typedef declarations** (Slice A family D, rungs 1–2).
+  (1) `template<...> class Owner<T>::Nested { ... };` (basic_istream's
+  `sentry` in <istream>/<ostream>) was mis-classified as a SPECIALIZATION
+  of Owner — the bogus spec could replace the primary pattern and the
+  nested type never registered (the `__cerb` ×86 drain family). The
+  qualified class-head is now detected (`template_class_head_is_qualified`),
+  captured per owner template (`OutOfLineNestedClassDef`), and parsed
+  eagerly with each monomorphization of the owner
+  (`instantiate_outofline_nested_classes`: typeparams → use-site args,
+  Owner/Owner<...> → the mangled tag; shell eager, method bodies stay
+  ODR-use-lazy; a defective nested body drops only itself).
+  (2) `string::size_type n = ...;` / `ios_base::iostate e = ...;` — a
+  qualified member-typedef DECLARATION at statement position inside a
+  function body unconditionally routed to the expression parser ("'X' is
+  not a static member of 'Y'"); the registered-datatype statement arm now
+  runs the same `datatype_statement_starts_qualified_expr()` +
+  `resolve_class_member_type_chain` probe the template-id arm already had.
+  New test tests/testoolnested.mad (byte-identical to g++). HONEST pack
+  finding: the drain-body gap ladder is deeper — on the <fstream> reducer
+  corpus these two rungs eliminate the wchar-identity ×149 and iostate ×96
+  families but advance bodies to catch-param/chained-arrow/_M_num_put
+  rungs (drops 429 → 538 mid-ladder; full release corpus 472 → 580,
+  trap stubs 178 → 211; every drop is a DEFBODY revert,
+  correctness-neutral — the packed suite stays the arbiter). Pack
+  completeness lands when the remaining rungs drain.
+
+- **fix(cir): member operators inherited from base classes now resolve**
+  (Slice A family D prelude). CIR-time operator overload selection
+  (`select_operator_overload` / `select_unary_operator_overload`) scanned
+  only the receiving class's methods vector, so any member operator
+  inherited from a base was invisible and the expression fell through to
+  the builtin lowering: `istringstream >> int` emitted a raw SHIFT
+  (c2mir check: "shift operands should be of an integer type"),
+  `ostringstream << 42`, `stringstream` both directions and
+  `ifstream >> int` failed the same way, and user-class operators
+  inherited across single/multiple inheritance mis-lowered to builtin
+  arithmetic. Both selectors now walk the direct bases when the operator
+  name is entirely absent from the receiving class (C++ name hiding
+  preserved — any same-name member of any arity stops the walk;
+  `method_map` is NOT the hiding signal since class registration flattens
+  base entries into it), and `__this` binds the OWNER's subobject in all
+  three call-lowering branches (external, user binary, user unary):
+  `base_offset_of` supplies the offset (virtual bases through the static
+  vbase offset — `operator!` on `basic_ios`), with the owner-typed
+  pointer cast and owner-named default symbol for madc-emitted bodies.
+  New test `tests/testopinherit.mad` (output byte-identical to g++);
+  pack census unchanged (472 drops, identical set) — the value is live
+  correctness, not pack completeness.
+
+- **fix(cir): pack callee-cascade stops judging alloca and fn-pointer-param
+  calls as external symbols** (Slice A family 3c).
+  `is_c2mir_builtin_call_name` now accepts `alloca`/`__builtin_alloca`
+  (c2mir's own ALLOCA builtin set — no external symbol exists or is
+  needed), and the harvested callee set subtracts the def's own parameter
+  names (`cir_collect_funcdef_param_names`): a call through a fn-pointer
+  parameter (`return __pf(*this);` — the ostream manipulator operators,
+  `__gnu_cxx::__stoa`'s `__convf`) is indirect, not a symbol to resolve.
+  Recovers 26 bodies on the <fstream> reducer freeze with zero new drops:
+  the manipulator `operator<</>>` families, the `num_put::_M_insert_int`
+  web (alloca-rooted), and all its `do_put` cascade victims.
+
+- **fix(mangle): typedef spellings desugar in mangled symbols; enum typedefs
+  keep their enum dd** (Slice A family 3b). Two mangle bugs and one latent
+  type-identity bug: (1) a namespace-scope scalar typedef (std::streamoff)
+  minted an alias DataDef whose canonical spelling is the alias itself, and
+  the mangle-spelling builders copied it verbatim — `__basic_file::seekoff`
+  mangled `...ESt9streamoffSt12_Ios_Seekdir` where libstdc++ exports
+  `...ElSt12_Ios_Seekdir` (Itanium encodes canonical types, never typedefs);
+  fixed by `DataDef::mangle_scalar_spelling()` +
+  `FuncDef::mangle_param_spelling()` feeding all four symbol builders.
+  (2) a member-template's return typedef leaked (`_M_insert` mangled
+  `R14__ostream_type` where the export has `RSo`); fixed by resolving
+  ret/param cores through the owner's `type_aliases`
+  (`desugar_member_type_spelling`). (3) an ENUM typedef
+  (`ios_base::openmode` = `_Ios_Openmode`) wrapped the enum in a plain
+  DataDef alias, losing enum-ness — `DataDefENUM` casts missed on it, and
+  its integer DataType was indistinguishable from a scalar typedef; enum
+  typedefs now keep the enum dd itself, exactly like class typedefs.
+  Verified against nm(libstdc++) oracles in the unit suite; wifstream's
+  string-open derive improves from 4 c2mir check errors to 1 (the residual
+  is the pre-existing wchar drain cluster — reducer banked at
+  tmp/reducer_wifstream_open_string.mad).
+
+- **fix(mangle): trailing `...` now mangles as Itanium `z`** (Slice A of the
+  instantiate-bucket plan, first family). A declared variadic C++ function
+  (`std::__throw_out_of_range_fmt(const char*, ...)`) mangled without the
+  ellipsis marker (`_ZSt24__throw_out_of_range_fmtPKc` instead of the real
+  export `…PKcz`), so the symbol never resolved: live, an executed throw
+  path died on an undefined MIR import; at pack time the whole caller web
+  (`basic_string::at/_M_check`, `basic_string_view::at`, `__sv_check` — 33
+  bodies) cascaded to drops. `builtin_code("...") → "z"` (both encoders,
+  never a substitution candidate), the namespace-symbol builder pushes
+  `"..."` for the parsed trailing pseudo-param, and the three method-side
+  spelling builders share `FuncDef::spell_varargs_tail()` (no-op unless the
+  tail slot is the parsed pseudo-param, so member-template placeholders and
+  post-hoc variadic promotions are untouched). Pack drops 515 → 482 (−33,
+  exactly the family), `--run-frozen` trap stubs 175 → 174; `string::at()`
+  out-of-range now throws the real `std::out_of_range` from libstdc++,
+  byte-identical live vs packed.
+
+- **perf(cir): RefFuncSet — journaled mark/rollback replaces referenced_funcs
+  full-set copies** (@c6776767). The speculative translation paths (tsubst
+  pattern probes, deferred-construction re-lowers, the covered-bail undo)
+  saved/restored the ODR-used symbol set by full tree copy, thousands of
+  times per module. referenced_funcs is membership-only (never iterated,
+  never erased — verified), so it became an unordered_set with an
+  insert-journal: mark()/rollback() undo exactly the first-time inserts since
+  the mark, with an RAII Scope whose dtor commits (matching the old
+  exception-unwind behavior) and depth asserts against mis-nesting. Bound
+  testsubscript whole-compile work −21% (-O0 callgrind 4.390B → 3.465B Ir);
+  the -O2 wall is neutral (0.570 in the 0.561–0.572 noise band) — the -O2
+  constraint is the instantiate bucket, not container churn. Gates: fulltest
+  681/0/0/16, all forest gates, packed suite 681/0, zero new warnings.
+- **perf(compile): despaced-canonical index — resolve_arg_spelling_datadef's
+  per-query struct_map scan removed** (@0f97958b, rung-4 first target).
+  Template-id spellings resolve via `StructRegistry::find_despaced`, an
+  incrementally maintained index serving the old linear scan's exact
+  first-hit-in-key-order answer. Both mutation channels of the cached
+  key are compile-enforced funnels: `DataDef::set_canonical_spelling()`
+  (private field; bumps a generation counter when an already-swept dd's
+  spelling is rewritten, e.g. fwd-class completion) and
+  `StructRegistry::set()` (struct_map is const-read-only otherwise;
+  value repoints at existing keys bump the gen — the channel a size
+  stamp cannot see). despace_spelling 49,105 → 4,944 calls (−90%),
+  317.3M → 27.5M Ir at the call sites; bound testsubscript -O2
+  0.572 → 0.561, live 2.182 → 2.151. Gates: fulltest 681/0/0/16,
+  tsubst ratchet, bind 18/18, packed suite 681/0, zero new warnings.
+- **perf(compile): lookup-churn slice — bound testsubscript 0.804 → 0.572
+  (−29%), live 2.399 → 2.182 (−9%)** (@2fb72247). Deep caller-attribution
+  recon overturned the "query-time hashing" framing: the profiled churn
+  was REBUILDS. (1) `tsubst_method_body` rebuilt its emittable-symbol
+  sets (Pass-1.6 synth dtors + forest bodies) from whole
+  struct_map/funcdef_map scans on every call — 170 calls × ~1k discarded
+  `set<string>` inserts; now an incremental builder memo (entries
+  classified once, seen-keyed by map-node key address; funcdef side
+  walked once per module since its forest-body subset is restore-stamped).
+  A first-cut size-stamp memo was profile-proven perf-inert (struct_map
+  grows between calls) before the rework landed. (2)
+  `findVariableThisScope`'s rename-stale rebuild re-emplaced the whole
+  ~7k-entry scope index (the surviving half of the task-#14 flood); now
+  an exact affected-key repair. Site counts: tsubst set-inserts
+  172,800 → 7,637; index emplaces 204,655 → 8,124. Clears the perf
+  ladder's ≤0.665 recovery target. Gates: fulltest 681/0/0/16, bind
+  18/18, packed suite 681/0, zero warnings.
+- **perf(forest): RUNG 3 CLOSED — unified referenced-surface filter**
+  (@154becbf). The CIR builder now emits only the REFERENCED surface, on
+  live and bound compiles identically (g++'s COMDAT/ODR-use shape): one
+  fixpoint admits system-header-origin type decls by tag/declared-alias
+  and every other category (protos, externs, globals, vtables/typeinfo/
+  thunks, synthesized dtors, library bodies) by declared symbol;
+  `__madc_global_init` ctor groups prune with their global; file-scope
+  statics stay unconditional; the producer freeze remains exempt.
+  Restored decls gained origin verdicts (`TopDecl.forest_system`,
+  qualified-then-bare index lookup) — the first cut had never fired on
+  bound. testsubscript emitted C: live 6079 → 3393 lines (structs
+  763 → 169), bound 6893 → 3965. Gates: fulltest 681/0 with bind 18/18
+  (strbind now asserts whole-TU MIR byte-identity), cirfidelity, packed
+  suite 681/0. Bound wall 0.824 → 0.804; the post-close profile shows
+  the remaining bound cost is query-time name hashing + string-keyed
+  sets → next lever is sid-keyed lookups (str-drop rung 2 territory).
+- **perf(forest): RUNG 2a — closure-filtered materialization**
+  (@3f06188c). `materialize_from_arena` builds only the TU's
+  bound-include closure (CirMaterializeFilter over the B4a decl index);
+  small TUs −69% bound wall; headline TU neutral (its closure spans the
+  corpus). Two root causes fixed en route: frozen-tree emission-name
+  contract (every kept restore surface seeds the reference-pull closure)
+  and two-surface ns_ok/flat_ok gating.
+- **perf(parser): task #14 — tracked renames end the stale-rebuild intern
+  flood** (@ceff5bf7). The only post-registration Variable rename (the
+  operator peer retag) was untracked, forcing whole-scope re-interns of
+  mangled names on every stale scope-index hit (196,596 → 28 re-interns;
+  intern hashing 853M → 301M Ir). `Variable::rename()` zeroes `name_sid`;
+  the rebuild re-interns only zeroed entries.
+- **perf(forest): raw container segments** — the pack no longer compresses
+  forest segments; the reader binds them zero-copy from the image. Bound
+  testsubscript: 5.31G → 4.25G instructions (−20%), 0.98s → 0.91s wall;
+  blob grows ~7MB → ~81MB (paid once at pack, not per compile). Perf
+  ladder to the ~0.1s end target stamped in the phase-2 plan.
+
+## [v0.34.0] — 2026-07-11
+
+The pack-time drain release: the packed madc binary carries fully-evaluated
+header bodies (Phase 2 rung 1), runs the entire integration suite 681/681,
+and dev/-O2-packed binaries now coexist (`bin/madc` / `bin/madc-release`).
+
+### Data-substrate Track B — the embedded header forest
+
+- **Phase 2 RUNG 1 CLOSED (2026-07-11) — pack-time deferred-body drain.**
+  A `--freeze`/`--freeze-append` parse now drains every deferred body to
+  fixpoint and freezes the translated defs through the existing v22/v26
+  machinery, with error-tolerant reverts (no silent caps): a drain failure
+  re-inserts the DEFBODY; a cascade drop of an eager-parsed SOURCE fn
+  reverts to its captured body span (the std::abs carry — this restored
+  packed `std::stoi`/`stod`, the packed suite's last two failures); only
+  local-class methods and instantiation-context products stay
+  consumer-invisible (re-instantiated fresh, live semantics). Pack-side
+  c2mir CHECK GATE (fork `c2mir_check_tree`/`c2mir_copy_tree` @062dd977,
+  `MIR_COMMIT` bumped) validates every drained lowering at pack time and
+  drops defective defs by top-item attribution; `--run-frozen` prebinds
+  unresolved drained-library imports to named trap stubs. EMISSION SPLIT:
+  tree membership (what `--run-frozen` compiles) is decoupled from
+  consumer visibility (what stamps `DF_HAS_FOREST_BODY`), preserving
+  whole-TU byte-identity by construction. Exit gates all green at
+  @b635feea: **fulltest rc=0 (suite 681/0/0/16 + every ratchet + both
+  oracles — first fully-green fulltest of the rung-1 era), packed suite
+  681/681, bind gate 18/18** incl. the owner's bar (testsubscript
+  freeze+bind == live == .expect). Consumer-side body derivations on
+  testsubscript: 217 live → 187 bound; the fallback tail + corpus growth
+  (44,689 → six-figure records) are rung 2's target, as planned. The
+  forest_index_oracle also learned the `__i<spelling>_<fnv1a32>`
+  instantiation-mangle scheme (first oracle run since that scheme landed).
+
+- **CAMPAIGN CLOSED (2026-07-09).** The 2026-06-22 embedded-header-forest
+  execution plan is stamped CLOSED — every Definition-of-Done bar met at
+  container format v27 (close commit @2e6d8d2e). **Item 5 (lazy defrost):**
+  the one decl-restore path is demand-keyed — registration filters to the
+  TU's bound-include closure via the B4a decl index at the post-tokenize
+  flush, with PER-NAME-SURFACE gating (the freeze stamps a globally-defined
+  tag's single record with a namespace that merely aliases it — ctime's
+  `using ::timespec` marks glibc's `struct timespec` record `ns=std` — so
+  the bare-tag and qualified surfaces answer to different declaring units
+  and gate independently). A packed `madc` binary compiles the FULL
+  integration suite zero-flag: **packed suite 680/680**, fulltest
+  680/0/0/16, bind gate 18/18 whole-TU MIR byte-identity. **Item 6 (the
+  number):** SMAUG 51-TU `--project` A/B against a gnu17 corpus of SMAUG's
+  21-header system surface — **end-to-end 20.15s → 16.68s (−17%)** with
+  byte-identical output; header-surface front end **4.2×** (input read
+  638 KiB → 0.7 KiB, lexer tokens 13,426 → 9); real-TU front end −22%.
+  Full method + table in the plan's CLOSE-OUT MEASUREMENT section.
+  Recorded follow-ons (no failing tests) live in the close-out handoff:
+  extern-array-global dims fidelity (unlocks the project-header/mud.h
+  corpus and most of the remaining per-TU win), `__stoa` `_Ret` collapse,
+  global-scope fn-template registration, qualified template-static access,
+  /usr/include product packaging.
+
+- **NEW-SPECIALIZATION instantiation from restored save-state WORKS (format
+  v21, two commits, 2026-07-07).** A consumer instantiates a specialization
+  the producer never built — `vector<long>` bound to a `vector<int>` producer
+  snapshot runs `t=42 n=2` == live == g++ (gate case [vecnewspec], 14/14).
+  Six loaded-state gaps burned down in one day: the `.madh` token codec
+  degraded `friend` + every version-gated reserved keyword to identifiers
+  (missing `tkFRIEND` / `tkCPPKEYWORD` reconstruction — masked for years by
+  the include-replay's keyword re-promotion); the skipped-ns-fn-template
+  PLACEHOLDER surface (`__ns_std__Destroy` funcdef + namespace binding +
+  overload-set seed); MEMBER function templates (pattern tokens + owner —
+  the flush re-runs the live registration over restored tokens); ENUMS
+  (`DK_ENUM` + scoped enumerator values; `std::align_val_t`); OUT-OF-LINE
+  member definitions of class templates (the eighth pattern map —
+  vector.tcc's `_M_realloc_insert`); and restored concrete declarations'
+  overload-set entries + Itanium `storage_alias_name` binding (aligned
+  `operator new` ranks to the 2-arg overload; `std::__throw_bad_alloc` →
+  `_ZSt17__throw_bad_allocv`). Course correction recorded in the READ-FIRST
+  banner: no more bespoke record families — every future gap moves its state
+  INTO the substrate (the GCC-PCH dump model); next step is measuring the
+  real-workload compile win before any further coverage.
+- **Widening slice 2 (format v20) — template-NAME state serializes; a bound
+  `<vector>` consumer runs.** The corpus blocker ("use of undeclared identifier
+  'vector'": the instantiation PRODUCT was in the arena, the template NAME was
+  not) closed by serializing the parser's pattern maps VERBATIM — the seven
+  template maps' definitions as params/flags/ns + their captured TOKEN runs in
+  the `.madh` record form (live keeps patterns as tokens, so bind holding the
+  same tokens IS state parity). Five more loaded-state gaps fell with it:
+  `canonical_cpp_spelling` restore (template arg-spelling identity — the
+  instantiation-key memo), the class-scope name maps (`type_aliases` /
+  static member types / integral static-const values), the producer's
+  instantiated `__mti` / `__ns_*__oN` DEFINITIONS (bodied free functions with
+  forest bodies riding the materialize_and_lower fixpoint; a producer root
+  like `main` cleanly lacks), a serialized EXTERN-DECL INDEX (loaded bodies'
+  pre-built runtime/library calls load the producer's own declaration node —
+  the setjmp / operator-new pointer-truncation SIGSEGV class), and namespaced
+  aliases to pinned primitives (`std::size_t`). The exact-match consumer binds
+  and runs `sum=7` == live == g++ with func/export/import SETS byte-identical
+  to live (whole-TU byte-identity — a proto/label numbering-order residual —
+  is the follow-on). New gate case [vecbind] (13/13); a NEW-specialization
+  consumer (`vector<long>`) advances into body instantiation and is the next
+  measured slice.
+- **B3 ARENA FLIP (Chunks A/1/2/3, format v18) — the DefArena IS the type-graph
+  serialization.** SAVE = dump the parse-populated arena (write-throughs at the
+  type-completion funnels + a freeze-time refresh/completion pass); LOAD =
+  `materialize_from_arena` reconstructs the DataDef graph applying the retired
+  v6 save-side selection at load. The v6 hand-serializer
+  (`cir_forest_fill_type_records` + `materialize_types` + the
+  `cir_forest_type_*` record family + the CIR_TYPE_RECORDS/PAYLOAD segments +
+  the transition oracle) is DELETED — net −1,291 LOC; a new DataDef field now
+  serializes by adding it to one POD record. Fixed along the way: struct→class
+  promotion left the live id table resolving the superseded struct
+  (`id_table::set` + repoint); `--freeze-run` never enabled the arena
+  (`madc_cir_freeze` now fails loudly on a flag-off freeze). Task #23: the
+  whole-`<string>`-TU func/export/data SETS are byte-identical between a bound
+  and a live compile; the residual dump diff is the late-pass ctor/dtor
+  emission order.
+- **Widening slice 1 — restored-method overload fidelity.** A bound
+  `s.append("!!")` mis-resolved to `append(initializer_list<char>)`:
+  `findMethodOverload` derives the hidden-`__this` skip from the method
+  Variable's `Method::owner_class`, and restored methods carried
+  `data==NULL`, breaking overload arity ranking. The restore now attaches
+  `Method(owner_class)` at materialization and the flush shares the ONE
+  Variable with tkProgram scope (live parity with parseFunction's tail).
+  A rich `<string>` consumer (append/operator+=/c_str) binds with a
+  whole-TU MIR dump byte-identical to live — even against a minimal
+  producer. New gate case [strops] (12/12). Next widening slice
+  (measured): `<vector>` needs template-NAME state serialized
+  (TemplateDef token bodies) — design in the READ-FIRST banner.
+- **#23 CLOSED — a bound `<string>` consumer's whole-TU MIR dump is
+  byte-identical to a live parse (diff 122 → 0), asserted by the strbind
+  gate.** Two loaded-state-equals-parsed-state fixes: (a) every restored class
+  METHOD now registers exactly as parseFunction's prototype tail leaves it —
+  `funcdef_map[method-id]` + a program-scope Variable + `Method(owner_class)`
+  — so Pass 0.75 emits the ctor/dtor typed extern protos at live's sorted
+  positions (the v12 emit_symbol-keyed dtor registration, a key live never
+  has, is deleted); (b) a SYSTEM-header forest body now materializes inside
+  the `materialize_and_lower` fixpoint on first ODR-use — the loaded
+  equivalent of a live parse's deferred lazy body — so the late tag-ctor /
+  allocator-dtor definitions land AFTER `main` in fixpoint order; USER-header
+  classes keep the eager roots-shaped path. Gates: fulltest 680/0/0/16;
+  forest_bind_gate 11/11 incl. the new whole-TU byte-identity assert;
+  test_cir_freeze 29/480; torture failset byte-identical (verified by run).
+- **RC2 (format v19) — free-function declarations serialize + restore.** A
+  bound header's file-scope prototypes (`int printf(const char *, ...)` et al.)
+  now restore as `funcdef_map` + program-scope Variables before the consumer
+  parses, so a bound call resolves the real signature and emits live's typed
+  extern proto — never the dlsym implicit-variadic fallback (`i64, ...`), which
+  mis-read a signed-`int` return as a 64-bit long (the `bsearch_skill_exact`
+  bug class). Gates: fulltest 680/0/0/16; forest_bind_gate 11/11 (strbind now
+  asserts the typed printf proto); torture failset byte-identical.
+- **B4a — grove payload v2 + pack-time recording + oracles + build modes**
+  (forest Phase 4 slice a): the format + pack side of forest-default mode;
+  no consumption yet (suite-neutral). The frozen container gains grove
+  payload v2 (`CIR_FOREST_FORMAT_VERSION = 2`): per-unit post-PP token
+  slices (`.madh` record form), a decl index (exported name → {kind, token
+  slice}), a PP-export event stream (`#define`/`#undef` deltas in directive
+  order), include edges, plus container-global branch-relevant macro set and
+  canonical unit order. `Program::pack_*` records all of it during
+  lex+parse under `--freeze`/`--freeze-append` (one predicted branch per site
+  otherwise); decl-boundary frames at the three top-level decl loops with
+  registration taps at the map inserts. New surfaces: `--dump-forest`,
+  `--dump-registered`, `-dM`; the index-parity oracle
+  (`scripts/forest_index_oracle.sh`) and the macro-set-vs-g++ ratchet
+  (`scripts/forest_dm_oracle.sh`), both wired into fulltest; the pack driver
+  (`scripts/forest_pack.sh` + versioned `scripts/forest_pack_headers.txt`);
+  and build modes (`MODE=develop|debug|release`, per-mode object trees,
+  `make release` = `-O2` → strip-before-append → pack + verify). Measured:
+  the release binary strips 18.7 MB → 7.3 MB and carries a 234-unit forest
+  it runs from its own EOF footer.
+- **B3 — multi-segment forest + append-to-binary + context pin** (forest
+  Phase 3): the cross-process closure. `cir_freeze_forest` partitions a
+  module tree into per-source-file units (one walk — B2's single-blob
+  freeze now delegates to it); cross-unit child references are CONNECTORS
+  (high-bit child entries into a per-unit connector pool) whose resolution
+  loads the target grove on demand — `CirFrozenForest::open` reads only the
+  directory, context-hash pin, string pool, typeid→name closure, and
+  required-libs list. The container carries its OWN string pool (A1
+  `frozen_intern_table` blocks) + a per-record position side-car, so a
+  FRESH process thaws, compiles, and runs with no parse and none of the
+  freezing process's state. New CLI: `--freeze=<f>`, `--freeze-append=<bin>`
+  (blob appended to a binary, found from its EOF footer), `--run-frozen[=<f>]`
+  (bare = the blob appended to the running executable via /proc/self/exe),
+  `--freeze-run` (freeze + re-exec fresh — the round-trip
+  `tests/testfreezerun.mad` and `scripts/forest_selfexe_gate.sh` drive).
+  Context-hash mismatch rejects loudly. Measured: a real
+  `<iostream>/<string>/<vector>` program = 93 units / 47,178 records /
+  683 KB; live 1.659 s vs frozen 0.082 s end-to-end (20×), output == g++.
+  Each directory unit reserves an `anchor_idx` — the B4 grove entry a
+  parse-time `#include` / C++20 `import` will bind to.
+- **B2 — single-segment freeze/thaw** (`b62089ad`, forest Phase 2): `src/cir_freeze.{h,cpp}`
+  flattens a cir_node sub-DAG to fixed-size POD records + a CSR child pool
+  (share/cycle-safe first-touch walk, iterative), carries it through the A2
+  snapshot container (two consumer kinds, load-time bounds validation), and
+  thaws via `CirFrozenSegment` — registered in the B1 segment registry (now a
+  `cir_segment_source` interface) with memoized two-phase resolve-on-touch
+  materialization at the c2mir edge. Structural-identity oracle + the thawed
+  tree compiles and runs through production `cir_compile`. Mechanism check:
+  `testsubscript` module tree (90,647 records, 456 KB) loads in 55.8 ms vs
+  2508 ms parse+translate — 45×. Cross-process closure (frozen intern/type
+  segment binding, context pin) is the B3 fence.
+- **B1 — serializable `cir_node` references** (`0b1e618a`, forest Phase 1):
+  every madc
+  extension field on `cir_node` is now position-independent — `datadef`
+  (DataDef*) → `datadef_id` (uint32 typeid; policy chokepoints hoisted to
+  the statically-reachable `madc_type_id_for`/`madc_type_from_id` over the
+  active project table); `typedef_name`/`error_msg`/`tsubst_pack_value_name`
+  (const char*) → uint32 handles in the ONE shared string pool
+  (`CirArena::intern` + its non-deduped side pool deleted); `tree1_origin`
+  (cir_node*) → a `(seg, idx)` `cir_ref` behind THE single resolve accessor
+  `madc_cir_node_for()`, with `CirArena` self-registering as a segment and
+  stamping each node's own `self` ref. Raw pointers remain only in the
+  c2mir-visible `base` (op links, `u.s` payloads), which stays pointer-based
+  live by decision and maps to refs/handles at freeze time (B2). Gate:
+  `--emit=c11` byte-identical on 688/694 tests — the 6 divergences are
+  per-compilation typeid-order constants in eval value shims only, proven
+  self-consistent by running the gcc-compiled artifact.
+
+### Data-substrate Track A — the madc::dis spine (COMPLETE)
+
+- **A1+A2 — frozen intern_table + pool-snapshot container** (`62c1b91b`):
+  `frozen_intern_table` binds read-only over the three serialized
+  index-linked blocks (zero fixup); the `madc::dis` snapshot container
+  (`include/madcdis/snapshot.h`) serializes pools to a standalone file OR
+  appended to the madc binary (footer-at-EOF self-location, 16-aligned
+  bind-in-place payloads, zlib/zstd via the one `madc_pch` codec).
+- **A3 — value pool + true 128-bit constants** (`7d7c0e5d`, `956e7030`):
+  `madc::dis::value_pool` (deduping handles over uint64-limb records;
+  `Program::valpool`); integer literals accumulate at 128 bits with the
+  gcc-canon "integer constant is too large for its type" warn+truncate;
+  the constant-fold spine (`parse_constant_*`, leaves, casts, case labels)
+  computes in a 128-bit carrier (`madc_wide_int`, gcc's wide_int model) —
+  `case ((__int128)1 << 100):` now folds, emits as the composed
+  `((unsigned __int128)hi << 64) | lo` (portable C11), and dispatches
+  byte-identically to gcc/clang (`tests/testint128.mad`). The dead
+  asmjit-era `ioperate`/`foperate` fold web was deleted (`59653106`).
+  Fixed en route: `Source::showerror`'s destructive rewind broke resumable
+  diagnostics (`7d7c0e5d`).
+
+## [v0.33.0] — 2026-07-04
+
+The parse-once release: the template re-parse deprecation campaign (Phase 5)
+is COMPLETE — every member-template instantiation, first or repeat, takes its
+body from tsubst over the one saved pattern tree; the re-parse fallback
+machinery is deleted outright. Plus a long-standing map-iteration SIGSEGV
+fixed and the portable `--emit=c11` gcc oracle green on container code.
+
+### Parse-once tsubst — campaign complete (Phase-5 slices 1–4b)
+
+- **Slice 1 — dependent template-id shells + ctor mem-inits.** The
+  `DependentShellOrigin` registry keeps dependent template-id types
+  structural through substitution; `std::pair`'s piecewise/indexed
+  delegating ctors HIT (structural rebuild, memoized construct arm,
+  per-element dependent-call re-resolution).
+- **Slice 2 — instantiation body-parse skip.** A pattern-bearing source's
+  repeat instantiations skip their body parse (name-keyed arming; raw span
+  captured for the bail fallback).
+- **Slice 3 — loud bail.** A tsubst bail on a covered shape is a LOUD
+  pre-c2mir error body, never a silent re-parse.
+- **Slice 4a — parse-once UNCONDITIONAL.** The `MADC_XTEST_DEP_PARSE=0`
+  escape hatch and the soak levers are deleted.
+- **Slice 4b — seven copy-time KINDs**, each landed with the burndown flat
+  at 0 FALLBACK: receiver-aware member-call rebuild; copy-time ctor
+  instantiation; deferred-arg formal re-selection (identity bake +
+  static-member re-select + per-formal pack fan-out); TAG_DEFN local-class
+  materialization (`_Guard`); vector-lane construct KINDs (free-operator
+  instantiation on lookup miss + order-independent pack-member-call symbol
+  rewrite); scalar placement-new structural store + pointer-pointee
+  overload rejection at the ONE shared ranking; reference-formal object-arg
+  address recovery (the SET wall).
+- **Member templates at 2+ types** get per type-shape instances (the
+  single-`__mti`-slot collision fix).
+- **The FLIP:** first-skip is production — FIRST instantiations skip the
+  eager body parse like repeats. The eager parse was over-instantiating
+  (redundant `allocator_traits::construct` overload instances); post-flip
+  instantiation is by-need. Gate evidence: all first-skip walls cleared,
+  suite burndown 0 FALLBACK with zero `[why:]` reason-classes, and a
+  pre-acceptance eligibility census EMPTY across all 693 tests.
+- **The DELETE:** `materialize_tsubst_skipped_body` and the captured-span
+  token machinery are gone (−123 lines); a tsubst bail on a skipped body is
+  a loud error. The parse-once rule now forbids reintroducing any re-parse
+  recovery path. Remaining body parses are the ONLY parse for their shapes
+  (pattern-ineligible sources, `auto`-return deduction).
+- Suite burndown: **312 HIT / 0 FALLBACK (100%)**; flag-on ratchet GREEN.
+
+### Bug fixes
+
+- **Map iteration SIGSEGV** (`for (map<K,V>::iterator it = m.begin(); ...)`
+  crashed in `_Rb_tree_increment`): a class-typed single declarator in the
+  for-init slot emitted only its bare storage decl — the 1→N class-decl
+  lowering's injected construction had no room in the single init slot and
+  was dropped. `translate_block`'s class-decl arm is factored into the
+  shared `class_decl_stmts`, and `translate_for` wraps class-shape for-init
+  declarators in a synthetic block `{ decl; construction; for (;cond;incr) }`
+  — exact for-init scoping, same-named sibling loops can't collide. New
+  `tests/testmapiter.mad`.
+- **Portable `--emit=c11` on container code:** the tsubst explicit-dtor and
+  destroy-marker arms declared element dtors `extern void d(void*)`,
+  conflicting with madc's typed definitions under gcc (c2mir tolerated it).
+  Both now emit typed forward protos (`void d(struct X *)`); the emitted C
+  for map/set/vector reducers compiles unpatched under `gcc -O0` with
+  JIT-matching output.
+
+### Testing
+
+- fulltest **677 passed / 0 failed / 0 timed out / 16 skipped** (suite grew
+  by `testmapiter`); tsubst flag-on ratchet GREEN on the updated baseline;
+  burndown 312/0 with zero reason-classes.
+
+## [v0.32.0] — 2026-07-01
+
+Rung-1 interning capstone (`madc::dis`) — the per-token `std::string` is gone —
+plus a root-caused retargeting of the tsubst re-parse burndown.
+
+### Rung 1 — interning capstone (front-end perf)
+
+- **Step 4 — dropped `TokenIdent::str`.** Bare identifier tokens (the most numerous
+  token) now carry only a 4-byte interned `rec.spelling_id` resolved via the
+  `madc::dis::intern_table` pool (`TokenBase::_active_strpool`), not a 32-byte
+  `std::string`. `spelling()` is virtual; content/alias subclasses (`TokenStr`,
+  `TokenREM`, `TokenKeyword`, `TokenDataType`) keep their own `str` and override it.
+  Measured **−43% madc token `std::string` constructors, −3.3% total instructions**
+  (deterministic callgrind). Landed in gated tranches; production byte-identical.
+- **`Variable::name_sid` + `finalize_pop1_rec` file_id caches** — kill redundant
+  intern re-hashing on the scope-lookup and per-token finalize paths: **−6.6%
+  instructions, hashing −64%** (deterministic callgrind).
+
+### Template instantiation (tsubst) — burndown insight + retargeting
+
+- Fresh suite-wide burndown (`scripts/tsubst_burndown.sh`): **175 hit / 90 fallback
+  (66%)**, up from the 104-fallback baseline. Root-caused the dominant
+  `[why: template-id '<' in body]` class (78% of fallbacks): it is a *first-blocker*
+  tally masking a deeper capability gap, not the concrete-template-id win the plan
+  assumed. gdb traced the wall to `std::__and_`'s dependent base
+  `conditional<...>::type` degrading to `"auto"` — the **dependent-member-type /
+  `::type` / rebind resolution KIND (Kind 3)** that `subst_datadef` lacks. Recorded
+  in `docs/plans/2026-07-01-templateid-gate-insight-HANDOFF.md` with the ordered fix
+  plan. No code change (analysis + doc only); production byte-identical.
+
+## [v0.31.0] — 2026-06-30
+
+Front-end performance track + the tag-arithmetic encoding retired: pointer/
+reference derivation now lives entirely in the `DataDefPTR`/`REF`/`CONST`
+object graph and the `madc::dis` substrate primitives (intern_table, arena,
+id_table) are factored out, with the `datatype_map` re-keyed onto interned ids.
+
+### Tag-arithmetic retirement — COMPLETE (encoding removed)
+
+- Began retiring the `DataType` tag-range encoding of pointer/reference derivation
+  (base+10000 = ptr, base+20000 = ref), a non-nesting "bit trick" that collides
+  across its fixed bands and duplicates the `DataDefPTR`/`REF`/`CONST` object graph
+  + the typeid table (design §6.4; enabled by `id_table` + `derived_type_id`).
+- **Phase 0 (gate):** `scripts/tag_arith_burndown.sh` counts the external raw-tag
+  worklist and `--check` ratchets `docs/parity/tag-arith-baseline.txt` (fails on a
+  rise); wired into `make -C src fulltest`. Plan + measured scope:
+  `docs/plans/2026-06-30-tag-arithmetic-retirement-plan.md`. Baseline 25.
+- **Cluster A:** the 18 builtin/host-function signature sites moved off
+  `rtPtr(DataType::dtX)` onto the structural `ptr_of(ddX)` form (`typespec_t` already
+  carried a `DataDef* + RefType` representation; `resolve_data_type` resolves it via
+  `getPointerType` to the SAME `ddXptr` global the tag resolved to — representation-
+  identical, torture byte-identical). Baseline 25 → 3; the remaining 3
+  (`same_representation`) are coupled to the final core-removal phase.
+- **Gate extended to a second metric:** the rt*-only count missed sites that READ
+  the offset indirectly (`type()==dtCHARptr`, switch cases, signature literals,
+  `reftype()` band-reads) and break when the tag is dropped. Added a ratcheted
+  **consumer-surface** metric (baseline 14), tracked as line 2 of the baseline file.
+  It surfaced **3 missed Cluster-A signature literals** (`strcmp`'s two `char*`
+  params, `get_argv`'s `char*` return) that used the `dtCHARptr` constant rather than
+  `rtPtr(dtCHAR)` — migrated to `ptr_of(ddCHAR)` (consumer 17 → 14, behavior-identical).
+- **Investigation:** base `DataDef::is_pointer()` is tag-aware but structurally
+  overridden on `DataDefPTR`, so the predicates already answer correctly for both the
+  structural and plain-tagged populations. The `type()==dt*ptr/ref` *equality*
+  consumers nonetheless can't be migrated faithfully in isolation (the non-nesting tag
+  overflows `char**` into the ref band, so `is_pointer() && rawtype()==dtCHAR` would
+  newly match `char**`; the plain-tagged population has no `base_type` to inspect) —
+  so they, with Cluster B, move WITH the atomic core flip, not ahead of it.
+- **Core-removal endgame de-risked + started** (`setRef` found dead; only `ddLPSTR`
+  + `ddVOIDref` were plain-tag; `reftype()` readers all guarded/dead/cosmetic). Three
+  gated, behavior-identical, torture-byte-identical steps landed:
+  - **Step 1:** structural `reftype()`/`rawtype()` overrides on `DataDefPTR`/`REF`
+    (mirroring `DataDefCONST`) — the structural objects stop reading the `_type` band;
+    `DataDefREF` now reports `reftype()==rtReference`, resolving the "three encodings"
+    disagreement (verified invisible at all readers).
+  - **Step 2:** `ddLPSTR` is now a structural `DataDefPTR(ddCHAR)` (was a plain
+    `DataDef` carrying a bare `dtCHARptr` tag), so every `char*` has a `base_type`.
+  - **Step 3:** new `DataDef::is_cstr()` (structural, value-equivalent to the old
+    `type()==dtCHARptr` and tag-independent) replaces the 6 cstr consumers; the
+    redundant `|| type()==dtCHARptr` in the subscript path deleted. Consumer metric
+    14 → 7. Unit-test pins `is_cstr() == (type()==dtCHARptr)` across char*/const
+    char*/char* const/char&/char**/int*/void*.
+  - **Flip groundwork:** cleared the last two non-`reftype()` consumers
+    (`dynamic_symbol_fallback_return_type` → `typespec_t`/`ptr_of(ddCHAR)`; deleted a
+    dead `|| dtARRAYref` arm — `rawtype()` always strips the band). Consumer metric
+    7 → 5 (all remaining are `reftype()` readers). Wrote the turnkey flip recipe into
+    the plan and confirmed no plain-tag pointer DataDef survives in `src/` besides
+    `DataDefPTR` + the soon-converted `DataDefVOIDref`.
+  - **Atomic core flip (DONE — encoding removed):** deleted the `dt*ptr`/`dt*ref`
+    enum ranges, the `rt{None,Val,Ptr,Ref,DePtr,DeRef}` macros, the static
+    `rawtype(DataType)` overload, and `setRef()`; made the base
+    `is_pointer()`/`rawtype()`/`reftype()` structural; dropped the `+10000` offset
+    from `DataDefPTR`'s ctor; converted `ddVOIDref` to a real `DataDefREF(ddVOID)`;
+    collapsed `same_representation`'s tag tail to `is_pointer()`/`type()` and deleted
+    `resolve_data_type`'s dead banded-tag branch. Two pointer-guards added because a
+    pointer's `type()` is now its pointee scalar: the shim classifier's `void*` return
+    no longer aliases `dtVOID`, and `native_type_from_datadef` bails pointers to integer
+    before the scalar switch. **Consumer + raw-tag metrics 5/3 → 0/0**; the gate is now
+    a finish-line check. Build 0-warn, fulltest 673/0/0/16, torture byte-identical to
+    the 51-name baseline. Pointer/reference derivation now lives ENTIRELY in the
+    `DataDefPTR`/`REF`/`CONST` object graph + the typeid table.
+
+### madc::dis substrate — first primitives (development-substrate vision, rung 1)
+
+- Recorded the **development-substrate north-star vision**
+  (`docs/plans/2026-06-29-madc-development-substrate-vision.md`): standardized
+  `madc::dis` in-memory primitives → generic `madc::dat` (parse, emit) drivers →
+  one dual-fidelity MC11-IR graph → past/present/future tenses → agentic
+  development via MCP (the codebase as a live queryable object, source-on-disk a
+  projection) → federation across the tool ecosystem (GitHub/Jira/Notion/IDE/LLM/
+  human). Each rung pays for itself; the grounded first step is the `madc::dis`
+  primitives, dogfooded by the compiler.
+- Began implementing `madc::dis`. Two foundational catalog primitives landed as
+  clean re-homes of proven compiler-internal code, each behind a documented
+  interface + catalog note, with zero behavior change:
+  - **`madc::dis::intern_table`** (`include/madcdis/intern_table.h`) — the interned
+    string table (was `StringPool`), with `madc::dis::intern_keyed_map<V>`. The
+    `stringpool.h` shim was added then retired; all call sites name the primitive
+    directly. Non-counted/permanent variant; refcounted + frozen/mmap variants slot
+    in behind the same interface later.
+  - **`madc::dis::arena`** (`include/madcdis/arena.h`) — the bump allocator,
+    factored out of `TokenArena` free of any `TokenBase` coupling. `TokenArena` now
+    HAS-A `madc::dis::arena` and keeps only the token slot registry (the id↔pointer
+    bridge); its public API is unchanged. Sets the template: the primitive stays
+    general, the compiler consumes it.
+  - **`madc::dis::id_table`** (`include/madcdis/id_table.h`) — the segmented
+    stable-id↔object* registry (the "growing tail over a fixed base" half of a
+    segmented id space): `vector<T*>` (polymorphic-safe, pointer-stable),
+    append-only, `add`/`get`/`base`/`size`. Factored out of the type-table
+    identity layer's project segment: `Program::project_types` is now an
+    `id_table<DataDef>`, and `type_id_for`/`type_from_id` keep only id policy
+    (the `dd->type_id` memo + primitive/system/project segment dispatch) and
+    delegate storage. The value ABI's cell pools and `madc::dat` serialization
+    will instantiate it over their own bases (a stable integer id is what
+    position-independent pools and serialized type-refs need, where a `DataDef*`
+    cannot live).
+- Completed the type-table identity layer with the **id-addressable derived-type
+  API** (`Program::derived_type_id`, design §6.1): "pointer-to(id)" /
+  "reference-to(id)" / "const(id)" resolved by typeid, obtaining the canonical
+  derived `DataDef` through the same `getPointerType`/`getReferenceType`/
+  `getConstType` cache the compiler uses (one source of truth; the hot path is
+  untouched), then stamping it. Compiler internals keep using `DataDef*`; this
+  converts only at the boundary. Enables — does not perform — the later
+  tag-arithmetic retirement campaign.
+- **Re-keyed the flat `datatype_map`** (the current-scope type-name map, the last
+  big string-keyed hot map) onto `madc::dis::intern_keyed_map<TokenDataType*>`:
+  O(1) id-keyed lookup over a DEDICATED dense `Program::type_name_pool` (not the
+  global `strpool` — type names are a tiny domain, so a private pool keeps the
+  `_slot` array tight and avoids a memory regression). `datatype_map` is now a
+  consumer of the `intern_table` primitive, and type-name identity is
+  id-addressable. The namespace-owned inner maps stay `std::map` (enumerated by
+  key). Conversion was build-enforced (50 sites across lexer/parser/cir_builder:
+  `it->second` → `*it`, mirroring the `keyword_map` idiom); inserts and
+  `find()!=end()` tests were unchanged.
+
+### Lambda `[&]` capture of class objects and references; two pre-existing fixes
+
+- **`[&]`-capture completeness** (`cir`): a captured variable used by *address*
+  (a class object via `object_var_addr` — `cout << msg`, `msg.method()`) or a
+  captured *reference* (`int &r`) was never recorded as a capture, so no hidden
+  pointer parameter was synthesized and the lambda body referenced an undeclared
+  outer name. Fixed at the chokepoints: `object_var_addr` records the capture and
+  returns the capture pointer directly; a shared `capture_param_type()` gives a
+  reference's capture parameter a referent-pointer shape at all three synthesis
+  sites; the call site forwards a reference's stored pointer value. `testcapture`
+  dropped its `.mir_skip` (now compiles and runs) and gained a reference-capture
+  case.
+- **Static function-pointer mistaken for a static method** (`cir`, pre-existing):
+  the static-member overload re-rank guard matched any `vfSTATIC` variable,
+  including a file-scope `static double (*fp)(float)`, then dereferenced its `data`
+  as a bogus `Method *` → SIGSEGV. Restricted to `FuncDef`-typed callees.
+  gcc.c-torture `func-ptr-1.c` restored; failset back to byte-identical baseline.
+- **`cout << ref_to_int` selected `operator<<(const void*)`** (`cir`, pre-existing):
+  an `int &` operand was scored by its pointer repr in `select_operator_overload`,
+  matching the `void*` overload (printed `0x5`, warned). A scalar reference now
+  scores by its referent ([over.match]); reference-to-pointer still scores as a
+  pointer. `+ tests/testrefstream`.
+
+### c2mir compile-warning elimination (97 → 0, suite-wide)
+
+- Drove the c2mir compile-warning count across the whole `tests/*.mad` suite
+  to **zero** on the flag-off (production) path, and wired a ratchet gate
+  (`scripts/warn_census.sh --check` in `make -C src fulltest`, baseline
+  `docs/parity/warning-baseline.txt`) so any new c2mir warning fails the suite.
+  The baseline now holds NO per-test entries — keep it that way; fix the
+  warning, never add an entry. Each fix was a deepest-layer root-cause fix
+  (no shims, no `#pragma`, no per-callee/class-name hardcoding), with the
+  baseline lowered in the same gated commit, fulltest GREEN, and the
+  gcc.c-torture failset byte-identical. The dominant family was
+  `DataDefFPTR` rendering as `long`: a function-pointer DataDef reports
+  `dtINT64`/`is_integer()` and does not answer `is_pointer()`, so it slipped
+  past pointer checks at four distinct sites — fn-ptr **casts** (was
+  `(long)fn`), host-call shim **params** and **returns** (now rejected as
+  unmarshallable), and **function-returning-fn-ptr** return-type declarators
+  (now emit `RET (*f(params))(fp-params)`). Other roots: case-range labels
+  lowered to individual C11 `N_CASE` labels; derived→base upcast in the
+  ref-argument spill (reads `TokenNEW::alloc_class`); C++ unqualified name
+  lookup fixed so a function-local name shadows a same-named namespace member
+  (gated on no explicit qualifier); `__madc_builtin_frame_address` registered
+  with its real `void *` return; `get_argv` takes `void *` instead of an
+  int64-reinterpret; and a capturing lambda's hidden capture params now appear
+  in its fn-ptr TYPE node. GCC-canon also caught two **non-conforming tests**
+  (gcc rejects the anonymous-typedef `struct fd_set` and the undefined
+  `struct teststruct`) — fixed by making the tests conforming and removing the
+  legacy built-in `ddTESTSTRUCT`, not by adding madc shims. Known residual
+  (NOT a warning): `testcapture` still fails to *compile* due to a separate
+  pre-existing bug — a `std::string` captured by reference is not detected by
+  `note_capture`, so the captured name is undeclared in the lambda body; it is
+  a compile error covered by `testcapture.mir_skip`, deferred as deep CIR work.
+
+### Two-tree tsubst widening
+
+- Landed the generic Kind 3 dependent-member body slice for copied
+  member-template calls. A retained body such as `a.inner(p)` now re-resolves
+  the member template after substitution, instantiates its concrete retained
+  body, and binds the copied call to that emittable definition without callee
+  name hardcoding. Dependent explicit destructors such as `p->~U()` now defer
+  trivial-vs-nontrivial lowering until `U` is concrete, so scalar elements stay
+  no-op and class elements call the concrete complete destructor. The copied
+  callee-id rewrite was also narrowed to the original callee symbol, preventing
+  member-call receiver ids from being rewritten to the callee symbol in C11
+  output. Under `MADC_XTEST_DEP_PARSE=1`, `tests/testvector.mad` moves from
+  12 hit / 3 fallback to **14 hit / 1 fallback**; `std::allocator_traits::destroy<_Up>`
+  is gone from the fallback profile and only the out-of-scope
+  `basic_string::_M_construct<_InIterator>` shape remains. This is a
+  correctness / forest-readiness widening, not a speedup gate. Validation:
+  flag-off fulltest **670/0/0/18**, flag-on `run_tests.sh` **670/0/0/18**,
+  drift gates green, torture failset byte-identical. `test_cir` is now
+  **92/1137/4**.
+- Extended the `--show-stats` tsubst body counter with a ranked fallback profile
+  grouped by retained source-template shape, with one concrete emitted-symbol
+  sample for drill-down. A clean `-O2` build now profiles `testsubscript` under
+  `MADC_XTEST_DEP_PARSE=1` at **6 hit / 29 fallback**, total **0.804 s** with
+  **0.327 s** in instantiation; the top real fallbacks are
+  `std::allocator_traits::construct<_Up,_Args...>` (4),
+  `std::allocator_traits::destroy<_Up>` (4), and
+  `std::__new_allocator::construct<_Up,_Args...>` (3). Added unit coverage
+  proving the profile sums to the fallback counter and carries a concrete
+  sample. Normal and `MADC_XTEST_DEP_PARSE=1` fulltest remain 670/0/0/18, with
+  `test_cir` now 86/1067/4.
+- Added a `--show-stats` engagement counter for env-gated two-tree
+  member-template body instantiation. The stats output now reports
+  `tsubst bodies ..... H hit / F fallback`, where a hit means CIR built the
+  concrete body from retained Tree-1 tsubst metadata and a fallback means the
+  instantiated body had that metadata but still lowered the parsed concrete
+  body. Current `testsubscript` smoke under `MADC_XTEST_DEP_PARSE=1` reports
+  **6 hit / 29 fallback**, giving the next profiling slice a real workload
+  baseline. Added `test_cir` coverage proving both sides of the counter; normal
+  and `MADC_XTEST_DEP_PARSE=1` fulltest remain 670/0/0/18, with `test_cir`
+  now 86/1065/4.
+- Added coverage for another direct forwarding-call pack spelling:
+  `std::move<Args>(args)...`. This proves the copied dependent-call fan-out is
+  structural rather than a `std::forward` name case; the callee re-resolves
+  through the same Tree-1 tsubst path and returns 34. Normal and
+  `MADC_XTEST_DEP_PARSE=1` fulltest remain 670/0/0/18, with `test_cir` now
+  85/1055/4.
+- Admitted the first `_Destroy_aux`-style member-template body named
+  `__destroy` onto the env-gated Tree-1 tsubst path only when the retained body
+  itself contains a direct `__destroy(T*)` compiler-intrinsic marker. This keeps
+  iterator/object-address destructor forms on the fallback while letting direct
+  marker bodies substitute the concrete pointee and lower to the class
+  destructor/no-op path. Added `test_cir` coverage proving the member body is
+  copied (`cir_count_tree1_copies > 0`) and runs a destructor side effect; at
+  that slice normal and `MADC_XTEST_DEP_PARSE=1` fulltest remained 670/0/0/18,
+  with `test_cir` at 84/1043/4.
+- Added pointer-parameter-pack call expansion for direct packs such as
+  `Args*... ps`. Function-template deduction now recognizes pointer-qualified
+  trailing packs and binds the pack element to the pointee type, while the
+  retained declaration/body substitution keeps the pointer suffix attached to
+  every generated parameter (`T0* ps__0, T1* ps__1`). Added `test_cir`
+  coverage proving the env-gated Tree-1 path fans out `sink(ps...)` and runs to
+  34; at that slice normal and `MADC_XTEST_DEP_PARSE=1` fulltest remained
+  670/0/0/18, with `test_cir` at 83/1026/4.
+- Hardened env-gated dependent-pattern parse failure handling. `parseFunction`
+  now exception-safely balances its temporary parameter compound scope, so a
+  malformed retained member-template parameter list cannot leave a dangling
+  `compounds` entry whose stack-local `Method` later SIGSEGVs in
+  `active_cpp_lookup_namespace`. Added `tests/testdependentparseerror.mad` with
+  `.expect_err` coverage; normal and `MADC_XTEST_DEP_PARSE=1` fulltest are now
+  670/0/0/18.
+- Added the generic `is_type_dependent` predicate — the step-C spine and the
+  `type_dependent_expression_p` (gcc/cp/pt.cc:30357) analogue: an expression is
+  type-dependent iff its type involves a template-parameter placeholder, with
+  structural shortcuts for nodes whose datadef is not yet meaningful (a pack
+  expansion is always dependent; a call is dependent iff any argument or its
+  result type is). `call_involves_placeholder` now wraps it. This is the
+  programmatic primitive the per-construct `tsubst_eligible` token-scan catalog
+  retires onto. Green flag-off AND flag-on (669/0/0/18).
+- Implemented the local nested function-template instantiation keystone for the
+  tsubst/copy path. Copied dependent calls now substitute explicit template args
+  and argument types, instantiate missing namespace function-template overloads
+  with concrete-typed synthetic params, rebuild the copied call against the
+  concrete callee, and preserve reference-return semantics without double
+  derefing. This retires the local `std::forward`/`std::move` callee-name peel;
+  system-header dependent-call bails and final `tsubst_eligible` catalog deletion
+  remain follow-on widening work.
+- Implemented direct TYPE template-argument binding for the env-gated two-tree
+  member-template body path. Concrete instantiated `FuncDef`s now retain
+  `tsubst_type_args` in source template-parameter order, so CIR tsubst consumes
+  the parser's resolved arg vector directly instead of recovering bindings from
+  the concrete signature. This covers body-only type parameters and retires
+  `recover_param_binding`.
+- Captured TYPE parameter-pack elements in `FuncDef::tsubst_type_arg_packs`,
+  parallel to source template-parameter order, giving CIR fan-out durable pack
+  arity and element types to consume.
+- Implemented the first actual CIR pack fan-out slice for direct value-pack
+  call arguments such as `sink(args...)`. The dependent parse records `expr...`
+  as `TokenPackExpansion`; the CIR recipe carries a pack marker; `tsubst_cir`
+  fans out list children using `tsubst_type_arg_packs` and renames direct value
+  pack ids like `args` to the concrete `args__N` parameters. Broader complex
+  pack patterns remain on the re-parse fallback.
+- Extended direct pack fan-out to reference parameter packs such as
+  `Args&... args` when the body expands the pack directly (`sink(args...)`).
+  `TokenPackExpansion` now finds the template pack under reference/const/pointer
+  type layers, and the tsubst fallback guard admits reference params only when
+  they are sourced from a TYPE pack.
+- Extended direct pack fan-out to direct expression-pattern packs such as
+  `sink((args + 1)...)`. `TokenPackExpansion` now discovers the template pack
+  and value-pack name inside the pattern tree, so `copy_cir_subtree` can clone
+  the expression once per concrete pack element and rename the inner `args`
+  leaves to `args__N`.
+- Extended pack fan-out to the first forwarding-call pattern:
+  `sink(std::forward<Args>(args)...)`. Dependent parse now wraps function-call
+  `expr...` forms as `TokenPackExpansion`; copied pack elements re-resolve the
+  dependent callee id from the concrete explicit template args and renamed
+  `args__N` parameter type. System-header template-id pack bodies stay on the
+  parsed-body fallback until broader constructor/destructor pack surfaces are
+  covered.
+- Extended the same direct value-pack fan-out to covered member-template
+  constructors. Constructor instantiation now builds the env-gated dependent
+  recipe, carries the parser-settled type/pack argument vectors onto the
+  concrete constructor `FuncDef`, and lets CIR tsubst copy local constructor
+  bodies such as `Holder(Args... args) { member = sink(args...); }`.
+- Admitted the first covered system-header placement-new pack bodies and lowered
+  scalar allocator-style constructed template types. A retained body shaped like
+  `new ((void*)p) _Up(std::forward<Args>(args)...)` now defers placement-new
+  lowering until `_Up` is substituted, then emits scalar assignment for
+  concrete scalar/pointer `_Up`; singleton pack expansion outside an argument
+  list keeps the original value-pack parameter name instead of inventing
+  `args__0`.
+- Extended the deferred constructed-type placement-new path to simple class
+  `_Up` construction when the constructor pack elements are scalar/pointer-like.
+  After substitution, the marker reuses the existing class placement-new lowering;
+  broader class-valued constructor argument packs stay on the parsed-body
+  fallback until widened deliberately.
+- Added direct `__destroy(T*)` tsubst lowering for retained template bodies. The
+  Tree-1 recipe now emits a deferred marker when the pointee is a template
+  parameter; after substitution the copy path lowers class pointees to the
+  concrete destructor and scalar/pointer pointees to a no-op.
+- Fixed multi-buffer builtin/intrinsic registration by reattaching an existing
+  shared `FuncDef` to the active `TokenProgram` when a later parse needs the
+  same function variable. This lets split system-header/user parses capture
+  compiler-intrinsic calls such as `__destroy(p)` during dependent recipe
+  parsing.
+- Extended copied dependent-call re-resolution to local non-pack namespace
+  function-template calls nested inside covered member-template bodies, such as
+  `sink(nn::ident(v))`. The copy path substitutes the argument types, reuses the
+  normal namespace overload resolver for the callee id, and keeps non-pack
+  system-header dependent calls on the parsed-body fallback.
+- Extended that copied dependent-call path from re-resolution-only to local
+  instantiation-on-miss. When a copied nested call names a dependent namespace
+  function template such as `std::forward<Item>`, the tsubst copy path now
+  synthesizes concrete-typed call parameters, instantiates the missing overload,
+  rewrites copied reference-slot arguments back to the concrete pack pointer
+  slots, and uses a source-deref context guard for reference-returning callees.
+  The scalar forwarded-pack canaries (`testmemtmplpackexpand`,
+  `testvariadicfn`) and the local reference-forwarded class-reference
+  placement-new pack test stay green under `MADC_XTEST_DEP_PARSE`.
+- Admitted singleton by-value class-object placement-new constructor packs, such
+  as allocator-style `new ((void*)p) Up(std::forward<Args>(args)...)` where
+  `Up`'s constructor takes one class object by value. The object pack stays as a
+  marked expression until copy-time substitution so parameter renaming and callee
+  re-resolution happen inside the instantiated body. This first guard still left
+  multi-element class-object packs and class-reference packs on the fallback.
+- Extended that by-value class-object placement-new pack path to multi-element
+  packs by checking each expanded element against its corresponding constructor
+  parameter, covering shapes like `PairBox(Item, Item)`. Class-reference and
+  object-address packs still fall back until they get per-element address
+  lowering.
+- Added the first class-reference placement-new constructor-pack slice for
+  value-returning forwarded class objects that bind to reference constructor
+  parameters, such as `PairRef(const Item&, const Item&)`. The tsubst path now
+  fans out those pack elements, copies each expression under the concrete pack
+  substitution, and keeps any needed class-object temporaries inside the copied
+  placement-new statement expression. Real reference-returning `std::forward`
+  and broader object-address packs still fall back.
+- Added the first local reference-forwarded class-reference placement-new
+  constructor-pack slice. Local retained recipes that pass `Args&...` through an
+  identity `std::forward<Args>(args)...` / `std::move(args)...` and bind to
+  class-reference constructor parameters now copy/address the concrete pack
+  operand per element through the generic copied dependent-call instantiation
+  path, not a callee-name special case. Real system-header reference-forwarding
+  and broader object-address packs still fall back after canary validation showed
+  those need a wider, separate lowering.
+- Admitted simple system-header scalar/pointer dependent calls, including
+  implementation-reserved `__*` helper names. Copied dependent calls from
+  system-header recipes now re-resolve when every substituted explicit template
+  arg and runtime arg is a concrete non-class scalar/pointer shape, the
+  substituted return is scalar/pointer/void, and the resolved callee has a
+  materializable body or external symbol. Copied calls also mark the resolved
+  callee reachable so lazy system-header body emission follows the ordinary
+  call path. Real forwarding/destructor/object-address packs and template-id
+  body surfaces still fall back.
+- Admitted the first direct system-header reference-forwarded placement-new
+  pack body. The system-header object-address guard now expands a pack element
+  only when its nested call resolves through `resolve_copied_dependent_call`
+  and the resolved reference return is the same/derived class that the
+  constructor reference parameter expects; other system-header pack shapes keep
+  the parsed-body fallback. `test_cir` now pins the split system-header body
+  with `cir_count_tree1_copies > 0` and the correct runtime value.
+- Widened that guarded system-header forwarding aperture to constructor
+  conversions. If the nested copied call returns a different class reference,
+  the pack body may still tsubst when the constructor reference target has a
+  single-argument converting constructor for that returned class; the manual
+  placement-new pack lowering now materializes the converted target temporary
+  before passing its address to the outer constructor. The new `test_cir` split
+  header case proves `cir_count_tree1_copies > 0` and the converted runtime
+  value.
+- Kept ordinary reference-parameter bodies, broader system-header
+  destructor/object-address and dependent calls behind the system-header bail,
+  class-valued placement-new constructor argument packs beyond the
+  reference-return direct/converted apertures, and template-id body/return
+  surfaces on the re-parse fallback until those
+  constructs are widened. The flag-on tsubst gate and normal fulltest both
+  remain 669/0/0/18; `test_cir` is 82 test cases / 1014
+  assertions / 4 skipped. Phase 4 is now tracked at roughly 74% implemented by
+  coverage weight, not session count.
+
+## [v0.30.0] — 2026-06-22
+
+Set wall cleared: real-libstdc++ `std::set`/`std::map` fully working on the
+default C++17 path, plus real 16-byte `__int128` end-to-end (P0 wide-integer
+track) and the measurement-gated embedded-header-forest plan.
+
+### Set wall cleared — real-libstdc++ `std::set` / `std::map` (C++17 default path)
+
+- The `std::set`/`std::map` "set wall" — a stack of eight root-cause bugs blocking
+  real libstdc++ ordered containers — is fully cleared. `std::set<int>`/`<string>`
+  and `std::map<K,V>` including `std::map<std::string,std::string>` compile and run
+  on the default real-header path; `testset`, `testmap`, `testsubscript`,
+  `testcontainerdtor`, and `testmadc_ns` are all green.
+- Final bug (7b): `std::get<0>`'s non-type argument `0` was binding to the TYPE
+  parameter of the by-type `std::get` overload, naming the return type `"0"` and
+  breaking `std::get` reference-binding in the piecewise `std::pair` constructor of
+  `map<K,std::string>::operator[]` (undefined `basic_string…__o15` at MIR link). It
+  surfaced only when two `pair<const std::string,V>` instantiations coexist. Fixed
+  at the deepest layer: a non-type value argument cannot bind to a type template
+  parameter (`[temp.arg.nontype]` substitution failure → candidate removed),
+  matching clang/gcc overload resolution.
+- fulltest is now **669 passed, 0 failed, 0 timed out, 18 skipped** (supersedes the
+  658/5 WIP figures below); the gcc.c-torture failset is byte-identical to the
+  51-name baseline; zero regressions.
+- Refined the `call-emit-symbol` drift gate with an audited
+  `// allowed-exception: <reason>` per-line opt-out, so `make fulltest` exits 0
+  while the gate stays strict (a new symbol-building read with no marker still
+  fails). Marked the six pre-existing non-symbol-building reads (debug prints,
+  lookup keys, a clone field-copy).
+- Added the measurement-gated **embedded header forest** execution plan
+  (`docs/plans/2026-06-22-embedded-header-forest-execution-plan.md`). `--show-stats`
+  on a real C++ compile shows parse is ~78% of wall and ~1.9 s of decl-parse is a
+  fixed header re-parse tax paid every compile — the target a save-state-after-parse
+  AST forest amortizes to a load.
+
+### C++ real-header `std::map` / tuple WIP rehydration
+
+- Recovered the interrupted `wip/tuple-instantiation-claude` handoff and fixed
+  the new regressions it exposed: body-bearing `void` std function templates
+  such as `std::_Destroy` and C++20 `std::destroy_at` now stay on the local
+  real-header template-body instantiation path instead of becoming undefined
+  mangled imports, while flattened C++ class emission now disambiguates
+  duplicate inherited C field names such as `_M_head_impl`.
+- Added `tests/teststdmapint.mad` as a real-libstdc++ `std::map<int,int>`
+  insert/update canary. WIP branch validation in the default build is now
+  **658 passed, 5 failed, 0 timed out, 18 skipped**; the remaining failures
+  are the known branch reds (`testcontainerdtor`, `testmadc_ns`, `testmap`,
+  `testset`, `testsubscript`). Non-fatal libstdc++ pointer-type diagnostics
+  remain in the map path.
+- Promoted the const/reference template-argument spelling and derived-to-base
+  nested-template deduction paths out of feature guards. External libstdc++
+  method declarations now preserve typed pointer returns and pass scalar
+  reference parameters by address, which keeps the stream/string focused tests
+  green while `std::map<int,int>` works without optional compiler flags.
+- Fixed the generic namespace-template overload path so explicit template
+  arguments are retained on instantiated overload records and calls such as
+  `std::forward<T>` do not reuse the wrong specialization. Const-qualified
+  class/struct DataDefs now remain structurally visible to overload ranking and
+  CIR extern/tag rendering. The current `testmap` blocker is narrower:
+  `std::get` still preserves a class-scope alias named `type` by spelling only,
+  colliding with an unrelated global typedef in emitted C.
+- Switched the map canaries back to the achievable C++17 target: `testmap` now
+  uses `find/end` instead of C++20 `contains`, and the map flags use
+  `--std=c++17 --no-embedded-headers`. The scoped-alias blocker above is now
+  fixed generically with same-DataDef typedef-alias preservation and concrete
+  partial-specialization completion from the opaque template path. The later
+  undefined local `basic_string...__o15` wrapper was moved forward by generic
+  CIR reference-return/constructor-argument handling.
+- Preserved anonymous struct/union layout through `DataDefSTRUCT` metadata and
+  CIR unnamed anonymous aggregate emission. This fixes the `std::basic_string`
+  layout used by libstdc++ (`_M_local_buf` and `_M_allocated_capacity` are an
+  anonymous union, not sequential fields), preventing `std::pair`/`_Rb_tree`
+  storage overflow and making the C++17 `tests/testmap.mad`
+  `std::map<std::string,int>` canary pass in focused validation.
+- Preserved scoped enum constant types and exact object identity in overload
+  scoring. The enum fix keeps C++20 `<compare>` category constructors from
+  seeing scoped enumerators as plain `int`, and the object-identity fix lets the
+  public `madc::array`/`madc::value` object bind `array&` parameters so
+  `madc::eval_expression_ctx(std::string&, const char*, array&)` no longer
+  falls back to the `double&` overload. Focused map, tuple/stream/loop, eval,
+  and C++20 comparison canaries pass; fulltest reruns still show the known
+  branch reds plus load-sensitive 5-second-cap timeouts on this host.
+- Added `tests/testmathh.timeout` after a clean revalidation showed
+  `testmathh` is a passing test that can sit too close to the runner's
+  default 5-second wall cap under full-suite load.
+
+### Real `__int128` / `unsigned __int128` (P0 wide-integer track, slices 1+1.5)
+
+- **`__int128` is a real 16-byte type** (SysV alignment 16) end-to-end:
+  lexer type words → new `ddINT128`/`ddUINT128` DataDefs (`dtINT128`/
+  `dtUINT128` at the append-only enum tail; the type predicates became
+  explicit sets — the historical `[dtFLOAT, dtRESERVED)` range would have
+  misclassified tail entries), typeid slots 19/20 backed, CIR emits
+  `[N_UNSIGNED,] N_INT128`, `--emit=c11` renders `__int128`, PCH spelling
+  map. Previously `__int128` silently aliased to the 64-bit types while
+  `__SIZEOF_INT128__=16` was defined — >64-bit values truncated.
+- **Enabled by the MIR fork's scalar-int128 raise** (fork `develop` @
+  `545ad46`, pushed; `MIR_COMMIT` pinned): c2mir previously lowered int128
+  CONSTANTS and one-lane v128 VECTORS only — scalar `__int128` variables
+  had no MIR lowering at all. The fork now covers scalar gen (dispatch onto
+  the one-lane-vector halves emitters), 128-bit constant folding, the SysV
+  two-INTEGER-eightbyte ABI, int128↔float helper conversions, switch,
+  truthiness, inc/dec, and implicit conversions in both directions; c2mir
+  also defines `__SIZEOF_INT128__` + the `__int128_t`/`__uint128_t`
+  builtin typedefs now.
+- **`__builtin_add/sub/mul_overflow` pass through as real c2mir builtins**
+  (handled natively at every width incl. `__int128`); the old textual remap
+  to 64-bit `__madc_*` helpers truncated 128-bit results (the `*_p`
+  predicate variants stay mapped). On the c2mir side this surfaced and
+  fixed three pre-existing bugs: an uninitialized VALUE-form overflow flag,
+  rejection of result types narrower than `int`, and wrong flags for mixed
+  operand/result types (now computed at 128 bits — exact infinite
+  precision for ≤64-bit operands).
+- gcc.c-torture: **+2** (`pr122943`, `pr63302` — failset 55 → 53 names,
+  zero regressions); new `tests/testint128.mad` verified byte-identical to
+  `gcc -O0`. Known residual for slice 3: switch case labels wider than 64
+  bits still truncate in madc's parse-time constant fold.
+
+### libmadc policy tail — late-bind dlsym gate; remaining non-AOT skips retired
+
+- **`enable_dlfcn_functions = false` now also gates the LINK-time dlsym
+  fallback**: a user-source `extern` prototype with no body and no
+  sanctioned binding (no mangled `emit_symbol`, not an `addFunction`
+  registration) can only ever resolve through the JIT link's dlsym — it
+  is rejected at the compile stage with the same "dynamic symbol
+  fallback is disabled by registration policy" diagnostic the parse-time
+  gate uses (new `FuncDef::decl_file` provenance distinguishes user
+  source from curated header declarations, which stay permitted).
+- 4 more unit tests green (`test_libmadc_program` **132 passed / 11
+  skipped** — every remaining skip is the deferred AOT save/load
+  family): missing-`main` exec_file runtime error, `eval_expression`
+  math.h header groups, the late-bind dlsym gate, and
+  `runtime_eval_policy` child full-eval restriction (the last two test
+  sources modernized: the CIR missing-main message and the
+  `<string>`/`<ns_madc>` includes the script-side eval surface requires).
+
+### libmadc fork-per-invocation execution on CIR
+
+- **`fork_per_invocation` exec/eval run on the CIR backend**: the forked
+  child still called the removed asmjit backend's `Program::execute()`
+  stub; it now builds the CIR JIT session and runs `main` in the child
+  (`run_main_now`) — the parent process never executes script code,
+  which is the fork-isolation model. The parent-side machinery (output
+  relay, rusage-based cpu/memory limits, output_bytes accounting, child
+  report protocol) was already complete and is unchanged.
+- 5 unit tests unskipped (`test_libmadc_program` 128 passed / 15
+  skipped): forked exec_string success, forked exec_file runtime-error
+  reporting (missing `main` now reports the CIR path's
+  "program::exec: main() not found"), stdout/stderr output-limit
+  accounting from the child, and string eval results marshalled from
+  child execution. Remaining skips: AOT save/load (deferred) and policy
+  stragglers.
+
+### libmadc `register_function` — host callbacks via compiler-synthesized trampolines
+
+- **Scripts can now call host-registered native functions**:
+  `program::register_function` (both the explicit
+  `native_function`+`native_signature` form and the template-deduced
+  `Ret(*)(Args...)` form) and the `engine::register_function` family are
+  implemented on the CIR backend — the asmjit-era "not yet implemented"
+  stubs are gone. Engine-level registrations are inherited by every
+  program created from the engine; programs can add their own on top.
+- **The shim machinery reversed, with zero runtime type dispatch**: each
+  registration is declared to the parser as an ordinary prototype
+  (`Program::add_host_callbacks`) and the CIR builder synthesizes the
+  module definition `RET name(params) { return __madc_host_cb_<k>(...); }`
+  (`synth_host_trampoline`, translate_module Pass 0.73) — a typed
+  pass-through the compiler emits with the registration's real low types
+  (long/double/char/char*). The deduced form's user callback rides as the
+  typed adapter's hidden first argument. No host-side dispatch pyramid.
+- **Session import overrides**: the JIT session binds the trampoline's
+  `__madc_host_cb_<k>` import to the host entry at MIR link (the import
+  resolver consults the linking Program's registrations before dlsym).
+- **`program::call` works directly on host-registered names**: the shim
+  core was re-keyed on the function `Variable`
+  (`CirBuilder::synth_call_shim_var`) so host-callback trampolines —
+  which have no parsed `TokenFunc` — get marshalling shims like any
+  module function; `call()` on them flows through the same one call
+  surface, so the `invoke_limits` cpu/memory enforcement applies
+  unchanged.
+- 10 unit tests unskipped (`test_libmadc_program` 123 passed / 20
+  skipped): explicit/deduced registration, string→`const char*` coercion,
+  four-arg callbacks, `const char*` returns, engine inheritance across
+  multiple programs, host→script→host call chains, and the
+  `invoke_limits` cpu_ms/memory_bytes rejection paths over host
+  callbacks. Remaining skips: fork-per-invocation shapes, AOT
+  save/load (deferred), policy stragglers.
+
+### Parser known-gaps sweep: ctor-comma declarators, VLA sizeof, const array dims
+
+- **`Q a(1), b(2);` no longer hangs the parser**: the ctor-call-syntax
+  declaration path gained the standard comma-continuation (consume `,`,
+  re-inject the base type) the `=`-initializer flow already had — the
+  orphaned `, b(2);` used to spin `parseExprStmt` forever. Works for
+  local and file-scope declarator lists (`tests/testctorcomma.mad`).
+- **`sizeof` of a VLA variable is now the runtime byte count** (C99
+  6.5.3.4p2) instead of pointer size 8 — for 1D, multidim, and
+  typedef'd VLA variables alike. Runtime dimensions are captured into
+  hidden `__madc_vla_dim_*` uint64 locals at the declaration (gcc keeps
+  VLA bounds in hidden temps the same way), so dimension side effects
+  run exactly once, the heap-allocation count reads the capture, and
+  `sizeof(a)` reflects the declaration-time value even if the dimension
+  variable changes afterwards (`tests/testvlasizeof.mad`).
+- **A file-scope `const int G = 5;` works as an array dimension** (C++
+  integral-constant-expression semantics, g++-verified): parse-time-known
+  scalar-integer const initializers are baked into the variable's
+  parse-time buffer (new `vfCONSTBAKED` flag) instead of reading the
+  calloc'd zero ("warning -- zero array size"). The CIR read-fold admits
+  baked consts, so `const int H = G + 3;` emits a constant file-scope
+  initializer c2mir accepts (`tests/testconstdim.mad`). `Variable::set`
+  widened `int`→`int64_t` (drops a latent enum-value truncation).
+- `tests/testfortypedcomma.mad` flakiness is no longer reproducible at
+  live HEAD (25 consecutive green runs) — resolved by intervening parser
+  work; removed from the known-gaps list.
+
+### Synthesized host-call shims — the embedding boundary's one call surface (`feature/eval-string-call-claude`)
+
+- **`CirBuilder::synth_call_shim`** (translate_module Pass 0.74) emits
+  `long __madc_shim_<sym>(char *args, char *ret)` per host-callable
+  function, marshalling over the 32-byte `madc_value` ABI: typeid
+  validation via `Program::type_id_for` (the type table's first codegen
+  consumer), class parameters constructed via the class's **own ctor**
+  through `ctor_call_assemble` (the one ctor assembler, refactored from
+  `class_ctor_call_addr`), `c_str()`/`size()`-protocol class returns →
+  TEXT values, any other class return → a typed INSTANCE cell (the callee
+  constructs into the cell; finalizer = the class's complete dtor). The
+  host knows ZERO class ABI.
+- `program::perform_call` and the child-eval path now call **only** the
+  shim; the `value_as`/`call_targetN`/`dispatch_callN` pyramid (~430
+  lines) and the 4-argument limit are deleted. New `value::from_raw`;
+  new C getters `madc_value_get_type_id/integer/real/bool`.
+- Shim eligibility excludes `is_simd()` signatures and
+  `local_emit_name`/`captured_vars` functions (GNU nested functions take
+  hidden capture parameters).
+- All 5 string-call marshalling skips unskipped (`std::string`
+  args/returns through `program::call`); new generic pin: a user-class
+  return arrives as a typed instance value with exactly-once finalization
+  (`test_libmadc_program` 113 passed / 30 skipped).
+
+### `madc::value` drops `std::string` — thin RAII over the 32-byte ABI (`feature/eval-string-call-claude`)
+
+- **`madc::value` is now a thin RAII wrapper over the 32-byte
+  `madc_value` struct** — the `_string`/`_bytes` members are deleted;
+  text lives in SSO/refcounted cells per the value-ABI design.
+  `as_string()` returns **by value**; `as_bytes()`/`make_bytes(vector)`
+  became `data()`/`size()`/`make_bytes(ptr,len)`.
+- **Generic typed-instance values**: `madc_cell` destroy finalizers +
+  `madc_value_make_instance(type_id,size,destroy)` and
+  `value::make_instance/instance_data/type_id/data/size` — a typed
+  instance of ANY table type is a first-class value (equality = cell
+  identity; doctest pins sharing + exactly-once finalization). Value
+  storage runtime consolidated in `madc_value.cpp`.
+- CIR `obj_storage_decl` gained an alignment parameter — `array a;`
+  lowers to an `_Alignas(alignof(madc::value))` buffer (the 16-aligned
+  struct previously overflowed an 8-aligned `long[]` buffer).
+- Fixed a latent **use-after-free**: expression-binding text was read by
+  the lazy JIT build after `eval_expression` cleared the bindings map;
+  binding storage now owns a copy (the `addLiteral` convention).
+
+### libmadc: MIR-fatal containment + const-char* binding fold (`feature/eval-string-call-claude`)
+
+- **A bad module can never `exit()` an embedding host**: `CirJitSession`
+  arms `MIR_set_error_func` + `longjmp`, converting MIR fatals into
+  ordinary compile diagnostics. 8 torture undefined-import tests
+  truthfully reclassified runtime→compile (failset names unchanged); a
+  containment regression test pins the no-host-exit contract.
+- **Host `const char*` expression bindings fold to string literals** (the
+  int-fold analogue), so bound text participates in constant contexts.
+- Dead lexer container-keyword relics (`keyword_map.erase("vector"/…)`)
+  deleted — non-keywords are never tokenized.
+
+### libmadc: get/set_global on live MIR storage + dynamic global init (`feature/eval-globals-claude`)
+
+- **`program::get_global`/`set_global` now operate on the JIT's live
+  module data** via the new `CirJitSession::data_address()` (data/bss item
+  lookup by emitted name), with the parser's `var->data` only as fallback —
+  previously host reads/writes were invisible to compiled code. Three
+  package-C tests unskipped (`test_libmadc_program` 106 passed / 35 skipped).
+- **Size-correct value↔storage helpers** (`value_from_storage` /
+  `set_storage_from_value`): every access is exactly `type->size` bytes —
+  the old dispatch wrote `int` globals as int64, clobbering the neighboring
+  global on real MIR data layout (neighbor-canary regression test added).
+- **Dynamic global initialization runs in call-only sessions**: file-scope
+  class-global ctor calls moved from main-prologue inlining into ONE
+  synthesized module function `__madc_global_init` (static once-guard);
+  `main` calls it and `ensure_runtime_initialized` invokes it for main-less
+  embedding sessions — `std::string g = "alice";` used to read empty unless
+  `main` ran.
+- **String globals marshal both directions** by reading/assigning the LIVE
+  libstdc++ `std::string` object at the resolved MIR address (the
+  `__madc_scope_set_string_runtime` mechanism); the parse-time fallback is
+  never used for text carriers (unconstructed memory).
+
+### 32-byte `madc_value` ABI (`feature/value-abi-claude`)
+
+- **The interchange value is now the 32-byte typeid struct** (design §3):
+  `{uint32 type_id; uint32 flags; uint64 size; 16-byte aligned union}` —
+  every madc primitive inlines (incl. the reserved `__int128`/`_Complex`/
+  `v128` slots), strings ≤15 bytes live inline NUL-terminated (SSO), longer
+  text in NUL-terminated refcounted cells (`include/madc_value_cell.h`:
+  non-atomic saturating counts with a permanent tier). New
+  `madc_value_copy` (retains the shared cell) and `madc_value_text`
+  (uniform SSO/cell accessor). `MADC_VALUE_*` kind constants are now
+  **aliases for typeid slots** (one vocabulary; numeric values changed) —
+  dynamic kinds TEXT/BYTES/OBJECT took primitive slots 31–33.
+- **Gradual typing enforced at the helpers** (design §4): unrestricted
+  re-tag by default; `MADC_VF_TYPE_COERCE` converts within the numeric
+  family toward the locked domain; `MADC_VF_TYPE_LOCKED` rejects
+  cross-domain sets; `MADC_VF_NULLABLE` admits typed nulls (`size==0`,
+  domain kept); `MADC_VF_CONST` is read-only. The contract survives
+  `madc_value_clear`.
+- The `madc::value` ↔ `madc_value` bridges rewrote onto the new layout;
+  the C++ `madc::value` class is unchanged (wrapper conversion is a later
+  phase per the design's A0 guardrail).
+
+### Type table (typeid) identity layer (`feature/type-table-claude`)
+
+- **New canonical type identity**: a segmented uint32 typeid space
+  (`include/madc_typeid.h`) — 0 invalid, `[1,0x100)` ABI-pinned primitive
+  slots (255 usable; slots 18–22 pre-reserved for the P0 wide-value types),
+  `[0x100,0x01000000)` reserved for the embedded-forest system segment,
+  `[0x01000000,…)` per-Program project segment. Slot numbers are append-only
+  ABI, doctest-pinned like the manglings.
+- `DataDef::type_id` (0 = unregistered); `madc_primitive_for_slot()` as the
+  single source of truth slot↔global-primitive, stamped idempotently from
+  `Program::add_datatypes()`; `Program::type_id_for()` as the one lazy
+  registration chokepoint and `type_from_id()` segment-dispatching reverse
+  lookup with defensive NULLs. Zero behavior change — nothing consumes the
+  ids yet (the 32-byte `madc_value` ABI and eval package C are next).
+- Design: `docs/plans/2026-06-12-type-table-value-abi-design.md` (one table
+  for static AND dynamic typing; 32-byte value ABI with gradual-typing flags
+  LOCKED/COERCE/NULLABLE; re-tag unrestricted by default). Doc set
+  reconciled: forest + frontend-refactor + madcdis-plan UPDATE blocks
+  (madcdis's 8-byte tagged handle = internal pool handle only;
+  `value_header.type_tag` := typeid; shared cell-header shape).
+
+### `===` / `!==` strict equality — STD_MADC dialect (`feature/strict-equality-claude`)
+
+- **New dialect operators**: `a === b` is type-domain identity AND value
+  equality; `a !== b` is its pure negation (never `operator!=`). Scalars
+  compare by representation (`uint32_t === int32_t` false even when values
+  match; `long === long long` true — both 64-bit signed; enums and `bool`
+  are their own domains; pointers recurse on the pointee; literals keep
+  their C type — `a === 5u` matches a `uint32_t`, `a === 5` does not).
+  Statically-false compares still evaluate both operands (comma lowering;
+  two pure literals fold to the constant so `===` works in constant
+  initializers). Spec: `docs/superpowers/specs/2026-06-11-strict-equality-design.md`.
+- **Class operands**: a user `operator===`/`operator!==` dispatches first
+  (member or free — new Itanium vendor-extended manglings `v23eq3` /
+  `v23ne3`, pinned in `test_mangle`); otherwise the domain rule
+  strict-compares through the class's own `operator==`, so
+  `std::string s("x"); s === "x"` is true (the literal enters the string
+  domain via the embedded `<string>` binding real libstdc++ symbols
+  mangled-direct). Same class with no `operator===`/`operator==` is a loud
+  compile error (`test3eqerr` expect_err fixture).
+- **Type predicate**: new `DataDef::same_representation()` (doctest-covered)
+  — typedefs are aliases, qualifiers ignored, function pointers match by
+  signature incl. varargs-ness; fixed a double-pointer/reference tag-range
+  collision found during review.
+- **Conformance fix**: the tokens are now STD_MADC-gated in the lexer
+  (`<=>`-style floor) — previously `===` lexed even at `--std=c++17`;
+  below the floor `===`/`!==` lex as `==` `=` / `!=` `=`, the conforming
+  syntax error (`test3eqgate`/`test3noteqgate`).
+- **Parser/CIR plumbing**: `tk3Eq`/`tk3NotEq` Tier-1 lowering in
+  `CirBuilder::strict_equality_lowering` (zero MIR-fork changes); free
+  `operator===`/`!==` dispatch through the one free-operator family;
+  `x !== y` rewrites to `!(x === y)` when a user `===` exists. Two
+  deep-layer fixes surfaced by TDD: plain (non-scoped) enum variables now
+  keep their `DataDefENUM` identity, and reference-encoded scalar operands
+  resolve through the new `operand_value_datadef` helper.
+- **eval-DSL**: `!==` joins the string value-compare rewrite
+  (`strcmp != 0`); comparison results now infer as `int` in
+  `infer_expression_result_type` — previously a string `!==` segfaulted
+  the host (int result marshalled as `char*`) and `5 === 5.0` was
+  rejected as non-boolean (same pre-existing flaw as `1 < 2.0` into a
+  bool destination).
+- **Deferred** (recorded in the spec): script-side `array`/`madc::value`
+  strict equality (no whole-value scalar ops on that surface yet — lands
+  with eval package C), reversed-operand `===` candidates, and the
+  real-header `test3eqclass_realhdr` variant (blocked on real `<string>`
+  under STD_MADC).
+- New tests: `test3eq` (29 scalar shapes incl. side-effect preservation),
+  `test3eqclass` (16 class/overload shapes), `test3eqerr`,
+  `test3eqgate`/`test3noteqgate`; doctest suites for
+  `same_representation` and the DSL strict compares.
+
+## [v0.29.0] — 2026-06-11
+
+The backend-correctness release: MIR-gen `-O2` reaches exact `-O1` torture parity
+(1567 = 1567, failsets byte-identical) — all 8 O2-only failures root-caused to
+five real c2mir/MIR bugs and fixed at the deepest layer — plus the fork synced
+with everything useful from upstream (PR #430 computed-goto RA fixes, PR #432
+GVN narrow-reload extension, PR #433 jump_opt label liveness, PR #434 aarch64
+LD stack rounding; #418/#420 already carried). Fork pinned at `9ab36fb`.
+
+### MIR fork: upstream PRs #432/#433/#434 adopted (2026-06-11, `feature/mir-pr430-claude`)
+
+- **Full upstream-activity sweep** (user-requested) found fresh fix-PRs for
+  the three open issues queued for fixing; all three cherry-picked (fork
+  `cc74fef` → `9ab36fb`, `MIR_COMMIT` bumped same-commit): **#432** — GVN
+  store-forwarding to a narrower typed reload lost the load's sign/zero
+  extension (reproduced on the fork: gen O2/O3 returned 4294967023 for
+  -273; independently root-caused to the same site before the sweep found
+  the PR); **#433** — jump_opt freed labels referenced only by
+  `laddr`/lref (half already carried via the theMackabu lref loop —
+  valgrind pre/post control showed no behavioral exposure on our fork; the
+  new `MIR_LADDR` scan is defensive completion); **#434** — aarch64
+  `% 16`-vs-round-up-to-16 in `va_arg_builtin` + `_MIR_get_ff_call`
+  (untestable here; serves the ARM64 track). PRs #420/#418 from the sweep
+  were already carried via the 2026-06-02 theMackabu backport. Remaining
+  upstream items triaged in `docs/parity/mir-fork-community-patches.md`
+  (#426 lref-vs-MIR_read noted as the reason `issue424.mir` can't load via
+  the binary round-trip — pre-existing, in-process JIT unaffected).
+- Gates: MIR `make test` exit 0 (+3 new regression tests, 1124/2248 +
+  1128/2256), fulltest **572 / 0 / 0 / 18**, torture O1 failset
+  **byte-identical**, **O2 still = O1 byte-identical**, SMAUG soak green.
+
+### MIR-gen O2 reaches O1 parity — five c2mir/MIR bugs fixed (2026-06-11, `feature/mir-pr430-claude`)
+
+- **All 8 O2-only gcc.c-torture failures root-caused and fixed** (fork
+  `65b99fc` → `cc74fef`, `MIR_COMMIT` bumped same-commit; every bug
+  reproduced on stock `c2m -eg`/`-ei` first): (1) `MIR_VA_BLOCK_ARG`
+  missing from GVN's `fixed_place_insn_p` — struct `va_arg` fetches were
+  CSE'd, corrupting SSA edges (SIGSEGV in copy_prop; `strct-varg-1`,
+  `920908-1`); (2) the classic **lost-copy hazard** in out-of-SSA — a
+  self-loop block's back-edge copy lands before the tail branch, so a
+  branch testing the phi var read the *next* iteration's value and
+  `while (i-- > 0)` loops ran one short (`stdarg-3` gen, `pr43236`);
+  (3) **union alias-conflict relation** — union-class ('U…') accesses and
+  member-class pointer-deref accesses to the same memory never aliased
+  under the flat id-compare; MIR core gains `MIR_add_alias_conflict` /
+  `MIR_alias_conflict_p` and c2mir registers union↔member-leaf conflicts
+  (`pr41463`, `pr41395-2`); (4) **`optimize("-fno-strict-aliasing")`
+  honored** per-function — c2mir suppresses TBAA (alias class 0) for the
+  attributed function, surviving MIR inlining (`alias-1`, `pr79043`);
+  (5) `_MIR_get_ff_call` **XMM slot over-counting** for mixed-class block
+  varargs — each `{double,long}`-style struct after the first landed its
+  SSE half one XMM register too high through the interpreter FFI
+  (`stdarg-3` interp).
+- **madc side**: the lexer attribute allowlist gains `optimize`; the
+  parser consumes a GNU attribute between declaration specifiers and the
+  declarator (`static void __attribute__((…)) f()`) and records the
+  pending no-strict-aliasing flag; the CIR builder forwards it as an
+  `N_ATTR` in the FUNC_DEF specs (the vector_size/cleanup convention).
+  New `FuncDef::no_strict_aliasing`.
+- **Result: gcc.c-torture at `-O2` = 1567 = `-O1`, failsets
+  byte-identical** (O2 was 1559 and structurally behind since the
+  2026-06-02 experiment; the old "GVN mem-forwarding" theory is retired —
+  no optimization-disabling shim needed). Full record:
+  `docs/parity/mir-fork-community-patches.md`.
+- Gates: MIR `make test` identical baseline (1121/2242), fulltest
+  **572 / 0 / 0 / 18** (exit 0, both check gates GREEN), torture O1
+  failset **byte-identical**, SMAUG soak green.
+
+### MIR fork: upstream PR #430 adopted — computed-goto RA fixes (2026-06-11, `feature/mir-pr430-claude`)
+
+- **Two register-allocator bugs breaking computed goto (`laddr`/`jmpi`) under
+  MIR-gen at `-O2`/`-O3` fixed in the fork**
+  ([vnmakarov/mir#430](https://github.com/vnmakarov/mir/pull/430), cyanogilvie;
+  verbatim cherry-picks preserving authorship, fork `develop`
+  `2ffebff` → `65b99fc`, `MIR_COMMIT` bumped same-commit): (1)
+  `insn_descs[MIR_LADDR]` lacked `OUT_FLAG` on its destination — RA treated the
+  laddr dest as a *use*, losing the label address under pressure (a later
+  `jmpi` jumped through stale spill-slot memory); (2) `split_edge_if_necessary`
+  assumed direct-branch block exits and overwrote `jmpi`'s register operand
+  with a label (NDEBUG: an N-way indirect jump silently became unconditional) —
+  functions containing `MIR_JMPI` now use the simplified RA, with
+  `busy_used_locs` kept in sync since RA mode varies per function.
+- The PR's `jmpi-crash.mir` reducer SIGSEGV'd under `MIR_TYPE=gen` on the fork
+  at `2ffebff` and now prints `1 2 3` exit 0. Inert at madc's O1 torture gate
+  but live at the user-facing `-O2`/`-O3` flags; clears a silent-misexecution
+  class off the O2-viability track. Triage record:
+  `docs/parity/mir-fork-community-patches.md`.
+- Gates: MIR `make test` green (Tests 1121, Success 2242 — identical
+  baseline), fulltest **572 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  torture failset **byte-identical** (1567/26/29/0/63), SMAUG soak green.
+
+## [v0.28.0] — 2026-06-11
+
+The C++20 three-way-comparison release: the `<=>` compliance track (P2.15) is
+complete — std-gating, real-`<compare>` category types, hidden-friend operator
+bodies, the token lowering, rewritten candidates, and `= default` comparison
+synthesis — alongside the completed template-instantiation batch (libstdc++
+operator BODY instantiation, reference operands), the libmadc eval leftovers
+(one `madc::value`, mangled-direct `<ns_madc>`, call-site scope capture), and
+the user-signed torture failset audit that re-defined the promote gate.
+Fulltest 572/0/0/18, gcc.c-torture 1567/1652 in-scope (95.0%), SMAUG boots.
+
+### `= default` comparison synthesis — the `<=>` track is complete (2026-06-11, `feature/template-instantiation-claude` @ `01528ed`)
+
+- **Defaulted `==`/`<=>` compile** ([class.compare.default]): the definition
+  is synthesized from the class's ordered member list at class completion
+  and parsed through the friend-hoist machinery. `==` synthesizes the
+  memberwise `&&`-chain; `<=>` the lexicographic early-return chain
+  (category = `partial_ordering` if any member is floating, else
+  `strong_ordering`). Both trigger sites: a defaulted FRIEND
+  (`<compare>`'s `operator==(strong_ordering, strong_ordering) = default`
+  — ordering-vs-ordering `==`/`!=` now work) and a defaulted MEMBER
+  (`auto operator<=>(const V&) const = default;` alone yields all six
+  comparisons — the implicit defaulted `==`, p4). Scalar/pointer members
+  only; bases or class-typed members bail to the loud error.
+- This completes the `<=>` compliance track (P2.15): gating, `<compare>`
+  types, hidden-friend bodies, the token lowering, rewritten candidates,
+  and defaulted-comparison synthesis. Remaining polish: the precedence
+  corner (`<=>` at the relational tier).
+- New test: `testdefaultedcmp_realhdr` (8 shapes incl. the lexicographic
+  chain, g++-verified). Gates: fulltest **572 / 0 / 0 / 18** (exit 0, both
+  check gates GREEN), torture failset **byte-identical**, SMAUG soak green.
+
+### `<=>` rewritten candidates — `r != 0`, reversed `==`, relationals via `<=>` (2026-06-11, `feature/template-instantiation-claude` @ `aff26fa`)
+
+- **C++20 [over.match.oper] rewritten candidates**: when every direct
+  candidate misses, `x != y` lowers to `!(x == y)` (a member `operator==`
+  serves too; `<compare>` defines no `operator!=`), `x == y` tries the
+  reversed `y == x`, and the relationals `< > <= >=` lower to
+  `(x <=> y) @ 0` when an `operator<=>` covers the operand pair. The C++20
+  idiom works: a class implementing only `operator<=>` + `operator==` gets
+  all six comparisons (`testrewritten_realhdr`, 9 g++-verified shapes).
+  Recursion is bounded via `lower_free_operator_to_call`'s new
+  `no_rewrite` parameter.
+- Known gap found in passing (pre-existing, verified at clean HEAD):
+  `Q a(1), b(2);` — multi-declarator with ctor-argument initializers —
+  hangs the parser (parseExprStmt loop at the comma). Recorded in
+  claude_status known gaps; workaround: split the declarations.
+- Gates: fulltest **571 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  torture failset **byte-identical**, SMAUG soak green.
+
+### `<=>` slice 3a — the token lowering itself; `a <=> b` works (2026-06-11, `feature/template-instantiation-claude` @ `7a56d72`)
+
+- **Builtin scalars** ([expr.spaceship]): `a <=> b` lowers CIR-side to a
+  comparison-category temp with the inline byte-select stored into
+  `_M_value` — no call, the g++ -O0 canon. Integral/pointer operands yield
+  `std::strong_ordering` (`l<r ? -1 : l>r ? 1 : 0`); floating yield
+  `std::partial_ordering` with the unordered arm (`... : l==r ? 0 : 2`,
+  2 = `__cmp_cat::_Ncmp::_Unordered`). Operands are materialized into
+  typed temps so each is evaluated exactly once. Parse-time,
+  `Program::comparison_category_class` types the expression as the
+  category CLASS from the parsed `<compare>` — which is what lets
+  `(a<=>b) < 0` dispatch to the hoisted hidden friend and
+  `auto r = a <=> b` copy-init. Without `<compare>` the expression is
+  rejected loudly with an include hint.
+- **Class operands**: `"<=>"` joined `object_operator_symbol` +
+  `binop_overload_symbol`, so member/friend `operator<=>` overloads ride
+  the existing operator machinery — the hoisted `<compare>` friends bind
+  both directions (`r <=> 0` and the reversed `0 <=> r` `__unspec` shape).
+- Known corner: `<=>` sits at the relational precedence tier
+  (unparenthesized `a < b <=> c` groups left; canonical shapes unaffected).
+- New test: `testspaceship_realhdr` — 8 shapes, g++-verified. Gates:
+  fulltest **570 / 0 / 0 / 18** (exit 0, both check gates GREEN), torture
+  failset **byte-identical**, SMAUG soak green.
+
+### `<=>` slice 2b — hidden-friend operator bodies; `r < 0` works from the real `<compare>` (2026-06-11, `feature/template-instantiation-claude` @ `5f63a20`)
+
+- **Free-operator dispatch**: a parsed non-member operator function with a
+  body — a user-written global/namespace free operator, a hoisted hidden
+  friend, or a prior template instantiation — is found and called for
+  class-operand operator expressions (`find_free_operator_function` ranks
+  the union of all `"::"+opname`-suffixed overload sets via the shared
+  `score_arg_to_param`; the winner lowers to an ordinary `TokenCallFunc`).
+  Global-scope `operatorX` definitions now register per-overload sets under
+  the `"::operatorX"` key. Comparisons (`== != < > <= >=`) joined the
+  parse-time operator family — `std::string ==`/`!=` now compile via the
+  existing body-instantiation path as a side effect. Test `testfreeop`.
+- **Literal `0` is a null-pointer constant** in overload ranking
+  ([conv.ptr]): `score_arg_to_param` gains `arg_is_zero_literal` (rank 3 —
+  below pointer args, above user-defined conversions), threaded from every
+  ranking layer that can see the argument token, including
+  `select_ctor_overload` — so the `0` in `r < 0` materializes the
+  `__cmp_cat::__unspec` argument through its `__unspec(__unspec*)` ctor.
+- **Hidden-friend operator DEFINITIONS hoist to namespace scope** once the
+  class completes ([class.friend] — they are namespace-scope functions,
+  TU-local, NOT exported by libstdc++, so the bodies must compile). Friend
+  FUNCTIONS are now modeled: `DataDefCLASS::friend_function_names`
+  (name-based grant, like `friend_class_names`); the FuncDef display name
+  is stamped BEFORE the body parses so the grant matches while the hoisted
+  body reads `__v._M_value`. Tests `testhiddenfriend`,
+  `testcompareops_realhdr` (strong/weak/partial orderings vs literal 0,
+  reversed operands, unordered — 7 shapes, g++-verified).
+- NOT in scope: C++20 rewritten candidates — `r != 0` (rewrites to
+  `!(r == 0)`; `<compare>` defines no `operator!=`) still errors loudly,
+  and `= default` comparison generation. Queued in cpp-support.md P2.15.
+- Gates per commit: fulltest up to **569 / 0 / 0 / 18** (exit 0, both check
+  gates GREEN), torture failset **byte-identical** (1567/26/29/0/63),
+  SMAUG soak green.
+
+### `<=>` slice 2a′ — standalone `#include <compare>` works, g++'s chain duplicated (2026-06-11, `feature/template-instantiation-claude` @ `fcceefb`)
+
+- **`__cpp_concepts=202002L` at the C++20 floor** — g++ compiles
+  `<compare>` standalone because concepts activate `<concepts>`, whose
+  `#include <type_traits>` carries `bits/c++config.h` in; madc now follows
+  the same chain. Constraints are CONSUMED, never evaluated (no concepts
+  semantics) — constrained declarations parse as if unconstrained.
+- Parser tolerance the activated regions needed: requires-clauses between
+  template header and declaration (`__detected_or`), TRAILING
+  requires-clauses between declarator and body (a requires-expression's
+  braces were mistaken for the function body), `concept` definitions
+  consumed to the top-level `;` without angle-tracking (comparison `<`
+  inside compound requirements desyncs it), and `using NAME = type;`
+  where NAME shadows a registered type name (`using int64_t = ...`).
+- `testcompare_realhdr` now includes `<compare>` FIRST (109ms). The one
+  remaining `<=>` wall: hidden-friend operator bodies (slice 2b).
+- Gates: fulltest **566 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  torture failset **byte-identical**, SMAUG soak green.
+
+### `<=>` slice 2a — `<compare>` category types from the real header (2026-06-11, `feature/template-instantiation-claude` @ `c8fdb48`)
+
+- **`std::strong_ordering` / `partial_ordering` / `weak_ordering` register
+  and carry correct values from the real `<compare>` under `--std=c++20`**
+  (test `testcompare_realhdr`: -1 0 1 2, g++-verified). Five general fixes:
+  `__cplusplus` now tracks the selected `--std=` (was pinned at the
+  build-capture's 201703L, silently preprocessing away every C++20 header
+  region) + `__cpp_impl_three_way_comparison` defined at the C++20 floor;
+  `resolve_namespaced_type_token` gains scope-relative qualification and
+  nested chains (`__cmp_cat::type` as a member type inside `namespace
+  std`); scoped-enum enumerator pseudo-namespaces key by the QUALIFIED tag
+  (+ the same walk in `parsePostfixChain`); file-scope ctor-syntax
+  declarations record their `TokenDecl` in `top_decls` (out-of-class
+  static member definitions had their ctor arguments silently dropped);
+  CLASS-typed static member expressions resolve to their definition
+  storage instead of the silent-0 `TokenInt` fold.
+- Known limit: a TU whose first include is `<compare>` still fails
+  (`bits/c++config.h` normally arrives via `<concepts>`, whose body
+  self-gates on the deliberately-undefined `__cpp_concepts`). Remaining
+  for `<=>`: hidden-friend operator bodies (`r < 0`) + the token lowering.
+- Gates: fulltest **566 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  torture failset **byte-identical**, SMAUG soak green.
+
+### `<=>` slice 1 — C++20 std-floor gating + loud unhandled-binop default (2026-06-11, `feature/template-instantiation-claude` @ `90e5f5c`)
+
+- **`a <=> b` no longer compiles as `a + b`.** The lexer tokenized `<=>`
+  under every `--std=`, and the CIR builder's binary-operator switch
+  silently lowered any unmapped operator as N_ADD — `3 <=> 7` returned 10
+  in the madc dialect. The token is now gated at the C++20 std floor
+  (STD_MADC + `--std=c++20`+; below the floor it lexes `<=` then `>` and
+  parse rejects, like g++ -std=c++17), and the unhandled-binop default is
+  a loud `error_node` (pre-c2mir gate). New test `test3waygate`.
+- **User ruling:** the lowering will be the FAITHFUL
+  `std::strong_ordering`/`partial_ordering` category objects from the real
+  `<compare>` header — no pragmatic-int shape. Probe: the category classes
+  don't yet register when parsing real `<compare>` (prerequisite work
+  recorded in `docs/plans/cpp-support.md` **P2.15** with the g++ -O0 canon
+  shape).
+- Gates: fulltest **565 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  torture failset **byte-identical**, SMAUG soak green.
+
+### Template-instantiation batch 2d — reference operands resolve as the referenced class (2026-06-11, `feature/template-instantiation-claude` @ `e124de5`) — BATCH COMPLETE
+
+- **2d — `cout << s` with a `const std::string &s` parameter works** (and
+  `a + b` on two reference params): madc stores references as
+  `DataDefPTR(T)` + `vfREFERENCE`, and every operator-resolution surface
+  typed operands by raw `datadef()` — a reference operand was invisible to
+  the overload sets. `cout << s` bound the bogus member
+  `operator<<(basic_streambuf*)` via the findMethod fallback (the c2mir
+  check error in `tmp/rK.mad`); `a + b` fell to raw pointer arithmetic.
+  One reference-aware helper per layer — `Program::operand_object_class`
+  (parse-time typing/lowering surfaces) and
+  `CirBuilder::operand_object_class` (CIR operator lowering + free-operator
+  instantiation rhs typing) — used everywhere; plain `T*` operands stay
+  opaque (only the reference representation is transparent). Arg emission
+  was already reference-aware. New test `teststrrefparam_realhdr`.
+- This completes the template-instantiation batch (2a pack elision, 2b-i
+  literal-lhs, 2b-ii operator body instantiation, 2c loud no-ctor-match,
+  2d reference operands).
+- Gates: fulltest **564 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  gcc.c-torture failset **byte-identical** (1567/26/29/0/63), SMAUG soak
+  green (exit 124 + ready line).
+
+### Template-instantiation batch 2c — loud no-ctor-match + the reference-arg scoring fix it surfaced (2026-06-11, `feature/template-instantiation-claude` @ `79f5e66`)
+
+- **2c — decl-path silent ctor-drop is now a loud error** (`79f5e66`): when
+  a class HAS user constructors but none matches the initializer,
+  `class_ctor_call` / `class_ctor_call_addr` returned NULL and every
+  caller's `if (cc)` guard silently dropped the construction (the a+b
+  SIGSEGV hid behind this for days). Both no-match tails now return an
+  `error_node` naming the class and argument types — the pre-c2mir gate
+  rejects the tree with file:line:col. The early no-user-ctor NULLs stay
+  (member-ctor / trivial-copy fallbacks). New test `testctornomatch`.
+- **Reference-parameter ctor arguments select the copy ctor** (`b5de674`):
+  the surfacing run flagged exactly one real pre-existing silent drop —
+  `select_ctor_overload` scored a `vfREFERENCE` variable by its pointer
+  representation (`const A &p` → `A*`), so `A local(p)` never matched any
+  ctor and the construction was dropped (garbage reads). Ctor scoring now
+  unwraps references to the referenced class, same as
+  `select_operator_overload` always did. This was also dropping the
+  `allocator<char>` copy-construction inside materialized libstdc++
+  `operator+`/`__str_concat` bodies (harmless only because the allocator
+  is stateless). New test `testctorrefarg`.
+- **Test runner: generic `.expect_err` fixture convention** — a
+  compile-error test must exit nonzero (not a timeout) and its stderr must
+  contain every listed line; the EXE pass skips such tests. Rule +
+  reasoning updated (`.claude/rules/test-fixtures.md`,
+  `docs/rules/test-fixtures.md`).
+- Gates: fulltest **563 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  gcc.c-torture failset **byte-identical** (1567/26/29/0/63), SMAUG soak
+  green (exit 124 + ready line).
+
+### Template-instantiation batch 2a/2b — operator BODY instantiation (2026-06-11, `feature/template-instantiation-claude` @ `9245775`)
+
+- **2b-ii — `a + "literal"` compiles the real libstdc++ `operator+` body**
+  (`9245775`): the `(const basic_string&, const _CharT*)` shape is not
+  exported, so the retained operator template's body instantiates (g++'s
+  TU-local weak specialization, Borland monomorphize). Operator templates
+  join `fn_template_map` (keyed `ns::operatorX`); deduction matches
+  template-id params against the operand class's canonical template
+  arguments (texts resolve through the one `instantiate_template_id` seam);
+  the expression lowers Cfront-style — the TokenOperator becomes a
+  TokenCallFunc on the instantiated overload (`lower_free_operator_to_call`),
+  only when no member operator and no exported mangled-direct shape covers
+  the operands. The 2a instantiation tail split into the shared
+  `instantiate_fn_template_binding`. CIR call-convention lock-step fixes the
+  chain exposed: Itanium sret for external member calls returning
+  non-trivial classes by value (`get_allocator`, g++-verified), Pass-0.75
+  retbuf-shaped externs + `m_materialized_lib_syms` classification for
+  lazily-materialized bodies, block-scope class typedefs reference the
+  file-scope tag (no shadowing local body), and ctor-overload selection
+  types call arguments by the resolved callee's return class (so
+  `return __str_concat(...);` copy-constructs into `__retbuf` — was a
+  bit-copy double-free). New test `teststrplusbody_realhdr`.
+- **char_traits explicit-specialization instantiation-key fix** (`1abbee8`):
+  `std::char_traits<char>::length("abc")` silently folded to **0** — once a
+  template name exists in 2+ namespaces, use sites key instantiations
+  namespace-qualified, but explicit specializations registered under the
+  legacy unqualified key, so use sites instantiated the hollow primary and
+  every static call became a dependent-call placeholder. One shared key
+  rule (`template_instantiation_key_head`), in-place completion of the
+  legacy placeholder (+ qualified-key alias), and qualified same-name
+  references to OTHER namespaces no longer renamed during primary
+  instantiation (`__gnu_cxx::char_traits<_CharT>` base was clobbered).
+- **2b-i — literal-lhs free operators** (`a89fe3a`): `"pre" + s` binds the
+  EXPORTED mixed shape `operator+(const char*, const string&)`
+  mangled-direct (W2 Pass 2b). Test `teststrlitplus_realhdr`.
+- **2a — fn-template EMPTY parameter-pack elision** (`6f93682`):
+  `std::stof/stod/stold` instantiate (`__gnu_cxx::__stoa`'s empty `_Base...`
+  elides). Tests `teststod{,_realhdr}`.
+- **iostream:80 `__ioinit` warning fix** (`398cb82`): class-qualified
+  nested-type declarations parse; external-ctor receiver cast to `void*`.
+- Gates at each landing: fulltest **561 / 0 / 0 / 18** (exit 0, both check
+  gates GREEN), full gcc.c-torture failset **byte-identical** to the
+  55-line baseline (1567/26/29/0/63), SMAUG soak green.
+
+### Failset classification audit — promote gate re-defined, 33 formal skips (2026-06-11, `21bfec9`)
+
+- **The 88-test gcc.c-torture failset is fully classified**
+  (`docs/parity/failset-classification.md`, user-signed): **41 class-(a)
+  standard-C compliance bugs** (~12 root causes — K&R old-style definition
+  *parsing* ×23, implicit-decl forward-call binding ×5, labels-have-function-
+  scope ×2, wide literals ×2, implicit-int returns ×2, plus singletons incl.
+  a C23 variadics gap and madc's `string` builtin leaking into C mode),
+  **14 class-(b) real-world GNU extensions** (roadmap items: `__int128`,
+  SIMD global-initializer drop, packed/misalign, `__sync_*`, by-value ABI,
+  aligned>16, cond-void-arm), **33 class-(c) gcc-internal/torture-only/UB
+  tests formally skipped** via `docs/parity/torture-skip-manifest.txt`
+  (generic basename→reason lookup in `run_gcc_testsuite.py`;
+  `--include-manifest-skips` overrides).
+- **Promote gate re-defined** (ADR 0001, branching.md ×2, ROADMAP 1.3):
+  all class-(a) fixed = **≥1608 of 1652 in-scope** (currently 1567).
+  "Match asmjit 1645" retired — the audit's oracle run showed the
+  capability sets diverged (asmjit passes 82 of CIR's 88 fails; CIR passes
+  34 of asmjit's 40). 100% torture parity is explicitly not the goal.
+- **User rulings recorded:** K&R/implicit-int/implicit-decl accepted in
+  STD_MADC + `--std=c89`–`c17`, hard error in `--std=c23`+ and all C++
+  modes; `string` is NOT a builtin type (retire-std-hardcoding keystone);
+  VLA-in-struct not supported (clang: "will never be supported").
+- **Stale attributions corrected:** simd-1/-2 are no longer floor gaps
+  (fork `2ffebff` compiles them; the live bug is dropped global vector
+  initializers); bitfld-5 hides a standalone C89 tag-shadow parse bug.
+- New torture baseline (full run verified): **1567 / 26 / 29 / 0 / 63**.
+
+### Eval leftovers landed: DSL string compares (B), one value type (A0), call-site scope capture (A) — fulltest 557/0/0/18 (2026-06-11)
+
+- **B — expression-DSL string compares are value compares** (`b144571`,
+  `89fee0f`, `a30b1f1`): a rewrite pass after policy validation lowers
+  every comparison whose operands are both string-typed to
+  `strcmp(a,b) OP 0` (all six relational operators); a string vs
+  non-string mix is a loud rejection (pinned). Confined to the
+  expression-DSL pipeline — full eval and the real language never see it.
+  `testmadcevalexprctx` extended (`name_ok`/`lt`/`ge` now value-true).
+- **A0 — MadValue/MadArray deleted; one `madc::value` end-to-end**
+  (`bb9d3f3`, `e60c466`, `66eeaaf`): the script `array` builtin IS the
+  public `madc::value` (ddARRAY retargeted, canonical identity
+  `madc::value`); `value::object()/array()` vivify from null; the
+  `build_runtime_expression_context` conversion layer is gone. The
+  extern-C boundary is kind-safe (`value_array_for_write` /
+  `value_object_for_write`: stderr diagnostic + no-op dummy instead of a
+  C++ exception escaping into MIR-JIT frames), the pop/shift/join family
+  keeps its pinned string/int-only conversion, and read-only eval no
+  longer vivifies a caller's null ctx in place.
+- **Itanium mangler: substitution back-ref as a name PREFIX keeps the
+  N..E wrap** (`fe06468`): `madc::value` as a parameter of a second
+  `madc::` function rendered `RS_5value` where g++ emits `RNS_5valueE` —
+  encode_name now wraps when a back-ref becomes a prefix (only `St` may
+  stand unwrapped). Pinned against four g++-verified literals; this
+  unblocked the whole mangled-direct `_ctx` surface.
+- **A — `<ns_madc>` is declaration-only mangled-direct** (`daf04ed`):
+  scripts bind `madc::eval_*` / `context_set_*` straight to the real
+  `namespace madc` implementations in the new `src/ns_madc.cpp`
+  (cpp-first-api.md); the extern-C `__madc_*_runtime` exports move there
+  as the C-host API only. New `eval_*_ctx` publics (full-eval five +
+  typed-out expression forms). General fix exposed by the FIRST
+  declaration-only overload set: such an overload's call symbol is its
+  external Itanium symbol on `emit_symbol`, never a bodiless internal
+  `__ns_*__oN` name.
+- **A — scope capture learns std::string locals** (`86e0a48`):
+  `DataDef::marshals_value_text()` — the marshalling-boundary predicate,
+  DEFINED in the mangler (the gate's one permitted home for std::
+  symbol knowledge; spellings compare via Itanium encoding, so the
+  pre-C++11 ABI type stays distinct) — plus the
+  `__madc_scope_set_string_runtime` setter and the CIR text branch.
+- **A — scope capture fires at the madc:: public call site**
+  (`1627e62`): `testmadcevalscope` un-skipped and GREEN (42/42/echo +
+  typed-out forms): calls to the madc:: publics rebind to their `_ctx`
+  sibling overloads when the per-family engine gates allow, and the
+  existing parseCallFunc tail appends the captured-scope ctx. Three root
+  fixes en route: the TokenScopeContext lowering yields the ctx LVALUE
+  (an extra N_ADDR double-wrapped it against `array&` params — the host
+  read a pointer slot as a null value); `int x = madc::eval_*(…)` no
+  longer captures x inside its own initializer (`decl_init_self`); and
+  full-eval scope bindings install captured string locals
+  (`set_variable_from_value` text case).
+- **Unit scope-access categories un-skipped** (`e250f6c`):
+  `test_libmadc_program` 97 passed / 38 skipped — the four script-side
+  scope-access cases pin the gate semantics (on→42/42, both-off→0/0,
+  expression-off→0/42, source-off→42/0).
+- Gates: fulltest **557/0/0/18** exit 0 (both check gates GREEN);
+  gcc.c-torture **1567/31/56/1** with the failset byte-identical to the
+  baseline; SMAUG boots (soak exit 124 + ready line).
+
+### Script-level `madc::eval_*` via `<ns_madc>` — fulltest 555/0/0/20 (2026-06-10)
+
+- **`madc::eval_*` exported through libmadc** (`8d73306`) exactly like the
+  other `ns_*` namespaces: `include/madc/ns_madc` declares the existing
+  `__madc_eval_*_runtime` extern-C exports and implements the `madc::`
+  wrappers as ordinary namespace bodies — no engine-side registration.
+  `testmadceval`, `testmadcevalexpr`, `testmadcevalexprtyped` are green
+  (`.mir_skip` lifted); the ctx and scope tests keep precise skip reasons.
+  CIR learns the scope-capture argument (`TokenScopeContext` → cstr-key
+  `__madc_scope_set_*` setter calls).
+- **Two general latent bugs fixed at root** (both reproduced on the plain
+  CLI): a block-scope `extern double fabs(double);` parsed as a GNU
+  *nested function*, orphaning the real name so the call fell to the
+  64-bit dlsym default (`fabs(-2.5)` → `1.0`; C11 6.2.2p5 — block-scope
+  function declarations have file scope); and `intern_file()` dangled
+  every interned `TokenBase::file` pointer because it reused the
+  `#include` guard map that `_tokenizer_init()` clears — the root cause of
+  the header-line-under-main-file diagnostic misattribution. Interned
+  names now have their own never-cleared store.
+- **Expression-eval pipeline repaired** (broke silently when the embedded
+  `math.h` gained real prototypes): the policy validator no longer reads
+  policy-header prototypes as user function calls, and
+  `parse_expression_unit` skips the prepended header tokens by anchoring
+  on the tail token's file.
+
+### libmadc in-process eval returns — CirJitSession on CIR→c2mir→MIR (2026-06-10)
+
+- **The eval surface lives again** (`946750a`): stubbed since the asmjit
+  removal, `program::compile_* / exec_* / call / eval_unit / eval_body /
+  eval_expression` now run through a persistent `CirJitSession` (translate
+  + c2mir + MIR_link held alive; `MIR_gen` per function on demand) —
+  `madc_cir_execute` itself delegates to the session, so the CLI, the
+  suite, torture, and SMAUG all prove it. 49 of the 91 deferred unit cases
+  pass (zero regressions); the 42 still-deferred are categorized in the
+  suite header. `madc::eval_expression("6 * 7") == 42` in-process. Plan and
+  master-branch behavioral references:
+  `docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md`.
+- **Un-skip audit** (`ce09527`): 3 stale `.mir_skip` fixtures lifted
+  (native `_Complex`, c2mir stmt-exprs, fixture issue resolved) —
+  integration suite 549→552.
+
+### W2 step D: free operators ride Pattern A — emit-symbol unification COMPLETE (2026-06-10)
+
+- **One emission, one symbol source for every operator call** (`42a5cd3`):
+  the last call-site symbol derivation is gone. `std_free_operator_instantiation`
+  scans the captured free namespace operators once (both the
+  reference-returning stream shape and the by-value class return), deduces
+  with the shared helpers, mangles via the one mangler, and returns an
+  instantiated `FuncDef` carrying the symbol on `emit_symbol`;
+  `class_operator_external_call` — the external member-operator emission
+  extracted and extended with parameters[0]-class lhs binding (derived→base
+  via `object_arg_addr`'s walk) and the Itanium sret/__retbuf by-value
+  shape — emits external members and free operators identically. The
+  interim by-value resolver/emitter pair is deleted; emitted symbols are
+  byte-identical. The 2026-06-09 emit-symbol-unification handoff is now
+  fully executed.
+
+### Default-mode `#include <cstdio>` works — fulltest 549/0/0/26 (2026-06-10)
+
+- **Embedded stdio.h declares the full C89 stdio surface** (`8a897f8`): real
+  libstdc++ `<cstdio>` imports every stdio name with `using ::…;`, and a
+  using-declaration needs a global-scope declaration to bind to (the
+  ctype.h/`<cctype>` precedent) — default-mode `#include <cstdio>` previously
+  died at `'fpos_t' is not a declaration in '::'`. The shim now carries a
+  real-glibc-layout `fpos_t`, `int`-typed returns for the whole int family,
+  and real variadic printf/scanf prototypes (the old "stay on dlsym"
+  limitation predates variadic prototype support; SMAUG soaks clean). New
+  test `testcstdio`.
+
+### std::string `a+b` runs through real libstdc++ — fulltest 548/0/0/26 (2026-06-10)
+
+- **By-value class returns for free namespace operators** (`23027f7`):
+  libstdc++'s `operator+` for strings is a free namespace template returning
+  the string by value; the W2 free-operator binder only emitted the
+  reference-returning stream shape, and the declaration path then silently
+  dropped the construction — `std::string c = a + b` left `c` as
+  uninitialized stack garbage (the real-header SIGSEGV). The new
+  `resolve_free_operator_byvalue`/`emit_free_operator_byvalue` pair deduces
+  both class parameters and the by-value class return with the existing
+  shared deducers, mangles via the one mangler, and emits the Itanium sret
+  shape (hidden result-slot first argument, void call) bound mangled-direct
+  to the exported weak `_ZStpl…` instantiations. Declaration inits construct
+  straight into the variable (guaranteed copy elision — g++'s exact one-call
+  shape); expression contexts materialize a cleanup-tagged temp. The parser
+  types `a + b` via the captured free operators when the class declares no
+  member operator (`Program::free_binary_operator_return_class`). New
+  integration test `teststringplus_realhdr` and a `test_mangle` pin of the
+  exported symbol.
+- **check-no-std-hardcoding gate back to 0/GREEN** (`b0519de`): the gate had
+  been red (250 lines) since the 2026-06-08 nlohmann/json vendoring — all
+  third-party false positives plus one comment naming a glibc header. The
+  vendored `include/json.hpp` is now excluded exactly like `doctest.h`.
+
+## [v0.27.0] — 2026-06-10
+
+All integration reds green: the full test suite passes (547/0/0/26) for the
+first time on the CIR backend — alias-spelled reference returns, namespace
+function-template body instantiation (real-header `std::to_string`/`std::stoi`),
+and the standard-C++ testfstream through real libstdc++ headers.
+
+### ALL integration reds green: testfstream passes — fulltest 547/0/0/26 (2026-06-10)
+
+- **Alias-spelled reference returns** (`8b16fd8`): an alias is a type, not a
+  spelling. `typedef T&` / `using = T&` lowered the `&` to `getPointerType`,
+  so `basic_string::operator[]`'s `reference` return (= `char&` through the
+  allocator_traits chain, origin `bits/allocator.h:287`) resolved to a plain
+  `char*` with `returns_ref` false — `char c = s[1]` read garbage and `&s[1]`
+  was a non-lvalue. New `DataDefREF` (IS-A `DataDefPTR`, identical lowering)
+  carries the reference qualifier in the resolved type, so alias-chain hops
+  propagate it for free; the method parse unwraps it into
+  `FuncDef::returns_ref` exactly like a literal `&`. `parsePostfixChain` also
+  builds the main parser's `TokenSubscript` for a chain-head class `var[idx]`
+  (head-only + class-with-operator[]-only; fixed arrays keep their precise
+  element typing — testmemchr2darray/teststructchararraysubaddr canaries).
+- **Namespace function-template BODY instantiation** (`c4a39aa`): libstdc++
+  does not export its function templates (`__gnu_cxx::__stoa`,
+  `std::__detail::__to_chars_len/__to_chars_10_impl`), so mangled-direct can
+  never bind them — madc now retains a body-bearing namespace function
+  template's tokens (`Program::fn_template_map`) and instantiates on demand
+  at the call (Borland monomorphize): type-arg deduction from bare/cv/`*`/`&`
+  param shapes, structural fn-ptr matching (`&std::strtol`), ONE trailing
+  single-element parameter pack, simple defaulted template params
+  (`_Ret = _TRet`), and EXPLICIT template args (`__stoa<long, int>`) now
+  captured at the call site instead of discarded. The concrete overload
+  registers in `namespace_fn_overload_sets`; `call_target_funcdef` ranks it.
+  Fixes exposed and landed: parse-time-filled default args no longer poison
+  CIR re-ranking (`TokenCallFunc::user_argc`), function-to-pointer decay in
+  `score_arg_to_param`, a statement-level `ns::member(...)` restoring (not
+  clearing) `current_namespace`, `struct X {...} const var;` declarators,
+  local-class reuse across instantiations, eager method bodies inside
+  instantiations, and `class_dtor_symbol` resolving through the unified
+  `call_emit_symbol` (a function-local class's dtor lives on
+  `local_emit_name`). `std::to_string(42)` and `std::stoi(string)` execute
+  through the real header bodies.
+- **testfstream rewritten + green** (`883c26e`): standard C++
+  (g++/clang++-validated) through real headers via `.flags`/`.expect`.
+  Fortify `__builtin___mem*_chk`/`__strn*_chk` map to `__madc_builtin_*`
+  wrappers (the existing strcpy_chk pattern), and unqualified calls now
+  consult active using-directives when a global's arity rejects the call
+  (C++ [namespace.udir] — `getline(inf, line)` is `std::getline`, not POSIX
+  `::getline`), via `Program::active_using_namespaces` +
+  `using_namespace_call_fallback`.
+- Gates: fulltest **547/0/0/26**, gcc.c-torture **1567/31/56/1** with a
+  byte-identical failset across the whole session, SMAUG soak boots.
+
+### Two of the three reds green: testlargesizeofquery + testdefer — fulltest 546/1/0/26 (2026-06-09)
+
+- **64-bit array dims (`carray_dim_t`)**: array dimensions were stored as
+  `uint32_t` throughout (Variable::dims, member_dims, parser/cir_builder dim
+  vectors), so `short buf[(1L<<62)-256]` truncated in the emitted struct layout
+  (madc's own size_t sizeof fold was right; c2mir's member offsets were wrong).
+  One typedef now carries every dim. testlargesizeofquery green; gcc.c-torture
+  `991014-1.c` flips to pass → **1567/31/56/1**.
+- **`defer` executes on CIR**: parsed-but-never-emitted since the asmjit
+  backend (whose `TokenCpnd::cleanup()` compiled it) was removed. CirBuilder
+  keeps a defer-scope stack and emits deferred statements inline (LIFO,
+  innermost scope first) at the compound's fall-off end and before every
+  return shape; `return <expr>` hoists the value into a typed temp so defers
+  run AFTER evaluation and before dtors (cleanup attribute). testdefer
+  rewritten to real libstdc++ headers (`.flags`/`.expect`); doc updated.
+- **C++ namespace free-function overload sets**: each overload of a C++
+  namespace function now parses into its own Variable/FuncDef under a unique
+  internal symbol (libstdc++'s nine inline `std::to_string` definitions all
+  collapsed onto one `__ns_` symbol before); the call site ranks the set by
+  arg types in `call_target_funcdef` (generic `score_arg_to_param`,
+  default-arg aware) and the winner's `local_emit_name` carries the symbol.
+  Inline-namespace members now mirror into the parent on plain re-opens too
+  (`inline namespace __cxx11` is re-opened as plain `namespace __cxx11 {`
+  throughout libstdc++). The `__retbuf` NRVO gate keys on the call's RESOLVED
+  emit symbol. `std::to_string`/`std::stoi` resolve;
+  `string s = to_string(42)` lowers via retbuf NRVO. **testfstream stays red**:
+  next wall is alias-spelled reference returns (`basic_string::operator[]`
+  returns `reference` — char& through the allocator_traits alias chain — and
+  madc drops the reference-ness, so the call misses its deref; reducers
+  `tmp/ts1.mad`, `tmp/ts4.mad`, `tmp/ts5.mad`).
+
+### testloop GREEN through real libstdc++ headers — fulltest 544/3/0/26 (2026-06-09)
+
+- Two generic fixes unblocked the full standard-C++ stream loop:
+  - **Virtual-base `__this` for externally-bound methods**: the inherited-method
+    base adjustment (which already understood virtual bases via the layout's
+    `vbase_offset` map) ran after the `emit_symbol` early-return, so the real
+    libstdc++ `good()` was called with the derived `ifstream*` instead of the
+    `basic_ios` subobject — reading garbage stream state. Hoisted above every
+    dispatch flavor.
+  - **Namespace-scope type visibility**: a namespace-scope `using alias = T;`
+    wrote the flat global type map, so `<string>`'s `namespace pmr { using
+    string = …; }` clobbered unqualified `string` with the pmr (polymorphic
+    allocator) type and the `using namespace std` import skipped it as
+    already-present — `ofstream::open(const string&)` could never match.
+    Namespace aliases now register per-namespace only, and unqualified type
+    lookup searches the enclosing-namespace chain before the global scope.
+- `tests/testloop.mad` rewritten to standard C++ (g++-validated, identical
+  output) and compiled through real system headers via a `.flags` fixture
+  (`--std=c++17 --no-embedded-headers`). First of the 4 known reds resolved:
+  fulltest `543/4/0/26` → `544/3/0/26`; gcc.c-torture unchanged at
+  `1566/31/57/1` with a byte-identical failset.
+
+### `std::` free-function templates bind via `emit_symbol`; `__ns_` shim gate retired (2026-06-09)
+
+- Named `std::` free-function template calls (`std::getline`) now instantiate a
+  `FuncDef` carrying the Itanium symbol on `FuncDef::emit_symbol` — resolved by
+  the one `call_emit_symbol` precedence and emitted by the **generic** call
+  path. The bespoke `try_std_free_function_call` N_CALL emission and the
+  `__ns_` callee-prefix shim gate are deleted; discovery is a pure
+  `free_function_overloads` signature lookup (Pattern A everywhere for named
+  free fns; the W2 operator path's re-mangle is the remaining follow-up).
+- Foundations, each independently correct: `call_target_funcdef` became the one
+  member callee-resolver every consumer shares; `object_arg_addr` now binds a
+  Derived object to a Base parameter by selecting the base subobject at its
+  byte offset (previously it CONSTRUCTED a converting-ctor Base temp — wrong
+  for `Base&` binding, user classes included); `native_func_shape` treats a
+  C++ reference return as an address return.
+- Verified: getline emits the byte-identical mangled symbol through the new
+  path and reads lines end-to-end; cout/string canaries green;
+  `check-call-emit-symbol.sh` green. Gates: fulltest `543/4/0/26` (baseline);
+  gcc.c-torture `1566/31/57/1` with a byte-identical failset.
+
+### `cout << std::string` works via the real free `operator<<` (2026-06-09)
+
+- The W2 free-operator path required the operator's 2nd parameter to exactly
+  match the rhs type, so the free
+  `operator<<(basic_ostream<_CharT,_Traits>&, const basic_string<_CharT,_Traits,_Alloc>&)`
+  (template-dependent parameter; `_Alloc` deducible only from the rhs) was never
+  selected — madc fell back to the wrong member overload (`streambuf*`) and
+  c2mir rejected the call. Now a non-exact 2nd parameter may deduce against the
+  rhs class (reference param + reference return only), via a shared
+  `deduce_param_against_class` helper extracted from (and now also used by) the
+  named free-function (getline) path. The deduced rhs is passed by address and
+  `requalify_head` preserves leading cv-qualifiers, so the symbol mangles `RK`
+  (const reference) — byte-identical to g++'s
+  `_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE`.
+- Chained `cout << a << " " << b << " " << b.size() << endl` runs end-to-end in
+  `--std=c++17 --no-embedded-headers` mode.
+- Validation: fulltest unchanged at `543 passed, 4 failed, 0 timed out, 26
+  skipped`; gcc.c-torture unchanged at `1566/31/57/1` with a byte-identical
+  failset; real-header canaries green.
+- Known pre-existing (verified at the unmodified HEAD): `std::string a + b`
+  SIGSEGVs in real-header mode — tracked separately.
+
+## [v0.26.0] — 2026-06-09
+
+Real-header C++ track: real libstdc++ `<string>`/`<iostream>`/`std::getline` via
+mangled-direct binding, call-symbol derivation unified onto one gated resolver,
+the `--project` multi-TU build driver (SMAUG boots end-to-end through it),
+≤16-byte SIMD/`vector_size` through the MIR fork, VLAs, and multi-return
+reimplemented on CIR.
+
+### Call-symbol derivation unified onto one resolver + drift gate (2026-06-09)
+
+- **One source of truth for a call's emitted C symbol.** Added
+  `CirBuilder::call_emit_symbol` with the precedence
+  `emit_symbol ?: local_emit_name ?: var_emit_name` and routed **every**
+  call-symbol site through it. Previously this precedence was re-implemented inline
+  at ~8 sites, each with a different partial slice (notably `func_emit_name`, which
+  ignored `emit_symbol` entirely) — the drift that shipped wrong symbols.
+- Merged the two synonymous `FuncDef` fields `class_emit_name` + `nested_emit_name`
+  into one `local_emit_name` (a madc-emitted body's non-default symbol — a hoisted
+  nested fn or an arity-disambiguated method/operator); `emit_symbol` (external ABI
+  bind, no body) stays distinct. Two fields, not three.
+- **Drift-prevention gate** `scripts/check-call-emit-symbol.sh`, wired into
+  `make fulltest`: fails if `local_emit_name`'s value is read as a symbol anywhere
+  outside `call_emit_symbol`. Verified it catches an injected violation.
+- **`cout << unsigned long` / `s.size()` now work.** The post-parse CIR bind pass
+  now binds non-template methods/operators of explicitly-instantiated libstdc++
+  classes (e.g. `basic_ostream<char>`) to their external symbol even when the header
+  marks them `inline` — so `operator<<(unsigned long)` binds the real member
+  `_ZNSolsEm` (g++ match) instead of emitting a body that forwards into the
+  non-exported `_M_insert<T>` template. Mirrors the existing ctor/dtor binding.
+- All steps behavior-preserving (parser invariant: `var.name == local_emit_name`
+  when set; `emit_symbol` mutually exclusive with `local_emit_name`). Validation:
+  `make -C src fulltest` unchanged at `543 passed, 4 failed, 0 timed out, 26 skipped`;
+  gcc.c-torture unchanged at `1566 passed, 31 compile-failed, 57 runtime-failed,
+  1 timed out, 30 skipped`. Remaining: `cout << std::string` (free-operator class rhs
+  as a const reference), the free-`std::`-fn `emit_symbol` migration, then the
+  per-red ingredients. See `docs/plans/2026-06-09-emit-symbol-unification-HANDOFF.md`.
+
+### Real `<fstream>` ofstream canary advanced (2026-06-09)
+
+- `tmp/fs_out.mad` now compiles and runs through real libstdc++ `<fstream>` /
+  `<ofstream>`, writes `hello42`, and exits cleanly. This is a canary advancement;
+  full `tests/testfstream.mad` and `tests/testloop.mad` remain known reds.
+- Fixed the path with generic parser/sema behavior: constructor parameter scope now
+  survives trailing `throw()` / `noexcept` before constructor initializer lists,
+  unqualified namespace lookup searches inline namespace children, non-expression-head
+  C++ identifiers get the same namespace fallback after lexical lookup fails, and
+  `&ref_returning_function()` parses as address-of an addressable call expression.
+- Validation: `make -C src fulltest` remains at the known baseline
+  `543 passed, 4 failed, 0 timed out, 26 skipped`; gcc.c-torture remains
+  `1566 passed, 31 compile-failed, 57 runtime-failed, 1 timed out, 30 skipped`;
+  string reducers, real-header `testcout_realhdr`, `test_extern_polymorphic`, and
+  `tmp/fs_out.mad` canaries pass.
+
+### Real `<string>` richer mutation path advanced (2026-06-09)
+
+- Fixed the c2mir failure reached by real libstdc++ `std::string` mutators such
+  as `s += "x"` and `s = "hi"` by treating C++ reference returns as address
+  returns in the CIR/external-call boundary and applying the same derived-to-base
+  adjustment used for pointer returns. Focused reducers for default construction,
+  assignment, and append now compile/run quiet.
+- Real libstdc++ `std::string` construction and mutation now compile and run
+  end-to-end (verified at `c9fd222`): `std::string s("hello")` (`hello len=5`),
+  `s += "..."`, `s = "..."`, `a + b`, and `.size()` all work. This supersedes the
+  earlier same-day diagnosis that `std::string s("hello")` "still crashes" / needed
+  member-template C-string-ctor instantiation — that wall is cleared. The next
+  functional wall is `std::getline` (`'getline' is not a member of namespace 'std'`
+  — unbound) and then `<fstream>` (`ofstream`/`ifstream` typedefs + `open()`/
+  `operator<<` + the `ios_base`/`basic_ostream` hierarchy, inc-5/inc-6).
+- Validation: `make -C src fulltest` remains at the known baseline
+  `543 passed, 4 failed, 0 timed out, 26 skipped`; gcc.c-torture remains
+  `1566 passed, 31 compile-failed, 57 runtime-failed, 1 timed out, 30 skipped`;
+  real-header `testcout_realhdr`, `test_extern_polymorphic`, and `tmp/fs_out.mad`
+  canaries pass.
+
+### `--no-auto-load`: make `#load` linking explicit (2026-06-08)
+
+- New CLI flag `--no-auto-load`: madc does **not** act on `#load` directives
+  (e.g. an embedded header auto-loading libm/libcrypt). The named library is
+  not `dlopen`ed; the namespace is bound to the global symbol scope, so its
+  symbols must be provided explicitly — via `madc -l<lib>` or the host — and
+  linking is fully under the user's control. It does *not* error (that is the
+  stricter `enable_dlfcn_functions=false` sandbox knob). Backed by a new,
+  dedicated `RegistrationPolicy::enable_auto_library_loading` (default on),
+  set on the engine so `--project` translation units inherit it. New fixture
+  `tests/testnoautoload` (embedded `<math.h>` `#load`s libm; with the flag,
+  `sqrt` still resolves through madc's own libm link). fulltest 540/4.
+
+### `--project`: relative manifest paths resolve against the manifest's own directory (2026-06-08)
+
+- When a `compile_commands.json` entry omits the `directory` field, madc now
+  resolves that entry's `file` and `-I` paths against **the manifest file's own
+  directory** instead of the process working directory. This lets a manifest
+  with relative paths be checked into a repository and stay portable — it
+  resolves the same regardless of the cwd, which a program may need to set
+  elsewhere (e.g. SMAUG runs from its data directory). An explicit `directory`
+  is honored unchanged. New fixture `tests/testprojectreldir`. fulltest 539/4.
+
+### A `.json` source defaults to `--project` mode (2026-06-08)
+
+- **`madc compile_commands.json [args...]`** now behaves as `madc --project
+  compile_commands.json [args...]`: a positional source file with a `.json`
+  extension is treated as a project manifest implicitly, mirroring how gcc/clang
+  select a tool by file extension. Options (e.g. `-lcrypt`) still precede the
+  source positional, as for any source file. New fixture `tests/testprojectjson`
+  exercises the implicit path through the production runner. fulltest 538/4.
+
+### SMAUG boots via `--project` — the intended path (2026-06-08)
+
+- **`madc --project <compile_commands.json> -lcrypt`** compiles all 51 non-IMC
+  SMAUG `.c` files as separate translation units, links the MIR modules, and runs
+  `comm.c`'s real `main` → "Realms of Despair ready … on port N" with a live
+  game loop (per-pulse area resets). No umbrella, no injected `main`.
+- **`fix(parser)` (`da4145c`) — record the explicit `*` count for function-type
+  typedef declarators.** madc collapsed `DO_FUN g` (a C function declaration) and
+  `DO_FUN *g` (a fn-ptr variable) into one bare `DataDefFPTR` (the parser consumed
+  the declarator `*` but never recorded it), so `DO_FUN do_look;` emitted as a NULL
+  fn-ptr global → multi-TU SIGSEGV / MIR repeated-decl. Now: count the stars, emit
+  exactly that many (recorded on `Variable::fnptr_explicit_stars`; the type stays
+  `DataDefFPTR` so fn-ptr call detection is unaffected). New shared
+  `Program::consume_declarator_stars` helper replaces the duplicated star-eating
+  loops. fulltest 537/4, torture 1566/31/57/1 unchanged.
+- **`feat(cli)` (`e4005e0`) — `-l<lib>` + `--help`/`-?`/`-h`.** `-l<name>` dlopens
+  `lib<name>.so` (`RTLD_GLOBAL`) so the import resolver finds its symbols at link —
+  general, works with or without `--project` (SMAUG needs `-lcrypt`). `--help`
+  finally prints a usage screen.
+
+### Fixed — SMAUG bring-up: C-source language mode + empty TUs (2026-06-08)
+
+- **Compile `.c` TUs in C mode under `--project`** (`2887740`): a `.c` source is C,
+  not C++ — gcc/clang select language by extension, so the build driver now defaults
+  a `.c` TU with no explicit `-std` to `--std=c89` (C mode). In `STD_MADC` the C++
+  keywords (`class`/`new`/…) are reserved, so SMAUG's `class` variables hit "Expecting
+  type name after elaborated type specifier" in `TokenIF`'s C++17 if-init
+  declaration-probe. Scoped to `--project`; torture/fulltest unchanged. Fixture
+  `tests/testproject_ckw`.
+- **Accept an empty translation unit** (`1851d88`): `Program::parse()` errored on an
+  empty token queue; a TU that is only comments or wholly `#ifdef`'d out is valid
+  C/C++ (gcc emits an empty object). Now a successful no-op parse. Unblocked SMAUG's
+  `services.c` (entirely `#ifdef WIN32`). Fixture `tests/testproject_empty`.
+- **Milestone:** SMAUG boots end-to-end from a fresh madc compile and stays up serving
+  ("Realms of Despair ready … on port N") via the umbrella + `--std=c` + `comm.c`'s real
+  `main` (MadSMAUG `master` `2140d3f`). Global `.bss` zero-init verified (matches gcc).
+
+### Added — project build driver (v1) (2026-06-08)
+
+- **Project build driver (v1):** `madc --project <compile_commands.json>` compiles each translation unit independently (each with its own fresh `Program` applying that TU's `-D`/`-I`/`-std`), links the resulting MIR modules in one `MIR_context`, and JIT-runs `main` — multi-TU compile+link+run without a hand-written umbrella translation unit. First manifest reader = `compile_commands.json` (vendored nlohmann/json at `include/json.hpp`). See `docs/superpowers/specs/2026-06-08-madc-project-build-driver-design.md`.
+
+### Added — C++11 opaque-enum declarations (`enum class E : T;`) (2026-06-06)
+
+`enum class E : T { ... }` (with body) parsed, but the forward/opaque declaration
+`enum class E : T;` (and unscoped `enum E : T;`) failed "Expecting identifier after
+type": the no-`{` branch assumed a *variable* declaration and pushed `int`, leaving
+`int ;`. Now a `;` after the (optional) underlying type is recognized as an
+opaque-enum-declaration — the tag is registered as a type and the statement
+finishes; a later full definition re-registers with its enumerators. Second
+real-header parser gap; unblocks `std::byte` (`enum class byte : unsigned char;`)
+in <vector>/<map>/<set>/<memory>. `tests/testopaqueenum.mad` covers scoped/unscoped
+opaque-then-full-def; fulltest 520/4/0/26, zero regressions.
+
+### Added — C++ brace-initialization of variables (`T x{...}`) (2026-06-06)
+
+madc parsed `T x = {...}` but not the brace-init form `T x{...}` (failed
+"unexpected token type 7"). Now a post-declarator `{` is handled in
+`parseDeclaration`, reusing the existing balanced brace-list parser: aggregates
+/arrays/structs/classes route through `= {...}`; scalars are unwrapped
+(`int x{7}` -> `= 7`, empty `int x{}` -> value-init `= 0`) to avoid a separate
+scalar `= {N}` defect. First parser gap from the real-header measurement
+(unblocks `in_place_t in_place{}` in <utility>/<memory>). `tests/testbraceinit.mad`
+covers scalar/empty/array/struct/namespace forms; fulltest 519/4/0/26, zero regr.
+
+### Added — predefined compiler macros from the configured compiler (2026-06-06)
+
+`scripts/gen_predefined_macros.sh` captures the build compiler's predefined macros
+(`<CXX> -dM -E -std=c++17`) at build time into `src/predefined_macros.cpp` (460:
+450 object-like + 10 function-like such as `__INT8_C(c)`), exposed via accessor
+functions (PLT-resolved — avoids PIE text relocations). `_tokenizer_init` seeds
+them into `define_map`/`macro_map` AFTER the hand-set builtins and BEFORE `-D`, so
+real-toolchain values win and `-D` can still override. Real system headers branch
+heavily on these (`__STDC_HOSTED__`, `__SIZEOF_*`, `__*_TYPE__`, feature macros).
+
+Mode-gated: `__cplusplus`/`__GNUG__` (C++-only) are seeded **only** in an explicit
+C++ std — never in C mode or the `STD_MADC` default — so the bulk of tests and C
+code's `#ifdef __cplusplus` are unaffected. Host/std-specific → gitignored,
+regenerated each build (`make clean` refreshes). Third preprocessor-environment
+piece for real-header parsing. `tests/testpredefmacros.mad` covers it; fulltest
+518/4/0/26, zero regressions.
+
+### Added — system include paths from the configured compiler (2026-06-06)
+
+The lexer's `#include <...>` system search list was hardcoded C-only
+(`/usr/local/include`, `/usr/include`, `/usr/include/x86_64-linux-gnu`) with a
+`// TODO: should come from ./configure`. Now `scripts/gen_sys_includes.sh` runs
+the build compiler's `<CXX> -x c++ -E -v` at build time and emits
+`src/sys_include_paths.cpp` with the real search list — including the **C++ paths**
+(`/usr/include/c++/NN`, …) the old list lacked. The lexer uses it (falling back to
+the hardcoded C list if detection is empty). Host-specific, so gitignored and
+regenerated each build (`make clean` refreshes).
+
+Effect: madc now finds the real C++ header closure without manual `-I`. A real,
+non-embedded system header parses end-to-end — e.g. `#include <cstddef>` emits the
+real `typedef … ptrdiff_t/size_t`. Second piece of the preprocessor environment
+for real-header parsing. fulltest 517/4/0/26, zero regressions.
+
+### Added — `-D` command-line macro defines (2026-06-06)
+
+madc now accepts `-DNAME`, `-DNAME=VALUE`, and `-D NAME` (repeatable, gcc-style: a
+bare name defines to `1`). Object-like; applied after the builtin defines so a
+`-D` can override one. First piece of the preprocessor *environment* needed to
+parse real system headers (which branch on predefined macros). New
+`tests/testdefineflag.mad` (+`.flags`/`.expect`) covers single/multiple/`=value`/
+bare forms; matches gcc. Note: `-D` one-at-a-time won't scale to the ~450
+predefined macros — a configure-captured predefined-macro builtin set is the
+follow-up (see `docs/plans/2026-06-06-real-header-pch-pipeline.md`).
+
+### Added — `--emit=c11` SIMD rendering (`cir_emit_c.cpp`) (2026-06-06)
+
+The transpile renderer now renders vector types and compound literals, so the
+emit-C-vs-g++ oracle holds for vectors:
+
+- `N_SPEC_DECL` now renders its attribute operand (op 2) — a SIMD typedef emits
+  `typedef int v4 __attribute__((vector_size(16)));` instead of `typedef int v4`.
+  (Also un-drops the `cleanup` attribute, previously silently lost.)
+- New `N_ATTR` case → `__attribute__((name(args)))` (renders the vector attr in a
+  cast/type-name spec list).
+- New `N_COMPOUND_LITERAL` case → `(T){ ... }` (was `/*<unhandled COMPOUND_LITERAL>*/`).
+
+10 of 11 SIMD tests are now emit-C-vs-gcc parity-OK; the 11th
+(`testgccwidevectorshift`) renders its 64-byte vector correctly but fails to link
+under plain gcc because `__builtin_sub_overflow` lowers to the madc runtime symbol
+`__madc_sub_overflow_u32` — a pre-existing, SIMD-unrelated emit-c portability gap
+(overflow builtins assume the madc runtime). Full suite unchanged at 515/4/1/26.
+
+### Added — madc SIMD frontend: lower `DataDefSIMD` to a c2mir vector type (2026-06-06)
+
+madc already parsed `__attribute__((vector_size(N)))` / `__vector_size__` into a
+`DataDefSIMD`, but `cir_builder` never lowered it — the vector-ness was dropped and
+c2mir saw a scalar (`typedef int v4hi`), so vector code failed its check pass. With
+the fork now providing ≤16B vectors, the bridge is built (Tier-1 lowering — reuse
+c2mir's own attribute→vector machinery rather than duplicating it):
+
+- `typedef_decl`: a `DataDefSIMD` typedef emits the **element** type's specs and a
+  `vector_size` `N_ATTR` on the `N_SPEC_DECL` attrs operand → c2mir's
+  `apply_vector_attrs` rewrites the typedef into a real vector type, so every use
+  inherits it (subscript, arithmetic, literals handled by c2mir natively).
+- `append_type_specs`: a `DataDefSIMD` emits element specs + a `vector_size`
+  `N_ATTR` **directly in the spec-qual list** → covers alias-less sites uniformly
+  (casts `(V)x`, abstract type-names, params), where c2mir scans the same list.
+
+**All 11 previously-skipped SIMD tests now pass** (un-skipped), including the
+one-lane `__int128` vector and the 32-byte/64-byte wide vectors (via c2mir's
+scalar-lane fallback). Full suite **515 passed / 4 failed / 1 timed out / 26
+skipped**, zero regressions vs the `504/4/1/37` post-pin-bump baseline.
+
+Follow-up (done, see the entry above): the `--emit=c11` renderer needed matching
+SIMD rendering for emit-C-vs-g++ parity.
+
+### Changed — consume MIR fork ≤16-byte SIMD; bump `MIR_COMMIT` → `2ffebff` (2026-06-06)
+
+The MIR fork's SIMD/vector work (`feature/simd-vector-support-codex`, 61 commits)
+was fast-forward-merged to the fork's `develop` and pushed. `develop` now carries
+≤16-byte (`v128` and smaller) `vector_size`/`ext_vector_type` support across
+c2mir + MIR (frontend, interpreter, x86-64 codegen, ABI), validated by the fork's
+own `make test` and the 37 GCC c-torture vector files.
+
+`MIR_COMMIT` is bumped `8864a73` → `2ffebff`. Rebuilding madc against it is a
+clean superset: full suite **504 passed / 4 failed / 1 timed out / 37 skipped**,
+zero regressions vs. the prior `486 / 4 / 1 / 55` baseline.
+
+**18 integration tests un-skipped** (deleted `.mir_skip` fixtures): they were
+skipped only because the older pinned MIR lacked the relevant c2mir features, all
+of which `2ffebff` now provides — `_Alignas`/`alignof`, compound literals
+(global-ptr, GNU designators, array), inline-asm decl/output/rw-operand + nested
+asm barriers, `__builtin_strcmp` macro-cycle, `__builtin_abs` (unsigned), global
+aliases (array + scalar), K&R fn-ptr varargs, `_Decimal64` zero, wide strings,
+`prefer`, and `argv` deref.
+
+Note: at this step the madc-side SIMD frontend was not yet wired, so the 11
+`testgccvector*/testsimd*` tests stayed skipped. That frontend bridge landed in
+the immediately-following change (above), un-skipping all 11.
+
+### Changed — retire-std-hardcoding cleanup merged to `develop` (2026-06-05)
+
+The intended std-class hardcoding retirement is now on `develop`.
+`scripts/check-no-std-hardcoding.sh` reports **0 offending lines**. Core madc
+should rely on standard/embedded C++ headers, generic object/overload/mangling
+machinery, and real libstdc++ declarations/operators for classes such as
+`std::string`, iostream/istream/ostream, sstream, containers, and user classes,
+instead of compiler/runtime per-class branches.
+
+Release prep now treats compiler warnings as blockers. A clean `make -C src`
+rebuild on `develop` emitted no compiler warnings, `make -C src test` passed,
+and the latest capped `make -C src fulltest` against the SIMD branch hit the
+known failing set. The aggregate harness reported
+**486 passed, 4 failed, 1 timed out, 55 skipped** with
+`testfortypedcomma` classified as `TIMEOUT`. The next validation goal is
+driving the remaining fulltest reds/timeouts to green; the largest
+longer-running parity bucket
+remains the documented SIMD/vector_size work in c2mir and the `/workspace/mir`
+fork.
+
+### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05/06)
+
+The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
+`2ffebff`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`6257780` added the first c2mir GNU `vector_size` slice with distinct
+memory-backed vector types, size/alignment, brace initialization, scalar
+subscript reads/writes, block copy/assignment, and memory-shaped
+parameter/return plumbing.
+
+Follow-up checkpoint `2194f8c` adds MIR `v128`, `vmov`, `vaddi32`/`vsubi32`,
+vector bitwise ops, signed `v4i32` comparisons, interpreter/x86-64 codegen,
+`mir-tests/test17.mir`, and C2MIR lowering for signed `v4i32`
+arithmetic/bitwise/unary/scalar splats/comparisons. `eceffd0` adds unsigned
+`v4u32` equality/inequality. `516db72` adds same-size `v128` vector-to-vector
+casts. `3a7bbbd` adds unsigned `v4u32` ordering comparisons by biasing operands
+and reusing the signed compare. `240f838` adds `v4i32`/`v4u32` vector shifts
+via lane-wise scalar MIR lowering for vector/scalar counts and compound shifts.
+`99c19a6` adds `v4i32`/`v4u32` vector multiply, divide, and modulo via
+lane-wise scalar MIR lowering, including compound assignment coverage.
+`52940dd` adds C2MIR builtin recognition and lane-wise lowering for
+`__builtin_convertvector` and `__builtin_shufflevector` on `v128` vectors with
+4- and 8-byte arithmetic lanes. `0305f1d` adds C2MIR builtin recognition and
+lane-wise lowering for GCC `__builtin_shuffle` on same-type `v128` sources
+with signed/unsigned runtime mask modulo handling. `2982f38` extends C2MIR
+lowering to `v128` integer vectors with 1-, 2-, 4-, and 8-byte lanes, covering
+signed/unsigned small-lane arithmetic, bitwise, unary, comparisons, shifts,
+compound assignment, same-type shuffles, `uint16x8_t`, and Clang-style
+`__builtin_vectorelements`. `c-tests/new/vector-size.c` covers the expanded
+and width-changing shuffle C2MIR paths. `40661db` adds C2MIR support for
+`__builtin_shufflevector` result widths determined by the index count, covering
+smaller and larger result vectors from `v128` sources. `62f8f31` adds
+`__builtin_shufflevector` support for non-`v128` source vector widths by
+materializing supported vector sources to memory and copying selected scalar
+lanes. `84377c2` adds generic non-`v128` GCC `__builtin_shuffle` support for
+same-type vectors by materializing supported vector widths to memory and
+copying lanes under runtime mask modulo rules. `665dbbb` adds C2MIR `v128`
+floating-lane arithmetic and comparisons through memory-backed scalar lane
+lowering, covering `v4sf` add/mul/unary/scalar splats/compound ops and `v2df`
+division/comparison masks. `1deb2be` extends that floating-lane lowering to
+non-`v128` float/double vectors, covering `v2sf`, `v8sf`, and `v4df`
+arithmetic/scalar splats/unary/comparison masks. `56e331b` adds x86-64 `v128`
+vector parameter/return ABI support across C2MIR prototypes, MIR generated
+calls/prologues/returns, interpreter FFI, and interpreter shims. `6de64b4`
+adds x86-64 `v64` vector parameter/return ABI support by classifying top-level
+8-byte vectors as one SysV SSE eightbyte through the existing `blk2:8` /
+`MIR_T_D` path, with `v2si`, `v2sf`, and `v4hi` coverage. `8a16ed6` adds
+x86-64 `v32` integer-vector parameter/return ABI support by classifying
+top-level 4-byte integer-element vectors as one SysV integer eightbyte through
+the existing `blk1:4` path; coverage includes `v1si`, `v2hi`, `v4qi`, and the
+GCC-memory-ABI `v1sf` control. `fe49fde` adds MIR packed `v128` f32 arithmetic
+opcodes (`vaddf32`, `vsubf32`, `vmulf32`, `vdivf32`) with interpreter support
+and x86-64 SSE `addps` / `subps` / `mulps` / `divps` codegen. C2MIR now selects
+those opcodes for `vector_size(16)` float arithmetic while keeping the existing
+scalar-lane fallback for other floating vector widths and double lanes.
+`ffa02b6` adds MIR packed `v128` f32 comparison opcodes (`veqf32`, `vnef32`,
+`vltf32`, `vlef32`) with interpreter support and x86-64 SSE `cmpps` codegen.
+C2MIR selects those opcodes for `vector_size(16)` float comparisons and lowers
+`>` / `>=` by swapping operands into ordered `<` / `<=`, preserving C comparison
+semantics. `52a75bb` adds MIR packed `v128` f64 arithmetic opcodes
+(`vaddf64`, `vsubf64`, `vmulf64`, `vdivf64`) and comparison opcodes
+(`veqf64`, `vnef64`, `vltf64`, `vlef64`) with interpreter support and x86-64
+SSE2 `addpd` / `subpd` / `mulpd` / `divpd` / `cmppd` codegen. C2MIR selects
+those opcodes for `vector_size(16)` double arithmetic/comparisons while keeping
+the scalar-lane fallback for non-`v128` double vectors. `798f18d` adds MIR
+packed `v128` i8/i16 add/sub opcodes (`vaddi8`, `vaddi16`, `vsubi8`,
+`vsubi16`) with interpreter support and x86-64 SSE2 `paddb` / `paddw` /
+`psubb` / `psubw` codegen. C2MIR selects those opcodes for `vector_size(16)`
+byte/word add/sub while keeping the scalar-lane fallback for 8-byte integer
+lanes. `3f287d0` adds MIR packed `v128` i8/i16 comparison opcodes (`veqi8`,
+`veqi16`, `vgti8`, `vgti16`) with interpreter support and x86-64 SSE2
+`pcmpeqb` / `pcmpeqw` / `pcmpgtb` / `pcmpgtw` codegen. C2MIR selects those
+opcodes for `vector_size(16)` byte/word equality and ordering comparisons,
+including unsigned ordering through lane sign-bit biasing, while keeping the
+scalar-lane fallback for 8-byte integer lanes.
+`730b50d` adds MIR packed `v128` i16 multiply opcode (`vmuli16`) with
+interpreter support and x86-64 SSE2 `pmullw` codegen. C2MIR selects it for
+`vector_size(16)` signed/unsigned short multiplication and compound
+multiplication while preserving scalar-lane fallback for byte, dword, and qword
+integer multiply/div/mod.
+`9fb836d` adds MIR packed `v128` i16 scalar-count shift opcodes (`vlshi16`,
+`vrshi16`, `vurshi16`) with interpreter support and x86-64 SSE2 `psllw` /
+`psraw` / `psrlw` codegen. C2MIR selects them for `vector_size(16)`
+signed/unsigned short scalar-count shifts and compound shifts while preserving
+scalar-lane fallback for vector-count shifts and other lane widths.
+`2ec7b5d` adds MIR packed `v128` i32 scalar-count shift opcodes (`vlshi32`,
+`vrshi32`, `vurshi32`) with interpreter support and x86-64 SSE2 `pslld` /
+`psrad` / `psrld` codegen. C2MIR selects them for `vector_size(16)`
+signed/unsigned int scalar-count shifts and compound shifts through the
+generalized 16-/32-bit integer-lane shift path while preserving scalar-lane
+fallback for vector-count shifts and unsupported lane widths.
+`4dcf378` adds C2MIR support for scalar-condition vector conditional
+expressions with matching vector true/false arms. Vector conditional results
+now lower through the memory-shaped aggregate path, covering assignment and
+vector-conditional rvalue indexing. GCC and clang C reject vector-condition
+ternary/logical forms; GCC also rejects scalar/vector mixed ternary arms, so
+this checkpoint follows the GCC-compatible matching-vector-arm subset.
+`b84da0d` generalizes C2MIR `__builtin_convertvector` beyond the earlier
+`v128`-only gate. Same-element-count conversions across supported arithmetic
+vector lane widths now lower through generic memory-backed vector lanes,
+covering `v64` conversions and `v128`-to-`v256` same-element-count widening.
+`3146f66` widens C2MIR integer vector operation lowering beyond the `v128`
+gate. Arithmetic, bitwise, shifts, unary operations, and comparisons for
+supported non-`v128` integer vector widths now lower through scalar lanes, with
+`v32`, `v64`, and `v256` coverage in `c-tests/new/vector-size.c`.
+`09b79af` generalizes same-size C2MIR vector reinterpret casts beyond the
+earlier `v128`-only gate. Non-`v128` vector casts now lower through
+memory-backed block copies while `v128` keeps the register move path, with
+`v64` and `v256` bitcast coverage in `c-tests/new/vector-size.c`.
+`9f6132e` adds C2MIR same-size integer scalar/vector reinterpret bitcasts.
+Integer-to-vector casts write the integer representation into vector storage,
+vector-to-integer casts load from materialized vector storage, and same-size
+float/pointer scalar casts remain rejected to match GCC/clang. The checker also
+keeps pointer-sized vector casts out of the constant-address path, avoiding
+bogus scalar-constant lowering for 8-byte vectors. `c-tests/new/vector-size.c`
+now covers `v32` and `v64` scalar integer/vector bitcasts in both directions.
+`3b25f0a` extends C2MIR `__builtin_shufflevector` to same-element-type sources
+with different vector widths. Validation now checks source indexes against the
+combined lane count, and codegen copies lanes from materialized sources using
+independent source element counts. This is GCC extension coverage: GCC accepts
+the mixed-source-width form, while Clang rejects it.
+`9de5b22` adds MIR packed `v128` i32 multiply opcode (`vmuli32`) with
+interpreter support and x86-64 SSE4.1 `pmulld` codegen. C2MIR now selects it
+for `vector_size(16)` signed/unsigned int multiplication and compound
+multiplication while preserving scalar-lane fallback for other integer lane
+widths and div/mod.
+`3bdf0e4` adds MIR packed `v128` i64 add/sub opcodes (`vaddi64`, `vsubi64`)
+with interpreter support and x86-64 SSE2 `paddq` / `psubq` codegen. C2MIR now
+selects them for `vector_size(16)` signed/unsigned long-long add/sub and
+compound add/sub while preserving scalar-lane fallback for other unsupported
+64-bit integer operations.
+`c96ac07` adds MIR packed `v128` i64 scalar-count shift opcodes (`vlshi64`,
+`vurshi64`) with interpreter support and x86-64 SSE2 `psllq` / `psrlq`
+codegen. C2MIR selects them for `vector_size(16)` signed/unsigned long-long
+left shifts and unsigned long-long right shifts while signed long-long right
+shifts remain on the scalar-lane fallback because SSE2 has no arithmetic qword
+right-shift instruction.
+`3f33ff6` fixes the C2MIR scalar-lane fallback for qword vector comparisons:
+8-byte comparison lanes now form all-ones masks in 64-bit temporaries with
+64-bit subtract-from-zero, so `v2i64` / `v2u64` equality, inequality, and
+ordering comparisons produce full-lane masks in generated mode.
+`92accb7` adds MIR packed `v128` i64 equality opcode (`veqi64`) with
+interpreter support and x86-64 SSE4.1 `pcmpeqq` codegen. C2MIR now selects it
+for `vector_size(16)` signed/unsigned long-long equality and inequality, while
+qword ordering comparisons stay on the scalar-lane fallback.
+`7c169e7` adds MIR packed `v128` i64 ordering opcode (`vgti64`) with
+interpreter support and x86-64 SSE4.2 `pcmpgtq` codegen. C2MIR now selects it
+for `vector_size(16)` signed/unsigned long-long ordering comparisons,
+including unsigned ordering through lane sign-bit XOR biasing.
+`dad14bc` synthesizes packed signed `v128` i64 scalar-count right shifts in
+C2MIR with the existing `vurshi64`, `vxor`, and `vsubi64` floor. The permanent
+`vector-size.c` fixture now covers the count-zero edge for `v2i64 >> 0`.
+`2ed2c4a` extends x86-64 ABI classification for top-level v8/v16 integer
+vectors, passing `vector_size(1)` / `vector_size(2)` integer vectors through
+the existing integer-register `blk1` path instead of `blk0` / `rblk` memory
+ABI. The permanent `vector-size.c` fixture now covers `v1qi`, `v2qi` /
+`v2uqi`, and `v1hi` parameter/return cases.
+`e4e096b` synthesizes packed `v128` i8 scalar-count shifts in C2MIR with the
+existing word-shift, mask, XOR, and byte-subtract vector floor. The permanent
+`vector-size.c` fixture now covers signed and unsigned `v16qi` / `v16uqi`
+left/right scalar-count shifts plus compound signed right shift.
+`29775cd` synthesizes packed `v128` i8 multiplication in C2MIR with the
+existing word multiply, byte mask, word shift, and OR vector floor. The
+permanent `vector-size.c` fixture now covers signed and unsigned `v16qi` /
+`v16uqi` multiply and compound multiply.
+`0bf8e7c` adds GCC vector prefix/postfix inc/dec support for integer and
+floating vector types in C2MIR. Prefix/postfix lowering reuses the existing
+integer/float vector arithmetic paths with a splatted one, and postfix old
+values are preserved when vector block-move assignments provide the result
+destination. The permanent `vector-size.c` fixture now covers `v4si`,
+`v16uqi`, `v4sf`, `v8si`, and `v8sf` inc/dec cases.
+`3a63473` adds C2MIR recognition for Clang `ext_vector_type` and
+`__ext_vector_type__` attributes for power-of-two element counts. The lowering
+converts the attribute's element count to a byte vector size, preserves
+qualifiers, and reuses the existing vector type and operation paths. The
+permanent `vector-size.c` fixture now covers `clang_i4`, `clang_uh8`, and
+`clang_f4` extended-vector types.
+`5966c1d` splits C2MIR vector storage size from logical element count, allowing
+Clang non-power-of-two extended vectors such as `ext_vector_type(3)` to keep
+their logical lane count while matching Clang's rounded storage/alignment. The
+same logical lane count is used by `__builtin_vectorelements`,
+`__builtin_convertvector`, and `__builtin_shufflevector` result construction.
+The permanent `vector-size.c` fixture now covers `clang_i3` and `clang_uc3`
+size/alignment, logical element count, and lane arithmetic.
+`3d9b8af` adds GCC/clang parity for mixed-signedness vector shift-count
+operands. C2MIR now accepts vector shift counts whose storage size, logical
+lane count, and lane width match the shifted vector even when signedness
+differs, while preserving the lane-wise scalar lowering required for
+non-uniform vector counts. The permanent `vector-size.c` fixture now covers
+`v4si` by `v4ui`, `v4ui` by `v4si`, `v8hi` by `uint16x8_t`, and compound
+mixed-signedness vector-count left shift cases.
+`fc493fd` preserves GNU declaration-spec attributes and applies
+`vector_size` / `ext_vector_type` after base type resolution. C2MIR now accepts
+GCC/clang spellings such as `typedef signed char
+__attribute__((__vector_size__(16))) V;` instead of dropping the attribute
+before the typedef declarator. The permanent `vector-size.c` fixture now covers
+that typedef spelling with signed-byte scalar compound modulo in the
+pr94524-style shape.
+`07dd396` parses attribute arguments as constant expressions and evaluates
+`vector_size` / `ext_vector_type` arguments through the existing
+constant-expression checker. This accepts GCC/clang spellings such as
+`__attribute__((__vector_size__(2 * sizeof (long long)), __may_alias__))`.
+The permanent `vector-size.c` fixture now covers that spelling plus
+pr92618-style casted vector-pointer stores that write all 16 bytes.
+`fbb47f3` lowers C2MIR `__builtin_abort` to a void zero-argument call to libc
+`abort`, matching GCC/clang lowering and avoiding the previous unresolved
+`__builtin_abort` import. `c-tests/new/builtin-abort.c` covers the generic
+builtin, and exact GCC torture cases `c-tests/gcc/pr92618.c`,
+`pr94524-1.c`, and `pr94524-2.c` now pass under C2MIR `-ei` and `-eg`.
+`48cd7be` accepts GNU empty asm statement barriers. C2MIR now parses
+`asm` / `__asm` / `__asm__` statement syntax with qualifiers, operands, and
+clobbers, rejects non-empty templates/output/goto asm, evaluates input
+operands, and emits no MIR instruction for empty templates. The exact GCC
+torture cases `c-tests/gcc/pr53645.c` and `pr53645-2.c`, plus focused
+`c-tests/new/empty-asm.c`, now pass under C2MIR `-ei` and `-eg`.
+`ff01f80` extends C2MIR `force_val` handling for narrow address-taken
+register-backed scalar lvalues. `char` and `short` rvalues are now sign- or
+zero-extended after byte/word pointer writes, fixing exact GCC `pr109040.c`.
+Coverage adds `c-tests/gcc/pr109040.c` and focused
+`c-tests/new/narrow-reg-address.c`.
+`fbe5efb` lowers C2MIR `__builtin_memcmp` to an imported libc `memcmp` call
+returning `int`, validates pointer/pointer/integer argument types, and avoids
+the previous unresolved `__builtin_memcmp` symbol. Coverage adds focused
+`c-tests/new/builtin-memcmp.c` plus exact GCC SIMD cases `c-tests/gcc/simd-5.c`,
+`pr65427.c`, and `pr60960.c`.
+`033732f` preserves leading GNU attributes in declaration specifiers and
+type-name specifier/qualifier lists instead of discarding them before the base
+type is known. This accepts macro-expanded forms such as
+`__attribute__((vector_size(N * sizeof(T)))) T` in ordinary declarations and
+compound literal type names. Coverage adds exact GCC SIMD cases
+`c-tests/gcc/scal-to-vec1.c`, `scal-to-vec2.c`, and `scal-to-vec3.c`.
+`95e52f9` preserves union aliases through array subscripts by keeping array
+storage operands in lvalue/storage context when possible and carrying an
+existing union alias onto the indexed memory load/store. This prevents MIR O2
+DSE from deleting union-width stores that are later read through array members,
+fixing the exact GCC SIMD case `c-tests/gcc/20050316-2.c` under C2MIR `-ei`
+and `-eg`.
+`626f75e` adds C2MIR `__int128` / `unsigned __int128` spelling and narrow
+memory-shaped scalar handling, then lowers one-lane unsigned `__int128` vector
+equality/inequality by comparing and storing the low/high 64-bit halves. This
+closes exact GCC `pr105613.c` under C2MIR `-ei` and `-eg`, with new coverage in
+`c-tests/gcc/pr105613.c`.
+`59117d8` recognizes C2MIR `__builtin_copysignf` and `__builtin_nan` as checked
+builtins and lowers them to imported libm `copysignf` / `nan` calls. This clears
+the remaining IEEE vector-search blockers discovered in GCC torture triage:
+exact GCC `c-tests/gcc/pr72824-2.c` and `c-tests/gcc/fp-cmp-cond-1.c` now pass
+C2MIR `-ei` and `-eg`. Coverage also adds focused
+`c-tests/new/builtin-fp.c`.
+`c69f4da` adds the remaining 21 exact GCC c-torture vector fixtures found by
+the vector-construct scan:
+`20050316-{1,3}.c`, `20050604-1.c`, `20050607-1.c`, `20060420-1.c`,
+`pr108292.c`, `pr110817-{1,2,3}.c`, `pr123753.c`, `pr23135.c`,
+`pr70903.c`, `pr71626-1.c`, `pr85169.c`, `pr85331.c`, `pr94412.c`,
+`pr94591.c`, and `simd-{1,2,4,6}.c`. All 37 GCC execute tests found by
+searching for vector constructs are now checked in under `c-tests/gcc` and pass
+C2MIR `-ei` and `-eg`.
+`55c65ee` adds text and binary MIR I/O round-trip support for `MIR_T_V128`
+data items by representing each vector element as 16 byte values. Coverage now
+exercises textual scan/output in `mir-tests/scan-test.c` and binary
+write/read in `mir-tests/io.c`.
+`e4a8945` adds MIR `v128` lane-count shift opcodes for i8/i16/i32/i64 lanes:
+`vlshvi*`, `vrshvi*`, and `vurshvi*`. C2MIR selects these opcodes for
+matching vector-count operands, the interpreter executes them directly, and
+x86-64 generated mode lowers them through scalar lane loads/shifts/stores so
+the path does not require AVX2. Coverage adds direct MIR scan/execute checks in
+`c-tests/mir/vector-shift-count.mir` and C frontend checks in
+`c-tests/new/vector-shift-count.c`.
+`360fdb5` adds C2MIR one-lane `__int128` and `unsigned __int128` vector
+lowering for add/sub/mul, bitwise ops, unary ops, equality/ordering
+comparisons, scalar-count and vector-count shifts, compound assignment, and
+GCC vector inc/dec by operating on low/high 64-bit halves. Coverage extends
+`c-tests/new/vector-size.c`.
+`2ffebff` adds C2MIR one-lane signed and unsigned `__int128` vector division
+and modulo through `__divti3`, `__udivti3`, `__modti3`, and `__umodti3`
+helper-call imports. C2MIR and the MIR binary runners now resolve those helpers
+for saved MIR/BMIR execution, and `c-tests/new/vector-size.c` covers exact
+small results plus high-half identity checks.
+
+This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
+are now beyond the 16-byte-and-smaller slice: AVX/YMM register ABI for
+32-byte-and-larger external vector boundaries, broader MIR vector
+opcodes/registers/interpreter/codegen, and further optional per-target packed
+lowering.
+Vector-condition ternary/logical semantics remain outside current C2MIR C
+coverage because GCC and clang C reject those forms.
+madc's `MIR_COMMIT` remains pinned to fork `develop` at `8864a73` until the MIR
+branch is ready to merge and consume from madc.
+
+Validation in `/workspace/mir`: `timeout 900 make test` passed at `2ffebff`
+with interpreter/O0 `Tests 1121, Success tests 2242`, generated-mode
+`Tests 1125, Success tests 2250`, plus bootstrap checks. Focused
+`make scan-test` and `make io-test` passed for the new `v128` data I/O
+coverage; the 21 newly checked-in exact GCC vector torture copies passed GCC
+native and C2MIR `-ei` / `-eg` at `c69f4da`. Clang native passed
+where it accepts the GCC forms; it rejects four GCC-only vector-element address,
+vector increment/decrement, or `__builtin_shuffle` forms. Exact
+`pr72824-2.c`, `fp-cmp-cond-1.c`, `pr105613.c`, and focused builtin-fp /
+one-lane unsigned `__int128` vector reducers passed GCC/clang native and
+assembly validation plus C2MIR `-ei` / `-eg`. Exact `20050316-2.c` and focused
+union-array alias reducers passed C2MIR `-ei` / `-eg`, and adjusted array
+parameter plus multidimensional array parameter probes stayed green. Focused
+one-lane `__int128` vector div/mod reducers passed GCC/clang native and
+assembly validation, C2MIR `-ei` / `-eg`, saved MIR `-ei` / `-eg`, and saved
+BMIR interp/gen validation. Focused
+prefix vector-attribute cases passed GCC/clang assembly/native validation plus
+C2MIR `-ei` / `-eg`; exact `scal-to-vec1.c`, `scal-to-vec2.c`, and
+`scal-to-vec3.c` passed C2MIR `-ei` and `-eg`. Focused `__builtin_memcmp`
+reducers passed GCC/clang
+native and assembly validation plus C2MIR `-ei` / `-eg`; exact `simd-5.c`,
+`pr65427.c`, and `pr60960.c` passed GCC/clang native validation plus C2MIR
+`-ei` / `-eg`; generated MIR showed `import memcmp`, `memcmp_p`, and
+`call memcmp_p` calls. Focused empty-asm barrier reducers passed GCC/clang
+native validation and C2MIR `-ei` / `-eg`, and generated MIR for the focused
+fixture contains the input-operand call with no asm marker. Exact GCC
+`pr109040.c` and focused narrow-register reducers passed GCC/clang
+assembly/native validation plus C2MIR `-ei` / `-eg`. Focused
+`interp-test17` and `gen-test17` passed;
+generated MIR showed `vmuli32` selection for the full vector fixture; focused
+v4i32 multiply reducers passed GCC/clang assembly/native validation and C2MIR
+interp/gen validation; GCC/clang `-msse4.1` assembly showed `pmulld`. Focused
+v2i64 add/sub reducers passed GCC/clang assembly/native validation and C2MIR
+interp/gen validation; GCC/clang assembly showed `paddq` / `psubq`; generated
+MIR showed `vaddi64` / `vsubi64` in both the focused reducer and
+`c-tests/new/vector-size.c`. Focused v2i64 scalar-shift reducers passed
+GCC/clang assembly/native validation and C2MIR interp/gen validation;
+GCC/clang assembly showed `psllq` / `psrlq`, generated MIR showed `vlshi64` /
+`vurshi64` for left and unsigned-right shifts. Focused signed v2i64
+scalar-right-shift reducers passed GCC/clang `-msse4.2` assembly/native
+validation and C2MIR interp/gen validation; GCC used a `pcmpgtq` / `psrlq` /
+`psllq` / `por` sign-fill sequence, clang used `psrlq` / `pxor` / `psubq`, and
+generated MIR showed the C2MIR `vurshi64` / `vxor` / `vsubi64` synthesis
+including `v2i64 >> 0`.
+Focused v8/v16 integer-vector ABI reducers passed GCC/clang assembly/native
+validation, C2MIR interp/gen validation against GCC-built and clang-built
+shared libraries, and generated MIR now uses `blk1:1` / `blk1:2` arguments and
+integer return registers instead of `blk0` / `rblk` memory ABI.
+Focused v16qi/v16uqi scalar-shift reducers passed GCC/clang assembly/native
+validation and C2MIR interp/gen validation; generated MIR showed `vlshi16`,
+`vurshi16`, and `vsubi8` selection for byte-shift synthesis.
+Focused v16qi/v16uqi multiply reducers passed GCC/clang assembly/native
+validation and C2MIR interp/gen validation; generated MIR showed `vand`,
+`vurshi16`, `vmuli16`, `vlshi16`, and `vor` selection for byte-multiply
+synthesis.
+Focused vector inc/dec reducers passed GCC native validation and C2MIR
+interp/gen validation for integer and float vectors. Clang rejects vector
+inc/dec forms, so this checkpoint is recorded as GCC extension coverage.
+Focused Clang `ext_vector_type` reducers passed Clang native/assembly
+validation and C2MIR interp/gen validation; GCC ignores this Clang-only
+attribute as expected. C2MIR interp/gen validation also passed for the full
+`vector-size.c` fixture after adding the extended-vector cases. Focused Clang
+odd-lane reducers for `ext_vector_type(3)` passed native/assembly validation
+and C2MIR interp/gen validation; an odd-lane
+`__builtin_shufflevector` / `__builtin_convertvector` reducer also passed
+Clang native/assembly and C2MIR interp/gen validation. The full MIR
+`timeout 900 make test` passed after the logical-lane change.
+Focused mixed-signedness vector shift-count reducers passed GCC/clang
+native/assembly validation and C2MIR interp/gen validation. Generated MIR for
+the reducer showed lane-wise scalar `lshs` / `urshs` operations for the
+non-uniform vector-count cases, not the low-64-bit scalar-count packed shift
+opcodes. The full `vector-size.c` fixture passed GCC native validation and
+C2MIR interp/gen validation with the mixed-signedness vector-count cases.
+Focused declaration-spec vector-attribute reducers passed GCC/clang
+native/assembly validation and C2MIR interp/gen validation. The exact GCC
+`pr94524-1.c` and `pr94524-2.c` torture sources now pass exact runtime
+validation after C2MIR lowers `__builtin_abort` to libc `abort`. The full
+`vector-size.c` fixture passed GCC native validation and C2MIR interp/gen
+validation with the declaration-spec vector-attribute case. The full MIR
+`timeout 900 make test` passed after the memcmp checkpoint with `Tests 1090,
+Success tests 2180` plus bootstrap checks.
+Focused expression-valued `vector_size` reducers passed GCC/clang
+native/assembly validation and C2MIR interp/gen validation. The exact GCC
+`pr92618.c` torture source now passes exact runtime validation after
+`__builtin_abort` lowering. GCC and clang assembly showed full 128-bit vector
+stores for the casted vector-pointer store shape, and the full `vector-size.c`
+fixture passed GCC native validation and C2MIR interp/gen validation with the
+constant-expression attribute case. The full MIR `timeout 900 make test`
+passed after the memcmp checkpoint with `Tests 1090, Success tests 2180` plus
+bootstrap checks.
+Focused v2i64/v2u64 comparison reducers passed GCC/clang assembly/native
+validation and C2MIR interp/gen validation; generated MIR now uses 64-bit
+`sub` mask formation for qword comparison lanes instead of 32-bit `subs`.
+Focused v2i64/v2u64 equality reducers passed GCC/clang `-msse4.1`
+assembly/native validation and C2MIR interp/gen validation; GCC/clang assembly
+showed `pcmpeqq`, generated MIR showed `veqi64` for equality plus `vxor` for
+inequality. Focused v2i64/v2u64 ordering reducers passed GCC/clang `-msse4.2`
+assembly/native validation and C2MIR interp/gen validation; GCC/clang assembly
+showed `pcmpgtq`, generated MIR showed `vgti64` for signed ordering and `vxor`
+bias plus `vgti64` for unsigned ordering.
+Focused c2m
+interp/gen reducers passed, GCC/clang packed-f32 arithmetic and comparison
+assembly reducers matched the packed-single shape, GCC/clang packed-f64
+reducers matched the packed-double shape, GCC/clang packed-small-integer
+add/sub reducers matched the packed byte/word shape, GCC/clang
+packed-small-integer comparison reducers matched the packed byte/word compare
+shape, GCC/clang packed-small-integer multiply reducers matched the packed word
+multiply shape, GCC/clang packed-small-integer scalar-shift reducers matched the
+packed word/dword shift shapes, GCC/clang scalar-condition vector ternary
+reducers plus C2MIR interp/gen reducers passed, focused ABI reducers and
+mixed-compiler ABI controls established the v32/v256 compiler-divergence
+boundaries, GCC/clang same-element-count convertvector reducers and C2MIR
+interp/gen reducers passed, focused GCC/clang non-`v128` integer-vector
+reducers and C2MIR interp/gen reducers passed, focused GCC/clang non-`v128`
+vector-cast reducers and C2MIR interp/gen reducers passed, focused GCC/clang
+scalar integer/vector bitcast reducers and C2MIR interp/gen reducers passed,
+negative same-size float/pointer scalar-vector controls rejected, focused GCC
+mixed-source-width shufflevector reducers and C2MIR interp/gen reducers passed,
+the Clang rejection control for that mixed-source form still rejects, MIR dumps
+showed scalar lane conversion, integer-operation lowering, non-`v128` cast
+block copies, and direct integer scalar/vector reinterpret stores and loads,
+focused lane-count shift validation passed native GCC, C2MIR `-ei`, C2MIR
+`-eg`, direct MIR `-ei`, direct MIR `-eg`, `make scan-test`, and
+`make io-test`, generated MIR from the C fixture showed all twelve `vlshvi*` /
+`vrshvi*` / `vurshvi*` opcodes, and `git diff --check` is clean.
+Downstream `/workspace/madc`
+fulltest hit the known failing set; the aggregate harness reported
+**486 passed, 4 failed, 1 timed out, 55 skipped** with `testfortypedcomma`
+classified as `TIMEOUT` in this aggregate run.
+
+### Fixed — generic real-header parser/PCH checkpoint (2026-06-05)
+
+Real-header parsing now handles class-scope aliases/static member types,
+nested/template aliases, explicit specialization constructor/destructor source
+names, class-qualified expressions, method-result receiver chains,
+base-qualified calls on `this`, arity-aware unqualified member lookup, and
+ordinary variable/function shadowing of contextual type names. C K&R recovery
+now requires a real old-style declaration suffix, so unresolved C++ unnamed
+parameter types do not get misread as K&R parameter names.
+
+PCH deserialization reconstructs keywords and builtin datatype tokens, and the
+compiler hash rejects stale generated `.madh` blobs so text embedded headers are
+used until real system-header PCH can preserve include-guard/macro state.
+
+Validation: `make -C src`, `make -C src test`, focused parser regressions,
+`scripts/check-no-std-hardcoding.sh`, the inline-asm scan, and fulltest
+**486 passed, 4 failed, 1 timed out, 55 skipped**. Remaining real-`iostream`
+work must be solved through generic class/member alias resolution from the real
+headers and real libstdc++ declarations/operators, not through `stdio.h` /
+`FILE*` stream bridges or per-`std` compiler shims.
+
+### Fixed — `std::cin >>` works on the CIR path (2026-06-04)
+
+Embedded `<iostream>` now declares `std::istream` and `extern std::cin`, and
+namespace-scope C++ variables can mangle to their real Itanium symbols such as
+`_ZSt3cin`. Numeric extraction binds to the real libstdc++
+`basic_istream::operator>>` member, while string extraction uses a small runtime
+bridge that calls the real C++ iostream extraction on `std::istream` /
+`std::string`. External class operators returning references now dereference the
+returned address before participating in chained expressions, so
+`cin >> a >> b` keeps the stream lvalue shape. `testcin.mad` passes and fulltest
+is now **486 passed, 4 failed, 1 timed out, 55 skipped**.
+
+### Changed — PHP string helpers prefer real C++ namespace linkage (2026-06-04)
+
+Declaration-only namespace functions now keep C++ linkage by default and mangle
+to their real namespace symbols, while `extern "C"` declarations stay on the C
+ABI path. The PHP string helpers now make `php::trim(...)`,
+`php::number_format(...)`, and the related string functions the foundational
+C++ definitions; the `__php_*` symbols are convenience wrappers that call those
+namespace functions. `test_mangle` now covers GCC-backed nested namespace
+symbols, and `testphp.mad` plus `--emit=c11 testphp.mad` validate that emitted C
+imports `_ZN3php...` symbols for string helpers. PHP array helpers remain on the
+generated wrapper path pending the `MadArray` / `MadValue` C++ API naming slice.
+
+### Changed — auto-includes are madc-mode only (2026-06-04)
+
+`Program::set_language_standard_option()` now centralizes `--std=` parsing for
+the CLI and madc shebangs, including C++ modes. Embedded standard-header
+auto-includes are gated to `STD_MADC`, so `--std=c` and `--std=c++` require
+explicit includes like a standard compiler. Added `teststdcppinclude.mad` and
+unit coverage for the standard-mode boundary.
+
+### Fixed — external bool returns use `_Bool` in CIR prototypes (2026-06-04)
+
+CIR external prototypes now emit `N_BOOL` for `dtBOOL` scalar and return specs
+instead of reading bool-returning external symbols as `long`/`int`. This fixes
+generic bool-returning functions and methods without class-specific handling;
+`teststringmethods.mad` again reads `empty()` correctly, and `test_cir` covers
+an `extern "C"` bool-returning host symbol.
+
+### Fixed — range-for locals in included/header function bodies (2026-06-04)
+
+`translate_block` now skips parameters by explicit `vfPARAM` flags instead of
+skipping the first `N` variables by function parameter count. That positional
+assumption dropped compiler-generated range-for element locals in functions with
+parameters, leaving header/helper function bodies to emit uses of an undeclared
+loop variable. `tests/testforeachheaderbody.mad` covers a range-for over `array`
+inside an included helper body.
+
+### Added — `extern "C"` / `extern "C++"` linkage specs parse (2026-06-04)
+
+The parser now accepts C++ linkage specifications for single declarations and
+declaration blocks while preserving existing `extern` declaration semantics.
+This is a prerequisite for moving embedded polyglot namespace headers toward
+ordinary C++ namespace wrappers over explicit C ABI symbols. The same slice also
+keeps reference-returning class functions out of the non-trivial object retbuf
+call path, avoiding a bogus hidden return-slot argument. `testexternclinkage.mad`
+covers both paths.
+
+### Fixed — typedef-preserved function signatures in CIR (2026-06-04)
+
+Function signatures now retain source typedef aliases on `FuncDef` for returns
+and parameters, so CIR prototypes and definitions can render declaration-only
+extern functions with header spelling instead of falling back through raw
+`DataDef` type specs. This fixes `extern "C"` string-pointer declarations such
+as `string *__php_trim(string *)` without adding class-specific handling, and
+keeps ordinary namespace wrappers compatible with the C ABI boundary.
+`testexterncstringptr.mad` covers the path.
+
+### Changed — embedded `<ns_php>` uses ordinary namespace wrappers (2026-06-04)
+
+Embedded `<ns_php>` now declares the `__php_*` runtime symbols as explicit
+`extern "C"` ABI functions and implements `php::` calls as normal namespace
+function bodies over that boundary. Emitted C now contains generated
+`__ns_php_*` namespace wrappers instead of direct `asm("__php_*")` aliases for
+the C++ surface. `testphp.mad` and its `--emit=c11` path cover the split.
+
+### Changed — embedded `<ns_perl>` uses ordinary namespace wrappers (2026-06-04)
+
+Embedded `<ns_perl>` now follows the same model as the public C++ header:
+`__perl_*` functions are explicit `extern "C"` ABI declarations, and `perl::`
+functions are ordinary namespace wrapper bodies. `testperl.mad`,
+`testregex.mad`, `testprefer.mad`, and `--emit=c11 testperl.mad` cover the
+split.
+
+### Changed — embedded Python/Ruby/JS namespaces use ordinary wrappers (2026-06-04)
+
+Embedded `<ns_python>`, `<ns_ruby>`, and `<ns_js>` now declare their runtime
+symbols as explicit `extern "C"` ABI functions and define normal namespace
+wrapper bodies over that boundary. `testlang.mad`, `testrubycharsshadow.mad`,
+and `--emit=c11 testlang.mad` cover the generated `__ns_python_*`,
+`__ns_ruby_*`, and `__ns_js_*` surfaces.
+
+### Changed — embedded `<ns_rust>` uses ordinary namespace wrappers (2026-06-04)
+
+Embedded `<ns_rust>` now declares `__rust_*` runtime symbols as explicit
+`extern "C"` ABI functions and defines ordinary `rust::` wrapper bodies over
+that boundary. `rust::match` remains parser syntax and is unaffected.
+`testrust.mad`, `testrustmatch.mad`, `testprefer.mad`, and
+`--emit=c11 testrust.mad` cover the split.
+
+### Changed — embedded `<algorithm>` helpers use explicit ABI wrappers (2026-06-04)
+
+Embedded `<algorithm>` no longer maps its array helpers with direct `asm`
+aliases. It now declares `madarray_size` and `__php_array_get_cstr` as explicit
+`extern "C"` ABI functions, then uses ordinary helper bodies inside the header.
+`testforeach.mad`, `testforeach2.mad`, `testforeachheaderbody.mad`, and
+`--emit=c11 testforeach2.mad` cover the path.
+
+### Changed — C++ library objects now stay on the generic object path (2026-06-04)
+
+The retire-std-hardcoding branch now reaches the finish-line gate:
+`scripts/check-no-std-hardcoding.sh` reports **0 offending lines**. The cleanup
+removes the compiler/runtime's per-type std hooks and keeps `std::string`,
+streams, containers, and user classes on the same parsed-header object model:
+generic overload resolution, mangling, ctor/dtor handling, and retbuf return
+paths.
+
+As a drift cleanup, embedded `<algorithm>` now implements `std::for_each(array,
+void (*)(string))` as an ordinary header function body over the existing array
+helpers and a normal local `string`. The old runtime shim in `ns_php.cpp` copied
+a fake libstdc++ `basic_string` layout before invoking a callback; that
+class-layout copy is gone. `testforeach`, `testforeach2`, and the
+no-std-hardcoding gate pass after this change.
+
+### Fixed — a `struct` with an object member is promoted to a class (`teststruct2`) (2026-06-02)
+
+A `std::string` **member of a `struct`** was never constructed, so `bob.name = "…"`
+ran `basic_string::operator=` on an unconstructed string → crash. In C++ a `struct`
+*is* a class (same record; they differ only in default access), and the **contents**
+decide whether it needs object semantics — not the keyword. So a `struct` now stays a
+plain `DataDefSTRUCT` and is **promoted to a `DataDefCLASS`** (which is-a `DataDefSTRUCT`)
+at the closing `}` when it contains an **object member by value** (`is_object()` — a
+`std::string` is an object). It then flows through the existing class machinery (member
+ctors at declaration, RAII dtor at scope exit) exactly like a user class with such a
+member. A struct with no object members is unchanged. Because only object-having structs
+promote, trivial C structs (the whole gcc.c-torture suite + SMAUG) are untouched.
+Integration **456 → 457** (`teststruct2`), full gcc.c-torture **1565** with **zero
+regressions**, SMAUG boots clean. ~28 lines in the parser; no `cir_builder`/fork change.
+
+### Fixed — multi-return (`return a, b` / `x, y := f()`) reimplemented on the CIR backend (2026-06-02)
+
+Integration **455 → 456** (`testmultiret` recovered), full O1 gcc.c-torture **1565** with
+zero regressions, SMAUG boots. Go-style multi-return was an asmjit-era feature; its
+compile-side was removed with asmjit in `64f44b3` and **never reimplemented on CIR**, so it
+had been silently broken since the backend switch (`return q, r` → `return 0`; `q, r := f()`
+→ `q = f(); r` uninitialized). Ported the `__retbuf` ABI to `cir_builder`: a multi-return
+function gets a `void` C return + a hidden `long *__retbuf` first param (`func_def`/`func_proto`
+in lock-step), `return a, b` → `__retbuf[i] = …; return;`, and the call site `a, b := f(args)`
+allocates `long __mret[N]`, calls `f(__mret, args)`, then `a = __mret[0]; b = __mret[1]`.
+Integer multi-return (matching the parser's `int64` typing).
+
+### Adopted — 5 proven bug fixes from community MIR forks (2026-06-02, fork `8864a73`)
+
+Upstream MIR is frozen ~2 years; adopted genuine fixes from maintained community forks
+(each attributed inline as `ADOPTED-FROM: <fork> @ <sha>`): a spill-reload `op_nums[]`
+buffer overflow (`MAX_INSN_RELOAD_MEM_OPS` 2→4), `addr_regs`-stale-after-SSA (O2-gated),
+`jump_opt` deleting `lref`/computed-goto labels, a vararg-RET error-path use-after-NULL,
+and NULL teardown guards. O1-safe (torture 1565, zero regressions). `MIR_COMMIT` →
+`8864a73`. A 4-fork survey + an O2-viability experiment are recorded in
+`docs/parity/mir-fork-community-patches.md` (the GVN-`≥O3` shim was deliberately *not* adopted).
+
+### Fixed — `const`-bound VLA: a `const` var with a runtime initializer is a VLA bound (2026-06-02, madc-only)
+
+**gcc.c-torture 1564 → 1565 (92.9%)**, recovers `20221006-1`, zero regressions, SMAUG boots.
+OTHER-38 group A (VLA follow-ons).
+
+`int M1[len][len]` where `const int len = atoi(argv[1]);` was rejected with "Expecting integer
+constant expression": the array-dimension classifier (`bracket_dim_uses_runtime_value`) treated
+*any* `const`-qualified variable as a compile-time-constant dimension. A `const` qualifier does
+not make a value a compile-time constant (C11 6.7.6.2) — `const int len = atoi(...)` has no folded
+value. Fix: a `const` var folds to a constant dimension **only** when `read_constant_integer`
+succeeds (the compile-time-known-scalar oracle already used by `resolve_integer_constant`);
+otherwise it is a runtime VLA bound and lowers through the existing multidim VLA machinery. Enum
+constants and folded `const` globals still fold; local `const`s with a runtime initializer that
+previously *threw* now compile.
+
+### Added — VLAs (core): multidim, runtime `sizeof`, param-bound side effects (2026-06-02, madc-only)
+
+Core VLA support — **all 6 VLA integration tests pass** (advanced torture forms — VLA-in-struct, `const`-bound, goto-dealloc, multidim-via-pointer — still remain). **gcc.c-torture 1559 → 1564
+(92.8%)** across the VLA work, +4 integration (+5 torture), zero regressions, SMAUG boots.
+
+- **Param-bound side effects** (`int a[i++]`): the bound expression is evaluated on function entry
+  (C11 6.9.1p10). Recovers `testparamvlaruntimeexpr`, torture `pr77767`.
+- **Runtime `sizeof(vla)`** (`typedef int c[i+2]; sizeof(c)`): computed as
+  `(dim0*…*dimk)*sizeof(element)` (C11 6.5.3.4p2) rather than a constant. Recovers
+  `testtypedefvlasizeof`, torture `970217-1`, `20040411-1`.
+- **Multidim** (`int M1[m][n]`): the flat malloc'd pointer's nested subscript chain is linearized
+  to a single row-major index `M1[i*n + j]` (c2mir has no VLA types). Recovers `testmultidimvla`.
+
+VLA is therefore confirmed **not** a c2mir/MIR floor gap — it is entirely a madc front-end lowering.
+
+### Added — function-local variable-length arrays (VLAs) (2026-06-02, madc-only)
+
+**gcc.c-torture 1559 → 1561 (92.6%)**, +1 integration (`testvla`), zero regressions, SMAUG boots.
+
+VLA was mis-documented as a c2mir/MIR floor gap. In fact the parser already records the runtime
+bound (`Variable::vla_size_expr`) and emits the VLA as a pointer — but `cir_builder` never consumed
+it, so a local `int a[n]` became an **uninitialized** `int *a` → SIGSEGV. (VLA *parameters* are
+plain pointers and already worked; only local *definitions* were broken — this worked on the old
+asmjit backend and was never ported to CIR.) Now a function-local VLA lowers to
+`a = (T *)malloc(n * sizeof(T))` with `__attribute__((cleanup(__madc_vla_free)))` freeing it at
+scope exit — the same RAII mechanism class destructors use. `malloc`+cleanup (not
+`__builtin_alloca`) is required so a VLA reached by a backward `goto`/loop is reclaimed rather than
+growing the stack frame (the goto-loop torture `20040811-1`). Recovers torture `920929-1`, `pr43220`.
+Follow-ups: multidim with 2+ runtime dims, runtime `sizeof(vla)`, param-VLA side-effecting bound.
+
+### Fixed — static-initializer compound-literal ordering (`20050929-1`) (2026-06-02, MIR fork `4aa628b`)
+
+Seventh c2mir-grind fix. **gcc.c-torture 1558 → 1559 (92.5%)**, zero regressions, SMAUG boots,
+fulltest 451.
+
+A file-scope object initialized with **multiple compound-literal addresses**
+(`struct B e = { &(struct A){1,2}, &(struct A){3,4} }`) was miscompiled: each element's value is
+produced by `val_gen`, which emits a compound literal's storage data into the module. The first
+element's data happened to land before the object's own data items (clean), but the 2nd+ element's
+storage was spliced into the **middle** of the object's data stream, and the element's trailing
+`ref` became an anonymous data item attached to the sub-object — truncating the object (`e` ended up
+8 bytes; `e.b` read into the spliced `{3,4}` data → SIGSEGV). gcc passes; stock c2m crashed. Fix
+(fork `4aa628b`): `gen_initializer`'s file-scope branch pre-computes all element values **before**
+emitting the object's own data items, so out-of-line compound-literal storage lands before the
+parent. Constants gen position-independently → non-compound-literal static inits are byte-identical.
+`MIR_COMMIT` `838b116` → `4aa628b`. PR middle-end/24109.
+
+### Fixed — `__builtin_*_overflow` u64 helper selection (`pr85095`) (2026-06-02, madc-only)
+
+Sixth c2mir-grind fix (madc-only, no fork change). **gcc.c-torture 1557 → 1558 (92.5%)**, zero
+regressions, SMAUG boots, fulltest 451.
+
+`__builtin_add/sub/mul_overflow` with **both operands unsigned 64-bit** miscompiled: the operands
+reach the runtime helper as `long long`, which sign-extends a large unsigned value (`2^64-18 → -18`),
+and `overflow_helper_name` selected the generic `_u64` helper that signed-widens them → wrong
+overflow flag and result (`pr85095`: `f1(16,-16)` gave 0, want 1). The correct `_uu64` helper (which
+reinterprets the inputs as unsigned) already existed but was never selected. Fix: key the `_uu64`
+selection on the **operands'** signedness, not the destination — so `pr85095` (unsigned operands →
+`_uu64`) and `pr91450-1` (`__builtin_mul_overflow(int,int,&u64)`: signed operands → signed-widening
+`_u64`) both pass.
+
+### Fixed — `__builtin_conjf` + `_Complex` width conversion (`20020411-1`, two-part) (2026-06-02, MIR fork `838b116`)
+
+Fifth c2mir-grind fix (two-part). **gcc.c-torture 1556 → 1557 (92.4%)**, zero regressions,
+SMAUG boots, fulltest 451.
+
+- **madc (`cir_builder`):** lower `__builtin_conj{,f,l}(z)` → `~z` (a `~` on a complex operand is
+  the conjugate in c2mir). Tier-1 (madc owns the front end) — stock c2mir has no `__builtin_conj*`
+  and fell through to a nonexistent dlsym symbol.
+- **c2mir (fork `838b116`):** convert `_Complex` values component-wise on a width change. A
+  `_Complex float` ↔ `_Complex double` conversion was mishandled at three sites — `N_CAST`
+  (scalar-cast of the aggregate), `N_ASSIGN` (block-move of LHS-size bytes from the narrower
+  source), and the local initializer (same block-move flaw) — all producing garbage. Added
+  `complex_to_complex()` (load each component at source width, cast to the destination component
+  type, store into a fresh temp), called from all three. `MIR_COMMIT` `8f97e4f` → `838b116`.
+
+### Fixed — static-local initializers (`pr53084`, two-part) (2026-06-02, MIR fork `8f97e4f`)
+
+Fourth c2mir-bug-grind fix (two-part). **gcc.c-torture 1552 → 1556 (92.3%)** — `+4`
+(`pr53084`, `20071029-1`, `pr124358`, `string-opt-17`), zero regressions, SMAUG boots,
+fulltest 451 (`+1` `teststaticlocalinit`).
+
+- **madc parser (the real prize):** a dead asmjit-era hoist. For a `static` local with an
+  initializer, the parser pushed the initializer into the file-scope statement stream
+  (`tkProgram->statements`) and cleared it from the declaration, relying on the removed
+  JIT's `TokenDecl::compile()` to run it once at startup. The CIR/c2mir pipeline never
+  emits those hoisted statements, so it silently dropped **every scalar static-local
+  initializer**: `static int x=7` read 0, `static double d=2.5` read 0, `static const char
+  *p="foo"` was left null → SIGSEGV on `p[0]`. (Masked because madc doesn't propagate
+  `main`'s return to the exit code — rc-based tests read green; only printing exposed it.)
+  Fix: keep the initializer on the declaration so it emits as the `SPEC_DECL`'s constant
+  initializer — c2mir initializes a `static` once at load (gcc semantics).
+- **c2mir (fork `8f97e4f`):** `check_const_addr_p` gated an `N_STR` base on
+  `curr_scope == top_scope`, rejecting a *computed* string-literal address (`"foo"+1`) for a
+  block-scope `static`. A string literal has static storage at any scope (C11 6.4.5p6) →
+  `return TRUE`. `MIR_COMMIT` `772efeb` → `8f97e4f`.
+
+### Fixed — zero-length array members (`T x[0]`) (2026-06-02, MIR fork `772efeb`)
+
+Third c2mir bug, a two-part fix. **gcc.c-torture 1551 → 1552 (92.1%)**, zero regressions,
+SMAUG boots, fulltest 450.
+
+- **madc parser:** the nested/anonymous-struct member path didn't record per-dimension
+  shape and dropped a trailing `[0]`/`[]` member to a *scalar* (`char name[0]` →
+  `char name`), so `name[0]` read the wrong storage. Now it records `inner_dims` and passes
+  them to `addMember`, exactly like the top-level member path — the member becomes a proper
+  (flexible/zero-length) array.
+- **c2mir (fork `772efeb`):** `set_type_layout` skipped any zero-size member (`continue`),
+  leaving a GNU zero-length array at offset 0 instead of its running offset (it aliased the
+  first member). Now a zero-size member gets the current aligned offset without growing the
+  type. C99 flexible-array members (`[]`) are unchanged. (Confirmed independently via stock
+  `c2m`; an upstream candidate.)
+
+Recovers `gcc.c-torture/execute/zerolen-1.c`. `MIR_COMMIT` `74adb6a` → `772efeb`.
+
+### Fixed — c2mir: statement-expression ending in post-increment/decrement (2026-06-02, MIR fork `74adb6a`)
+
+Second "bugs before features" c2mir fix. **gcc.c-torture 1550 → 1551 (92.0%)**, zero
+regressions, SMAUG boots, fulltest 450.
+
+A statement-expression's value is its block's last expression, but c2mir gens
+expression-statements value-discarded (`top_gen` passes `val_p=FALSE`). Most expressions
+materialize their result regardless, but post-`++`/`--` only do so when used — so a
+stmt-expr ending in `x++`/`x--` (`({ x--; })` as a value, `return`, or `while`/`if`
+condition) left an `undef` operand and crashed MIR codegen. Fix (madc MIR fork `74adb6a`):
+gen the marked last expression in value context (`val_p=TRUE`). Confirmed a **c2mir** bug
+via stock `c2m`; recovers `gcc.c-torture/execute/950906-1.c`. `MIR_COMMIT` `caa6ff9` →
+`74adb6a`.
+
+### Fixed — c2mir: struct-valued statement-expression miscompile (2026-06-02, MIR fork `caa6ff9`)
+
+First of the "bugs before features" c2mir fixes. **gcc.c-torture 1549 → 1550 (92.0%)**,
+zero regressions, SMAUG boots, fulltest 450.
+
+A GNU statement-expression whose value is a struct/union (`({ …; obj; })`) returns the
+lvalue of an in-block local, but c2mir reuses that local's stack slot across
+non-overlapping sibling scopes. With two in one expression — `({..A..}).x - ({..B..}).x`
+— both member loads are deferred to the enclosing operator and read whichever block ran
+last, yielding a wrong result (`20020320-1`). Confirmed a **c2mir** bug (not the MIR
+machine, not madc): stock `c2m -ei`/`-eg` both miscompile a minimal reducer. Fix (in the
+[madc MIR fork](https://github.com/derekbsnider/mir), `caa6ff9`): copy a struct/union
+stmt-expr value into a fresh `ALLOCA` temporary so each has independent storage, matching
+GCC. Pre-existing upstream since statement-expression support landed (`c8e3c4f`) — a clean
+upstream candidate. `MIR_COMMIT` bumped `1fdf44d` → `caa6ff9`.
+
+### Fixed — aggregate-init cluster: array compound literals + array-of-pointer declarators (2026-06-02, develop @ ec97689)
+
+The last cheap front-end parity cluster. **gcc.c-torture 1547 → 1549 (91.9%)**, zero
+regressions, SMAUG boots, and **all compiler warnings cleaned to zero**.
+
+- **Array compound literal with a struct element** (`(S[]){{.b=3,…}}`, `pr98366`): the
+  array path rendered the element type via `append_type_specs`, which emits `N_INT` for any
+  struct, so c2mir saw `int[]` and rejected the brace-init as "excess elements in scalar
+  initializer". Extracted the scalar path's struct/typedef/anonymous spec-builder into
+  `CirBuilder::append_lit_type_spec()` and reuse it for the array path; the parser now
+  propagates the element's typedef alias to the literal.
+- **Array of pointer-to-typedef'd-array** (`A3_28 *paa[]`, `strlen-4` family): `var_decl`'s
+  `skip_tail` correction (which compensates for the parser flattening a typedef's dims into
+  `v->dims`) only applies in the non-pointer path. With a pointer prefix the parser leaves
+  those dims in the pointee, so `v->dims` holds only the variable's own dims — gated
+  `skip_tail` on `!is_ptr` so the trailing `[]` is no longer dropped. (`strlen-4` itself
+  still hits a deeper runtime bug; the declarator family is now correct.)
+- The other two tests the worklist had grouped here (`pr109938`/`pr109986`) are **SIMD floor
+  gaps** (`v4si` vector initializers), not aggregate-init — re-classified.
+
+### Changed — zero compiler warnings (2026-06-02)
+
+- `FuncDef` constructor initializer order matched to member declaration order (`-Wreorder`);
+  explicit `(T)` casts in the `MADC_COMPLEX_OPS` macro for `unsigned short` complex arithmetic
+  (`-Wnarrowing` ×11 — no-op for wide types, makes the defined modular truncation explicit);
+  removed two unused locals in `parser.cpp`; enlarged the `"p%zu"` `snprintf` buffer in
+  `translate_module` (`-Wformat-truncation`).
+
+### Fixed — CIR↔asmjit gcc-torture parity campaign 82.0%→91.8% (2026-06-01, branch feature/cir-stdstring-claude)
+
+Recovered the regression the CIR backend carried vs the old asmjit backend on the
+gcc.c-torture/execute suite (same runner): **CIR 1382 (82.0%) → 1547/1685 (91.8%)**,
+integration 432 → **450**, zero regressions throughout, SMAUG boots + playable. Each
+cluster gcc-compared, failset-diffed for zero regressions, and SMAUG-soaked.
+
+- ~20 root-cause clusters landed: bitfield load/store, struct/aggregate member-type
+  resolution, varargs (+ MIR-fork SysV ABI fixes), integer promotion, builtin/libm
+  return types, `_Complex` pass/return ABI, GNU nested functions, `__attribute__`
+  alias/aligned, statement-expressions, pointer-to-array, FAM, self-ref typedef, K&R
+  unprototyped, function-scoped labels + block-scope `extern`.
+- **Union support fixed** (`14fc16c`/`187b135`/`f9d7566`, +11): emit `N_UNION` at every
+  site (definition, type-spec reference, typedef'd-anonymous, function-return, var-decl,
+  extern) — previously all hardcoded `N_STRUCT`, which broke member aliasing/type-punning
+  and union-by-value parameter passing.
+- **Nested statement-expression last-value** `({ ({...}); })` (`069fb8b`, +3).
+- **Function used as a value** (address-of / fn-ptr decay) now emits a prototype (`9ac7a1b`, +3).
+- The MIR dependency is the **madc fork** (`feature/cleanup-attribute` @ `1fdf44d`), carrying
+  native `_Complex`, `__attribute__((cleanup))`, the scope-depth auto-local layout fix, and
+  the SysV varargs / `_Complex` / `_Alignas` ABI fixes.
+
+### Changed — dead-code removal + test/recovery hardening (2026-06-01)
+
+- **Removed the legacy `cir_translate` path** (`9af4e29`, `src/madc_cir.cpp` ~1800→275 lines).
+  It was reachable only via `MADC_CIR_OLD=1` and had **drifted** from the live `CirBuilder`
+  (the sole backend) — and a stale `test_cir` was exercising it, which hung `MIR_interp` and
+  pegged the host. `test_cir` now tests the live `CirBuilder` (`7d927d5`). One backend, no A/B drift.
+- **`make test` runs each unit binary under `ulimit -t` + `timeout`** (`bd1f5da`) — a hung test
+  fails the suite instead of pegging the machine.
+- New rule [`no-parallel-implementations.md`](.claude/rules/no-parallel-implementations.md):
+  one implementation per concern; tests use the production path; cap every test run.
+- New [`scripts/resume.sh`](scripts/resume.sh) rehydration preflight: live git/reflog state,
+  runaway-process detection (`--kill`), and a tiered ~120k-token rehydration corpus manifest
+  (self-checks the ≥100k floor) — recovers full context after an aggressive compaction.
+
+### Changed — std:: types are real classes/templates; legacy C++ shortcuts retired (2026-05-31, branch feature/cir-stdstring-claude)
+
+The temporary shortcuts that faked C++ niceties (a special `dtSTRING` type with bespoke
+string-object lowering, the `tkSTRING` token, the `tkVECTOR`/`tkMAP`/`tkSET`/`tkLIST`
+keywords, and `ns_stl.cpp` wrappers) are **retired** in favor of madc's real C++ framework:
+
+- **`std::string` is a real C++ class** — declaration/construction/destruction, methods,
+  operators (`=`/`+=`/`==`/`!=`), `cout <<`, struct members, `string*` pointers, and
+  **return-by-value** all flow through the class model. Methods/ctors/dtor/operators bind
+  to mangled libstdc++ symbols via a new `FuncDef::emit_symbol`; storage is a real
+  `struct string` sized from `sizeof(std::string)`. `std::string` is now `std::`-only,
+  defined by `#include <string>` (the `tkSTRING` builtin token is gone).
+- **`std::vector`/`map`/`set` are real `#include`-defined `std::` templates**
+  (`include/madc/vector|map|set`), instantiated per use through the class model + template
+  engine. The `vector`/`map`/`set`/`list` keywords and `ns_stl.cpp` are removed. `vector<string>`
+  works; container element destructors run (general `__destroy` intrinsic, no element leak).
+  Added `namespace { }` block parsing.
+- 368 → **376** integration tests, zero regressions. New: `teststringclass`,
+  `teststringreturn`, `teststringeq`, `testtemplatestring`, `testtemplatecontainer`,
+  `testplacementnew`, `testrefreturn`, `testcontainerdtor`. Plan + restart guide:
+  `docs/superpowers/plans/2026-05-31-stdtypes-as-real-classes.md`,
+  `docs/superpowers/plans/2026-05-31-RESTART-HANDOFF.md`.
+- Remaining (step 4): complete operator-overloading coverage (bind `std::string operator[]`/`+`;
+  extend the dispatch table — overload only when a class declares the operator) + three parser gaps.
+
+## [v0.25.0] — 2026-05-30
+
+CIR is now the sole backend, and SMAUG 1.8 boots, runs, and is playable.
+
+> **Build dependency:** madc now builds against the **madc MIR fork**
+> ([github.com/derekbsnider/mir](https://github.com/derekbsnider/mir), branch
+> `feature/complex-support`) at `/workspace/mir` — not upstream MIR. It carries
+> native C99 `_Complex` support and the c2mir fixes the CIR backend depends on.
+
+### CIR is now the sole backend; asmjit and Gecko removed (feature/cir-node)
+
+- **Removed the Gecko parser + MIR-transpiler entirely** (`42e9b6e`).
+- **Removed the asmjit x86-64 JIT + original codegen entirely** (`64f44b3`).
+  `madc parser → cir_node (MC11-IR) → c2mir → MIR` is now the **sole** backend.
+  There is no `--backend=jit`; `--backend=mir` aliases to cir.
+- **MC11-IR set in stone:** the `cir_node` tree derives from c2mir `node_t`
+  (c2mir consumes the lowered C11 view) AND carries each node's originating
+  tokens + parse subtree + file/line/col (madc retains the high-level view).
+  See `docs/rules/mc11-ir.md`.
+- **Honest CIR baseline: 227 pass / 193 fail / 56 skip** (integration). The 193
+  are the active coverage worklist. (The earlier "419 pass / 0 fail" was the
+  now-removed backend; full C89 coverage is the *target* the CIR path is
+  climbing back to, not a current property.)
+- **Parser-fix port + empty-body CIR fix** landed (SMAUG now parses end-to-end
+  through CIR): `fd4d510`, `a429323`, `28d5e65`, `8b627ec`.
+- **Deferred (stubbed):** libmadc in-process compile/exec/`eval` + the REPL
+  (~100 unit tests skipped as the spec); native AOT object/executable
+  (`save_object`/`save_executable` stubbed, signatures kept).
+- **`--backend=cir` and `--dump-cir` CLI flags;** extern function prototypes
+  with variadic support; SMAUG mini test (malloc/free/printf/structs/pointers)
+  runs through the CIR path.
+
+### ★ SMAUG 1.8 boots, runs, and is playable through CIR (2026-05-30)
+
+The full SMAUG 1.8 codebase (~158k LOC C89) now compiles and **runs**
+end-to-end through `cir_node → c2mir → MIR → JIT`: it boots to a live
+server (`Realms of Despair ready … port 4000`), and a connected client can
+create a character, navigate the world, and **fight** — the Newgate room-109
+serpent fight runs without crashing. Integration **316 → 325**. The fixes,
+in order:
+
+- **fn-ptr-typedef rendering** (`49b79a1`, call-site `7924e42`): function
+  typedefs / members / vars / params now render from the retained signature
+  (`DataDefFPTR->target`) instead of erasing to `long`; the implicit `*` for a
+  Form-1 fn-ptr-typedef use is added at emit time in `explicit_star_count` so
+  `var.type` stays `DataDefFPTR` and the expression parser's fn-ptr-call
+  detection keeps working. Cleared the SMAUG `spec_fun` blocker.
+- **extern set only at variable creation** (`62577a8`): a file-scope
+  definition plus a redundant `extern` of the same global share one Variable;
+  `vfEXTERN` is now set only when the symbol is created, never re-set on an
+  existing one, so a defined global can't be demoted to a declaration
+  (MIR-link `import of undefined item help_greeting`).
+- **varargs lowered to the c2mir intrinsic** (`2fbe5f0`): `va_start(ap,last)`
+  → `__builtin_va_start(ap)` directly, instead of a master-`__va_args` +
+  struct-copy that mis-set `reg_save_area` in large frames (SMAUG's `bug()`
+  segfaulted in `vsprintf`).
+- **switch `default` case emitted** (`4011d95`): `translate_switch` dropped
+  every `default:` (it only emitted the separately-stored default when
+  `default_index < 0`, which the parser never sets) — values matching no case
+  fell through executing nothing. Was the last boot blocker.
+- **strcmp family declared `int`, not the `long` fallback** (`ac16d07`):
+  undeclared comparison libc fns defaulted to a `long` return; libc returns
+  `int` in `eax`, so a negative result read as 64-bit became huge and SMAUG's
+  `bsearch_skill_exact` (`strcmp(name,x) < 1`) always took the wrong branch —
+  `skill_lookup` failed for 79 skills, every combat gsn stayed unassigned, and
+  the serpent fight dereferenced `skill_table[bad]` (SIGSEGV). ASSIGN_GSN
+  failures 79 → 0.
+- **JIT-symbolizing crash handler** (`25c731a`): madc's SIGSEGV backtrace now
+  resolves MIR-generated frames to `func+0xoff [JIT]` (maps the faulting
+  address to a function's `machine_code` range). First brick of a madc-native
+  debugger; pinpointed the serpent crash to `learn_from_failure`.
+- Plus the array/pointer type-erasure family, 2D-array init, switch pre-case
+  decls, abstract-param `N_TYPE`, and the real System V `va_list` ABI that
+  drove SMAUG from **159 → 0** c2mir check errors earlier in the session.
+
+## [v0.24.0] — 2026-05-28
+
+Native C99 `_Complex` support in c2mir, transpiler cleanup, 410→419.
+
+- **Native `_Complex` support in c2mir.** 13 commits to our MIR fork
+  implementing C99 `_Complex` types directly in c2mir — no struct
+  workaround needed. Supports `_Complex double/float/long double`,
+  arithmetic (`+`, `-`, `*`, `/`, `+=`, etc.), `__real__`/`__imag__`
+  operators, imaginary literals (`1.0i`), conjugate (`~`), equality
+  (`==`, `!=`), boolean context, function params/return, casts.
+  Zero regressions across c2mir's 1,071 test suite.
+
+- **Complex constant folding in c2mir.** Compile-time evaluation of
+  `_Complex` expressions for global initializers (`_Complex v = 3.0 +
+  1.0iF;`). Complex-to-scalar cast extracts real part per C99 6.3.1.7.
+
+- **Transpiler `_Complex` cleanup.** Removed `struct __madc_c*`
+  workaround infrastructure (-302 lines). Transpiler now emits raw
+  `_Complex` types and imaginary literals directly.
+
+- **`__real__`/`__imag__` as first-class grammar operators.** New
+  `AN_REALPART`/`AN_IMAGPART` AST nodes, `GT_REALPART`/`GT_IMAGPART`
+  grammar terminals. Gecko parses them as unary prefix operators.
+
+- **Test parity: 410→419.** All 12 `_Complex` tests now pass.
+  Transpiler parity at 88.2% (419/475, 56 skipped).
+
+## [v0.23.0] — 2026-05-27
+
+MIR default backend, clang++ compiler, transpiler parity push (400→410).
+
+- **MIR is now the default backend.** `bin/madc` uses the Gecko+c2mir
+  transpiler pipeline by default. Legacy asmjit JIT available via
+  `--backend=jit`.
+
+- **clang++ replaces g++ as the default compiler.** Builds clean with
+  identical results. Prepares for macOS port.
+
+- **String literals as `const char *`.** Literal-initialized `string`
+  variables emit as `const char *` instead of managed char arrays.
+  Temporary `std::string` constructed at namespace call sites via
+  `__builtin_alloca`. `MADC_STRING_SIZE` renamed to `STDSTRING_SIZE`.
+
+- **Transpiler parity: 400→410 (+10 tests).** Header prototypes for
+  dirent/time/netdb/select, emitter extern declarations, attribute
+  mode lowering, std::vector/map/set/list tokenizer collapse,
+  madc::array support, extern "C" regex/argv wrappers, builtin
+  wrappers (object_size, strcpy_chk), char** pointer depth fix.
+
+- **`MADC_EXTERN_C` macros.** `MADC_EXTERN_C0` through `MADC_EXTERN_C4`
+  for generating thin extern "C" wrappers by argument count.
+
+- **c2mir built-in headers.** Emitter preamble now uses `#include
+  <stdint.h>`, `<stddef.h>`, etc. from c2mir's embedded C11 headers
+  instead of hand-written typedefs.
+
+- **_Complex type mapping (WIP).** Compound _Complex keywords lowered
+  to `struct __madc_cX` types. Runtime helpers for all complex
+  arithmetic compiled by clang++. Operation lowering still in progress.
+
+- **STL container `_cstr` variants.** Map/set get, contains, put
+  operations accept `const char *` keys directly.
+
+- **Transpiler triage.** All 65 skipped tests categorized with specific
+  root causes in `.mir_skip` files. `docs/transpiler-triage.md` tracks
+  the full breakdown.
+
+## [v0.22.0] — 2026-05-26
+
+Gecko+MIR transpiler pipeline: Phase 2 semantic pre-pass, Phase 4 string
+runtime, O(1) AST dispatch, iostream wrappers, and namespace function bridging.
+
+- **Phase 2 semantic pre-pass.** `madc_sema.cpp/h` — SemaInfo struct
+  collects variable types, function signatures, class info, and typedef
+  names in a single AST walk before emission. TypeClass enum for
+  compile-time-checked type classification.
+
+- **Phase 4 string runtime.** `string` variables are managed `std::string`
+  objects via placement-new in stack buffers. Runtime wrappers:
+  `__madc_string_construct/destruct/assign_cstr/cstr/length/append`.
+  Namespace functions (php::trim etc.) receive `std::string*` directly.
+
+- **O(1) AST dispatch via `gp_set_anode_code`.** 156 anode names registered
+  as integer codes at grammar build time. Eliminates ~200 `strcmp` calls per
+  AST traversal. Uses Makarov's built-in Gecko API (`node->aux` field).
+
+- **Hash map tokenizer.** Replaces ~60 sequential string comparisons per
+  identifier token with a single `unordered_map` lookup for keyword
+  recognition.
+
+- **iostream wrappers.** `cout <<` / `cerr <<` / `cin >>` emit calls to
+  generic `__madc_ostream_*` / `__madc_istream_*` wrappers that take a
+  stream pointer. Works with any `std::ostream` / `std::istream`.
+  Full manipulator support (hex, oct, setw, setprecision, etc.).
+
+- **Extern "C" namespace wrappers.** 106 thin C-linkage functions across
+  6 namespace files (php, perl, python, ruby, js, rust). Enables
+  `dlsym`-based import resolution and provides a clean C API for libmadc.
+
+- **Class inheritance.** Base class fields copied into derived struct.
+  Method calls resolve through the base chain via sema. Access specifiers
+  (public/private/protected) tokenized correctly.
+
+- **`__attribute__` skipping.** Tokenizer consumes `__attribute__((...))`,
+  `__extension__` constructs. Unlocks 9 GCC-extension-heavy tests.
+
+- **`typeof` type specifier.** Grammar rules for `typeof(expr)` and
+  `typeof(type)`, emitted as `__typeof__()` for c2mir.
+
+- **Expression type inference for cout.** `infer_expr_cout_type()` walks
+  AST expressions to determine correct output type — deref, subscript,
+  pointer arithmetic, cast, function call return types.
+
+- **New rule: `enum-over-strings.md`.** Never use strings or chars as
+  type discriminators when an enum will do.
+
+- Transpiler test results: 283/473 (59.8%) match legacy output, up from
+  274/473 (57.9%) at session start. 475/475 legacy JIT tests pass.
+
 ## [v0.21.1] — 2026-05-25
 
 Const enforcement, access control, token position, and JIT IR architecture research.

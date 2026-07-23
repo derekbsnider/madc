@@ -1,0 +1,35 @@
+#!/../bin/madc
+// arrow-after-subscript: `v[i]->method()` / `v[i]->member` where the element is
+// a pointer-to-class. The classic container-of-base-pointers polymorphism
+// pattern — virtual dispatch through a subscript element pointer (ties P0.3 +
+// P0.6). The element is `Base*`, so `->` derefs it and __this is the pointer
+// VALUE (not its address — unlike the dot case where the element is an object).
+#include <iostream>
+#include <vector>
+using namespace std;
+
+class A {
+public:
+	int tag;
+	virtual int who() { return 1; }
+};
+class B : public A { public: int who() { return 2; } };
+class C : public A { public: int who() { return 3; } };
+
+int main() {
+	// virtual call + member read through a base-pointer subscript element
+	vector<A*> vb;
+	A *pb = new B(); pb->tag = 11;
+	vb.push_back(pb);
+	cout << "who " << vb[0]->who() << endl;     // who 2 (derived override)
+	cout << "tag " << vb[0]->tag << endl;        // tag 11 (member through ptr element)
+
+	// a different derived type, same pattern — the right override runs
+	vector<A*> vc;
+	A *pc = new C(); pc->tag = 22;
+	vc.push_back(pc);
+	cout << "who2 " << vc[0]->who() << endl;     // who2 3
+	cout << "tag2 " << vc[0]->tag << endl;        // tag2 22
+
+	return 0;
+}

@@ -1,0 +1,9 @@
+// === is a madc-dialect (STD_MADC) token only. Below the std floor the
+// sequence lexes as `==` then `=`, which cannot parse in an expression —
+// exactly how a conforming C++ compiler rejects it. See .expect_err.
+int main()
+{
+	int a = 5, b = 5;
+	int r = (a === b);
+	return r;
+}

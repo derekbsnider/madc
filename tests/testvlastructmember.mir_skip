@@ -1,0 +1,1 @@
+c2mir now ACCEPTS the VLA struct members here but MISCOMPILES the statement-expr copy of a VLA struct (data mismatch -> runtime abort in check(), SIGABRT in bar [JIT]). Reason drifted from front-end reject to codegen miscompile. Audit 2026-07-19.

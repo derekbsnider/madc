@@ -1,0 +1,28 @@
+// The C++20 <compare> comparison category types from the REAL header
+// (slice 2a of the <=> track): std::strong_ordering registers, its
+// class-typed constexpr statics resolve to their out-of-class-definition
+// storage (not the silent-0 integral fold), and the copied value carries
+// the right _M_value byte. Exercises: __cplusplus tracking --std=,
+// __cpp_impl_three_way_comparison + __cpp_concepts (the <compare> →
+// <concepts> → <type_traits> → c++config chain — <compare> is deliberately
+// the FIRST include, the g++-equivalent standalone shape), requires-clause
+// / concept-definition consumption, scope-relative namespace-qualified
+// member types (__cmp_cat::type), enum class in a nested namespace,
+// out-of-class static member definitions with ctor args.
+#include <compare>
+#include <cstdio>
+
+int main()
+{
+	std::strong_ordering oless = std::strong_ordering::less;
+	std::strong_ordering oequal = std::strong_ordering::equal;
+	std::strong_ordering ogreater = std::strong_ordering::greater;
+	std::partial_ordering ounord = std::partial_ordering::unordered;
+	signed char *pl = (signed char *)&oless;
+	signed char *pe = (signed char *)&oequal;
+	signed char *pg = (signed char *)&ogreater;
+	signed char *pu = (signed char *)&ounord;
+	printf("%d %d %d %d\n", (int)pl[0], (int)pe[0], (int)pg[0],
+	       (int)pu[0]);
+	return 0;
+}

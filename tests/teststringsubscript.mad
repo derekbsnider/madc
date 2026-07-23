@@ -1,0 +1,32 @@
+#!/../bin/madc
+// std::string operator[] — element read and write through the real libstdc++
+// char& basic_string::operator[](size_t) symbol. `s[i]` must work as an rvalue
+// (read) and an lvalue (`s[i] = c` writes through the returned char&).
+#include <iostream>
+#include <string>
+using namespace std;
+
+int main() {
+    string s = "hello";
+
+    // read: index a known character
+    cout << "c0=" << s[0] << endl;     // 'h'
+    cout << "c4=" << s[4] << endl;     // 'o'
+
+    // write: assign through the char& lvalue, then read back
+    s[0] = 'H';
+    cout << "after=" << s << endl;     // "Hello"
+    cout << "c0b=" << s[0] << endl;    // 'H'
+
+    // loop index: count vowels
+    int vowels = 0;
+    int n = s.length();
+    for (int i = 0; i < n; i++) {
+        char ch = s[i];
+        if (ch == 'e' || ch == 'o')
+            vowels++;
+    }
+    cout << "vowels=" << vowels << endl;  // 'e' and 'o' => 2
+
+    return 0;
+}

@@ -1,0 +1,1 @@
+JIT run must produce empty stderr (a bit-copied string member would double-free here).

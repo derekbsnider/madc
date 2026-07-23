@@ -1,4 +1,4 @@
 void main() {
-    char c = *(version.c_str());
+    char c = *MADC_VERSION;
     putchar(c);
 }

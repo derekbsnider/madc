@@ -1,0 +1,15 @@
+#!../bin/madc
+// Real-header <iostream> regression (W2 + facet vtable ownership + DCE): compiled
+// against the REAL libstdc++ <iostream> (--no-embedded-headers), cout<< binds the
+// free std::operator<<(ostream&,const char*) and the std::endl manipulator
+// mangled-direct to libstdc++. Output must match g++.
+#include <iostream>
+using namespace std;
+
+int main()
+{
+    int64_t x = 1;
+
+    cout << "This is a test, x = " << -x << endl;
+    return 0;
+}

@@ -1,0 +1,28 @@
+#!/../bin/madc
+// Out-of-line member TEMPLATE definitions of a class template (sub-gap 9): a
+// MEMBER TEMPLATE of a class template defined OUTSIDE the class body with a
+// two-level head (`template<class T> template<class U> RET S<T>::f(U){body}` —
+// e.g. std::vector::_M_realloc_insert's C++11 variadic form). The body must
+// instantiate per inner-arg binding as a method of the monomorphized class, not
+// be dropped as an undefined import. Covers non-void + void, with member access
+// (the body reads a class member through the implicit this).
+#include <stdio.h>
+
+template<class T> struct Box {
+	T base;
+	template<class U> U add(U u);       // out-of-line, non-void
+	template<class U> void store(U u);  // out-of-line, void
+	T peek() { return base; }           // in-class (control)
+};
+
+template<class T> template<class U> U Box<T>::add(U u) { return u + (U)base; }
+template<class T> template<class U> void Box<T>::store(U u) { base = (T)u; }
+
+int main()
+{
+	Box<int> b;
+	b.store(40);
+	printf("%d\n", b.peek());   // 40
+	printf("%d\n", b.add(2));   // 42
+	return 0;
+}

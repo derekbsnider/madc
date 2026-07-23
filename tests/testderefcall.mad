@@ -1,0 +1,24 @@
+#include <cstdio>
+
+class B {
+public:
+    char buf[8];
+    char *cur;
+    char *ptr() { return cur; }
+    int put(char c) {
+        *this->ptr() = c;
+        this->cur += 1;
+        return (int)c;
+    }
+};
+
+int main()
+{
+    B b;
+    b.cur = b.buf;
+    b.put('h');
+    b.put('i');
+    b.buf[2] = 0;
+    printf("%s\n", b.buf);
+    return 0;
+}

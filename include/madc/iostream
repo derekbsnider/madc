@@ -1,2 +1,0 @@
-// madc embedded iostream — registers cout, cin, cerr, endl
-// The actual registration is handled by add_iostream() callback

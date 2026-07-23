@@ -1,0 +1,13 @@
+#include <iostream>
+#include <typeinfo>
+using namespace std;
+class Shape { public: virtual int kind() { return 0; } };
+class Circle : public Shape { public: int kind() { return 1; } };
+int main() {
+    Circle c;
+    Shape *s = &c;
+    // typeid via the real type_info read from the vtable RTTI slot:
+    cout << (typeid(*s) == typeid(Circle)) << endl;  // 1
+    cout << (typeid(*s) == typeid(Shape)) << endl;   // 0
+    return 0;
+}

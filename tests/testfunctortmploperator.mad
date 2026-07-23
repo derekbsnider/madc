@@ -1,0 +1,43 @@
+// Regression: a functor whose `operator()` is a TEMPLATE must be dispatched
+// for `g(args)` (== g.operator()(args)), not mis-handled.
+//
+// Before the fix a template operator() was never registered as a method
+// (skipped_template_function_declarator_name_index didn't recognize the
+// `operator()` operator-function-id, whose own `()` sits between the `operator`
+// keyword and the parameter list), so findMethod("operator()") failed, the
+// functor-call path was skipped, and `g(args)` fell through to a bogus
+// assignment `g = args` that c2mir rejected. This is std::_Rb_tree's
+// `__node_gen(forward(__v))` (a `_NodeGen&` functor with a template
+// `operator()`).
+//
+// Exercises the whole chain: operator-id name extraction, the parameter-list
+// `(` that follows the operator-id, the instantiation declarator rename across
+// the operator-id span, a POINTER return type (must not collapse to a by-value
+// struct return), and a `static` LOCAL in the body (must not mark the method
+// static / drop the hidden `__this`).
+#include <cstdio>
+
+struct Node { int v; };
+
+struct Gen {
+	int base;
+	Gen(int b) : base(b) {}
+	template<typename Arg>
+	Node *operator()(Arg&& a) const
+	{
+		static Node n;          // static LOCAL — must not make operator() static
+		n.v = base + a;
+		return &n;              // POINTER return
+	}
+};
+
+int main()
+{
+	Gen g(100);
+	Node *p = g(5);             // functor call via the object
+	printf("%d\n", p->v);       // 105
+	Gen &gr = g;
+	Node *q = gr(7);            // functor call via a reference
+	printf("%d\n", q->v);       // 107
+	return 0;
+}

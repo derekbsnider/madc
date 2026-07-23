@@ -1,0 +1,2 @@
+// Project-mode test. The real build is driven by testproject.cc.json via the
+// --project flag in testproject.flags. This file is an ignored positional.

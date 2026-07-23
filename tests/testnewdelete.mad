@@ -1,0 +1,35 @@
+// Scalar and array new/delete: `new T`, `new T(v)`, `new T[n]`, `delete p`,
+// `delete[] p`. Exercises the non-class allocation path (malloc/calloc lowering)
+// and array delete (free). A class member that owns a `new[]`/`delete[]` buffer
+// confirms array-delete of a trivial element type frees without a per-element
+// dtor cookie. Matches g++ (-std=c++17).
+#include <cstdio>
+
+struct Buf {
+    int *data;
+    Buf(int n) { data = new int[n]; for (int i = 0; i < n; i++) data[i] = i * 10; }
+    ~Buf() { delete[] data; }
+    int at(int i) { return data[i]; }
+};
+
+int main()
+{
+    int *a = new int;        // uninitialized scalar
+    *a = 7;
+    int *b = new int(11);    // scalar with initializer
+    double *d = new double(2.5);
+    int *arr = new int[5];   // value-initialized (zeroed)
+    arr[4] = 99;
+
+    printf("a=%d b=%d d=%.1f arr0=%d arr4=%d\n", *a, *b, *d, arr[0], arr[4]);
+
+    Buf buf(4);
+    printf("buf=%d %d %d %d\n", buf.at(0), buf.at(1), buf.at(2), buf.at(3));
+
+    delete a;
+    delete b;
+    delete d;
+    delete[] arr;
+    printf("done\n");
+    return 0;
+}

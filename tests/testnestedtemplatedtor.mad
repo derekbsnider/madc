@@ -1,0 +1,28 @@
+// Regression: a nested class inside a class template, with a user destructor,
+// that is referenced by a sibling member's signature. Such a nested class keeps
+// its source-tag method_map keys ("Node"/"~Node") while its composed name becomes
+// "Box_int32_t__Node" — so the old "~"+cdd->name dtor lookup missed its own dtor,
+// the synth-dtor pass wrongly fired, and the destructor was emitted TWICE (MIR
+// "Repeated item declaration"). The own-dtor must be found name-independently so
+// exactly one destructor body is emitted and it runs once.
+#include <stdio.h>
+
+template<typename T>
+struct Box {
+	struct Node {
+		T val;
+		Node(T v) : val(v) {}
+		~Node() { printf("dtor %d\n", (int)val); }
+	};
+	// References Node in its signature — the dup trigger. Not called here.
+	Node *ref(Node *p) { return p; }
+};
+
+int main() {
+	Box<int> b;
+	{
+		Box<int>::Node n(7);
+		printf("val %d\n", n.val);
+	}
+	return 0;
+}

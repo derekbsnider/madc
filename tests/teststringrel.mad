@@ -1,0 +1,20 @@
+#!/../bin/madc
+// std::string relational operators < > <= >= bound to the extern-C runtime
+// wrappers string_lt/gt/le/ge (libstdc++'s relational operators for strings are
+// weak template instantiations, not dlsym-able — like operator== and operator+).
+#include <iostream>
+#include <string>
+using namespace std;
+int main() {
+    string a = "apple"; string b = "banana"; string c = "apple";
+    // a < b -> 1, b < a -> 0, a < c -> 0 (equal)
+    printf("lt %d %d %d\n", a < b, b < a, a < c);   // lt 1 0 0
+    // a > b -> 0, b > a -> 1, a > c -> 0
+    printf("gt %d %d %d\n", a > b, b > a, a > c);   // gt 0 1 0
+    // a <= b -> 1, b <= a -> 0, a <= c -> 1 (equal)
+    printf("le %d %d %d\n", a <= b, b <= a, a <= c); // le 1 0 1
+    // a >= b -> 0, b >= a -> 1, a >= c -> 1 (equal)
+    printf("ge %d %d %d\n", a >= b, b >= a, a >= c); // ge 0 1 1
+    if (a < b) cout << "apple<banana" << endl;
+    return 0;
+}

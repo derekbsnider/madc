@@ -1,0 +1,51 @@
+#!/../bin/madc
+#include <iostream>
+using namespace std;
+
+// User-defined class template, instantiated per concrete type (Borland
+// monomorphization) — the same machinery containers will build on.
+template<typename T> class Box {
+public:
+    T value;
+    void store(T v) { value = v; }
+    T fetch() { return value; }
+};
+
+// A template whose type argument is a pointer (`char*`) — the star is folded
+// into the argument type, mirroring a pointer typedef.
+template<typename T> class Holder {
+public:
+    T ptr;
+    void put(T p) { ptr = p; }
+    T get() { return ptr; }
+};
+
+int main()
+{
+    Box<int> a;
+    a.store(42);
+    printf("a: %d\n", a.fetch());
+
+    Box<int> b;
+    b.store(99);
+    printf("b: %d\n", b.fetch());
+
+    a.value = 7;
+    printf("a.value: %d\n", a.value);
+
+    // 8-byte type parameters: long and double, both as a stored value and a
+    // T-returning method.
+    Box<long> l;
+    l.store(1234567890123);
+    printf("l: %ld\n", l.fetch());
+
+    Box<double> d;
+    d.store(3.5);
+    printf("d: %f\n", d.fetch());
+
+    // Pointer type argument.
+    Holder<char*> h;
+    h.put("hello");
+    printf("h: %s\n", h.get());
+    return 0;
+}

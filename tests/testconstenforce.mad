@@ -1,0 +1,56 @@
+#!/../bin/madc
+// P2.4: const enforcement. The compiler now REJECTS assignment to a const
+// lvalue (write-side enforcement in cir_builder.cpp). The test runner has no
+// expected-compile-error mechanism (a non-zero exit is a FAIL), so this is the
+// POSITIVE companion: it proves that VALID const usage — reads, runtime-init
+// consts, const arrays, pointer-to-const reassignment — all still compile and
+// run correctly after the enforcement was turned on. The REJECTION cases
+// (`const int x; x = 6;` -> "assignment of read-only variable 'x'", matching
+// g++) are verified by the probes documented in the commit / handoff.
+#include <iostream>
+using namespace std;
+
+int runtime_value() { return 42; }
+
+const int g = 100;                 // global compile-time const
+
+int main()
+{
+    // Compile-time scalar const: reads fine (may constant-fold to its value).
+    const int a = 5;
+    cout << a << endl;             // 5
+    cout << g << endl;             // 100
+
+    // Runtime-initialized const: must NOT fold to 0 — reads the real value.
+    const int b = runtime_value();
+    cout << b << endl;             // 42
+
+    // Non-const variables assign, compound-assign, and ++ normally.
+    int x = 10;
+    x = 20;
+    cout << x << endl;             // 20
+    x += a;
+    cout << x << endl;             // 25
+    x++;
+    cout << x << endl;             // 26
+
+    // const ARRAY: element reads work (the array is not scalar-folded).
+    const int arr[3] = { 7, 8, 9 };
+    cout << arr[0] << endl;        // 7
+    cout << arr[2] << endl;        // 9
+
+    // pointer-to-const: the pointee is const, but the pointer is reassignable.
+    const int *p = &a;
+    cout << *p << endl;            // 5
+    p = &b;
+    cout << *p << endl;            // 42
+
+    // const used in arithmetic / as a bound.
+    const int n = 3;
+    int sum = 0;
+    for (int i = 0; i < n; i++)
+        sum += arr[i];
+    cout << sum << endl;           // 24
+
+    return 0;
+}

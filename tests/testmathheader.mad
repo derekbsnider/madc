@@ -1,0 +1,19 @@
+// Task #55: <math.h> (the C++ wrapper -> full <cmath> closure) must compile
+// with ZERO stderr. The C++11 template overload surface (__enable_if SFINAE
+// candidates, __promote_2 mixed-type overloads) is speculatively instantiated
+// during overload scoring; failed candidates are discarded silently (g++
+// [temp.deduct]/8) — the .expect_quiet fixture locks that hygiene.
+#include <math.h>
+#include <stdio.h>
+
+int main()
+{
+	double d = pow(2.0f, 3);      // mixed float/int: __promote_2 overload shape
+	int i = isnan(1.5f);          // scores (and discards) the integral SFINAE candidate
+	int j = isinf(2.5);
+	double m = fmod(7.5, 2);
+	printf("pow %.1f\n", d);
+	printf("isnan %d isinf %d\n", i, j);
+	printf("fmod %.1f\n", m);
+	return 0;
+}

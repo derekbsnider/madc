@@ -21,7 +21,6 @@
 #include <queue>
 #include <stack>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
-#include <asmjit/x86.h>
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
@@ -29,82 +28,86 @@
 #include "ns_common.h"
 
 using namespace std;
-using namespace asmjit;
 
-int64_t rust_contains(void *str, void *needle)
+static std::string rust_text_arg(const char *ptr)
 {
-	return ns_common::contains(*(std::string *)str,
-				   *(std::string *)needle) ? 1 : 0;
+	return std::string(ptr ? ptr : "");
 }
 
-int64_t rust_starts_with(void *str, void *prefix)
+int64_t rust_contains(const char *str, const char *needle)
 {
-	return ns_common::starts_with(*(std::string *)str,
-				      *(std::string *)prefix) ? 1 : 0;
+	std::string s = rust_text_arg(str);
+	std::string n = rust_text_arg(needle);
+	return ns_common::contains(s, n) ? 1 : 0;
 }
 
-int64_t rust_ends_with(void *str, void *suffix)
+int64_t rust_starts_with(const char *str, const char *prefix)
 {
-	return ns_common::ends_with(*(std::string *)str,
-				    *(std::string *)suffix) ? 1 : 0;
+	std::string s = rust_text_arg(str);
+	std::string p = rust_text_arg(prefix);
+	return ns_common::starts_with(s, p) ? 1 : 0;
 }
 
-void *rust_trim(void *ptr)
+int64_t rust_ends_with(const char *str, const char *suffix)
 {
-	ns_common::trim(*(std::string *)ptr, true, true);
+	std::string s = rust_text_arg(str);
+	std::string p = rust_text_arg(suffix);
+	return ns_common::ends_with(s, p) ? 1 : 0;
+}
+
+std::string *rust_trim(std::string *ptr)
+{
+	ns_common::trim(*ptr, true, true);
 	return ptr;
 }
 
-void *rust_trim_start(void *ptr)
+std::string *rust_trim_start(std::string *ptr)
 {
-	ns_common::trim(*(std::string *)ptr, true, false);
+	ns_common::trim(*ptr, true, false);
 	return ptr;
 }
 
-void *rust_trim_end(void *ptr)
+std::string *rust_trim_end(std::string *ptr)
 {
-	ns_common::trim(*(std::string *)ptr, false, true);
+	ns_common::trim(*ptr, false, true);
 	return ptr;
 }
 
-void *rust_replace(void *ptr, void *from, void *to)
+std::string *rust_replace(std::string *ptr, const char *from, const char *to)
 {
-	ns_common::replace_all(*(std::string *)ptr,
-			       *(std::string *)from,
-			       *(std::string *)to);
+	std::string f = rust_text_arg(from);
+	std::string t = rust_text_arg(to);
+	ns_common::replace_all(*ptr, f, t);
 	return ptr;
 }
 
-void *rust_repeat(void *ptr, int64_t count)
+std::string *rust_repeat(std::string *ptr, int64_t count)
 {
-	ns_common::repeat(*(std::string *)ptr, count);
+	ns_common::repeat(*ptr, count);
 	return ptr;
 }
 
-int64_t rust_len(void *ptr)
+int64_t rust_len(const char *ptr)
 {
-	return (int64_t)((std::string *)ptr)->length();
+	return ptr ? (int64_t)strlen(ptr) : 0;
 }
 
-int64_t rust_is_empty(void *ptr)
+int64_t rust_is_empty(const char *ptr)
 {
-	return ((std::string *)ptr)->empty() ? 1 : 0;
+	return (!ptr || !ptr[0]) ? 1 : 0;
 }
 
-void *rust_split(void *arr, void *str, void *delim)
+void rust_split(madc::value *arr, const char *str, const char *delim)
 {
-	ns_common::split_by_delim(*(MadArray *)arr,
-				  *(std::string *)str,
-				  *(std::string *)delim);
-	return arr;
+	std::string s = rust_text_arg(str);
+	std::string d = rust_text_arg(delim);
+	ns_common::split_by_delim(*arr, s, d);
 }
 
-void *rust_split_whitespace(void *arr, void *str)
+void rust_split_whitespace(madc::value *arr, const char *str)
 {
-	MadArray &a = *(MadArray *)arr;
-	std::string &s = *(std::string *)str;
-	a.data.clear();
-	a.assoc.clear();
+	std::string s = rust_text_arg(str);
+	*arr = madc::value::make_array();
 	std::string word;
 	for ( size_t i = 0; i < s.length(); ++i )
 	{
@@ -112,7 +115,7 @@ void *rust_split_whitespace(void *arr, void *str)
 		{
 			if ( !word.empty() )
 			{
-				a.push(MadValue(word));
+				arr->array().push_back(madc::value(word));
 				word.clear();
 			}
 		}
@@ -120,121 +123,79 @@ void *rust_split_whitespace(void *arr, void *str)
 			word += s[i];
 	}
 	if ( !word.empty() )
-		a.push(MadValue(word));
-	return arr;
+		arr->array().push_back(madc::value(word));
 }
 
-void *rust_join(void *result, void *arr, void *sep)
+std::string *rust_join(std::string *result, madc::value *arr, const char *sep)
 {
-	ns_common::join_with_sep(*(std::string *)result,
-				 *(MadArray *)arr,
-				 *(std::string *)sep);
+	std::string s = rust_text_arg(sep);
+	ns_common::join_with_sep(*result, *arr, s);
 	return result;
 }
 
-void *rust_first(void *result, void *arr)
+std::string *rust_first(std::string *result, madc::value *arr)
 {
-	std::string &res = *(std::string *)result;
-	MadArray &a = *(MadArray *)arr;
+	std::string &res = *result;
 	res.clear();
-	if ( !a.data.empty() )
-		ns_common::value_to_string(a.data[0], res);
+	if ( arr->is_array() && !arr->as_array().empty() )
+		ns_common::value_to_string(arr->as_array()[0], res);
 	return result;
 }
 
-void *rust_last(void *result, void *arr)
+std::string *rust_last(std::string *result, madc::value *arr)
 {
-	std::string &res = *(std::string *)result;
-	MadArray &a = *(MadArray *)arr;
+	std::string &res = *result;
 	res.clear();
-	if ( !a.data.empty() )
-		ns_common::value_to_string(a.data[a.data.size() - 1], res);
+	if ( arr->is_array() && !arr->as_array().empty() )
+		ns_common::value_to_string(arr->as_array().back(), res);
 	return result;
 }
 
-void *rust_get(void *result, void *arr, int64_t idx)
+std::string *rust_get(std::string *result, madc::value *arr, int64_t idx)
 {
-	std::string &res = *(std::string *)result;
-	MadArray &a = *(MadArray *)arr;
+	std::string &res = *result;
 	res.clear();
-	if ( idx >= 0 && (size_t)idx < a.data.size() )
-		ns_common::value_to_string(a.data[(size_t)idx], res);
+	if ( arr->is_array() && idx >= 0 && (size_t)idx < arr->as_array().size() )
+		ns_common::value_to_string(arr->as_array()[(size_t)idx], res);
 	return result;
 }
 
-void *rust_push(void *arr, void *value)
+void rust_push(madc::value *arr, const char *value)
 {
-	((MadArray *)arr)->push(MadValue(*(std::string *)value));
-	return arr;
+	ns_common::value_array_for_write(*arr, "rust::push")
+		.push_back(madc::value(rust_text_arg(value)));
 }
 
-void *rust_pop(void *result, void *arr)
+std::string *rust_pop(std::string *result, madc::value *arr)
 {
-	std::string &res = *(std::string *)result;
-	MadValue v = ((MadArray *)arr)->pop();
+	std::string &res = *result;
 	res.clear();
+	if ( !arr->is_array() || arr->as_array().empty() )
+		return result;
+	madc::value v = std::move(arr->array().back());
+	arr->array().pop_back();
 	ns_common::value_to_string(v, res);
 	return result;
 }
 
-void Program::add_rust_namespace()
-{
-	variable_map_t &rust_ns = namespace_map["rust"];
-	Variable *var;
-
-	var = addFunction("__rust_contains",          datatype_vec_t{DataType::dtINT64,  DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_contains);
-	if (var) rust_ns["contains"] = var;
-
-	var = addFunction("__rust_starts_with",       datatype_vec_t{DataType::dtINT64,  DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_starts_with);
-	if (var) rust_ns["starts_with"] = var;
-
-	var = addFunction("__rust_ends_with",         datatype_vec_t{DataType::dtINT64,  DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_ends_with);
-	if (var) rust_ns["ends_with"] = var;
-
-	var = addFunction("__rust_trim",              datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_trim);
-	if (var) rust_ns["trim"] = var;
-
-	var = addFunction("__rust_trim_start",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_trim_start);
-	if (var) rust_ns["trim_start"] = var;
-
-	var = addFunction("__rust_trim_end",          datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_trim_end);
-	if (var) rust_ns["trim_end"] = var;
-
-	var = addFunction("__rust_replace",           datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_replace);
-	if (var) rust_ns["replace"] = var;
-
-	var = addFunction("__rust_repeat",            datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)rust_repeat);
-	if (var) rust_ns["repeat"] = var;
-
-	var = addFunction("__rust_len",               datatype_vec_t{DataType::dtINT64,  DataType::dtSTRING}, (fVOIDFUNC)rust_len);
-	if (var) rust_ns["len"] = var;
-
-	var = addFunction("__rust_is_empty",          datatype_vec_t{DataType::dtINT64,  DataType::dtSTRING}, (fVOIDFUNC)rust_is_empty);
-	if (var) rust_ns["is_empty"] = var;
-
-	var = addFunction("__rust_split",             datatype_vec_t{DataType::dtARRAY,  DataType::dtARRAY, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_split);
-	if (var) rust_ns["split"] = var;
-
-	var = addFunction("__rust_split_whitespace",  datatype_vec_t{DataType::dtARRAY,  DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)rust_split_whitespace);
-	if (var) rust_ns["split_whitespace"] = var;
-
-	var = addFunction("__rust_join",              datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)rust_join);
-	if (var) rust_ns["join"] = var;
-
-	var = addFunction("__rust_first",             datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)rust_first);
-	if (var) rust_ns["first"] = var;
-
-	var = addFunction("__rust_last",              datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)rust_last);
-	if (var) rust_ns["last"] = var;
-
-	var = addFunction("__rust_get",               datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)rust_get);
-	if (var) rust_ns["get"] = var;
-
-	var = addFunction("__rust_push",              datatype_vec_t{DataType::dtARRAY,  DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)rust_push);
-	if (var) rust_ns["push"] = var;
-
-	var = addFunction("__rust_pop",               datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)rust_pop);
-	if (var) rust_ns["pop"] = var;
-
-	DBG(std::cout << "add_rust_namespace() registered rust:: with " << rust_ns.size() << " members" << std::endl);
+extern "C" {
+// Thin C-linkage wrappers for transpiler import resolution
+int64_t __rust_contains(const char *a, const char *b) { return rust_contains(a, b); }
+int64_t __rust_starts_with(const char *a, const char *b) { return rust_starts_with(a, b); }
+int64_t __rust_ends_with(const char *a, const char *b) { return rust_ends_with(a, b); }
+std::string *__rust_trim(std::string *a) { return rust_trim(a); }
+std::string *__rust_trim_start(std::string *a) { return rust_trim_start(a); }
+std::string *__rust_trim_end(std::string *a) { return rust_trim_end(a); }
+std::string *__rust_replace(std::string *a, const char *b, const char *c) { return rust_replace(a, b, c); }
+std::string *__rust_repeat(std::string *a, int64_t b) { return rust_repeat(a, b); }
+int64_t __rust_len(const char *a) { return rust_len(a); }
+int64_t __rust_is_empty(const char *a) { return rust_is_empty(a); }
+void __rust_split(madc::value *a, const char *b, const char *c) { rust_split(a, b, c); }
+void __rust_split_whitespace(madc::value *a, const char *b) { rust_split_whitespace(a, b); }
+std::string *__rust_join(std::string *a, madc::value *b, const char *c) { return rust_join(a, b, c); }
+std::string *__rust_first(std::string *a, madc::value *b) { return rust_first(a, b); }
+std::string *__rust_last(std::string *a, madc::value *b) { return rust_last(a, b); }
+std::string *__rust_get(std::string *a, madc::value *b, int64_t c) { return rust_get(a, b, c); }
+void __rust_push(madc::value *a, const char *b) { rust_push(a, b); }
+std::string *__rust_pop(std::string *a, madc::value *b) { return rust_pop(a, b); }
 }

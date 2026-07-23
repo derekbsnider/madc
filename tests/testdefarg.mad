@@ -1,0 +1,16 @@
+// Default function arguments: a call that omits a trailing argument fills it
+// from the parameter's default expression; arity matching uses the required
+// (no-default) count. Generic — no type special-casing.
+#include <stdio.h>
+
+int add(int a, int b = 10) { return a + b; }
+int scale(int x, int factor = 2, int bias = 100) { return x * factor + bias; }
+
+int main() {
+	printf("%d\n", add(5));          // 15 (b defaulted)
+	printf("%d\n", add(5, 20));      // 25
+	printf("%d\n", scale(3));        // 106 (factor=2, bias=100)
+	printf("%d\n", scale(3, 4));     // 112 (bias=100)
+	printf("%d\n", scale(3, 4, 1));  // 13
+	return 0;
+}

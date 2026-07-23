@@ -28,14 +28,26 @@ file indexes them explicitly in the "Rules" section below.
 
 ## Project summary
 
-**madc** — "My jit-Assembled Dialect of C" — is a C-like scripting
-language that JIT-compiles directly to x86-64 machine code using the
-asmjit library. Programs are compiled and executed in-process with no
-intermediate bytecode.
+**madc** — "My Advanced Dialect of C" — is a C-like scripting
+language. madc parses source into a `cir_node` tree — a
+c2mir-friendly C11 AST that serves as madc's IR — which c2mir then
+compiles to MIR for execution. (The original asmjit x86-64 JIT and the
+Gecko parser experiment were both removed; CIR → c2mir → MIR is now the
+sole backend.)
 
 The "Mad" in Mad-C: mix functions from multiple programming languages
 (PHP, Perl, Python, Ruby, JavaScript) in a single program via
 namespaces.
+
+**North-star vision & invariants — read `docs/plans/madc-vision-and-invariants.md`.**
+The long-term arc is madc as a *polyglot transpiler* (read source language/standard X,
+emit target Y, through the one `cir_node`/MC11-IR — chosen because most languages are
+themselves implemented in C/C++, so a faithful C/C++ AST is their common substrate).
+That doc holds the **invariants I1–I8** and a "does this block the vision?" checklist;
+every language change must satisfy them (no hardcoded standards/targets; every feature
+gated via the `--std=`/`LanguageStd` enum + the keyword/feature registry; one IR, one
+emitter; no special-casing). `docs/plans/cpp-support.md` is the compliance roadmap that
+serves this vision.
 
 Long-term goal: compile a realistic C89 codebase end-to-end. The
 concrete test case is SMAUG 1.8 (~158k LOC). The actual port lives
@@ -125,17 +137,29 @@ working on storage/federation code or any shared surface that may affect it.
 Source lives in `src/`, headers in `include/`, output in `bin/` and
 `obj/`.
 
-Build requires `g++` with C++11 support and asmjit v1.14 installed at
-`/usr/local/` (see "asmjit version notes" below).
+Build requires `clang++` (or `g++`) with C++11 support and the **madc MIR
+fork** (libmir + c2mir) at `/workspace/mir` —
+[github.com/derekbsnider/mir](https://github.com/derekbsnider/mir), branch
+**`develop`** (pinned at the commit in the repo-root `MIR_COMMIT` file — the
+single source of truth for the pin), **not** upstream
+MIR (it carries native C99 `_Complex`, `__attribute__((cleanup))`, the
+scope-depth auto-local layout fix, the struct/union statement-expression
+copy-out fix, ≤16-byte SIMD/vector (`vector_size`/`ext_vector_type`) support,
+and the SysV-varargs / `_Complex` / `_Alignas`
+ABI fixes the CIR backend depends on). The fork's `develop` tracks madc's
+`develop` and its `master` tracks madc's `master`. The fork is released as
+`<upstream-base>-madc.<madc-version>` (e.g. `1.0-madc.0.38.0`): the
+repo-root `MIR_VERSION` file declares the fork release madc depends on,
+and each madc release that ships fork changes cuts the matching annotated
+`v<MIR_VERSION>` tag on the fork (see `.claude/rules/build.md`).
 
 ## Architecture
 
 | Component | File                       | Role                                                          |
 |-----------|----------------------------|---------------------------------------------------------------|
-| Lexer     | `src/lexer.cpp`            | Tokenizes `.mad` source; handles `#include`, `#load`           |
-| Parser    | `src/parser.cpp`           | Builds AST; struct/class/namespace resolution                  |
-| Compiler  | `src/compiler.cpp`         | Walks AST, emits x86 via asmjit; stream I/O, dlcall            |
-| Typesafe  | `src/typesafe.cpp`         | Type-safe register helpers (Gp/Xmm moves, arithmetic)          |
+| Lexer       | `src/lexer.cpp`          | Tokenizes `.mad` source; handles `#include`, `#load`           |
+| Parser      | `src/parser.cpp`         | Builds AST; struct/class/namespace resolution                  |
+| CIR builder | `src/cir_builder.cpp`    | Lowers the AST to a `cir_node` tree (c2mir-friendly C11 AST), the IR fed to c2mir → MIR |
 | php::     | `src/ns_php.cpp`           | 36 PHP-style string + array functions                          |
 | perl::    | `src/ns_perl.cpp`          | 21 Perl-style functions (chop, grep, glob, split)              |
 | python::  | `src/ns_python.cpp`        | 16 Python-style functions (title, center, zfill, format)       |
@@ -144,26 +168,13 @@ Build requires `g++` with C++11 support and asmjit v1.14 installed at
 | STL       | `src/ns_stl.cpp`           | STL container helpers: `vector<T>`, `map<K,V>`, `set<T>`, `list<T>` |
 | Headers   | `include/madc.h`, `include/tokens.h`, `include/datadef.h`, `include/datatokens.h` | Core data structures |
 
-Execution flow: `madc.cpp` → lexer → parser → compiler → JIT execute.
+Execution flow: `madc.cpp` → lexer → parser → CIR builder (`cir_node`)
+→ c2mir → MIR execute.
 
-## asmjit version notes
+## Backend note
 
-The project uses the **manually installed** asmjit v1.14 at
-`/usr/local/` (NOT the apt-installed package at
-`/lib/x86_64-linux-gnu/`). The Makefile explicitly passes
-`-L/usr/local/lib -Wl,-rpath,/usr/local/lib` to link the right one.
-Headers are at `/usr/local/include/asmjit/`.
-
-Key v1.14 migration points (full list in `docs/rules/asmjit-api.md`):
-
-- `BaseReg::kTypeGp*` → `RegType::kGp*`
-- `BaseReg::kGroupVec` / `kGroupGp` → `RegGroup::kVec` / `kGp`
-- `ConstPool::kScopeLocal` → `ConstPoolScope::kLocal`
-- `CallConv::kIdHost` → `CallConvId::kCDecl`
-- `cc.call(target, sig)` → `cc.invoke(&node, target, sig)`
-- `Imm::i64()` → `Imm::value()`
-- `Operand::isEqual()` → `Operand::equals()`
-- `FormatOptions::kFlag*` → `FormatFlags::k*`
+asmjit (the original x86-64 JIT) was removed. CIR → c2mir → MIR is the
+sole backend; the MIR library (libmir + c2mir) lives at `/workspace/mir`.
 
 ## Testing
 
@@ -191,7 +202,7 @@ playbook.
 
 - `claude_status.json` is the canonical current snapshot.
 - `madc-knowledge` is the authoritative project-memory source.
-- `claude_status.json`, `TODO.md`, and `CHANGELOG.md` are mirrored
+- `claude_status.json`, `docs/plans/ROADMAP.md`, and `CHANGELOG.md` are mirrored
   repo surfaces that must stay in sync with it.
 - `docs/test-status.md` is the detailed test baseline.
 - Live git state and actual build/test results remain operational truth
@@ -221,9 +232,8 @@ passing work between agents.
 - **Multi-return functions** use a hidden `__retbuf` parameter — a
   pointer to caller-allocated stack memory where return values are
   written.
-- **Ternary operator** uses a stack-slot merge: both branches of
-  `cond ? a : b` write to the same stack location, avoiding phi
-  nodes. See `docs/rules/ternary.md` for why.
+- **Ternary operator** `cond ? a : b` lowers to a C11 conditional in the
+  `cir_node` tree; c2mir/MIR own the branch/merge codegen.
 
 ## Rules
 
@@ -253,6 +263,7 @@ history, or spam agent-permission prompts. Apply them unconditionally.
 | [docs-vs-rules.md](.claude/rules/docs-vs-rules.md) |   20 | Bare rules in `.claude/rules/`, reasoning in `docs/rules/` — never duplicate content |
 | [session-handoff.md](.claude/rules/session-handoff.md) |   19 | KG-first hand-off flow, hypothesis-first execution, concise hand-off note |
 | [knowledge-graph.md](.claude/rules/knowledge-graph.md) |   14 | KG as authoritative project memory, mirrored back into repo files |
+| [scratch-files.md](.claude/rules/scratch-files.md) |     8 | All scratch / temp / reducer files go in `tmp/` (gitignored) — never in `tests/` or repo root |
 
 Shell-command hygiene (single commands, no `&&` chains) is a P1 rule
 too; it's stated in the "Shell command hygiene" section of this file.
@@ -266,9 +277,12 @@ no matter how small.
 |--------------------------------------------------|------:|------------------------------------------------|
 | [design-principles.md](.claude/rules/design-principles.md) |  59 | Separation of concerns, high cohesion / low coupling, OOP, no hard-coding specifics into general machinery |
 | [pre-edit-checklist.md](.claude/rules/pre-edit-checklist.md) |  19 | Trace data flow, search for existing handling, identify write-back target — before every edit (Top 10 Rule #10) |
-| [cpp-first-api.md](.claude/rules/cpp-first-api.md) |  10 | Design embedding and `libmadc` APIs as C++ first; keep C shims thin and late |
+| [cpp-first-api.md](.claude/rules/cpp-first-api.md) |  20 | Design embedding and `libmadc` APIs as C++ first; keep C shims thin and late; extern-C exports are the C-host API only — script-facing namespace publics resolve mangled-direct |
 | [helper-methods.md](.claude/rules/helper-methods.md) |  12 | Extract ad-hoc checks into named helpers      |
+| [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
+| [parse-once.md](.claude/rules/parse-once.md)     |    24 | New C++ support resolves on the parse-once generic spine (g++ tsubst model), NEVER via re-parse; re-parse is a transitional fallback slated for deletion at suite-wide burndown=0; every change moves the `[why:]` fallback count down or flat |
 | [code-style.md](.claude/rules/code-style.md)     |     9 | C++11, tabs, header guards, naming             |
+| [enum-over-strings.md](.claude/rules/enum-over-strings.md) | 15 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
 
 ### P3 — Build, test, and validation (gate "done")
 
@@ -289,24 +303,23 @@ editing — don't try to memorize all of them.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
-| [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 30 | Compare with `gcc -S` first, fix at deepest layer, operator self-determination |
-| [asmjit-api.md](.claude/rules/asmjit-api.md)     |    32 | asmjit v1.14 API dos / don'ts                  |
+| [mc11-ir.md](.claude/rules/mc11-ir.md)           |    26 | **SET IN STONE.** `cir_node` = MC11-IR: derives from c2mir `node_t` (c2mir sees lowered) AND carries originating tokens + parse tree + file/line/col (madc sees high-level). It is BOTH; render targets share the `--std=` enum |
+| [backend-strategy.md](.claude/rules/backend-strategy.md) | 30 | **Forward trajectory (ADR 0001).** c2mir/C-AST IR is the sole backend; direct-MIR is a scalpel for runtime internals + REPL/debug tier; `--emit=c11` is first-class; CIR coverage parity gates promotion to master |
+| [lowering-vs-raising.md](.claude/rules/lowering-vs-raising.md) | 39 | Where a missing feature gets fixed: Tier 1 lower/resolve in madc (default) · Tier 2 raise c2mir for semantic primitives · Tier 3 raise MIR for floor gaps (SIMD). Verify c2mir's real surface — stmt-exprs/_Generic/_Complex are supported |
+| [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 44 | Compare with `gcc -S -fverbose-asm` first, fix at deepest layer, operator self-determination |
+| [clang-methodology.md](.claude/rules/clang-methodology.md) | 46 | Same methodology against clang, the co-equal canon; cross-check lowering with both gcc and clang |
 | [debug.md](.claude/rules/debug.md)               |    18 | `DBG(x)` macro usage and rules                 |
-| [regdp-reset.md](.claude/rules/regdp-reset.md)   |    23 | Reset `regdp` before sub-compiles in loops / conditionals |
-| [struct-compiler.md](.claude/rules/struct-compiler.md) |  40 | `addOffset` vs `setOffset`, string-member lifecycle |
-| [class-methods.md](.claude/rules/class-methods.md) |    26 | Name mangling, `__this`, unqualified member access |
-| [multi-return.md](.claude/rules/multi-return.md) |    33 | `__retbuf` injection, multi-return call sites  |
-| [ternary.md](.claude/rules/ternary.md)           |    30 | Ternary parsing + stack-slot merge pattern     |
-| [embedded-headers.md](.claude/rules/embedded-headers.md) |  53 | `include/madc/` headers, lazy registration, `#load` |
-| [typed-register-ir.md](.claude/rules/typed-register-ir.md) |  32 | IR layer between tokens and asmjit; Load/Store/Coerce; per-token migration |
-| [gcc-parity.md](.claude/rules/gcc-parity.md)     |     8 | Use GCC as the reference baseline for JIT vs EXE / AOT parity work |
+| [c11-transpiler.md](.claude/rules/c11-transpiler.md) | 70 | `--emit=c11` lowers every C++ feature to strict C11; c2mir limits, lowering patterns, emission hygiene |
+| [embedded-headers.md](.claude/rules/embedded-headers.md) |  67 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns) |
+| [gcc-parity.md](.claude/rules/gcc-parity.md)     |    15 | GCC as a reference baseline (verbose `-fverbose-asm` disassembly) for codegen / type / runtime parity |
+| [clang-parity.md](.claude/rules/clang-parity.md) |    16 | clang as the co-equal reference baseline (second lowering opinion); both gcc and clang are canon |
 
 ### Total rule footprint
 
-- **24 rules, 548 lines** in `.claude/rules/`.
-- **This file (AGENTS.md): ~295 lines** — loaded by Claude via
+- **28 rules, 761 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~363 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~843 lines.**
+- **Grand total loaded by Claude Code per turn: ~1133 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

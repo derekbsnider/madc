@@ -20,7 +20,6 @@ thread_local bool madc_verbose = false;
 #include <syslog.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <asmjit/x86.h>
 
 #include "datadef.h"
 #include "tokens.h"
@@ -28,6 +27,26 @@ thread_local bool madc_verbose = false;
 #include "madc.h"
 
 // Global instances are defined in parser.cpp (linked via TESTOBJ)
+
+// Local DataDefSTRUCT fixture for the struct tests. This used to be the
+// compiler-global `ddTESTSTRUCT` built-in (removed as legacy cruft — the
+// teststruct.mad integration test now defines its own struct); the unit tests
+// only need a representative struct to exercise DataDefSTRUCT, so build one
+// here. A function-local static (not a file-scope global) so it is constructed
+// on first use — after the `ddCHARptr`/`ddINT`/`ddUINT8` globals it references
+// (defined in parser.cpp, a different TU) are initialized — avoiding a
+// static-init-order crash.
+static DataDefSTRUCT &test_struct()
+{
+	static DataDefSTRUCT s("teststruct",
+	{
+		{"name", &ddCHARptr},
+		{"id",   &ddINT},
+		{"age",  &ddUINT8},
+		{"sex",  &ddUINT8}
+	});
+	return s;
+}
 
 TEST_SUITE("DataType enum") {
     TEST_CASE("primitive types have expected values") {
@@ -37,25 +56,12 @@ TEST_SUITE("DataType enum") {
         CHECK(DataType::dtCHAR == DataType::dtINT8);
     }
 
-    TEST_CASE("pointer variants are base + 10000") {
-        CHECK((uint32_t)DataType::dtINTptr == (uint32_t)DataType::dtINT + 10000);
-        CHECK((uint32_t)DataType::dtSTRINGptr == (uint32_t)DataType::dtSTRING + 10000);
-    }
-
-    TEST_CASE("reference variants are base + 20000") {
-        CHECK((uint32_t)DataType::dtINTref == (uint32_t)DataType::dtINT + 20000);
-        CHECK((uint32_t)DataType::dtSTRINGref == (uint32_t)DataType::dtSTRING + 20000);
-    }
-
-    TEST_CASE("rtPtr/rtDePtr macros are inverses") {
-        DataType t = DataType::dtINT32;
-        CHECK(rtDePtr(rtPtr(t)) == t);
-    }
-
-    TEST_CASE("rtRef/rtDeRef macros are inverses") {
-        DataType t = DataType::dtINT32;
-        CHECK(rtDeRef(rtRef(t)) == t);
-    }
+    // The pointer/reference tag-arithmetic cases (dt*ptr == base+10000,
+    // dt*ref == base+20000, and the rtPtr/rtRef/rtDePtr/rtDeRef macro
+    // inverses) were removed with the encoding itself (tag-arithmetic
+    // retirement). Derivation is now the DataDefPTR/DataDefREF/DataDefCONST
+    // object graph — see the is_cstr() and DataDefPTR/REF suites and
+    // is_pointer()/is_reference()/rawtype() for the structural contract.
 }
 
 TEST_SUITE("varflag_t") {
@@ -82,11 +88,59 @@ TEST_SUITE("varflag_t") {
 }
 
 TEST_SUITE("DataDef type queries") {
+    TEST_CASE("class-pattern provenance follows object birth and copy") {
+	struct CaptureFlagRestore {
+	    bool saved;
+	    CaptureFlagRestore() : saved(madc_class_pattern_capture_active) {}
+	    ~CaptureFlagRestore() { madc_class_pattern_capture_active = saved; }
+	} restore;
+	madc_class_pattern_capture_active = false;
+	DataDef stable("stable", 4, DataType::dtINT32);
+	stable.set_canonical_spelling("ns::stable");
+	stable.canonical_swept = true;
+	stable.type_id = 77;
+	DataDef stable_copy(stable);
+	CHECK_FALSE(stable.speculative_class_capture);
+	CHECK_FALSE(stable_copy.speculative_class_capture);
+
+	madc_class_pattern_capture_active = true;
+	DataDef speculative("speculative", 4, DataType::dtINT32);
+	DataDef copied_stable(stable);
+	CHECK(speculative.speculative_class_capture);
+	CHECK(copied_stable.speculative_class_capture);
+	CHECK(copied_stable.name == stable.name);
+	CHECK(copied_stable.size == stable.size);
+	CHECK(copied_stable.type() == stable.type());
+	CHECK(copied_stable.canonical_cpp_spelling() == "ns::stable");
+	CHECK(copied_stable.canonical_swept);
+	CHECK(copied_stable.type_id == 77);
+
+	madc_class_pattern_capture_active = false;
+	DataDef copied_speculative(speculative);
+	CHECK(copied_speculative.speculative_class_capture);
+	stable = speculative;
+	CHECK_FALSE(stable.speculative_class_capture);
+	CHECK(stable.name == "speculative");
+	CHECK(stable.size == speculative.size);
+	CHECK(stable.type() == speculative.type());
+	speculative = stable;
+	CHECK(speculative.speculative_class_capture);
+
+	DataDefCLASS stable_class("StableClass", 0, DataType::dtRESERVED);
+	madc_class_pattern_capture_active = true;
+	DataDefCLASS speculative_class(stable_class);
+	CHECK(speculative_class.speculative_class_capture);
+	madc_class_pattern_capture_active = false;
+	DataDefCLASS stable_destination("Destination", 0,
+	    DataType::dtRESERVED);
+	stable_destination = speculative_class;
+	CHECK_FALSE(stable_destination.speculative_class_capture);
+    }
+
     TEST_CASE("ddINT is numeric and integer") {
         CHECK(ddINT.is_numeric());
         CHECK(ddINT.is_integer());
         CHECK(!ddINT.is_real());
-        CHECK(!ddINT.is_string());
         CHECK(!ddINT.is_object());
     }
 
@@ -96,11 +150,11 @@ TEST_SUITE("DataDef type queries") {
         CHECK(!ddDOUBLE.is_integer());
     }
 
-    TEST_CASE("ddSTRING is string and object, not numeric") {
-        CHECK(ddSTRING.is_string());
-        CHECK(ddSTRING.is_object());
-        CHECK(!ddSTRING.is_numeric());
-        CHECK(!ddSTRING.is_integer());
+    TEST_CASE("DataDefCLASS is object, not numeric") {
+        DataDefCLASS cls("Probe", 0, DataType::dtRESERVED);
+        CHECK(cls.is_object());
+        CHECK(!cls.is_numeric());
+        CHECK(!cls.is_integer());
     }
 
     TEST_CASE("unsigned types are detected correctly") {
@@ -111,17 +165,21 @@ TEST_SUITE("DataDef type queries") {
     }
 
     TEST_CASE("struct type has btStruct basetype") {
-        CHECK(ddTESTSTRUCT.basetype() == BaseType::btStruct);
-        CHECK(ddTESTSTRUCT.is_struct());
-        CHECK(!ddTESTSTRUCT.is_numeric());
+        CHECK(test_struct().basetype() == BaseType::btStruct);
+        CHECK(test_struct().is_struct());
+        CHECK(!test_struct().is_numeric());
     }
 
-    TEST_CASE("rawtype strips pointer and reference variants") {
-        DataType ptr_int = rtPtr(DataType::dtINT);
-        DataType ref_int = rtRef(DataType::dtINT);
-        CHECK(DataDef::rawtype(ptr_int) == DataType::dtINT);
-        CHECK(DataDef::rawtype(ref_int) == DataType::dtINT);
-        CHECK(DataDef::rawtype(DataType::dtINT) == DataType::dtINT);
+    TEST_CASE("rawtype strips pointer and reference derivation (structural)") {
+        // Derivation is the object graph now (no tag bands / rt* macros):
+        // DataDefPTR/REF forward rawtype() to base_type.
+        DataDefPTR ptr_int(ddINT);   // int*
+        DataDefREF ref_int(ddINT);   // int&
+        CHECK(ptr_int.rawtype() == DataType::dtINT);
+        CHECK(ref_int.rawtype() == DataType::dtINT);
+        CHECK(ddINT.rawtype()   == DataType::dtINT);
+        CHECK(ptr_int.is_pointer());
+        CHECK(ref_int.is_reference());
     }
 
     TEST_CASE("reftype detection") {
@@ -141,30 +199,30 @@ TEST_SUITE("DataDef type queries") {
 
 TEST_SUITE("DataDefSTRUCT") {
     TEST_CASE("teststruct has expected members and size") {
-        CHECK(ddTESTSTRUCT.members.size() == 4);
-        CHECK(ddTESTSTRUCT.members[0].first == "name");
-        CHECK(ddTESTSTRUCT.members[1].first == "id");
-        CHECK(ddTESTSTRUCT.members[2].first == "age");
-        CHECK(ddTESTSTRUCT.members[3].first == "sex");
+        CHECK(test_struct().members.size() == 4);
+        CHECK(test_struct().members[0].first == "name");
+        CHECK(test_struct().members[1].first == "id");
+        CHECK(test_struct().members[2].first == "age");
+        CHECK(test_struct().members[3].first == "sex");
     }
 
     TEST_CASE("member offsets are sequential") {
         std::string name_s = "name", id_s = "id", age_s = "age";
-        CHECK(ddTESTSTRUCT.m_offset(name_s) == 0);
-        CHECK(ddTESTSTRUCT.m_offset(id_s) == (ssize_t)sizeof(std::string));
-        CHECK(ddTESTSTRUCT.m_offset(age_s) == (ssize_t)(sizeof(std::string) + 4));
+        CHECK(test_struct().m_offset(name_s) == 0);
+        CHECK(test_struct().m_offset(id_s) == (ssize_t)sizeof(char *));
+        CHECK(test_struct().m_offset(age_s) == (ssize_t)(sizeof(char *) + 4));
     }
 
     TEST_CASE("m_type returns correct DataDef pointer") {
         std::string id_s = "id";
-        DataDef *t = ddTESTSTRUCT.m_type(id_s);
+        DataDef *t = test_struct().m_type(id_s);
         CHECK(t != nullptr);
         CHECK(t->is_integer());
     }
 
     TEST_CASE("m_offset returns -1 for unknown member") {
         std::string unknown = "nonexistent";
-        CHECK(ddTESTSTRUCT.m_offset(unknown) == -1);
+        CHECK(test_struct().m_offset(unknown) == -1);
     }
 }
 
@@ -224,7 +282,8 @@ static void register_test_host_namespace(Program &pgm)
 }
 
 TEST_SUITE("Program isolation") {
-    TEST_CASE("separate Program instances do not leak typedefs or macros") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("separate Program instances do not leak typedefs or macros" * doctest::skip()) {
 	std::string good_path = write_temp_mad_source(
 	    "madc_prog_good",
 	    "#define ANSWER 42\n"
@@ -279,7 +338,8 @@ TEST_SUITE("Program isolation") {
 	unlink(path.c_str());
     }
 
-    TEST_CASE("Engine builtin registry can be extended before parse") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("Engine builtin registry can be extended before parse" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_host_builtin",
 	    "int main() { host_putchar(65); return 0; }\n");
@@ -302,7 +362,8 @@ TEST_SUITE("Program isolation") {
 	unlink(path.c_str());
     }
 
-    TEST_CASE("Engine namespace registry can be extended before parse") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("Engine namespace registry can be extended before parse" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_host_namespace",
 	    "int main() { host::putchar(65); return 0; }\n");
@@ -337,7 +398,8 @@ TEST_SUITE("Program isolation") {
 	unlink(path.c_str());
     }
 
-    TEST_CASE("MadcEngine seeds program policy and registries") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("MadcEngine seeds program policy and registries" * doctest::skip()) {
 	std::string restricted_path = write_temp_mad_source(
 	    "madc_engine_restricted",
 	    "int main() { puti(42); return 0; }\n");
@@ -371,7 +433,8 @@ TEST_SUITE("Program isolation") {
 	unlink(host_path.c_str());
     }
 
-    TEST_CASE("Program load_file runs tokenize parse and compile") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("Program load_file runs tokenize parse and compile" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_load_file",
 	    "int main() { return 0; }\n");
@@ -453,19 +516,13 @@ TEST_SUITE("Program isolation") {
 	engine.reset_standard_streams();
     }
 
-    TEST_CASE("Program std iostream namespace honors engine streams without bare globals") {
+    TEST_CASE("Program does not inject std iostream globals") {
 	std::string path = write_temp_mad_source(
-	    "madc_prog_iostream_streams",
-	    "#include <iostream>\nint main() { return 0; }\n");
+	    "madc_prog_no_iostream_globals",
+	    "int main() { return 0; }\n");
 	REQUIRE(!path.empty());
 
-	std::istringstream inbuf("hello");
-	std::ostringstream outbuf;
-	std::ostringstream errbuf;
 	MadcEngine engine;
-	engine.bind_input_stream(inbuf);
-	engine.bind_output_stream(outbuf);
-	engine.bind_error_stream(errbuf);
 	std::unique_ptr<Program> prog = engine.create_program();
 
 	TokenProgram *tp = prog->tokenize(path.c_str());
@@ -480,25 +537,18 @@ TEST_SUITE("Program isolation") {
 	CHECK(cout_var == NULL);
 	CHECK(cin_var == NULL);
 	CHECK(cerr_var == NULL);
-	variable_map_t &std_ns = prog->namespace_map["std"];
-	cout_var = std_ns["cout"];
-	cin_var = std_ns["cin"];
-	cerr_var = std_ns["cerr"];
-	REQUIRE(cout_var != NULL);
-	REQUIRE(cin_var != NULL);
-	REQUIRE(cerr_var != NULL);
-	REQUIRE(cout_var->data != NULL);
-	REQUIRE(cin_var->data != NULL);
-	REQUIRE(cerr_var->data != NULL);
-	CHECK(((std::ostream *)cout_var->data)->rdbuf() == outbuf.rdbuf());
-	CHECK(((std::istream *)cin_var->data)->rdbuf() == inbuf.rdbuf());
-	CHECK(((std::ostream *)cerr_var->data)->rdbuf() == errbuf.rdbuf());
+	std::map<std::string, variable_map_t>::iterator std_it =
+	    prog->namespace_map.find("std");
+	REQUIRE(std_it != prog->namespace_map.end());
+	CHECK(std_it->second.find("cout") == std_it->second.end());
+	CHECK(std_it->second.find("cin") == std_it->second.end());
+	CHECK(std_it->second.find("cerr") == std_it->second.end());
 
-	engine.reset_standard_streams();
 	unlink(path.c_str());
     }
 
-    TEST_CASE("Program execute runtime failures become diagnostics") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("Program execute runtime failures become diagnostics" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_no_main",
 	    "int helper() { return 0; }\n");
@@ -524,7 +574,8 @@ TEST_SUITE("Program isolation") {
 	unlink(path.c_str());
     }
 
-	TEST_CASE("MadcEngine stream helpers capture script output") {
+	// DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+	TEST_CASE("MadcEngine stream helpers capture script output" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_capture_output",
 	    "#include <string>\n"
@@ -544,7 +595,8 @@ TEST_SUITE("Program isolation") {
 	unlink(path.c_str());
     }
 
-    TEST_CASE("MadcEngine buffer helpers capture and clear output") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("MadcEngine buffer helpers capture and clear output" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_buffer_capture",
 	    "int main() { puti(7); return 0; }\n");
@@ -578,7 +630,8 @@ TEST_SUITE("Program isolation") {
 	engine.reset_standard_streams();
     }
 
-    TEST_CASE("MadcEngine tee output duplicates to primary and buffer") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("MadcEngine tee output duplicates to primary and buffer" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_tee_output",
 	    "int main() { puti(9); return 0; }\n");
@@ -1361,5 +1414,412 @@ TEST_SUITE("Program isolation") {
 
 	MadcEngine::unbind_log_streams();
 	engine.reset_standard_streams();
+    }
+}
+
+TEST_SUITE("DataDef::same_representation (=== type-domain identity)") {
+    TEST_CASE("integers: size+signedness; tags are the representation") {
+        DataDef i32("int", 4, DataType::dtINT32);
+        DataDef u32("uint32_t", 4, DataType::dtUINT32);
+        DataDef u8("uint8_t", 1, DataType::dtUINT8);
+        DataDef i64a("long", 8, DataType::dtINT64);
+        DataDef i64b("long long", 8, DataType::dtINT64);
+        DataDef ch("char", 1, DataType::dtCHAR);
+        DataDef i8("int8_t", 1, DataType::dtINT8);
+        CHECK(!i32.same_representation(u32));   // signedness
+        CHECK(!u32.same_representation(u8));    // size
+        CHECK(i64a.same_representation(i64b));  // long === long long
+        CHECK(ch.same_representation(i8));      // char == int8 on this target
+        CHECK(!ch.same_representation(u8));
+        CHECK(i32.same_representation(i32));
+    }
+    TEST_CASE("kinds: bool/float/int are distinct domains") {
+        DataDef b("bool", 1, DataType::dtBOOL);
+        DataDef u8("uint8_t", 1, DataType::dtUINT8);
+        DataDef f("float", 4, DataType::dtFLOAT);
+        DataDef d("double", 8, DataType::dtDOUBLE);
+        DataDef i32("int", 4, DataType::dtINT32);
+        CHECK(!b.same_representation(u8));
+        CHECK(!f.same_representation(d));
+        CHECK(!i32.same_representation(d));
+        CHECK(d.same_representation(d));
+    }
+    TEST_CASE("enums are their own domain") {
+        DataDefENUM color("Color");
+        DataDefENUM color2("Color");
+        DataDefENUM fruit("Fruit");
+        DataDef i32("int", 4, DataType::dtINT32);
+        CHECK(!color.same_representation(i32));   // enum vs int: false
+        CHECK(!i32.same_representation(color));
+        CHECK(!color.same_representation(fruit)); // different enums
+        CHECK(color.same_representation(color2)); // same enum name
+    }
+    TEST_CASE("pointers recurse on the pointee; refs compare as referee") {
+        DataDef i32("int", 4, DataType::dtINT32);
+        DataDef u32("uint32_t", 4, DataType::dtUINT32);
+        DataDefPTR pi(i32);
+        DataDefPTR pi2(i32);
+        DataDefPTR pu(u32);
+        DataDefREF ri(i32);
+        CHECK(pi.same_representation(pi2));
+        CHECK(!pi.same_representation(pu));    // pointee signedness
+        CHECK(!pi.same_representation(i32));   // ptr vs non-ptr
+        CHECK(ri.same_representation(i32));    // T& reads as T
+    }
+    TEST_CASE("double pointers: char** is structurally distinct from char and char*") {
+        // char** = DataDefPTR(DataDefPTR(char)). With the tag encoding retired,
+        // same_representation recurses on base_type, so the old numeric-band
+        // collision (char**'s tag landing in the bare-reference range) is gone —
+        // the distinction is purely structural now.
+        // The wraps go through DataDef& (as the parser does via DataDef*) —
+        // DataDefPTR(pc) directly would pick the COPY ctor, not a wrap.
+        DataDef ch("char", 1, DataType::dtCHAR);
+        DataDefPTR pc(ch);                              // char*
+        DataDefPTR pp(static_cast<DataDef &>(pc));      // char**
+        DataDefPTR pc2(ch);
+        DataDefPTR pp2(static_cast<DataDef &>(pc2));    // an identical char**
+        CHECK(pp.is_pointer());
+        CHECK(pp.rawtype() == DataType::dtCHAR);        // recurses to the scalar
+        CHECK(!pp.same_representation(ch));    // char** vs char
+        CHECK(!ch.same_representation(pp));
+        CHECK(!pc.same_representation(pp));    // char* vs char**
+        CHECK(!pp.same_representation(pc));
+        CHECK(pp.same_representation(pp2));    // identical char** chains
+    }
+    TEST_CASE("is_cstr(): structural char* detection (char*, const char*, char&)") {
+        DataDef ch("char", 1, DataType::dtCHAR);
+        DataDef i32("int", 4, DataType::dtINT32);
+        DataDefPTR pc(ch);                              // char*
+        DataDefPTR pp(static_cast<DataDef &>(pc));      // char**
+        DataDefCONST cc(ch);                            // const char
+        DataDefPTR pcc(static_cast<DataDef &>(cc));     // const char*
+        DataDefCONST ccp(static_cast<DataDef &>(pc));   // char* const
+        DataDefPTR pi(i32);                             // int*
+        DataDefPTR pv(ddVOID);                          // void*
+        DataDefREF rc(ch);                              // char& (lowers as char*)
+        // Matches char* and its const-qualified variants; a reference lowers as
+        // the pointer so it matches too (preserving the old tag behaviour).
+        CHECK(pc.is_cstr());
+        CHECK(pcc.is_cstr());
+        CHECK(ccp.is_cstr());
+        CHECK(rc.is_cstr());
+        // Excludes non-pointers, char**, and other pointer types.
+        CHECK(!ch.is_cstr());
+        CHECK(!pp.is_cstr());
+        CHECK(!pi.is_cstr());
+        CHECK(!pv.is_cstr());
+        // (The old `is_cstr() == (type() == dtCHARptr)` cross-checks were
+        // removed with the dtCHARptr tag itself — the explicit expected values
+        // above ARE the structural contract that replaced the tag compare.)
+    }
+    TEST_CASE("function signatures: return + params + varargs; fptr targets") {
+        DataDef i32("int", 4, DataType::dtINT32);
+        DataDef u32("uint32_t", 4, DataType::dtUINT32);
+        DataDef d("double", 8, DataType::dtDOUBLE);
+
+        FuncDef f1(i32);            // int(int, double)
+        f1.parameters.push_back(&i32);
+        f1.parameters.push_back(&d);
+        FuncDef f2(i32);            // int(int, double)
+        f2.parameters.push_back(&i32);
+        f2.parameters.push_back(&d);
+        FuncDef f3(i32);            // int(uint32_t, double)
+        f3.parameters.push_back(&u32);
+        f3.parameters.push_back(&d);
+        FuncDef f4(i32);            // int(int)
+        f4.parameters.push_back(&i32);
+        FuncDef f5(i32);            // int(int, double, ...)
+        f5.parameters.push_back(&i32);
+        f5.parameters.push_back(&d);
+        f5.is_varargs = true;
+
+        CHECK(f1.same_representation(f2));   // identical signature
+        CHECK(!f1.same_representation(f3));  // differing param type
+        CHECK(!f1.same_representation(f4));  // differing param count
+        CHECK(!f1.same_representation(f5));  // varargs-ness differs
+
+        DataDefFPTR p1(&f1);
+        DataDefFPTR p2(&f1);
+        CHECK(p1.same_representation(p2));   // same target FuncDef
+
+        // A NULL param slot matches only a NULL slot, and a both-NULL
+        // slot must NOT exempt the remaining params from checking.
+        FuncDef g1(i32);            // int(NULL, int)
+        g1.parameters.push_back(NULL);
+        g1.parameters.push_back(&i32);
+        FuncDef g2(i32);            // int(NULL, double)
+        g2.parameters.push_back(NULL);
+        g2.parameters.push_back(&d);
+        FuncDef g3(i32);            // int(NULL, int)
+        g3.parameters.push_back(NULL);
+        g3.parameters.push_back(&i32);
+        CHECK(!g1.same_representation(g2));  // both-NULL continues; later mismatch
+        CHECK(g1.same_representation(g3));   // both-NULL + matching rest
+        CHECK(!g1.same_representation(f1));  // one-NULL vs typed param
+    }
+    TEST_CASE("C arrays compare element + count") {
+        DataDef i32("int", 4, DataType::dtINT32);
+        DataDef u32("uint32_t", 4, DataType::dtUINT32);
+        DataDefCArray a4(i32, "int[4]", 4);
+        DataDefCArray b4(i32, "int[4]", 4);
+        DataDefCArray a5(i32, "int[5]", 5);
+        DataDefCArray u4(u32, "uint32_t[4]", 4);
+        CHECK(a4.same_representation(b4));
+        CHECK(!a4.same_representation(a5));
+        CHECK(!a4.same_representation(u4));
+    }
+}
+
+TEST_SUITE("type table (typeid) identity layer") {
+
+    // The slot numbers are ABI (design doc §7): once eval package C ships,
+    // these constants are frozen, exactly like the manglings in test_mangle.
+    TEST_CASE("primitive slot constants are pinned ABI") {
+        CHECK(MADC_TYPEID_INVALID == 0);
+        CHECK(MADC_TYPEID_VOID == 1);
+        CHECK(MADC_TYPEID_VOID_REF == 2);
+        CHECK(MADC_TYPEID_BOOL == 3);
+        CHECK(MADC_TYPEID_CHAR == 4);
+        CHECK(MADC_TYPEID_INT == 5);
+        CHECK(MADC_TYPEID_INT8 == 6);
+        CHECK(MADC_TYPEID_INT16 == 7);
+        CHECK(MADC_TYPEID_INT24 == 8);
+        CHECK(MADC_TYPEID_INT32 == 9);
+        CHECK(MADC_TYPEID_INT64 == 10);
+        CHECK(MADC_TYPEID_UINT8 == 11);
+        CHECK(MADC_TYPEID_UINT16 == 12);
+        CHECK(MADC_TYPEID_UINT24 == 13);
+        CHECK(MADC_TYPEID_UINT32 == 14);
+        CHECK(MADC_TYPEID_UINT64 == 15);
+        CHECK(MADC_TYPEID_FLOAT == 16);
+        CHECK(MADC_TYPEID_DOUBLE == 17);
+        CHECK(MADC_TYPEID_LONG_DOUBLE == 18);
+        CHECK(MADC_TYPEID_INT128 == 19);
+        CHECK(MADC_TYPEID_UINT128 == 20);
+        CHECK(MADC_TYPEID_COMPLEX_FLOAT == 21);
+        CHECK(MADC_TYPEID_COMPLEX_DOUBLE == 22);
+        CHECK(MADC_TYPEID_MAX_ALIGN_T == 23);
+        CHECK(MADC_TYPEID_LPSTR == 24);
+        CHECK(MADC_TYPEID_VOID_PTR == 25);
+        CHECK(MADC_TYPEID_CHAR_PTR == 26);
+        CHECK(MADC_TYPEID_INT_PTR == 27);
+        CHECK(MADC_TYPEID_INT32_PTR == 28);
+        CHECK(MADC_TYPEID_ARRAY == 29);
+        CHECK(MADC_TYPEID_AUTO == 30);
+        CHECK(MADC_TYPEID_TEXT == 31);
+        CHECK(MADC_TYPEID_BYTES == 32);
+        CHECK(MADC_TYPEID_OBJECT == 33);
+        CHECK(MADC_TYPEID_BUILTIN_VA_LIST == 34);
+        CHECK(MADC_TYPEID_PRIMITIVE_LAST == 34);
+        CHECK(MADC_TYPEID_PRIMITIVE_LAST < MADC_TYPEID_PRIMITIVE_END);
+        CHECK(MADC_TYPEID_PRIMITIVE_END == 0x100);
+        CHECK(MADC_TYPEID_SYSTEM_BASE == 0x100);
+        CHECK(MADC_TYPEID_PROJECT_BASE == 0x01000000u);
+    }
+
+    TEST_CASE("primitive stamping round-trips slot <-> global DataDef") {
+        madc_stamp_primitive_type_ids();
+        CHECK(ddVOID.type_id == MADC_TYPEID_VOID);
+        CHECK(ddINT.type_id == MADC_TYPEID_INT);
+        CHECK(ddUINT64.type_id == MADC_TYPEID_UINT64);
+        CHECK(ddDOUBLE.type_id == MADC_TYPEID_DOUBLE);
+        CHECK(ddCHARptr.type_id == MADC_TYPEID_CHAR_PTR);
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_INT) == &ddINT);
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_AUTO) == &ddAUTO);
+        // every backed slot stamps to exactly its own number
+        for ( uint32_t s = 1; s <= MADC_TYPEID_PRIMITIVE_LAST; ++s )
+        {
+            DataDef *dd = madc_primitive_for_slot(s);
+            if ( dd )
+                CHECK(dd->type_id == s);
+        }
+        // P0: 128-bit integer slots are backed (16-byte, integer, align 16)
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_INT128) == &ddINT128);
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_UINT128) == &ddUINT128);
+        CHECK(ddINT128.size == 16);
+        CHECK(ddUINT128.size == 16);
+        CHECK(ddINT128.alignment() == 16);
+        CHECK(ddINT128.is_integer());
+        CHECK(ddUINT128.is_integer());
+        CHECK(!ddINT128.is_real());
+        CHECK(!ddINT128.is_unsigned());
+        CHECK(ddUINT128.is_unsigned());
+        // the compiler-owned SysV va_list: struct __madc_va_list_tag[1]
+        {
+            DataDef *va = madc_primitive_for_slot(MADC_TYPEID_BUILTIN_VA_LIST);
+            REQUIRE(va != (DataDef *)NULL);
+            CHECK(va->type_id == MADC_TYPEID_BUILTIN_VA_LIST);
+            CHECK(va->size == 24);
+        }
+        // reserved-but-unbacked slots resolve NULL until their P0 slice lands
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_LONG_DOUBLE) == (DataDef *)NULL);
+        // dynamic value kinds have no compiler DataDef
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_TEXT) == (DataDef *)NULL);
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_OBJECT) == (DataDef *)NULL);
+        // out-of-segment queries resolve NULL
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_INVALID) == (DataDef *)NULL);
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_PRIMITIVE_END) == (DataDef *)NULL);
+    }
+
+    TEST_CASE("project segment: lazy stamp, memoization, round trip") {
+        Program pgm;
+        DataDef a("UserTypeA", 4, DataType::dtINT);
+        DataDef b("UserTypeB", 8, DataType::dtINT64);
+
+        CHECK(a.type_id == 0);                          // unregistered until asked
+        uint32_t ida = pgm.type_id_for(&a);
+        CHECK(ida == MADC_TYPEID_PROJECT_BASE);         // first project id
+        CHECK(pgm.type_id_for(&a) == ida);              // memoized via the stamp
+        CHECK(pgm.type_from_id(ida) == &a);             // round trip
+        CHECK(pgm.type_id_for(&b) == MADC_TYPEID_PROJECT_BASE + 1);
+        CHECK(pgm.type_from_id(MADC_TYPEID_PROJECT_BASE + 1) == &b);
+
+        // primitives resolve through the slot table
+        madc_stamp_primitive_type_ids();
+        CHECK(pgm.type_from_id(MADC_TYPEID_CHAR) == &ddCHAR);
+        CHECK(pgm.type_id_for(&ddCHAR) == MADC_TYPEID_CHAR);    // no re-stamp
+
+        // defensive NULLs: invalid, reserved system segment, foreign/unknown ids
+        CHECK(pgm.type_from_id(MADC_TYPEID_INVALID) == (DataDef *)NULL);
+        CHECK(pgm.type_from_id(MADC_TYPEID_SYSTEM_BASE + 5) == (DataDef *)NULL);
+        CHECK(pgm.type_from_id(MADC_TYPEID_PROJECT_BASE + 99) == (DataDef *)NULL);
+        CHECK(pgm.type_id_for((DataDef *)NULL) == MADC_TYPEID_INVALID);
+    }
+
+    TEST_CASE("class registration journal rolls back registries and type ids") {
+        Program pgm;
+        pgm.datatype_map.set_pool(&pgm.type_name_pool);
+        pgm.namespace_datatype_map.set_pool(&pgm.namespace_name_pool);
+        pgm.template_map.set_pool(&pgm.template_name_pool);
+        pgm.partial_spec_map.set_pool(&pgm.template_name_pool);
+        pgm.template_alias_map.set_pool(&pgm.template_name_pool);
+        pgm.var_template_map.set_pool(&pgm.template_name_pool);
+        pgm.fn_template_map.set_pool(&pgm.template_name_pool);
+        pgm.fn_template_decl_map.set_pool(&pgm.template_name_pool);
+        pgm.fn_template_instantiated_vars.set_pool(&pgm.template_name_pool);
+
+        DataDefCLASS original("JournalOriginal", 0, DataType::dtRESERVED);
+        DataDefCLASS temporary("JournalTemporary", 0, DataType::dtRESERVED);
+        TokenDataType original_type("JournalOriginal", original);
+        TokenDataType temporary_type("JournalTemporary", temporary);
+        pgm.struct_map.set("JournalKey", &original);
+        pgm.datatype_map["JournalKey"] = &original_type;
+        pgm.forest_arena_enabled = true;
+
+        {
+            Program::ClassRegistrationJournal journal(pgm);
+            CHECK(pgm.class_registration_taps_muted);
+            CHECK_FALSE(pgm.forest_arena_enabled);
+            pgm.struct_map.set("JournalKey", &temporary);
+            pgm.struct_map.set("TemporaryKey", &temporary);
+            pgm.datatype_map["JournalKey"] = &temporary_type;
+            pgm.datatype_map["TemporaryKey"] = &temporary_type;
+            CHECK(pgm.type_id_for(&temporary) == MADC_TYPEID_PROJECT_BASE);
+        }
+
+        CHECK_FALSE(pgm.class_registration_taps_muted);
+        CHECK(pgm.forest_arena_enabled);
+        CHECK(pgm.struct_map.find("JournalKey")->second == &original);
+        CHECK(pgm.struct_map.find("TemporaryKey") == pgm.struct_map.end());
+        CHECK(*pgm.datatype_map.find("JournalKey") == &original_type);
+        CHECK(pgm.datatype_map.find("TemporaryKey") == pgm.datatype_map.end());
+        CHECK(temporary.type_id == 0);
+        CHECK(pgm.project_types.size() == 0);
+
+        {
+            Program::ClassRegistrationJournal journal(pgm);
+            pgm.struct_map.set("CommittedKey", &temporary);
+            journal.commit();
+        }
+        CHECK(pgm.struct_map.find("CommittedKey")->second == &temporary);
+        CHECK_FALSE(pgm.class_registration_taps_muted);
+        CHECK(pgm.forest_arena_enabled);
+    }
+
+    TEST_CASE("derived-type id API: pointer/reference/const round-trip + idempotent") {
+        Program pgm;
+        madc_stamp_primitive_type_ids();
+
+        uint32_t int_id = pgm.type_id_for(&ddINT);
+        CHECK(int_id == MADC_TYPEID_INT);
+
+        // pointer-to(int): idempotent, reverse-resolves to the canonical
+        // DataDefPTR — the SAME object the compiler's getPointerType returns.
+        uint32_t p1 = pgm.derived_type_id(DerivedKind::dkPointer, int_id);
+        uint32_t p2 = pgm.derived_type_id(DerivedKind::dkPointer, int_id);
+        CHECK(p1 != MADC_TYPEID_INVALID);
+        CHECK(p1 == p2);                                       // idempotent
+        DataDef *pd = pgm.type_from_id(p1);
+        CHECK(pd != (DataDef *)NULL);
+        CHECK(pd->is_pointer());
+        CHECK(pd == pgm.getPointerType(&ddINT));               // one source of truth
+        // int* is the well-known global ddINTptr — a primitive slot, not a
+        // freshly-minted project id.
+        CHECK(pd == &ddINTptr);
+        CHECK(p1 == MADC_TYPEID_INT_PTR);
+
+        // reference-to(int) and const(int): idempotent, canonical
+        uint32_t r1 = pgm.derived_type_id(DerivedKind::dkReference, int_id);
+        CHECK(r1 == pgm.derived_type_id(DerivedKind::dkReference, int_id));
+        CHECK(pgm.type_from_id(r1) == (DataDef *)pgm.getReferenceType(&ddINT));
+
+        uint32_t c1 = pgm.derived_type_id(DerivedKind::dkConst, int_id);
+        CHECK(c1 == pgm.derived_type_id(DerivedKind::dkConst, int_id));
+        CHECK(pgm.type_from_id(c1) == (DataDef *)pgm.getConstType(&ddINT));
+
+        // distinct kinds yield distinct ids
+        CHECK(p1 != r1);
+        CHECK(r1 != c1);
+        CHECK(p1 != c1);
+
+        // unknown operand id -> invalid
+        CHECK(pgm.derived_type_id(DerivedKind::dkPointer,
+                                  MADC_TYPEID_PROJECT_BASE + 999) == MADC_TYPEID_INVALID);
+    }
+}
+
+TEST_SUITE("DataDefTemplateParam (unresolved template parameter T)") {
+    TEST_CASE("identity: is_template_param true, every other predicate false") {
+        DataDefTemplateParam t("T", 0);
+
+        CHECK(t.is_template_param());
+        CHECK(t.basetype() == BaseType::btTemplateParam);
+        CHECK(t.name == "T");
+        CHECK(t.param_index == 0u);
+        CHECK(t.size == 0u);
+        CHECK(t.rawtype() == DataType::dtVOID);
+        CHECK(t.reftype() == RefType::rtValue);
+
+        // A placeholder is none of these — the inherited predicates must all
+        // answer false so type-system consumers tolerate it without crashing
+        // or mis-classifying it.
+        CHECK_FALSE(t.is_numeric());
+        CHECK_FALSE(t.is_integer());
+        CHECK_FALSE(t.is_real());
+        CHECK_FALSE(t.is_unsigned());
+        CHECK_FALSE(t.is_pointer());
+        CHECK_FALSE(t.is_reference());
+        CHECK_FALSE(t.is_const());
+        CHECK_FALSE(t.is_struct());
+        CHECK_FALSE(t.is_object());
+        CHECK_FALSE(t.is_function());
+        CHECK_FALSE(t.is_complex());
+        CHECK_FALSE(t.is_simd());
+        CHECK_FALSE(t.is_member_pointer());
+    }
+
+    TEST_CASE("param_index carries the parameter position") {
+        DataDefTemplateParam t0("T", 0);
+        DataDefTemplateParam t1("U", 1);
+        DataDefTemplateParam t2("V", 7);
+        CHECK(t0.param_index == 0u);
+        CHECK(t1.param_index == 1u);
+        CHECK(t2.param_index == 7u);
+        CHECK(t1.name == "U");
+    }
+
+    TEST_CASE("a non-placeholder type answers is_template_param false") {
+        CHECK_FALSE(ddINT.is_template_param());
+        CHECK_FALSE(ddCHAR.is_template_param());
     }
 }

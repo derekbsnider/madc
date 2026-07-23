@@ -1,0 +1,15 @@
+#include <iostream>
+using namespace std;
+class Base { public: virtual ~Base() {} virtual int who() { return 0; } };
+class Derived : public Base { public: int who() { return 1; } int extra() { return 42; } };
+class Other  : public Base { public: int who() { return 2; } };
+int main() {
+    Base *b = new Derived();
+    Derived *d = dynamic_cast<Derived*>(b);
+    cout << (d != 0) << endl;            // 1 (succeeds)
+    cout << d->extra() << endl;          // 42
+    Other *o = dynamic_cast<Other*>(b);
+    cout << (o == 0) << endl;            // 1 (fails -> null)
+    delete b;
+    return 0;
+}

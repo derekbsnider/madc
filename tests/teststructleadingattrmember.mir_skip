@@ -1,0 +1,1 @@
+c2mir does not support VLA struct members (aligned struct-T member a[size]; struct fails to form, member accesses cascade errors). Verified at HEAD, audit 2026-07-19.

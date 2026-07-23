@@ -41,6 +41,30 @@ For stdin input, `bin/madc foo.mad < foo.input` is preferred over
 `echo | prog` buries the input in the runner and has to be re-built
 whenever it changes. With a fixture file, the runner doesn't care.
 
+## Why `.expect_err` exists
+
+Loud-diagnostic work (the no-ctor-match error, the `--std=` hard-error
+gates) needs regression tests asserting that a program *fails* to compile
+with a specific message. The plain `.expect` contract requires exit 0, so
+it cannot express this. `.expect_err` inverts the contract for that one
+test: nonzero exit (a timeout still fails) and the listed lines must
+appear on stderr — the diagnostics are the expected output. The EXE pass
+skips these tests because the source does not compile by design.
+
+## Why `.expect_quiet` exists
+
+`.expect` only requires the listed lines to *appear*, so a test whose
+output is correct but whose compile leaks warnings or recovered-error
+noise to stderr still passes — the noise is invisible to the suite.
+Diagnostic-hygiene work (task #55: speculative template-instantiation
+failures during overload scoring must be SFINAE-silent, matching g++)
+needs the inverse assertion: this compile+run produces *no* stderr at
+all. `.expect_quiet` (presence-only; content ignored) makes the runner
+capture stderr separately and fail the test if any byte lands there,
+reported as `NOISY(stderr):`. Use it on tests that compile real system
+headers, where a reintroduced diagnostic leak would otherwise regress
+silently.
+
 ## How to add a new capability
 
 If the runner needs a new knob (say, compiler flags or environment variables), resist the
@@ -49,3 +73,29 @@ convention — e.g. `tests/foo.flags` with whitespace-split CLI flags or
 `tests/foo.env` with `KEY=value` lines — and extend
 the runner's per-test block to discover it. The runner remains free of
 test-specific knowledge.
+
+## Why `exe_skip` exists (2026-07-20)
+
+The native-artifact lanes compile every JIT-green test to a native
+artifact and byte-compare the run: `--exe` links a standalone executable,
+`--obj` (AOT R4b) emits a relocatable `.o` and executes it through the
+in-process loader (`madc foo.o`). A few tests exercise machinery that only
+exists inside a live, freshly-compiled madc program — `testfreezerun`
+re-executes the freeze/thaw container path, `testmadcevalexprctx` drives
+in-process libmadc host callback eval contexts. The native lanes have no
+analogue for these, so failing them would be noise, and hard-coding their
+names into the runner would violate the no-per-test-logic rule. One
+fixture covers all native lanes — the skip reason ("structurally
+JIT-only") is a property of the test, not of any one artifact format. The
+fixture file's content is a one-line justification, so every skip is
+self-documenting — an empty or vague `exe_skip` in review is a red flag
+that someone is hiding a real failure.
+
+`obj_skip` is the narrower sibling: it exempts a test from the `--obj`
+pass only. The four `--project` tests need it because a multi-TU program
+has no single-`.o` form — `-c` on a project correctly emits one object
+per TU, and running any one of them is not the program. The `--exe` lane
+still covers those tests (a whole-project executable IS a single
+artifact), which is exactly why they must not use `exe_skip`. When
+multi-object loading lands (the declared future rung), these four
+fixtures are the removal checklist.

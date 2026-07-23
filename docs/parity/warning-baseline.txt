@@ -1,0 +1,40 @@
+# c2mir warning ratchet baseline.
+# Format: <count> <tests/*.mad basename>
+# Missing tests default to 0 allowed warnings, so new tests cannot introduce
+# warnings silently. Lower counts in the SAME commit that fixes a warning class.
+# The end state is an all-zero baseline. Enforced by scripts/warn_census.sh --check
+# (wired into `make -C src fulltest`).
+# Current total: 1 warning across 1 test (2026-06-29). History: c3514126
+# cleared the _Rb_tree pointer-fidelity cluster (97 -> 29); Class 3 case-range
+# lowering cleared testcaserange (29 -> 27); derived->base spill upcast cleared
+# testvectorptr (27 -> 24); local-shadows-namespace name resolution cleared the
+# ns_perl/ns_ruby wrapper clusters — testperl/testprefer/testregex/testlang/
+# testrubycharsshadow (24 -> 17); function-pointer cast type node cleared
+# testfnptrcast (17 -> 16); shim classifier rejects fn-ptr params as
+# unmarshallable, clearing testfnptrderefcall2/testfnptrvarargs/
+# testkrfnptrvarargs (16 -> 13); __madc_builtin_frame_address registered with
+# its real void* return cleared testbuiltinframeaddress (13 -> 12); shim return
+# classifier rejects fn-ptr returns, clearing testreturnfndecay (12 -> 10); the
+# fn-ptr cast fix (6818e40b) also cleared testfinstrumentfunctions's
+# `(void(*)())fn` cast (was `(long)fn`), tightened here (10 -> 8); teststructinterop
+# used the invalid `struct fd_set` (gcc rejects it — fd_set is an anonymous-struct
+# typedef with no tag), fixed to the conforming `fd_set` typedef (8 -> 5);
+# removed the legacy built-in `ddTESTSTRUCT` and defined the struct in
+# teststruct.mad (it used the undefined built-in, which gcc rejects) (5 -> 3);
+# get_argv now takes `void *` (the pointer it reinterprets) instead of int64,
+# so a char** argument converts cleanly — testargv (3 -> 2); fnptr_func_node now
+# includes a capturing lambda's hidden capture params in its fn-ptr TYPE (so
+# `void (*add)(int) = lambda` matched the `void(int,int*)` lambda) — testcapture
+# (2 -> 1). NOTE: testcapture still does NOT compile — a SEPARATE pre-existing
+# bug (a std::string captured by reference, `[&]{ cout << msg; }`, is not
+# detected so `msg` is undeclared in the lambda body); that is a compile ERROR,
+# not a warning, and is covered by testcapture.mir_skip. Only testforeach2's one
+# warning remains (a fn-ptr-returning instantiated for_each renders its return
+# type as `long`); a function-returning-fn-ptr declarator in func_def/func_proto
+# now emits `RET (*f(params))(fp-params)` — testforeach2 (1 -> 0).
+#
+# *** END STATE REACHED: 0 warnings across the whole tests/*.mad suite. ***
+# Every test now compiles warning-free on the flag-off (production) path. This
+# baseline file holds NO per-test entries, so ANY test that emits even one c2mir
+# compile warning fails `scripts/warn_census.sh --check` (and `make -C src
+# fulltest`). Keep it that way — fix the warning, never add an entry here.

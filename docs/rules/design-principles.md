@@ -38,9 +38,9 @@ separation of concerns at every level.
 
 ### Good
 
-- `.claude/rules/multi-return.md` and `docs/rules/multi-return.md`
+- `.claude/rules/embedded-headers.md` and `docs/rules/embedded-headers.md`
   live together; one contains the constraints, the other the why.
-  A change to multi-return touches both in one place.
+  A change to the embedded-header rule touches both in one place.
 - `tests/testcin.mad` ships with `testcin.input` and `testcin.expect`
   as siblings.
 

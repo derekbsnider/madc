@@ -1,4 +1,7 @@
 #include <iostream>
+#include <vector>
+#include <map>
+#include <string>
 using namespace std;
 // Test [] subscript operator for arrays and containers
 
@@ -17,8 +20,8 @@ int main()
 
     // map<string,int> read and write
     map<string,int> ages;
-    ages.put("alice", 30);
-    ages.put("bob", 25);
+    ages["alice"] = 30;
+    ages["bob"] = 25;
     string k1 = "alice";
     string k2 = "bob";
     cout << ages[k1] << endl;  // 30
@@ -39,10 +42,10 @@ int main()
     map<string,string> dict;
     string k = "en";
     string v = "hello";
-    dict.put(k, v);
+    dict[k] = v;
     string k2b = "fr";
     string v2 = "bonjour";
-    dict.put(k2b, v2);
+    dict[k2b] = v2;
     cout << dict[k] << endl;   // hello
     cout << dict[k2b] << endl; // bonjour
     dict[k] = "hi";

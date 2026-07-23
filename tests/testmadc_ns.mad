@@ -1,5 +1,10 @@
 #!/usr/bin/env madc
 #include <iostream>
+#include <vector>
+#include <map>
+#include <set>
+#include <string>
+#include <ns_php>
 using namespace std;
 // Test madc:: and std:: namespace-qualified types
 
@@ -43,8 +48,8 @@ int main()
 	std::map<string, int> ages;
 	string k1 = "alice";
 	string k2 = "bob";
-	ages.put(k1, 30);
-	ages.put(k2, 25);
+	ages[k1] = 30;
+	ages[k2] = 25;
 	n = ages.size();
 	cout << n << endl;
 

@@ -15,6 +15,12 @@
 #include <deque>
 
 class TokenBase;
+enum class TokenID : int;	// full definition in tokens.h; opaque here so
+				// the pop-1 token factory can reuse token_from_id
+class TokenStream;	// parser token stream (defined in madc.h); the
+			// write side serializes it directly — see madc.cpp
+			// PCH-write. The read side fills local std::deque
+			// buffers that are then pushed into the live stream.
 
 // .madh file header (28 bytes)
 struct MadhHeader
@@ -51,19 +57,33 @@ namespace madc_pch {
 // Current format version
 static const uint16_t FORMAT_VERSION = 1;
 
+// Materialize a payload-free TokenBase shell from its TokenID (operators,
+// punctuation, keywords). Returns NULL for payload-bearing or unknown kinds.
+// Reused by the lexer pop-1 token factory so kind->shell lives in ONE place.
+TokenBase *token_from_id(TokenID ti);
+
 // Serialize a token stream to a binary buffer (uncompressed)
-bool serialize_tokens(const std::deque<TokenBase *> &tokens,
+bool serialize_tokens(const TokenStream &tokens,
 		      std::vector<uint8_t> &out);
+
+// Serialize an arbitrary token subsequence in the same record form —
+// the B4a forest per-unit token-slice payload (read back with
+// deserialize_tokens).
+bool serialize_token_seq(const std::vector<TokenBase *> &tokens,
+			 std::vector<uint8_t> &out);
 
 // Deserialize a binary buffer back to a token stream
 bool deserialize_tokens(const uint8_t *data, size_t len,
 			uint32_t expected_count,
 			std::deque<TokenBase *> &out);
 
-// Compress a buffer (returns compressed data)
+// Compress a buffer (returns compressed data). `level` applies to Zstd only
+// (zlib keeps Z_DEFAULT_COMPRESSION): 0 = the codec default (3 — the .madh
+// PCH balance); pack-time callers that pay compression ONCE per release build
+// pass a high level (the forest container uses 19).
 bool compress(const std::vector<uint8_t> &in,
 	      std::vector<uint8_t> &out,
-	      PchCompression method);
+	      PchCompression method, int level = 0);
 
 // Decompress a buffer
 bool decompress(const uint8_t *in, size_t in_len,
@@ -72,7 +92,7 @@ bool decompress(const uint8_t *in, size_t in_len,
 
 // Write a complete .madh file
 bool write_madh(const char *path,
-		const std::deque<TokenBase *> &tokens,
+		const TokenStream &tokens,
 		uint64_t source_hash,
 		PchCompression method = PchCompression::Zlib);
 

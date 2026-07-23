@@ -1,5 +1,7 @@
 #!/../bin/madc
 #include <iostream>
+#include <string>
+#include <ns_php>
 using namespace std;
 
 int main()
@@ -53,7 +55,7 @@ int main()
     php::number_format(formatted, 1234567, comma);
     cout << "number: " << formatted << endl;
 
-    // explode + implode with MadArray
+    // explode + implode with a madc array
     string csv = "one,two,three,four";
     string delim = ",";
     string piece;

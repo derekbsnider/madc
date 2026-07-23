@@ -1,0 +1,17 @@
+// Sibling static-const members referenced (unqualified) inside a later
+// member's constant initializer, inside the class body — the std::ios_base
+// category-flags shape. Output matches g++ -std=c++17.
+#include <stdio.h>
+struct ios {
+	typedef int category;
+	static const category none	= 0;
+	static const category ctype	= 1 << 0;
+	static const category numeric	= 1 << 1;
+	static const category collate	= 1 << 2;
+	static const category time	= 1 << 3;
+	static const category all	= (ctype | numeric | collate | time);
+};
+int main(){
+	printf("%d %d %d %d\n", ios::none, ios::ctype, ios::time, ios::all);
+	return 0;
+}

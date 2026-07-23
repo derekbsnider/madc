@@ -1,0 +1,47 @@
+#!/../bin/madc
+// P2.7: range-for by REFERENCE — `for (T& v : c)` aliases each element so
+// writes mutate the SOURCE (in-place), while `for (T v : c)` keeps copying.
+// The reference loop var lowers to a vfREFERENCE pointer bound to the element
+// ADDRESS (&a[i] for a raw array; the operator[] T& result for a container),
+// reusing madc's numeric-reference (T&->T*) model. Verified vs g++.
+#include <iostream>
+#include <vector>
+using namespace std;
+
+int main()
+{
+    // Raw array, reference loop var: mutate in place.
+    int a[4] = { 1, 2, 3, 4 };
+    for (int& v : a)
+        v = v * 10;
+    for (int i = 0; i < 4; i++)
+        cout << a[i] << endl;           // 10 20 30 40
+
+    // Container (vector<int>), reference loop var: mutate in place.
+    vector<int> w;
+    w.push_back(5);
+    w.push_back(6);
+    w.push_back(7);
+    for (int& v : w)
+        v = v + 100;
+    for (int i = 0; i < 3; i++)
+        cout << w[i] << endl;           // 105 106 107
+
+    // const reference loop var: read-only accumulate (no mutation).
+    int sum = 0;
+    for (const int& v : a)
+        sum = sum + v;
+    cout << sum << endl;                // 100  (10+20+30+40)
+
+    // By-VALUE range-for must STILL copy — the source is unchanged. (Uses a
+    // distinct loop-var name `k`; madc adds a range-for var to the enclosing
+    // function scope, so reusing one name for both a `T&` and a `T` loop in the
+    // same function would collide on the var's type — a separate scoping gap.)
+    int b[3] = { 1, 2, 3 };
+    for (int k : b)
+        k = k + 1000;                   // writes the copy, not b
+    for (int i = 0; i < 3; i++)
+        cout << b[i] << endl;           // 1 2 3
+
+    return 0;
+}

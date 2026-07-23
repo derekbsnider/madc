@@ -1,0 +1,1 @@
+GCC builtin override behavior — GCC folds llabs() as a builtin (never calls the user's overriding definition, prints "ok"); c2mir calls the user definition, which aborts. Verified at HEAD, audit 2026-07-19.

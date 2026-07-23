@@ -22,7 +22,19 @@ Merges develop into master, tags the release, and pushes.
 4. **Push to GitHub**:
    - Push master
    - Push tags: `git push --tags`
+   - If `gh auth status` succeeds, publish the GitHub Release for madc:
+     `gh release create vX.Y.Z --title "vX.Y.Z — <one-line theme>"
+     --notes-file docs/release-notes/vX.Y.Z.md --latest`
+     (if gh is not authed, note it in the report and continue)
 
-5. **Switch back to develop**
+5. **Promote the MIR fork in lockstep** (`/workspace/mir` — branch
+   correspondence: the fork's `master` tracks madc's `master`):
+   - Verify the fork's `develop` is pushed and `MIR_COMMIT` points into it
+   - Switch the fork to `master`, merge `develop` (expected fast-forward;
+     if not, STOP and ask the user)
+   - Push the fork's master and tags
+   - Switch the fork back to `develop`
 
-6. **Report**: Print confirmation with version number, tag, and GitHub URL
+6. **Switch back to develop**
+
+7. **Report**: Print confirmation with version number, tag, fork state, and GitHub URL

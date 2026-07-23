@@ -2,19 +2,23 @@
 //                                                                       //
 // va_helpers.cpp — madc varargs support functions                       //
 //                                                                       //
-// These C functions are compiled by gcc and linked into the madc binary. //
+// These C functions are compiled by clang++ and linked into the madc     //
+// binary.
 // They bridge madc's packed int64_t[] varargs buffer to libc's printf    //
 // family by parsing the format string and calling sprintf per-specifier. //
 //                                                                       //
 ///////////////////////////////////////////////////////////////////////////
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cstdint>
 #include <cstdarg>
 #include <csetjmp>
 #include <type_traits>
 #include <map>
+#include <iostream>
+#include <string>
 
 struct madc_timeval
 {
@@ -35,6 +39,14 @@ static std::map<void *, madc_jmp_slot *> &madc_jmp_slots()
 {
     static std::map<void *, madc_jmp_slot *> slots;
     return slots;
+}
+
+extern "C" void *__madc_istream_extract(void *stream, void *value)
+{
+    std::istream *in = static_cast<std::istream *>(stream);
+    std::string *out = static_cast<std::string *>(value);
+    (*in) >> (*out);
+    return stream;
 }
 
 static madc_jmp_slot *madc_jmp_slot_for(void *user_buf)
@@ -313,6 +325,15 @@ extern "C" int __madc_sub_overflow_uu64(long long a, long long b, uint64_t *res)
 extern "C" int __madc_mul_overflow_uu64(long long a, long long b, uint64_t *res)
 { return madc_overflow_store_uu64(a, b, res, [](unsigned __int128 x, unsigned __int128 y) { return x * y; }); }
 
+// VLA scope-exit cleanup: a C99 variable-length-array local is lowered to a
+// `T *` backed by malloc; the cir_builder attaches __attribute__((cleanup(
+// __madc_vla_free))) to it, so c2mir calls this with &a (a `T **`) on scope
+// exit. Free the pointed-to storage. NULL-safe (free(NULL) is a no-op).
+extern "C" void __madc_vla_free(void *pp)
+{
+    if (pp) free(*(void **)pp);
+}
+
 // __builtin_bswap*: byte-swap fixed-width integer values.
 extern "C" uint16_t __madc_bswap16(uint16_t x)
 {
@@ -547,3 +568,151 @@ extern "C" void __madc_timersub(void *left, void *right, void *result)
         r->tv_usec += 1000000;
     }
 }
+
+// -----------------------------------------------------------------------
+// Compiler builtin wrappers — expose clang++ builtins as extern "C"
+// so transpiled code (c2mir) can call them via dlsym.
+// -----------------------------------------------------------------------
+
+// __builtin_object_size: compile-time only — runtime always returns -1 (unknown)
+extern "C" unsigned long __madc_builtin_object_size(void *ptr, int mode)
+{
+    (void)ptr; (void)mode;
+    return (unsigned long)-1;
+}
+
+// __builtin___strcpy_chk family — bounds-checked string operations
+extern "C" char *__madc_builtin_strcpy_chk(char *dst, const char *src, unsigned long size)
+{
+    return __builtin___strcpy_chk(dst, src, size);
+}
+
+extern "C" char *__madc_builtin_stpcpy_chk(char *dst, const char *src, unsigned long size)
+{
+    return __builtin___stpcpy_chk(dst, src, size);
+}
+
+extern "C" char *__madc_builtin_stpncpy_chk(char *dst, const char *src, unsigned long n, unsigned long size)
+{
+    return __builtin___stpncpy_chk(dst, src, n, size);
+}
+
+extern "C" char *__madc_builtin_strcat_chk(char *dst, const char *src, unsigned long size)
+{
+    return __builtin___strcat_chk(dst, src, size);
+}
+
+extern "C" char *__madc_builtin_strncpy_chk(char *dst, const char *src, unsigned long n, unsigned long size)
+{
+    return __builtin___strncpy_chk(dst, src, n, size);
+}
+
+extern "C" char *__madc_builtin_strncat_chk(char *dst, const char *src, unsigned long n, unsigned long size)
+{
+    return __builtin___strncat_chk(dst, src, n, size);
+}
+
+// __builtin___mem*_chk family — bounds-checked memory operations
+// (glibc fortify-wrapper header inlines under _FORTIFY_SOURCE).
+extern "C" void *__madc_builtin_memcpy_chk(void *dst, const void *src, unsigned long n, unsigned long size)
+{
+    return __builtin___memcpy_chk(dst, src, n, size);
+}
+
+extern "C" void *__madc_builtin_memmove_chk(void *dst, const void *src, unsigned long n, unsigned long size)
+{
+    return __builtin___memmove_chk(dst, src, n, size);
+}
+
+extern "C" void *__madc_builtin_mempcpy_chk(void *dst, const void *src, unsigned long n, unsigned long size)
+{
+    return __builtin___mempcpy_chk(dst, src, n, size);
+}
+
+extern "C" void *__madc_builtin_memset_chk(void *dst, int c, unsigned long n, unsigned long size)
+{
+    return __builtin___memset_chk(dst, c, n, size);
+}
+
+// __builtin_frame_address: return caller's frame pointer
+extern "C" void *__madc_builtin_frame_address(int level)
+{
+    // level must be a compile-time constant for the real builtin;
+    // we only support level 0 (current frame).
+    return __builtin_frame_address(0);
+}
+
+// __builtin_setjmp / __builtin_longjmp — map to standard setjmp/longjmp
+#include <setjmp.h>
+extern "C" int __madc_builtin_setjmp(void *buf)
+{
+    return setjmp(*(jmp_buf *)buf);
+}
+
+extern "C" void __madc_builtin_longjmp_val(void *buf, int val)
+{
+    longjmp(*(jmp_buf *)buf, val);
+}
+
+// __builtin_uabs / __builtin_umaxabs — unsigned absolute value
+#include <stdint.h>
+extern "C" unsigned int __madc_builtin_uabs(int x)
+{
+    return (x < 0) ? (unsigned int)(-(long long)x) : (unsigned int)x;
+}
+
+extern "C" uintmax_t __madc_builtin_umaxabs(intmax_t x)
+{
+    return (x < 0) ? (uintmax_t)(-((long long)x + 1)) + 1 : (uintmax_t)x;
+}
+
+// -----------------------------------------------------------------------
+// _Complex lowering — struct-based complex arithmetic helpers.
+// Each type gets a struct { T re; T im; } and a full set of operations.
+// Mirrors the legacy DataDefCOMPLEX layout exactly.
+// -----------------------------------------------------------------------
+
+// Struct types (must match emitter preamble typedefs)
+typedef struct { double re; double im; } __madc_cdouble;
+typedef struct { float re; float im; } __madc_cfloat;
+typedef struct { int re; int im; } __madc_cint;
+typedef struct { unsigned int re; unsigned int im; } __madc_cuint;
+typedef struct { unsigned short re; unsigned short im; } __madc_cushort;
+typedef struct { long re; long im; } __madc_clong;
+typedef struct { unsigned long re; unsigned long im; } __madc_culong;
+
+// Macro to generate all operations for a complex type.
+// T = scalar type, N = name suffix (e.g. cdouble, cfloat)
+#define MADC_COMPLEX_OPS(T, N) \
+extern "C" __madc_##N __madc_##N##_add(__madc_##N a, __madc_##N b) \
+    { return (__madc_##N){(T)(a.re+b.re), (T)(a.im+b.im)}; } \
+extern "C" __madc_##N __madc_##N##_sub(__madc_##N a, __madc_##N b) \
+    { return (__madc_##N){(T)(a.re-b.re), (T)(a.im-b.im)}; } \
+extern "C" __madc_##N __madc_##N##_mul(__madc_##N a, __madc_##N b) \
+    { return (__madc_##N){(T)(a.re*b.re - a.im*b.im), (T)(a.re*b.im + a.im*b.re)}; } \
+extern "C" __madc_##N __madc_##N##_div(__madc_##N a, __madc_##N b) \
+    { T denom = b.re*b.re + b.im*b.im; \
+      return (__madc_##N){(T)((a.re*b.re + a.im*b.im)/denom), \
+                          (T)((a.im*b.re - a.re*b.im)/denom)}; } \
+extern "C" __madc_##N __madc_##N##_conj(__madc_##N a) \
+    { return (__madc_##N){a.re, (T)(-a.im)}; } \
+extern "C" __madc_##N __madc_##N##_neg(__madc_##N a) \
+    { return (__madc_##N){(T)(-a.re), (T)(-a.im)}; } \
+extern "C" int __madc_##N##_eq(__madc_##N a, __madc_##N b) \
+    { return a.re == b.re && a.im == b.im; } \
+extern "C" int __madc_##N##_ne(__madc_##N a, __madc_##N b) \
+    { return a.re != b.re || a.im != b.im; } \
+extern "C" __madc_##N __madc_##N##_make(T re, T im) \
+    { return (__madc_##N){re, im}; } \
+extern "C" __madc_##N __madc_##N##_from_real(T re) \
+    { return (__madc_##N){re, 0}; } \
+extern "C" T __madc_##N##_real(__madc_##N a) { return a.re; } \
+extern "C" T __madc_##N##_imag(__madc_##N a) { return a.im; }
+
+MADC_COMPLEX_OPS(double, cdouble)
+MADC_COMPLEX_OPS(float, cfloat)
+MADC_COMPLEX_OPS(int, cint)
+MADC_COMPLEX_OPS(unsigned int, cuint)
+MADC_COMPLEX_OPS(unsigned short, cushort)
+MADC_COMPLEX_OPS(long, clong)
+MADC_COMPLEX_OPS(unsigned long, culong)

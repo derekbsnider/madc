@@ -1,0 +1,11 @@
+// Task #52: instantiating an abstract class (unoverridden pure virtual)
+// must be a COMPILE error (g++: "cannot declare variable 'a' to be of
+// abstract type 'A'"). Pointer/reference use stays legal — only the
+// declaration below is rejected.
+struct A { virtual int f() = 0; };
+
+int main()
+{
+	A a;
+	return 0;
+}

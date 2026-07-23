@@ -1,0 +1,67 @@
+#!/../bin/madc
+// P2.5: access control (private / protected) enforcement. The compiler now
+// REJECTS external access to a private/protected member (in the parser's
+// member-access resolution). The runner has no expected-compile-error
+// mechanism (a non-zero exit is a FAIL), so this is the POSITIVE companion:
+// it proves that VALID access compiles and runs — a private member used via
+// the class's own public methods, and a protected member used from a derived
+// class's method. The REJECTION cases (`c.s = 7` on a private member ->
+// "'s' is a private member of 'C'", matching clang) are verified by probes
+// documented in the commit / handoff.
+#include <iostream>
+using namespace std;
+
+// Private member, reached only through the class's own public methods.
+class Counter {
+private:
+    int value;
+public:
+    void set(int v) { value = v; }      // private access from own method: OK
+    void bump() { value = value + 1; }  // OK
+    int get() { return value; }         // OK
+};
+
+// Protected member, reached from a derived class's method.
+class Base {
+protected:
+    int p;
+public:
+    void init(int v) { p = v; }         // own method: OK
+};
+
+class Derived : public Base {
+public:
+    int doubled() { return p * 2; }     // protected from derived method: OK
+    void add(int n) { p = p + n; }      // OK
+};
+
+// Mixed: public members are always accessible from anywhere.
+class Point {
+public:
+    int x;
+    int y;
+};
+
+int main()
+{
+    Counter c;
+    c.set(40);
+    c.bump();
+    c.bump();
+    cout << c.get() << endl;            // 42
+
+    Derived d;
+    d.init(20);
+    d.add(1);
+    cout << d.doubled() << endl;        // 42
+
+    // Public members: direct external access is allowed.
+    Point pt;
+    pt.x = 3;
+    pt.y = 4;
+    cout << pt.x << endl;               // 3
+    cout << pt.y << endl;               // 4
+    cout << (pt.x + pt.y) << endl;      // 7
+
+    return 0;
+}

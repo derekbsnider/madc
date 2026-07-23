@@ -1,0 +1,15 @@
+#!/../bin/madc
+// Non-polymorphic MI + a virtual-base class: sizeof + distinct members vs g++.
+class P1 { public: long p1; };
+class P2 { public: long p2; };
+class MIc : public P1, public P2 { public: long c; };
+class V { public: long v; };
+class D : virtual public V { public: long d; };  // vbase -> gets a vptr (size 24)
+int main()
+{
+    MIc m; m.p1 = 11; m.p2 = 22; m.c = 33;
+    D dd; dd.v = 9; dd.d = 4;
+    printf("%ld %ld %ld %d %ld %ld %d\n",
+        m.p1, m.p2, m.c, (int)sizeof(MIc), dd.v, dd.d, (int)sizeof(D));
+    return 0;
+}

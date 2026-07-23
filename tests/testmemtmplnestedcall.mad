@@ -1,0 +1,28 @@
+// Member template at TWO shapes whose body makes a NESTED member-template
+// call (a.dispose(p)) with a dependent arg. Shape 1 parses eagerly and
+// enriches Alloc::dispose's local_emit_name (first-wins); shape 2 comes from
+// tsubst, whose copy must rebuild the nested call STRUCTURALLY — resolving
+// the callee per ITS OWN substitution — not by matching the callee id's
+// spelling against the (now re-pointed) enrichment state. Pre-fix the second
+// shape's body kept the generic definition-less symbol and failed loudly.
+#include <cstdio>
+
+struct Alloc {
+	template <typename U> long dispose(U *p) { return (long)sizeof(U) + (*p != 0); }
+};
+
+struct Traits {
+	Alloc a;
+	template <typename U> long dispose(U *p) { return a.dispose(p); }
+};
+
+int main()
+{
+	Traits t;
+	int i = 42;
+	double d = 2.5;
+	long ri = t.dispose(&i);
+	long rd = t.dispose(&d);
+	printf("i=%ld d=%ld\n", ri, rd);
+	return 0;
+}

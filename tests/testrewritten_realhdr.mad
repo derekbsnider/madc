@@ -1,0 +1,34 @@
+// C++20 rewritten candidates ([over.match.oper], P2.15 item 2):
+//   x != y  ->  !(x == y)      (<compare> defines no operator!=)
+//   x == y  ->  y == x         (reversed candidate)
+//   x @ y   ->  (x <=> y) @ 0  (relationals via a member/free operator<=>)
+// P implements only operator<=> + operator== and gets all six comparisons.
+#include <compare>
+#include <cstdio>
+class P {
+	int v;
+public:
+	P(int x) : v(x) {}
+	std::strong_ordering operator<=>(const P &o) const {
+		return v <=> o.v;
+	}
+	bool operator==(const P &o) const { return v == o.v; }
+};
+int main()
+{
+	std::strong_ordering r = std::strong_ordering::less;
+	if (r != 0) printf("ne\n");
+	if (0 != r) printf("rev-ne\n");
+	std::strong_ordering e = std::strong_ordering::equal;
+	if (0 == e) printf("rev-eq\n");
+	P a(1);
+	P b(2);
+	if (a < b)  printf("p-lt\n");
+	if (b > a)  printf("p-gt\n");
+	if (a <= b) printf("p-le\n");
+	if (b >= a) printf("p-ge\n");
+	if (a != b) printf("p-ne\n");
+	P c(1);
+	if (a == c) printf("p-eq\n");
+	return 0;
+}

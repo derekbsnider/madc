@@ -1,0 +1,37 @@
+#!../bin/madc
+// EXPLICIT template arguments that fill a trailing parameter pack must be
+// distributed to the pack (not just the first), and a pack-expansion
+// `pattern...` in the member template's RETURN TYPE must expand once per pack
+// element. This is the std::__result_of_other_impl keystone behind
+// __invoke_result / __is_invocable:
+//     template<typename F, typename... A>
+//       static success<decltype(declval<F>()(declval<A>()...))> test(int);
+//     template<typename...> static failure test(...);
+//     using R = decltype(test<F, A...>(0));   // success<ret> when F(A...) valid
+// Before the fix, `test<Cmp&, const int&, const int&>(0)` bound the pack A to a
+// single element, so `declval<A>()...` expanded to ONE argument and the
+// synthesized `Cmp::operator()` call got the wrong arity ("Incorrect number of
+// parameters: expected 3 got 2").
+#include <type_traits>
+#include <cstdio>
+using namespace std;
+
+struct Cmp { bool operator()(const int&, const int&) const; };
+
+template<typename T> struct success { typedef T type; };
+struct failure { };
+
+struct tester {
+    template<typename F, typename... A>
+        static success<decltype(declval<F>()(declval<A>()...))> test(int);
+    template<typename...>
+        static failure test(...);
+};
+
+int main()
+{
+    using R = decltype(tester::test<Cmp&, const int&, const int&>(0));
+    static_assert(is_same<R, success<bool> >{}, "selected success<bool>");
+    printf("ok\n");
+    return 0;
+}

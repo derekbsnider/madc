@@ -1,0 +1,26 @@
+#!/../bin/madc
+// C++20 requires-expression satisfaction folded as a constant: a requirement's
+// expression is checked WELL-FORMED via the expression resolver. Exercises the
+// member-call requirement (strict both directions) plus a positive type
+// requirement and a nested/conjunction combination.
+#include <cstdio>
+namespace std { template<typename T> T&& declval() noexcept; }
+struct HasFoo { int foo(); typedef int kind; };
+struct NoFoo {};
+template<typename T> concept CallFoo = requires(T x) { x.foo(); };
+template<typename T> concept HasKind = requires { typename T::kind; };
+template<typename T> concept Both = CallFoo<T> && HasKind<T>;
+int main()
+{
+    static_assert(CallFoo<HasFoo>, "HasFoo.foo() is well-formed");
+    static_assert(!CallFoo<NoFoo>, "NoFoo.foo() is ill-formed");
+    static_assert(HasKind<HasFoo>, "HasFoo::kind names a type");
+    // Type requirement is STRICT: a missing nested type (a plain struct, or a
+    // pointer which has no members) makes the requirement unsatisfied.
+    static_assert(!HasKind<NoFoo>, "NoFoo has no ::kind");
+    static_assert(!HasKind<int*>, "int* (pointer) has no member ::kind");
+    static_assert(Both<HasFoo>, "HasFoo satisfies both");
+    static_assert(!Both<NoFoo>, "NoFoo fails the foo() conjunct");
+    printf("requires ok\n");
+    return 0;
+}

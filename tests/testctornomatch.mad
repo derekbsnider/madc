@@ -1,0 +1,17 @@
+// A class WITH user constructors whose initializer matches none of them must
+// be a loud compile error (cir error via the pre-c2mir gate), never a silent
+// drop of the construction. See .expect_err.
+class Box
+{
+	int v;
+public:
+	Box(const char *s) { v = 1; }
+	int val() { return v; }
+};
+
+int main()
+{
+	Box b(3.5, 7);
+	printf("%d\n", b.val());
+	return 0;
+}

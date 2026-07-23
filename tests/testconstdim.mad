@@ -1,0 +1,25 @@
+// A const-declared integer with a parse-time-constant initializer is an
+// integral constant expression (C++ [expr.const]; g++ accepts all of
+// these). A file-scope const used as an array dimension used to read 0
+// from its uninitialized parse-time buffer ("warning -- zero array size").
+
+const int G = 5;
+const int H = G + 3;
+int g[G];
+char h[H];
+int gh[G][H];
+
+int main()
+{
+	printf("%d %d %d\n", (int)sizeof(g), (int)sizeof(h), (int)sizeof(gh));
+
+	g[G - 1] = 42;
+	printf("%d\n", g[4]);
+
+	const int L = 7;
+	int l[L];
+	l[L - 1] = 9;
+	printf("%d %d\n", (int)sizeof(l), l[6]);
+
+	return 0;
+}

@@ -1,0 +1,21 @@
+#include <iostream>
+#include <type_traits>
+using namespace std;
+
+// Regression: (1) variable-template trailing-pack absorption — is_invocable_v<F,
+// Args...> resolves its `is_invocable<F, Args...>::value` init with the pack
+// expanded (previously `_Args...` was left unexpanded -> "Expecting ',' or '>'").
+// (2) a braceless `if constexpr (C) static_assert(...);` whose live branch is a
+// compile-time-only statement (parse yields NULL, not an error) — exactly
+// libstdc++ _Rb_tree::_S_key's shape (stl_tree.h:770).
+
+struct Cmp { bool operator()(const int &, const int &) const; };
+
+int main()
+{
+	static_assert(is_invocable_v<Cmp &, const int &, const int &>, "vt pack");
+	if constexpr (is_invocable_v<Cmp &, const int &, const int &>)
+		static_assert(is_invocable_v<const Cmp &, const int &, const int &>, "const inv");
+	cout << "ifconstexpr ok" << endl;
+	return 0;
+}

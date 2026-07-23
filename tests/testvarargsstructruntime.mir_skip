@@ -1,0 +1,1 @@
+c2mir does not support VLA struct members (struct { char x[size]; } locals + va_arg of typeof(d) — incomplete-type cascade at check time). Verified at HEAD, audit 2026-07-19.

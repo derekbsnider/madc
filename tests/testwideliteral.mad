@@ -1,0 +1,18 @@
+// gcc-parity for integer literals wider than 64 bits: warn "integer constant
+// is too large for its type" (stderr) and TRUNCATE to the low 64 bits, typing
+// the constant from the truncated value (canon probed: tmp/wide_lit*.c).
+// P0 slice 2 — the full value is retained on the token in the value pool.
+#include <stdio.h>
+
+int main()
+{
+    unsigned long long a = 18446744073709551616;      // 2^64 -> truncates to 0
+    unsigned long long b = 0xffffffffffffffffff;      // 2^72 -> low 64 bits
+    unsigned long long c = 0x10000000000000000;       // 2^64 hex -> 0
+    unsigned long long d = 18446744073709551615;      // 2^64-1: FITS, no warning
+    printf("a=%llu\n", a);
+    printf("b=%llx\n", b);
+    printf("c=%llu\n", c);
+    printf("d=%llu\n", d);
+    return 0;
+}

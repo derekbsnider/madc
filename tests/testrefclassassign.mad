@@ -1,0 +1,48 @@
+// Rung 11 (family D): ref-return of a CLASS assignment —
+// `V& set(V& o) { return *this = o; }` (basic_string::assign(basic_string&&)
+// drains as `return *this = std::move(__str);`). C++ says the assignment
+// yields the assigned lvalue; the C11 lowering wrapped N_ADDR around a
+// non-lvalue (bit-copy N_ASSIGN / memberwise stmt-expr) — "lvalue required
+// as unary & operand". Three shapes: trivial bit-copy (V), non-trivial
+// memberwise (W, has a dtor), user-declared operator= (U — the call IS the
+// value; already worked, kept as a regression pin). Oracle: g++ same output.
+#include <cstdio>
+
+class V {
+public:
+    const char *p;
+    int n;
+    V& set(V& o) { return *this = o; }
+};
+
+class W {
+public:
+    const char *p;
+    int n;
+    ~W() { }
+    W& set(W& o) { return *this = o; }
+};
+
+class U {
+public:
+    int n;
+    U& operator=(const U& o) { n = o.n; return *this; }
+    U& set(U& o) { return *this = o; }
+};
+
+int main()
+{
+    V a; a.p = "aa"; a.n = 1;
+    V b; b.p = "bb"; b.n = 2;
+    V &r = a.set(b);
+    printf("%s %d %d\n", a.p, a.n, &r == &a ? 1 : 0);
+    W c; c.p = "cc"; c.n = 3;
+    W d; d.p = "dd"; d.n = 4;
+    W &s = c.set(d);
+    printf("%s %d %d\n", c.p, c.n, &s == &c ? 1 : 0);
+    U e; e.n = 5;
+    U f; f.n = 6;
+    U &t = e.set(f);
+    printf("%d %d\n", e.n, &t == &e ? 1 : 0);
+    return 0;
+}

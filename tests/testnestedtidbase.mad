@@ -1,0 +1,30 @@
+#!/../bin/madc
+// A nested class/struct whose base clause is a TEMPLATE-ID
+// (`struct Outer { struct Inner : bf<int> {...}; };`). The enclosing
+// aggregate delegates the nested definition to the class-body parser in
+// definition-only mode; instantiating the template-id base (`bf<int>`)
+// mid-base-clause must NOT inherit that def-only / cpp-struct-class parse
+// mode, or the instantiation early-returns at the base's '}' and leaks its
+// terminating ';', derailing the enclosing member loop. This is the real
+// libstdc++ shape `std::map`'s nested
+// `class value_compare : public binary_function<value_type, value_type, bool>`.
+#include <iostream>
+using namespace std;
+
+template<class A> struct bf { A tag() { return (A)7; } };
+
+struct Outer {
+	struct Inner : bf<int> { int c; };
+	int run() {
+		Inner i;
+		i.c = 42;
+		return i.c + i.tag();	// 42 + 7
+	}
+};
+
+int main()
+{
+	Outer o;
+	cout << o.run() << endl;
+	return 0;
+}

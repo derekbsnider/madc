@@ -3,7 +3,7 @@
 
 #include "libmadc/datasource.h"
 #include "libmadc/error.h"
-#include "madcdat/schema.h"
+#include "madcdis/schema.h"
 #include "libmadc/value.h"
 
 #include <cstddef>

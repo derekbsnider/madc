@@ -1,0 +1,43 @@
+// Implicit default construction of ctorless classes must cascade into
+// class-type MEMBER subobjects ([class.default.ctor]): a polymorphic member
+// needs its vptr stamped (task #35 — `Mid m;` left m.lf's vptr garbage and a
+// virtual call through &m.lf crashed), recursively through ctorless layers,
+// on the stack and on the heap, and NSDMI/member ctors must still run when
+// the enclosing class is itself polymorphic.
+#include <cstdio>
+#include <string>
+
+class Leaf { public: int v; virtual int vget() { return v * 2; } };
+class Mid { public: Leaf lf; };
+class Outer { public: int pad; Mid md; };
+class Poly {
+public:
+	int x = 5;
+	std::string tag;
+	virtual int vget() { return x + (int)tag.size(); }
+};
+
+int main()
+{
+	Mid m;
+	m.lf.v = 7;
+	Leaf *q = &m.lf;
+	printf("member %d\n", q->vget());
+
+	Outer o;
+	o.md.lf.v = 9;
+	Leaf *r = &o.md.lf;
+	printf("nested %d\n", r->vget());
+
+	Mid *hm = new Mid;
+	hm->lf.v = 5;
+	Leaf *hq = &hm->lf;
+	printf("heap %d\n", hq->vget());
+	delete hm;
+
+	Poly p;
+	p.tag = "abc";
+	Poly *pp = &p;
+	printf("poly %d\n", pp->vget());
+	return 0;
+}

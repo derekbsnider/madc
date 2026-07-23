@@ -1,0 +1,34 @@
+// -g (JIT debug info) lane: compiles with source-loc stamping + debuggable
+// codegen (O0, no inlining, spill-all), builds and registers the GDB-JIT
+// debug object, then runs. Locks the -g pipeline against crashes/regressions;
+// the interactive gdb capability itself is verified manually (task #82 gate).
+#include <stdio.h>
+
+struct point {
+	int x, y;
+};
+
+int scale(int v, int factor)
+{
+	int scaled = v * factor;
+	int biased = scaled + 3;
+	return biased;
+}
+
+double half(double d)
+{
+	double h = d / 2.0;
+	return h;
+}
+
+int main()
+{
+	struct point p = {4, 7};
+	int total = 0;
+
+	for (int i = 0; i < 3; i++) {
+		total += scale(p.x + i, p.y);
+	}
+	printf("debuginfo: total=%d half=%.2f\n", total, half(9.0));
+	return 0;
+}

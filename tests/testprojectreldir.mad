@@ -1,0 +1,5 @@
+// Manifest-relative path resolution: testprojectreldir.cc.json omits the
+// "directory" field and uses paths relative to the manifest's own location
+// (tests/). madc must resolve them against the manifest directory, not the
+// process cwd (repo root), so a committed manifest stays portable. This .mad
+// is the ignored trailing positional.

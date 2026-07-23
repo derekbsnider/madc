@@ -1,0 +1,29 @@
+#include <stdio.h>
+
+// A struct routed to the class body parser (it has a method) must keep every
+// data-member capability the struct parser has: comma-separated declarators,
+// bit-fields (incl. with a trailing __attribute__), leading member attributes,
+// and pointer/array declarators — none dropped on the floor.
+struct Packed {
+	unsigned half : 16;
+	unsigned long whole : 32 __attribute__((packed));
+	__attribute__((aligned(4))) int tag;
+	int a, b;
+	int arr[3], *p;
+	int sum() const { return a + b + tag; }
+};
+
+int main(void)
+{
+	Packed s;
+	s.half = 0x1234;
+	s.whole = 0x56789abcL;
+	s.tag = 100;
+	s.a = 3; s.b = 4;
+	s.arr[0] = 1; s.arr[1] = 2; s.arr[2] = 3;
+	s.p = &s.tag;
+	printf("%x %lx\n", s.half, s.whole);   // 1234 56789abc
+	printf("%d\n", s.sum());               // 107
+	printf("%d %d\n", s.arr[2], *s.p);     // 3 100
+	return 0;
+}

@@ -1,0 +1,18 @@
+// A struct member whose type is namespace-qualified (`a::T`) must resolve —
+// both when the struct is itself inside a namespace and at global scope. The
+// struct-member type parser previously only consulted the unqualified typedef
+// map and rejected any `ns::Type` member with "Expecting type in struct
+// definition". (This is one of the two qualified-name gaps the real
+// bits/char_traits.h exposed.)
+namespace a { struct T { int x; }; }
+namespace b { struct S { a::T *p; }; }
+struct G { a::T *q; };
+
+int main()
+{
+	a::T t; t.x = 7;
+	b::S s; s.p = &t;
+	G g; g.q = &t;
+	printf("%d %d\n", s.p->x, g.q->x);
+	return 0;
+}

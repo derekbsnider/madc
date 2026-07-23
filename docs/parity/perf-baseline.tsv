@@ -1,0 +1,5 @@
+# madc perf frame-of-reference — recorded once, reused every run.
+# GCC = must-beat bar (gcc -O0 -c); tinycc = floor (tcc -c). HOST-SPECIFIC
+# (madc-devbox); re-measure with: scripts/perf_vs_gcc.sh <file> --refresh.
+# key(relpath|std)	gcc_O0_c_s	tinycc_c_s	recorded
+gcc_testsuite/gcc.c-torture/execute/memcpy-a1.c|	3.578	0.051	2026-06-23

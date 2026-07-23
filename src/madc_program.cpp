@@ -29,12 +29,13 @@
 extern thread_local bool madc_verbose;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
-#include <asmjit/x86.h>
 
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_cir.h"
+#include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
 
 namespace madc {
 
@@ -352,17 +353,15 @@ struct expression_function_spec
     const char *name;
     datatype_vec_t signature;
 };
-bool string_list_contains(const std::vector<std::string> &items, const std::string &value);
+bool text_list_contains(const std::vector<std::string> &items, const std::string &value);
 std::vector<expression_function_spec> expression_header_function_specs(const std::string &header);
 std::vector<std::string> expression_allowed_function_names(const expression_policy &policy);
-std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBase *> &tokens);
+std::vector<std::string> collect_expression_token_calls(const TokenStream &tokens,
+							 const std::string &source_file);
 void append_unique_strings(std::vector<std::string> &dst,
 			   const std::vector<std::string> &src);
 std::vector<std::string> expand_header_symbol_groups(const std::vector<std::string> &headers);
 bool native_type_from_datadef(DataDef *type, program::native_type &out);
-template <typename R>
-bool call_target0(void *fn, value *result);
-
 void copy_program_public_error(Program &dst, const Program &src)
 {
     dst.diagnostics = src.diagnostics;
@@ -391,14 +390,168 @@ std::string build_expression_input_from_policy(const expression_policy &policy,
     return source.str();
 }
 
+bool is_expression_compare_token(TokenID id)
+{
+    return id == TokenID::tkEquals || id == TokenID::tkNotEq
+	|| id == TokenID::tkLT || id == TokenID::tkLE
+	|| id == TokenID::tkGT || id == TokenID::tkGE
+	|| id == TokenID::tk3Eq || id == TokenID::tk3NotEq;
+}
+
+bool expression_operand_is_string(TokenBase *tb)
+{
+    DataDef *dd = tb ? tb->datadef() : NULL;
+    return dd && dd->is_cstr();
+}
+
+Variable *ensure_expression_strcmp(Program &pgm)
+{
+    std::string id = "strcmp";
+    if ( Variable *existing = pgm.findVariable(id) )
+	return existing;
+    void *sym = dlsym(RTLD_DEFAULT, "strcmp");
+    if ( !sym )
+	return NULL;
+    // signed int return — embedded-headers.md comparison-family rule
+    return pgm.addFunction(id, datatype_vec_t{DataType::dtINT, ptr_of(ddCHAR),
+					      ptr_of(ddCHAR)}, (fVOIDFUNC)sym);
+}
+
+// The expression DSL compares string operands by VALUE (spec:
+// docs/superpowers/specs/2026-06-10-eval-leftovers-design.md). Comparison
+// nodes with two string operands become strcmp(a,b) OP 0 (`===` becomes a
+// replacement strcmp(a,b) == 0 node and `!==` its strcmp(a,b) != 0 twin —
+// the DSL's value semantics; the real language's ===/!== lower in CIR via
+// strict_equality_lowering and never reach this pass); a string vs
+// non-string mix is a loud error.
+// The rewrite must cover EVERY compare token over string operands: an
+// unrewritten compare keeps char* operands at the root, and
+// infer_expression_result_type would marshal the int result as a pointer
+// (the host then strlen()s it — a real crash, caught by unit test).
+// The recursion set mirrors validate_expression_ast's node coverage — keep
+// the two in sync. call->src_node is unreachable here: the validator rejects
+// indirect calls before this pass runs.
+bool rewrite_expression_string_compares(Program &pgm, TokenBase *&tb,
+					std::string &error)
+{
+    if ( !tb )
+	return true;
+    if ( TokenMember *member = dynamic_cast<TokenMember *>(tb) )
+    {
+	// covers TokenCallMethod too (TokenCallMethod : TokenMember)
+	if ( !rewrite_expression_string_compares(pgm, member->parent_expr, error) )
+	    return false;
+	for ( size_t i = 0; i < member->parameters.size(); ++i )
+	    if ( !rewrite_expression_string_compares(pgm, member->parameters[i], error) )
+		return false;
+	return true;
+    }
+    if ( TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(tb) )
+    {
+	for ( size_t i = 0; i < call->parameters.size(); ++i )
+	    if ( !rewrite_expression_string_compares(pgm, call->parameters[i], error) )
+		return false;
+	return true;
+    }
+    if ( TokenSubscriptExpr *subexpr = dynamic_cast<TokenSubscriptExpr *>(tb) )
+    {
+	if ( !rewrite_expression_string_compares(pgm, subexpr->base_expr, error) )
+	    return false;
+	return rewrite_expression_string_compares(pgm, subexpr->index, error);
+    }
+    if ( TokenSubscript *sub = dynamic_cast<TokenSubscript *>(tb) )
+    {
+	if ( !rewrite_expression_string_compares(pgm, sub->index, error) )
+	    return false;
+	for ( size_t i = 0; i < sub->extra_indices.size(); ++i )
+	    if ( !rewrite_expression_string_compares(pgm, sub->extra_indices[i], error) )
+		return false;
+	return true;
+    }
+    if ( TokenAddrExpr *addr = dynamic_cast<TokenAddrExpr *>(tb) )
+	return rewrite_expression_string_compares(pgm, addr->expr, error);
+    if ( TokenDerefExpr *deref = dynamic_cast<TokenDerefExpr *>(tb) )
+	return rewrite_expression_string_compares(pgm, deref->expr, error);
+    if ( TokenCast *cast = dynamic_cast<TokenCast *>(tb) )
+	return rewrite_expression_string_compares(pgm, cast->expr, error);
+    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(tb) )
+    {
+	if ( !rewrite_expression_string_compares(pgm, tq->condition, error) )
+	    return false;
+	if ( !rewrite_expression_string_compares(pgm, tq->true_expr, error) )
+	    return false;
+	return rewrite_expression_string_compares(pgm, tq->false_expr, error);
+    }
+    TokenOperator *op = dynamic_cast<TokenOperator *>(tb);
+    if ( !op )
+	return true;
+    if ( !rewrite_expression_string_compares(pgm, op->left, error) )
+	return false;
+    if ( !rewrite_expression_string_compares(pgm, op->right, error) )
+	return false;
+    if ( !is_expression_compare_token(op->id()) )
+	return true;
+    bool ls = expression_operand_is_string(op->left);
+    bool rs = expression_operand_is_string(op->right);
+    if ( !ls && !rs )
+	return true;
+    if ( ls != rs )
+    {
+	error = "cannot compare string and non-string values";
+	return false;
+    }
+    Variable *sv = ensure_expression_strcmp(pgm);
+    if ( !sv )
+    {
+	error = "could not resolve strcmp for string comparison";
+	return false;
+    }
+    TokenCallFunc *cmp = new TokenCallFunc(*sv);
+    cmp->file = op->file;
+    cmp->line = op->line;
+    cmp->column = op->column;
+    cmp->parameters.push_back(op->left);
+    cmp->parameters.push_back(op->right);
+    TokenInt *zero = new TokenInt(0);
+    zero->file = op->file;
+    zero->line = op->line;
+    zero->column = op->column;
+    if ( op->id() == TokenID::tk3Eq )
+    {
+	// `===` on two strings is same-type + equal-value, which for two
+	// strings is exactly strcmp == 0. Replace the node outright.
+	TokenEquals *eq = new TokenEquals();
+	eq->file = op->file;
+	eq->line = op->line;
+	eq->column = op->column;
+	eq->left = cmp;
+	eq->right = zero;
+	tb = eq;
+	return true;
+    }
+    if ( op->id() == TokenID::tk3NotEq )
+    {
+	// `!==` on two strings is !(===): strcmp != 0. Replace the node.
+	TokenNotEq *ne = new TokenNotEq();
+	ne->file = op->file;
+	ne->line = op->line;
+	ne->column = op->column;
+	ne->left = cmp;
+	ne->right = zero;
+	tb = ne;
+	return true;
+    }
+    op->left = cmp;
+    op->right = zero;
+    return true;
+}
+
 DataDef *expression_result_datadef_internal(DataDef *expr_type, bool have_result)
 {
     if ( !have_result )
 	return &ddVOID;
     if ( !expr_type )
 	return NULL;
-    if ( expr_type->rawtype() == DataType::dtSTRING )
-	return &ddCHARptr;
     program::native_type native;
     return native_type_from_datadef(expr_type, native) ? expr_type : NULL;
 }
@@ -432,10 +585,11 @@ bool register_expression_header_functions(Program &pgm,
 
 bool validate_expression_function_policy(Program &pgm,
 					 const expression_policy &policy,
-					 const std::deque<TokenBase *> &tokens,
+					 const TokenStream &tokens,
+					 const std::string &source_file,
 					 const std::string &display_file)
 {
-    std::vector<std::string> calls = collect_expression_token_calls(tokens);
+    std::vector<std::string> calls = collect_expression_token_calls(tokens, source_file);
     if ( calls.empty() )
 	return true;
     if ( !policy.allow_function_calls )
@@ -446,13 +600,71 @@ bool validate_expression_function_policy(Program &pgm,
     std::vector<std::string> allowed = expression_allowed_function_names(policy);
     for ( std::size_t i = 0; i < calls.size(); ++i )
     {
-	if ( string_list_contains(allowed, calls[i]) )
+	if ( text_list_contains(allowed, calls[i]) )
 	    continue;
 	return fail_program_runtime(pgm,
 				    std::string("program::eval_expression rejected function call to '")
 				    + calls[i] + "'",
 				    display_file.c_str());
     }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Host-call shims — the ONE call surface to compiled script functions.
+// ---------------------------------------------------------------------------
+// The module carries a synthesized `long __madc_shim_<sym>(char*, char*)`
+// adapter per host-callable function (CirBuilder::synth_call_shim): a packed
+// madc_value argument array in, one madc_value out. ALL signature knowledge
+// (validation, class construction/destruction, retbuf, conversions) lives in
+// the compiled adapter, derived from the parsed headers — the host side
+// below is signature-blind.
+typedef long (*madc_shim_fn)(void *args, void *out);
+
+std::string shim_symbol_for(FuncDef *func, const std::string &name)
+{
+    return "__madc_shim_" + CirBuilder::call_emit_symbol(func, name);
+}
+
+bool invoke_call_shim(void *shim, const std::vector<value> &args,
+		      value *result, std::string &error)
+{
+    std::vector<madc_value> cargs(args.size());
+    for ( std::size_t i = 0; i < args.size(); ++i )
+	madc_value_init(&cargs[i]);
+    for ( std::size_t i = 0; i < args.size(); ++i )
+    {
+	if ( args[i].is_array() || args[i].is_object() )
+	{
+	    for ( std::size_t j = 0; j < i; ++j )
+		madc_value_clear(&cargs[j]);
+	    error = std::string("program::call cannot marshal argument kind '")
+		    + value::kind_name(args[i].type()) + "'";
+	    return false;
+	}
+	madc_value_copy(&cargs[i], &args[i].raw());
+    }
+    madc_value out;
+    madc_value_init(&out);
+    long rc = reinterpret_cast<madc_shim_fn>(shim)(
+	cargs.empty() ? NULL : cargs.data(), &out);
+    for ( std::size_t i = 0; i < cargs.size(); ++i )
+	madc_value_clear(&cargs[i]);
+    if ( rc != 0 )
+    {
+	madc_value_clear(&out);
+	std::ostringstream os;
+	if ( rc >= 1 && rc <= (long)args.size() )
+	    os << "program::call argument " << (rc - 1)
+	       << " has an incompatible kind";
+	else
+	    os << "program::call marshalling failed (shim code " << rc << ")";
+	error = os.str();
+	return false;
+    }
+    if ( result )
+	*result = value::from_raw(out);
+    madc_value_clear(&out);
     return true;
 }
 
@@ -469,12 +681,7 @@ bool invoke_program_zero_arg_function(Program &pgm,
 	return fail_program_runtime(pgm,
 				    "program::call target '" + name + "' is not a function");
 
-    Method *method = static_cast<Method *>(var->data);
-    if ( !method || !method->x86code )
-	return fail_program_runtime(pgm,
-				    "program::call target '" + name + "' has no callable code");
-
-    FuncDef *func = static_cast<FuncDef *>(method->returns.type);
+    FuncDef *func = dynamic_cast<FuncDef *>(var->type);
     if ( !func )
 	return fail_program_runtime(pgm,
 				    "program::call target '" + name + "' has no function metadata");
@@ -488,51 +695,40 @@ bool invoke_program_zero_arg_function(Program &pgm,
 	return fail_program_runtime(pgm,
 				    "program::call argument count mismatch for '" + name + "'");
 
-    program::native_type ret_type;
-    if ( !native_type_from_datadef(&func->returns, ret_type) )
-	return fail_program_runtime(pgm,
-				    "program::call does not support this return type yet");
-
     pgm.clear_diagnostics();
     pgm.clear_error();
-    pgm.push_runtime_scope();
-    pgm.root_fn();
-    pgm.pop_runtime_scope();
+
+    // CIR backend: this path serves ad-hoc child Programs (runtime eval /
+    // the synthetic expression entry), so it builds a one-shot JIT session
+    // for the bare Program — the named-entry analogue of madc_cir_execute.
+    // The call itself goes through the function's synthesized marshalling
+    // shim, like every host call.
+    CirJitSession session;
+    if ( !session.build(&pgm, "<eval>") )
+	return fail_program_runtime(pgm, "eval compilation (CIR->MIR) failed");
+    void *shim = session.function_code(shim_symbol_for(func, name).c_str());
+    if ( !shim )
+	return fail_program_runtime(pgm,
+				    "program::call does not support this signature yet ('"
+				    + name + "' has no marshalling shim)");
     if ( pgm.last_error.has_error )
 	return false;
 
     try
     {
 	pgm.push_runtime_scope();
-	bool ok = false;
-	switch ( ret_type )
-	{
-	    case program::native_type::void_type:
-	    {
-		typedef void (*fn_t)();
-		reinterpret_cast<fn_t>(method->x86code)();
-		result = value();
-		ok = true;
-		break;
-	    }
-	    case program::native_type::boolean:   ok = call_target0<bool>(method->x86code, &result); break;
-	    case program::native_type::integer:   ok = call_target0<int64_t>(method->x86code, &result); break;
-	    case program::native_type::real:      ok = call_target0<double>(method->x86code, &result); break;
-	    case program::native_type::c_string:  ok = call_target0<const char *>(method->x86code, &result); break;
-	    case program::native_type::string_object: ok = call_target0<std::string *>(method->x86code, &result); break;
-	}
+	std::string err;
+	bool ok = invoke_call_shim(shim, std::vector<value>(), &result, err);
 	pgm.pop_runtime_scope();
-	if ( ok )
-	    return true;
+	if ( !ok )
+	    return fail_program_runtime(pgm, err);
+	return true;
     }
     catch ( const std::exception &e )
     {
 	pgm.pop_runtime_scope();
 	return fail_program_runtime(pgm, e.what());
     }
-
-    return fail_program_runtime(pgm,
-				"program::call could not dispatch the requested signature");
 }
 
 std::string read_text_file(const std::string &path)
@@ -543,7 +739,7 @@ std::string read_text_file(const std::string &path)
     return os.str();
 }
 
-bool string_list_contains(const std::vector<std::string> &items, const std::string &value)
+bool text_list_contains(const std::vector<std::string> &items, const std::string &value)
 {
     for ( std::size_t i = 0; i < items.size(); ++i )
     {
@@ -558,7 +754,7 @@ void append_unique_strings(std::vector<std::string> &dst,
 {
     for ( std::size_t i = 0; i < src.size(); ++i )
     {
-	if ( !string_list_contains(dst, src[i]) )
+	if ( !text_list_contains(dst, src[i]) )
 	    dst.push_back(src[i]);
     }
 }
@@ -595,6 +791,13 @@ DataDef *infer_expression_result_type(TokenBase *expr)
     TokenOperator *op = dynamic_cast<TokenOperator *>(expr);
     if ( !op )
 	return dt;
+
+    // A comparison yields int 0/1 regardless of operand types (C semantics);
+    // never adopt a pointer or real OPERAND type as the comparison's result.
+    // (Without this, `5 === 5.0` inferred double and `s !== "x"` inferred
+    // char* — the host then mis-marshalled the int result.)
+    if ( is_expression_compare_token(op->id()) )
+	return &ddINT;
 
     DataDef *left = infer_expression_result_type(op->left);
     DataDef *right = infer_expression_result_type(op->right);
@@ -797,10 +1000,62 @@ bool source_contains_explicit_eval_entry(const std::string &source)
 std::string build_eval_body_wrapper_source(const std::string &source,
 					   const char *return_type)
 {
+    // Split into lines, retaining each line's trailing '\n'.
+    std::vector<std::string> lines;
+    for ( size_t i = 0, n = source.size(); i < n; )
+    {
+	size_t eol = source.find('\n', i);
+	size_t end = (eol == std::string::npos) ? n : eol + 1;
+	lines.push_back(source.substr(i, end - i));
+	i = end;
+    }
+
+    // Hoist the CONTIGUOUS leading run of preprocessor directives (blank lines
+    // allowed) out of the wrapper FUNCTION BODY to file scope. A `#include`
+    // left inside the body inlines the header's declarations as function-local
+    // statements — e.g. <math.h> pulls <cmath>'s `namespace std`, whose
+    // std-typed parameters then fail to resolve at function-body scope
+    // ("Failed to find type 'std'"). Only the leading run is moved (the
+    // conventional includes-at-top form), so code order is preserved and a
+    // mid-body #if/#endif block is left untouched. Backslash-continued
+    // directive lines are kept whole.
+    auto first_nonws = [](const std::string &s) -> int {
+	for ( size_t j = 0; j < s.size(); ++j )
+	    if ( s[j] != ' ' && s[j] != '\t' && s[j] != '\r' && s[j] != '\n' )
+		return (unsigned char)s[j];
+	return -1;	// blank line
+    };
+    auto continues = [](const std::string &s) -> bool {
+	size_t j = s.find_last_not_of("\r\n");
+	return j != std::string::npos && s[j] == '\\';
+    };
+    std::string preamble, body;
+    size_t k = 0;
+    for ( ; k < lines.size(); ++k )
+    {
+	int c = first_nonws(lines[k]);
+	if ( c == '#' )
+	{
+	    preamble += lines[k];
+	    while ( continues(lines[k]) && k + 1 < lines.size() )
+		preamble += lines[++k];
+	    continue;
+	}
+	if ( c == -1 )		// blank line within the leading run
+	{
+	    preamble += lines[k];
+	    continue;
+	}
+	break;			// first real code line — the rest is the body
+    }
+    for ( ; k < lines.size(); ++k )
+	body += lines[k];
+
     std::ostringstream wrapped;
-    wrapped << return_type << " " << eval_entry_name() << "() {\n"
-	    << source;
-    if ( source.empty() || source[source.size() - 1] != '\n' )
+    wrapped << preamble
+	    << return_type << " " << eval_entry_name() << "() {\n"
+	    << body;
+    if ( body.empty() || body[body.size() - 1] != '\n' )
 	wrapped << "\n";
     wrapped << "}\n";
     return wrapped.str();
@@ -818,7 +1073,6 @@ const char *eval_body_wrapper_return_type(madc::program::native_type return_type
 	    return "double";
 	case madc::program::native_type::c_string:
 	    return "char *";
-	case madc::program::native_type::string_object:
 	case madc::program::native_type::void_type:
 	    break;
 	    }
@@ -1054,7 +1308,7 @@ bool validate_expression_ast_call_target(const expression_policy &policy,
 	return set_expression_ast_rejection(reason, "indirect function calls are disabled by expression policy");
 
     std::vector<std::string> allowed = expression_allowed_function_names(policy);
-    if ( !string_list_contains(allowed, call->var.name) )
+    if ( !text_list_contains(allowed, call->var.name) )
     {
 	reason = std::string("rejected function call to '") + call->var.name + "'";
 	return false;
@@ -1119,7 +1373,8 @@ bool validate_expression_ast_call(const expression_policy &policy,
     return validate_expression_ast_list(call->parameters, policy, reason);
 }
 
-std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBase *> &tokens)
+std::vector<std::string> collect_expression_token_calls(const TokenStream &tokens,
+							 const std::string &source_file)
 {
     std::vector<std::string> calls;
     for ( std::size_t i = 0; i < tokens.size(); ++i )
@@ -1127,12 +1382,24 @@ std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBa
 	TokenBase *tb = tokens[i];
 	if ( !tb || tb->type() != TokenType::ttIdentifier )
 	    continue;
+	// The policy validates the USER EXPRESSION's tokens only. The eval TU
+	// is synthesized (policy #includes + the expression) and tokenized
+	// from ONE source file; the expression's tokens carry exactly that
+	// file, while every #include'd token — the real header and its whole
+	// transitive closure (/usr/include/math.h, bits/*.h, …) — carries its
+	// own header path. Keep only tokens from the tokenized source file.
+	// (The old policy-header-name EXCLUDE list matched the embedded-era
+	// literal "math.h" token files but not real header paths, and never
+	// covered transitive includes — real <math.h>'s `decltype (…)` and
+	// `__iseqsig (…)` then poisoned the allowlist check.)
+	if ( !tb->file || source_file != tb->file )
+	    continue;
 	if ( i + 1 >= tokens.size() || !tokens[i + 1] || tokens[i + 1]->id() != TokenID::tkOpBrk )
 	    continue;
-	std::string identifier = ((TokenIdent *)tb)->str;
+	std::string identifier = ((TokenIdent *)tb)->spelling();
 	if ( is_expression_keyword_identifier(identifier) )
 	    continue;
-	if ( !string_list_contains(calls, identifier) )
+	if ( !text_list_contains(calls, identifier) )
 	    calls.push_back(identifier);
     }
     return calls;
@@ -1177,6 +1444,8 @@ bool validate_expression_ast_subscript_expr(TokenSubscriptExpr *sub,
     return validate_expression_ast(policy, sub->index, reason);
 }
 
+// The recursion set here is mirrored by rewrite_expression_string_compares
+// (the DSL strcmp lowering pass) — keep the two in sync.
 bool validate_expression_ast(const expression_policy &policy,
 			     TokenBase *expr,
 			     std::string &reason)
@@ -1348,7 +1617,7 @@ std::vector<std::string> collect_expression_identifier_paths(const std::string &
 			i = end;
 			continue;
 		    }
-		    if ( !string_list_contains(paths, path) )
+		    if ( !text_list_contains(paths, path) )
 			paths.push_back(path);
 		    i = end;
 		}
@@ -1908,24 +2177,32 @@ security_policy clamp_security_policy_for_authority_mode(const security_policy &
     return clamped;
 }
 
-DataType datatype_from_native_type(program::native_type type)
-{
-    switch ( type )
-    {
-	case program::native_type::void_type: return DataType::dtVOID;
-	case program::native_type::boolean:   return DataType::dtBOOL;
-	case program::native_type::integer:   return DataType::dtINT64;
-	case program::native_type::real:      return DataType::dtDOUBLE;
-	case program::native_type::c_string:  return rtPtr(DataType::dtCHAR);
-	case program::native_type::string_object: return DataType::dtSTRING;
-    }
-    return DataType::dtVOID;
-}
 
 bool native_type_from_datadef(DataDef *type, program::native_type &out)
 {
     if ( !type )
 	return false;
+
+    // C string before the integer fallback below: a char* is a DataDefPTR,
+    // which reports is_integer() (pointers are integers at the ABI), so it must
+    // be classified as c_string first. Structural is_cstr() replaces the old
+    // `case dtCHARptr` (tag-arithmetic retirement).
+    if ( type->is_cstr() )
+    {
+	out = program::native_type::c_string;
+	return true;
+    }
+
+    // Any other pointer marshals as an integer (the ABI view). Structural guard
+    // BEFORE the scalar switch: a pointer's type() is now its pointee scalar
+    // (the +10000 tag is retired), so e.g. a void* would otherwise match
+    // `case dtVOID` and a bool* `case dtBOOL`. is_pointer() keeps them integers,
+    // exactly as the old dt*ptr tag did (it fell through to is_integer()).
+    if ( type->is_pointer() )
+    {
+	out = program::native_type::integer;
+	return true;
+    }
 
     switch ( type->type() )
     {
@@ -1934,12 +2211,6 @@ bool native_type_from_datadef(DataDef *type, program::native_type &out)
 	    return true;
 	case DataType::dtBOOL:
 	    out = program::native_type::boolean;
-	    return true;
-	case DataType::dtCHARptr:
-	    out = program::native_type::c_string;
-	    return true;
-	case DataType::dtSTRING:
-	    out = program::native_type::string_object;
 	    return true;
 	default:
 	    break;
@@ -1958,103 +2229,142 @@ bool native_type_from_datadef(DataDef *type, program::native_type &out)
     return false;
 }
 
-template <typename T>
-T value_as(const value &v);
 
-template <>
-bool value_as<bool>(const value &v)
+// Storage-form read: marshal one scalar at `data` of type `type` into a
+// host value. `data` may be the parser's var->data OR a resolved live MIR
+// data-item address (get_global) — callers own that choice; this function
+// must therefore access EXACTLY type->size bytes (an 8-byte read of a
+// 4-byte int is fine on calloc'd parse-time storage but reads a neighbor
+// on real MIR data layout).
+bool value_from_storage(DataDef *type, void *data, size_t count,
+			bool is_array_like, value &out)
 {
-    return v.as_boolean();
-}
-
-template <>
-int64_t value_as<int64_t>(const value &v)
-{
-    return v.as_integer();
-}
-
-template <>
-double value_as<double>(const value &v)
-{
-    if ( v.is_real() )
-	return v.as_real();
-    if ( v.is_integer() )
-	return static_cast<double>(v.as_integer());
-    throw std::runtime_error("madc::program::call expected real-compatible argument");
-}
-
-template <>
-const char *value_as<const char *>(const value &v)
-{
-    return v.as_string().c_str();
-}
-
-template <>
-std::string *value_as<std::string *>(const value &v)
-{
-    return const_cast<std::string *>(&v.as_string());
-}
-
-template <typename T>
-value value_from(T v);
-
-template <>
-value value_from<bool>(bool v)
-{
-    return value(v);
-}
-
-template <>
-value value_from<int64_t>(int64_t v)
-{
-    return value(v);
-}
-
-template <>
-value value_from<double>(double v)
-{
-    return value(v);
-}
-
-template <>
-value value_from<const char *>(const char *v)
-{
-    return value(v);
-}
-
-template <>
-value value_from<std::string *>(std::string *v)
-{
-    return value(v ? *v : std::string());
-}
-
-bool value_from_variable(Variable *var, value &out)
-{
-    if ( !var || !var->type || !var->data )
+    if ( !type || !data )
 	return false;
 
-    if ( var->count != 1 || var->is_fixed_array() || var->is_vla() )
+    if ( count != 1 || is_array_like )
 	return false;
 
-    DataDef *type = var->type;
     if ( type == &ddBOOL )
     {
-	out = value(static_cast<bool>(*static_cast<bool *>(var->data)));
+	out = value(static_cast<bool>(*static_cast<bool *>(data)));
 	return true;
     }
     if ( type->is_integer() || type->is_pointer() )
     {
-	out = value(static_cast<int64_t>(var->get<int64_t>()));
+	bool u = type->is_unsigned();
+	int64_t v = 0;
+	switch ( type->size )
+	{
+	    case 1:
+		v = u ? (int64_t)*static_cast<uint8_t *>(data)
+		      : (int64_t)*static_cast<int8_t *>(data);
+		break;
+	    case 2:
+	    case 3:	// int24 storage mirrors the 16-bit write dispatch
+		v = u ? (int64_t)*static_cast<uint16_t *>(data)
+		      : (int64_t)*static_cast<int16_t *>(data);
+		break;
+	    case 4:
+		v = u ? (int64_t)*static_cast<uint32_t *>(data)
+		      : (int64_t)*static_cast<int32_t *>(data);
+		break;
+	    case 8:
+		v = *static_cast<int64_t *>(data);
+		break;
+	    default:
+		return false;
+	}
+	out = value(v);
 	return true;
     }
     if ( type->is_real() )
     {
-	out = value(static_cast<double>(var->get<double>()));
+	out = value(type->size == 4
+		    ? static_cast<double>(*static_cast<float *>(data))
+		    : *static_cast<double *>(data));
 	return true;
     }
-    if ( type->rawtype() == DataType::dtSTRING )
+    return false;
+}
+
+bool value_from_variable(Variable *var, value &out)
+{
+    if ( !var )
+	return false;
+    return value_from_storage(var->type, var->data, var->count,
+			      var->is_fixed_array() || var->is_vla(), out);
+}
+
+// Storage-form write: see value_from_storage — accesses exactly
+// type->size bytes so a resolved MIR data address is safe (the old
+// dd-identity dispatch wrote ddINT as int64: an 8-byte store on a 4-byte
+// int, neighbor-clobbering on real data layout).
+bool set_storage_from_value(DataDef *type, void *data, size_t count,
+			    bool is_array_like, const value &in)
+{
+    if ( !type || !data )
+	return false;
+
+    if ( count != 1 || is_array_like )
+	return false;
+
+    if ( type == &ddBOOL )
     {
-	out = value(*static_cast<std::string *>(var->data));
+	*static_cast<bool *>(data) = in.as_boolean();
+	return true;
+    }
+    if ( type == &ddCHARptr && in.is_string() )
+    {
+	// Text binding: the storage OWNS a copy (addLiteral's `data holds
+	// a stable char*` convention). Borrowing the value's payload broke
+	// here: the JIT build that reads this pointer runs LAZILY at call
+	// time, after eval_expression clears the bindings map (a latent
+	// use-after-free in the std::string era, exposed by SSO).
+	size_t len = 0;
+	const char *text = madc_value_text(&in.raw(), &len);
+	char *copy = static_cast<char *>(std::malloc(len + 1));
+	if ( copy == NULL )
+	    return false;
+	std::memcpy(copy, text ? text : "", len);
+	copy[len] = '\0';
+	*static_cast<const char **>(data) = copy;
+	return true;
+    }
+    if ( type->is_pointer() )
+	return false;
+    if ( type->is_integer() )
+    {
+	if ( !in.is_integer() )
+	    return false;
+	int64_t v = in.as_integer();
+	switch ( type->size )
+	{
+	    case 1:
+		*static_cast<uint8_t *>(data) = static_cast<uint8_t>(v);
+		break;
+	    case 2:
+	    case 3:	// int24 keeps its historical 16-bit storage dispatch
+		*static_cast<uint16_t *>(data) = static_cast<uint16_t>(v);
+		break;
+	    case 4:
+		*static_cast<uint32_t *>(data) = static_cast<uint32_t>(v);
+		break;
+	    case 8:
+		*static_cast<int64_t *>(data) = v;
+		break;
+	    default:
+		return false;
+	}
+	return true;
+    }
+    if ( type->is_real() )
+    {
+	double d = in.is_real() ? in.as_real() : static_cast<double>(in.as_integer());
+	if ( type->size == 4 )
+	    *static_cast<float *>(data) = static_cast<float>(d);
+	else
+	    *static_cast<double *>(data) = d;
 	return true;
     }
     return false;
@@ -2062,64 +2372,13 @@ bool value_from_variable(Variable *var, value &out)
 
 bool set_variable_from_value(Variable *var, const value &in)
 {
-    if ( !var || !var->type || !var->data )
+    if ( !var )
 	return false;
-
-    if ( var->count != 1 || var->is_fixed_array() || var->is_vla() )
+    if ( !set_storage_from_value(var->type, var->data, var->count,
+				 var->is_fixed_array() || var->is_vla(), in) )
 	return false;
-
-    DataDef *type = var->type;
-    if ( type == &ddBOOL )
-    {
-	*static_cast<bool *>(var->data) = in.as_boolean();
-	var->modified();
-	return true;
-    }
-    if ( type->is_integer() || type->is_pointer() )
-    {
-	if ( !in.is_integer() )
-	    return false;
-	int64_t v = in.as_integer();
-	if ( type == &ddCHAR )
-	    *static_cast<char *>(var->data) = static_cast<char>(v);
-	else if ( type == &ddINT || type == &ddINT64 )
-	    *static_cast<int64_t *>(var->data) = v;
-	else if ( type == &ddINT8 )
-	    *static_cast<int8_t *>(var->data) = static_cast<int8_t>(v);
-	else if ( type == &ddINT16 || type == &ddINT24 )
-	    *static_cast<int16_t *>(var->data) = static_cast<int16_t>(v);
-	else if ( type == &ddINT32 )
-	    *static_cast<int32_t *>(var->data) = static_cast<int32_t>(v);
-	else if ( type == &ddUINT8 )
-	    *static_cast<uint8_t *>(var->data) = static_cast<uint8_t>(v);
-	else if ( type == &ddUINT16 || type == &ddUINT24 )
-	    *static_cast<uint16_t *>(var->data) = static_cast<uint16_t>(v);
-	else if ( type == &ddUINT32 )
-	    *static_cast<uint32_t *>(var->data) = static_cast<uint32_t>(v);
-	else if ( type == &ddUINT64 )
-	    *static_cast<uint64_t *>(var->data) = static_cast<uint64_t>(v);
-	else
-	    return false;
-	var->modified();
-	return true;
-    }
-    if ( type->is_real() )
-    {
-	double d = in.is_real() ? in.as_real() : static_cast<double>(in.as_integer());
-	if ( type == &ddFLOAT )
-	    *static_cast<float *>(var->data) = static_cast<float>(d);
-	else
-	    *static_cast<double *>(var->data) = d;
-	var->modified();
-	return true;
-    }
-    if ( type->rawtype() == DataType::dtSTRING )
-    {
-	*static_cast<std::string *>(var->data) = in.as_string();
-	var->modified();
-	return true;
-    }
-    return false;
+    var->modified();
+    return true;
 }
 
 DataDef *expression_binding_datadef(const value &v)
@@ -2133,7 +2392,7 @@ DataDef *expression_binding_datadef(const value &v)
 	case value::kind::real:
 	    return &ddDOUBLE;
 	case value::kind::string:
-	    return &ddSTRING;
+	    return &ddCHARptr;
 	default:
 	    break;
     }
@@ -2178,157 +2437,64 @@ bool install_runtime_eval_scope_globals(Program &pgm,
     return true;
 }
 
-template <typename R>
-bool call_target0(void *fn, value *result)
-{
-    typedef R (*fn_t)();
-    R ret = reinterpret_cast<fn_t>(fn)();
-    if ( result )
-	*result = value_from<R>(ret);
-    return true;
-}
-
-template <>
-bool call_target0<void>(void *fn, value *result)
-{
-    typedef void (*fn_t)();
-    reinterpret_cast<fn_t>(fn)();
-    if ( result )
-	*result = value();
-    return true;
-}
-
-template <typename R, typename A0>
-bool call_target1(void *fn, const value &a0, value *result)
-{
-    typedef R (*fn_t)(A0);
-    R ret = reinterpret_cast<fn_t>(fn)(value_as<A0>(a0));
-    if ( result )
-	*result = value_from<R>(ret);
-    return true;
-}
-
-template <typename A0>
-bool call_target1_void(void *fn, const value &a0, value *result)
-{
-    typedef void (*fn_t)(A0);
-    reinterpret_cast<fn_t>(fn)(value_as<A0>(a0));
-    if ( result )
-	*result = value();
-    return true;
-}
-
-template <typename R, typename A0, typename A1>
-bool call_target2(void *fn, const value &a0, const value &a1, value *result)
-{
-    typedef R (*fn_t)(A0, A1);
-    R ret = reinterpret_cast<fn_t>(fn)(value_as<A0>(a0), value_as<A1>(a1));
-    if ( result )
-	*result = value_from<R>(ret);
-    return true;
-}
-
-template <typename A0, typename A1>
-bool call_target2_void(void *fn, const value &a0, const value &a1, value *result)
-{
-    typedef void (*fn_t)(A0, A1);
-    reinterpret_cast<fn_t>(fn)(value_as<A0>(a0), value_as<A1>(a1));
-    if ( result )
-	*result = value();
-    return true;
-}
-
-template <typename R, typename A0, typename A1, typename A2>
-bool call_target3(void *fn, const value &a0, const value &a1, const value &a2, value *result)
-{
-    typedef R (*fn_t)(A0, A1, A2);
-    R ret = reinterpret_cast<fn_t>(fn)(value_as<A0>(a0),
-				       value_as<A1>(a1),
-				       value_as<A2>(a2));
-    if ( result )
-	*result = value_from<R>(ret);
-    return true;
-}
-
-template <typename A0, typename A1, typename A2>
-bool call_target3_void(void *fn, const value &a0, const value &a1, const value &a2, value *result)
-{
-    typedef void (*fn_t)(A0, A1, A2);
-    reinterpret_cast<fn_t>(fn)(value_as<A0>(a0),
-			       value_as<A1>(a1),
-			       value_as<A2>(a2));
-    if ( result )
-	*result = value();
-    return true;
-}
-
-template <typename R, typename A0, typename A1, typename A2, typename A3>
-bool call_target4(void *fn,
-		  const value &a0,
-		  const value &a1,
-		  const value &a2,
-		  const value &a3,
-		  value *result)
-{
-    typedef R (*fn_t)(A0, A1, A2, A3);
-    R ret = reinterpret_cast<fn_t>(fn)(value_as<A0>(a0),
-				       value_as<A1>(a1),
-				       value_as<A2>(a2),
-				       value_as<A3>(a3));
-    if ( result )
-	*result = value_from<R>(ret);
-    return true;
-}
-
-template <typename A0, typename A1, typename A2, typename A3>
-bool call_target4_void(void *fn,
-		       const value &a0,
-		       const value &a1,
-		       const value &a2,
-		       const value &a3,
-		       value *result)
-{
-    typedef void (*fn_t)(A0, A1, A2, A3);
-    reinterpret_cast<fn_t>(fn)(value_as<A0>(a0),
-			       value_as<A1>(a1),
-			       value_as<A2>(a2),
-			       value_as<A3>(a3));
-    if ( result )
-	*result = value();
-    return true;
-}
-
-bool build_cpp_callback_trampoline(asmjit::JitRuntime &runtime,
-				   void *callback_ptr,
-				   program::native_function adapter_entry,
-				   program::native_function &out)
-{
-    out = NULL;
-    if ( !callback_ptr || !adapter_entry )
-	return false;
-
-    asmjit::CodeHolder code;
-    code.init(runtime.environment());
-    asmjit::x86::Assembler a(&code);
-
-    // Insert the original callback pointer as a hidden first GP argument:
-    // rdi <- callback, rsi <- old rdi, rdx <- old rsi, rcx <- old rdx, r8 <- old rcx.
-    a.mov(asmjit::x86::r8, asmjit::x86::rcx);
-    a.mov(asmjit::x86::rcx, asmjit::x86::rdx);
-    a.mov(asmjit::x86::rdx, asmjit::x86::rsi);
-    a.mov(asmjit::x86::rsi, asmjit::x86::rdi);
-    a.mov(asmjit::x86::rdi, asmjit::imm(reinterpret_cast<uint64_t>(callback_ptr)));
-    a.mov(asmjit::x86::rax, asmjit::imm(reinterpret_cast<uint64_t>(adapter_entry)));
-    a.jmp(asmjit::x86::rax);
-
-    void *fn = NULL;
-    if ( runtime.add(&fn, &code) != asmjit::kErrorOk )
-	return false;
-    out = reinterpret_cast<program::native_function>(fn);
-    return true;
-}
 
 } // namespace
+
+// One host-callback registration as stored by program/engine impls. `entry`
+// is the address the trampoline's import resolves to (the deduced form's
+// typed adapter, or the explicit form's callback itself); `bound` carries
+// the deduced form's user callback, passed as the adapter's hidden first
+// argument (0 for the explicit form).
+struct host_callback_entry
+{
+    std::string name;
+    uintptr_t entry = 0;
+    uintptr_t bound = 0;
+    program::native_signature signature;
+};
+
+static bool valid_host_callback_name(const std::string &name)
+{
+    if ( name.empty() )
+	return false;
+    if ( !(isalpha((unsigned char)name[0]) || name[0] == '_') )
+	return false;
+    for ( char c : name )
+	if ( !(isalnum((unsigned char)c) || c == '_') )
+	    return false;
+    return true;
+}
+
+static bool valid_host_callback_signature(const program::native_signature &sig)
+{
+    typedef program::native_type nt;
+    switch ( sig.returns )
+    {
+	case nt::void_type: case nt::boolean: case nt::integer:
+	case nt::real: case nt::c_string:
+	    break;
+	default:
+	    return false;
+    }
+    for ( nt p : sig.parameters )
+	if ( p != nt::boolean && p != nt::integer
+	  && p != nt::real && p != nt::c_string )
+	    return false;
+    return true;
+}
+
+static int host_kind_from_native(program::native_type t)
+{
+    typedef program::native_type nt;
+    switch ( t )
+    {
+	case nt::boolean:  return Program::HostCallbackReg::K_BOOL;
+	case nt::integer:  return Program::HostCallbackReg::K_INT;
+	case nt::real:     return Program::HostCallbackReg::K_REAL;
+	case nt::c_string: return Program::HostCallbackReg::K_CSTR;
+	default:           return Program::HostCallbackReg::K_VOID;
+    }
+}
 
 struct program::impl
 {
@@ -2361,8 +2527,18 @@ struct program::impl
     value current_expression_context;
     std::map<std::string, value> active_expression_bindings;
     invoke_limits current_invoke_limits;
-    asmjit::JitRuntime callback_trampoline_runtime;
     std::vector<void *> callback_trampolines;
+    // Host-callback registrations (register_function): installed into the
+    // fresh Program's host_callback_regs on every reset_program, so they
+    // apply to whatever is compiled next.
+    std::vector<host_callback_entry> host_callbacks;
+    // The CIR->c2mir->MIR in-process JIT session behind exec/call/eval.
+    // Built lazily on first run from the parsed Program; reset (with the
+    // Program) on every recompile. See docs/plans/2026-06-10-libmadc-eval-
+    // on-cir-plan.md.
+    std::unique_ptr<CirJitSession> jit;
+    bool compiled_ok = false;
+    std::string compiled_display;
 
     impl()
 	: eng(&owned_engine)
@@ -2390,8 +2566,8 @@ struct program::impl
 
     ~impl()
     {
-	for ( std::size_t i = 0; i < callback_trampolines.size(); ++i )
-	    callback_trampoline_runtime.release(callback_trampolines[i]);
+	// Callback trampolines were JIT-built by asmjit, which is gone.
+	// The vector is never populated now; nothing to release.
     }
 
     MadcEngine &engine() { return *eng; }
@@ -2403,7 +2579,11 @@ struct program::impl
 	    runtime_eval_child_policy_from_public(current_runtime_eval_policy);
 	pgm = eng->create_program();
 	pgm->aot_tracking = aot_mode;
+	install_host_callbacks();
 	runtime_initialized = false;
+	jit.reset();           // the old session references the old Program's tree
+	compiled_ok = false;
+	compiled_display.clear();
 	clear_public_errors();
     }
 
@@ -2521,6 +2701,8 @@ struct program::impl
 	    sync_public_errors();
 	    return false;
 	}
+	compiled_ok = true;
+	compiled_display = path;
 	sync_public_errors();
 	return true;
     }
@@ -2534,7 +2716,29 @@ struct program::impl
 	    sync_public_errors();
 	    return false;
 	}
+	compiled_ok = true;
+	compiled_display = display_file;
 	sync_public_errors();
+	return true;
+    }
+
+    // Build (or reuse) the CIR->MIR JIT session for the compiled Program.
+    bool ensure_jit_built()
+    {
+	if ( !compiled_ok || !pgm )
+	    return fail_runtime("program requires a successfully compiled program");
+	if ( jit && jit->built() )
+	    return true;
+	if ( !jit )
+	    jit.reset(new CirJitSession());
+	const char *name = compiled_display.empty() ? "<memory>"
+						    : compiled_display.c_str();
+	if ( !jit->build(pgm.get(), name) )
+	{
+	    jit.reset();
+	    sync_public_errors();
+	    return fail_runtime("program compilation (CIR->MIR) failed");
+	}
 	return true;
     }
 
@@ -2640,10 +2844,7 @@ struct program::impl
 	    return exec_compiled_in_child(path, display_file);
 
 	bool ok = invoke_with_limits("exec", [this]() -> bool {
-	    pgm->execute();
-	    runtime_initialized = !pgm->last_error.has_error;
-	    sync_public_errors();
-	    return !pgm->last_error.has_error;
+	    return run_main_now();
 	});
 	if ( !ok && has_public_last_error && !pgm->last_error.has_error )
 	    return false;
@@ -2654,6 +2855,24 @@ struct program::impl
 	return ok;
     }
 
+    // Run the compiled program's main() through the CIR JIT session (the
+    // body both exec lambdas share). A missing main is a runtime error,
+    // matching the CLI's behavior.
+    bool run_main_now()
+    {
+	if ( !ensure_jit_built() )
+	    return false;
+	static char progname[] = "madc-program";
+	char *argv0[2] = { progname, NULL };
+	bool ran = false;
+	jit->run_main(1, argv0, &ran);
+	if ( !ran )
+	    return fail_runtime("program::exec: main() not found");
+	runtime_initialized = !pgm->last_error.has_error;
+	sync_public_errors();
+	return !pgm->last_error.has_error;
+    }
+
     bool exec_compiled_with_display(const std::string &actual_file,
 				    const std::string &display_file)
     {
@@ -2661,10 +2880,7 @@ struct program::impl
 	    return exec_compiled_in_child(actual_file, display_file);
 
 	bool ok = invoke_with_limits("exec", [this]() -> bool {
-	    pgm->execute();
-	    runtime_initialized = !pgm->last_error.has_error;
-	    sync_public_errors();
-	    return !pgm->last_error.has_error;
+	    return run_main_now();
 	});
 	if ( !ok && has_public_last_error && !pgm->last_error.has_error )
 	    return false;
@@ -2702,12 +2918,19 @@ struct program::impl
 		_exit(121);
 
 	    engine().reset_standard_streams();
-	    pgm->execute();
-	    runtime_initialized = !pgm->last_error.has_error;
-	    if ( display_file != path )
-		sync_public_errors(display_file, path);
-	    else
-		sync_public_errors();
+	    // The child runs main through the CIR JIT session (built here, in
+	    // the child — that IS the fork-isolation model: the parent process
+	    // never executes script code). run_main_now syncs pgm diagnostics;
+	    // skip the re-sync when it failed via fail_runtime with no pgm
+	    // error (e.g. missing main), as the non-fork exec paths do.
+	    bool ran_ok = run_main_now();
+	    if ( !(!ran_ok && has_public_last_error && !pgm->last_error.has_error) )
+	    {
+		if ( display_file != path )
+		    sync_public_errors(display_file, path);
+		else
+		    sync_public_errors();
+	    }
 
 	    exec_child_report report;
 	    report.ok = !has_public_last_error;
@@ -2929,8 +3152,6 @@ struct program::impl
 	    return &ddVOID;
 	if ( !expr_type )
 	    return NULL;
-	if ( expr_type->rawtype() == DataType::dtSTRING )
-	    return &ddCHARptr;
 	program::native_type native;
 	return native_type_from_datadef(expr_type, native) ? expr_type : NULL;
     }
@@ -2967,10 +3188,11 @@ struct program::impl
 	return true;
     }
 
-    bool validate_expression_function_policy(const std::deque<TokenBase *> &tokens,
+    bool validate_expression_function_policy(const TokenStream &tokens,
+					    const std::string &source_file,
 					    const std::string &display_file)
     {
-	std::vector<std::string> calls = collect_expression_token_calls(tokens);
+	std::vector<std::string> calls = collect_expression_token_calls(tokens, source_file);
 	if ( calls.empty() )
 	    return true;
 	if ( !current_expression_policy.allow_function_calls )
@@ -2988,7 +3210,7 @@ struct program::impl
 	std::vector<std::string> allowed = expression_allowed_function_names(current_expression_policy);
 	for ( std::size_t i = 0; i < calls.size(); ++i )
 	{
-	    if ( string_list_contains(allowed, calls[i]) )
+	    if ( text_list_contains(allowed, calls[i]) )
 		continue;
 	    clear_public_errors();
 	    public_last_error = error(error::severity::error,
@@ -3086,7 +3308,7 @@ struct program::impl
 	    return false;
 	}
 
-	if ( !validate_expression_function_policy(pgm->tokens,
+	if ( !validate_expression_function_policy(pgm->tokens, path,
 						 display_file.empty() ? path : display_file) )
 	    return false;
 	if ( !register_expression_header_functions(display_file.empty() ? path : display_file) )
@@ -3113,6 +3335,21 @@ struct program::impl
 				      error::phase::runtime,
 				      std::string("program::eval_expression rejected parsed expression: ")
 				      + ast_validation_error,
+				      display_file.empty() ? path : display_file,
+				      expr->line, expr->column);
+	    has_public_last_error = true;
+	    public_diagnostics.push_back(public_last_error);
+	    return false;
+	}
+
+	std::string compare_error;
+	if ( !rewrite_expression_string_compares(*pgm, expr, compare_error) )
+	{
+	    clear_public_errors();
+	    public_last_error = error(error::severity::error,
+				      error::phase::runtime,
+				      std::string("program::eval_expression rejected parsed expression: ")
+				      + compare_error,
 				      display_file.empty() ? path : display_file,
 				      expr->line, expr->column);
 	    has_public_last_error = true;
@@ -3152,6 +3389,11 @@ struct program::impl
 	}
 
 	bool ok = pgm->compile();
+	if ( ok )
+	{
+	    compiled_ok = true;
+	    compiled_display = display_file.empty() ? path : display_file;
+	}
 	if ( display_file != path )
 	    sync_public_errors(display_file, path);
 	else
@@ -3217,38 +3459,9 @@ struct program::impl
 			   native_function callback,
 			   const native_signature &signature)
     {
-	if ( name.empty() )
-	{
-	    clear_public_errors();
-	    public_last_error = error(error::severity::error,
-				      error::phase::runtime,
-				      "register_function requires a non-empty name");
-	    has_public_last_error = true;
-	    public_diagnostics.push_back(public_last_error);
-	    return false;
-	}
-	if ( !callback )
-	{
-	    clear_public_errors();
-	    public_last_error = error(error::severity::error,
-				      error::phase::runtime,
-				      "register_function requires a non-null callback");
-	    has_public_last_error = true;
-	    public_diagnostics.push_back(public_last_error);
-	    return false;
-	}
-	engine().populate_default_registries();
-
-	datatype_vec_t params;
-	params.push_back(datatype_from_native_type(signature.returns));
-	for ( std::size_t i = 0; i < signature.parameters.size(); ++i )
-	    params.push_back(datatype_from_native_type(signature.parameters[i]));
-
-	engine().builtin_registry.add_core_function(name,
-						    params,
-						    reinterpret_cast<fVOIDFUNC>(callback));
-	reset_program();
-	return true;
+	// Explicit-signature form: the trampoline calls the callback itself
+	// through the signature's low types (no adapter, no hidden arg).
+	return add_host_callback(name, (uintptr_t)callback, 0, signature);
     }
 
     bool register_cpp_callback(const std::string &name,
@@ -3256,14 +3469,56 @@ struct program::impl
 			       const native_signature &signature,
 			       native_function adapter_entry)
     {
-	native_function trampoline = NULL;
-	if ( !build_cpp_callback_trampoline(callback_trampoline_runtime,
-					    callback_ptr,
-					    adapter_entry,
-					    trampoline) )
-	    return fail_runtime("register_function could not build callback trampoline");
-	callback_trampolines.push_back(reinterpret_cast<void *>(trampoline));
-	return register_function(name, trampoline, signature);
+	// Deduced form: the trampoline calls the typed adapter, passing the
+	// user callback as the adapter's hidden first argument.
+	return add_host_callback(name, (uintptr_t)adapter_entry,
+				 (uintptr_t)callback_ptr, signature);
+    }
+
+    bool add_host_callback(const std::string &name, uintptr_t entry,
+			   uintptr_t bound, const native_signature &signature)
+    {
+	if ( !valid_host_callback_name(name) )
+	    return fail_runtime("register_function: invalid function name '"
+				+ name + "'");
+	if ( !entry )
+	    return fail_runtime("register_function: null callback for '"
+				+ name + "'");
+	if ( !valid_host_callback_signature(signature) )
+	    return fail_runtime("register_function: unsupported signature for '"
+				+ name + "'");
+	for ( const host_callback_entry &e : host_callbacks )
+	    if ( e.name == name )
+		return fail_runtime("register_function: '" + name
+				    + "' is already registered");
+	host_callback_entry e;
+	e.name = name;
+	e.entry = entry;
+	e.bound = bound;
+	e.signature = signature;
+	host_callbacks.push_back(e);
+	// Applies at the next compile: every compile path begins with
+	// reset_program, which installs the registrations into the fresh
+	// Program (install_host_callbacks).
+	return true;
+    }
+
+    void install_host_callbacks()
+    {
+	pgm->host_callback_regs.clear();
+	int k = 0;
+	for ( const host_callback_entry &e : host_callbacks )
+	{
+	    Program::HostCallbackReg reg;
+	    reg.name = e.name;
+	    reg.import_sym = "__madc_host_cb_" + std::to_string(k++);
+	    reg.entry = e.entry;
+	    reg.bound = e.bound;
+	    reg.returns = host_kind_from_native(e.signature.returns);
+	    for ( program::native_type p : e.signature.parameters )
+		reg.params.push_back(host_kind_from_native(p));
+	    pgm->host_callback_regs.push_back(reg);
+	}
     }
 
     bool fail_runtime(const std::string &message)
@@ -3379,17 +3634,29 @@ struct program::impl
     {
 	if ( runtime_initialized )
 	    return true;
-	if ( !pgm || !pgm->root_fn )
+	if ( !compiled_ok || !pgm )
 	    return fail_runtime("program::call requires a successfully compiled program");
 
+	// CIR backend: "runtime initialized" = the JIT session is built and
+	// linked, and dynamic global initializers have run. (The asmjit-era
+	// root_fn() top-level run is gone.)
 	pgm->clear_diagnostics();
 	pgm->clear_error();
-	pgm->push_runtime_scope();
-	pgm->root_fn();
-	pgm->pop_runtime_scope();
+	if ( !ensure_jit_built() )
+	    return false;
 	sync_public_errors();
 	if ( pgm->last_error.has_error )
 	    return false;
+	// File-scope class globals (e.g. `std::string g = "hi";`) construct in
+	// the synthesized module function __madc_global_init — main calls it
+	// too, but a call-only session never runs main. The function carries a
+	// static once-guard, so init-here + a later run_main stays single-shot.
+	if ( jit )
+	{
+	    void *ginit = jit->function_code("__madc_global_init");
+	    if ( ginit )
+		((void (*)())ginit)();
+	}
 	runtime_initialized = true;
 	return true;
     }
@@ -3399,296 +3666,6 @@ struct program::impl
 	return current_security_policy.execution == execution_mode::fork_per_invocation;
     }
 
-    bool dispatch_call0(void *fn, native_type ret_type, value *result)
-    {
-	switch ( ret_type )
-	{
-	    case native_type::void_type: return call_target0<void>(fn, result);
-	    case native_type::boolean:   return call_target0<bool>(fn, result);
-	    case native_type::integer:   return call_target0<int64_t>(fn, result);
-	    case native_type::real:      return call_target0<double>(fn, result);
-	    case native_type::c_string:  return call_target0<const char *>(fn, result);
-	    case native_type::string_object: return call_target0<std::string *>(fn, result);
-	}
-	return false;
-    }
-
-    template <typename A0>
-    bool dispatch_call1_ret(void *fn, native_type ret_type, const value &arg0, value *result)
-    {
-	switch ( ret_type )
-	{
-	    case native_type::void_type: return call_target1_void<A0>(fn, arg0, result);
-	    case native_type::boolean:   return call_target1<bool, A0>(fn, arg0, result);
-	    case native_type::integer:   return call_target1<int64_t, A0>(fn, arg0, result);
-	    case native_type::real:      return call_target1<double, A0>(fn, arg0, result);
-	    case native_type::c_string:  return call_target1<const char *, A0>(fn, arg0, result);
-	    case native_type::string_object: return call_target1<std::string *, A0>(fn, arg0, result);
-	}
-	return false;
-    }
-
-    bool dispatch_call1(void *fn, native_type ret_type, native_type arg0_type,
-			const value &arg0, value *result)
-    {
-	switch ( arg0_type )
-	{
-	    case native_type::boolean: return dispatch_call1_ret<bool>(fn, ret_type, arg0, result);
-	    case native_type::integer: return dispatch_call1_ret<int64_t>(fn, ret_type, arg0, result);
-	    case native_type::real:    return dispatch_call1_ret<double>(fn, ret_type, arg0, result);
-	    case native_type::c_string:return dispatch_call1_ret<const char *>(fn, ret_type, arg0, result);
-	    case native_type::string_object:return dispatch_call1_ret<std::string *>(fn, ret_type, arg0, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    template <typename A0, typename A1>
-    bool dispatch_call2_ret(void *fn, native_type ret_type,
-			    const value &arg0, const value &arg1, value *result)
-    {
-	switch ( ret_type )
-	{
-	    case native_type::void_type: return call_target2_void<A0, A1>(fn, arg0, arg1, result);
-	    case native_type::boolean:   return call_target2<bool, A0, A1>(fn, arg0, arg1, result);
-	    case native_type::integer:   return call_target2<int64_t, A0, A1>(fn, arg0, arg1, result);
-	    case native_type::real:      return call_target2<double, A0, A1>(fn, arg0, arg1, result);
-	    case native_type::c_string:  return call_target2<const char *, A0, A1>(fn, arg0, arg1, result);
-	    case native_type::string_object: return call_target2<std::string *, A0, A1>(fn, arg0, arg1, result);
-	}
-	return false;
-    }
-
-    template <typename A0>
-    bool dispatch_call2_arg1(void *fn, native_type ret_type, native_type arg1_type,
-			     const value &arg0, const value &arg1, value *result)
-    {
-	switch ( arg1_type )
-	{
-	    case native_type::boolean: return dispatch_call2_ret<A0, bool>(fn, ret_type, arg0, arg1, result);
-	    case native_type::integer: return dispatch_call2_ret<A0, int64_t>(fn, ret_type, arg0, arg1, result);
-	    case native_type::real:    return dispatch_call2_ret<A0, double>(fn, ret_type, arg0, arg1, result);
-	    case native_type::c_string:return dispatch_call2_ret<A0, const char *>(fn, ret_type, arg0, arg1, result);
-	    case native_type::string_object:return dispatch_call2_ret<A0, std::string *>(fn, ret_type, arg0, arg1, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    bool dispatch_call2(void *fn, native_type ret_type,
-			native_type arg0_type, native_type arg1_type,
-			const value &arg0, const value &arg1, value *result)
-    {
-	switch ( arg0_type )
-	{
-	    case native_type::boolean: return dispatch_call2_arg1<bool>(fn, ret_type, arg1_type, arg0, arg1, result);
-	    case native_type::integer: return dispatch_call2_arg1<int64_t>(fn, ret_type, arg1_type, arg0, arg1, result);
-	    case native_type::real:    return dispatch_call2_arg1<double>(fn, ret_type, arg1_type, arg0, arg1, result);
-	    case native_type::c_string:return dispatch_call2_arg1<const char *>(fn, ret_type, arg1_type, arg0, arg1, result);
-	    case native_type::string_object:return dispatch_call2_arg1<std::string *>(fn, ret_type, arg1_type, arg0, arg1, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    template <typename A0, typename A1, typename A2>
-    bool dispatch_call3_ret(void *fn,
-			    native_type ret_type,
-			    const value &arg0,
-			    const value &arg1,
-			    const value &arg2,
-			    value *result)
-    {
-	switch ( ret_type )
-	{
-	    case native_type::void_type: return call_target3_void<A0, A1, A2>(fn, arg0, arg1, arg2, result);
-	    case native_type::boolean:   return call_target3<bool, A0, A1, A2>(fn, arg0, arg1, arg2, result);
-	    case native_type::integer:   return call_target3<int64_t, A0, A1, A2>(fn, arg0, arg1, arg2, result);
-	    case native_type::real:      return call_target3<double, A0, A1, A2>(fn, arg0, arg1, arg2, result);
-	    case native_type::c_string:  return call_target3<const char *, A0, A1, A2>(fn, arg0, arg1, arg2, result);
-	    case native_type::string_object: return call_target3<std::string *, A0, A1, A2>(fn, arg0, arg1, arg2, result);
-	}
-	return false;
-    }
-
-    template <typename A0, typename A1>
-    bool dispatch_call3_arg2(void *fn,
-			     native_type ret_type,
-			     native_type arg2_type,
-			     const value &arg0,
-			     const value &arg1,
-			     const value &arg2,
-			     value *result)
-    {
-	switch ( arg2_type )
-	{
-	    case native_type::boolean: return dispatch_call3_ret<A0, A1, bool>(fn, ret_type, arg0, arg1, arg2, result);
-	    case native_type::integer: return dispatch_call3_ret<A0, A1, int64_t>(fn, ret_type, arg0, arg1, arg2, result);
-	    case native_type::real:    return dispatch_call3_ret<A0, A1, double>(fn, ret_type, arg0, arg1, arg2, result);
-	    case native_type::c_string:return dispatch_call3_ret<A0, A1, const char *>(fn, ret_type, arg0, arg1, arg2, result);
-	    case native_type::string_object:return dispatch_call3_ret<A0, A1, std::string *>(fn, ret_type, arg0, arg1, arg2, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    template <typename A0>
-    bool dispatch_call3_arg1(void *fn,
-			     native_type ret_type,
-			     native_type arg1_type,
-			     native_type arg2_type,
-			     const value &arg0,
-			     const value &arg1,
-			     const value &arg2,
-			     value *result)
-    {
-	switch ( arg1_type )
-	{
-	    case native_type::boolean: return dispatch_call3_arg2<A0, bool>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::integer: return dispatch_call3_arg2<A0, int64_t>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::real:    return dispatch_call3_arg2<A0, double>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::c_string:return dispatch_call3_arg2<A0, const char *>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::string_object:return dispatch_call3_arg2<A0, std::string *>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    bool dispatch_call3(void *fn,
-			native_type ret_type,
-			native_type arg0_type,
-			native_type arg1_type,
-			native_type arg2_type,
-			const value &arg0,
-			const value &arg1,
-			const value &arg2,
-			value *result)
-    {
-	switch ( arg0_type )
-	{
-	    case native_type::boolean: return dispatch_call3_arg1<bool>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::integer: return dispatch_call3_arg1<int64_t>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::real:    return dispatch_call3_arg1<double>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::c_string:return dispatch_call3_arg1<const char *>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::string_object:return dispatch_call3_arg1<std::string *>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    template <typename A0, typename A1, typename A2, typename A3>
-    bool dispatch_call4_ret(void *fn,
-			    native_type ret_type,
-			    const value &arg0,
-			    const value &arg1,
-			    const value &arg2,
-			    const value &arg3,
-			    value *result)
-    {
-	switch ( ret_type )
-	{
-	    case native_type::void_type: return call_target4_void<A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
-	    case native_type::boolean:   return call_target4<bool, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
-	    case native_type::integer:   return call_target4<int64_t, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
-	    case native_type::real:      return call_target4<double, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
-	    case native_type::c_string:  return call_target4<const char *, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
-	    case native_type::string_object: return call_target4<std::string *, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
-	}
-	return false;
-    }
-
-    template <typename A0, typename A1, typename A2>
-    bool dispatch_call4_arg3(void *fn,
-			     native_type ret_type,
-			     native_type arg3_type,
-			     const value &arg0,
-			     const value &arg1,
-			     const value &arg2,
-			     const value &arg3,
-			     value *result)
-    {
-	switch ( arg3_type )
-	{
-	    case native_type::boolean: return dispatch_call4_ret<A0, A1, A2, bool>(fn, ret_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::integer: return dispatch_call4_ret<A0, A1, A2, int64_t>(fn, ret_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::real:    return dispatch_call4_ret<A0, A1, A2, double>(fn, ret_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::c_string:return dispatch_call4_ret<A0, A1, A2, const char *>(fn, ret_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::string_object:return dispatch_call4_ret<A0, A1, A2, std::string *>(fn, ret_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    template <typename A0, typename A1>
-    bool dispatch_call4_arg2(void *fn,
-			     native_type ret_type,
-			     native_type arg2_type,
-			     native_type arg3_type,
-			     const value &arg0,
-			     const value &arg1,
-			     const value &arg2,
-			     const value &arg3,
-			     value *result)
-    {
-	switch ( arg2_type )
-	{
-	    case native_type::boolean: return dispatch_call4_arg3<A0, A1, bool>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::integer: return dispatch_call4_arg3<A0, A1, int64_t>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::real:    return dispatch_call4_arg3<A0, A1, double>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::c_string:return dispatch_call4_arg3<A0, A1, const char *>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::string_object:return dispatch_call4_arg3<A0, A1, std::string *>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    template <typename A0>
-    bool dispatch_call4_arg1(void *fn,
-			     native_type ret_type,
-			     native_type arg1_type,
-			     native_type arg2_type,
-			     native_type arg3_type,
-			     const value &arg0,
-			     const value &arg1,
-			     const value &arg2,
-			     const value &arg3,
-			     value *result)
-    {
-	switch ( arg1_type )
-	{
-	    case native_type::boolean: return dispatch_call4_arg2<A0, bool>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::integer: return dispatch_call4_arg2<A0, int64_t>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::real:    return dispatch_call4_arg2<A0, double>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::c_string:return dispatch_call4_arg2<A0, const char *>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::string_object:return dispatch_call4_arg2<A0, std::string *>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    bool dispatch_call4(void *fn,
-			native_type ret_type,
-			native_type arg0_type,
-			native_type arg1_type,
-			native_type arg2_type,
-			native_type arg3_type,
-			const value &arg0,
-			const value &arg1,
-			const value &arg2,
-			const value &arg3,
-			value *result)
-    {
-	switch ( arg0_type )
-	{
-	    case native_type::boolean: return dispatch_call4_arg1<bool>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::integer: return dispatch_call4_arg1<int64_t>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::real:    return dispatch_call4_arg1<double>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::c_string:return dispatch_call4_arg1<const char *>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::string_object:return dispatch_call4_arg1<std::string *>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
 
     bool has_function(const std::string &name) const
     {
@@ -3700,8 +3677,9 @@ struct program::impl
 	Variable *var = pgm->findVariable(id);
 	if ( !var || !var->type || var->type->basetype() != BaseType::btFunct )
 	    return false;
-	Method *method = static_cast<Method *>(var->data);
-	return method && method->x86code;
+	// CIR backend: a parsed function is callable — the JIT session
+	// generates its code on first call; no per-Method code pointer.
+	return true;
     }
 
     bool load_object(const std::string &path)
@@ -3784,11 +3762,7 @@ struct program::impl
 	if ( !var->type || var->type->basetype() != BaseType::btFunct )
 	    return fail_runtime("program::call target '" + name + "' is not a function");
 
-	Method *method = static_cast<Method *>(var->data);
-	if ( !method || !method->x86code )
-	    return fail_runtime("program::call target '" + name + "' has no callable code");
-
-	FuncDef *func = static_cast<FuncDef *>(method->returns.type);
+	FuncDef *func = dynamic_cast<FuncDef *>(var->type);
 	if ( !func )
 	    return fail_runtime("program::call target '" + name + "' has no function metadata");
 	if ( func->is_multi_return() )
@@ -3797,63 +3771,30 @@ struct program::impl
 	    return fail_runtime("program::call does not support variadic functions yet");
 	if ( args.size() != func->parameters.size() )
 	    return fail_runtime("program::call argument count mismatch for '" + name + "'");
-	if ( args.size() > 4 )
-	    return fail_runtime("program::call currently supports up to 4 arguments");
 
-	native_type ret_type;
-	if ( !native_type_from_datadef(&func->returns, ret_type) )
-	    return fail_runtime("program::call does not support this return type yet");
-
-	std::vector<native_type> arg_types;
-	arg_types.reserve(func->parameters.size());
-	for ( std::size_t i = 0; i < func->parameters.size(); ++i )
-	{
-	    native_type arg_type;
-	    if ( !native_type_from_datadef(func->parameters[i], arg_type) )
-		return fail_runtime("program::call does not support this parameter type yet");
-	    arg_types.push_back(arg_type);
-	}
+	// The ONE call path: the function's synthesized marshalling shim
+	// (CirBuilder::synth_call_shim). A function without one has a
+	// signature the boundary cannot marshal yet.
+	void *shim = jit ? jit->function_code(shim_symbol_for(func, name).c_str()) : NULL;
+	if ( !shim )
+	    return fail_runtime("program::call does not support this signature yet ('"
+				+ name + "' has no marshalling shim)");
 
 	try
 	{
-	    bool ok = false;
-	    std::vector<value> arg_storage(args.begin(), args.end());
 	    pgm->push_runtime_scope();
-	    switch ( args.size() )
-	    {
-		case 0:
-		    ok = dispatch_call0(method->x86code, ret_type, result);
-		    break;
-		case 1:
-		    ok = dispatch_call1(method->x86code, ret_type, arg_types[0], arg_storage[0], result);
-		    break;
-		case 2:
-		    ok = dispatch_call2(method->x86code, ret_type, arg_types[0], arg_types[1],
-					arg_storage[0], arg_storage[1], result);
-		    break;
-		case 3:
-		    ok = dispatch_call3(method->x86code, ret_type, arg_types[0], arg_types[1], arg_types[2],
-					arg_storage[0], arg_storage[1], arg_storage[2], result);
-		    break;
-		case 4:
-		    ok = dispatch_call4(method->x86code, ret_type, arg_types[0], arg_types[1],
-					arg_types[2], arg_types[3],
-					arg_storage[0], arg_storage[1], arg_storage[2], arg_storage[3], result);
-		    break;
-		default:
-		    break;
-	    }
+	    std::string err;
+	    bool ok = invoke_call_shim(shim, args, result, err);
 	    pgm->pop_runtime_scope();
-	    if ( ok )
-		return true;
+	    if ( !ok )
+		return fail_runtime(err);
+	    return true;
 	}
 	catch ( const std::exception &e )
 	{
 	    pgm->pop_runtime_scope();
 	    return fail_runtime(e.what());
 	}
-
-	return fail_runtime("program::call could not dispatch the requested signature");
     }
 
     bool call_in_child(const std::string &name, const std::vector<value> &args, value *result)
@@ -4030,8 +3971,28 @@ struct program::impl
 	    if ( var->type && var->type->basetype() == BaseType::btFunct )
 		return fail_runtime("program::get_global target '" + name + "' is a function");
 
+	    // Compiled code reads the MIR module's data item, not the
+	    // parser's var->data backing store — resolve the live address
+	    // (globals emit under their source identifier) and fall back to
+	    // parse-time storage only when the item is absent.
+	    void *storage = jit ? jit->data_address(id.c_str()) : NULL;
+	    // Text-carrier globals (real libstdc++ std::string objects under
+	    // the header model) marshal by reading the LIVE object — same
+	    // mechanism as __madc_scope_set_string_runtime (parser.cpp).
+	    // Requires the resolved MIR object; the parse-time fallback
+	    // would read unconstructed memory.
+	    if ( storage && var->count == 1 && var->type
+	    &&   var->type->marshals_value_text() )
+	    {
+		*result = value(*static_cast<const std::string *>(storage));
+		return true;
+	    }
 	    value out;
-	    if ( !value_from_variable(var, out) )
+	    bool marshaled = storage
+		? value_from_storage(var->type, storage, var->count,
+				     var->is_fixed_array() || var->is_vla(), out)
+		: value_from_variable(var, out);
+	    if ( !marshaled )
 		return fail_runtime("program::get_global does not support this variable type yet");
 	    *result = out;
 	    return true;
@@ -4057,8 +4018,27 @@ struct program::impl
 
 	    try
 	    {
-		if ( !set_variable_from_value(var, new_value) )
+		// Write the LIVE MIR data item when present (see get_global);
+		// parse-time var->data is the fallback for unemitted vars.
+		void *storage = jit ? jit->data_address(id.c_str()) : NULL;
+		if ( storage && var->count == 1 && var->type
+		&&   var->type->marshals_value_text() && new_value.is_string() )
+		{
+		    // Assign through the live object: the host's libstdc++
+		    // operator= manages the real string's storage.
+		    *static_cast<std::string *>(storage) = new_value.as_string();
+		    var->modified();
+		    return true;
+		}
+		bool stored = storage
+		    ? set_storage_from_value(var->type, storage, var->count,
+					     var->is_fixed_array() || var->is_vla(),
+					     new_value)
+		    : set_variable_from_value(var, new_value);
+		if ( !stored )
 		    return fail_runtime("program::set_global does not support this variable type yet");
+		if ( storage )
+		    var->modified();
 	    }
 	    catch ( const std::exception &e )
 	    {
@@ -4168,12 +4148,12 @@ bool program::compile_string(const std::string &source, const std::string &virtu
 
 bool program::is_compiled() const
 {
-    return _impl->pgm && _impl->pgm->root_fn;
+    return _impl->pgm && _impl->compiled_ok;
 }
 
 bool program::save_object(const std::string &path)
 {
-    if ( !_impl->pgm || !_impl->pgm->root_fn )
+    if ( !_impl->pgm || !_impl->compiled_ok )
     {
 	_impl->clear_public_errors();
 	_impl->public_last_error = error(error::severity::error,
@@ -4198,7 +4178,7 @@ bool program::save_object(const std::string &path)
 
 bool program::save_executable(const std::string &path)
 {
-    if ( !_impl->pgm || !_impl->pgm->root_fn )
+    if ( !_impl->pgm || !_impl->compiled_ok )
     {
 	_impl->clear_public_errors();
 	_impl->public_last_error = error(error::severity::error,
@@ -4521,7 +4501,9 @@ bool internal_program_runtime_eval_expression(::Program &self,
 	copy_program_public_error(self, child);
 	return false;
     }
-    if ( !validate_expression_function_policy(child, policy, child.tokens, display_name) )
+    if ( !validate_expression_function_policy(child, policy, child.tokens,
+					      display_name.empty() ? "<memory>" : display_name,
+					      display_name) )
     {
 	copy_program_public_error(self, child);
 	return false;
@@ -4545,6 +4527,19 @@ bool internal_program_runtime_eval_expression(::Program &self,
 	fail_program_runtime(child,
 			     std::string("program::eval_expression rejected parsed expression: ")
 			     + ast_validation_error,
+			     display_name.c_str(),
+			     expr->line,
+			     expr->column);
+	copy_program_public_error(self, child);
+	return false;
+    }
+
+    std::string compare_error;
+    if ( !rewrite_expression_string_compares(child, expr, compare_error) )
+    {
+	fail_program_runtime(child,
+			     std::string("program::eval_expression rejected parsed expression: ")
+			     + compare_error,
 			     display_name.c_str(),
 			     expr->line,
 			     expr->column);
@@ -4742,8 +4737,10 @@ struct engine::impl
     expression_policy current_expression_policy;
     runtime_eval_policy current_runtime_eval_policy;
     invoke_limits current_invoke_limits;
-    asmjit::JitRuntime callback_trampoline_runtime;
     std::vector<void *> callback_trampolines;
+    // Engine-level host-callback registrations: copied into each program
+    // created from this engine (create_program), ahead of the program's own.
+    std::vector<host_callback_entry> host_callbacks;
 
     impl()
     {
@@ -4753,8 +4750,8 @@ struct engine::impl
 
     ~impl()
     {
-	for ( std::size_t i = 0; i < callback_trampolines.size(); ++i )
-	    callback_trampoline_runtime.release(callback_trampolines[i]);
+	// Callback trampolines were JIT-built by asmjit, which is gone.
+	// The vector is never populated now; nothing to release.
     }
 
     void sync_registration_policy()
@@ -4869,24 +4866,34 @@ const invoke_limits &engine::get_invoke_limits() const
     return _impl->current_invoke_limits;
 }
 
+static bool engine_add_host_callback(std::vector<host_callback_entry> &list,
+				     const std::string &name, uintptr_t entry,
+				     uintptr_t bound,
+				     const program::native_signature &signature)
+{
+    if ( !valid_host_callback_name(name) || !entry
+      || !valid_host_callback_signature(signature) )
+	return false;
+    for ( const host_callback_entry &e : list )
+	if ( e.name == name )
+	    return false;
+    host_callback_entry e;
+    e.name = name;
+    e.entry = entry;
+    e.bound = bound;
+    e.signature = signature;
+    list.push_back(e);
+    return true;
+}
+
 bool engine::register_function(const std::string &name,
 			       program::native_function callback,
 			       const program::native_signature &signature)
 {
-    if ( name.empty() || !callback )
-	return false;
-
-    _impl->eng.populate_default_registries();
-
-    datatype_vec_t params;
-    params.push_back(datatype_from_native_type(signature.returns));
-    for ( std::size_t i = 0; i < signature.parameters.size(); ++i )
-	params.push_back(datatype_from_native_type(signature.parameters[i]));
-
-    _impl->eng.builtin_registry.add_core_function(name,
-						   params,
-						   reinterpret_cast<fVOIDFUNC>(callback));
-    return true;
+    // Explicit-signature form; applies to programs created AFTER this call
+    // (create_program copies the engine's registrations into the program).
+    return engine_add_host_callback(_impl->host_callbacks, name,
+				    (uintptr_t)callback, 0, signature);
 }
 
 bool engine::register_cpp_callback(const std::string &name,
@@ -4894,14 +4901,11 @@ bool engine::register_cpp_callback(const std::string &name,
 				   const program::native_signature &signature,
 				   program::native_function adapter_entry)
 {
-    program::native_function trampoline = NULL;
-    if ( !build_cpp_callback_trampoline(_impl->callback_trampoline_runtime,
-					callback_ptr,
-					adapter_entry,
-					trampoline) )
-	return false;
-    _impl->callback_trampolines.push_back(reinterpret_cast<void *>(trampoline));
-    return register_function(name, trampoline, signature);
+    // Deduced form: the adapter receives the user callback as its hidden
+    // first argument.
+    return engine_add_host_callback(_impl->host_callbacks, name,
+				    (uintptr_t)adapter_entry,
+				    (uintptr_t)callback_ptr, signature);
 }
 
 // Deferred: needs engine::impl to be complete.
@@ -4913,6 +4917,122 @@ program::program(engine &eng)
 		     eng._impl->current_runtime_eval_policy,
 		     eng._impl->current_invoke_limits))
 {
+    // Engine-level host-callback registrations seed the program's list (the
+    // program may add its own on top). Installed into the parse Program at
+    // the next compile's reset_program.
+    _impl->host_callbacks = eng._impl->host_callbacks;
 }
 
 } // namespace madc
+
+//////////////////////////////////////////////////////////////////////////
+// Legacy asmjit-JIT entry points — now stubs.
+//
+// The asmjit JIT codegen backend (compiler.cpp, typesafe.cpp,
+// compiler_*.cpp) and the AOT ELF writer (madc_elf.cpp) were removed.
+// CIR (madc parse → cir_node → c2mir → MIR) is the sole backend and is
+// driven through madc_cir_execute(). The public Program methods below
+// keep their signatures (for libmadc API/ABI stability) but no longer
+// generate or run native code: they report a clear error and fail.
+//////////////////////////////////////////////////////////////////////////
+
+bool Program::compile()
+{
+    // On the CIR backend, Program-level compilation IS the front end: the
+    // tokenize+parse that already ran. Code generation happens at the
+    // CIR->c2mir->MIR stage (CirJitSession / madc_cir_execute), driven
+    // lazily at execute/call/eval time. A parsed Program is compile-ready.
+    //
+    // ONE policy gate lives here: with dynamic symbol fallback disabled, a
+    // USER-SOURCE prototype with no body and no sanctioned binding (no
+    // emit_symbol, not an addFunction registration — those create FuncDefs
+    // with declaration_only false) could only ever resolve through the JIT
+    // link's dlsym fallback. Reject it at compile, the late-bind analogue of
+    // the parse-time undeclared-identifier gate. Curated header declarations
+    // (decl_file != the main translation unit) stay permitted.
+    if ( !last_error.has_error && !is_dynamic_symbol_fallback_enabled()
+      && tkProgram && !tkProgram->source.empty() )
+    {
+	for ( funcdef_map_iter fmi = funcdef_map.begin();
+	      fmi != funcdef_map.end(); ++fmi )
+	{
+	    FuncDef *fd = fmi->second;
+	    if ( !fd || !fd->declaration_only || !fd->emit_symbol.empty() )
+		continue;
+	    if ( !fd->decl_file || tkProgram->source != fd->decl_file )
+		continue;
+	    set_error(DiagnosticPhase::compiler,
+		      "dynamic symbol fallback is disabled by registration policy");
+	    return false;
+	}
+    }
+    return !last_error.has_error;
+}
+
+void Program::execute()
+{
+    set_error(Program::DiagnosticPhase::runtime,
+	      "Program::execute() is unavailable: the asmjit JIT codegen "
+	      "backend was removed. Use the CIR backend via madc_cir_execute().");
+}
+
+bool Program::save_object(const std::string &path) const
+{
+    (void)path;
+    std::cerr << "AOT object output is not available on the CIR backend; "
+		 "emit C with --emit-c and compile with gcc/clang" << std::endl;
+    return false;
+}
+
+bool Program::save_executable(const std::string &path)
+{
+    (void)path;
+    std::cerr << "AOT executable output is not available on the CIR backend; "
+		 "emit C with --emit-c and compile with gcc/clang" << std::endl;
+    return false;
+}
+
+bool Program::load_object(const std::string &path)
+{
+    (void)path;
+    std::cerr << "loading saved AOT objects is not available on the CIR "
+		 "backend (the asmjit/ELF code path was removed)" << std::endl;
+    return false;
+}
+
+bool Program::has_loaded_function(const std::string &name) const
+{
+    (void)name;
+    return false;
+}
+
+void *Program::loaded_function_ptr(const std::string &name) const
+{
+    (void)name;
+    return NULL;
+}
+
+void Program::unload_object()
+{
+}
+
+void Program::add_include_dir(const std::string &dir)
+{
+	if (dir.empty())
+		return;
+	std::string p = dir;
+	if (p.back() != '/')
+		p += '/';
+	include_paths.push_back(p);
+}
+
+void Program::add_cli_define(const std::string &def)
+{
+	if (def.empty())
+		return;
+	std::string::size_type eq = def.find('=');
+	std::string name = (eq == std::string::npos) ? def : def.substr(0, eq);
+	std::string value = (eq == std::string::npos) ? std::string("1") : def.substr(eq + 1);
+	if (!name.empty())
+		cli_defines.push_back(std::make_pair(name, value));
+}

@@ -1,0 +1,23 @@
+#include <set>
+#include <map>
+#include <string>
+#include <cstdio>
+int main()
+{
+	std::set<std::string> seen;
+	seen.insert("red");
+	seen.insert("green");
+	seen.insert("blue");
+	seen.insert("green");
+	std::map<std::string, int> ranks;
+	int rank = 1;
+	for (std::set<std::string>::iterator it = seen.begin();
+	     it != seen.end(); ++it)
+		ranks[*it] = rank++;
+	int total = 0;
+	for (std::map<std::string, int>::iterator it = ranks.begin();
+	     it != ranks.end(); ++it)
+		total += it->second;
+	printf("total=%d size=%d\n", total, (int)seen.size());
+	return 0;
+}

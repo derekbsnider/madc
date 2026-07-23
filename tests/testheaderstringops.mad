@@ -1,0 +1,16 @@
+#include <stdio.h>
+#include <string>
+
+typedef std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > mystr;
+
+int main() {
+	mystr a("hello");
+	mystr b("hello");
+	mystr c("world");
+	mystr d = a + c;
+
+	printf("eq=%d\n", a == b);
+	printf("ne=%d\n", a != c);
+	printf("cat=%s\n", d.c_str());
+	return 0;
+}

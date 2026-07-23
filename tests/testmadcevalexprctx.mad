@@ -1,6 +1,7 @@
 #!/usr/bin/env madc
 #include <iostream>
 using namespace std;
+#include <ns_madc>
 
 int main()
 {
@@ -28,6 +29,11 @@ int main()
     cout << "int=" << madc::eval_expression_int_ctx("user.stats.level + 1", ctx) << endl;
     cout << "bool=" << madc::eval_expression_bool_ctx("user.stats.level > 40", ctx) << endl;
     cout << "name_ok=" << madc::eval_expression_bool_ctx("user.name == \"echo\"", ctx) << endl;
+    cout << "lt=" << madc::eval_expression_bool_ctx("user.name < \"zzz\"", ctx) << endl;
+    cout << "ge=" << madc::eval_expression_bool_ctx("user.name >= \"echo\"", ctx) << endl;
+    cout << "gt=" << madc::eval_expression_bool_ctx("user.name > \"zzz\"", ctx) << endl;
+    cout << "cast_ok=" << madc::eval_expression_bool_ctx("(bool)(user.name == \"echo\")", ctx) << endl;
+    cout << "eq3=" << madc::eval_expression_bool_ctx("user.name === \"echo\"", ctx) << endl;
     cout << "double=" << madc::eval_expression_double_ctx("radius * 2.0", ctx) << endl;
 
     string rendered_name;

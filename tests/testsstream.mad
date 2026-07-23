@@ -1,5 +1,6 @@
 #!../bin/madc
 #include <iostream>
+#include <sstream>
 using namespace std;
 
 int gimmie5()
@@ -24,7 +25,9 @@ int main()
     ss << hello << " ... " << bye;
     ss << " i: " << i;
     ss << " 123: " << 123;
-    printstream(ss);
+    // Standard idiom to print the accumulated buffer (the old `printstream(ss)`
+    // convenience builtin was tied to the retired hardcoded dtSSTREAM stream tag).
+    cout << ss.str() << endl;
 
     cout << "This is a test to cout: " << gimmie5() << endl;
 //    endl(cout);

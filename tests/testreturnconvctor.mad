@@ -1,0 +1,32 @@
+// Regression: a `return expr;` whose operand's type differs from the function's
+// by-value class return type must apply an implicit converting constructor
+// (return-value copy-initialization, [stmt.return]/[dcl.init]) — the same
+// user-defined conversion that assignment and parameter passing already apply.
+//
+// This is the trivially-copyable case (B has no dtor, so it uses c2mir's native
+// struct return rather than the __retbuf ABI, which already applies the
+// conversion via class_copy_construct_into_retbuf). Without the fix c2mir
+// rejected the tree: "incompatible return-expr type in function returning a
+// struct/union". Mirrors std::set's `iterator find(){ return _M_t.find(x); }`,
+// where the tree's non-const `iterator` converts to set's `const_iterator`.
+#include <cstdio>
+
+struct A { int v; };
+struct B {
+	int v;
+	B() : v(0) {}
+	B(const A& a) : v(a.v) {}        // converting ctor A -> B
+};
+
+B make_implicit(A a) { return a; }   // implicit A -> B on return
+B make_explicit(A a) { return B(a); } // explicit (control)
+
+int main()
+{
+	A a; a.v = 42;
+	B b1 = make_implicit(a);
+	B b2 = make_explicit(a);
+	printf("%d\n", b1.v);   // 42
+	printf("%d\n", b2.v);   // 42
+	return 0;
+}

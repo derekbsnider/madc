@@ -1,0 +1,31 @@
+// = default comparison synthesis ([class.compare.default]):
+// - <compare>'s own `friend bool operator==(strong_ordering,
+//   strong_ordering) = default` works (ordering-vs-ordering ==/!=)
+// - a member `auto operator<=>(const V&) const = default` synthesizes the
+//   lexicographic <=> AND the implicit defaulted == (p4), giving all six
+//   comparisons from one declaration.
+#include <compare>
+#include <cstdio>
+struct V {
+	int a;
+	int b;
+	auto operator<=>(const V &) const = default;
+};
+int main()
+{
+	std::strong_ordering r = std::strong_ordering::less;
+	std::strong_ordering s = std::strong_ordering::less;
+	std::strong_ordering e = std::strong_ordering::equal;
+	if (r == s) printf("ord-eq\n");
+	if (r != e) printf("ord-ne\n");
+	V x; x.a = 1; x.b = 5;
+	V y; y.a = 1; y.b = 9;
+	V z; z.a = 2; z.b = 0;
+	if (x < y)  printf("v-lt\n");
+	if (y > x)  printf("v-gt\n");
+	if (x < z)  printf("v-lex\n");
+	if (x == x) printf("v-eq\n");
+	if (x != y) printf("v-ne\n");
+	if (x <= y && z >= y) printf("v-lege\n");
+	return 0;
+}

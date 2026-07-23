@@ -1,0 +1,26 @@
+#include <iostream>
+using namespace std;
+
+// A reference IS its referent for overload resolution: `cout << r` must select
+// operator<<(int) / operator<<(double), NOT operator<<(const void*). Regression
+// test for the first-class-reference repr (DataDefREF == pointer) leaking into
+// operator<< candidate scoring and printing references as pointers.
+int main()
+{
+    int n = 5;
+    int &r = n;
+    cout << r << endl;          // 5  (not 0x5)
+
+    double d = 2.5;
+    double &dr = d;
+    cout << dr << endl;         // 2.5
+
+    const int &cr = n;
+    cout << cr << endl;         // 5
+
+    int *p = &n;
+    int *&pr = p;
+    cout << (pr != 0) << endl;  // 1  (ref-to-pointer still behaves as a pointer)
+
+    return 0;
+}

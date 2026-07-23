@@ -1,0 +1,14 @@
+// An externally-defined std:: polymorphic class (std::bad_alloc): madc emits NONE
+// of its machinery (vtable/typeinfo) — libstdc++ owns it. Construction installs
+// the REAL _ZTVSt9bad_alloc vtable, the virtual what() dispatches through it, and
+// typeid reads the REAL _ZTISt9bad_alloc. Mangled-direct, no madc-synthesized
+// parallel vtable/typeinfo. Output must match g++ byte-for-byte.
+#include <new>
+#include <typeinfo>
+#include <cstdio>
+int main() {
+    std::bad_alloc e;
+    printf("what=%s\n", e.what());
+    printf("name=%s\n", typeid(e).name());
+    return 0;
+}

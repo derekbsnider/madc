@@ -1,0 +1,27 @@
+// Task #48: a CONCRETE manipulator (`os << hex`) applied through a
+// NON-most-derived stream view. The manipulator's argument coercion
+// (ostream& -> ios_base&) is dynamic through the virtual base, so the
+// result stream cannot be re-derived from the returned ios_base& by a
+// static downcast — the lowering saves the lhs pointer once and yields
+// it (g++'s member operator<< applies the manipulator to *this and
+// returns *this). Oracle: g++ -O0.
+#include <iostream>
+#include <fstream>
+#include <string>
+
+int main()
+{
+	// Most-derived lhs (cout): the control.
+	std::cout << std::hex << 255 << std::dec << " " << 255 << std::endl;
+	// ostream& over an ofstream: the manipulator must mutate the REAL
+	// ios_base subobject and the chain must continue on the SAME stream.
+	std::ofstream f("/tmp/madc_testmanipview.txt");
+	std::ostream &os = f;
+	os << std::hex << 255 << " " << 256;
+	f.close();
+	std::ifstream in("/tmp/madc_testmanipview.txt");
+	std::string s;
+	std::getline(in, s);
+	std::cout << "file:" << s << std::endl;
+	return 0;
+}

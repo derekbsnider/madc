@@ -1,0 +1,9 @@
+if: yes
+not: yes
+and: yes
+or: yes
+tern: 5
+while: 3
+vbase: good
+vbase: fail-state
+extract: 3

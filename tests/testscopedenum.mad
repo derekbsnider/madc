@@ -1,0 +1,46 @@
+// P2.2 — scoped enums (`enum class`). C++11 feature, gated to !is_c_mode().
+//
+// A scoped enum:
+//   - declares a type (Color) usable in variable declarations
+//   - scopes its enumerators: Color::Green, NOT bare Green
+//   - lowers to a plain C enum / int (same underlying values)
+//   - supports comparison and switch
+//
+// Optional underlying type: `enum class Size : int { ... }`.
+
+#include <iostream>
+using namespace std;
+
+enum class Color { Red, Green, Blue };
+
+enum class Size : int { Small = 1, Medium = 5, Large = 10 };
+
+int main()
+{
+    Color c = Color::Green;
+
+    cout << "c == " << (int)c << endl;
+
+    if ( c == Color::Green )
+	cout << "is green" << endl;
+    else
+	cout << "not green" << endl;
+
+    if ( c == Color::Red )
+	cout << "is red" << endl;
+    else
+	cout << "not red" << endl;
+
+    switch ( c )
+    {
+	case Color::Red:   cout << "case red" << endl;   break;
+	case Color::Green: cout << "case green" << endl; break;
+	case Color::Blue:  cout << "case blue" << endl;  break;
+    }
+
+    Size s = Size::Medium;
+    cout << "s == " << (int)s << endl;
+    cout << "Large == " << (int)Size::Large << endl;
+
+    return 0;
+}

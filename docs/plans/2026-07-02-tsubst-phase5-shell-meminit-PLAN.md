@@ -1,0 +1,951 @@
+# Phase-5 — shell / ctor mem-init tsubst → DELETE the re-parse path
+
+Status: SCOPED (recon 2026-07-02, grounded file:line). Successor campaign to the
+default flip (`a2262c35`, handoff UPDATE-6). Campaign law: `.claude/rules/parse-once.md`.
+Parent plan: `2026-06-23-two-tree-cir-materialize-from-ast-PLAN.md` §11.3(B)
+("the shell parse can later be made copy-based too — a follow-on") + Phase 5.
+
+## Why this blocks deletion
+
+The burndown (268 hit / 0 fallback) means no BODY **lowering** uses the re-parsed
+tokens. But under hybrid B the instantiation re-parse still RUNS for every
+instantiation: it produces (a) the concrete signature/shell the parser needs at
+parse time (§11.2 core tension), (b) `FuncDef::ctor_initializers` — mem-init
+ARG TOKEN TREES (`include/madc.h:235-239`) parsed by `parse_ctor_initializer_list`,
+and (c) the body tokens whose parse product the tsubst hit then discards.
+Deleting the re-parse machinery therefore requires the mem-init semantics (b)
+to come from Tree-1, and the body parse (c) to be skippable.
+
+## Grounded mechanics (recon 2026-07-02)
+
+- Mem-inits lower in `func_def`'s ctor PROLOGUE (`cir_builder.cpp:15385-15440+`):
+  `find_base_initializer` / `find_member_initializer` walk `fd->ctor_initializers`
+  and lower `ci->args` (TokenBase trees) via `class_ctor_call_addr` etc. — this is
+  INDEPENDENT of `tsubst_method_body` (which replaces only the `{}` body node).
+  So today a "hit" ctor takes its body from Tree-1 and its mem-inits from the
+  concrete shell's re-parse. (This is how the empty-body pair piecewise/indexed
+  ctors are hits: all semantics are shell-side.)
+- The PATTERN parse (`build_dependent_pattern` → `parseFunction`) already runs
+  `parse_ctor_initializer_list` when the retained decl carries `: inits` — the
+  pattern fd gets dependent `ctor_initializers` (args referencing placeholders /
+  pack expansions). UNVERIFIED: whether the pattern fd's ctor_initializers
+  survive today or are discarded with the pattern parse — check first.
+- Pattern granularity: patterns are keyed per concrete-owner member-template
+  FuncDef (`fd->dependent_pattern`), so the OWNER (members, bases, layout) is
+  CONCRETE inside a pattern. Only the member template's own params are
+  placeholders. This makes mem-init pattern-ization tractable: base/member
+  resolution in the prologue needs no substitution — only the ARG EXPRESSIONS do.
+
+## Slices (each gated: fulltest + ratchet + burndown flat + sweep; torture when
+flag-off-reachable)
+
+1. **Mem-init Tree-1**: at pattern build, lower the pattern fd's ctor_initializers
+   into the Tree-1 pattern (pattern-mode arg lowering; prologue-shaped nodes
+   attached ahead of the body, or a parallel per-ci node list on the pattern).
+   At `tsubst_method_body` hit for a ctor, emit the substituted mem-init nodes
+   and have `func_def`'s prologue SKIP its token-side emission for exactly the
+   inits the pattern covered (whole-ctor switch, not per-init mixing).
+   Start with the pair piecewise/indexed ctors (empty bodies — the pattern IS
+   the mem-inits) and `_Rb_tree::_Auto_node`'s ctor.
+2. **Body-parse skip**: for a method whose fd has `tsubst_source` +
+   `dependent_pattern` and whose instantiation would be a hit, make the
+   instantiation parse skip the body tokens (the deferred-body machinery
+   already skips bodies at class parse — extend `parse_deferred_lazy_body` /
+   the CIR fixpoint to try tsubst BEFORE materializing the lazy body, falling
+   back to materialization only when tsubst bails). Measure parse-time win
+   (--show-stats): this is the O(n²)-class front-end cost the law cites.
+3. **Bail = error**: once slices 1-2 soak green, a tsubst bail on a covered
+   shape becomes a LOUD error instead of a fallback (the bail-net's
+   swallow-and-reparse behavior dies first).
+4. **DELETE**: remove the re-parse instantiation body path + the =0 escape
+   hatch + `madc_tsubst_dep_parse_enabled()` + the unit-test fallback-counter
+   specimen (test_cir.cpp engagement counters — replace with a hit-counter
+   assertion). Build with -Wall; `-Wunused-function` on the deleted web
+   confirms the cut (no-parallel-implementations).
+
+## Open questions to answer before slice 1 code
+
+- Does the pattern fd retain parsed `ctor_initializers` after
+  `build_dependent_pattern` returns? (The failure path erases funcdef_map
+  entries; the success path moves the TokenFunc to fd->dependent_pattern —
+  where do the fd-level ctor_initializers live?)
+  **Partial recon (2026-07-02):** the pattern FuncDef object survives via
+  `pattern->var.type` (only the funcdef_map ENTRY is erased on success,
+  parser.cpp:34311). BUT parseFunction accepts `: inits` only when
+  `parsing_defaulted_member_template_constructor` is set (parser.cpp:38057-38081
+  gate) — set ONLY by parse_deferred_lazy_body's full_definition branch — or
+  when the id resolves as `<owner>__<ctor>[__oN]`; the pattern's `__pat<N>`
+  rename defeats the ctor-tail resolution. So a ctor pattern parse today most
+  likely does NOT take the mem-init path — PROBE how pair's piecewise ctor
+  (an empty-body HIT) actually parses its `: pair(...)` span in the pattern
+  (does the `:` throw and the pattern still build because...? or is the
+  mem-init span stripped before def_tokens?) before designing slice 1.
+  ~~First slice-1 step may simply be: set
+  `parsing_defaulted_member_template_constructor` (or a pattern-mode
+  equivalent) across the pattern parseFunction so the pattern fd's
+  ctor_initializers populate.~~
+  **PROBED 2026-07-02 — the one-flag version CRASHES; both questions answered:**
+  - An env-gated probe at build_dependent_pattern's tail confirmed: the
+    mem-init span IS present in a ctor pattern's def_tokens (pair o19:
+    `colon_before_body=1 parsed=1`), the pattern parses today ONLY because
+    the parser.cpp:38111 skip loop silently DISCARDS the `: inits` span
+    (`parse_ctor_initializers` false — the `__pat<N>` rename defeats the
+    ctor-tail detection), and `ctor_initializers` is 0 on EVERY pattern fd.
+    Also: many never-ODR-used variants' patterns fail to parse (parsed=0 for
+    char16_t/char32_t/pmr basic_string ctors) — invisible to the burndown
+    because nothing instantiates them.
+  - Setting `parsing_defaulted_member_template_constructor = true` across the
+    pattern parseFunction (the lazy full-definition precedent) SIGSEGVs
+    testmap: unbounded recursion in `TokenCpnd::findVariable` walking a
+    compound parent chain (repeated `findVariable+0x168` frames) — the EAGER
+    mem-init arg parse runs BEFORE the function's body compound exists and
+    re-enters instantiation machinery mid-pattern-parse. The body parse's
+    dependent deferral (`dependent_parse_in_progress`) did not prevent it, so
+    mem-init args hit an instantiation path that ignores that flag — find it
+    before retrying (the backtrace signature is the search key).
+  - **Candidate slice-1 design (grounded in existing machinery):** do NOT
+    parse mem-inits eagerly in the pattern. Capture the raw span the way the
+    class-body sink path already does (`pending_deferred_ctor_inits`,
+    parser.cpp:38122+/38139+) onto the pattern fd, then REPLAY it inside the
+    pattern's body compound the way `parse_deferred_function_body` replays
+    `ctor_init_tokens` ahead of the body (parser.cpp:24162-24173 +
+    parse_ctor_initializer_list at 24222) — [class.base.init] complete-class
+    context, and the args then parse in the same compound context as the
+    body, where the dependent deferral machinery is known to work.
+  - **Crash ROOT CAUSE (traced 2026-07-02) — two prerequisite fixes, both
+    deepest-layer, needed regardless of eager-vs-replay:** the "recursion" is
+    not a compound cycle (only pushCompound assigns TokenCpnd::parent, always
+    fresh) — it is UNBOUNDED RE-ENTRY: a delegating mem-init `: pair(...)`
+    parses as a construction → `instantiate_member_ctor_template_for_construction`
+    → its 34581 `build_dependent_pattern(fd)` for the SAME fd whose pattern is
+    mid-build (fd->dependent_pattern still NULL) → parseFunction again →
+    same mem-init → ∞. Each cycle pushes compounds, so any findVariable walks
+    a thousands-deep parent chain until stack exhaustion (the SIGSEGV site is
+    a bystander).
+    1. The ctor-construction path lacks the CALL path's dependent deferral:
+       mirror parser.cpp:34327 (`dependent_parse_in_progress &&
+       args-involve-placeholder` → return, stay dependent, re-resolve at
+       copy) in `instantiate_member_ctor_template_for_construction`.
+    2. `build_dependent_pattern` needs an fd-keyed in-progress guard
+       (re-entrant request returns NULL; the `member_fn_inst_in_progress` /
+       mfi_key cycle-break at 34381 is the precedent) — latent today for any
+       dependent body that constructs its own class.
+    **Both prerequisites LANDED @ `88bef0c3`** (fulltest 674/0/0/16, burndown
+    FLAT 268/0; C-unreachable by construction, no torture rerun).
+  - **Capture+replay ATTEMPTED and REVERTED (2026-07-02) — the slice has a
+    DEEPER blocker, fully probed:** the mechanism itself worked (flag
+    `dependent_pattern_ctor_inits` set across the pattern parse; parseFunction
+    treats top-level `:` after params as ctor-inits, captures raw via the
+    defer path, swaps to an invocation-LOCAL vector immediately after the scan
+    loop — the shared `pending_deferred_ctor_inits` leaks across nested
+    parses otherwise — and replays inside the body compound with a synthetic
+    `{` terminator before parseCompound). BUT source-position probing
+    (`[PAT-MEMINIT-CAP] src=` on the first captured token) proved the
+    captured spans on NON-ctor patterns are **stray injected-token garbage**:
+    to_string's pattern parse captured basic_string's sv-ctor mem-init span
+    (`basic_string(__sv_wrapper(_S_to_string_view(__t)), __a)`) with tokens
+    stamped basic_string.h:4170 — to_string's `string __str(...)` BODY USE
+    SITE, i.e. clone tokens injected by a nested instantiation that ABORTED
+    and left its unconsumed decl tokens in the stream. **The pre-existing
+    38111 skip loop has been silently EATING this garbage all along** — a
+    masked latent bug: any pattern parse that hits a stray `: ...` span
+    after its params discards it and "succeeds". Capturing it into
+    ctor_initializers is semantic pollution (to_string got a bogus entry), so
+    the slice cannot land until the stray-injection hazard is fixed at ITS
+    root: find WHICH nested instantiation path injects decl-clone tokens
+    (pushToken front-injection) without consuming them on abort, and make it
+    restore the stream (the build_dependent_pattern failure path's
+    `tokens = saved_tokens` restore is the model). Real-ctor captures looked
+    CORRECT (pair indexed ctor `first(...), second(...)`, _Auto_node
+    `_M_t(__t), _M_node(...)`) — the mechanism is right, the stream hygiene
+    isn't there yet. Probe tooling to reuse: the env-gated
+    `MADC_XTEST_PAT_MEMINIT_DEBUG` prints (pattern-tail parsed/ctor_inits +
+    capture span/src) — reconstruct from this description; removed pre-revert.
+  - **BLOCKER DISSOLVED (2026-07-02, definitive probe) — there are NO stray
+    injected tokens.** A skip-loop discard probe + bulk-injection/drain probes
+    across all four injector sites (fnbind, pattern, defbody, lazyfull) on
+    teststdstringconv showed ZERO stream imbalance (no fnbind drain ever
+    fired) and that every discarded `: ...` span belongs to the pattern being
+    parsed. The "to_string captured basic_string's mem-init" reading was a
+    DOUBLE ILLUSION: (1) `build_dependent_pattern` did not isolate
+    `compounds`, so a pattern built mid-body-parse (to_string's body
+    `string __str(...)` at basic_string.h:4170 → ctor-construction
+    instantiation → pattern build for basic_string's _Tp sv-ctor) saw
+    `compounds.top()->method` = the ENCLOSING function and was
+    nested-renamed `__ns_std____cxx11_to_string____pat12__17` — reading as
+    "to_string's pattern" when it was the SV-CTOR's pattern parsing its OWN
+    `: basic_string(__sv_wrapper(...), __a)` mem-init; (2) `clone()` stamps
+    tokens with the CURRENT `_parse_file/_parse_line` (TokenBase ctor), so
+    decl clones carry the USE-site position — provenance from clone stamps
+    is a trap. The capture mechanism was capturing the RIGHT span for the
+    RIGHT fd all along. Slice 1 is UNBLOCKED: re-apply the documented
+    capture+replay mechanism.
+  - **Prerequisite fix LANDED (hermetic pattern COMPOUNDS):**
+    build_dependent_pattern now swaps `compounds` out around the pattern
+    parseFunction (the instantiate_fn_template_binding model). This kills the
+    nested-renaming (patterns keep their `__patN` id, so
+    `funcdef_map.erase(parse_id)` now actually erases — previously every
+    mid-body pattern build leaked a stale funcdef_map entry under the nested
+    name) and stops pattern bodies from wrongly binding enclosing-function
+    locals. `class_scope_stack` is deliberately NOT swapped: a first version
+    also swapped it and pushed the owner chain, which broke testlocalclassraii
+    — with the owner in scope, the pattern's LOCAL class (Guard) registered as
+    the concrete `<owner>__<local>` nested class BEFORE the shell parse
+    created the real one, hijacking the struct_map entry; the pattern's
+    `__patN`-prefixed method TokenFuncs are dropped with the pattern's
+    pending_funcs → undefined MIR imports. The local-class naming regimes are
+    caller-scope-dependent by construction (parser.cpp:25117 nests ANY class
+    declared under a non-empty class_scope_stack — including function-local
+    classes; the tsubst local-method remap at cir_builder.cpp:14897 depends
+    on the concrete side of that conflation), so patterns must keep
+    inheriting the caller's class scope until a principled
+    pattern-local-class model exists (future work, not this campaign).
+  - **SEPARATE latent bug found by the probe (own track, NOT slice 1):**
+    a LOCAL-class ctor hoisted with a nested uid — `__stoa`'s `_Save_errno`
+    → id `__ns___gnu_cxx___stoa__o2___Save_errno___Save_errno__1` — defeats
+    the parseFunction owner-prefix ctor gate (it strips `__oN` but not the
+    nested `__<uid>` suffix), so its REAL mem-init `: _M_errno(errno)` is
+    SILENTLY DISCARDED (wrong code: the saved errno is garbage). Affects
+    default and =0 modes alike (it is fnbind/local-class machinery, not
+    tsubst). The gate's name-surgery detection is the root problem; slice
+    1's explicit ctor-ness flag (fd ∈ owner->ctors at pattern/inst build)
+    is the right vehicle to replace it.
+- Prologue ordering: member inits interleave with base ctors and vptr stores
+  in DECLARATION order ([class.base.init]) — the pattern-side nodes must
+  reproduce that order or delegate ordering to func_def (prefer: pattern
+  carries per-ci arg NODES, func_def keeps ordering/default-init logic and
+  consumes substituted arg nodes instead of tokens — smallest change, keeps
+  one ordering implementation).
+- Delegating ctors (`find_delegating_initializer`) — same treatment, arg
+  nodes from pattern.
+
+## Slice-1 state (2026-07-02) — parser half LANDED @ad46a4a3; CIR half design
+
+**Parser half DONE:** ctor patterns capture their `: mem-init` span raw
+(consume-once `dependent_pattern_ctor_inits` flag, ctor-ness = fd ∈
+owner->ctors, invocation-local span buffer) and REPLAY it inside the body
+compound (parse_deferred_function_body model) — SELF-FORGIVING (throw →
+drain to pre-replay stream boundary + drop partial inits + isolate poison;
+absent ctor_initializers = shell path). Pattern fds now carry dependent
+ctor_initializers, verified via the env-gated MADC_XTEST_PAT_MEMINIT_DEBUG
+print (kept in-tree at build_dependent_pattern's tail): pair piecewise
+delegating=1, pair indexed=2, _Auto_node=2, basic_string sv-ctors=1;
+allocators correctly 0. Gates: fulltest 674/0/0/16, burndown FLAT 268/0,
+sweep = known 4-noise set.
+
+**CIR half — grounded consumption map (all in func_def's ctor prologue):**
+- delegating: `find_delegating_initializer` (cir_builder.cpp ~15398) →
+  `class_ctor_call_addr(id("__this"), ocls, ci->args, tf)` — the delegation
+  IS the whole prologue ([class.base.init]p6, nothing else runs).
+- base: `find_base_initializer` (~15429) → class_ctor_call_addr at the
+  base subobject address.
+- member: `class_ctor_initializer_stmts(ocls, fd, prologue, tf)` (~15453).
+- `explicit_member_inits` name-set (~15413) gates default-member-inits +
+  member-construct suppression.
+
+**Design decided:** at pattern build (tsubst_method_body's memoize block,
+~14796), ALSO lower the recipe fd's ctor_initializers in pattern mode →
+memoized per-source pattern mem-init structure; at hit, copy+subst each ci
+arg with the same binding; func_def's prologue takes the WHOLE-CTOR switch
+(all-or-nothing: every ci covered by the pattern or none) and keeps
+ordering/default-init logic, consuming substituted arg NODES.
+
+**The hard sub-problem:** `class_ctor_call_addr` does per-instantiation ctor
+OVERLOAD SELECTION from TOKEN args — substituted NODES can't feed it.
+Candidates: (a) relower from origin tokens + substituted types (the
+`tsubst_relower_deferred_construction` analog — the machinery the Kind-4
+deferred-construction slice extracted); (b) pattern-build-time selection
+with a rewritable callee id (the deferred member-call model). Prefer (a):
+it already handles pack-expansion args.
+
+**Suite-live targets + their ci shapes:** pair piecewise = DELEGATING ci
+(`: pair(__first, __second, _Index_tuple<...>(), _Index_tuple<...>())`);
+pair indexed = member inits with NON-TYPE-pack expansions
+(`first(std::get<_Indexes1>(__first)...)`); _Auto_node = plain member init
+args (`_M_t(__t), _M_node(__t._M_get_node())`). The basic_string sv-ctor
+delegating variants are NOT suite-live (never ODR-used). Start with
+_Auto_node (plain args) → pair piecewise (delegating, single construction
+call = the relower shape) → pair indexed (pack expansion in member-init
+args, the hardest).
+
+**CIR half FIRST LANDING (2026-07-02, working tree) — the _Auto_node shape
+is LIVE:** `m_tsubst_meminit_patterns[source]` (cir_builder.h) memoizes
+per-ci ASSIGN-path arg nodes lowered in pattern mode alongside the body
+pattern (admission: no bases/vtable/NSDMIs, NO class-instance members,
+every ci a ≤1-arg member init — anything else keeps the shell path via an
+absent entry). At hit, the args copy under the SAME binding/pack window as
+the body (inside the tsubst_cir block, before the m_tsubst_* restores);
+substituted `__this->member = init` stmts (N_ADDR-wrapped for reference
+members — the class_ctor_initializer_stmts model) ride at the HEAD of the
+returned body block, and `m_tsubst_body_carries_meminits` (cleared at
+tsubst_method_body entry, read at func_def's ctor prologue) suppresses the
+shell-side `class_ctor_initializer_stmts` — the WHOLE-CTOR switch. A failed
+substitution silently keeps the shell path (mem-inits not yet load-bearing
+under hybrid B). VERIFIED firing: `[MEMINIT-HIT] fn=..._Auto_node...
+stmts=2 failed=0` (env probe MADC_XTEST_PAT_MEMINIT_DEBUG, kept in-tree)
+with testmap/testset/testsubscript green. NEXT: pair piecewise (delegating
+— needs the whole-prologue-is-the-delegation form + relower for the ctor
+call) and pair indexed (pack expansion inside ci args — check whether the
+pattern-mode translate_expr of `std::get<_Indexes1>(__first)...` produced a
+usable pattern or bailed at admission; probe [MEMINIT-HIT] on testsubscript).
+
+## Slice-1 pair shapes (2026-07-02 cont.) — delegating WIRED, blocked on
+## dependent template-id arg types; wall precisely characterized
+
+**Landed (this increment):** the DELEGATING memoize+hit path is wired
+end-to-end. Memoize: `find_delegating_initializer` on the pattern fd → a
+`delegating=true` entry keeping the ci's TOKEN args (no class-shape
+admission — [class.base.init]p6: the target performs the COMPLETE
+initialization, so the delegation IS the whole prologue). Hit: relower via
+`tsubst_relower_deferred_construction(ci_args, tf, ocls, &binding,
+this=id("__this"), yield=false, relax=true, require_overload_match=true)`.
+`require_overload_match` is NEW: a delegation names a specific target, so
+selection failure must ERROR (clean meminit_failed → shell cis, body stays
+HIT) — the blind method_map default-ctor fallback produced a bogus
+`Class__Class` call that the emittability gate then (correctly) rejected,
+turning previously-HIT pair bodies into FALLBACKs (ratchet red). With the
+flag: 35 hit / 0 fallback on testsubscript — ratchet green, honest
+"attempted, not yet covered" state. func_def's delegating emission now also
+honors the whole-ctor switch (`delegating_ci && !m_tsubst_body_carries_meminits`).
+The emittability gate additionally collects callees from meminit_stmts
+(delegation/member-ctor calls ride at body head — they need the same
+ODR-record + emittable gate). Probes in-tree (env MADC_XTEST_PAT_MEMINIT_DEBUG):
+[MEMINIT-MEMO], [MEMINIT-DELEG-FAIL], [RELOWER-SELECT], [TSUBST-UNEMITTABLE].
+
+**The wall (probe-proven):** the delegation's 4 arg datadefs stay DEPENDENT
+at hit time — `tuple__Args1`, `tuple__Args2`,
+`_Index_tuple___integer_pack_sizeof_____Args1_____` (×2) — so
+`select_ctor_overload` scores -1 on every candidate. `subst_datadef` digs
+ptr/ref/const/array LAYERS only; a dependent template-id SHELL class
+(`tuple<_Args1...>`) has NO structural template-origin metadata (DataDefCLASS
+records nothing about "instantiated-from template X with args [...]"), so no
+CIR-side substitution can concretize it. The relower's new generic stand-in
+(dependent LAYERED args → `tsubst_concrete_arg_token(subst_datadef(...))`
+for scoring only) is landed but inert for shells.
+
+**How the shell does it (recon):** `instantiate_fn_template_binding`
+(parser.cpp ~32189) is TOKEN-SUBSTITUTION instantiation — it handles
+template-id packs (`_Args1` deduced from `tuple<_Args1...>`) and NON-TYPE
+tid packs (`_Indexes1`) at 0/1 elements by token surgery, then re-parses the
+signature. This machinery SURVIVES hybrid B (signature parse stays per
+§11.2) — it is what created the indexed `__o20` instantiations.
+
+**The model to follow:** `resolve_copied_dependent_call` (cir_builder.cpp
+~1317) already does hit-time re-resolution WITH instantiation: substituted
+arg types → synthetic TokenCallMethod of `tsubst_concrete_arg_token` args →
+`instantiate_member_fn_template_for_call` (deduction + instantiate, tid-packs
+included). The delegating arm should drive the SAME shape for ctor calls.
+Its missing input = concrete arg types:
+- `__first`/`__second`: resolvable NOW — pattern ci args that are TokenVar
+  references to the recipe's own parameters take their concrete type from
+  the INSTANTIATED fd->parameters (the g++ PARM_DECL model: signature params
+  substitute once, body references reuse them). Survives slice 2.
+- `_Index_tuple` temps: the TRUE wall — `typename
+  _Build_index_tuple<sizeof...(_Args1)>::__type()` needs structural
+  dependent-type tsubst. Road (i), the principled increment: record
+  template-origin metadata (template ref + arg structure, incl.
+  sizeof...(pack) / __integer_pack forms) on dependent template-id shells AT
+  PATTERN PARSE (the parser has the structure in hand when it creates the
+  shell); teach subst_datadef one new case: rebuild via the Program's
+  class-template instantiation + member-alias resolution. Serves every KIND
+  (Kind-3 rebind included) — this is the parse-once TYPE-half completion.
+- Pair INDEXED additionally needs NON-TYPE pack expansion at hit time
+  (`std::get<_Indexes1>(...)...` — m_tsubst_active_type_arg_packs is
+  type-only today; non-type packs exist only in the parser's
+  tid_packs_nontype token substitution).
+
+**Sequencing consequence:** slice 2's body-parse skip can proceed PER-FD for
+ctors tsubst fully covers (the _Auto_node class of shapes now); pair joins
+once road (i) lands. The mem-init capture+replay (parser half) remains the
+transitional carrier for not-yet-covered ctors. Slice 4's DELETE gate
+requires road (i) (or an explicitly decided narrower scope) — cost it at
+slice-2 time.
+
+**Road (i) STEP 1 LANDED @94b6ec12 — DependentShellOrigin registry:**
+`instantiate_opaque_template_use` records {tname, ns, owner_class, arg
+spellings, CLONED raw_arg_tokens} keyed by the shell DataDef at creation.
+Probe-verified: tuple shells = tmpl=tuple + single pack-name token;
+_Index_tuple shells = the full `__integer_pack ( sizeof ... ( _ArgsN ) ) ...`
+run. NEXT (step 2): the subst_datadef structural case — substitute arg runs
+under the binding (pack name → elems from the pack window; sizeof...(P) →
+arity; __integer_pack(N)... → 0..N-1 non-type ints), then rebuild the
+concrete instantiation. Open sub-questions: pack-context threading into
+subst_datadef (static (prog,dd,subst) — thread the CIR pack window or
+pre-extend the binding with a pack side map) and the instantiation entry
+point (token-free DataDef-driven if one exists; else the parser's cloned
+arg-token replay into instantiate_template_use, which is structural — see
+verdict note below).
+
+**✅ Road (i) STEP 2 LANDED @198f4859 — THE PAIR DELEGATING WALL IS DOWN.**
+`subst_datadef` structural case live: a shell with a DependentShellOrigin
+record rebuilds concrete at tsubst time. Pieces: (1) run substitution —
+pack name -> per-element runs, `sizeof...(P)` -> arity literal (the
+parser's own `expand_integer_pack_template_args` then folds
+`__integer_pack(N)...` — no CIR-side expansion needed), scalar name ->
+concrete; `sizeof` is a TokenKeyword (match via TokenIdent inheritance,
+NOT ttIdentifier). (2) `Program::instantiate_shell_origin_replay` — the
+partial-spec replay shape (`<` runs `>` pushToken + instantiate_template_use
+under allow_variadic_real_inst), stream drained to pre-replay depth on
+failure. (3) **key-identity lesson:** elements replay DECOMPOSED
+(`const` + core type token + `&`/`*` — tsubst_decompose_elem_tokens) so
+the arg spelling goes through the parser's own qualifier/fold path; a
+composite TokenDataType spelled the CONST wrapper's empty canonical and
+FORKED the instantiation key (tuple_const_basic_string… vs
+tuple_const_std____cxx11__… — one logical type, two structs). (4)
+`subst_datadef_active` member seam threads the live pack window through
+every CirBuilder substitution (empty window elsewhere — inert). (5)
+relower acceptance is `sdd != add` (a concrete-arg rebuild like
+`_Index_tuple<0>` still carries the opaque-path placeholder flag + an
+origin record — the flag is NOT a dependence test). (6) relower by-value
+class args: a zero-arg value-init TokenObjTemp of a rebuildable shell
+declares its temp AS the substituted class (the shell-typed temp was the
+last c2mir mismatch — "incompatible argument type for struct/union type
+parameter" at the delegation call). Result: __o19's delegation relowers
+end-to-end, select_ctor_overload finds __o20, emitted body == g++ ground
+truth, testsubscript 35 hit / 0 fallback, reducer val=42. Gates: fulltest
+exit 0 ratchet GREEN; burndown FLAT 268/0; sweep = known 4-noise set.
+Failure paths never delete built replay tokens (cloned keywords are
+shared prototypes — TokenKeyword::clone returns this). REMAINING in
+slice 1: the pair INDEXED shape — __o20's own member cis
+(`first(std::get<_Indexes1>(...)...)`) need NON-TYPE pack expansion at
+hit (m_tsubst_active_type_arg_packs is type-only); today __o20's
+mem-inits still ride the shell capture+replay carrier (output correct).
+
+**✅ Indexed-shape construct arm WIRED @325d964c — empty-pack coverage;
+the LAST slice-1 capability is pinned.** Third memoize arm (member-
+CONSTRUCTION cis): every ci names a member, every class-instance member
+ci-covered (uncovered would default-construct in the PROLOGUE before the
+body-head inits), owner NSDMI-free; bases/vtable fine (prologue precedes
+members). Args stay TOKENS. Hit covers the EMPTY expansion only: class
+member default-construct via the relower, scalar zero-init. **The wall
+(both symptoms trace to ONE capability — per-element dependent-call
+re-resolution):** a non-empty pack element is a raw dependent pattern
+token (`std::forward<_Args1>(std::get<_Indexes1>(__t1))`); hit-time
+translate_expr on it (a) recurses unboundedly in class_ctor_call<->
+object_arg_addr (temp materialization of an ungroundable class-valued
+arg; SIGSEGV by stack exhaustion on pair<const string,string>), and (b)
+even when assembly survives, the call resolves to the BARE `__ns_std_get`
+(generic symbol) instead of the concrete `__o2` instantiation — the
+pinned "copy path must INSTANTIATE (or find) nested fn-template
+instantiations" gap (same one blocking the identity_forwarding_operand
+retirement). The construct arm clean-fails BEFORE the relower for
+non-empty packs — shell carrier emits, body stays HIT. The emittability
+gate now collects meminit callees SEPARATELY: un-emittable meminit callee
+→ meminit_failed only (the uniform gate had turned HIT pair bodies into
+fallbacks); meminit callees ODR-recorded only on survival. Probes:
+[MEMINIT-MEMO construct], [MEMINIT-CONSTRUCT-FAIL],
+[TSUBST-UNEMITTABLE-MEMINIT]. NEXT for full indexed coverage: the
+re-resolution capability — model = resolve_copied_dependent_call
+(synthetic call + concrete arg tokens + instantiate the namespace fn
+template `std::get<0>` for the element; the concrete `__o2` often already
+EXISTS from the shell path — selection must key on explicit non-type args
+too). Gates: fulltest exit 0 ratchet GREEN; burndown FLAT 268/0; sweep =
+known 4-noise set by name.
+
+**✅ Per-element dependent-call re-resolution LANDED @254bdb96 — SLICE 1
+COMPLETE. The pair INDEXED wall is down; both pinned symptoms had ONE
+root cause each, all three fixes at their deepest layers:**
+1. **Lockstep pack binding** ([temp.variadic]):
+   `collect_pack_params_in_pattern` (new collect-ALL walker) also walks
+   each nested call's `explicit_template_args` — where the NON-TYPE index
+   pack `_Indexes1` lives; the primary-pack walker never looked there.
+   `tsubst_bind_lockstep_packs` binds every mentioned pack's param to its
+   elem-th window element (arity violation = clean fail); wired into the
+   relower per-element loop + system_header_pack_element_call_resolves.
+   With `_Indexes1` bound to its per-element value-DataDef, the EXISTING
+   copy-time N_CALL rebuild (cir_builder.cpp ~2845 — resolve winner +
+   copied_call_arg_for_formal per formal; it IS the finish_call_expr
+   analogue, no new machinery needed) re-resolves `std::get<_Indexes1>`
+   to the concrete `__o2`. Bare `__ns_std_get` gone.
+2. **Value→address coercion** (`copied_call_arg_for_formal`): the
+   symmetric arm to its existing `&a -> a` case — a Tree-1 arg lowered as
+   the referenced object's VALUE (`*__t1`; the generic callee FuncDef has
+   NO parameters, so translate-time coercion had no formals — probe
+   `pt=(null) refp=0`) re-takes the address for a reference formal (a
+   deref's operand IS the address). The old blind
+   `cast(ptr_type, value)` was c2mir's "conversion of non-scalar value
+   requested" (the last compile error).
+3. **Recursion closed for good** (`object_arg_addr`): the materializing
+   tail refuses dependent-typed args UNCONDITIONALLY (the pattern-mode
+   guard at ~4086 documented this exact class_ctor_call<->object_arg_addr
+   cycle; hit-time relower translates raw pattern tokens with pattern
+   mode OFF, so the guard never applied) — clean error tree, shell
+   fallback. Plus: a DEPENDENT ref-returning call keeps the addr-of-call
+   shape (copy rewrites the callee per element) instead of temp
+   materialization. `dependent_placeholder_under_type_layers` factored
+   out (shell predicate reuses it). The construct arm's all_empty_packs
+   pre-fail is DELETED — non-empty packs flow through the relower.
+Result: map<string,string>/map<string,int> reducers run end-to-end,
+`__o20`'s mem-inits fully tsubst'd, emitted body == g++ ground truth
+(`basic_string` copy-ctor from `&(*forward__o5(&(*get__o2(t))))`,
+default second); testsubscript output byte-identical. Gates: fulltest
+exit 0 (674/0/0/16, ratchet GREEN at baseline), burndown FLAT 268/0
+(100%), sweep = known 4-noise set by name. NOTE: hit counts stay 35/0
+etc. — the ratchet counts fd bodies, and these meminits ride bodies
+already HIT; the new coverage means the SHELL CARRIER no longer needs to
+emit those cis (slice-2's body-parse skip can now include pair).
+REMAINING before slice 2: none pinned — next open the slice-2 body-parse
+skip (per-fd where tsubst covers body+meminits), then slice 3 (loud
+bail), slice 4 (DELETE re-parse + escape hatch removal).
+
+**✅ SLICE 2 LANDED @e546c465 — instantiation body-parse skip,
+FIRST-EAGER / REPEAT-SKIP model.** Only the FIRST instantiation of each
+source parses its body eagerly; repeats capture the raw span
+(fd->tsubst_skipped_body_tokens) and parse an empty body. Mechanics:
+name-keyed arming (Program::tsubst_skip_body_name, set by both
+instantiation entry points around try_instantiate when
+fd->dependent_pattern && fd->tsubst_body_instantiated_once — nested
+signature/SFINAE/mem-init parses never misfire), skip at parseFunction's
+body point (collect_compound_body_tokens + synthetic `}`; signature +
+params + ctor mem-inits parse as before per hybrid B §11.2; `auto`
+returns stay eager), bail fallback = Program::materialize_tsubst_
+skipped_body (replays the span into the SAME TokenFunc under the
+parse_deferred_function_body context model + instantiation invariants
+incl. fn_template_instantiation_depth). Soak levers (die at slice 4):
+MADC_XTEST_TSUBST_NO_BODY_SKIP=1 (disable skip),
+MADC_XTEST_TSUBST_FORCE_BAIL=1 (bail every covered body → fallback
+exercised suite-wide; testmap/testset byte-identical through it; the
+container force-bail failures are byte-identical with skip disabled —
+pre-existing pure-fallback-lane gaps).
+**WHY first-eager — the two probe-proven enrichment walls (the remaining
+slice-2 KINDs, prerequisites for skipping FIRSTS and for slice 4):**
+(1) TAG_DEFN local-class remap (cir_builder ~15563) maps the pattern's
+local class onto the concrete `<owner>__<local>` class THE EAGER PARSE
+BUILDS — skip-all left pattern _Guard's deferred dtor failing the
+[class.access] private check on _M_dispose (pattern local classes carry
+no enclosing_class — build_dependent_pattern deliberately leaves
+class_scope_stack alone per the testlocalclassraii hijack note).
+(2) Member-template callee enrichment: the pattern build lowers nested
+MEMBER calls against the placeholder's parse-time state (local_emit_name
+alias + varargs (void*)&addr class-arg shape); skip-all made
+_M_emplace_hint_unique's _M_insert_ call pass a bare _Alloc_node VALUE →
+c2mir "incompatible argument type for pointer type parameter". The
+copy-path N_CALL rebuild EXCLUDES TokenMember (2864 site nulls it; the
+id-only rewrite at 2099 fixes the symbol but not the args) — the fix
+KIND is a receiver-aware member-call formal rebuild at copy time
+(arg-index offset for __this/sret; ABI reshape when the winner's return
+class differs). Measured: testsubscript parse 2.333s→1.628s (-30%),
+total -28%; hits unchanged 35/0. Gates: fulltest exit 0 (674/0/0/16 all
+GREEN), burndown FLAT 268/0, sweep = known 4-noise BY NAME. NEXT: slice-2
+widening KINDs above (optional, or defer to the slice-4 gate costing) →
+slice 3 (loud bail) → slice 4 (DELETE re-parse; note first-eager keeps
+the instantiation body parse load-bearing for FIRSTS, so the slice-4
+delete scope must be costed against the two KINDs above).
+
+**✅ SLICE 3 LANDED @5de32859 — covered-shape bail is a LOUD error; the
+bail-net's swallow-and-reparse dies for the covered lane.** The
+ACCEPTANCE LINE is the boundary: pattern built + binding complete
+(cir_builder tsubst_method_body, right after the type-arg arity check)
+— past it tsubst CLAIMS the body. The three post-acceptance bails
+(`substitute produced no tree`, `substitute error`, `tsubst body calls
+un-emittable symbol` — all suite-unreachable, burndown 0) now go through
+`bail_covered`: restores referenced_funcs, sets `m_tsubst_bailed_covered`,
+and returns a LOUD error BODY (`error_node` in an N_BLOCK) naming the
+instantiation + template key + [why:] — the existing pre-c2mir validity
+gate (`cir_report_errors`) aborts the compile with position. func_def
+never swallows it: the materialization/translate_block fallback arm is
+reached ONLY by pre-acceptance bails (the coverage boundary — eligibility
+gates, scans, pattern-build self-detection like the unit specimen's
+`dependent name P:: in body`, binding gaps), which keep the transitional
+fallback until the slice-4 costed delete. Accounting truthful: a loud
+bail counts in the --show-stats fallback profile (never a hit).
+Emit surface closed: `--emit=c11|mc11` (madc_cir_emit) now runs the SAME
+validity gate — an error node previously rendered as NOTHING (silently
+broken C). Levers: `MADC_XTEST_TSUBST_FORCE_BAIL=covered` forces the
+post-acceptance loud arm (=1 unchanged: soaks the slice-2 materialization
+lane); both values + the =0 whole-lane bypass verified by hand
+(covered → rc!=0 both compile and emit, named instantiation; =1 →
+testmap byte-correct through materialization; =0 → no error). New unit
+test asserts error node in final tree + zero hits + slice-3 reason in
+profile; the pre-acceptance specimen (dep_fallback) is UNTOUCHED. No
+fixpoint-ordering hazard: the emittability gate checks definition
+SOURCES (pending_funcs/AST/lazy/external), not emitted-yet status.
+Gates: fulltest exit 0 (674/0/0/16 all GREEN), burndown FLAT 268/0
+(100%), sweep = known 4-noise BY NAME. NEXT: soak, then slice 4 (DELETE
+re-parse + MADC_XTEST_DEP_PARSE=0 hatch + madc_tsubst_dep_parse_enabled()
++ FORCE_BAIL/NO_BODY_SKIP levers + unit fallback-counter specimen →
+hit-counter assertion; -Wunused-function confirms the cut) — delete
+scope costed against the two slice-2 enrichment KINDs (first-eager keeps
+the instantiation body parse load-bearing for FIRSTS).
+
+**Road (i) recon (2026-07-02, probe [DELEG-ORIGIN] in-tree):** all 4
+delegation ci-arg datadefs confirmed `is_dependent_placeholder=1,
+has_dependent_surface=0` with clean canonical spellings
+(`std::tuple<_Args1>`, `std::_Index_tuple<__integer_pack(sizeof...(_Args1))...>`)
+and NO `pending_template_instantiations` record (that registry only covers
+the variadic-real-inst shell site, parser.cpp ~3906). THE creation seam is
+the opaque-template-args path parser.cpp ~3294-3346: it has `tname`, the
+`TemplateDef` (namespace/owner), arg SPELLINGS, and **`raw_arg_tokens`
+(per-arg structural token runs)** in hand when it makes the shell — the
+structure is simply dropped today. Implementation sketch:
+1. Program-side registry `dependent_shell_origin[shell] = {tname, td ref,
+   arg spellings, cloned raw_arg_tokens}` recorded at ~3343 (and the ~3906
+   variadic site already records args via
+   record_pending_template_instantiation — unify or parallel).
+2. subst_datadef new case: shell with origin record → substitute each arg
+   run under the binding — single template-param name → binding lookup;
+   `sizeof...(P)` → pack arity; `__integer_pack(N)...` → 0..N-1 non-type
+   expansion (needs PACK CONTEXT threading — subst_datadef is static
+   (prog, dd, subst); pack arity lives in the CIR pack window, so either
+   thread it or pre-extend the binding with a pack-arity side map).
+3. Instantiation seam: the ~3317 partial-spec path shows the parser's
+   existing pattern — push cloned `<args>` structural tokens + call
+   instantiate_template_use. g++-faithful would build from DataDefs
+   directly; check whether a token-free entry point exists before adding
+   one (Rule #4). Note the Codex-verification verdict (FINDINGS doc): a
+   string re-tokenize resolver was INERT — the structural
+   make_typename_type→lookup_member form in subst_datadef is the settled
+   direction; arg-token replay into the parser's own instantiation
+   interface is structural (cloned type tokens, not source text), distinct
+   from the outlawed body re-parse, but weigh it against a DataDef-driven
+   entry point at implementation time.
+
+## Slice-4 delete costing (2026-07-03) — SETTLED scope 4a/4b; multi-type wall found+fixed
+
+**Recon product.** The `=0` mode is the parallel implementation: it switches
+off pattern building (2 parser sites), tsubst metadata recording (2 sites),
+slice-2 skip arming (2 sites), and tsubst_method_body — every body then
+comes from the eager parse product. Gate scripts only set `=1` (the
+default); ~23 unit tests carry save/set-1/restore env boilerplate (~140
+lines); nothing tests `=0` itself. tmp/flagon_diff_sweep.sh is the only
+=0 consumer (scratch, dies with the hatch).
+
+**Found on the way — MULTI-TYPE MEMBER-TEMPLATE WALL, FIXED @a0664983:**
+any member template (instance or static) instantiated at 2+ types in one
+TU hard-failed ("Repeated item declaration <name>__mti", ALL lanes incl.
+=0) — the author-pinned single-alias-slot follow-up. Fix = the ctor lane's
+model: per type-shape memo (member_fn_inst_names, keyed on placeholder
+var.name + arg types + explicit targs — placeholder IDENTITY, split from
+the display-name cycle key which blurs siblings and can be empty), unique
+instance symbols (unique_overload_symbol over `__mti`; first shape keeps
+`__mti`), per-call binding via TokenCallFunc::mti_instance consumed at
+call_target_variable (the one TokenCallFunc-lane resolver) + the
+TokenCallMethod rebuild in reselect_method_overload + the tc3 static
+rebuild + the CIR copy-path synth sites; local_emit_name stays first-wins
+for token-less consumers. Suite hits 268→296 (calls previously aliased to
+another shape's instance now instantiate their own). Tests:
+testmemtmplmultitype.mad (HIT lane) + unit "fallback-lane member template
+at two types" (Kind-3 at 2 types: per-shape instances + repeat skip arming
++ materialize_tsubst_skipped_body on REAL shapes — the production
+materialization consumer, replacing the FORCE_BAIL=1 soak need; lives in
+the UNIT suite so the suite burndown stays 0 FALLBACK per the law).
+
+**Slice 4a (executable now): delete the =0 MODE + levers.**
+1. Delete madc_tsubst_dep_parse_enabled() (datadef.h decl, madc_globals.cpp
+   def); its 8 call sites become unconditional.
+2. Delete MADC_XTEST_TSUBST_NO_BODY_SKIP and MADC_XTEST_TSUBST_FORCE_BAIL=1
+   (the materialization lane now has the real-shape unit test). DECIDE at
+   execution: keep `=covered` as the loud-arm fault-injection hook (no real
+   shape can reach the arm by construction — deleting it leaves the slice-3
+   unit test and the arm untestable) or delete both values + that test.
+3. Sweep the ~23 unit-test env boilerplate blocks; drop `env
+   MADC_XTEST_DEP_PARSE=1` from tsubst_flagon_gate.sh + tsubst_burndown.sh.
+4. The unit fallback-counter specimen STAYS (contra the original slice-4
+   bullet, which assumed full coverage): Kind-3 `typename T::type` still
+   falls back pre-acceptance — the specimen is the live regression test of
+   that lane. Replace with a hit-counter assertion only when Kind-3 lands.
+5. -Wall build; -Wunused-function on madc_tsubst_dep_parse_enabled confirms
+   the cut.
+
+**Slice 4b (BLOCKED — the body-parse machinery itself).** parseFunction's
+instantiation body parse + def_tokens replay + materialize_tsubst_
+skipped_body stay LOAD-BEARING for (i) FIRST instantiations (first-eager
+model — blocked on the two slice-2 enrichment KINDs: TAG_DEFN local-class
+remap for pattern classes, receiver-aware member-call formal rebuild) and
+(ii) pre-acceptance coverage-boundary shapes (Kind-3 dependent member
+type, destroy-helper guard, dependent-call scan, binding gaps) — each a
+KIND still to land. 4b = the burndown-of-KINDs continuation; delete the
+machinery when both (i) and (ii) reach zero reachability.
+
+**✅ SLICE 4a LANDED @69548cb0 — the =0 MODE is DELETED; parse-once is
+UNCONDITIONAL (-306 net lines).** madc_tsubst_dep_parse_enabled() gone
+(decl+def+8 gate sites unconditional); MADC_XTEST_DEP_PARSE inert;
+NO_BODY_SKIP deleted; FORCE_BAIL=1 deleted (the real-shape unit test
+"fallback-lane member template at two types" is the production
+materialization exerciser); FORCE_BAIL=covered SURVIVES as the slice-3
+loud-arm fault-injection hook (the arm is unreachable from real shapes by
+construction). 36 env-boilerplate blocks swept from test_cir.cpp; gate
+scripts de-prefixed; parse-once rule + docs sibling updated in lockstep;
+the Kind-3 specimen STAYS (live pre-acceptance-lane regression test). The
+on/off diff sweep gate RETIRES with the hatch — standing gates are
+fulltest + burndown. Gates: fulltest exit 0 (675/0/0/16 all GREEN);
+burndown 296/0 (100%); =0 verified inert; =covered verified on compile +
+emit surfaces. REMAINING: slice 4b per the costing block above (BLOCKED on
+the two slice-2 enrichment KINDs + the pre-acceptance coverage-boundary
+KINDs; delete the body-parse machinery per-KIND as they land).
+
+**✅ SLICE 4b KIND 1 LANDED @acd3ff02 — receiver-aware member-call rebuild
+at copy time (+ 2 root-cause fixes it exposed).** The copy-path N_CALL arm
+no longer nulls TokenMember: member calls are claimed at the CALL level,
+where the callee id is op0 BY CONSTRUCTION — killing the per-node
+id-rewrite's order-dependent identity check (spelling vs func_emit_name,
+which reads local_emit_name enrichment that the FIRST shape's
+instantiation re-points first-wins; the SECOND shape's callee silently
+kept the generic definition-less symbol). The arm resolves via the
+existing receiver-aware member branch (winner instantiated per THIS
+call's subst), rebuilds args against the winner's formals with the
+[sret?][__this][explicit...] index offset via copied_call_arg_for_formal;
+pack args / non-N_ID callees (virtual dispatch) / arity or return-ABI
+mismatches / unknown formals degrade to a structural RENAME-ONLY copy
+(today's behavior, order-independent). Exposed and fixed at depth:
+(a) translate_module's pf_drained watermark moved to the entry `funcs`
+snapshot — a ROOT body's copy-time instantiation previously appended
+below it (referenced, never defined → MIR undefined import);
+(b) dependent sizeof(U) no longer parse-folds to the placeholder's size
+0 (silent wrong values) — bare-param queries defer into TokenTypeQuery
+(the VLA lane, via type_query_size_is_deferred + resolve_template_param
+consult), lowering to the placeholder type-spec marker tsubst expands.
+New test testmemtmplnestedcall (two shapes, nested dependent member-
+template call, sizeof-derived values; failed 3 ways pre-fix, == g++ now).
+Gates: fulltest exit 0 (676/0/0/16 all GREEN), burndown 300/0 (100%),
+ratchet PROGRESS — baseline advanced (+1 set/map, +2 vector, +4
+subscript/containerdtor/madc_ns). First-skip probe state (probe removed
+after recon): sizeof + nested-call sources skip FIRSTS end-to-end;
+map<int,int> down to ONE bail ([why: tsubst: class deferred-construction
+object argument pack]); strings still hit the TAG_DEFN _Guard
+[class.access] wall. REMAINING for 4b: the TAG_DEFN local-class remap
+KIND, the deferred-construction object-arg-pack KIND, then the
+pre-acceptance coverage-boundary KINDs (Kind-3 dependent member type,
+destroy-helper guard, dependent-call scan, binding gaps).
+
+**✅ SLICE 4b ctor-instantiation slice LANDED @b3b354e1 — copy-time ctor
+instantiation in the deferred-construction relower.** selected_placement_
+ctor, on a failed selection OR a declaration-only variadic-generic
+winner (no pack formals → pt=(null) at every pack position), now calls
+instantiate_member_ctor_template_for_construction for the substituted
+args (idempotent, memoized) and re-selects — the ctor-lane twin of
+KIND 1's copy-time member-call instantiation. Clears the map<int,int>
+first-skip _M_emplace_hint_unique "[why: class deferred-construction
+object argument pack]" bail (_Auto_node ctor + mem-inits tsubst clean).
+The relower's unsupported branches + the deferred-arg conversion bail
+now self-identify under MADC_XTEST_PAT_MEMINIT_DEBUG. Gates: fulltest
+676/0/0/16 exit 0 (ratchet at baseline — default lane byte-stable);
+burndown 300/0. NEXT WALL (probe-proven, evidence in the commit):
+_M_construct_node's deferred-arg binding markers bake ONE pattern-time
+target class (tuple) for ALL pack positions — pattern-build overload
+selection for the construct(...) callee runs unenriched (the KIND-1
+order-dependence disease in ARG-FORMAL selection). Design unit:
+copy-time formal re-selection for static-member/varargs pack calls
+(the generic pack fan-out in copy_cir_subtree has no call context —
+either thread the enclosing call's re-selected formals into the marker
+copy, or claim static-member pack calls in a KIND-1-style CALL-level
+rebuild that expands packs itself). Then: TAG_DEFN local-class remap
+(strings' _Guard wall), pre-acceptance coverage-boundary KINDs.
+
+**✅ SLICE 4b deferred-arg formal re-selection KIND LANDED @9cd40b83.**
+Recon (backtrace at marker creation) pinned the baked target=tuple to the
+INNER std::forward call's parse-time-baked overload formal
+(__ns_std_forward__o4) — unenriched first-wins state, the KIND-1 disease
+in ARG-FORMAL position. Three root-cause fixes (cir_builder.cpp only):
+(1) identity-refcast bake — a forward/move callee's formal is a DEDUCED
+forwarding reference (matches the arg BY CONSTRUCTION), so a dependent
+ref-var arg defers with its OWN type as the marker datadef; the
+consumption arm substitutes per element (identity_bake, no convert-check);
+(2) static member-template re-selection — resolve_copied_dependent_call's
+member branch now claims non-TokenMember static calls
+(_Alloc_traits::construct) via the callee FuncDef's member_template_owner
+as receiver type (same instantiate entry, no __this);
+(3) per-element-formal pack fan-out — the KIND-1 call-rebuild arm expands
+a top-level pack argument itself, pairing element e with formal fi+e
+under that element's subst + pack window (the generic child fan-out has
+no call context). First-skip probe (reverted): map<int,int> operator[]
+compiles AND RUNS end-to-end with firsts skipped (_M_construct_node /
+construct / _Auto_node all tsubst); strings still stop at the TAG_DEFN
+_Guard [class.access] wall. Gates: fulltest 676/0/0/16 exit 0 (all
+GREEN); burndown 314/0 (100%, was 300/0); ratchet PROGRESS — baseline
+advanced (+2 vector, +2 subscript/containerdtor/madc_ns). REMAINING for
+4b: the TAG_DEFN local-class remap KIND (strings' _Guard wall), then the
+pre-acceptance coverage-boundary KINDs (Kind-3 dependent member type,
+destroy-helper guard, dependent-call scan, binding gaps), then delete
+the eager body-parse machinery per-KIND.
+
+**✅ SLICE 4b TAG_DEFN local-class remap KIND LANDED @51869343 —
+tsubst-side materialization of the concrete local class.** Recon (backtrace at the
+access_flag_violation private return; -rdynamic resolves function-level
+frames without -g) pinned the wall: during translate_module's lazy-body
+fixpoint, parse_deferred_lazy_body parsed the PATTERN _Guard's dtor
+(`if (_M_guarded) _M_guarded->_M_dispose();`) with cur_class=_Guard,
+enclosing_class=NULL → [class.access] private check fails. Root cause:
+the concrete `<owner>__<local>` class has exactly ONE producer — the
+eager first-instantiation body parse (TokenCLASS::parse names it via
+class_scope_stack.back() @25326 and sets enclosing_class @25654); the
+CIR remap only LOOKS UP struct_map[own+"__"+pc->name]. Skip firsts →
+nothing produced it → raw pattern _Guard leaks into the emitted tree,
+its dtor gets ODR-used, lazy parse hits the access wall. Fix (g++
+[temp.inst]: a local class is instantiated WITH the enclosing function):
+new Program::materialize_pattern_local_class(source, pattern_class,
+owner) — on remap miss, scan the retained fd->member_template_decl for
+the local class's DEFINITION token subspan (struct|class + name + {…}),
+clone it + synthetic `;`, and replay through parseKeyword under the
+instantiate_template_use context model (fresh compounds + class scope
+with OWNER pushed, cleared parse-mode flags, owner canonical spelling +
+namespace, parse_deferred_lazy_body token save/restore) — the SAME
+TokenCLASS::parse context the eager lane uses, so naming,
+enclosing_class, ctor/dtor registration, emit symbols, and deferred
+method bodies come out identical; both producers converge (materializer
+pre-checks struct_map; the eager lane's redefinition hits the existing
+depth>0 reuse branch @25605). The scan-miss is the name-gate: a class
+merely REFERENCED by the body has no definition span and stays unmapped
+(never materializes a global struct). NOT via class_scope_stack at
+pattern-build time (the twice-proven-wrong hijack — pattern parse
+context contaminates method emit names). First-skip probe (reverted):
+map<string,string> dict[k]=v compiles AND RUNS (read-back correct:
+"hello bonjour size=2"); testmap passes END-TO-END under first-skip.
+NEXT probe-proven walls (all vector-lane / set): __new_allocator::
+construct "[why: tsubst: dependent-arg object construction]"
+(testsubscript/testcontainerdtor), allocator_traits::construct on
+basic_string "[why: tsubst body calls un-emittable symbol]" @
+stl_vector.h:428 (testvector/testsubscript/testcontainerdtor), testset
+c2mir check error. REMAINING for 4b: those vector-lane construct KINDs,
+the pre-acceptance coverage-boundary KINDs, then delete the eager
+body-parse machinery per-KIND.
+
+**✅ SLICE 4b vector-lane construct KINDs LANDED @96181e73 — free-operator
+instantiation on lookup miss + order-independent pack-member-call symbol
+rewrite.** (1) vector<int>'s _M_realloc_insert bailed un-emittable on
+__ns___gnu_cxx_operator_mi: resolve_copied_dependent_call's free lane
+found NOTHING for a free OPERATOR template (it lives in fn_template_map /
+free_operator_overloads, not the namespace overload sets) and the
+instantiate_concrete_operator_call arm only ran on a bodyless WINNER;
+the not-found arm now instantiates the operator (the eager first body
+parse used to do this as a side effect — first-overload instantiations
+keep the base symbol, masking it on the default lane). (2)
+vector<string>'s allocator_traits::construct__mti__o2 bailed on the
+generic __new_allocator<string>::construct: the inner pack member call
+is claim-rejected (pack arg) and the per-node id-rewrite's spelling gate
+reads func_emit_name — mutated by the FIRST instantiation's resolve —
+so the SECOND copy silently missed the rewrite. The N_CALL arm now does
+a symbol-only rewrite keyed on op0's own baked spelling (order-
+independent), args copied WHOLESALE through the generic path. NOTE: a
+full formal-mapped rebuild for member packs was tried and REVERTED —
+it corrupted multi-element pack arg emission the generic copy handles
+(map<string,string> bad_alloc on the DEFAULT lane); symbol-only is the
+correct scope. Probe (reverted): sub_vi/sub_vs/sub_ss/sub_ss2 all
+correct-output on BOTH lanes; testmap green under first-skip. Gates:
+fulltest 676/0/0/16 exit 0 all GREEN, ratchet flat, burndown 314/0
+flat. REMAINING probe-proven walls for 4b: __new_allocator<int>::
+construct "[why: tsubst: dependent-arg object construction]"
+(testsubscript/testcontainerdtor — the relower's named unsupported
+branch), a probe-only RUNTIME bad_alloc in testvector, the testset
+"c2mir_compile_tree: 1 check errors" wall, then the pre-acceptance
+coverage-boundary KINDs, then delete the eager body-parse machinery
+per-KIND.
+
+**✅ SLICE 4b scalar-placement-store + pointer-pointee scoring LANDED
+@209a5bf3 — testsubscript AND testvector run end-to-end under
+first-skip.** (1) The "[why: tsubst: dependent-arg object construction]"
+wall on __new_allocator<int32_t>::construct__mti was the raw-token
+retranslate fallback in the placement-new N_IGNORE copy arm: a NON-class
+`_Up` (int) skips the class relower and re-translated the SHARED pattern
+tokens with pattern mode off, reading the callee identity an earlier
+instantiation baked into them (map<string,int>'s forward<tuple<>> bake →
+build_call_args coerced the raw `_Args*` arg to a `tuple` formal →
+object_arg_addr's HIT-time dependent-arg rejection). Fix = new
+CirBuilder::tsubst_scalar_placement_store: `*(_Up*)placement = value`
+structurally, value read from the shell's own pack-fan-out param (slot
+id + N_DEREF, the class relower's proven per-element shape), yield =
+typed `_Up*` ([expr.new]; construct_at-style callers RETURN it). Claims
+value-init + single-pack-expansion arity 0/1; else old fallback. (2)
+The probe-only testvector/testsubscript RUNTIME std::bad_alloc: the int
+lane's __uninitialized_copy<...>::__uninit_copy (owner unfolded — the
+non-type fold gap below) re-resolves __do_uninit_copy at copy time with
+int32_t* args, and score_arg_to_param ACCEPTED the existing STRING-typed
+instance (one-side-class pointer pairing fell to the rawtype comparison,
+score 4) → string copy-ctor over int elements → garbage length →
+bad_alloc (the stl_vector.h:428 "incompatible argument/return-expr"
+c2mir warnings were the compile-time shadow). Fix at the ONE shared
+ranking: a class pointee on exactly one side rejects unless the other
+pointee is void ([conv.ptr]; C's malloc direction keeps score 3). ZERO
+suite regressions. Recon lesson: the emitted-C census (--emit=c11 +
+grep) pinpointed the cross-typed call in minutes after backtraces
+plateaued. KNOWN residual (separate, non-blocking): the int lane's
+`__uninitialized_copy<__can_memmove && __assignable>` non-type class-
+template arg does not FOLD under tsubst (owner name keeps the raw
+dependent spelling, selects the primary do_uninit_copy loop instead of
+the <true> memmove fast path — semantically correct, perf/hygiene gap).
+Probe (reverted as always): testsubscript, testvector, testmap ALL
+end-to-end green with firsts skipped, outputs verified. Gates: fulltest
+676/0/0/16 exit 0, ratchet GREEN, burndown 314/0 (100%) flat. REMAINING
+4b wall: the SET KIND — stl_set.h:96:13 "conversion of non-scalar value
+requested" c2mir check error (testset + testcontainerdtor share it) —
+then the pre-acceptance coverage-boundary KINDs, then the per-KIND
+machinery delete.
+
+**✅ SLICE 4b SET wall LANDED @76d92228 — ALL first-skip walls cleared;
+every container test runs end-to-end with FIRSTS skipped.** The
+stl_set.h:96 "conversion of non-scalar value requested" check error
+(testset + testcontainerdtor): in _M_insert_unique's tsubst-copied
+body, the nested dependent call `_M_insert_(..., __an)` binds the local
+`_Alloc_node __an` to the reference formal `_NodeGen&`, but the copied
+arg was a bare pattern N_ID with NO datadef — so
+copied_call_arg_for_formal's existing refp arm (which even documents
+this exact c2mir error) could never see it as a class object, and cast
+the struct VALUE to the pointer type instead of `&__an`. Reduced to
+set<int> single-insert (NO cross-type contamination needed this time);
+the emitted-C census (probe-vs-default diff of --emit=c11) pinpointed
+the divergence in one diff: `(_Alloc_node*)__an` vs
+`(_Alloc_node*)((void*)(&__an))`, plus a benign `&(*fw(..))` twin that
+proved the refp arm ran for the neighbouring arg. Fix at the ONE
+arg-adaptation point: bare N_ID + null datadef + origin TokenVar
+(non-reference) recovers the var type, substitutes, and applies the
+same as_class_instance gate before N_ADDR. LESSON (regression caught
+in-flight): the first attempt also substituted NON-null datadefs
+through subst before the class check — that flipped previously-
+unwrapped dependent rvalue shapes into wrapped ones ("lvalue required
+as unary & operand" ×4 in the vector lane); narrowed to exactly the
+diseased shape (purely additive arm; non-null-datadef path
+byte-identical). Safety: every shape the new arm fires on was
+previously a guaranteed struct-value-to-pointer check error. Probe
+(reverted as always): testset, testcontainerdtor, testvector, testmap,
+testsubscript, testmadc_ns ALL end-to-end green with firsts skipped,
+outputs fixture-verified. Gates: fulltest 676/0/0/16 exit 0, ratchet
+GREEN at baseline, burndown 314/0 (100%) flat, zero reason-classes.
+NEXT: the pre-acceptance coverage-boundary KINDs (Kind-3 dependent
+member type, destroy-helper guard, dependent-call scan, binding gaps),
+then the per-KIND eager body-parse machinery delete (parseFunction
+instantiation lane, def_tokens replay, materialize_tsubst_skipped_body;
+-Wunused-function confirms each cut).
+
+**✅ SLICE 4b FLIP LANDED @75869db7 — first-skip is PRODUCTION.** The two
+member-lane arming sites drop the `tsubst_body_instantiated_once`
+condition: FIRST instantiations of a pattern-bearing member template
+skip the eager body parse exactly like 2nd+ ones. Preceded by the
+delete-gate evidence: all first-skip walls cleared (@76d92228),
+burndown 0 FALLBACK / zero reason-classes, and the pre-acceptance
+eligibility census EMPTY across all 693 tests (recon [ELIG-NO] print
+in tsubst_eligible's no() lambda, reverted; instrument proven by a
+dependent-return negative control). Ratchet baseline LOWERED with
+in-file rationale — the eager first parse was OVER-instantiating:
+allocator_traits::construct overload instances (int __o2, string __o3)
+for arg shapes the program never lowers (for int, identical C-level
+signatures); post-flip instantiation is by-need. Verified by pre/post
+--emit=c11 defined-symbol diff on testvector (only the two redundant
+instances vanish; _Guard ctor/dtor renames to the materializer's
+<owner>__<local> naming; every call resolves; zero warnings). Suite
+burndown 314 -> 300 HIT, still 0 FALLBACK (100%). The auto-return
+sub-lane still parses eagerly by design (deduction reads statements).
+Gates: fulltest 676/0/0/16 exit 0 all GREEN; ratchet GREEN on the new
+baseline. REMAINING (task #10): delete the now-dead eager machinery
+per-KIND — parseFunction instantiation body-parse lane, def_tokens
+replay, materialize_tsubst_skipped_body, the
+tsubst_body_instantiated_once flag itself; -Wunused-function is the
+cut-completeness signal; full gates per landing.
+
+**✅ SLICE 4b MACHINERY DELETE LANDED @eef9264f — the re-parse fallback
+is GONE (-123 net lines).** materialize_tsubst_skipped_body deleted;
+its one caller (func_def's NULL-body bail) returns a LOUD error_node
+for a skipped body (slice-3 contract). tsubst_skipped_body_tokens
+(per-instantiation raw-token capture) → bool tsubst_body_skipped
+(parseFunction consumes and DISCARDS the span — no capture allocation).
+tsubst_body_instantiated_once deleted (write-only since the flip).
+Still live BY DESIGN: per-instantiation shell parse (hybrid B),
+one-time pattern build, auto-return deduction lane, and the eager lane
+for pattern-INELIGIBLE shapes (their body parse is the only parse —
+future work there is per-KIND eligibility widening, e.g. Kind-3
+dependent member types, NOT fallback machinery). test_cir fallback-lane
+test comment refreshed (its shape never armed the skip; assertions
+unchanged 95/95). Rules updated: .claude/rules/parse-once.md +
+docs/rules/parse-once.md now state the fallback is deleted and a bail
+is a loud error. Gates: fulltest 676/0/0/16 exit 0 all GREEN, ratchet
+GREEN, burndown 300/0 (100%) flat, zero reason-classes. PHASE-5 SLICE
+4b IS COMPLETE — task #10 closed.

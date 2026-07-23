@@ -1,0 +1,14 @@
+// --no-auto-load: the embedded <math.h> contains `#load "libm.so.6" as libm;`.
+// With --no-auto-load (see testnoautoload.flags), madc must NOT dlopen libm and
+// must bind the namespace to the global symbol scope. sqrt still resolves
+// because madc is itself linked against libm (RTLD_DEFAULT), so explicit/host
+// linking provides the symbol — proving the skip path doesn't break resolution.
+#include <math.h>
+#include <stdio.h>
+
+int main()
+{
+	double x = sqrt(16.0);
+	printf("sqrt=%g\n", x);
+	return 0;
+}

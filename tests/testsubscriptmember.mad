@@ -1,0 +1,23 @@
+#!/../bin/madc
+// Subscript-element member/method access: `v[i].method()` on a container whose
+// operator[] returns a class element. This is the C++ keystone — calling a
+// method directly on a container element without copying it to a local first.
+#include <iostream>
+#include <vector>
+#include <string>
+using namespace std;
+
+int main() {
+    vector<string> v;
+    v.push_back("hello");
+    v.push_back("worldly");
+
+    // method call directly on the subscript element (no copy-to-local)
+    cout << "len0=" << v[0].length() << endl;   // 5
+    cout << "len1=" << v[1].length() << endl;   // 7
+
+    // c_str() on the element, then use as a const char*
+    cout << "c0=" << v[0].c_str() << endl;       // hello
+
+    return 0;
+}

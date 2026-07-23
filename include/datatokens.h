@@ -6,11 +6,20 @@
 //////////////////////////////////////////////////////////////////////////
 #define __TOKENDATA_H 1
 
+#include <cstring>
+
 class TokenDataType: public TokenIdent
 {
 public:
+    // `str` retained (interning Step 4): a datatype token's SPELLING can differ from
+    // its DataDef name (e.g. `_Bool` vs bool, `wchar_t`, `size_t`), and these tokens
+    // are static/shared across Programs, so the spelling can't come from a per-Program
+    // pool. Kept here (like TokenKeyword); spelling() overrides the pool path.
+    std::string str;
     DataDef &definition;
-    TokenDataType(const char *k, DataDef &d) : TokenIdent(k), definition(d) {}
+    TokenDataType(const char *k, DataDef &d) : TokenIdent(k), str(k ? k : ""), definition(d) {}
+    virtual const char *spelling() const override { return str.c_str(); }
+    virtual size_t spelling_len() const override { return str.size(); }
     virtual TokenType type() const { return TokenType::ttDataType; }
     virtual TokenBase *clone() { return new TokenDataType(str.c_str(), definition); }
 };
@@ -38,13 +47,12 @@ class TokenDOUBLE:    public TokenDataType { public: TokenDOUBLE(): TokenDataTyp
 class TokenLPSTR:     public TokenDataType { public: TokenLPSTR():  TokenDataType("LPSTR", ddLPSTR) {} };
 
 // some basic c++ types
-class TokenSTRING:    public TokenDataType { public: TokenSTRING(): TokenDataType("string", ddSTRING) {} };
-class TokenOSTREAM:   public TokenDataType { public: TokenOSTREAM():TokenDataType("ostream", ddOSTREAM) {} };
-class TokenSSTREAM:   public TokenDataType { public: TokenSSTREAM():TokenDataType("stringstream", ddSSTREAM) {} };
+// NOTE: there is deliberately NO TokenSTRING here. `string` is std::string —
+// it comes into existence only via `#include <string>` under the `std`
+// namespace (std_types["string"], registered in _parser_init), reached as
+// `std::string` or via `using namespace std;`. It is NOT a global builtin
+// type token, exactly like C++. (Phase A5, stdtypes-as-real-classes.)
 class TokenARRAY:     public TokenDataType { public: TokenARRAY():  TokenDataType("array", ddARRAY) {} };
-class TokenIFSTREAM:  public TokenDataType { public: TokenIFSTREAM(): TokenDataType("ifstream", ddIFSTREAM) {} };
-class TokenOFSTREAM:  public TokenDataType { public: TokenOFSTREAM(): TokenDataType("ofstream", ddOFSTREAM) {} };
-class TokenFSTREAM:   public TokenDataType { public: TokenFSTREAM():  TokenDataType("fstream", ddFSTREAM) {} };
 
 class TokenAUTO:      public TokenDataType { public: TokenAUTO():  TokenDataType("auto", ddAUTO) {} };
 
@@ -54,6 +62,13 @@ class Variable
 {
 public:
     std::string name;
+    // Cached interned spelling-id of `name` (Program::strpool), 0 = not yet
+    // interned / invalidated. Lets TokenCpnd::findVariableThisScope index the
+    // scope by id without re-hashing the name on every absorption (the per-
+    // instantiation scope rebuild was re-interning every name — see
+    // docs/parity/2026-06-30-frontend-profile-O0-vs-O2.md). A rename is picked
+    // up by the staleness-rebuild path, which force-refreshes this field.
+    uint32_t name_sid = 0;
     DataDef *type;
     void *data;
     size_t aot_data_offset;
@@ -61,7 +76,14 @@ public:
     uint32_t count;
     uint32_t flags;
     std::string storage_alias_name;
-    std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
+    std::string typedef_name; // if declared via typedef, the source alias (e.g. "EXT_BV")
+    // Explicit '*' count written on a function-type-typedef declarator, recorded
+    // because the type stays a bare DataDefFPTR (fn-ptr CALL detection keys on it,
+    // so the stars can't live in the type). `DO_FUN x` -> 0 (a C function
+    // declaration), `DO_FUN *fp` -> 1 (a function-pointer variable). -1 means
+    // "not a recorded fn-ptr-base declarator" -> emitter uses its legacy path.
+    int fnptr_explicit_stars = -1;
+    std::vector<carray_dim_t> dims; // C fixed-size array shape; empty = scalar
     int64_t object_size_hint;
     // C99 variable-length array: when non-NULL, the local was declared as
     // `T name[expr]` with a runtime-valued size. The variable acts as a
@@ -78,18 +100,29 @@ public:
    ~Variable();
     inline bool is_vla() const { return vla_size_expr != nullptr; }
     inline bool is_fixed_array() const { return (flags & vfFIXEDARRAY) != 0; }
+    // A reference variable (`T& r`, `auto& x`, a `T&` parameter, a `for(T& v:c)`
+    // loop var): its type is a DataDefREF. The single source of truth for
+    // reference-ness — first-class refs Phase 2 retired the parallel vfREFERENCE
+    // flag. The value auto-derefs on access; the slot holds the referent address.
+    inline bool is_reference() const { return type && type->is_reference(); }
     inline bool has_aot_data() const { return aot_data_offset != (size_t)-1; }
     inline bool has_aot_cstr() const { return aot_cstr_offset != (size_t)-1; }
-    inline uint32_t total_elements() const {
-	uint32_t n = 1;
+    inline size_t total_elements() const {
+	size_t n = 1;
 	for ( auto d : dims ) n *= d;
 	return n;
     }
     inline void modified() { flags |= vfMODIFIED; DBG(std::cout << "Variable::modified(" << name << ')' << std::endl); }
+    // The ONLY way to change `name` after the variable may have been registered
+    // in a scope: zeroing name_sid marks the rename for the scope index, so
+    // TokenCpnd::findVariableThisScope's staleness rebuild re-interns just this
+    // entry instead of force-rehashing every name in the scope. A raw
+    // `v->name = x` on a registered variable silently breaks sid lookups.
+    inline void rename(const std::string &n) { name = n; name_sid = 0; }
     inline void makeconstant() { flags |= vfCONSTANT; }
     inline bool is_global()   const { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
     inline bool is_constant() const { if ( (flags & vfCONSTANT) ) return true; return false; }
-    bool set(int c)
+    bool set(int64_t c)
     {
 	if ( !data ) { return false; }
 	/**/ if (type == &ddCHAR)   *((char *)data) = c;
@@ -111,6 +144,7 @@ public:
 	else if (type == &ddUINT64) *((uint64_t *)data) = c;
 	else if (type == &ddFLOAT)  *((float *)data) = c;
 	else if (type == &ddDOUBLE) *((double *)data) = c;
+	else if (dynamic_cast<DataDefENUM *>(type)) *((int32_t *)data) = c;
 	else 	     { return false; }
 	return true;
     }
@@ -132,11 +166,16 @@ public:
 	if (type == &ddUINT64) return *((uint64_t *)data) == static_cast<uint64_t>(c);
 	if (type == &ddFLOAT)  return *((float *)data) == c;
 	if (type == &ddDOUBLE) return *((double *)data) == c;
+	if (dynamic_cast<DataDefENUM *>(type)) return *((int32_t *)data) == c;
 	return 0;
     }
     int cmp(std::string &s)
     {
-	if (type == &ddSTRING) return ((std::string *)data)->compare(s);
+	if (type == &ddCHARptr && data)
+	{
+	    const char *p = *(const char **)data;
+	    return p ? std::strcmp(p, s.c_str()) : -1;
+	}
 	return 0;
     }
     bool dec()
@@ -192,8 +231,11 @@ public:
 	else if (type == &ddUINT24) return *((uint16_t *)data);
 	else if (type == &ddUINT32) return *((uint32_t *)data);
 	else if (type == &ddUINT64) return *((uint64_t *)data);
+	else if (type == &ddINT128)  return *((madc_wide_int *)data);
+	else if (type == &ddUINT128) return *((madc_wide_uint *)data);
 	else if (type == &ddFLOAT)  return *((float *)data);
 	else if (type == &ddDOUBLE) return *((double *)data);
+	else if (dynamic_cast<DataDefENUM *>(type)) return *((int32_t *)data);
 	return true;
     }
 };
@@ -207,11 +249,10 @@ public:
     virtual TokenType type() const { return TokenType::ttVariable; }
     virtual int64_t get() const { return var.get<int64_t>(); }
     virtual int val() const     { return var.get<int>(); }
-    // Constant-fold path (TokenOperator::optimize → ioperate/foperate)
-    // calls ival()/dval() on each leaf. Without these overrides
-    // enum/const-var leaves report 0, so e.g. (TOPCOLOR-COLORBASE)
-    // folds to 0 at runtime even though parse-time array sizing reads
-    // them correctly via read_constant_integer.
+    // Constant-value view: literal-gated fold sites (e.g. CirBuilder's
+    // constant-if pruning) call ival()/dval() on leaves. Without these
+    // overrides enum/const-var leaves report 0 even though parse-time
+    // constant contexts read them correctly via read_constant_integer.
     virtual int64_t ival() const override
         { return var.is_constant() ? var.get<int64_t>() : 0; }
     virtual double dval() const override
@@ -219,10 +260,6 @@ public:
     virtual bool is_constant() const { return var.is_constant(); }
     virtual bool is_real() const { return _datatype->is_real(); }
     virtual void set(int64_t c) { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
-    virtual void putreg(Program &);
-//  virtual asmjit::x86::Gp &getreg(Program &);
-    virtual asmjit::Operand &operand(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 #endif // __TOKENDATA_H

@@ -1,0 +1,53 @@
+#!/../bin/madc
+// C++11 default member initializers (NSDMI). Covers: scalar-only struct (no
+// ctor), class with ctors (NSDMI applied for members not in the ctor init-list),
+// object-member NSDMI, comma-shared declarators, and a pointer member.
+#include <iostream>
+#include <string>
+using namespace std;
+
+// Scalar-only struct -> promoted to a class purely for its NSDMI.
+struct S { int x = 5; int y = 7; };
+
+// Comma-shared declarators each with their own initializer.
+struct C { int a = 1, b = 2, c = 3; };
+
+// Pointer member NSDMI.
+struct PtrHolder { int *p = nullptr; int n = 42; };
+
+// Class with constructors: the default ctor applies all NSDMIs; a value ctor
+// overrides only the member it initializes, the rest keep their NSDMI.
+struct P {
+	int x = 5;
+	int y = 7;
+	P() {}
+	P(int a) : x(a) {}
+};
+
+// Object member NSDMI: the string value-inits, the scalars apply their NSDMI.
+struct Q {
+	int n = 3;
+	string s = string();
+	bool f = false;
+};
+
+int main()
+{
+	S s;
+	cout << "S " << s.x << " " << s.y << endl;
+
+	C c;
+	cout << "C " << c.a << " " << c.b << " " << c.c << endl;
+
+	PtrHolder ph;
+	cout << "PH " << (ph.p == nullptr ? 1 : 0) << " " << ph.n << endl;
+
+	P d;
+	P e(99);
+	cout << "P " << d.x << " " << d.y << " " << e.x << " " << e.y << endl;
+
+	Q q;
+	cout << "Q " << q.n << " [" << q.s << "] " << (q.f ? 1 : 0) << endl;
+
+	return 0;
+}

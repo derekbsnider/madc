@@ -1,0 +1,25 @@
+#include <stdio.h>
+
+// A struct, like a class, may declare member functions, operators, and
+// access labels — differing from a class only in default access (public).
+// A trivial struct-with-method must behave identically to the class form.
+struct Point {
+	int x, y;
+	int sum() const { return x + y; }
+	bool operator<(const Point &o) const { return sum() < o.sum(); }
+};
+
+// A struct functor (the std::less shape) — operator() not at member start.
+struct less_int {
+	bool operator()(int a, int b) const { return a < b; }
+};
+
+int main(void)
+{
+	Point a; a.x = 3; a.y = 4;
+	Point b; b.x = 10; b.y = 20;
+	printf("%d\n", a.sum());          // 7
+	printf("%d\n", (a < b) ? 1 : 0);  // 1
+	printf("%d\n", less_int()(2, 5) ? 1 : 0); // 1
+	return 0;
+}

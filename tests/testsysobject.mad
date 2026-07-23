@@ -1,0 +1,25 @@
+#!/usr/bin/env madc
+// Task #91: madc::sys — the system object (Python sys convention).
+// argv/path are mutable madc arrays populated at main entry via the
+// injected __madc_sys_init; platform/version/hostname are immutable
+// facts initialized at host load. sys.version equals MADC_VERSION.
+#include <iostream>
+#include <string>
+#include <ns_php>
+#include <ns_madc>
+using namespace std;
+
+int main(int argc, char **argv)
+{
+	cout << "argc_matches: " << (php::count(madc::sys.argv) == argc) << endl;
+	cout << "argv1: " << madc::sys.argv[1] << endl;
+	string v = madc::sys.version;
+	cout << "version_matches: " << (v == MADC_VERSION) << endl;
+	cout << "platform: " << madc::sys.platform << endl;
+	string h = madc::sys.hostname;
+	cout << "hostname_nonempty: " << (h != "") << endl;
+	php::array_push(madc::sys.argv, "gamma");
+	cout << "after_push: " << php::count(madc::sys.argv) << endl;
+	cout << "path_nonempty: " << (php::count(madc::sys.path) > 0) << endl;
+	return 0;
+}

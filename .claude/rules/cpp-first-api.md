@@ -7,4 +7,14 @@
 - Make CLI and native-host call sites adopt the C++ API before adding C shims.
 - Keep ownership, lifetime, diagnostics, and IO policy modeled in C++ objects.
 - Add or expand C shims only after the C++ model is coherent and exercised.
+- `extern "C"` exports exist EXCLUSIVELY as the C-linkage API for C hosts
+  consuming libmadc.a/.so — never as a script-side resolution path.
+- Script-facing embedded headers (`<ns_madc>`, `<ns_php>`, …) declare their
+  namespace publics as declaration-only C++ functions, resolved mangled-direct
+  (Itanium symbols) to real `namespace X { }` implementations in the host.
+- Do not write namespace wrapper bodies over the extern-C exports in script
+  headers; that flattens C++ type information (references, overloads).
+- Exception: compiler-machinery symbols emitted by the CIR builder
+  (`__madc_scope_set_*`, `__madc_vla_free` category) stay extern-C — they are
+  not user-resolved functions.
 - See `docs/rules/cpp-first-api.md` for the reasoning.

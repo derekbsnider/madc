@@ -1,0 +1,44 @@
+// C++17 init-statement in `if` and `switch` ([stmt.pre]):
+//   if (init-statement; condition) ...
+//   switch (init-statement; condition) ...
+// The init-statement runs before the condition and shares its scope, so a
+// variable it declares is visible in the condition and in BOTH branches.
+extern "C" int printf(const char *, ...);
+
+int foo() { return 7; }
+
+int main()
+{
+	// declaration init-statement; condition true -> then-branch sees `c`
+	if ( int c = foo(); c != 0 )
+		printf("if-decl-true c=%d\n", c);
+	else
+		printf("if-decl-true MISS\n");
+
+	// condition false -> else-branch still sees the init var `c`
+	if ( int c = foo(); c == 0 )
+		printf("if-decl-false MISS\n");
+	else
+		printf("if-decl-false c=%d\n", c);
+
+	// expression init-statement (assignment), not a declaration
+	int x = 0;
+	if ( x = foo(); x > 5 )
+		printf("if-expr x=%d\n", x);
+
+	// switch with an init-statement
+	switch ( int s = foo() - 5; s )
+	{
+	    case 1:
+		printf("switch MISS\n");
+		break;
+	    case 2:
+		printf("switch-two s=%d\n", s);
+		break;
+	    default:
+		printf("switch MISS-default\n");
+		break;
+	}
+
+	return 0;
+}

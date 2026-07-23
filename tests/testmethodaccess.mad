@@ -1,0 +1,51 @@
+#!/../bin/madc
+// P2.5c: access control extended to METHODS. A private/protected method
+// called from OUTSIDE the (derived) class is now rejected, reusing the same
+// access check as the P2.5 data-member path (one rule, two callers). The
+// runner has no expected-compile-error mechanism, so this is the POSITIVE
+// companion proving the ALLOWED forms compile/run:
+//   - a private method called from the class's own (public) method via this->
+//   - a protected method called from a derived class's method
+//   - public methods called externally
+// The REJECTION (a private method called externally -> "'helper' is a private
+// member of 'C'", matching g++/clang) is verified by a probe documented in the
+// commit / handoff.
+#include <iostream>
+using namespace std;
+
+class Calc {
+    // private helper — reachable only from Calc's own methods.
+    int twice(int x) { return x * 2; }
+public:
+    // public method that uses the private helper (via this->, the supported
+    // in-class call form).
+    int compute(int v) { return this->twice(v) + 1; }
+};
+
+class Base {
+protected:
+    // protected helper — reachable from Base and any derived class.
+    int half(int x) { return x / 2; }
+public:
+    int viaBase(int v) { return this->half(v); }
+};
+
+class Derived : public Base {
+public:
+    // protected method called from a derived class's method: allowed.
+    int viaDerived(int v) { return this->half(v) + 100; }
+};
+
+int main()
+{
+    Calc c;
+    cout << c.compute(10) << endl;      // 21  (twice(10)+1, private via this->)
+
+    Base b;
+    cout << b.viaBase(40) << endl;      // 20  (protected via own method)
+
+    Derived d;
+    cout << d.viaDerived(40) << endl;   // 120 (protected from derived: 20+100)
+
+    return 0;
+}

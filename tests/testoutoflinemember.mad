@@ -1,0 +1,27 @@
+#!/../bin/madc
+// Out-of-line member DEFINITIONS of a class template (sub-gap 8): a member of a
+// class template defined OUTSIDE the class body
+// (`template<class T> RET S<T>::member(...) { body }`, the bits/*.tcc shape) must
+// instantiate as a member of the monomorphized class on ODR-use — not be dropped
+// as an undefined import. Covers a void member, a non-void member (whose return
+// type must survive the deferred re-parse), and member access through `this`.
+#include <stdio.h>
+
+template<class T> struct Box {
+	T v;
+	void set(T x);          // out-of-line, void
+	T plus_base(T x);       // out-of-line, non-void, reads a member via this
+	T get() { return v; }   // in-class (control)
+};
+
+template<class T> void Box<T>::set(T x) { v = x; }
+template<class T> T Box<T>::plus_base(T x) { return v + x; }
+
+int main()
+{
+	Box<int> b;
+	b.set(35);
+	printf("%d\n", b.get());        // 35
+	printf("%d\n", b.plus_base(7)); // 42
+	return 0;
+}

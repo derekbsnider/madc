@@ -1,0 +1,32 @@
+// Regression: a METHOD that returns a non-trivial class BY VALUE (the __retbuf
+// ABI) and takes a REFERENCE parameter, called via copy-elision init
+// (`Ret r = obj.make(prvalue)`), must materialize the prvalue into a temp and
+// pass its ADDRESS — not pass the value where a pointer is expected.
+//
+// Before the fix the copy-elision path delegated the method's explicit args to
+// build_call_args, which indexes the callee's parameters from 0; but a method's
+// parameter[0] is the hidden __this, so the explicit arg was coerced against
+// __this instead of the real reference parameter. The reference materialization
+// was skipped, the prvalue (or a reference arg) was passed as an integer where a
+// pointer was expected, and the callee dereferenced that integer -> SIGSEGV.
+// This is std::set<int>::insert -> _Rb_tree::_M_insert_unique (a retbuf-returning
+// member whose `const value_type&` / forwarding-reference arg is passed through).
+#include <cstdio>
+
+struct It { int v; It(int x) : v(x) {} };
+struct Ret { It first; bool second; Ret(It f, bool s) : first(f), second(s) {} };
+
+struct Box {
+	Ret make(const int &v) { return Ret(It(v), true); }  // retbuf + __this + const int&
+};
+
+int main()
+{
+	Box b;
+	Ret r = b.make(105);                // 105 is a prvalue bound to const int&
+	printf("%d %d\n", r.first.v, (int)r.second);   // 105 1
+	int n = 107;
+	Ret q = b.make(n);                  // n is an lvalue bound to const int&
+	printf("%d %d\n", q.first.v, (int)q.second);   // 107 1
+	return 0;
+}

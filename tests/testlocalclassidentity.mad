@@ -1,0 +1,33 @@
+#include <stdio.h>
+
+int local_sum(int x)
+{
+	int result = 0;
+	{
+		class Guard {
+		public:
+			int value;
+			Guard(int v) { value = v; }
+			~Guard() { value = 0; }
+		};
+		Guard guard(x);
+		result += guard.value;
+	}
+	{
+		class Guard {
+		public:
+			int value;
+			Guard(int v) { value = v + 1; }
+			~Guard() { value = 0; }
+		};
+		Guard guard(x);
+		result += guard.value;
+	}
+	return result;
+}
+
+int main()
+{
+	printf("%d\n", local_sum(7));
+	return 0;
+}

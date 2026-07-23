@@ -1,0 +1,40 @@
+// P2.1b gap 2 — operator-> (smart-pointer style).
+//
+// `obj->m` where obj is a class declaring operator-> rewrites to
+// `(obj.operator->())->m`: operator-> returns a pointer, then the real
+// `->` applies. Reuses the class-method dispatch.
+#include <iostream>
+using namespace std;
+
+class Inner {
+public:
+    int val;
+    int doubled() { return val * 2; }
+};
+
+class Wrap {
+public:
+    Inner* p;
+    Inner* operator->() { return p; }
+};
+
+int main()
+{
+    Inner i;
+    i.val = 21;
+
+    Wrap w;
+    w.p = &i;
+
+    cout << w->val << endl;        // 21  (data member through operator->)
+    cout << w->doubled() << endl;  // 42  (method through operator->)
+
+    w->val = 5;                    // assignment through operator->
+    cout << i.val << endl;         // 5
+
+    // Plain pointer -> still works (negative control).
+    Inner* dp = &i;
+    cout << dp->val << endl;       // 5
+
+    return 0;
+}

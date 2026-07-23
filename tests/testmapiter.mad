@@ -1,0 +1,27 @@
+// map iteration via explicit iterator for-loops. Regression: a class-typed
+// single declarator in the for-init slot lost its injected construction
+// (1->N decl lowering had one slot) — the iterator started as garbage and
+// the first ++ handed junk to _Rb_tree_increment (SIGSEGV). Two loops
+// reuse the iterator name deliberately: the synthetic-block lowering must
+// scope each declarator to its own loop.
+#include <map>
+#include <string>
+#include <cstdio>
+
+int main()
+{
+	std::map<std::string, int> m;
+	m["alpha"] = 1;
+	m["beta"] = 2;
+	m["gamma"] = 3;
+	int n = 0;
+	for (std::map<std::string, int>::iterator it = m.begin(); it != m.end(); ++it)
+		n++;
+	int sum = 0;
+	for (std::map<std::string, int>::iterator it = m.begin(); it != m.end(); ++it)
+		sum += it->second;
+	printf("count=%d sum=%d\n", n, sum);
+	for (std::map<std::string, int>::iterator it = m.begin(); it != m.end(); ++it)
+		printf("%s=%d\n", it->first.c_str(), it->second);
+	return 0;
+}

@@ -1,0 +1,29 @@
+// sizeof of a VLA variable is a RUNTIME value captured at the declaration
+// (C99 6.5.3.4p2; gcc stores the VLA bound in a hidden temp — changing the
+// dimension variable afterwards must NOT change sizeof).
+
+int main()
+{
+	int n = 5;
+	int a[n];
+	printf("%d\n", (int)sizeof(a));          // 20
+
+	n = 50;
+	printf("%d\n", (int)sizeof(a));          // still 20
+
+	int m = 3;
+	int b[m][4];
+	printf("%d\n", (int)sizeof(b));          // 48
+
+	int c[2][m];
+	printf("%d\n", (int)sizeof(c));          // 24
+
+	char s[n];                               // n is 50 now
+	printf("%d\n", (int)sizeof(s));          // 50
+
+	// usable inside larger expressions
+	int total = (int)(sizeof(a) + sizeof(b));
+	printf("%d\n", total);                   // 68
+
+	return 0;
+}

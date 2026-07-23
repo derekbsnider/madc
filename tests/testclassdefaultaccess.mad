@@ -1,0 +1,57 @@
+#!/../bin/madc
+// P2.5b: `class` members default to PRIVATE, `struct` members default to
+// PUBLIC (C++ canon), now that P2.5 enforces access. The runner has no
+// expected-compile-error mechanism, so this is the POSITIVE companion proving
+// the ALLOWED forms compile/run:
+//   - a `struct` with unlabeled members -> public -> external access OK
+//   - a `class` with an explicit `public:` -> external access OK
+//   - a `class` with unlabeled members used only via its own methods -> OK
+// The REJECTION (a `class` with unlabeled members accessed externally ->
+// "'m' is a private member of 'C'", matching g++/clang where class defaults
+// to private) is verified by a probe documented in the commit / handoff.
+#include <iostream>
+using namespace std;
+
+// struct: unlabeled members are PUBLIC — direct external access is allowed.
+struct PodPoint {
+    int x;
+    int y;
+};
+
+// class with explicit public: — external access allowed.
+class OpenPoint {
+public:
+    int x;
+    int y;
+};
+
+// class with UNLABELED members (default PRIVATE) used only through its own
+// methods — the private members are reachable from inside the class.
+class Counter {
+    int n;                                  // private by default
+public:
+    void set(int v) { n = v; }              // private access from own method: OK
+    void inc() { n = n + 1; }               // OK
+    int get() { return n; }                 // OK
+};
+
+int main()
+{
+    struct PodPoint pp;
+    pp.x = 3;
+    pp.y = 4;
+    cout << (pp.x + pp.y) << endl;          // 7  (struct -> public)
+
+    OpenPoint op;
+    op.x = 10;
+    op.y = 20;
+    cout << (op.x + op.y) << endl;          // 30 (class + public:)
+
+    Counter c;
+    c.set(40);
+    c.inc();
+    c.inc();
+    cout << c.get() << endl;                // 42 (private via own methods)
+
+    return 0;
+}

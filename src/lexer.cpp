@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <dlfcn.h>
 #include <iostream>
 #include <iomanip>
@@ -20,42 +21,55 @@
 #include <map>
 #include <list>
 #include <vector>
+#include <deque>
 #include <queue>
 #include <stack>
 #include <functional>
+#include <chrono>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
-#include <asmjit/x86.h>
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_pch.h"
+#include "cir_freeze.h"	// Phase 6: CirFrozenForest — parse-time grove binding
+
+// --show-stats: RAII accumulator for time spent loading source into the lex
+// stream (file read / embedded-header copy). Adds its lifetime, in seconds, to
+// the referenced accumulator on scope exit.
+namespace {
+struct ReadTimer
+{
+    double &acc;
+    std::chrono::steady_clock::time_point t0;
+    ReadTimer(double &a) : acc(a), t0(std::chrono::steady_clock::now()) {}
+    ~ReadTimer()
+    {
+	acc += std::chrono::duration<double>(
+	    std::chrono::steady_clock::now() - t0).count();
+    }
+};
+}
 
 // From precompiled_headers.cpp (generated)
 struct PrecompiledHeader { const uint8_t *data; size_t size; };
 extern const PrecompiledHeader *find_precompiled_header(const std::string &name);
 
 using namespace std;
-using namespace asmjit;
+
+static bool find_filesystem_precompiled_header(Program &pgm,
+					       const std::string &incfile,
+					       bool is_system,
+					       std::string &outpath);
+static bool load_precompiled_header_file(const std::string &path,
+					 std::deque<TokenBase *> &tokens);
+static bool push_precompiled_header_tokens(Program &pgm,
+					   const std::string &display_name,
+					   std::deque<TokenBase *> &pch_tokens);
 
 static DataDef *get_complex_compat_type(DataDef *base_type)
 {
-    static std::map<DataDef *, DataDefCOMPLEX *> cache;
-    if ( !base_type )
-	base_type = &ddDOUBLE;
-    std::map<DataDef *, DataDefCOMPLEX *>::iterator it = cache.find(base_type);
-    if ( it != cache.end() )
-	return it->second;
-    DataDefCOMPLEX *complex_type = new DataDefCOMPLEX(*base_type);
-    cache[base_type] = complex_type;
-    return complex_type;
-}
-
-static bool builtin_alias_needs_retokenize(const std::string &word,
-					   const std::string &val)
-{
-    (void)val;
-    return word == "__builtin_va_list";
+    return Program::complex_type_of(base_type);
 }
 
 static bool is_prefixed_literal_token(const std::string &ident,
@@ -191,7 +205,7 @@ static std::string narrow_string_as_wide(const std::string &narrow)
     return out;
 }
 
-static TokenBase *read_wide_literal(Source &source)
+TokenBase *Program::read_wide_literal()
 {
     char quote = source.get();
     int row = source.line();
@@ -219,7 +233,7 @@ static TokenBase *read_wide_literal(Source &source)
 	    throw "Unterminated wide string";
 	}
 	source.get();
-	return new TokenStr(bytes, true);
+	return make_str(bytes, true);
     }
 
     uint32_t cp = 0;
@@ -241,14 +255,15 @@ static TokenBase *read_wide_literal(Source &source)
 	throw "Unterminated wide character literal";
     }
     source.get();
-    TokenInt *ti = new TokenInt((int64_t)cp);
+    TokenInt *ti = (TokenInt *)make_int((int64_t)cp);
     ti->setDataType(&ddINT32);
     return ti;
 }
 
-static int64_t read_binary_literal(Source &source)
+static unsigned __int128 read_binary_literal(Source &source, bool &ovf)
 {
-    int64_t bv = 0;
+    unsigned __int128 bv = 0;
+    ovf = false;
     source.get(); // eat 'b' / 'B'
     while ( source.good() )
     {
@@ -259,6 +274,8 @@ static int64_t read_binary_literal(Source &source)
 	}
 	if ( source.peek() != '0' && source.peek() != '1' )
 	    break;
+	if ( (bv >> 127) != 0 )
+	    ovf = true;		// shifted past 128 bits
 	bv <<= 1;
 	bv += source.get() - '0';
     }
@@ -295,6 +312,35 @@ static bool is_identifier_spelling(const std::string &s)
 	if ( s[i] != '_' && !isalnum((unsigned char)s[i]) )
 	    return false;
     return true;
+}
+
+static bool next_source_word_is(Source &source, const char *match)
+{
+    std::string consumed;
+    while ( source.good() )
+    {
+	int c = source.peek();
+	if ( c == ' ' || c == '\t' || c == '\n' || c == '\r'
+	  || c == '\f' || c == '\v' )
+	    consumed += (char)source.get();
+	else
+	    break;
+    }
+    std::string word;
+    while ( source.good() )
+    {
+	int c = source.peek();
+	if ( isalnum((unsigned char)c) || c == '_' )
+	{
+	    word += (char)source.get();
+	    consumed += word.back();
+	}
+	else
+	    break;
+    }
+    if ( !consumed.empty() )
+	source.pushback_reread(consumed);
+    return word == match;
 }
 
 static bool identifier_matches_gnu_attribute_name(const std::string &id,
@@ -395,6 +441,9 @@ static bool expansion_is_compound_type_specifiers(const std::string &text, int &
 static const char *auto_include_embedded_header_for_identifier(const std::string &word)
 {
     static const std::map<std::string, std::string> identifier_headers = {
+	{"string", "string"},
+	{"stringstream", "sstream"},
+
 	{"size_t", "stddef.h"},
 	{"ptrdiff_t", "stddef.h"},
 	{"wchar_t", "stddef.h"},
@@ -460,6 +509,57 @@ static const char *auto_include_embedded_header_for_identifier(const std::string
     return it->second.c_str();
 }
 
+static std::vector<std::string> ordered_auto_include_headers(const std::set<std::string> &headers)
+{
+    static const char *preferred_order[] = {
+	"stddef.h",
+	"stdint.h",
+	"float.h",
+	"stdlib.h",
+	"string.h",
+	"stdio.h",
+	"string",
+	"sstream",
+	"iostream",
+	"vector",
+	"map",
+	"set",
+	NULL
+    };
+
+    std::vector<std::string> ordered;
+    std::set<std::string> emitted;
+    for ( int i = 0; preferred_order[i]; ++i )
+    {
+	std::string h(preferred_order[i]);
+	if ( headers.count(h) )
+	{
+	    ordered.push_back(h);
+	    emitted.insert(h);
+	}
+    }
+    for ( std::set<std::string>::const_iterator it = headers.begin();
+	  it != headers.end(); ++it )
+	if ( !emitted.count(*it) )
+	    ordered.push_back(*it);
+    return ordered;
+}
+
+static size_t auto_include_insertion_index(const TokenStream &tokens,
+					   size_t limit,
+					   const char *source_name)
+{
+    if ( !source_name || !*source_name )
+	return 0;
+    for ( size_t i = 0; i < limit; ++i )
+    {
+	TokenBase *tb = tokens[i];
+	if ( tb && tb->file && strcmp(tb->file, source_name) == 0 )
+	    return i;
+    }
+    return limit;
+}
+
 void Program::mark_embedded_include_flag(const std::string &incfile)
 {
     if ( incfile == "iostream" )
@@ -471,16 +571,24 @@ void Program::mark_embedded_include_flag(const std::string &incfile)
 	_include_stdio = true;
     if ( incfile == "string" )
 	_include_string = true;
+    if ( incfile == "ns_madc" )
+	_include_ns_madc = true;
 }
 
 bool Program::auto_include_standard_identifier(const std::string &word)
 {
+    if ( skip_includes )
+	return false;
+    if ( !auto_includes_enabled() )
+	return false;
+    if ( suppress_auto_include_scan )
+	return false;
+
     // `typedef unsigned long size_t;` and similar declaration heads are
     // defining the identifier, not using the standard header surface.
     // Auto-including here injects the embedded header in the middle of
     // the declarator and leaves a duplicate alias token behind.
-    for ( std::deque<TokenBase *>::reverse_iterator it = tokens.rbegin();
-	  it != tokens.rend(); ++it )
+    for ( auto it = tokens.rbegin(); it != tokens.rend(); ++it )
     {
 	TokenBase *t = *it;
 	TokenID tid = t->id();
@@ -505,33 +613,175 @@ bool Program::auto_include_standard_identifier(const std::string &word)
     if ( !header )
 	return false;
 
-    std::string include_key = std::string("<") + header + ">";
-    if ( !should_tokenize_include(include_key) )
-	return false;
+    pending_auto_include_headers.insert(header);
+    pending_auto_include_identifiers.insert(word);
+    return false;
+}
 
-    const std::string *embedded = find_embedded_header(header);
-    if ( !embedded )
-	return false;
-    if ( !is_embedded_header_allowed(header) )
-	Throw << "embedded header '" << header
-	      << "' is not allowed by registration policy" << flush;
-
-    source.pushback(word);
+std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string &value,
+							       const TokenBase *origin)
+{
+    std::vector<TokenBase *> replacement;
+    if ( value.empty() )
+	return replacement;
 
     Source saved = std::move(source);
+    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
+    suppress_auto_include_scan = true;
     source = Source();
-    source.fname(header);
-    source.str(*embedded);
-    TokenBase *itb;
-    const char *interned = intern_file(header);
-    while ( (itb = getRealToken()) )
+    source.fname(origin && origin->file ? origin->file : "<auto-include>");
+    source.str(value);
+
+    try
     {
-	itb->file = interned;
-	push_token_with_string_concat(itb);
+	TokenBase *rt;
+	while ( (rt = getRealToken()) )
+	{
+	    if ( origin )
+	    {
+		rt->file = origin->file;
+		rt->line = origin->line;
+		rt->column = origin->column;
+	    }
+	    replacement.push_back(rt);
+	}
     }
+    catch(...)
+    {
+	source = std::move(saved);
+	suppress_auto_include_scan = saved_suppress_auto_include_scan;
+	throw;
+    }
+
     source = std::move(saved);
-    mark_embedded_include_flag(header);
-    return true;
+    suppress_auto_include_scan = saved_suppress_auto_include_scan;
+    return replacement;
+}
+
+void Program::expand_pending_auto_include_macros(size_t original_start)
+{
+    if ( pending_auto_include_identifiers.empty() )
+	return;
+
+    std::vector<TokenBase *> rewritten;
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	TokenBase *tb = tokens[i];
+	if ( i >= original_start
+	  && tb
+	  && tb->type() == TokenType::ttIdentifier )
+	{
+	    TokenIdent *ident = (TokenIdent *)tb;
+	    if ( pending_auto_include_identifiers.count(ident->spelling()) )
+	    {
+		madc::dis::intern_keyed_map<std::string>::iterator di =
+		    define_map.find(ident->spelling());
+		if ( di != define_map.end() )
+		{
+		    std::vector<TokenBase *> repl =
+			tokenize_auto_include_define(*di, tb);
+		    rewritten.insert(rewritten.end(), repl.begin(), repl.end());
+		    continue;
+		}
+	    }
+	}
+	rewritten.push_back(tb);
+    }
+
+    tokens.assign_ids_from(rewritten);
+    pending_auto_include_identifiers.clear();
+}
+
+void Program::inject_pending_auto_includes()
+{
+    if ( skip_includes )
+	return;
+    if ( !auto_includes_enabled() )
+    {
+	pending_auto_include_headers.clear();
+	pending_auto_include_identifiers.clear();
+	return;
+    }
+    if ( pending_auto_include_headers.empty() )
+	return;
+
+    size_t include_start = tokens.size();
+    size_t insert_at = auto_include_insertion_index(tokens, include_start,
+						    source.fname());
+
+    while ( !pending_auto_include_headers.empty() )
+    {
+	std::set<std::string> batch;
+	batch.swap(pending_auto_include_headers);
+	std::vector<std::string> ordered = ordered_auto_include_headers(batch);
+	for ( std::vector<std::string>::const_iterator hi = ordered.begin();
+	      hi != ordered.end(); ++hi )
+	{
+	    const std::string &header = *hi;
+	    std::string include_key = std::string("<") + header + ">";
+	    if ( !should_tokenize_include(include_key) )
+		continue;
+
+	    std::string pch_path;
+	    if ( find_filesystem_precompiled_header(*this, header, true, pch_path) )
+	    {
+		std::deque<TokenBase *> pch_tokens;
+		if ( load_precompiled_header_file(pch_path, pch_tokens) )
+		{
+		    push_precompiled_header_tokens(*this, pch_path, pch_tokens);
+		    continue;
+		}
+	    }
+	    const PrecompiledHeader *pch = find_precompiled_header(header);
+	    if ( pch )
+	    {
+		std::deque<TokenBase *> pch_tokens;
+		if ( madc_pch::read_madh(pch->data, pch->size, pch_tokens) )
+		{
+		    push_precompiled_header_tokens(*this, header, pch_tokens);
+		    continue;
+		}
+	    }
+
+	    const std::string *embedded = find_embedded_header(header);
+	    if ( !embedded )
+		continue;
+	    if ( !is_embedded_header_allowed(header) )
+		Throw << "embedded header '" << header
+		      << "' is not allowed by registration policy" << flush;
+
+	    pack_record_edge(header);	// B4a: auto-include edge, pre-swap
+	    Source saved = std::move(source);
+	    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
+	    suppress_auto_include_scan = true;
+	    source = Source();
+	    source.fname(header.c_str());
+	    { ReadTimer _rt(_read_seconds); source.str(*embedded); }
+	    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
+	    TokenBase *itb;
+	    const char *interned = intern_file(header);
+	    pack_note_unit(interned);
+	    while ( (itb = getRealToken()) )
+	    {
+		itb->file = interned;
+		push_token_with_literal_concat(itb);
+	    }
+	    source = std::move(saved);
+	    suppress_auto_include_scan = saved_suppress_auto_include_scan;
+	    mark_embedded_include_flag(header);
+	}
+    }
+
+    if ( tokens.size() > include_start )
+    {
+	// Move the just-appended auto-include token range [include_start, end)
+	// to insert_at (id-level; runs at cursor==0, pushback empty).
+	size_t tail_len = tokens.size() - include_start;
+	tokens.move_tail_to(include_start, insert_at);
+	expand_pending_auto_include_macros(insert_at + tail_len);
+    }
+    else
+	expand_pending_auto_include_macros(insert_at);
 }
 
 // Walk back through recently emitted tokens to decide whether the
@@ -542,7 +792,7 @@ bool Program::auto_include_standard_identifier(const std::string &word)
 // declarator and the parse fails. Skips pointer decorators; stops at
 // the first non-`*` token and classifies it as type / qualifier /
 // typedef-identifier (→ decl head) or anything else (→ not decl head).
-static bool looks_like_decl_head(const std::deque<TokenBase *> &tokens)
+static bool looks_like_decl_head(const TokenStream &tokens)
 {
     for ( auto it = tokens.rbegin(); it != tokens.rend(); ++it )
     {
@@ -688,13 +938,11 @@ TokenEXTERN	tkEXTERN;
 TokenRESTRICT	tkRESTRICT;
 TokenVOLATILE	tkVOLATILE;
 TokenUSING	tkUSING;
+TokenFRIEND	tkFRIEND;
 TokenNAMESPACE	tkNAMESPACE;
 TokenPREFER	tkPREFER;
 TokenDEFER	tkDEFER;
-TokenVECTOR	tkVECTOR;
-TokenMAP	tkMAP;
-TokenSET	tkSET;
-TokenLIST	tkLIST;
+TokenTEMPLATE	tkTEMPLATE;
 TokenNEW	tkNEW;
 TokenDELETE	tkDELETE;
 
@@ -716,17 +964,56 @@ TokenUINT32	tkUINT32;
 TokenUINT64	tkUINT64;
 TokenFLOAT	tkFLOAT;
 TokenDOUBLE	tkDOUBLE;
-TokenSTRING	tkSTRING;
-TokenSSTREAM	tkSSTREAM;
 TokenARRAY	tkARRAY;
-TokenIFSTREAM	tkIFSTREAM;
-TokenOFSTREAM	tkOFSTREAM;
-TokenFSTREAM	tkFSTREAM;
 TokenLPSTR	tkLPSTR;
 TokenAUTO	tkAUTO;
 
 
-void Program::push_token_with_string_concat(TokenBase *tb)
+// Fill the immutable (ROM) TokenRec from the now-formed pop-1 shell, so a fresh
+// mutable (RAM) shell can be rebuilt from the rec alone (no-clone split, step 1).
+// Provenance (file/line/column) and the ident spelling_id are already stamped by
+// the time a token reaches the stream (getRealToken / getToken / the tokenize
+// loop), so this just snapshots them into the POD record.
+void Program::finalize_pop1_rec(TokenBase *tb)
+{
+    TokenRec &r = tb->rec;
+    r.kind = (uint16_t)tb->id();
+    if ( tb->is_real() )
+    {
+	double d = tb->dval();
+	memcpy(&r.value, &d, sizeof(d));	// store the double's bits
+    }
+    else
+	r.value = tb->get();			// _token / char code / int value
+    // String payload (interning Step 4): identifiers/datatypes are interned at
+    // creation (make_ident/make_datatype/the TokenIdent ctors). Only the CONTENT
+    // subclasses retain a `str`, and only they need a fallback intern here (they
+    // may be mutated after construction — e.g. wide-string conversion), so the POD
+    // spelling_id reflects the final bytes (NUL-preserving via the std::string overload).
+    if ( r.spelling_id == 0 )
+    {
+	TokenType tt = tb->type();
+	if ( tt == TokenType::ttString )
+	    r.spelling_id = strpool.intern(((TokenStr *)tb)->str);
+	else if ( tt == TokenType::ttComment )
+	    r.spelling_id = strpool.intern(((TokenREM *)tb)->str);
+    }
+    r.line = (int32_t)tb->line;
+    r.column = (int32_t)tb->column;
+    if ( tb->file )
+    {
+	if ( tb->file != _finalize_last_file )		// almost always the same file as the prior token
+	{
+	    _finalize_last_file = tb->file;
+	    _finalize_last_file_id = strpool.intern(tb->file);
+	}
+	r.file_id = _finalize_last_file_id;
+    }
+    else
+	r.file_id = 0;
+}
+
+void Program::push_token_with_literal_concat(TokenBase *tb)
 {
     if ( tb->type() == TokenType::ttString
       && !tokens.empty()
@@ -748,37 +1035,132 @@ void Program::push_token_with_string_concat(TokenBase *tb)
 	}
 	else
 	    prev->str += next->str;
+	// the merged literal lives in `prev` (already in the stream); refresh its
+	// rec spelling to the concatenated bytes so its ROM stays self-describing.
+	prev->rec.spelling_id = strpool.intern(prev->str);
 	delete tb;
 	return;
     }
+    ++_tok_produced;	// --show-stats: a real stream token emitted by the lexer
+    finalize_pop1_rec(tb);
     tokens.push_back(tb);
+}
+
+// Predefined compiler macros captured at build time (scripts/gen_predefined_macros.sh
+// -> src/predefined_macros.cpp). The struct shapes match the generated file.
+struct MadcPredefObj  { const char *name; const char *value; };
+struct MadcPredefFunc { const char *name; const char *params; const char *body; };
+// Accessor functions (PLT-resolved) rather than direct extern data refs — keeps
+// the PIE binary free of text relocations (see gen_predefined_macros.sh).
+extern const MadcPredefObj  *madc_predefined_objects();
+extern const MadcPredefFunc *madc_predefined_functions();
+
+// Captured-predefine names that exist only in g++'s C++ modes (the capture
+// runs g++; `gcc -std=cNN -dM` defines none of these). Skipped when the
+// selected mode does not present as C++ — diff of `g++ -x c++ -dM` vs
+// `gcc -std=c17 -dM` plus the __cpp_* feature-test family.
+static bool predefine_is_cpp_only(const char *name)
+{
+    if ( strncmp(name, "__cpp_", 6) == 0 )
+	return true;
+    static const char *const cpp_only[] = {
+	"__cplusplus", "__GNUG__", "_GNU_SOURCE", "__DEPRECATED",
+	"__EXCEPTIONS", "__GLIBCXX_BITSIZE_INT_N_0", "__GLIBCXX_TYPE_INT_N_0",
+	"__GXX_EXPERIMENTAL_CXX0X__", "__GXX_RTTI", "__GXX_WEAK__",
+	"__STDCPP_DEFAULT_NEW_ALIGNMENT__", "__STDCPP_THREADS__", NULL
+    };
+    for ( int i = 0; cpp_only[i]; ++i )
+	if ( strcmp(name, cpp_only[i]) == 0 )
+	    return true;
+    return false;
 }
 
 void Program::_tokenizer_init()
 {
+    // Bind the interned-spelling maps to this Program's intern_table BEFORE any
+    // insert (add_keywords / add_datatypes / the predefined define_map below) so
+    // their string-keyed inserts intern correctly; hot lookups in _getToken pass a
+    // pre-computed spelling_id (uint32) instead of comparing strings.
+    // Bind the active pool for TokenIdent::spelling() (interning Step 4). Compile is
+    // sequential per-Program, so the currently-initializing Program owns the accessor.
+    activate_token_pools();
+    keyword_map.set_pool(&strpool);
+    cpp_operator_map.set_pool(&strpool);
+    define_map.set_pool(&strpool);
+    macro_map.set_pool(&strpool);
+    // datatype_map uses a DEDICATED dense pool (not strpool): type names are a
+    // small domain, so a private pool keeps its intern_keyed_map _slot tight.
+    datatype_map.set_pool(&type_name_pool);
+    // Template-family maps share a dedicated dense template-name pool (same
+    // _slot-sizing discipline as datatype_map; rung-1 substrate consolidation).
+    partial_spec_map.set_pool(&template_name_pool);
+    template_map.set_pool(&template_name_pool);
+    template_alias_map.set_pool(&template_name_pool);
+    var_template_map.set_pool(&template_name_pool);
+    fn_template_decl_map.set_pool(&template_name_pool);
+    fn_template_instantiated_vars.set_pool(&template_name_pool);
+    fn_template_map.set_pool(&template_name_pool);
+    namespace_datatype_map.set_pool(&namespace_name_pool);
+    // Pre-size the value pools so they don't relocate as entries are added: a
+    // single allocation instead of incremental growth, and — for
+    // namespace_datatype_map, whose values are inner maps held by pointer
+    // across inserts — it keeps those pointers stable (the std::map-node
+    // analogue). Sizes are headroom for typical programs; growth past them is
+    // still correct (find()-after-insert re-fetches where it matters).
+    namespace_datatype_map.reserve(32);
+    template_map.reserve(64);
+    template_alias_map.reserve(32);
+    partial_spec_map.reserve(32);
+    var_template_map.reserve(32);
+    fn_template_map.reserve(64);
+    fn_template_decl_map.reserve(32);
+    fn_template_instantiated_vars.reserve(64);
 
     tkProgram = NULL;
     tkFunction = NULL;
     try_depth = 0;
     _cur_token = NULL;
     _prv_token = NULL;
+    deferred_function_body_sink = NULL;
+    parsing_cpp_struct_class = false;
     _include_iostream = false;
     _include_stdio = false;
     _include_string = false;
+    _include_ns_madc = false;
     included_files.clear();
+    include_guard_by_file.clear();
+    pending_auto_include_headers.clear();
+    pending_auto_include_identifiers.clear();
+    suppress_auto_include_scan = false;
+    pending_no_strict_aliasing = false;
     add_keywords();
     add_datatypes();
-    struct_map["teststruct"] = &ddTESTSTRUCT;
 
     // Ignored C storage hints. Type qualifiers are real tokens so
     // macro token-pasting can still see their spelling.
     define_map["inline"] = "";
     define_map["__inline__"] = "";
     define_map["__inline"] = "";
+    // constexpr (slice 5) / consteval / constinit (slice 6) are real reserved
+    // tokens, no longer erased: constexpr activates the TokenIF `if constexpr`
+    // discard machinery, and all three are consumed as ignored decl-specifiers
+    // (TokenCppKeyword::parse / the member-specifier loop /
+    // is_ignored_cpp_specifier_token, which already recognize all three
+    // spellings).
+    // noexcept is NOT a plain empty define nor a function-like macro: the
+    // macro path splits its argument on top-level commas, and the C
+    // preprocessor does not treat <...> as grouping, so a template-id
+    // condition like noexcept(is_nothrow_constructible<T, Args...>::value)
+    // would split into two macro arguments ("Too many parameters"). It is
+    // stripped by balanced-paren consumption in getToken() instead.
     define_map["__extension__"] = "";
-    // _Alignas(N) is a C11 keyword — consume like __attribute__
-    // The lexer handles it by stripping the specifier and its parens.
+    // _Alignas(N) (C11) / alignas(N) (C++11) are alignment specifiers — consume
+    // like __attribute__. The lexer strips the specifier and its parens (or, when
+    // the argument names a layout attribute, preserves it for the parser). Both
+    // spellings map to the same path; libstdc++ uses the bare `alignas` keyword
+    // (e.g. __aligned_membuf's `alignas(__alignof__(_Tp)) unsigned char ...`).
     define_map["_Alignas"] = "__attribute__";
+    define_map["alignas"] = "__attribute__";
     define_map["__restrict"] = "";
     define_map["__restrict__"] = "";
     define_map["__signed__"] = "signed";
@@ -805,6 +1187,23 @@ void Program::_tokenizer_init()
     define_map["__BIGGEST_ALIGNMENT__"] = "16";
 
     // GCC predefined macros for C compatibility
+    define_map["__DATE__"] = "\"" __DATE__ "\"";
+    define_map["__TIME__"] = "\"" __TIME__ "\"";
+    // Built-in release-version string literal. MADC_VERSION_STR is supplied by
+    // the build (-DMADC_VERSION_STR='"x.y.z"' from ../VERSION); the value stored
+    // here keeps its quotes so the macro substitutes as a const char* literal.
+#ifndef MADC_VERSION_STR
+#define MADC_VERSION_STR "0.0.0"
+#endif
+    define_map["MADC_VERSION"] = "\"" MADC_VERSION_STR "\"";
+    // madc's own compiler-identity macros — the peer-compiler equivalent of Clang's
+    // __clang__. madc still impersonates the host gcc (it seeds the toolchain's whole
+    // predefined set below, incl. __GNUC__) so UNMODIFIED libstdc++/glibc parse; this
+    // ALSO declares madc's own identity so madc-aware code can detect it without
+    // pretending to BE gcc. Defined in EVERY mode (like __clang__), unlike __cplusplus.
+    define_map["__madc__"] = "1";
+    define_map["__MADC__"] = "1";
+    define_map["__MADC_VERSION__"] = "\"" MADC_VERSION_STR "\"";
     define_map["__CHAR_BIT__"] = "8";
     define_map["__SIZEOF_SHORT__"] = "2";
     define_map["__SIZEOF_INT__"] = "4";
@@ -855,25 +1254,32 @@ void Program::_tokenizer_init()
     define_map["__UINT_FAST32_TYPE__"] = "unsigned long";
     define_map["__INT_FAST64_TYPE__"] = "long";
     define_map["__UINT_FAST64_TYPE__"] = "unsigned long";
-    define_map["__builtin_va_list"] = "long";
+    // __builtin_va_list is NOT a macro: it is a real compiler type
+    // (Program::builtin_va_list_type — the SysV __madc_va_list_tag[1]
+    // singleton) resolved via resolve_builtin_type_spelling, so
+    // `typedef __builtin_va_list va_list;` gets the true array-of-struct
+    // semantics a textual expansion can never express.
     define_map["__builtin_va_arg"] = "va_arg";
-    // __builtin_va_start/end — need to be function-like macros
-    {
-	MacroDef m;
-	m.params = {"__ap", "__last"};
-	m.body = "__ap = __va_args";
-	macro_map["__builtin_va_start"] = m;
-    }
+    define_map["__null"] = "0";
+    // __builtin_va_start passes through to the CIR as a real c2mir intrinsic
+    // call (cir_builder emits N_CALL(__builtin_va_start, ap); c2mir lowers it to
+    // MIR_VA_START on the user's own va_list). It is intentionally NOT a macro:
+    // the earlier `__ap = __va_args` master-copy expansion mis-set reg_save_area
+    // in large frames. va_end stays a no-op (the stdarg.h va_end macro handles
+    // it as `((void)(ap))`).
+    // va_list is the real __madc_va_list_tag[1] array type, so va_end is a
+    // no-op cast (an array lvalue cannot be assigned) and va_copy copies the
+    // one element — the same bodies the embedded stdarg.h macros use.
     {
 	MacroDef m;
 	m.params = {"__ap"};
-	m.body = "__ap = 0";
+	m.body = "((void)(__ap))";
 	macro_map["__builtin_va_end"] = m;
     }
     {
 	MacroDef m;
 	m.params = {"__dest", "__src"};
-	m.body = "__dest = __src";
+	m.body = "((__dest)[0] = (__src)[0])";
 	macro_map["__builtin_va_copy"] = m;
     }
     // Report the GCC version that compiled madc itself.
@@ -926,6 +1332,10 @@ void Program::_tokenizer_init()
     define_map["__builtin_strpbrk"] = "strpbrk";
     define_map["__builtin_strspn"] = "strspn";
     define_map["__builtin_snprintf"] = "snprintf";
+    define_map["__builtin_vsprintf"] = "vsprintf";
+    define_map["__builtin_vsnprintf"] = "vsnprintf";
+    define_map["__builtin_vprintf"] = "vprintf";
+    define_map["__builtin_vfprintf"] = "vfprintf";
     define_map["__builtin_fprintf"] = "fprintf";
     define_map["__builtin_fprintf_unlocked"] = "fprintf_unlocked";
     define_map["__builtin_fputc"] = "fputc";
@@ -988,12 +1398,10 @@ void Program::_tokenizer_init()
     define_map["__bswap_16"] = "__madc_bswap16";
     define_map["__bswap_32"] = "__madc_bswap32";
 
-    // __builtin_*_overflow: overflow-checking arithmetic (GCC extension).
-    // Mapped to helper functions in va_helpers.cpp that use __int128.
-    define_map["__builtin_add_overflow"] = "__madc_add_overflow";
-    define_map["__builtin_sub_overflow"] = "__madc_sub_overflow";
-    define_map["__builtin_mul_overflow"] = "__madc_mul_overflow";
-
+    // __builtin_add/sub/mul_overflow pass through to CIR as real c2mir
+    // builtins (handled natively at every width incl. __int128); the old
+    // __madc_* long-helper remap truncated wider-than-64-bit results.
+    // The *_p predicate variants stay mapped (no c2mir builtin for them).
     define_map["__builtin_add_overflow_p"] = "__madc_add_overflow_p";
     define_map["__builtin_sub_overflow_p"] = "__madc_sub_overflow_p";
     define_map["__builtin_mul_overflow_p"] = "__madc_mul_overflow_p";
@@ -1014,6 +1422,61 @@ void Program::_tokenizer_init()
 	m.body = "((void)(__addr))";
 	macro_map["__builtin_prefetch"] = m;
     }
+    // FP classification builtins (type-generic compiler magic; real <math.h>
+    // C++ regions call them directly). Lowered Tier-1 onto the REAL glibc
+    // classification exports (__fpclassify*/__isnan*/__isinf*/__signbit*/
+    // __finite*), dispatched by sizeof — float subnormals would misclassify
+    // if promoted through a double-only helper. Statement-expr keeps the
+    // operand single-evaluation, matching the builtin's contract.
+    {
+	MacroDef m;
+	m.params = {"__a", "__b", "__c", "__d", "__e", "__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "int __madc_fc = (sizeof(__madc_fcx) == 4 ? __fpclassifyf(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __fpclassify(__madc_fcx) "
+		 ": __fpclassifyl(__madc_fcx)); "
+		 "__madc_fc == FP_NAN ? (__a) : __madc_fc == FP_INFINITE ? (__b) "
+		 ": __madc_fc == FP_NORMAL ? (__c) : __madc_fc == FP_SUBNORMAL ? (__d) : (__e); })";
+	macro_map["__builtin_fpclassify"] = m;
+    }
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "sizeof(__madc_fcx) == 4 ? __isnanf(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __isnan(__madc_fcx) : __isnanl(__madc_fcx); })";
+	macro_map["__builtin_isnan"] = m;
+    }
+    {
+	// __isinf* return the SIGN (+1/-1) for infinities, 0 otherwise —
+	// exactly __builtin_isinf_sign's contract.
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "sizeof(__madc_fcx) == 4 ? __isinff(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __isinf(__madc_fcx) : __isinfl(__madc_fcx); })";
+	macro_map["__builtin_isinf_sign"] = m;
+    }
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "sizeof(__madc_fcx) == 4 ? __finitef(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __finite(__madc_fcx) : __finitel(__madc_fcx); })";
+	macro_map["__builtin_isfinite"] = m;
+    }
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "int __madc_fc = (sizeof(__madc_fcx) == 4 ? __fpclassifyf(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __fpclassify(__madc_fcx) "
+		 ": __fpclassifyl(__madc_fcx)); __madc_fc == FP_NORMAL; })";
+	macro_map["__builtin_isnormal"] = m;
+    }
+    // (The IEEE quiet-comparison builtin family — isgreater/isless/
+    // isunordered/… — is defined further below; quiet `<`/`>` are already
+    // their correct lowering.)
     // __builtin_constant_p(expr) — always return 0 (not a constant)
     {
 	MacroDef m;
@@ -1168,6 +1631,24 @@ void Program::_tokenizer_init()
     define_map["__builtin_parityl"] = "__madc_parityl";
     define_map["__builtin_parityll"] = "__madc_parityll";
 
+    // Compiler builtins with no libc equivalent — map to __madc_builtin_* wrappers
+    define_map["__builtin_object_size"] = "__madc_builtin_object_size";
+    define_map["__builtin___strcpy_chk"] = "__madc_builtin_strcpy_chk";
+    define_map["__builtin___stpcpy_chk"] = "__madc_builtin_stpcpy_chk";
+    define_map["__builtin___stpncpy_chk"] = "__madc_builtin_stpncpy_chk";
+    define_map["__builtin___strcat_chk"] = "__madc_builtin_strcat_chk";
+    define_map["__builtin___strncpy_chk"] = "__madc_builtin_strncpy_chk";
+    define_map["__builtin___strncat_chk"] = "__madc_builtin_strncat_chk";
+    define_map["__builtin___memcpy_chk"] = "__madc_builtin_memcpy_chk";
+    define_map["__builtin___memmove_chk"] = "__madc_builtin_memmove_chk";
+    define_map["__builtin___mempcpy_chk"] = "__madc_builtin_mempcpy_chk";
+    define_map["__builtin___memset_chk"] = "__madc_builtin_memset_chk";
+    define_map["__builtin_frame_address"] = "__madc_builtin_frame_address";
+    define_map["__builtin_setjmp"] = "__madc_builtin_setjmp";
+    define_map["__builtin_longjmp"] = "__madc_builtin_longjmp_val";
+    define_map["__builtin_uabs"] = "__madc_builtin_uabs";
+    define_map["__builtin_umaxabs"] = "__madc_builtin_umaxabs";
+
     // __builtin_offsetof(type, member) — compute struct member offset.
     // Implemented as a function-like macro using the null-pointer trick.
     {
@@ -1184,6 +1665,91 @@ void Program::_tokenizer_init()
 	m.body = "0";
 	macro_map["__builtin_classify_type"] = m;
     }
+    {
+	MacroDef m;
+	m.body = "0";
+	macro_map["__builtin_is_constant_evaluated"] = m;
+    }
+
+    // Predefined compiler macros captured at build time (gen_predefined_macros.sh).
+    // Seeded AFTER the hand-set builtins (so the real toolchain values win) and
+    // BEFORE -D (so -D can override, matching gcc). Real system headers branch on
+    // these. C++-only macros follow presents_as_cpp(): the madc dialect and
+    // every explicit C++ std impersonate g++ (so real libstdc++ headers parse);
+    // explicit C modes stay plain gcc — the capture ran g++, but `gcc -std=cNN
+    // -dM` defines NONE of these, and real glibc headers branch on them
+    // (_GNU_SOURCE selects the transparent-union __SOCKADDR_ARG bind/accept
+    // signatures; C code's `#ifdef __cplusplus` regions must stay off).
+    for ( const MadcPredefObj *o = madc_predefined_objects(); o->name; ++o )
+    {
+	if ( !presents_as_cpp() && predefine_is_cpp_only(o->name) )
+	    continue;
+	// The capture ran a STRICT-std g++; strictness follows the SELECTED
+	// mode (gcc parity: plain gcc/g++ default to the gnu dialects and
+	// define no __STRICT_ANSI__ — glibc's features.h would otherwise
+	// suppress _DEFAULT_SOURCE and hide timercmp-class declarations).
+	if ( strcmp(o->name, "__STRICT_ANSI__") == 0 && !strict_ansi_mode() )
+	    continue;
+	// __cplusplus tracks the SELECTED --std=, not the value captured at
+	// build time (the capture ran the host g++ at one fixed std; a pinned
+	// 201703L made every `#if __cplusplus > 201703L` header region —
+	// all of <compare>, the C++20 surface of <concepts>/<ranges> —
+	// silently preprocess away under --std=c++20).
+	if ( strcmp(o->name, "__cplusplus") == 0 )
+	{
+	    define_map[o->name] = cplusplus_value_for_std();
+	    continue;
+	}
+	define_map[o->name] = o->value;
+    }
+    // C modes define __STDC_VERSION__ per the selected standard (gcc parity;
+    // the g++-run capture cannot supply it, and glibc gates its C99/C11
+    // surfaces — __USE_ISOC99/__USE_ISOC11 — on it). c89/c90 predate the
+    // macro and leave it undefined, like gcc -std=c89.
+    if ( is_c_mode() )
+    {
+	if ( const char *sv = stdc_version_for_std() )
+	    define_map["__STDC_VERSION__"] = sv;
+    }
+    // madc's own version identity, #if-testable: MADC_VERSION expands to the
+    // build's version as a string literal. sys.version (<ns_madc>) is the
+    // runtime spelling of the same value.
+    define_map["MADC_VERSION"] = std::string("\"") + MADC_VERSION_STR + "\"";
+    // Compiler feature-test macros madc provides itself, gated by the std
+    // floor (the build-time capture can't know them — they describe THIS
+    // compiler's features, not the host's). <compare> requires
+    // __cpp_impl_three_way_comparison >= 201907L to expose the comparison
+    // category types, and includes <concepts>, whose body gates on
+    // __cpp_concepts and carries the <type_traits> -> bits/c++config.h
+    // chain every standalone libstdc++ include relies on.
+    if ( is_cpp_mode() && language_std >= STD_CPP20 )
+    {
+	define_map["__cpp_impl_three_way_comparison"] = "201907L";
+	define_map["__cpp_concepts"] = "202002L";
+    }
+    for ( const MadcPredefFunc *f = madc_predefined_functions(); f->name; ++f )
+    {
+	MacroDef m;
+	std::string ps = f->params;
+	size_t start = 0;
+	while ( start <= ps.size() )
+	{
+	    size_t comma = ps.find(',', start);
+	    std::string p = ps.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+	    while ( !p.empty() && p.front() == ' ' ) p.erase(p.begin());
+	    while ( !p.empty() && p.back() == ' ' ) p.pop_back();
+	    if ( !p.empty() ) m.params.push_back(p);
+	    if ( comma == std::string::npos ) break;
+	    start = comma + 1;
+	}
+	m.body = f->body;
+	macro_map[f->name] = m;
+    }
+
+    // Command-line -D defines, applied AFTER the builtins/predefined so a -D
+    // overrides one (matching gcc). Object-like only: -DNAME=VALUE / -DNAME (=> "1").
+    for ( const std::pair<std::string,std::string> &d : cli_defines )
+	define_map[d.first] = d.second;
 }
 
 bool Program::include_already_seen(const std::string &path)
@@ -1198,6 +1764,207 @@ std::string Program::current_source_directory()
     if ( slash_pos == std::string::npos )
 	return "";
     return cur_fname.substr(0, slash_pos + 1);
+}
+
+// Phase 6 (--forest-bind): open the grove container once, on the first system
+// #include. The container source is forest_bind_path (a standalone --freeze
+// container) or the blob appended to this executable (empty -> /proc/self/exe).
+// A missing/mismatched container leaves bind_forest NULL: every include then
+// live-parses. The mapping is never unmapped — the forest reads from it for the
+// process lifetime.
+// --show-stats wall clock (R0 startup instrumentation).
+static double forest_stat_now(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec + tv.tv_usec / 1e6;
+}
+
+CirFrozenForest *Program::ensure_bind_forest()
+{
+    if ( bind_forest_tried )
+	return bind_forest;
+    bind_forest_tried = true;
+    double _t0 = forest_stat_now();
+    const void *image = NULL;
+    size_t image_len = 0;
+    const char *path = forest_bind_path.empty() ? NULL : forest_bind_path.c_str();
+    if ( !cir_forest_map_image(path, image, image_len) )
+    {
+	_forest_map_seconds = forest_stat_now() - _t0;
+	DBG(std::cout << "forest-bind: no container at "
+	    << (path ? path : "/proc/self/exe") << " — live parse" << std::endl);
+	return NULL;
+    }
+    _forest_map_seconds = forest_stat_now() - _t0;
+    CirFrozenForest *f = new CirFrozenForest();
+    double _t1 = forest_stat_now();
+    if ( !f->open_header(image, image_len, /*quiet_missing=*/true) )
+    {
+	_forest_open_seconds = forest_stat_now() - _t1;
+	// open_header() printed real corruption / pin mismatch; a blob-less
+	// binary (the default-on probe of /proc/self/exe) fell through
+	// silently.
+	delete f;
+	return NULL;
+    }
+    // v27 producer-config gate: header CONTENT depends on the language
+    // standard (C vs C++ surface, __STRICT_ANSI__) and the -D set, so a
+    // container parsed under a different config must not bind — fall through
+    // silently to live parse (the packed-binary default relies on this: a C
+    // compile resolves the same real glibc paths a C++ corpus carries).
+    // Gated on the directory header BEFORE the heavy pool/arena binds (R1):
+    // a mismatched compile pays only the footer + directory read.
+    if ( f->language_std() != madc_forest_config_word(this)
+      || f->defines_hash() != madc_forest_defines_hash(this) )
+    {
+	_forest_open_seconds = forest_stat_now() - _t1;
+	DBG(std::cout << "forest-bind: producer config mismatch (std/defines)"
+	    << " — live parse" << std::endl);
+	delete f;
+	return NULL;
+    }
+    if ( !f->complete_open(/*c2m=*/NULL) )
+    {
+	_forest_open_seconds = forest_stat_now() - _t1;
+	delete f;
+	return NULL;
+    }
+    _forest_open_seconds = forest_stat_now() - _t1;
+    bind_forest = f;
+    DBG(std::cout << "forest-bind: opened container (" << f->unit_count()
+	<< " units)" << std::endl);
+    return bind_forest;
+}
+
+// --show-stats (R0): flatten the forest-bind counters (Program-side timers +
+// the forest/reader-owned decode counters) into the plain struct the stats
+// display reads — no CirFrozenForest type leaks to the caller.
+Program::ForestBindStats Program::forest_bind_stats() const
+{
+    ForestBindStats s;
+    s.map_secs     = _forest_map_seconds;
+    s.open_secs    = _forest_open_seconds;
+    s.bind_secs    = _forest_bind_seconds;
+    s.restore_secs = _forest_restore_seconds;
+    s.declidx_secs = _forest_declidx_seconds;
+    s.units_bound  = forest_chain.size();
+    if ( bind_forest )
+    {
+	s.opened         = true;
+	s.units_total    = bind_forest->unit_count();
+	s.unitload_secs  = bind_forest->_stat_unitload_secs;
+	s.unitload_count = bind_forest->_stat_unitload_count;
+	s.mat_secs       = bind_forest->_stat_mat_secs;
+	s.zstd_frames    = bind_forest->stat_zstd_frames();
+	s.zstd_bytes     = bind_forest->stat_zstd_bytes_out();
+	s.zstd_secs      = bind_forest->stat_zstd_secs();
+	s.copy_calls     = bind_forest->stat_copy_calls();
+	s.copy_bytes     = bind_forest->stat_copy_bytes();
+    }
+    return s;
+}
+
+// Map a system include spelling to a frozen grove unit index (-1 = miss). Tries
+// the bare spelling first (compiler-builtin/embedded units name themselves, e.g.
+// "stddef.h"), then the resolved filesystem path (real headers name their full
+// path) — the same resolution the live path would use, so a hit binds the exact
+// grove the pack froze.
+int Program::forest_unit_for_include(const std::string &incfile)
+{
+    CirFrozenForest *f = ensure_bind_forest();
+    if ( !f )
+	return -1;
+    int u = f->find_unit(incfile);
+    if ( u >= 0 )
+	return u;
+    std::string fp = resolve_include_path(incfile, /*is_system=*/true);
+    if ( !fp.empty() && fp != incfile )
+	u = f->find_unit(fp);
+    return u;
+}
+
+// Bind a grove unit and its include closure: post-order DFS over the unit's
+// frozen edges so an includee's PP delta installs before the includer's own
+// (matching the common "includes at top, defines after" header shape). The
+// forest_chain_set done-marker prunes a unit bound by an earlier #include;
+// forest_bind_walking breaks include cycles. After the walk every reachable
+// unit's macros are live and it is recorded in forest_chain. The decl records
+// (symbol tables) restore ONCE per compile at the call site — never re-parse.
+void Program::forest_bind_include(uint32_t unit)
+{
+    if ( forest_chain_set.count(unit) || forest_bind_walking.count(unit) )
+	return;
+    forest_bind_walking.insert(unit);
+    // --show-stats (R0): per-unit SELF cost — edge decode + PP install,
+    // recursion excluded — so the accumulated total sums cleanly.
+    double _t0 = forest_stat_now();
+    std::vector<uint32_t> edges;
+    bool have_edges = bind_forest->unit_edges(unit, edges);
+    double _self = forest_stat_now() - _t0;
+    if ( have_edges )
+	for ( size_t i = 0; i < edges.size(); ++i )
+	    forest_bind_include(edges[i]);
+    double _t1 = forest_stat_now();
+    forest_install_pp(unit);
+    forest_chain.push_back(unit);
+    forest_chain_set.insert(unit);
+    forest_bind_walking.erase(unit);
+    _self += forest_stat_now() - _t1;
+    _forest_bind_seconds += _self;
+    const char *nm = bind_forest->unit_name(unit);
+    _forest_unit_bind_costs.push_back(
+	std::make_pair(std::string(nm ? nm : "?"), _self));
+}
+
+// Apply one unit's frozen PP-export delta to the live macro tables, replaying
+// the exact define_map / macro_map writes the lexer's #define/#undef handlers
+// perform. The event stream is flat u32:
+//   [name_id, tag_flags, body_id, variadic_param_id, nparams, <nparams ids>]...
+// with the low byte of tag_flags the PackMacroEvent tag and bit 8 the variadic
+// flag. Pool ids resolve through the container's own string pool.
+void Program::forest_install_pp(uint32_t unit)
+{
+    std::vector<uint32_t> ev;
+    if ( !bind_forest->unit_pp_events(unit, ev) )
+	return;
+    for ( size_t k = 0; k + 5 <= ev.size(); )
+    {
+	uint32_t name_id = ev[k], tag_flags = ev[k + 1], body_id = ev[k + 2];
+	uint32_t vpar_id = ev[k + 3], nparams = ev[k + 4];
+	const char *nm = bind_forest->pool_str(name_id);
+	uint8_t tag = (uint8_t)(tag_flags & 0xff);
+	if ( nm )
+	{
+	    std::string name(nm);
+	    if ( tag == PackMacroEvent::peUndef )
+	    {
+		define_map.erase(name);
+		macro_map.erase(name);
+	    }
+	    else if ( tag == PackMacroEvent::peDefine )
+	    {
+		const char *b = body_id ? bind_forest->pool_str(body_id) : NULL;
+		define_map[name] = b ? std::string(b) : std::string();
+	    }
+	    else // peDefineFn
+	    {
+		MacroDef m;
+		for ( uint32_t p = 0; p < nparams; ++p )
+		    if ( const char *pn = bind_forest->pool_str(ev[k + 5 + p]) )
+			m.params.push_back(pn);
+		if ( tag_flags & CIR_FOREST_PP_VARIADIC )
+		    m.variadic = true;
+		if ( vpar_id )
+		    if ( const char *vp = bind_forest->pool_str(vpar_id) )
+			m.variadic_param = vp;
+		if ( const char *b = body_id ? bind_forest->pool_str(body_id) : NULL )
+		    m.body = b;
+		macro_map[name] = m;
+	    }
+	}
+	k += 5 + nparams;
+    }
 }
 
 std::string Program::resolve_include_path(const std::string &incfile, bool is_system)
@@ -1223,13 +1990,21 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	    if ( probe.good() )
 		return candidate;
 	}
-	// TODO: these paths should come from ./configure
-	static const char *sys_paths[] = {
+	// System include paths captured at BUILD time from the configured
+	// compiler's own search list (scripts/gen_sys_includes.sh ->
+	// src/sys_include_paths.cpp) — so madc searches the SAME dirs the toolchain
+	// does, including the C++ paths (/usr/include/c++/NN, …) the old hardcoded
+	// C-only list lacked. Falls back to that minimal C list when detection
+	// produced nothing (no compiler at build time).
+	extern const char *madc_sys_include_paths[];
+	static const char *fallback_paths[] = {
 	    "/usr/local/include/",
 	    "/usr/include/",
 	    "/usr/include/x86_64-linux-gnu/",
 	    NULL
 	};
+	const char **sys_paths = (madc_sys_include_paths[0] != NULL)
+				 ? madc_sys_include_paths : fallback_paths;
 	for ( int i = 0; sys_paths[i]; ++i )
 	{
 	    std::string candidate = std::string(sys_paths[i]) + incfile;
@@ -1270,6 +2045,305 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
     return cur_dir.empty() ? incfile : cur_dir + incfile;
 }
 
+// Is this source file one that came from a system/toolchain include directory
+// (glibc / libstdc++ / their bits/), as opposed to the user's own .mad/.c/.h?
+// Data-driven (project Rule #7): a prefix match against the SAME compiler-derived
+// search dirs `#include <...>` uses (madc_sys_include_paths[], generated by
+// scripts/gen_sys_includes.sh) — never a namespace==std or class-name test.
+// Used by the CIR backend to gate emission of library inline-method bodies
+// (reachability DCE): madc emits a body only for entities it defines; a function
+// parsed from a system header is emitted only when reachable from user code.
+// An unknown/empty path classifies as NON-system (treat as user code → emit),
+// which keeps the conservative "emit it" default for synthetic/compiler-created
+// tokens that carry no source file.
+bool Program::is_system_header_path(const char *path) const
+{
+    if ( !path || !*path )
+	return false;
+    extern const char *madc_sys_include_paths[];
+    for ( int i = 0; madc_sys_include_paths[i]; ++i )
+    {
+	const char *prefix = madc_sys_include_paths[i];
+	size_t plen = strlen(prefix);
+	if ( plen && strncmp(path, prefix, plen) == 0 )
+	    return true;
+    }
+    return false;
+}
+
+// #include_next <file>: behave like a system #include, but search the
+// path list starting AFTER the directory the current file was found in.
+// Used by libstdc++ wrapper headers (cstdlib -> stdlib.h, cmath -> math.h …)
+// to reach the "real" header of the same name that sits later in the search
+// order. The embedded/curated layer is consulted first by the caller (so
+// curated libc headers still win while libc stays curated); this resolves the
+// filesystem fallback for the non-curated targets.
+std::string Program::resolve_include_next_path(const std::string &incfile)
+{
+    if ( incfile.empty() || incfile[0] == '/' )
+	return incfile;
+
+    // Ordered system search list — the same dirs <> includes search:
+    // -I paths first, then the compiler-derived system include paths.
+    std::vector<std::string> search;
+    for ( size_t i = 0; i < include_paths.size(); ++i )
+	search.push_back(include_paths[i]);
+    extern const char *madc_sys_include_paths[];
+    static const char *fallback_paths[] = {
+	"/usr/local/include/",
+	"/usr/include/",
+	"/usr/include/x86_64-linux-gnu/",
+	NULL
+    };
+    const char **sys_paths = (madc_sys_include_paths[0] != NULL)
+			     ? madc_sys_include_paths : fallback_paths;
+    for ( int i = 0; sys_paths[i]; ++i )
+	search.push_back(sys_paths[i]);
+
+    // Normalize-with-trailing-slash compare to locate the current file's dir
+    // in the search list; #include_next searches only entries AFTER it.
+    std::string cur = current_source_directory();
+    if ( !cur.empty() && cur.back() != '/' )
+	cur += '/';
+    size_t start = 0;
+    for ( size_t i = 0; i < search.size(); ++i )
+    {
+	std::string d = search[i];
+	if ( !d.empty() && d.back() != '/' )
+	    d += '/';
+	if ( d == cur )
+	{
+	    start = i + 1;
+	    break;
+	}
+    }
+    for ( size_t i = start; i < search.size(); ++i )
+    {
+	std::string &dir = search[i];
+	std::string candidate = dir + (dir.empty() || dir.back() == '/' ? "" : "/") + incfile;
+	std::ifstream probe(candidate.c_str());
+	if ( probe.good() )
+	    return candidate;
+    }
+    return incfile; // not found — will fail at open
+}
+
+// Detect the classic include guard of a header file: the first significant
+// line is `#ifndef NAME` (or `#if !defined(NAME)`) and its matching `#endif`
+// closes the file with nothing significant after it. Returns the guard macro
+// name, or "" when the file is NOT fully guard-wrapped (e.g. glibc's
+// bits/mathcalls.h, which is INTENTIONALLY included multiple times with a
+// different _Mdouble_ each pass).
+static std::string detect_include_guard(const std::string &file_path)
+{
+    std::ifstream in(file_path.c_str());
+    if ( !in )
+	return std::string();
+    std::string guard;
+    int depth = 0;
+    bool seen_open = false;     // saw the opening #ifndef
+    bool closed = false;        // matching #endif reached (depth back to 0)
+    bool in_block_comment = false;
+    std::string line;
+    while ( std::getline(in, line) )
+    {
+	// Fold line continuations so a split directive reads whole.
+	while ( !line.empty() && line.back() == '\\' && in )
+	{
+	    std::string cont;
+	    if ( !std::getline(in, cont) )
+		break;
+	    line.pop_back();
+	    line += cont;
+	}
+	// Strip comments for significance testing.
+	std::string sig;
+	for ( size_t i = 0; i < line.size(); ++i )
+	{
+	    if ( in_block_comment )
+	    {
+		if ( line[i] == '*' && i + 1 < line.size() && line[i+1] == '/' )
+		{ in_block_comment = false; ++i; }
+		continue;
+	    }
+	    if ( line[i] == '/' && i + 1 < line.size() && line[i+1] == '*' )
+	    { in_block_comment = true; ++i; continue; }
+	    if ( line[i] == '/' && i + 1 < line.size() && line[i+1] == '/' )
+		break;
+	    sig += line[i];
+	}
+	size_t p = sig.find_first_not_of(" \t");
+	if ( p == std::string::npos )
+	    continue;
+	if ( closed )
+	    return std::string();   // significant content after the guard's #endif
+	if ( sig[p] != '#' )
+	{
+	    if ( !seen_open )
+		return std::string();   // code before any guard
+	    continue;
+	}
+	++p;
+	while ( p < sig.size() && (sig[p] == ' ' || sig[p] == '\t') ) ++p;
+	std::string dir;
+	while ( p < sig.size() && (isalpha((unsigned char)sig[p]) || sig[p] == '_') )
+	    dir += sig[p++];
+	if ( !seen_open )
+	{
+	    std::string name;
+	    if ( dir == "ifndef" )
+	    {
+		while ( p < sig.size() && (sig[p] == ' ' || sig[p] == '\t') ) ++p;
+		while ( p < sig.size() && (isalnum((unsigned char)sig[p]) || sig[p] == '_') )
+		    name += sig[p++];
+	    }
+	    else if ( dir == "if" )
+	    {
+		// `#if !defined(NAME)` / `#if !defined NAME` (whole condition)
+		std::string rest = sig.substr(p);
+		size_t b = rest.find_first_not_of(" \t");
+		if ( b != std::string::npos && rest[b] == '!' )
+		{
+		    size_t d = rest.find("defined", b);
+		    if ( d != std::string::npos )
+		    {
+			d += 7;
+			while ( d < rest.size() && (rest[d]==' '||rest[d]=='\t'||rest[d]=='(') ) ++d;
+			while ( d < rest.size() && (isalnum((unsigned char)rest[d]) || rest[d]=='_') )
+			    name += rest[d++];
+			while ( d < rest.size() && (rest[d]==' '||rest[d]=='\t'||rest[d]==')') ) ++d;
+			if ( d < rest.size() )
+			    name.clear();   // trailing condition — not a pure guard
+		    }
+		}
+	    }
+	    if ( name.empty() )
+		return std::string();
+	    guard = name;
+	    seen_open = true;
+	    depth = 1;
+	    continue;
+	}
+	if ( dir == "if" || dir == "ifdef" || dir == "ifndef" )
+	    ++depth;
+	else if ( dir == "endif" )
+	{
+	    if ( --depth == 0 )
+		closed = true;
+	}
+    }
+    return (seen_open && closed) ? guard : std::string();
+}
+
+// --- B4a pack-time forest recording hooks (grove payload v2; see
+// docs/plans/2026-07-04-forest-default-mode-design.md §2). Every hook is a
+// no-op unless pack_recording is on (--freeze / --freeze-append), so default
+// lexing pays one predicted branch per site.
+
+const char *Program::pack_current_unit()
+{
+    if ( !pack_recording )
+	return NULL;
+    const char *f = source.fname();
+    if ( !f || !*f )
+	return NULL;
+    return intern_file(f);
+}
+
+void Program::pack_note_unit(const char *interned_file)
+{
+    if ( !pack_recording || !interned_file )
+	return;
+    if ( pack_units_seen.insert(interned_file).second )
+	pack_unit_order.push_back(interned_file);
+}
+
+void Program::pack_record_define(const std::string &name, const std::string &value)
+{
+    if ( const char *unit = pack_current_unit() )
+    {
+	pack_note_unit(unit);
+	pack_pp_exports[unit].push_back(PackMacroEvent());
+	PackMacroEvent &ev = pack_pp_exports[unit].back();
+	ev.name = name;
+	ev.tag = PackMacroEvent::peDefine;
+	ev.value = value;
+    }
+}
+
+void Program::pack_record_define_fn(const std::string &name, const MacroDef &m)
+{
+    if ( const char *unit = pack_current_unit() )
+    {
+	pack_note_unit(unit);
+	pack_pp_exports[unit].push_back(PackMacroEvent());
+	PackMacroEvent &ev = pack_pp_exports[unit].back();
+	ev.name = name;
+	ev.tag = PackMacroEvent::peDefineFn;
+	ev.macro = m;
+    }
+}
+
+void Program::pack_record_undef(const std::string &name)
+{
+    if ( const char *unit = pack_current_unit() )
+    {
+	pack_note_unit(unit);
+	pack_pp_exports[unit].push_back(PackMacroEvent());
+	PackMacroEvent &ev = pack_pp_exports[unit].back();
+	ev.name = name;
+	ev.tag = PackMacroEvent::peUndef;
+    }
+}
+
+void Program::pack_record_edge(const std::string &includee)
+{
+    if ( const char *unit = pack_current_unit() )
+    {
+	pack_note_unit(unit);
+	pack_unit_edges[unit].push_back(intern_file(includee));
+    }
+}
+
+void Program::pack_record_branch_macro(const std::string &name)
+{
+    if ( pack_recording && !name.empty() )
+	pack_branch_macros.insert(name);
+}
+
+// -dM: dump the effective macro table (object-like + function-like) in
+// `#define` form, sorted by name — the gcc `-dM -E` analogue backing the
+// forest PP parity oracle (design doc §7).
+void Program::dump_macros(FILE *out)
+{
+    std::map<std::string, std::string> lines;
+    define_map.for_each([&](const char *key, std::string &value) -> bool {
+	lines[key] = value.empty() ? std::string() : (" " + value);
+	return false;
+    });
+    macro_map.for_each([&](const char *key, MacroDef &m) -> bool {
+	std::string sig = "(";
+	for ( size_t i = 0; i < m.params.size(); ++i )
+	{
+	    if ( i ) sig += ", ";
+	    sig += m.params[i];
+	    if ( m.variadic && !m.variadic_param.empty() && m.variadic_param == m.params[i] )
+		sig += "...";
+	}
+	if ( m.variadic && m.variadic_param.empty() )
+	{
+	    if ( !m.params.empty() ) sig += ", ";
+	    sig += "...";
+	}
+	sig += ")";
+	lines[key] = sig + (m.body.empty() ? std::string() : (" " + m.body));
+	return false;
+    });
+    for ( std::map<std::string, std::string>::const_iterator it = lines.begin();
+	  it != lines.end(); ++it )
+	fprintf(out, "#define %s%s\n", it->first.c_str(), it->second.c_str());
+}
+
 bool Program::should_tokenize_include(const std::string &path)
 {
     std::string canonical = path;
@@ -1282,9 +2356,144 @@ bool Program::should_tokenize_include(const std::string &path)
 	    free(rp);
 	}
     }
-    if ( include_already_seen(canonical) )
+    if ( !path.empty() && path[0] == '<' )
+    {
+	// Named (embedded/PCH) include keys: blanket once-only — the baked
+	// sets assume single inclusion and the surviving embedded headers
+	// carry no #ifndef guards of their own.
+	if ( include_already_seen(canonical) )
+	    return false;
+	included_files[canonical] = true;
+	return true;
+    }
+    // User ("...") includes keep madc's dialect require-once semantics
+    // (pinned by tests/testincludeonce.mad). SYSTEM headers get gcc's
+    // multiple-include semantics below — they are written for gcc and
+    // rely on it (bits/mathcalls.h).
+    if ( !is_system_header_path(canonical.c_str()) )
+    {
+	if ( include_already_seen(canonical) )
+	    return false;
+	included_files[canonical] = true;
+	return true;
+    }
+    // System headers: gcc's multiple-include optimization. Skip a
+    // repeat inclusion ONLY when the file is fully wrapped in an include
+    // guard whose macro is (still) defined. A guard-less header (glibc's
+    // bits/mathcalls.h, multi-included with a different _Mdouble_ per
+    // pass) is re-tokenized every time, exactly like gcc.
+    auto gi = include_guard_by_file.find(canonical);
+    if ( gi == include_guard_by_file.end() )
+    {
+	include_guard_by_file[canonical] = detect_include_guard(canonical);
+	return true;
+    }
+    const std::string &guard = gi->second;
+    if ( guard.empty() )
+	return true;
+    pack_record_branch_macro(guard);	// B4a: guard definedness gates inclusion
+    return define_map.find(guard) == define_map.end()
+	&& macro_map.find(guard) == macro_map.end();
+}
+
+static bool file_exists(const std::string &path)
+{
+    std::ifstream probe(path.c_str(), std::ios::binary);
+    return probe.good();
+}
+
+static void add_pch_candidate(std::vector<std::string> &candidates,
+			      const std::string &dir,
+			      const std::string &incfile)
+{
+    std::string path = dir;
+    if ( !path.empty() && path.back() != '/' )
+	path += '/';
+    path += incfile;
+    path += ".madh";
+    candidates.push_back(path);
+}
+
+static bool find_filesystem_precompiled_header(Program &pgm,
+					       const std::string &incfile,
+					       bool is_system,
+					       std::string &outpath)
+{
+    std::vector<std::string> candidates;
+    if ( !incfile.empty() && incfile[0] == '/' )
+	candidates.push_back(incfile + ".madh");
+    else
+    {
+	std::string cur_dir = pgm.current_source_directory();
+	if ( !is_system && !cur_dir.empty() )
+	    add_pch_candidate(candidates, cur_dir, incfile);
+	for ( size_t i = 0; i < pgm.include_paths.size(); ++i )
+	    add_pch_candidate(candidates, pgm.include_paths[i], incfile);
+	if ( is_system && !cur_dir.empty() )
+	    add_pch_candidate(candidates, cur_dir, incfile);
+    }
+
+    for ( size_t i = 0; i < candidates.size(); ++i )
+    {
+	if ( file_exists(candidates[i]) )
+	{
+	    outpath = candidates[i];
+	    return true;
+	}
+    }
+    return false;
+}
+
+static bool load_precompiled_header_file(const std::string &path,
+					 std::deque<TokenBase *> &tokens)
+{
+    std::ifstream in(path.c_str(), std::ios::binary | std::ios::ate);
+    if ( !in )
 	return false;
-    included_files[canonical] = true;
+    std::streampos end = in.tellg();
+    if ( end <= 0 )
+	return false;
+    size_t size = (size_t)end;
+    in.seekg(0);
+    std::vector<uint8_t> bytes(size);
+    in.read((char *)bytes.data(), size);
+    if ( !in )
+	return false;
+    return madc_pch::read_madh(bytes.data(), bytes.size(), tokens);
+}
+
+static bool push_precompiled_header_tokens(Program &pgm,
+					   const std::string &display_name,
+					   std::deque<TokenBase *> &pch_tokens)
+{
+    const char *interned = pgm.intern_file(display_name);
+    pgm.pack_record_edge(display_name);	// B4a: includer (current source) -> PCH unit
+    pgm.pack_note_unit(interned);
+    for ( TokenBase *itb : pch_tokens )
+    {
+	if ( TokenIdent *ident = dynamic_cast<TokenIdent *>(itb) )
+	{
+	    TokenBase *replacement = NULL;
+	    keyword_map_iter ki = pgm.keyword_map.find(ident->spelling());
+	    if ( ki != pgm.keyword_map.end() )
+		replacement = (*ki)->clone();
+	    else
+	    {
+		flat_datatype_map_iter di = pgm.datatype_map.find(ident->spelling());
+		if ( di != pgm.datatype_map.end() )
+		    replacement = (*di)->clone();
+	    }
+	    if ( replacement )
+	    {
+		replacement->line = itb->line;
+		replacement->column = itb->column;
+		delete itb;
+		itb = replacement;
+	    }
+	}
+	itb->file = interned;
+	pgm.push_token_with_literal_concat(itb);
+    }
     return true;
 }
 
@@ -1300,12 +2509,15 @@ void Program::add_keywords()
     keyword_map[tkCASE.str] = &tkCASE;
     keyword_map[tkBREAK.str] = &tkBREAK;
     keyword_map[tkCONT.str] = &tkCONT;
-    keyword_map[tkTRY.str] = &tkTRY;
-    keyword_map[tkCATCH.str] = &tkCATCH;
-    keyword_map[tkTHROW.str] = &tkTHROW;
+    if ( !is_c_mode() ) {
+	keyword_map[tkTRY.str] = &tkTRY;
+	keyword_map[tkCATCH.str] = &tkCATCH;
+	keyword_map[tkTHROW.str] = &tkTHROW;
+    }
     keyword_map[tkSWITCH.str] = &tkSWITCH;
     keyword_map[tkWHILE.str] = &tkWHILE;
-    keyword_map[tkCLASS.str] = &tkCLASS;
+    if ( !is_c_mode() )
+	keyword_map[tkCLASS.str] = &tkCLASS;
     keyword_map[tkSTRUCT.str] = &tkSTRUCT;
     keyword_map[tkUNION.str] = &tkUNION;
     keyword_map[tkDEFAULT.str] = &tkDEFAULT;
@@ -1320,26 +2532,179 @@ void Program::add_keywords()
     keyword_map[tkVOLATILE.str] = &tkVOLATILE;
     keyword_map["__volatile"] = &tkVOLATILE;
     keyword_map["__volatile__"] = &tkVOLATILE;
-    keyword_map[tkUSING.str] = &tkUSING;
-    keyword_map[tkNAMESPACE.str] = &tkNAMESPACE;
-    keyword_map[tkPREFER.str] = &tkPREFER;
+    if ( !is_c_mode() ) {
+	keyword_map[tkUSING.str] = &tkUSING;
+	keyword_map[tkNAMESPACE.str] = &tkNAMESPACE;
+	keyword_map[tkPREFER.str] = &tkPREFER;
+	keyword_map[tkTEMPLATE.str] = &tkTEMPLATE;
+	keyword_map[tkNEW.str] = &tkNEW;
+	keyword_map[tkDELETE.str] = &tkDELETE;
+	keyword_map[tkFRIEND.str] = &tkFRIEND;
+    }
     keyword_map[tkDEFER.str] = &tkDEFER;
-    keyword_map[tkVECTOR.str] = &tkVECTOR;
-    keyword_map[tkMAP.str] = &tkMAP;
-    keyword_map[tkSET.str] = &tkSET;
-    // `list` intentionally omitted from keyword_map so it doesn't shadow
-    // the C identifier `list`. Use `std::list<T>` instead.
-    // keyword_map[tkLIST.str] = &tkLIST;
-    keyword_map[tkNEW.str] = &tkNEW;
-    keyword_map[tkDELETE.str] = &tkDELETE;
+
+    // Version-gated C++ RESERVED-keyword registry (C++26 and earlier). Each
+    // entry is reserved ONLY in the madc dialect or an explicit C++ mode at/after
+    // its introducing standard (cpp_keyword_active) — NEVER in C. These have no
+    // dedicated dispatch token: the parser already recognizes them by SPELLING
+    // (contextual_identifier_name), and tkCPPKEYWORD is admitted to that helper's
+    // allowlist — so reserving them is transparent to existing parse sites while
+    // preventing their use as bare identifiers.
+    //
+    // ONLY genuine reserved keywords appear here. Contextual identifiers
+    // (`override`, `final`, `module`, `import`, `audit`) are deliberately NOT
+    // reserved (a hard reservation broke 49 tests — see the KG lesson). The
+    // pervasive ignored specifiers `inline` (erased), `noexcept` and `alignas`
+    // (special lexer handling) keep their existing treatment. The erased
+    // specifiers `constexpr`/`consteval`/`constinit` are registered below AFTER
+    // being removed from the erase map, and need decl-specifier consume handling.
+    struct CppReservedKw { const char *kw; LanguageStd min_std; };
+    static const CppReservedKw cpp_reserved[] = {
+	// STAGED — see DESIGN NOTE / the plan. The complete reserved set (below,
+	// commented) is validated-but-not-yet-activated: hard-reserving them is a
+	// genuine multi-site de-shim (every direct `type()==ttIdentifier` check
+	// that must accept the token), and a full activation surfaced 9 regressions
+	// (asm-statement dispatch, the move/forward template-instantiation reparse,
+	// a __x scope-loss, math.h + string operator+ codegen). Activate in
+	// validated slices per docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
+	//   C++98: this typename sizeof typeid true false
+	//          static_cast const_cast reinterpret_cast dynamic_cast
+	//   C++11: decltype alignof nullptr static_assert thread_local
+	// --- C++20 — DEFERRED (NOT yet reserved). madc presents as a C++20+
+	//     dialect to real headers, which use `concept`/`requires` (active
+	//     under __cpp_lib_concepts, e.g. <compare>/<concepts>) and the
+	//     coroutine keywords. madc lacks concept/coroutine PARSING; today it
+	//     SKIPS those declarations via string-gated paths (skip_requires_clause
+	//     &al.). Reserving these as tokens breaks those skip paths, so they
+	//     stay contextual until the skip paths are de-shimmed to accept the
+	//     tokens. Listed here so the registry is COMPLETE/accounted-for:
+	//       char8_t, concept, requires, co_await, co_return, co_yield  (C++20)
+	//     Tracked in docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
+	//
+	// --- ACTIVATED SLICES (validated, zero-regression) ---
+	// Slice 1 (asm): the standard C++ keyword `asm`. Statement-position
+	// asm is skipped by the shared Program::skip_gnu_asm_statement, reached
+	// from BOTH the ttIdentifier and ttKeyword parseStatement arms; asm
+	// labels on declarations go through consume_gnu_asm_label (dynamic_cast
+	// to TokenIdent, works for the keyword token). The GNU spellings
+	// `__asm__`/`__asm` stay contextual (double-underscore impl-reserved).
+	{ "asm",              STD_CPP98 },
+	// Slice 2 (declaration keywords): access specifiers and member/base
+	// specifiers. Every parse site reads them via
+	// is_contextual_identifier_token / contextual_identifier_name (base-spec
+	// virtual/access loop, access-label public/private/protected, the
+	// member-specifier virtual/mutable/explicit loop, and the has-methods
+	// detector) — all already admit tkCPPKEYWORD. `export` has no dedicated
+	// handler (export-template was removed in C++11; C++20 module `export`
+	// does not appear in the classic headers madc parses), so it is reserved
+	// for completeness only.
+	{ "explicit",         STD_CPP98 },
+	{ "mutable",          STD_CPP98 },
+	{ "virtual",          STD_CPP98 },
+	{ "export",           STD_CPP98 },
+	{ "public",           STD_CPP98 },
+	{ "private",          STD_CPP98 },
+	{ "protected",        STD_CPP98 },
+	// Slice 3 (typename) — DEFERRED (staged, NOT reserved). Every direct
+	// parse site already reads contextual_identifier_name / TokenIdent::str
+	// (so `template<typename T>` and `typename X::type{...}` are fine), but
+	// reserving it regresses the LATE free-function-template instantiation of
+	// std::move / std::forward: `int&& y = std::move(x)` emits `&__ns_std_move`
+	// with the `(x)` call DROPPED (emitted-C shows `int *y = (&__ns_std_move)`),
+	// i.e. the move/forward template instantiation is not triggered at the call
+	// site. The bug is in the free-fn-template return-type (`typename
+	// std::remove_reference<_Tp>::type&&`) instantiation/reparse path, not a
+	// plain ttIdentifier de-shim. Reproduce with tmp/fwd.mad. Reserve only
+	// after that path is fixed (testmemtmplpackexpand, testlateinstproto).
+	// Slice 5 (constexpr): a real tkCPPKEYWORD (no longer erased) so the
+	// dormant TokenIF `if constexpr` discard machinery activates. As an
+	// ignored decl-specifier it is consumed by TokenCppKeyword::parse (leading
+	// and storage-delegated `static constexpr` / `const constexpr`) and the
+	// member-specifier loop; is_ignored_cpp_specifier_token recognizes it.
+	{ "constexpr",        STD_CPP11 },
+	// Slice 6 (consteval/constinit, C++20): ignored decl-specifiers, handled
+	// by the same is_ignored_cpp_specifier_token path as constexpr.
+	{ "consteval",        STD_CPP20 },
+	{ "constinit",        STD_CPP20 },
+	// Slice 4 (expression keywords) — validating subset first. The named
+	// casts / typeid / decltype / alignof are recognized by spelling in
+	// parse_constant_primary and the expression parser (de-shimmed), and are
+	// implausible as identifiers. `this`, `sizeof`, `nullptr`, `true`,
+	// `false` are staged separately (SESSION-16 §4 flagged semantic regressions).
+	{ "static_cast",      STD_CPP98 },
+	{ "const_cast",       STD_CPP98 },
+	{ "reinterpret_cast", STD_CPP98 },
+	{ "dynamic_cast",     STD_CPP98 },
+	{ "typeid",           STD_CPP98 },
+	{ "decltype",         STD_CPP11 },
+	{ "alignof",          STD_CPP11 },
+	// Slice 4b: boolean / pointer literals.
+	{ "true",             STD_CPP98 },
+	{ "false",            STD_CPP98 },
+	{ "nullptr",          STD_CPP11 },
+	// Slice 4c: sizeof (bisecting — SESSION-16 §4 flagged the expr-keyword set).
+	{ "sizeof",           STD_CPP98 },
+	// Slice 4d: this (bisecting — madc models the receiver as __this).
+	{ "this",             STD_CPP98 },
+	{ 0,                  STD_CPP98 }
+    };
+    for ( size_t i = 0; i < sizeof(cpp_reserved)/sizeof(cpp_reserved[0]); ++i )
+	if ( cpp_reserved[i].kw
+	  && cpp_keyword_active(cpp_reserved[i].min_std)
+	  && keyword_map.find(cpp_reserved[i].kw) == keyword_map.end() )
+	    keyword_map[cpp_reserved[i].kw] =
+		new TokenCppKeyword(cpp_reserved[i].kw);
+
+    // Slice 7 — alternative-token operators ([lex.digraph]). In C++ these are
+    // reserved keywords spelled as words; each is an exact synonym for a
+    // symbolic operator, so map the spelling straight to the operator token
+    // (cloned on lookup at lexer.cpp ~4382, like every keyword). C++98+ /
+    // madc-dialect only (cpp_keyword_active): in C they are NOT keywords —
+    // <iso646.h> defines them as macros, which the real header supplies.
+    if ( cpp_keyword_active(STD_CPP98) )
+    {
+	cpp_operator_map["and"]    = new TokenLand();    // &&
+	cpp_operator_map["or"]     = new TokenLor();     // ||
+	cpp_operator_map["not"]    = new TokenLnot();    // !
+	cpp_operator_map["bitand"] = new TokenBand();    // &
+	cpp_operator_map["bitor"]  = new TokenBor();     // |
+	cpp_operator_map["xor"]    = new TokenXor();     // ^
+	cpp_operator_map["compl"]  = new TokenBnot();    // ~
+	cpp_operator_map["not_eq"] = new TokenNotEq();   // !=
+	cpp_operator_map["and_eq"] = new TokenBandEq();  // &=
+	cpp_operator_map["or_eq"]  = new TokenBorEq();   // |=
+	cpp_operator_map["xor_eq"] = new TokenXorEq();   // ^=
+    }
+    // DESIGN NOTE: this table is intentionally NOT populated with hard keyword
+    // tokens. madc deliberately handles most C++ keywords as CONTEXTUAL
+    // identifiers recognized by spelling (Cfront-style; see the KG lesson
+    // "Tokenizer remapping for contextual keywords" — a grammar-level hard
+    // reservation caused a 49-test regression). Empirically, reserving e.g.
+    // `typename` as a tkCPPKEYWORD breaks real-header `template<typename ...>`
+    // parsing. Reservation + version-gating must therefore be expressed as a
+    // gated SPELLING predicate consulted by the contextual sites, not as hard
+    // tokens. Tracked in docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
 }
 
 // add static tokens for base data types
 void Program::add_datatypes()
 {
+    // Idempotent: globals get the same fixed ABI slot every time, so
+    // multiple Programs per process (project driver) are safe.
+    madc_stamp_primitive_type_ids();
+
     static TokenDataType tkPTRDIFF("ptrdiff_t", ddINT64);
     static TokenDataType tkSIZE_T("size_t", ddUINT64);
     static TokenDataType tkWCHAR_T("wchar_t", ddINT32);
+    static TokenDataType tkCHAR8_T("char8_t", ddUINT8);
+    static TokenDataType tkCHAR16_T("char16_t", ddUINT16);
+    static TokenDataType tkCHAR32_T("char32_t", ddUINT32);
+    static TokenDataType tkMAX_ALIGN_T("max_align_t", ddMAX_ALIGN_T);
+    static TokenDataType tkFLOAT32("_Float32", ddFLOAT);
+    static TokenDataType tkFLOAT64("_Float64", ddDOUBLE);
+    static TokenDataType tkFLOAT128("_Float128", ddDOUBLE);
+    static TokenDataType tkFLOAT32X("_Float32x", ddDOUBLE);
+    static TokenDataType tkFLOAT64X("_Float64x", ddDOUBLE);
     static TokenDataType tkDECIMAL32("_Decimal32", ddFLOAT);
     static TokenDataType tkDECIMAL64("_Decimal64", ddDOUBLE);
     static TokenDataType tkDECIMAL128("_Decimal128", ddDOUBLE);
@@ -1366,12 +2731,141 @@ void Program::add_datatypes()
     datatype_map[tkAUTO.str] = &tkAUTO;
     datatype_map[tkPTRDIFF.str] = &tkPTRDIFF;
     datatype_map[tkSIZE_T.str] = &tkSIZE_T;
-    datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
+    // wchar_t / char8_t / char16_t / char32_t are FUNDAMENTAL built-in types in
+    // C++ (keywords — [basic.fundamental]), but in C they are typedefs supplied
+    // by headers (wchar_t: <stddef.h>/<wchar.h>; char16_t/char32_t: <uchar.h>;
+    // char8_t: <uchar.h> in C23). So register them as primitives ONLY in the
+    // madc dialect or an explicit C++ mode at/after their introducing standard;
+    // in explicit C modes the real header typedef supplies them (retire-
+    // embedded-shims principle — do not preempt the real header).
+    if ( cpp_keyword_active(STD_CPP98) )
+	datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
+    if ( cpp_keyword_active(STD_CPP20) )
+	datatype_map[tkCHAR8_T.str] = &tkCHAR8_T;
+    if ( cpp_keyword_active(STD_CPP11) )
+    {
+	datatype_map[tkCHAR16_T.str] = &tkCHAR16_T;
+	datatype_map[tkCHAR32_T.str] = &tkCHAR32_T;
+    }
+    datatype_map[tkMAX_ALIGN_T.str] = &tkMAX_ALIGN_T;
+    datatype_map[tkFLOAT32.str] = &tkFLOAT32;
+    datatype_map[tkFLOAT64.str] = &tkFLOAT64;
+    datatype_map[tkFLOAT128.str] = &tkFLOAT128;
+    datatype_map[tkFLOAT32X.str] = &tkFLOAT32X;
+    datatype_map[tkFLOAT64X.str] = &tkFLOAT64X;
     datatype_map[tkDECIMAL32.str] = &tkDECIMAL32;
     datatype_map[tkDECIMAL64.str] = &tkDECIMAL64;
     datatype_map[tkDECIMAL128.str] = &tkDECIMAL128;
 }
 
+
+// CHAR-LEVEL directive-line-tail skip, used ONLY while skipping an inactive
+// #if branch (skipConditionalBlock). The active path uses
+// consume_directive_line_tail() to run the tail through the lexer (reusing its
+// comment handling), but inactive content must NOT be tokenized or macro-
+// expanded — so here we scan raw characters, mirroring the lexer's comment rule
+// by hand: a `/* */` block comment counts as whitespace and may span physical
+// newlines, so skip it IN FULL (else its continuation lines leak as directives/
+// code). Stop at the first newline NOT inside a block comment; `//` ends the line.
+static void skip_directive_line_tail(Source &source)
+{
+    while ( source.good() && !source.eof() )
+    {
+	int c = source.peek();
+	if ( c == '\n' || c == '\r' )
+	    break;
+	if ( c == '/' )
+	{
+	    source.get();
+	    int n = source.peek();
+	    if ( n == '*' )
+	    {
+		source.get();
+		int prev = 0;
+		while ( source.good() && !source.eof() )
+		{
+		    int cc = source.get();
+		    if ( prev == '*' && cc == '/' )
+			break;
+		    prev = cc;
+		}
+		continue;
+	    }
+	    if ( n == '/' )
+	    {
+		while ( source.good() && !source.eof()
+		     && source.peek() != '\n' && source.peek() != '\r' )
+		    source.get();
+		break;
+	    }
+	    continue;   // a lone '/', already consumed
+	}
+	source.get();
+    }
+}
+
+// === pop-1 lexer-token factory (token-arena Phase 2 seam, step 2.2a) ===
+// Single construction point for every lexed (pop-1) token. 2.2a is
+// behavior-identical: still heap-`new`s and returns a TokenBase*, no
+// representation change. 2.2b makes these append a POD TokenRec to the arena
+// and return a slot-id-backed shell. Payload-free kinds delegate to the shared
+// madc_pch::token_from_id switch (ONE materialize-from-kind table); payload
+// kinds construct directly. See docs/plans/2026-06-23-p1-token-arena-*.
+TokenBase *Program::make_token(TokenID kind)
+{
+    TokenBase *tb = madc_pch::token_from_id(kind);
+    // token_from_id materializes whitespace with count 1; the lexer never
+    // routes Space/Tab/EOL here (they carry a count -> make_space/tab/eol).
+    return tb;
+}
+
+TokenBase *Program::make_ident(const std::string &spelling)
+{
+    TokenIdent *t = new TokenIdent(spelling.c_str());
+    t->rec.spelling_id = strpool.intern(spelling);	// interned at creation (Step 4)
+    return t;
+}
+
+TokenBase *Program::make_int(int64_t value)
+{
+    return new TokenInt(value);
+}
+
+TokenBase *Program::make_int(int64_t value, const std::string &src)
+{
+    return new TokenInt(value, src);
+}
+
+TokenBase *Program::make_real(double value)
+{
+    return new TokenReal(value);
+}
+
+TokenBase *Program::make_str(const std::string &bytes, bool wide)
+{
+    return new TokenStr(bytes, wide);
+}
+
+TokenBase *Program::make_char(int code)
+{
+    return new TokenChar(code);
+}
+
+TokenBase *Program::make_datatype(const char *name, DataDef &dd)
+{
+    TokenDataType *t = new TokenDataType(name, dd);
+    t->rec.spelling_id = strpool.intern(name);		// interned at creation (Step 4)
+    return t;
+}
+
+TokenBase *Program::make_rem(const std::string &text)
+{
+    return new TokenREM(text);
+}
+
+TokenBase *Program::make_space(int cnt) { return new TokenSpace(cnt); }
+TokenBase *Program::make_tab(int cnt)   { return new TokenTab(cnt); }
+TokenBase *Program::make_eol(int cnt)   { return new TokenEOL(cnt); }
 
 // lex and return the next token from the data stream
 // TODO: replace top switch with direct dispatch
@@ -1380,9 +2874,20 @@ void Program::add_datatypes()
 TokenBase *Program::_getToken()
 {
     keyword_map_iter kmi;
-    datatype_map_iter bmi;
+    flat_datatype_map_iter bmi = nullptr;
     string word;
     int ch, cnt, row, col;
+
+    // Runaway-expansion guard. macro_disabled() blue paint stops the ordinary
+    // recursive-macro cases, but a depth bound is a cheap backstop that turns
+    // ANY future runaway (a re-expansion the paint misses, a pathological
+    // include/macro chain) into a clean diagnostic instead of a stack crash.
+    // One pushback frame per live macro expansion; legitimate nesting is tiny
+    // (chains of a few dozen), so a high bound never trips on real code.
+    if ( source.pushback_depth() > 4096 )
+	Throw << "macro/preprocessor expansion nested too deeply ("
+	      << source.pushback_depth()
+	      << ") — likely a recursive macro" << flush;
 
     if ( !injected_tokens.empty() )
     {
@@ -1397,16 +2902,23 @@ TokenBase *Program::_getToken()
     if ( ch == -1 ) { return NULL; }  // EOF after last char (no trailing newline)
     switch( ch )
     {
+	// Form feed and vertical tab are whitespace (C11 5.4 / [lex.charset]).
+	// glibc headers use lone ^L page separators (regex.h, bits/mman*.h);
+	// falling through to the char-token default desynced the whole
+	// following parse ("unexpected token type 10" — the wall-4 family).
 	case ' ':
+	case '\f':
+	case '\v':
 	    cnt = 1;
-	    while ( source.peek() == ' ' )
+	    while ( source.peek() == ' ' || source.peek() == '\f'
+		 || source.peek() == '\v' )
 	    {
 		++cnt;
 		source.get();
 		if ( !source.good() || source.eof() )
 		    break;
 	    }
-	    return new TokenSpace(cnt);
+	    return make_space(cnt);
 	case '\t':
 	    cnt = 1;
 	    while ( source.peek() == '\t' )
@@ -1416,7 +2928,7 @@ TokenBase *Program::_getToken()
 		if ( !source.good() || source.eof() )
 		    break;
 	    }
-	    return new TokenTab(cnt);
+	    return make_tab(cnt);
 	case '\r':
 	    source.get();
 	case '\n':
@@ -1429,36 +2941,40 @@ TokenBase *Program::_getToken()
 		if ( !source.good() || source.eof() )
 		    break;
 	    }
-	    return new TokenEOL(cnt);
+	    return make_eol(cnt);
 	case '=':
 	    if (source.peek() == '=')
 	    {
 		source.get();
-		if (source.peek() == '=') { source.get(); return new Token3Eq; } // ===
-		return new TokenEquals;					// ==
+		// === is the madc dialect's strict-equality token. Below the
+		// std floor the sequence lexes as == then = — C/C++ sources
+		// keep their conforming syntax error.
+		if (source.peek() == '=' && language_std == STD_MADC)
+		    { source.get(); return make_token(TokenID::tk3Eq); }		// ===
+		return make_token(TokenID::tkEquals);					// ==
 	    }
-	    if (source.peek() == '>') { source.get(); return new TokenFatArrow; } // =>
-	    return new TokenAssign;					// =
+	    if (source.peek() == '>') { source.get(); return make_token(TokenID::tkFatArrow); } // =>
+	    return make_token(TokenID::tkAssign);					// =
 	case '+':
-	    if (source.peek() == '+') { source.get(); return new TokenInc;   }   // ++
-	    if (source.peek() == '=') { source.get(); return new TokenAddEq; }   // +=
-	    return new TokenAdd;					// +
+	    if (source.peek() == '+') { source.get(); return make_token(TokenID::tkInc);   }   // ++
+	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkAddEq); }   // +=
+	    return make_token(TokenID::tkPlus);					// +
 	case '-':
-	    if (source.peek() == '-') { source.get(); return new TokenDec;   }   // --
-	    if (source.peek() == '=') { source.get(); return new TokenSubEq; }   // -=
-	    if (source.peek() == '>') { source.get(); return new TokenDeRef; }   // ->
-	    return new TokenNeg;					// -
-	case '*': if (source.peek() != '=') return new TokenMul;		// *
-	     source.get(); return new TokenMulEq;				// *=
+	    if (source.peek() == '-') { source.get(); return make_token(TokenID::tkDec);   }   // --
+	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkSubEq); }   // -=
+	    if (source.peek() == '>') { source.get(); return make_token(TokenID::tkDeRef); }   // ->
+	    return make_token(TokenID::tkNeg);					// -
+	case '*': if (source.peek() != '=') return make_token(TokenID::tkMul);		// *
+	     source.get(); return make_token(TokenID::tkMulEq);				// *=
 	case '/':
-	    if (source.peek() == '=') { source.get(); return new TokenDivEq; }   // /=
+	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkDivEq); }   // /=
 	    if (source.peek() == '/')					// //
 	    {
 		source.get();
 		word = "//";
 		while ( source.good() && !source.eof() && source.peek() != '\r' && source.peek() != '\n' )
 		    word += source.get();
-		return new TokenREM(word);
+		return make_rem(word);
 	    }
 	    if (source.peek() == '*')					// /*
 	    {
@@ -1475,10 +2991,10 @@ TokenBase *Program::_getToken()
 		    }
 		    word += ch;
 		}
-		return new TokenREM(word);
+		return make_rem(word);
 	    }
-	    return new TokenDiv;
-	case '\\': return new TokenBslsh;
+	    return make_token(TokenID::tkSlash);
+	case '\\': return make_token(TokenID::tkBslsh);
 	case '#': // #! is a special comment style for shell script execution
 	    if ( source.peek() == '!' )
 	    {
@@ -1486,7 +3002,36 @@ TokenBase *Program::_getToken()
 		word = "#!";
 		while ( source.good() && !source.eof() && source.peek() != '\r' && source.peek() != '\n' )
 		    word += source.get();
-		return new TokenREM(word);
+		// Parse shebang args if interpreter is madc
+		{
+		    size_t sp = word.find(' ');
+		    std::string path = (sp != std::string::npos) ? word.substr(2, sp - 2) : word.substr(2);
+		    size_t slash = path.rfind('/');
+		    std::string base = (slash != std::string::npos) ? path.substr(slash + 1) : path;
+		    if ( base == "madc" && sp != std::string::npos )
+		    {
+			std::string args = word.substr(sp + 1);
+			std::istringstream as(args);
+			std::string arg;
+			while ( as >> arg )
+			    if ( set_language_standard_option(arg) )
+				break;
+			// Remove C++ keywords retroactively if shebang set C mode
+			if ( is_c_mode() )
+			{
+			    keyword_map.erase("try");
+			    keyword_map.erase("catch");
+			    keyword_map.erase("throw");
+			    keyword_map.erase("class");
+			    keyword_map.erase("new");
+			    keyword_map.erase("delete");
+			    keyword_map.erase("using");
+			    keyword_map.erase("namespace");
+			    keyword_map.erase("prefer");
+			}
+		    }
+		}
+		return make_rem(word);
 	    }
 	    while ( source.peek() == ' ' || source.peek() == '\t' )
 		source.get();
@@ -1494,10 +3039,14 @@ TokenBase *Program::_getToken()
 	    if ( isalpha(source.peek()) )
 	    {
 		std::string directive;
-		while ( source.good() && !source.eof() && isalpha(source.peek()) )
+		// '_' is accepted so the compound directive #include_next is
+		// read whole (no standard directive but include_next uses '_').
+		while ( source.good() && !source.eof()
+		     && (isalpha(source.peek()) || source.peek() == '_') )
 		    directive += source.get();
-		if ( directive == "include" )
+		if ( directive == "include" || directive == "include_next" )
 		{
+		    bool is_include_next = (directive == "include_next");
 		    // skip_includes mode: consume rest of line and continue
 		    if ( skip_includes )
 		    {
@@ -1519,43 +3068,102 @@ TokenBase *Program::_getToken()
 			incfile += source.get();
 		    if ( source.peek() == end_delim )
 			source.get(); // consume closing delimiter
-		    // angle-bracket includes: check embedded headers first
-		    if ( is_system )
+		    // angle-bracket includes: prefer real precompiled headers, then
+		    // text-embedded compatibility headers, then filesystem source.
+		    // #include_next is POSITIONAL (continue the path search after
+		    // the current header's dir) — it must never resolve through
+		    // the named PCH/embedded caches, only the filesystem walk.
+		    if ( is_system && !is_include_next )
 		    {
-			std::string include_key = "<" + incfile + ">";
-			if ( !should_tokenize_include(include_key) )
+			if ( !suppress_auto_include_scan
+			  && pending_auto_include_headers.count(incfile) )
 			{
+			    DBG(std::cout << "#include <" << incfile
+				<< "> deferred to auto-include prelude" << std::endl);
+			    return getToken();
+			}
+			// Phase 6 (--forest-bind): a grove-backed system header
+			// BINDS instead of tokenizing — install its PP-export
+			// delta along the include DAG (forest_bind_include), then
+			// restore the forest's typed decl records into the symbol
+			// tables (forest_restore_decls, once per compile), and
+			// return WITHOUT re-parsing the header. Non-forest headers
+			// fall through to live parse. Gated on forest_bind_enabled
+			// so the default path is one predicted branch.
+			if ( forest_bind_enabled )
+			{
+			    int fu = forest_unit_for_include(incfile);
+			    if ( fu >= 0 )
+			    {
+				DBG(std::cout << "#include <" << incfile
+				    << "> bound to grove unit " << fu << " ("
+				    << bind_forest->unit_name(fu) << ")" << std::endl);
+				forest_bind_include((uint32_t)fu);
+				// v25: the embedded-header include FLAG is a live
+				// tokenize-time side effect (_parser_init's lazy_map
+				// registration: stdin/stdout/stderr, cout/cin). A
+				// grove unit whose name IS the bare embedded-header
+				// name was tokenized from the embedded text at
+				// freeze — re-run the one live side effect. A
+				// REAL-header unit (path name) never marks, exactly
+				// like the live filesystem branch.
+				{
+				    const char *un = bind_forest->unit_name(fu);
+				    if ( un && incfile == un
+				      && find_embedded_header(incfile) )
+					mark_embedded_include_flag(incfile);
+				}
+				// Item 5 (lazy defrost): the decl-record restore
+				// moved to flush_forest_pending_globals — the
+				// post-tokenize point where forest_chain_set is
+				// COMPLETE, so registration filters to the TU's
+				// actual bound-include closure (live parity: a
+				// header you never include declares nothing).
+				return getToken();
+			    }
+			}
+			// The NAME-level once-only key gates ONLY the named
+			// PCH/embedded resolutions (their baked token sets assume
+			// single inclusion and carry no #ifndef guards). A
+			// filesystem-resolved header must NOT be deduped by name:
+			// its dedup is the guard-aware full-path check below, so a
+			// deliberately guard-less header (bits/mathcalls.h, multi-
+			// included with a different _Mdouble_ per pass) re-tokenizes.
+			std::string include_key = "<" + incfile + ">";
+			bool name_already_included = include_already_seen(include_key);
+			bool resolves_named = false;
+			std::string pch_path;
+			if ( find_filesystem_precompiled_header(*this, incfile, true, pch_path) )
+			    resolves_named = true;
+			else if ( find_precompiled_header(incfile) )
+			    resolves_named = true;
+			else if ( find_embedded_header(incfile)
+			       && is_embedded_header_allowed(incfile) )
+			    resolves_named = true;
+			if ( resolves_named && name_already_included )
+			{
+			    // B4a: the include EDGE exists in the source even when
+			    // the once-only dedup skips re-tokenization — the bind-
+			    // time PP-export composition walks these edges.
+			    pack_record_edge(pch_path.empty() ? incfile : pch_path);
 			    DBG(std::cout << "#include <" << incfile << "> skipped (already included)" << std::endl);
 			    return getToken();
 			}
-			// Text-embedded headers (hand-written stubs) take priority
-			// because they're tailored for madc's parser. Pre-compiled
-			// system headers are used only when no text stub exists.
-			const std::string *embedded = find_embedded_header(incfile);
-			if ( embedded )
+			if ( resolves_named )
+			    should_tokenize_include(include_key);   // record the name
+			if ( !pch_path.empty() )
 			{
-			    if ( !is_embedded_header_allowed(incfile) )
-				Throw << "embedded header '" << incfile
-				      << "' is not allowed by registration policy" << flush;
-			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
-			    Source saved = std::move(source);
-			    source = Source();
-			    source.fname(incfile.c_str());
-			    source.str(*embedded);
-			    TokenBase *itb;
-			    const char *_interned1 = intern_file(incfile);
-			    while ( (itb = getRealToken()) )
+			    DBG(std::cout << "#include <" << incfile << "> (precompiled file "
+				<< pch_path << ")" << std::endl);
+			    std::deque<TokenBase *> pch_tokens;
+			    if ( load_precompiled_header_file(pch_path, pch_tokens) )
 			    {
-				itb->file = _interned1;
-				push_token_with_string_concat(itb);
+				push_precompiled_header_tokens(*this, pch_path, pch_tokens);
+				return getToken();
 			    }
-			    source = std::move(saved);
-			    // flag headers for deferred registration during parse init
-			    mark_embedded_include_flag(incfile);
-			    return getToken();
+			    DBG(std::cout << "#include <" << incfile
+				<< "> filesystem PCH failed, trying embedded PCH" << std::endl);
 			}
-			// Check pre-compiled headers (post-lexer token stream
-			// from real system headers, used when no text stub exists)
 			const PrecompiledHeader *pch = find_precompiled_header(incfile);
 			if ( pch )
 			{
@@ -1563,21 +3171,77 @@ TokenBase *Program::_getToken()
 			    std::deque<TokenBase *> pch_tokens;
 			    if ( madc_pch::read_madh(pch->data, pch->size, pch_tokens) )
 			    {
-				const char *_interned_pch = intern_file(incfile);
-				for ( TokenBase *itb : pch_tokens )
-				{
-				    itb->file = _interned_pch;
-				    push_token_with_string_concat(itb);
-				}
-				mark_embedded_include_flag(incfile);
+				push_precompiled_header_tokens(*this, incfile, pch_tokens);
 				return getToken();
 			    }
-			    DBG(std::cout << "#include <" << incfile << "> PCH failed, trying filesystem" << std::endl);
+			    DBG(std::cout << "#include <" << incfile << "> PCH failed, trying embedded text" << std::endl);
+			}
+			const std::string *embedded = find_embedded_header(incfile);
+			// Disallowed by policy (e.g. --no-embedded-headers): skip madc's
+			// baked-in stub and fall through to the real filesystem header
+			// below, rather than erroring. The host's include_paths still
+			// gate what the filesystem search can reach.
+			if ( embedded && !is_embedded_header_allowed(incfile) )
+			{
+			    DBG(std::cout << "#include <" << incfile
+				<< "> embedded stub disallowed by policy; using filesystem" << std::endl);
+			    embedded = NULL;
+			}
+			if ( embedded )
+			{
+			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
+			    pack_record_edge(incfile);	// B4a: includer -> includee, pre-swap
+			    Source saved = std::move(source);
+			    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
+			    suppress_auto_include_scan = true;
+			    source = Source();
+			    source.fname(incfile.c_str());
+			    { ReadTimer _rt(_read_seconds); source.str(*embedded); }
+			    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
+			    TokenBase *itb;
+			    const char *_interned1 = intern_file(incfile);
+			    pack_note_unit(_interned1);
+			    while ( (itb = getRealToken()) )
+			    {
+				itb->file = _interned1;
+				push_token_with_literal_concat(itb);
+			    }
+			    source = std::move(saved);
+			    suppress_auto_include_scan = saved_suppress_auto_include_scan;
+			    // flag headers for deferred registration during parse init
+			    mark_embedded_include_flag(incfile);
+			    return getToken();
 			}
 		    }
-		    std::string full_path = resolve_include_path(incfile, is_system);
+		    std::string full_path = is_include_next
+			? resolve_include_next_path(incfile)
+			: resolve_include_path(incfile, is_system);
+		    // Phase 6 (--forest-bind), v25: a grove-backed QUOTED /
+		    // filesystem include BINDS instead of tokenizing, exactly like
+		    // the angle branch above — the forest holds EVERY #include's
+		    // state (v24 root-vs-include discriminator: user headers
+		    // restore), so a live re-parse BESIDE the restored state would
+		    // double-define its contents ("Repeated item declaration").
+		    // Keyed on the RESOLVED path (the name the freeze tokenized
+		    // the unit under). #include_next keeps its positional walk.
+		    if ( forest_bind_enabled && !is_include_next
+		      && !full_path.empty() )
+		    {
+			int fu = forest_unit_for_include(full_path);
+			if ( fu >= 0 )
+			{
+			    DBG(std::cout << "#include \"" << full_path
+				<< "\" bound to grove unit " << fu << " ("
+				<< bind_forest->unit_name(fu) << ")" << std::endl);
+			    forest_bind_include((uint32_t)fu);
+			    // Item 5: decl restore rides the post-tokenize
+			    // flush (see the system-include bind site).
+			    return getToken();
+			}
+		    }
 		    if ( !should_tokenize_include(full_path) )
 		    {
+			pack_record_edge(full_path);	// B4a: edge survives the dedup skip
 			DBG(std::cout << "#include "
 			    << (is_system ? "<" : "\"") << full_path
 			    << (is_system ? ">" : "\"")
@@ -1587,25 +3251,37 @@ TokenBase *Program::_getToken()
 		    DBG(std::cout << "#include "
 			<< (is_system ? "<" : "\"") << full_path
 			<< (is_system ? ">" : "\"") << std::endl);
+		    pack_record_edge(full_path);	// B4a: includer -> includee, pre-swap
 		    // save current source, tokenize included file
 		    Source saved = std::move(source);
+		    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
+		    suppress_auto_include_scan = true;
 		    source = Source();
 		    std::ifstream incf(full_path.c_str());
 		    if ( !incf )
 		    {
+			suppress_auto_include_scan = saved_suppress_auto_include_scan;
 			source = std::move(saved); // restore before throwing
 			Throw << "Failed to open include file: " << full_path.c_str() << flush;
 		    }
 		    source.fname(full_path.c_str());
-		    source.copybuf(incf.rdbuf());
+		    {
+			ReadTimer _rt(_read_seconds);
+			incf.seekg(0, std::ios::end);	// --show-stats: filesystem header bytes
+			if ( incf.tellg() > 0 ) _input_bytes += (size_t)incf.tellg();
+			incf.seekg(0);
+			source.copybuf(incf.rdbuf());
+		    }
 		    TokenBase *itb;
 		    const char *_interned2 = intern_file(full_path);
+		    pack_note_unit(_interned2);
 		    while ( (itb = getRealToken()) )
 		    {
 			itb->file = _interned2;
-			push_token_with_string_concat(itb);
+			push_token_with_literal_concat(itb);
 		    }
 		    source = std::move(saved);
+		    suppress_auto_include_scan = saved_suppress_auto_include_scan;
 		    return getToken(); // continue with current file
 		}
 		if ( directive == "load" )
@@ -1640,16 +3316,30 @@ TokenBase *Program::_getToken()
 			source.get();
 		    if ( source.peek() == ';' )
 			source.get();
-		    // dlopen the library
-		    void *handle = dlopen(libname.c_str(), RTLD_LAZY | RTLD_GLOBAL);
-		    if ( !handle )
+		    // dlopen the library — unless auto-library-loading is off, in
+		    // which case the named library is NOT loaded; the namespace is
+		    // bound to the global symbol scope (dlopen(NULL)) so its symbols
+		    // come from explicit linking (`madc -l<lib>` / the host) instead.
+		    void *handle;
+		    if ( is_auto_library_loading_enabled() )
 		    {
-			std::string err = "Failed to load library: " + libname + ": " + dlerror();
-			Throw << err.c_str() << flush;
+			handle = dlopen(libname.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+			if ( !handle )
+			{
+			    std::string err = "Failed to load library: " + libname + ": " + dlerror();
+			    Throw << err.c_str() << flush;
+			}
+			DBG(std::cout << "#load \"" << libname << "\" as " << ns_name << std::endl);
+			loaded_lib_paths.push_back(libname);
+		    }
+		    else
+		    {
+			handle = dlopen(NULL, RTLD_LAZY | RTLD_GLOBAL);
+			DBG(std::cout << "#load \"" << libname << "\" as " << ns_name
+				      << " — auto-load off, bound to global scope" << std::endl);
 		    }
 		    dlopen_map[ns_name] = handle;
-		    namespace_map[ns_name]; // create empty namespace
-		    DBG(std::cout << "#load \"" << libname << "\" as " << ns_name << std::endl);
+		    namespace_variables_for_write(ns_name); // create empty namespace
 		    return getToken();
 		}
 		if ( directive == "define" )
@@ -1720,6 +3410,7 @@ TokenBase *Program::_getToken()
 			std::string body = read_macro_body(source);
 			macro.body = body;
 			macro_map[name] = macro;
+			pack_record_define_fn(name, macro);
 			DBG(std::cout << "#define " << name << "(");
 			DBG(for (size_t i=0; i<macro.params.size(); ++i) { if (i) std::cout << ","; std::cout << macro.params[i]; });
 			DBG(std::cout << ") " << body << std::endl);
@@ -1732,6 +3423,7 @@ TokenBase *Program::_getToken()
 			source.get();
 		    std::string value = read_macro_body(source);
 		    define_map[name] = value;
+		    pack_record_define(name, value);
 		    DBG(std::cout << "#define " << name << " " << value << std::endl);
 		    return getToken();
 		}
@@ -1744,10 +3436,11 @@ TokenBase *Program::_getToken()
 			name += source.get();
 		    define_map.erase(name);
 		    macro_map.erase(name);
+		    pack_record_undef(name);
 		    DBG(std::cout << "#undef " << name << std::endl);
-		    // consume rest of line
-		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			source.get();
+		    // discard the directive's trailing tokens via the lexer, so a
+		    // multi-line /* */ comment here is handled by the lexer's case '/'
+		    consume_directive_line_tail();
 		    return getToken();
 		}
 		if ( directive == "line" )
@@ -1764,13 +3457,14 @@ TokenBase *Program::_getToken()
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
 		    bool defined = define_map.count(name) > 0 || macro_map.count(name) > 0;
+		    pack_record_branch_macro(name);
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    ifdef_stack.push(active);
 		    ifdef_done_stack.push(active);
 		    DBG(std::cout << "#" << directive << " " << name << " -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
-		    // consume rest of line
-		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			source.get();
+		    // discard the directive's trailing tokens via the lexer, so a
+		    // multi-line /* */ comment here is handled by the lexer's case '/'
+		    consume_directive_line_tail();
 		    if ( !active )
 			return skipConditionalBlock();
 		    return getToken();
@@ -1820,9 +3514,9 @@ TokenBase *Program::_getToken()
 		    if ( active )
 			ifdef_done_stack.top() = true;
 		    DBG(std::cout << "#else -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
-		    // consume rest of line
-		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			source.get();
+		    // discard the directive's trailing tokens via the lexer, so a
+		    // multi-line /* */ comment here is handled by the lexer's case '/'
+		    consume_directive_line_tail();
 		    if ( !active )
 			return skipConditionalBlock();
 		    return getToken();
@@ -1834,9 +3528,9 @@ TokenBase *Program::_getToken()
 		    ifdef_stack.pop();
 		    ifdef_done_stack.pop();
 		    DBG(std::cout << "#endif" << std::endl);
-		    // consume rest of line
-		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			source.get();
+		    // discard the directive's trailing tokens via the lexer, so a
+		    // multi-line /* */ comment here is handled by the lexer's case '/'
+		    consume_directive_line_tail();
 		    return getToken();
 		}
 		if ( directive == "error" || directive == "warning" )
@@ -1889,9 +3583,9 @@ TokenBase *Program::_getToken()
 				    _pack_stack.pop();
 				DBG(std::cout << "#pragma pack(pop)" << std::endl);
 			    }
-			    // consume rest of line
-			    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-				source.get();
+			    // discard trailing tokens via the lexer (handles a
+			    // multi-line /* */ comment on this line)
+			    consume_directive_line_tail();
 			}
 		    }
 		    else if ( pragma == "push_macro" || pragma == "pop_macro" )
@@ -1916,7 +3610,7 @@ TokenBase *Program::_getToken()
 				if ( is_push )
 				{
 				    auto it = define_map.find(mname);
-				    std::string val = (it != define_map.end()) ? it->second : std::string("\x01");
+				    std::string val = (it != define_map.end()) ? *it : std::string("\x01");
 				    _macro_save_stack[mname].push(val);
 				    DBG(std::cout << "#pragma push_macro(\"" << mname << "\") saved=\"" << val << "\"" << std::endl);
 				}
@@ -1936,9 +3630,9 @@ TokenBase *Program::_getToken()
 				}
 			    }
 			}
-			// consume rest of line
-			while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			    source.get();
+			// discard trailing tokens via the lexer (handles a
+			// multi-line /* */ comment on this line)
+			consume_directive_line_tail();
 		    }
 		    else if ( pragma == "prefer" )
 		    {
@@ -1960,44 +3654,44 @@ TokenBase *Program::_getToken()
 				source.get();
 			}
 
-			TokenBase *tb = new TokenPREFER();
+			TokenBase *tb = make_token(TokenID::tkPREFER);
 			tb->line = pragma_line;
 			tb->column = pragma_col;
 			injected_tokens.push_back(tb);
 			for ( size_t i = 0; i < order.size(); ++i )
 			{
-			    TokenIdent *ti = new TokenIdent(order[i]);
+			    TokenIdent *ti = (TokenIdent *)make_ident(order[i]);
 			    ti->line = pragma_line;
 			    ti->column = pragma_col;
 			    injected_tokens.push_back(ti);
 			    if ( i + 1 < order.size() )
 			    {
-				tb = new TokenComma();
+				tb = make_token(TokenID::tkComma);
 				tb->line = pragma_line;
 				tb->column = pragma_col;
 				injected_tokens.push_back(tb);
 			    }
 			}
-			tb = new TokenSemi();
+			tb = make_token(TokenID::tkSemi);
 			tb->line = pragma_line;
 			tb->column = pragma_col;
 			injected_tokens.push_back(tb);
 		    }
 		    else
 		    {
-			// consume rest of line for unknown pragmas
-			while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			    source.get();
+			// consume the rest of the directive line for unknown
+			// pragmas; discard trailing tokens via the lexer
+			consume_directive_line_tail();
 		    }
 		    return _getToken();
 		}
 	    }
 	    DBG(std::cout << "# fell through to TokenHash, peek=" << (int)source.peek() << " file=" << source.fname() << std::endl);
-	    return new TokenHash;
-	case '{': return new TokenOpBrc;
-	case '}': return new TokenClBrc;
-	case '(': return new TokenOpBrk;
-	case ')': return new TokenClBrk;
+	    return make_token(TokenID::tkHash);
+	case '{': return make_token(TokenID::tkOpBrc);
+	case '}': return make_token(TokenID::tkClBrc);
+	case '(': return make_token(TokenID::tkOpBrk);
+	case ')': return make_token(TokenID::tkClBrk);
 	case '[':
 	    // C23 [[attribute]] syntax: consume [[...]] and skip
 	    if ( source.peek() == '[' )
@@ -2015,30 +3709,35 @@ TokenBase *Program::_getToken()
 		}
 		return getToken();
 	    }
-	    return new TokenOpSqr;
-	case ']': return new TokenClSqr;
-	case '~': return new TokenBnot;
-	case '!': if (source.peek() != '=') return new TokenLnot;		// !
-	    source.get(); return new TokenNotEq;				// !=
+	    return make_token(TokenID::tkOpSqr);
+	case ']': return make_token(TokenID::tkClSqr);
+	case '~': return make_token(TokenID::tkBnot);
+	case '!': if (source.peek() != '=') return make_token(TokenID::tkLnot);		// !
+	    source.get();
+	    // !== is the madc dialect's strict not-equal; below the floor it
+	    // lexes as != then = (conforming syntax error).
+	    if (source.peek() == '=' && language_std == STD_MADC)
+		{ source.get(); return make_token(TokenID::tk3NotEq); }		// !==
+	    return make_token(TokenID::tkNotEq);					// !=
 	case '&':
-	    if (source.peek() == '&') { source.get(); return new TokenLand;   }  // &&
-	    if (source.peek() == '=') { source.get(); return new TokenBandEq; }  // &=
-	    return new TokenBand;					// &
+	    if (source.peek() == '&') { source.get(); return make_token(TokenID::tkLand);   }  // &&
+	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkBandEq); }  // &=
+	    return make_token(TokenID::tkBand);					// &
 	case '|':
-	    if (source.peek() == '|') { source.get(); return new TokenLor;    }  // ||
-	    if (source.peek() == '=') { source.get(); return new TokenBorEq;  }  // |=
-	    return new TokenBor;					// |
-	case '%': if (source.peek() != '=') return new TokenMod;		// %
-	    source.get(); return new TokenModEq;				// %=
-	case '^': if (source.peek() != '=') return new TokenXor;		// ^
-	     source.get(); return new TokenXorEq;				// ^=
-	case '?': return new TokenTerQ;					// ?
+	    if (source.peek() == '|') { source.get(); return make_token(TokenID::tkLor);    }  // ||
+	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkBorEq);  }  // |=
+	    return make_token(TokenID::tkBor);					// |
+	case '%': if (source.peek() != '=') return make_token(TokenID::tkMod);		// %
+	    source.get(); return make_token(TokenID::tkModEq);				// %=
+	case '^': if (source.peek() != '=') return make_token(TokenID::tkXor);		// ^
+	     source.get(); return make_token(TokenID::tkXorEq);				// ^=
+	case '?': return make_token(TokenID::tkQmark);					// ?
 	case ':':
-	    if (source.peek() == ':') { source.get(); return new TokenNS; }   // ::
-	    if (source.peek() == '=') { source.get(); return new TokenColEq; } // :=
-	    return new TokenTerC;                                               // :
-	case ';': return new TokenSemi;					// ,
-	case ',': return new TokenComma;				// .
+	    if (source.peek() == ':') { source.get(); return make_token(TokenID::tkNS); }   // ::
+	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkColEq); } // :=
+	    return make_token(TokenID::tkColon);                                               // :
+	case ';': return make_token(TokenID::tkSemi);					// ,
+	case ',': return make_token(TokenID::tkComma);				// .
 	case '.':
 	    // Leading-dot float literal: `.4`, `.25f`, etc. are valid C
 	    // shorthand for `0.4`, `0.25f`. The lexer used to tokenize
@@ -2075,9 +3774,9 @@ TokenBase *Program::_getToken()
 		    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
 			source.get();
 		}
-		return new TokenReal(num);
+		return make_real(num);
 	    }
-	    return new TokenDot;
+	    return make_token(TokenID::tkDot);
 	case '"':
 	    word = "";
 	    row = source.line();
@@ -2139,7 +3838,7 @@ TokenBase *Program::_getToken()
 		Throw << "Unterminated string" << flush;
 	    }
 	    source.get();
-	    return new TokenStr(word);
+	    return make_str(word);
 	case '\'':
 	    word = "";
 	    row = source.line();
@@ -2199,30 +3898,35 @@ TokenBase *Program::_getToken()
 		Throw << "Unterminated string" << flush;
 	    }
 	    source.get();
-	    return new TokenChar(word[0]);
+	    return make_char(word[0]);
 	case '<':
 	    if (source.peek() == '=')
 	    {
 		source.get();
-		if (source.peek() == '>') { source.get(); return new Token3Way; }  // <=>
-		return new TokenLE;					  // <=
+		// <=> is C++20 (and the madc dialect). Below the std floor the
+		// sequence lexes as <= then > — pre-C++20 sources that happen
+		// to contain the characters keep their old meaning.
+		if (source.peek() == '>'
+		 && (language_std == STD_MADC || language_std >= STD_CPP20))
+		    { source.get(); return make_token(TokenID::tk3Way); }		  // <=>
+		return make_token(TokenID::tkLE);					  // <=
 	    }
 	    if (source.peek() == '<')
 	    {
 		source.get();
-		if (source.peek() == '=') { source.get(); return new TokenBSLEq; } // <<=
-		return new TokenBSL;					  // <<
+		if (source.peek() == '=') { source.get(); return make_token(TokenID::tkBSLEq); } // <<=
+		return make_token(TokenID::tkBSL);					  // <<
 	    }
-	    return new TokenLT;						  // <
+	    return make_token(TokenID::tkLT);						  // <
 	case '>':
-	    if (source.peek() == '=')     { source.get(); return new TokenGE;  }	  // >=
+	    if (source.peek() == '=')     { source.get(); return make_token(TokenID::tkGE);  }	  // >=
 	    if (source.peek() == '>')
 	    {
 		source.get();
-		if (source.peek() == '=') { source.get(); return new TokenBSREq; } // >>=
-		return new TokenBSR;					  // >>
+		if (source.peek() == '=') { source.get(); return make_token(TokenID::tkBSREq); } // >>=
+		return make_token(TokenID::tkBSR);					  // >>
 	    }
-	    return new TokenGT;						  // >
+	    return make_token(TokenID::tkGT);						  // >
 	default:
 	    if ( isdigit(ch) )
 	    {
@@ -2294,20 +3998,46 @@ TokenBase *Program::_getToken()
 			return &ddINT64;
 		    return is_hex_or_octal ? (DataDef *)&ddUINT64 : (DataDef *)&ddINT64;
 		};
+		// gcc canon (verified tmp/wide_lit.c + wide_lit2.c, host gcc): an
+		// integer literal wider than 64 bits gets "integer constant is
+		// too large for its type" and TRUNCATES to its low 64 bits — gcc
+		// has no 128-bit literals (__int128 constants are composed as
+		// (hi<<64)|lo), and the literal's TYPE is chosen from the
+		// TRUNCATED value by the normal rules. madc matches that
+		// behavior but keeps the full 128-bit value in Program::valpool
+		// (TokenInt::wide_handle) so the token retains fidelity.
+		auto finish_int_literal = [&](unsigned __int128 uval, bool ovf128,
+					      bool is_hex_or_octal) -> TokenInt * {
+		    int64_t tval = (int64_t)(uint64_t)uval;
+		    TokenInt *ti = (TokenInt *)make_int(tval);
+		    if ( ovf128 || (uval >> 64) != 0 )
+		    {
+			report_warning(DiagnosticPhase::lexer,
+				       "integer constant is too large for its type",
+				       source.fname(), source.line(), source.column());
+			print_last_diagnostic(error());
+			ti->wide_handle = valpool.put_u128((uint64_t)uval,
+							   (uint64_t)(uval >> 64));
+		    }
+		    DataDef *st = resolve_int_suffix_type(tval, is_hex_or_octal);
+		    if ( st )
+			ti->setDataType(st);
+		    return ti;
+		};
 		if ( is_binary_prefix(ch, source) )
 		{
-		    int64_t bv = read_binary_literal(source);
+		    bool bv_ovf = false;
+		    unsigned __int128 bv = read_binary_literal(source, bv_ovf);
 		    eat_int_suffix();
-		    TokenInt *ti = new TokenInt(bv);
-		    { DataDef *st = resolve_int_suffix_type(bv, true); if (st) ti->setDataType(st); }
 		    // binary prefix source_text not critical for macro round-trip
-		    return ti;
+		    return finish_int_literal(bv, bv_ovf, true);
 		}
 		// hex literal: 0x... or 0X...
 		if ( ch == '0' && source.good() && (source.peek() == 'x' || source.peek() == 'X') )
 		{
 		    lit_text += (char)source.get(); // eat 'x'/'X'
-		    long long hv = 0;
+		    unsigned __int128 hv = 0;
+		    bool hv_ovf = false;
 		    while ( source.good() )
 		    {
 			if ( is_digit_separator(source.peek()) )
@@ -2319,6 +4049,8 @@ TokenBase *Program::_getToken()
 			    break;
 			char hc = source.get();
 			lit_text += hc;
+			if ( (hv >> 124) != 0 )
+			    hv_ovf = true;	// next *16 shifts past 128 bits
 			hv *= 16;
 			if      ( hc >= '0' && hc <= '9' ) hv += hc - '0';
 			else if ( hc >= 'a' && hc <= 'f' ) hv += hc - 'a' + 10;
@@ -2368,25 +4100,35 @@ TokenBase *Program::_getToken()
 		    }
 		    if ( eat_imag_suffix() )
 		    {
-			TokenReal *tr = new TokenReal(strtod(lit_text.c_str(), NULL));
+			TokenReal *tr = (TokenReal *)make_real(strtod(lit_text.c_str(), NULL));
 			char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
 			tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
+			// Preserve full literal text with imaginary suffix for transpiler
+			std::string full = lit_text;
+			if (imag_type_suffix) { full += 'i'; full += imag_type_suffix; }
+			else full += 'i';
+			tr->source_text = full;
 			return tr;
 		    }
-		    return new TokenReal(strtod(lit_text.c_str(), NULL));
+		    {
+			TokenReal *tr = (TokenReal *)make_real(strtod(lit_text.c_str(), NULL));
+			if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
+			    tr->setDataType(&ddFLOAT);
+			return tr;
+		    }
 		    }
 		    eat_int_suffix();
 		    {
-			TokenInt *ti = new TokenInt((int64_t)hv);
+			TokenInt *ti = finish_int_literal(hv, hv_ovf, true);
 			ti->source_text = lit_text;
-			{ DataDef *st = resolve_int_suffix_type((int64_t)hv, true); if (st) ti->setDataType(st); }
 			return ti;
 		    }
 		}
 		// Octal literal: starts with 0, digits 0-7
 		bool is_octal = (ch == '0') && source.good()
 		    && source.peek() >= '0' && source.peek() <= '7';
-		int64_t v = (ch & 0xf);
+		unsigned __int128 v = (unsigned __int128)(ch & 0xf);
+		bool v_ovf = false;
 
 		if ( is_octal )
 		{
@@ -2398,11 +4140,16 @@ TokenBase *Program::_getToken()
 			    break;
 			char oc = source.get();
 			lit_text += oc;
+			if ( (v >> 125) != 0 )
+			    v_ovf = true;	// next *8 shifts past 128 bits
 			v = v * 8 + (oc & 0xf);
 		    }
 		}
 		else
 		{
+		    // 2^128-1 = ...211455: a next digit overflows iff v exceeds
+		    // the /10 limit, or equals it with a digit above the final 5.
+		    const unsigned __int128 dec_limit = (~(unsigned __int128)0) / 10;
 		    while ( source.good() )
 		    {
 			if ( is_digit_separator(source.peek()) )
@@ -2414,6 +4161,8 @@ TokenBase *Program::_getToken()
 			    break;
 			char dc = source.get();
 			lit_text += dc;
+			if ( v > dec_limit || (v == dec_limit && (dc & 0xf) > 5) )
+			    v_ovf = true;
 			v *= 10;
 			v += dc & 0xf;
 		    }
@@ -2442,24 +4191,31 @@ TokenBase *Program::_getToken()
 			double num = strtod(lit_text.c_str(), NULL);
 			if ( eat_imag_suffix() )
 			{
-			    TokenReal *tr = new TokenReal(num);
+			    TokenReal *tr = (TokenReal *)make_real(num);
 			    char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
 			    tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
+			    std::string full = lit_text;
+			    if (imag_type_suffix) { full += 'i'; full += imag_type_suffix; }
+			    else full += 'i';
+			    tr->source_text = full;
 			    return tr;
 			}
-			return new TokenReal(num);
+			return make_real(num);
 		    }
 		    if ( eat_imag_suffix() )
 		    {
-			TokenInt *ti = new TokenInt(v);
+			TokenInt *ti = (TokenInt *)make_int((int64_t)(uint64_t)v);
 			ti->source_text = lit_text;
-			ti->setDataType(get_complex_compat_type(&ddINT64));
+			// gcc types an integer imaginary constant by the plain
+			// decimal ladder: `4i` is _Complex int, not _Complex long.
+			ti->setDataType(get_complex_compat_type(
+			    v <= 0x7fffffffULL ? (DataDef *)&ddINT32
+					       : (DataDef *)&ddINT64));
 			return ti;
 		    }
 		    eat_int_suffix();
-		    TokenInt *ti = new TokenInt(v);
+		    TokenInt *ti = finish_int_literal(v, v_ovf, is_octal);
 		    ti->source_text = lit_text;
-		    { DataDef *st = resolve_int_suffix_type(v, is_octal); if (st) ti->setDataType(st); }
 		    return ti;
 		}
 		// handle floating point
@@ -2507,31 +4263,66 @@ TokenBase *Program::_getToken()
 		double num = strtod(lit_text.c_str(), NULL);
 		if ( eat_imag_suffix() )
 		{
-		    TokenReal *tr = new TokenReal(num);
+		    TokenReal *tr = (TokenReal *)make_real(num);
 		    char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
 		    tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
+		    std::string full = lit_text;
+		    if (imag_type_suffix) { full += 'i'; full += imag_type_suffix; }
+		    else full += 'i';
+		    tr->source_text = full;
 		    return tr;
 		}
-		return new TokenReal(num);
+		{
+		    TokenReal *tr = (TokenReal *)make_real(num);
+		    // Record a single-precision type for an `f`/`F`-suffixed literal so
+		    // its width survives into c2mir (it self-determines arithmetic type).
+		    // Without this `1.0f` lowered as a double, which silently widened
+		    // mixed float/float-_Complex arithmetic to double precision.
+		    if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
+			tr->setDataType(&ddFLOAT);
+		    return tr;
+		}
 	    }
 	    if ( ch == '_' || isalnum(ch) )
 	    {
 		word = "";
 		word += ch;
+		// Fold the spelling hash WHILE reading the identifier (tinycc model)
+		// so intern() below doesn't re-walk the bytes for the hash.
+		uint32_t whash = madc::dis::intern_table::hash_step(madc::dis::intern_table::hash_init(), (unsigned char)ch);
 
+		// Fast path: scan the identifier-continuation SPAN straight off the
+		// flat buffer (one append + a contiguous hash fold) instead of
+		// per-char get()/peek() + std::string growth. Falls through to the
+		// char loop below for the pushback (macro) and line-splice remainder.
+		const char *idspan; size_t idlen;
+		if ( source.fast_ident_span(idspan, idlen) )
+		{
+		    word.append(idspan, idlen);
+		    for ( size_t k = 0; k < idlen; ++k )
+			whash = madc::dis::intern_table::hash_step(whash, (unsigned char)idspan[k]);
+		}
 		while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
-		    word += source.get();
+		{
+		    int wc = source.get();
+		    word += (char)wc;
+		    whash = madc::dis::intern_table::hash_step(whash, (unsigned char)wc);
+		}
 		if ( word == "L" && source.good()
 		  && (source.peek() == '"' || source.peek() == '\'') )
-		    return read_wide_literal(source);
+		    return read_wide_literal();
+		// Intern the spelling ONCE (with the pre-folded hash); reuse the id
+		// for every per-word map probe below (macro/define/keyword/cpp-operator)
+		// — a flat sid-indexed array access, no string compare, no tree.
+		uint32_t sid = strpool.intern(word.data(), (uint32_t)word.size(), whash);
 		// function-like macro expansion: NAME(args) or NAME (args)
 		// Suppressed when the preceding tokens form a declaration /
 		// definition head (`void bug(const char *, ...)` must not
 		// be eaten by a prior `#define bug(...) ((void)0)`).
-		if ( macro_map.count(word) && !source.macro_disabled(word)
+		if ( macro_map.count(sid) && !source.macro_disabled(word)
 		     && consume_macro_call_open(source) )
 		{
-		    MacroDef &macro = macro_map[word];
+		    MacroDef &macro = macro_map[sid];
 		    // read actual arguments (handling nested parens and strings)
 		    std::vector<std::string> args;
 		    std::string arg;
@@ -2746,7 +4537,7 @@ TokenBase *Program::_getToken()
 			}
 			tail += ")";
 			source.pushback(tail);
-			return new TokenIdent(word);
+			return make_ident(word);
 		    }
 		    // substitute params in body — single pass over the
 		    // original body so an argument that happens to match a
@@ -2800,7 +4591,7 @@ TokenBase *Program::_getToken()
 				    expanded_arg += ((TokenMultiOp *)at)->str; break;
 				case TokenType::ttString:
 				    expanded_arg += '"';
-				    expanded_arg += ((TokenIdent *)at)->str;
+				    expanded_arg += ((TokenIdent *)at)->spelling();
 				    expanded_arg += '"';
 				    break;
 				case TokenType::ttChar:
@@ -2810,7 +4601,7 @@ TokenBase *Program::_getToken()
 				    break;
 				default:
 				    if ( auto *ti = dynamic_cast<TokenIdent *>(at) )
-					expanded_arg += ti->str;
+					expanded_arg += ti->spelling();
 				    else if ( at->type() == TokenType::ttInteger )
 				    {
 					TokenInt *tki = static_cast<TokenInt *>(at);
@@ -2833,6 +4624,7 @@ TokenBase *Program::_getToken()
 		    }
 		    std::map<std::string, const std::string *> param_map;
 		    std::string named_varargs;
+		    std::string empty_macro_arg;   // for params supplied no argument
 		    bool has_named_varargs = macro.variadic && !macro.variadic_param.empty();
 		    size_t fixed_param_count = macro.params.size();
 		    if ( has_named_varargs && fixed_param_count > 0 )
@@ -2852,6 +4644,13 @@ TokenBase *Program::_getToken()
 			else
 			    param_map[macro.params[i]] = &args[i];
 		    }
+		    // A macro called with fewer arguments than parameters binds the
+		    // missing params to EMPTY (C semantics) — e.g. `STR()` for
+		    // `#define STR(x) #x` binds x to "" so `#x` stringizes to "",
+		    // not a stray literal `#`. (glibc: __STRING(__USER_LABEL_PREFIX__)
+		    // with the prefix empty reaches the inner # with no argument.)
+		    for ( size_t i = args.size(); i < macro.params.size(); ++i )
+			param_map[macro.params[i]] = &empty_macro_arg;
 		    auto stringify_macro_arg = [](const std::string &raw) -> std::string {
 			std::string out("\"");
 			bool pending_space = false;
@@ -2977,20 +4776,22 @@ TokenBase *Program::_getToken()
 		    source.pushback_macro(expanded, word);
 		    return getToken();
 		}
-		// #define substitution: inject the define value into the source stream
-		if ( define_map.count(word) && !source.macro_disabled(word) )
-		{
-		    std::string &val = define_map[word];
-		    if ( !val.empty() )
-		    {
+			// #define substitution: inject the define value into the source stream
+			if ( define_map.count(sid) && !source.macro_disabled(word) )
+			{
+			    if ( word == "inline"
+			      && next_source_word_is(source, "namespace") )
+				return make_ident(word);
+			    std::string &val = define_map[sid];
+			    if ( !val.empty() )
+			    {
 			// Builtin libc aliases such as __builtin_strcmp -> strcmp
 			// should resolve to the target identifier directly instead
 			// of re-entering the macro rescanner. Otherwise user macros
 			// like `#define strcmp __builtin_strcmp` recurse forever.
 			if ( word.compare(0, 10, "__builtin_") == 0
-			  && is_identifier_spelling(val)
-			  && !builtin_alias_needs_retokenize(word, val) )
-			    return new TokenIdent(val);
+			  && is_identifier_spelling(val) )
+			    return make_ident(val);
 			source.pushback_macro(val, word);
 			return getToken(); // re-tokenize the substituted text
 		    }
@@ -3021,7 +4822,28 @@ TokenBase *Program::_getToken()
 		// is known.
 		if ( word == "__FUNCTION__" || word == "__func__"
 		  || word == "__PRETTY_FUNCTION__" )
-		    return new TokenIdent(word);
+		    return make_ident(word);
+		// noexcept / noexcept(expr): madc ignores exception
+		// specifications. Strip the optional (...) by BALANCED parens
+		// — NOT via a function-like macro, whose comma-splitting breaks
+		// on a template-id condition such as
+		// noexcept(is_nothrow_constructible<T, Args...>::value) (the
+		// preprocessor does not treat <...> as grouping).
+		if ( word == "noexcept" )
+		{
+		    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t' || source.peek() == '\n' || source.peek() == '\r') )
+			source.get();
+		    if ( source.peek() == '(' )
+		    {
+			int depth = 0;
+			do {
+			    char c = source.get();
+			    if ( c == '(' ) ++depth;
+			    else if ( c == ')' ) --depth;
+			} while ( source.good() && depth > 0 );
+		    }
+		    return getToken();
+		}
 		// Most GCC attributes are no-ops for madc. Preserve the few
 		// layout/type-shaping ones the parser understands and skip
 		// the rest.
@@ -3046,13 +4868,32 @@ TokenBase *Program::_getToken()
 		      || gnu_attribute_text_has_name(attr_text, "scalar_storage_order")
 		      || gnu_attribute_text_has_name(attr_text, "vector_size")
 		      || gnu_attribute_text_has_name(attr_text, "alias")
-		      || gnu_attribute_text_has_name(attr_text, "no_instrument_function") )
+		      || gnu_attribute_text_has_name(attr_text, "no_instrument_function")
+		      || gnu_attribute_text_has_name(attr_text, "optimize") )
 		    {
 			source.pushback(attr_text);
-			return new TokenIdent(word);
+			return make_ident(word);
 		    }
 		    return getToken();
 		}
+		// GCC/clang predefine __int128_t / __uint128_t as typedefs for
+		// (unsigned) __int128 — always available, no header. They are
+		// ATOMIC: unlike the __int128 keyword they do NOT combine with
+		// signed/unsigned/long (`unsigned __int128_t` is invalid), so
+		// resolve them directly to the canonical 128-bit datatype rather
+		// than feeding the compound accumulator. The datatype name stays
+		// "__int128" (from ddINT128), so downstream name-keyed lookups and
+		// c2mir emission are identical to the __int128 keyword path.
+		if ( word == "__int128_t" )
+		    return make_datatype("__int128", ddINT128);
+		if ( word == "__uint128_t" )
+		    return make_datatype("unsigned __int128", ddUINT128);
+		// The compiler-owned SysV va_list (struct __madc_va_list_tag[1]
+		// singleton) — ATOMIC like __int128_t; the parser's spelling
+		// table (resolve_builtin_type_spelling) returns the same object.
+		if ( word == "__builtin_va_list" )
+		    return make_datatype("__builtin_va_list",
+					 *use_builtin_va_list());
 		// Compound type specifiers: any mix of unsigned/signed/long/
 		// short/int/char/double in any order (C99 6.7.2).
 		// Uses a bitmap accumulator (chibicc-style) so order doesn't
@@ -3111,7 +4952,7 @@ TokenBase *Program::_getToken()
 			    }
 			    else
 			    {
-				source.pushback(std::string(" ") + w);
+				source.pushback_reread(std::string(" ") + w);
 				break;
 			    }
 			}
@@ -3119,7 +4960,7 @@ TokenBase *Program::_getToken()
 			{
 			    // Not a type specifier — push it back
 			    if ( !w.empty() )
-				source.pushback(std::string(" ") + w);
+				source.pushback_reread(std::string(" ") + w);
 			    break;
 			}
 		    }
@@ -3131,90 +4972,101 @@ TokenBase *Program::_getToken()
 			    if ( counter & TS_COMPLEX )
 			    {
 				DataDef *complex_dd = get_complex_compat_type(&ddDOUBLE);
-				return new TokenDataType(complex_dd->name.c_str(), *complex_dd);
+				return make_datatype(complex_dd->name.c_str(), *complex_dd);
 			    }
 			    break;
 			case TS_CHAR:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddCHAR); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("char", ddCHAR);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddCHAR); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("char", ddCHAR);
 			case TS_SIGNED + TS_CHAR:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT8); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("signed char", ddINT8);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT8); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("signed char", ddINT8);
 			case TS_UNSIGNED + TS_CHAR:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT8); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("unsigned char", ddUINT8);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT8); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned char", ddUINT8);
 			case TS_SHORT:
 			case TS_SHORT + TS_INT:
 			case TS_SIGNED + TS_SHORT:
 			case TS_SIGNED + TS_SHORT + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT16); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("short", ddINT16);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT16); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("short", ddINT16);
 			case TS_UNSIGNED + TS_SHORT:
 			case TS_UNSIGNED + TS_SHORT + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT16); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("unsigned short", ddUINT16);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT16); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned short", ddUINT16);
 			case TS_INT:
 			case TS_SIGNED:
 			case TS_SIGNED + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT32); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("int", ddINT32);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT32); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("int", ddINT32);
 			case TS_UNSIGNED:
 			case TS_UNSIGNED + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT32); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("unsigned int", ddUINT32);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT32); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned int", ddUINT32);
 			case TS_LONG:
 			case TS_LONG + TS_INT:
 			case TS_SIGNED + TS_LONG:
 			case TS_SIGNED + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("long", ddINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("long", ddINT64);
 			case TS_UNSIGNED + TS_LONG:
 			case TS_UNSIGNED + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("unsigned long", ddUINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned long", ddUINT64);
 			case TS_LONG + TS_LONG:
 			case TS_LONG + TS_LONG + TS_INT:
 			case TS_SIGNED + TS_LONG + TS_LONG:
 			case TS_SIGNED + TS_LONG + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("long long", ddINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("long long", ddINT64);
 			case TS_UNSIGNED + TS_LONG + TS_LONG:
 			case TS_UNSIGNED + TS_LONG + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("unsigned long long", ddUINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned long long", ddUINT64);
 			case TS_INT128:
 			case TS_SIGNED + TS_INT128:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("__int128", ddINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("__int128", ddINT128);
 			case TS_UNSIGNED + TS_INT128:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("unsigned __int128", ddUINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned __int128", ddUINT128);
 			case TS_FLOAT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddFLOAT); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("float", ddFLOAT);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddFLOAT); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("float", ddFLOAT);
 			case TS_DOUBLE:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("double", ddDOUBLE);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("double", ddDOUBLE);
 			case TS_LONG + TS_DOUBLE:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("long double", ddDOUBLE);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("long double", ddDOUBLE);
 			default:
 			    // Unrecognized combination — push back consumed words
 			    // in reverse and fall through to identifier/keyword lookup.
 			    for ( auto it = consumed.rbegin(); it != consumed.rend(); ++it )
-				source.pushback(std::string(" ") + *it);
+				source.pushback_reread(std::string(" ") + *it);
 			    break;
 		    }
 		}
-		if ( (kmi=keyword_map.find(word)) != keyword_map.end() )
-		    return kmi->second->clone();
+		if ( (kmi=keyword_map.find(sid)) != keyword_map.end() )
+		    return (*kmi)->clone();
+		// C++ alternative-token operators (and/or/not/...): empty in C
+		// mode, so this find is a no-op there.
+		if ( !cpp_operator_map.empty() )
+		{
+		    madc::dis::intern_keyed_map<TokenBase *>::iterator oi =
+			cpp_operator_map.find(sid);
+		    if ( oi != cpp_operator_map.end() )
+			return (*oi)->clone();
+		}
 		if ( (bmi=datatype_map.find(word)) != datatype_map.end() )
-		    return bmi->second->clone();
+		    return (*bmi)->clone();
 		if ( auto_include_standard_identifier(word) )
 		    return getToken();
-		return new TokenIdent(word);
+		TokenIdent *ti = (TokenIdent *)make_ident(word);
+		ti->rec.spelling_id = sid;   // already interned above; skip re-intern in getToken()
+		return ti;
 	    }
-	    return new TokenChar(ch);
+	    return make_char(ch);
 	// end switch
     }
 
@@ -3252,15 +5104,13 @@ TokenBase *Program::skipConditionalBlock()
 	if ( dir == "ifdef" || dir == "ifndef" || dir == "if" )
 	{
 	    depth++;
-	    // consume rest of line
-	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-		source.get();
+	    // consume the rest of the directive line (comment-aware)
+	    skip_directive_line_tail(source);
 	}
 	else if ( dir == "endif" )
 	{
-	    // consume rest of line
-	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-		source.get();
+	    // consume the rest of the directive line (comment-aware)
+	    skip_directive_line_tail(source);
 	    DBG(std::cout << "skipConditionalBlock: #endif depth=" << depth << " stack=" << ifdef_stack.size() << std::endl);
 	    if ( depth == 0 )
 	    {
@@ -3274,9 +5124,8 @@ TokenBase *Program::skipConditionalBlock()
 	}
 	else if ( depth == 0 && dir == "else" )
 	{
-	    // consume rest of line
-	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-		source.get();
+	    // consume the rest of the directive line (comment-aware)
+	    skip_directive_line_tail(source);
 	    bool already_done = ifdef_done_stack.top();
 	    ifdef_stack.pop();
 	    bool active = !already_done;
@@ -3295,9 +5144,9 @@ TokenBase *Program::skipConditionalBlock()
 	    if ( already_done )
 	    {
 		ifdef_stack.push(false);
-		// consume rest of line since we won't evaluate
-		while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-		    source.get();
+		// consume the rest of the directive line (comment-aware) since
+		// we won't evaluate this #elif
+		skip_directive_line_tail(source);
 		// keep skipping
 	    }
 	    else
@@ -3323,9 +5172,10 @@ TokenBase *Program::skipConditionalBlock()
     return NULL;
 }
 
-// evaluate #if condition: supports defined(NAME), !, &&, ||, identifiers,
-// and integer constants. This is enough for the header guards and platform
-// feature checks used by the imported SMAUG sources.
+// evaluate #if condition: supports defined(NAME), !, &&, ||, ?:, the
+// comparison/arithmetic/bitwise/shift tiers, identifiers, and integer
+// constants — the full C #if expression grammar real glibc/libstdc++
+// headers use.
 // Expand all #define macros in a #if/#elif expression string.
 // Simple defines are replaced with their values; undefined identifiers
 // (other than 'defined') become 0 per the C standard. Runs up to
@@ -3351,6 +5201,11 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    std::string word;
 	    while ( i < expr.size() && (isalnum((unsigned char)expr[i]) || expr[i] == '_') )
 		word += expr[i++];
+	    // B4a: every identifier a #if/#elif condition consults (including
+	    // `defined` operands, which the evaluator resolves later) is a
+	    // branch-relevant macro name for the pack container.
+	    if ( word != "defined" )
+		pack_record_branch_macro(word);
 	    // Don't expand 'defined' — it's a #if operator
 	    if ( word == "defined" )
 	    {
@@ -3368,14 +5223,118 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    auto it = define_map.find(word);
 	    if ( it != define_map.end() )
 	    {
-		out += it->second.empty() ? "1" : it->second;
+		out += it->empty() ? "1" : *it;
 		changed = true;
 	    }
 	    else if ( macro_map.count(word) > 0 )
 	    {
-		// Function-like macro without args in #if context → treat as defined (1)
-		out += "1";
-		changed = true;
+		// Function-like macro: expand a real invocation by collecting
+		// its balanced argument list from the expression text and
+		// substituting parameters into the body (the standard requires
+		// full macro expansion in #if). Replacing the call with a bare
+		// "1" left the argument list behind as garbage tokens —
+		// `__GNUC_PREREQ (7, 0) && !defined X` became `1 (7, 0) && …`,
+		// derailing the evaluator so the defined-operator tail
+		// produced the wrong branch (glibc's floatn-common.h
+		// __HAVE_FLOATN_NOT_TYPEDEF condition).
+		size_t j = i;
+		while ( j < expr.size() && (expr[j] == ' ' || expr[j] == '\t') )
+		    ++j;
+		if ( j < expr.size() && expr[j] == '(' )
+		{
+		    const MacroDef &m = macro_map[word];
+		    std::vector<std::string> margs;
+		    std::string marg;
+		    int mdepth = 0;
+		    ++j; // consume '('
+		    for ( ; j < expr.size(); ++j )
+		    {
+			char mc = expr[j];
+			if ( mc == '(' ) { ++mdepth; marg += mc; }
+			else if ( mc == ')' )
+			{
+			    if ( mdepth == 0 ) { ++j; break; }
+			    --mdepth; marg += mc;
+			}
+			else if ( mc == ',' && mdepth == 0 )
+			{ margs.push_back(marg); marg.clear(); }
+			else marg += mc;
+		    }
+		    if ( !marg.empty() || !margs.empty() )
+			margs.push_back(marg);
+		    auto trim = [](std::string &s) {
+			while ( !s.empty() && (s.front()==' '||s.front()=='\t') ) s.erase(s.begin());
+			while ( !s.empty() && (s.back()==' '||s.back()=='\t') ) s.pop_back();
+		    };
+		    for ( auto &a : margs ) trim(a);
+		    // Substitute params in a single pass over the body so an
+		    // argument matching a later parameter name isn't cascaded.
+		    const std::string &body = m.body;
+		    std::string expanded;
+		    size_t b = 0;
+		    while ( b < body.size() )
+		    {
+			if ( !isalpha((unsigned char)body[b]) && body[b] != '_' )
+			{ expanded += body[b++]; continue; }
+			std::string bw;
+			while ( b < body.size()
+			     && (isalnum((unsigned char)body[b]) || body[b] == '_') )
+			    bw += body[b++];
+			bool subst = false;
+			for ( size_t pi2 = 0; pi2 < m.params.size(); ++pi2 )
+			    if ( bw == m.params[pi2] )
+			    {
+				expanded += pi2 < margs.size() ? margs[pi2] : "";
+				subst = true;
+				break;
+			    }
+			if ( !subst && m.variadic
+			  && (bw == "__VA_ARGS__"
+			      || (!m.variadic_param.empty() && bw == m.variadic_param)) )
+			{
+			    for ( size_t va = m.params.size(); va < margs.size(); ++va )
+			    {
+				if ( va > m.params.size() ) expanded += ", ";
+				expanded += margs[va];
+			    }
+			    subst = true;
+			}
+			if ( !subst )
+			    expanded += bw;
+		    }
+		    // Token pasting: `A ## B` joins into ONE token after
+		    // parameter substitution — glibc's #if-consulted macros
+		    // are built this way (`__GLIBC_USE(F)` -> `__GLIBC_USE_
+		    // ## F`); without the join the evaluator saw two
+		    // undefined halves (0) and glibc feature conditions
+		    // (__GLIBC_USE (DEPRECATED_GETS)) took the wrong branch.
+		    // The joined name resolves on the next expansion pass.
+		    size_t hh;
+		    while ( (hh = expanded.find("##")) != std::string::npos )
+		    {
+			size_t lend = hh;
+			while ( lend > 0 && (expanded[lend-1] == ' '
+					  || expanded[lend-1] == '\t') )
+			    --lend;
+			size_t rstart = hh + 2;
+			while ( rstart < expanded.size()
+			     && (expanded[rstart] == ' '
+			      || expanded[rstart] == '\t') )
+			    ++rstart;
+			expanded = expanded.substr(0, lend)
+				 + expanded.substr(rstart);
+		    }
+		    out += "(" + expanded + ")";
+		    i = j;
+		    changed = true;
+		}
+		else
+		{
+		    // Function-like macro name with NO argument list: keep the
+		    // historical behavior (treated as 1 in #if context).
+		    out += "1";
+		    changed = true;
+		}
 	    }
 	    else
 		out += word; // leave as-is (will become 0 in the evaluator)
@@ -3406,6 +5365,7 @@ bool Program::evaluateIfCondition()
     };
 
     // Integer-valued recursive descent so comparisons work correctly.
+    std::function<int64_t()> parse_cond;
     std::function<int64_t()> parse_or;
     std::function<int64_t()> parse_and;
     std::function<int64_t()> parse_comparison;
@@ -3492,7 +5452,7 @@ bool Program::evaluateIfCondition()
 	if ( expr[pos] == '(' )
 	{
 	    ++pos;
-	    int64_t value = parse_or();
+	    int64_t value = parse_cond();
 	    skip_ws();
 	    if ( pos < expr.size() && expr[pos] == ')' )
 		++pos;
@@ -3571,8 +5531,8 @@ bool Program::evaluateIfCondition()
 	    auto it = define_map.find(word);
 	    if ( it != define_map.end() )
 	    {
-		if ( !it->second.empty() )
-		    return strtoll(it->second.c_str(), NULL, 0);
+		if ( !it->empty() )
+		    return strtoll(it->c_str(), NULL, 0);
 		return 1;
 	    }
 	    if ( macro_map.count(word) > 0 )
@@ -3815,21 +5775,80 @@ bool Program::evaluateIfCondition()
 	}
     };
 
-    return parse_or() != 0;
+    // Conditional operator (?:) — the lowest #if precedence tier
+    // (conditional-expression: logical-OR ? expression : conditional-expr,
+    // right-associative). Without this tier the ternary's CONDITION value
+    // leaked out as the result and both arms were ignored — glibc's
+    // features.h `defined __cplusplus ? __cplusplus >= 201402L : defined
+    // __USE_ISOC11` (__GLIBC_USE_DEPRECATED_GETS) took the wrong branch
+    // under --std=c++11, hiding ::gets from <cstdio>'s using-declaration.
+    parse_cond = [&]() -> int64_t {
+	int64_t cond = parse_or();
+	skip_ws();
+	if ( pos < expr.size() && expr[pos] == '?' )
+	{
+	    ++pos;
+	    int64_t then_v = parse_cond();
+	    skip_ws();
+	    if ( pos < expr.size() && expr[pos] == ':' )
+		++pos;
+	    int64_t else_v = parse_cond();
+	    return cond ? then_v : else_v;
+	}
+	return cond;
+    };
+
+    return parse_cond() != 0;
 }
 
 TokenBase *Program::getToken()
 {
     TokenBase *tb = _getToken();
 
+    // Step 4: identifier spelling_id is now interned AT CREATION (make_ident and
+    // the TokenIdent ctors), so the old getToken() stamp-from-str fallback is gone
+    // along with the per-token `str`.
     DBG(if (tb) printt(tb));
     return tb;
+}
+
+// Discard the trailing content of a preprocessor directive line (after
+// #endif/#else/#undef/#pragma/…) by running it THROUGH THE LEXER — the same
+// path normal code takes — and stopping at the end-of-line token. This reuses
+// the lexer's existing comment handling (`case '/'`, which reads a `/* */`
+// block comment across physical newlines into one token), so a comment that
+// opens on the directive line and continues onto the next is consumed in full
+// instead of leaking its body as code (real <stddef.h>:
+// `#endif /* … \n || __need_XXX was not defined before */`). Trailing tokens
+// are dropped, matching GCC's "extra tokens at end of #endif directive". Only
+// for ACTIVE directives — inactive #if branches are skipped at char level
+// (skip_directive_line_tail), since their content must NOT be tokenized/expanded.
+void Program::consume_directive_line_tail()
+{
+    TokenBase *t;
+    while ( (t = getToken()) && t->type() != TokenType::ttEOL )
+	/* discard — same as getRealToken() drops trivia */;
+}
+
+// Exact source text of a trivia token (whitespace via its RLE count, comment
+// via its stored text incl. delimiters). Used for full-fidelity reconstruction.
+static std::string trivia_text(TokenBase *tb)
+{
+    switch ( tb->type() )
+    {
+	case TokenType::ttSpace:   return std::string(((TokenSpace *)tb)->cnt, ' ');
+	case TokenType::ttTab:     return std::string(((TokenTab *)tb)->cnt, '\t');
+	case TokenType::ttEOL:     return std::string(((TokenEOL *)tb)->cnt, '\n');
+	case TokenType::ttComment: return ((TokenREM *)tb)->str;
+	default:                   return std::string();
+    }
 }
 
 // get a real token (ignore whitespace and comments)
 TokenBase *Program::getRealToken()
 {
     TokenBase *tb;
+    std::string pending_trivia;   // full-fidelity: leading whitespace/comments
 
 	while ( (tb=getToken()) )
 	{
@@ -3844,13 +5863,77 @@ TokenBase *Program::getRealToken()
 	    case TokenType::ttTab:
 	    case TokenType::ttEOL:
 	    case TokenType::ttComment:
+		if ( keep_trivia )
+		    pending_trivia += trivia_text(tb);
 		continue;
 	    default:
+		if ( keep_trivia && !pending_trivia.empty() )
+		    tb->leading_trivia = std::move(pending_trivia);
 		return tb;
 	}
     }
 
+    // EOF: stash any accumulated trailing trivia for reconstruct_source().
+    if ( keep_trivia && !pending_trivia.empty() )
+	_trailing_trivia = std::move(pending_trivia);
     return NULL;
+}
+
+// Best-effort source spelling of a lex-time token. NOTE: numeric literals store
+// the parsed value, not the original text (0x1F -> "31"), and string escapes are
+// not preserved — true byte-faithful reconstruction needs tokens to retain raw
+// source text (a follow-on). Sufficient to demonstrate trivia retention on plain
+// source. Keywords/identifiers/types/comments are all TokenIdent-derived.
+static std::string token_spelling(TokenBase *tb)
+{
+    switch ( tb->type() )
+    {
+	case TokenType::ttString:
+	    if ( TokenIdent *ti = dynamic_cast<TokenIdent *>(tb) )
+		return std::string("\"") + ti->spelling() + "\"";
+	    return std::string();
+	case TokenType::ttVariable:
+	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) ) return tv->var.name;
+	    return std::string();
+	case TokenType::ttInteger: return std::to_string(tb->ival());
+	case TokenType::ttReal:    return std::to_string(tb->dval());
+	case TokenType::ttChar:
+	{
+	    // Reconstruct a char literal that re-lexes to the same value.
+	    // TokenChar keeps only the value (not the original spelling), so this
+	    // is a canonical form: printable ASCII emitted directly (the quote and
+	    // backslash escaped), everything else as a hex escape. Without this case char
+	    // literals reconstructed as empty (dropping `'\0'`/`'\x7f'` operands),
+	    // which corrupted -E output fed back to the parser.
+	    int v = (int)tb->ival();
+	    if ( v >= 0x20 && v <= 0x7e && v != '\'' && v != '\\' )
+		return std::string("'") + (char)v + "'";
+	    char buf[16];
+	    snprintf(buf, sizeof(buf), "'\\x%x'", (unsigned)(v & 0xff));
+	    return std::string(buf);
+	}
+	case TokenType::ttOperator:
+	case TokenType::ttSymbol:  return std::string(1, (char)tb->get());
+	default:
+	    if ( TokenIdent *ti = dynamic_cast<TokenIdent *>(tb) ) return ti->spelling();
+	    if ( TokenMultiOp *to = dynamic_cast<TokenMultiOp *>(tb) ) return to->str;
+	    return std::string();
+    }
+}
+
+// Reconstruct source text from the token stream (full-fidelity mode): each
+// token's leading trivia followed by its spelling. Requires keep_trivia to have
+// been set before tokenizing.
+std::string Program::reconstruct_source()
+{
+    std::string out;
+    for ( TokenBase *tb : tokens )
+    {
+	out += tb->leading_trivia;
+	out += token_spelling(tb);
+    }
+    out += _trailing_trivia;   // whitespace/comments after the last token
+    return out;
 }
 
 // print out a token with syntax highlighting, to debug parser
@@ -3902,7 +5985,7 @@ void Program::printt(TokenBase *tb)
 		std::cout << "\e[0;37m";
 	    else
 		std::cout << "ID::";
-	    std::cout << ((TokenIdent *)tb)->str;
+	    std::cout << ((TokenIdent *)tb)->spelling();
 	    if ( colors ) { std::cout << "\e[m"; }
 	    break;
 	case TokenType::ttVariable:
@@ -3919,7 +6002,7 @@ void Program::printt(TokenBase *tb)
 		std::cout << "\e[1;32m";
 	    else
 		std::cout << "REM::";
-	    std::cout << ((TokenIdent *)tb)->str;
+	    std::cout << ((TokenIdent *)tb)->spelling();
 	    if ( colors ) { std::cout << "\e[m"; }
 	    break;
 	case TokenType::ttString:
@@ -3927,7 +6010,7 @@ void Program::printt(TokenBase *tb)
 		std::cout << "\e[0;36m";
 	    else
 		std::cout << "STR::";
-	    std::cout << '"' << ((TokenIdent *)tb)->str << '"';
+	    std::cout << '"' << ((TokenIdent *)tb)->spelling() << '"';
 	    if ( colors ) { std::cout << "\e[m"; }
 	    break;
 	case TokenType::ttChar:
@@ -3962,7 +6045,7 @@ void Program::printt(TokenBase *tb)
 		std::cout << "\e[1;33m";
 	    else
 		std::cout << "KEY::";
-	    std::cout << ((TokenIdent *)tb)->str;
+	    std::cout << ((TokenIdent *)tb)->spelling();
 	    if ( colors ) { std::cout << "\e[m"; }
 	    break;
 	case TokenType::ttDataType:
@@ -3970,7 +6053,7 @@ void Program::printt(TokenBase *tb)
 		std::cout << "\e[1;37m";
 	    else
 		std::cout << "TYPE::";
-	    std::cout << ((TokenIdent *)tb)->str;
+	    std::cout << ((TokenIdent *)tb)->spelling();
 	    if ( colors ) { std::cout << "\e[m"; }
 	    break;
 	default:
@@ -3982,15 +6065,7 @@ void Program::printt(TokenBase *tb)
 void Source::showerror(int row, int col)
 {
 //	std::cout << "showerror(" << row << ", " << col << ')' << std::endl;
-	char *env_columns = getenv("COLUMNS");
-	size_t term_columns;
 	std::string ln;
-
-	if ( env_columns )
-	    term_columns = atoi(env_columns);
-	else
-	    term_columns = 80;
-	_ss.clear();
 
 	if ( !row || !col )
 	{
@@ -3998,10 +6073,17 @@ void Source::showerror(int row, int col)
 	    col = column();
 	}
 
+	// This display walk MUST be position-neutral: a WARNING resumes lexing
+	// right after it prints, so the cursor state is saved here and restored
+	// before every return. (It was destructive-only before — every caller
+	// was a fatal error path, so the clobbered cursor never mattered.)
+	size_t saved_gpos = _gpos;
+	int saved_cr = _cr, saved_lf = _lf, saved_column = _column;
+
+	// Flat-buffer rewind: reset the read cursor to the start and re-scan
+	// forward to the error line (was _ss.seekg(0) on the old stringstream).
 	_cr = _lf = 0;
-	_ss.seekg(0, _ss.beg);
-	if ( !_ss.good() )
-	    std::cerr << " seekfail";
+	_gpos = 0;
 
 	while ( peek() != -1 )
 	{
@@ -4011,17 +6093,53 @@ void Source::showerror(int row, int col)
 		break;
         }
 
-	if ( ln.length()+5 > term_columns )
-	{
-	    ln = "  ..." + ln.substr(col);
-	    std::cerr << ln << std::endl;
-	    std::cerr << std::setw(4) << ' ' << "\e[1;32m^\e[m" << std::endl;
-	    return;
-	}
-	std::cerr << ln << std::endl;
-	if ( col > 1 )
-	    std::cerr << std::setw(col-1) << ' ';
-	std::cerr << "\e[1;32m^\e[m" << std::endl;
+	_gpos = saved_gpos;
+	_cr = saved_cr; _lf = saved_lf; _column = saved_column;
+
+	show_error_source_line(ln, col);
+}
+
+// Shared display tail for a diagnostic source echo: the offending line and a
+// caret under the column, truncated to the terminal width — one formatter for
+// both the live-Source echo and the reread-from-disk echo.
+void show_error_source_line(const std::string &ln, int col)
+{
+    char *env_columns = getenv("COLUMNS");
+    size_t term_columns = env_columns ? (size_t)atoi(env_columns) : 80;
+
+    if ( ln.length()+5 > term_columns )
+    {
+	std::string trunc = "  ..." + ln.substr(col);
+	std::cerr << trunc << std::endl;
+	std::cerr << std::setw(4) << ' ' << "\e[1;32m^\e[m" << std::endl;
+	return;
+    }
+    std::cerr << ln << std::endl;
+    if ( col > 1 )
+	std::cerr << std::setw(col-1) << ' ';
+    std::cerr << "\e[1;32m^\e[m" << std::endl;
+}
+
+// Echo line `row` of a file that is NOT the live Source buffer — a token from
+// an #included file. Diagnostics are a cold path, so reread from disk. Returns
+// false (echo skipped) when the file cannot be opened or is shorter than
+// `row` — e.g. an embedded header with no on-disk presence, or stale
+// provenance; skipping beats echoing the wrong file's text.
+bool madc_show_file_error(const char *fname, int row, int col)
+{
+    if ( !fname || !*fname || row <= 0 )
+	return false;
+    std::ifstream f(fname);
+    if ( !f.is_open() )
+	return false;
+    std::string ln;
+    int i = 0;
+    while ( i < row && std::getline(f, ln) )
+	++i;
+    if ( i != row )
+	return false;
+    show_error_source_line(ln, col);
+    return true;
 }
 
 int throwbuf::sync()
@@ -4029,10 +6147,19 @@ int throwbuf::sync()
     cerr << endl;
     if ( _tb )
     {
-	cerr << ANSI_WHITE << (_src ? _src->fname() : "???") << ':' << _tb->line << ':' << _tb->column 
+	// file, line, column, AND the echoed source line must all come from
+	// the SAME provenance — the token's. Before this, an error inside an
+	// #included file printed the top-level file's NAME with the header's
+	// LINE and echoed the top-level file's text (three-way inconsistent).
+	const char *tok_file = (_tb->file && *_tb->file) ? _tb->file : NULL;
+	const char *fname = tok_file ? tok_file
+			  : (_src ? _src->fname() : "???");
+	cerr << ANSI_WHITE << fname << ':' << _tb->line << ':' << _tb->column
 	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
-	if ( _src )
+	if ( _src && (!tok_file || strcmp(tok_file, _src->fname()) == 0) )
 	    _src->showerror(_tb->line, _tb->column);
+	else
+	    madc_show_file_error(fname, _tb->line, _tb->column);
     }
     else
     if ( _src )
@@ -4118,8 +6245,17 @@ TokenProgram *Program::tokenize(const char *fname)
 
     _tokenizer_init();
 
+    forest_root_file = fname;	// v24: the program's own file — its state
+				// never enters the forest's bind surface
     source.fname(fname);
-    source.copybuf(file.rdbuf());
+    {
+	ReadTimer _rt(_read_seconds);
+	file.seekg(0, std::ios::end);	// --show-stats: main source-file bytes
+	if ( file.tellg() > 0 ) _input_bytes += (size_t)file.tellg();
+	file.seekg(0);
+	source.copybuf(file.rdbuf());
+    }
+    pack_note_unit(pack_recording ? intern_file(fname) : NULL);	// B4a: main unit first
     Throw.source(source);
 
     try
@@ -4129,7 +6265,7 @@ TokenProgram *Program::tokenize(const char *fname)
 	    tb->file = fname;
 //	    tb->line = source.line();
 //	    tb->column = source.column();
-	    push_token_with_string_concat(tb);
+	    push_token_with_literal_concat(tb);
         }
     }
     catch(const char *err_msg)
@@ -4140,7 +6276,7 @@ TokenProgram *Program::tokenize(const char *fname)
     }
     catch(TokenIdent *ti)
     {
-	set_error(Program::DiagnosticPhase::lexer, std::string("use of undeclared identifier '") + ti->str + '\'', fname, source.line(), source.column());
+	set_error(Program::DiagnosticPhase::lexer, std::string("use of undeclared identifier '") + ti->spelling() + '\'', fname, source.line(), source.column());
 	print_last_diagnostic(error());
 	return NULL;
     }
@@ -4154,6 +6290,7 @@ TokenProgram *Program::tokenize(const char *fname)
     {
 	if ( !last_error.has_error )
 	    set_error(Program::DiagnosticPhase::lexer, Throw.str().empty() ? e.what() : Throw.str(), fname, source.line(), source.column());
+	print_unrendered_diagnostic();
 	return NULL;
     }
 
@@ -4161,6 +6298,7 @@ TokenProgram *Program::tokenize(const char *fname)
 
     tkProgram = new TokenProgram();
     tkFunction = tkProgram;
+    flush_forest_pending_globals();	// v13: globals staged during #include bind
 
     file.clear();
 
@@ -4185,8 +6323,11 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 
     _tokenizer_init();
 
+    forest_root_file = fname;	// v24 (see tokenize)
     source.fname(fname);
-    source.str(source_text);
+    { ReadTimer _rt(_read_seconds); source.str(source_text); }
+    _input_bytes += source_text.size();	// --show-stats: load_buffer main-source bytes
+    pack_note_unit(pack_recording ? fname : NULL);	// B4a: main unit first
     Throw.source(source);
 
     try
@@ -4194,7 +6335,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 	while ( (tb=getRealToken()) )
 	{
 	    tb->file = fname;
-	    push_token_with_string_concat(tb);
+	    push_token_with_literal_concat(tb);
 	}
     }
     catch(const char *err_msg)
@@ -4207,7 +6348,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
     catch(TokenIdent *ti)
     {
 	set_error(Program::DiagnosticPhase::lexer,
-		  std::string("use of undeclared identifier '") + ti->str + '\'',
+		  std::string("use of undeclared identifier '") + ti->spelling() + '\'',
 		  fname, source.line(), source.column());
 	print_last_diagnostic(error());
 	return NULL;
@@ -4226,6 +6367,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 	    set_error(Program::DiagnosticPhase::lexer,
 		      Throw.str().empty() ? e.what() : Throw.str(),
 		      fname, source.line(), source.column());
+	print_unrendered_diagnostic();
 	return NULL;
     }
 
@@ -4233,6 +6375,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 
     tkProgram = new TokenProgram();
     tkFunction = tkProgram;
+    flush_forest_pending_globals();	// v13: globals staged during #include bind
 
     tkProgram->source = effective_name;
     tkProgram->is = new std::stringstream(source_text);

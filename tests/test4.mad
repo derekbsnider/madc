@@ -33,7 +33,7 @@ int main()
     putchar(32);
     printi(i);
 
-    printstr(version);
+    puts(MADC_VERSION);
 
     return 0;
 }

@@ -1,0 +1,43 @@
+// Catch-parameter grammar: full exception-declaration shapes.
+// - qualified class type by unnamed reference (`catch (ns::T&)`) — the
+//   libstdc++ __catch(__cxxabiv1::__forced_unwind&) shape in every stream body
+// - named cv-qualified class reference (`catch (const T& e)`) — body must
+//   type-check against the real class type
+// - pointer declarator (`catch (char* m)`)
+// Dispatch canon (g++): a class/pointer clause never matches a thrown int —
+// madc's runtime throws int/double/cstr only, so such a clause is unmatchable
+// and the thrown value must fall through to a later clause. 3-oracled vs g++.
+#include <cstdio>
+
+namespace myabi { class forced { public: int x; }; }
+class exc { public: int code; };
+
+int f1() {
+  try { throw 42; }
+  catch (myabi::forced&) { return 1; }
+  catch (...) { return 2; }
+  return 0;
+}
+
+int f2() {
+  try { throw 7; }
+  catch (const exc& e) { return e.code; }
+  catch (int v) { return v; }
+  return 0;
+}
+
+int f3() {
+  try { throw 5; }
+  catch (char* m) { return 8; }
+  catch (int v) { return v + 10; }
+  return 0;
+}
+
+int f4() {
+  try { throw 3; }
+  catch (exc&) { return 30; }
+  catch (int v) { return v * 100; }
+  return 0;
+}
+
+int main() { printf("%d %d %d %d\n", f1(), f2(), f3(), f4()); return 0; }

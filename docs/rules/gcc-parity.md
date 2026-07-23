@@ -41,3 +41,21 @@ For parity work:
   model.
 - Do not cargo-cult GCC output; use it to sharpen the hypothesis before
   editing.
+
+## GCC as the performance baseline
+
+GCC does strictly more work than madc's front-end on the same translation
+unit (it also optimizes and emits an object), yet it is heavily tuned. So if
+madc's *parse + c2mir* time exceeds GCC's *whole `-O0 -c`* time, madc is almost
+certainly doing something algorithmically wrong, not merely "unoptimized" — the
+canonical example is an unbounded-lookahead helper that scans to end-of-stream
+once per token (O(n²)). That class is invisible on small inputs and only shows
+up on large or macro-heavy bodies (gcc.c-torture `memcpy-a*`, `memclr`).
+
+The standing practice: **whenever a test is slower than GCC, callgrind it** and
+read the top self-cost madc function. `scripts/perf_vs_gcc.sh` automates the
+compare-and-callgrind; `docs/plans/2026-06-23-parser-lookahead-audit.md` is the
+running log of the bug class and the per-site triage worklist. tinycc
+(`/workspace/tinycc`) is a useful *floor* reference (interned int tokens,
+pre-tokenized macro bodies) for how fast this can ultimately get; GCC is the
+must-beat bar.

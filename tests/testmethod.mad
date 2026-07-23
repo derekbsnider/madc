@@ -4,6 +4,7 @@ using namespace std;
 // Test class methods
 
 class Counter {
+public:
 	int count;
 
 	void inc()

@@ -12,6 +12,7 @@ thread_local bool madc_verbose = false;
 #include "libmadc/value.h"
 
 #include <map>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -71,9 +72,31 @@ TEST_SUITE("madc::value") {
 
     TEST_CASE("bytes roundtrip") {
 	std::vector<uint8_t> raw{0x01, 0x02, 0xff};
-	value v = value::make_bytes(raw);
+	value v = value::make_bytes(raw.data(), raw.size());
 	CHECK(v.is_bytes());
-	CHECK(v.as_bytes() == raw);
+	REQUIRE(v.size() == raw.size());
+	CHECK(std::memcmp(v.data(), raw.data(), raw.size()) == 0);
+    }
+
+    TEST_CASE("typed instance cell: identity, sharing, finalizer") {
+	static int destroyed = 0;
+	destroyed = 0;
+	struct hooks { static void destroy(void *) { ++destroyed; } };
+	const uint32_t fake_type = MADC_TYPEID_PRIMITIVE_END + 7;
+	value v = value::make_instance(fake_type, 24, &hooks::destroy);
+	CHECK(v.is_instance());
+	CHECK(v.type_id() == fake_type);
+	CHECK(v.size() == 24);
+	REQUIRE(v.data() != nullptr);
+	*(int *)v.instance_data() = 42;
+	value w = v;                     // copy retains the SAME cell
+	CHECK(w == v);                   // instance equality = identity
+	CHECK(w.data() == v.data());
+	CHECK(destroyed == 0);
+	w = value();                     // one reference down
+	CHECK(destroyed == 0);
+	v = value();                     // last reference: finalizer runs once
+	CHECK(destroyed == 1);
     }
 
     TEST_CASE("array make_array empty and populated") {
@@ -158,8 +181,9 @@ TEST_SUITE("madc::value") {
 	CHECK(value(1.5) == value(1.5));
 	CHECK(value("x") == value("x"));
 	CHECK(value("x") != value("y"));
-	CHECK(value::make_bytes({1,2,3}) == value::make_bytes({1,2,3}));
-	CHECK(value::make_bytes({1,2,3}) != value::make_bytes({1,2,4}));
+	const uint8_t b123[] = {1,2,3}, b124[] = {1,2,4};
+	CHECK(value::make_bytes(b123, 3) == value::make_bytes(b123, 3));
+	CHECK(value::make_bytes(b123, 3) != value::make_bytes(b124, 3));
 	CHECK(value::make_array() == value::make_array());
 
 	value o1 = value::make_object();
@@ -194,5 +218,128 @@ TEST_SUITE("madc::value") {
 	CHECK(a.array().empty());
 	a.array().push_back(value(int64_t(99)));
 	CHECK(a.as_array()[0].as_integer() == 99);
+    }
+
+    TEST_CASE("object() on a null value vivifies an empty object") {
+	value v;
+	CHECK(v.is_null());
+	v.object()["k"] = value(int64_t(1));
+	CHECK(v.is_object());
+	CHECK(v.as_object().at("k").as_integer() == 1);
+    }
+
+    TEST_CASE("array() on a null value vivifies an empty array") {
+	value v;
+	CHECK(v.is_null());
+	v.array().push_back(value(int64_t(7)));
+	CHECK(v.is_array());
+	CHECK(v.as_array().size() == 1);
+    }
+
+    TEST_CASE("mutating accessors still throw on non-null kind mismatch") {
+	value v(int64_t(1));
+	CHECK_THROWS_AS(v.object(), std::runtime_error);
+	CHECK_THROWS_AS(v.array(),  std::runtime_error);
+	value o = value::make_object();
+	CHECK_THROWS_AS(o.array(),  std::runtime_error);
+	value a = value::make_array();
+	CHECK_THROWS_AS(a.object(), std::runtime_error);
+    }
+
+    TEST_CASE("a vivified value equals its make_ factory twin") {
+	value vo;
+	vo.object();
+	CHECK(vo == value::make_object());
+	value va;
+	va.array();
+	CHECK(va == value::make_array());
+    }
+}
+
+// --- The 32-byte madc_value C ABI + cell runtime (madc_api.h /
+// madc_value_cell.h). Header-only struct + the cell impl in madc_value.o —
+// still no parser/compiler internals in this binary.
+#include "madc_api.h"
+#include "madc_value_cell.h"
+#include <cstddef>
+#include <cstdlib>
+
+TEST_SUITE("madc_value 32-byte ABI") {
+
+    TEST_CASE("layout is pinned ABI") {
+        CHECK(sizeof(madc_value) == 32);
+        CHECK(alignof(madc_value) == 16);
+        CHECK(offsetof(madc_value, type_id) == 0);
+        CHECK(offsetof(madc_value, flags) == 4);
+        CHECK(offsetof(madc_value, size) == 8);
+        CHECK(MADC_VALUE_NULL == MADC_TYPEID_INVALID);
+        CHECK(MADC_VALUE_BOOLEAN == MADC_TYPEID_BOOL);
+        CHECK(MADC_VALUE_INTEGER == MADC_TYPEID_INT64);
+        CHECK(MADC_VALUE_REAL == MADC_TYPEID_DOUBLE);
+        CHECK(MADC_VALUE_STRING == MADC_TYPEID_TEXT);
+        CHECK(MADC_VF_HEAP == 1u);
+        CHECK(MADC_VF_INLINE_TEXT == 2u);
+        CHECK(MADC_VF_TYPE_LOCKED == 4u);
+        CHECK(MADC_VF_TYPE_COERCE == 8u);
+        CHECK(MADC_VF_NULLABLE == 16u);
+        CHECK(MADC_VF_CONST == 32u);
+    }
+
+    TEST_CASE("freeze: mutation entry points reject, reads unaffected") {
+	value a = value::make_array();
+	a.array().push_back(value("alpha"));
+	a.freeze();
+	CHECK(a.is_frozen());
+	CHECK_THROWS(a.array());                 // mutable accessor rejected
+	CHECK(a.as_array().size() == 1);         // const read unaffected
+	CHECK(a.as_array()[0].as_string() == "alpha");
+	value src = value::make_array();
+	CHECK_THROWS(a = src);                   // copy-assign onto frozen
+	value s("hello");
+	s.freeze();
+	CHECK(s.as_string() == "hello");         // frozen SSO string readable
+	value w("world");
+	CHECK_THROWS(s = w);                     // copy-assign onto frozen throws
+	s = value("moved");                      // move-assign: noexcept, refused loudly
+	CHECK(s.as_string() == "hello");         // ...and the value is unchanged
+    }
+
+    TEST_CASE("freeze is slot-local: copies of a frozen value are mutable") {
+	value a = value::make_array();
+	a.array().push_back(value(int64_t(1)));
+	a.freeze();
+	value b = a;                             // copy ctor strips CONST
+	CHECK(!b.is_frozen());
+	b.array().push_back(value(int64_t(2)));  // mutable copy
+	CHECK(b.as_array().size() == 2);
+	CHECK(a.as_array().size() == 1);         // original untouched
+	value c;
+	c = b;                                   // copy-assign FROM non-frozen
+	CHECK(!c.is_frozen());
+	b.freeze();
+	value d;
+	d = b;                                   // copy-assign FROM frozen
+	CHECK(!d.is_frozen());
+	d.array().push_back(value(int64_t(3)));
+	CHECK(d.as_array().size() == 3);
+    }
+
+    TEST_CASE("cell runtime: retain/release/saturation") {
+        void *p = madc_cell_alloc(8);
+        REQUIRE(p != (void *)NULL);
+        CHECK(madc_cell_refcount(p) == 1);
+        madc_cell_retain(p);
+        CHECK(madc_cell_refcount(p) == 2);
+        madc_cell_release(p);
+        CHECK(madc_cell_refcount(p) == 1);
+        madc_cell_release(p);                    // frees; do not touch p after
+        void *q = madc_cell_alloc(4);
+        REQUIRE(q != (void *)NULL);
+        madc_cell_of(q)->refcount = MADC_CELL_PERMANENT - 1;
+        madc_cell_retain(q);                     // saturates
+        CHECK(madc_cell_refcount(q) == MADC_CELL_PERMANENT);
+        madc_cell_release(q);                    // permanent: no-op, no free
+        CHECK(madc_cell_refcount(q) == MADC_CELL_PERMANENT);
+        std::free(madc_cell_of(q));              // test cleanup of permanent cell
     }
 }

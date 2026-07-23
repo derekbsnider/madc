@@ -1,0 +1,34 @@
+// C++20 <=> three-way comparison (P2.15 slice 3a): builtin scalars lower to
+// a comparison-category temp with the inline byte-select into _M_value
+// (g++ -O0 canon, no call) — strong_ordering for integral operands,
+// partial_ordering (with the unordered=2 arm) for floating. Class operands
+// dispatch to the hoisted friend operator<=> bodies via the free-operator
+// machinery (forward AND reversed __cmp_cat::__unspec shapes).
+#include <compare>
+#include <cstdio>
+int main()
+{
+	int a = 3, b = 7;
+	if ((a <=> b) < 0)
+		printf("int-lt\n");
+	if ((b <=> a) > 0)
+		printf("int-gt\n");
+	if ((a <=> a) == 0)
+		printf("int-eq\n");
+	double x = 1.5, y = 2.5;
+	if ((x <=> y) < 0)
+		printf("dbl-lt\n");
+	double n = 0.0 / 0.0;
+	if (!((n <=> x) < 0) && !((n <=> x) > 0) && !((n <=> x) == 0))
+		printf("dbl-unordered\n");
+	auto r = a <=> b;
+	if (r < 0)
+		printf("auto-lt\n");
+	std::strong_ordering s = (r <=> 0);
+	if (s < 0)
+		printf("cls-fwd\n");
+	std::strong_ordering t = (0 <=> r);
+	if (t > 0)
+		printf("cls-rev\n");
+	return 0;
+}

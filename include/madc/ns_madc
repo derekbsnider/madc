@@ -1,0 +1,77 @@
+// madc embedded <ns_madc> — script-level runtime eval + expression eval.
+// Declaration-only: the madc:: publics below resolve mangled-direct
+// (Itanium symbols) to the real namespace madc implementations in the
+// host, src/ns_madc.cpp (cpp-first-api.md — script namespace publics are
+// never routed through extern-C wrappers; the C-linkage __madc_*_runtime
+// surface is the API for C hosts only). `array` is the script alias of
+// madc::value, so array& parameters bind to the host madc::value&
+// symbols.
+// Security: the runtime honours the engine's madc_runtime_eval_policy;
+// scope-access variants are gated by the parser's scope-access hooks.
+
+namespace madc {
+    // Full-program eval: the source must define (or be wrapped into)
+    // `__madc_eval()`; the rendered result text lands in `out`.
+    std::string &eval_unit(std::string &out, std::string &source);
+    bool eval_bool(std::string &source);
+    long eval_int(std::string &source);
+    long eval_int(const char *source);
+    double eval_double(std::string &source);
+    std::string &eval_string(std::string &out, std::string &source);
+
+    // Expression eval: a single expression, no function calls unless the
+    // engine's expression policy allows them.
+    bool eval_expression_bool(const char *expr);
+    long eval_expression_int(const char *expr);
+    double eval_expression_double(const char *expr);
+    std::string &eval_expression_string(std::string &out, const char *expr);
+
+    // Typed out-parameter forms (overloaded on the destination). The
+    // string-destination form RENDERS any result type ("42", "4.000000",
+    // "echo"); eval_expression_string above is the strict string-typed
+    // coercion.
+    void eval_expression(long &out, const char *expr);
+    void eval_expression(double &out, const char *expr);
+    void eval_expression(std::string &out, const char *expr);
+
+    // Context-carrying expression forms: `ctx` is a madc array of nested
+    // key/value entries built with the context_set_* helpers below.
+    std::string &eval_expression_ctx(std::string &out, const char *expr, array &ctx);
+    bool eval_expression_bool_ctx(const char *expr, array &ctx);
+    long eval_expression_int_ctx(const char *expr, array &ctx);
+    double eval_expression_double_ctx(const char *expr, array &ctx);
+    std::string &eval_expression_string_ctx(std::string &out, const char *expr, array &ctx);
+    void eval_expression_ctx(long &out, const char *expr, array &ctx);
+    void eval_expression_ctx(double &out, const char *expr, array &ctx);
+
+    // Context-carrying full-eval forms — the rebind targets for call-site
+    // scope capture.
+    std::string &eval_unit_ctx(std::string &out, std::string &source, array &ctx);
+    bool eval_bool_ctx(std::string &source, array &ctx);
+    long eval_int_ctx(std::string &source, array &ctx);
+    long eval_int_ctx(const char *source, array &ctx);
+    double eval_double_ctx(std::string &source, array &ctx);
+    std::string &eval_string_ctx(std::string &out, std::string &source, array &ctx);
+
+    void context_set_int(array &ctx, std::string &key, long value);
+    void context_set_real(array &ctx, std::string &key, double value);
+    void context_set_string(array &ctx, std::string &key, const char *value);
+    void context_set_array(array &ctx, std::string &key, array &value);
+
+    // The system object (Python `sys` convention — include this header
+    // like Python's `import sys`). sys.argv / sys.path are mutable madc
+    // arrays (argv[0] = script path; path mutations steer FUTURE
+    // #load/eval only); platform / version / hostname are immutable
+    // facts (sys.version == MADC_VERSION). The one instance lives in the
+    // host (_ZN4madc3sysE); argv/path fill at main entry via the
+    // injected __madc_sys_init. LAYOUT CONTRACT with
+    // include/libmadc/sysinfo.h — append-only, keep both in sync.
+    struct SysInfo {
+	array argv;
+	array path;
+	const char *const platform;
+	const char *const version;
+	const char *const hostname;
+    };
+    extern SysInfo sys;
+}

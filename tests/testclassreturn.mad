@@ -1,0 +1,49 @@
+#!/../bin/madc
+// Returning a class/struct BY VALUE — value semantics, fundamental C++.
+// A trivial class (no object members) returns via c2mir's native struct-return
+// ABI; the caller's decl-init must actually perform the initialization (this
+// previously dropped the initializer and read garbage).
+#include <iostream>
+#include <string>
+using namespace std;
+
+// Trivial class (no object members): native struct-return ABI.
+class A { public: int v; int w; };
+A makeA(int n) { A r; r.v = n; r.w = n * 2; return r; }
+
+class Point { public: int x; int y; };
+Point mid(Point a, Point b) { Point p; p.x = (a.x + b.x) / 2; p.y = (a.y + b.y) / 2; return p; }
+
+// Non-trivial class (a std::string member): the __retbuf ABI — the callee
+// member-copy-constructs into the caller's return slot, so the returned string
+// buffer is deep-copied (no double-free).
+class B { public: string s; int n; };
+B makeB(int k) { B b; b.s = "hello"; b.n = k; return b; }
+
+int main() {
+    // decl-init from a trivial by-value return (the garbage case — must print 9 18)
+    A z = makeA(9);
+    cout << "z " << z.v << " " << z.w << endl;        // z 9 18
+
+    // trivial assignment form (native struct copy, no dtor — already worked)
+    A z2;
+    z2 = makeA(4);
+    cout << "z2 " << z2.v << " " << z2.w << endl;     // z2 4 8
+
+    // by-value params + by-value return together
+    Point a; a.x = 0; a.y = 0;
+    Point b; b.x = 10; b.y = 20;
+    Point m = mid(a, b);
+    cout << "mid " << m.x << " " << m.y << endl;       // mid 5 10
+
+    // non-trivial class (string member) returned by value, decl-init (NRVO)
+    B w = makeB(7);
+    cout << "w " << w.s << " " << w.n << endl;         // w hello 7
+    B w2 = makeB(42);
+    cout << "w2 " << w2.s << " " << w2.n << endl;      // w2 hello 42
+
+    // member read directly off a returned temp
+    cout << "tmp " << makeB(99).n << endl;             // tmp 99
+
+    return 0;
+}

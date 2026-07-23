@@ -1,0 +1,51 @@
+/* task #69: component-correct GNU integer _Complex (lowered to
+   struct{__real,__imag} on the struct spine; c2mir rejects the native
+   integer-complex specifier). Division follows gcc (tree-complex.cc
+   expand_complex_div_wide): Smith's algorithm in INTEGER arithmetic —
+   (7-3i)/(-2+5i) = (0,-1), NOT the exact (-1,-1). clang emits the straight
+   formula and gives (-1,-1); the two canons diverge here and madc follows
+   gcc because the gcc torture suite is the parity arbiter. */
+extern void abort(void);
+int printf(const char *, ...);
+
+struct s { _Complex unsigned short x; };
+struct s gs = { 100 + 200i };
+
+static _Complex int mul(_Complex int a, _Complex int b)
+{
+	return a * b;
+}
+
+int main()
+{
+	_Complex int a = 7 + -3i;
+	_Complex int b = -2 + 5i;
+	_Complex int m = mul(a, b);
+	_Complex int d = a / b;
+	_Complex int u = -a;
+	_Complex int cj = ~a;
+	_Complex unsigned t = 42;
+	t /= 7;
+	if (__real__ m != 1 || __imag__ m != 41)
+		abort();
+	if (__real__ d != 0 || __imag__ d != -1)
+		abort();
+	if (__real__ u != -7 || __imag__ u != 3)
+		abort();
+	if (__real__ cj != 7 || __imag__ cj != 3)
+		abort();
+	if ((int)__real__ t != 6 || (int)__imag__ t != 0)
+		abort();
+	/* the imaginary part survives the static initializer ... */
+	if (__imag__ gs.x != 200)
+		abort();
+	/* ... and a scalar-degraded gs.x would equal plain 100 */
+	if (gs.x == 100)
+		abort();
+	/* component lvalue on a struct member */
+	__real__ gs.x = 7;
+	if (gs.x != (7 + 200i))
+		abort();
+	printf("ok %d %d\n", (int)__real__ d, (int)__imag__ d);
+	return 0;
+}

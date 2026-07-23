@@ -1,0 +1,17 @@
+#!/../bin/madc
+// MI parse smoke: a class with two bases + a virtual base must parse and run.
+class A { public: int a; };
+class B { public: int b; };
+class C : public A, public B { public: int c; };
+class V { public: int v; };
+class D : virtual public V { public: int d; };
+
+int main()
+{
+    C obj;
+    obj.a = 1; obj.b = 2; obj.c = 3;
+    D dobj;
+    dobj.v = 9; dobj.d = 4;
+    printf("%d %d %d %d %d\n", obj.a, obj.b, obj.c, dobj.v, dobj.d);
+    return 0;
+}
