@@ -546,6 +546,9 @@ class CirBuilder {
 	// order; false when tb is not a pure subscript tree over a named root.
 	bool subscript_root_indices(TokenBase *tb, class Variable *&root,
 				    std::vector<TokenBase *> &idxs);
+	// Row stride (element count) for pointer arithmetic on a flat-lowered
+	// runtime-sized array pointer value; NULL when no scaling applies.
+	node_t vla_arith_stride(TokenBase *t, TokenBase *origin);
 	// Linearized access on a flat VLA pointer (runtime-sized param or
 	// malloc'd local): full index chains yield the element lvalue, partial
 	// chains yield C's row pointer as scaled pointer arithmetic. idxs is

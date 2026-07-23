@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+- **feat(cir+parser): VLA row-pointer semantics — arithmetic,
+  variably-modified declarators, sizeof operand evaluation.** Completes
+  the VLA boundary set opened below: (1) pointer arithmetic on flat
+  runtime-sized arrays scales by the row stride — `a + 1` on
+  `int a[n][m]` advances one row; `n + a`, `a - n`, compound `+=`/`-=`,
+  `++`/`--` (post forms recover the old value arithmetically), and a
+  difference of two row pointers divides the element difference back
+  down. New `CirBuilder::vla_arith_stride` keys on token shape (root
+  var / subscript value / `&subscript`) plus the flat-root type gate,
+  so fixed arrays never mis-scale. (2) C11 6.7.6.2 variably-modified
+  declarators parse: `int (*rp)[m]` as a local (dim captured at the
+  declaration point — `sizeof *rp` keeps the declaration-time value
+  even if `m` changes), as a parameter (dims captured at function entry
+  by the existing VLA-param machinery), and as a cast `(int (*)[m])`.
+  The type is the same flat `PTR(CArray count_expr)` shape a VLA
+  parameter's pointee carries, so the subscript linearizer, row sizeof,
+  `&`, and the new arithmetic apply unchanged; declarations and casts
+  emit the flat scalar pointer. `(*rp)[j]` / `(*a)[j]` unwind
+  deref-as-[0] through `subscript_root_indices`. (3) The documented
+  C11 6.5.3.4p2 divergence is closed: a VLA-row sizeof operand's index
+  side effects now evaluate (`sizeof a[i++]` bumps `i`), carried on
+  `TokenTypeQuery` and emitted as a comma chain ahead of the runtime
+  size; int-typed operands stay unevaluated per the standard. New
+  `testvlarowptr` (28 probes; gcc oracle — JIT and `--emit=c11`→gcc
+  byte-match). Remaining edges: subscripting an arbitrary parenthesized
+  arithmetic result (`(a + 1)[j]`) and bare `*a` row decay in value
+  context stay on generic paths.
+
 - **fix(cir+parser): VLA row boundaries — `sizeof a[i]`, `sizeof *a`,
   and `&a[i]` on runtime-sized arrays.** Closes the boundaries the
   partial-subscript fix left open. sizeof of a subscripted / deref'd
@@ -21,11 +49,9 @@
   `CirBuilder::subscript_root_indices()` unwinds all three subscript
   token shapes for the linearizer and the new address-of arm. New
   `testvlabounds` (22 probes; gcc oracle — JIT and `--emit=c11`→gcc
-  byte-match). Known divergence: index side effects in a VLA-row sizeof
-  operand are not evaluated (C11 6.5.3.4p2 evaluates them). Still open:
-  row-pointer arithmetic on the raw root (`a + 1` strides by element,
-  not row) and variably-modified declarators (`int (*rp)[m]` is a parse
-  error).
+  byte-match). The boundaries this entry left open — row-pointer
+  arithmetic, variably-modified declarators, sizeof operand side
+  effects — are closed by the row-pointer-semantics entry above.
 
 - **fork(c2mir): uninitialized narrow locals extend at birth, reads
   stay extension-free (fork @9c7e7f3b, pin bumped).** Supersedes the

@@ -10486,6 +10486,7 @@ TokenBase *Program::try_parse_vla_row_sizeof(TokenBase *op_tb, Variable *v,
     if ( paren )
 	nextToken();                       // '('
     DataDef *row_dd = vp->base_type;
+    std::vector<TokenBase *> idx_exprs;    // source order (outermost first)
     if ( deref )
     {
 	nextToken();                       // '*'
@@ -10501,10 +10502,19 @@ TokenBase *Program::try_parse_vla_row_sizeof(TokenBase *op_tb, Variable *v,
 	while ( TokenSubscriptExpr *e = dynamic_cast<TokenSubscriptExpr *>(cur) )
 	{
 	    ++ni;
+	    idx_exprs.push_back(e->index);
 	    cur = e->base_expr;
 	}
+	std::reverse(idx_exprs.begin(), idx_exprs.end());
 	if ( TokenSubscript *ts0 = dynamic_cast<TokenSubscript *>(cur) )
+	{
 	    ni += 1 + ts0->extra_indices.size();
+	    std::vector<TokenBase *> head;
+	    head.push_back(ts0->index);
+	    for ( TokenBase *x : ts0->extra_indices )
+		head.push_back(x);
+	    idx_exprs.insert(idx_exprs.begin(), head.begin(), head.end());
+	}
 	else if ( !dynamic_cast<TokenVar *>(cur) )
 	    pure = false;                  // mixed postfix chain (member, …)
 	for ( size_t step = 1; pure && step < ni; ++step )
@@ -10533,7 +10543,14 @@ TokenBase *Program::try_parse_vla_row_sizeof(TokenBase *op_tb, Variable *v,
     }
     if ( paren )
 	nextToken();                       // ')'
-    return make_type_query_token(op_tb, row_dd, false);
+    TokenBase *result = make_type_query_token(op_tb, row_dd, false);
+    // C11 6.5.3.4p2: a VLA-typed operand IS evaluated — carry the index
+    // expressions on the deferred query so the builder emits them (values
+    // discarded) ahead of the size computation. A constant-folded result
+    // means the operand type was NOT variably modified: not evaluated.
+    if ( TokenTypeQuery *ttq = dynamic_cast<TokenTypeQuery *>(result) )
+	ttq->operand_side_effects = idx_exprs;
+    return result;
 }
 
 // sizeof applied to a VLA VARIABLE (`sizeof(a)` / `sizeof a` where `a` was
@@ -36572,9 +36589,11 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 // outermost-first. Shared by the declaration, parameter, and cast arms;
 // `what` names the arm for diagnostics.
 DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
-					 const char *what)
+					 const char *what,
+					 bool capture_runtime_dims)
 {
     std::vector<carray_dim_t> dims;
+    std::vector<TokenBase *> dim_exprs;
     while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
     {
 	nextToken(); // consume '['
@@ -36583,19 +36602,45 @@ DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
 	{
 	    nextToken(); // consume ']' for unsized leading dim
 	    dims.push_back(0);
+	    dim_exprs.push_back(NULL);
 	    continue;
 	}
-	int64_t n = parse_constant_integer_expression();
-	if ( n < 0 )
-	    Throw(ctx) << "Array dimension must be non-negative in " << what << flush;
-	dims.push_back((carray_dim_t)n);
+	if ( bracket_dim_needs_runtime_value() )
+	{
+	    // C11 6.7.6.2 variably-modified declarator (`int (*rp)[m]`,
+	    // runtime m): the dim becomes the CArray's count_expr — the same
+	    // flat-lowered shape a VLA parameter's pointee carries, so the
+	    // subscript linearizer / sizeof / row-stride machinery all apply.
+	    // In a declaration the dim is captured at the declaration point
+	    // (the VM type's size is fixed there); a parameter's dims are
+	    // captured at function entry by parseFunction instead, and a cast
+	    // type's dim is consumed immediately.
+	    TokenBase *dim_expr = parseExpression(nextToken(), true);
+	    if ( capture_runtime_dims )
+	    {
+		TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+		if ( TokenBase *cap =
+			 materialize_vla_dim_capture(code, dim_expr, ctx) )
+		    code->statements.push_back((TokenStmt *)cap);
+	    }
+	    dims.push_back(0);
+	    dim_exprs.push_back(dim_expr);
+	}
+	else
+	{
+	    int64_t n = parse_constant_integer_expression();
+	    if ( n < 0 )
+		Throw(ctx) << "Array dimension must be non-negative in " << what << flush;
+	    dims.push_back((carray_dim_t)n);
+	    dim_exprs.push_back(NULL);
+	}
 	TokenBase *cl = nextToken();
 	if ( !cl || cl->id() != TokenID::tkClSqr )
 	    Throw(cl ? cl : ctx) << "Expected ']' in " << what << flush;
     }
     DataDef *arr = elem_dd;
     for ( size_t i = dims.size(); i-- > 0; )
-	arr = new DataDefCArray(*arr, arr->name, dims[i], NULL);
+	arr = new DataDefCArray(*arr, arr->name, dims[i], dim_exprs[i]);
     return getPointerType(arr);
 }
 
@@ -49227,7 +49272,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    {
 		// Pointer-to-array: `type (*name)[N]`
 		decl_type = parse_ptr_array_suffix(decl_type, open,
-						   "pointer-to-array declaration");
+						   "pointer-to-array declaration",
+						   true);
 		have_decl_id = true;
 		nt = peekToken();
 	    }

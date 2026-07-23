@@ -6504,8 +6504,16 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// suffixes AFTER the pointer(s) below (declarator order [POINTER, ARR],
 	// which c2m reads as "pointer to array", vs [ARR, POINTER] = array of ptr).
 	std::vector<carray_dim_t> ptr_array_dims;
-	if (is_ptr)
+	if (is_ptr) {
+		bool vm_pointee = carray_chain_has_runtime(base_dd);
 		base_dd = peel_carray_dims(base_dd, ptr_array_dims);
+		// A variably-modified pointee (`int (*rp)[m]`, runtime m) lowers
+		// FLAT: the row structure lives in the DataDef for the
+		// linearizer / stride machinery, never in the emitted declarator
+		// (c2mir has no VLA types) — emit `int *rp`, no N_ARR suffixes.
+		if (vm_pointee)
+			ptr_array_dims.clear();
+	}
 
 	// A variable whose type is an anonymous aggregate (`struct { ... } x;`)
 	// has no tag to forward-reference, so the body must be emitted inline in
@@ -14460,7 +14468,77 @@ bool CirBuilder::subscript_root_indices(TokenBase *tb, Variable *&root,
 		root = &tv0->var;
 		return true;
 	}
+	// A deref of the root variable is the implicit first subscript
+	// (`(*rp)[j]` == rp[0][j]; `*a` == a[0]) — rewrite deref-as-[0] so
+	// the chain linearizes.
+	Variable *dvar = NULL;
+	if (TokenDerefExpr *tde = dynamic_cast<TokenDerefExpr *>(cur)) {
+		TokenVar *dv = dynamic_cast<TokenVar *>(tde->expr);
+		if (dv && tde->expr->type() == TokenType::ttVariable)
+			dvar = &dv->var;
+	} else if (TokenDeref *td = dynamic_cast<TokenDeref *>(cur))
+		dvar = &td->var;
+	if (dvar) {
+		TokenInt *zero = new TokenInt((int64_t)0);
+		zero->setDataType(&ddUINT64);
+		zero->file = cur->file;
+		zero->line = cur->line;
+		zero->column = cur->column;
+		idxs.push_back(zero);
+		root = dvar;
+		return true;
+	}
 	return false;
+}
+
+// Element-count stride for pointer arithmetic on a flat-lowered
+// runtime-sized array pointer VALUE (C row-pointer semantics: `a + 1` on
+// `int a[n][m]` advances one ROW). The emitted flat pointer is a scalar
+// `T *`, so c2mir scales by the ELEMENT only; the row stride (product of
+// the dims below the operand's row level) must be applied by the builder.
+// Operand shapes: the root variable itself (level 0), a partial subscript
+// VALUE (decays one level per index), and `&subscript` (one level up from
+// the subscript value). Returns NULL when the operand is not
+// flat-VLA-derived or is already at element level (no scaling needed).
+node_t CirBuilder::vla_arith_stride(TokenBase *t, TokenBase *origin)
+{
+	Variable *root = NULL;
+	std::vector<TokenBase *> idxs;
+	size_t level = 0;
+	if (subscript_root_indices(t, root, idxs)) {
+		level = idxs.size();
+	} else if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(t)) {
+		if (!subscript_root_indices(ta->expr, root, idxs)
+		    || idxs.empty())
+			return NULL;
+		level = idxs.size() - 1;
+	} else if (TokenVar *tv = dynamic_cast<TokenVar *>(t)) {
+		// Plain variable only — TokenMember/TokenCallFunc derive from
+		// TokenVar.
+		if (t->type() != TokenType::ttVariable)
+			return NULL;
+		root = &tv->var;
+	} else
+		return NULL;
+	DataDefPTR *rp = root ? dynamic_cast<DataDefPTR *>(root->type) : NULL;
+	DataDefCArray *rc = rp ? dynamic_cast<DataDefCArray *>(rp->base_type)
+			       : NULL;
+	if (!rc || !rc->chain_has_runtime_size())
+		return NULL;
+	std::vector<DataDefCArray *> dims;
+	for (DataDefCArray *c = rc; c;
+	     c = dynamic_cast<DataDefCArray *>(c->element_type))
+		dims.push_back(c);
+	if (level >= dims.size())
+		return NULL;
+	node_t stride = NULL;
+	for (size_t m = level; m < dims.size(); m++) {
+		node_t d = dims[m]->has_runtime_size()
+			   ? translate_expr(dims[m]->count_expr)
+			   : integer((int64_t)dims[m]->count);
+		stride = stride ? node2(N_MUL, stride, d, origin) : d;
+	}
+	return stride;
 }
 
 // Linearized access on a flat VLA pointer. A runtime-sized array (VLA param
@@ -15627,7 +15705,19 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				node_t elem_szof = node1(N_SIZEOF,
 					node2(N_TYPE, type_list(elem),
 					      node2(N_DECL, ignore(), list())), tb);
-				return node2(N_MUL, total, elem_szof, tb);
+				node_t szval = node2(N_MUL, total, elem_szof, tb);
+				// C11 6.5.3.4p2: the VLA-typed operand is
+				// EVALUATED — emit the carried subscript index
+				// expressions (values discarded) ahead of the
+				// size: (i0, i1, ..., size).
+				node_t evals = NULL;
+				for (TokenBase *sfx : ttq->operand_side_effects) {
+					node_t e = translate_expr(sfx);
+					evals = evals ? node2(N_COMMA, evals, e, tb)
+						      : e;
+				}
+				return evals ? node2(N_COMMA, evals, szval, tb)
+					     : szval;
 			}
 			node_t tl = type_list(ttq->query_type);
 			node_t type_decl = node2(N_DECL, ignore(), list());
@@ -15762,9 +15852,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// array, the same shape the variable-declaration path builds.
 			// Without this the CArray base fell through type_list to `int`
 			// and the dims vanished: the cast emitted `(int *)`.
+			// A variably-modified pointee (`(int (*)[m])`, runtime m)
+			// lowers FLAT like its declaration: `(T *)`, no N_ARR.
 			std::vector<carray_dim_t> cast_arr_dims;
-			if (cast_ptr_levels > 0)
+			if (cast_ptr_levels > 0) {
+				bool vm_pointee = carray_chain_has_runtime(cast_dd);
 				cast_dd = peel_carray_dims(cast_dd, cast_arr_dims);
+				if (vm_pointee)
+					cast_arr_dims.clear();
+			}
 
 			node_t tl = type_list(cast_dd);
 			node_t cast_decl_list = list();
@@ -15857,6 +15953,20 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (node_t ov = class_unary_operator_call(uop, operand_tb, tb))
 				return ov;
 			node_t operand = translate_expr(operand_tb);
+			// ++/-- on a flat row-pointer lvalue steps one ROW, not one
+			// element. Prefix forms are the scaled compound assign; post
+			// forms recover the old value arithmetically:
+			// a++ == ((a += stride) - stride).
+			if (node_t s = vla_arith_stride(operand_tb, tb)) {
+				bool inc = tb->id() == TokenID::tkInc;
+				node_t r = node2(inc ? N_ADD_ASSIGN : N_SUB_ASSIGN,
+						 operand, s, tb);
+				if (is_post)
+					r = node2(inc ? N_SUB : N_ADD, r,
+						  vla_arith_stride(operand_tb, tb),
+						  tb);
+				return r;
+			}
 			c2mir_node_code_t code;
 			if (tb->id() == TokenID::tkInc)
 				code = is_post ? N_POST_INC : N_INC;
@@ -16104,6 +16214,30 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					left = node2(N_CAST, char_ptr_type(), left, tb);
 				if (is_size1_pointer(rdd))
 					right = node2(N_CAST, char_ptr_type(), right, tb);
+			}
+			// Row-pointer arithmetic on a flat runtime-sized array
+			// (`a + 1` on `int a[n][m]` advances one ROW): the emitted
+			// scalar pointer scales by the element only, so multiply the
+			// integer operand by the row stride; a difference of two row
+			// pointers divides the element difference back down.
+			if (code == N_ADD || code == N_SUB) {
+				node_t ls = vla_arith_stride(top->left, tb);
+				node_t rs = vla_arith_stride(top->right, tb);
+				if (code == N_SUB && ls && rs)
+					return node2(N_DIV,
+						     node2(N_SUB, left, right, tb),
+						     ls, tb);
+				if (ls && !rs)
+					right = node2(N_MUL, right, ls, tb);
+				else if (code == N_ADD && rs && !ls)
+					left = node2(N_MUL, left, rs, tb);
+			}
+			// Compound `a += n` / `a -= n` on a flat row-pointer lvalue:
+			// scale the step by the row stride (the lvalue itself stays
+			// the scalar element pointer).
+			if (code == N_ADD_ASSIGN || code == N_SUB_ASSIGN) {
+				if (node_t s = vla_arith_stride(top->left, tb))
+					right = node2(N_MUL, right, s, tb);
 			}
 			// Compound `vp += n` / `vp -= n` on a size-1 pointer lvalue:
 			// the lvalue cannot be cast in place, so lower to

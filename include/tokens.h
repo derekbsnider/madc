@@ -981,6 +981,10 @@ public:
     DataDef *query_type;
     bool want_alignof;
     bool use_cached_runtime_size;
+    // sizeof of a VLA-typed operand EVALUATES the operand (C11 6.5.3.4p2):
+    // the subscript index expressions of a deferred row sizeof, emitted
+    // (values discarded) ahead of the runtime size computation.
+    std::vector<TokenBase *> operand_side_effects;
 
     TokenTypeQuery(DataDef *dd = NULL, bool want_align = false,
 		   bool use_cached_size = true)
@@ -989,7 +993,13 @@ public:
     {
 	_datatype = &ddUINT64;
     }
-    virtual TokenBase *clone() { return new TokenTypeQuery(query_type, want_alignof, use_cached_runtime_size); }
+    virtual TokenBase *clone()
+    {
+	TokenTypeQuery *c = new TokenTypeQuery(query_type, want_alignof,
+					       use_cached_runtime_size);
+	c->operand_side_effects = operand_side_effects;
+	return c;
+    }
     virtual TokenID id() const { return TokenID::tkInt; }
 };
 

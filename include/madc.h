@@ -4435,9 +4435,13 @@ public:
     // the first '['; stops with the token after the last ']' unconsumed.
     // Returns the true pointer-to-array DataDefPTR(DataDefCArray(elem,...)).
     // Shared by the declaration, parameter, and cast `(T (*)[N])` arms;
-    // `what` names the arm for diagnostics.
+    // `what` names the arm for diagnostics. A runtime dim (C11 6.7.6.2
+    // variably-modified: `int (*rp)[m]`) becomes the CArray's count_expr;
+    // capture_runtime_dims captures each at the declaration point (the
+    // declaration arm — params capture at function entry instead).
     DataDef *parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
-				    const char *what);
+				    const char *what,
+				    bool capture_runtime_dims = false);
     // The FuncDef giving a CALL's signature: the variable's own FuncDef, or
     // the target signature behind a function-pointer type (DataDefFPTR).
     // NULL when the variable isn't callable-typed. Parse-time twin of the CIR
