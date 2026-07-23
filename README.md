@@ -43,22 +43,26 @@ optional rather than required for a core `madc` build.
 
 ## Multi-file Projects
 
-Single-file programs are the default. For larger projects, the convention is
-a top-level file named after the application (e.g. `smaug.mad`, `mygame.mad`)
-that `#include`s the rest in the right order, with `int main()` last:
+madc builds multi-file projects from a standard **`compile_commands.json`**
+compilation database (the format CMake emits with
+`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, or `bear -- make` generates from any
+Makefile build): each translation unit compiles separately, the modules are
+linked in-process, and the entry point runs.
 
-```c
-// smaug.mad
-#include "config.mad"
-#include "mud.mad"
-#include "tables.mad"
-#include "comm.mad"
-// ... other source files ...
-#include "main.mad"   // contains int main()
+```bash
+bin/madc --project compile_commands.json          # compile all TUs, link, run
+bin/madc compile_commands.json                    # .json implies --project
+bin/madc --project compile_commands.json -lcrypt  # resolve libs at link time
+bin/madc --project compile_commands.json -o app   # single native ELF from all TUs
 ```
 
-Run the whole project with `bin/madc smaug.mad`. `#include "file.mad"` works
-at the lexer level — filenames resolve relative to the including file, nested
+This is how the flagship test case runs: SMAUG 1.8 (~158k lines of C89,
+51 translation units) boots both as a multi-TU JIT run and as a single
+~5 MB native executable.
+
+For small projects, `#include` composition still works — one top-level file
+that `#include`s the rest, with `int main()` last, run as a single
+translation unit. Filenames resolve relative to the including file, nested
 includes are supported, and repeated includes are skipped within the same
 compile.
 
