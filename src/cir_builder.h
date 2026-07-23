@@ -541,6 +541,11 @@ class CirBuilder {
 	// and expression-receiver subscript paths; recv_addr = receiver address.
 	node_t class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 				       TokenBase *index, TokenBase *origin);
+	// Unwind a subscript token tree (TokenSubscript / TokenSubscriptExpr
+	// chain) to its named root variable + index list in the linearizer's
+	// order; false when tb is not a pure subscript tree over a named root.
+	bool subscript_root_indices(TokenBase *tb, class Variable *&root,
+				    std::vector<TokenBase *> &idxs);
 	// Linearized access on a flat VLA pointer (runtime-sized param or
 	// malloc'd local): full index chains yield the element lvalue, partial
 	// chains yield C's row pointer as scaled pointer arithmetic. idxs is

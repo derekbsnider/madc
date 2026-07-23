@@ -1,0 +1,22 @@
+p2_row 20
+p2_row_paren 20
+p2_deref 20
+p2_elem 4
+p2_ptr 8
+p3_plane 80
+p3_row 16
+p3_row_paren 16
+mx_plane 21
+mx_row 7
+a2_rowdiff 20
+a2_decay 1
+a2_wr 77 77
+a3_plane 80
+a3_row 112
+a3_elem 124
+l_all 60
+l_all_paren 60
+l_row 20
+l_row_paren 20
+l_rowdiff 40
+l_val 21 21

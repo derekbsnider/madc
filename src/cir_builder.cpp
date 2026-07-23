@@ -5761,11 +5761,8 @@ static DataDef *peel_carray_dims(DataDef *dd, std::vector<carray_dim_t> &dims)
 // parameter of the type lowers to a flat scalar pointer.
 static bool carray_chain_has_runtime(DataDef *dd)
 {
-	for (DataDefCArray *c = dynamic_cast<DataDefCArray *>(dd); c;
-	     c = dynamic_cast<DataDefCArray *>(c->element_type))
-		if (c->has_runtime_size())
-			return true;
-	return false;
+	DataDefCArray *c = dynamic_cast<DataDefCArray *>(dd);
+	return c && c->chain_has_runtime_size();
 }
 
 // A parameter type whose pointee CArray chain carries a runtime dim lowers to
@@ -14426,11 +14423,51 @@ static bool constant_real_operand(TokenBase *t, long double &out)
 	return false;
 }
 
+// Unwind a subscript token tree to (root variable, index list in the
+// linearizer's order: idxs[ni-1] is the FIRST/outermost subscript i0).
+// Handles the three shapes the parser builds: TokenSubscript over a named
+// variable (extra_indices reversed, then index), a TokenSubscriptExpr chain
+// over a TokenSubscript root, and a TokenSubscriptExpr chain over a bare
+// TokenVar (cast-operand parse). Returns false when tb is not a pure
+// subscript tree over a named root.
+bool CirBuilder::subscript_root_indices(TokenBase *tb, Variable *&root,
+					std::vector<TokenBase *> &idxs)
+{
+	root = NULL;
+	idxs.clear();
+	if (TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(tb)) {
+		for (size_t k = tsub->extra_indices.size(); k > 0; k--)
+			idxs.push_back(tsub->extra_indices[k - 1]);
+		idxs.push_back(tsub->index);
+		root = &tsub->object;
+		return true;
+	}
+	TokenBase *cur = tb;
+	while (TokenSubscriptExpr *e = dynamic_cast<TokenSubscriptExpr *>(cur)) {
+		idxs.push_back(e->index);
+		cur = e->base_expr;
+	}
+	if (idxs.empty())
+		return false;
+	if (TokenSubscript *ts0 = dynamic_cast<TokenSubscript *>(cur)) {
+		if (!ts0->extra_indices.empty())
+			return false;
+		idxs.push_back(ts0->index);
+		root = &ts0->object;
+		return true;
+	}
+	if (TokenVar *tv0 = dynamic_cast<TokenVar *>(cur)) {
+		root = &tv0->var;
+		return true;
+	}
+	return false;
+}
+
 // Linearized access on a flat VLA pointer. A runtime-sized array (VLA param
 // or malloc'd VLA local) is represented as `T *root` whose pointee DataDef
 // keeps the INNER dims d1..dk as a CArray chain (the outermost dim is decayed
-// away / held in vla_size_expr). With indices i0..i_{n-1} (outermost-first in
-// idxs, the subscript-unwind order):
+// away / held in vla_size_expr). With indices i0..i_{n-1} (in the
+// subscript-unwind order subscript_root_indices produces: idxs[ni-1] is i0):
 //   full access  (n == k+1): element lvalue IND(root, ((i0*d1+i1)*d2+...)+ik)
 //   partial access (n <= k): C's row pointer (`a[i]` on `int a[n][m]` has
 //     type int(*)[m]) — under the flat lowering that is scaled pointer
@@ -15261,8 +15298,21 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// Address-of expression
 	{
 		TokenAddrExpr *tae = dynamic_cast<TokenAddrExpr *>(tb);
-		if (tae)
+		if (tae) {
+			// `&a[i]...` on a flat runtime-sized array: a PARTIAL
+			// access already linearizes to the address VALUE
+			// (root + lin*stride) — return it directly; N_ADDR
+			// over that non-lvalue arithmetic is invalid. A FULL
+			// access linearizes to the element lvalue IND(...),
+			// which keeps the ordinary N_ADDR.
+			Variable *vroot = NULL;
+			std::vector<TokenBase *> vidxs;
+			if (subscript_root_indices(tae->expr, vroot, vidxs))
+				if (node_t flat = vla_flat_subscript(vroot, vidxs, tb))
+					return CIR_NODE(flat)->base.code == N_IND
+					       ? node1(N_ADDR, flat, tb) : flat;
 			return node1(N_ADDR, translate_expr(tae->expr), tb);
+		}
 	}
 
 	// Dereference variable
@@ -15328,13 +15378,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// (`a[i]` on `int a[n][m]` == a + i*m under the flat
 				// lowering); the generic scalar IND below would mis-read
 				// one element instead.
-				std::vector<TokenBase *> idxs; // outermost-first
-				for (size_t k = tsub->extra_indices.size(); k > 0; k--)
-					idxs.push_back(tsub->extra_indices[k - 1]);
-				idxs.push_back(tsub->index);
-				if (node_t flat = vla_flat_subscript(&tsub->object,
-								     idxs, tb))
-					return flat;
+				Variable *vroot = NULL;
+				std::vector<TokenBase *> idxs;
+				if (subscript_root_indices(tsub, vroot, idxs))
+					if (node_t flat = vla_flat_subscript(vroot,
+									     idxs, tb))
+						return flat;
 				base = id(var_emit_name(tsub->object).c_str(), tb);
 			}
 			// madc array element read (`arr[i]`): route through the
@@ -15399,35 +15448,16 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// TokenSubscriptExpr(...(TokenSubscript(M1,i0))...,ik) because M1 is
 			// a flat malloc'd pointer (c2mir has no VLA types), so the nested
 			// IND(IND(M1,i0),i1) fails (M1[i0] is a scalar). Unwind the chain to
-			// (root M1, [i0..ik]) and emit ONE linearized subscript
-			// M1[i0*d1*..*dk + i1*d2*..*dk + ... + ik] (row-major), with the
-			// inner dim sizes d1..dk from M1's pointee DataDefCArray chain.
-			std::vector<TokenBase *> idxs; // outermost-first: [ik .. i1]
-			TokenBase *cur = tse;
+			// (root M1, [i0..ik]) via subscript_root_indices and emit ONE
+			// linearized subscript M1[i0*d1*..*dk + i1*d2*..*dk + ... + ik]
+			// (row-major), with the inner dim sizes d1..dk from M1's pointee
+			// DataDefCArray chain. vla_flat_subscript linearizes a FULL access
+			// (one index per dimension = 1 outer + k inner) to a single element
+			// IND, and a PARTIAL access (`a[i][j]` on `int a[n][m][k]`) to the
+			// row pointer a + (i*m+j)*k.
 			Variable *root = NULL;
-			while (TokenSubscriptExpr *e =
-				       dynamic_cast<TokenSubscriptExpr *>(cur)) {
-				idxs.push_back(e->index);
-				cur = e->base_expr;
-			}
-			if (TokenSubscript *ts0 = dynamic_cast<TokenSubscript *>(cur)) {
-				if (ts0->extra_indices.empty()) {
-					idxs.push_back(ts0->index); // i0 (innermost root index)
-					root = &ts0->object;
-				}
-			} else if (TokenVar *tv0 = dynamic_cast<TokenVar *>(cur)) {
-				// Some contexts (a cast operand: `(int *)a[1]`) parse the
-				// base as a bare TokenVar under the SubscriptExpr instead
-				// of a TokenSubscript root — all indices are already in
-				// idxs.
-				root = &tv0->var;
-			}
-			// vla_flat_subscript linearizes a FULL access (one index per
-			// dimension = 1 outer + k inner) to a single element IND, and
-			// a PARTIAL access (`a[i][j]` on `int a[n][m][k]`) to the row
-			// pointer a + (i*m+j)*k. idxs is outermost-first, so
-			// idxs[ni-1] is the root index i0.
-			if (root) {
+			std::vector<TokenBase *> idxs;
+			if (subscript_root_indices(tse, root, idxs)) {
 				node_t flat = vla_flat_subscript(root, idxs, tb);
 				if (flat)
 					return flat;
@@ -15579,8 +15609,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// element's compile-time alignment (constant), so only sizeof is
 			// lowered this way.
 			DataDefCArray *vca = dynamic_cast<DataDefCArray *>(ttq->query_type);
-			if (vca && vca->has_runtime_size() && !ttq->want_alignof) {
-				node_t total = translate_expr(vca->count_expr);
+			if (vca && vca->chain_has_runtime_size() && !ttq->want_alignof) {
+				// A constant head dim over a runtime inner dim
+				// (`char a[3][n]`) is still variably modified.
+				node_t total = vca->has_runtime_size()
+					       ? translate_expr(vca->count_expr)
+					       : integer((int64_t)vca->count);
 				DataDef *elem = vca->element_type;
 				while (DataDefCArray *inner =
 					       dynamic_cast<DataDefCArray *>(elem)) {

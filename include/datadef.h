@@ -1250,6 +1250,18 @@ public:
     }
 
     bool has_runtime_size() const { return count_expr != NULL; }
+
+    // A runtime dim ANYWHERE in the chain makes the whole array type
+    // variably modified (C11 6.7.6): its size is a runtime value even when
+    // the head dim is constant (`char a[3][n]`).
+    bool chain_has_runtime_size() const
+    {
+	for ( const DataDefCArray *c = this; c;
+	      c = dynamic_cast<const DataDefCArray *>(c->element_type) )
+	    if ( c->has_runtime_size() )
+		return true;
+	return false;
+    }
 };
 
 class DataDefENUM : public DataDef

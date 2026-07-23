@@ -4836,6 +4836,9 @@ public:
 					   TokenBase *&dim_expr, TokenBase *loc);
     TokenBase *try_parse_vla_variable_sizeof(TokenBase *op_tb,
 					     const std::string &op_name);
+    TokenBase *try_parse_vla_row_sizeof(TokenBase *op_tb, class Variable *v,
+					bool paren, bool deref,
+					size_t after_ix);
     TokenBase *parse_functional_type_expression(TokenBase *type_tb,
 						DataDef *type_dd);
     TokenBase *parse_namespace_block(bool inline_namespace);

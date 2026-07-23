@@ -1,0 +1,85 @@
+#include <stdio.h>
+#include <string.h>
+
+int sumrow(int n, int *row)
+{
+	int s = 0;
+	for (int j = 0; j < n; j++)
+		s += row[j];
+	return s;
+}
+
+void szparam2(int n, int m, int a[n][m])
+{
+	printf("p2_row %zu\n", sizeof a[0]);            /* m*4 */
+	printf("p2_row_paren %zu\n", sizeof (a[1]));
+	printf("p2_deref %zu\n", sizeof *a);            /* == sizeof a[0] */
+	printf("p2_elem %zu\n", sizeof a[0][0]);        /* element */
+	printf("p2_ptr %zu\n", sizeof a);               /* param decays: pointer */
+}
+
+void szparam3(int n, int m, int k, int a[n][m][k])
+{
+	printf("p3_plane %zu\n", sizeof a[1]);          /* m*k*4 */
+	printf("p3_row %zu\n", sizeof a[1][2]);         /* k*4 */
+	printf("p3_row_paren %zu\n", sizeof (a[0][0]));
+}
+
+/* constant outer dims over a runtime inner dim: still variably modified */
+void szmixed(int n, char c[2][3][n])
+{
+	printf("mx_plane %zu\n", sizeof c[0]);          /* 3*n */
+	printf("mx_row %zu\n", sizeof c[1][2]);         /* n */
+}
+
+void amp2(int n, int m, int a[n][m])
+{
+	char *r1 = (char *)&a[1];                       /* partial: row pointer */
+	char *r0 = (char *)&a[0];
+	printf("a2_rowdiff %ld\n", (long)(r1 - r0));    /* m*4 */
+	printf("a2_decay %d\n", a[1] == &a[1][0]);      /* row value == &full elem */
+	int *row2 = (int *)&a[2];
+	row2[3] = 77;                                   /* write through &row */
+	printf("a2_wr %d %d\n", a[2][3], sumrow(m, (int *)&a[2]));
+}
+
+void amp3(int n, int m, int k, int a[n][m][k])
+{
+	char *pp = (char *)&a[1];                       /* one-index: plane ptr */
+	printf("a3_plane %ld\n", (long)(pp - (char *)a));
+	char *rp = (char *)&a[1][2];                    /* two-index: row ptr */
+	printf("a3_row %ld\n", (long)(rp - (char *)a));
+	char *ep = (char *)&a[1][2][3];                 /* full: element lvalue */
+	printf("a3_elem %ld\n", (long)(ep - (char *)a));
+}
+
+void loc(int n, int m)
+{
+	int t[n][m];                                    /* VLA local: same flat lowering */
+	memset(t, 0, sizeof t);
+	printf("l_all %zu\n", sizeof t);
+	printf("l_all_paren %zu\n", sizeof (t));
+	printf("l_row %zu\n", sizeof t[0]);
+	printf("l_row_paren %zu\n", sizeof (t[2]));
+	t[2][1] = 21;
+	char *r2 = (char *)&t[2];
+	printf("l_rowdiff %ld\n", (long)(r2 - (char *)t));
+	printf("l_val %d %d\n", t[2][1], sumrow(m, (int *)&t[2]));
+}
+
+int main(void)
+{
+	int a2[3][5];
+	memset(a2, 0, sizeof a2);
+	szparam2(3, 5, a2);
+	int a3[2][5][4];
+	memset(a3, 0, sizeof a3);
+	szparam3(2, 5, 4, a3);
+	char c3[2][3][7];
+	memset(c3, 0, sizeof c3);
+	szmixed(7, c3);
+	amp2(3, 5, a2);
+	amp3(2, 5, 4, a3);
+	loc(3, 5);
+	return 0;
+}

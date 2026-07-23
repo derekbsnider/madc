@@ -9947,7 +9947,7 @@ static bool is_runtime_sized_type(DataDef *dd)
     if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd) )
 	return sdd->has_runtime_size();
     if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
-	return add->has_runtime_size();
+	return add->chain_has_runtime_size();
     return false;
 }
 
@@ -10438,12 +10438,111 @@ TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
     return make_type_query_token(op_tb, dd, false);
 }
 
+// Row form of a VLA sizeof: `sizeof a[i]...` / `sizeof *a` where `a` is a
+// flat runtime-sized array (a pointer whose pointee CArray chain carries a
+// runtime dim — VLA parameter or malloc'd VLA local). Subscripts peel
+// dimensions off that chain; the remaining row type is fully described by
+// its stored dim expressions, so the size defers via make_type_query_token
+// (TokenTypeQuery) and the CIR builder lowers it to the runtime product of
+// the remaining dims times the element size. Returns NULL — without
+// consuming tokens — when the root does not gate or the operand is not
+// exactly a deref / subscript chain.
+TokenBase *Program::try_parse_vla_row_sizeof(TokenBase *op_tb, Variable *v,
+					     bool paren, bool deref,
+					     size_t after_ix)
+{
+    DataDefPTR *vp = dynamic_cast<DataDefPTR *>(v->type);
+    DataDefCArray *vc = vp ? dynamic_cast<DataDefCArray *>(vp->base_type)
+			   : NULL;
+    if ( !vc || !vc->chain_has_runtime_size() )
+	return NULL;
+    if ( paren )
+    {
+	// Commit only when the parenthesized operand is EXACTLY the deref /
+	// subscript chain — `sizeof (a[0] + 1)` stays on the generic
+	// expression path.
+	size_t scan = after_ix;
+	while ( scan < tokens.size() && tokens[scan]
+	     && tokens[scan]->id() == TokenID::tkOpSqr )
+	{
+	    int depth = 1;
+	    ++scan;
+	    while ( scan < tokens.size() && tokens[scan] && depth > 0 )
+	    {
+		if ( tokens[scan]->id() == TokenID::tkOpSqr )
+		    ++depth;
+		else if ( tokens[scan]->id() == TokenID::tkClSqr )
+		    --depth;
+		++scan;
+	    }
+	    if ( depth > 0 )
+		return NULL;
+	}
+	if ( scan >= tokens.size() || !tokens[scan]
+	  || tokens[scan]->id() != TokenID::tkClBrk )
+	    return NULL;
+    }
+
+    if ( paren )
+	nextToken();                       // '('
+    DataDef *row_dd = vp->base_type;
+    if ( deref )
+    {
+	nextToken();                       // '*'
+	nextToken();                       // identifier: *a == a[0]
+    }
+    else
+    {
+	TokenBase *id_tb = nextToken();    // identifier
+	TokenBase *chain = parsePostfixChain(id_tb);
+	size_t ni = 0;
+	bool pure = true;
+	TokenBase *cur = chain;
+	while ( TokenSubscriptExpr *e = dynamic_cast<TokenSubscriptExpr *>(cur) )
+	{
+	    ++ni;
+	    cur = e->base_expr;
+	}
+	if ( TokenSubscript *ts0 = dynamic_cast<TokenSubscript *>(cur) )
+	    ni += 1 + ts0->extra_indices.size();
+	else if ( !dynamic_cast<TokenVar *>(cur) )
+	    pure = false;                  // mixed postfix chain (member, …)
+	for ( size_t step = 1; pure && step < ni; ++step )
+	{
+	    DataDefCArray *rc = dynamic_cast<DataDefCArray *>(row_dd);
+	    if ( !rc )
+	    {
+		pure = false;              // over-subscripted
+		break;
+	    }
+	    row_dd = rc->element_type;
+	}
+	if ( !pure )
+	{
+	    // Fold the same constant the generic path computes for these
+	    // shapes (the operand tokens are already consumed).
+	    TokenInt *ti = new TokenInt((int64_t)query_datadef_measure(
+					    type_query_chain_datadef(chain),
+					    false));
+	    ti->setDataType(&ddUINT64);
+	    copy_token_location(ti, op_tb);
+	    if ( paren )
+		nextToken();               // ')'
+	    return ti;
+	}
+    }
+    if ( paren )
+	nextToken();                       // ')'
+    return make_type_query_token(op_tb, row_dd, false);
+}
+
 // sizeof applied to a VLA VARIABLE (`sizeof(a)` / `sizeof a` where `a` was
 // declared `T a[n]`): the result is a runtime value — the product of the
 // declaration-time dimension captures (materialize_vla_dim_capture rewrote
 // the stored dim expressions to TokenVars over those hidden locals) times
-// the element size. Returns NULL without consuming tokens when the operand
-// is not a bare VLA variable; the constant path handles everything else.
+// the element size. A subscripted or deref'd operand routes to the row form
+// above instead. Returns NULL without consuming tokens when the operand is
+// neither; the constant path handles everything else.
 // alignof never needs this: alignment is a property of the element type.
 TokenBase *Program::try_parse_vla_variable_sizeof(TokenBase *op_tb,
 						  const std::string &op_name)
@@ -10452,26 +10551,34 @@ TokenBase *Program::try_parse_vla_variable_sizeof(TokenBase *op_tb,
 	return NULL;
 
     bool paren = peekToken() && peekToken()->id() == TokenID::tkOpBrk;
-    TokenBase *ident_tb = NULL;
-    if ( paren )
-    {
-	if ( tokens.size() < 3 )
-	    return NULL;
-	if ( !tokens[1] || !is_contextual_identifier_token(tokens[1])
-	  || !tokens[2] || tokens[2]->id() != TokenID::tkClBrk )
-	    return NULL;
-	ident_tb = tokens[1];
-    }
-    else
-    {
-	ident_tb = peekToken();
-	if ( !ident_tb || !is_contextual_identifier_token(ident_tb) )
-	    return NULL;
-    }
+    size_t ix = paren ? 1 : 0;
+    if ( tokens.size() <= ix + 1 || !tokens[ix] )
+	return NULL;
+    bool deref = tokens[ix]->id() == TokenID::tkMul;
+    if ( deref )
+	++ix;
+    if ( tokens.size() <= ix || !tokens[ix]
+      || !is_contextual_identifier_token(tokens[ix]) )
+	return NULL;
+    TokenBase *ident_tb = tokens[ix];
+    TokenBase *after_tb = ix + 1 < tokens.size() ? tokens[ix + 1] : NULL;
+    bool subscripted = after_tb && after_tb->id() == TokenID::tkOpSqr;
 
     std::string vla_var_name = contextual_identifier_name(ident_tb);
     Variable *v = findVariable(vla_var_name);
-    if ( !v || !v->is_vla() || !v->vla_size_expr )
+    if ( !v )
+	return NULL;
+
+    if ( deref || subscripted )
+    {
+	if ( deref && subscripted )
+	    return NULL;                   // `sizeof *a[i]` — generic path
+	return try_parse_vla_row_sizeof(op_tb, v, paren, deref, ix + 1);
+    }
+
+    if ( paren && (!after_tb || after_tb->id() != TokenID::tkClBrk) )
+	return NULL;
+    if ( !v->is_vla() || !v->vla_size_expr )
 	return NULL;
 
     // Fresh leaf per use — AST nodes are single-use; the declaration keeps

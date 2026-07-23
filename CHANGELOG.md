@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+- **fix(cir+parser): VLA row boundaries — `sizeof a[i]`, `sizeof *a`,
+  and `&a[i]` on runtime-sized arrays.** Closes the boundaries the
+  partial-subscript fix left open. sizeof of a subscripted / deref'd
+  row on a flat runtime-sized array (VLA param or local, any depth,
+  mixed const/runtime chains like `char c[2][3][n]`) now defers through
+  `make_type_query_token`/`TokenTypeQuery` and lowers to the runtime
+  product of the remaining dims times the element size — previously it
+  folded the unsized row type to 0, and `sizeof t[0]` on a VLA local
+  mis-parsed the subscript as a lambda intro (parse error). `&a[i]` on
+  a partial row returns the linearized row-pointer VALUE directly
+  (N_ADDR over the pointer arithmetic tripped c2mir's lvalue check);
+  full-chain `&a[i][j]` keeps N_ADDR over the element lvalue. New
+  `DataDefCArray::chain_has_runtime_size()` is the single
+  variably-modified predicate (C11 6.7.6), shared by the parser's
+  `is_runtime_sized_type`, the builder's TokenTypeQuery lowering (which
+  also learns const-head dims), and the flat-subscript gate; new
+  `CirBuilder::subscript_root_indices()` unwinds all three subscript
+  token shapes for the linearizer and the new address-of arm. New
+  `testvlabounds` (22 probes; gcc oracle — JIT and `--emit=c11`→gcc
+  byte-match). Known divergence: index side effects in a VLA-row sizeof
+  operand are not evaluated (C11 6.5.3.4p2 evaluates them). Still open:
+  row-pointer arithmetic on the raw root (`a + 1` strides by element,
+  not row) and variably-modified declarators (`int (*rp)[m]` is a parse
+  error).
+
 - **fork(c2mir): uninitialized narrow locals extend at birth, reads
   stay extension-free (fork @9c7e7f3b, pin bumped).** Supersedes the
   July re-widening of `force_val` (bde8658d): the addr_p read gate from
@@ -30,7 +55,7 @@
   arrays untouched. New `testvlapartial` (gcc oracle; JIT, `-o`, and
   `--emit=c11`→gcc all byte-match; `.expect_quiet` guards the old c2mir
   warnings). Boundaries noted: `sizeof a[i]` and `&a[i]` on a partial
-  row remain open.
+  row remained open (closed by the VLA row-boundary entry above).
 
 - **feat(aot): conditional DT_NEEDED — runtime-free executables drop
   `libmadc.so.0`.** The native image writer now classifies every
