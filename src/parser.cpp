@@ -46614,6 +46614,31 @@ void Program::param_default_capture_end(const DefCapState &st,
     }
 }
 
+// Remove dim expressions that materialize_vla_dim_capture rewired into
+// entry-time capture initializers from a parameter's side-effect comma chain
+// (they would otherwise be evaluated twice at function entry). Returns the
+// pruned chain, or NULL when every leaf was captured.
+static TokenBase *drop_captured_dim_exprs(TokenBase *chain,
+					  const std::set<TokenBase *> &captured)
+{
+    if ( !chain )
+	return NULL;
+    if ( captured.count(chain) )
+	return NULL;
+    TokenComma *comma = dynamic_cast<TokenComma *>(chain);
+    if ( !comma )
+	return chain;
+    TokenBase *l = drop_captured_dim_exprs(comma->left, captured);
+    TokenBase *r = drop_captured_dim_exprs(comma->right, captured);
+    if ( l && r )
+    {
+	comma->left = l;
+	comma->right = r;
+	return comma;
+    }
+    return l ? l : r;
+}
+
 // parse a function definition, can be a forward declaration, or function definition
 void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class,
 			    std::vector<DataDef *> *multi_ret, bool return_ref,
@@ -48014,6 +48039,45 @@ paramdecl:
     else
     {
 	DBG(cout << "parseFunction() code = NULL" << endl);
+    }
+
+    // C11 6.7.6.2: a VLA parameter's bound is fixed ON FUNCTION ENTRY — a body
+    // striding `char a[2][N]` by N must keep the entry value even if the body
+    // assigns N. Capture each runtime dimension in the parameter's CArray
+    // chain into a hidden entry-time local (the same __madc_vla_dim_*
+    // machinery block-scope VLAs use): the capture decl becomes a leading
+    // body statement and REPLACES the raw expr in the chain, so the subscript
+    // linearizer and sizeof read the captured value. A captured expr is
+    // pruned from param_vla_side_effect_expr — its capture initializer
+    // already evaluates it exactly once at entry.
+    if ( code )
+    {
+	for ( Variable *pv : method->parameters )
+	{
+	    if ( !pv )
+		continue;
+	    DataDefPTR *pp = dynamic_cast<DataDefPTR *>(pv->type);
+	    DataDefCArray *pc = pp ? dynamic_cast<DataDefCArray *>(pp->base_type)
+				   : NULL;
+	    if ( !pc )
+		continue;
+	    std::set<TokenBase *> captured;
+	    for ( DataDefCArray *c = pc; c;
+		  c = dynamic_cast<DataDefCArray *>(c->element_type) )
+	    {
+		if ( !c->count_expr || dynamic_cast<TokenInt *>(c->count_expr) )
+		    continue;
+		TokenBase *orig = c->count_expr;
+		if ( TokenBase *cap = materialize_vla_dim_capture(code, c->count_expr, orig) )
+		{
+		    code->statements.push_back((TokenStmt *)cap);
+		    captured.insert(orig);
+		}
+	    }
+	    if ( !captured.empty() && pv->param_vla_side_effect_expr )
+		pv->param_vla_side_effect_expr =
+		    drop_captured_dim_exprs(pv->param_vla_side_effect_expr, captured);
+	}
     }
 
     // Resolve a captured trailing return type now that the parameter variables

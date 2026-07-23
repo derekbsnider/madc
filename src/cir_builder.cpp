@@ -5241,6 +5241,8 @@ static DataDef *ref_param_referent(DataDef *pt)
 // Translate a call's explicit arguments into `args`, coercing object
 // parameters and numeric reference parameters. Does NOT inject hidden params
 // (__this / __retbuf).
+static DataDef *vla_param_flat_elem(DataDef *ptype, int &stars); // defined below
+
 void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 				 size_t param_base)
 {
@@ -5302,6 +5304,8 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 		DataDef *pt = (callee && pi < callee->parameters.size())
 				? callee->parameters[pi] : NULL;
 		bool is_ref_param = callee && callee->is_ref_param(pi);
+		int vla_stars = 0;
+		DataDef *velem = NULL;
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			append(args, object_arg_addr(arg, pc));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
@@ -5354,6 +5358,20 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 			append(args, pt->is_complex()
 			       ? int_complex_to_native(av, alow, pt, arg)
 			       : int_complex_to_scalar(av, alow, arg));
+		}
+		else if (pt && (velem = vla_param_flat_elem(pt, vla_stars)) != NULL) {
+			// A VLA-typed formal lowered to a flat scalar pointer
+			// (param_decl): cast the argument to that type explicitly.
+			// The source types are compatible under C11 VLA rules
+			// (6.7.6.2p6 — `int (*)[4]` arg, `int a[m][n]` formal), but
+			// c2mir sees only the lowered view (`int (*)[4]` vs `int *`)
+			// and would warn on every such call.
+			node_t dl = list();
+			for (int s = 0; s < vla_stars; s++)
+				append(dl, pointer());
+			node_t ct = node2(N_TYPE, type_list(velem),
+					  node2(N_DECL, ignore(), dl));
+			append(args, node2(N_CAST, ct, translate_expr(arg), arg));
 		}
 		else
 			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
@@ -5737,6 +5755,58 @@ static DataDef *peel_carray_dims(DataDef *dd, std::vector<carray_dim_t> &dims)
 	return dd;
 }
 
+// Does any dimension in a CArray chain have a runtime (VLA) size? A chain
+// with one runtime dim anywhere makes the WHOLE object variably modified
+// (C11 6.7.6): every access must linearize against runtime strides, and a
+// parameter of the type lowers to a flat scalar pointer.
+static bool carray_chain_has_runtime(DataDef *dd)
+{
+	for (DataDefCArray *c = dynamic_cast<DataDefCArray *>(dd); c;
+	     c = dynamic_cast<DataDefCArray *>(c->element_type))
+		if (c->has_runtime_size())
+			return true;
+	return false;
+}
+
+// A parameter type whose pointee CArray chain carries a runtime dim lowers to
+// a FLAT scalar pointer (see param_decl): c2mir has no VLA types, and the
+// subscript translation linearizes every access against the runtime dims, so
+// only the scalar element type appears in the lowered declarator. Returns
+// that scalar element and sets `stars` to the lowering's total pointer depth;
+// NULL when ptype is not a VLA-typed parameter.
+static DataDef *vla_param_flat_elem(DataDef *ptype, int &stars)
+{
+	int ptr_levels = 0;
+	DataDef *t = ptype;
+	while (t && t->is_pointer()) {
+		DataDefPTR *p = dynamic_cast<DataDefPTR *>(t);
+		if (!p || !p->base_type) break;
+		t = p->base_type;
+		ptr_levels++;
+	}
+	if (!carray_chain_has_runtime(t))
+		return NULL;
+	DataDef *elem = t;
+	int elem_stars = 0;
+	for (;;) {
+		if (DataDefCArray *c = dynamic_cast<DataDefCArray *>(elem)) {
+			elem = c->element_type;
+			continue;
+		}
+		if (elem && elem->is_pointer()) {
+			DataDefPTR *p = dynamic_cast<DataDefPTR *>(elem);
+			if (p && p->base_type) {
+				elem = p->base_type;
+				elem_stars++;
+				continue;
+			}
+		}
+		break;
+	}
+	stars = elem_stars + (ptr_levels ? ptr_levels : 1);
+	return elem;
+}
+
 // Read element `index` of a static integer fixed-array's pre-baked storage
 // (`var->data`), decoded per the element type. The parser writes constant
 // initializers for `static`/global integer arrays directly into var->data and
@@ -5913,6 +5983,23 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 			if (!p || !p->base_type) break;
 			t = p->base_type;
 			ptr_levels++;
+		}
+		// A VLA-typed parameter (`char a[2][N]` — PTR(CArray char,
+		// count_expr N)) lowers to a FLAT scalar pointer (`char *a`,
+		// vla_param_flat_elem): the row structure must not reappear in
+		// the declarator — only the scalar element type matters.
+		// Without this the runtime-sized chain fell through type_list's
+		// default `int` spec (`int *a`), scaling every linearized index
+		// by 4 (pr22061-1).
+		{
+			int vla_stars = 0;
+			if (DataDef *velem = vla_param_flat_elem(ptype, vla_stars)) {
+				node_t pspec = type_list(velem);
+				node_t pdecl_list = list();
+				for (int s = 0; s < vla_stars; s++)
+					append(pdecl_list, pointer());
+				return wrap(pspec, pdecl_list);
+			}
 		}
 		std::vector<carray_dim_t> adims;
 		DataDef *elem = peel_carray_dims(t, adims);
@@ -15275,7 +15362,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			DataDefPTR *rp = root ? dynamic_cast<DataDefPTR *>(root->type) : NULL;
 			DataDefCArray *rc = rp ? dynamic_cast<DataDefCArray *>(rp->base_type)
 					       : NULL;
-			if (root && rc && rc->has_runtime_size()) {
+			// Any runtime dim ANYWHERE in the chain forces the
+			// linearized form (`char a[2][3][N]` — the outer dims are
+			// constant but the flat pointer still strides by N).
+			if (root && rc && carray_chain_has_runtime(rc)) {
 				std::vector<node_t> dims; // d1..dk (inner dims)
 				for (DataDefCArray *c = rc; c;
 				     c = dynamic_cast<DataDefCArray *>(c->element_type))
@@ -20035,11 +20125,21 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		std::vector<node_t> vla_side_fx;
 		if (tf->method) {
 			for (Variable *pv : tf->method->parameters) {
-				if (pv && pv->param_vla_side_effect_expr)
+				if (pv && pv->param_vla_side_effect_expr) {
+					// (void)-cast the evaluation: a bound that is
+					// a plain read (`int a[m][n]` — m survives the
+					// capture prune) is a no-effect statement gcc
+					// -Wall flags in the emitted C.
+					node_t vt = node2(N_TYPE, type_list(&ddVOID),
+							  node2(N_DECL, ignore(),
+								list()));
 					vla_side_fx.push_back(
 						node2(N_EXPR, list(),
-						      translate_expr(pv->param_vla_side_effect_expr),
+						      node2(N_CAST, vt,
+							    translate_expr(pv->param_vla_side_effect_expr),
+							    tf),
 						      tf));
+				}
 			}
 		}
 		if (!vla_side_fx.empty()) {

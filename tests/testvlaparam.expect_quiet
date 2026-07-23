@@ -1,0 +1,1 @@
+JIT stderr must be empty: VLA-parameter calls must not trip c2mir pointer-compat warnings (the build_call_args flat-pointer cast arm).

@@ -1,0 +1,69 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <alloca.h>
+
+int N = 1;
+int G = 1;
+
+/* pr22061-1 shape: file-scope bound, evaluated at function entry. */
+void bar(char a[2][N]) { a[1][0] = N; }
+
+/* Entry-time capture: assigning N in the body must not change the stride. */
+void baz(char a[2][N])
+{
+	N = 99;
+	a[1][1] = 7;
+}
+
+/* Bounds from earlier parameters, int elements (stride scales by sizeof). */
+void fill(int m, int n, int a[m][n])
+{
+	int i, j;
+	for (i = 0; i < m; i++)
+		for (j = 0; j < n; j++)
+			a[i][j] = i * 10 + j;
+}
+
+/* Mixed constant + runtime dims: outer dims constant, stride still runtime. */
+void mix(int a[2][3][N])
+{
+	a[1][2][N - 1] = 42;
+}
+
+/* Outermost runtime bound: side effect must run exactly once per call. */
+void once(char a[G++][4]) { (void)a; }
+
+int main(void)
+{
+	int  ibuf[3][4];
+	int  mbuf[2][3][4];
+	void *x;
+	void *y;
+
+	N = 4;
+	x = alloca(2 * N);
+	memset(x, 0, 2 * N);
+	bar(x);
+	printf("bar %d %d\n", ((char *)x)[N], ((char *)x)[2]);
+
+	y = alloca(2 * N);
+	memset(y, 0, 2 * N);
+	baz(y);
+	printf("baz %d %d\n", ((char *)y)[5], N);
+	N = 4;
+
+	memset(ibuf, 0, sizeof(ibuf));
+	fill(3, 4, ibuf);
+	printf("fill %d %d %d %d %d %d\n", ibuf[0][0], ibuf[0][1], ibuf[0][2],
+	       ibuf[0][3], ibuf[1][3], ibuf[2][3]);
+
+	memset(mbuf, 0, sizeof(mbuf));
+	mix(mbuf);
+	printf("mix %d\n", mbuf[1][2][3]);
+
+	once(x);
+	once(x);
+	printf("once %d\n", G);
+	return 0;
+}
