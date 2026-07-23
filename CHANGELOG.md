@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+- **fix(parser,cir): cast to pointer-to-array `(T (*)[N])expr` (task
+  #79).** The fn-ptr cast arm required '(' after '(*)'; the array
+  declarator suffix now parses via the new shared
+  `parse_ptr_array_suffix()` (one implementation serving the
+  declaration, parameter, and cast arms — two duplicated dim loops
+  deleted). The CIR TokenCast lowering emits the pointee's CArray dims
+  as `[POINTER, ARR]` declarator suffixes instead of collapsing the
+  type to `(int *)` (which strode wrong and fed an int to strlen —
+  SIGSEGV). New `testptrarrcast` (JIT + emit-C byte-equal to gcc).
+- **fix(parser): C-style cast to a template-id — `(Box<int>)7` (task
+  #71).** A template name + balanced `<...>` + `)`/`*` in cast
+  position resolves through `resolve_declared_type_token` (the #62
+  sizeof path — instantiates on demand, consumes nothing on failure),
+  before both the identifier and datatype-token dispatch arms.
+  Functional casts `Name<...>(...)` keep the grouping path. Covers
+  pointer forms and alias templates. New `testtplcast`.
+- **fix(cir): implicit copy ctor for non-trivially-copyable classes
+  (task #70).** Filed for template instances, but general: any class
+  with user ctors + a user dtor and no copy ctor could not
+  copy-construct (`P b(a)` errored). The memberwise arm of
+  `try_implicit_copy_construct` now binds both objects to pointer
+  temps, whole-object bit-copies, then recursively re-invokes nested
+  members' USER copy ctors (std::string members deep-copy). Loud
+  boundaries kept: own user copy ctor, polymorphic classes (vptr
+  re-stamp unmodeled), non-trivial bases. Fires only where the loud
+  no-match error fired before. New `testimplcopy`.
+- **infra: `remote_build.sh` gains a `pull` stage** — rsyncs the
+  container-built `bin/madc` / `bin/madc-release` back to the NAS
+  (userlands are ABI-identical; proven by running pulled binaries on
+  the QNAP). The QNAP no longer compiles or runs suites at all (owner
+  directive 2026-07-23).
+
 - **feat(cir): `--finstrument-functions` emission (task #66).** The flag
   previously had no consumer anywhere. Instrumented functions now emit a
   `__cyg_profile_func_enter` call plus a cleanup-attributed

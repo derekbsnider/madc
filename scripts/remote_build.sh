@@ -16,6 +16,8 @@
 #   exe       bash scripts/run_tests.sh --exe
 #   release   make -C src release
 #   packed    MADC_BIN=bin/madc-release bash scripts/run_tests.sh
+#   pull      rsync container-built bin/madc (+ madc-release) back to
+#             the NAS (ABI-identical userlands; QNAP never compiles)
 #   battery   fulltest + exe + release + packed (the push gate)
 #   shell     print the ssh command and exit
 #
@@ -93,6 +95,34 @@ for stage in $stages; do
 		;;
 	packed)
 		run_remote "packed" "cd /workspace/madc; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"
+		;;
+	pull)
+		# Bring the container-built binaries back to the NAS: the two
+		# userlands are ABI-identical (Ubuntu glibc 2.39, g++ 13.3)
+		# and bin/madc links libmadc statically, so pulled binaries
+		# run directly. The QNAP never compiles (owner directive
+		# 2026-07-23). --no-perms/--no-owner/--no-group: the QNAP ACL
+		# rejects chmod on temp files ("Bad address"). Pull only
+		# right after building the CURRENT tree state, and never
+		# while anything on the NAS is mid-suite.
+		echo "=== pull ==="
+		rsync -az --no-perms --no-owner --no-group \
+			-e "ssh -p $PORT" \
+			"$REMOTE:/workspace/madc/bin/madc" "$LOCAL_MADC/bin/madc"
+		rc=$?
+		echo "pull madc rc=$rc"
+		if [ $rc -ne 0 ]; then rc_total=1; fi
+		chmod +x "$LOCAL_MADC/bin/madc" 2>/dev/null
+		if $SSH "test -f /workspace/madc/bin/madc-release"; then
+			rsync -az --no-perms --no-owner --no-group \
+				-e "ssh -p $PORT" \
+				"$REMOTE:/workspace/madc/bin/madc-release" \
+				"$LOCAL_MADC/bin/madc-release"
+			rc=$?
+			echo "pull madc-release rc=$rc"
+			if [ $rc -ne 0 ]; then rc_total=1; fi
+			chmod +x "$LOCAL_MADC/bin/madc-release" 2>/dev/null
+		fi
 		;;
 	*)
 		echo "unknown stage: $stage" >&2
