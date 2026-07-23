@@ -1,8 +1,34 @@
 # MIR fork → upstream probe (fix-tier classification)
 
-**Date:** 2026-07-23 · **Status:** probe for owner review — no commitments
+**Date:** 2026-07-23 · **Status:** DECIDED (owner, same day) — bugfix
+wave GO; features await real discussion with Vladimir; fork-future
+steering deliberately none (not shy about fork-only features)
 **Fork:** github.com/derekbsnider/mir `develop` @40fdf81b
 **Upstream:** github.com/vnmakarov/mir `master` @a8ab7c31 (2026-06-19)
+
+## Owner decisions (2026-07-23)
+
+1. **No steering** between the two fork futures (upstream absorption
+   vs monolith vendoring) until actual discussion with Vladimir;
+   fork-only features continue freely meanwhile.
+2. **Bugfix PRs approved** — continuing an existing practice: we have
+   already contributed PRs upstream, each carefully **authored by us**,
+   verified a **real, still-present** bug, and **not already fixed**
+   upstream. Same bar applies here; owner reviews staged PRs before
+   submission.
+3. **Features (SIMD, _Complex, cleanup, debug) need Vladimir
+   discussion first** — only bugfixes are sure-accepts today. No RFCs
+   without that discussion.
+
+## Authorship audit (gates PR eligibility)
+
+Of the 26 Tier-A commits, **15 are Derek's** (PR-eligible) and **11
+are Cyan Ogilvie's** (not ours to send: the aarch64 clobber family,
+x86-64 va_start offsets with block args, long-double va_arg alignment,
+GVN store-forwarding extension loss, jump_opt label liveness, LADDR
+output marking, simplified-RA-for-indirect-jumps, paramless varargs,
+and the big-blk-arg2 test). Cyan's fixes stay in the fork; upstreaming
+them is Cyan's call.
 
 ## Context
 
@@ -74,17 +100,28 @@ the original authors explicitly or leave them to their forks.
   flagship fork capability; upstreamable only as a major RFC if
   Vladimir wants native AOT at all. Not first-wave.
 
-## Proposed first wave (if owner green-lights)
+## First wave (approved — Derek-authored fixes only)
 
-1. Branch `upstream-fixes-1` off upstream/master; cherry-pick the
-   varargs-ABI + ff_call + aarch64-clobber groups (pure fixes, each
-   with a repro test); run the fork's full lanes (2278 OK ×2 + make
-   test) on the branch.
-2. One PR per group with the gcc-differential/repro evidence in the PR
-   body.
-3. Follow with the narrow-value-extension and SSA/RA groups after the
-   first responses calibrate upstream appetite.
-4. SIMD and _Complex open as RFC issues, not PRs.
+One branch per PR off upstream/master, cherry-picked from the fork,
+upstream suite green on each, owner reviews before submission:
+
+1. **SysV varargs/ff ABI (x86-64):** c40ed469 (register-save-area
+   boundary + mixed-class struct va_arg) + cc74fef7 (ff_call skipped
+   XMM slots for mixed-class block args).
+2. **Narrow-value extension:** bde8658d (force_val extends ALL narrow
+   int reg values, gcc pr34099-2) + ff01f808 (narrow address-taken
+   values).
+3. **Gen/SSA hazards:** 058893f5 (lost-copy in out-of-SSA self-loops)
+   + 6c831111 (GVN must not CSE fixed-place VA_BLOCK_ARG).
+
+Second wave (after first responses): union aliasing (7a909601 +
+95e52f9c), scope-depth auto-local layout (01f999bb),
+statement-expression semantics (caa6ff96 + 74adb6a6), layout/init
+corners (772efebd, 8f97e4fc, 4aa628ba), deterministic long-double
+serialization (2158356f).
+
+SIMD / _Complex / cleanup / debug: parked until the Vladimir
+discussion (owner decision #3).
 
 Nothing here changes madc's pin discipline: `MIR_COMMIT` keeps pinning
 the fork regardless of what upstream takes; absorbed fixes fall out of
