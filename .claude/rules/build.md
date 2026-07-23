@@ -27,7 +27,19 @@
 - **Pin discipline:** when madc starts depending on new fork commits, merge them
   to MIR `develop`, push, and bump `MIR_COMMIT` in the SAME madc commit. Never let
   madc depend on un-pushed or unpinned fork work.
-- **Release tag pairing:** every madc release gets an annotated tag
-  `madc-vX.Y.Z` on the fork at the commit `MIR_COMMIT` pins, pushed with the
-  release. `MIR_COMMIT` stays the machine pin; the tag is the human-readable
-  version pairing.
+- **Fork releases:** versioned `<upstream-base>-madc.<madc-version>`
+  (e.g. `1.0-madc.0.38.0`) — upstream base = the newest upstream MIR release
+  merged into the fork; suffix = the full madc release version that depends
+  on it. The repo-root `MIR_VERSION` file holds the fork release madc
+  depends on (`MIR_COMMIT` stays the machine pin; never restate either
+  value elsewhere).
+- **Release cadence:** when a madc release ships fork changes, release BOTH:
+  bump `MIR_VERSION` in the release commit and push an annotated tag
+  `v<MIR_VERSION>` on the fork at the commit `MIR_COMMIT` pins. If the fork
+  is unchanged since the previous release, `MIR_VERSION` stays put and no
+  new fork tag is cut.
+- The upstream-base component bumps only when a newer upstream MIR release
+  is merged into the fork.
+- Historical: `madc-v0.38.0` on the fork is the superseded first-format
+  pairing tag (same commit as `v1.0-madc.0.38.0`; kept, do not reuse the
+  naming).

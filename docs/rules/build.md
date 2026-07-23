@@ -37,19 +37,35 @@ library (libmir + c2mir) at `/workspace/mir`, on the madc fork's `develop`
 branch and pinned by the repo-root `MIR_COMMIT` file. The old asmjit link flags
 no longer exist.
 
-## Release tag pairing — why
+## Fork releases and version pairing — why
 
-The fork has no version identity of its own — it exists to serve madc,
-so its versioning is madc's (owner decision, 2026-07-22). Two mechanisms
-carry that pairing, each doing one job:
+The fork's release version is `<upstream-base>-madc.<madc-version>`
+(owner decision, 2026-07-23, superseding the 2026-07-22 madc-vX.Y.Z
+naming): derived-project practice keeps the original project's version
+visible with the derivation after the dash, so `1.0-madc.0.38.0` says at
+a glance "upstream MIR 1.0, carrying the divergence madc 0.38.0 ships
+against." The upstream base answers "how stale are we against upstream?"
+(it bumps only when a newer upstream release is merged in); the suffix
+answers "which madc consumes this?" The full madc triplet is used (not
+`0.38`) so a patch release that touches the fork gets its own fork
+release. The `madc.` infix keeps our tags unmistakably separate from
+upstream's own `vX.Y.Z` tags, which share the fork repo's namespace.
+
+Three mechanisms carry the dependency, each doing one job:
 
 - **`MIR_COMMIT`** is the machine pin: exact, per-commit, what the build
   actually checks out. It moves whenever madc starts depending on new
   fork work, which can be many times between releases.
-- **The annotated `madc-vX.Y.Z` tag** on the fork is the human-readable
-  release correspondence: "this fork state is what madc vX.Y.Z shipped
-  against." One tag per madc release, placed on the commit `MIR_COMMIT`
-  pins at release time, pushed alongside the release.
+- **`MIR_VERSION`** is madc's declared dependency on a fork RELEASE —
+  the human-readable "this madc requires fork 1.0-madc.0.38.0". It moves
+  only at madc releases that ship fork changes; between releases it
+  names the newest published fork release (the pin may be ahead of it).
+- **The annotated `v<MIR_VERSION>` tag** on the fork is that release:
+  placed on the commit `MIR_COMMIT` pins at madc-release time, pushed
+  with the release. A madc release with an unchanged fork cuts no new
+  fork release — the previous fork release simply gains another
+  dependent, which is why the fork version is not blindly mirrored from
+  madc's.
 
 Restating the pin's VALUE in prose (rules files, AGENTS.md) proved to be
 a drift trap — the literal `2ffebff` sat stale in two documents while

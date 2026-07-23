@@ -147,9 +147,11 @@ scope-depth auto-local layout fix, the struct/union statement-expression
 copy-out fix, ≤16-byte SIMD/vector (`vector_size`/`ext_vector_type`) support,
 and the SysV-varargs / `_Complex` / `_Alignas`
 ABI fixes the CIR backend depends on). The fork's `develop` tracks madc's
-`develop` and its `master` tracks madc's `master`; each madc release is
-paired by an annotated `madc-vX.Y.Z` tag on the fork (see
-`.claude/rules/build.md`).
+`develop` and its `master` tracks madc's `master`. The fork is released as
+`<upstream-base>-madc.<madc-version>` (e.g. `1.0-madc.0.38.0`): the
+repo-root `MIR_VERSION` file declares the fork release madc depends on,
+and each madc release that ships fork changes cuts the matching annotated
+`v<MIR_VERSION>` tag on the fork (see `.claude/rules/build.md`).
 
 ## Architecture
 

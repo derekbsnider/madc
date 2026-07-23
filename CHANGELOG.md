@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **infra: MIR fork release versioning (owner convention).** Fork
+  releases are now `<upstream-base>-madc.<madc-version>` — retroactive
+  first release `v1.0-madc.0.38.0` tagged on the fork (same commit the
+  superseded `madc-v0.38.0` tag names). New repo-root `MIR_VERSION`
+  declares the fork release madc depends on (`MIR_COMMIT` remains the
+  machine pin). `/release` now cuts the paired fork release whenever
+  the fork changed; `/promote` now fast-forwards the fork's master in
+  lockstep (both command docs previously predated the pairing scheme
+  entirely).
 - **fix(cli): lexer-phase errors now exit nonzero.** A failed
   `#include` (or any diagnostic thrown during tokenization) printed
   its error and aborted compilation, but the CLI's

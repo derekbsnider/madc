@@ -35,25 +35,40 @@ Perform the full release workflow:
    - Add/update a `### Current Release` sub-section right before the Roadmap table with a paragraph summary of vX.Y.Z
    - Add/update a `### Recent Releases` sub-section with one-line summaries of the last 5 releases (read from `docs/release-notes/`)
 
-8. **Update `claude_status.json`**:
+8. **Release the MIR fork alongside** (only if the fork changed since the
+   last madc release — compare the commit in `MIR_COMMIT` against the commit
+   the previous `v<MIR_VERSION>` fork tag points to):
+   - New fork version: `<upstream-base>-madc.<new madc version>` — upstream
+     base = the newest upstream MIR release merged into the fork (bump it
+     only when a newer upstream release was merged; otherwise carry it
+     forward from the current `MIR_VERSION`)
+   - Write the new version to `MIR_VERSION` (included in the release commit)
+   - On the fork (`/workspace/mir`): ensure `develop` is pushed and
+     `MIR_COMMIT` points at it, then
+     `git tag -a v<MIR_VERSION> <MIR_COMMIT commit> -m "MIR fork release <MIR_VERSION>"`
+     and push the tag
+   - If the fork is UNCHANGED since the previous release: leave
+     `MIR_VERSION` untouched, cut no fork tag
+
+9. **Update `claude_status.json`**:
    - Read the existing file and update all fields to reflect current state
    - Update the version, date, build_status, test_status, phases, features, known_issues, remaining_todo
    - Write the updated JSON
 
-9. **Commit all changes on current branch**:
-   - Stage: `VERSION`, `docs/plans/ROADMAP.md`, `CHANGELOG.md`, `README.md`, `claude_status.json`, `docs/release-notes/vX.Y.Z.md`, plus any other uncommitted changes
-   - Commit message: `Release vX.Y.Z — <one-line summary>`
-   - Do NOT use `--amend`
+10. **Commit all changes on current branch**:
+    - Stage: `VERSION`, `MIR_VERSION` (if bumped), `docs/plans/ROADMAP.md`, `CHANGELOG.md`, `README.md`, `claude_status.json`, `docs/release-notes/vX.Y.Z.md`, plus any other uncommitted changes
+    - Commit message: `Release vX.Y.Z — <one-line summary>`
+    - Do NOT use `--amend`
 
-10. **Merge to develop** (if not already on develop):
+11. **Merge to develop** (if not already on develop):
     - Push the current branch to origin
     - Switch to `develop`
     - Merge the feature branch into develop (fast-forward or merge commit)
     - If there are merge conflicts, STOP and ask the user
 
-11. **Push develop to GitHub**: `git push origin develop`
+12. **Push develop to GitHub**: `git push origin develop`
 
-12. **Report**: Print a summary of what was released, the version number, and remind the user to run `/promote` when ready to push to master
+13. **Report**: Print a summary of what was released, the madc version, the fork release (if one was cut), and remind the user to run `/promote` when ready to push to master
 
 ## Important
 - Run `make -C src fulltest` before starting — abort if tests fail

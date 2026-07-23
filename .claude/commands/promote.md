@@ -23,6 +23,14 @@ Merges develop into master, tags the release, and pushes.
    - Push master
    - Push tags: `git push --tags`
 
-5. **Switch back to develop**
+5. **Promote the MIR fork in lockstep** (`/workspace/mir` — branch
+   correspondence: the fork's `master` tracks madc's `master`):
+   - Verify the fork's `develop` is pushed and `MIR_COMMIT` points into it
+   - Switch the fork to `master`, merge `develop` (expected fast-forward;
+     if not, STOP and ask the user)
+   - Push the fork's master and tags
+   - Switch the fork back to `develop`
 
-6. **Report**: Print confirmation with version number, tag, and GitHub URL
+6. **Switch back to develop**
+
+7. **Report**: Print confirmation with version number, tag, fork state, and GitHub URL
