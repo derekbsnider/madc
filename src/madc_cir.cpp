@@ -1127,14 +1127,103 @@ bool CirJitSession::emit_native_object(const char *out_path)
 }
 
 // The one writer for -o/-shared images: pull the finished whole-context
+// True when the import named `name` is provided by one of the DT_NEEDED
+// entries in `covers` (spellings like "libc.so.6" / "libcrypt.so"): resolve
+// the symbol in this process (bin/madc has the whole JIT resolution surface
+// loaded), then map the resolved address back to its defining object and
+// prefix-match that object's basename against the cover spellings. A symbol
+// that does not resolve, or resolves outside every cover (including into the
+// madc runtime itself — statically linked into this executable, so dladdr
+// reports the self exe), is NOT covered.
+static bool cir_import_covered(const char *name,
+			       const std::vector<std::string> &covers)
+{
+    void *addr = dlsym(RTLD_DEFAULT, name);
+    if (!addr)
+	return false;
+    Dl_info info;
+    if (!dladdr(addr, &info) || !info.dli_fname || !info.dli_fname[0])
+	return false;
+    const char *bn = strrchr(info.dli_fname, '/');
+    bn = bn ? bn + 1 : info.dli_fname;
+    for (const std::string &c : covers) {
+	size_t slash = c.rfind('/');
+	const char *cb = slash == std::string::npos ? c.c_str()
+						    : c.c_str() + slash + 1;
+	if (strncmp(bn, cb, strlen(cb)) == 0)
+	    return true;
+    }
+    return false;
+}
+
+// Does the image actually need the madc runtime? Walk every module in the
+// context, collect the names its items DEFINE, and classify each IMPORT that
+// no module defines (in --project the TUs satisfy each other's imports
+// in-context). If every external import is covered by the non-madc DT_NEEDED
+// entries, the produced binary is runtime-free and libmadc.so.0 can be
+// dropped. Any uncovered import — a madc runtime symbol, or a symbol only
+// reachable through libmadc's dependency closure — keeps the dependency
+// (conservative: false negatives cost one extra DT_NEEDED, false positives
+// break the binary at load).
+static bool cir_image_needs_madc_runtime(MIR_context_t ctx,
+					 const std::vector<std::string> &covers)
+{
+    std::set<std::string> defined;
+    std::vector<std::string> imports;
+    for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx));
+	 m; m = DLIST_NEXT(MIR_module_t, m)) {
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it)) {
+	    if (it->item_type == MIR_import_item) {
+		imports.push_back(it->u.import_id);
+		continue;
+	    }
+	    if (it->item_type == MIR_export_item
+		|| it->item_type == MIR_forward_item
+		|| it->item_type == MIR_proto_item)
+		continue;
+	    const char *nm = MIR_item_name(ctx, it);
+	    if (nm && nm[0])
+		defined.insert(nm);
+	}
+    }
+    for (const std::string &imp : imports) {
+	if (defined.count(imp))
+	    continue;
+	if (!cir_import_covered(imp.c_str(), covers)) {
+	    DBG(std::cout << "native image needs madc runtime: import '"
+			  << imp << "' is not covered by base/user libs"
+			  << std::endl);
+	    return true;
+	}
+    }
+    return false;
+}
+
 // capture out of ctx and write it to disk. Shared by the single-TU session
 // (emit_native_executable) and the --project whole-program lane.
 static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 				   const std::vector<std::string> &needed,
 				   const std::string &runpath, bool shared)
 {
+    // Conditional runtime dependency: a program whose every dynamic import
+    // resolves within the base C/C++ and user -l libraries gets no
+    // libmadc.so.0 DT_NEEDED — it runs on hosts without madc installed.
+    std::vector<std::string> other;
+    bool have_madc = false;
+    for (const std::string &l : needed) {
+	if (l == "libmadc.so.0")
+	    have_madc = true;
+	else
+	    other.push_back(l);
+    }
+    bool drop_madc = have_madc && !cir_image_needs_madc_runtime(ctx, other);
+    DBG(std::cout << "native image DT_NEEDED: libmadc.so.0 "
+		  << (drop_madc ? "dropped (runtime-free)"
+				: (have_madc ? "kept" : "absent"))
+		  << std::endl);
     std::vector<const char *> libs;
-    for (const std::string &l : needed)
+    for (const std::string &l : (drop_madc ? other : needed))
 	libs.push_back(l.c_str());
     MIR_object_exec_params xp;
     memset(&xp, 0, sizeof xp);

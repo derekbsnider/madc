@@ -108,4 +108,51 @@ TEST_SUITE("madc_cir_emit_native") {
 	std::remove(src_path.c_str());
 	std::remove(so_path.c_str());
     }
+
+    TEST_CASE("conditional DT_NEEDED: runtime-free exec drops libmadc.so.0") {
+	// The needed-soname strings live in the image's .dynstr, so a raw
+	// byte scan for "libmadc.so.0" is a faithful DT_NEEDED probe (the
+	// RUNPATH holds directory paths only, never that spelling).
+	auto emit_exec = [](const char *body) -> std::string {
+	    std::string src_path =
+		write_temp("/tmp/madc_unit_needed_XXXXXX.mad", 4, body);
+	    REQUIRE(!src_path.empty());
+	    std::string out_path =
+		write_temp("/tmp/madc_unit_needed_XXXXXX.bin", 4, "");
+	    REQUIRE(!out_path.empty());
+	    MadcEngine engine;
+	    std::unique_ptr<Program> prog = engine.create_program();
+	    TokenProgram *tp = prog->tokenize(src_path.c_str());
+	    REQUIRE(tp != NULL);
+	    REQUIRE(prog->parse(tp));
+	    std::vector<std::string> user_libs;
+	    int rc = madc_cir_emit_native(prog.get(), src_path.c_str(),
+					  mnkExecutable, out_path.c_str(),
+					  user_libs);
+	    madc_object_mode = false;
+	    REQUIRE(rc == 0);
+	    std::ifstream f(out_path.c_str(), std::ios::binary);
+	    std::string img((std::istreambuf_iterator<char>(f)),
+			    std::istreambuf_iterator<char>());
+	    std::remove(src_path.c_str());
+	    std::remove(out_path.c_str());
+	    return img;
+	};
+
+	// Every import resolves in libc: no runtime dependency.
+	std::string free_img = emit_exec(
+	    "int main(int argc, char **argv) { return argc > 90 ? 1 : 0; }\n");
+	CHECK(free_img.find("libmadc.so.0") == std::string::npos);
+	CHECK(free_img.find("libc.so.6") != std::string::npos);
+
+	// A VLA local imports the runtime's __madc_vla_free cleanup:
+	// the dependency must stay.
+	std::string rt_img = emit_exec(
+	    "int main(int argc, char **argv) {\n"
+	    "    int a[argc + 1];\n"
+	    "    a[argc] = argc;\n"
+	    "    return a[argc] > 90 ? 1 : 0;\n"
+	    "}\n");
+	CHECK(rt_img.find("libmadc.so.0") != std::string::npos);
+    }
 }

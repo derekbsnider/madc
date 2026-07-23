@@ -101,9 +101,10 @@ Compile to a relocatable native object (default:
 .TP
 .BI \-o " prog"
 Compile to a native executable \(em MIR assembles the ELF directly.
-The produced program needs
+The produced program depends on
 .B libmadc.so.0
-at run time.
+only when it uses the madc runtime; a plain C program's executable is
+runtime-free.
 .TP
 .BR \-shared " [" \-o " \fIfile.so\fR]"
 Compile to a shared object (ET_DYN; dlopen/#load-consumable; PIC).
