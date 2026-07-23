@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **fix(cli): lexer-phase errors now exit nonzero.** A failed
+  `#include` (or any diagnostic thrown during tokenization) printed
+  its error and aborted compilation, but the CLI's
+  `if (!tokenize()) return 0;` reported SUCCESS to the shell — build
+  scripts never saw the failure (found via the torture runner
+  classifying 5 include-dependent tests as compile-failed while madc's
+  exit code claimed 0). Parse/compile/runtime phases already exited
+  nonzero; the `--emit-pch` path already handled the same NULL
+  correctly. New `testincludefail` (`.expect_err`). Verified as a
+  targeted micro-batch per owner: the 90 suite tests whose pass
+  criterion is exit-0-alone all still exit 0 (the only other rc
+  consumers), plus parse-error/good-program sanity; full battery rides
+  the next batch.
+
 - **fix(cir): VLA parameter bounds — flat pointer lowering + entry-time
   capture (task #80, pr22061-1 — the last open ledger item).** A
   VLA-typed parameter (`char a[2][N]`, C11 6.7.6.2) was miscompiled:

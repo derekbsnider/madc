@@ -1082,8 +1082,11 @@ int main(int argc, char **argv)
 	    prog->forest_arena_enabled = true; // B3: populate forest_arena during parse — the arena IS the type-graph dump (v18)
 	struct timeval _tk0, _tk1;     // --show-stats: tokenize (read+lex) wall time
 	gettimeofday(&_tk0, NULL);
+	// A NULL TokenProgram means a lexer-phase diagnostic already printed
+	// (failed #include, unterminated literal, bad PP directive) and
+	// compilation aborted — exit nonzero like every later phase does.
 	if ( !(tp=prog->tokenize(argv[filearg])) )
-	    return 0;
+	    return 1;
 	gettimeofday(&_tk1, NULL);
 
 	if ( dump_source )
