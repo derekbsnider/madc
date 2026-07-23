@@ -12878,15 +12878,16 @@ static op_t force_val (c2m_ctx_t c2m_ctx, op_t op, int arr_p) {
     /* an array -- use a pointer: */
     return mem_to_address (c2m_ctx, op, FALSE);
   }
-  /* Extend ALL narrow integer reg values, not only address-taken ones: an
-     UNINITIALIZED narrow local was never written by a well-formed (extending)
-     store, so its pseudo-reg carries stale 64-bit garbage; reading it
-     unextended feeds full-width garbage into e.g. 32-bit division and
-     gcc.c-torture pr34099-2 (char x; x/1000 must be 0 for any char) aborts
-     at -O0/-O1.  This restores the original fix for issue #458 that the
-     upstream follow-up (2a157cc2) narrowed to addr_p; pr34099-2 is the
-     counterexample to that narrowing -- propose it back upstream. */
-  if (op.decl != NULL && op.mir_op.mode == MIR_OP_REG
+  /* Issue-458 invariant: a narrow integer reg value is always born from an
+     extending operation, so reads need no extension (the upstream follow-up
+     2a157cc2 keeps only the addr_p case here).  The one counterexample --
+     an UNINITIALIZED narrow local, whose pseudo-reg is stale 64-bit garbage
+     (gcc.c-torture pr34099-2: char x; x/1000 must stay in char range) -- is
+     now repaired at its source: the declaration emits a single extension
+     (see the N_SPEC_DECL uninitialized-narrow-auto case), so the invariant
+     holds without pessimizing every read.  Supersedes the earlier
+     unconditional re-widening (bde8658d). */
+  if (op.decl != NULL && op.decl->addr_p && op.mir_op.mode == MIR_OP_REG
       && integer_type_p (op.decl->decl_spec.type)) {
     t = get_mir_type (c2m_ctx, op.decl->decl_spec.type);
     if (t == MIR_T_I8 || t == MIR_T_U8 || t == MIR_T_I16 || t == MIR_T_U16)
@@ -18784,6 +18785,36 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
             }
             if (i >= VARR_LENGTH (node_t, sym.defs)) /* No item yet or no decl with intializer: */
               decl->u.item = MIR_new_bss (ctx, name, raw_type_size (c2m_ctx, decl->decl_spec.type));
+          } else if (decl->scope != top_scope && !decl->decl_spec.static_p
+                     && !decl->decl_spec.thread_local_p && decl->used_p
+                     && integer_type_p (decl->decl_spec.type)) {
+            /* An UNINITIALIZED narrow (i8/u8/i16/u16) auto scalar homed in a
+               reg starts as stale 64-bit garbage.  Extend it once at its
+               declaration so every read can rely on the issue-458 invariant
+               (a narrow reg value is always born extended) without paying an
+               extension at each read; gcc.c-torture pr34099-2 (char x;
+               x/1000 must stay in char range) is the case that breaks
+               otherwise.  Memory-homed decls (addr_p etc.) read through
+               typed loads, which already extend -- gen yields a non-reg op
+               for them and they are skipped. */
+            MIR_type_t vt = get_mir_type (c2m_ctx, decl->decl_spec.type);
+            if (vt == MIR_T_I8 || vt == MIR_T_U8 || vt == MIR_T_I16 || vt == MIR_T_U16) {
+              if (id->attr == NULL) { /* as in the initializer path below */
+                node_t saved_scope = curr_scope;
+
+                curr_scope = decl->scope;
+                check (c2m_ctx, id, NULL);
+                curr_scope = saved_scope;
+              }
+              op_t vr = gen (c2m_ctx, id, NULL, NULL, FALSE, NULL, NULL);
+              if (vr.mir_op.mode == MIR_OP_REG)
+                emit2 (c2m_ctx,
+                       vt == MIR_T_I8    ? MIR_EXT8
+                       : vt == MIR_T_U8  ? MIR_UEXT8
+                       : vt == MIR_T_I16 ? MIR_EXT16
+                                         : MIR_UEXT16,
+                       vr.mir_op, vr.mir_op);
+            }
           }
         } else if (initializer->code != N_IGNORE) {  // ??? general code
           init_start = VARR_LENGTH (init_el_t, init_els);
