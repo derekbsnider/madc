@@ -1,0 +1,617 @@
+/* ============================================================================
+   madc — "My Advanced Dialect of C" — surface grammar
+   https://github.com/derekbsnider/madc
+
+   W3C-EBNF notation, renderable with the Railroad Diagram Generator
+   (https://github.com/GuntherRademacher/rr).
+
+   SCOPE AND AUTHORITY
+   - This file DOCUMENTS the surface language accepted by madc's hand-written
+     recursive-descent parser; the parser (src/parser.cpp) is authoritative.
+     The grammar is descriptive, maintained at release milestones, and scoped
+     to constructs exercised by the test suite (tests/*.mad).
+   - madc is a C/C++ dialect: a C17 core, a substantial implemented C++
+     subset (classes with single/multiple/virtual inheritance, templates,
+     operator overloading, exceptions, lambdas, namespaces), and madc's own
+     dialect extensions. Productions marked "madc dialect" below are the
+     extensions; "C++" / "GNU" marks note the origin of borrowed constructs.
+   - Dialect selection (--std=c78..c23, c++98..c++26, gnu variants, or the
+     default madc mode) gates which productions are active; the gates are
+     semantic and not encoded here. Notably: K&R function definitions parse
+     only under --std=c78..c17; C++ productions are inactive in plain C
+     modes; the madc-dialect extensions are active in the default mode.
+   - The preprocessor (a separate translation phase, as in C) is summarized
+     in its own section; macro replacement is not modeled.
+   ========================================================================= */
+
+/* ---------------------------------------------------------------------------
+   Translation unit. In the default (madc) mode, file-scope STATEMENTS are
+   permitted and are collected into a synthesized main() — "script mode".
+   A leading '#!' interpreter line is accepted and ignored.
+   ------------------------------------------------------------------------ */
+
+Program          ::= Shebang? TopLevelPart*
+
+TopLevelPart     ::= PreprocessorDirective
+                   | ExternalDeclaration
+                   | Statement                       /* madc dialect: script mode */
+
+Shebang          ::= '#!' NotLineBreak* LineBreak
+
+/* ---------------------------------------------------------------------------
+   Preprocessor (summary). Directives occupy one logical line; '\' continues
+   a line. Conditional groups nest as in C.
+   ------------------------------------------------------------------------ */
+
+PreprocessorDirective
+                 ::= IncludeDirective
+                   | LoadDirective
+                   | DefineDirective
+                   | UndefDirective
+                   | ConditionalDirective
+                   | PragmaDirective
+                   | ErrorDirective
+
+IncludeDirective ::= '#include' ( '<' HeaderName '>' | StringLiteral )
+
+/* madc dialect: dlopen a shared library and expose its exports under a
+   namespace (RTLD_GLOBAL — unprefixed calls also resolve). */
+LoadDirective    ::= '#load' StringLiteral 'as' Identifier ';'
+
+DefineDirective  ::= '#define' Identifier
+                     ( '(' ( Identifier ( ',' Identifier )* ( ',' '...' )? | '...' )? ')' )?
+                     ReplacementText
+
+UndefDirective   ::= '#undef' Identifier
+
+ConditionalDirective
+                 ::= ( '#if' ConstantExpression
+                     | '#ifdef' Identifier
+                     | '#ifndef' Identifier )
+                     TopLevelPart*
+                     ( '#elif' ConstantExpression TopLevelPart* )*
+                     ( '#else' TopLevelPart* )?
+                     '#endif'
+
+/* '#pragma prefer' is an alias of the 'prefer' directive (see Statements). */
+PragmaDirective  ::= '#pragma' ( 'prefer' Identifier ( ',' Identifier )* | PPTokens )
+
+ErrorDirective   ::= '#error' PPTokens?
+
+/* ---------------------------------------------------------------------------
+   External declarations.
+   ------------------------------------------------------------------------ */
+
+ExternalDeclaration
+                 ::= FunctionDefinition
+                   | Declaration
+                   | NamespaceDefinition                              /* C++ */
+                   | TemplateDeclaration                              /* C++ */
+                   | LinkageSpecification                             /* C++ */
+                   | UsingDirective                                   /* C++ */
+                   | UsingDeclaration                                 /* C++ */
+                   | UsingAlias                                       /* C++ */
+                   | StaticAssertDeclaration
+                   | PreferDirective                          /* madc dialect */
+                   | ';'
+
+NamespaceDefinition
+                 ::= 'inline'? 'namespace' Identifier?
+                     '{' ( ExternalDeclaration | Statement )* '}'
+
+LinkageSpecification
+                 ::= 'extern' StringLiteral
+                     ( '{' ExternalDeclaration* '}' | ExternalDeclaration )
+
+UsingDirective   ::= 'using' 'namespace' QualifiedName ';'
+
+UsingDeclaration ::= 'using' QualifiedName ';'
+
+UsingAlias       ::= 'using' Identifier '=' TypeId ';'                /* C++11 */
+
+StaticAssertDeclaration
+                 ::= ( 'static_assert' | '_Static_assert' )
+                     '(' ConstantExpression ( ',' StringLiteral )? ')' ';'
+
+/* madc dialect: unqualified-lookup namespace precedence, e.g.
+   `prefer rust, php, c;` ('c' = the plain C/madc lookup path). */
+PreferDirective  ::= 'prefer' Identifier ( ',' Identifier )* ';'
+
+/* ---------------------------------------------------------------------------
+   Templates (C++). madc instantiates by monomorphization per use; class
+   templates, function templates (namespace-scope and member), variadic
+   packs, default arguments, and out-of-line member definitions parse.
+   ------------------------------------------------------------------------ */
+
+TemplateDeclaration
+                 ::= 'template' '<' TemplateParameterList? '>'
+                     ( ClassDeclaration ';'
+                     | FunctionDefinition
+                     | Declaration
+                     | TemplateDeclaration )     /* member template of a class template */
+
+TemplateParameterList
+                 ::= TemplateParameter ( ',' TemplateParameter )*
+
+TemplateParameter
+                 ::= ( 'class' | 'typename' ) '...'? Identifier? ( '=' TypeId )?
+                   | DeclSpecifierSeq Declarator? ( '=' ConstantExpression )?   /* non-type */
+
+TemplateArguments
+                 ::= '<' ( TemplateArgument ( ',' TemplateArgument )* )? '>'
+
+TemplateArgument ::= TypeId | ConstantExpression
+
+/* ---------------------------------------------------------------------------
+   Declarations and declarators.
+   ------------------------------------------------------------------------ */
+
+Declaration      ::= DeclSpecifierSeq InitDeclaratorList? ';'
+                   | UnpackDeclaration
+                   | 'typedef' DeclSpecifierSeq Declarator ( ',' Declarator )* ';'
+
+/* madc dialect: Go-style unpacking of a multi-return call —
+   `q, r := divide(17, 5);`. Types are inferred from the callee. */
+UnpackDeclaration
+                 ::= Identifier ( ',' Identifier )+ ':=' PostfixExpression ';'
+
+InitDeclaratorList
+                 ::= InitDeclarator ( ',' InitDeclarator )*
+
+InitDeclarator   ::= Declarator Initializer?
+
+Initializer      ::= '=' InitializerClause
+                   | '(' ExpressionList ')'         /* direct-init (C++) */
+                   | BracedInitList
+
+InitializerClause
+                 ::= AssignmentExpression | BracedInitList
+
+BracedInitList   ::= '{' ( InitializerItem ( ',' InitializerItem )* ','? )? '}'
+
+InitializerItem  ::= Designation? InitializerClause
+
+Designation      ::= Designator+ '='
+
+/* '[a ... b]' range designators are a GNU extension madc accepts. */
+Designator       ::= '.' Identifier
+                   | '[' ConstantExpression ( '...' ConstantExpression )? ']'
+
+DeclSpecifierSeq ::= DeclSpecifier+
+
+DeclSpecifier    ::= StorageClassSpecifier
+                   | TypeQualifier
+                   | FunctionSpecifier
+                   | AlignmentSpecifier
+                   | AttributeSpecifier
+                   | TypeSpecifier
+
+StorageClassSpecifier
+                 ::= 'static' | 'extern' | 'register' | 'thread_local' | 'typedef'
+
+TypeQualifier    ::= 'const' | 'volatile' | 'restrict' | '__restrict' | '__restrict__'
+
+FunctionSpecifier
+                 ::= 'inline' | 'virtual' | 'explicit' | 'friend'
+                   | 'constexpr' | 'consteval' | 'constinit' | 'mutable'
+
+AlignmentSpecifier
+                 ::= ( 'alignas' | '_Alignas' ) '(' ( TypeId | ConstantExpression ) ')'
+
+/* GNU attributes are parsed; layout attributes (aligned, packed) are
+   honored, others are consumed. */
+AttributeSpecifier
+                 ::= ( '__attribute__' | '__attribute' ) '(' '(' AttributeList? ')' ')'
+
+AttributeList    ::= Attribute ( ',' Attribute )*
+
+Attribute        ::= Identifier ( '(' ExpressionList? ')' )?
+
+TypeSpecifier    ::= SimpleTypeSpecifier
+                   | ElaboratedTypeSpecifier
+                   | ClassDeclaration                   /* defining-type-specifier */
+                   | EnumDeclaration
+                   | TypeName
+                   | 'auto'                             /* deduced (C++11) */
+                   | 'decltype' '(' Expression ')'
+                   | ( 'typeof' | '__typeof__' ) '(' ( Expression | TypeId ) ')'  /* GNU */
+
+SimpleTypeSpecifier
+                 ::= 'void' | 'bool' | '_Bool' | 'char' | 'short' | 'int' | 'long'
+                   | 'float' | 'double' | 'signed' | 'unsigned'
+                   | '_Complex' | '_Imaginary'
+                   | 'wchar_t' | 'char8_t' | 'char16_t' | 'char32_t'
+                   | '__int128' | '_BitInt' '(' ConstantExpression ')'
+
+ElaboratedTypeSpecifier
+                 ::= ( 'struct' | 'union' | 'class' | 'enum' ) QualifiedName
+
+/* A named type: typedef name, class/template name, or namespace-qualified.
+   'array' (the madc mixed-type container) and 'string'/'ostream'/... (via
+   auto-included real headers in madc mode) arrive through this production. */
+TypeName         ::= QualifiedName TemplateArguments?
+
+TypeId           ::= DeclSpecifierSeq AbstractDeclarator?
+
+AbstractDeclarator
+                 ::= PtrOperator+ DirectAbstractDeclarator?
+                   | DirectAbstractDeclarator
+
+DirectAbstractDeclarator
+                 ::= '(' AbstractDeclarator ')' ( ParameterClause | ArrayDimension )*
+                   | ( ParameterClause | ArrayDimension )+
+
+Declarator       ::= PtrOperator* DirectDeclarator
+
+PtrOperator      ::= '*' TypeQualifier*
+                   | '&'                                /* lvalue reference (C++) */
+                   | '&&'                               /* rvalue reference (C++11) */
+
+DirectDeclarator ::= DeclaratorId
+                   | '(' Declarator ')'
+                   | DirectDeclarator ArrayDimension
+                   | DirectDeclarator ParameterClause
+                     TypeQualifier* RefQualifier? NoexceptSpecifier?
+                     ( 'override' | 'final' )* TrailingReturnType?
+
+DeclaratorId     ::= QualifiedName                      /* incl. out-of-line Class::member */
+                   | '~' Identifier                     /* destructor (C++) */
+                   | 'operator' OverloadableOperator    /* operator function (C++) */
+
+/* A dimension expression need not be constant: runtime dimensions form
+   VLAs and variably-modified declarators — `int a[n][m]`, `int (*rp)[m]`
+   (C99/C11 6.7.6.2). */
+ArrayDimension   ::= '[' AssignmentExpression? ']'
+
+ParameterClause  ::= '(' ParameterList? ')'
+
+ParameterList    ::= 'void'
+                   | ParameterDeclaration ( ',' ParameterDeclaration )* ( ',' '...' )?
+                   | '...'
+
+ParameterDeclaration
+                 ::= DeclSpecifierSeq ( Declarator | AbstractDeclarator )?
+                     ( '=' InitializerClause )?         /* default argument (C++) */
+
+RefQualifier     ::= '&' | '&&'
+
+NoexceptSpecifier
+                 ::= 'noexcept' ( '(' ConstantExpression ')' )?
+                   | 'throw' '(' TypeIdList? ')'
+
+TypeIdList       ::= TypeId ( ',' TypeId )*
+
+TrailingReturnType
+                 ::= '->' TypeId                        /* C++11 */
+
+OverloadableOperator
+                 ::= '+' | '-' | '*' | '/' | '%' | '^' | '&' | '|' | '~' | '!'
+                   | '=' | '<' | '>' | '+=' | '-=' | '*=' | '/=' | '%=' | '^='
+                   | '&=' | '|=' | '<<' | '>>' | '<<=' | '>>=' | '==' | '!='
+                   | '<=' | '>=' | '<=>' | '===' | '!=='       /* madc: strict equality */
+                   | '&&' | '||' | '++' | '--' | ',' | '->*' | '->'
+                   | '(' ')' | '[' ']'
+                   | 'new' ( '[' ']' )? | 'delete' ( '[' ']' )?
+                   | TypeId                             /* conversion operator */
+
+/* ---------------------------------------------------------------------------
+   Function definitions.
+   ------------------------------------------------------------------------ */
+
+FunctionDefinition
+                 ::= DeclSpecifierSeq? Declarator
+                     KnRParameterDeclarations?
+                     CtorInitializer?
+                     ( CompoundStatement
+                     | '=' 'default' ';'                /* C++11 */
+                     | '=' 'delete' ';' )               /* C++11 */
+
+/* K&R parameter declarations — only under --std=c78..c17. */
+KnRParameterDeclarations
+                 ::= Declaration+
+
+CtorInitializer  ::= ':' MemInitializer ( ',' MemInitializer )*
+
+MemInitializer   ::= ( Identifier | TypeName )
+                     ( '(' ExpressionList? ')' | BracedInitList )
+
+/* ---------------------------------------------------------------------------
+   Classes (C++). Single, multiple, and virtual inheritance are supported
+   (Itanium layout); methods dispatch virtually when declared virtual.
+   ------------------------------------------------------------------------ */
+
+ClassDeclaration ::= ClassKey Identifier? BaseClause? '{' MemberSpecification* '}'
+
+ClassKey         ::= 'class' | 'struct' | 'union'
+
+BaseClause       ::= ':' BaseSpecifier ( ',' BaseSpecifier )*
+
+BaseSpecifier    ::= ( 'virtual' AccessSpecifier? | AccessSpecifier 'virtual'? )? TypeName
+
+AccessSpecifier  ::= 'public' | 'protected' | 'private'
+
+MemberSpecification
+                 ::= AccessSpecifier ':'
+                   | MemberDeclaration
+
+MemberDeclaration
+                 ::= DeclSpecifierSeq? MemberDeclaratorList? ';'
+                   | FunctionDefinition
+                   | TemplateDeclaration                /* member template */
+                   | UsingDeclaration                   /* incl. using Base::member */
+                   | UsingAlias
+                   | StaticAssertDeclaration
+                   | ';'
+
+MemberDeclaratorList
+                 ::= MemberDeclarator ( ',' MemberDeclarator )*
+
+MemberDeclarator ::= Declarator Initializer?            /* incl. default member init */
+                   | Declarator? ':' ConstantExpression /* bit-field */
+
+/* ---------------------------------------------------------------------------
+   Enumerations.
+   ------------------------------------------------------------------------ */
+
+EnumDeclaration  ::= 'enum' ( 'class' | 'struct' )? Identifier?
+                     ( ':' TypeSpecifier+ )?
+                     '{' ( Enumerator ( ',' Enumerator )* ','? )? '}'
+
+Enumerator       ::= Identifier ( '=' ConstantExpression )?
+
+/* ---------------------------------------------------------------------------
+   Statements.
+   ------------------------------------------------------------------------ */
+
+Statement        ::= LabeledStatement
+                   | CompoundStatement
+                   | ExpressionStatement
+                   | Declaration
+                   | IfStatement
+                   | SwitchStatement
+                   | RustMatchStatement                 /* madc dialect */
+                   | WhileStatement
+                   | DoStatement
+                   | ForStatement
+                   | RangeForStatement                  /* C++11 */
+                   | BreakStatement
+                   | ContinueStatement
+                   | ReturnStatement
+                   | GotoStatement
+                   | TryBlock                           /* C++ */
+                   | DeferStatement                     /* madc dialect */
+                   | PreferDirective                    /* madc dialect */
+                   | ';'
+
+LabeledStatement ::= Identifier ':' Statement
+                   | 'case' ConstantExpression ( '...' ConstantExpression )? ':' Statement
+                   | 'default' ':' Statement
+
+CompoundStatement
+                 ::= '{' Statement* '}'
+
+ExpressionStatement
+                 ::= Expression ';'
+
+IfStatement      ::= 'if' 'constexpr'? '(' Condition ')' Statement ( 'else' Statement )?
+
+Condition        ::= Expression
+                   | DeclSpecifierSeq Declarator '=' InitializerClause
+
+/* 'case a ... b:' range labels are a GNU extension madc accepts. */
+SwitchStatement  ::= 'switch' '(' Expression ')' Statement
+
+/* madc dialect: no-fall-through multi-pattern match over integer constant
+   patterns; '_' is the wildcard arm; '|' separates alternative patterns. */
+RustMatchStatement
+                 ::= 'rust' '::' 'match' '(' Expression ')' '{' MatchArm* '}'
+
+MatchArm         ::= ( '_' | MatchPattern ( '|' MatchPattern )* ) '=>' Statement
+
+MatchPattern     ::= ConstantExpression
+
+WhileStatement   ::= 'while' '(' Condition ')' Statement
+
+DoStatement      ::= 'do' Statement 'while' '(' Expression ')' ';'
+
+ForStatement     ::= 'for' '(' ( Declaration | ExpressionStatement | ';' )
+                     Condition? ';' Expression? ')' Statement
+
+RangeForStatement
+                 ::= 'for' '(' DeclSpecifierSeq Declarator ':' Expression ')' Statement
+
+BreakStatement   ::= 'break' ';'
+
+ContinueStatement
+                 ::= 'continue' ';'
+
+/* Two or more return values make the function multi-return (madc dialect,
+   Go-style): `return q, r;` — unpacked at the call site with ':='. */
+ReturnStatement  ::= 'return' ( AssignmentExpression ( ',' AssignmentExpression )* )? ';'
+
+GotoStatement    ::= 'goto' Identifier ';'
+
+TryBlock         ::= 'try' CompoundStatement Handler+
+
+Handler          ::= 'catch' '(' ( ParameterDeclaration | '...' ) ')' CompoundStatement
+
+/* madc dialect: Go-style deferred execution — the statement runs at scope
+   exit, LIFO across defers in the same scope. */
+DeferStatement   ::= 'defer' Statement
+
+/* ---------------------------------------------------------------------------
+   Expressions. One production per precedence level, tightest last.
+   Word operators (and, or, not, bitand, bitor, xor, compl, not_eq, and_eq,
+   or_eq, xor_eq) are exact synonyms of the symbolic forms (C++ [lex.digraph])
+   and are omitted from the diagrams for clarity.
+   ------------------------------------------------------------------------ */
+
+Expression       ::= AssignmentExpression ( ',' AssignmentExpression )*
+
+ExpressionList   ::= AssignmentExpression ( ',' AssignmentExpression )*
+
+ConstantExpression
+                 ::= ConditionalExpression
+
+AssignmentExpression
+                 ::= ConditionalExpression
+                   | UnaryExpression AssignmentOperator InitializerClause
+                   | ThrowExpression
+
+AssignmentOperator
+                 ::= '=' | '+=' | '-=' | '*=' | '/=' | '%='
+                   | '&=' | '|=' | '^=' | '<<=' | '>>='
+
+ThrowExpression  ::= 'throw' AssignmentExpression?
+
+ConditionalExpression
+                 ::= LogicalOrExpression ( '?' Expression ':' AssignmentExpression )?
+
+LogicalOrExpression
+                 ::= LogicalAndExpression ( '||' LogicalAndExpression )*
+
+LogicalAndExpression
+                 ::= InclusiveOrExpression ( '&&' InclusiveOrExpression )*
+
+InclusiveOrExpression
+                 ::= ExclusiveOrExpression ( '|' ExclusiveOrExpression )*
+
+ExclusiveOrExpression
+                 ::= AndExpression ( '^' AndExpression )*
+
+AndExpression    ::= EqualityExpression ( '&' EqualityExpression )*
+
+/* '===' / '!==' are madc's strict-equality operators (same value AND same
+   dynamic domain); they overload like any other binary operator. */
+EqualityExpression
+                 ::= RelationalExpression
+                     ( ( '==' | '!=' | '===' | '!==' ) RelationalExpression )*
+
+RelationalExpression
+                 ::= CompareExpression
+                     ( ( '<' | '>' | '<=' | '>=' ) CompareExpression )*
+
+/* C++20 three-way comparison. */
+CompareExpression
+                 ::= ShiftExpression ( '<=>' ShiftExpression )*
+
+ShiftExpression  ::= AdditiveExpression ( ( '<<' | '>>' ) AdditiveExpression )*
+
+AdditiveExpression
+                 ::= MultiplicativeExpression
+                     ( ( '+' | '-' ) MultiplicativeExpression )*
+
+MultiplicativeExpression
+                 ::= CastExpression ( ( '*' | '/' | '%' ) CastExpression )*
+
+CastExpression   ::= UnaryExpression
+                   | '(' TypeId ')' CastExpression
+                   | '(' TypeId ')' BracedInitList      /* C99 compound literal */
+
+UnaryExpression  ::= PostfixExpression
+                   | ( '++' | '--' ) UnaryExpression
+                   | ( '&' | '*' | '+' | '-' | '~' | '!' ) CastExpression
+                   | 'sizeof' ( UnaryExpression | '(' TypeId ')' )
+                   | 'sizeof' '...' '(' Identifier ')'  /* C++11 pack arity */
+                   | ( 'alignof' | '_Alignof' ) '(' TypeId ')'
+                   | NewExpression
+                   | DeleteExpression
+
+NewExpression    ::= '::'? 'new' ( '(' ExpressionList ')' )?  /* placement */
+                     ( TypeName | SimpleTypeSpecifier+ ) PtrOperator*
+                     ( '[' Expression ']' )?
+                     ( '(' ExpressionList? ')' | BracedInitList )?
+
+DeleteExpression ::= '::'? 'delete' ( '[' ']' )? CastExpression
+
+PostfixExpression
+                 ::= PrimaryExpression
+                     ( '[' Expression ']'
+                     | '(' ExpressionList? ')'
+                     | ( '.' | '->' ) ( QualifiedName TemplateArguments? | '~' Identifier )
+                     | '++'
+                     | '--' )*
+
+PrimaryExpression
+                 ::= Literal
+                   | 'this'
+                   | QualifiedName TemplateArguments?
+                   | '(' Expression ')'
+                   | LambdaExpression
+                   | NamedCast
+                   | 'typeid' '(' ( Expression | TypeId ) ')'
+                   | GenericSelection
+
+NamedCast        ::= ( 'static_cast' | 'dynamic_cast' | 'const_cast' | 'reinterpret_cast' )
+                     '<' TypeId '>' '(' Expression ')'
+
+GenericSelection ::= '_Generic' '(' AssignmentExpression
+                     ( ',' ( TypeId | 'default' ) ':' AssignmentExpression )+ ')'  /* C11 */
+
+/* madc dialect lambda (V1): the RETURN TYPE sits inside the brackets —
+   `[](string s) { ... }` returns void, `[int](int a, int b) { return a+b; }`
+   returns int. C++ capture lists are not yet supported; lambdas lower to
+   hoisted functions and yield function-pointer values. */
+LambdaExpression ::= '[' TypeId? ']' '(' ParameterList? ')' CompoundStatement
+
+/* ---------------------------------------------------------------------------
+   Literals (token level, abridged).
+   ------------------------------------------------------------------------ */
+
+Literal          ::= IntegerLiteral
+                   | FloatingLiteral
+                   | CharacterLiteral
+                   | StringLiteral
+                   | 'true' | 'false' | 'nullptr'
+
+/* Binary literals and ' digit separators are accepted (C++14 / C23).
+   An 'i' suffix forms an imaginary constant (GNU): 3i, 2.0if. */
+IntegerLiteral   ::= ( DecimalLiteral | OctalLiteral | HexLiteral | BinaryLiteral )
+                     IntegerSuffix?
+
+DecimalLiteral   ::= [1-9] ( "'"? [0-9] )* | '0'
+
+OctalLiteral     ::= '0' ( "'"? [0-7] )+
+
+HexLiteral       ::= ( '0x' | '0X' ) ( "'"? [0-9a-fA-F] )+
+
+BinaryLiteral    ::= ( '0b' | '0B' ) ( "'"? [01] )+
+
+IntegerSuffix    ::= ( [uU] ( 'l' | 'L' | 'll' | 'LL' )? | ( 'l' | 'L' | 'll' | 'LL' ) [uU]? )
+                     [iI]?
+
+FloatingLiteral  ::= ( [0-9]+ '.' [0-9]* | '.' [0-9]+ | [0-9]+ )
+                     ( [eE] ( '+' | '-' )? [0-9]+ )?
+                     [fFlL]? [iI]?
+
+CharacterLiteral ::= ( 'L' | 'u' | 'U' | 'u8' )? "'" ( EscapeSequence | NotQuoteOrBackslash )+ "'"
+
+StringLiteral    ::= ( 'L' | 'u' | 'U' | 'u8' )? '"' ( EscapeSequence | NotDQuoteOrBackslash )* '"'
+
+EscapeSequence   ::= '\' ( "'" | '"' | '?' | '\' | [abfnrtv]
+                         | [0-7] [0-7]? [0-7]?
+                         | 'x' [0-9a-fA-F]+ )
+
+Identifier       ::= [a-zA-Z_] [a-zA-Z0-9_]*
+
+QualifiedName    ::= '::'? Identifier ( '::' Identifier )*
+
+HeaderName       ::= NotGreaterThan+
+
+/* Opaque token runs (preprocessor bodies); not modeled further. */
+ReplacementText  ::= NotLineBreak* LineBreak
+
+PPTokens         ::= NotLineBreak* LineBreak
+
+/* Character-class helpers (named for diagram readability). */
+NotLineBreak     ::= [^#xA#xD]
+
+LineBreak        ::= #xD? #xA
+
+NotQuoteOrBackslash
+                 ::= [^'#x5C#xA#xD]
+
+NotDQuoteOrBackslash
+                 ::= [^"#x5C#xA#xD]
+
+NotGreaterThan   ::= [^>#xA#xD]

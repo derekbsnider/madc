@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **docs(grammar): `docs/grammar/madc.ebnf` — the madc surface grammar in
+  W3C EBNF (issue #6).** Covers the C17 core, the implemented C++ subset,
+  and the madc dialect extensions (script mode, `#load … as ns`, `prefer`,
+  `defer`, `rust::match`, multi-return `return a, b` / `a, b := f()`,
+  `===`/`!==`, `[ret-type]` lambdas), with dialect/GNU origin notes and a
+  parser-is-authoritative header. Validated by rendering through the
+  Railroad Diagram Generator (rr 2.6) — every production gets a diagram,
+  no undefined references; regeneration steps in `docs/grammar/README.md`.
+  The rendered `madc.ebnf.xhtml` is contributed to the
+  mingodad/cpp-grammars collection.
+
 - **feat(cir+parser): VLA row-pointer semantics — arithmetic,
   variably-modified declarators, sizeof operand evaluation.** Completes
   the VLA boundary set opened below: (1) pointer arithmetic on flat
