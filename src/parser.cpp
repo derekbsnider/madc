@@ -27418,7 +27418,10 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			// Function-pointer cast: `(RET (*)(PARAMS)) expr`. After the
 			// return type (plus any pointer stars) we may see `(*)` and
 			// then a parameter list. Reuse parseFnPtrParams() to build the
-			// FuncDef, then wrap in DataDefFPTR.
+			// FuncDef, then wrap in DataDefFPTR. The suffix may instead be
+			// an array declarator — `(T (*)[N]) expr` is a cast to
+			// pointer-to-array (task #79), the same shape the declaration
+			// arm builds for `T (*name)[N]`.
 			if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 			{
 			    TokenBase *open = nextToken();    // consume '('
@@ -27429,11 +27432,17 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				TokenBase *close1 = nextToken();
 				if ( !close1 || close1->id() != TokenID::tkClBrk )
 				    Throw(close1 ? close1 : open) << "expected ')' after '(*' in function pointer cast" << flush;
-				TokenBase *open2 = nextToken();
-				if ( !open2 || open2->id() != TokenID::tkOpBrk )
-				    Throw(open2 ? open2 : open) << "expected '(' to introduce parameter list in function pointer cast" << flush;
-				FuncDef *func = parseFnPtrParams(*cast_dd);
-				cast_dd = new DataDefFPTR(func);
+				if ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
+				    cast_dd = parse_ptr_array_suffix(cast_dd, open,
+						"pointer-to-array cast");
+				else
+				{
+				    TokenBase *open2 = nextToken();
+				    if ( !open2 || open2->id() != TokenID::tkOpBrk )
+					Throw(open2 ? open2 : open) << "expected '(' to introduce parameter list in function pointer cast" << flush;
+				    FuncDef *func = parseFnPtrParams(*cast_dd);
+				    cast_dd = new DataDefFPTR(func);
+				}
 			    }
 			    else
 			    {
@@ -36404,6 +36413,42 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	pgm.nextToken();
 
     return record_typedef(alias, base_dd, tdt, alias_tok);
+}
+
+// Pointer-to-array declarator suffix `[N][M]...` — the stream is positioned
+// AT the first '[' (unconsumed); stops with the token after the last ']'
+// unconsumed. `T (*)[N]` / `T (*name)[N]` bind the dims to the parenthesized
+// inner declarator, yielding a true pointer-to-array
+// DataDefPTR(DataDefCArray(elem, N)) — NOT a plain `T *` (deref of which is
+// scalar, so `(*p)[i]` would not be subscriptable). Dims nest
+// outermost-first. Shared by the declaration, parameter, and cast arms;
+// `what` names the arm for diagnostics.
+DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
+					 const char *what)
+{
+    std::vector<carray_dim_t> dims;
+    while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
+    {
+	nextToken(); // consume '['
+	TokenBase *dim_peek = peekToken();
+	if ( dim_peek && dim_peek->id() == TokenID::tkClSqr )
+	{
+	    nextToken(); // consume ']' for unsized leading dim
+	    dims.push_back(0);
+	    continue;
+	}
+	int64_t n = parse_constant_integer_expression();
+	if ( n < 0 )
+	    Throw(ctx) << "Array dimension must be non-negative in " << what << flush;
+	dims.push_back((carray_dim_t)n);
+	TokenBase *cl = nextToken();
+	if ( !cl || cl->id() != TokenID::tkClSqr )
+	    Throw(cl ? cl : ctx) << "Expected ']' in " << what << flush;
+    }
+    DataDef *arr = elem_dd;
+    for ( size_t i = dims.size(); i-- > 0; )
+	arr = new DataDefCArray(*arr, arr->name, dims[i], NULL);
+    return getPointerType(arr);
 }
 
 // Function-pointer MEMBER declarator tail: `name ) ( params )` after the
@@ -47094,39 +47139,15 @@ grabnt:
 		nt = nextToken();
 		if ( nt && nt->id() == TokenID::tkOpSqr )
 		{
-		    // Pointer-to-array parameter: `int (*a)[2]`. The `[N]` binds to
-		    // the parenthesized inner declarator, yielding a true
-		    // pointer-to-array `DataDefPTR(DataDefCArray(elem, N))` — NOT a
-		    // plain `int *a` (deref of which is scalar `int`, so `(*a)[i]`
-		    // would not be subscriptable). Build the nested CArray dims
-		    // (outermost first), then wrap in one pointer level.
-		    std::vector<carray_dim_t> pa_dims;
-		    while ( nt && nt->id() == TokenID::tkOpSqr )
-		    {
-			TokenBase *dim_peek = peekToken();
-			if ( dim_peek && dim_peek->id() == TokenID::tkClSqr )
-			{
-			    nextToken(); // consume ']' for unsized leading dim
-			    pa_dims.push_back(0);
-			}
-			else
-			{
-			    int64_t n = parse_constant_integer_expression();
-			    if ( n < 0 )
-				Throw(inner) << "Pointer-to-array parameter dimension must be non-negative" << flush;
-			    pa_dims.push_back((carray_dim_t)n);
-			    TokenBase *cl = nextToken();
-			    if ( !cl || cl->id() != TokenID::tkClSqr )
-				Throw(cl ? cl : inner) << "Expected ']' in pointer-to-array parameter" << flush;
-			}
-			nt = nextToken();
-		    }
-		    DataDef *pa_elem = param_dd;
-		    for ( size_t i = pa_dims.size(); i-- > 0; )
-			pa_elem = new DataDefCArray(*pa_elem, pa_elem->name,
-						    pa_dims[i], NULL);
-		    param_dd = getPointerType(pa_elem);
+		    // Pointer-to-array parameter: `int (*a)[2]`. nt holds the
+		    // already-consumed '[' — push it back so the shared suffix
+		    // parser sees the full `[N]...`; it leaves the parameter's
+		    // ending ',' / ')' unconsumed for paramdecl below.
+		    pushToken(nt);
+		    param_dd = parse_ptr_array_suffix(param_dd, inner,
+						      "pointer-to-array parameter");
 		    rtype = RefType::rtPointer;
+		    nt = nextToken();
 		    goto paramdecl;
 		}
 		if ( !nt || nt->id() != TokenID::tkOpBrk )
@@ -48993,29 +49014,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    if ( param_open && param_open->id() == TokenID::tkOpSqr )
 	    {
 		// Pointer-to-array: `type (*name)[N]`
-		std::vector<carray_dim_t> ptr_array_dims;
-		while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
-		{
-		    nextToken(); // consume '['
-		    TokenBase *dim_peek = peekToken();
-		    if ( dim_peek && dim_peek->id() == TokenID::tkClSqr )
-		    {
-			nextToken(); // consume ']' for unsized
-			ptr_array_dims.push_back(0);
-			continue;
-		    }
-		    int64_t dim = parse_constant_integer_expression();
-		    if ( dim < 0 )
-			Throw(open) << "Pointer-to-array dimension must be non-negative" << flush;
-		    ptr_array_dims.push_back((carray_dim_t)dim);
-		    TokenBase *cl = nextToken();
-		    if ( !cl || cl->id() != TokenID::tkClSqr )
-			Throw(cl ? cl : open) << "Expected ] in pointer-to-array declaration" << flush;
-		}
-		DataDef *array_type = decl_type;
-		for ( size_t di = ptr_array_dims.size(); di-- > 0; )
-		    array_type = new DataDefCArray(*array_type, array_type->name, ptr_array_dims[di], NULL);
-		decl_type = getPointerType(array_type);
+		decl_type = parse_ptr_array_suffix(decl_type, open,
+						   "pointer-to-array declaration");
 		have_decl_id = true;
 		nt = peekToken();
 	    }

@@ -4431,6 +4431,13 @@ public:
     // function-pointer typedefs. Builds a FuncDef with the given return type.
     // Parameter names are accepted but discarded. Stops after consuming ')'.
     FuncDef *parseFnPtrParams(DataDef &returns);
+    // Pointer-to-array declarator suffix `[N][M]...` — stream positioned AT
+    // the first '['; stops with the token after the last ']' unconsumed.
+    // Returns the true pointer-to-array DataDefPTR(DataDefCArray(elem,...)).
+    // Shared by the declaration, parameter, and cast `(T (*)[N])` arms;
+    // `what` names the arm for diagnostics.
+    DataDef *parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
+				    const char *what);
     // The FuncDef giving a CALL's signature: the variable's own FuncDef, or
     // the target signature behind a function-pointer type (DataDefFPTR).
     // NULL when the variable isn't callable-typed. Parse-time twin of the CIR

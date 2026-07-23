@@ -15479,6 +15479,16 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				cast_ptr_levels++;
 			}
 
+			// Pointer-to-array cast `(T (*)[N]) expr` (task #79): peel the
+			// pointee's CArray dims and emit them as N_ARR suffixes AFTER
+			// the pointer(s) — declarator order [POINTER, ARR] = pointer to
+			// array, the same shape the variable-declaration path builds.
+			// Without this the CArray base fell through type_list to `int`
+			// and the dims vanished: the cast emitted `(int *)`.
+			std::vector<carray_dim_t> cast_arr_dims;
+			if (cast_ptr_levels > 0)
+				cast_dd = peel_carray_dims(cast_dd, cast_arr_dims);
+
 			node_t tl = type_list(cast_dd);
 			node_t cast_decl_list = list();
 			if (cast_ptr_levels > 0) {
@@ -15487,6 +15497,9 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			} else if (cast_is_ptr) {
 				append(cast_decl_list, pointer());
 			}
+			for (size_t d = 0; d < cast_arr_dims.size(); d++)
+				append(cast_decl_list, node3(N_ARR, ignore(), list(),
+							     integer(cast_arr_dims[d])));
 			node_t type_decl = node2(N_DECL, ignore(), cast_decl_list);
 			node_t type_node = node2(N_TYPE, tl, type_decl);
 			return node2(N_CAST, type_node, translate_expr(tc->expr), tb);
