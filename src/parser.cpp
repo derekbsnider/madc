@@ -27233,7 +27233,48 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				peek1 = peekToken();
 			    }
 			}
-			if ( peek1->type() == TokenType::ttDataType )
+			// C-style cast to a template-id (task #71): `(Box<int>)7`,
+			// `(Box<int>*)p` — and `(vector<int>)v` when the bare name
+			// already lexed as a datatype. A template name followed by a
+			// balanced `<...>` whose next token is `)` or `*` in this
+			// speculative-cast position is a type, never an expression (a
+			// template name is not a value, so `<` cannot be less-than).
+			// Resolve through the one declared-type resolver — the same
+			// path the sizeof/dtor/dynamic_cast arms use — which
+			// instantiates on demand and consumes the template-id tokens;
+			// on failure nothing is consumed and the arms below see an
+			// intact stream. `Name<...>(` / `Name<...>{` stay with the
+			// functional-cast machinery (template_ctor_grouping below).
+			if ( cpp_keyword_active(Program::STD_CPP98)
+			  && (peek1->type() == TokenType::ttDataType
+			   || peek1->type() == TokenType::ttIdentifier)
+			  && tokens.size() > 1 && tokens[1]
+			  && tokens[1]->id() == TokenID::tkLT )
+			{
+			    std::string tid_name =
+				peek1->type() == TokenType::ttDataType
+				    ? ((TokenDataType *)peek1)->spelling()
+				    : ((TokenIdent *)peek1)->spelling();
+			    if ( find_template(tid_name)
+			      || find_template_alias(tid_name) )
+			    {
+				TokenBase *after_tid =
+				    peek_after_balanced_template_id_from(tokens, 1);
+				if ( after_tid
+				  && (after_tid->id() == TokenID::tkClBrk
+				   || after_tid->id() == TokenID::tkMul) )
+				{
+				    TokenBase *head = nextToken();
+				    TokenDataType *tdt =
+					resolve_declared_type_token(head, true, true);
+				    if ( tdt )
+					cast_dd = &tdt->definition;
+				    else
+					pushToken(head);
+				}
+			    }
+			}
+			if ( !cast_dd && peek1->type() == TokenType::ttDataType )
 			{
 			    cast_dd = &((TokenDataType *)peek1)->definition;
 			    if ( typedef_alias_matches_datadef(
@@ -27307,7 +27348,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    if ( tdt )
 				cast_dd = &tdt->definition;
 			}
-			else if ( peek1->type() == TokenType::ttIdentifier )
+			else if ( !cast_dd && peek1->type() == TokenType::ttIdentifier )
 			{
 			    std::string tname = ((TokenIdent *)peek1)->spelling();
 			    bool template_ctor_grouping = false;

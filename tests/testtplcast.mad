@@ -1,0 +1,20 @@
+// C-style cast to a template-id type (task #71): the cast-detection arm
+// resolves `Name<Args>` through the declared-type resolver (instantiating
+// on demand), same as the sizeof/dtor/dynamic_cast arms. Oracle: g++ -O0.
+#include <cstdio>
+
+template<class T> struct Box { T v; Box(T x) : v(x) {} ~Box() {} };
+template<class T> using BoxA = Box<T>;
+
+int main()
+{
+    Box<int> b = (Box<int>)7;          // C-cast through the converting ctor
+    printf("a %d\n", b.v);
+    Box<double> d = (Box<double>)2;    // instantiate-on-demand via the cast
+    printf("b %g\n", d.v);
+    Box<int> *p = (Box<int>*)&b;       // pointer-to-template-id form
+    printf("c %d\n", p->v);
+    Box<int> b2 = (BoxA<int>)9;        // alias template-id
+    printf("d %d\n", b2.v);
+    return 0;
+}
