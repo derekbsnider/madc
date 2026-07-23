@@ -545,26 +545,24 @@ public:
     void setReverseScalarStorage(bool reverse)
     {
 	reverse_scalar_storage = reverse;
-	size_t unit_offset = (size_t)-1;
-	size_t unit_size = 0;
-	size_t unit_next_bit = 0;
+	// Flip each field's bit_offset within its own window from the
+	// PER-FIELD recorded state — fields of different declared types may
+	// share a window (SysV packing, task #76), so replaying run
+	// bookkeeping by (storage_offset, storage_size) transitions would
+	// misplace shared-window fields.
 	for ( size_t i = 0; i < member_bitfields.size(); ++i )
 	{
 	    BitFieldInfo &info = member_bitfields[i];
 	    if ( !info.is_bitfield )
 		continue;
-	    if ( info.storage_offset != unit_offset || info.storage_size != unit_size )
-	    {
-		unit_offset = info.storage_offset;
-		unit_size = info.storage_size;
-		unit_next_bit = 0;
-	    }
 	    size_t storage_bits = info.storage_size * 8;
-	    info.bit_offset = reverse_scalar_storage
-		? (storage_bits - unit_next_bit - info.bit_width)
-		: unit_next_bit;
-	    info.reverse_storage = reverse_scalar_storage;
-	    unit_next_bit += info.bit_width;
+	    size_t forward = info.reverse_storage
+		? (storage_bits - info.bit_offset - info.bit_width)
+		: info.bit_offset;
+	    info.bit_offset = reverse
+		? (storage_bits - forward - info.bit_width)
+		: forward;
+	    info.reverse_storage = reverse;
 	}
     }
     void endBitFieldRun()
@@ -629,23 +627,31 @@ public:
 	};
 	size_t storage_size = bitfield_storage_size(dd);
 	size_t storage_bits = storage_size * 8;
-	if ( !bitfield_active
-	  || bitfield_unit_size != storage_size
-	  || bitfield_next_bit + width > storage_bits )
-	{
-	    size_t fa = field_align(dd);
-	    size = align_up(size, fa);
-	    if ( fa > max_align ) max_align = fa;
-	    bitfield_active = true;
-	    bitfield_unit_offset = size;
-	    bitfield_unit_size = storage_size;
-	    bitfield_next_bit = 0;
-	    size += storage_size;
-	}
+	// SysV/gcc bitfield packing (task #76): a bitfield is placed at the
+	// next free BIT; the only constraint is that it must not cross a
+	// sizeof(T)-aligned window of its OWN declared type. Consecutive
+	// bitfields of DIFFERENT types share bytes when they fit —
+	// {_Bool b:1; unsigned x:5;} is ONE shared window (gcc/c2mir: 4
+	// bytes), not two allocation units (was 8). The recorded
+	// (storage_offset, storage_size, bit_offset) triple still names a
+	// naturally-aligned window of the declared type containing the
+	// field, so access consumers load/store exactly as before.
+	size_t next_bit = bitfield_active
+	    ? bitfield_unit_offset * 8 + bitfield_next_bit
+	    : size * 8;
+	if ( next_bit % storage_bits + width > storage_bits )
+	    next_bit = align_up(next_bit, storage_bits);
+	size_t window_offset = next_bit / storage_bits * storage_size;
+	size_t fa = field_align(dd);
+	if ( fa > max_align ) max_align = fa;
+	bitfield_active = true;
+	bitfield_unit_offset = window_offset;
+	bitfield_unit_size = storage_size;
+	bitfield_next_bit = next_bit - window_offset * 8;
 
 	BitFieldInfo info;
 	info.is_bitfield = true;
-	info.storage_offset = bitfield_unit_offset;
+	info.storage_offset = window_offset;
 	info.storage_size = storage_size;
 	info.bit_offset = reverse_scalar_storage
 	    ? (storage_bits - bitfield_next_bit - width)
@@ -659,8 +665,11 @@ public:
 	    || alias_like_int;
 	info.reverse_storage = reverse_scalar_storage;
 	bitfield_next_bit += width;
-	if ( bitfield_next_bit >= storage_bits )
-	    endBitFieldRun();
+	// Only the bytes the fields actually occupy count toward size —
+	// finalize() and the next plain member's align_up supply padding.
+	size_t end_byte = window_offset + (bitfield_next_bit + 7) / 8;
+	if ( end_byte > size )
+	    size = end_byte;
 	return info;
     }
     void addBitField(std::string n, DataDef &dd, size_t width)
