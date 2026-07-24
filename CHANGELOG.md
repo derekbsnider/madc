@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+- **feat(aot): multi-object linking — `.o` inputs now link and run;
+  `-r` emits relocatable output (gcc/ld `-r`).** The make model for
+  AOT: recompile one TU to its `.o` cache, relink — MIR stays the only
+  linker. `madc a.o b.o -o prog` links precompiled caches into a native
+  executable (PIE default/`-no-pie`/`-shared` as from source);
+  `madc a.o b.o -r -o one.o` combines them into one relocatable
+  (`ld -r` shape); `madc a.o b.o [args]` merges in memory and runs
+  (the leading run of `.o` positionals are all objects — extends the
+  R4b single-cache lane; circular cross-object references are fine,
+  they resolve at the merge's final emit). `--project -r -o one.o`
+  emits the whole-program capture as ONE `.o`, which lets the suite's
+  `--obj` lane cover the four multi-TU project tests (obj_skips
+  deleted; lane 713→737/0). Fork side (`MIR_COMMIT` bumped in-commit):
+  new `MIR_object_read` appends a MIR-emitted ET_REL image into a
+  builder — the ELF scan front is extracted from the loader so both
+  parse through one implementation; symbols unify by name (UNDEF ↔
+  definition both directions, strong replaces weak, duplicate strong
+  definitions are a loud error naming the symbol, locals never unify);
+  relocations rebase (section-symbol addends absorb the append base).
+  The merged builder feeds the existing single-object consumers
+  unchanged. Documented fences: `-g` inputs' DWARF is dropped from
+  merged outputs with a loud warning (one CU per `.o` with stmt_list
+  pinned at 0 — concatenation would corrupt CU 2..N; `--project -g`
+  whole-program DWARF is unaffected), and two inputs both carrying
+  file-scope ctor init (`__madc_global_init`) hit the duplicate-symbol
+  error — C++ cross-TU ODR/ctor merging is the follow-on slice. New
+  unit case covers cross-object calls/data through all lanes plus the
+  duplicate detection.
+
 - **feat(aot): PIE executables — `-o` now emits a position-independent
   ET_DYN executable by default (gcc parity); `-no-pie` keeps the
   fixed-base ET_EXEC layout, `-pie` selects the default explicitly.**
