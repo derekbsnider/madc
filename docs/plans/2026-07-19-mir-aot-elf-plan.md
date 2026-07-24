@@ -921,3 +921,111 @@ Commits: fork @798e329b (develop @0f13b036, pinned in MIR_COMMIT), madc
 
 Next unfiled rungs (owner-ranked): multi-object linking (lifts the 4
 obj_skips) > RELRO > Mach-O/PE.
+
+---
+
+## MULTI-OBJECT LINKING — design (2026-07-24, in progress)
+
+Goal (owner-ranked next): combine several precompiled `.o` caches into
+one output — the make model for AOT (recompile one TU, relink) — and
+lift the four `--project` obj_skips. MIR stays the only linker (owner
+law: no external toolchain ever).
+
+### Vocabulary (gcc parity)
+
+- `-r` — relocatable link output (`gcc -r` / `ld -r`): combine inputs
+  into ONE relocatable `.o`. Default output name `a.out` (gcc emits a
+  relocatable a.out for `-r` without `-o`). With a single source it is
+  equivalent to `-c` plus the combine-of-one.
+- `madc a.o b.o … -o prog` — link `.o` caches into a native executable
+  (PIE default / `-no-pie` / `-shared`, exactly as from source).
+- `madc a.o b.o … -r -o one.o` — `ld -r` shape over `.o` caches.
+- `madc a.o b.o … [args]` — multi-object precompiled-cache RUN: the
+  leading run of `.o` positionals are all objects (argv[0] = first
+  object path, remaining positionals the program's argv). Extends
+  R4b's single-object convention.
+- `madc --project p.json -r -o one.o` — whole-program relocatable: the
+  project's one shared-context capture (same granularity as `-o`)
+  emitted as ONE `.o` instead of an executable. `-c` keeps its gcc
+  per-TU meaning untouched.
+- `-c` with `.o` inputs stays a loud error (gcc: input unused).
+
+### Fork primitive — merge INTO the builder
+
+`int MIR_object_read (MIR_object_t obj, const void *buf, size_t size,
+char *err_msg, size_t err_len)` — parse one MIR-emitted ET_REL image
+and APPEND it into a builder; repeated reads = the link. Fifth consumer
+of the ELF core, beside the emitter and loader.
+
+- The ELF scan front (header/section/symtab validation + fixed
+  alloc-set identification by flags+name) is EXTRACTED from
+  `MIR_object_load` into a shared `objx_scan` helper — the loader and
+  the reader parse through one implementation (no parallel parse).
+  Same loud rejections (extra alloc sections, foreign reloc types).
+- Section append: pad dst to the src section's `sh_addralign`, append
+  bytes (bss grows size only); dst section aligns take the max.
+- Symbol unification (file-sym index → dst-sym id map, built per read):
+  - defined LOCAL / section symbols: never unified; locals appended
+    with `value += append_base`; file section symbols map to the dst
+    section symbol.
+  - defined GLOBAL: existing UNDEF of the same name → defined in place
+    (the `MIR_object_define_symbol` path); existing strong definition →
+    LOUD duplicate-definition error; weak loses to strong, first weak
+    wins.
+  - UNDEF: maps to any existing same-name symbol, else appended UNDEF.
+- Reloc rebase: `offset += dst_section_append_base`; addend unchanged
+  for named symbols (their dst value already carries the base), addend
+  `+= src_section_append_base` for section-symbol targets.
+- DWARF (slice 3, deferred): `.debug_*` in a read `.o` is DROPPED with
+  one loud warning line. Reason: the R5 emitter writes ONE CU per
+  object with `DW_AT_stmt_list` fixed at 0 and relocless — valid only
+  while a `.o` holds one CU, so naive section concatenation corrupts
+  CU 2..N. The fix (slice 3) is a `.rela.debug_info` entry for
+  stmt_list against a `.debug_line` section symbol + debug-section
+  concat with the same rebase rules as data. NOT lossy where it
+  matters today: `--project -r -g` and `--project -o -g` capture
+  whole-program in one context = one CU = full DWARF; external ld
+  remains the multi-`.o` `-g` oracle.
+- New accessor for madc's conditional-DT_NEEDED logic (no ctx in the
+  `.o` lane): iterate the merged builder's UNDEF names
+  (`MIR_object_undef_name (obj, i)` → NULL past end); madc applies the
+  same base-lib coverage predicate it uses on ctx imports.
+
+### Consumers — all existing single paths, zero new machinery
+
+merged builder → `MIR_object_emit` (`-r` one `.o`) ·
+`MIR_object_emit_executable` (exe/PIE/`-shared`) ·
+emit → `MIR_object_load` (the multi-`.o` RUN lane; merge-then-load
+resolves cross-object references at emit, so circular a.o↔b.o refs
+need no loader surgery).
+
+### madc surface
+
+- `MadcNativeKind` += `mnkRelocatable` (whole-program/linked `.o`).
+  Project lane: goes through the whole-program shared-context arm
+  (like exe/shared), ends in `c2mir_get_native_object`. Single-TU
+  lane: same capture as `-c`.
+- Positional `.o` detection collects the LEADING RUN of `.o` args.
+  Multiple objects + no output flag → merge/load/run
+  (`madc_cir_run_objects`); + `-o`/`-shared`/`-r` → link
+  (`madc_cir_link_objects`). Entry `main` must be defined in the
+  merged object for an executable (emitter already enforces).
+- Runner `--obj` pass: `-c -o` → `-r -o` uniformly (single-TU output
+  unchanged in substance; project tests now produce one whole-program
+  `.o`), run step drops the compile-only `--project <arg>` pair from
+  the replayed flags (-l is why flags ride along at all), DELETE the
+  four obj_skip fixtures.
+
+### Slices and gates
+
+1. **madc-only:** `-r` + `mnkRelocatable` + project whole-program `.o`
+   + runner switch + obj_skip deletion. Gate: battery (obj lane grows
+   by the four project tests).
+2. **fork + madc:** scan-front refactor + `MIR_object_read` + undef
+   iterator; multi-`.o` CLI lanes; unit tests (cross-object call +
+   data + pool refs, duplicate-strong error named in the message,
+   undef↔defined resolution both directions, run/exe/shared/`-r`
+   outputs). Gate: battery + fork object/load-object lanes; pin bump
+   in the same madc commit.
+3. **DWARF merge** (follow-on): stmt_list reloc + debug concat.
+   Torture: not implicated (no codegen anywhere in this rung).
