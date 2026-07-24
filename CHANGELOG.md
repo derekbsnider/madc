@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v0.41.0] — 2026-07-24
+
+The ODR/linkonce weak release (ELF-completion slice 4): the C++
+vague-linkage set captures `STB_WEAK`, so two TUs' identical copies —
+template instantiations, in-class method bodies, vtables — merge at
+native links instead of duplicate-strong colliding.
+
 - **feat(aot): ODR/linkonce weak — two TUs' identical C++ copies merge
   at native links instead of duplicate-strong colliding [ELF-completion
   slice 4].** Template instantiations, in-class/header method bodies,

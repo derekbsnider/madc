@@ -203,7 +203,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.40.0): 753 integration tests pass (0 failing, 0 timed out, 9 skipped) through both the live and packed release binaries; the native `--exe` and `--obj` lanes are at 737/0 each. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.41.0): 753 integration tests pass (0 failing, 0 timed out, 9 skipped) through both the live and packed release binaries; the native `--exe` and `--obj` lanes are at 737/0 each. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -244,34 +244,35 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.40.0** is the ctor/init-array release (ELF-completion slice 3):
-native images adopt the platform initializer model. Each TU with
-dynamic global initializers gets a per-TU init riding a real
-**`.init_array`** section (gcc-shaped, inside the RELRO lead region;
-external `ld` collects it natively), so **ctor TUs now link and run
-together in every native lane** — the two-ctor-TU merge fence is
-lifted, and a ctor TU that isn't main's TU no longer loses its ctors.
-`DT_INIT_ARRAY` replaces the retired `DT_INIT` on executables, PIEs,
-and shared objects (dlopen runs a `.so`'s inits; the in-process loader
-walks the merged array before `main`); `sys.*` population is guarded
-against dlopen-time stomping; and a latent c2mir `-g` debug-capture
-use-after-free is fixed. Fulltest and the packed suite hold
-**753/0/0/9**; the native `--exe` and `--obj` lanes are at **737/0**
-each. Ships against MIR fork release `1.0-madc.0.40.0`.
+**v0.41.0** is the ODR/linkonce weak release (ELF-completion slice 4):
+the C++ vague-linkage set — template instantiations, in-class/header
+method bodies, vtables, typeinfo, synthesized members — is now
+captured as **`STB_WEAK`**, so **two TUs' identical copies merge at
+native links** (first weak wins, a strong definition replaces a weak
+one; gcc/ld-shaped) instead of colliding as duplicate strong
+definitions. External linkers dedupe madc `.o` caches natively, and
+the MIR fork gains a proper binding model
+(GLOBAL / WEAK / LINKONCE): only interposable `__attribute__((weak))`
+suppresses inlining (gcc parity), while LINKONCE copies stay
+inlineable — JIT template-instantiation inlining is preserved.
+`--emit=c11` renders the marker as portable `__attribute__((weak))`.
+Fulltest and the packed suite hold **753/0/0/9**; the native `--exe`
+and `--obj` lanes are at **737/0** each. Ships against MIR fork
+release `1.0-madc.0.41.0`.
 
 **Branch state:** `master` is at v0.38.0 (promoted 2026-07-23);
-`develop` carries v0.40.0 pending `/promote`. The
+`develop` carries v0.41.0 pending `/promote`. The
 [MIR fork](https://github.com/derekbsnider/mir)'s `master` tracks
 madc's `master` in lockstep; fork releases pair with madc's (see
 [`MIR_VERSION`](MIR_VERSION)).
 
 ### Recent Releases
 
+- **v0.41.0** — ODR/linkonce weak (ELF-completion slice 4): C++ vague-linkage set (instantiations, in-class bodies, vtables, typeinfo, synth members) captured STB_WEAK — identical per-TU copies merge at links, internal and external ld alike; fork binding enum GLOBAL/WEAK/LINKONCE (only interposable weak suppresses inlining, gcc parity); bindings survive MIR binary/text IO; fulltest + packed 753/0/0/9, `--exe`/`--obj` 737/0; fork release 1.0-madc.0.41.0
 - **v0.40.0** — ctor/init-array (ELF-completion slice 3): per-TU inits ride `.init_array` (SHT_INIT_ARRAY, RELRO-protected; external-ld collects natively); two-ctor-TU merge fence lifted in every native lane; `DT_INIT` retired; guarded `__madc_sys_init_once`; pre-init-array ctor caches refused loudly; c2mir `-g` capture UAF fixed; fulltest + packed 753/0/0/9, `--exe`/`--obj` 737/0; fork release 1.0-madc.0.40.0
 - **v0.39.0** — AOT hardening + ELF completion: PIE default (`-no-pie` escape, PT_PHDR law); multi-object linking (`.o` caches link/run, `-r`, obj_skips lifted); Full RELRO + NX on every image (pool = GOT leads RW under PT_GNU_RELRO, BIND_NOW); DT_DEBUG; multi-`.o` DWARF merge (multi-CU, fixes external-ld `-g` links too); fulltest + packed 753/0/0/9, `--exe`/`--obj` 737/0; fork release 1.0-madc.0.39.0
 - **v0.38.0** — System object: `madc::sys` (Python `sys` convention — argv/path arrays, platform/version/hostname facts, all lanes); native array `count()`/`size()`; `MADC_VERSION` macro; frozen-value enforcement; array struct-member + subscript-read fixes; fork release-tag pairing; fulltest + packed 740/0/0/13, `--exe` 726/0; promote gate met
 - **v0.37.0** — Script mode: top-level statements → synthesized `int main(int argc, char **argv)` (madc dialect; conflict/header/std guard rails, 5 new tests); C++ dynamic global init (g++ model); JIT exit-status parity; demand-driven forest bind (packed C hello 94 → 38 ms, c17 45 → 15); fulltest + packed 734/0/0/13, `--exe` 720/0
-- **v0.36.0** — Native compiler: `madc -c` → ELF `.o`, `madc -o` → MIR-assembled executables (no external toolchain), `-shared`, gcc-style CLI; `--exe` lane live 709/729; `madc -g` source-level gdb on the JIT; integer `_Complex` component-correct; fulltest + packed 729/0/0/13; torture 1614 (gate met)
 
 ## Roadmap
 
