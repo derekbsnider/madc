@@ -400,12 +400,25 @@ typedef struct {
      that section, value the pre-bias address value.  The .o emitter turns
      these into relocations against the .text section symbol. */
   void (*addr_slot) (void *env, int sec, size_t pos, uint64_t value);
+  /* When non-NULL, called for every 4-byte cross-debug-section offset slot
+     (CU header abbrev offset, DW_AT_stmt_list, .debug_frame FDE CIE
+     pointers): src/tgt use the sec id space above plus 3 = .debug_abbrev,
+     value the offset within the target section.  The .o emitter turns these
+     into R_X86_64_32 relocations against the target debug section's symbol
+     -- without them the offsets are valid only while one CU sits at
+     section offset 0, which is exactly what breaks multi-object links. */
+  void (*sec_ref) (void *env, int src, size_t pos, int tgt, uint32_t value);
   void *env;
 } dwgen_t;
 
 static void dw_addr (const dwgen_t *g, dwbuf_t *b, int sec, uint64_t value) {
   if (g->addr_slot != NULL) g->addr_slot (g->env, sec, b->len, value);
   buf_u64 (b, g->bias + value);
+}
+
+static void dw_secref (const dwgen_t *g, dwbuf_t *b, int src, int tgt, uint32_t value) {
+  if (g->sec_ref != NULL) g->sec_ref (g->env, src, b->len, tgt, value);
+  buf_u32 (b, value);
 }
 
 static int dw_func_skip_p (const dwgen_t *g, const dwfunc_t *fn) {
@@ -550,7 +563,7 @@ static void emit_info (MIR_debug_t d, dwbuf_t *b, const dwgen_t *g, uint64_t tex
   buf_u32 (b, 0);
   size_t after_len = b->len;
   buf_u16 (b, 4);
-  buf_u32 (b, 0);
+  dw_secref (g, b, 0, 3, 0); /* abbrev offset (this emission's table is at 0) */
   buf_u8 (b, 8);
   buf_uleb (b, A_CU);
   buf_str (b, "mir-debug");
@@ -559,7 +572,7 @@ static void emit_info (MIR_debug_t d, dwbuf_t *b, const dwgen_t *g, uint64_t tex
   buf_str (b, "");
   dw_addr (g, b, 0, text_lo);
   dw_addr (g, b, 0, text_lo + text_size);
-  buf_u32 (b, 0); /* stmt_list (single CU: .debug_line offset 0) */
+  dw_secref (g, b, 0, 1, 0); /* stmt_list (this emission's line program is at 0) */
 
   uint32_t *toff = d->n_types ? calloc ((size_t) d->n_types, sizeof (uint32_t)) : NULL;
   tfix_t *fix = NULL;
@@ -872,7 +885,7 @@ static void emit_frame (MIR_debug_t d, dwbuf_t *b, const dwgen_t *g) {
     if (dw_func_skip_p (g, fn) || fn->size == 0) continue;
     size_t fde_len_pos = b->len;
     buf_u32 (b, 0); /* length, backpatched */
-    buf_u32 (b, (uint32_t) cie_off); /* CIE pointer (section offset) */
+    dw_secref (g, b, 2, 2, (uint32_t) cie_off); /* CIE pointer (section offset) */
     dw_addr (g, b, 2, (uint64_t) (uintptr_t) fn->addr); /* initial location */
     buf_u64 (b, (uint64_t) fn->size); /* address range */
     /* prologue detection peeks at the machine code: in offset mode fn->addr
@@ -904,8 +917,9 @@ int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
   if (size != NULL) *size = 0;
   if (d == NULL || buf == NULL || size == NULL || MIR_DEBUG_EM == 0) return -1;
 
-  /* GDB-JIT mode: absolute JIT addresses, fn->addr readable directly */
-  dwgen_t g = {0, NULL, 0, NULL, NULL};
+  /* GDB-JIT mode: absolute JIT addresses, fn->addr readable directly;
+     cross-section offsets stay in place (single emission, all at 0) */
+  dwgen_t g = {0, NULL, 0, NULL, NULL, NULL};
   uint64_t text_base, text_size;
   dw_text_range (d, &g, &text_base, &text_size);
 
@@ -1158,8 +1172,25 @@ typedef struct {
   int n, cap;
 } dwslots_t;
 
+/* 4-byte cross-debug-section offset slots (abbrev offset, stmt_list, CIE
+   pointers) -- relocated against the TARGET debug section's symbol so both
+   external linkers and MIR_object_read can concatenate debug sections. */
+typedef struct {
+  int src, tgt; /* dwgen sec ids: 0 info / 1 line / 2 frame / 3 abbrev */
+  size_t pos;
+  uint32_t value;
+} dwsref_t;
+
+typedef struct {
+  dwslots_t slots;
+  struct {
+    dwsref_t *v;
+    int n, cap;
+  } refs;
+} dwcap_t;
+
 static void dwslot_record (void *env, int sec, size_t pos, uint64_t value) {
-  dwslots_t *s = env;
+  dwslots_t *s = &((dwcap_t *) env)->slots;
   if (s->n == s->cap) {
     s->cap = s->cap ? s->cap * 2 : 64;
     s->v = realloc (s->v, (size_t) s->cap * sizeof (dwslot_t));
@@ -1169,6 +1200,20 @@ static void dwslot_record (void *env, int sec, size_t pos, uint64_t value) {
   s->v[s->n].pos = pos;
   s->v[s->n].value = value;
   s->n++;
+}
+
+static void dwsref_record (void *env, int src, size_t pos, int tgt, uint32_t value) {
+  dwcap_t *c = env;
+  if (c->refs.n == c->refs.cap) {
+    c->refs.cap = c->refs.cap ? c->refs.cap * 2 : 16;
+    c->refs.v = realloc (c->refs.v, (size_t) c->refs.cap * sizeof (dwsref_t));
+  }
+  if (c->refs.v == NULL) return;
+  c->refs.v[c->refs.n].src = src;
+  c->refs.v[c->refs.n].tgt = tgt;
+  c->refs.v[c->refs.n].pos = pos;
+  c->refs.v[c->refs.n].value = value;
+  c->refs.n++;
 }
 
 int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
@@ -1190,8 +1235,62 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   Elf64_Sym z = {0};
   buf_bytes (&symtab, &z, sizeof z);
   static const int sec_shndx[4] = {1, 2, 3, 4};
+
+  /* DWARF emission runs BEFORE the symtab build: the debug sections get
+     STT_SECTION symbols of their own (targets of the cross-debug-section
+     relocations), so their planned section indexes -- which depend on
+     which .rela.* alloc sections exist and whether .debug_frame is empty
+     -- must be known while locals are written. */
+  dwbuf_t dw_abbrev = {0}, dw_info = {0}, dw_line = {0}, dw_frame = {0};
+  dwcap_t cap = {0};
+  if (obj->debug != NULL) {
+    dwgen_t g = {0, obj->text.p, 1, dwslot_record, dwsref_record, &cap};
+    uint64_t text_lo, text_size;
+    dw_text_range (obj->debug, &g, &text_lo, &text_size);
+    emit_abbrev (&dw_abbrev);
+    emit_info (obj->debug, &dw_info, &g, text_lo, text_size,
+               obj->debug->n_files ? obj->debug->files[0] : "");
+    emit_line (obj->debug, &dw_line, &g);
+    emit_frame (obj->debug, &dw_frame, &g);
+  }
+  /* Section order below: null, .text, .data, .bss, .mir.addrpool, .symtab,
+     .strtab, [.rela.text], [.rela.data], [.rela.mir.addrpool], then the
+     debug sections.  Presence of each .rela.* mirrors the emission loop's
+     classification exactly. */
+  int have_rt = 0, have_rd = 0, have_rp = 0;
+  for (size_t i = 0; i < obj->n_rels; i++) {
+    int rs = obj->rels[i].sec;
+    if (rs == MIR_OBJ_SEC_TEXT)
+      have_rt = 1;
+    else if (rs == MIR_OBJ_SEC_DATA)
+      have_rd = 1;
+    else
+      have_rp = 1;
+  }
+  int dbg_shndx[4] = {0, 0, 0, 0};      /* dwgen ids: info/line/frame/abbrev */
+  uint32_t dbg_secsym[4] = {0, 0, 0, 0}; /* their final symtab indexes */
+  if (obj->debug != NULL) {
+    int nx = 7 + have_rt + have_rd + have_rp;
+    dbg_shndx[3] = nx++; /* .debug_abbrev */
+    dbg_shndx[0] = nx++; /* .debug_info */
+    dbg_shndx[1] = nx++; /* .debug_line */
+    if (dw_frame.len != 0) dbg_shndx[2] = nx;
+  }
+
   uint32_t next = 1, n_locals = 0;
-  for (int pass = 0; pass < 2; pass++)
+  static const int dbg_sym_order[4] = {3, 0, 1, 2}; /* section-index order */
+  for (int pass = 0; pass < 2; pass++) {
+    if (pass == 1) /* debug section symbols: locals, after the objsym locals */
+      for (int k = 0; k < 4; k++) {
+        int d = dbg_sym_order[k];
+        if (dbg_shndx[d] == 0) continue;
+        Elf64_Sym es = {0};
+        es.st_info = ELF64_ST_INFO (STB_LOCAL, STT_SECTION);
+        es.st_shndx = (Elf64_Section) dbg_shndx[d];
+        buf_bytes (&symtab, &es, sizeof es);
+        dbg_secsym[d] = next++;
+        n_locals++;
+      }
     for (size_t i = 0; i < n; i++) {
       objsym_t *s = &obj->syms[i];
       int local = s->local_p || s->section_p;
@@ -1215,6 +1314,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
       if (pass == 0) n_locals++;
       final_idx[i] = next++;
     }
+  }
 
   int bad_p = 0;
   for (size_t i = 0; i < obj->n_rels; i++) {
@@ -1237,37 +1337,41 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
                &er, sizeof er);
   }
 
-  /* DWARF sections (R5): section-offset addresses, each 8-byte code-address
-     slot zeroed and relocated against the .text section symbol so an
-     external linker's placement fixes the debug info exactly like the code.
-     (The CU's stmt_list stays 0 without a relocation -- one CU per object.) */
-  dwbuf_t dw_abbrev = {0}, dw_info = {0}, dw_line = {0}, dw_frame = {0};
+  /* DWARF relocations (R5 + multi-object): each 8-byte code-address slot
+     zeroed and relocated against the .text section symbol, each 4-byte
+     cross-debug-section offset (CU abbrev offset, stmt_list, FDE CIE
+     pointers) zeroed and R_X86_64_32-relocated against the target debug
+     section's symbol -- so an external linker's OR MIR_object_read's
+     placement fixes the debug info exactly like the code, multi-CU
+     included. */
   dwbuf_t rela_dw_info = {0}, rela_dw_line = {0}, rela_dw_frame = {0};
   if (obj->debug != NULL && !bad_p) {
-    dwslots_t slots = {0};
-    dwgen_t g = {0, obj->text.p, 1, dwslot_record, &slots};
-    uint64_t text_lo, text_size;
-    dw_text_range (obj->debug, &g, &text_lo, &text_size);
-    emit_abbrev (&dw_abbrev);
-    emit_info (obj->debug, &dw_info, &g, text_lo, text_size,
-               obj->debug->n_files ? obj->debug->files[0] : "");
-    emit_line (obj->debug, &dw_line, &g);
-    emit_frame (obj->debug, &dw_frame, &g);
     uint32_t text_sym_idx = final_idx[obj->sec_sym[MIR_OBJ_SEC_TEXT]];
-    for (int i = 0; i < slots.n; i++) {
-      dwbuf_t *tgt = slots.v[i].sec == 0 ? &dw_info : slots.v[i].sec == 1 ? &dw_line : &dw_frame;
-      dwbuf_t *rel = slots.v[i].sec == 0   ? &rela_dw_info
-                     : slots.v[i].sec == 1 ? &rela_dw_line
-                                           : &rela_dw_frame;
-      memset (tgt->p + slots.v[i].pos, 0, 8);
+    for (int i = 0; i < cap.slots.n; i++) {
+      dwslot_t *sl = &cap.slots.v[i];
+      dwbuf_t *tgt = sl->sec == 0 ? &dw_info : sl->sec == 1 ? &dw_line : &dw_frame;
+      dwbuf_t *rel = sl->sec == 0 ? &rela_dw_info : sl->sec == 1 ? &rela_dw_line : &rela_dw_frame;
+      memset (tgt->p + sl->pos, 0, 8);
       Elf64_Rela er;
-      er.r_offset = slots.v[i].pos;
+      er.r_offset = sl->pos;
       er.r_info = ELF64_R_INFO ((uint64_t) text_sym_idx, R_X86_64_64);
-      er.r_addend = (int64_t) slots.v[i].value;
+      er.r_addend = (int64_t) sl->value;
       buf_bytes (rel, &er, sizeof er);
     }
-    free (slots.v);
+    for (int i = 0; i < cap.refs.n; i++) {
+      dwsref_t *rf = &cap.refs.v[i];
+      dwbuf_t *tgt = rf->src == 0 ? &dw_info : rf->src == 1 ? &dw_line : &dw_frame;
+      dwbuf_t *rel = rf->src == 0 ? &rela_dw_info : rf->src == 1 ? &rela_dw_line : &rela_dw_frame;
+      memset (tgt->p + rf->pos, 0, 4);
+      Elf64_Rela er;
+      er.r_offset = rf->pos;
+      er.r_info = ELF64_R_INFO ((uint64_t) dbg_secsym[rf->tgt], R_X86_64_32);
+      er.r_addend = (int64_t) rf->value;
+      buf_bytes (rel, &er, sizeof er);
+    }
   }
+  free (cap.slots.v);
+  free (cap.refs.v);
 
   int rc = -1;
   if (!bad_p) {
@@ -1300,7 +1404,11 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     if (rela_pool.len != 0)
       S[ns++] = (dwsec_t) {".rela.mir.addrpool", SHT_RELA, (uint32_t) i_symtab, 4, 8,
                            SHF_INFO_LINK, 0, sizeof (Elf64_Rela), &rela_pool, rela_pool.len};
-    if (obj->debug != NULL) {
+    /* the planned indexes behind dbg_secsym[] must match the table being
+       built -- divergence is an emitter-maintenance bug; refuse rather
+       than mis-relocate */
+    int plan_ok = obj->debug == NULL || ns == dbg_shndx[3];
+    if (obj->debug != NULL && plan_ok) {
       S[ns++] = (dwsec_t) {".debug_abbrev", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &dw_abbrev,
                            dw_abbrev.len};
       uint32_t i_dw_info = (uint32_t) ns;
@@ -1329,7 +1437,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     /* non-executable stack marker (its absence makes ld assume an executable
        stack and warn) */
     S[ns++] = (dwsec_t) {".note.GNU-stack", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, NULL, 0};
-    rc = elf_assemble (S, ns, EM_X86_64, buf, size);
+    if (plan_ok) rc = elf_assemble (S, ns, EM_X86_64, buf, size);
   }
   free (final_idx);
   free (strtab.p);
@@ -1644,7 +1752,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
      addresses; for ET_DYN gdb applies the load bias itself.  Non-alloc file
      content, laid out after the load segments below. */
   if (obj->debug != NULL) {
-    dwgen_t g = {code_vaddr, obj->text.p, 1, NULL, NULL};
+    dwgen_t g = {code_vaddr, obj->text.p, 1, NULL, NULL, NULL};
     uint64_t text_lo, dbg_text_size;
     dw_text_range (obj->debug, &g, &text_lo, &dbg_text_size);
     emit_abbrev (&dw_abbrev);
