@@ -34,9 +34,13 @@ class CirBuilder;
 class CirFrozenForest;
 
 // Native AOT output kind for madc_cir_emit_native (gcc CLI vocabulary):
-// -c = relocatable .o, -o = linked executable (PIE by default, gcc parity;
-// -no-pie = fixed-base ET_EXEC), -shared = shared object.
-enum MadcNativeKind { mnkObject, mnkExecutable, mnkShared, mnkPieExecutable };
+// -c = relocatable .o (per-TU under --project), -o = linked executable
+// (PIE by default, gcc parity; -no-pie = fixed-base ET_EXEC), -shared =
+// shared object, -r = relocatable link output (gcc/ld -r): ONE .o
+// carrying the whole program (whole-program capture under --project).
+enum MadcNativeKind {
+    mnkObject, mnkExecutable, mnkShared, mnkPieExecutable, mnkRelocatable
+};
 
 // A compiled-and-linked CIR->c2mir->MIR module held alive for repeated
 // in-process calls — the engine behind libmadc's program::exec / call /
@@ -169,6 +173,24 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 int madc_cir_emit_native(Program *prog, const char *source_name,
 			 MadcNativeKind kind, const char *out_path,
 			 const std::vector<std::string> &user_libs);
+
+// Multi-object lanes (the .o-input twins of madc_cir_emit_native and
+// madc_cir_run_object). The inputs are madc-emitted relocatable objects;
+// the fork's MIR_object_read merges them into one builder (sections
+// concatenate, symbols unify — duplicate strong definitions are a loud
+// error — and cross-object references resolve at the final emit), which
+// then feeds the existing single-object emitters/loader unchanged.
+// madc_cir_link_objects: kind selects the output — mnkRelocatable = one
+// combined .o (ld -r), executables (PIE default/-no-pie) and -shared as
+// from source; -g inputs' debug sections are dropped with a warning
+// (multi-object DWARF merge is a future slice). Returns 0/-1.
+// madc_cir_run_objects: merge in memory, load, run main (argv[0] = the
+// first object path); a single path takes the R4b direct-load lane.
+int madc_cir_link_objects(const std::vector<std::string> &paths,
+			  MadcNativeKind kind, const char *out_path,
+			  const std::vector<std::string> &user_libs);
+int madc_cir_run_objects(const std::vector<std::string> &paths,
+			 int argc, char **argv);
 
 // R4b, the .o-as-precompiled-cache lane (`madc foo.o [args...]`): load a
 // madc-emitted relocatable object back into this process via the fork

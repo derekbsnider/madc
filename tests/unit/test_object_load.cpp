@@ -158,6 +158,70 @@ TEST_SUITE("madc_cir_run_object") {
 	std::remove(obj_path.c_str());
     }
 
+    TEST_CASE("multi-object link: cross-object calls, data, and dup detection") {
+	// TU a: defines `scale` and calls b's `bonus` (undefined here);
+	// TU b: defines `bonus` and reads a's `scale` (undefined here).
+	// Circular cross-object references — resolvable only by merging.
+	std::string a_path = emit_object(
+	    "int scale = 6;\n"
+	    "int bonus(int);\n"
+	    "int amul(int x) { return bonus(x) * scale; }\n"
+	    "int main(int argc, char **argv) { return amul(argc + 5); }\n");
+	std::string b_path = emit_object(
+	    "extern int scale;\n"
+	    "int bonus(int x) { return x + scale; }\n");
+
+	std::vector<std::string> paths;
+	paths.push_back(a_path);
+	paths.push_back(b_path);
+
+	// Run lane (merge in memory, load, enter main):
+	// main(1) = amul(6) = bonus(6) * 6 = (6 + 6) * 6 = 72.
+	char *oargv[] = { (char *)a_path.c_str(), NULL };
+	CHECK(madc_cir_run_objects(paths, 1, oargv) == 72);
+
+	// ld -r lane: the merged relocatable loads and runs like any .o.
+	std::string r_path =
+	    write_temp("/tmp/madc_unit_objload_XXXXXX.o", 2, "");
+	REQUIRE(!r_path.empty());
+	std::vector<std::string> user_libs;
+	REQUIRE(madc_cir_link_objects(paths, mnkRelocatable, r_path.c_str(),
+				      user_libs) == 0);
+	char *rargv[] = { (char *)r_path.c_str(), NULL };
+	CHECK(madc_cir_run_object(r_path.c_str(), 1, rargv) == 72);
+
+	// Executable lane: the merged capture through the PIE emitter.
+	std::string x_path =
+	    write_temp("/tmp/madc_unit_objload_XXXXXX.bin", 4, "");
+	REQUIRE(!x_path.empty());
+	REQUIRE(madc_cir_link_objects(paths, mnkPieExecutable,
+				      x_path.c_str(), user_libs) == 0);
+	{
+	    std::ifstream f(x_path.c_str(), std::ios::binary);
+	    std::string img((std::istreambuf_iterator<char>(f)),
+			    std::istreambuf_iterator<char>());
+	    REQUIRE(img.size() > 4);
+	    CHECK(img.compare(0, 4, "\177ELF") == 0);
+	}
+
+	// Duplicate strong definition: linking a with itself must fail
+	// loudly (stderr names the symbol; here we assert the rc).
+	std::vector<std::string> dup;
+	dup.push_back(a_path);
+	dup.push_back(a_path);
+	std::string d_path =
+	    write_temp("/tmp/madc_unit_objload_XXXXXX.o", 2, "");
+	REQUIRE(!d_path.empty());
+	CHECK(madc_cir_link_objects(dup, mnkRelocatable, d_path.c_str(),
+				    user_libs) != 0);
+
+	std::remove(a_path.c_str());
+	std::remove(b_path.c_str());
+	std::remove(r_path.c_str());
+	std::remove(x_path.c_str());
+	std::remove(d_path.c_str());
+    }
+
     TEST_CASE("two same-sentinel imports keep distinct pool slots (R6)") {
 	// Both prototypes are unresolvable at emit (static impls above are
 	// not dlsym-visible), so the sentinel resolver hands them one shared

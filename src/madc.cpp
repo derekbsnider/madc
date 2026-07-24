@@ -474,9 +474,11 @@ static void print_usage(const char *prog)
 "                          translation unit, link the modules, run the entry\n"
 "  <file.json>             a .json source is treated as a project manifest\n"
 "                          (implicit --project; gcc/clang-style by extension)\n"
-"  <file.o>                execute a madc-compiled relocatable object (-c\n"
+"  <file.o>...             execute madc-compiled relocatable objects (-c/-r\n"
 "                          output) as a precompiled cache: MIR's in-process\n"
-"                          loader maps and relocates it — no recompilation\n"
+"                          loader maps and relocates them — no recompilation;\n"
+"                          several .o inputs merge first (multi-object link);\n"
+"                          with -o/-shared/-r they LINK into one artifact\n"
 "  -E                      preprocess only (print the expanded source)\n"
 "\n"
 "Language / preprocessor (gcc/clang-style):\n"
@@ -553,7 +555,11 @@ static void print_usage(const char *prog)
 "\n"
 "AOT output (gcc vocabulary; do not run):\n"
 "  -c [-o file.o]          compile to a relocatable native object\n"
-"                          (default: <source-base>.o in the current dir)\n"
+"                          (default: <source-base>.o in the current dir;\n"
+"                          --project: one .o per TU, gcc semantics)\n"
+"  -r [-o file.o]          relocatable link output (gcc/ld -r): ONE .o\n"
+"                          carrying the whole input — with --project the\n"
+"                          whole-program capture (default name: a.out)\n"
 "  -o prog                 compile to a native executable — MIR assembles\n"
 "                          the ELF directly (no external toolchain); needs\n"
 "                          libmadc.so at run time (DT_RUNPATH is set);\n"
@@ -601,6 +607,7 @@ int main(int argc, char **argv)
     bool compile_object = false;          // -c: emit a relocatable .o, no run
     bool emit_shared = false;             // -shared: emit an ET_DYN .so, no run
     bool no_pie = false;                  // -no-pie: fixed-base ET_EXEC (default = PIE, gcc parity)
+    bool emit_relocatable = false;        // -r: relocatable link output — ONE .o (gcc/ld -r), no run
     bool show_help = false;               // --help / -h / -?
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
@@ -634,6 +641,11 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "-shared") == 0) {
             // gcc vocabulary: produce a MIR-assembled ET_DYN shared object.
             emit_shared = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-r") == 0) {
+            // gcc/ld vocabulary: relocatable link output — combine the whole
+            // input set into ONE relocatable .o instead of an executable.
+            emit_relocatable = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "-no-pie") == 0) {
             // gcc vocabulary: fixed-base ET_EXEC executable instead of the
@@ -856,19 +868,23 @@ int main(int argc, char **argv)
         }
     }
 
-    // A .o input runs as a precompiled native cache (AOT R4b): load the
-    // madc-emitted relocatable object in-process and execute its main — no
-    // parse, no codegen. Freshness is the build system's concern (make
-    // semantics), exactly as with any compiler's .o. Same extension
-    // convention and --run-frozen exclusion as the .json arm above.
-    const char *run_object_path = NULL;
-    if ( !project_manifest && !run_frozen && filearg < argc )
+    // .o inputs: a precompiled native cache to run (AOT R4b), or — several
+    // of them / with an output flag — a multi-object link (this rung). The
+    // LEADING RUN of .o positionals are all objects; the rest become the
+    // program's argv (argv[0] stays the first object path). Freshness is
+    // the build system's concern (make semantics), exactly as with any
+    // compiler's .o. Same extension convention and --run-frozen exclusion
+    // as the .json arm above.
+    std::vector<std::string> run_object_paths;
+    if ( !project_manifest && !run_frozen )
     {
-        const char *f = argv[filearg];
-        size_t flen = strlen(f);
-        if ( flen >= 2 && strcmp(f + flen - 2, ".o") == 0 )
+        while ( filearg < argc )
         {
-            run_object_path = f;
+            const char *f = argv[filearg];
+            size_t flen = strlen(f);
+            if ( flen < 2 || strcmp(f + flen - 2, ".o") != 0 )
+                break;
+            run_object_paths.push_back(f);
             ++filearg;   // remaining positionals become the program's argv
         }
     }
@@ -908,16 +924,40 @@ int main(int argc, char **argv)
     // mode and write a native artifact instead of running. -o without -c or
     // -shared means a linked executable (gcc semantics); --emit-pch keeps its
     // own -o meaning (.madh output path).
-    bool emit_native = compile_object || emit_shared || emit_object_path
-                    || emit_executable_path
+    bool emit_native = compile_object || emit_shared || emit_relocatable
+                    || emit_object_path || emit_executable_path
                     || (generic_output_path && !emit_pch);
 
-    if ( run_object_path && emit_native )
+    // gcc parity: ld rejects "-r and -shared may not be used together".
+    if ( emit_relocatable && emit_shared )
     {
-        std::cerr << "madc: a .o input is executed, not compiled; "
-                     "-c/-o/-shared do not apply "
-                     "(multi-object linking is a future rung)" << std::endl;
+        std::cerr << "madc: -r and -shared may not be used together"
+                  << std::endl;
         return 1;
+    }
+
+    // .o inputs + an output flag = the multi-object LINK lane: combine the
+    // precompiled captures into one artifact (-r one .o, -o an executable,
+    // -shared a .so) — MIR is the linker, no external toolchain. -c stays
+    // a loud error (gcc: the input is already compiled).
+    if ( !run_object_paths.empty() && emit_native )
+    {
+        if ( compile_object || emit_object_path )
+        {
+            std::cerr << "madc: -c with .o inputs: the input is already"
+                         " compiled (use -r to combine objects)"
+                      << std::endl;
+            return 1;
+        }
+        MadcNativeKind kind = emit_relocatable ? mnkRelocatable
+                            : emit_shared ? mnkShared
+                            : no_pie ? mnkExecutable
+                            : mnkPieExecutable;
+        const char *outp = emit_executable_path ? emit_executable_path
+                         : generic_output_path ? generic_output_path
+                         : "a.out";
+        return madc_cir_link_objects(run_object_paths, kind, outp,
+                                     cc_link_args) == 0 ? 0 : 1;
     }
 
     // -l<name>: dlopen each requested library (RTLD_GLOBAL) so the import
@@ -938,19 +978,21 @@ int main(int argc, char **argv)
         prog->loaded_lib_paths.push_back(lib);   // the frozen-forest link closure
     }
 
-    // .o input (AOT R4b): execute the madc-emitted relocatable object as a
-    // precompiled cache — no parse, no translate, no gen. Placed after the
-    // -l loop so `madc -lcrypt foo.o` resolves the same way the JIT lane
-    // would. argv[0] is the object path (the JIT lane's source-path
-    // convention); remaining positionals are the program's argv.
-    if ( run_object_path )
+    // .o inputs (AOT R4b + multi-object): execute the madc-emitted
+    // relocatable object(s) as a precompiled cache — no parse, no
+    // translate, no gen; several objects merge in memory first. Placed
+    // after the -l loop so `madc -lcrypt foo.o` resolves the same way the
+    // JIT lane would. argv[0] is the first object path (the JIT lane's
+    // source-path convention); remaining positionals are the program's
+    // argv.
+    if ( !run_object_paths.empty() )
     {
         std::vector<char *> oargv;
-        oargv.push_back((char *)run_object_path);
+        oargv.push_back((char *)run_object_paths[0].c_str());
         for ( int i = filearg; i < argc; ++i )
             oargv.push_back(argv[i]);
-        return madc_cir_run_object(run_object_path,
-                                   (int)oargv.size(), oargv.data());
+        return madc_cir_run_objects(run_object_paths,
+                                    (int)oargv.size(), oargv.data());
     }
 
     // --run-frozen: thaw + compile + run a frozen forest container — no
@@ -977,7 +1019,8 @@ int main(int argc, char **argv)
         return (rc < 0) ? 1 : 0;
     }
 
-    if ( generic_output_path && !emit_pch && !compile_object && !emit_shared )
+    if ( generic_output_path && !emit_pch && !compile_object && !emit_shared
+	 && !emit_relocatable )
 	emit_executable_path = generic_output_path;
 
     if ( emit_native )
@@ -1053,13 +1096,15 @@ int main(int argc, char **argv)
 	    // (whole-program capture in one shared context — the same
 	    // granularity the JIT project lane uses).
 	    MadcNativeKind kind = (compile_object || emit_object_path) ? mnkObject
+				: emit_relocatable ? mnkRelocatable
 				: emit_shared ? mnkShared
 				: no_pie ? mnkExecutable
 				: mnkPieExecutable;
 	    const char *explicit_out =
 		  kind == mnkObject ? (emit_object_path ? emit_object_path
 						        : generic_output_path)
-		: kind == mnkShared ? generic_output_path
+		: (kind == mnkShared || kind == mnkRelocatable)
+			? generic_output_path
 		: emit_executable_path;
 	    if ( kind == mnkObject && explicit_out && manifest.tus.size() > 1 )
 	    {
@@ -1069,7 +1114,7 @@ int main(int argc, char **argv)
 	    }
 	    const char *outpath = explicit_out ? explicit_out
 			        : kind == mnkObject ? NULL   // per-TU naming
-			        : "a.out";
+			        : "a.out";   // -r too: gcc emits a relocatable a.out
 	    int erc = madc_project_emit_native(engine, manifest, kind, outpath,
 					       cc_link_args,
 					       prog->forest_bind_enabled,
@@ -1448,6 +1493,13 @@ int main(int argc, char **argv)
 		explicit_out = emit_object_path ? emit_object_path
 						: generic_output_path;
 		dflt_suffix = ".o";
+	    }
+	    else if ( emit_relocatable )
+	    {
+		// gcc -r on a single source: compile + relocatable link —
+		// one .o, default name a.out (gcc parity).
+		kind = mnkRelocatable;
+		explicit_out = generic_output_path;
 	    }
 	    else if ( emit_shared )
 	    {
