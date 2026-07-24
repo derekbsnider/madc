@@ -1095,6 +1095,111 @@ Remaining owner-ranked rung after this: Mach-O/PE. Unfiled sibling
 slices: `.mir.rodata` split (pure-constant pool entries out of the RW
 segment entirely), multi-`.o` DWARF merge + C++ ODR/ctor merge.
 
+---
+
+## ELF-lane completion track — design (2026-07-24, owner-directed)
+
+Owner resequenced: close the ELF-lane gaps BEFORE Mach-O/PE (which is
+also blocked on the macOS container for end-to-end validation anyway).
+Slices in order; each fork slice lands with battery + fork lanes + gdb
+gates + `MIR_COMMIT` pin discipline.
+
+### Slice 1 — DT_DEBUG (SHIPPED, fork @49e840e6)
+
+One dynamic tag, executables only (ld parity — ld does not add it to
+shared objects). Root cause of the long-standing gdb "Probes-based
+dynamic linker interface failed" warning: gdb locates the `r_debug`
+rendezvous through the executable's DT_DEBUG slot; without it the
+probes interface failed setup and gdb reverted to the legacy fallback.
+VERIFIED in container: warning gone, standard interface active, full
+solib list; ld.so writes the slot before RELRO protection (same as
+every distro PIE), program runs normally. Unit probe added (DT_DEBUG
+present on exe kinds, absent on `-shared`).
+
+### Slice 2 — multi-`.o` DWARF merge (fork, the big slice)
+
+Lifts the "-g inputs' DWARF dropped on merge" fence. Architecture:
+**make the `.o`'s debug sections fully relocatable, then merge them
+with the exact rebase rules data sections already use.**
+
+- Today's `.o` emits `.rela.debug_*` ONLY for 8-byte code-address
+  slots (ABS64 vs the `.text` section symbol). Three cross-section
+  offsets are bare, valid only at one-CU-per-object: the CU header's
+  abbrev offset (`.debug_info` → `.debug_abbrev`), `DW_AT_stmt_list`
+  (`.debug_info` → `.debug_line`, pinned 0), and `.debug_frame` FDE
+  CIE pointers (self-section offset). Fix: section symbols for the
+  debug sections + R_X86_64_32 relocs for those three families —
+  external `ld` resolves them natively (the `.o` stays
+  oracle-linkable), and `MIR_object_read` then rebases them with the
+  EXISTING section-symbol addend rules.
+- Builder grows raw-debug storage (four `dwbuf_t` + reloc lists),
+  filled ONLY by the merge reader (a builder with both a live
+  `MIR_debug_t` and raw debug bytes is impossible by construction —
+  the reader runs only in `.o`-input lanes; guard loudly).
+  Cross-debug-section relocs resolve AT READ TIME (both sides' final
+  offsets known after concat); only text-address relocs survive to
+  emit.
+- Emit paths on a merged builder: `.o` writes raw sections + remaining
+  relocs; exe/so emitter applies text-address relocs with final vaddrs
+  (ABS64 vs text section symbol → `code_vaddr + addend`). Output is
+  multi-CU `.debug_info` — standard ld shape; gdb handles it.
+- Acceptance: gdb R5 gate on a MERGED `-g` executable (break by line
+  in a.o's TU AND b.o's TU, named args/bt both) + external-`ld` merge
+  of the same `.o`s as the behavior oracle.
+
+### Slice 3 — ctor/init-array (fork + madc; lifts the
+`__madc_global_init` dup fence)
+
+Adopt the platform model (gcc-shaped: per-TU ctors ride `.init_array`;
+main is not involved). Today every native lane relies on the builder
+wrapping MAIN with a `__madc_global_init()` call — per-context single,
+so two ctor-TU `.o`s collide and only main's TU's init would ever run.
+
+- New object section `.mir.initarr`: 8-byte ABS64-relocated slots, one
+  per TU init. madc's object-mode translate emits its init LOCAL under
+  a TU-unique name (locals never unify — merge-safe) + one slot; the
+  main-entry init call is RETIRED in object mode (JIT lane unchanged:
+  one context = one init, wrap stays).
+- Init signature follows the platform: `(int argc, char **argv,
+  char **envp)` — ld.so/glibc pass exactly these to DT_INIT_ARRAY
+  entries, and the loader lane passes `(argc, argv, environ)`. A TU
+  that included `<ns_madc>` calls `__madc_sys_init(argc, argv)` at the
+  top of ITS init (once-guarded), preserving "dynamic global
+  initializers may read sys.*" in every lane.
+- exe/PIE: emit `DT_INIT_ARRAY`/`DT_INIT_ARRAYSZ` over the merged
+  array (it lives in the RELRO lead region, like gcc's `.init_array` —
+  ld.so relocates, protects, then reads it to call inits). Our `_start`
+  already passes init=NULL to `__libc_start_main`, and glibc ≥ 2.34
+  then runs the main map's init array itself — that glibc floor gets
+  documented (container = 2.36).
+- `-shared`: `DT_INIT_ARRAY` replaces the `DT_INIT ==
+  "__madc_global_init"` convention. R4b loader: maps/relocates
+  `.mir.initarr` like data + new accessor
+  (`MIR_object_loaded_init_array`); `cir_enter_loaded_main` walks it
+  before `main`. One model per artifact kind — no parallel init paths.
+
+### Slice 4 — ODR/linkonce weak (fork + c2mir + madc)
+
+Two TUs instantiating the same template (or emitting the same inline
+body) currently merge-collide as duplicate STRONG definitions. The
+merge rules already implement linkonce semantics (first weak wins,
+strong replaces weak) — recon confirms the capture just never sets
+`weak_p` (mir-gen.c:9890/9900: binding is purely `export_p`). Fix at
+the deepest layer: a weak/linkonce bit on MIR items (fork API), set by
+c2mir from a node attribute, set by madc for template instantiations
+and inline-emitted bodies; the capture then defines them `weak_p=1`.
+
+### Slice 5 — `.mir.rodata` split (REASSESSED — last, possibly defer)
+
+RELRO subsumed most of its hardening value: the pool is already
+read-only after relocation. Remaining value = pre-relocation
+immutability + RO-page sharing + smaller RELRO segment. Real cost is
+larger than the R6-era note implied: entry boundaries are only known
+at CAPTURE time, so the clean fix is a capture-side two-pool split
+(object format grows a section; loader/reader/emitters all learn it).
+Rank last; if recon confirms medium+ cost, bring the defer decision to
+the owner rather than force it.
+
 ### Original design (2026-07-24)
 
 Goal (owner-ranked next): Full RELRO on every MIR-emitted native image —
