@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v0.39.0] — 2026-07-24
+
+The AOT hardening + ELF-completion release: PIE executables by default,
+multi-object linking of `.o` caches, Full RELRO + NX on every native
+image, DT_DEBUG, and multi-`.o` DWARF merge — MIR remains the only
+compiler, assembler, and linker.
+
 - **feat(aot): multi-`.o` DWARF merge — `-g` debug info now survives
   multi-object links (multi-CU output).** The `.o`'s cross-debug-
   section offsets (CU abbrev offset, `DW_AT_stmt_list`, `.debug_frame`

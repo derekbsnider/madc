@@ -74,8 +74,18 @@ high-level" — the answer is both.**
   and both the live fulltest and packed release suite are **695/0/0/16** with
   every forest gate green, including `[subbind]`. See
   `docs/plans/2026-07-14-CODEX-HANDBACK-local-class-identity.md`.
-- **Version:** `0.35.0` (per `VERSION`) — released on `develop` (CIR backend);
-  the **small-binary + family-D** release: the packed release binary drops
+- **Version:** `0.39.0` (per `VERSION`) — the **AOT hardening +
+  ELF-completion** release on `develop`: PIE executables by default
+  (`-no-pie` escape, PT_PHDR load-bias law), multi-object linking
+  (`.o` caches link/run, `-r` = `ld -r`, four project obj_skips lifted,
+  `--obj` lane 737/0), Full RELRO + non-exec stack on every image
+  (addrpool = the GOT leads the RW segment under PT_GNU_RELRO,
+  BIND_NOW as statement of fact), DT_DEBUG (gdb probes interface
+  restored), and multi-`.o` DWARF merge (multi-CU; external-ld links
+  were corrupt too — fixed by relocatable debug sections). Fulltest +
+  packed **753/0/0/9**; `--exe`/`--obj` **737/0**; fork release
+  `1.0-madc.0.39.0`. `master` remains at v0.38.0 pending `/promote`.
+  v0.35.0 was the **small-binary + family-D** release: the packed release binary drops
   **101 MB → 9.26 MB** (<10 MB owner target; blob 3.8 MB) via per-segment
   zstd (pack L15 / dev codec-default), the snapshot-v2 segment-transform
   vocabulary (CHILDREN u32-delta 1.68→0.09 MB, RECORDS byte-plane-80
@@ -310,16 +320,20 @@ high-level" — the answer is both.**
   `get/set_global`, string call marshalling, fork/limits, the policy tail
   (the 38 `test_libmadc_program` skips; see
   `docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md`).
-- **AOT (native object/executable):** **LIVE as of v0.36.0** — `madc -c`
-  emits ELF `.o` objects and `madc -o` emits runnable executables
-  **assembled by MIR itself** (no external toolchain; owner directive), with
-  `madc -g` gdb debugging of the JIT lane from the same arc. Plan + landing
-  blocks: [2026-07-19-mir-aot-elf-plan.md](2026-07-19-mir-aot-elf-plan.md)
-  (R0–R2 + R4 landed; `run_tests.sh --exe` is the live AOT arbiter at
-  709/729). Remaining rungs: direct ET_DYN `-shared`, `--project` per-TU
-  objects, R4b execute-`.o`-as-cache (asmjit-master parity), R5 DWARF in
-  the `.o`, R6 PIC; Mach-O / PE assemblers later behind the same
-  `MIR_object` seam.
+- **AOT (native object/executable):** **FEATURE-COMPLETE ON ELF as of
+  v0.39.0** — `madc -c` emits ELF `.o` caches, `madc -o` emits PIE
+  executables (`-no-pie`/`-shared`/`-r` as with gcc), all **assembled by
+  MIR itself** (no external toolchain; owner directive). The full rung
+  ladder R1–R6 + PIE + multi-object linking + Full RELRO/NX + DT_DEBUG +
+  multi-`.o` DWARF merge is landed: `.o` caches link and run (`ld -r`
+  shape included), every image is Full RELRO + NX with the addrpool as
+  the GOT, and `-g` debug info survives multi-object links (multi-CU).
+  Plan + landing blocks:
+  [2026-07-19-mir-aot-elf-plan.md](2026-07-19-mir-aot-elf-plan.md);
+  `run_tests.sh --exe` / `--obj` are the live AOT arbiters (737/0 each).
+  Remaining (ELF-completion slices 3–5): ctor/init-array model, ODR/
+  linkonce weak, `.mir.rodata` split; then Mach-O / PE assemblers behind
+  the same `MIR_object` seam (Track 6.3).
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target
   the CIR path is climbing back to — NOT the current state.
