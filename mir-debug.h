@@ -295,6 +295,26 @@ extern int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_p
    returns NULL and, when err_msg != NULL, writes a diagnostic there. */
 typedef struct MIR_object_loaded *MIR_object_loaded_t;
 typedef void *(*MIR_object_resolver_t) (const char *name, void *env);
+/* --- Merge reader (multi-object linking) ---------------------------------
+   Parse one MIR-emitted ET_REL image and APPEND it into a builder: sections
+   concatenate at their alignments, symbols unify by name (an UNDEF resolves
+   against a definition from either side; a strong definition replaces a
+   weak one; two strong definitions are a loud error; locals never unify),
+   relocations are rebased.  Repeated reads over one builder ARE the link;
+   the merged builder feeds the single-object consumers unchanged
+   (MIR_object_emit = the ld -r shape, MIR_object_emit_executable,
+   emit + MIR_object_load for an in-process run).  Returns 0 on success,
+   1 on success where the image carried .debug_* sections that were DROPPED
+   (multi-object DWARF merging is a future slice: the emitter writes one CU
+   per object with DW_AT_stmt_list pinned at 0, so concatenation would
+   corrupt every CU after the first), and -1 on error with err_msg filled. */
+extern int MIR_object_read (MIR_object_t obj, const void *buf, size_t size, char *err_msg,
+                            size_t err_len);
+
+/* Iterate the names of the builder's UNDEFINED (imported) symbols:
+   idx 0, 1, ... until NULL. */
+extern const char *MIR_object_undef_name (MIR_object_t obj, size_t idx);
+
 extern MIR_object_loaded_t MIR_object_load (const void *buf, size_t size,
                                             MIR_object_resolver_t resolver, void *env,
                                             char *err_msg, size_t err_len);

@@ -2011,6 +2011,123 @@ static int objload_sym_cmp (const void *a, const void *b) {
     if (err_msg != NULL && err_len != 0) snprintf (err_msg, err_len, __VA_ARGS__); \
   } while (0)
 
+/* Shared ELF scan front for the emitter's ET_REL subset -- one parse for the
+   in-process loader (MIR_object_load) and the merge reader (MIR_object_read).
+   Validates the container, identifies the fixed alloc-section set (by flags
+   + the .mir.addrpool name), and locates the symbol table.  Anything alloc
+   beyond the four known sections is emitter growth these consumers do not
+   understand -- fail loudly rather than drop it. */
+typedef struct {
+  const uint8_t *buf;
+  size_t size;
+  const Elf64_Ehdr *eh;
+  const Elf64_Shdr *sh;
+  int i_text, i_data, i_bss, i_pool, i_symtab;
+  const Elf64_Sym *syms;
+  size_t n_file_syms;
+  const char *strtab;
+  size_t strtab_size;
+  int has_debug_p; /* any non-alloc .debug_* section present */
+} objx_scan_t;
+
+static int objx_scan (objx_scan_t *sc, const void *vbuf, size_t size, char *err_msg,
+                      size_t err_len) {
+  const uint8_t *buf = vbuf;
+
+  memset (sc, 0, sizeof (*sc));
+  sc->i_text = sc->i_data = sc->i_bss = sc->i_pool = sc->i_symtab = -1;
+  if (MIR_DEBUG_EM != EM_X86_64) {
+    OBJLOAD_ERR ("MIR objects are x86-64 only");
+    return -1;
+  }
+  if (buf == NULL || size < sizeof (Elf64_Ehdr)) {
+    OBJLOAD_ERR ("truncated or empty object");
+    return -1;
+  }
+  const Elf64_Ehdr *eh = (const Elf64_Ehdr *) buf;
+  if (memcmp (eh->e_ident, ELFMAG, SELFMAG) != 0 || eh->e_ident[EI_CLASS] != ELFCLASS64
+      || eh->e_ident[EI_DATA] != ELFDATA2LSB) {
+    OBJLOAD_ERR ("not a 64-bit little-endian ELF file");
+    return -1;
+  }
+  if (eh->e_type != ET_REL) {
+    OBJLOAD_ERR ("not a relocatable object (ET_REL)");
+    return -1;
+  }
+  if (eh->e_machine != EM_X86_64) {
+    OBJLOAD_ERR ("not an x86-64 object");
+    return -1;
+  }
+  if (eh->e_shentsize != sizeof (Elf64_Shdr) || eh->e_shnum == 0 || eh->e_shoff > size
+      || (uint64_t) eh->e_shnum * sizeof (Elf64_Shdr) > size - eh->e_shoff
+      || eh->e_shstrndx >= eh->e_shnum) {
+    OBJLOAD_ERR ("malformed section header table");
+    return -1;
+  }
+  const Elf64_Shdr *sh = (const Elf64_Shdr *) (buf + eh->e_shoff);
+
+  /* Every non-NOBITS section body a consumer touches must lie inside the
+     file; validate once up front. */
+  for (int i = 0; i < eh->e_shnum; i++)
+    if (sh[i].sh_type != SHT_NOBITS
+        && (sh[i].sh_offset > size || sh[i].sh_size > size - sh[i].sh_offset)) {
+      OBJLOAD_ERR ("section %d body out of file bounds", i);
+      return -1;
+    }
+  const char *shstr = (const char *) (buf + sh[eh->e_shstrndx].sh_offset);
+  size_t shstr_size = sh[eh->e_shstrndx].sh_size;
+
+  /* Identify the fixed section set.  .mir.addrpool is picked out by name
+     (its flags alone would classify it as data); the rest of the alloc
+     sections are classified by their flags (EXECINSTR -> text, NOBITS ->
+     bss, else data).  Non-alloc sections (.symtab, .rela.*, .note.GNU-stack,
+     .debug_*) ride along or are consumed by name. */
+  for (int i = 1; i < eh->e_shnum; i++) {
+    if (sh[i].sh_name >= shstr_size) {
+      OBJLOAD_ERR ("section %d name out of bounds", i);
+      return -1;
+    }
+    if (sh[i].sh_type == SHT_SYMTAB) {
+      if (sc->i_symtab >= 0) {
+        OBJLOAD_ERR ("multiple symbol tables");
+        return -1;
+      }
+      sc->i_symtab = i;
+    }
+    if ((sh[i].sh_flags & SHF_ALLOC) == 0) {
+      if (strncmp (shstr + sh[i].sh_name, ".debug_", 7) == 0) sc->has_debug_p = 1;
+      continue;
+    }
+    int *slot = strcmp (shstr + sh[i].sh_name, ".mir.addrpool") == 0 ? &sc->i_pool
+                : (sh[i].sh_flags & SHF_EXECINSTR) != 0              ? &sc->i_text
+                : sh[i].sh_type == SHT_NOBITS                        ? &sc->i_bss
+                                                                     : &sc->i_data;
+    if (*slot >= 0) {
+      OBJLOAD_ERR ("unsupported extra alloc section %s", shstr + sh[i].sh_name);
+      return -1;
+    }
+    *slot = i;
+  }
+
+  if (sc->i_symtab >= 0) {
+    if (sh[sc->i_symtab].sh_entsize != sizeof (Elf64_Sym)
+        || sh[sc->i_symtab].sh_link >= eh->e_shnum
+        || sh[sh[sc->i_symtab].sh_link].sh_type != SHT_STRTAB) {
+      OBJLOAD_ERR ("malformed symbol table");
+      return -1;
+    }
+    sc->syms = (const Elf64_Sym *) (buf + sh[sc->i_symtab].sh_offset);
+    sc->n_file_syms = sh[sc->i_symtab].sh_size / sizeof (Elf64_Sym);
+    sc->strtab = (const char *) (buf + sh[sh[sc->i_symtab].sh_link].sh_offset);
+    sc->strtab_size = sh[sh[sc->i_symtab].sh_link].sh_size;
+  }
+  sc->buf = buf;
+  sc->size = size;
+  sc->eh = eh;
+  sc->sh = sh;
+  return 0;
+}
+
 MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
                                      MIR_object_resolver_t resolver, void *env, char *err_msg,
                                      size_t err_len) {
@@ -2022,96 +2139,17 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
   OBJLOAD_ERR ("in-process object loading is unsupported on this host (no mmap)");
   return NULL;
 #else
-  const uint8_t *buf = vbuf;
-
-  if (MIR_DEBUG_EM != EM_X86_64) {
-    OBJLOAD_ERR ("in-process object loading is x86-64 only");
-    return NULL;
-  }
-  if (buf == NULL || size < sizeof (Elf64_Ehdr)) {
-    OBJLOAD_ERR ("truncated or empty object");
-    return NULL;
-  }
-  const Elf64_Ehdr *eh = (const Elf64_Ehdr *) buf;
-  if (memcmp (eh->e_ident, ELFMAG, SELFMAG) != 0 || eh->e_ident[EI_CLASS] != ELFCLASS64
-      || eh->e_ident[EI_DATA] != ELFDATA2LSB) {
-    OBJLOAD_ERR ("not a 64-bit little-endian ELF file");
-    return NULL;
-  }
-  if (eh->e_type != ET_REL) {
-    OBJLOAD_ERR ("not a relocatable object (ET_REL)");
-    return NULL;
-  }
-  if (eh->e_machine != EM_X86_64) {
-    OBJLOAD_ERR ("not an x86-64 object");
-    return NULL;
-  }
-  if (eh->e_shentsize != sizeof (Elf64_Shdr) || eh->e_shnum == 0 || eh->e_shoff > size
-      || (uint64_t) eh->e_shnum * sizeof (Elf64_Shdr) > size - eh->e_shoff
-      || eh->e_shstrndx >= eh->e_shnum) {
-    OBJLOAD_ERR ("malformed section header table");
-    return NULL;
-  }
-  const Elf64_Shdr *sh = (const Elf64_Shdr *) (buf + eh->e_shoff);
-
-  /* Every non-NOBITS section body the loader touches must lie inside the
-     file; validate once up front. */
-  for (int i = 0; i < eh->e_shnum; i++)
-    if (sh[i].sh_type != SHT_NOBITS
-        && (sh[i].sh_offset > size || sh[i].sh_size > size - sh[i].sh_offset)) {
-      OBJLOAD_ERR ("section %d body out of file bounds", i);
-      return NULL;
-    }
-  const char *shstr = (const char *) (buf + sh[eh->e_shstrndx].sh_offset);
-  size_t shstr_size = sh[eh->e_shstrndx].sh_size;
-
-  /* Identify the fixed section set.  .mir.addrpool is picked out by name
-     (its flags alone would classify it as data); the rest of the alloc
-     sections are classified by their flags (EXECINSTR -> text, NOBITS ->
-     bss, else data); anything alloc beyond those four is emitter growth
-     this loader does not understand -- fail loudly rather than drop it.
-     Non-alloc sections (.symtab, .rela.*, .note.GNU-stack, future
-     .debug_*) ride along or are consumed by name. */
-  int i_text = -1, i_data = -1, i_bss = -1, i_pool = -1, i_symtab = -1;
-  for (int i = 1; i < eh->e_shnum; i++) {
-    if (sh[i].sh_name >= shstr_size) {
-      OBJLOAD_ERR ("section %d name out of bounds", i);
-      return NULL;
-    }
-    if (sh[i].sh_type == SHT_SYMTAB) {
-      if (i_symtab >= 0) {
-        OBJLOAD_ERR ("multiple symbol tables");
-        return NULL;
-      }
-      i_symtab = i;
-    }
-    if ((sh[i].sh_flags & SHF_ALLOC) == 0) continue;
-    int *slot = strcmp (shstr + sh[i].sh_name, ".mir.addrpool") == 0 ? &i_pool
-                : (sh[i].sh_flags & SHF_EXECINSTR) != 0              ? &i_text
-                : sh[i].sh_type == SHT_NOBITS                        ? &i_bss
-                                                                     : &i_data;
-    if (*slot >= 0) {
-      OBJLOAD_ERR ("unsupported extra alloc section %s", shstr + sh[i].sh_name);
-      return NULL;
-    }
-    *slot = i;
-  }
-
-  const Elf64_Sym *syms = NULL;
-  size_t n_file_syms = 0;
-  const char *strtab = NULL;
-  size_t strtab_size = 0;
-  if (i_symtab >= 0) {
-    if (sh[i_symtab].sh_entsize != sizeof (Elf64_Sym) || sh[i_symtab].sh_link >= eh->e_shnum
-        || sh[sh[i_symtab].sh_link].sh_type != SHT_STRTAB) {
-      OBJLOAD_ERR ("malformed symbol table");
-      return NULL;
-    }
-    syms = (const Elf64_Sym *) (buf + sh[i_symtab].sh_offset);
-    n_file_syms = sh[i_symtab].sh_size / sizeof (Elf64_Sym);
-    strtab = (const char *) (buf + sh[sh[i_symtab].sh_link].sh_offset);
-    strtab_size = sh[sh[i_symtab].sh_link].sh_size;
-  }
+  objx_scan_t sc;
+  if (objx_scan (&sc, vbuf, size, err_msg, err_len) != 0) return NULL;
+  const uint8_t *buf = sc.buf;
+  const Elf64_Ehdr *eh = sc.eh;
+  const Elf64_Shdr *sh = sc.sh;
+  int i_text = sc.i_text, i_data = sc.i_data, i_bss = sc.i_bss, i_pool = sc.i_pool,
+      i_symtab = sc.i_symtab;
+  const Elf64_Sym *syms = sc.syms;
+  size_t n_file_syms = sc.n_file_syms;
+  const char *strtab = sc.strtab;
+  size_t strtab_size = sc.strtab_size;
 
   /* One mapping, page-aligned regions: [text][data][bss][pool].  Page
      alignment dominates the emitter's section alignments (16 / data_align)
@@ -2304,6 +2342,287 @@ void MIR_object_loaded_unload (MIR_object_loaded_t lo) {
   free (lo->syms);
   free (lo);
 }
+
+/* ===== Merge reader (multi-object linking) =============================== */
+/* MIR_object_read parses one MIR-emitted ET_REL image (through the same
+   objx_scan front the loader uses) and APPENDS it into a builder: sections
+   concatenate at their alignments, symbols unify by name, relocations are
+   rebased.  Repeated reads over one builder ARE the link -- the merged
+   builder then feeds the existing single-object consumers unchanged
+   (MIR_object_emit for an ld -r shape, MIR_object_emit_executable for
+   executables/shared objects, emit + MIR_object_load for in-process runs;
+   internal cross-object references resolve at that final emit). */
+
+static int objx_shndx_sec (const objx_scan_t *sc, int shndx) {
+  return shndx == sc->i_text   ? MIR_OBJ_SEC_TEXT
+         : shndx == sc->i_data ? MIR_OBJ_SEC_DATA
+         : shndx == sc->i_bss  ? MIR_OBJ_SEC_BSS
+         : shndx == sc->i_pool ? MIR_OBJ_SEC_ADDRPOOL
+                               : -1;
+}
+
+/* Name -> dst symbol id for unification: the builder's pre-read non-local
+   named symbols sorted for bsearch; symbols appended DURING the read live
+   past first_new and are scanned linearly (a per-object tail, so no
+   re-sort per add). */
+typedef struct {
+  const char *name;
+  int id;
+} objx_nmid_t;
+
+static int objx_nmid_cmp (const void *a, const void *b) {
+  return strcmp (((const objx_nmid_t *) a)->name, ((const objx_nmid_t *) b)->name);
+}
+
+static int objx_named_lookup (MIR_object_t obj, const objx_nmid_t *idx, size_t n_idx,
+                              size_t first_new, const char *nm) {
+  objx_nmid_t key;
+  key.name = nm;
+  key.id = 0;
+  objx_nmid_t *f = bsearch (&key, idx, n_idx, sizeof key, objx_nmid_cmp);
+  if (f != NULL) return f->id;
+  for (size_t i = first_new; i < obj->n_syms; i++) {
+    objsym_t *s = &obj->syms[i];
+    if (s->name != NULL && !s->local_p && !s->section_p && strcmp (s->name, nm) == 0)
+      return (int) i;
+  }
+  return -1;
+}
+
+int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_msg,
+                     size_t err_len) {
+  objx_scan_t sc;
+  int rc = -1;
+  objx_nmid_t *idx = NULL;
+  int *map = NULL;
+  signed char *map_sec = NULL;
+
+  if (obj == NULL) {
+    OBJLOAD_ERR ("no object builder");
+    return -1;
+  }
+  if (objx_scan (&sc, vbuf, size, err_msg, err_len) != 0) return -1;
+  const Elf64_Shdr *sh = sc.sh;
+
+  /* Alloc-section alignments: powers of two; .text is fixed at the
+     emitter's 16 (MIR_object_text_append aligns to exactly that). */
+  uint64_t al[4] = {1, 1, 1, 1};
+  const int isec[4] = {sc.i_text, sc.i_data, sc.i_bss, sc.i_pool};
+  for (int s = 0; s < 4; s++) {
+    if (isec[s] < 0) continue;
+    uint64_t a = sh[isec[s]].sh_addralign;
+    if (a == 0) a = 1;
+    if ((a & (a - 1)) != 0) {
+      OBJLOAD_ERR ("section alignment %llu is not a power of two", (unsigned long long) a);
+      return -1;
+    }
+    al[s] = a;
+  }
+  if (al[MIR_OBJ_SEC_TEXT] > 16) {
+    OBJLOAD_ERR ("text alignment %llu unsupported (the emitter's is 16)",
+                 (unsigned long long) al[MIR_OBJ_SEC_TEXT]);
+    return -1;
+  }
+
+  /* Append the section bodies; the returned offsets are this object's
+     rebase deltas.  An absent/empty section keeps a harmless base (no
+     symbol or relocation can reference into it). */
+  uint64_t base[4];
+  base[MIR_OBJ_SEC_TEXT]
+    = sc.i_text >= 0 && sh[sc.i_text].sh_size != 0
+        ? MIR_object_text_append (obj, sc.buf + sh[sc.i_text].sh_offset, sh[sc.i_text].sh_size)
+        : obj->text.len;
+  base[MIR_OBJ_SEC_DATA]
+    = sc.i_data >= 0 && sh[sc.i_data].sh_size != 0
+        ? MIR_object_data_append (obj, sc.buf + sh[sc.i_data].sh_offset, sh[sc.i_data].sh_size,
+                                  (size_t) al[MIR_OBJ_SEC_DATA])
+        : obj->data.len;
+  base[MIR_OBJ_SEC_BSS] = sc.i_bss >= 0 && sh[sc.i_bss].sh_size != 0
+                            ? MIR_object_bss_reserve (obj, sh[sc.i_bss].sh_size,
+                                                      (size_t) al[MIR_OBJ_SEC_BSS])
+                            : obj->bss_size;
+  base[MIR_OBJ_SEC_ADDRPOOL]
+    = sc.i_pool >= 0 && sh[sc.i_pool].sh_size != 0
+        ? MIR_object_addrpool_append (obj, sc.buf + sh[sc.i_pool].sh_offset,
+                                      sh[sc.i_pool].sh_size, (size_t) al[MIR_OBJ_SEC_ADDRPOOL])
+        : obj->pool.len;
+
+  /* Sorted unification index over the PRE-read builder symbols. */
+  size_t first_new = obj->n_syms, n_idx = 0;
+  idx = malloc ((first_new ? first_new : 1) * sizeof (objx_nmid_t));
+  map = malloc ((sc.n_file_syms ? sc.n_file_syms : 1) * sizeof (int));
+  map_sec = malloc (sc.n_file_syms ? sc.n_file_syms : 1);
+  if (idx == NULL || map == NULL || map_sec == NULL) {
+    OBJLOAD_ERR ("out of memory");
+    goto done;
+  }
+  for (size_t i = 0; i < first_new; i++) {
+    objsym_t *s = &obj->syms[i];
+    if (s->name == NULL || s->local_p || s->section_p) continue;
+    idx[n_idx].name = s->name;
+    idx[n_idx].id = (int) i;
+    n_idx++;
+  }
+  qsort (idx, n_idx, sizeof (objx_nmid_t), objx_nmid_cmp);
+
+  /* Symbols: file index -> dst id (map), with the section id recorded for
+     section symbols (map_sec) -- their relocation addends absorb the
+     rebase, a named symbol's dst value already carries it. */
+  for (size_t i = 1; i < sc.n_file_syms; i++) {
+    const Elf64_Sym *s = &sc.syms[i];
+    unsigned st = ELF64_ST_TYPE (s->st_info), sb = ELF64_ST_BIND (s->st_info);
+    map[i] = -1;
+    map_sec[i] = -1;
+    if (st == STT_SECTION) {
+      int sec = objx_shndx_sec (&sc, (int) s->st_shndx);
+      if (sec < 0) continue; /* a dropped (debug) section's symbol: only an
+                                error if a kept relocation references it */
+      map[i] = MIR_object_section_symbol (obj, sec);
+      map_sec[i] = (signed char) sec;
+      if (map[i] < 0) {
+        OBJLOAD_ERR ("out of memory");
+        goto done;
+      }
+      continue;
+    }
+    if (st != STT_NOTYPE && st != STT_OBJECT && st != STT_FUNC) {
+      OBJLOAD_ERR ("unsupported symbol type %u (symbol %zu)", st, i);
+      goto done;
+    }
+    if (s->st_shndx == SHN_ABS || s->st_shndx == SHN_COMMON) {
+      OBJLOAD_ERR ("unsupported ABS/COMMON symbol %zu", i);
+      goto done;
+    }
+    const char *nm = NULL;
+    if (s->st_name != 0) {
+      if (s->st_name >= sc.strtab_size) {
+        OBJLOAD_ERR ("symbol %zu name out of bounds", i);
+        goto done;
+      }
+      nm = sc.strtab + s->st_name;
+    }
+    int func_p = st == STT_FUNC;
+    if (s->st_shndx == SHN_UNDEF) {
+      if (nm == NULL) {
+        OBJLOAD_ERR ("unnamed undefined symbol %zu", i);
+        goto done;
+      }
+      int ex = objx_named_lookup (obj, idx, n_idx, first_new, nm);
+      map[i] = ex >= 0 ? ex
+                       : MIR_object_add_symbol (obj, nm, MIR_OBJ_SEC_UNDEF, 0, 0, func_p, 0, 0);
+      if (map[i] < 0) {
+        OBJLOAD_ERR ("out of memory");
+        goto done;
+      }
+      continue;
+    }
+    int sec = objx_shndx_sec (&sc, (int) s->st_shndx);
+    if (sec < 0) {
+      OBJLOAD_ERR ("symbol %zu defined in an unsupported section (%u)", i,
+                   (unsigned) s->st_shndx);
+      goto done;
+    }
+    uint64_t val = s->st_value + base[sec];
+    if (sb == STB_LOCAL) { /* locals never unify; duplicate names are fine */
+      map[i] = MIR_object_add_symbol (obj, nm, sec, val, s->st_size, func_p, 1, 0);
+      if (map[i] < 0) {
+        OBJLOAD_ERR ("out of memory");
+        goto done;
+      }
+      continue;
+    }
+    int weak_p = sb == STB_WEAK;
+    int ex = nm != NULL ? objx_named_lookup (obj, idx, n_idx, first_new, nm) : -1;
+    if (ex < 0) {
+      map[i] = MIR_object_add_symbol (obj, nm, sec, val, s->st_size, func_p, 0, weak_p);
+      if (map[i] < 0) {
+        OBJLOAD_ERR ("out of memory");
+        goto done;
+      }
+      continue;
+    }
+    objsym_t *es = &obj->syms[ex];
+    if (!es->defined_p) {
+      MIR_object_symbol_define (obj, ex, sec, val, s->st_size, func_p, 0, weak_p);
+      map[i] = ex;
+    } else if (weak_p) {
+      map[i] = ex; /* an existing definition (strong or first weak) wins */
+    } else if (es->weak_p) {
+      /* a strong definition replaces a weak one, in place */
+      es->sec = sec;
+      es->value = val;
+      es->size = s->st_size;
+      es->func_p = func_p != 0;
+      es->weak_p = 0;
+      es->defined_p = 1;
+      map[i] = ex;
+    } else {
+      OBJLOAD_ERR ("duplicate symbol '%s'", nm);
+      goto done;
+    }
+  }
+
+  /* Relocations: kept for the alloc sections (offset and section-symbol
+     addends rebased); .rela.debug_* drops with its sections. */
+  for (int ri = 1; ri < sc.eh->e_shnum; ri++) {
+    if (sh[ri].sh_type != SHT_RELA) continue;
+    if (sh[ri].sh_info >= sc.eh->e_shnum) {
+      OBJLOAD_ERR ("relocation section %d targets an out-of-range section", ri);
+      goto done;
+    }
+    int tsec = objx_shndx_sec (&sc, (int) sh[ri].sh_info);
+    if (tsec < 0) continue; /* .rela.debug_*: dropped with the debug sections */
+    if (tsec == MIR_OBJ_SEC_BSS) {
+      OBJLOAD_ERR ("relocation section %d targets .bss", ri);
+      goto done;
+    }
+    if (sh[ri].sh_entsize != sizeof (Elf64_Rela) || (int) sh[ri].sh_link != sc.i_symtab
+        || sc.syms == NULL) {
+      OBJLOAD_ERR ("malformed relocation section %d", ri);
+      goto done;
+    }
+    const Elf64_Rela *ra = (const Elf64_Rela *) (sc.buf + sh[ri].sh_offset);
+    size_t n_rel = sh[ri].sh_size / sizeof (Elf64_Rela);
+    for (size_t k = 0; k < n_rel; k++) {
+      unsigned rtype = (unsigned) ELF64_R_TYPE (ra[k].r_info);
+      int kind = rtype == R_X86_64_64      ? MIR_OBJ_RELOC_ABS64
+                 : rtype == R_X86_64_PC32 ? MIR_OBJ_RELOC_PC32
+                                          : -1;
+      if (kind < 0) {
+        OBJLOAD_ERR ("unsupported relocation type %u (the emitter's subset is "
+                     "R_X86_64_64/R_X86_64_PC32)",
+                     rtype);
+        goto done;
+      }
+      size_t si = ELF64_R_SYM (ra[k].r_info);
+      if (si >= sc.n_file_syms || map[si] < 0) {
+        OBJLOAD_ERR ("relocation %zu in section %d against an unmapped symbol", k, ri);
+        goto done;
+      }
+      int64_t addend = ra[k].r_addend;
+      if (map_sec[si] >= 0) addend += (int64_t) base[(int) map_sec[si]];
+      MIR_object_add_reloc (obj, tsec, ra[k].r_offset + base[tsec], map[si], addend, kind);
+    }
+  }
+  rc = sc.has_debug_p ? 1 : 0; /* 1: merged, but debug sections were dropped */
+
+done:
+  free (idx);
+  free (map);
+  free (map_sec);
+  return rc;
+}
+
+const char *MIR_object_undef_name (MIR_object_t obj, size_t idx) {
+  if (obj == NULL) return NULL;
+  for (size_t i = 0; i < obj->n_syms; i++) {
+    objsym_t *s = &obj->syms[i];
+    if (s->defined_p || s->name == NULL) continue;
+    if (idx == 0) return s->name;
+    idx--;
+  }
+  return NULL;
+}
 #else
 int MIR_debug_emit (MIR_debug_t d MIR_UNUSED, void **buf, size_t *size) {
   if (buf != NULL) *buf = NULL;
@@ -2373,6 +2692,15 @@ void *MIR_object_loaded_sym (MIR_object_loaded_t lo MIR_UNUSED, const char *name
   return NULL;
 }
 void MIR_object_loaded_unload (MIR_object_loaded_t lo MIR_UNUSED) {}
+int MIR_object_read (MIR_object_t obj MIR_UNUSED, const void *vbuf MIR_UNUSED,
+                     size_t size MIR_UNUSED, char *err_msg, size_t err_len) {
+  if (err_msg != NULL && err_len != 0)
+    snprintf (err_msg, err_len, "no <elf.h> on this host");
+  return -1;
+}
+const char *MIR_object_undef_name (MIR_object_t obj MIR_UNUSED, size_t idx MIR_UNUSED) {
+  return NULL;
+}
 #endif
 
 /* The GDB JIT interface (the process-global __jit_debug_descriptor and
