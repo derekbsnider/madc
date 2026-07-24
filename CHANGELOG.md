@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+- **feat(aot): ctor/init-array — per-TU initializers ride the platform
+  `.init_array`; the two-ctor-TU merge fence is lifted [ELF-completion
+  slice 3].** Native lanes no longer wrap `main` with a
+  `__madc_global_init()` call (per-image single — two ctor-TU `.o`s
+  collided as duplicate strong definitions, and a ctor TU that wasn't
+  main's TU had its ctors silently skipped). In object mode each TU
+  with dynamic initializers (or `<ns_madc>`) synthesizes a STATIC init
+  under a TU-unique name (`__madc_init_<stem>_<hash>`, platform
+  signature `(argc, argv, envp)`) registered into the capture's
+  `.init_array` — a real `SHT_INIT_ARRAY` section, so an EXTERNAL
+  linker collects it natively too. Executables/PIE/shared objects emit
+  `DT_INIT_ARRAY`/`DT_INIT_ARRAYSZ` (inside the RELRO lead region,
+  gcc-shaped); `DT_INIT` is retired; ld.so runs a `.so`'s inits at
+  dlopen, glibc ≥ 2.34 runs an executable's own array (documented
+  floor; container = 2.36); the R4b loader exposes the merged array
+  (`MIR_object_loaded_init_array`) and the run lanes walk it before
+  `main`. `sys.*` population moves into the TU init via a new guarded
+  `__madc_sys_init_once` (a dlopen'd madc module no longer stomps the
+  running script's `sys.path`/`sys.argv` mutations). A pre-init-array
+  ctor cache (defines `__madc_global_init`) is refused at merge with a
+  re-emit message. The JIT lane is unchanged. gdb-proven: source-level
+  breakpoint inside a per-TU init on the merged `-g` PIE; external
+  gcc/ld oracle runs both TUs' inits. Fork `MIR_COMMIT` bumped
+  in-commit.
+
+- **fix(fork/c2mir): `-g` debug-capture state reset at `c2mir_finish`.**
+  The R5 DWARF capture kept per-compile records (MIR items, AST tag
+  nodes, interned names) in process statics — a latent use-after-free
+  for any second `-g` compile in one process (in-process emitters like
+  libmadc sessions and the unit suite; the one-shot CLI never hit it).
+  `c2mir_finish` now destroys the debug builder and resets the record
+  arrays.
+
 ## [v0.39.0] — 2026-07-24
 
 The AOT hardening + ELF-completion release: PIE executables by default,

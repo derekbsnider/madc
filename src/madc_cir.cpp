@@ -494,6 +494,8 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
 {
     out_builder = NULL;
     CirBuilder *builder = new CirBuilder(c2m);
+    // TU identity for the object-mode per-TU init symbol (S3 init-array).
+    builder->set_tu_name(source_name);
     node_t tree = NULL;
     auto _cir_t0 = std::chrono::steady_clock::now();	// --show-stats: CIR build
     try {
@@ -704,6 +706,25 @@ bool CirJitSession::init_contexts(const char *source_name, bool dump_checked)
     return true;
 }
 
+// Object mode (ELF-completion S3): register a TU's synthesized init into
+// the capture's .init_array (one 8-byte ABS64 slot per TU). Must run after
+// link — the eager gen interface has generated every function by then, so
+// the init's STB_LOCAL symbol is defined in the capture. True when the TU
+// has no init (nothing to register).
+static bool cir_register_tu_init(MIR_context_t ctx, CirBuilder *b,
+				 const char *source_name)
+{
+    if (!b || b->tu_init_name().empty())
+	return true;
+    MIR_object_t o = MIR_gen_get_object(ctx);
+    if (!o || MIR_object_add_init(o, b->tu_init_name().c_str()) != 0) {
+	fprintf(stderr, "%s: cannot register module init '%s' in the object"
+		" capture\n", source_name, b->tu_init_name().c_str());
+	return false;
+    }
+    return true;
+}
+
 bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 {
     if (setjmp(cir_mir_error_jmp)) {
@@ -900,7 +921,13 @@ bool CirJitSession::build(Program *prog, const char *source_name,
 	}
     }
 
-    return load_and_link(source_name, prog);
+    if (!load_and_link(source_name, prog))
+	return false;
+    if (madc_object_mode && !cir_register_tu_init(ctx, builder, source_name)) {
+	teardown();
+	return false;
+    }
+    return true;
 }
 
 bool CirJitSession::build_frozen(const void *image, size_t image_len,
@@ -1235,12 +1262,12 @@ static bool cir_split_needed(const std::vector<std::string> &needed,
     return have_madc;
 }
 
-// The flavor → exec-params mapping, in one place: mnkShared = ET_DYN
-// module with DT_INIT ctors (a dlopen'd module has no main to run the
-// file-scope ctors; once-guarded, so a host that also calls it explicitly
-// stays correct; omitted when the module has none — the emitter skips
-// undefined init symbols); executables get entry=main and, per gcc
-// parity, the PIE layout unless -no-pie chose fixed-base ET_EXEC.
+// The flavor → exec-params mapping, in one place. File-scope ctors ride the
+// capture's .init_array in every flavor (DT_INIT_ARRAY when non-empty; the
+// emitter owns the tag) — ld.so runs a shared object's entries at load, and
+// glibc >= 2.34 runs an executable's own array from __libc_start_main.
+// Executables get entry=main and, per gcc parity, the PIE layout unless
+// -no-pie chose fixed-base ET_EXEC.
 static void cir_fill_exec_params(MIR_object_exec_params &xp,
 				 MadcNativeKind kind,
 				 const std::vector<const char *> &libs,
@@ -1251,7 +1278,6 @@ static void cir_fill_exec_params(MIR_object_exec_params &xp,
     xp.n_needed = libs.size();
     if (kind == mnkShared) {
 	xp.shared_p = 1;
-	xp.init = "__madc_global_init";
     } else {
 	xp.entry = "main";
 	xp.pie_p = kind == mnkPieExecutable;
@@ -1408,10 +1434,12 @@ static bool cir_read_file(const char *path, std::vector<unsigned char> &bytes)
     return true;
 }
 
-// Enter a loaded image's main. Global ctors run from inside main (the
-// builder injects the __madc_global_init call there), so entering main is
-// the whole contract. The image is deliberately never unloaded: the
-// program may have registered atexit handlers pointing into it.
+// Enter a loaded image's main, running the image's init array first — the
+// loader lane's twin of ld.so/glibc's pre-main init walk (each per-TU init
+// is called with the platform (argc, argv, envp) signature). Old caches
+// have an empty array and keep their main-wrapped ctors. The image is
+// deliberately never unloaded: the program may have registered atexit
+// handlers pointing into it.
 static int cir_enter_loaded_main(MIR_object_loaded_t lo, const char *display,
 				 int argc, char **argv)
 {
@@ -1421,6 +1449,11 @@ static int cir_enter_loaded_main(MIR_object_loaded_t lo, const char *display,
 	fprintf(stderr, "madc: %s: no main() defined in object\n", display);
 	return 1;
     }
+    typedef void (*cir_init_fn)(int, char **, char **);
+    size_t n_init = 0;
+    void *const *inits = MIR_object_loaded_init_array(lo, &n_init);
+    for (size_t i = 0; i < n_init; i++)
+	((cir_init_fn)inits[i])(argc, argv, environ);
     fflush(stdout);
     return entry(argc, argv, environ);
 }
@@ -1470,6 +1503,16 @@ static MIR_object_t cir_read_objects(const std::vector<std::string> &paths)
 	    MIR_object_destroy(obj);
 	    return NULL;
 	}
+    }
+    // A cache from the pre-init-array model defines __madc_global_init and
+    // relies on a main wrap this madc no longer emits — its ctors would be
+    // silently skipped in a link (the very fence S3 lifts). Refuse loudly.
+    if (MIR_object_find_symbol(obj, "__madc_global_init", NULL, NULL, NULL)) {
+	fprintf(stderr, "madc: input predates the init-array model"
+		" (defines __madc_global_init); re-emit the .o with this"
+		" madc version\n");
+	MIR_object_destroy(obj);
+	return NULL;
     }
     return obj;
 }
@@ -4630,6 +4673,13 @@ int madc_project_emit_native(MadcEngine &engine,
 	MIR_link(ctx, MIR_set_gen_interface, cir_object_import_resolver);
 	if (madc_debug_info)
 		c2mir_object_attach_debug(ctx);   // R5: whole-program DWARF
+	// Every TU's init joins the capture's .init_array (link order).
+	for (size_t bi = 0; bi < builders.size(); bi++)
+		if (!cir_register_tu_init(ctx, builders[bi],
+					  parsed[bi].name.c_str())) {
+			teardown();
+			return -1;
+		}
 
 	bool ok;
 	if (kind == mnkRelocatable)

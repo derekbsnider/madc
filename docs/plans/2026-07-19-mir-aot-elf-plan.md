@@ -1182,8 +1182,73 @@ with the exact rebase rules data sections already use.**
   in a.o's TU AND b.o's TU, named args/bt both) + external-`ld` merge
   of the same `.o`s as the behavior oracle.
 
-### Slice 3 — ctor/init-array (fork + madc; lifts the
+### Slice 3 — ctor/init-array — LANDED 2026-07-24 (lifts the
 `__madc_global_init` dup fence)
+
+**Commits:** fork = the feature/aot-initarr pair (c2mir debug-state
+reset + the init-array object model), madc = the
+feature/aot-initarr-claude merge this block ships in (`MIR_COMMIT`
+pinned in-commit).
+
+**Implemented as designed, with these decided deviations:**
+
+- **Section name is `.init_array` (SHT_INIT_ARRAY), not `.mir.initarr`**
+  — the design's own first line ("adopt the platform model, gcc-shaped")
+  is served literally: an external linker collects the section natively
+  into its output init array (gate-proven: a gcc/ld link of two madc
+  ctor `.o`s runs both inits with no linker-script help), the same
+  external-linkability S2 proved load-bearing for the DWARF relocs.
+- **`MIR_object_exec_params.init` (DT_INIT) is DELETED**, not merely
+  unused — one init model per artifact kind, no parallel paths. The
+  emitter emits `DT_INIT_ARRAY`/`DT_INIT_ARRAYSZ` when the builder's
+  array is non-empty; `.init_array` is exe shdr row 8 unconditionally
+  (rows renumbered: 9=.dynamic 10=.data 11=.bss 12=.symtab 13=.strtab
+  14=.shstrtab = e_shstrndx; debug 15–18).
+- **Two runtime entries over one sys population:** the JIT main wrap
+  keeps `__madc_sys_init` (unconditional — a multi-session embedding
+  host repopulates per run); the per-TU init opens with
+  `__madc_sys_init_once`, which yields to any prior population (N TU
+  inits are idempotent, and a madc `.so` dlopen'd MID-program — handed
+  main's argv by ld.so — no longer stomps the running script's
+  `sys.path`/`sys.argv` mutations).
+- **Old-cache refusal lives madc-side** (the fork's format stays
+  generic): any merge input set whose unified symbols define
+  `__madc_global_init` is refused loudly with a re-emit message —
+  the silently-skipped-ctors direction is closed. The single-`.o`
+  run-direct lane is untouched (an old cache's main wrap is
+  self-consistent). Old READERS refuse new ctor-caches loudly too, via
+  the pre-existing unknown-alloc-section guard.
+- The `.o` emits the section + `.rela.init_array` only when non-empty:
+  ctor-less TUs (all of C, SMAUG) stay byte-identical.
+- Per-TU init symbol: `__madc_init_<stem>_<fnv32(path)>`, STB_LOCAL
+  (locals never unify — merge-safe by construction; the name is for
+  gdb, not correctness). Signature `(int argc, char **argv,
+  char **envp)`; glibc ≥ 2.34 floor documented in mir-debug.h (our
+  `_start` passes init=NULL and csu/libc-start.c's call_init walks the
+  main map's own dynamic segment; container = 2.36).
+
+**Companion fork fix (own commit):** c2mir's R5 debug-capture state
+(`c2m_dbg`, tag/var/funcrec arrays) was process-STATIC while holding
+per-context pointers (AST nodes, MIR items, interned names) — a latent
+use-after-free for any SECOND `-g` compile in one process since R5,
+exposed by this slice's allocation shifts (the unit suite's in-process
+double emission began faulting; the CLI's one-shot lanes never could).
+`c2mir_finish` now resets it (`c2m_dbg_reset`).
+
+**Gates at landing:** ten container gates — two-ctor-TU MIR link → PIE
+runs BOTH inits · loader run lane · `-no-pie` baked entries · readelf
+(INIT_ARRAY/INIT_ARRAYSZ present, DT_INIT absent, `.init_array` inside
+page-padded PT_GNU_RELRO) · external gcc/ld oracle runs both inits ·
+`-shared` dlopen runs the init, DT_INIT_ARRAY replaces DT_INIT ·
+`sys.argv` populated via the array in a native exe · single-TU
+source→exe ctors · `__madc_init_*` locals in `.symtab` · gdb
+source-level breakpoint inside a per-TU init on the merged `-g` PIE
+with the init frame named in `bt` · unit test_object_load 7/7 (+
+two-ctor merge/run + old-cache refusal), test_native_shared 5/5 (+
+init-array-in-RELRO case) · full battery + `--obj` lane + fork lanes
+green (counts in the status snapshot).
+
+#### Original design
 
 Adopt the platform model (gcc-shaped: per-TU ctors ride `.init_array`;
 main is not involved). Today every native lane relies on the builder

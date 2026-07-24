@@ -100,9 +100,9 @@ public:
     // the image flavor: mnkPieExecutable = position-independent ET_DYN
     // executable (the default, gcc parity), mnkExecutable = fixed-base
     // ET_EXEC (-no-pie), mnkShared = ET_DYN shared object
-    // (dlopen/#load-consumable; exports the module's globals, DT_INIT runs
-    // the file-scope ctors at load). mnkObject is not valid here — the .o
-    // lane is emit_native_object().
+    // (dlopen/#load-consumable; exports the module's globals; the
+    // file-scope ctors ride DT_INIT_ARRAY, run by ld.so at load).
+    // mnkObject is not valid here — the .o lane is emit_native_object().
     bool emit_native_executable(const char *out_path,
 				const std::vector<std::string> &needed,
 				const std::string &runpath,
