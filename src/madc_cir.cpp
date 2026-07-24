@@ -1204,8 +1204,10 @@ static bool cir_image_needs_madc_runtime(MIR_context_t ctx,
 // (emit_native_executable) and the --project whole-program lane.
 static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 				   const std::vector<std::string> &needed,
-				   const std::string &runpath, bool shared)
+				   const std::string &runpath,
+				   MadcNativeKind kind)
 {
+    bool shared = kind == mnkShared;
     // Conditional runtime dependency: a program whose every dynamic import
     // resolves within the base C/C++ and user -l libraries gets no
     // libmadc.so.0 DT_NEEDED — it runs on hosts without madc installed.
@@ -1236,8 +1238,12 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 	// has no ctors — the emitter skips undefined init symbols.
 	xp.shared_p = 1;
 	xp.init = "__madc_global_init";
-    } else
+    } else {
 	xp.entry = "main";
+	// gcc parity: executables are position-independent (ET_DYN + PIE
+	// tag) unless -no-pie selected the fixed-base ET_EXEC layout.
+	xp.pie_p = kind == mnkPieExecutable;
+    }
     xp.runpath = runpath.empty() ? NULL : runpath.c_str();
     void *buf = NULL;
     size_t size = 0;
@@ -1270,10 +1276,10 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 bool CirJitSession::emit_native_executable(const char *out_path,
 					   const std::vector<std::string> &needed,
 					   const std::string &runpath,
-					   bool shared)
+					   MadcNativeKind kind)
 {
     if (!ctx || !mod) return false;
-    return cir_write_native_image(ctx, out_path, needed, runpath, shared);
+    return cir_write_native_image(ctx, out_path, needed, runpath, kind);
 }
 
 // bin/madc lives in <root>/bin; the runtime lives in <root>/lib. An
@@ -1340,7 +1346,7 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
     std::string runpath;
     cir_native_link_env(user_libs, needed, runpath);
     return session.emit_native_executable(out_path, needed, runpath,
-					  kind == mnkShared) ? 0 : -1;
+					  kind) ? 0 : -1;
 }
 
 // R4b resolver: the JIT lane's chain (host-callback regs → dlsym; bin/madc
@@ -4365,8 +4371,9 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 // madc_cir_emit_native. mnkObject emits one .o per TU — object capture is
 // context-wide, so each TU gets its own session/context (gcc semantics:
 // <TU-base>.o in the current directory; out_path overrides only for a
-// single-TU manifest, enforced by the caller). mnkExecutable/mnkShared
-// emit ONE native image of every TU: here the shared context is the RIGHT
+// single-TU manifest, enforced by the caller). The linked kinds (PIE /
+// ET_EXEC executables, -shared) emit ONE native image of every TU: here
+// the shared context is the RIGHT
 // granularity — all TU modules land in one capture, cross-TU references
 // resolve internally at emit, and only genuine runtime imports stay UNDEF
 // (the sentinel resolver, exactly as in the single-TU lane).
@@ -4470,7 +4477,7 @@ int madc_project_emit_native(MadcEngine &engine,
 	std::string runpath;
 	cir_native_link_env(user_libs, needed, runpath);
 	bool ok = cir_write_native_image(ctx, out_path, needed, runpath,
-					 kind == mnkShared);
+					 kind);
 	teardown();
 	return ok ? 0 : -1;
 }

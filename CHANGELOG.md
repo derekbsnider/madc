@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+- **feat(aot): PIE executables — `-o` now emits a position-independent
+  ET_DYN executable by default (gcc parity); `-no-pie` keeps the
+  fixed-base ET_EXEC layout, `-pie` selects the default explicitly.**
+  The R6 PIC rung left this "a layout flip away" and it was: the fork's
+  executable emitter (`MIR_object_emit_executable`, new `pie_p` param)
+  reuses the shared-object treatment for the image (base 0, internal
+  address slots as `R_X86_64_RELATIVE`) while keeping the executable
+  apparatus (PT_INTERP, `_start`, `e_entry`, import-only dynsym), plus
+  `DT_FLAGS_1 = DF_1_PIE` so tooling classifies it (`file`: "pie
+  executable"). Two structural fixes fell out: the `_start` stub's one
+  bias-hostile instruction (`mov $entry,%edi` imm32) became a
+  rip-relative `lea` — ONE stub now serves both layouts (bias 32→48) —
+  and executables now carry the gABI-ordered `PT_PHDR`/`PT_INTERP`
+  headers ahead of the loads (glibc derives a PIE's load bias from
+  `PT_PHDR`; without it ld.so rebases nothing and faults on its own
+  unrebased pointers — found by the first PIE run crashing inside
+  `dl_main`). madc side: `MadcNativeKind` gains `mnkPieExecutable`,
+  flavor→exec-params mapping centralized in `cir_write_native_image`;
+  single-TU and `--project` lanes both flip. gdb R5 gate re-proven on
+  PIE `-g` output (break by line at the rebased address, named bt,
+  locals/args). New unit case probes the PIE image structurally
+  (ET_DYN + PT_INTERP + `DF_1_PIE` + RELATIVE relocs + no TEXTREL) and
+  pins `-no-pie` to ET_EXEC.
+
 - **docs(grammar): `docs/grammar/madc.ebnf` — the madc surface grammar in
   W3C EBNF (issue #6).** Covers the C17 core, the implemented C++ subset,
   and the madc dialect extensions (script mode, `#load … as ns`, `prefer`,

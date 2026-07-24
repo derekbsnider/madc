@@ -556,7 +556,10 @@ static void print_usage(const char *prog)
 "                          (default: <source-base>.o in the current dir)\n"
 "  -o prog                 compile to a native executable — MIR assembles\n"
 "                          the ELF directly (no external toolchain); needs\n"
-"                          libmadc.so at run time (DT_RUNPATH is set)\n"
+"                          libmadc.so at run time (DT_RUNPATH is set);\n"
+"                          position-independent (PIE) by default, gcc parity\n"
+"  -pie / -no-pie          keep / drop the PIE layout: -no-pie emits a\n"
+"                          fixed-base ET_EXEC instead of the ET_DYN PIE\n"
 "  -shared [-o file.so]    compile to a shared object (ET_DYN, MIR-assembled;\n"
 "                          dlopen/#load-consumable; PIC, no TEXTREL)\n"
 "  --emit-object/--emit-executable <path> are aliases of -c -o / -o.\n"
@@ -597,6 +600,7 @@ int main(int argc, char **argv)
     std::vector<std::string> cc_link_args; // -l<name> → DT_NEEDED in AOT mode
     bool compile_object = false;          // -c: emit a relocatable .o, no run
     bool emit_shared = false;             // -shared: emit an ET_DYN .so, no run
+    bool no_pie = false;                  // -no-pie: fixed-base ET_EXEC (default = PIE, gcc parity)
     bool show_help = false;               // --help / -h / -?
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
@@ -630,6 +634,15 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "-shared") == 0) {
             // gcc vocabulary: produce a MIR-assembled ET_DYN shared object.
             emit_shared = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-no-pie") == 0) {
+            // gcc vocabulary: fixed-base ET_EXEC executable instead of the
+            // default position-independent (PIE) one.
+            no_pie = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-pie") == 0) {
+            // gcc vocabulary: explicitly request the (default) PIE layout.
+            no_pie = false;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-object") == 0 && i + 1 < argc) {
             // alias for -c -o <path>
@@ -1041,7 +1054,8 @@ int main(int argc, char **argv)
 	    // granularity the JIT project lane uses).
 	    MadcNativeKind kind = (compile_object || emit_object_path) ? mnkObject
 				: emit_shared ? mnkShared
-				: mnkExecutable;
+				: no_pie ? mnkExecutable
+				: mnkPieExecutable;
 	    const char *explicit_out =
 		  kind == mnkObject ? (emit_object_path ? emit_object_path
 						        : generic_output_path)
@@ -1443,7 +1457,7 @@ int main(int argc, char **argv)
 	    }
 	    else
 	    {
-		kind = mnkExecutable;
+		kind = no_pie ? mnkExecutable : mnkPieExecutable;
 		explicit_out = emit_executable_path;   // -o / --emit-executable
 	    }
 	    std::string outpath;
