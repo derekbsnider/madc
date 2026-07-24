@@ -872,3 +872,52 @@ but not minimal; RELRO for the pool.
 
 Commits: fork @40fdf81b (pinned in MIR_COMMIT), madc = the
 feature/aot-r6-pic-claude merge this block ships in.
+
+---
+
+## PIE LANDED — position-independent executables by default (2026-07-24)
+
+`-o` now emits an ET_DYN PIE (`DT_FLAGS_1 = DF_1_PIE`; `file`: "pie
+executable") — gcc parity, with `-no-pie` keeping the fixed-base ET_EXEC
+and `-pie` naming the default. Single-TU and `--project` lanes both flip
+(`MadcNativeKind` gains `mnkPieExecutable`; flavor→exec-params mapping
+centralized in `cir_write_native_image`).
+
+R6's "a layout flip away" held: the emitter (`MIR_object_exec_params`
+gains `pie_p`) reuses the shared-object image treatment — base 0,
+internal ABS64 slots to `.rela.dyn` as `R_X86_64_RELATIVE` — under the
+executable apparatus (PT_INTERP, `_start`, `e_entry`, import-only
+dynsym). No codegen change; the PIC capture already keeps `.text`
+relocation-free.
+
+Two structural truths the rung surfaced:
+
+- **The one bias-hostile instruction** was the `_start` stub's
+  `mov $entry,%edi` imm32 → now a rip-relative `lea`; ONE 48-byte stub
+  (int3-padded, 16-aligned) serves ET_EXEC and PIE alike
+  (`OBJX_TEXT_BIAS` 32 → 48). Both stub references are link-vaddr PC
+  distances — bias-invariant by construction.
+- **PIE requires PT_PHDR.** glibc derives the main map's load bias from
+  it (`rtld_setup_main_map`: `l_addr = phdr − p_vaddr`); ET_EXEC never
+  needed it (bias 0 by construction) so the emitter never wrote one, and
+  the first PIE crashed inside `dl_main`'s strcmp on the *unrebased*
+  PT_INTERP string. Executables now carry gABI-ordered PT_PHDR +
+  PT_INTERP ahead of the loads (n_phdrs 4 → 5, gcc's exact layout).
+  TRAP (sibling of the R6 TEXTREL law): the loader knows only what the
+  program headers declare — an image can be byte-perfect and still
+  unbootable if a header the loader keys on is missing.
+
+**Gates at landing:** fulltest 753/0/0/9; `--exe` 753/0 — every suite
+executable emitted as a PIE byte-matches its JIT run; packed arbiter
+753/0/0/9 + release forest pack OK; gdb R5 gate re-proven on PIE `-g`
+(break by line at the rebased 0x5555… address, `compute (a=6, b=7)`,
+named bt, `sum = 13`); new unit case probes the image structurally
+(ET_DYN + PT_INTERP + DF_1_PIE + RELATIVE relocs + no TEXTREL; `-no-pie`
+pinned to ET_EXEC); fork object + load-object lanes 1139/2278 ×2.
+Torture not implicated (layout-only; JIT lane untouched).
+
+Commits: fork @798e329b (develop @0f13b036, pinned in MIR_COMMIT), madc
+@654eadd0 (develop merge @036bf164).
+
+Next unfiled rungs (owner-ranked): multi-object linking (lifts the 4
+obj_skips) > RELRO > Mach-O/PE.
