@@ -992,6 +992,18 @@ typedef struct {
   int kind;
 } objreloc_t;
 
+/* Raw DWARF carried by a MERGED builder (MIR_object_read concatenates the
+   inputs' debug sections; mutually exclusive with a live `debug` builder).
+   Relocations against these sections keep the dwgen sec-id space
+   (0 info / 1 line / 2 frame / 3 abbrev); tgt 4 = the .text section. */
+#define OBJDBG_N 4
+#define OBJDBG_TGT_TEXT 4
+typedef struct {
+  uint8_t src, tgt;
+  uint64_t off;
+  int64_t add;
+} objdbgrel_t;
+
 struct MIR_object {
   dwbuf_t text, data, pool; /* pool = .mir.addrpool, the GOT-shaped
                                address-slot section (R6 PIC) */
@@ -1004,6 +1016,10 @@ struct MIR_object {
   int sec_sym[4];    /* section-symbol ids for TEXT/DATA/BSS/ADDRPOOL; -1 until created */
   MIR_debug_t debug; /* borrowed builder with .text-offset func addrs (R5);
                         NULL = no debug sections in the artifacts */
+  dwbuf_t dbg[OBJDBG_N]; /* merged raw .debug_{info,line,frame,abbrev} (reader-filled) */
+  int dbg_raw_p;         /* nonzero: dbg[] is live (debug must stay NULL) */
+  objdbgrel_t *dbgrels;
+  size_t n_dbgrels, cap_dbgrels;
 };
 
 static void buf_zeros (dwbuf_t *b, size_t n) {
@@ -1036,6 +1052,8 @@ void MIR_object_destroy (MIR_object_t obj) {
   free (obj->text.p);
   free (obj->data.p);
   free (obj->pool.p);
+  for (int k = 0; k < OBJDBG_N; k++) free (obj->dbg[k].p);
+  free (obj->dbgrels);
   free (obj);
 }
 
@@ -1223,7 +1241,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
 
   /* DWARF relocations bind to the .text section symbol -- make sure it
      exists before the symbol count is snapshotted below. */
-  if (obj->debug != NULL) MIR_object_section_symbol (obj, MIR_OBJ_SEC_TEXT);
+  if (obj->debug != NULL || obj->dbg_raw_p) MIR_object_section_symbol (obj, MIR_OBJ_SEC_TEXT);
 
   /* Final symtab order: null, locals (incl. section symbols), then
      globals/weak.  Relocations hold stable ids; map them here. */
@@ -1267,14 +1285,23 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     else
       have_rp = 1;
   }
+  /* A merged builder carries raw concatenated debug sections instead of a
+     live debug builder (mutually exclusive; MIR_object_read enforces it);
+     the table below serves both through one set of buffer pointers. */
+  int dbg_p = obj->debug != NULL || obj->dbg_raw_p;
+  dwbuf_t *pb_dbg[4]; /* dwgen ids: info/line/frame/abbrev */
+  pb_dbg[0] = obj->dbg_raw_p ? &obj->dbg[0] : &dw_info;
+  pb_dbg[1] = obj->dbg_raw_p ? &obj->dbg[1] : &dw_line;
+  pb_dbg[2] = obj->dbg_raw_p ? &obj->dbg[2] : &dw_frame;
+  pb_dbg[3] = obj->dbg_raw_p ? &obj->dbg[3] : &dw_abbrev;
   int dbg_shndx[4] = {0, 0, 0, 0};      /* dwgen ids: info/line/frame/abbrev */
   uint32_t dbg_secsym[4] = {0, 0, 0, 0}; /* their final symtab indexes */
-  if (obj->debug != NULL) {
+  if (dbg_p) {
     int nx = 7 + have_rt + have_rd + have_rp;
     dbg_shndx[3] = nx++; /* .debug_abbrev */
     dbg_shndx[0] = nx++; /* .debug_info */
     dbg_shndx[1] = nx++; /* .debug_line */
-    if (dw_frame.len != 0) dbg_shndx[2] = nx;
+    if (pb_dbg[2]->len != 0) dbg_shndx[2] = nx;
   }
 
   uint32_t next = 1, n_locals = 0;
@@ -1372,6 +1399,24 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   }
   free (cap.slots.v);
   free (cap.refs.v);
+  if (obj->dbg_raw_p && !bad_p) {
+    /* merged raw debug: the recorded (already-rebased) relocations re-emit
+       against the same section symbols -- the merged .o stays externally
+       linkable AND re-mergeable */
+    uint32_t text_sym_idx = final_idx[obj->sec_sym[MIR_OBJ_SEC_TEXT]];
+    for (size_t i = 0; i < obj->n_dbgrels; i++) {
+      objdbgrel_t *dr = &obj->dbgrels[i];
+      if (dr->src > 2) continue; /* no producer patches .debug_abbrev */
+      dwbuf_t *rel = dr->src == 0 ? &rela_dw_info : dr->src == 1 ? &rela_dw_line : &rela_dw_frame;
+      Elf64_Rela er;
+      er.r_offset = dr->off;
+      er.r_info = dr->tgt == OBJDBG_TGT_TEXT
+                    ? ELF64_R_INFO ((uint64_t) text_sym_idx, R_X86_64_64)
+                    : ELF64_R_INFO ((uint64_t) dbg_secsym[dr->tgt], R_X86_64_32);
+      er.r_addend = dr->add;
+      buf_bytes (rel, &er, sizeof er);
+    }
+  }
 
   int rc = -1;
   if (!bad_p) {
@@ -1407,19 +1452,21 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     /* the planned indexes behind dbg_secsym[] must match the table being
        built -- divergence is an emitter-maintenance bug; refuse rather
        than mis-relocate */
-    int plan_ok = obj->debug == NULL || ns == dbg_shndx[3];
-    if (obj->debug != NULL && plan_ok) {
-      S[ns++] = (dwsec_t) {".debug_abbrev", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &dw_abbrev,
-                           dw_abbrev.len};
+    int plan_ok = !dbg_p || ns == dbg_shndx[3];
+    if (dbg_p && plan_ok) {
+      S[ns++] = (dwsec_t) {".debug_abbrev", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, pb_dbg[3],
+                           pb_dbg[3]->len};
       uint32_t i_dw_info = (uint32_t) ns;
-      S[ns++] = (dwsec_t) {".debug_info", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &dw_info, dw_info.len};
+      S[ns++]
+        = (dwsec_t) {".debug_info", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, pb_dbg[0], pb_dbg[0]->len};
       uint32_t i_dw_line = (uint32_t) ns;
-      S[ns++] = (dwsec_t) {".debug_line", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &dw_line, dw_line.len};
+      S[ns++]
+        = (dwsec_t) {".debug_line", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, pb_dbg[1], pb_dbg[1]->len};
       uint32_t i_dw_frame = 0;
-      if (dw_frame.len != 0) {
+      if (pb_dbg[2]->len != 0) {
         i_dw_frame = (uint32_t) ns;
         S[ns++]
-          = (dwsec_t) {".debug_frame", SHT_PROGBITS, 0, 0, 8, 0, 0, 0, &dw_frame, dw_frame.len};
+          = (dwsec_t) {".debug_frame", SHT_PROGBITS, 0, 0, 8, 0, 0, 0, pb_dbg[2], pb_dbg[2]->len};
       }
       if (rela_dw_info.len != 0)
         S[ns++] = (dwsec_t) {".rela.debug_info", SHT_RELA, (uint32_t) i_symtab, i_dw_info, 8,
@@ -1751,7 +1798,31 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
      link-time vaddrs -- ET_EXEC's identity layout makes them the runtime
      addresses; for ET_DYN gdb applies the load bias itself.  Non-alloc file
      content, laid out after the load segments below. */
-  if (obj->debug != NULL) {
+  if (obj->dbg_raw_p) {
+    /* merged raw debug (MIR_object_read): copy the concatenated sections
+       and resolve the recorded relocations against the final layout --
+       code-address slots get the link-time text vaddr added (gdb rebases
+       ET_DYN itself, as with generated DWARF), cross-debug offsets are
+       final after the merge concatenation */
+    buf_bytes (&dw_info, obj->dbg[0].p, obj->dbg[0].len);
+    buf_bytes (&dw_line, obj->dbg[1].p, obj->dbg[1].len);
+    buf_bytes (&dw_frame, obj->dbg[2].p, obj->dbg[2].len);
+    buf_bytes (&dw_abbrev, obj->dbg[3].p, obj->dbg[3].len);
+    for (size_t i = 0; i < obj->n_dbgrels; i++) {
+      objdbgrel_t *dr = &obj->dbgrels[i];
+      if (dr->src > 2) continue; /* no producer patches .debug_abbrev */
+      dwbuf_t *sb = dr->src == 0 ? &dw_info : dr->src == 1 ? &dw_line : &dw_frame;
+      size_t w = dr->tgt == OBJDBG_TGT_TEXT ? 8 : 4;
+      if (dr->off > sb->len || w > sb->len - dr->off) goto done; /* corrupt reloc */
+      if (dr->tgt == OBJDBG_TGT_TEXT) {
+        uint64_t v = code_vaddr + (uint64_t) dr->add;
+        memcpy (sb->p + dr->off, &v, 8);
+      } else {
+        uint32_t v = (uint32_t) dr->add;
+        memcpy (sb->p + dr->off, &v, 4);
+      }
+    }
+  } else if (obj->debug != NULL) {
     dwgen_t g = {code_vaddr, obj->text.p, 1, NULL, NULL, NULL};
     uint64_t text_lo, dbg_text_size;
     dw_text_range (obj->debug, &g, &text_lo, &dbg_text_size);
@@ -1798,7 +1869,8 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     = {"",      ".interp", ".hash",    ".dynsym", ".dynstr", ".rela.dyn", ".text",
        ".mir.addrpool", ".dynamic", ".data", ".bss", ".symtab", ".strtab", ".shstrtab",
        ".debug_abbrev", ".debug_info", ".debug_line", ".debug_frame"};
-  int n_dbg_secs = obj->debug != NULL ? (dw_frame.len != 0 ? 4 : 3) : 0;
+  int n_dbg_secs
+    = (obj->debug != NULL || obj->dbg_raw_p) ? (dw_frame.len != 0 ? 4 : 3) : 0;
   n_secs += n_dbg_secs;
   buf_u8 (&shstr, 0);
   shname[0] = 0;
@@ -2172,8 +2244,16 @@ typedef struct {
   size_t n_file_syms;
   const char *strtab;
   size_t strtab_size;
-  int has_debug_p; /* any non-alloc .debug_* section present */
+  int has_debug_p;      /* any non-alloc .debug_* section present */
+  int i_dbg[OBJDBG_N];  /* .debug_{info,line,frame,abbrev} shndx; -1 = absent */
 } objx_scan_t;
+
+/* dwgen/dbg sec id for a debug section's shndx, -1 if not one */
+static int objx_shndx_dbg (const objx_scan_t *sc, int shndx) {
+  for (int k = 0; k < OBJDBG_N; k++)
+    if (sc->i_dbg[k] == shndx) return k;
+  return -1;
+}
 
 static int objx_scan (objx_scan_t *sc, const void *vbuf, size_t size, char *err_msg,
                       size_t err_len) {
@@ -2181,6 +2261,7 @@ static int objx_scan (objx_scan_t *sc, const void *vbuf, size_t size, char *err_
 
   memset (sc, 0, sizeof (*sc));
   sc->i_text = sc->i_data = sc->i_bss = sc->i_pool = sc->i_symtab = -1;
+  for (int k = 0; k < OBJDBG_N; k++) sc->i_dbg[k] = -1;
   if (MIR_DEBUG_EM != EM_X86_64) {
     OBJLOAD_ERR ("MIR objects are x86-64 only");
     return -1;
@@ -2240,7 +2321,19 @@ static int objx_scan (objx_scan_t *sc, const void *vbuf, size_t size, char *err_
       sc->i_symtab = i;
     }
     if ((sh[i].sh_flags & SHF_ALLOC) == 0) {
-      if (strncmp (shstr + sh[i].sh_name, ".debug_", 7) == 0) sc->has_debug_p = 1;
+      const char *nm = shstr + sh[i].sh_name;
+      if (strncmp (nm, ".debug_", 7) == 0) {
+        sc->has_debug_p = 1;
+        /* dwgen sec-id order: 0 info / 1 line / 2 frame / 3 abbrev */
+        if (strcmp (nm, ".debug_info") == 0)
+          sc->i_dbg[0] = i;
+        else if (strcmp (nm, ".debug_line") == 0)
+          sc->i_dbg[1] = i;
+        else if (strcmp (nm, ".debug_frame") == 0)
+          sc->i_dbg[2] = i;
+        else if (strcmp (nm, ".debug_abbrev") == 0)
+          sc->i_dbg[3] = i;
+      }
       continue;
     }
     int *slot = strcmp (shstr + sh[i].sh_name, ".mir.addrpool") == 0 ? &sc->i_pool
@@ -2534,6 +2627,22 @@ static int objx_named_lookup (MIR_object_t obj, const objx_nmid_t *idx, size_t n
   return -1;
 }
 
+static int objdbg_add_rel (MIR_object_t obj, int src, int tgt, uint64_t off, int64_t add) {
+  if (obj->n_dbgrels == obj->cap_dbgrels) {
+    size_t nc = obj->cap_dbgrels ? obj->cap_dbgrels * 2 : 64;
+    objdbgrel_t *nv = realloc (obj->dbgrels, nc * sizeof (objdbgrel_t));
+    if (nv == NULL) return -1;
+    obj->dbgrels = nv;
+    obj->cap_dbgrels = nc;
+  }
+  obj->dbgrels[obj->n_dbgrels].src = (uint8_t) src;
+  obj->dbgrels[obj->n_dbgrels].tgt = (uint8_t) tgt;
+  obj->dbgrels[obj->n_dbgrels].off = off;
+  obj->dbgrels[obj->n_dbgrels].add = add;
+  obj->n_dbgrels++;
+  return 0;
+}
+
 int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_msg,
                      size_t err_len) {
   objx_scan_t sc;
@@ -2541,6 +2650,7 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
   objx_nmid_t *idx = NULL;
   int *map = NULL;
   signed char *map_sec = NULL;
+  signed char *map_dbg = NULL;
 
   if (obj == NULL) {
     OBJLOAD_ERR ("no object builder");
@@ -2592,12 +2702,38 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
                                       sh[sc.i_pool].sh_size, (size_t) al[MIR_OBJ_SEC_ADDRPOOL])
         : obj->pool.len;
 
+  /* Debug sections concatenate like data, into the builder's raw store;
+     their relocations (kept in dbgrels below) rebase with the same rules.
+     Every record family is self-delimiting, so plain concatenation is
+     valid -- .debug_frame's 8-multiple entry lengths are guaranteed by
+     the emitter and re-checked here (a pad byte would parse as a bogus
+     entry). */
+  uint64_t dbg_base[OBJDBG_N] = {0, 0, 0, 0};
+  if (sc.has_debug_p) {
+    if (obj->debug != NULL) {
+      OBJLOAD_ERR ("builder already has a live debug builder; cannot merge raw debug sections");
+      return -1;
+    }
+    for (int k = 0; k < OBJDBG_N; k++) {
+      dbg_base[k] = obj->dbg[k].len;
+      if (sc.i_dbg[k] < 0 || sh[sc.i_dbg[k]].sh_size == 0) continue;
+      if (k == 2 /* frame */
+          && ((obj->dbg[k].len % 8) != 0 || (sh[sc.i_dbg[k]].sh_size % 8) != 0)) {
+        OBJLOAD_ERR (".debug_frame length is not an 8-multiple; refusing to concatenate");
+        return -1;
+      }
+      buf_bytes (&obj->dbg[k], sc.buf + sh[sc.i_dbg[k]].sh_offset, sh[sc.i_dbg[k]].sh_size);
+    }
+    obj->dbg_raw_p = 1;
+  }
+
   /* Sorted unification index over the PRE-read builder symbols. */
   size_t first_new = obj->n_syms, n_idx = 0;
   idx = malloc ((first_new ? first_new : 1) * sizeof (objx_nmid_t));
   map = malloc ((sc.n_file_syms ? sc.n_file_syms : 1) * sizeof (int));
   map_sec = malloc (sc.n_file_syms ? sc.n_file_syms : 1);
-  if (idx == NULL || map == NULL || map_sec == NULL) {
+  map_dbg = malloc (sc.n_file_syms ? sc.n_file_syms : 1);
+  if (idx == NULL || map == NULL || map_sec == NULL || map_dbg == NULL) {
     OBJLOAD_ERR ("out of memory");
     goto done;
   }
@@ -2618,10 +2754,15 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
     unsigned st = ELF64_ST_TYPE (s->st_info), sb = ELF64_ST_BIND (s->st_info);
     map[i] = -1;
     map_sec[i] = -1;
+    map_dbg[i] = -1;
     if (st == STT_SECTION) {
       int sec = objx_shndx_sec (&sc, (int) s->st_shndx);
-      if (sec < 0) continue; /* a dropped (debug) section's symbol: only an
-                                error if a kept relocation references it */
+      if (sec < 0) {
+        /* a debug section's symbol: reloc targets resolve through map_dbg;
+           any other unknown section's symbol errors only if referenced */
+        map_dbg[i] = (signed char) objx_shndx_dbg (&sc, (int) s->st_shndx);
+        continue;
+      }
       map[i] = MIR_object_section_symbol (obj, sec);
       map_sec[i] = (signed char) sec;
       if (map[i] < 0) {
@@ -2708,7 +2849,8 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
   }
 
   /* Relocations: kept for the alloc sections (offset and section-symbol
-     addends rebased); .rela.debug_* drops with its sections. */
+     addends rebased); .rela.debug_* rebases into dbgrels the same way. */
+  size_t n_dbg32 = 0; /* cross-debug relocs seen (the mergeable-.o marker) */
   for (int ri = 1; ri < sc.eh->e_shnum; ri++) {
     if (sh[ri].sh_type != SHT_RELA) continue;
     if (sh[ri].sh_info >= sc.eh->e_shnum) {
@@ -2716,7 +2858,47 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
       goto done;
     }
     int tsec = objx_shndx_sec (&sc, (int) sh[ri].sh_info);
-    if (tsec < 0) continue; /* .rela.debug_*: dropped with the debug sections */
+    if (tsec < 0) {
+      int tdbg = objx_shndx_dbg (&sc, (int) sh[ri].sh_info);
+      if (tdbg < 0) continue; /* relocations for an unknown non-alloc section */
+      if (sh[ri].sh_entsize != sizeof (Elf64_Rela) || (int) sh[ri].sh_link != sc.i_symtab
+          || sc.syms == NULL) {
+        OBJLOAD_ERR ("malformed relocation section %d", ri);
+        goto done;
+      }
+      const Elf64_Rela *ra = (const Elf64_Rela *) (sc.buf + sh[ri].sh_offset);
+      size_t n_rel = sh[ri].sh_size / sizeof (Elf64_Rela);
+      for (size_t k = 0; k < n_rel; k++) {
+        unsigned rtype = (unsigned) ELF64_R_TYPE (ra[k].r_info);
+        size_t si = ELF64_R_SYM (ra[k].r_info);
+        if (si >= sc.n_file_syms) {
+          OBJLOAD_ERR ("debug relocation %zu in section %d against a bad symbol index", k, ri);
+          goto done;
+        }
+        if (rtype == R_X86_64_64 && map_sec[si] == MIR_OBJ_SEC_TEXT) {
+          /* code-address slot: function moved by the text append base */
+          if (objdbg_add_rel (obj, tdbg, OBJDBG_TGT_TEXT, ra[k].r_offset + dbg_base[tdbg],
+                              ra[k].r_addend + (int64_t) base[MIR_OBJ_SEC_TEXT])
+              != 0) {
+            OBJLOAD_ERR ("out of memory");
+            goto done;
+          }
+        } else if (rtype == R_X86_64_32 && map_dbg[si] >= 0) {
+          /* cross-debug-section offset: target section moved by ITS base */
+          if (objdbg_add_rel (obj, tdbg, map_dbg[si], ra[k].r_offset + dbg_base[tdbg],
+                              ra[k].r_addend + (int64_t) dbg_base[(int) map_dbg[si]])
+              != 0) {
+            OBJLOAD_ERR ("out of memory");
+            goto done;
+          }
+          n_dbg32++;
+        } else {
+          OBJLOAD_ERR ("unsupported debug relocation %zu in section %d (type %u)", k, ri, rtype);
+          goto done;
+        }
+      }
+      continue;
+    }
     if (tsec == MIR_OBJ_SEC_BSS) {
       OBJLOAD_ERR ("relocation section %d targets .bss", ri);
       goto done;
@@ -2749,12 +2931,22 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
       MIR_object_add_reloc (obj, tsec, ra[k].r_offset + base[tsec], map[si], addend, kind);
     }
   }
-  rc = sc.has_debug_p ? 1 : 0; /* 1: merged, but debug sections were dropped */
+  /* A pre-multi-CU .o carries debug sections whose cross-section offsets
+     are bare values (no R_X86_64_32 relocs) -- valid only at append base 0.
+     Appended later, its CU would silently read another object's abbrev /
+     line tables.  Refuse loudly; re-emitting the cache fixes it. */
+  if (sc.i_dbg[0] >= 0 && sh[sc.i_dbg[0]].sh_size != 0 && dbg_base[0] != 0 && n_dbg32 == 0) {
+    OBJLOAD_ERR ("object's debug info predates multi-object DWARF (no cross-section "
+                 "relocations); re-emit it with this MIR version");
+    goto done;
+  }
+  rc = 0;
 
 done:
   free (idx);
   free (map);
   free (map_sec);
+  free (map_dbg);
   return rc;
 }
 
