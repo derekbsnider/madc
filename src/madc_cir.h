@@ -33,6 +33,11 @@ class Program;
 class CirBuilder;
 class CirFrozenForest;
 
+// Native AOT output kind for madc_cir_emit_native (gcc CLI vocabulary):
+// -c = relocatable .o, -o = linked executable (PIE by default, gcc parity;
+// -no-pie = fixed-base ET_EXEC), -shared = shared object.
+enum MadcNativeKind { mnkObject, mnkExecutable, mnkShared, mnkPieExecutable };
+
 // A compiled-and-linked CIR->c2mir->MIR module held alive for repeated
 // in-process calls — the engine behind libmadc's program::exec / call /
 // eval surface (madc_cir_execute is the same machinery one-shot).
@@ -85,15 +90,19 @@ public:
     // object-capture mode at link). False on emission/IO failure.
     bool emit_native_object(const char *out_path);
 
-    // -o: write the capture as a complete ET_EXEC dynamic executable (mode
-    // 0755) — MIR assembles it directly, no external toolchain. needed =
-    // DT_NEEDED sonames; runpath ("" = omit) = DT_RUNPATH search path.
-    // shared: ET_DYN shared object instead (dlopen/#load-consumable; exports
-    // the module's globals, DT_INIT runs the file-scope ctors at load).
+    // -o: write the capture as a complete dynamic executable (mode 0755) —
+    // MIR assembles it directly, no external toolchain. needed = DT_NEEDED
+    // sonames; runpath ("" = omit) = DT_RUNPATH search path. kind selects
+    // the image flavor: mnkPieExecutable = position-independent ET_DYN
+    // executable (the default, gcc parity), mnkExecutable = fixed-base
+    // ET_EXEC (-no-pie), mnkShared = ET_DYN shared object
+    // (dlopen/#load-consumable; exports the module's globals, DT_INIT runs
+    // the file-scope ctors at load). mnkObject is not valid here — the .o
+    // lane is emit_native_object().
     bool emit_native_executable(const char *out_path,
 				const std::vector<std::string> &needed,
 				const std::string &runpath,
-				bool shared = false);
+				MadcNativeKind kind);
 
 private:
     MIR_context_t ctx;
@@ -145,15 +154,13 @@ int madc_cir_execute(Program *prog, const char *source_name,
 int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 		  CirEmitLang lang);
 
-// Native AOT output kind for madc_cir_emit_native (gcc CLI vocabulary):
-// -c = relocatable .o, -o = linked executable, -shared = shared object.
-enum MadcNativeKind { mnkObject, mnkExecutable, mnkShared };
-
 // AOT (-c/-o/-shared): full pipeline through gen OBJECT-CAPTURE mode —
 // translate + c2mir compile + MIR_link with a sentinel import resolver
 // (imports become undefined ELF symbols), then MIR assembles the output
-// itself (no external toolchain): relocatable .o (mnkObject), ET_EXEC
-// dynamic executable (mnkExecutable), or ET_DYN shared object (mnkShared).
+// itself (no external toolchain): relocatable .o (mnkObject), position-
+// independent ET_DYN executable (mnkPieExecutable, DT_FLAGS_1 = DF_1_PIE),
+// fixed-base ET_EXEC executable (mnkExecutable), or ET_DYN shared object
+// (mnkShared).
 // All output is PIC (R6): address slots live in the .mir.addrpool data
 // section, .text carries no relocations, no DT_TEXTREL.
 // user_libs ("-l<name>" or a path) join
@@ -177,8 +184,9 @@ int madc_cir_run_object(const char *path, int argc, char **argv);
 // The --project twin of madc_cir_emit_native. mnkObject: one .o per TU
 // (gcc semantics: <TU-base>.o in the current directory; out_path overrides
 // only for a single-TU manifest — the caller rejects -c -o with many TUs).
-// mnkExecutable/mnkShared: ONE MIR-assembled native image of the whole
-// project (all TUs captured in one shared context). No execution.
+// The linked kinds (mnkPieExecutable/mnkExecutable/mnkShared): ONE
+// MIR-assembled native image of the whole project (all TUs captured in one
+// shared context). No execution.
 // Returns 0 on success, -1 on failure.
 class MadcEngine;
 struct ProjectManifest;

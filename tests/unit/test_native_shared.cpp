@@ -1,7 +1,9 @@
-// Unit test for the AOT -shared lane (madc_cir_emit_native, mnkShared):
-// MIR assembles an ET_DYN shared object directly — no external toolchain —
-// and this process consumes it via dlopen/dlsym, so the whole product path
-// is exercised in-repo with no host cc/ld even at test time.
+// Unit tests for the AOT native-image lanes (madc_cir_emit_native):
+// MIR assembles the artifacts directly — no external toolchain — and this
+// process consumes them (dlopen/dlsym for the -shared ET_DYN; structural
+// ELF probes for the executable flavors: PIE ET_DYN vs -no-pie ET_EXEC),
+// so the whole product path is exercised in-repo with no host cc/ld even
+// at test time.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
@@ -29,6 +31,7 @@ thread_local bool madc_verbose = false;
 #include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
+#include <elf.h>
 #include <unistd.h>
 
 // The one-shot CLI flag madc_cir_emit_native sets (defined weak in
@@ -56,6 +59,61 @@ std::string write_temp(const char *suffix_tmpl, int suffix_len,
     }
     close(fd);
     return std::string(path.data());
+}
+
+// Emit `body` as a native executable of the given kind and return the raw
+// image bytes (empty on failure). Shared by the DT_NEEDED and PIE cases.
+std::string emit_native_image(const char *body, MadcNativeKind kind)
+{
+    std::string src_path =
+	write_temp("/tmp/madc_unit_native_XXXXXX.mad", 4, body);
+    REQUIRE(!src_path.empty());
+    std::string out_path =
+	write_temp("/tmp/madc_unit_native_XXXXXX.bin", 4, "");
+    REQUIRE(!out_path.empty());
+    MadcEngine engine;
+    std::unique_ptr<Program> prog = engine.create_program();
+    TokenProgram *tp = prog->tokenize(src_path.c_str());
+    REQUIRE(tp != NULL);
+    REQUIRE(prog->parse(tp));
+    std::vector<std::string> user_libs;
+    int rc = madc_cir_emit_native(prog.get(), src_path.c_str(), kind,
+				  out_path.c_str(), user_libs);
+    madc_object_mode = false;
+    REQUIRE(rc == 0);
+    std::ifstream f(out_path.c_str(), std::ios::binary);
+    std::string img((std::istreambuf_iterator<char>(f)),
+		    std::istreambuf_iterator<char>());
+    std::remove(src_path.c_str());
+    std::remove(out_path.c_str());
+    return img;
+}
+
+// The emitter's identity file-offset<->vaddr mapping makes p_offset a
+// direct file position, so the image can be probed without mapping it.
+const Elf64_Phdr *find_phdr(const std::string &img, uint32_t type)
+{
+    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)img.data();
+    const Elf64_Phdr *ph = (const Elf64_Phdr *)(img.data() + eh->e_phoff);
+    for (int i = 0; i < eh->e_phnum; i++)
+	if (ph[i].p_type == type)
+	    return &ph[i];
+    return NULL;
+}
+
+bool dyn_has_tag(const std::string &img, int64_t tag, uint64_t *val)
+{
+    const Elf64_Phdr *pd = find_phdr(img, PT_DYNAMIC);
+    if (!pd)
+	return false;
+    const Elf64_Dyn *d = (const Elf64_Dyn *)(img.data() + pd->p_offset);
+    for (; d->d_tag != DT_NULL; d++)
+	if (d->d_tag == tag) {
+	    if (val)
+		*val = d->d_un.d_val;
+	    return true;
+	}
+    return false;
 }
 
 } // namespace
@@ -113,46 +171,66 @@ TEST_SUITE("madc_cir_emit_native") {
 	// The needed-soname strings live in the image's .dynstr, so a raw
 	// byte scan for "libmadc.so.0" is a faithful DT_NEEDED probe (the
 	// RUNPATH holds directory paths only, never that spelling).
-	auto emit_exec = [](const char *body) -> std::string {
-	    std::string src_path =
-		write_temp("/tmp/madc_unit_needed_XXXXXX.mad", 4, body);
-	    REQUIRE(!src_path.empty());
-	    std::string out_path =
-		write_temp("/tmp/madc_unit_needed_XXXXXX.bin", 4, "");
-	    REQUIRE(!out_path.empty());
-	    MadcEngine engine;
-	    std::unique_ptr<Program> prog = engine.create_program();
-	    TokenProgram *tp = prog->tokenize(src_path.c_str());
-	    REQUIRE(tp != NULL);
-	    REQUIRE(prog->parse(tp));
-	    std::vector<std::string> user_libs;
-	    int rc = madc_cir_emit_native(prog.get(), src_path.c_str(),
-					  mnkExecutable, out_path.c_str(),
-					  user_libs);
-	    madc_object_mode = false;
-	    REQUIRE(rc == 0);
-	    std::ifstream f(out_path.c_str(), std::ios::binary);
-	    std::string img((std::istreambuf_iterator<char>(f)),
-			    std::istreambuf_iterator<char>());
-	    std::remove(src_path.c_str());
-	    std::remove(out_path.c_str());
-	    return img;
-	};
 
 	// Every import resolves in libc: no runtime dependency.
-	std::string free_img = emit_exec(
-	    "int main(int argc, char **argv) { return argc > 90 ? 1 : 0; }\n");
+	std::string free_img = emit_native_image(
+	    "int main(int argc, char **argv) { return argc > 90 ? 1 : 0; }\n",
+	    mnkExecutable);
 	CHECK(free_img.find("libmadc.so.0") == std::string::npos);
 	CHECK(free_img.find("libc.so.6") != std::string::npos);
 
 	// A VLA local imports the runtime's __madc_vla_free cleanup:
 	// the dependency must stay.
-	std::string rt_img = emit_exec(
+	std::string rt_img = emit_native_image(
 	    "int main(int argc, char **argv) {\n"
 	    "    int a[argc + 1];\n"
 	    "    a[argc] = argc;\n"
 	    "    return a[argc] > 90 ? 1 : 0;\n"
-	    "}\n");
+	    "}\n",
+	    mnkExecutable);
 	CHECK(rt_img.find("libmadc.so.0") != std::string::npos);
+    }
+
+    TEST_CASE("PIE flip: mnkPieExecutable emits an ET_DYN PIE, -no-pie stays ET_EXEC") {
+	const char *body =
+	    "int base = 7;\n"
+	    "int main(int argc, char **argv) { return argc * base > 90 ? 1 : 0; }\n";
+
+	std::string pie = emit_native_image(body, mnkPieExecutable);
+	REQUIRE(pie.size() > sizeof(Elf64_Ehdr));
+	const Elf64_Ehdr *eh = (const Elf64_Ehdr *)pie.data();
+	CHECK(eh->e_type == ET_DYN);
+	CHECK(eh->e_entry != 0);		// _start survives the flip
+	CHECK((find_phdr(pie, PT_INTERP) != NULL)); // still an executable
+	uint64_t flags1 = 0;
+	CHECK(dyn_has_tag(pie, DT_FLAGS_1, &flags1));
+	CHECK((flags1 & DF_1_PIE) != 0);
+	// base 0 layout: the entry point is a small link-time vaddr the
+	// loader rebases, not an OBJX_BASE_ADDR-fixed one.
+	CHECK(eh->e_entry < 0x400000);
+	// R6 invariant carried over: a PIE must never need TEXTREL.
+	CHECK(!dyn_has_tag(pie, DT_TEXTREL, NULL));
+	// The internal `base` data reference must ride a RELATIVE reloc
+	// (an ET_DYN image cannot resolve it at emit time).
+	{
+	    const Elf64_Phdr *pd = find_phdr(pie, PT_DYNAMIC);
+	    REQUIRE((pd != NULL));
+	    uint64_t rela = 0, relasz = 0;
+	    REQUIRE(dyn_has_tag(pie, DT_RELA, &rela));
+	    REQUIRE(dyn_has_tag(pie, DT_RELASZ, &relasz));
+	    const Elf64_Rela *r = (const Elf64_Rela *)(pie.data() + rela);
+	    size_t nrel = relasz / sizeof(Elf64_Rela), nrelative = 0;
+	    for (size_t i = 0; i < nrel; i++)
+		if (ELF64_R_TYPE(r[i].r_info) == R_X86_64_RELATIVE)
+		    nrelative++;
+	    CHECK(nrelative > 0);
+	}
+
+	std::string fixed = emit_native_image(body, mnkExecutable);
+	REQUIRE(fixed.size() > sizeof(Elf64_Ehdr));
+	const Elf64_Ehdr *fh = (const Elf64_Ehdr *)fixed.data();
+	CHECK(fh->e_type == ET_EXEC);
+	CHECK(fh->e_entry >= 0x400000);
+	CHECK(!dyn_has_tag(fixed, DT_FLAGS_1, NULL));
     }
 }
