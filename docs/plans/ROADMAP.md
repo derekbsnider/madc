@@ -74,17 +74,27 @@ high-level" — the answer is both.**
   and both the live fulltest and packed release suite are **695/0/0/16** with
   every forest gate green, including `[subbind]`. See
   `docs/plans/2026-07-14-CODEX-HANDBACK-local-class-identity.md`.
-- **Version:** `0.39.0` (per `VERSION`) — the **AOT hardening +
-  ELF-completion** release on `develop`: PIE executables by default
-  (`-no-pie` escape, PT_PHDR load-bias law), multi-object linking
-  (`.o` caches link/run, `-r` = `ld -r`, four project obj_skips lifted,
-  `--obj` lane 737/0), Full RELRO + non-exec stack on every image
-  (addrpool = the GOT leads the RW segment under PT_GNU_RELRO,
-  BIND_NOW as statement of fact), DT_DEBUG (gdb probes interface
-  restored), and multi-`.o` DWARF merge (multi-CU; external-ld links
-  were corrupt too — fixed by relocatable debug sections). Fulltest +
-  packed **753/0/0/9**; `--exe`/`--obj` **737/0**; fork release
-  `1.0-madc.0.39.0`. `master` remains at v0.38.0 pending `/promote`.
+- **Version:** `0.40.0` (per `VERSION`) — the **ctor/init-array**
+  release on `develop` (ELF-completion slice 3): per-TU initializers
+  ride a real `SHT_INIT_ARRAY` section (gcc-shaped, inside the RELRO
+  lead region; external `ld` collects it natively), the two-ctor-TU
+  merge fence is lifted (each TU's dynamic inits run in every native
+  lane — MIR link, loader run, `-no-pie`, dlopen'd `.so`), `DT_INIT`
+  is retired, `sys.*` population moves into the TU init via a guarded
+  `__madc_sys_init_once` (dlopen no longer stomps script mutations),
+  and a latent c2mir `-g` debug-capture use-after-free (second `-g`
+  compile in one process) is fixed. Fulltest + packed **753/0/0/9**;
+  `--exe`/`--obj` **737/0**; fork release `1.0-madc.0.40.0`.
+  `master` remains at v0.38.0 pending `/promote`.
+  v0.39.0 was the **AOT hardening + ELF-completion** release: PIE
+  executables by default (`-no-pie` escape, PT_PHDR load-bias law),
+  multi-object linking (`.o` caches link/run, `-r` = `ld -r`, four
+  project obj_skips lifted, `--obj` lane 737/0), Full RELRO +
+  non-exec stack on every image (addrpool = the GOT leads the RW
+  segment under PT_GNU_RELRO, BIND_NOW as statement of fact),
+  DT_DEBUG (gdb probes interface restored), and multi-`.o` DWARF
+  merge (multi-CU; external-ld links were corrupt too — fixed by
+  relocatable debug sections); fork release `1.0-madc.0.39.0`.
   v0.35.0 was the **small-binary + family-D** release: the packed release binary drops
   **101 MB → 9.26 MB** (<10 MB owner target; blob 3.8 MB) via per-segment
   zstd (pack L15 / dev codec-default), the snapshot-v2 segment-transform
@@ -328,12 +338,14 @@ high-level" — the answer is both.**
   multi-`.o` DWARF merge is landed: `.o` caches link and run (`ld -r`
   shape included), every image is Full RELRO + NX with the addrpool as
   the GOT, and `-g` debug info survives multi-object links (multi-CU).
-  Plan + landing blocks:
+  Slice 3 (v0.40.0) adds the platform ctor model: per-TU initializers
+  ride `.init_array` (`DT_INIT_ARRAY`; `DT_INIT` retired), lifting the
+  two-ctor-TU merge fence in every native lane. Plan + landing blocks:
   [2026-07-19-mir-aot-elf-plan.md](2026-07-19-mir-aot-elf-plan.md);
   `run_tests.sh --exe` / `--obj` are the live AOT arbiters (737/0 each).
-  Remaining (ELF-completion slices 3–5): ctor/init-array model, ODR/
-  linkonce weak, `.mir.rodata` split; then Mach-O / PE assemblers behind
-  the same `MIR_object` seam (Track 6.3).
+  Remaining (ELF-completion slices 4–5): ODR/linkonce weak,
+  `.mir.rodata` split (reassessed — possibly defer); then Mach-O / PE
+  assemblers behind the same `MIR_object` seam (Track 6.3).
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target
   the CIR path is climbing back to — NOT the current state.

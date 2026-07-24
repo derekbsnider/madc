@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [v0.40.0] — 2026-07-24
+
+The ctor/init-array release (ELF-completion slice 3): native images adopt
+the platform init model — per-TU initializers ride `.init_array`, the
+two-ctor-TU merge fence is lifted, `DT_INIT` is retired.
+
 - **feat(aot): ctor/init-array — per-TU initializers ride the platform
   `.init_array`; the two-ctor-TU merge fence is lifted [ELF-completion
   slice 3].** Native lanes no longer wrap `main` with a
