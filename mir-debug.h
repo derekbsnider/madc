@@ -261,7 +261,13 @@ extern int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size);
    _start, e_entry, and the import-only .dynsym of an executable (defined
    globals are NOT exported), plus DT_FLAGS_1 = DF_1_PIE so tooling
    classifies it as a PIE.  The stub's entry reference is rip-relative, so
-   the loader may place the image at any bias (ASLR). */
+   the loader may place the image at any bias (ASLR).
+
+   Every image is Full RELRO and NX, unconditionally: .mir.addrpool (the
+   GOT) and .dynamic lead the R+W segment under a page-padded PT_GNU_RELRO
+   (the loader mprotects them read-only after relocation), DT_FLAGS /
+   DT_FLAGS_1 carry BIND_NOW / NOW (a statement of fact -- no lazy binding
+   exists to disable), and PT_GNU_STACK marks the stack non-executable. */
 typedef struct MIR_object_exec_params {
   const char *interp;        /* PT_INTERP path; NULL = /lib64/ld-linux-x86-64.so.2 (executables only) */
   const char *const *needed; /* DT_NEEDED sonames, emitted in order */
