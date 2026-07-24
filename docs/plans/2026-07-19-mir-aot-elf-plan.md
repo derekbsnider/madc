@@ -1054,7 +1054,48 @@ need no loader surgery).
 
 ---
 
-## RELRO — design (2026-07-24)
+## RELRO — LANDED 2026-07-24 (design below implemented as written)
+
+**Commits:** fork @60384999 (develop merge @f86a5afa, pinned in
+MIR_COMMIT), madc @1dbabbf4 (feature/aot-relro-claude).
+
+**Gates at landing:** battery green end-to-end (fulltest + `--exe` +
+release + forest pack rc=0; packed arbiter 753/0/0/9) · `--obj` 737/0
+(the `.o` ET_REL path is untouched by this rung) · unit
+test_native_shared 4/4, 110 assertions incl. the new RELRO structural
+case (PIE + `-no-pie` + `-shared`) · fork object + load-object lanes
+1139/2278 ×2, 0 fail · gdb R5 gate re-proven on RELRO PIE `-g`
+(break by line, `compute (a=6, b=7)`, named bt, `sum = 13`) · torture
+not implicated (layout-only, zero codegen).
+
+**Runtime proof, not just classification:** live gdb
+`info proc mappings` on the running PIE shows the image's pool +
+`.dynamic` page mapped `r--p` after relocation while `.data` stays
+`rw-p` — ld.so actually applied the protection over exactly the
+designed range. readelf: GNU_RELRO [rw_off, page-aligned end) covering
+`.mir.addrpool` + `.dynamic`; `FLAGS BIND_NOW`; `FLAGS_1 NOW [PIE]`;
+GNU_STACK RW. `-no-pie` images now carry DT_FLAGS_1 too (NOW without
+PIE) — the unit case pins that it never claims DF_1_PIE.
+
+**Companion decision shipped (called out for owner veto):**
+`PT_GNU_STACK` (non-exec). The emitter had never written one, and an
+absent header means an EXECUTABLE stack on x86-64 Linux (kernel compat
+default). MIR emits no stack trampolines, so non-exec is
+unconditionally correct; checksec-style classification is now
+Full RELRO + NX on every image kind.
+
+**Pre-existing observation (not a regression):** gdb prints
+"Probes-based dynamic linker interface failed. Reverting to original
+interface." on MIR-emitted executables — verified present on
+pre-RELRO binaries too; gdb's fallback rendezvous works (every R5
+gate has passed through it). Cosmetic; noted in case a future rung
+wants to emit the DT_DEBUG apparatus.
+
+Remaining owner-ranked rung after this: Mach-O/PE. Unfiled sibling
+slices: `.mir.rodata` split (pure-constant pool entries out of the RW
+segment entirely), multi-`.o` DWARF merge + C++ ODR/ctor merge.
+
+### Original design (2026-07-24)
 
 Goal (owner-ranked next): Full RELRO on every MIR-emitted native image —
 after the loader finishes relocation, the pages holding the address pool

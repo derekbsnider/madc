@@ -231,6 +231,68 @@ TEST_SUITE("madc_cir_emit_native") {
 	const Elf64_Ehdr *fh = (const Elf64_Ehdr *)fixed.data();
 	CHECK(fh->e_type == ET_EXEC);
 	CHECK(fh->e_entry >= 0x400000);
-	CHECK(!dyn_has_tag(fixed, DT_FLAGS_1, NULL));
+	// DT_FLAGS_1 is always present now (DF_1_NOW, the RELRO rung) —
+	// but a -no-pie image must not claim to be a PIE.
+	uint64_t fixed_flags1 = 0;
+	REQUIRE(dyn_has_tag(fixed, DT_FLAGS_1, &fixed_flags1));
+	CHECK((fixed_flags1 & DF_1_PIE) == 0);
+    }
+
+    TEST_CASE("RELRO rung: Full RELRO + non-exec stack on every image kind") {
+	const char *body =
+	    "int base = 7;\n"
+	    "int main(int argc, char **argv) { return argc * base > 90 ? 1 : 0; }\n";
+	const char *so_body =
+	    "int mul_base = 6;\n"
+	    "int mmul(int a) { return a * mul_base; }\n";
+
+	const MadcNativeKind kinds[] = { mnkPieExecutable, mnkExecutable,
+					 mnkShared };
+	for (int k = 0; k < 3; k++) {
+	    INFO("kind = " << (int)kinds[k]);
+	    std::string img = emit_native_image(
+		kinds[k] == mnkShared ? so_body : body, kinds[k]);
+	    REQUIRE(img.size() > sizeof(Elf64_Ehdr));
+
+	    // The R+W LOAD segment (the one after the R+X at offset 0).
+	    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)img.data();
+	    const Elf64_Phdr *ph = (const Elf64_Phdr *)(img.data() + eh->e_phoff);
+	    const Elf64_Phdr *rw = NULL;
+	    for (int i = 0; i < eh->e_phnum; i++)
+		if (ph[i].p_type == PT_LOAD && (ph[i].p_flags & PF_W))
+		    rw = &ph[i];
+	    REQUIRE((rw != NULL));
+
+	    // PT_GNU_RELRO leads the R+W segment and ends page-aligned —
+	    // _dl_protect_relro protects whole pages only, so an unaligned
+	    // end would leave the tail of the range writable.
+	    const Elf64_Phdr *relro = find_phdr(img, PT_GNU_RELRO);
+	    REQUIRE((relro != NULL));
+	    CHECK(relro->p_vaddr == rw->p_vaddr);
+	    CHECK(relro->p_memsz > 0);
+	    CHECK(((relro->p_vaddr + relro->p_memsz) & 0xfff) == 0);
+
+	    // .dynamic sits fully inside the protected range (the pool
+	    // leads the segment by construction, so start-coverage above
+	    // already pins it).
+	    const Elf64_Phdr *pd = find_phdr(img, PT_DYNAMIC);
+	    REQUIRE((pd != NULL));
+	    CHECK(pd->p_vaddr >= relro->p_vaddr);
+	    CHECK(pd->p_vaddr + pd->p_memsz <= relro->p_vaddr + relro->p_memsz);
+
+	    // BIND_NOW classification (checksec "Full RELRO"): both the
+	    // DT_FLAGS and DT_FLAGS_1 spellings.
+	    uint64_t flags = 0, flags1 = 0;
+	    REQUIRE(dyn_has_tag(img, DT_FLAGS, &flags));
+	    CHECK((flags & DF_BIND_NOW) != 0);
+	    REQUIRE(dyn_has_tag(img, DT_FLAGS_1, &flags1));
+	    CHECK((flags1 & DF_1_NOW) != 0);
+
+	    // Non-exec stack: the header must exist (absent = executable
+	    // stack on x86-64 Linux) and must not carry PF_X.
+	    const Elf64_Phdr *stack = find_phdr(img, PT_GNU_STACK);
+	    REQUIRE((stack != NULL));
+	    CHECK((stack->p_flags & PF_X) == 0);
+	}
     }
 }
