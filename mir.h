@@ -441,6 +441,9 @@ struct MIR_item {
      item, imported definition or proto object */
   void *addr;
   char export_p; /* true for export items (only func items) */
+  /* symbol binding of the definition (a MIR_item_binding_t value, set by
+     MIR_item_set_binding): WEAK and LINKONCE both capture as STB_WEAK */
+  char binding;
   /* defined for data-bss after loading. True if it is a start of allocated section */
   char section_head_p;
   union {
@@ -543,6 +546,25 @@ extern DLIST (MIR_module_t) * MIR_get_module_list (MIR_context_t ctx);
 extern MIR_item_t MIR_new_import (MIR_context_t ctx, const char *name);
 extern MIR_item_t MIR_new_export (MIR_context_t ctx, const char *name);
 extern MIR_item_t MIR_new_forward (MIR_context_t ctx, const char *name);
+/* Symbol binding of a definition item (func/data/ref_data/bss).  Both
+   non-global kinds capture as STB_WEAK in the AOT object model, so identical
+   per-TU copies merge (first weak wins, a strong definition replaces a weak
+   one) instead of colliding as duplicate strong definitions.  They differ in
+   interposability:
+   - MIR_ITEM_BIND_WEAK is C's __attribute__((weak)): the definition may be
+     legitimately replaced by a DIFFERENT one at link time, so calls to it are
+     never inlined (gcc parity).
+   - MIR_ITEM_BIND_LINKONCE is C++ vague linkage (template instantiations,
+     inline bodies, vtables): every copy is identical by ODR, so calls inline
+     freely.
+   JIT multi-module linking is unaffected (use MIR_set_func_redef_permission
+   for the in-memory analogue). */
+typedef enum {
+  MIR_ITEM_BIND_GLOBAL = 0, /* strong definition (the default) */
+  MIR_ITEM_BIND_WEAK,       /* interposable weak: STB_WEAK, never inlined */
+  MIR_ITEM_BIND_LINKONCE,   /* ODR-identical per-TU copy: STB_WEAK, inlineable */
+} MIR_item_binding_t;
+extern void MIR_item_set_binding (MIR_context_t ctx, MIR_item_t item, MIR_item_binding_t binding);
 extern MIR_item_t MIR_new_bss (MIR_context_t ctx, const char *name,
                                size_t len); /* name can be NULL */
 extern MIR_item_t MIR_new_data (MIR_context_t ctx, const char *name, MIR_type_t el_type, size_t nel,
