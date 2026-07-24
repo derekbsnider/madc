@@ -1610,10 +1610,13 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   uint64_t dynamic_off = off;
   /* NEEDED*n [+RUNPATH] [+INIT] + STRTAB/STRSZ/SYMTAB/SYMENT/HASH
      + RELA/RELASZ/RELAENT + FLAGS (BIND_NOW) + FLAGS_1 (NOW [| PIE])
+     [+DEBUG -- executables only, gcc/ld parity: ld.so writes the r_debug
+     rendezvous address into the slot (before RELRO protection), which is
+     how gdb's probes-based solib interface locates the link map]
      [+TEXTREL -- only if a dynamic slot targets text; the PIC capture
      keeps text clean] + NULL */
   uint64_t n_dyntags = params->n_needed + (params->runpath != NULL ? 1 : 0) + (init_i < n ? 1 : 0)
-                       + 10 + (textrel_p ? 1 : 0) + 1;
+                       + 10 + (shared_p ? 0 : 1) + (textrel_p ? 1 : 0) + 1;
   uint64_t dynamic_size = n_dyntags * sizeof (Elf64_Dyn);
   uint64_t relro_end = OBJX_ALIGN (dynamic_off + dynamic_size, OBJX_PAGE);
   size_t data_align = obj->data_align > 8 ? obj->data_align : 8;
@@ -1817,6 +1820,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
        of fact, and with PT_GNU_RELRO it classifies as Full RELRO */
     OBJX_DYN (DT_FLAGS, DF_BIND_NOW);
     OBJX_DYN (DT_FLAGS_1, DF_1_NOW | (pie_p ? DF_1_PIE : 0));
+    if (!shared_p) OBJX_DYN (DT_DEBUG, 0);
     if (textrel_p) OBJX_DYN (DT_TEXTREL, 0);
     OBJX_DYN (DT_NULL, 0);
 #undef OBJX_DYN
