@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **feat(aot): Full RELRO + non-executable stack on every native
+  image (executables, PIEs, shared objects).** `.mir.addrpool` (the
+  GOT) and `.dynamic` now lead the R+W segment under a page-padded
+  `PT_GNU_RELRO` — the loader mprotects them read-only after
+  relocation, closing the classic GOT-overwrite escalation.
+  `DT_FLAGS = BIND_NOW` and `DT_FLAGS_1 = NOW` are emitted always (a
+  statement of fact: madc's images have no PLT and no lazy binding —
+  every import is an eagerly-relocated pool slot — so Full RELRO
+  costs one ≤4K pad, not eager-resolution latency). `PT_GNU_STACK`
+  (non-exec) is emitted in the same phdr block: an absent header
+  means an executable stack on x86-64 Linux. checksec-style
+  classification: Full RELRO + NX on all image kinds, unconditional
+  (no knob — there is no trade to expose). Fork `MIR_COMMIT` bumped
+  in-commit; `.o` emit/load/merge paths untouched.
+
 - **feat(aot): multi-object linking — `.o` inputs now link and run;
   `-r` emits relocatable output (gcc/ld `-r`).** The make model for
   AOT: recompile one TU to its `.o` cache, relink — MIR stays the only
