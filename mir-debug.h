@@ -145,18 +145,24 @@ extern void MIR_debug_gdb_unregister (MIR_debug_jit_t entry);
 typedef struct MIR_object *MIR_object_t;
 
 /* Section identifiers (fixed section-header indexes 1..4 in the emitted
-   object).  MIR_OBJ_SEC_UNDEF marks an imported (undefined) symbol.
+   object; .init_array follows at 5 when non-empty).  MIR_OBJ_SEC_UNDEF
+   marks an imported (undefined) symbol.
    ADDRPOOL (".mir.addrpool", R6 PIC) is the GOT-shaped address-slot
    section: every 8-byte address the generated code materializes or calls
    through -- const-pool entries and switch tables -- lives here instead of
    .text, reached by rip-relative PC32 references, so .text carries no
-   relocations at all (no DT_TEXTREL in executables/shared objects). */
+   relocations at all (no DT_TEXTREL in executables/shared objects).
+   INITARR (".init_array", SHT_INIT_ARRAY -- the platform section, so an
+   external linker collects it natively) holds 8-byte function-pointer
+   slots, one per registered module initializer (MIR_object_add_init);
+   each slot is zero in the file and covered by an ABS64 relocation. */
 enum {
   MIR_OBJ_SEC_UNDEF = -1,
   MIR_OBJ_SEC_TEXT = 0,
   MIR_OBJ_SEC_DATA = 1,
   MIR_OBJ_SEC_BSS = 2,
   MIR_OBJ_SEC_ADDRPOOL = 3,
+  MIR_OBJ_SEC_INITARR = 4,
 };
 
 /* Relocation kinds (mapped to the arch-specific ELF type at emit). */
@@ -218,6 +224,18 @@ extern void MIR_object_add_reloc (MIR_object_t obj, int sec, uint64_t offset, in
 extern int MIR_object_find_symbol (MIR_object_t obj, const char *name, int *sec, uint64_t *value,
                                    uint64_t *size);
 
+/* Register a defined text function as a module initializer: appends one
+   8-byte slot to .init_array, covered by an ABS64 relocation against the
+   function's symbol (locals qualify -- per-TU initializers are typically
+   static).  The array reaches every consumer: the .o carries the section +
+   .rela.init_array (external linkers collect it natively), merges
+   concatenate it, executables/shared objects emit DT_INIT_ARRAY/
+   DT_INIT_ARRAYSZ over it, and the in-process loader exposes it through
+   MIR_object_loaded_init_array.  Entries are called (int argc, char **argv,
+   char **envp), the platform init-array contract.  Returns 0, or -1 when
+   the name is not a defined .text symbol. */
+extern int MIR_object_add_init (MIR_object_t obj, const char *name);
+
 /* Attach a debug builder (AOT R5): MIR_object_emit and
    MIR_object_emit_executable will generate .debug_abbrev/.debug_info/
    .debug_line (and .debug_frame on x86-64) from it into the artifact.
@@ -267,7 +285,17 @@ extern int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size);
    GOT) and .dynamic lead the R+W segment under a page-padded PT_GNU_RELRO
    (the loader mprotects them read-only after relocation), DT_FLAGS /
    DT_FLAGS_1 carry BIND_NOW / NOW (a statement of fact -- no lazy binding
-   exists to disable), and PT_GNU_STACK marks the stack non-executable. */
+   exists to disable), and PT_GNU_STACK marks the stack non-executable.
+
+   Module initializers ride the builder's .init_array (MIR_object_add_init,
+   or merged in from input objects): it lands inside the RELRO lead region
+   -- relocated, then protected, then read -- and a non-empty array emits
+   DT_INIT_ARRAY / DT_INIT_ARRAYSZ.  Shared objects get their entries run
+   by ld.so at load.  Executables rely on glibc >= 2.34: the _start stub
+   passes init = NULL to __libc_start_main, which then walks the main map's
+   own dynamic segment (csu/libc-start.c call_init) -- older glibc would
+   silently skip the array.  There is no DT_INIT: the array is the one
+   init model. */
 typedef struct MIR_object_exec_params {
   const char *interp;        /* PT_INTERP path; NULL = /lib64/ld-linux-x86-64.so.2 (executables only) */
   const char *const *needed; /* DT_NEEDED sonames, emitted in order */
@@ -276,9 +304,6 @@ typedef struct MIR_object_exec_params {
                           (executables only) */
   const char *runpath; /* DT_RUNPATH library search path; NULL = omit */
   int shared_p;        /* nonzero: emit an ET_DYN shared object instead of ET_EXEC */
-  const char *init;    /* optional text symbol emitted as DT_INIT (the loader runs it
-                          at load); silently omitted when NULL or not defined -- "no
-                          initializers" is a valid module state, not an error */
   int pie_p;           /* nonzero: emit the executable as a position-independent
                           ET_DYN (PIE) instead of fixed-base ET_EXEC; ignored when
                           shared_p is set */
@@ -303,10 +328,11 @@ typedef struct MIR_object_loaded *MIR_object_loaded_t;
 typedef void *(*MIR_object_resolver_t) (const char *name, void *env);
 /* --- Merge reader (multi-object linking) ---------------------------------
    Parse one MIR-emitted ET_REL image and APPEND it into a builder: sections
-   concatenate at their alignments, symbols unify by name (an UNDEF resolves
-   against a definition from either side; a strong definition replaces a
-   weak one; two strong definitions are a loud error; locals never unify),
-   relocations are rebased.  .debug_* sections concatenate too (multi-CU
+   concatenate at their alignments (.init_array included -- every input
+   TU's initializers ride the merged array, in input order), symbols unify
+   by name (an UNDEF resolves against a definition from either side; a
+   strong definition replaces a weak one; two strong definitions are a loud
+   error; locals never unify), relocations are rebased.  .debug_* sections concatenate too (multi-CU
    output): their relocations -- code-address slots against .text, and the
    cross-debug-section offsets (CU abbrev offset, stmt_list, FDE CIE
    pointers) against the debug sections' own symbols -- rebase with the
@@ -331,6 +357,12 @@ extern MIR_object_loaded_t MIR_object_load (const void *buf, size_t size,
                                             char *err_msg, size_t err_len);
 /* Address of a defined global (or weak) symbol in the loaded image, or NULL. */
 extern void *MIR_object_loaded_sym (MIR_object_loaded_t lo, const char *name);
+/* The loaded image's init array: relocated function pointers, in object
+   order.  Returns the first entry's address (NULL when the image has none)
+   and sets *n to the entry count.  The caller runs them -- each as
+   (int argc, char **argv, char **envp) -- before entering the image's
+   code; the loader itself never calls them. */
+extern void *const *MIR_object_loaded_init_array (MIR_object_loaded_t lo, size_t *n);
 /* Unmap the image and free the handle.  Must not be called while code from
    the image can still run -- including atexit handlers it registered. */
 extern void MIR_object_loaded_unload (MIR_object_loaded_t lo);

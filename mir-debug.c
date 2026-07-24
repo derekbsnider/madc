@@ -1007,13 +1007,15 @@ typedef struct {
 struct MIR_object {
   dwbuf_t text, data, pool; /* pool = .mir.addrpool, the GOT-shaped
                                address-slot section (R6 PIC) */
+  dwbuf_t initarr;          /* .init_array: 8-byte zero slots, one per module
+                               initializer, each covered by an ABS64 reloc */
   uint64_t bss_size;
   size_t data_align, bss_align, pool_align;
   objsym_t *syms;
   size_t n_syms, cap_syms;
   objreloc_t *rels;
   size_t n_rels, cap_rels;
-  int sec_sym[4];    /* section-symbol ids for TEXT/DATA/BSS/ADDRPOOL; -1 until created */
+  int sec_sym[5]; /* section-symbol ids for TEXT/DATA/BSS/ADDRPOOL/INITARR; -1 until created */
   MIR_debug_t debug; /* borrowed builder with .text-offset func addrs (R5);
                         NULL = no debug sections in the artifacts */
   dwbuf_t dbg[OBJDBG_N]; /* merged raw .debug_{info,line,frame,abbrev} (reader-filled) */
@@ -1040,7 +1042,7 @@ MIR_object_t MIR_object_create (void) {
   MIR_object_t obj = calloc (1, sizeof (struct MIR_object));
   if (obj == NULL) return NULL;
   obj->data_align = obj->bss_align = obj->pool_align = 1;
-  obj->sec_sym[0] = obj->sec_sym[1] = obj->sec_sym[2] = obj->sec_sym[3] = -1;
+  for (int s = 0; s < 5; s++) obj->sec_sym[s] = -1;
   return obj;
 }
 
@@ -1052,6 +1054,7 @@ void MIR_object_destroy (MIR_object_t obj) {
   free (obj->text.p);
   free (obj->data.p);
   free (obj->pool.p);
+  free (obj->initarr.p);
   for (int k = 0; k < OBJDBG_N; k++) free (obj->dbg[k].p);
   free (obj->dbgrels);
   free (obj);
@@ -1132,7 +1135,7 @@ void MIR_object_symbol_define (MIR_object_t obj, int sym_id, int sec, uint64_t v
 }
 
 int MIR_object_section_symbol (MIR_object_t obj, int sec) {
-  if (sec < MIR_OBJ_SEC_TEXT || sec > MIR_OBJ_SEC_ADDRPOOL) return -1;
+  if (sec < MIR_OBJ_SEC_TEXT || sec > MIR_OBJ_SEC_INITARR) return -1;
   if (obj->sec_sym[sec] < 0) {
     int id = MIR_object_add_symbol (obj, NULL, sec, 0, 0, 0, 1, 0);
     if (id >= 0) obj->syms[id].section_p = 1;
@@ -1170,6 +1173,24 @@ int MIR_object_find_symbol (MIR_object_t obj, const char *name, int *sec, uint64
     return 1;
   }
   return 0;
+}
+
+int MIR_object_add_init (MIR_object_t obj, const char *name) {
+  if (obj == NULL || name == NULL) return -1;
+  /* the initializer is typically a per-TU static (STB_LOCAL) -- scan the
+     whole symbol table, not just the unifiable names */
+  for (size_t i = 0; i < obj->n_syms; i++) {
+    objsym_t *s = &obj->syms[i];
+    if (!s->defined_p || s->sec != MIR_OBJ_SEC_TEXT || s->name == NULL
+        || strcmp (s->name, name) != 0)
+      continue;
+    while (obj->initarr.len % 8 != 0) buf_u8 (&obj->initarr, 0);
+    size_t off = obj->initarr.len;
+    buf_zeros (&obj->initarr, 8);
+    MIR_object_add_reloc (obj, MIR_OBJ_SEC_INITARR, off, (int) i, 0, MIR_OBJ_RELOC_ABS64);
+    return 0;
+  }
+  return -1;
 }
 
 void MIR_object_set_debug (MIR_object_t obj, MIR_debug_t d) {
@@ -1248,11 +1269,15 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   size_t n = obj->n_syms;
   uint32_t *final_idx = calloc (n ? n : 1, sizeof (uint32_t));
   if (final_idx == NULL) return -1;
-  dwbuf_t strtab = {0}, symtab = {0}, rela_text = {0}, rela_data = {0}, rela_pool = {0};
+  dwbuf_t strtab = {0}, symtab = {0}, rela_text = {0}, rela_data = {0}, rela_pool = {0},
+          rela_init = {0};
   buf_u8 (&strtab, 0);
   Elf64_Sym z = {0};
   buf_bytes (&symtab, &z, sizeof z);
-  static const int sec_shndx[4] = {1, 2, 3, 4};
+  /* INITARR's shndx (5) is valid only when the section is emitted -- it is
+     non-empty exactly when a symbol or relocation can reference it */
+  static const int sec_shndx[5] = {1, 2, 3, 4, 5};
+  int init_p = obj->initarr.len != 0;
 
   /* DWARF emission runs BEFORE the symtab build: the debug sections get
      STT_SECTION symbols of their own (targets of the cross-debug-section
@@ -1271,17 +1296,20 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     emit_line (obj->debug, &dw_line, &g);
     emit_frame (obj->debug, &dw_frame, &g);
   }
-  /* Section order below: null, .text, .data, .bss, .mir.addrpool, .symtab,
-     .strtab, [.rela.text], [.rela.data], [.rela.mir.addrpool], then the
-     debug sections.  Presence of each .rela.* mirrors the emission loop's
-     classification exactly. */
-  int have_rt = 0, have_rd = 0, have_rp = 0;
+  /* Section order below: null, .text, .data, .bss, .mir.addrpool,
+     [.init_array], .symtab, .strtab, [.rela.text], [.rela.data],
+     [.rela.mir.addrpool], [.rela.init_array], then the debug sections.
+     Presence of each .rela.* mirrors the emission loop's classification
+     exactly. */
+  int have_rt = 0, have_rd = 0, have_rp = 0, have_ri = 0;
   for (size_t i = 0; i < obj->n_rels; i++) {
     int rs = obj->rels[i].sec;
     if (rs == MIR_OBJ_SEC_TEXT)
       have_rt = 1;
     else if (rs == MIR_OBJ_SEC_DATA)
       have_rd = 1;
+    else if (rs == MIR_OBJ_SEC_INITARR)
+      have_ri = 1;
     else
       have_rp = 1;
   }
@@ -1297,7 +1325,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   int dbg_shndx[4] = {0, 0, 0, 0};      /* dwgen ids: info/line/frame/abbrev */
   uint32_t dbg_secsym[4] = {0, 0, 0, 0}; /* their final symtab indexes */
   if (dbg_p) {
-    int nx = 7 + have_rt + have_rd + have_rp;
+    int nx = 7 + init_p + have_rt + have_rd + have_rp + have_ri;
     dbg_shndx[3] = nx++; /* .debug_abbrev */
     dbg_shndx[0] = nx++; /* .debug_info */
     dbg_shndx[1] = nx++; /* .debug_line */
@@ -1349,7 +1377,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     if ((r->kind != MIR_OBJ_RELOC_ABS64 && r->kind != MIR_OBJ_RELOC_PC32) || r->sym < 0
         || (size_t) r->sym >= n
         || (r->sec != MIR_OBJ_SEC_TEXT && r->sec != MIR_OBJ_SEC_DATA
-            && r->sec != MIR_OBJ_SEC_ADDRPOOL)) {
+            && r->sec != MIR_OBJ_SEC_ADDRPOOL && r->sec != MIR_OBJ_SEC_INITARR)) {
       bad_p = 1;
       break;
     }
@@ -1358,9 +1386,10 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     er.r_info = ELF64_R_INFO ((uint64_t) final_idx[r->sym],
                               r->kind == MIR_OBJ_RELOC_PC32 ? R_X86_64_PC32 : R_X86_64_64);
     er.r_addend = r->addend;
-    buf_bytes (r->sec == MIR_OBJ_SEC_TEXT   ? &rela_text
-               : r->sec == MIR_OBJ_SEC_DATA ? &rela_data
-                                            : &rela_pool,
+    buf_bytes (r->sec == MIR_OBJ_SEC_TEXT      ? &rela_text
+               : r->sec == MIR_OBJ_SEC_DATA    ? &rela_data
+               : r->sec == MIR_OBJ_SEC_INITARR ? &rela_init
+                                               : &rela_pool,
                &er, sizeof er);
   }
 
@@ -1434,6 +1463,9 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     S[ns++] = (dwsec_t) {".mir.addrpool", SHT_PROGBITS, 0, 0,
                          (uint32_t) (obj->pool_align > 8 ? obj->pool_align : 8),
                          SHF_ALLOC | SHF_WRITE, 0, 0, &obj->pool, obj->pool.len};
+    if (init_p)
+      S[ns++] = (dwsec_t) {".init_array", SHT_INIT_ARRAY, 0, 0, 8, SHF_ALLOC | SHF_WRITE, 0, 8,
+                           &obj->initarr, obj->initarr.len};
     int i_symtab = ns;
     S[ns++] = (dwsec_t) {".symtab", SHT_SYMTAB, 0, n_locals + 1, 8, 0, 0, sizeof (Elf64_Sym),
                          &symtab, symtab.len};
@@ -1449,6 +1481,9 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     if (rela_pool.len != 0)
       S[ns++] = (dwsec_t) {".rela.mir.addrpool", SHT_RELA, (uint32_t) i_symtab, 4, 8,
                            SHF_INFO_LINK, 0, sizeof (Elf64_Rela), &rela_pool, rela_pool.len};
+    if (rela_init.len != 0)
+      S[ns++] = (dwsec_t) {".rela.init_array", SHT_RELA, (uint32_t) i_symtab, 5, 8, SHF_INFO_LINK,
+                           0, sizeof (Elf64_Rela), &rela_init, rela_init.len};
     /* the planned indexes behind dbg_secsym[] must match the table being
        built -- divergence is an emitter-maintenance bug; refuse rather
        than mis-relocate */
@@ -1492,6 +1527,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   free (rela_text.p);
   free (rela_data.p);
   free (rela_pool.p);
+  free (rela_init.p);
   free (dw_abbrev.p);
   free (dw_info.p);
   free (dw_line.p);
@@ -1511,13 +1547,13 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
    simplified by MIR's exact reloc ledgers):
      - fixed load base 0x400000, identity file-offset<->vaddr mapping;
      - two PT_LOADs (R+X: headers/interp/hash/dynsym/dynstr/rela.dyn/text;
-       R+W: addrpool/.dynamic then a page pad, then data/bss tail) +
-       PT_PHDR + PT_INTERP + PT_DYNAMIC (PHDR/INTERP first, gABI order;
-       PT_PHDR is what the loader derives a PIE's load bias from) +
+       R+W: addrpool/.init_array/.dynamic then a page pad, then data/bss
+       tail) + PT_PHDR + PT_INTERP + PT_DYNAMIC (PHDR/INTERP first, gABI
+       order; PT_PHDR is what the loader derives a PIE's load bias from) +
        PT_GNU_STACK (non-exec) + PT_GNU_RELRO (Full RELRO: the pool -- the
-       GOT -- and .dynamic lead the R+W segment and are mprotected
-       read-only after relocation; BIND_NOW is already the only semantics,
-       there is no lazy binding to disable);
+       GOT -- .init_array and .dynamic lead the R+W segment and are
+       mprotected read-only after relocation; BIND_NOW is already the only
+       semantics, there is no lazy binding to disable);
      - internal relocations resolve at emit; imports become eager
        R_X86_64_64 slot relocations in .rela.dyn (no PLT/GOT: MIR calls
        already go through address slots) => DT_TEXTREL until the PIC rung;
@@ -1528,8 +1564,12 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
    vaddrs the loader rebases), no PT_INTERP/_start/entry, defined globals
    exported in .dynsym, and EVERY relocation kept dynamic -- internal targets
    as R_X86_64_RELATIVE (bias + link vaddr; -Bsymbolic semantics), imports as
-   R_X86_64_64.  DT_INIT (params->init, when defined) covers load-time
-   initializers for dlopen'd modules that have no main to call them.
+   R_X86_64_64.  A non-empty builder .init_array emits DT_INIT_ARRAY /
+   DT_INIT_ARRAYSZ (no DT_INIT -- the array is the one init model): ld.so
+   runs a shared object's entries at load; an executable's are run by
+   glibc >= 2.34's __libc_start_main itself (the _start stub passes
+   init = NULL, and csu/libc-start.c call_init walks the main map's own
+   dynamic segment -- older glibc would silently skip them).
    pie_p combines the two: an executable (PT_INTERP/_start/entry, import-only
    dynsym) on the shared object's base-0 ET_DYN layout with RELATIVE internal
    slots, tagged DT_FLAGS_1 = DF_1_PIE.  The stub is bias-clean (rip-relative
@@ -1587,7 +1627,8 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   uint64_t base = pic_image_p ? 0 : OBJX_BASE_ADDR;
   const char *interp = params->interp != NULL ? params->interp : "/lib64/ld-linux-x86-64.so.2";
   const char *entry_nm = params->entry != NULL ? params->entry : "main";
-  static const Elf64_Section objx_shndx[4] = {6, 9, 10, 7}; /* text/data/bss/pool shdr indexes */
+  static const Elf64_Section objx_shndx[5]
+    = {6, 10, 11, 7, 8}; /* text/data/bss/pool/initarr shdr indexes */
 
   /* the entry symbol must be a defined text function (executables only) */
   size_t n = obj->n_syms;
@@ -1601,15 +1642,6 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
       }
     if (entry_i == n) return -1;
   }
-  /* optional DT_INIT symbol; a module without one is valid -- omit the tag */
-  size_t init_i = n;
-  if (params->init != NULL)
-    for (size_t i = 0; i < n; i++)
-      if (obj->syms[i].name != NULL && obj->syms[i].defined_p
-          && obj->syms[i].sec == MIR_OBJ_SEC_TEXT && strcmp (obj->syms[i].name, params->init) == 0) {
-        init_i = i;
-        break;
-      }
 
   /* dynsym = every undefined (imported) symbol, plus __libc_start_main for
      the _start slot if the module does not already import it (executables);
@@ -1747,10 +1779,11 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   uint64_t rx_filesz = text_off + text_size; /* the R+X segment: file start..text end */
   uint64_t rw_off = off;                     /* page-aligned R+W segment start */
   /* RELRO: the protected pieces LEAD the R+W segment -- .mir.addrpool (the
-     GOT, incl. the _start __libc_start_main slot) then .dynamic -- and the
-     boundary is page-padded (glibc's _dl_protect_relro protects only whole
-     pages, and a page shared with .data could not be protected), so
-     PT_GNU_RELRO below covers them exactly.  .data/.bss follow, writable. */
+     GOT, incl. the _start __libc_start_main slot), .init_array, then
+     .dynamic -- and the boundary is page-padded (glibc's _dl_protect_relro
+     protects only whole pages, and a page shared with .data could not be
+     protected), so PT_GNU_RELRO below covers them exactly.  .data/.bss
+     follow, writable. */
   size_t pool_align = obj->pool_align > 8 ? obj->pool_align : 8;
   if (pool_align > OBJX_PAGE) goto done; /* congruence bound; nothing emits >4K aligns */
   uint64_t pool_off = rw_off; /* page-aligned, so any <=4K pool_align holds */
@@ -1761,17 +1794,24 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     off = lsm_off + 8;
     pool_view_size = off - pool_off;
   }
+  /* .init_array: gcc-shaped RELRO placement -- ld.so relocates the entries
+     (RELATIVE in PIC images; baked at emit for ET_EXEC), protects the page,
+     then the init walk reads them */
+  uint64_t initarr_off = OBJX_ALIGN (off, 8);
+  off = initarr_off + obj->initarr.len;
   off = OBJX_ALIGN (off, 8);
   uint64_t dynamic_off = off;
-  /* NEEDED*n [+RUNPATH] [+INIT] + STRTAB/STRSZ/SYMTAB/SYMENT/HASH
+  /* NEEDED*n [+RUNPATH] [+INIT_ARRAY/INIT_ARRAYSZ]
+     + STRTAB/STRSZ/SYMTAB/SYMENT/HASH
      + RELA/RELASZ/RELAENT + FLAGS (BIND_NOW) + FLAGS_1 (NOW [| PIE])
      [+DEBUG -- executables only, gcc/ld parity: ld.so writes the r_debug
      rendezvous address into the slot (before RELRO protection), which is
      how gdb's probes-based solib interface locates the link map]
      [+TEXTREL -- only if a dynamic slot targets text; the PIC capture
      keeps text clean] + NULL */
-  uint64_t n_dyntags = params->n_needed + (params->runpath != NULL ? 1 : 0) + (init_i < n ? 1 : 0)
-                       + 10 + (shared_p ? 0 : 1) + (textrel_p ? 1 : 0) + 1;
+  uint64_t n_dyntags = params->n_needed + (params->runpath != NULL ? 1 : 0)
+                       + (obj->initarr.len != 0 ? 2 : 0) + 10 + (shared_p ? 0 : 1)
+                       + (textrel_p ? 1 : 0) + 1;
   uint64_t dynamic_size = n_dyntags * sizeof (Elf64_Dyn);
   uint64_t relro_end = OBJX_ALIGN (dynamic_off + dynamic_size, OBJX_PAGE);
   size_t data_align = obj->data_align > 8 ? obj->data_align : 8;
@@ -1785,14 +1825,16 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   uint64_t text_vaddr = base + text_off;
   uint64_t data_vaddr = base + data_off;
   uint64_t pool_vaddr = base + pool_off;
+  uint64_t initarr_vaddr = base + initarr_off;
   uint64_t code_vaddr = text_vaddr + text_bias; /* the builder's .text offset 0 */
 
   /* section vaddr for a defined symbol/section id */
 #define OBJX_SEC_VADDR(sec) \
-  ((sec) == MIR_OBJ_SEC_TEXT   ? code_vaddr \
-   : (sec) == MIR_OBJ_SEC_DATA ? data_vaddr \
-   : (sec) == MIR_OBJ_SEC_BSS  ? bss_vaddr \
-                               : pool_vaddr)
+  ((sec) == MIR_OBJ_SEC_TEXT      ? code_vaddr \
+   : (sec) == MIR_OBJ_SEC_DATA    ? data_vaddr \
+   : (sec) == MIR_OBJ_SEC_BSS     ? bss_vaddr \
+   : (sec) == MIR_OBJ_SEC_INITARR ? initarr_vaddr \
+                                  : pool_vaddr)
 
   /* ---- DWARF (R5): the builder's .text offsets biased to the final
      link-time vaddrs -- ET_EXEC's identity layout makes them the runtime
@@ -1863,12 +1905,12 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   (void) next;
 
   /* ---- assemble the image */
-  int n_secs = 14; /* fixed table below; + up to 4 appended .debug_* */
-  uint32_t shname[18];
-  static const char *objx_sec_names[18]
+  int n_secs = 15; /* fixed table below; + up to 4 appended .debug_* */
+  uint32_t shname[19];
+  static const char *objx_sec_names[19]
     = {"",      ".interp", ".hash",    ".dynsym", ".dynstr", ".rela.dyn", ".text",
-       ".mir.addrpool", ".dynamic", ".data", ".bss", ".symtab", ".strtab", ".shstrtab",
-       ".debug_abbrev", ".debug_info", ".debug_line", ".debug_frame"};
+       ".mir.addrpool", ".init_array", ".dynamic", ".data", ".bss", ".symtab", ".strtab",
+       ".shstrtab", ".debug_abbrev", ".debug_info", ".debug_line", ".debug_frame"};
   int n_dbg_secs
     = (obj->debug != NULL || obj->dbg_raw_p) ? (dw_frame.len != 0 ? 4 : 3) : 0;
   n_secs += n_dbg_secs;
@@ -1879,7 +1921,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     buf_str (&shstr, objx_sec_names[i]);
   }
   /* debug sections: non-alloc file content between the load image and the
-     symtab (indexes 14.. so the fixed table above keeps its numbering) */
+     symtab (indexes 15.. so the fixed table above keeps its numbering) */
   uint64_t dw_abbrev_off = OBJX_ALIGN (off, 8);
   uint64_t dw_info_off = dw_abbrev_off + dw_abbrev.len;
   uint64_t dw_line_off = dw_info_off + dw_info.len;
@@ -1918,6 +1960,8 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   if (obj->text.len != 0) memcpy (p + text_off + text_bias, obj->text.p, obj->text.len);
   if (obj->data.len != 0) memcpy (p + data_off, obj->data.p, obj->data.len);
   if (obj->pool.len != 0) memcpy (p + pool_off, obj->pool.p, obj->pool.len);
+  /* .init_array needs no copy: its file bytes are zero (calloc), every slot
+     is written by the relocation pass (baked vaddr or RELATIVE at load) */
   if (n_dbg_secs != 0) {
     if (dw_abbrev.len != 0) memcpy (p + dw_abbrev_off, dw_abbrev.p, dw_abbrev.len);
     if (dw_info.len != 0) memcpy (p + dw_info_off, dw_info.p, dw_info.len);
@@ -1943,6 +1987,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
       uint64_t slot_off = (r->sec == MIR_OBJ_SEC_TEXT       ? text_off + text_bias
                            : r->sec == MIR_OBJ_SEC_DATA     ? data_off
                            : r->sec == MIR_OBJ_SEC_ADDRPOOL ? pool_off
+                           : r->sec == MIR_OBJ_SEC_INITARR  ? initarr_off
                                                             : 0)
                           + r->offset;
       objsym_t *s = &obj->syms[r->sym];
@@ -1987,7 +2032,10 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     d++;                    \
   } while (0)
     if (params->runpath != NULL) OBJX_DYN (DT_RUNPATH, runpath_off);
-    if (init_i < n) OBJX_DYN (DT_INIT, code_vaddr + obj->syms[init_i].value);
+    if (obj->initarr.len != 0) {
+      OBJX_DYN (DT_INIT_ARRAY, base + initarr_off);
+      OBJX_DYN (DT_INIT_ARRAYSZ, obj->initarr.len);
+    }
     OBJX_DYN (DT_STRTAB, base + dynstr_off);
     OBJX_DYN (DT_STRSZ, dynstr.len);
     OBJX_DYN (DT_SYMTAB, base + dynsym_off);
@@ -2033,7 +2081,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     eh->e_phnum = (Elf64_Half) n_phdrs;
     eh->e_shentsize = sizeof (Elf64_Shdr);
     eh->e_shnum = (Elf64_Half) n_secs;
-    eh->e_shstrndx = 13;
+    eh->e_shstrndx = 14;
   }
   { /* program headers: [PHDR, INTERP,] LOAD R+X, LOAD R+W, DYNAMIC */
     Elf64_Phdr *ph = (Elf64_Phdr *) (p + phdr_off);
@@ -2099,7 +2147,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     struct objx_shrow {
       uint32_t type, link, info, align;
       uint64_t flags, off, vaddr_p, sz, entsize;
-    } T[18] = {
+    } T[19] = {
       {0, 0, 0, 0, 0, 0, 0, 0, 0},
       {SHT_PROGBITS, 0, 0, 1, SHF_ALLOC, interp_off, 1, interp_size, 0},
       {SHT_HASH, 3, 0, 8, SHF_ALLOC, hash_off, 1, hash.len, 4},
@@ -2109,21 +2157,22 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
       {SHT_PROGBITS, 0, 0, 16, SHF_ALLOC | SHF_EXECINSTR, text_off, 1, text_size, 0},
       {SHT_PROGBITS, 0, 0, (uint32_t) pool_align, SHF_ALLOC | SHF_WRITE, pool_off, 1,
        pool_view_size, 0},
+      {SHT_INIT_ARRAY, 0, 0, 8, SHF_ALLOC | SHF_WRITE, initarr_off, 1, obj->initarr.len, 8},
       {SHT_DYNAMIC, 4, 0, 8, SHF_ALLOC | SHF_WRITE, dynamic_off, 1, dynamic_size,
        sizeof (Elf64_Dyn)},
       {SHT_PROGBITS, 0, 0, (uint32_t) data_align, SHF_ALLOC | SHF_WRITE, data_off, 1,
        obj->data.len, 0},
       {SHT_NOBITS, 0, 0, (uint32_t) bss_align, SHF_ALLOC | SHF_WRITE, off, 2, obj->bss_size, 0},
-      {SHT_SYMTAB, 12, n_locals + 1, 8, 0, symtab_off, 0, symtab.len, sizeof (Elf64_Sym)},
+      {SHT_SYMTAB, 13, n_locals + 1, 8, 0, symtab_off, 0, symtab.len, sizeof (Elf64_Sym)},
       {SHT_STRTAB, 0, 0, 1, 0, strtab_off, 0, strtab.len, 0},
       {SHT_STRTAB, 0, 0, 1, 0, shstr_off, 0, shstr.len, 0},
     };
-    if (n_dbg_secs != 0) { /* appended after the fixed table (e_shstrndx stays 13) */
-      T[14] = (struct objx_shrow) {SHT_PROGBITS, 0, 0, 1, 0, dw_abbrev_off, 0, dw_abbrev.len, 0};
-      T[15] = (struct objx_shrow) {SHT_PROGBITS, 0, 0, 1, 0, dw_info_off, 0, dw_info.len, 0};
-      T[16] = (struct objx_shrow) {SHT_PROGBITS, 0, 0, 1, 0, dw_line_off, 0, dw_line.len, 0};
+    if (n_dbg_secs != 0) { /* appended after the fixed table (e_shstrndx stays 14) */
+      T[15] = (struct objx_shrow) {SHT_PROGBITS, 0, 0, 1, 0, dw_abbrev_off, 0, dw_abbrev.len, 0};
+      T[16] = (struct objx_shrow) {SHT_PROGBITS, 0, 0, 1, 0, dw_info_off, 0, dw_info.len, 0};
+      T[17] = (struct objx_shrow) {SHT_PROGBITS, 0, 0, 1, 0, dw_line_off, 0, dw_line.len, 0};
       if (dw_frame.len != 0)
-        T[17] = (struct objx_shrow) {SHT_PROGBITS, 0, 0, 8, 0, dw_frame_off, 0, dw_frame.len, 0};
+        T[18] = (struct objx_shrow) {SHT_PROGBITS, 0, 0, 8, 0, dw_frame_off, 0, dw_frame.len, 0};
     }
     for (int i = 1; i < n_secs; i++) {
       sh[i].sh_name = shname[i];
@@ -2182,6 +2231,8 @@ struct MIR_object_loaded {
   size_t map_size;
   objload_sym_t *syms; /* defined global/weak symbols, sorted by name */
   size_t n_syms;
+  void **init_arr; /* relocated .init_array entries inside the mapping */
+  size_t n_init;
 };
 
 #if defined(__ELF__) && defined(__GNUC__) && defined(__x86_64__)
@@ -2239,7 +2290,7 @@ typedef struct {
   size_t size;
   const Elf64_Ehdr *eh;
   const Elf64_Shdr *sh;
-  int i_text, i_data, i_bss, i_pool, i_symtab;
+  int i_text, i_data, i_bss, i_pool, i_init, i_symtab;
   const Elf64_Sym *syms;
   size_t n_file_syms;
   const char *strtab;
@@ -2260,7 +2311,7 @@ static int objx_scan (objx_scan_t *sc, const void *vbuf, size_t size, char *err_
   const uint8_t *buf = vbuf;
 
   memset (sc, 0, sizeof (*sc));
-  sc->i_text = sc->i_data = sc->i_bss = sc->i_pool = sc->i_symtab = -1;
+  sc->i_text = sc->i_data = sc->i_bss = sc->i_pool = sc->i_init = sc->i_symtab = -1;
   for (int k = 0; k < OBJDBG_N; k++) sc->i_dbg[k] = -1;
   if (MIR_DEBUG_EM != EM_X86_64) {
     OBJLOAD_ERR ("MIR objects are x86-64 only");
@@ -2303,11 +2354,11 @@ static int objx_scan (objx_scan_t *sc, const void *vbuf, size_t size, char *err_
   const char *shstr = (const char *) (buf + sh[eh->e_shstrndx].sh_offset);
   size_t shstr_size = sh[eh->e_shstrndx].sh_size;
 
-  /* Identify the fixed section set.  .mir.addrpool is picked out by name
-     (its flags alone would classify it as data); the rest of the alloc
-     sections are classified by their flags (EXECINSTR -> text, NOBITS ->
-     bss, else data).  Non-alloc sections (.symtab, .rela.*, .note.GNU-stack,
-     .debug_*) ride along or are consumed by name. */
+  /* Identify the fixed section set.  .mir.addrpool and .init_array are
+     picked out by name (their flags alone would classify them as data); the
+     rest of the alloc sections are classified by their flags (EXECINSTR ->
+     text, NOBITS -> bss, else data).  Non-alloc sections (.symtab, .rela.*,
+     .note.GNU-stack, .debug_*) ride along or are consumed by name. */
   for (int i = 1; i < eh->e_shnum; i++) {
     if (sh[i].sh_name >= shstr_size) {
       OBJLOAD_ERR ("section %d name out of bounds", i);
@@ -2337,6 +2388,7 @@ static int objx_scan (objx_scan_t *sc, const void *vbuf, size_t size, char *err_
       continue;
     }
     int *slot = strcmp (shstr + sh[i].sh_name, ".mir.addrpool") == 0 ? &sc->i_pool
+                : strcmp (shstr + sh[i].sh_name, ".init_array") == 0 ? &sc->i_init
                 : (sh[i].sh_flags & SHF_EXECINSTR) != 0              ? &sc->i_text
                 : sh[i].sh_type == SHT_NOBITS                        ? &sc->i_bss
                                                                      : &sc->i_data;
@@ -2383,13 +2435,13 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
   const Elf64_Ehdr *eh = sc.eh;
   const Elf64_Shdr *sh = sc.sh;
   int i_text = sc.i_text, i_data = sc.i_data, i_bss = sc.i_bss, i_pool = sc.i_pool,
-      i_symtab = sc.i_symtab;
+      i_init = sc.i_init, i_symtab = sc.i_symtab;
   const Elf64_Sym *syms = sc.syms;
   size_t n_file_syms = sc.n_file_syms;
   const char *strtab = sc.strtab;
   size_t strtab_size = sc.strtab_size;
 
-  /* One mapping, page-aligned regions: [text][data][bss][pool].  Page
+  /* One mapping, page-aligned regions: [text][data][bss][pool][init].  Page
      alignment dominates the emitter's section alignments (16 / data_align)
      and lets the text region change protection independently. */
   long ps = sysconf (_SC_PAGESIZE);
@@ -2399,16 +2451,23 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
   size_t data_size = i_data >= 0 ? sh[i_data].sh_size : 0;
   size_t bss_size = i_bss >= 0 ? sh[i_bss].sh_size : 0;
   size_t pool_size = i_pool >= 0 ? sh[i_pool].sh_size : 0;
+  size_t init_size = i_init >= 0 ? sh[i_init].sh_size : 0;
   if ((i_text >= 0 && sh[i_text].sh_addralign > pg) || (i_data >= 0 && sh[i_data].sh_addralign > pg)
       || (i_bss >= 0 && sh[i_bss].sh_addralign > pg)
-      || (i_pool >= 0 && sh[i_pool].sh_addralign > pg)) {
+      || (i_pool >= 0 && sh[i_pool].sh_addralign > pg)
+      || (i_init >= 0 && sh[i_init].sh_addralign > pg)) {
     OBJLOAD_ERR ("section alignment exceeds the page size");
+    return NULL;
+  }
+  if (init_size % 8 != 0) {
+    OBJLOAD_ERR (".init_array size is not an 8-multiple");
     return NULL;
   }
   size_t data_off = OBJLOAD_PGALIGN (text_size);
   size_t bss_off = data_off + OBJLOAD_PGALIGN (data_size);
   size_t pool_off = bss_off + OBJLOAD_PGALIGN (bss_size);
-  size_t map_size = pool_off + OBJLOAD_PGALIGN (pool_size);
+  size_t init_off = pool_off + OBJLOAD_PGALIGN (pool_size);
+  size_t map_size = init_off + OBJLOAD_PGALIGN (init_size);
   if (map_size == 0) map_size = pg;
   uint8_t *map
     = mmap (NULL, map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -2419,6 +2478,7 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
   if (text_size != 0) memcpy (map, buf + sh[i_text].sh_offset, text_size);
   if (data_size != 0) memcpy (map + data_off, buf + sh[i_data].sh_offset, data_size);
   if (pool_size != 0) memcpy (map + pool_off, buf + sh[i_pool].sh_offset, pool_size);
+  if (init_size != 0) memcpy (map + init_off, buf + sh[i_init].sh_offset, init_size);
   /* .bss is zero by mmap. */
 
   /* Region base for a symbol defined in file section index shndx. */
@@ -2427,6 +2487,7 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
    : (int) (shndx) == i_data ? (*(out_base) = map + data_off, *(out_size) = data_size, 1) \
    : (int) (shndx) == i_bss  ? (*(out_base) = map + bss_off, *(out_size) = bss_size, 1) \
    : (int) (shndx) == i_pool ? (*(out_base) = map + pool_off, *(out_size) = pool_size, 1) \
+   : (int) (shndx) == i_init ? (*(out_base) = map + init_off, *(out_size) = init_size, 1) \
                              : 0)
 
   /* Relocation pass over every SHT_RELA section targeting text or data.
@@ -2529,6 +2590,10 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
   if (lo == NULL) goto fail_unmap;
   lo->map = map;
   lo->map_size = map_size;
+  if (init_size != 0) { /* relocated in place above; entries are 8-byte fn ptrs */
+    lo->init_arr = (void **) (map + init_off);
+    lo->n_init = init_size / 8;
+  }
   size_t n_exp = 0;
   for (size_t si = 0; si < n_file_syms; si++) {
     unsigned bind = ELF64_ST_BIND (syms[si].st_info);
@@ -2571,6 +2636,11 @@ void *MIR_object_loaded_sym (MIR_object_loaded_t lo, const char *name) {
   return f == NULL ? NULL : f->addr;
 }
 
+void *const *MIR_object_loaded_init_array (MIR_object_loaded_t lo, size_t *n) {
+  if (n != NULL) *n = lo == NULL ? 0 : lo->n_init;
+  return lo == NULL ? NULL : (void *const *) lo->init_arr;
+}
+
 void MIR_object_loaded_unload (MIR_object_loaded_t lo) {
   if (lo == NULL) return;
 #if defined(MIR_DEBUG_HAVE_MMAP)
@@ -2596,7 +2666,16 @@ static int objx_shndx_sec (const objx_scan_t *sc, int shndx) {
          : shndx == sc->i_data ? MIR_OBJ_SEC_DATA
          : shndx == sc->i_bss  ? MIR_OBJ_SEC_BSS
          : shndx == sc->i_pool ? MIR_OBJ_SEC_ADDRPOOL
+         : shndx == sc->i_init ? MIR_OBJ_SEC_INITARR
                                : -1;
+}
+
+/* .init_array body append for the merge reader (always 8-aligned slots). */
+static size_t objx_initarr_append (MIR_object_t obj, const void *bytes, size_t len) {
+  while (obj->initarr.len % 8 != 0) buf_u8 (&obj->initarr, 0);
+  size_t off = obj->initarr.len;
+  buf_bytes (&obj->initarr, bytes, len);
+  return off;
 }
 
 /* Name -> dst symbol id for unification: the builder's pre-read non-local
@@ -2661,9 +2740,9 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
 
   /* Alloc-section alignments: powers of two; .text is fixed at the
      emitter's 16 (MIR_object_text_append aligns to exactly that). */
-  uint64_t al[4] = {1, 1, 1, 1};
-  const int isec[4] = {sc.i_text, sc.i_data, sc.i_bss, sc.i_pool};
-  for (int s = 0; s < 4; s++) {
+  uint64_t al[5] = {1, 1, 1, 1, 1};
+  const int isec[5] = {sc.i_text, sc.i_data, sc.i_bss, sc.i_pool, sc.i_init};
+  for (int s = 0; s < 5; s++) {
     if (isec[s] < 0) continue;
     uint64_t a = sh[isec[s]].sh_addralign;
     if (a == 0) a = 1;
@@ -2679,10 +2758,16 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
     return -1;
   }
 
+  if (sc.i_init >= 0
+      && (sh[sc.i_init].sh_size % 8 != 0 || al[MIR_OBJ_SEC_INITARR] > 8)) {
+    OBJLOAD_ERR (".init_array is not 8-byte slots");
+    return -1;
+  }
+
   /* Append the section bodies; the returned offsets are this object's
      rebase deltas.  An absent/empty section keeps a harmless base (no
      symbol or relocation can reference into it). */
-  uint64_t base[4];
+  uint64_t base[5];
   base[MIR_OBJ_SEC_TEXT]
     = sc.i_text >= 0 && sh[sc.i_text].sh_size != 0
         ? MIR_object_text_append (obj, sc.buf + sh[sc.i_text].sh_offset, sh[sc.i_text].sh_size)
@@ -2701,6 +2786,10 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
         ? MIR_object_addrpool_append (obj, sc.buf + sh[sc.i_pool].sh_offset,
                                       sh[sc.i_pool].sh_size, (size_t) al[MIR_OBJ_SEC_ADDRPOOL])
         : obj->pool.len;
+  base[MIR_OBJ_SEC_INITARR]
+    = sc.i_init >= 0 && sh[sc.i_init].sh_size != 0
+        ? objx_initarr_append (obj, sc.buf + sh[sc.i_init].sh_offset, sh[sc.i_init].sh_size)
+        : obj->initarr.len;
 
   /* Debug sections concatenate like data, into the builder's raw store;
      their relocations (kept in dbgrels below) rebase with the same rules.
