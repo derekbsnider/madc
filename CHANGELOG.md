@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+- **feat(aot): multi-`.o` DWARF merge — `-g` debug info now survives
+  multi-object links (multi-CU output).** The `.o`'s cross-debug-
+  section offsets (CU abbrev offset, `DW_AT_stmt_list`, `.debug_frame`
+  FDE CIE pointers) were bare values valid only for a lone CU at
+  section offset 0 — any multi-object link, EXTERNAL `ld` INCLUDED,
+  silently corrupted every CU after the first. They are now zeroed and
+  `R_X86_64_32`-relocated against the target debug section's symbol,
+  and `MIR_object_read` concatenates debug sections with the same
+  rebase rules as data instead of dropping them: `madc -o prog a.o
+  b.o` (and `-r`, and the merged-run lane) keeps full line info,
+  breakpoints, and backtraces across every input TU, and the merged
+  `-r` relocatable stays externally linkable and re-mergeable. A `-g`
+  cache emitted before this change is refused at merge (past the
+  first position) with a re-emit message. gdb-proven on the MIR-linked
+  merged executable and on the gcc-linked oracle. Fork `MIR_COMMIT`
+  bumped in-commit; also emits `DT_DEBUG` in executables (slice 1 —
+  restores gdb's standard probes-based solib interface).
+
 - **feat(aot): Full RELRO + non-executable stack on every native
   image (executables, PIEs, shared objects).** `.mir.addrpool` (the
   GOT) and `.dynamic` now lead the R+W segment under a page-padded

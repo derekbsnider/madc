@@ -182,8 +182,9 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
 // then feeds the existing single-object emitters/loader unchanged.
 // madc_cir_link_objects: kind selects the output — mnkRelocatable = one
 // combined .o (ld -r), executables (PIE default/-no-pie) and -shared as
-// from source; -g inputs' debug sections are dropped with a warning
-// (multi-object DWARF merge is a future slice). Returns 0/-1.
+// from source; -g inputs' DWARF merges into the output (multi-CU; a cache
+// emitted before the cross-section debug relocations is refused with a
+// re-emit message). Returns 0/-1.
 // madc_cir_run_objects: merge in memory, load, run main (argv[0] = the
 // first object path); a single path takes the R4b direct-load lane.
 int madc_cir_link_objects(const std::vector<std::string> &paths,

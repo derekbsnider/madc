@@ -31,12 +31,15 @@ thread_local bool madc_verbose = false;
 #include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
+#include <elf.h>
 #include <unistd.h>
 
 // The one-shot CLI flag madc_cir_emit_native sets (defined weak in
 // madc_globals.cpp); reset after each emission so later cases in this
 // binary run in normal JIT mode.
 extern thread_local bool madc_object_mode;
+// -g equivalent: enables the DWARF builder during emission.
+extern thread_local bool madc_debug_info;
 
 namespace {
 
@@ -220,6 +223,83 @@ TEST_SUITE("madc_cir_run_object") {
 	std::remove(r_path.c_str());
 	std::remove(x_path.c_str());
 	std::remove(d_path.c_str());
+    }
+
+    TEST_CASE("multi-object -g link: DWARF merges as multi-CU debug info") {
+	madc_debug_info = true;
+	std::string a_path = emit_object(
+	    "int scale = 6;\n"
+	    "int bonus(int);\n"
+	    "int amul(int x) { return bonus(x) * scale; }\n"
+	    "int main(int argc, char **argv) { return amul(argc + 5); }\n");
+	std::string b_path = emit_object(
+	    "extern int scale;\n"
+	    "int bonus(int x) { return x + scale; }\n");
+	madc_debug_info = false;
+
+	std::vector<std::string> paths;
+	paths.push_back(a_path);
+	paths.push_back(b_path);
+
+	// The merged relocatable must carry BOTH inputs' compile units and
+	// re-emitted cross-debug-section relocations (2+ R_X86_64_32 per CU:
+	// the CU's abbrev offset and stmt_list) — the pre-merge emitter
+	// dropped debug sections entirely.
+	std::string r_path =
+	    write_temp("/tmp/madc_unit_objload_XXXXXX.o", 2, "");
+	REQUIRE(!r_path.empty());
+	std::vector<std::string> user_libs;
+	REQUIRE(madc_cir_link_objects(paths, mnkRelocatable, r_path.c_str(),
+				      user_libs) == 0);
+	{
+	    std::ifstream f(r_path.c_str(), std::ios::binary);
+	    std::string img((std::istreambuf_iterator<char>(f)),
+			    std::istreambuf_iterator<char>());
+	    REQUIRE(img.size() > sizeof(Elf64_Ehdr));
+	    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)img.data();
+	    const Elf64_Shdr *sh = (const Elf64_Shdr *)(img.data() + eh->e_shoff);
+	    const char *shstr = img.data() + sh[eh->e_shstrndx].sh_offset;
+	    const Elf64_Shdr *info = NULL, *rinfo = NULL;
+	    for (int i = 1; i < eh->e_shnum; i++) {
+		const char *nm = shstr + sh[i].sh_name;
+		if (!strcmp(nm, ".debug_info"))
+		    info = &sh[i];
+		else if (!strcmp(nm, ".rela.debug_info"))
+		    rinfo = &sh[i];
+	    }
+	    REQUIRE((info != NULL));
+	    REQUIRE((rinfo != NULL));
+	    // Walk the CU chain: unit_length u32 heads each CU.
+	    size_t pos = 0, n_cus = 0;
+	    while (pos + 4 <= info->sh_size) {
+		uint32_t len;
+		memcpy(&len, img.data() + info->sh_offset + pos, 4);
+		if (len == 0)
+		    break;
+		n_cus++;
+		pos += 4 + (size_t)len;
+	    }
+	    CHECK(n_cus == 2);
+	    // Cross-debug relocs re-emitted: 2 per CU.
+	    const Elf64_Rela *ra =
+		(const Elf64_Rela *)(img.data() + rinfo->sh_offset);
+	    size_t nr = rinfo->sh_size / sizeof(Elf64_Rela), n32 = 0;
+	    for (size_t i = 0; i < nr; i++)
+		if (ELF64_R_TYPE(ra[i].r_info) == R_X86_64_32)
+		    n32++;
+	    CHECK(n32 >= 4);
+	}
+
+	// The debug-bearing merge still runs (loader ignores debug) and the
+	// merged relocatable still loads.
+	char *oargv[] = { (char *)a_path.c_str(), NULL };
+	CHECK(madc_cir_run_objects(paths, 1, oargv) == 72);
+	char *rargv[] = { (char *)r_path.c_str(), NULL };
+	CHECK(madc_cir_run_object(r_path.c_str(), 1, rargv) == 72);
+
+	std::remove(a_path.c_str());
+	std::remove(b_path.c_str());
+	std::remove(r_path.c_str());
     }
 
     TEST_CASE("two same-sentinel imports keep distinct pool slots (R6)") {

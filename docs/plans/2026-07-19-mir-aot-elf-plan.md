@@ -1116,7 +1116,42 @@ solib list; ld.so writes the slot before RELRO protection (same as
 every distro PIE), program runs normally. Unit probe added (DT_DEBUG
 present on exe kinds, absent on `-shared`).
 
-### Slice 2 — multi-`.o` DWARF merge (fork, the big slice)
+### Slice 2 — multi-`.o` DWARF merge — LANDED 2026-07-24 (design below implemented as written)
+
+**Commits:** fork @a6cdb992 (phase A: relocatable debug sections) +
+@704be488 (phases B–D: merge + raw emit paths), develop merge
+@809a318a; madc = the feature/aot-dwarf-merge-claude merge this block
+ships in (`MIR_COMMIT` pinned in-commit).
+
+**What phase A alone fixed:** the `.o`'s bare cross-debug offsets
+(CU abbrev offset, stmt_list, FDE CIE pointers) meant even EXTERNAL
+ld multi-`.o` `-g` links had corrupt CU-2+ line info — the "external
+ld remains the oracle" note in the multi-object fence was optimistic.
+With the R_X86_64_32 section-symbol relocs, the gcc-linked pair now
+gives correct lines/breakpoints in both TUs.
+
+**Phases B–D:** `MIR_object_read` concatenates debug sections into
+the builder's raw store (mutually exclusive with a live debug
+builder) and rebases their relocs with the same section-symbol rules
+as data; `MIR_object_emit` re-emits sections + relocs (`-r` output
+stays externally linkable AND re-mergeable); the executable emitter
+resolves them against the final layout. Old-format `-g` caches are
+refused at nonzero debug base with a re-emit message (valid in first
+position). Loader untouched — debug stays ignored at load.
+
+**Gates at landing:** MIR-linked merged `-g` PIE: `info line` correct
+in both CUs, breakpoint in the second TU with named args, cross-TU
+bt (the design's acceptance gate) · merged `-r`: 2 CUs + re-emitted
+relocs, gcc-linked oracle resolves second-CU lines · run lanes on
+debug-bearing merges unaffected · unit test_object_load + multi-CU
+structural case · fork object + load-object lanes 1139/2278 ×2 ·
+battery green (753/0/0/9 packed) · `--obj` 737/0 · zero codegen —
+torture not implicated.
+
+The `cir_read_objects` drop-warning is deleted; `MIR_object_read`'s
+rc=1 protocol is retired (nothing is dropped anymore).
+
+#### Original design (implemented as written)
 
 Lifts the "-g inputs' DWARF dropped on merge" fence. Architecture:
 **make the `.o`'s debug sections fully relocatable, then merge them

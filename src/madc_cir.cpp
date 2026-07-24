@@ -1453,7 +1453,6 @@ static MIR_object_t cir_read_objects(const std::vector<std::string> &paths)
 	fprintf(stderr, "madc: object builder unavailable on this host\n");
 	return NULL;
     }
-    bool warned_debug = false;
     for (const std::string &p : paths) {
 	std::vector<unsigned char> bytes;
 	if (!cir_read_file(p.c_str(), bytes)) {
@@ -1461,22 +1460,15 @@ static MIR_object_t cir_read_objects(const std::vector<std::string> &paths)
 	    return NULL;
 	}
 	char err[256];
-	int rc = MIR_object_read(obj, bytes.data(), bytes.size(),
-				 err, sizeof err);
-	if (rc < 0) {
+	// -g inputs' DWARF merges too (multi-CU output); a cache emitted
+	// before the cross-section debug relocations existed is refused by
+	// the reader with a re-emit message.
+	if (MIR_object_read(obj, bytes.data(), bytes.size(),
+			    err, sizeof err) != 0) {
 	    fprintf(stderr, "madc: %s: cannot merge object: %s\n",
 		    p.c_str(), err);
 	    MIR_object_destroy(obj);
 	    return NULL;
-	}
-	if (rc == 1 && !warned_debug) {
-	    // One CU per .o with stmt_list pinned at 0: concatenation
-	    // would corrupt CU 2..N, so the reader drops .debug_*.
-	    fprintf(stderr, "madc: warning: debug info in %s dropped from"
-		    " the merged output (multi-object -g linking is a"
-		    " future slice; --project -g keeps whole-program"
-		    " DWARF)\n", p.c_str());
-	    warned_debug = true;
 	}
     }
     return obj;
