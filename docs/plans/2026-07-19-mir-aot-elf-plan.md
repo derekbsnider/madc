@@ -1278,7 +1278,93 @@ so two ctor-TU `.o`s collide and only main's TU's init would ever run.
   (`MIR_object_loaded_init_array`); `cir_enter_loaded_main` walks it
   before `main`. One model per artifact kind — no parallel init paths.
 
-### Slice 4 — ODR/linkonce weak (fork + c2mir + madc)
+### Slice 4 — ODR/linkonce weak — LANDED 2026-07-24 (two TUs' identical
+copies merge instead of duplicate-strong colliding)
+
+**Commits:** fork = the feature/aot-odr-weak branch (binding enum +
+capture + IO + inliner gate + c2mir attr), madc = the
+feature/aot-odr-weak-claude merge this block ships in (`MIR_COMMIT`
+pinned in-commit).
+
+**Implemented as designed, with these decided refinements:**
+
+- **The item bit is a 3-valued binding enum, not one weak bit** —
+  `MIR_item_binding_t { GLOBAL, WEAK, LINKONCE }`,
+  `MIR_item_set_binding(ctx, item, kind)`. gcc's model has two distinct
+  non-global strengths and collapsing them was proven wrong empirically:
+  `__attribute__((weak))` means *legitimately interposable by a
+  DIFFERENT definition*, so gcc never inlines such a callee — MIR's
+  inliner baking a weak callee's body produced results diverging from
+  the gcc oracle (`22 11` vs `22 22`) the moment link order replaced the
+  copy. LINKONCE (C++ vague linkage) keeps copies ODR-identical, so
+  inlining stays legal — and blunt weak semantics would have cost the
+  JIT every template-instantiation inline. Both kinds capture as
+  STB_WEAK; only WEAK gates `process_inlines`.
+- **c2mir consumes two spec-list attrs** — `__attribute__((weak))`
+  (gcc-parity C surface) and `__attribute__((linkonce))` (madc's
+  internal channel; no gcc equivalent since COMDAT is automatic there).
+  `decl_spec` gains `weak_p`/`linkonce_p`; weak+static errors
+  ("weak declaration of X must be public", gcc-shaped). Trap for C
+  sources through `c2m`: glibc's `sys/cdefs.h` defines
+  `__attribute__(x)` away for non-GNU compilers — after a libc include
+  use `__mirc_attribute__`, madc is immune (builds N_ATTR nodes
+  directly).
+- **The binding survives both MIR serializations** — a trailing
+  `weak <name>` / `linkonce <name>` record (binary) / line (text)
+  written right after the definition item, only when present:
+  binding-less streams stay byte-identical to the pre-S4 format (no
+  version bump; an old reader hitting a new record fails loudly into
+  the mir-cache rebuild fallback). Required by the forest law — a
+  bound MIR-module cache must reproduce the parse exactly.
+- **madc marks the C++ vague-linkage set LINKONCE** via one predicate,
+  `FuncDef::is_linkonce()` = `tsubst_source != NULL || vague_linkage`,
+  where the new parse-layer `vague_linkage` flag is stamped at the
+  three places the parser *knows* the entity is per-TU-replicable:
+  `parse_deferred_function_body` (every in-class/deferred-restored
+  body), `parseFunction` under `fn_template_instantiation_depth > 0`
+  (free-template instantiation products), and — because the lexer
+  still erases the `inline` keyword — bodied C++ free functions whose
+  defining file `is_system_header_path` (libstdc++'s bodied free fns
+  are inline-or-template by construction). The FuncDef
+  rebuild/clone paths (return-type refresh, old-style param rebuild,
+  `clone_funcdef_with_return`, lambda deduction) now carry the flag —
+  the `__gnu_cxx` iterator `operator-` regression proved a deduced
+  `auto` return rebuilds the FuncDef *after* the flag was stamped.
+- **Emission sites:** `func_def()` appends `N_ATTR("linkonce")` to the
+  ret-spec list (the `optimize` attr convention); vtables, `_ZTS`/`_ZTI`
+  typeinfo, synthesized dtors, vtable thunks, and `__madc_shim_*`
+  adapters get the attr at their own builders (madc has no key-function
+  model — every TU emits them, weak dedupes them; matches libstdc++'s
+  observed all-weak shape).
+- **`--emit=c11` renders `linkonce` as `__attribute__((weak))`** — no
+  gcc `linkonce` attr exists; weak is the portable spelling with the
+  same link-time dedupe (gate: two emitted-C TUs gcc-compile with zero
+  attribute warnings, link, dedupe, run).
+- **No capture-level text dedupe (COMDAT groups stay a follow-on):**
+  symbol-level linkonce only — a merged image keeps the losing copy's
+  text as dead bytes, exactly like ld linking plain-weak objects
+  without COMDAT sections.
+
+**Documented boundary (LOUD, not silent):** an explicitly-`inline`
+USER-header free function still duplicate-strong collides at a link
+(`madc: cannot merge object: duplicate symbol 'sumv'`) because the
+lexer erases `inline`/`__inline__` as an "ignored C storage hint" —
+there is nothing left to classify by. Follow-on slice: model `inline`
+as a real tracked specifier (the constexpr un-erasure precedent), then
+route it into `vague_linkage`. A bodied non-inline function in a shared
+user header collides in g++/ld too — that half of the error is parity.
+
+**Gates (all PASS, container):** two-TU in-class-method PIE link+run;
+STB_WEAK in each `.o` + ONE survivor in the `-r` merge; two-TU
+`vector<int>` instantiations link+run; `-no-pie`; external gcc/ld link
+of madc weak `.o`s (+ `libmadc.so` for the shim runtime) runs; g++
+source oracle agrees; `-shared` dlopen; run-direct merge lane; emit-C
+attr-warning-free gcc link+run; JIT lane unchanged; erased-inline
+boundary still errors loudly. Fork smoke: first-weak-wins / reversed /
+strong-replaces-weak both orders vs the gcc oracle, weak data, binary
++ text MIR round-trips, `c2m` JIT lane.
+
+#### Original design (2026-07-24)
 
 Two TUs instantiating the same template (or emitting the same inline
 body) currently merge-collide as duplicate STRONG definitions. The

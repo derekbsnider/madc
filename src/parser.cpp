@@ -32290,6 +32290,13 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     if ( !body.var || !body.method )
 	return;
 
+    // Every body that arrives here was defined in-class (or restored from a
+    // header's deferred-body capture) — the C++ implicit-inline set: any TU
+    // that sees the defining class/header can emit an identical copy. Record
+    // that so the CIR builder emits it linkonce [ELF-completion S4].
+    if ( FuncDef *vfd = dynamic_cast<FuncDef *>(body.var->type) )
+	vfd->vague_linkage = true;
+
     body.method->reset_hoisted_declarations();
 
     std::string saved_func = cur_func_name;
@@ -46683,6 +46690,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->is_deleted = src->is_deleted;
     f->pure_virtual = src->pure_virtual;
     f->is_const_method = src->is_const_method;
+    f->vague_linkage = src->vague_linkage;
     return f;
 }
 
@@ -46909,6 +46917,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
 	    fresh->is_deleted = func->is_deleted;
 	    fresh->pure_virtual = func->pure_virtual;
+	    fresh->vague_linkage = func->vague_linkage;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	    func_already_declared = false;
@@ -46934,6 +46943,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
 	    fresh->is_deleted = func->is_deleted;
 	    fresh->pure_virtual = func->pure_virtual;
+	    fresh->vague_linkage = func->vague_linkage;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	}
@@ -46952,6 +46962,20 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // "operator<" while parsing the body, not the internal overload symbol.
     if ( !pending_function_display_name.empty() )
 	func->function_display_name = pending_function_display_name;
+    // A function parsed inside a template instantiation is an instantiation
+    // product (e.g. a namespace free-template instance) — the C++ vague-
+    // linkage set: any TU using the template mints an identical copy. Record
+    // that so the CIR builder emits it linkonce [ELF-completion S4].
+    if ( fn_template_instantiation_depth > 0 )
+	func->vague_linkage = true;
+    // A bodied C++ free function DEFINED in a system header is inline-or-
+    // template by construction (libstdc++'s bodied free functions are all
+    // `inline`, a keyword the lexer erases) — the same vague-linkage set g++
+    // derives from the keyword. Data-driven path test (Rule #7), mirroring
+    // the class from_system_header stamp.
+    else if ( !is_c_mode() && current_linkage == LinkageSpec::Cpp
+	   && is_system_header_path(TokenBase::_parse_file) )
+	func->vague_linkage = true;
 
     // for multi-return functions, inject hidden __retbuf parameter as first arg
     if ( multi_ret && multi_ret->size() > 1 )
@@ -48651,6 +48675,7 @@ TokenBase *Program::parseLambda()
 	    fresh->is_void_params	 = func->is_void_params;
 	    fresh->no_instrument_function = func->no_instrument_function;
 	    fresh->explicit_alignment	 = func->explicit_alignment;
+	    fresh->vague_linkage	 = func->vague_linkage;
 	    funcdef_map[lambda_name] = fresh;
 	    var->type = fresh;
 	    func = fresh;

@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+- **feat(aot): ODR/linkonce weak — two TUs' identical C++ copies merge
+  at native links instead of duplicate-strong colliding [ELF-completion
+  slice 4].** Template instantiations, in-class/header method bodies,
+  vtables, typeinfo, synthesized dtors, vtable thunks, and
+  `__madc_shim_*` adapters — the C++ vague-linkage set every TU emits a
+  copy of — are now marked linkonce (parse-layer
+  `FuncDef::vague_linkage` + `tsubst_source`, emitted as a spec-list
+  `N_ATTR("linkonce")`) and captured as `STB_WEAK`: a multi-`.o` link
+  keeps the first copy (strong replaces weak; gcc/ld-shaped), an
+  external gcc/ld link of madc `.o`s dedupes them natively, and
+  `--emit=c11` renders the marker as portable `__attribute__((weak))`.
+  Fork: MIR items gain a binding enum
+  (`MIR_item_set_binding`: GLOBAL / WEAK / LINKONCE — both non-global
+  kinds bind STB_WEAK; only interposable WEAK suppresses inlining, gcc
+  parity), c2mir consumes `__attribute__((weak))`/`((linkonce))` with
+  the gcc-shaped weak-static diagnostic, and the binding survives
+  binary + text MIR round trips (binding-less streams stay
+  byte-identical). Boundary (loud, not silent): an explicitly-`inline`
+  user-header free function still collides at link because the lexer
+  erases `inline` — follow-on slice models `inline` as a real
+  specifier. JIT lane unchanged. Fork `MIR_COMMIT` bumped in-commit.
+
 ## [v0.40.0] — 2026-07-24
 
 The ctor/init-array release (ELF-completion slice 3): native images adopt
