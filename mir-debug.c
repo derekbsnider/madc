@@ -1356,7 +1356,9 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
    simplified by MIR's exact reloc ledgers):
      - fixed load base 0x400000, identity file-offset<->vaddr mapping;
      - two PT_LOADs (R+X: headers/interp/hash/dynsym/dynstr/rela.dyn/text;
-       R+W: data/.dynamic/bss tail) + PT_INTERP + PT_DYNAMIC;
+       R+W: data/.dynamic/bss tail) + PT_PHDR + PT_INTERP + PT_DYNAMIC
+       (PHDR/INTERP first, gABI order; PT_PHDR is what the loader derives
+       a PIE's load bias from);
      - internal relocations resolve at emit; imports become eager
        R_X86_64_64 slot relocations in .rela.dyn (no PLT/GOT: MIR calls
        already go through address slots) => DT_TEXTREL until the PIC rung;
@@ -1368,25 +1370,36 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
    exported in .dynsym, and EVERY relocation kept dynamic -- internal targets
    as R_X86_64_RELATIVE (bias + link vaddr; -Bsymbolic semantics), imports as
    R_X86_64_64.  DT_INIT (params->init, when defined) covers load-time
-   initializers for dlopen'd modules that have no main to call them. */
+   initializers for dlopen'd modules that have no main to call them.
+   pie_p combines the two: an executable (PT_INTERP/_start/entry, import-only
+   dynsym) on the shared object's base-0 ET_DYN layout with RELATIVE internal
+   slots, tagged DT_FLAGS_1 = DF_1_PIE.  The stub is bias-clean (rip-relative
+   entry lea + slot call), so PIE needs no extra codegen -- the R6 PIC capture
+   already keeps .text relocation-free. */
 
 #define OBJX_BASE_ADDR 0x400000ull
 #define OBJX_PAGE 0x1000ull
+#ifndef DF_1_PIE /* pre-2.27 glibc elf.h */
+#define DF_1_PIE 0x08000000
+#endif
 
 /* _start: xor ebp; mov rdx->r9; pop rsi (argc); mov rsp->rdx (argv);
    align rsp; push rax; push rsp; r8=0 (fini); ecx=0 (init);
-   mov $entry,%edi (imm32 @0x15); call *disp32(%rip) (@0x19, disp @0x1b)
+   lea entry(%rip),%rdi (@0x14, disp @0x17 -- rip-relative so the ONE stub
+   serves ET_EXEC and PIE alike); call *disp32(%rip) (@0x1b, disp @0x1d)
    through the 8-byte __libc_start_main slot in the R+W address-pool region
    (PIC: a dynamic slot in text would fault the loader's write -- there is
-   no DT_TEXTREL to make it remap); hlt. */
+   no DT_TEXTREL to make it remap); hlt; int3 padding to 48. */
 static const uint8_t objx_start_stub[]
   = {0x31, 0xed, 0x49, 0x89, 0xd1, 0x5e, 0x48, 0x89, 0xe2, 0x48, 0x83,
-     0xe4, 0xf0, 0x50, 0x54, 0x45, 0x31, 0xc0, 0x31, 0xc9, 0xbf, 0x00,
-     0x00, 0x00, 0x00, 0xff, 0x15, 0x00, 0x00, 0x00, 0x00, 0xf4};
-#define OBJX_STUB_ENTRY_IMM 21 /* imm32 of mov $entry,%edi */
-#define OBJX_STUB_CALL_DISP 27 /* disp32 of call *(%rip) */
-#define OBJX_STUB_SIZE 32
-/* the 32-byte stub keeps the captured text's 16-byte alignment on its own
+     0xe4, 0xf0, 0x50, 0x54, 0x45, 0x31, 0xc0, 0x31, 0xc9, 0x48, 0x8d,
+     0x3d, 0x00, 0x00, 0x00, 0x00, 0xff, 0x15, 0x00, 0x00, 0x00, 0x00,
+     0xf4, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
+     0xcc, 0xcc, 0xcc, 0xcc};
+#define OBJX_STUB_ENTRY_DISP 23 /* disp32 of lea entry(%rip),%rdi */
+#define OBJX_STUB_CALL_DISP 29  /* disp32 of call *(%rip) */
+#define OBJX_STUB_SIZE 48
+/* the 48-byte stub keeps the captured text's 16-byte alignment on its own
    (SSE pool constants: movaps/xorpd fault otherwise) */
 #define OBJX_TEXT_BIAS OBJX_STUB_SIZE
 
@@ -1408,7 +1421,11 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   if (obj == NULL || params == NULL || buf == NULL || size == NULL || MIR_DEBUG_EM != EM_X86_64)
     return -1;
   int shared_p = params->shared_p != 0;
-  uint64_t base = shared_p ? 0 : OBJX_BASE_ADDR;
+  int pie_p = !shared_p && params->pie_p != 0;
+  /* pic_image_p: the load bias is unknown (ET_DYN) -- base 0, internal
+     ABS64 slots become R_X86_64_RELATIVE for the loader to rebase */
+  int pic_image_p = shared_p || pie_p;
+  uint64_t base = pic_image_p ? 0 : OBJX_BASE_ADDR;
   const char *interp = params->interp != NULL ? params->interp : "/lib64/ld-linux-x86-64.so.2";
   const char *entry_nm = params->entry != NULL ? params->entry : "main";
   static const Elf64_Section objx_shndx[4] = {6, 7, 10, 8}; /* text/data/bss/pool shdr indexes */
@@ -1534,7 +1551,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
       if (!obj->syms[r->sym].defined_p) goto done; /* PC32 against an import: no such producer */
       continue;
     }
-    if (shared_p || !obj->syms[r->sym].defined_p) {
+    if (pic_image_p || !obj->syms[r->sym].defined_p) {
       n_dyn_rel++;
       if (r->sec == MIR_OBJ_SEC_TEXT) textrel_p = 1;
     }
@@ -1544,7 +1561,13 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
 #define OBJX_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
   uint64_t off = sizeof (Elf64_Ehdr);
   uint64_t phdr_off = off;
-  const int n_phdrs = shared_p ? 3 : 4; /* shared objects carry no PT_INTERP */
+  /* executables: PHDR, INTERP, LOAD RX, LOAD RW, DYNAMIC (gABI order --
+     PT_PHDR/PT_INTERP precede the loadable segments; the loader derives a
+     PIE's load bias from PT_PHDR: l_addr = phdr runtime addr - p_vaddr,
+     so without it a PIE's rebasing silently uses bias 0 and ld.so faults
+     on its own unrebased pointers).  shared objects: LOAD, LOAD, DYNAMIC
+     (dlopen takes l_addr from the mapping itself). */
+  const int n_phdrs = shared_p ? 3 : 5;
   off += (uint64_t) n_phdrs * sizeof (Elf64_Phdr);
   uint64_t interp_off = off, interp_size = shared_p ? 0 : strlen (interp) + 1;
   off = OBJX_ALIGN (interp_off + interp_size, 8);
@@ -1579,10 +1602,10 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   off = OBJX_ALIGN (off, 8);
   uint64_t dynamic_off = off;
   /* NEEDED*n [+RUNPATH] [+INIT] + STRTAB/STRSZ/SYMTAB/SYMENT/HASH
-     + RELA/RELASZ/RELAENT [+TEXTREL -- only if a dynamic slot targets text;
-     the PIC capture keeps text clean] + NULL */
+     + RELA/RELASZ/RELAENT [+FLAGS_1 DF_1_PIE] [+TEXTREL -- only if a
+     dynamic slot targets text; the PIC capture keeps text clean] + NULL */
   uint64_t n_dyntags = params->n_needed + (params->runpath != NULL ? 1 : 0) + (init_i < n ? 1 : 0)
-                       + 8 + (textrel_p ? 1 : 0) + 1;
+                       + 8 + (pie_p ? 1 : 0) + (textrel_p ? 1 : 0) + 1;
   uint64_t dynamic_size = n_dyntags * sizeof (Elf64_Dyn);
   off = dynamic_off + dynamic_size;
   uint64_t rw_filesz = off - rw_off;
@@ -1686,9 +1709,12 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   } else {
     memcpy (p + interp_off, interp, interp_size);
     memcpy (p + text_off, objx_start_stub, OBJX_STUB_SIZE);
+    /* both stub references are rip-relative link-vaddr distances --
+       bias-invariant, so ET_EXEC and PIE patch identically */
     uint64_t entry_vaddr = code_vaddr + obj->syms[entry_i].value;
-    uint32_t imm = (uint32_t) entry_vaddr; /* base 0x400000: fits imm32 */
-    memcpy (p + text_off + OBJX_STUB_ENTRY_IMM, &imm, 4);
+    uint32_t edisp
+      = (uint32_t) (entry_vaddr - (text_vaddr + OBJX_STUB_ENTRY_DISP + 4));
+    memcpy (p + text_off + OBJX_STUB_ENTRY_DISP, &edisp, 4);
     /* call *disp32(%rip) into the R+W __libc_start_main slot */
     uint32_t disp
       = (uint32_t) ((base + lsm_off) - (text_vaddr + OBJX_STUB_CALL_DISP + 4));
@@ -1735,7 +1761,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
         }
         int32_t d32 = (int32_t) d;
         memcpy (p + slot_off, &d32, 4);
-      } else if (s->defined_p && shared_p) {
+      } else if (s->defined_p && pic_image_p) {
         er->r_offset = base + slot_off;
         er->r_info = ELF64_R_INFO (0, R_X86_64_RELATIVE);
         er->r_addend = (int64_t) (OBJX_SEC_VADDR (s->sec) + s->value + (uint64_t) r->addend);
@@ -1775,6 +1801,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     OBJX_DYN (DT_RELA, base + rela_off);
     OBJX_DYN (DT_RELASZ, rela_size);
     OBJX_DYN (DT_RELAENT, sizeof (Elf64_Rela));
+    if (pie_p) OBJX_DYN (DT_FLAGS_1, DF_1_PIE);
     if (textrel_p) OBJX_DYN (DT_TEXTREL, 0);
     OBJX_DYN (DT_NULL, 0);
 #undef OBJX_DYN
@@ -1794,10 +1821,12 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     eh->e_ident[EI_DATA] = ELFDATA2LSB;
     eh->e_ident[EI_VERSION] = EV_CURRENT;
     eh->e_ident[EI_OSABI] = ELFOSABI_SYSV;
-    eh->e_type = shared_p ? ET_DYN : ET_EXEC;
+    eh->e_type = pic_image_p ? ET_DYN : ET_EXEC;
     eh->e_machine = EM_X86_64;
     eh->e_version = EV_CURRENT;
-    eh->e_entry = shared_p ? 0 : text_vaddr; /* the _start stub heads .text */
+    /* the _start stub heads .text; for PIE this is the link-time vaddr
+       (base 0) and the loader rebases it with the load bias */
+    eh->e_entry = shared_p ? 0 : text_vaddr;
     eh->e_phoff = phdr_off;
     eh->e_shoff = shoff;
     eh->e_ehsize = sizeof (Elf64_Ehdr);
@@ -1807,37 +1836,45 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     eh->e_shnum = (Elf64_Half) n_secs;
     eh->e_shstrndx = 13;
   }
-  { /* program headers: LOAD R+X, LOAD R+W, [INTERP,] DYNAMIC */
+  { /* program headers: [PHDR, INTERP,] LOAD R+X, LOAD R+W, DYNAMIC */
     Elf64_Phdr *ph = (Elf64_Phdr *) (p + phdr_off);
-    ph[0].p_type = PT_LOAD;
-    ph[0].p_flags = PF_R | PF_X;
-    ph[0].p_offset = 0;
-    ph[0].p_vaddr = ph[0].p_paddr = base;
-    ph[0].p_filesz = ph[0].p_memsz = rx_filesz;
-    ph[0].p_align = OBJX_PAGE;
-    ph[1].p_type = PT_LOAD;
-    ph[1].p_flags = PF_R | PF_W;
-    ph[1].p_offset = rw_off;
-    ph[1].p_vaddr = ph[1].p_paddr = base + rw_off;
-    ph[1].p_filesz = rw_filesz;
-    ph[1].p_memsz = rw_memsz;
-    ph[1].p_align = OBJX_PAGE;
-    Elf64_Phdr *pd = &ph[2];
     if (!shared_p) {
-      ph[2].p_type = PT_INTERP;
-      ph[2].p_flags = PF_R;
-      ph[2].p_offset = interp_off;
-      ph[2].p_vaddr = ph[2].p_paddr = base + interp_off;
-      ph[2].p_filesz = ph[2].p_memsz = interp_size;
-      ph[2].p_align = 1;
-      pd = &ph[3];
+      ph->p_type = PT_PHDR;
+      ph->p_flags = PF_R;
+      ph->p_offset = phdr_off;
+      ph->p_vaddr = ph->p_paddr = base + phdr_off;
+      ph->p_filesz = ph->p_memsz = (uint64_t) n_phdrs * sizeof (Elf64_Phdr);
+      ph->p_align = 8;
+      ph++;
+      ph->p_type = PT_INTERP;
+      ph->p_flags = PF_R;
+      ph->p_offset = interp_off;
+      ph->p_vaddr = ph->p_paddr = base + interp_off;
+      ph->p_filesz = ph->p_memsz = interp_size;
+      ph->p_align = 1;
+      ph++;
     }
-    pd->p_type = PT_DYNAMIC;
-    pd->p_flags = PF_R | PF_W;
-    pd->p_offset = dynamic_off;
-    pd->p_vaddr = pd->p_paddr = base + dynamic_off;
-    pd->p_filesz = pd->p_memsz = dynamic_size;
-    pd->p_align = 8;
+    ph->p_type = PT_LOAD;
+    ph->p_flags = PF_R | PF_X;
+    ph->p_offset = 0;
+    ph->p_vaddr = ph->p_paddr = base;
+    ph->p_filesz = ph->p_memsz = rx_filesz;
+    ph->p_align = OBJX_PAGE;
+    ph++;
+    ph->p_type = PT_LOAD;
+    ph->p_flags = PF_R | PF_W;
+    ph->p_offset = rw_off;
+    ph->p_vaddr = ph->p_paddr = base + rw_off;
+    ph->p_filesz = rw_filesz;
+    ph->p_memsz = rw_memsz;
+    ph->p_align = OBJX_PAGE;
+    ph++;
+    ph->p_type = PT_DYNAMIC;
+    ph->p_flags = PF_R | PF_W;
+    ph->p_offset = dynamic_off;
+    ph->p_vaddr = ph->p_paddr = base + dynamic_off;
+    ph->p_filesz = ph->p_memsz = dynamic_size;
+    ph->p_align = 8;
   }
   { /* section headers (readelf/gdb view; the loader uses only phdrs) */
     Elf64_Shdr *sh = (Elf64_Shdr *) (p + shoff);

@@ -253,7 +253,15 @@ extern int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size);
    defined global symbols are exported through .dynsym/.hash; internal
    references cannot resolve at emit (unknown load bias) so EVERY relocation
    lands in .rela.dyn -- R_X86_64_RELATIVE for internal targets (-Bsymbolic
-   semantics: internal references never interpose), R_X86_64_64 for imports. */
+   semantics: internal references never interpose), R_X86_64_64 for imports.
+
+   With pie_p set (executables only; shared_p wins if both) the executable
+   becomes a position-independent ET_DYN: shared-object base-0 layout and
+   RELATIVE treatment of internal address slots, but keeping PT_INTERP,
+   _start, e_entry, and the import-only .dynsym of an executable (defined
+   globals are NOT exported), plus DT_FLAGS_1 = DF_1_PIE so tooling
+   classifies it as a PIE.  The stub's entry reference is rip-relative, so
+   the loader may place the image at any bias (ASLR). */
 typedef struct MIR_object_exec_params {
   const char *interp;        /* PT_INTERP path; NULL = /lib64/ld-linux-x86-64.so.2 (executables only) */
   const char *const *needed; /* DT_NEEDED sonames, emitted in order */
@@ -265,6 +273,9 @@ typedef struct MIR_object_exec_params {
   const char *init;    /* optional text symbol emitted as DT_INIT (the loader runs it
                           at load); silently omitted when NULL or not defined -- "no
                           initializers" is a valid module state, not an error */
+  int pie_p;           /* nonzero: emit the executable as a position-independent
+                          ET_DYN (PIE) instead of fixed-base ET_EXEC; ignored when
+                          shared_p is set */
 } MIR_object_exec_params;
 extern int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *params,
                                        void **buf, size_t *size);
