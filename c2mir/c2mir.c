@@ -481,6 +481,8 @@ void c2mir_init (MIR_context_t ctx) {
   str_init (c2m_ctx);
 }
 
+static void c2m_dbg_reset (void); /* defined with the debug-capture state below */
+
 void c2mir_finish (MIR_context_t ctx) {
   struct c2m_ctx **c2m_ctx_ptr = c2m_ctx_loc (ctx), *c2m_ctx = *c2m_ctx_ptr;
 
@@ -488,6 +490,7 @@ void c2mir_finish (MIR_context_t ctx) {
   reg_memory_finish (c2m_ctx);
   free (c2m_ctx);
   *c2m_ctx_ptr = NULL;
+  c2m_dbg_reset ();
 }
 
 /* New Page */
@@ -16784,6 +16787,34 @@ static c2m_dbgvar_t *c2m_dbg_vars;
 static size_t c2m_dbg_nvars, c2m_dbg_cvars;
 static c2m_dbgfunc_t *c2m_dbg_funcrecs;
 static size_t c2m_dbg_nfuncrecs, c2m_dbg_cfuncrecs;
+
+/* Reset the debug-capture state (called from c2mir_finish): every record
+   borrows pointers from the finished compile -- interned file/reg names,
+   AST tag nodes, MIR items -- so keeping it across compiles was a
+   use-after-free for any second -g compile in one process (the AOT
+   populate dereferences funcrecs[].item; latent while the freed pages
+   stayed benignly mapped).  The builder itself copies its strings, so
+   destroying it here is self-contained; the type-handle caches must be
+   dropped with it. */
+static void c2m_dbg_reset (void) {
+  if (c2m_dbg != NULL) MIR_debug_destroy (c2m_dbg);
+  c2m_dbg = NULL;
+  memset (c2m_dbg_basic, 0, sizeof (c2m_dbg_basic));
+  free (c2m_dbg_files);
+  c2m_dbg_files = NULL;
+  c2m_dbg_nfiles = c2m_dbg_cfiles = 0;
+  free (c2m_dbg_tags);
+  c2m_dbg_tags = NULL;
+  free (c2m_dbg_tagtypes);
+  c2m_dbg_tagtypes = NULL;
+  c2m_dbg_ntags = c2m_dbg_ctags = 0;
+  free (c2m_dbg_vars);
+  c2m_dbg_vars = NULL;
+  c2m_dbg_nvars = c2m_dbg_cvars = 0;
+  free (c2m_dbg_funcrecs);
+  c2m_dbg_funcrecs = NULL;
+  c2m_dbg_nfuncrecs = c2m_dbg_cfuncrecs = 0;
+}
 
 static MIR_debug_type_t c2m_dbg_type (c2m_ctx_t c2m_ctx, struct type *type);
 
