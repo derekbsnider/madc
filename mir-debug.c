@@ -1356,9 +1356,13 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
    simplified by MIR's exact reloc ledgers):
      - fixed load base 0x400000, identity file-offset<->vaddr mapping;
      - two PT_LOADs (R+X: headers/interp/hash/dynsym/dynstr/rela.dyn/text;
-       R+W: data/.dynamic/bss tail) + PT_PHDR + PT_INTERP + PT_DYNAMIC
-       (PHDR/INTERP first, gABI order; PT_PHDR is what the loader derives
-       a PIE's load bias from);
+       R+W: addrpool/.dynamic then a page pad, then data/bss tail) +
+       PT_PHDR + PT_INTERP + PT_DYNAMIC (PHDR/INTERP first, gABI order;
+       PT_PHDR is what the loader derives a PIE's load bias from) +
+       PT_GNU_STACK (non-exec) + PT_GNU_RELRO (Full RELRO: the pool -- the
+       GOT -- and .dynamic lead the R+W segment and are mprotected
+       read-only after relocation; BIND_NOW is already the only semantics,
+       there is no lazy binding to disable);
      - internal relocations resolve at emit; imports become eager
        R_X86_64_64 slot relocations in .rela.dyn (no PLT/GOT: MIR calls
        already go through address slots) => DT_TEXTREL until the PIC rung;
@@ -1428,7 +1432,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   uint64_t base = pic_image_p ? 0 : OBJX_BASE_ADDR;
   const char *interp = params->interp != NULL ? params->interp : "/lib64/ld-linux-x86-64.so.2";
   const char *entry_nm = params->entry != NULL ? params->entry : "main";
-  static const Elf64_Section objx_shndx[4] = {6, 7, 10, 8}; /* text/data/bss/pool shdr indexes */
+  static const Elf64_Section objx_shndx[4] = {6, 9, 10, 7}; /* text/data/bss/pool shdr indexes */
 
   /* the entry symbol must be a defined text function (executables only) */
   size_t n = obj->n_syms;
@@ -1561,13 +1565,14 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
 #define OBJX_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
   uint64_t off = sizeof (Elf64_Ehdr);
   uint64_t phdr_off = off;
-  /* executables: PHDR, INTERP, LOAD RX, LOAD RW, DYNAMIC (gABI order --
-     PT_PHDR/PT_INTERP precede the loadable segments; the loader derives a
-     PIE's load bias from PT_PHDR: l_addr = phdr runtime addr - p_vaddr,
-     so without it a PIE's rebasing silently uses bias 0 and ld.so faults
-     on its own unrebased pointers).  shared objects: LOAD, LOAD, DYNAMIC
-     (dlopen takes l_addr from the mapping itself). */
-  const int n_phdrs = shared_p ? 3 : 5;
+  /* executables: PHDR, INTERP, LOAD RX, LOAD RW, DYNAMIC, GNU_STACK,
+     GNU_RELRO (gABI order -- PT_PHDR/PT_INTERP precede the loadable
+     segments; the loader derives a PIE's load bias from PT_PHDR:
+     l_addr = phdr runtime addr - p_vaddr, so without it a PIE's rebasing
+     silently uses bias 0 and ld.so faults on its own unrebased pointers).
+     shared objects: LOAD, LOAD, DYNAMIC, GNU_STACK, GNU_RELRO (dlopen
+     takes l_addr from the mapping itself). */
+  const int n_phdrs = shared_p ? 5 : 7;
   off += (uint64_t) n_phdrs * sizeof (Elf64_Phdr);
   uint64_t interp_off = off, interp_size = shared_p ? 0 : strlen (interp) + 1;
   off = OBJX_ALIGN (interp_off + interp_size, 8);
@@ -1586,12 +1591,14 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   off = OBJX_ALIGN (text_off + text_size, OBJX_PAGE);
   uint64_t rx_filesz = text_off + text_size; /* the R+X segment: file start..text end */
   uint64_t rw_off = off;                     /* page-aligned R+W segment start */
-  size_t data_align = obj->data_align > 8 ? obj->data_align : 8;
-  if (data_align > OBJX_PAGE) goto done; /* congruence bound; nothing emits >4K aligns */
-  uint64_t data_off = rw_off;
+  /* RELRO: the protected pieces LEAD the R+W segment -- .mir.addrpool (the
+     GOT, incl. the _start __libc_start_main slot) then .dynamic -- and the
+     boundary is page-padded (glibc's _dl_protect_relro protects only whole
+     pages, and a page shared with .data could not be protected), so
+     PT_GNU_RELRO below covers them exactly.  .data/.bss follow, writable. */
   size_t pool_align = obj->pool_align > 8 ? obj->pool_align : 8;
-  if (pool_align > OBJX_PAGE) goto done;
-  uint64_t pool_off = OBJX_ALIGN (data_off + obj->data.len, pool_align);
+  if (pool_align > OBJX_PAGE) goto done; /* congruence bound; nothing emits >4K aligns */
+  uint64_t pool_off = rw_off; /* page-aligned, so any <=4K pool_align holds */
   uint64_t lsm_off = 0, pool_view_size = obj->pool.len;
   off = pool_off + obj->pool.len;
   if (!shared_p) { /* the _start __libc_start_main slot rides with the pool */
@@ -1602,12 +1609,17 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   off = OBJX_ALIGN (off, 8);
   uint64_t dynamic_off = off;
   /* NEEDED*n [+RUNPATH] [+INIT] + STRTAB/STRSZ/SYMTAB/SYMENT/HASH
-     + RELA/RELASZ/RELAENT [+FLAGS_1 DF_1_PIE] [+TEXTREL -- only if a
-     dynamic slot targets text; the PIC capture keeps text clean] + NULL */
+     + RELA/RELASZ/RELAENT + FLAGS (BIND_NOW) + FLAGS_1 (NOW [| PIE])
+     [+TEXTREL -- only if a dynamic slot targets text; the PIC capture
+     keeps text clean] + NULL */
   uint64_t n_dyntags = params->n_needed + (params->runpath != NULL ? 1 : 0) + (init_i < n ? 1 : 0)
-                       + 8 + (pie_p ? 1 : 0) + (textrel_p ? 1 : 0) + 1;
+                       + 10 + (textrel_p ? 1 : 0) + 1;
   uint64_t dynamic_size = n_dyntags * sizeof (Elf64_Dyn);
-  off = dynamic_off + dynamic_size;
+  uint64_t relro_end = OBJX_ALIGN (dynamic_off + dynamic_size, OBJX_PAGE);
+  size_t data_align = obj->data_align > 8 ? obj->data_align : 8;
+  if (data_align > OBJX_PAGE) goto done;
+  uint64_t data_off = relro_end; /* page boundary, so any <=4K data_align holds */
+  off = data_off + obj->data.len;
   uint64_t rw_filesz = off - rw_off;
   size_t bss_align = obj->bss_align > 8 ? obj->bss_align : 8;
   uint64_t bss_vaddr = OBJX_ALIGN (base + off, bss_align);
@@ -1673,7 +1685,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   uint32_t shname[18];
   static const char *objx_sec_names[18]
     = {"",      ".interp", ".hash",    ".dynsym", ".dynstr", ".rela.dyn", ".text",
-       ".data", ".mir.addrpool", ".dynamic", ".bss", ".symtab", ".strtab", ".shstrtab",
+       ".mir.addrpool", ".dynamic", ".data", ".bss", ".symtab", ".strtab", ".shstrtab",
        ".debug_abbrev", ".debug_info", ".debug_line", ".debug_frame"};
   int n_dbg_secs = obj->debug != NULL ? (dw_frame.len != 0 ? 4 : 3) : 0;
   n_secs += n_dbg_secs;
@@ -1801,7 +1813,10 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     OBJX_DYN (DT_RELA, base + rela_off);
     OBJX_DYN (DT_RELASZ, rela_size);
     OBJX_DYN (DT_RELAENT, sizeof (Elf64_Rela));
-    if (pie_p) OBJX_DYN (DT_FLAGS_1, DF_1_PIE);
+    /* no lazy binding exists (no PLT/DT_JMPREL): BIND_NOW is a statement
+       of fact, and with PT_GNU_RELRO it classifies as Full RELRO */
+    OBJX_DYN (DT_FLAGS, DF_BIND_NOW);
+    OBJX_DYN (DT_FLAGS_1, DF_1_NOW | (pie_p ? DF_1_PIE : 0));
     if (textrel_p) OBJX_DYN (DT_TEXTREL, 0);
     OBJX_DYN (DT_NULL, 0);
 #undef OBJX_DYN
@@ -1875,6 +1890,24 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     ph->p_vaddr = ph->p_paddr = base + dynamic_off;
     ph->p_filesz = ph->p_memsz = dynamic_size;
     ph->p_align = 8;
+    ph++;
+    /* an ABSENT PT_GNU_STACK means an EXECUTABLE stack on x86-64 Linux
+       (kernel compat default); MIR emits no stack trampolines, so non-exec
+       is unconditionally correct (offset/vaddr/sizes stay 0 -- calloc'd) */
+    ph->p_type = PT_GNU_STACK;
+    ph->p_flags = PF_R | PF_W;
+    ph->p_align = 0x10;
+    ph++;
+    /* ld.so mprotects [rw_off, relro_end) read-only after relocation and
+       before DT_INIT; the pool (the GOT) and .dynamic lead the segment so
+       the cover is exact, and nothing writes them after relocation (no
+       DT_DEBUG/DT_PLTGOT emitted; pool content is runtime-read-only) */
+    ph->p_type = PT_GNU_RELRO;
+    ph->p_flags = PF_R;
+    ph->p_offset = rw_off;
+    ph->p_vaddr = ph->p_paddr = base + rw_off;
+    ph->p_filesz = ph->p_memsz = relro_end - rw_off;
+    ph->p_align = 1;
   }
   { /* section headers (readelf/gdb view; the loader uses only phdrs) */
     Elf64_Shdr *sh = (Elf64_Shdr *) (p + shoff);
@@ -1890,12 +1923,12 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
       {SHT_STRTAB, 0, 0, 1, SHF_ALLOC, dynstr_off, 1, dynstr.len, 0},
       {SHT_RELA, 3, 0, 8, SHF_ALLOC, rela_off, 1, rela_size, sizeof (Elf64_Rela)},
       {SHT_PROGBITS, 0, 0, 16, SHF_ALLOC | SHF_EXECINSTR, text_off, 1, text_size, 0},
-      {SHT_PROGBITS, 0, 0, (uint32_t) data_align, SHF_ALLOC | SHF_WRITE, data_off, 1,
-       obj->data.len, 0},
       {SHT_PROGBITS, 0, 0, (uint32_t) pool_align, SHF_ALLOC | SHF_WRITE, pool_off, 1,
        pool_view_size, 0},
       {SHT_DYNAMIC, 4, 0, 8, SHF_ALLOC | SHF_WRITE, dynamic_off, 1, dynamic_size,
        sizeof (Elf64_Dyn)},
+      {SHT_PROGBITS, 0, 0, (uint32_t) data_align, SHF_ALLOC | SHF_WRITE, data_off, 1,
+       obj->data.len, 0},
       {SHT_NOBITS, 0, 0, (uint32_t) bss_align, SHF_ALLOC | SHF_WRITE, off, 2, obj->bss_size, 0},
       {SHT_SYMTAB, 12, n_locals + 1, 8, 0, symtab_off, 0, symtab.len, sizeof (Elf64_Sym)},
       {SHT_STRTAB, 0, 0, 1, 0, strtab_off, 0, strtab.len, 0},
