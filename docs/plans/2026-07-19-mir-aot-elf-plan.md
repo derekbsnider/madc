@@ -924,7 +924,29 @@ obj_skips) > RELRO > Mach-O/PE.
 
 ---
 
-## MULTI-OBJECT LINKING — design (2026-07-24, in progress)
+## MULTI-OBJECT LINKING — LANDED 2026-07-24 (design below implemented as written)
+
+**Commits:** fork @94b2b259 (develop @fda5543a, pinned in MIR_COMMIT),
+madc @ef04cece (develop merge @8133a1cb).
+
+**Gates at landing:** fulltest 753/0/0/9 · `--exe` 753/0 · packed
+arbiter 753/0/0/9 + release pack OK · **`--obj` 737/0 — the four
+multi-TU project obj_skips DELETED** (whole-program `--project -r`
+covers them; lane was 713) · unit test_object_load 4/4 (cross-object
+calls + data through the run, `ld -r`, and PIE-executable lanes;
+duplicate-strong error) · fork object + load-object lanes 1139/2278 ×2
+· no codegen anywhere — torture not implicated.
+
+**Fences shipped loud, filed as the follow-on slice:** `-g` inputs'
+DWARF drops from merged outputs with a warning (stmt_list-pinned
+one-CU-per-object; `--project -g` whole-program DWARF unaffected);
+two inputs both defining `__madc_global_init` (file-scope ctor init)
+hit the duplicate-symbol error — C++ cross-TU ODR/ctor/linkonce
+merging pairs with the DWARF merge slice.
+
+Remaining owner-ranked rungs after this: RELRO > Mach-O/PE.
+
+### Original design (2026-07-24)
 
 Goal (owner-ranked next): combine several precompiled `.o` caches into
 one output — the make model for AOT (recompile one TU, relink) — and
