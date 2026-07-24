@@ -286,7 +286,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false), vague_linkage(false) {}
     DataDef *findParameter(const std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -363,6 +363,18 @@ public:
     // 'K' (e.g. _ZNKSt9basic_ios...4goodEv). Set by TokenCLASS::parse / parseFunction
     // when a trailing const follows the parameter list. Default false.
     bool is_const_method;
+    // True when the body was defined in-class or arrived through the
+    // deferred-body machinery (parse_deferred_function_body): the C++
+    // implicit-inline set — every TU that sees the defining class/header can
+    // emit an identical copy. Set by the parser; consumed by is_linkonce().
+    bool vague_linkage;
+    // A definition multiple TUs can each emit identically (C++ vague
+    // linkage): a template instantiation or an in-class/deferred body. The
+    // CIR builder emits these with the `linkonce` attribute so the native
+    // object capture binds them STB_WEAK — identical per-TU copies merge at
+    // a multi-.o link (first wins) instead of colliding as duplicate strong
+    // definitions [ELF-completion S4].
+    bool is_linkonce() const { return tsubst_source != NULL || vague_linkage; }
     bool is_multi_return() const { return return_types.size() > 1; }
 };
 

@@ -7476,6 +7476,8 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 	// --- _ZTS<cls>: static char _ZTS...[] = { bytes... };  (explicit byte list) ---
 	{
 		node_t spec = list();
+		// linkonce [S4]: per-TU typeinfo-name copies dedupe at a link
+		append(spec, node2(N_ATTR, id("linkonce"), list()));
 		append(spec, simple(N_CHAR));
 		node_t dl = list();
 		append(dl, node3(N_ARR, ignore(), list(), ignore())); // [] (sized by init)
@@ -7547,6 +7549,8 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 
 	{
 		node_t spec = list();
+		// linkonce [S4]: per-TU typeinfo copies dedupe at a link
+		append(spec, node2(N_ATTR, id("linkonce"), list()));
 		append(spec, simple(N_VOID));
 		node_t dl = list();
 		append(dl, node3(N_ARR, ignore(), list(), ignore())); // []
@@ -7597,6 +7601,8 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 		if (!emitted_thunks.insert(tname).second)
 			return tname;
 		node_t ret_spec = list();
+		// linkonce [S4]: thunks re-emit wherever the vtable does
+		append(ret_spec, node2(N_ATTR, id("linkonce"), list()));
 		node_t throwaway = list();
 		fnptr_decl_pieces(ov, true, ret_spec, throwaway, std::vector<carray_dim_t>());
 		node_t plist = list();
@@ -7636,7 +7642,9 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 	auto make_dtor_thunk = [&](const std::string &target_sym, size_t off,
 				   const char *tag) -> std::string {
 		std::string tname = cdd->name + "__dthunk_" + std::to_string(off) + "_" + tag;
+		// linkonce [S4]: dtor thunks re-emit wherever the vtable does
 		node_t ret_spec = node1(N_LIST, simple(N_VOID));
+		append(ret_spec, node2(N_ATTR, id("linkonce"), list()));
 		node_t pspec = simple(N_SPEC_DECL);
 		append(pspec, node1(N_LIST, simple(N_CHAR)));
 		append(pspec, node2(N_DECL, id("__self"), node1(N_LIST, pointer())));
@@ -7774,8 +7782,11 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 	}
 
 	// void *ClassName__vtable[] = { ... };
+	// linkonce [S4]: every TU that sees the class emits the same vtable
+	// (madc has no key-function model); STB_WEAK dedupes them at a link.
 	std::string vname = cdd->name + "__vtable";
 	node_t spec = list();
+	append(spec, node2(N_ATTR, id("linkonce"), list()));
 	append(spec, simple(N_VOID));
 	node_t dl = list();
 	append(dl, node3(N_ARR, ignore(), list(), ignore())); // [] (sized by init)
@@ -10135,7 +10146,10 @@ node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
 		return NULL;
 
 	// void Class___dtor(struct Class *__this)
+	// linkonce [S4]: the synthesized dtor re-emits in every TU that
+	// destroys the class; per-TU copies dedupe at a link.
 	node_t ret_type = node1(N_LIST, simple(N_VOID));
+	append(ret_type, node2(N_ATTR, id("linkonce"), list()));
 	// A NAMED parameter is an N_SPEC_DECL (matches param_decl); an N_TYPE is
 	// only for unnamed/abstract params and would lose the __this name.
 	node_t pspec = node1(N_LIST, class_tag_ref(cdd));
@@ -20205,6 +20219,16 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		append(ret_type, node2(N_ATTR, id("optimize", tf), attr_args, tf));
 	}
 
+	// C++ vague linkage → linkonce [ELF-completion S4]: a template
+	// instantiation or in-class/deferred body is emitted by every TU that
+	// uses it. The attr makes c2mir bind the MIR item LINKONCE, captured
+	// STB_WEAK, so identical per-TU copies merge at a multi-.o link (first
+	// wins) instead of colliding as duplicate strong definitions. Calls to
+	// linkonce functions still inline (copies are ODR-identical); main is
+	// never vague.
+	if (fd->is_linkonce() && tf->var.name != "main")
+		append(ret_type, node2(N_ATTR, id("linkonce", tf), list(), tf));
+
 	// GNU nested-function / [&]-lambda capture context. A capturing function
 	// (has_captures) implicitly captures by reference whatever enclosing
 	// vars/params its body uses (its potential_captures). We translate the body
@@ -21236,7 +21260,11 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	node_t items = list();
 	for (node_t st : stmts) append(items, st);
 	node_t body = node2(N_BLOCK, list(), items);
-	node_t out = node4(N_FUNC_DEF, node1(N_LIST, simple(N_LONG)), decl,
+	// linkonce [S4]: the shim is a deterministic synthesized adapter —
+	// every TU referencing the target emits an identical copy.
+	node_t shim_spec = node1(N_LIST, simple(N_LONG));
+	append(shim_spec, node2(N_ATTR, id("linkonce"), list()));
+	node_t out = node4(N_FUNC_DEF, shim_spec, decl,
 			   list(), body);
 	CIR_NODE(out)->synth_from_origin = true;
 	return out;

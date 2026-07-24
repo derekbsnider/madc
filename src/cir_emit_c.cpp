@@ -39,6 +39,7 @@
 #include <string>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 extern "C" {
 #include "c2mir/c2mir_api.h"   // c2mir_node_op, c2mir_node_code_name
@@ -545,6 +546,14 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		// [0]=N_ID(name) [1]=N_LIST(args)  ->  __attribute__((name(args)))
 		// Emitted for vector_size on SIMD types; rendered in a spec list (cast /
 		// type-name) or via the N_SPEC_DECL attrs operand (typedef).
+		// `linkonce` is madc's internal vague-linkage marker (S4) — no such
+		// gcc attribute exists; the portable C spelling with the same
+		// link-time dedupe (STB_WEAK, first def wins) is `weak`.
+		node_t aname = op(n, 0);
+		if (aname && aname->code == N_ID && strcmp(aname->u.s.s, "linkonce") == 0) {
+			fputs("__attribute__((weak))", f);
+			break;
+		}
 		fputs("__attribute__((", f);
 		emit(f, op(n, 0), lang);
 		node_t aargs = op(n, 1);
