@@ -1051,3 +1051,100 @@ need no loader surgery).
    in the same madc commit.
 3. **DWARF merge** (follow-on): stmt_list reloc + debug concat.
    Torture: not implicated (no codegen anywhere in this rung).
+
+---
+
+## RELRO — design (2026-07-24)
+
+Goal (owner-ranked next): Full RELRO on every MIR-emitted native image —
+after the loader finishes relocation, the pages holding the address pool
+(the GOT) and `.dynamic` are mprotected read-only, closing the classic
+GOT-overwrite escalation. Small hardening rung; zero codegen.
+
+### Why Full RELRO is nearly free here
+
+madc's images have NO lazy binding: no PLT, no `DT_JMPREL`, no
+`DT_PLTGOT` — every import is an eagerly-relocated `.mir.addrpool` slot
+(R6: the pool IS the GOT). `BIND_NOW` is therefore a statement of fact,
+not a behavior change, and the usual Full-RELRO cost (eager resolution
+of a lazy PLT) does not exist. The rung is pure layout + classification.
+
+Verified: nothing writes the protected range after relocation. Pool
+content = const-pool values, address slots, switch tables — all
+runtime-read-only (the `.mir.rodata` sibling slice exists precisely
+because the pure-constant entries are writable-but-never-written). The
+two `.dynamic` tags ld.so writes through (`DT_DEBUG` r_debug, `DT_PLTGOT`
+GOT[1]/[2]) are not emitted. glibc's `_dl_protect_relro` runs after
+relocation and before `DT_INIT`, and `__madc_global_init` writes madc
+globals in `.data`/`.bss`, never pool slots.
+
+### Layout change (fork `mir-debug.c`, `MIR_object_emit_executable` only)
+
+Reorder the R+W segment so the protected pieces LEAD it, and page-pad
+the RELRO boundary (glibc's `_dl_protect_relro` protects only whole
+pages — an unaligned end leaves the last partial page writable, and an
+end page shared with `.data` must not be protected):
+
+```
+rw_off      (page-aligned, unchanged)
+  .mir.addrpool  @ rw_off          (pool_align ≤ 4K ⇒ satisfied directly)
+  [lsm slot]     8-aligned after pool (executables; rides the pool view)
+  .dynamic       8-aligned
+  ── relro_end = ALIGN(., 4K)      (file-backed zero pad, ≤ 4095 bytes)
+  .data          @ relro_end       (data_align ≤ 4K ⇒ satisfied directly)
+  .bss           (NOBITS, unchanged tail arithmetic)
+```
+
+Identity offset↔vaddr mapping preserved throughout. The `_start` stub's
+`call *disp32(%rip)` recomputes automatically (lsm_off moves with the
+pool); all reloc slot offsets and `DT_*` vaddrs are derived, not pinned.
+
+### New program headers (both executables and shared objects)
+
+- `PT_GNU_RELRO`: `p_offset = rw_off`, `filesz = memsz =
+  relro_end − rw_off`, `PF_R`, align 1 — covers pool + lsm slot +
+  `.dynamic` exactly.
+- `PT_GNU_STACK` (`PF_R|PF_W`, sizes 0, align 0x10) — companion
+  hardening DECIDED into this rung: the emitter has never written one,
+  and on x86-64 Linux an absent `PT_GNU_STACK` means an EXECUTABLE
+  stack (kernel compat default). MIR emits no stack trampolines, so
+  non-exec is unconditionally correct. One 56-byte header in the same
+  phdr block; called out for owner veto.
+
+Phdr order follows gcc: [PHDR, INTERP,] LOAD RX, LOAD RW, DYNAMIC,
+GNU_STACK, GNU_RELRO. `n_phdrs`: executables 5 → 7, shared 3 → 5
+(PT_PHDR's filesz derives from n_phdrs — auto-correct).
+
+### Dynamic tags
+
+- `DT_FLAGS = DF_BIND_NOW` (new, always).
+- `DT_FLAGS_1 = DF_1_NOW | (pie ? DF_1_PIE : 0)` (now always emitted;
+  previously only for PIE). checksec's Full-RELRO test = `PT_GNU_RELRO`
+  + BIND_NOW — both present on exe, PIE, and `.so` alike.
+
+### Section-header rows (readelf/gdb view only; loader keys on phdrs)
+
+Rows 7/8/9 renumber to file order: 7 = `.mir.addrpool`, 8 = `.dynamic`,
+9 = `.data` (`objx_shndx` map {6,7,10,8} → {6,9,10,7}; shstrtab name
+array reordered to match). `n_secs` 14 fixed + debug rows 14–17 and
+`e_shstrndx = 13` all UNCHANGED — the R6 e_shstrndx trap re-checked.
+The R4b loader and `MIR_object_read` parse ET_REL only — unaffected.
+
+### Defaults (decide-good-defaults)
+
+RELRO + non-exec stack are UNCONDITIONAL — no `MIR_object_exec_params`
+field, no CLI knob. There is no trade to expose: no lazy binding exists,
+so Full RELRO costs one ≤4K pad page; gcc's distro default is full RELRO
+(`-z relro -z now`). An escape hatch can be a one-field addition if a
+real embedding case ever needs it.
+
+### Validation
+
+readelf -l shows GNU_RELRO ending page-aligned and covering pool +
+`.dynamic`; GNU_STACK RW; readelf -d shows `FLAGS BIND_NOW` +
+`FLAGS_1 (NOW PIE)`; checksec-equivalent classification = Full RELRO +
+NX. Structural probes added to unit `test_native_shared.cpp` (PIE +
+`-shared` cases). Battery (fulltest / exe / release / packed) + `--obj`
+lane + gdb R5 gate on PIE `-g` + fork object/load-object lanes. Pin
+discipline: fork develop merge + `MIR_COMMIT` bump in the same madc
+commit. Torture not implicated (layout-only, zero codegen).
