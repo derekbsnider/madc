@@ -225,6 +225,96 @@ TEST_SUITE("madc_cir_run_object") {
 	std::remove(d_path.c_str());
     }
 
+    TEST_CASE("init-array: two ctor TUs merge and BOTH inits run (S3)") {
+	// Each TU's dynamic global initializer forces a per-TU static init
+	// riding .init_array — the exact shape that collided as duplicate
+	// __madc_global_init definitions before the init-array model.
+	std::string a_path = emit_object(
+	    "int aseed() { return 30; }\n"
+	    "int abase = aseed();\n"
+	    "extern int bbase;\n"
+	    "int main(int argc, char **argv) { return abase + bbase; }\n");
+	std::string b_path = emit_object(
+	    "int bseed() { return 12; }\n"
+	    "int bbase = bseed();\n");
+
+	// Structural: each .o carries a 1-slot .init_array + its rela.
+	auto initarr_size = [](const std::string &path) -> uint64_t {
+	    std::ifstream f(path.c_str(), std::ios::binary);
+	    std::string img((std::istreambuf_iterator<char>(f)),
+			    std::istreambuf_iterator<char>());
+	    REQUIRE(img.size() > sizeof(Elf64_Ehdr));
+	    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)img.data();
+	    const Elf64_Shdr *sh = (const Elf64_Shdr *)(img.data()
+							+ eh->e_shoff);
+	    for (int i = 1; i < eh->e_shnum; i++)
+		if (sh[i].sh_type == SHT_INIT_ARRAY)
+		    return sh[i].sh_size;
+	    return 0;
+	};
+	CHECK(initarr_size(a_path) == 8);
+	CHECK(initarr_size(b_path) == 8);
+
+	std::vector<std::string> paths;
+	paths.push_back(a_path);
+	paths.push_back(b_path);
+
+	// Run lane: the loader walks the merged init array before main —
+	// main sees BOTH TUs' dynamic inits done (30 + 12).
+	char *oargv[] = { (char *)a_path.c_str(), NULL };
+	CHECK(madc_cir_run_objects(paths, 1, oargv) == 42);
+
+	// ld -r lane: the arrays concatenate (2 slots) and the re-emitted
+	// merge still runs both inits.
+	std::string r_path =
+	    write_temp("/tmp/madc_unit_objload_XXXXXX.o", 2, "");
+	REQUIRE(!r_path.empty());
+	std::vector<std::string> user_libs;
+	REQUIRE(madc_cir_link_objects(paths, mnkRelocatable, r_path.c_str(),
+				      user_libs) == 0);
+	CHECK(initarr_size(r_path) == 16);
+	char *rargv[] = { (char *)r_path.c_str(), NULL };
+	CHECK(madc_cir_run_object(r_path.c_str(), 1, rargv) == 42);
+
+	std::remove(a_path.c_str());
+	std::remove(b_path.c_str());
+	std::remove(r_path.c_str());
+    }
+
+    TEST_CASE("init-array: pre-S3 ctor cache is refused at merge") {
+	// Synthesize a minimal old-model .o: it defines __madc_global_init,
+	// the retired convention whose ctors nothing would run anymore.
+	MIR_object_t obj = MIR_object_create();
+	REQUIRE(obj != NULL);
+	unsigned char ret_insn[16] = { 0xc3 };	// ret (padded to text align)
+	MIR_object_text_append(obj, ret_insn, sizeof ret_insn);
+	REQUIRE(MIR_object_add_symbol(obj, "__madc_global_init",
+				      MIR_OBJ_SEC_TEXT, 0, 1, 1, 0, 0) >= 0);
+	void *buf = NULL;
+	size_t size = 0;
+	REQUIRE(MIR_object_emit(obj, &buf, &size) == 0);
+	MIR_object_destroy(obj);
+	std::string o_path =
+	    write_temp("/tmp/madc_unit_objload_XXXXXX.o", 2, "");
+	REQUIRE(!o_path.empty());
+	{
+	    std::ofstream f(o_path.c_str(), std::ios::binary);
+	    f.write((const char *)buf, (std::streamsize)size);
+	}
+	free(buf);
+
+	std::vector<std::string> paths;
+	paths.push_back(o_path);
+	std::vector<std::string> user_libs;
+	std::string out_path =
+	    write_temp("/tmp/madc_unit_objload_XXXXXX.o", 2, "");
+	REQUIRE(!out_path.empty());
+	CHECK(madc_cir_link_objects(paths, mnkRelocatable, out_path.c_str(),
+				    user_libs) != 0);
+	std::remove(o_path.c_str());
+	std::remove(out_path.c_str());
+    }
+
     TEST_CASE("multi-object -g link: DWARF merges as multi-CU debug info") {
 	madc_debug_info = true;
 	std::string a_path = emit_object(

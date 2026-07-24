@@ -299,6 +299,59 @@ TEST_SUITE("madc_cir_emit_native") {
 	    // legacy-interface fallback warning.
 	    CHECK(dyn_has_tag(img, DT_DEBUG, NULL)
 		  == (kinds[k] != mnkShared));
+
+	    // Ctor-less TU: no init array, no legacy DT_INIT (S3 baseline).
+	    CHECK(!dyn_has_tag(img, DT_INIT_ARRAY, NULL));
+	    CHECK(!dyn_has_tag(img, DT_INIT, NULL));
+	}
+    }
+
+    TEST_CASE("init-array rung: per-TU init rides DT_INIT_ARRAY inside RELRO") {
+	// A dynamic global initializer (seed() is not a C11 constant
+	// expression) forces the per-TU init in object mode.
+	const char *body =
+	    "int seed() { return 42; }\n"
+	    "int base = seed();\n"
+	    "int main() { return base == 42 ? 0 : 1; }\n";
+	const char *so_body =
+	    "int seed() { return 42; }\n"
+	    "int base = seed();\n"
+	    "int mget() { return base; }\n";
+
+	const MadcNativeKind kinds[] = { mnkPieExecutable, mnkExecutable,
+					 mnkShared };
+	for (int k = 0; k < 3; k++) {
+	    INFO("kind = " << (int)kinds[k]);
+	    std::string img = emit_native_image(
+		kinds[k] == mnkShared ? so_body : body, kinds[k]);
+	    REQUIRE(img.size() > sizeof(Elf64_Ehdr));
+
+	    // One TU init = one 8-byte array entry; DT_INIT is retired
+	    // (the array is the one init model on every image kind).
+	    uint64_t ia = 0, iasz = 0;
+	    REQUIRE(dyn_has_tag(img, DT_INIT_ARRAY, &ia));
+	    REQUIRE(dyn_has_tag(img, DT_INIT_ARRAYSZ, &iasz));
+	    CHECK(iasz == 8);
+	    CHECK(!dyn_has_tag(img, DT_INIT, NULL));
+
+	    // The array lives in the RELRO lead region (gcc-shaped):
+	    // relocated, protected, then read by the init walk.
+	    const Elf64_Phdr *relro = find_phdr(img, PT_GNU_RELRO);
+	    REQUIRE((relro != NULL));
+	    CHECK(ia >= relro->p_vaddr);
+	    CHECK(ia + iasz <= relro->p_vaddr + relro->p_memsz);
+
+	    // ET_EXEC bakes the entry at emit; PIC images leave the file
+	    // slot zero for the loader's RELATIVE relocation. The identity
+	    // offset<->vaddr mapping means file offset = vaddr - load base
+	    // (the first LOAD's vaddr - offset).
+	    const Elf64_Phdr *rx = find_phdr(img, PT_LOAD);
+	    REQUIRE((rx != NULL));
+	    uint64_t slot_off = ia - (rx->p_vaddr - rx->p_offset);
+	    REQUIRE(slot_off + 8 <= img.size());
+	    uint64_t slot = 0;
+	    std::memcpy(&slot, img.data() + slot_off, 8);
+	    CHECK((slot != 0) == (kinds[k] == mnkExecutable));
 	}
     }
 }

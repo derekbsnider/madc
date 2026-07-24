@@ -108,6 +108,13 @@ class CirBuilder {
 	// base DataDef so we can tell the typedef's own pointer depth apart from
 	// the explicit stars written at the usage site.
 	Program *m_prog;
+	// TU identity (the source path) — set by the caller before
+	// translate_module; seeds the object-mode per-TU init symbol.
+	std::string m_tu_name;
+	// Object mode (ELF-completion S3): the TU-unique STATIC init function
+	// translate_module synthesized (empty = this TU has none). madc_cir
+	// registers it into the capture's .init_array after generation.
+	std::string m_tu_init_name;
 	// True while translating the body of a void-returning function — lets
 	// translate_return lower a gcc-accepted `return <expr>;` to `<expr>;
 	// return;` (c2mir rejects a value in a void return).
@@ -1400,6 +1407,11 @@ public:
 
 	// ---- Top-level module translation ----
 	node_t translate_module(Program *prog);
+	// TU identity for the object-mode per-TU init symbol; call before
+	// translate_module (harmless in JIT mode — unused there).
+	void set_tu_name(const char *s) { m_tu_name = s ? s : ""; }
+	// The synthesized per-TU init's symbol (object mode; empty = none).
+	const std::string &tu_init_name() const { return m_tu_init_name; }
 	// Pack-side c2mir check gate, drop arm (rung 1, layer 4): called by
 	// madc_cir_freeze with the defective top-level child indices reported
 	// by c2mir_check_tree on a COPY of the pristine translated tree. Drops

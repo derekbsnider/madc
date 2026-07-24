@@ -53,6 +53,10 @@ extern "C" {
 }
 
 extern thread_local bool madc_verbose;
+// Object-capture mode (native artifacts): translate_module synthesizes the
+// per-TU static init (rides the image's .init_array) instead of the JIT's
+// __madc_global_init + main-wrap model. Defined in madc_globals.cpp.
+extern thread_local bool madc_object_mode;
 
 namespace {
 class CirNullStreambuf : public std::streambuf
@@ -20631,15 +20635,18 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	}
 
 	// madc::sys (task #91): a TU that included <ns_madc> populates the
-	// host system object from main's real arguments — ONE injected
-	// __madc_sys_init(argc, argv) call serves the JIT and native lanes
-	// alike, and it runs BEFORE __madc_global_init so dynamic global
-	// initializers may read sys.*. A main declared without parameters
-	// initializes an empty argv. The facts (platform/version/hostname)
-	// initialize at host load and need no call here.
+	// host system object from main's real arguments — the injected
+	// __madc_sys_init(argc, argv) call runs BEFORE __madc_global_init so
+	// dynamic global initializers may read sys.*. A main declared without
+	// parameters initializes an empty argv. The facts (platform/version/
+	// hostname) initialize at host load and need no call here.
+	// JIT lane only: object mode (ELF-completion S3) retires this main
+	// wrap — the per-TU init synthesized in translate_module carries both
+	// calls and rides the image's .init_array (ld.so/glibc run it before
+	// main), so two ctor TUs no longer collide on __madc_global_init.
 	bool want_sys_init = tf->var.name == "main"
 			     && m_prog && m_prog->_include_ns_madc;
-	if (tf->var.name == "main"
+	if (!madc_object_mode && tf->var.name == "main"
 	    && (want_sys_init || !m_global_ctor_stmts.empty())) {
 		node_t outer = list();
 		if (want_sys_init) {
@@ -21796,6 +21803,37 @@ static const char *cir_declared_id(node_t n)
 	if (idn && idn->code == N_ID)
 		return idn->u.s.s;
 	return NULL;
+}
+
+// Object-mode per-TU init symbol: __madc_init_<stem>_<fnv32(path)> — a
+// deterministic, gdb-readable, TU-unique C identifier (the function is
+// static, so uniqueness is for debuggability, not correctness; locals
+// never unify at the multi-.o merge).
+static std::string tu_init_symbol(const std::string &tu)
+{
+	uint32_t h = 2166136261u;			// FNV-1a over the full path
+	for (size_t i = 0; i < tu.size(); i++) {
+		h ^= (unsigned char)tu[i];
+		h *= 16777619u;
+	}
+	std::string stem = tu;
+	size_t sl = stem.rfind('/');
+	if (sl != std::string::npos)
+		stem = stem.substr(sl + 1);
+	size_t dot = stem.rfind('.');
+	if (dot != std::string::npos && dot > 0)
+		stem = stem.substr(0, dot);
+	std::string out = "__madc_init_";
+	for (size_t i = 0; i < stem.size(); i++) {
+		char c = stem[i];
+		bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+			  || (c >= '0' && c <= '9');
+		out += ok ? c : '_';
+	}
+	char hx[12];
+	snprintf(hx, sizeof hx, "_%08x", h);
+	out += hx;
+	return out;
 }
 
 node_t CirBuilder::translate_module(Program *prog)
@@ -23308,16 +23346,28 @@ node_t CirBuilder::translate_module(Program *prog)
 		m_instr_thunk_def = NULL;
 	}
 
-	// Synthesize `void __madc_global_init(void)` — the ONE home for the
-	// file-scope class-global ctor calls (collected by collect_global_ctors).
-	// main's prologue calls it (translate_func), and main-less embedding
-	// sessions invoke it at runtime init via CirJitSession::function_code.
-	// A static once-guard makes a second invocation (host init + run_main)
-	// a no-op. Emitted FIRST among definitions so main's call (and any
-	// earlier-in-source function) sees the definition.
+	// Synthesize the module init — the ONE home for the file-scope
+	// class-global ctor calls (collected by collect_global_ctors).
+	// JIT lane: `void __madc_global_init(void)` — main's prologue calls it
+	// (translate_func), and main-less embedding sessions invoke it at
+	// runtime init via CirJitSession::function_code. Object mode
+	// (ELF-completion S3): a STATIC init under a TU-unique name (locals
+	// never unify at the multi-.o merge, so two ctor TUs coexist) with the
+	// platform init-array signature (int argc, char **argv, char **envp) —
+	// madc_cir registers it into the capture's .init_array, and ld.so /
+	// glibc >= 2.34 / the R4b loader run it before main. A TU that
+	// included <ns_madc> opens its init with __madc_sys_init(argc, argv)
+	// (the runtime guards repopulation), preserving "dynamic global
+	// initializers may read sys.*" — so an object-mode init exists when
+	// the TU has ctors OR included <ns_madc>.
+	// A static once-guard makes a second invocation a no-op. Emitted FIRST
+	// among definitions so main's call (and any earlier-in-source
+	// function) sees the definition.
 	node_t gi_items = NULL;		// rung 3: the init body's stmt list —
 	node_t gi_def = NULL;		// the filter prunes dead ctor groups here
-	if (!m_global_ctor_stmts.empty()) {
+	m_tu_init_name.clear();
+	bool obj_sys_init = madc_object_mode && m_prog && m_prog->_include_ns_madc;
+	if (!m_global_ctor_stmts.empty() || obj_sys_init) {
 		// declaration: N_SPEC_DECL(N_SHARE(specs), declarator, attrs,
 		// asm, initializer) — c2mir.c:538.
 		node_t gspec = list();
@@ -23336,12 +23386,63 @@ node_t CirBuilder::translate_module(Program *prog)
 				    node2(N_RETURN, list(), ignore()), ignore()));
 		append(items, node2(N_EXPR, list(),
 				    node2(N_ASSIGN, id("__madc_gi_done"), integer(1))));
+		if (obj_sys_init) {
+			// __madc_sys_init_once(argc, (void *)argv); — from
+			// the init's own parameters (main's wrap is retired
+			// here). The _once entry yields to a prior
+			// population, so N TU inits and dlopen'd modules
+			// never stomp a running script's sys.* mutations.
+			need_output_extern("__madc_sys_init_once", false,
+					   { { {N_LONG}, false },
+					     { {N_VOID}, true } });
+			node_t sargs = list();
+			append(sargs, id("argc"));
+			append(sargs, node2(N_CAST, void_ptr_type(),
+					    id("argv")));
+			node_t scall = node2(N_CALL,
+					     id("__madc_sys_init_once"),
+					     sargs);
+			CIR_NODE(scall)->synth_from_origin = true;
+			append(items, node2(N_EXPR, list(), scall));
+		}
 		for (node_t s : m_global_ctor_stmts)
 			append(items, s);
 		node_t ibody = node2(N_BLOCK, list(), items);
-		node_t iret = node1(N_LIST, simple(N_VOID));
-		node_t idecl = node2(N_DECL, id("__madc_global_init"),
-				     node1(N_LIST, node1(N_FUNC, list())));
+		node_t iret = list();
+		node_t iparams = list();
+		const char *gi_name = "__madc_global_init";
+		std::string tu_sym;
+		if (madc_object_mode) {
+			tu_sym = tu_init_symbol(m_tu_name);
+			gi_name = tu_sym.c_str();
+			m_tu_init_name = tu_sym;
+			// static linkage: the capture defines it STB_LOCAL
+			append(iret, simple(N_STATIC));
+			// (int argc, char **argv, char **envp)
+			static const char *gi_par[3]
+				= {"argc", "argv", "envp"};
+			for (int gp = 0; gp < 3; gp++) {
+				node_t pspec = list();
+				append(pspec, simple(gp == 0 ? N_INT
+							     : N_CHAR));
+				node_t pdecl = list();
+				if (gp != 0) {
+					append(pdecl, pointer());
+					append(pdecl, pointer());
+				}
+				node_t par = simple(N_SPEC_DECL);
+				append(par, node1(N_SHARE, pspec));
+				append(par, node2(N_DECL, id(gi_par[gp]),
+						  pdecl));
+				append(par, ignore());
+				append(par, ignore());
+				append(par, ignore());
+				append(iparams, par);
+			}
+		}
+		append(iret, simple(N_VOID));
+		node_t idecl = node2(N_DECL, id(gi_name),
+				     node1(N_LIST, node1(N_FUNC, iparams)));
 		gi_items = items;
 		gi_def = node4(N_FUNC_DEF, iret, idecl, list(), ibody);
 		func_def_nodes.insert(func_def_nodes.begin(), gi_def);
