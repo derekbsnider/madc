@@ -293,6 +293,12 @@ TEST_SUITE("madc_cir_emit_native") {
 	    const Elf64_Phdr *stack = find_phdr(img, PT_GNU_STACK);
 	    REQUIRE((stack != NULL));
 	    CHECK((stack->p_flags & PF_X) == 0);
+
+	    // DT_DEBUG (executables only — ld parity): the r_debug slot gdb's
+	    // probes-based solib interface keys on; its absence forced the
+	    // legacy-interface fallback warning.
+	    CHECK(dyn_has_tag(img, DT_DEBUG, NULL)
+		  == (kinds[k] != mnkShared));
 	}
     }
 }
