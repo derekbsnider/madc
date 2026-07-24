@@ -6312,6 +6312,12 @@ struct decl_spec {
   unsigned int typedef_p : 1, extern_p : 1, static_p : 1;
   unsigned int auto_p : 1, register_p : 1, thread_local_p : 1;
   unsigned int inline_p : 1, no_return_p : 1; /* func specifiers  */
+  /* __attribute__((weak)) / __attribute__((linkonce)) in the declaration
+     specs: the definition's MIR item binding (MIR_item_set_binding) becomes
+     WEAK (interposable, never inlined) or LINKONCE (ODR-identical per-TU
+     copy, inlineable); both capture as STB_WEAK so identical per-TU copies
+     merge instead of duplicate-strong colliding */
+  unsigned int weak_p : 1, linkonce_p : 1;
   int align;                                  // negative value means undefined
   node_t align_node;                          //  strictest valid N_ALIGNAS node
   node_code_t linkage;  // N_IGNORE - none, N_STATIC - internal, N_EXTERN - external
@@ -7494,6 +7500,7 @@ static void set_type_qual (c2m_ctx_t c2m_ctx, node_t r, struct type_qual *tq,
 }
 
 static void apply_vector_attr_list (c2m_ctx_t c2m_ctx, node_t attrs, struct type **type_ptr);
+static int attr_name_eq_p (const char *attr_name, const char *canonical_name);
 
 static void check_type_duplication (c2m_ctx_t c2m_ctx, struct type *type, node_t n,
                                     const char *name, int size, int sign) {
@@ -7749,6 +7756,7 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
   res->typedef_p = res->extern_p = res->static_p = FALSE;
   res->auto_p = res->register_p = res->thread_local_p = FALSE;
   res->inline_p = res->no_return_p = FALSE;
+  res->weak_p = res->linkonce_p = FALSE;
   res->align = -1;
   res->align_node = NULL;
   res->linkage = N_IGNORE;
@@ -8079,7 +8087,18 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
       }
       break;
     }
-    case N_ATTR: break;
+    case N_ATTR: {
+      /* vector_size/ext_vector_type are applied after the loop
+         (apply_vector_attr_list); weak/linkonce are consumed here */
+      node_t aname = NL_HEAD (n->u.ops);
+      if (aname != NULL && aname->code == N_ID) {
+        if (attr_name_eq_p (aname->u.s.s, "weak"))
+          res->weak_p = TRUE;
+        else if (attr_name_eq_p (aname->u.s.s, "linkonce"))
+          res->linkonce_p = TRUE;
+      }
+      break;
+    }
     default: abort ();
     }
   if (type->mode == TM_BASIC && type->u.basic_type == TP_UNDEF) {
@@ -9290,6 +9309,10 @@ static void create_decl (c2m_ctx_t c2m_ctx, node_t scope, node_t decl_node,
     list_head = NL_HEAD (NL_NEXT (id)->u.ops);
     func_p = !param_p && list_head && list_head->code == N_FUNC;
     decl->decl_spec.linkage = get_id_linkage (c2m_ctx, func_p, id, scope, decl->decl_spec);
+    /* gcc parity: a weak/linkonce symbol needs external linkage */
+    if ((decl->decl_spec.weak_p || decl->decl_spec.linkonce_p)
+        && decl->decl_spec.linkage == N_STATIC && id->code == N_ID)
+      error (c2m_ctx, POS (id), "weak declaration of %s must be public", id->u.s.s);
   }
   if (decl_node->code != N_MEMBER) {
     set_type_layout (c2m_ctx, decl->decl_spec.type);
@@ -18881,6 +18904,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         }
         if (decl->u.item != NULL && decl->scope == top_scope && !decl->decl_spec.static_p) {
           MIR_new_export (ctx, name);
+          if (decl->decl_spec.weak_p)
+            MIR_item_set_binding (ctx, decl->u.item, MIR_ITEM_BIND_WEAK);
+          else if (decl->decl_spec.linkonce_p)
+            MIR_item_set_binding (ctx, decl->u.item, MIR_ITEM_BIND_LINKONCE);
         } else if (decl->u.item != NULL && decl->scope != top_scope && decl->decl_spec.static_p) {
           MIR_item_t item = MIR_new_forward (ctx, name);
 
@@ -18924,6 +18951,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                                          VARR_LENGTH (MIR_var_t, proto_info.arg_vars),
                                          VARR_ADDR (MIR_var_t, proto_info.arg_vars)));
     func_decl->u.item = curr_func;
+    if (func_decl->decl_spec.weak_p)
+      MIR_item_set_binding (ctx, curr_func, MIR_ITEM_BIND_WEAK);
+    else if (func_decl->decl_spec.linkonce_p)
+      MIR_item_set_binding (ctx, curr_func, MIR_ITEM_BIND_LINKONCE);
     curr_no_strict_aliasing_p = func_decl->no_strict_aliasing_p;
     DLIST_INIT (MIR_insn_t, slow_code_part);
     if (ns->stack_var_p /* we can have empty struct only with size 0 and still need a frame: */

@@ -3412,8 +3412,12 @@ static void target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code
 
   size_t func_off = MIR_object_text_append (obj, code, code_len);
   int sym = gen_obj_item_sym (gen_ctx, curr_func_item);
+  /* weak/linkonce (MIR_item_set_binding) binds STB_WEAK -- identical per-TU
+     copies merge (first weak wins) instead of duplicate-strong colliding;
+     the ELF writer lets local_p take precedence over weak_p */
   MIR_object_symbol_define (obj, sym, MIR_OBJ_SEC_TEXT, func_off, code_len, TRUE,
-                            !curr_func_item->export_p, FALSE);
+                            !curr_func_item->export_p,
+                            curr_func_item->binding != MIR_ITEM_BIND_GLOBAL);
   int text_sec_sym = MIR_object_section_symbol (obj, MIR_OBJ_SEC_TEXT);
   int pool_sec_sym = MIR_object_section_symbol (obj, MIR_OBJ_SEC_ADDRPOOL);
 

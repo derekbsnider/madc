@@ -9887,7 +9887,8 @@ static void obj_emit_module_data (gen_ctx_t gen_ctx, MIR_module_t m) {
         el.item = ci;
         if (HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)) {
           int sym = gen_obj_item_sym (gen_ctx, ci);
-          MIR_object_symbol_define (gen_object, sym, sec, off, len, 0, !ci->export_p, 0);
+          MIR_object_symbol_define (gen_object, sym, sec, off, len, 0, !ci->export_p,
+                                    ci->binding != MIR_ITEM_BIND_GLOBAL);
         }
       }
     }
@@ -9898,7 +9899,7 @@ static void obj_emit_module_data (gen_ctx_t gen_ctx, MIR_module_t m) {
     if (head_nm != NULL || referenced_p) {
       int sym = gen_obj_item_sym (gen_ctx, item);
       MIR_object_symbol_define (gen_object, sym, sec, head_off, group_end - head_off, 0,
-                                !item->export_p, 0);
+                                !item->export_p, item->binding != MIR_ITEM_BIND_GLOBAL);
     }
     item = g_end;
   }

@@ -1216,6 +1216,7 @@ static MIR_item_t create_item (MIR_context_t ctx, MIR_item_type_t item_type,
   item->item_type = item_type;
   item->ref_def = NULL;
   item->export_p = FALSE;
+  item->binding = MIR_ITEM_BIND_GLOBAL;
   item->section_head_p = FALSE;
   item->addr = NULL;
   return item;
@@ -1245,6 +1246,19 @@ static MIR_item_t new_export_import_forward (MIR_context_t ctx, const char *name
 
 MIR_item_t MIR_new_export (MIR_context_t ctx, const char *name) {
   return new_export_import_forward (ctx, name, MIR_export_item, "export", FALSE);
+}
+
+void MIR_item_set_binding (MIR_context_t ctx, MIR_item_t item, MIR_item_binding_t binding) {
+  mir_assert (item != NULL);
+  if (binding != MIR_ITEM_BIND_GLOBAL && binding != MIR_ITEM_BIND_WEAK
+      && binding != MIR_ITEM_BIND_LINKONCE)
+    MIR_get_error_func (ctx) (MIR_wrong_param_value_error,
+                              "MIR_item_set_binding: unknown binding kind");
+  if (item->item_type != MIR_func_item && item->item_type != MIR_data_item
+      && item->item_type != MIR_ref_data_item && item->item_type != MIR_bss_item)
+    MIR_get_error_func (ctx) (MIR_wrong_param_value_error,
+                              "MIR_item_set_binding: item is not a bindable definition");
+  item->binding = (char) binding;
 }
 
 MIR_item_t MIR_new_import (MIR_context_t ctx, const char *name) {
@@ -3406,8 +3420,15 @@ void MIR_output_module (MIR_context_t ctx, FILE *f, MIR_module_t module) {
   mir_assert (f != NULL && module != NULL);
   fprintf (f, "%s:\tmodule\n", module->name);
   for (MIR_item_t item = DLIST_HEAD (MIR_item_t, module->items); item != NULL;
-       item = DLIST_NEXT (MIR_item_t, item))
+       item = DLIST_NEXT (MIR_item_t, item)) {
     MIR_output_item (ctx, f, item);
+    /* weak/linkonce definitions carry a trailing `weak <name>` /
+       `linkonce <name>` line (same placement as the binary writer: right
+       after the definition item) */
+    if (item->binding != MIR_ITEM_BIND_GLOBAL && MIR_item_name (ctx, item) != NULL)
+      fprintf (f, "\t%s\t%s\n", item->binding == MIR_ITEM_BIND_WEAK ? "weak" : "linkonce",
+               MIR_item_name (ctx, item));
+  }
   fprintf (f, "\tendmodule\n");
 }
 
@@ -4341,7 +4362,11 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
     }
     called_func = called_func_item->u.func;
     called_func_insns_num = DLIST_LENGTH (MIR_insn_t, called_func->insns);
-    if (called_func->first_lref != NULL || called_func->vararg_p || called_func->jret_p
+    /* an interposable-weak definition may be replaced by a DIFFERENT one at
+       link time -- never bake its body into a caller (gcc parity; LINKONCE
+       copies are ODR-identical and stay inlineable) */
+    if (called_func_item->binding == MIR_ITEM_BIND_WEAK || called_func->first_lref != NULL
+        || called_func->vararg_p || called_func->jret_p
         || called_func_insns_num > (func_insn->code != MIR_CALL ? MIR_MAX_INSNS_FOR_INLINE
                                                                 : MIR_MAX_INSNS_FOR_CALL_INLINE)
         || (func_insns_num > MIR_MAX_FUNC_INLINE_GROWTH * original_func_insns_num / 100
@@ -5399,8 +5424,19 @@ static size_t write_module (MIR_context_t ctx, writer_func_t writer, MIR_module_
 
   len += write_name (ctx, writer, module->name);
   for (MIR_item_t item = DLIST_HEAD (MIR_item_t, module->items); item != NULL;
-       item = DLIST_NEXT (MIR_item_t, item))
+       item = DLIST_NEXT (MIR_item_t, item)) {
     len += write_item (ctx, writer, item);
+    /* weak/linkonce definitions carry a trailing `weak <name>` /
+       `linkonce <name>` record (only emitted when present, so binding-less
+       streams are byte-identical to the pre-binding format; an old reader
+       hitting one fails loudly as an unknown insn name, which cache
+       consumers treat as rebuild-and-recompile) */
+    if (item->binding != MIR_ITEM_BIND_GLOBAL && MIR_item_name (ctx, item) != NULL) {
+      len += write_name (ctx, writer,
+                         item->binding == MIR_ITEM_BIND_WEAK ? "weak" : "linkonce");
+      len += write_name (ctx, writer, MIR_item_name (ctx, item));
+    }
+  }
   len += write_name (ctx, writer, "endmodule");
   return len;
 }
@@ -5925,6 +5961,20 @@ void MIR_read_with_func (MIR_context_t ctx, int (*const reader) (MIR_context_t))
         if (VARR_LENGTH (uint64_t, insn_label_string_nums) != 0)
           MIR_get_error_func (ctx) (MIR_binary_io_error, "export %s should have no labels", name);
         MIR_new_export (ctx, name);
+      } else if (strcmp (name, "weak") == 0 || strcmp (name, "linkonce") == 0) {
+        /* binding marker: written right after its definition item, so the
+           module item table already holds the named definition */
+        MIR_item_t bind_item;
+        MIR_item_binding_t binding
+          = name[0] == 'w' ? MIR_ITEM_BIND_WEAK : MIR_ITEM_BIND_LINKONCE;
+        name = read_name (ctx, module, "wrong weak/linkonce name");
+        if (VARR_LENGTH (uint64_t, insn_label_string_nums) != 0)
+          MIR_get_error_func (ctx) (MIR_binary_io_error, "weak/linkonce %s should have no labels",
+                                    name);
+        if (module == NULL || (bind_item = item_tab_find (ctx, name, module)) == NULL)
+          MIR_get_error_func (ctx) (MIR_binary_io_error, "weak/linkonce %s of undefined item",
+                                    name);
+        MIR_item_set_binding (ctx, bind_item, binding);
       } else if (strcmp (name, "import") == 0) {
         name = read_name (ctx, module, "wrong import name");
         if (VARR_LENGTH (uint64_t, insn_label_string_nums) != 0)
@@ -6664,6 +6714,7 @@ void MIR_scan_string (MIR_context_t ctx, const char *str) {
   MIR_label_t label;
   int64_t i, n;
   int module_p, end_module_p, proto_p, func_p, end_func_p, dots_p, export_p, import_p, forward_p;
+  int weak_stmt_p, linkonce_stmt_p;
   int bss_p, ref_p, lref_p, expr_p, string_p, global_p, local_p, push_op_p, read_p, disp_p;
   insn_name_t in, el;
 
@@ -6696,6 +6747,7 @@ void MIR_scan_string (MIR_context_t ctx, const char *str) {
     }
     module_p = end_module_p = proto_p = func_p = end_func_p = FALSE;
     export_p = import_p = forward_p = bss_p = ref_p = lref_p = expr_p = string_p = FALSE;
+    weak_stmt_p = linkonce_stmt_p = FALSE;
     global_p = local_p = FALSE;
     if (strcmp (name, "module") == 0) {
       module_p = TRUE;
@@ -6721,6 +6773,14 @@ void MIR_scan_string (MIR_context_t ctx, const char *str) {
       export_p = TRUE;
       if (VARR_LENGTH (label_name_t, label_names) != 0)
         scan_error (ctx, "export should have no labels");
+    } else if (strcmp (name, "weak") == 0) {
+      weak_stmt_p = TRUE;
+      if (VARR_LENGTH (label_name_t, label_names) != 0)
+        scan_error (ctx, "weak should have no labels");
+    } else if (strcmp (name, "linkonce") == 0) {
+      linkonce_stmt_p = TRUE;
+      if (VARR_LENGTH (label_name_t, label_names) != 0)
+        scan_error (ctx, "linkonce should have no labels");
     } else if (strcmp (name, "import") == 0) {
       import_p = TRUE;
       if (VARR_LENGTH (label_name_t, label_names) != 0)
@@ -6789,6 +6849,14 @@ void MIR_scan_string (MIR_context_t ctx, const char *str) {
         if (t.code != TC_COL && !proto_p && !func_p && !local_p && !global_p) {
           if (export_p) {
             MIR_new_export (ctx, name);
+            push_op_p = FALSE;
+          } else if (weak_stmt_p || linkonce_stmt_p) {
+            /* binding marker: the definition item precedes its weak/linkonce
+               line (MIR_output_module writes it right after the item) */
+            if (module == NULL || (item = item_tab_find (ctx, name, module)) == NULL)
+              scan_error (ctx, "weak/linkonce %s of undeclared item", name);
+            MIR_item_set_binding (ctx, item,
+                                  weak_stmt_p ? MIR_ITEM_BIND_WEAK : MIR_ITEM_BIND_LINKONCE);
             push_op_p = FALSE;
           } else if (import_p) {
             MIR_new_import (ctx, name);
@@ -7068,7 +7136,8 @@ void MIR_scan_string (MIR_context_t ctx, const char *str) {
         scan_error (ctx, "endfunc should have no params");
       func = NULL;
       MIR_finish_func (ctx);
-    } else if (export_p || import_p || forward_p) { /* we already created items, now do nothing: */
+    } else if (export_p || weak_stmt_p || linkonce_stmt_p || import_p
+               || forward_p) { /* we already created/marked items, now do nothing: */
       mir_assert (VARR_LENGTH (MIR_op_t, scan_insn_ops) == 0);
     } else if (global_p || local_p) {
       op_addr = VARR_ADDR (MIR_op_t, scan_insn_ops);
