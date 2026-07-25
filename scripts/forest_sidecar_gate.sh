@@ -11,6 +11,11 @@
 # quietly), so the chain reaches the external arms. Runs from the repo root
 # (fulltest does); fixtures generated into tmp/ (gitignored).
 set -u
+# pipefail so a madc failure inside the $(... | tr) captures trips the
+# || fail guards. The greps below therefore read via here-strings, NOT
+# pipes: `echo big | grep -q` dies of EPIPE when grep -q exits at the
+# first match, and pipefail would turn that into a false failure.
+set -o pipefail
 cd "$(dirname "$0")/.."
 
 ulimit -t 300 2>/dev/null
@@ -53,30 +58,30 @@ live_out=$(env -u MADC_FOREST timeout 120 "$D/madc" --no-forest-bind "$D/consume
 
 # Leg 1 — sidecar arm: <exe>.forest beside the binary binds.
 cp "$D/stdio.msnap" "$D/madc.forest"
-v=$(env -u MADC_FOREST timeout 120 "$D/madc" -v "$D/consumer.cpp" 2>&1) \
+v=$(env -u MADC_FOREST timeout 120 "$D/madc" -v "$D/consumer.cpp" 2>&1 | tr -d '\0') \
     || fail "[sidecar] compile failed"
-echo "$v" | grep -q 'bound to grove unit' || fail "[sidecar] did not bind"
+grep -q <<<"$v" 'bound to grove unit' || fail "[sidecar] did not bind"
 out=$(env -u MADC_FOREST timeout 120 "$D/madc" "$D/consumer.cpp" 2>/dev/null)
 [ "$out" = "$live_out" ] || fail "[sidecar] bind output != live parse output"
 
 # Leg 2 — --no-forest-bind beats the sidecar (the master live-parse lever).
-v=$(env -u MADC_FOREST timeout 120 "$D/madc" --no-forest-bind -v "$D/consumer.cpp" 2>&1) \
+v=$(env -u MADC_FOREST timeout 120 "$D/madc" --no-forest-bind -v "$D/consumer.cpp" 2>&1 | tr -d '\0') \
     || fail "[no-bind] compile failed"
-echo "$v" | grep -q 'bound to grove unit' && fail "[no-bind] bound despite --no-forest-bind"
+grep -q <<<"$v" 'bound to grove unit' && fail "[no-bind] bound despite --no-forest-bind"
 
 # Leg 3 — arm order: a present sidecar wins BEFORE the MADC_FOREST arm is
 # probed (a junk env path must produce no not-a-container notice).
 echo "not a container" > "$D/junk.txt"
-v=$(MADC_FOREST="$D/junk.txt" timeout 120 "$D/madc" -v "$D/consumer.cpp" 2>&1) \
+v=$(MADC_FOREST="$D/junk.txt" timeout 120 "$D/madc" -v "$D/consumer.cpp" 2>&1 | tr -d '\0') \
     || fail "[order] compile failed"
-echo "$v" | grep -q 'bound to grove unit' || fail "[order] sidecar did not bind"
-echo "$v" | grep -q 'no forest container found' && fail "[order] env arm probed despite sidecar hit"
+grep -q <<<"$v" 'bound to grove unit' || fail "[order] sidecar did not bind"
+grep -q <<<"$v" 'no forest container found' && fail "[order] env arm probed despite sidecar hit"
 
 # Leg 4 — MADC_FOREST arm: with no sidecar, the env path binds.
 rm -f "$D/madc.forest"
-v=$(MADC_FOREST="$D/stdio.msnap" timeout 120 "$D/madc" -v "$D/consumer.cpp" 2>&1) \
+v=$(MADC_FOREST="$D/stdio.msnap" timeout 120 "$D/madc" -v "$D/consumer.cpp" 2>&1 | tr -d '\0') \
     || fail "[env] compile failed"
-echo "$v" | grep -q 'bound to grove unit' || fail "[env] did not bind"
+grep -q <<<"$v" 'bound to grove unit' || fail "[env] did not bind"
 out=$(MADC_FOREST="$D/stdio.msnap" timeout 120 "$D/madc" "$D/consumer.cpp" 2>/dev/null)
 [ "$out" = "$live_out" ] || fail "[env] bind output != live parse output"
 
@@ -85,7 +90,7 @@ out=$(MADC_FOREST="$D/stdio.msnap" timeout 120 "$D/madc" "$D/consumer.cpp" 2>/de
 cp "$D/junk.txt" "$D/madc.forest"
 err=$(env -u MADC_FOREST timeout 120 "$D/madc" "$D/consumer.cpp" 2>&1 >/dev/null) \
     || fail "[junk-sidecar] compile failed (fallback broken)"
-echo "$err" | grep -q 'no forest container found' || fail "[junk-sidecar] junk was silently skipped"
+grep -q <<<"$err" 'no forest container found' || fail "[junk-sidecar] junk was silently skipped"
 out=$(env -u MADC_FOREST timeout 120 "$D/madc" "$D/consumer.cpp" 2>/dev/null)
 [ "$out" = "$live_out" ] || fail "[junk-sidecar] fallback output wrong"
 rm -f "$D/madc.forest"
@@ -94,7 +99,7 @@ rm -f "$D/madc.forest"
 # explicitly named container must never be ignored silently).
 err=$(env -u MADC_FOREST timeout 120 "$D/madc" --forest-bind="$D/absent.msnap" "$D/consumer.cpp" 2>&1 >/dev/null) \
     || fail "[explicit-miss] compile failed (fallback broken)"
-echo "$err" | grep -q 'did not provide a usable forest container' \
+grep -q <<<"$err" 'did not provide a usable forest container' \
     || fail "[explicit-miss] missing the loud notice"
 
 echo "forest_sidecar_gate: OK (sidecar + env arms bind, order pinned, failure surfaces loud)"

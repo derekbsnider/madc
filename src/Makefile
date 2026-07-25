@@ -212,6 +212,18 @@ else ifeq ($(WITH_FOREST),sidecar)
 DEFINES += -DMADC_FOREST_EXPECT_SIDECAR
 endif
 endif
+# The expectation is BAKED into madc.o (-D above), and -MMD tracks headers,
+# not flags: a WITH_FOREST switch without a clean would silently keep the
+# previous shape's madc.o. The stamp records the shape per obj tree
+# (the .libmode precedent); switching shapes recreates it and recompiles
+# madc.o. Prerequisite-only entry — the recipe stays the pattern rule's.
+FOREST_SHAPE_STAMP = $(OBJDIR)/.forest-shape-$(WITH_FOREST)
+$(FOREST_SHAPE_STAMP):
+	@mkdir -p $(OBJDIR)
+	@rm -f $(OBJDIR)/.forest-shape-*
+	@touch $@
+$(OBJDIR)/madc.o: $(FOREST_SHAPE_STAMP)
+$(PICOBJDIR)/madc.o: $(FOREST_SHAPE_STAMP)
 # Hosted binaries ship PACKED (forest-carriers S1): the darwin groves are
 # cross-frozen by the same-arch cross madc (identical embedded prelude, same
 # target facts -> same context hash + config word) and embedded at link time
