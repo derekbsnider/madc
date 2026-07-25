@@ -314,35 +314,6 @@ static bool is_identifier_spelling(const std::string &s)
     return true;
 }
 
-static bool next_source_word_is(Source &source, const char *match)
-{
-    std::string consumed;
-    while ( source.good() )
-    {
-	int c = source.peek();
-	if ( c == ' ' || c == '\t' || c == '\n' || c == '\r'
-	  || c == '\f' || c == '\v' )
-	    consumed += (char)source.get();
-	else
-	    break;
-    }
-    std::string word;
-    while ( source.good() )
-    {
-	int c = source.peek();
-	if ( isalnum((unsigned char)c) || c == '_' )
-	{
-	    word += (char)source.get();
-	    consumed += word.back();
-	}
-	else
-	    break;
-    }
-    if ( !consumed.empty() )
-	source.pushback_reread(consumed);
-    return word == match;
-}
-
 static bool identifier_matches_gnu_attribute_name(const std::string &id,
 						  const std::string &name)
 {
@@ -1136,11 +1107,22 @@ void Program::_tokenizer_init()
     add_keywords();
     add_datatypes();
 
-    // Ignored C storage hints. Type qualifiers are real tokens so
-    // macro token-pasting can still see their spelling.
-    define_map["inline"] = "";
-    define_map["__inline__"] = "";
-    define_map["__inline"] = "";
+    // C modes: `inline` and its GNU spellings stay ignored storage hints
+    // (the C99 inline no-external-definition model is a different feature;
+    // erasure keeps today's behavior). C++ modes / the madc dialect: `inline`
+    // is a REAL reserved decl-specifier (registered in add_keywords like
+    // constexpr) that carries vague linkage — the GNU spellings map to it.
+    if ( !cpp_keyword_active(STD_CPP98) )
+    {
+	define_map["inline"] = "";
+	define_map["__inline__"] = "";
+	define_map["__inline"] = "";
+    }
+    else
+    {
+	define_map["__inline__"] = "inline";
+	define_map["__inline"] = "inline";
+    }
     // constexpr (slice 5) / consteval / constinit (slice 6) are real reserved
     // tokens, no longer erased: constexpr activates the TokenIF `if constexpr`
     // discard machinery, and all three are consumed as ignored decl-specifiers
@@ -2626,6 +2608,13 @@ void Program::add_keywords()
 	// by the same is_ignored_cpp_specifier_token path as constexpr.
 	{ "consteval",        STD_CPP20 },
 	{ "constinit",        STD_CPP20 },
+	// inline (un-erased 2026-07-24, ELF-completion S4 follow-through): a
+	// real decl-specifier consumed by TokenCppKeyword::parse (which also
+	// owns `inline namespace`) and the member-specifier loop; it carries
+	// vague linkage — bodied external-linkage functions/variables it
+	// qualifies emit linkonce (STB_WEAK) so per-TU header copies merge at
+	// native links. C modes keep the erasure (see _tokenizer_init).
+	{ "inline",           STD_CPP98 },
 	// Slice 4 (expression keywords) — validating subset first. The named
 	// casts / typeid / decltype / alignof are recognized by spelling in
 	// parse_constant_primary and the expression parser (de-shimmed), and are
@@ -4779,9 +4768,6 @@ TokenBase *Program::_getToken()
 			// #define substitution: inject the define value into the source stream
 			if ( define_map.count(sid) && !source.macro_disabled(word) )
 			{
-			    if ( word == "inline"
-			      && next_source_word_is(source, "namespace") )
-				return make_ident(word);
 			    std::string &val = define_map[sid];
 			    if ( !val.empty() )
 			    {

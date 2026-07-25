@@ -3685,6 +3685,7 @@ public:
     bool parsing_extern_decl = false;	// current declaration originated from `extern`
     bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
     bool parsing_const_decl = false;	// current declaration originated from `const` — set vfCONSTANT on the variable
+    bool parsing_inline_decl = false;	// current declaration carries the C++ `inline` specifier (TokenCppKeyword::parse sets it; parseDeclaration consumes it like parsing_static_decl) — vague linkage for external-linkage functions/variables
     bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
 
     // ---- Script mode: STD_MADC file-scope statements → synthesized main.
@@ -4211,7 +4212,8 @@ public:
 		       std::vector<DataDef *> *multi_ret = NULL,
 		       bool return_ref = false,
 		       std::string return_typedef_alias = std::string(),
-		       bool static_class_method = false);
+		       bool static_class_method = false,
+		       bool inline_specified = false);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     TokenBase *parseCallMethod(TokenCallMethod *);

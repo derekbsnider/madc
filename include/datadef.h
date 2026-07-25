@@ -119,6 +119,10 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			  vfCONSTBAKED =262144, // `const`-DECLARED var whose parse-time-known
 			                        // initializer value WAS set() into data — an
 			                        // integral constant expression; read-fold OK
+			  vfLINKONCE   =524288, // C++ `inline` variable (vague linkage): every
+			                        // including TU defines it — the CIR backend
+			                        // emits a linkonce data binding (STB_WEAK) so
+			                        // per-TU copies merge at a multi-.o link
 			} varflag_t;
 
 // The rt{None,Val,Ptr,Ref,DePtr,DeRef} tag-arithmetic macros are retired:

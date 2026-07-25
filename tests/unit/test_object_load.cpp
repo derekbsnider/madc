@@ -112,6 +112,31 @@ void *two_import_resolver(const char *name, void *)
     return dlsym(RTLD_DEFAULT, name);
 }
 
+// ELF binding of a DEFINED symbol in an object file's SHT_SYMTAB
+// (STB_GLOBAL/STB_WEAK), or -1 when the name is absent/undefined.
+int sym_bind(const std::string &path, const char *name)
+{
+    std::ifstream f(path.c_str(), std::ios::binary);
+    std::string img((std::istreambuf_iterator<char>(f)),
+		    std::istreambuf_iterator<char>());
+    REQUIRE(img.size() > sizeof(Elf64_Ehdr));
+    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)img.data();
+    const Elf64_Shdr *sh = (const Elf64_Shdr *)(img.data() + eh->e_shoff);
+    for (int i = 1; i < eh->e_shnum; i++) {
+	if (sh[i].sh_type != SHT_SYMTAB)
+	    continue;
+	const Elf64_Sym *syms =
+	    (const Elf64_Sym *)(img.data() + sh[i].sh_offset);
+	size_t n = sh[i].sh_size / sizeof(Elf64_Sym);
+	const char *str = img.data() + sh[sh[i].sh_link].sh_offset;
+	for (size_t s = 1; s < n; s++)
+	    if (syms[s].st_shndx != SHN_UNDEF && syms[s].st_name
+		&& std::strcmp(str + syms[s].st_name, name) == 0)
+		return ELF64_ST_BIND(syms[s].st_info);
+    }
+    return -1;
+}
+
 } // namespace
 
 TEST_SUITE("madc_cir_run_object") {
@@ -301,30 +326,6 @@ TEST_SUITE("madc_cir_run_object") {
 	       "{ Adder y; return y.add(4, 3) + use_a(); }\n").c_str());
 
 	// Structural: the method is a WEAK defined symbol in each .o.
-	auto sym_bind = [](const std::string &path,
-			   const char *name) -> int {
-	    std::ifstream f(path.c_str(), std::ios::binary);
-	    std::string img((std::istreambuf_iterator<char>(f)),
-			    std::istreambuf_iterator<char>());
-	    REQUIRE(img.size() > sizeof(Elf64_Ehdr));
-	    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)img.data();
-	    const Elf64_Shdr *sh = (const Elf64_Shdr *)(img.data()
-							+ eh->e_shoff);
-	    for (int i = 1; i < eh->e_shnum; i++) {
-		if (sh[i].sh_type != SHT_SYMTAB)
-		    continue;
-		const Elf64_Sym *syms =
-		    (const Elf64_Sym *)(img.data() + sh[i].sh_offset);
-		size_t n = sh[i].sh_size / sizeof(Elf64_Sym);
-		const char *str = img.data()
-				  + sh[sh[i].sh_link].sh_offset;
-		for (size_t s = 1; s < n; s++)
-		    if (syms[s].st_shndx != SHN_UNDEF && syms[s].st_name
-			&& std::strcmp(str + syms[s].st_name, name) == 0)
-			return ELF64_ST_BIND(syms[s].st_info);
-	    }
-	    return -1;
-	};
 	CHECK(sym_bind(a_path, "Adder__add") == STB_WEAK);
 	CHECK(sym_bind(b_path, "Adder__add") == STB_WEAK);
 
@@ -346,6 +347,60 @@ TEST_SUITE("madc_cir_run_object") {
 	REQUIRE(madc_cir_link_objects(paths, mnkRelocatable, r_path.c_str(),
 				      user_libs) == 0);
 	CHECK(sym_bind(r_path, "Adder__add") == STB_WEAK);
+	char *rargv[] = { (char *)r_path.c_str(), NULL };
+	CHECK(madc_cir_run_object(r_path.c_str(), 1, rargv) == 42);
+
+	std::remove(a_path.c_str());
+	std::remove(b_path.c_str());
+	std::remove(r_path.c_str());
+    }
+
+    TEST_CASE("inline un-erasure: user-header inline fn + variable merge weak, dynamic init runs once") {
+	// The S4 boundary lifted: an explicitly-`inline` free function and
+	// an `inline` variable shared by two TUs (the user-header shape)
+	// bind STB_WEAK — function AND data — and merge instead of
+	// duplicate-strong colliding. `once` has a DYNAMIC init that bumps
+	// `counter`: the linkonce once-guard must run it exactly once in
+	// the merged image (double-run makes counter 2 and the exit code
+	// 142, not 42).
+	static const char *hdr =
+	    "inline int sumv(int a, int b) { return a + b; }\n"
+	    "inline int tunable = 29;\n"
+	    "inline int counter = 0;\n"
+	    "inline int bump() { return ++counter; }\n"
+	    "inline int once = bump();\n";
+	std::string a_path = emit_object(
+	    (std::string(hdr)
+	     + "int use_a() { return sumv(tunable, 5); }\n").c_str());
+	std::string b_path = emit_object(
+	    (std::string(hdr)
+	     + "extern int use_a();\n"
+	       "int main(int argc, char **argv)\n"
+	       "{ return sumv(4, 3) + use_a() + once + (counter - 1) * 100; }\n").c_str());
+
+	CHECK(sym_bind(a_path, "sumv") == STB_WEAK);
+	CHECK(sym_bind(b_path, "sumv") == STB_WEAK);
+	CHECK(sym_bind(a_path, "tunable") == STB_WEAK);
+	CHECK(sym_bind(b_path, "tunable") == STB_WEAK);
+	CHECK(sym_bind(a_path, "once") == STB_WEAK);
+
+	std::vector<std::string> paths;
+	paths.push_back(a_path);
+	paths.push_back(b_path);
+
+	// Run lane: 4+3 + 29+5 + once(1) + 0 = 42.
+	char *oargv[] = { (char *)a_path.c_str(), NULL };
+	CHECK(madc_cir_run_objects(paths, 1, oargv) == 42);
+
+	// ld -r lane: one weak survivor each, still 42.
+	std::string r_path =
+	    write_temp("/tmp/madc_unit_objload_XXXXXX.o", 2, "");
+	REQUIRE(!r_path.empty());
+	std::vector<std::string> user_libs;
+	REQUIRE(madc_cir_link_objects(paths, mnkRelocatable, r_path.c_str(),
+				      user_libs) == 0);
+	CHECK(sym_bind(r_path, "sumv") == STB_WEAK);
+	CHECK(sym_bind(r_path, "tunable") == STB_WEAK);
 	char *rargv[] = { (char *)r_path.c_str(), NULL };
 	CHECK(madc_cir_run_object(r_path.c_str(), 1, rargv) == 42);
 

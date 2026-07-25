@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+- **feat(lang): `inline` un-erasure — a real C++ specifier carrying
+  vague linkage; the S4 `sumv` boundary is closed [ELF-completion S4
+  follow-through].** `inline` joins the version-gated keyword registry
+  (C++ modes; `__inline__`/`__inline` map to it; C modes keep the
+  erasure — C99 inline semantics are out of scope, nothing broken
+  there), is consumed in every decl-specifier position
+  (`TokenCppKeyword::parse`, which also owns `inline namespace` — the
+  lexer carve-out is deleted; the member-specifier loop; mid-seq
+  positions), and routes into `FuncDef::vague_linkage` via
+  `parseDeclaration`/`parseFunction` with `static inline` excluded
+  (internal linkage is never vague). Inline VARIABLES (C++17) ride the
+  same S4 machinery: `vfLINKONCE` → linkonce data binding (STB_WEAK,
+  fn AND data merge across TUs), and a dynamic init runs once per
+  merged image behind a linkonce once-guard (`__madc_ivg_<sym>`, the
+  g++ guarded COMDAT-init model). `--emit=c11` renders the variable
+  attr as portable `__attribute__((weak))`. Fork untouched. Gates:
+  20/20 (two-TU weak fn+data merge runs 42 across madc-link /
+  run-direct / external gcc/ld / emit-C lanes; g++ source oracle
+  agrees; JIT `tests/testinline.mad`; init-once is load-bearing).
+  Pre-existing gaps surfaced and verified NOT slice regressions:
+  emitted-C multi-TU dynamic-init TUs collide on `__madc_global_init`
+  (emit-C still uses the JIT main-wrap model), and file-static
+  functions export GLOBAL in `.o`s (same for plain `static`).
+
 ## [v0.41.0] — 2026-07-24
 
 The ODR/linkonce weak release (ELF-completion slice 4): the C++
