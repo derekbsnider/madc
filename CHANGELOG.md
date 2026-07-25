@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v0.42.0] — 2026-07-25
+
+The inline un-erasure release (ELF-completion S4 follow-through):
+`inline` is a real C++ specifier carrying vague linkage — user-header
+inline functions and C++17 inline variables merge weak across TUs, and
+dynamic inits run once behind a linkonce guard. Fork untouched.
+
 - **feat(lang): `inline` un-erasure — a real C++ specifier carrying
   vague linkage; the S4 `sumv` boundary is closed [ELF-completion S4
   follow-through].** `inline` joins the version-gated keyword registry

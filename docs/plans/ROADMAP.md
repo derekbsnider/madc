@@ -74,21 +74,26 @@ high-level" — the answer is both.**
   and both the live fulltest and packed release suite are **695/0/0/16** with
   every forest gate green, including `[subbind]`. See
   `docs/plans/2026-07-14-CODEX-HANDBACK-local-class-identity.md`.
-- **Version:** `0.41.0` (per `VERSION`) — the **ODR/linkonce weak**
-  release on `develop` (ELF-completion slice 4): the C++ vague-linkage
-  set (template instantiations, in-class/header method bodies, vtables,
-  typeinfo, synthesized dtors, thunks, shims) is emitted linkonce and
-  captured `STB_WEAK`, so two TUs' identical copies merge at native
-  links (first weak wins, strong replaces weak; external gcc/ld
-  dedupes madc `.o`s natively) instead of duplicate-strong colliding.
-  Fork: MIR items gain a binding enum (GLOBAL/WEAK/LINKONCE — only
-  interposable WEAK suppresses inlining, gcc parity), c2mir consumes
-  `__attribute__((weak))`/`((linkonce))`, bindings survive binary +
-  text MIR round trips. Boundary (loud): explicitly-`inline`
-  user-header free functions still collide (lexer erases `inline`;
-  follow-on slice). Fulltest + packed **753/0/0/9**; `--exe`/`--obj`
-  **737/0**; fork release `1.0-madc.0.41.0`.
+- **Version:** `0.42.0` (per `VERSION`) — the **inline un-erasure**
+  release on `develop` (ELF-completion S4 follow-through): `inline` is
+  a real C++ specifier carrying vague linkage (keyword registry, every
+  decl position, `inline namespace` on the keyword path). User-header
+  inline functions — S4's `sumv` boundary — AND C++17 inline variables
+  merge `STB_WEAK` across TUs (function and data); a dynamic init runs
+  once per merged image behind a linkonce once-guard (g++ COMDAT-init
+  model). `static inline` stays internal; C modes keep the erasure;
+  `--emit=c11` renders portable `__attribute__((weak))`. Fork
+  untouched (still `1.0-madc.0.41.0`). Fulltest + packed
+  **754/0/0/9**; `--exe`/`--obj` **738/0**.
   `master` remains at v0.38.0 pending `/promote`.
+  v0.41.0 was the **ODR/linkonce weak** release (ELF-completion slice
+  4): the C++ vague-linkage set (template instantiations, in-class
+  bodies, vtables, typeinfo, synthesized members) emitted linkonce and
+  captured `STB_WEAK` — identical per-TU copies merge at native links,
+  internal and external ld alike; fork binding enum
+  (GLOBAL/WEAK/LINKONCE — only interposable WEAK suppresses inlining,
+  gcc parity); bindings survive binary + text MIR round trips; fork
+  release `1.0-madc.0.41.0`.
   v0.40.0 was the **ctor/init-array** release (ELF-completion slice
   3): per-TU initializers ride a real `SHT_INIT_ARRAY` section
   (gcc-shaped, RELRO lead; external `ld` collects it natively), the
@@ -352,14 +357,16 @@ high-level" — the answer is both.**
   two-ctor-TU merge fence in every native lane. Slice 4 (v0.41.0) adds
   ODR/linkonce weak: the C++ vague-linkage set captures `STB_WEAK`
   (fork binding enum GLOBAL/WEAK/LINKONCE), so identical per-TU copies
-  merge at links — internal and external ld alike. Plan + landing
-  blocks:
+  merge at links — internal and external ld alike. The inline
+  un-erasure (v0.42.0) closes S4's `sumv` boundary: `inline` is a real
+  specifier routed into vague linkage, covering user-header inline fns
+  AND C++17 inline variables (once-guarded dynamic init). Plan +
+  landing blocks:
   [2026-07-19-mir-aot-elf-plan.md](2026-07-19-mir-aot-elf-plan.md);
-  `run_tests.sh --exe` / `--obj` are the live AOT arbiters (737/0 each).
-  Remaining: the `inline`-specifier un-erasure follow-on (linkonce for
-  explicitly-inline user-header fns), slice 5 `.mir.rodata` split
-  (reassessed — possibly defer); then Mach-O / PE assemblers behind
-  the same `MIR_object` seam (Track 6.3).
+  `run_tests.sh --exe` / `--obj` are the live AOT arbiters (738/0 each).
+  Remaining: slice 5 `.mir.rodata` split (reassessed — defer decision
+  with the owner); then Mach-O / PE assemblers behind the same
+  `MIR_object` seam (Track 6.3).
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target
   the CIR path is climbing back to — NOT the current state.
