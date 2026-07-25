@@ -1443,16 +1443,20 @@ renaming is object-mode only); reproduced with plain globals, zero
 `inline` involvement. (2) file-static functions export GLOBAL in
 `.o`s — identical for `static` and `static inline`.
 
-### Slice 5 — `.mir.rodata` split (REASSESSED — last, possibly defer)
+### Slice 5 — `.mir.rodata` split — DEFERRED (owner decision 2026-07-25)
 
+**Owner-deferred; do not implement without a new owner directive.**
 RELRO subsumed most of its hardening value: the pool is already
 read-only after relocation. Remaining value = pre-relocation
 immutability + RO-page sharing + smaller RELRO segment. Real cost is
 larger than the R6-era note implied: entry boundaries are only known
 at CAPTURE time, so the clean fix is a capture-side two-pool split
-(object format grows a section; loader/reader/emitters all learn it).
-Rank last; if recon confirms medium+ cost, bring the defer decision to
-the owner rather than force it.
+(object format grows a section; loader/reader/emitters all learn it) —
+a medium+ change for a hardening rung RELRO already covers. With this
+defer the **ELF-completion track is closed** (S1–S4 + the inline
+un-erasure follow-through landed); the AOT remainder is Mach-O / PE
+assemblers behind the `MIR_object` seam (Track 6.3, needs the owner's
+macOS container for e2e).
 
 ### Original design (2026-07-24)
 

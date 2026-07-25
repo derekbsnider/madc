@@ -364,9 +364,11 @@ high-level" — the answer is both.**
   landing blocks:
   [2026-07-19-mir-aot-elf-plan.md](2026-07-19-mir-aot-elf-plan.md);
   `run_tests.sh --exe` / `--obj` are the live AOT arbiters (738/0 each).
-  Remaining: slice 5 `.mir.rodata` split (reassessed — defer decision
-  with the owner); then Mach-O / PE assemblers behind the same
-  `MIR_object` seam (Track 6.3).
+  Slice 5 `.mir.rodata` split is **DEFERRED (owner decision
+  2026-07-25** — RELRO subsumed its hardening value; capture-side
+  two-pool split not worth the format change), closing the
+  ELF-completion track. Remaining AOT: Mach-O / PE assemblers behind
+  the same `MIR_object` seam (Track 6.3).
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target
   the CIR path is climbing back to — NOT the current state.
