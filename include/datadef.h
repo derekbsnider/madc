@@ -49,6 +49,17 @@ std::string madc_self_exe_path();
 #define MADC_DSO_SUFFIX ".so"
 #endif
 
+// The native-emit TARGET is an Apple/Mach-O platform: either an emit-only
+// cross madc configured for one (MADC_CROSS_APPLE) or a madc hosted on one
+// (native target == host). Orthogonal to MADC_CROSS_TARGET, which gates the
+// run lanes: a hosted-darwin madc is Apple-target but NOT cross. Lives here
+// (not madc_cir.h) because the parser keys on it too (asm-label symbol space).
+#if defined(MADC_CROSS_APPLE) || defined(__APPLE__)
+#define MADC_TARGET_APPLE_P 1
+#else
+#define MADC_TARGET_APPLE_P 0
+#endif
+
 class TokenBase;
 
 // C fixed-size array dimension. 64-bit: huge dims like

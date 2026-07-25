@@ -19,15 +19,8 @@
 #include "mir.h"
 #include "cir_emit_c.h"   // CirEmitLang
 
-// The native-emit TARGET is an Apple/Mach-O platform: either an emit-only
-// cross madc configured for one (MADC_CROSS_APPLE) or a madc hosted on one
-// (native target == host). Orthogonal to MADC_CROSS_TARGET, which gates the
-// run lanes: a hosted-darwin madc is Apple-target but NOT cross.
-#if defined(MADC_CROSS_APPLE) || defined(__APPLE__)
-#define MADC_TARGET_APPLE_P 1
-#else
-#define MADC_TARGET_APPLE_P 0
-#endif
+// MADC_TARGET_APPLE_P (target-is-Apple predicate) lives in datadef.h —
+// the parser keys on it too (asm-label symbol space), not just the CIR layer.
 
 // Forward declarations (c2mir types)
 struct c2m_ctx;

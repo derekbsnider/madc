@@ -3709,8 +3709,46 @@ public:
     Variable *script_param_lookup(const std::string &id);
     bool token_is_tu_origin(TokenBase *tb) const;
 
-    std::stack<int> _pack_stack;	// #pragma pack(push, N) / pop stack
-    int pack_stack_top() { return _pack_stack.empty() ? 0 : _pack_stack.top(); }
+    // #pragma pack state, GCC semantics: `pack(N)` sets the current value,
+    // `pack()` resets it, `pack(push[, N])` saves the current value (then
+    // optionally sets it), `pack(pop)` restores the last saved value.
+    //
+    // The file is fully tokenized BEFORE parsing, so lexer-time state would
+    // be stale when struct layout reads it (a balanced push/pop region has
+    // already reset by parse time). Pack events therefore ride a side
+    // channel keyed by the first real token AFTER the directive: the lexer
+    // queues ops in _pending_pack_ops, push_token_with_literal_concat pins
+    // them to the next emitted token, and nextToken() applies them one-shot
+    // at the single consume chokepoint — invisible to peekToken/scanners.
+    // Op encoding: {0,N} set current to N (0 = default layout), {1,N} push
+    // current then set N when N != 0, {2,0} pop.
+    std::stack<int> _pack_stack;	// saved values (push/pop)
+    int _pack_current = 0;		// current alignment; 0 = default layout
+    int pack_current() const { return _pack_current; }
+    std::vector<std::pair<int,int> > _pending_pack_ops;
+    std::unordered_map<const TokenBase *, std::vector<std::pair<int,int> > >
+	_pragma_pack_events;
+    void apply_pragma_pack_op(int op, int val)
+    {
+	if ( op == 1 )
+	{
+	    _pack_stack.push(_pack_current);
+	    if ( val )
+		_pack_current = val;
+	}
+	else if ( op == 2 )
+	{
+	    if ( !_pack_stack.empty() )
+	    {
+		_pack_current = _pack_stack.top();
+		_pack_stack.pop();
+	    }
+	    else
+		_pack_current = 0;
+	}
+	else
+	    _pack_current = val;
+    }
 
     bool colors;
     enum LanguageStd {
@@ -4120,6 +4158,7 @@ public:
     // ends up as one merged literal, not two adjacent tokens whose
     // first one gets dropped by parser exStack semantics.
     void push_token_with_literal_concat(TokenBase *tb);
+    void pin_pending_pack_ops(TokenBase *tb);
 
     // for debugging
     void printt(TokenBase *);
@@ -4204,6 +4243,20 @@ public:
 	    TokenBase::_parse_file   = _cur_token->file;
 	    TokenBase::_parse_line   = _cur_token->line;
 	    TokenBase::_parse_column = _cur_token->column;
+	    // #pragma pack events pinned to this token (see _pragma_pack_events):
+	    // applied once, at first consumption — the empty() guard keeps the
+	    // hot path free for the (usual) pack-less TU.
+	    if ( !_pragma_pack_events.empty() )
+	    {
+		auto pe = _pragma_pack_events.find(_cur_token);
+		if ( pe != _pragma_pack_events.end() )
+		{
+		    for ( size_t i = 0; i < pe->second.size(); ++i )
+			apply_pragma_pack_op(pe->second[i].first,
+					     pe->second[i].second);
+		    _pragma_pack_events.erase(pe);
+		}
+	    }
 	}
 	return _cur_token;
     }

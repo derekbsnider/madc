@@ -269,7 +269,7 @@ static DataDef *builtin_datadef_from_spelling(const std::string &s)
       || s == "unsigned long long" || s == "unsigned long long int" ) return &ddUINT64;
     if ( s == "__int128" || s == "signed __int128" ) return &ddINT128;
     if ( s == "unsigned __int128" ) return &ddUINT128;
-    if ( s == "float" || s == "_Float32" ) return &ddFLOAT;
+    if ( s == "float" || s == "_Float16" || s == "_Float32" ) return &ddFLOAT;
     if ( s == "double" || s == "long double"
       || s == "_Float64" || s == "_Float128"
       || s == "_Float32x" || s == "_Float64x" ) return &ddDOUBLE;

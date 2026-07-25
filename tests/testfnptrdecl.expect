@@ -1,0 +1,5 @@
+apply=42
+handler_a 7
+handler_b 8
+buf=AB advanced=2
+buf2=C advanced2=3

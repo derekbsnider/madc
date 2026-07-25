@@ -70,11 +70,9 @@ HFILES	= madc.h datadef.h tokens.h datatokens.h
 CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o exception_runtime.o pch.o madcdis_snapshot.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
-# Regenerate embedded_headers.cpp NOW, at Makefile parse time, before any target
-# is evaluated — so an edited/added/DELETED embedded header is reflected in
-# embedded_headers.o within a SINGLE make. The generator is idempotent (rewrites
-# only on real content change), so this does not churn mtimes or force rebuilds.
-EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
+# embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
+# MODE blocks — hosted-darwin modes embed a generated SDK prelude alongside
+# include/madc/ and write a per-mode file instead of src/embedded_headers.cpp.
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
 MADDATHDRS = $(wildcard ../include/madcdat/*.h)
 # madc::dis substrate headers: tokens.h/madc.h include these, so they MUST be in
@@ -163,6 +161,23 @@ endif
 # toolchain's tables in place before; the generators are idempotent, so an
 # unchanged toolchain never churns mtimes).
 HOSTTAB_GEN := $(shell CXX="$(CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" ../scripts/gen_sys_includes.sh >/dev/null 2>&1; CXX="$(CXX)" ../scripts/gen_predefined_macros.sh >/dev/null 2>&1; echo done)
+# Regenerate embedded_headers.cpp NOW, at Makefile parse time, before any target
+# is evaluated — so an edited/added/DELETED embedded header is reflected in
+# embedded_headers.o within a SINGLE make. The generators are idempotent (rewrite
+# only on real content change), so this does not churn mtimes or force rebuilds.
+# Hosted-darwin modes: the SDK-derived flattened C prelude (stdio.h & co for the
+# run-only Macs) is generated into the per-mode obj tree and embedded ALONGSIDE
+# include/madc/; the per-mode embedded_headers.cpp lives in the obj tree so SDK
+# content never reaches the committed src/ file. stderr stays visible — a failed
+# prelude leaves no .cpp and the build stops loudly (silent header degradation
+# is exactly the G2 failure class this exists to prevent).
+ifdef HOSTED_DARWIN_TARGET
+DARWIN_PRELUDE_DIR = $(OBJDIR)/darwin_prelude
+EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
+EMBED_GEN := $(shell mkdir -p $(OBJDIR) && ../scripts/gen_darwin_prelude.sh $(HOSTED_DARWIN_TARGET) $(MACOS_SDK) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null; echo done)
+else
+EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
+endif
 DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS) $(MADCDISHDRS)
 
 ifeq ($(HAVE_MADCDAT),1)
@@ -461,6 +476,15 @@ predefined_macros.cpp:
 $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+
+# Hosted-darwin modes compile the PER-MODE embedded_headers.cpp (generated at
+# parse time into the obj tree, EMBED_GEN above) — never src/embedded_headers.cpp,
+# which stays the committed include/madc/-only table for host builds.
+ifdef HOSTED_DARWIN_TARGET
+$(OBJDIR)/embedded_headers.o: $(EMBEDDED_HEADERS_CPP) $(DEPENDS)
+	@mkdir -p $(OBJDIR)
+	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+endif
 
 $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)
 	@mkdir -p $(PICOBJDIR)

@@ -1,0 +1,64 @@
+// Function-pointer declarator breadth (shapes from real system headers):
+// east-const / interleaved qualifiers in fnptr params, anonymous fnptr
+// params, union tags in fnptr params, the classic C spiral (a function
+// returning a function pointer, Apple signal.h), and postfix ++ binding
+// under a deref of a member chain (Apple stdio __sputc).
+#include <stdio.h>
+
+union uv { int i; long l; };
+
+// east-const + double pointer in a fnptr typedef param (_RuneLocale shape)
+typedef int (*rune_fn)(const char *s, unsigned long n, char const * *end);
+
+// union tag param + anonymous fnptr param
+typedef void (*notify_fn)(union uv);
+int apply(int v, int (*)(int));
+
+// the spiral: function returning a function pointer
+void (*pick_handler(int which, void (*fallback)(int)))(int);
+
+static int doubler(int v) { return v * 2; }
+int apply(int v, int (*fn)(int)) { return fn(v); }
+
+static void handler_a(int v) { printf("handler_a %d\n", v); }
+static void handler_b(int v) { printf("handler_b %d\n", v); }
+
+void (*pick_handler(int which, void (*fallback)(int)))(int)
+{
+    if (which == 1)
+	return handler_a;
+    if (which == 2)
+	return handler_b;
+    return fallback;
+}
+
+struct W { char *p; };
+
+int main()
+{
+    rune_fn rf = 0;
+    notify_fn nf = 0;
+    if (rf != 0 || nf != 0)
+	return 1;
+
+    printf("apply=%d\n", apply(21, doubler));
+
+    void (*h)(int) = pick_handler(1, handler_b);
+    h(7);
+    h = pick_handler(9, handler_b);
+    h(8);
+
+    // *w->p++ = c is *((w->p)++) = c — postfix binds inside the deref
+    char buf[4] = {0, 0, 0, 0};
+    struct W w;
+    w.p = buf;
+    *w.p++ = 'A';
+    *w.p++ = 'B';
+    printf("buf=%c%c advanced=%d\n", buf[0], buf[1], (int)(w.p - buf));
+
+    struct W *wp = &w;
+    wp->p = buf + 2;
+    *wp->p++ = 'C';
+    printf("buf2=%c advanced2=%d\n", buf[2], (int)(wp->p - buf));
+    return 0;
+}

@@ -268,6 +268,68 @@ green is the refactor gate.
   with `std::__1` (libc++), confirming the Phase-2 delta.
 - Deliverable sizes: ~6.0 MB unstripped `-O2` per binary.
 
+## G2 round-2 fix slice — the darwin embedded C prelude (2026-07-25/26)
+
+G2 root cause (hardware-proven on the A64 laptop): hosted binaries
+shipped with NO darwin header story — `<stdio.h>` resolved into the
+libc++ `c++/v1` wrapper maze (or nothing), printf stayed undeclared,
+and the dlsym variadic-fallback convention collides with the Apple
+arm64 stack-varargs ABI (x86-64 immune by register-ABI coincidence).
+
+**Design — flattened umbrella, embedded TEXT (not .madh):**
+
+- `scripts/gen_darwin_prelude.sh`: clang-18 `-target … --sysroot SDK
+  -x c -std=c11 -E -dD -P` flattens ONE umbrella TU over the hosted
+  C standard/POSIX header set. `-dD` keeps every `#define` as text so
+  madc's OWN preprocessor installs `EOF`, `NULL`, `stdin=__stdinp`, …
+  at include time — a `.madh` token stream structurally CANNOT carry
+  macro state (`#define` is consumed at lex time), which is also why
+  the old baked-PCH layer was emptied. `-D_Nullable=`-family scrubs
+  the clang nullability keywords. The script refuses to install a
+  prelude that lacks `printf` (fail-loud beats silent degradation).
+- One umbrella + one-line stubs (`stdio.h` → `#include
+  <__madc_darwin_prelude.h>`) instead of per-header flattening:
+  independent flattening duplicates shared sub-headers, and madc
+  accepts duplicate identical typedefs but correctly rejects duplicate
+  struct definitions (`struct timespec` is in several closures). The
+  name-level once-only dedup makes the second standard include free.
+- `gen_embedded_headers.sh` gained an extra-root + outfile mode; the
+  hosted MODEs generate a PER-MODE `embedded_headers.cpp` in the obj
+  tree (SDK-derived content never reaches committed files) and compile
+  it via an explicit rule — a failed generation stops the build.
+- Embedded resolution already precedes the filesystem walk in both the
+  .mad and .c lanes, so the `c++/v1` maze is unreachable for covered
+  names. The freestanding six stay on the committed `include/madc/`
+  set; the umbrella covers the hosted set (stdio/stdlib/…/sys/*).
+
+**Deep-layer fixes the prelude shook out (all target-independent):**
+
+- Function-pointer params: `*` and cv-qualifiers now interleave
+  (`char const * *`, `char * restrict` — Apple `_RuneLocale`).
+- `#pragma pack`: full GCC semantics (`pack(N)` set, `pack()` reset,
+  `push` saves current, `pop` restores) AND a real architecture fix —
+  madc tokenizes the whole file before parsing, so the old lex-time
+  pack state was STALE at parse time (every balanced push/pop region
+  silently lost its packing; proven by probe). Pack events now ride a
+  side channel pinned to the next real token and are applied one-shot
+  in `nextToken()` — invisible to peekToken/scanners, hot path guarded
+  by `empty()`. Known gap: pack events do not survive `.madh`/forest
+  serialization (pre-existing class; the prelude tokenizes live).
+- Apple-target `__asm("_open")` labels: leading underscore stripped at
+  `consume_gnu_asm_label` — madc's canonical symbol space is the
+  C/dlsym name (darwin dlsym takes no underscore; the Mach-O writer
+  re-prepends it). Fixes hosted JIT dlsym AND cross/hosted AOT binds
+  for the labeled POSIX family (`open`, `fopen`, `kill`, …).
+  `MADC_TARGET_APPLE_P` moved to `datadef.h` (single owner).
+- `_Float16` registered via the `_FloatN` nearest-supported precedent
+  (→ float): the macOS 15 SDK declares `__fabsf16` & co UNGUARDED.
+- Explicit `#include` defers to the auto-include prelude ONLY when a
+  named provider (PCH/embedded) can serve it (shared
+  `named_include_provider_exists()`); otherwise the direct filesystem
+  path with its loud open-failure — gcc canon: explicit includes
+  resolve or error. An uncovered include on a header-less Mac now
+  fails loudly instead of silently producing garble.
+
 ## Risks
 
 - **dlsym export visibility on darwin executables** — the entire

@@ -1207,7 +1207,19 @@ TokenBase *Program::consume_gnu_asm_label(TokenBase *nt,
 	    Throw(open ? open : nt) << "Expecting '(' after asm label" << flush;
 	TokenBase *label = nextToken();
 	if ( alias_target && label && label->type() == TokenType::ttString )
+	{
 	    *alias_target = ((TokenStr *)label)->str;
+#if MADC_TARGET_APPLE_P
+	    // Mach-O asm labels carry the assembler-level leading underscore
+	    // (`__asm("_open")`). madc's canonical symbol space is the C/dlsym
+	    // name: darwin dlsym() takes it WITHOUT the underscore and the
+	    // Mach-O writer re-prepends it at emit — so strip exactly one here,
+	    // at the boundary where the label enters madc. (ELF targets keep
+	    // labels verbatim: glibc's `__isoc99_scanf` IS the ELF symbol.)
+	    if ( !alias_target->empty() && (*alias_target)[0] == '_' )
+		alias_target->erase(0, 1);
+#endif
+	}
 	TokenBase *close = nextToken();
 	if ( !close || close->id() != TokenID::tkClBrk )
 	    Throw(close ? close : label) << "Expecting ')' after asm label" << flush;
@@ -2191,7 +2203,8 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
       || name == "unsigned long long" || name == "unsigned long long int"
       || name == "unsigned __int128" )
 	return &ddUINT64;
-    if ( name == "float" || name == "_Float32" ) return &ddFLOAT;
+    if ( name == "float" || name == "_Float16" || name == "_Float32" )
+	return &ddFLOAT;
     if ( name == "double" || name == "long double"
       || name == "_Float64" || name == "_Float128"
       || name == "_Float32x" || name == "_Float64x" )
@@ -29001,6 +29014,37 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    // became the raw CALL ("lvalue required as left
 				    // operand of assignment").
 				    deref_expr = parsePostfixChain(deref_tb);
+				    // Postfix ++/-- binds tighter than the outer unary
+				    // `*`: `*s->p++ = c` is `*((s->p)++) = c`, never
+				    // `(*s->p)++ = c` — same lowering as the `*(expr)++`
+				    // arm: wrap the chain in a postfix step and deref
+				    // the OLD pointer value (Apple stdio's __sputc).
+				    if ( deref_expr && peekToken()
+				      && (peekToken()->id() == TokenID::tkInc
+				       || peekToken()->id() == TokenID::tkDec) )
+				    {
+					DataDef *chain_dtype =
+					    effective_pointer_type_for_member_access(deref_expr);
+					if ( !chain_dtype )
+					    chain_dtype = deref_expr->datadef();
+					if ( chain_dtype && chain_dtype->is_pointer() )
+					{
+					    DataDefPTR *chain_dptr =
+						dynamic_cast<DataDefPTR *>(chain_dtype);
+					    DataDef *chain_base = (chain_dptr && chain_dptr->base_type)
+						? chain_dptr->base_type : &ddINT64;
+					    TokenBase *step_tb = nextToken();
+					    TokenOperator *step;
+					    if ( step_tb->id() == TokenID::tkInc )
+						step = new TokenInc();
+					    else
+						step = new TokenDec();
+					    step->left = deref_expr;
+					    step->right = NULL;
+					    exStack.push(new TokenDerefExpr(step, chain_base));
+					    return done ? ExprStep::Done : ExprStep::Break;
+					}
+				    }
 				}
 				else if ( deref_tb->type() == TokenType::ttIdentifier
 				   && peekToken()
@@ -30905,10 +30949,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
     }
     dds->union_layout = is_union;
-    if ( is_packed || pgm.pack_stack_top() == 1 )
+    if ( is_packed || pgm.pack_current() == 1 )
 	dds->pack = 1;
-    else if ( pgm.pack_stack_top() > 0 )
-	dds->pack = pgm.pack_stack_top();
+    else if ( pgm.pack_current() > 0 )
+	dds->pack = pgm.pack_current();
     if ( have_scalar_storage_order )
 	dds->setReverseScalarStorage(reverse_scalar_storage);
     if ( explicit_align > dds->max_align )
@@ -36739,18 +36783,23 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	    return func;
 	}
 
-	// Resolve parameter type: plain type, struct Tag, or typedef alias
+	// Resolve parameter type: plain type, struct/union Tag, or typedef
+	// alias (unions share struct_map, house pattern)
 	DataDef *param_dd = NULL;
-	if ( nt->id() == TokenID::tkSTRUCT )
+	if ( nt->id() == TokenID::tkSTRUCT || nt->id() == TokenID::tkUNION )
 	{
+	    bool tag_is_union = nt->id() == TokenID::tkUNION;
 	    TokenBase *tag = nextToken();
 	    if ( !tag || tag->type() != TokenType::ttIdentifier )
-		Throw(tag ? tag : nt) << "Expecting struct name after 'struct'" << flush;
+		Throw(tag ? tag : nt) << "Expecting "
+		    << (tag_is_union ? "union" : "struct")
+		    << " name after tag keyword" << flush;
 	    std::string sname = ((TokenIdent *)tag)->spelling();
 	    datadef_map_citer sdmi = struct_map.find(sname);
 	    if ( sdmi == struct_map.end() )
 	    {
 		DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
+		fwd->union_layout = tag_is_union;
 		pack_tap_struct(sname);	// B4a tap
 		struct_map.set(sname, fwd);
 		sdmi = struct_map.find(sname);
@@ -36788,16 +36837,23 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	bool param_is_ref = false;
 	bool param_rvalue_ref = false;
 
-	// Pointer decorators
-	while ( peekToken() && peekToken()->id() == TokenID::tkMul )
+	// Pointer decorators — `*` and type-qualifiers interleave freely in a
+	// C declarator (`char const * *`, `char * restrict`); consume both in
+	// one loop, counting pointer depth. Qualifiers beyond the leading const
+	// are discarded, matching the pre-existing trailing-const handling.
+	while ( peekToken()
+	     && (peekToken()->id() == TokenID::tkMul
+	      || peekToken()->id() == TokenID::tkCONST
+	      || peekToken()->id() == TokenID::tkVOLATILE
+	      || peekToken()->id() == TokenID::tkRESTRICT) )
 	{
-	    nextToken();
-	    param_dd = getPointerType(param_dd);
-	    ++param_ptr_depth;
+	    TokenBase *decor = nextToken();
+	    if ( decor->id() == TokenID::tkMul )
+	    {
+		param_dd = getPointerType(param_dd);
+		++param_ptr_depth;
+	    }
 	}
-
-	while ( peekToken() && peekToken()->id() == TokenID::tkCONST )
-	    nextToken();
 
 	if ( peekToken()
 	  && (peekToken()->id() == TokenID::tkBand
@@ -36809,6 +36865,34 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	    // First-class refs (Phase 2): reference param is a DataDefREF, not a
 	    // plain pointer, so is_reference() is the single source of truth.
 	    param_dd = getReferenceType(param_dd);
+	}
+
+	// Nested function-pointer parameter, named or anonymous:
+	// `ret (*[name])(args)` — param_dd so far is the nested callback's
+	// return type; recurse for its own parameter list.
+	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    nextToken(); // consume '('
+	    TokenBase *star = nextToken();
+	    if ( !star || star->id() != TokenID::tkMul )
+		Throw(star ? star : nt)
+		    << "Unsupported parenthesized declarator in function pointer typedef" << flush;
+	    TokenBase *fin = nextToken();
+	    while ( fin && (is_restrict_token(fin)
+	                 || fin->id() == TokenID::tkCONST
+	                 || fin->id() == TokenID::tkVOLATILE) )
+		fin = nextToken();
+	    if ( fin && is_contextual_identifier_token(fin) )
+		fin = nextToken(); // optional name, discarded
+	    if ( !fin || fin->id() != TokenID::tkClBrk )
+		Throw(fin ? fin : star)
+		    << "Expected ')' in nested function pointer parameter" << flush;
+	    TokenBase *fopen = nextToken();
+	    if ( !fopen || fopen->id() != TokenID::tkOpBrk )
+		Throw(fopen ? fopen : star)
+		    << "Expected '(' for nested function pointer parameter list" << flush;
+	    FuncDef *nested = parseFnPtrParams(*param_dd);
+	    param_dd = new DataDefFPTR(nested);
 	}
 
 	// Optional parameter name (discard)
@@ -47418,11 +47502,13 @@ grabnt:
 		           || nt->id() == TokenID::tkCONST
 		           || nt->id() == TokenID::tkVOLATILE) )
 		    nt = nextToken();
-		if ( !is_contextual_identifier_token(nt) )
-		    Throw(nt) << "Expecting identifier in function pointer parameter" << flush;
-		pid = contextual_identifier_name(nt);
-
-		nt = nextToken();
+		if ( is_contextual_identifier_token(nt) )
+		{
+		    pid = contextual_identifier_name(nt);
+		    nt = nextToken();
+		}
+		// else: anonymous function-pointer parameter `type (*)(params)`
+		// — prototypes don't bind names; nt should already hold ')'.
 		if ( !nt || nt->id() != TokenID::tkClBrk )
 		    Throw(nt ? nt : inner) << "Expected ')' after function pointer parameter name" << flush;
 		nt = nextToken();
@@ -49316,6 +49402,29 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    if ( !name_tok || !is_contextual_identifier_token(name_tok) )
 		Throw(name_tok ? name_tok : open) << "Expecting identifier in function pointer declaration" << flush;
 	    id = contextual_identifier_name(name_tok);
+	    // Function returning a function pointer — the classic C spiral,
+	    // `type (*name(fn-params))(ret-params);` (Apple signal.h declares
+	    // signal/sigset this way; glibc goes through a typedef). Stash the
+	    // fn-params tokens balanced; the EXISTING flow below then parses
+	    // `)(ret-params)` into decl_type = DataDefFPTR, and the stash is
+	    // re-pushed so the normal function path parses `name(fn-params)`
+	    // with that fnptr as its return type.
+	    std::vector<TokenBase *> spiral_fn_params;
+	    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	    {
+		int spiral_depth = 0;
+		do
+		{
+		    TokenBase *sp = nextToken();
+		    if ( !sp )
+			Throw(name_tok) << "Unexpected end of input in function declarator" << flush;
+		    if ( sp->id() == TokenID::tkOpBrk )
+			++spiral_depth;
+		    else if ( sp->id() == TokenID::tkClBrk )
+			--spiral_depth;
+		    spiral_fn_params.push_back(sp);
+		} while ( spiral_depth > 0 );
+	    }
 	    TokenBase *rbrk = peekToken();
 	    while ( rbrk && rbrk->id() == TokenID::tkOpSqr )
 	    {
@@ -49349,6 +49458,9 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 						   "pointer-to-array declaration",
 						   true);
 		have_decl_id = true;
+		// spiral form `type (*name(fn-params))[N]` — see below
+		for ( size_t sp = spiral_fn_params.size(); sp > 0; --sp )
+		    pushToken(spiral_fn_params[sp - 1]);
 		nt = peekToken();
 	    }
 	    else
@@ -49360,6 +49472,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		FuncDef *func = parseFnPtrParams(*decl_type);
 		decl_type = new DataDefFPTR(func);
 		have_decl_id = true;
+		// Spiral declarator: decl_type is now the RETURN fnptr type;
+		// re-push the stashed fn-params so the stream reads
+		// `(fn-params)…` and the function path below parses `id` as a
+		// function declaration returning decl_type.
+		for ( size_t sp = spiral_fn_params.size(); sp > 0; --sp )
+		    pushToken(spiral_fn_params[sp - 1]);
 		nt = peekToken();
 	    }
 	}
@@ -49430,6 +49548,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
     }
     DBG(std::cout << "parseDeclaration() identifier: " << id << std::endl);
+
+    // GNU asm label on a plain declarator (`extern long timezone
+    // __asm("_timezone");`) — consume it here so the terminator dispatch
+    // below sees the real `;`/`=`/`,`; the alias lands on the created
+    // Variable below (functions consume theirs in parseFunction).
+    std::string decl_asm_alias;
+    if ( peekToken() && is_gnu_asm_identifier_token(peekToken()) )
+	pushToken(consume_gnu_asm_label(nextToken(), &decl_asm_alias));
 
     if ( !(nt=peekToken()) )
 	Throw << "expecting token after identifier" << flush;
@@ -50325,6 +50451,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    var = addVariable(code, *decl_type, id, elem_count, NULL, alloc);
 	    var->fnptr_explicit_stars = decl_fnptr_stars;
 	}
+	if ( var && !decl_asm_alias.empty() )
+	    var->storage_alias_name = decl_asm_alias;
 	if ( !decl_typedef_alias.empty() )
 	    var->typedef_name = decl_typedef_alias;
 	// Record file-scope variables in top_decls in source order for the CIR
