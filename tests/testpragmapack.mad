@@ -1,0 +1,29 @@
+// #pragma pack — GCC semantics, parse-time application (token side channel).
+// Layout oracle (gcc -O0, LP64): pack(4) caps long's alignment at 4.
+#include <stdio.h>
+
+#pragma pack(4)
+struct p4 { int a; long b; };
+#pragma pack()
+
+struct natural { int a; long b; };
+
+#pragma pack(push, 1)
+struct p1 { char c; int i; };
+#pragma pack(pop)
+
+struct after_pop { char c; int i; };
+
+#pragma pack(2)
+#pragma pack(push)
+struct still2 { char c; int i; };
+#pragma pack(pop)
+#pragma pack()
+
+int main()
+{
+    printf("p4=%zu natural=%zu\n", sizeof(struct p4), sizeof(struct natural));
+    printf("p1=%zu after_pop=%zu\n", sizeof(struct p1), sizeof(struct after_pop));
+    printf("still2=%zu\n", sizeof(struct still2));
+    return 0;
+}

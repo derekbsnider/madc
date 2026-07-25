@@ -1,18 +1,32 @@
 #!/bin/bash
-# forest_pack.sh — build the standard-header forest container and append it
-# to a madc binary (the release pack step; design doc
+# forest_pack.sh — build the standard-header forest container and ship it
+# with a madc binary (the release pack step; design doc
 # 2026-07-04-forest-default-mode-design.md §7).
 #
-#   bash scripts/forest_pack.sh [bin/madc]
+#   bash scripts/forest_pack.sh [--sidecar] [bin/madc]
 #
+# Default (embedded carrier): append the container to the binary itself.
 # MUST run AFTER strip: strip rewrites the ELF image and discards appended
 # bytes, so strip-after-pack destroys the blob (mandatory ordering).
-# Pack failure = build failure (set -e). Re-packing an already-packed binary
-# appends a new footer; the reader finds the LAST one, so correctness holds
-# (the stale blob's bytes are dead weight until the next relink).
+# Re-packing an already-packed binary appends a new footer; the reader finds
+# the LAST one, so correctness holds (the stale blob's bytes are dead weight
+# until the next relink).
+#
+# --sidecar (forest-carriers S3, --with-forest=sidecar): write the container
+# as a standalone <bin>.forest file beside the binary instead — a
+# --freeze-append onto an EMPTY file IS a valid standalone container
+# (placement 2, container at offset 0; the S1 darwin cross-freeze precedent).
+# The runtime discovery chain finds it as arm 3 (sidecar beside the image).
+#
+# Pack failure = build failure (set -e).
 set -e
 cd "$(dirname "$0")/.."
 
+SIDECAR=0
+if [ "$1" = "--sidecar" ]; then
+    SIDECAR=1
+    shift
+fi
 BIN="${1:-bin/madc}"
 LIST=scripts/forest_pack_headers.txt
 mkdir -p tmp
@@ -27,28 +41,51 @@ TU=tmp/forest_pack_tu.cpp
 } > "$TU"
 
 # The pack runs a COPY of the binary: Linux forbids writing to a running
-# executable (ETXTBSY), and the append target IS the compiler doing the work.
+# executable (ETXTBSY), and (in embedded mode) the append target IS the
+# compiler doing the work.
 cp "$BIN" tmp/forest_packer_madc
 
 ulimit -t 900
-timeout 900 tmp/forest_packer_madc --freeze-mir-cache --freeze-append="$BIN" "$TU"
+if [ "$SIDECAR" = 1 ]; then
+    OUT="$BIN.forest"
+    rm -f "$OUT"
+    timeout 900 tmp/forest_packer_madc --freeze-mir-cache --freeze-append="$OUT" "$TU"
+else
+    OUT="$BIN"
+    timeout 900 tmp/forest_packer_madc --freeze-mir-cache --freeze-append="$BIN" "$TU"
+fi
 
-# Verify: the blob reads back from the packed binary itself (context-hash pin
-# + directory), and the stripped+appended binary still runs a frozen module —
-# the dlsym-heavy smoke that proves plain strip kept .dynsym intact.
-timeout 120 "$BIN" --dump-forest > tmp/forest_pack_dump.txt
+# Verify: the container reads back (context-hash pin + directory) and the
+# binary still runs the frozen module — the dlsym-heavy smoke that proves
+# plain strip kept .dynsym intact. Embedded reads the binary's own blob;
+# sidecar names the file explicitly (and --run-frozen= takes the same path).
+if [ "$SIDECAR" = 1 ]; then
+    timeout 120 "$BIN" --dump-forest="$OUT" > tmp/forest_pack_dump.txt
+else
+    timeout 120 "$BIN" --dump-forest > tmp/forest_pack_dump.txt
+fi
 grep -q '^forest	units=' tmp/forest_pack_dump.txt
-timeout 120 "$BIN" --run-frozen
+if [ "$SIDECAR" = 1 ]; then
+    timeout 120 "$BIN" --run-frozen="$OUT"
+else
+    timeout 120 "$BIN" --run-frozen
+fi
 
 # MIR-cache bind-lane equivalence (rung 3, opt-in lane): the packed binary
 # compiling a real test with MADC_MIR_CACHE_BIND=1 must (a) actually engage
 # the cache lane — a silent fallback would pass every equality check while
 # testing nothing — and (b) produce byte-identical output vs the default
-# (lane off) run: the blob is DERIVED state, never semantic.
+# (lane off) run: the blob is DERIVED state, never semantic. In sidecar mode
+# the bind reaches the container through the DISCOVERY chain (<bin>.forest
+# beside the binary), so this doubles as the sidecar-arm smoke.
 MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" -v tests/testfreezerun.mad 2>/dev/null \
     | grep -aq 'mir cache: bind module staged'
 out_cache=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
 out_nocache=$(timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
 [ "$out_cache" = "$out_nocache" ]
 
-echo "forest_pack: OK ($(grep -c '^unit	' tmp/forest_pack_dump.txt) units appended to $BIN; bind cache == no-cache)"
+if [ "$SIDECAR" = 1 ]; then
+    echo "forest_pack: OK ($(grep -c '^unit	' tmp/forest_pack_dump.txt) units in sidecar $OUT; bind cache == no-cache)"
+else
+    echo "forest_pack: OK ($(grep -c '^unit	' tmp/forest_pack_dump.txt) units appended to $BIN; bind cache == no-cache)"
+fi

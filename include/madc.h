@@ -286,7 +286,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false), vague_linkage(false) {}
     DataDef *findParameter(const std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -363,6 +363,18 @@ public:
     // 'K' (e.g. _ZNKSt9basic_ios...4goodEv). Set by TokenCLASS::parse / parseFunction
     // when a trailing const follows the parameter list. Default false.
     bool is_const_method;
+    // True when the body was defined in-class or arrived through the
+    // deferred-body machinery (parse_deferred_function_body): the C++
+    // implicit-inline set — every TU that sees the defining class/header can
+    // emit an identical copy. Set by the parser; consumed by is_linkonce().
+    bool vague_linkage;
+    // A definition multiple TUs can each emit identically (C++ vague
+    // linkage): a template instantiation or an in-class/deferred body. The
+    // CIR builder emits these with the `linkonce` attribute so the native
+    // object capture binds them STB_WEAK — identical per-TU copies merge at
+    // a multi-.o link (first wins) instead of colliding as duplicate strong
+    // definitions [ELF-completion S4].
+    bool is_linkonce() const { return tsubst_source != NULL || vague_linkage; }
     bool is_multi_return() const { return return_types.size() > 1; }
 };
 
@@ -493,7 +505,7 @@ public:
     int end_line;			// line of closing } (set by parseCompound)
     bool is_stmt_expr = false;		// true: a GNU statement-expression `({...})`, not a plain `{...}` block
     TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; end_line = 0; }
-    virtual TokenType type() const { return TokenType::ttCompound; }
+    virtual TokenType type() const override { return TokenType::ttCompound; }
     virtual DataDef *datadef() const override {
 	if ( statements.empty() ) return &ddVOID;
 	DataDef *dd = statements.back()->datadef();
@@ -683,8 +695,8 @@ public:
         return _datatype;
     }
     virtual bool is_real() const override { return datadef() && datadef()->is_real(); }
-    virtual size_t argc() const { return parameters.size(); }
-    virtual TokenType type() const { return TokenType::ttCallFunc; }
+    virtual size_t argc() const override { return parameters.size(); }
+    virtual TokenType type() const override { return TokenType::ttCallFunc; }
 };
 
 class TokenScopeContext: public TokenBase
@@ -693,7 +705,7 @@ public:
     Variable &context_var;
     std::vector<Variable *> scope_vars;
     TokenScopeContext(Variable &ctx) : TokenBase(), context_var(ctx) { _datatype = &ddARRAY; }
-    virtual TokenType type() const { return TokenType::ttVariable; }
+    virtual TokenType type() const override { return TokenType::ttVariable; }
     virtual DataDef *datadef() const override { return &ddARRAY; }
 };
 
@@ -707,7 +719,7 @@ public:
         : TokenCallFunc(m), object(o), offset(ofs), parent_expr(nullptr) { _datatype = m.type; }
     TokenMember(Variable &o, Variable &m, size_t ofs, TokenBase *parent)
         : TokenCallFunc(m), object(o), offset(ofs), parent_expr(parent) { _datatype = m.type; }
-    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual TokenType type() const override { return TokenType::ttMember; }
     virtual DataDef *datadef() const override { return _datatype; }
     virtual bool is_real() const override { return _datatype->is_real(); }
     // Member is declared as a fixed array (e.g. `SKILLTYPE *arr[N]`).
@@ -749,7 +761,7 @@ public:
     Variable &var;
     DataDef *ptr_type;  // pointer-to-var type
     TokenAddrOf(Variable &v, DataDef *pt) : var(v), ptr_type(pt) {}
-    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
 };
 
@@ -760,7 +772,7 @@ public:
     TokenBase *expr;
     DataDef *ptr_type;
     TokenAddrExpr(TokenBase *e, DataDef *pt) : expr(e), ptr_type(pt) {}
-    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
 };
 
@@ -771,8 +783,8 @@ public:
     std::string name;
     DataDef *ptr_type;
     TokenLabelAddr(const std::string &n, DataDef *pt) : name(n), ptr_type(pt) {}
-    virtual TokenType type() const { return TokenType::ttBase; }
-    virtual TokenBase *clone() { return new TokenLabelAddr(name, ptr_type); }
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual TokenBase *clone() override { return new TokenLabelAddr(name, ptr_type); }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
 };
 
@@ -794,7 +806,7 @@ public:
     Variable &var;
     DataDef *deref_type;  // pointed-to type
     TokenDeref(Variable &v, DataDef *dt) : var(v), deref_type(dt) { _datatype = dt; }
-    virtual TokenType type() const { return TokenType::ttMember; }  // reuse member type for assignment compat
+    virtual TokenType type() const override { return TokenType::ttMember; }  // reuse member type for assignment compat
     virtual DataDef *datadef() const override { return deref_type; }
 };
 
@@ -805,7 +817,7 @@ public:
     TokenBase *expr;
     DataDef *deref_type;
     TokenDerefExpr(TokenBase *e, DataDef *dt) : expr(e), deref_type(dt) { _datatype = dt; }
-    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual TokenType type() const override { return TokenType::ttMember; }
     virtual DataDef *datadef() const override { return deref_type; }
 };
 
@@ -818,7 +830,7 @@ public:
     TokenComplexPart(TokenBase *e, bool imag)
 	: expr(e), imag_part(imag) {}
 
-    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual TokenType type() const override { return TokenType::ttMember; }
     virtual DataDef *datadef() const override
     {
 	DataDef *expr_dd = expr ? expr->datadef() : NULL;
@@ -843,7 +855,7 @@ public:
     bool increment;
     TokenDerefStep(Variable &v, DataDef *dt, bool inc)
         : var(v), deref_type(dt), increment(inc) { _datatype = dt; }
-    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return deref_type; }
 };
 
@@ -854,7 +866,7 @@ public:
     DataDef *cast_type;   // target type
     TokenBase *expr;      // expression being cast
     TokenCast(DataDef *ct, TokenBase *e) : cast_type(ct), expr(e) {}
-    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return cast_type; }
 };
 
@@ -916,7 +928,7 @@ public:
 	    return NULL;
 	return &fd->return_value_type();
     }
-    virtual TokenType type() const { return TokenType::ttSubscript; }
+    virtual TokenType type() const override { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }
     // The element type is computed in the constructor for every container
     // kind (fixed array, pointer, string, SIMD, vector, map, madc array).
@@ -937,7 +949,7 @@ public:
     {
         _datatype = elem_type ? elem_type : &ddINT64;
     }
-    virtual TokenType type() const { return TokenType::ttSubscript; }
+    virtual TokenType type() const override { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }
     // operand() must return an *lvalue* (Mem) — i.e. the address of
     // the element — not the loaded value. Callers (TokenAssign LHS,
@@ -1941,6 +1953,25 @@ public:
 	// This is the incremental shim-retirement lever — bypass system shims while
 	// keeping madc's own headers. Data-driven: see embedded_header_is_system_library_shim().
 	bool bypass_system_library_headers = false;
+	// Frozen-forest discovery + failure policy (forest-carriers S3).
+	// enable_external_forest gates the probe-chain arms that read frozen
+	// state from OUTSIDE the binary/library images (the <exe>.forest
+	// sidecar and the MADC_FOREST environment variable): a sandboxed
+	// embedding host turns it off so nothing external can redirect where
+	// the compiler loads frozen state from. forest_missing_policy decides
+	// what happens when the discovery chain finds NO usable container:
+	// silent_fallback live-parses (the dev default), loud_fallback
+	// live-parses after ONE stderr notice (the packaged-CLI default,
+	// baked via MADC_FOREST_EXPECT_*), strict_require hard-errors (an
+	// embedding host that must never silently degrade). A producer-config
+	// (std / -D) mismatch — a container was found but for a different
+	// dialect — is the by-design multi-dialect fall-through: NEVER a
+	// notice under loud_fallback (the packed CLI compiling C against its
+	// C++-parsed corpus is the everyday case); strict_require still
+	// hard-errors on it, naming the mismatch.
+	enum class ForestPolicy { silent_fallback, loud_fallback, strict_require };
+	ForestPolicy forest_missing_policy = ForestPolicy::silent_fallback;
+	bool enable_external_forest = true;
 	std::vector<std::string> allowed_headers;
 	std::vector<std::string> allowed_dlfcn_symbols;
 	RuntimeEvalChildPolicy runtime_eval_source_policy;
@@ -3673,6 +3704,7 @@ public:
     bool parsing_extern_decl = false;	// current declaration originated from `extern`
     bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
     bool parsing_const_decl = false;	// current declaration originated from `const` — set vfCONSTANT on the variable
+    bool parsing_inline_decl = false;	// current declaration carries the C++ `inline` specifier (TokenCppKeyword::parse sets it; parseDeclaration consumes it like parsing_static_decl) — vague linkage for external-linkage functions/variables
     bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
 
     // ---- Script mode: STD_MADC file-scope statements → synthesized main.
@@ -3696,8 +3728,46 @@ public:
     Variable *script_param_lookup(const std::string &id);
     bool token_is_tu_origin(TokenBase *tb) const;
 
-    std::stack<int> _pack_stack;	// #pragma pack(push, N) / pop stack
-    int pack_stack_top() { return _pack_stack.empty() ? 0 : _pack_stack.top(); }
+    // #pragma pack state, GCC semantics: `pack(N)` sets the current value,
+    // `pack()` resets it, `pack(push[, N])` saves the current value (then
+    // optionally sets it), `pack(pop)` restores the last saved value.
+    //
+    // The file is fully tokenized BEFORE parsing, so lexer-time state would
+    // be stale when struct layout reads it (a balanced push/pop region has
+    // already reset by parse time). Pack events therefore ride a side
+    // channel keyed by the first real token AFTER the directive: the lexer
+    // queues ops in _pending_pack_ops, push_token_with_literal_concat pins
+    // them to the next emitted token, and nextToken() applies them one-shot
+    // at the single consume chokepoint — invisible to peekToken/scanners.
+    // Op encoding: {0,N} set current to N (0 = default layout), {1,N} push
+    // current then set N when N != 0, {2,0} pop.
+    std::stack<int> _pack_stack;	// saved values (push/pop)
+    int _pack_current = 0;		// current alignment; 0 = default layout
+    int pack_current() const { return _pack_current; }
+    std::vector<std::pair<int,int> > _pending_pack_ops;
+    std::unordered_map<const TokenBase *, std::vector<std::pair<int,int> > >
+	_pragma_pack_events;
+    void apply_pragma_pack_op(int op, int val)
+    {
+	if ( op == 1 )
+	{
+	    _pack_stack.push(_pack_current);
+	    if ( val )
+		_pack_current = val;
+	}
+	else if ( op == 2 )
+	{
+	    if ( !_pack_stack.empty() )
+	    {
+		_pack_current = _pack_stack.top();
+		_pack_stack.pop();
+	    }
+	    else
+		_pack_current = 0;
+	}
+	else
+	    _pack_current = val;
+    }
 
     bool colors;
     enum LanguageStd {
@@ -3787,6 +3857,12 @@ public:
     bool set_language_standard(const std::string &standard);
     bool set_language_standard_option(const std::string &arg);
     bool aot_tracking;
+    bool aot_skip_eval_shims;	// this build's artifact can never be host-called
+				// through the value ABI (standalone executable; any
+				// non--shared artifact of an emit-only cross build),
+				// so the CIR build skips the __madc_shim_* eval
+				// adapters — keeps pure programs runtime-free (the
+				// libmadc.so.0 DT_NEEDED cover-drop can fire)
     bool instrument_functions;
     bool skip_includes;		// --emit-function: lex without processing #include
     std::set<std::string> pending_auto_include_headers;
@@ -3993,6 +4069,7 @@ public:
     std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune
     std::set<uint32_t> forest_bind_walking;	// units on the in-flight bind recursion (cycle break)
     CirFrozenForest *ensure_bind_forest();	// open on first use; NULL if unavailable
+    void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
     int forest_unit_for_include(const std::string &incfile); // spelling/path lookup; -1 miss
     void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
@@ -4101,6 +4178,7 @@ public:
     // ends up as one merged literal, not two adjacent tokens whose
     // first one gets dropped by parser exStack semantics.
     void push_token_with_literal_concat(TokenBase *tb);
+    void pin_pending_pack_ops(TokenBase *tb);
 
     // for debugging
     void printt(TokenBase *);
@@ -4185,6 +4263,20 @@ public:
 	    TokenBase::_parse_file   = _cur_token->file;
 	    TokenBase::_parse_line   = _cur_token->line;
 	    TokenBase::_parse_column = _cur_token->column;
+	    // #pragma pack events pinned to this token (see _pragma_pack_events):
+	    // applied once, at first consumption — the empty() guard keeps the
+	    // hot path free for the (usual) pack-less TU.
+	    if ( !_pragma_pack_events.empty() )
+	    {
+		auto pe = _pragma_pack_events.find(_cur_token);
+		if ( pe != _pragma_pack_events.end() )
+		{
+		    for ( size_t i = 0; i < pe->second.size(); ++i )
+			apply_pragma_pack_op(pe->second[i].first,
+					     pe->second[i].second);
+		    _pragma_pack_events.erase(pe);
+		}
+	    }
 	}
 	return _cur_token;
     }
@@ -4199,7 +4291,8 @@ public:
 		       std::vector<DataDef *> *multi_ret = NULL,
 		       bool return_ref = false,
 		       std::string return_typedef_alias = std::string(),
-		       bool static_class_method = false);
+		       bool static_class_method = false,
+		       bool inline_specified = false);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     TokenBase *parseCallMethod(TokenCallMethod *);
@@ -4435,9 +4528,13 @@ public:
     // the first '['; stops with the token after the last ']' unconsumed.
     // Returns the true pointer-to-array DataDefPTR(DataDefCArray(elem,...)).
     // Shared by the declaration, parameter, and cast `(T (*)[N])` arms;
-    // `what` names the arm for diagnostics.
+    // `what` names the arm for diagnostics. A runtime dim (C11 6.7.6.2
+    // variably-modified: `int (*rp)[m]`) becomes the CArray's count_expr;
+    // capture_runtime_dims captures each at the declaration point (the
+    // declaration arm — params capture at function entry instead).
     DataDef *parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
-				    const char *what);
+				    const char *what,
+				    bool capture_runtime_dims = false);
     // The FuncDef giving a CALL's signature: the variable's own FuncDef, or
     // the target signature behind a function-pointer type (DataDefFPTR).
     // NULL when the variable isn't callable-typed. Parse-time twin of the CIR
@@ -4836,6 +4933,9 @@ public:
 					   TokenBase *&dim_expr, TokenBase *loc);
     TokenBase *try_parse_vla_variable_sizeof(TokenBase *op_tb,
 					     const std::string &op_name);
+    TokenBase *try_parse_vla_row_sizeof(TokenBase *op_tb, class Variable *v,
+					bool paren, bool deref,
+					size_t after_ix);
     TokenBase *parse_functional_type_expression(TokenBase *type_tb,
 						DataDef *type_dd);
     TokenBase *parse_namespace_block(bool inline_namespace);

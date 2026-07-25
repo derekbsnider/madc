@@ -162,23 +162,33 @@ for t in tests/*.mad; do
         fi
     fi
 
-    # OBJ pass: compile to a relocatable .o, then execute it through the
-    # in-process loader (`madc foo.o` — the precompiled-cache lane). The
-    # exe_skip fixture covers ALL native-artifact lanes: a structurally
-    # JIT-only test is skipped here too. obj_skip additionally marks tests
-    # outside the single-object domain (multi-TU --project programs) that
-    # the EXE lane still covers. Fixture flags are passed to both
+    # OBJ pass: compile to ONE relocatable .o (-r, the gcc/ld -r shape —
+    # a multi-TU --project program becomes one whole-program .o), then
+    # execute it through the in-process loader (`madc foo.o` — the
+    # precompiled-cache lane). The exe_skip fixture covers ALL
+    # native-artifact lanes: a structurally JIT-only test is skipped here
+    # too. obj_skip marks tests outside the .o domain entirely (the EXE
+    # lane still covers them). Fixture flags are passed to both
     # invocations — the compile needs them, and the run honors -l (the
-    # dlopen happens before the .o dispatch).
+    # dlopen happens before the .o dispatch); --project is compile-only
+    # (the run executes the finished artifact) so it is dropped from the
+    # replayed run flags.
     if [ $RUN_OBJ -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ] \
        && [ ! -f "tests/$base.exe_skip" ] && [ ! -f "tests/$base.obj_skip" ]; then
         obj_path="/tmp/madc_test_obj_${base}.o"
+        run_flags=()
+        skip_next=0
+        for fl in "${flags[@]}"; do
+            if [ $skip_next -eq 1 ]; then skip_next=0; continue; fi
+            if [ "$fl" = "--project" ]; then skip_next=1; continue; fi
+            run_flags+=("$fl")
+        done
         # -o BEFORE fixture flags — same positional rule as the EXE pass.
-        if "$MADC" -c -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+        if "$MADC" -r -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
-                obj_out=$(timeout 5 "$MADC" "${flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
+                obj_out=$(timeout 5 "$MADC" "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
-                obj_out=$(timeout 5 "$MADC" "${flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
+                obj_out=$(timeout 5 "$MADC" "${run_flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
             fi
             obj_rc=$?
             obj_ok=1

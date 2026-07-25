@@ -2,6 +2,661 @@
 
 ## [Unreleased]
 
+## [v0.48.0] — 2026-07-25
+
+Forest carriers S3: the frozen forest becomes discoverable — ordered
+carrier probe chain (self-image → `<exe>.forest` sidecar →
+`$MADC_FOREST`), `--with-forest=embedded|sidecar|none` configure axis,
+and the failure-policy pair (loud-fallback CLI / strict embedding
+hosts); full shape × platform matrix green on Linux and Apple hardware.
+
+- **feat(forest): carrier discovery chain — sidecar + `MADC_FOREST`
+  arms, `--with-forest=` configure axis, failure-policy knobs
+  (forest-carriers S3).** One format, one loader, N carriers — this
+  slice adds DISCOVERY. With no explicit `--forest-bind=`, the bind
+  path walks the ordered probe chain, first usable container wins:
+  1. self-image (ELF trailer / Mach-O `__MADC,__forest` section —
+  shipped), 2. (S4 slot) library image via `dladdr`, 3. `<exe>.forest`
+  sidecar beside the binary, 4. the `$MADC_FOREST` path, 5. (S6 slot)
+  `madc.ini` / baked default. Every arm validates identically (footer +
+  context hash + version pin + v27 producer-config gate); a config
+  (std/`-D`) mismatch stays a silent skip under every policy (the
+  multi-dialect contract), a file that exists but is not a container is
+  loud, and an explicit `--forest-bind=` path that fails to open is now
+  a loud fall-through — never silently ignored. Failure policy joins
+  the `RegistrationPolicy` sandbox-knob family: `forest_missing_policy`
+  (`silent_fallback` dev default / `loud_fallback` one stderr notice,
+  the packaged-CLI default baked via `MADC_FOREST_EXPECT_*` in product
+  MODEs / `strict_require` hard error for embedding hosts that must
+  never silently degrade) and `enable_external_forest` (gates the
+  sidecar + env arms so a sandboxed host can forbid external
+  redirection of frozen-state loading). New `--with-forest=embedded|
+  sidecar|none` configure axis (default embedded) selects what the
+  product build ships: embedded = today's pack; sidecar =
+  `<bin>.forest` beside the binary (`forest_pack.sh --sidecar`; hosted
+  darwin keeps the cross-freeze, drops `-sectcreate`, ships
+  `$(BIN).forest`; `make install` places `bin/madc.forest`); none = the
+  live-parse dev shape. Never a restriction on discovery. Gates:
+  `scripts/forest_sidecar_gate.sh` in fulltest (both external arms bind
+  with `-v` engagement evidence + byte parity vs `--no-forest-bind`
+  live parse, arm ordering pinned, loud failure surfaces);
+  `tests/unit/test_forest_policy.cpp` pins the policy triad. A
+  forest-shape stamp recompiles `madc.o` on a `WITH_FOREST` switch
+  (`-MMD` tracks headers, not `-D` flags).
+
+- **fix(forest): config-mismatch fall-through is never a loud notice.**
+  The packed/sidecar CLI (baked `loud_fallback`) fired the
+  missing-forest notice on every compile whose std/`-D` config-gated
+  past the corpus (a `--std=c17` C compile against the C++-parsed
+  pack) — caught by the arbiter's `expect_quiet` tests through BOTH
+  carriers. The chain-end policy now knows WHY it ended empty
+  (`forest_missing_fallback(config_mismatch)`): the multi-dialect
+  fall-through stays silent under `loud_fallback`; `strict_require`
+  still hard-errors on it, naming the mismatch.
+
+- **fix(gate): emitpack Mach-O legs are rev-skew-immune.** The S2 gate
+  dumped a dev-madc-frozen container with the cross madcs —
+  cross-binary dump equality, which the context-hash pin rightly
+  rejects once the dev binary is newer than the cross builds. Each
+  Mach-O leg now freezes its own container with the same cross madc
+  that emits and dumps it: carrier transparency per binary, the claim
+  the gate actually makes.
+
+## [v0.47.0] — 2026-07-25
+
+Emitted-pack (forest-carriers S2): `--pack-forest` embeds a frozen
+container in emitted native executables — ELF trailer / Mach-O
+`__MADC,__forest` section signed at emit via a new fork-writer seam, no
+re-signer anywhere on the product path; Mach-O file-probe read-back;
+full native loop green on Apple hardware, both arches.
+
+- **feat(aot): `--pack-forest` — emitted native executables carry a
+  frozen container in their self-image carrier (forest-carriers S2).**
+  One format, one loader, N carriers: `--pack-forest=<container>` with a
+  linked native output (`-o` / `-shared`) embeds the container in the
+  emitted image — the ELF arm appends it post-write via the new
+  `madc::dis::snapshot_append_blob` (extracted from
+  `snapshot_writer::append_file` so one owner holds the placement-2
+  pad-to-16 shape; footer at EOF, byte-equivalent to `--freeze-append`),
+  and the Mach-O arm rides a new fork-writer seam
+  (`MIR_object_exec_params.extra_*`): `mir-macho.c` lays a read-only
+  one-section `__MADC,__forest` segment between `__DATA` and
+  `__LINKEDIT` INSIDE the emit-time ad-hoc signature — signed once at
+  emit, no post-link surgery on a signed file, no re-signer anywhere on
+  the product path (the `-sectcreate` insight, now first-class in the
+  emitter). Read-back: `cir_forest_map_image`'s file probe gains a
+  Mach-O arm (pure byte parse of the load commands, host-neutral — the
+  Linux cross madcs verify emitted Mach-O images; macro-proof against
+  `<mach-o/loader.h>` on hosted builds), so `--dump-forest` /
+  `--forest-bind=` / `--run-frozen=` find a packed Mach-O file's
+  container the same way ELF trailers are found. The container is
+  validated with the production reader at emit (a non-container payload
+  fails loudly); `-c` / `-r` / JIT runs refuse the flag at one CLI
+  chokepoint. Gate GREEN on Apple hardware, both arches (A64 native +
+  X64-under-Rosetta): cross-emitted packed binaries carrying the real
+  30-unit darwin groves run under AMFI (rc-exact), hosted
+  `--dump-forest` over the packed files is byte-identical to the
+  containers, and the full native loop — hosted madc freezes, emits
+  packed, AMFI accepts, reads back — is green. Linux: permanent
+  `scripts/forest_emitpack_gate.sh` in fulltest (ELF run + dump parity
+  + both refusal arms; per-arch Mach-O dump-parity legs). The darwin
+  `--freeze-run` half of S2 needed nothing: the hardware probe showed
+  the temp-file + re-exec + file-probe flow already green (no
+  self-rewrite ⇒ no re-signer); the re-signer for rewriting EXISTING
+  signed binaries is consciously deferred (dev convenience, not the
+  product path).
+- **fix(build): per-target MIR variant libs always recurse (FORCE).**
+  The bare `build-*/libmir.a` rules never re-invoked the fork's make
+  once the lib existed, so fork source changes went silently stale
+  under existing build dirs (this slice's writer seam caught it as a
+  stale cross madc rejecting `--pack-forest`). Every variant-lib rule
+  now FORCE-recurses; the fork's `-MMD` tracking decides what rebuilds,
+  and downstream relinks still key off the artifact's real mtime.
+
+## [v0.46.0] — 2026-07-25
+
+The frozen forest reaches macOS (forest-carriers S1): hosted darwin
+binaries ship PACKED via a `__MADC,__forest` Mach-O section —
+cross-frozen groves, `-sectcreate` embed (no re-signer on the build
+path), section read-back — gate green on Apple hardware, both arches;
+plus the typedef-of-class parser fix the gate caught.
+
+- **feat(forest): the frozen forest reaches macOS — hosted binaries ship
+  PACKED via a `__MADC,__forest` Mach-O section (forest-carriers S1).**
+  The darwin standard-header groves are cross-frozen in the build
+  container by the same-arch cross madc (which now embeds the identical
+  per-target darwin prelude, so freezer and consumer parse the same
+  text with the same target facts — same context hash, same config
+  word) and embedded at hosted link time via
+  `-Wl,-sectcreate,__MADC,__forest`: lld computes the ad-hoc code
+  signature AFTER section layout, so the build path needs no re-signer
+  (appended blobs are AMFI-illegal on signed Mach-O — the file must end
+  exactly at the signature; the section is the darwin self-image
+  carrier, the ELF trailer stays untouched on Linux). Read-back:
+  `cir_forest_map_image`'s darwin arm probes the running image's
+  section via `getsectiondata` (zero-copy, slid) before the file probe.
+  `scripts/forest_pack_darwin.sh` generates the freeze TU from the
+  prelude's `.MANIFEST` (one owner of the header list) and gates on
+  every name being a directory unit; hosted MODEs regained zstd via
+  per-target static libs so the consumer reads the release codec.
+  Gate GREEN on Apple hardware, both arches: 30 units read from the
+  binary's own section, all lanes (JIT/AOT × .mad/.c), grove bind
+  provably engaged and byte-identical to `--no-forest-bind` live parse.
+- **fix(parser): typedef-of-class registers the FULL typedef surface
+  (grove-bound darwin `FILE`).** Apple's `typedef struct __sFILE {...
+  fnptr members ...} FILE;` routes through the class parser, whose
+  typedef branches registered only the type maps — no
+  `user_typedef_names`, no dkTypedef TopDecl — so the forest freeze
+  never emitted the alias's DK_TYPEDEF record and a grove-bound
+  consumer lost `FILE` while live parse resolved it. Both branches now
+  record the same surface every other typedef path records (the
+  using-alias precedent); the freeze's silent "cleanly lacks" drops
+  now DBG-log name and reason. New Linux `forest_bind_gate` case
+  `[fnptrbody]` pins the shape. Known follow-on: fnptr TYPEDEFS
+  (darwin `sig_t`) still cleanly lack — they need a DK_FPTR arena kind
+  (the DK_CARRAY precedent).
+
+## [v0.45.0] — 2026-07-25
+
+madc runs natively on the Macs (madc-on-macOS Route 1, Phase 1 complete):
+hosted arm64 + x86-64 darwin binaries with a full embedded C header
+story — G2 green on Apple hardware in every lane (JIT, native Mach-O
+AOT, labeled POSIX symbols, ctype inlines) on both architectures.
+Fork release 1.0-madc.0.45.0.
+
+- **feat(hosted-macos): darwin embedded C prelude — hosted madc binaries
+  carry their standard headers (G2 round-2 fix).** Root cause of the A64
+  garble (hardware-proven): hosted binaries shipped with no darwin header
+  story, `<stdio.h>` resolved into the libc++ `c++/v1` wrapper maze (or
+  nothing), printf stayed undeclared, and the dlsym variadic-fallback
+  collides with Apple arm64's stack-varargs ABI (x86-64 was immune by
+  register-ABI coincidence). Fix: `scripts/gen_darwin_prelude.sh` flattens
+  the hosted C standard/POSIX header set against the staged SDK with
+  clang-18 `-E -dD -P -fno-blocks` (`-dD` keeps every `#define` as text so
+  madc's own preprocessor installs `EOF`, `NULL`, `stdin=__stdinp`, … at
+  include time — a `.madh` token stream cannot carry macro state) into ONE
+  umbrella + one-line stubs per header name; `gen_embedded_headers.sh`
+  gained an extra-root/outfile mode and hosted MODEs embed a per-mode
+  table generated into the obj tree (SDK content never reaches committed
+  files; a failed generation stops the build loudly). Embedded headers now
+  classify as system headers for the reachability DCE, and an explicit
+  `#include` defers to the auto-include prelude only when a named provider
+  can actually serve it (gcc canon: explicit includes resolve or error).
+- **fix(parser): deep-layer fixes shaken out by the darwin prelude (all
+  target-independent).** `#pragma pack` gained full GCC semantics
+  (`pack(N)`/`pack()`/valueless `push`) AND a real architecture fix: pack
+  state was lexer-time but consumed at parse time (the file is fully
+  tokenized before parsing), so every BALANCED push/pop region silently
+  lost its packing; pack events now ride a side channel pinned to the next
+  real token, applied one-shot in `nextToken()` (`tests/testpragmapack.mad`).
+  Function-pointer declarators: `*` and cv-qualifiers interleave
+  (`char const * *`), anonymous fn-ptr params (`int (*)(int)`), union tags
+  in fn-ptr params, nested fn-ptr params, and the classic C spiral —
+  a function returning a function pointer (`void (*signal(int, void
+  (*)(int)))(int)`, Apple signal.h) — all parse (`tests/testfnptrdecl.mad`).
+  Postfix `++` now binds inside a deref of a member chain (`*s->p++ = c`
+  is `*((s->p)++) = c` — Apple stdio's `__sputc`). GNU `__asm` labels on
+  plain variable declarators are consumed (glibc/Apple `timezone`), and on
+  Apple targets asm labels drop their leading underscore at the
+  consumption boundary — madc's canonical symbol space is the C/dlsym
+  name; the Mach-O writer re-prepends it (fixes hosted JIT dlsym AND AOT
+  binds for `open`/`fopen`/`kill`/…). `_Float16` registered via the
+  `_FloatN` nearest-supported precedent (macOS 15 SDK declares
+  `__fabsf16` & co unguarded). `RLIMIT_AS` self-limit skipped on darwin
+  (setrlimit EINVALs finite AS caps there).
+- **feat(hosted-macos): madc itself now cross-builds for the Macs
+  (madc-on-macOS Route 1, Phase 1).** `make -C src hosted-arm64-macos` /
+  `hosted-x86-64-macos` build FULL madc binaries (JIT + native Mach-O
+  AOT — the v0.44.0 writer becomes the native writer through host
+  detection) with clang-18 + the owner's SDK + ld64.lld; unstripped
+  `-O2`, madcdat/zstd off (Phase 3). Source port pass (Linux
+  behavior-identical, fulltest + exe lanes green): one
+  `madc_self_exe_path()` helper (readlink vs `_NSGetExecutablePath`)
+  converges all six /proc/self/exe sites; `.dylib` soname synthesis;
+  mach `task_info` memory probe + `ru_maxrss` unit normalization +
+  `/dev/fd` report path; host-keyed errno accessor (`__error`) and
+  host-keyed AOT cover spellings (`libsystem_`/`libc++`/`libSystem`);
+  `MADC_TARGET_APPLE_P` separates target-is-Apple from crossness;
+  `__madc_builtin_mempcpy_chk` darwin arm. Host tables
+  (sys-include paths, predefined macros) now regenerate at Makefile
+  parse time keyed to the mode's compiler, with an SDK→CLT path map
+  for hosted binaries. Fork: object layer made host-independent
+  (`mir-elf-defs.h` local ELF64 ABI defs — no `<elf.h>` needed; gate +
+  stubs deleted), manual checked 128-bit multiply on Apple (libSystem
+  exports no `__muloti4` on arm64). Bonus fix found by clang:
+  `TokenChar::is_constant()` hid (not overrode) its base virtual —
+  char literals reported non-constant through base pointers; headers
+  now carry the 85 missing `override` markers.
+
+## [v0.44.0] — 2026-07-25
+
+The Mach-O release (Mach-O/ARM64 track, axis B writer + cross madcs):
+madc on Linux now emits complete, ad-hoc-signed Apple Mach-O executables
+for BOTH arm64 (Apple Silicon) and x86-64 (Intel) — no Apple toolchain
+anywhere in the product path — and the first binaries ran on the owner's
+Macs the same day (identical output, exit 28, AMFI accepted the
+MIR-generated signature). Fork release 1.0-madc.0.44.0.
+
+- **feat(fork): Mach-O64 executable writer behind the `MIR_object` seam
+  (`mir-macho.c`, fork @a13933bd).** For Apple targets
+  `MIR_object_emit_executable` assembles an MH_EXECUTE image from the
+  same builder state the ELF writer consumes:
+  `__PAGEZERO`/`__TEXT`/`__DATA_CONST`(`__mir_addrpool`,
+  `__mod_init_func`)/`__DATA`/`__LINKEDIT`; always PIE; LC_MAIN replaces
+  the `_start` stub (dyld's libdyld glue calls the entry symbol);
+  classic LC_DYLD_INFO_ONLY — internal address slots baked + rebase
+  opcodes, imports as `_`-prefixed binds against the implicit
+  libSystem, no stubs / lazy binding / indirect symbol table (the
+  addrpool IS the GOT); nlist symtab with DYSYMTAB ranges; real
+  LC_FUNCTION_STARTS; deterministic LC_UUID (content SHA-256); and a
+  linker-signed ad-hoc LC_CODE_SIGNATURE (inline SHA-256, 4K signing
+  pages, execSeg = `__TEXT` MAIN_BINARY) — mandatory on Apple Silicon.
+  16K segment pages on arm64, 4K on x86-64. `shared_p` is refused (no
+  dylib emission by design). `MIR_object_exec_params` gains a tail
+  `identifier` field (signature identifier).
+- **feat(fork): x86_64-macos target + target-keyed predefines.**
+  `MIR_TARGET_X86_64_MACOS` pair helper; the `mirc_{x86_64,aarch64}_*`
+  predefine/typedef headers switch on `MIR_TARGET_APPLE_P` instead of
+  host macros (OS predefine block, LDBL==DBL on arm64-macos, darwin
+  `int64_t`/`va_list`/`wchar_t`); two target-code-semantics sites
+  (`__darwin*` redefinition/redecl handling) flip too. A default build
+  stays behavior-identical (probe-verified).
+- **feat(aot): Mach-O cross compilers — emit-only
+  `bin/madc-x86-64-macos` / `bin/madc-arm64-macos`.**
+  `make -C src cross-x86-64-macos` / `cross-arm64-macos` (same MODE
+  isolation as `cross-aarch64-linux`). Apple targets treat the base-lib
+  sonames as cover analysis only (the emitter links the implicit
+  libSystem); a program that would need the madc runtime fails at emit
+  with a clear error instead of at dyld; the signature identifier is
+  stamped from the output basename. Cross modes now use per-mode
+  `../lib` archive names — a cross build can no longer clobber the
+  host-facing `libmadc.a` (latent since axis A). Lanes proven on both
+  targets: pure C `-o`, `.mad` `-o`, `-c`×2 → madc-link, run-lane
+  refusal.
+- **Gate B (all-Linux, llvm-18 oracle + clang/ld64.lld reference
+  binaries):** otool layout matches the reference (identical arm64
+  segment addresses), rebase/bind streams decode, adrp pairs land on
+  the pool page, valid disassembly on both arches, python re-hash
+  independently verifies every signature page, file ends exactly at
+  the signature end. ELF object + load-object suites: 0 failures.
+  **Gate B-final (owner, both Macs): GREEN** — `madc-A64_MachO` and
+  `madc-X64_MachO` printed identical output and exited 28.
+- Host regression battery unchanged and green: fulltest 754/0/0/9,
+  exe 738/0, obj (packed) 754/0/0/9.
+- Remaining in the track: MH_OBJECT `.o` flavor (the `-c` artifacts are
+  ELF-container dev vehicles that madc's own linker consumes); owner
+  route decision recorded for the larger goal — madc-release running
+  ON macOS.
+
+## [v0.43.0] — 2026-07-25
+
+The aarch64 cross-AOT release (Mach-O/ARM64 track, axis A complete):
+`bin/madc-aarch64-linux` emits aarch64 ELF executables, objects, and
+merges from an x86-64 host — MIR is the cross compiler/assembler/linker
+— proven end-to-end under qemu-aarch64. Fork release 1.0-madc.0.43.0.
+
+- **feat(aot): aarch64-linux cross compiler — emit-only
+  `bin/madc-aarch64-linux`, qemu gate A green [Mach-O/ARM64 axis A].**
+  `make -C src cross-aarch64-linux` builds a host binary against the
+  fork's `build-aarch64-linux/libmir.a` variant (gcc cross model: one
+  target per compiled stack, separate emit-only binary, zero mir
+  makefile changes — the variant builds through the stock CPPFLAGS
+  hook). Every run lane refuses loudly (JIT tail, `--project` execute,
+  `.o` in-process eval, `--run-frozen`/`--freeze-run`); every emit lane
+  works. Gate A (all-Linux, qemu-aarch64, no external toolchain on the
+  product path): pure C `-o` matches the `aarch64-linux-gnu-gcc` native
+  reference byte-for-byte on stdout + exit code; `.mad` `-o` runs;
+  `.mad` `-c`×2 → madc `.o`-link → PIE runs runtime-free. Front-end
+  type layout needed NO changes for this target (aarch64-linux is LP64
+  with 16-byte long double, identical to x86-64-linux).
+- **feat(fork): build-time target selection + aarch64 AOT object
+  capture/ELF relocations (fork @588e3a9b).** `mir-target.h` centralizes
+  arch/OS selection (separate knobs + pair helpers + validation; no
+  override = host detection = upstream-identical). The aarch64 gen gains
+  the full PIC addrpool model in object mode: item refs read
+  `.mir.addrpool` slots through relocated `adrp+ldr` pairs ('j'/'p'
+  pattern; movz/movk constraints reject refs so leaks fail loudly),
+  switch tables move to the pool behind `adrp+add`, and
+  `target_object_capture` mirrors x86-64 (S4 weak/linkonce binding
+  identical). The ELF writer maps three new bias-invariant reloc kinds
+  (`ADR_PREL_PG_HI21`/`LDST64_ABS_LO12_NC`/`ADD_ABS_LO12_NC`) per
+  target at every seam (.o emit, executable emit, in-process load,
+  merge read-back), adds an aarch64 `_start` stub, 64K max-page-size
+  (gcc canon), target-selected interp, and a target-gated
+  `.debug_frame` CIE (was host-gated). `c2mir`'s `mir_ldouble` is
+  target-conditional (double for arm64-macos; size-correct binary128
+  for aarch64-linux with host-bounded fold precision, documented).
+- **feat(aot): eval-shim gating — standalone executables are
+  runtime-free.** The `__madc_shim_*` host-call adapters (Pass 0.74)
+  are skipped for executables (nothing can ever host-call a standalone
+  image) and for every non-`-shared` artifact of a cross build (the
+  in-process eval lane those shims serve is refused there). Dropping
+  their `madc_value_*` imports lets the existing `libmadc.so.0`
+  DT_NEEDED cover-drop fire: pure programs now emit with no madc
+  runtime dependency. Host `-c` objects keep the shims — the
+  run-objects eval contract is unchanged (suite: fulltest 754/0/0/9,
+  exe 738/0, obj 738/0, packed 754/0/0/9).
+
+- **chore: last asmjit residue removed.** The backend was deleted long
+  ago; this clears what was left — four unit tests still `#include`d
+  `<asmjit/x86.h>` (never using a symbol; the test binaries no longer
+  need asmjit headers installed), the commented `-lasmjit` Makefile
+  line, and stale agent-briefing text (`code-style.md`'s asmjit /
+  `regdefp_t` / `compile()/operand()` bullets; AGENTS.md design notes
+  describing removed JIT-era string/stream machinery).
+
+## [v0.42.0] — 2026-07-25
+
+The inline un-erasure release (ELF-completion S4 follow-through):
+`inline` is a real C++ specifier carrying vague linkage — user-header
+inline functions and C++17 inline variables merge weak across TUs, and
+dynamic inits run once behind a linkonce guard. Fork untouched.
+
+- **feat(lang): `inline` un-erasure — a real C++ specifier carrying
+  vague linkage; the S4 `sumv` boundary is closed [ELF-completion S4
+  follow-through].** `inline` joins the version-gated keyword registry
+  (C++ modes; `__inline__`/`__inline` map to it; C modes keep the
+  erasure — C99 inline semantics are out of scope, nothing broken
+  there), is consumed in every decl-specifier position
+  (`TokenCppKeyword::parse`, which also owns `inline namespace` — the
+  lexer carve-out is deleted; the member-specifier loop; mid-seq
+  positions), and routes into `FuncDef::vague_linkage` via
+  `parseDeclaration`/`parseFunction` with `static inline` excluded
+  (internal linkage is never vague). Inline VARIABLES (C++17) ride the
+  same S4 machinery: `vfLINKONCE` → linkonce data binding (STB_WEAK,
+  fn AND data merge across TUs), and a dynamic init runs once per
+  merged image behind a linkonce once-guard (`__madc_ivg_<sym>`, the
+  g++ guarded COMDAT-init model). `--emit=c11` renders the variable
+  attr as portable `__attribute__((weak))`. Fork untouched. Gates:
+  20/20 (two-TU weak fn+data merge runs 42 across madc-link /
+  run-direct / external gcc/ld / emit-C lanes; g++ source oracle
+  agrees; JIT `tests/testinline.mad`; init-once is load-bearing).
+  Pre-existing gaps surfaced and verified NOT slice regressions:
+  emitted-C multi-TU dynamic-init TUs collide on `__madc_global_init`
+  (emit-C still uses the JIT main-wrap model), and file-static
+  functions export GLOBAL in `.o`s (same for plain `static`).
+
+## [v0.41.0] — 2026-07-24
+
+The ODR/linkonce weak release (ELF-completion slice 4): the C++
+vague-linkage set captures `STB_WEAK`, so two TUs' identical copies —
+template instantiations, in-class method bodies, vtables — merge at
+native links instead of duplicate-strong colliding.
+
+- **feat(aot): ODR/linkonce weak — two TUs' identical C++ copies merge
+  at native links instead of duplicate-strong colliding [ELF-completion
+  slice 4].** Template instantiations, in-class/header method bodies,
+  vtables, typeinfo, synthesized dtors, vtable thunks, and
+  `__madc_shim_*` adapters — the C++ vague-linkage set every TU emits a
+  copy of — are now marked linkonce (parse-layer
+  `FuncDef::vague_linkage` + `tsubst_source`, emitted as a spec-list
+  `N_ATTR("linkonce")`) and captured as `STB_WEAK`: a multi-`.o` link
+  keeps the first copy (strong replaces weak; gcc/ld-shaped), an
+  external gcc/ld link of madc `.o`s dedupes them natively, and
+  `--emit=c11` renders the marker as portable `__attribute__((weak))`.
+  Fork: MIR items gain a binding enum
+  (`MIR_item_set_binding`: GLOBAL / WEAK / LINKONCE — both non-global
+  kinds bind STB_WEAK; only interposable WEAK suppresses inlining, gcc
+  parity), c2mir consumes `__attribute__((weak))`/`((linkonce))` with
+  the gcc-shaped weak-static diagnostic, and the binding survives
+  binary + text MIR round trips (binding-less streams stay
+  byte-identical). Boundary (loud, not silent): an explicitly-`inline`
+  user-header free function still collides at link because the lexer
+  erases `inline` — follow-on slice models `inline` as a real
+  specifier. JIT lane unchanged. Fork `MIR_COMMIT` bumped in-commit.
+
+## [v0.40.0] — 2026-07-24
+
+The ctor/init-array release (ELF-completion slice 3): native images adopt
+the platform init model — per-TU initializers ride `.init_array`, the
+two-ctor-TU merge fence is lifted, `DT_INIT` is retired.
+
+- **feat(aot): ctor/init-array — per-TU initializers ride the platform
+  `.init_array`; the two-ctor-TU merge fence is lifted [ELF-completion
+  slice 3].** Native lanes no longer wrap `main` with a
+  `__madc_global_init()` call (per-image single — two ctor-TU `.o`s
+  collided as duplicate strong definitions, and a ctor TU that wasn't
+  main's TU had its ctors silently skipped). In object mode each TU
+  with dynamic initializers (or `<ns_madc>`) synthesizes a STATIC init
+  under a TU-unique name (`__madc_init_<stem>_<hash>`, platform
+  signature `(argc, argv, envp)`) registered into the capture's
+  `.init_array` — a real `SHT_INIT_ARRAY` section, so an EXTERNAL
+  linker collects it natively too. Executables/PIE/shared objects emit
+  `DT_INIT_ARRAY`/`DT_INIT_ARRAYSZ` (inside the RELRO lead region,
+  gcc-shaped); `DT_INIT` is retired; ld.so runs a `.so`'s inits at
+  dlopen, glibc ≥ 2.34 runs an executable's own array (documented
+  floor; container = 2.36); the R4b loader exposes the merged array
+  (`MIR_object_loaded_init_array`) and the run lanes walk it before
+  `main`. `sys.*` population moves into the TU init via a new guarded
+  `__madc_sys_init_once` (a dlopen'd madc module no longer stomps the
+  running script's `sys.path`/`sys.argv` mutations). A pre-init-array
+  ctor cache (defines `__madc_global_init`) is refused at merge with a
+  re-emit message. The JIT lane is unchanged. gdb-proven: source-level
+  breakpoint inside a per-TU init on the merged `-g` PIE; external
+  gcc/ld oracle runs both TUs' inits. Fork `MIR_COMMIT` bumped
+  in-commit.
+
+- **fix(fork/c2mir): `-g` debug-capture state reset at `c2mir_finish`.**
+  The R5 DWARF capture kept per-compile records (MIR items, AST tag
+  nodes, interned names) in process statics — a latent use-after-free
+  for any second `-g` compile in one process (in-process emitters like
+  libmadc sessions and the unit suite; the one-shot CLI never hit it).
+  `c2mir_finish` now destroys the debug builder and resets the record
+  arrays.
+
+## [v0.39.0] — 2026-07-24
+
+The AOT hardening + ELF-completion release: PIE executables by default,
+multi-object linking of `.o` caches, Full RELRO + NX on every native
+image, DT_DEBUG, and multi-`.o` DWARF merge — MIR remains the only
+compiler, assembler, and linker.
+
+- **feat(aot): multi-`.o` DWARF merge — `-g` debug info now survives
+  multi-object links (multi-CU output).** The `.o`'s cross-debug-
+  section offsets (CU abbrev offset, `DW_AT_stmt_list`, `.debug_frame`
+  FDE CIE pointers) were bare values valid only for a lone CU at
+  section offset 0 — any multi-object link, EXTERNAL `ld` INCLUDED,
+  silently corrupted every CU after the first. They are now zeroed and
+  `R_X86_64_32`-relocated against the target debug section's symbol,
+  and `MIR_object_read` concatenates debug sections with the same
+  rebase rules as data instead of dropping them: `madc -o prog a.o
+  b.o` (and `-r`, and the merged-run lane) keeps full line info,
+  breakpoints, and backtraces across every input TU, and the merged
+  `-r` relocatable stays externally linkable and re-mergeable. A `-g`
+  cache emitted before this change is refused at merge (past the
+  first position) with a re-emit message. gdb-proven on the MIR-linked
+  merged executable and on the gcc-linked oracle. Fork `MIR_COMMIT`
+  bumped in-commit; also emits `DT_DEBUG` in executables (slice 1 —
+  restores gdb's standard probes-based solib interface).
+
+- **feat(aot): Full RELRO + non-executable stack on every native
+  image (executables, PIEs, shared objects).** `.mir.addrpool` (the
+  GOT) and `.dynamic` now lead the R+W segment under a page-padded
+  `PT_GNU_RELRO` — the loader mprotects them read-only after
+  relocation, closing the classic GOT-overwrite escalation.
+  `DT_FLAGS = BIND_NOW` and `DT_FLAGS_1 = NOW` are emitted always (a
+  statement of fact: madc's images have no PLT and no lazy binding —
+  every import is an eagerly-relocated pool slot — so Full RELRO
+  costs one ≤4K pad, not eager-resolution latency). `PT_GNU_STACK`
+  (non-exec) is emitted in the same phdr block: an absent header
+  means an executable stack on x86-64 Linux. checksec-style
+  classification: Full RELRO + NX on all image kinds, unconditional
+  (no knob — there is no trade to expose). Fork `MIR_COMMIT` bumped
+  in-commit; `.o` emit/load/merge paths untouched.
+
+- **feat(aot): multi-object linking — `.o` inputs now link and run;
+  `-r` emits relocatable output (gcc/ld `-r`).** The make model for
+  AOT: recompile one TU to its `.o` cache, relink — MIR stays the only
+  linker. `madc a.o b.o -o prog` links precompiled caches into a native
+  executable (PIE default/`-no-pie`/`-shared` as from source);
+  `madc a.o b.o -r -o one.o` combines them into one relocatable
+  (`ld -r` shape); `madc a.o b.o [args]` merges in memory and runs
+  (the leading run of `.o` positionals are all objects — extends the
+  R4b single-cache lane; circular cross-object references are fine,
+  they resolve at the merge's final emit). `--project -r -o one.o`
+  emits the whole-program capture as ONE `.o`, which lets the suite's
+  `--obj` lane cover the four multi-TU project tests (obj_skips
+  deleted; lane 713→737/0). Fork side (`MIR_COMMIT` bumped in-commit):
+  new `MIR_object_read` appends a MIR-emitted ET_REL image into a
+  builder — the ELF scan front is extracted from the loader so both
+  parse through one implementation; symbols unify by name (UNDEF ↔
+  definition both directions, strong replaces weak, duplicate strong
+  definitions are a loud error naming the symbol, locals never unify);
+  relocations rebase (section-symbol addends absorb the append base).
+  The merged builder feeds the existing single-object consumers
+  unchanged. Documented fences: `-g` inputs' DWARF is dropped from
+  merged outputs with a loud warning (one CU per `.o` with stmt_list
+  pinned at 0 — concatenation would corrupt CU 2..N; `--project -g`
+  whole-program DWARF is unaffected), and two inputs both carrying
+  file-scope ctor init (`__madc_global_init`) hit the duplicate-symbol
+  error — C++ cross-TU ODR/ctor merging is the follow-on slice. New
+  unit case covers cross-object calls/data through all lanes plus the
+  duplicate detection.
+
+- **feat(aot): PIE executables — `-o` now emits a position-independent
+  ET_DYN executable by default (gcc parity); `-no-pie` keeps the
+  fixed-base ET_EXEC layout, `-pie` selects the default explicitly.**
+  The R6 PIC rung left this "a layout flip away" and it was: the fork's
+  executable emitter (`MIR_object_emit_executable`, new `pie_p` param)
+  reuses the shared-object treatment for the image (base 0, internal
+  address slots as `R_X86_64_RELATIVE`) while keeping the executable
+  apparatus (PT_INTERP, `_start`, `e_entry`, import-only dynsym), plus
+  `DT_FLAGS_1 = DF_1_PIE` so tooling classifies it (`file`: "pie
+  executable"). Two structural fixes fell out: the `_start` stub's one
+  bias-hostile instruction (`mov $entry,%edi` imm32) became a
+  rip-relative `lea` — ONE stub now serves both layouts (bias 32→48) —
+  and executables now carry the gABI-ordered `PT_PHDR`/`PT_INTERP`
+  headers ahead of the loads (glibc derives a PIE's load bias from
+  `PT_PHDR`; without it ld.so rebases nothing and faults on its own
+  unrebased pointers — found by the first PIE run crashing inside
+  `dl_main`). madc side: `MadcNativeKind` gains `mnkPieExecutable`,
+  flavor→exec-params mapping centralized in `cir_write_native_image`;
+  single-TU and `--project` lanes both flip. gdb R5 gate re-proven on
+  PIE `-g` output (break by line at the rebased address, named bt,
+  locals/args). New unit case probes the PIE image structurally
+  (ET_DYN + PT_INTERP + `DF_1_PIE` + RELATIVE relocs + no TEXTREL) and
+  pins `-no-pie` to ET_EXEC.
+
+- **docs(grammar): `docs/grammar/madc.ebnf` — the madc surface grammar in
+  W3C EBNF (issue #6).** Covers the C17 core, the implemented C++ subset,
+  and the madc dialect extensions (script mode, `#load … as ns`, `prefer`,
+  `defer`, `rust::match`, multi-return `return a, b` / `a, b := f()`,
+  `===`/`!==`, `[ret-type]` lambdas), with dialect/GNU origin notes and a
+  parser-is-authoritative header. Validated by rendering through the
+  Railroad Diagram Generator (rr 2.6) — every production gets a diagram,
+  no undefined references; regeneration steps in `docs/grammar/README.md`.
+  The rendered `madc.ebnf.xhtml` is contributed to the
+  mingodad/cpp-grammars collection.
+
+- **feat(cir+parser): VLA row-pointer semantics — arithmetic,
+  variably-modified declarators, sizeof operand evaluation.** Completes
+  the VLA boundary set opened below: (1) pointer arithmetic on flat
+  runtime-sized arrays scales by the row stride — `a + 1` on
+  `int a[n][m]` advances one row; `n + a`, `a - n`, compound `+=`/`-=`,
+  `++`/`--` (post forms recover the old value arithmetically), and a
+  difference of two row pointers divides the element difference back
+  down. New `CirBuilder::vla_arith_stride` keys on token shape (root
+  var / subscript value / `&subscript`) plus the flat-root type gate,
+  so fixed arrays never mis-scale. (2) C11 6.7.6.2 variably-modified
+  declarators parse: `int (*rp)[m]` as a local (dim captured at the
+  declaration point — `sizeof *rp` keeps the declaration-time value
+  even if `m` changes), as a parameter (dims captured at function entry
+  by the existing VLA-param machinery), and as a cast `(int (*)[m])`.
+  The type is the same flat `PTR(CArray count_expr)` shape a VLA
+  parameter's pointee carries, so the subscript linearizer, row sizeof,
+  `&`, and the new arithmetic apply unchanged; declarations and casts
+  emit the flat scalar pointer. `(*rp)[j]` / `(*a)[j]` unwind
+  deref-as-[0] through `subscript_root_indices`. (3) The documented
+  C11 6.5.3.4p2 divergence is closed: a VLA-row sizeof operand's index
+  side effects now evaluate (`sizeof a[i++]` bumps `i`), carried on
+  `TokenTypeQuery` and emitted as a comma chain ahead of the runtime
+  size; int-typed operands stay unevaluated per the standard. New
+  `testvlarowptr` (28 probes; gcc oracle — JIT and `--emit=c11`→gcc
+  byte-match). Remaining edges: subscripting an arbitrary parenthesized
+  arithmetic result (`(a + 1)[j]`) and bare `*a` row decay in value
+  context stay on generic paths.
+
+- **fix(cir+parser): VLA row boundaries — `sizeof a[i]`, `sizeof *a`,
+  and `&a[i]` on runtime-sized arrays.** Closes the boundaries the
+  partial-subscript fix left open. sizeof of a subscripted / deref'd
+  row on a flat runtime-sized array (VLA param or local, any depth,
+  mixed const/runtime chains like `char c[2][3][n]`) now defers through
+  `make_type_query_token`/`TokenTypeQuery` and lowers to the runtime
+  product of the remaining dims times the element size — previously it
+  folded the unsized row type to 0, and `sizeof t[0]` on a VLA local
+  mis-parsed the subscript as a lambda intro (parse error). `&a[i]` on
+  a partial row returns the linearized row-pointer VALUE directly
+  (N_ADDR over the pointer arithmetic tripped c2mir's lvalue check);
+  full-chain `&a[i][j]` keeps N_ADDR over the element lvalue. New
+  `DataDefCArray::chain_has_runtime_size()` is the single
+  variably-modified predicate (C11 6.7.6), shared by the parser's
+  `is_runtime_sized_type`, the builder's TokenTypeQuery lowering (which
+  also learns const-head dims), and the flat-subscript gate; new
+  `CirBuilder::subscript_root_indices()` unwinds all three subscript
+  token shapes for the linearizer and the new address-of arm. New
+  `testvlabounds` (22 probes; gcc oracle — JIT and `--emit=c11`→gcc
+  byte-match). The boundaries this entry left open — row-pointer
+  arithmetic, variably-modified declarators, sizeof operand side
+  effects — are closed by the row-pointer-semantics entry above.
+
+- **fork(c2mir): uninitialized narrow locals extend at birth, reads
+  stay extension-free (fork @9c7e7f3b, pin bumped).** Supersedes the
+  July re-widening of `force_val` (bde8658d): the addr_p read gate from
+  upstream's issue-458 follow-up is restored, and the one counterexample
+  — an uninitialized narrow auto local (gcc pr34099-2) — is repaired
+  with a single extension at its declaration. Better codegen than the
+  re-widened form (no per-read extensions); fork `make test`, madc
+  battery (751/0/0/9, exe 735/0, packed), and the torture baseline
+  (1614/1/9/0/61) all green. Staged for upstream as wave 1 with the
+  `alias_ctx` allocation one-liner —
+  `docs/plans/2026-07-23-upstream-wave1-STAGING.md` (owner review
+  gates submission).
+
+- **fix(cir): VLA partial subscript yields the row pointer.** Follow-up
+  to #80's flat lowering: a partial access on a runtime-sized array —
+  `a[i]` on `int a[n][m]`, `a[i][j]` on a 3-D VLA — fell through to raw
+  scalar N_INDs (2-D shape read one element as the "pointer"; 3-D shape
+  hard-failed c2mir check). New `CirBuilder::vla_flat_subscript` serves
+  both subscript paths: full chains keep the single linearized element
+  IND, partial chains emit scaled pointer arithmetic
+  (`a + lin(i…) * prod(remaining dims)`), matching C's row-pointer
+  semantics under the flat representation. The chain unwind also learns
+  a bare TokenVar root (`(int *)a[1]` parses the cast operand without a
+  TokenSubscript node — previously bypassed linearization and produced
+  a NULL pointer at runtime). Params and malloc'd locals alike; fixed
+  arrays untouched. New `testvlapartial` (gcc oracle; JIT, `-o`, and
+  `--emit=c11`→gcc all byte-match; `.expect_quiet` guards the old c2mir
+  warnings). Boundaries noted: `sizeof a[i]` and `&a[i]` on a partial
+  row remained open (closed by the VLA row-boundary entry above).
+
+- **feat(aot): conditional DT_NEEDED — runtime-free executables drop
+  `libmadc.so.0`.** The native image writer now classifies every
+  module-unsatisfied import by resolving it in-process and mapping the
+  address to its defining object (dladdr): if all imports are covered
+  by the base C/C++ and user `-l` DT_NEEDED entries, the libmadc
+  dependency is omitted — a plain C (or plain madc-dialect) executable
+  now runs on hosts with no madc installed. Any uncovered import — a
+  madc runtime symbol or one only reachable through libmadc's
+  dependency closure — keeps it (conservative). `-shared` objects keep
+  the dependency by design (their host-callable shims import the
+  madc_value ABI). Unit-tested in `test_native_shared` (byte-scan of
+  .dynstr both ways); man page `-o` note updated.
+
+- **feat(build): `make -C src install` / `uninstall`.** PREFIX
+  (default /usr/local) + DESTDIR staging: stripped forest-packed
+  release binary as plain `madc`, `libmadc.so.0` + dev symlink, gzipped
+  man page; depends on `release` so the installed .so is always the
+  -O2 flavor; ldconfig only on real installs. Same layout convention as
+  the distro packages.
+
+- **docs(plans): MIR upstream probe
+  (`docs/plans/2026-07-23-mir-upstream-probe.md`).** Fix-tier
+  classification of the fork's 164 commits over upstream (zero upstream
+  drift since the merge-base — cherry-picks apply clean): Tier A
+  standalone bugfix PRs, Tier B feature RFCs (SIMD, _Complex, cleanup,
+  debug stack), Tier C madc-specific. Owner decision pending; no
+  commitments.
+
 - **infra: packaged releases — .deb + .rpm (`scripts/package_release.sh`)
   + man page (`docs/man/madc.1`).** Installs `/usr/bin/madc`
   (bin/madc-release under its public name), `libmadc.so.0` in the system

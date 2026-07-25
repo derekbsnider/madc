@@ -9,7 +9,6 @@
 #include <execinfo.h>
 #include <dlfcn.h>
 #include <unistd.h>
-#include <ucontext.h>
 #include <sys/resource.h>
 #include <new>
 #include <iostream>
@@ -267,6 +266,12 @@ static void install_resource_guards(size_t project_tus)
     // MADC_MEM_LIMIT overrides the computed default verbatim.
     rlim_t default_mb = 4096 + (project_tus > 1 ? 128 * (rlim_t)project_tus : 0);
     rlim_t mem_mb = env_rlim("MADC_MEM_LIMIT", default_mb);
+#ifdef __APPLE__
+    // darwin does not enforce RLIMIT_AS (setrlimit rejects finite values
+    // with EINVAL) — the address-space guard is a no-op there. The CPU
+    // guard above still applies; a mach-based memory guard is a P3 item.
+    (void)mem_mb;
+#else
     if ( mem_mb > 0 ) {
         struct rlimit rl;
         rl.rlim_cur = (rlim_t)mem_mb * 1024 * 1024;
@@ -278,6 +283,7 @@ static void install_resource_guards(size_t project_tus)
             std::set_new_handler(mem_guard_new_handler);
         }
     }
+#endif
 }
 
 // Walk backwards from a line to include preceding comment block.
@@ -474,9 +480,11 @@ static void print_usage(const char *prog)
 "                          translation unit, link the modules, run the entry\n"
 "  <file.json>             a .json source is treated as a project manifest\n"
 "                          (implicit --project; gcc/clang-style by extension)\n"
-"  <file.o>                execute a madc-compiled relocatable object (-c\n"
+"  <file.o>...             execute madc-compiled relocatable objects (-c/-r\n"
 "                          output) as a precompiled cache: MIR's in-process\n"
-"                          loader maps and relocates it — no recompilation\n"
+"                          loader maps and relocates them — no recompilation;\n"
+"                          several .o inputs merge first (multi-object link);\n"
+"                          with -o/-shared/-r they LINK into one artifact\n"
 "  -E                      preprocess only (print the expanded source)\n"
 "\n"
 "Language / preprocessor (gcc/clang-style):\n"
@@ -519,15 +527,24 @@ static void print_usage(const char *prog)
 "                          Remaining arguments become the program's argv\n"
 "  --freeze-run            freeze to a temp container, then re-exec this\n"
 "                          madc in a FRESH process to run it (round-trip)\n"
+"  --pack-forest=<file>    with -o/-shared: the emitted native image also\n"
+"                          carries this frozen container in its self-image\n"
+"                          carrier (ELF: appended trailer; Mach-O: a\n"
+"                          __MADC,__forest section signed at emit)\n"
 "  --dump-forest[=<file>]  print a container's directory + grove payloads\n"
 "                          (decl index, PP exports, edges, branch macros,\n"
 "                          canonical order); no value = this executable's blob\n"
 "  --forest-bind[=<file>]  bind grove-backed system #includes from a frozen\n"
 "                          container instead of live-parsing; no value = the\n"
-"                          blob appended to this executable. This is the\n"
-"                          DEFAULT for compiles (silent live fall-through\n"
-"                          when no blob is appended); freeze modes live-parse\n"
-"                          unless it is passed explicitly\n"
+"                          discovery chain below. This is the DEFAULT for\n"
+"                          compiles (live fall-through when nothing is\n"
+"                          found); freeze modes live-parse unless it is\n"
+"                          passed explicitly.\n"
+"                          Discovery order (first usable container wins):\n"
+"                          1. this binary's own image (ELF trailer /\n"
+"                             Mach-O __MADC,__forest section),\n"
+"                          2. <exe>.forest beside the binary (sidecar),\n"
+"                          3. the $MADC_FOREST path\n"
 "  --no-forest-bind        force live parse (overrides the default and an\n"
 "                          explicit --forest-bind; the A/B measurement lever)\n"
 "  --dump-registered       parse, then print the registered name maps\n"
@@ -550,18 +567,42 @@ static void print_usage(const char *prog)
 "  MADC_MEM_LIMIT=<MB>     address-space guard (RLIMIT_AS, covers JIT\n"
 "                          mappings); default 4096 MB + 128 MB per --project\n"
 "                          TU; 0 disables. Trips name the knob.\n"
+"  MADC_FOREST=<file>      frozen forest container to bind when neither the\n"
+"                          binary's own image nor the <exe>.forest sidecar\n"
+"                          carries one (discovery arm 3)\n"
 "\n"
 "AOT output (gcc vocabulary; do not run):\n"
 "  -c [-o file.o]          compile to a relocatable native object\n"
-"                          (default: <source-base>.o in the current dir)\n"
+"                          (default: <source-base>.o in the current dir;\n"
+"                          --project: one .o per TU, gcc semantics)\n"
+"  -r [-o file.o]          relocatable link output (gcc/ld -r): ONE .o\n"
+"                          carrying the whole input — with --project the\n"
+"                          whole-program capture (default name: a.out)\n"
 "  -o prog                 compile to a native executable — MIR assembles\n"
 "                          the ELF directly (no external toolchain); needs\n"
-"                          libmadc.so at run time (DT_RUNPATH is set)\n"
+"                          libmadc.so at run time (DT_RUNPATH is set);\n"
+"                          position-independent (PIE) by default, gcc parity\n"
+"  -pie / -no-pie          keep / drop the PIE layout: -no-pie emits a\n"
+"                          fixed-base ET_EXEC instead of the ET_DYN PIE\n"
 "  -shared [-o file.so]    compile to a shared object (ET_DYN, MIR-assembled;\n"
 "                          dlopen/#load-consumable; PIC, no TEXTREL)\n"
 "  --emit-object/--emit-executable <path> are aliases of -c -o / -o.\n"
 "  -l<name> becomes a DT_NEEDED lib<name>.so in AOT mode (dlopen otherwise).\n";
 }
+
+#ifdef MADC_CROSS_TARGET
+// Cross build (gcc cross model): this binary EMITS native artifacts for
+// MADC_CROSS_TARGET and can never execute target code on this host. Every
+// run lane refuses loudly through here.
+static int cross_refuse_run(const char *lane)
+{
+    std::cerr << "madc: cross build for " MADC_CROSS_TARGET
+              << " is emit-only: cannot " << lane << " on this host."
+                 " Use -c / -o / -shared / -r / --emit=..., then run the"
+                 " artifact on the target." << std::endl;
+    return 1;
+}
+#endif
 
 int main(int argc, char **argv)
 {
@@ -579,6 +620,17 @@ int main(int argc, char **argv)
     TokenProgram *tp;
 
     prog->colors = true;
+#if defined(MADC_FOREST_EXPECT_EMBEDDED) || defined(MADC_FOREST_EXPECT_SIDECAR)
+    // --with-forest= product expectation (forest-carriers S3): this binary
+    // was built to ship WITH a forest (embedded carrier or sidecar), so a
+    // discovery chain that finds nothing is degradation worth one loud
+    // stderr notice — the CLI liberal default (live parse still runs).
+    // Dev/debug/cross builds bake neither define and stay silent_fallback.
+    prog->registration_policy.forest_missing_policy =
+	Program::RegistrationPolicy::ForestPolicy::loud_fallback;
+    engine.registration_policy.forest_missing_policy =
+	Program::RegistrationPolicy::ForestPolicy::loud_fallback;
+#endif
 
     int filearg = 1;
     const char *emit_object_path = NULL;
@@ -597,6 +649,8 @@ int main(int argc, char **argv)
     std::vector<std::string> cc_link_args; // -l<name> → DT_NEEDED in AOT mode
     bool compile_object = false;          // -c: emit a relocatable .o, no run
     bool emit_shared = false;             // -shared: emit an ET_DYN .so, no run
+    bool no_pie = false;                  // -no-pie: fixed-base ET_EXEC (default = PIE, gcc parity)
+    bool emit_relocatable = false;        // -r: relocatable link output — ONE .o (gcc/ld -r), no run
     bool show_help = false;               // --help / -h / -?
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
@@ -630,6 +684,20 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "-shared") == 0) {
             // gcc vocabulary: produce a MIR-assembled ET_DYN shared object.
             emit_shared = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-r") == 0) {
+            // gcc/ld vocabulary: relocatable link output — combine the whole
+            // input set into ONE relocatable .o instead of an executable.
+            emit_relocatable = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-no-pie") == 0) {
+            // gcc vocabulary: fixed-base ET_EXEC executable instead of the
+            // default position-independent (PIE) one.
+            no_pie = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-pie") == 0) {
+            // gcc vocabulary: explicitly request the (default) PIE layout.
+            no_pie = false;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-object") == 0 && i + 1 < argc) {
             // alias for -c -o <path>
@@ -732,6 +800,9 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--freeze-run") == 0) {
             freeze_run = true;
             filearg = i + 1;
+        } else if (strncmp(argv[i], "--pack-forest=", 14) == 0) {
+            madc_pack_forest_path = argv[i] + 14;
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--run-frozen") == 0) {
             run_frozen = true;
             filearg = i + 1;
@@ -778,13 +849,16 @@ int main(int argc, char **argv)
         } else if (strncmp(argv[i], "-l", 2) == 0 && argv[i][2] != '\0') {
             // -l<name>: dlopen a shared library so its symbols are resolvable by
             // the import resolver at link time (e.g. -lcrypt). Like a linker's
-            // -l, but it dlopen()s lib<name>.so (RTLD_GLOBAL). A name containing
-            // '/' or ending in .so is used verbatim.
+            // -l, but it dlopen()s lib<name>.so / .dylib (RTLD_GLOBAL). A name
+            // containing '/' or ending in the host suffix is used verbatim.
             std::string lib(argv[i] + 2);
+            const std::string dso_sfx = MADC_DSO_SUFFIX;
             if ( lib.find('/') == std::string::npos
-              && (lib.size() < 3 || lib.compare(lib.size() - 3, 3, ".so") != 0) )
+              && (lib.size() < dso_sfx.size()
+                  || lib.compare(lib.size() - dso_sfx.size(), dso_sfx.size(),
+                                 dso_sfx) != 0) )
             {
-                lib = "lib" + lib + ".so";
+                lib = "lib" + lib + dso_sfx;
                 cc_link_args.push_back(argv[i]);   // AOT: forward as -l<name>
             }
             else
@@ -843,19 +917,23 @@ int main(int argc, char **argv)
         }
     }
 
-    // A .o input runs as a precompiled native cache (AOT R4b): load the
-    // madc-emitted relocatable object in-process and execute its main — no
-    // parse, no codegen. Freshness is the build system's concern (make
-    // semantics), exactly as with any compiler's .o. Same extension
-    // convention and --run-frozen exclusion as the .json arm above.
-    const char *run_object_path = NULL;
-    if ( !project_manifest && !run_frozen && filearg < argc )
+    // .o inputs: a precompiled native cache to run (AOT R4b), or — several
+    // of them / with an output flag — a multi-object link (this rung). The
+    // LEADING RUN of .o positionals are all objects; the rest become the
+    // program's argv (argv[0] stays the first object path). Freshness is
+    // the build system's concern (make semantics), exactly as with any
+    // compiler's .o. Same extension convention and --run-frozen exclusion
+    // as the .json arm above.
+    std::vector<std::string> run_object_paths;
+    if ( !project_manifest && !run_frozen )
     {
-        const char *f = argv[filearg];
-        size_t flen = strlen(f);
-        if ( flen >= 2 && strcmp(f + flen - 2, ".o") == 0 )
+        while ( filearg < argc )
         {
-            run_object_path = f;
+            const char *f = argv[filearg];
+            size_t flen = strlen(f);
+            if ( flen < 2 || strcmp(f + flen - 2, ".o") != 0 )
+                break;
+            run_object_paths.push_back(f);
             ++filearg;   // remaining positionals become the program's argv
         }
     }
@@ -895,16 +973,53 @@ int main(int argc, char **argv)
     // mode and write a native artifact instead of running. -o without -c or
     // -shared means a linked executable (gcc semantics); --emit-pch keeps its
     // own -o meaning (.madh output path).
-    bool emit_native = compile_object || emit_shared || emit_object_path
-                    || emit_executable_path
+    bool emit_native = compile_object || emit_shared || emit_relocatable
+                    || emit_object_path || emit_executable_path
                     || (generic_output_path && !emit_pch);
 
-    if ( run_object_path && emit_native )
+    // gcc parity: ld rejects "-r and -shared may not be used together".
+    if ( emit_relocatable && emit_shared )
     {
-        std::cerr << "madc: a .o input is executed, not compiled; "
-                     "-c/-o/-shared do not apply "
-                     "(multi-object linking is a future rung)" << std::endl;
+        std::cerr << "madc: -r and -shared may not be used together"
+                  << std::endl;
         return 1;
+    }
+
+    // --pack-forest rides a LINKED image (executable or shared object): a
+    // relocatable .o has no self-image carrier, and a JIT run produces no
+    // image at all. One chokepoint for every lane (source, .o link,
+    // --project).
+    if ( madc_pack_forest_path
+         && (!emit_native || compile_object || emit_object_path
+             || emit_relocatable) )
+    {
+        std::cerr << "madc: --pack-forest requires a linked native output"
+                     " (-o executable or -shared)" << std::endl;
+        return 1;
+    }
+
+    // .o inputs + an output flag = the multi-object LINK lane: combine the
+    // precompiled captures into one artifact (-r one .o, -o an executable,
+    // -shared a .so) — MIR is the linker, no external toolchain. -c stays
+    // a loud error (gcc: the input is already compiled).
+    if ( !run_object_paths.empty() && emit_native )
+    {
+        if ( compile_object || emit_object_path )
+        {
+            std::cerr << "madc: -c with .o inputs: the input is already"
+                         " compiled (use -r to combine objects)"
+                      << std::endl;
+            return 1;
+        }
+        MadcNativeKind kind = emit_relocatable ? mnkRelocatable
+                            : emit_shared ? mnkShared
+                            : no_pie ? mnkExecutable
+                            : mnkPieExecutable;
+        const char *outp = emit_executable_path ? emit_executable_path
+                         : generic_output_path ? generic_output_path
+                         : "a.out";
+        return madc_cir_link_objects(run_object_paths, kind, outp,
+                                     cc_link_args) == 0 ? 0 : 1;
     }
 
     // -l<name>: dlopen each requested library (RTLD_GLOBAL) so the import
@@ -925,27 +1040,37 @@ int main(int argc, char **argv)
         prog->loaded_lib_paths.push_back(lib);   // the frozen-forest link closure
     }
 
-    // .o input (AOT R4b): execute the madc-emitted relocatable object as a
-    // precompiled cache — no parse, no translate, no gen. Placed after the
-    // -l loop so `madc -lcrypt foo.o` resolves the same way the JIT lane
-    // would. argv[0] is the object path (the JIT lane's source-path
-    // convention); remaining positionals are the program's argv.
-    if ( run_object_path )
+    // .o inputs (AOT R4b + multi-object): execute the madc-emitted
+    // relocatable object(s) as a precompiled cache — no parse, no
+    // translate, no gen; several objects merge in memory first. Placed
+    // after the -l loop so `madc -lcrypt foo.o` resolves the same way the
+    // JIT lane would. argv[0] is the first object path (the JIT lane's
+    // source-path convention); remaining positionals are the program's
+    // argv.
+    if ( !run_object_paths.empty() )
     {
+#ifdef MADC_CROSS_TARGET
+        return cross_refuse_run("execute .o objects in-process");
+#endif
         std::vector<char *> oargv;
-        oargv.push_back((char *)run_object_path);
+        oargv.push_back((char *)run_object_paths[0].c_str());
         for ( int i = filearg; i < argc; ++i )
             oargv.push_back(argv[i]);
-        return madc_cir_run_object(run_object_path,
-                                   (int)oargv.size(), oargv.data());
+        return madc_cir_run_objects(run_object_paths,
+                                    (int)oargv.size(), oargv.data());
     }
 
     // --run-frozen: thaw + compile + run a frozen forest container — no
     // source file, no parse. Remaining positionals become the program's
     // argv (argv[0] is the container / executable path).
+#ifdef MADC_CROSS_TARGET
+    if ( run_frozen || freeze_run )
+        return cross_refuse_run("run a frozen program");
+#endif
     if ( run_frozen )
     {
-        std::string ra0 = run_frozen_path ? run_frozen_path : "/proc/self/exe";
+        std::string ra0 = run_frozen_path ? std::string(run_frozen_path)
+                                          : madc_self_exe_path();
         std::vector<char *> rargv;
         rargv.push_back((char *)ra0.c_str());
         for ( int i = filearg; i < argc; ++i )
@@ -964,7 +1089,8 @@ int main(int argc, char **argv)
         return (rc < 0) ? 1 : 0;
     }
 
-    if ( generic_output_path && !emit_pch && !compile_object && !emit_shared )
+    if ( generic_output_path && !emit_pch && !compile_object && !emit_shared
+	 && !emit_relocatable )
 	emit_executable_path = generic_output_path;
 
     if ( emit_native )
@@ -1040,12 +1166,15 @@ int main(int argc, char **argv)
 	    // (whole-program capture in one shared context — the same
 	    // granularity the JIT project lane uses).
 	    MadcNativeKind kind = (compile_object || emit_object_path) ? mnkObject
+				: emit_relocatable ? mnkRelocatable
 				: emit_shared ? mnkShared
-				: mnkExecutable;
+				: no_pie ? mnkExecutable
+				: mnkPieExecutable;
 	    const char *explicit_out =
 		  kind == mnkObject ? (emit_object_path ? emit_object_path
 						        : generic_output_path)
-		: kind == mnkShared ? generic_output_path
+		: (kind == mnkShared || kind == mnkRelocatable)
+			? generic_output_path
 		: emit_executable_path;
 	    if ( kind == mnkObject && explicit_out && manifest.tus.size() > 1 )
 	    {
@@ -1055,7 +1184,7 @@ int main(int argc, char **argv)
 	    }
 	    const char *outpath = explicit_out ? explicit_out
 			        : kind == mnkObject ? NULL   // per-TU naming
-			        : "a.out";
+			        : "a.out";   // -r too: gcc emits a relocatable a.out
 	    int erc = madc_project_emit_native(engine, manifest, kind, outpath,
 					       cc_link_args,
 					       prog->forest_bind_enabled,
@@ -1063,6 +1192,9 @@ int main(int argc, char **argv)
 	    return erc == 0 ? 0 : 1;
 	}
 	// Remaining positionals (filearg..argc) become the program's argv.
+#ifdef MADC_CROSS_TARGET
+	return cross_refuse_run("execute a --project program");
+#endif
 	int run_argc = argc - filearg;
 	char **run_argv = argv + filearg;
 	int rc = madc_project_execute(engine, manifest, run_argc, run_argv,
@@ -1396,6 +1528,7 @@ int main(int argc, char **argv)
 		return 1;
 	    }
 	    std::string opt = std::string("--run-frozen=") + tmpl;
+	    std::string selfexe = madc_self_exe_path();   // resolved pre-fork
 	    std::vector<char *> cargv;
 	    cargv.push_back(argv[0]);
 	    cargv.push_back((char *)opt.c_str());
@@ -1405,7 +1538,7 @@ int main(int argc, char **argv)
 	    pid_t pid = fork();
 	    if ( pid == 0 )
 	    {
-		execv("/proc/self/exe", cargv.data());
+		execv(selfexe.c_str(), cargv.data());
 		perror("madc: --freeze-run: execv");
 		_exit(127);
 	    }
@@ -1435,15 +1568,22 @@ int main(int argc, char **argv)
 						: generic_output_path;
 		dflt_suffix = ".o";
 	    }
+	    else if ( emit_relocatable )
+	    {
+		// gcc -r on a single source: compile + relocatable link —
+		// one .o, default name a.out (gcc parity).
+		kind = mnkRelocatable;
+		explicit_out = generic_output_path;
+	    }
 	    else if ( emit_shared )
 	    {
 		kind = mnkShared;
 		explicit_out = generic_output_path;
-		dflt_suffix = ".so";
+		dflt_suffix = MADC_DSO_SUFFIX;
 	    }
 	    else
 	    {
-		kind = mnkExecutable;
+		kind = no_pie ? mnkExecutable : mnkPieExecutable;
 		explicit_out = emit_executable_path;   // -o / --emit-executable
 	    }
 	    std::string outpath;
@@ -1471,6 +1611,12 @@ int main(int argc, char **argv)
 	}
 
 	struct timeval before, after;
+#ifdef MADC_CROSS_TARGET
+	// The default lane compiles AND RUNS (JIT). --dump-* still need the
+	// compile side, but execution of target code on this host is
+	// impossible -- refuse before c2mir/MIR_gen would produce it.
+	return cross_refuse_run("JIT-run a program");
+#endif
 	gettimeofday(&before, NULL);
 	int result = madc_cir_execute(prog.get(), argv[filearg],
 				      argc - filearg, argv + filearg,

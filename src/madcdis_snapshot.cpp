@@ -270,11 +270,8 @@ bool snapshot_writer::write_file(const char *path) const
     return ok;
 }
 
-bool snapshot_writer::append_file(const char *path) const
+bool snapshot_append_blob(const char *path, const void *blob, size_t len)
 {
-    std::vector<uint8_t> blob;
-    if ( !build(blob) )
-	return false;
     FILE *f = fopen(path, "ab");
     if ( !f )
 	return false;
@@ -294,11 +291,19 @@ bool snapshot_writer::append_file(const char *path) const
 	fclose(f);
 	return false;
     }
-    size_t n = fwrite(blob.data(), 1, blob.size(), f);
-    bool ok = ( n == blob.size() ) && ( fclose(f) == 0 );
-    if ( n != blob.size() )
+    size_t n = fwrite(blob, 1, len, f);
+    bool ok = ( n == len ) && ( fclose(f) == 0 );
+    if ( n != len )
 	fclose(f);
     return ok;
+}
+
+bool snapshot_writer::append_file(const char *path) const
+{
+    std::vector<uint8_t> blob;
+    if ( !build(blob) )
+	return false;
+    return snapshot_append_blob(path, blob.data(), blob.size());
 }
 
 // --- reader ---

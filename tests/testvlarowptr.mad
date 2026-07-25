@@ -1,0 +1,112 @@
+#include <stdio.h>
+#include <string.h>
+
+void arith2(int n, int m, int a[n][m])
+{
+	printf("add %ld\n", (long)((char *)(a + 1) - (char *)a));
+	printf("radd %ld\n", (long)((char *)(1 + a) - (char *)a));
+	printf("sub %ld\n", (long)((char *)a - (char *)(a - 1)));
+	printf("amp_eq %d\n", (void *)&a[1] == (void *)(a + 1));
+	printf("diff %ld\n", (long)(&a[2] - &a[0]));
+}
+
+void arith3(int n, int m, int k, int a[n][m][k])
+{
+	printf("p3add %ld\n", (long)((char *)(a + 1) - (char *)a));
+	printf("rowval %ld\n", (long)((char *)(a[1] + 2) - (char *)a[1]));
+	printf("rowdiff %ld\n", (long)(a[1] - a[0]));
+}
+
+void steps(int n, int m, int a[n][m])
+{
+	int i;
+	for (i = 0; i < n; i++)
+		a[i][0] = 100 + i;
+	int total = 0;
+	while (n-- > 0) {
+		total += (*a)[0];
+		a++;
+	}
+	printf("walk %d\n", total);
+	a--;
+	printf("back %d\n", (*a)[0]);
+	a -= 2;
+	printf("back2 %d\n", (*a)[0]);
+	a += 1;
+	printf("fwd %d\n", (*a)[0]);
+}
+
+void vmdecl(int n, int m, int a[n][m])
+{
+	int (*rp)[m] = &a[1];
+	printf("rd %ld\n", (long)((char *)rp - (char *)&a[0]));
+	printf("r0 %d\n", (*rp)[0]);
+	printf("r2 %d\n", rp[0][2]);
+	printf("r10 %d\n", rp[1][0]);
+	rp = rp + 1;
+	printf("rp1 %d\n", (*rp)[0]);
+	rp--;
+	printf("rpm %d\n", (*rp)[3]);
+	printf("szrow %zu\n", sizeof *rp);
+	printf("szsub %zu\n", sizeof rp[0]);
+	(*rp)[4] = 99;
+	printf("wr %d\n", a[1][4]);
+}
+
+void vmparam(int m, int (*rp)[m], int want)
+{
+	printf("pp %d\n", (*rp)[1] == want);
+	printf("pp2 %d\n", rp[1][1]);
+}
+
+/* VM type size is fixed at the declaration: later writes to m don't move it */
+void vmfix(int m)
+{
+	int buf[40];
+	memset(buf, 0, sizeof buf);
+	int (*rp)[m] = (int (*)[m])buf;
+	m = 999;
+	printf("fixed %zu\n", sizeof *rp);
+	printf("cast0 %d\n", (*rp)[0]);
+}
+
+void sfx(int n, int m, int a[n][m])
+{
+	int i = 0;
+	size_t s = sizeof a[i++];       /* VLA-row operand: i++ IS evaluated */
+	printf("s %zu i %d\n", s, i);
+	int p = 0;
+	size_t sp = sizeof (a[p++]);    /* paren form */
+	printf("sp %zu p %d\n", sp, p);
+	int j = 0;
+	size_t t = sizeof a[j++][0];    /* int-typed operand: NOT evaluated */
+	printf("t %zu j %d\n", t, j);
+}
+
+int main(void)
+{
+	{
+		int a2[3][5];
+		memset(a2, 0, sizeof a2);
+		a2[2][0] = 42;
+		arith2(3, 5, a2);
+		int a3[2][5][4];
+		memset(a3, 0, sizeof a3);
+		arith3(2, 5, 4, a3);
+		steps(3, 5, a2);
+	}
+	{
+		int a2[3][5];
+		for (int i = 0; i < 3; i++)
+			for (int j = 0; j < 5; j++)
+				a2[i][j] = i * 10 + j;
+		vmdecl(3, 5, a2);
+		vmparam(5, &a2[1], 11);
+		vmfix(5);
+	}
+	{
+		int a2[3][5];
+		sfx(3, 5, a2);
+	}
+	return 0;
+}

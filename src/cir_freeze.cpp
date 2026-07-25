@@ -19,6 +19,10 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/getsect.h>	// self-image forest carrier: __MADC,__forest section
+#include <mach-o/ldsyms.h>	// _mh_execute_header (MH_EXECUTE self-probe)
+#endif
 // mir-code-alloc.h (reached via cir_node.h -> c2mir headers) redefines
 // MAP_FAILED to NULL for its own allocator; drop the glibc define so that
 // redefinition is fresh, and compare mmap() results against the real value
@@ -709,15 +713,97 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	return true;
 }
 
+// Mach-O FILE carrier probe: a signed Mach-O cannot carry an EOF trailer,
+// so a packed image (a hosted madc binary, or a --pack-forest emitted
+// executable) holds the container in its __MADC,__forest section. This is
+// the FILE arm — pure byte parsing of the mapped image, host-neutral (the
+// Linux cross madcs verify emitted Mach-O images with --dump-forest); the
+// RUNNING self-image on darwin is served by getsectiondata below (slid,
+// zero-copy). Little-endian MH_MAGIC_64 only — exactly what the fork
+// writer and the hosted toolchain produce. False = not a Mach-O or no
+// section; the caller falls through to the EOF-footer probe.
+static bool cir_macho_find_forest(const uint8_t *m, size_t sz,
+				  const void *&image, size_t &len)
+{
+	// Local values, not the <mach-o/loader.h> names: on darwin hosted
+	// builds that header is already included above and defines them as
+	// macros, which would clobber any same-named declaration here.
+	const uint32_t macho_magic_64 = 0xfeedfacfu;
+	const uint32_t macho_lc_segment_64 = 0x19u;
+	if (sz < 32)
+		return false;
+	uint32_t magic, ncmds, sizeofcmds;
+	memcpy(&magic, m, 4);
+	if (magic != macho_magic_64)
+		return false;
+	memcpy(&ncmds, m + 16, 4);
+	memcpy(&sizeofcmds, m + 20, 4);
+	if ((uint64_t)32 + sizeofcmds > sz)
+		return false;
+	size_t off = 32;
+	for (uint32_t c = 0; c < ncmds; c++) {
+		if (off + 8 > 32 + (size_t)sizeofcmds)
+			return false;
+		uint32_t cmd, cmdsize;
+		memcpy(&cmd, m + off, 4);
+		memcpy(&cmdsize, m + off + 4, 4);
+		if (cmdsize < 8 || off + cmdsize > 32 + (size_t)sizeofcmds)
+			return false;
+		if (cmd == macho_lc_segment_64 && cmdsize >= 72
+		    && memcmp(m + off + 8, "__MADC\0\0\0\0\0\0\0\0\0\0", 16) == 0) {
+			uint32_t nsects;
+			memcpy(&nsects, m + off + 64, 4);
+			if ((uint64_t)72 + (uint64_t)nsects * 80 > cmdsize)
+				return false;
+			for (uint32_t s = 0; s < nsects; s++) {
+				const uint8_t *sec = m + off + 72 + (size_t)s * 80;
+				if (memcmp(sec, "__forest\0\0\0\0\0\0\0\0", 16) != 0)
+					continue;
+				uint64_t ssize;
+				uint32_t soff;
+				memcpy(&ssize, sec + 40, 8);
+				memcpy(&soff, sec + 48, 4);
+				if (ssize == 0 || soff >= sz || ssize > sz - soff)
+					return false;
+				image = m + soff;
+				len = (size_t)ssize;
+				return true;
+			}
+		}
+		off += cmdsize;
+	}
+	return false;
+}
+
 bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 {
-	char selfbuf[4096];
+	std::string selfpath;
 	if (!path) {
-		ssize_t n = readlink("/proc/self/exe", selfbuf, sizeof(selfbuf) - 1);
-		if (n <= 0)
+#ifdef __APPLE__
+		// Darwin self-image carrier: signed Mach-O forbids appended
+		// bytes (the file must end exactly at the code signature), so
+		// the forest rides a __MADC,__forest section placed at link
+		// time (-sectcreate) or by the post-link packer. The section
+		// data IS the container (footer at its end), already mapped
+		// and slid in the running image — zero-copy, process-lifetime.
+		// _mh_execute_header limits this probe to the executable
+		// image; the shared-library shape (forest-in-dylib) gets its
+		// own dladdr-based arm in the carriers track S4.
+		unsigned long seclen = 0;
+		uint8_t *sec = getsectiondata(&_mh_execute_header, "__MADC",
+					      "__forest", &seclen);
+		if (sec && seclen) {
+			image = sec;
+			len = (size_t)seclen;
+			return true;
+		}
+		// No section: fall through to the file probe (an unpacked dev
+		// binary silently fails the footer check -> live parse).
+#endif
+		selfpath = madc_self_exe_path();
+		if (selfpath.empty())
 			return false;
-		selfbuf[n] = '\0';
-		path = selfbuf;
+		path = selfpath.c_str();
 	}
 	int fd = ::open(path, O_RDONLY);
 	if (fd < 0)
@@ -733,6 +819,12 @@ bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 		return false;
 	// Deliberately never munmap'd: thawed segments read string bytes and
 	// pool blocks from the mapping for the process lifetime.
+	// Mach-O file: the container is the __MADC,__forest section slice
+	// (page-aligned in file, so 16-aligned payload offsets hold), not an
+	// EOF trailer. Anything else keeps the whole file (footer at EOF).
+	if (cir_macho_find_forest((const uint8_t *)m, (size_t)st.st_size,
+				  image, len))
+		return true;
 	image = m;
 	len = (size_t)st.st_size;
 	return true;

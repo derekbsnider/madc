@@ -1,0 +1,28 @@
+add 20
+radd 20
+sub 20
+amp_eq 1
+diff 2
+p3add 80
+rowval 32
+rowdiff 5
+walk 303
+back 102
+back2 100
+fwd 101
+rd 20
+r0 10
+r2 12
+r10 20
+rp1 20
+rpm 13
+szrow 20
+szsub 20
+wr 99
+pp 1
+pp2 21
+fixed 20
+cast0 0
+s 20 i 1
+sp 20 p 1
+t 4 j 0

@@ -1,0 +1,2 @@
+JIT stderr must be empty: the partial-subscript lowering must not trip
+c2mir pointer/integer conversion warnings.

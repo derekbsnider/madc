@@ -74,8 +74,42 @@ high-level" — the answer is both.**
   and both the live fulltest and packed release suite are **695/0/0/16** with
   every forest gate green, including `[subbind]`. See
   `docs/plans/2026-07-14-CODEX-HANDBACK-local-class-identity.md`.
-- **Version:** `0.35.0` (per `VERSION`) — released on `develop` (CIR backend);
-  the **small-binary + family-D** release: the packed release binary drops
+- **Version:** `0.42.0` (per `VERSION`) — the **inline un-erasure**
+  release on `develop` (ELF-completion S4 follow-through): `inline` is
+  a real C++ specifier carrying vague linkage (keyword registry, every
+  decl position, `inline namespace` on the keyword path). User-header
+  inline functions — S4's `sumv` boundary — AND C++17 inline variables
+  merge `STB_WEAK` across TUs (function and data); a dynamic init runs
+  once per merged image behind a linkonce once-guard (g++ COMDAT-init
+  model). `static inline` stays internal; C modes keep the erasure;
+  `--emit=c11` renders portable `__attribute__((weak))`. Fork
+  untouched (still `1.0-madc.0.41.0`). Fulltest + packed
+  **754/0/0/9**; `--exe`/`--obj` **738/0**.
+  `master` remains at v0.38.0 pending `/promote`.
+  v0.41.0 was the **ODR/linkonce weak** release (ELF-completion slice
+  4): the C++ vague-linkage set (template instantiations, in-class
+  bodies, vtables, typeinfo, synthesized members) emitted linkonce and
+  captured `STB_WEAK` — identical per-TU copies merge at native links,
+  internal and external ld alike; fork binding enum
+  (GLOBAL/WEAK/LINKONCE — only interposable WEAK suppresses inlining,
+  gcc parity); bindings survive binary + text MIR round trips; fork
+  release `1.0-madc.0.41.0`.
+  v0.40.0 was the **ctor/init-array** release (ELF-completion slice
+  3): per-TU initializers ride a real `SHT_INIT_ARRAY` section
+  (gcc-shaped, RELRO lead; external `ld` collects it natively), the
+  two-ctor-TU merge fence lifted, `DT_INIT` retired, guarded
+  `__madc_sys_init_once`, and the latent c2mir `-g` debug-capture
+  use-after-free fixed; fork release `1.0-madc.0.40.0`.
+  v0.39.0 was the **AOT hardening + ELF-completion** release: PIE
+  executables by default (`-no-pie` escape, PT_PHDR load-bias law),
+  multi-object linking (`.o` caches link/run, `-r` = `ld -r`, four
+  project obj_skips lifted, `--obj` lane 737/0), Full RELRO +
+  non-exec stack on every image (addrpool = the GOT leads the RW
+  segment under PT_GNU_RELRO, BIND_NOW as statement of fact),
+  DT_DEBUG (gdb probes interface restored), and multi-`.o` DWARF
+  merge (multi-CU; external-ld links were corrupt too — fixed by
+  relocatable debug sections); fork release `1.0-madc.0.39.0`.
+  v0.35.0 was the **small-binary + family-D** release: the packed release binary drops
   **101 MB → 9.26 MB** (<10 MB owner target; blob 3.8 MB) via per-segment
   zstd (pack L15 / dev codec-default), the snapshot-v2 segment-transform
   vocabulary (CHILDREN u32-delta 1.68→0.09 MB, RECORDS byte-plane-80
@@ -310,16 +344,69 @@ high-level" — the answer is both.**
   `get/set_global`, string call marshalling, fork/limits, the policy tail
   (the 38 `test_libmadc_program` skips; see
   `docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md`).
-- **AOT (native object/executable):** **LIVE as of v0.36.0** — `madc -c`
-  emits ELF `.o` objects and `madc -o` emits runnable executables
-  **assembled by MIR itself** (no external toolchain; owner directive), with
-  `madc -g` gdb debugging of the JIT lane from the same arc. Plan + landing
-  blocks: [2026-07-19-mir-aot-elf-plan.md](2026-07-19-mir-aot-elf-plan.md)
-  (R0–R2 + R4 landed; `run_tests.sh --exe` is the live AOT arbiter at
-  709/729). Remaining rungs: direct ET_DYN `-shared`, `--project` per-TU
-  objects, R4b execute-`.o`-as-cache (asmjit-master parity), R5 DWARF in
-  the `.o`, R6 PIC; Mach-O / PE assemblers later behind the same
-  `MIR_object` seam.
+- **AOT (native object/executable):** **FEATURE-COMPLETE ON ELF as of
+  v0.39.0** — `madc -c` emits ELF `.o` caches, `madc -o` emits PIE
+  executables (`-no-pie`/`-shared`/`-r` as with gcc), all **assembled by
+  MIR itself** (no external toolchain; owner directive). The full rung
+  ladder R1–R6 + PIE + multi-object linking + Full RELRO/NX + DT_DEBUG +
+  multi-`.o` DWARF merge is landed: `.o` caches link and run (`ld -r`
+  shape included), every image is Full RELRO + NX with the addrpool as
+  the GOT, and `-g` debug info survives multi-object links (multi-CU).
+  Slice 3 (v0.40.0) adds the platform ctor model: per-TU initializers
+  ride `.init_array` (`DT_INIT_ARRAY`; `DT_INIT` retired), lifting the
+  two-ctor-TU merge fence in every native lane. Slice 4 (v0.41.0) adds
+  ODR/linkonce weak: the C++ vague-linkage set captures `STB_WEAK`
+  (fork binding enum GLOBAL/WEAK/LINKONCE), so identical per-TU copies
+  merge at links — internal and external ld alike. The inline
+  un-erasure (v0.42.0) closes S4's `sumv` boundary: `inline` is a real
+  specifier routed into vague linkage, covering user-header inline fns
+  AND C++17 inline variables (once-guarded dynamic init). Plan +
+  landing blocks:
+  [2026-07-19-mir-aot-elf-plan.md](2026-07-19-mir-aot-elf-plan.md);
+  `run_tests.sh --exe` / `--obj` are the live AOT arbiters (738/0 each).
+  Slice 5 `.mir.rodata` split is **DEFERRED (owner decision
+  2026-07-25** — RELRO subsumed its hardening value; capture-side
+  two-pool split not worth the format change), closing the
+  ELF-completion track. **Mach-O/ARM64 track (Track 6.3, ACTIVE — the
+  next `/promote` milestone): axis A COMPLETE (v0.43.0) — the fork's
+  build-time target selection + full aarch64 PIC-addrpool object
+  capture/ELF relocs, and the emit-only `bin/madc-aarch64-linux` cross
+  compiler; gate A green under qemu-aarch64. Axis B writer + cross
+  madcs COMPLETE (v0.44.0) — `mir-macho.c` emits ad-hoc-signed
+  MH_EXECUTE PIEs for arm64 AND x86-64 behind the `MIR_object` seam;
+  emit-only `bin/madc-{x86-64,arm64}-macos`; Gate B green vs
+  clang+ld64.lld references (llvm-18 oracle, independent signature
+  re-hash); Gate B-final GREEN on BOTH owner Macs (identical output,
+  exit 28 — AMFI accepted the MIR-generated signature). madc-on-macOS
+  Route 1 Phase 1 COMPLETE (v0.45.0) — hosted arm64/x86-64 darwin madc
+  binaries (JIT + native Mach-O AOT) with the embedded darwin C
+  prelude; G2 green on Apple hardware, all lanes, both arches
+  ([2026-07-25-madc-on-macos-plan.md](2026-07-25-madc-on-macos-plan.md)).
+  Forest-carriers S1 COMPLETE (v0.46.0) — hosted binaries ship PACKED:
+  darwin groves cross-frozen in the container, embedded as a
+  `__MADC,__forest` section via `-sectcreate` (no re-signer on the
+  build path), section read-back; grove bind == live parse on Apple
+  hardware, both arches. Forest-carriers S2 COMPLETE (v0.47.0) —
+  emitted-pack: `--pack-forest=<container>` embeds a frozen container
+  in emitted native executables (ELF trailer / Mach-O `__MADC,__forest`
+  section laid by the fork writer INSIDE the emit-time signature — no
+  re-signer anywhere on the product path); Mach-O file-probe read-back
+  arm; full native loop (freeze → pack-emit → AMFI → read-back) green
+  on Apple hardware, both arches; darwin `--freeze-run` was already
+  green (no self-rewrite). Forest-carriers S3 COMPLETE (v0.48.0) —
+  carrier discovery chain (self-image → `<exe>.forest` sidecar →
+  `$MADC_FOREST`, S4/S6 slots reserved), `--with-forest=embedded|
+  sidecar|none` configure axis, failure-policy knobs
+  (`forest_missing_policy` silent/loud/strict + `enable_external_forest`
+  in the RegistrationPolicy sandbox family); full shape × platform
+  matrix green (Linux arbiter through BOTH carriers 756/0/0/9; Mac 7/7
+  legs both arches)
+  ([2026-07-25-forest-carriers-plan.md](2026-07-25-forest-carriers-plan.md)).
+  REMAINING: forest-carriers S4–S6 (shared shape / forest-in-library,
+  `-static-libmadc` Tier A, `madc.ini`; the existing-signed-binary
+  re-signer is consciously deferred residue); MH_OBJECT `.o` flavor
+  (fork); P2 libc++ STD-ABI script-lane flavor. Plan:**
+  [2026-07-25-macho-arm64-plan.md](2026-07-25-macho-arm64-plan.md).
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target
   the CIR path is climbing back to — NOT the current state.
@@ -956,7 +1043,7 @@ libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
 |-------|------|--------|--------|------|
 | 6.1 | macOS/ARM64 MVP (via MIR — c2mir + MIR are already cross-platform) | 10-15 wk | Planned | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.2 | macOS SIMD (NEON) | 2-3 wk | Blocked on 6.1 | [macos-arm64-port.md](macos-arm64-port.md) |
-| 6.3 | macOS AOT (Mach-O writer) | 4-6 wk | Future | [macos-arm64-port.md](macos-arm64-port.md) |
+| 6.3 | macOS AOT (Mach-O writer + aarch64 cross-gen; the next `/promote` milestone) | 4-6 wk | **ACTIVE** | [2026-07-25-macho-arm64-plan.md](2026-07-25-macho-arm64-plan.md) |
 | 6.4 | Windows port | TBD | Not started | — |
 
 **Dependencies:** 1.3 (IR) dramatically reduces 6.1 effort.

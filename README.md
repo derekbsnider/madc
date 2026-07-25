@@ -71,7 +71,7 @@ compile.
 ## Language Features
 
 - **Data types:** `int8_t`–`int64_t`, `uint8_t`–`uint64_t`, `float`, `double`, `char`, `std::string`, `array`
-- **Typed containers:** `vector<int>`, `map<string, int>`, `set<string>` — also as `std::vector<int>` etc.
+- **Typed containers:** `vector<T>`, `map<K,V>`, `set<T>`, `list<T>` — real template instantiations (also as `std::vector<T>` etc.)
 - **Streams:** `std::cout`, `std::cerr`, `std::cin`, `std::stringstream`, `std::ifstream`, `std::ofstream`, `std::fstream`
 - **Control flow:** `if`/`else`, `for`, `while`, `do`/`while`, `switch`/`case`/`default`, `rust::match`
 - **Range-based for:** `for (string name : names) { ... }` — works with array and vector
@@ -85,7 +85,7 @@ compile.
 - **`:=` short declaration:** `x := 42;` with type inference from RHS
 - **`register` keyword:** explicitly register-only variables (never written to memory)
 - **User-defined structs:** `struct Point { int x; int y; };`
-- **Classes with methods:** `class Counter { int count; void inc() { count = count + 1; } };`
+- **Classes:** the full C++ class model — see **C++ support** below
 - **Namespaces:** `std::cout`, `madc::regex_match()`, `php::explode()`, `perl::grep()`, `python::title()`, `ruby::tr()`, `js::btoa()`, `rust::trim()`
 - **Dialect precedence:** `prefer rust, php, c;` or `#pragma prefer rust, php, c`
 - **Regex:** `madc::regex_match()`, `madc::regex_search()`, `madc::regex_replace()`
@@ -98,6 +98,44 @@ compile.
 - **Subscript operator:** `a[0]`, `nums[i]`, `ages["key"]`
 - **Escape sequences:** `\n`, `\t`, `\r`, `\\`, `\"`, `\0`
 - **C23 coverage (early wave):** `_Bool`, `0b...`, `_Static_assert` / `static_assert`, `alignof` / `_Alignof`, `typeof` / `typeof_unqual`, `nullptr`, digit separators (`1'000'000`)
+
+### C++ support
+
+madc is a C/C++ dialect: C++ lowers Cfront-style to strict C11 on the
+one `cir_node` IR (`--emit=c11` is a first-class output), and madc
+parses the **real glibc/libstdc++ headers** — `#include <vector>`,
+`<string>`, `<iostream>` read the actual installed headers, not
+embedded shims. The current model (all suite-tested):
+
+- **Classes:** constructors/destructors with RAII (destructor injection
+  at every scope exit, return, and unwind path), const methods, static
+  members, access control, `friend`, conversion operators, and operator
+  overloading — including `<=>` three-way comparison with the standard
+  synthesis of the relational operators
+- **Inheritance:** single, multiple, and virtual inheritance on the
+  Itanium model (vtables, vtable thunks, virtual bases constructed
+  once), virtual and pure-virtual methods, virtual destructors, RTTI —
+  `typeid` and `dynamic_cast`, including cross-casts in MI hierarchies
+- **Templates:** class, function, member, and variable templates via
+  real monomorphization on the parse-once spine (the g++ tsubst model:
+  the pattern parses once, instantiations substitute over the saved
+  tree — never re-parsed); `std::move`/`std::forward` instantiate from
+  the real headers
+- **`std::string` and streams are real libstdc++ objects**, called
+  mangled-direct through Itanium symbols — no wrapper layer
+- **Exceptions:** `try`/`catch`/`throw` lowered to setjmp/longjmp with
+  type-dispatched catch; destructors run during unwinding
+- **Lambdas** with `[&]` capture; references (including rvalue
+  references in template instantiation)
+- **Specifiers:** `constexpr` (folded; `if constexpr` discards the dead
+  branch), `consteval`/`constinit` (accepted), `inline` with real C++
+  vague linkage — identical per-TU copies (template instantiations,
+  inline/in-class bodies, vtables, typeinfo, C++17 inline variables)
+  emit `STB_WEAK` and merge at native or external links, with inline
+  variables' dynamic inits once-guarded — plus `inline namespace`,
+  `alignas`, `noexcept`, `auto` return deduction
+- Version-gated via `--std=`: each keyword activates at its introducing
+  standard through the language-standard registry
 
 ### Multi-Language Namespaces
 
@@ -203,7 +241,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.38.0): 749 integration tests pass (0 failing, 0 timed out, 9 skipped) through both the live and packed release binaries; the native `--exe` lane is at 734/0. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.48.0): 756 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary and the packed release binary in BOTH carrier shapes (embedded and sidecar); the native `--exe` lane is at 740/0. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -244,40 +282,52 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.38.0** is the system-object release: `madc::sys` brings the Python
-`sys` convention to madc — `sys.argv` and `sys.path` as mutable madc
-arrays, `sys.platform` / `sys.version` / `sys.hostname` as immutable
-facts — declared by `#include <ns_madc>` (the `import sys` parallel)
-and identical across the JIT, native artifacts, `--emit=c11`, and
-script mode. The polyglot `array` gained native `count()`/`size()`
-methods, `MADC_VERSION` is now a preprocessor macro, and frozen
-`madc::value` slots enforce read-only values at every mutation entry
-point. The campaign's recon also fixed general gaps: array struct
-members, madc-array subscript reads, extern-of-class emission. Fulltest
-and the packed suite hold **740/0/0/13**; the native `--exe` lane is at
-**726/0**; the gcc-torture master-promotion gate is met (1614 ≥ 1608,
-zero class-(a) failures).
+**v0.48.0** — **forest carriers S3** (discovery): the frozen forest is
+now **discoverable** rather than hard-wired to one carrier. With no
+explicit `--forest-bind=`, madc walks an ordered probe chain — the
+binary's **own image** (ELF trailer / Mach-O `__MADC,__forest`
+section), then a **`<exe>.forest` sidecar** beside the binary, then the
+**`$MADC_FOREST`** path — first usable container wins, every arm
+validated identically (footer, context hash, format version,
+producer-config gate). A new **`--with-forest=embedded|sidecar|none`**
+configure axis picks the shape the product build ships (embedded pack,
+sidecar file, or the live-parse dev shape) without ever restricting
+discovery, and the **failure policy** is explicit: the packaged CLI
+falls back to live parse with one loud notice, embedding hosts get a
+`strict_require` hard error plus an `enable_external_forest` sandbox
+knob, and the multi-dialect fall-through (a container frozen under a
+different std/`-D` config) is never noise. Green across the full
+shape × platform matrix: the Linux arbiter runs through **both**
+carriers at identical counts, and 7/7 hardware legs pass per arch on
+the Mac (A64 native + X64-Rosetta). Suites: fulltest **756/0/0/9**,
+arbiter embedded **756/0/0/9** + sidecar **756/0/0/9**, `--exe`
+**740/0**. The MIR fork is unchanged (`1.0-madc.0.47.0` remains the
+pinned release).
 
-**Branch state:** `master` was promoted to v0.38.0 on 2026-07-23 (tree
-identical to `develop` at promotion) and now tracks releases; `develop`
-carries active work. The [MIR fork](https://github.com/derekbsnider/mir)'s
-`master` tracks madc's `master` in lockstep; fork releases pair with madc's
-(see [`MIR_VERSION`](MIR_VERSION)).
+**Branch state:** `master` is at v0.38.0 (promoted 2026-07-23);
+`develop` carries v0.48.0 — `/promote` rides with/after this slice
+(owner decision 2026-07-25). The
+[MIR fork](https://github.com/derekbsnider/mir)'s `master` tracks
+madc's `master` in lockstep; fork releases pair with madc's (see
+[`MIR_VERSION`](MIR_VERSION)).
 
 ### Recent Releases
 
-- **v0.38.0** — System object: `madc::sys` (Python `sys` convention — argv/path arrays, platform/version/hostname facts, all lanes); native array `count()`/`size()`; `MADC_VERSION` macro; frozen-value enforcement; array struct-member + subscript-read fixes; fork release-tag pairing; fulltest + packed 740/0/0/13, `--exe` 726/0; promote gate met
-- **v0.37.0** — Script mode: top-level statements → synthesized `int main(int argc, char **argv)` (madc dialect; conflict/header/std guard rails, 5 new tests); C++ dynamic global init (g++ model); JIT exit-status parity; demand-driven forest bind (packed C hello 94 → 38 ms, c17 45 → 15); fulltest + packed 734/0/0/13, `--exe` 720/0
-- **v0.36.0** — Native compiler: `madc -c` → ELF `.o`, `madc -o` → MIR-assembled executables (no external toolchain), `-shared`, gcc-style CLI; `--exe` lane live 709/729; `madc -g` source-level gdb on the JIT; integer `_Complex` component-correct; fulltest + packed 729/0/0/13; torture 1614 (gate met)
-- **v0.35.0** — Small-binary + family-D: packed binary 101 MB → 9.26 MB (per-segment zstd, snapshot-v2 segment transforms, intern-spine pack compression; libzstd-dev now required); family-D campaign merged (drops 483 → 308, stable local-class hoist identity, ranked-callee typing, live-correctness ladder); fulltest + packed suite 696/0/0/16
-- **v0.34.0** — Pack-time deferred-body drain (rung 1): pack-side c2mir check gate (fork `c2mir_check_tree` @062dd97), error-tolerant reverts incl. body-span carry (packed stoi/stod restored), emission split + trap prebind; packed suite 681/681; dual dev/packed binaries; timing trend TSV; fulltest 681/0/0/16
+- **v0.48.0** — forest-carriers S3 (discovery): ordered carrier probe chain (self-image → `<exe>.forest` sidecar → `$MADC_FOREST`; S4/S6 slots reserved); `--with-forest=embedded|sidecar|none` configure axis (`forest_pack.sh --sidecar`, hosted darwin sidecar shape, `make install` sidecar); failure-policy knobs in the RegistrationPolicy family (silent/loud/strict + `enable_external_forest`); config-mismatch fall-through never a notice; `forest_sidecar_gate` in fulltest; Linux arbiter through both carriers 756/0/0/9, Mac 7/7 legs both arches; fork unchanged (1.0-madc.0.47.0)
+- **v0.47.0** — forest-carriers S2 (emitted-pack): `--pack-forest=<container>` embeds a frozen container in emitted native executables — ELF trailer / Mach-O `__MADC,__forest` section laid by the fork writer inside the emit-time signature (fork seam `MIR_object_exec_params.extra_*`; no re-signer on the product path); host-neutral Mach-O file-probe read-back; full native loop (freeze → pack-emit → AMFI → read-back) green on Apple hardware both arches; `forest_emitpack_gate` in fulltest; fulltest 756/0/0/9 + packed 240 units, `--exe` 740/0; fork release 1.0-madc.0.47.0
+- **v0.46.0** — forest-carriers S1: hosted darwin binaries ship PACKED — darwin groves cross-frozen by the same-arch cross madc (identical embedded prelude), embedded as a `__MADC,__forest` Mach-O section via `-sectcreate` (lld signs after layout: no re-signer on the build path), section read-back via `getsectiondata`; grove bind == live parse on Apple hardware, both arches; typedef-of-class parser fix ([fnptrbody] gate); fulltest 756/0/0/9 + packed 240 units, `--exe` 740/0; fork unchanged (1.0-madc.0.45.0)
+- **v0.45.0** — madc-on-macOS P1 complete: hosted arm64/x86-64 darwin madc binaries (JIT + native Mach-O AOT) with the embedded darwin C prelude (clang-flattened, macro-preserving); Apple asm-label symbol-space strip; parser depth fixes from real Apple headers (#pragma pack parse-time architecture, fnptr declarator breadth, spiral, deref-postinc); G2 green on Apple hardware, all lanes, both arches; fulltest 756/0/0/9, `--exe` 740/0; fork release 1.0-madc.0.45.0
+- **v0.44.0** — Mach-O (axis B writer + cross madcs): `mir-macho.c` MH_EXECUTE writer behind the `MIR_object` seam (PIE, LC_MAIN, classic dyld rebase/bind, ad-hoc SHA-256 code signature — MIR signs its own binaries); `MIR_TARGET_X86_64_MACOS` + target-keyed c2mir predefines; emit-only `bin/madc-{x86-64,arm64}-macos`; Gate B green vs clang+ld64.lld references; Gate B-final green on BOTH owner Macs; fulltest + packed 754/0/0/9, `--exe`/`--obj` 738/0; fork release 1.0-madc.0.44.0
 
 ## Roadmap
 
 Canonical roadmap: [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md). The phases
-below were achieved on the **old asmjit/Gecko backend** (now removed); the
-current focus is re-establishing them on the `cir_node` → c2mir → MIR path
-(integration baseline 227/193/56).
+below chart the language build-out. They were originally achieved on the
+**old asmjit/Gecko backend** (since removed) and have been **fully
+re-established — and far surpassed — on the `cir_node` → c2mir → MIR
+path**: the CIR parity gate was met with zero standard-C failures
+outstanding, and the suite stands at the counts in the Testing section
+above.
 
 | Phase | Goal | Status |
 |-------|------|--------|
@@ -292,7 +342,7 @@ current focus is re-establishing them on the `cir_node` → c2mir → MIR path
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
 | **GCC Parity** | GCC torture test suite compatibility | **v0.20.0** — 1536/1685 (91.2%); std namespace cleanup, std::vector |
-| **C++ Model** | Classes, inheritance, vtables, exceptions | **v0.21.0** — ctors/dtors, operators, refs, new/delete, inheritance, vtables, SJLJ exceptions + unwinding |
+| **C++ Model** | Classes, inheritance, vtables, exceptions | **Complete and extended on CIR** — full Itanium class model (MI + virtual bases, RTTI/`dynamic_cast`, vtable thunks), templates via real monomorphization, `<=>`, SJLJ exceptions + unwinding, real libstdc++ headers, vague linkage (see *C++ support* above) |
 | **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/` |
 
 ---

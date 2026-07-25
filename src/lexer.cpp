@@ -66,6 +66,9 @@ static bool load_precompiled_header_file(const std::string &path,
 static bool push_precompiled_header_tokens(Program &pgm,
 					   const std::string &display_name,
 					   std::deque<TokenBase *> &pch_tokens);
+static bool named_include_provider_exists(Program &pgm,
+					  const std::string &incfile,
+					  std::string &pch_path);
 
 static DataDef *get_complex_compat_type(DataDef *base_type)
 {
@@ -312,35 +315,6 @@ static bool is_identifier_spelling(const std::string &s)
 	if ( s[i] != '_' && !isalnum((unsigned char)s[i]) )
 	    return false;
     return true;
-}
-
-static bool next_source_word_is(Source &source, const char *match)
-{
-    std::string consumed;
-    while ( source.good() )
-    {
-	int c = source.peek();
-	if ( c == ' ' || c == '\t' || c == '\n' || c == '\r'
-	  || c == '\f' || c == '\v' )
-	    consumed += (char)source.get();
-	else
-	    break;
-    }
-    std::string word;
-    while ( source.good() )
-    {
-	int c = source.peek();
-	if ( isalnum((unsigned char)c) || c == '_' )
-	{
-	    word += (char)source.get();
-	    consumed += word.back();
-	}
-	else
-	    break;
-    }
-    if ( !consumed.empty() )
-	source.pushback_reread(consumed);
-    return word == match;
 }
 
 static bool identifier_matches_gnu_attribute_name(const std::string &id,
@@ -1038,12 +1012,27 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
 	// the merged literal lives in `prev` (already in the stream); refresh its
 	// rec spelling to the concatenated bytes so its ROM stays self-describing.
 	prev->rec.spelling_id = strpool.intern(prev->str);
+	// pin any queued #pragma pack ops to the SURVIVING token (tb dies here)
+	pin_pending_pack_ops(prev);
 	delete tb;
 	return;
     }
     ++_tok_produced;	// --show-stats: a real stream token emitted by the lexer
     finalize_pop1_rec(tb);
     tokens.push_back(tb);
+    pin_pending_pack_ops(tb);
+}
+
+// Pin queued #pragma pack ops to the first real token emitted after the
+// directive (see the pack side-channel block in madc.h); nextToken()
+// applies them when that token is consumed.
+void Program::pin_pending_pack_ops(TokenBase *tb)
+{
+    if ( _pending_pack_ops.empty() || !tb )
+	return;
+    std::vector<std::pair<int,int> > &ev = _pragma_pack_events[tb];
+    ev.insert(ev.end(), _pending_pack_ops.begin(), _pending_pack_ops.end());
+    _pending_pack_ops.clear();
 }
 
 // Predefined compiler macros captured at build time (scripts/gen_predefined_macros.sh
@@ -1133,14 +1122,30 @@ void Program::_tokenizer_init()
     pending_auto_include_identifiers.clear();
     suppress_auto_include_scan = false;
     pending_no_strict_aliasing = false;
+    while ( !_pack_stack.empty() )
+	_pack_stack.pop();
+    _pack_current = 0;
+    _pending_pack_ops.clear();
+    _pragma_pack_events.clear();
     add_keywords();
     add_datatypes();
 
-    // Ignored C storage hints. Type qualifiers are real tokens so
-    // macro token-pasting can still see their spelling.
-    define_map["inline"] = "";
-    define_map["__inline__"] = "";
-    define_map["__inline"] = "";
+    // C modes: `inline` and its GNU spellings stay ignored storage hints
+    // (the C99 inline no-external-definition model is a different feature;
+    // erasure keeps today's behavior). C++ modes / the madc dialect: `inline`
+    // is a REAL reserved decl-specifier (registered in add_keywords like
+    // constexpr) that carries vague linkage — the GNU spellings map to it.
+    if ( !cpp_keyword_active(STD_CPP98) )
+    {
+	define_map["inline"] = "";
+	define_map["__inline__"] = "";
+	define_map["__inline"] = "";
+    }
+    else
+    {
+	define_map["__inline__"] = "inline";
+	define_map["__inline"] = "inline";
+    }
     // constexpr (slice 5) / consteval / constinit (slice 6) are real reserved
     // tokens, no longer erased: constexpr activates the TokenIF `if constexpr`
     // discard machinery, and all three are consumed as ignored decl-specifiers
@@ -1767,11 +1772,12 @@ std::string Program::current_source_directory()
 }
 
 // Phase 6 (--forest-bind): open the grove container once, on the first system
-// #include. The container source is forest_bind_path (a standalone --freeze
-// container) or the blob appended to this executable (empty -> /proc/self/exe).
-// A missing/mismatched container leaves bind_forest NULL: every include then
-// live-parses. The mapping is never unmapped — the forest reads from it for the
-// process lifetime.
+// #include. With an explicit --forest-bind=PATH that path is the whole search;
+// otherwise the carrier DISCOVERY CHAIN below probes the ordered arms
+// (forest-carriers plan: one format, one loader, N carriers). A chain that
+// ends empty applies registration_policy.forest_missing_policy — the dev
+// default live-parses silently. The winning mapping is never unmapped: the
+// forest reads from it for the process lifetime.
 // --show-stats wall clock (R0 startup instrumentation).
 static double forest_stat_now(void)
 {
@@ -1780,61 +1786,183 @@ static double forest_stat_now(void)
     return tv.tv_sec + tv.tv_usec / 1e6;
 }
 
-CirFrozenForest *Program::ensure_bind_forest()
+// One discovery arm: map `path` (NULL = the running self-image: ELF trailer /
+// Mach-O __MADC,__forest section) and open it as a forest container. Returns
+// the opened forest, or NULL to fall through to the next arm. quiet_missing
+// silences ONLY the not-a-container case — pass true where an absent blob is
+// normal (the self-image of an unpacked dev binary), false where a concrete
+// file was found and junk warrants the notice (sidecar / env / explicit
+// path). An absent FILE never maps and always skips silently; a version-pin
+// or corruption reject always prints (open_header); a producer-config
+// (std / -D) mismatch always skips silently — the v27 multi-dialect contract
+// (a C compile must not bind a C++-parsed corpus; the packed-binary default
+// relies on it). The config gate reads only the directory header, so a
+// mismatched arm costs footer + directory, not the pool/arena binds (R1).
+static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
+					 const char *arm, bool quiet_missing,
+					 bool &config_mismatch,
+					 double &map_secs, double &open_secs)
 {
-    if ( bind_forest_tried )
-	return bind_forest;
-    bind_forest_tried = true;
     double _t0 = forest_stat_now();
     const void *image = NULL;
     size_t image_len = 0;
-    const char *path = forest_bind_path.empty() ? NULL : forest_bind_path.c_str();
     if ( !cir_forest_map_image(path, image, image_len) )
     {
-	_forest_map_seconds = forest_stat_now() - _t0;
-	DBG(std::cout << "forest-bind: no container at "
-	    << (path ? path : "/proc/self/exe") << " — live parse" << std::endl);
+	map_secs += forest_stat_now() - _t0;
+	DBG(std::cout << "forest-bind: [" << arm << "] no image at "
+	    << (path ? path : "self-image") << std::endl);
 	return NULL;
     }
-    _forest_map_seconds = forest_stat_now() - _t0;
+    map_secs += forest_stat_now() - _t0;
     CirFrozenForest *f = new CirFrozenForest();
     double _t1 = forest_stat_now();
-    if ( !f->open_header(image, image_len, /*quiet_missing=*/true) )
+    if ( !f->open_header(image, image_len, quiet_missing) )
     {
-	_forest_open_seconds = forest_stat_now() - _t1;
-	// open_header() printed real corruption / pin mismatch; a blob-less
-	// binary (the default-on probe of /proc/self/exe) fell through
-	// silently.
+	open_secs += forest_stat_now() - _t1;
 	delete f;
 	return NULL;
     }
-    // v27 producer-config gate: header CONTENT depends on the language
-    // standard (C vs C++ surface, __STRICT_ANSI__) and the -D set, so a
-    // container parsed under a different config must not bind — fall through
-    // silently to live parse (the packed-binary default relies on this: a C
-    // compile resolves the same real glibc paths a C++ corpus carries).
-    // Gated on the directory header BEFORE the heavy pool/arena binds (R1):
-    // a mismatched compile pays only the footer + directory read.
-    if ( f->language_std() != madc_forest_config_word(this)
-      || f->defines_hash() != madc_forest_defines_hash(this) )
+    if ( f->language_std() != madc_forest_config_word(prog)
+      || f->defines_hash() != madc_forest_defines_hash(prog) )
     {
-	_forest_open_seconds = forest_stat_now() - _t1;
-	DBG(std::cout << "forest-bind: producer config mismatch (std/defines)"
-	    << " — live parse" << std::endl);
+	open_secs += forest_stat_now() - _t1;
+	DBG(std::cout << "forest-bind: [" << arm << "] producer config"
+	    " mismatch (std/defines) — skipped" << std::endl);
+	config_mismatch = true;
 	delete f;
 	return NULL;
     }
     if ( !f->complete_open(/*c2m=*/NULL) )
     {
-	_forest_open_seconds = forest_stat_now() - _t1;
+	open_secs += forest_stat_now() - _t1;
 	delete f;
 	return NULL;
     }
-    _forest_open_seconds = forest_stat_now() - _t1;
-    bind_forest = f;
-    DBG(std::cout << "forest-bind: opened container (" << f->unit_count()
-	<< " units)" << std::endl);
+    open_secs += forest_stat_now() - _t1;
+    DBG(std::cout << "forest-bind: [" << arm << "] opened container ("
+	<< f->unit_count() << " units)" << std::endl);
+    return f;
+}
+
+CirFrozenForest *Program::ensure_bind_forest()
+{
+    if ( bind_forest_tried )
+	return bind_forest;
+    bind_forest_tried = true;
+
+    // Arm 0: an explicit --forest-bind=PATH is the whole search (CLI beats
+    // every discovery arm). A named container that fails to open falls back
+    // to live parse LOUDLY regardless of policy — the user pointed at it, so
+    // ignoring it silently is exactly the degradation the failure policy
+    // exists to prevent (strict still hard-errors via the shared fallback).
+    if ( !forest_bind_path.empty() )
+    {
+	bool cfg_mismatch = false;
+	bind_forest = forest_probe_arm(this, forest_bind_path.c_str(),
+				       "explicit", /*quiet_missing=*/false,
+				       cfg_mismatch,
+				       _forest_map_seconds,
+				       _forest_open_seconds);
+	if ( !bind_forest )
+	{
+	    if ( registration_policy.forest_missing_policy
+		 == RegistrationPolicy::ForestPolicy::strict_require )
+		Throw(NULL) << "frozen forest required (strict forest policy):"
+			       " '" << forest_bind_path << "' did not provide"
+			       " a usable container" << std::flush;
+	    (error_stream ? *error_stream : std::cerr)
+		<< "madc: --forest-bind: '" << forest_bind_path
+		<< "' did not provide a usable forest container; falling"
+		   " back to live parse" << std::endl;
+	}
+	return bind_forest;
+    }
+
+    // Discovery chain (forest-carriers plan) — fixed order, first usable
+    // container wins. Arm 1: self-image — the running binary's own carrier
+    // (ELF trailer / Mach-O __MADC,__forest section). An unpacked dev binary
+    // misses quietly.
+    bool cfg_mismatch = false;
+    bind_forest = forest_probe_arm(this, NULL, "self-image",
+				   /*quiet_missing=*/true, cfg_mismatch,
+				   _forest_map_seconds, _forest_open_seconds);
+    // Arm 2 (S4 slot): library image — when madc is built shared, the forest
+    // rides libmadc's image (dladdr on a libmadc symbol -> the same
+    // per-format probe). Lands with the shared shape.
+    if ( !bind_forest && registration_policy.enable_external_forest )
+    {
+	// Arm 3: sidecar container beside the binary (<exe>.forest — the
+	// packaged-install shape; dev iteration without re-packing).
+	std::string exe = madc_self_exe_path();
+	if ( !exe.empty() )
+	    bind_forest = forest_probe_arm(this, (exe + ".forest").c_str(),
+					   "sidecar", /*quiet_missing=*/false,
+					   cfg_mismatch,
+					   _forest_map_seconds,
+					   _forest_open_seconds);
+	// Arm 4: MADC_FOREST environment variable (a configured path; env
+	// outranks the madc.ini key / baked default per the config
+	// precedence rule — those land as arm 5 with S6).
+	const char *env = getenv("MADC_FOREST");
+	if ( !bind_forest && env && *env )
+	    bind_forest = forest_probe_arm(this, env, "MADC_FOREST",
+					   /*quiet_missing=*/false,
+					   cfg_mismatch,
+					   _forest_map_seconds,
+					   _forest_open_seconds);
+    }
+    if ( !bind_forest )
+	forest_missing_fallback(cfg_mismatch);
     return bind_forest;
+}
+
+// The discovery chain ended with no usable container: apply the failure
+// policy (forest-carriers S3 — the G2 lesson: no SILENT degradation unless
+// silent is the configured contract). Called at most once per Program
+// (bind_forest_tried gates the caller). strict_require raises through the
+// standard Throw path so an embedding host sees it as a compile error.
+//
+// config_mismatch = a container WAS found but its producer config (std/-D)
+// differs from this compile's. Under loud_fallback that is NOT degradation —
+// it is the by-design multi-dialect contract (the packed CLI compiling a C
+// file against its C++-parsed corpus is the everyday case; a notice there
+// would fire on every such compile — caught by the expect_quiet suite tests
+// carrying --std= fixtures). strict_require still hard-errors on it: a host
+// that REQUIRES frozen state wants to know its compile config cannot bind
+// the container it shipped.
+void Program::forest_missing_fallback(bool config_mismatch)
+{
+    switch ( registration_policy.forest_missing_policy )
+    {
+    case RegistrationPolicy::ForestPolicy::silent_fallback:
+	DBG(std::cout << "forest-bind: no container — live parse"
+	    << std::endl);
+	break;
+    case RegistrationPolicy::ForestPolicy::loud_fallback:
+	if ( config_mismatch )
+	{
+	    DBG(std::cout << "forest-bind: container config mismatch — live"
+		" parse (multi-dialect fall-through, no notice)" << std::endl);
+	    break;
+	}
+	(error_stream ? *error_stream : std::cerr)
+	    << "madc: no frozen forest found (probed: self-image,"
+	       " <exe>.forest sidecar, $MADC_FOREST); falling back to live"
+	       " parse — startup will be slower. Point --forest-bind=<file>"
+	       " at a container, or silence this with --no-forest-bind."
+	    << std::endl;
+	break;
+    case RegistrationPolicy::ForestPolicy::strict_require:
+	if ( config_mismatch )
+	    Throw(NULL) << "frozen forest required (strict forest policy):"
+			   " a container was found but its producer config"
+			   " (std/-D defines) does not match this compile"
+			<< std::flush;
+	Throw(NULL) << "frozen forest required (strict forest policy) but no"
+		       " usable container was found (probed: self-image,"
+		       " <exe>.forest sidecar, $MADC_FOREST)" << std::flush;
+	break;
+    }
 }
 
 // --show-stats (R0): flatten the forest-bind counters (Program-side timers +
@@ -2060,6 +2188,13 @@ bool Program::is_system_header_path(const char *path) const
 {
     if ( !path || !*path )
 	return false;
+    // Embedded headers carry their bare NAME as the token file (they never
+    // touch the filesystem). They are system/library surface by definition —
+    // notably the hosted-darwin prelude, whose inline bodies must be DCE'd
+    // like any system header's (unreachable darwin inlines would otherwise
+    // demand libSystem imports from every program).
+    if ( find_embedded_header(path) )
+	return true;
     extern const char *madc_sys_include_paths[];
     for ( int i = 0; madc_sys_include_paths[i]; ++i )
     {
@@ -2444,6 +2579,22 @@ static bool find_filesystem_precompiled_header(Program &pgm,
     return false;
 }
 
+// One named-provider probe shared by the explicit-include path and the
+// auto-include defer gate: can <incfile> be served without a filesystem
+// walk — a filesystem .madh, a baked PCH, or an embedded text header?
+// On success pch_path names the filesystem .madh (empty for the others).
+static bool named_include_provider_exists(Program &pgm,
+					  const std::string &incfile,
+					  std::string &pch_path)
+{
+    if ( find_filesystem_precompiled_header(pgm, incfile, true, pch_path) )
+	return true;
+    if ( find_precompiled_header(incfile) )
+	return true;
+    return find_embedded_header(incfile) != NULL
+	&& pgm.is_embedded_header_allowed(incfile);
+}
+
 static bool load_precompiled_header_file(const std::string &path,
 					 std::deque<TokenBase *> &tokens)
 {
@@ -2626,6 +2777,13 @@ void Program::add_keywords()
 	// by the same is_ignored_cpp_specifier_token path as constexpr.
 	{ "consteval",        STD_CPP20 },
 	{ "constinit",        STD_CPP20 },
+	// inline (un-erased 2026-07-24, ELF-completion S4 follow-through): a
+	// real decl-specifier consumed by TokenCppKeyword::parse (which also
+	// owns `inline namespace`) and the member-specifier loop; it carries
+	// vague linkage — bodied external-linkage functions/variables it
+	// qualifies emit linkonce (STB_WEAK) so per-TU header copies merge at
+	// native links. C modes keep the erasure (see _tokenizer_init).
+	{ "inline",           STD_CPP98 },
 	// Slice 4 (expression keywords) — validating subset first. The named
 	// casts / typeid / decltype / alignof are recognized by spelling in
 	// parse_constant_primary and the expression parser (de-shimmed), and are
@@ -2700,6 +2858,10 @@ void Program::add_datatypes()
     static TokenDataType tkCHAR16_T("char16_t", ddUINT16);
     static TokenDataType tkCHAR32_T("char32_t", ddUINT32);
     static TokenDataType tkMAX_ALIGN_T("max_align_t", ddMAX_ALIGN_T);
+    // _Float16 rides the same nearest-supported approximation the other
+    // _FloatN spellings use (MIR has no half-float): declarations parse;
+    // half-precision ABI fidelity is a MIR floor gap (SIMD-class, Tier 3).
+    static TokenDataType tkFLOAT16("_Float16", ddFLOAT);
     static TokenDataType tkFLOAT32("_Float32", ddFLOAT);
     static TokenDataType tkFLOAT64("_Float64", ddDOUBLE);
     static TokenDataType tkFLOAT128("_Float128", ddDOUBLE);
@@ -2748,6 +2910,7 @@ void Program::add_datatypes()
 	datatype_map[tkCHAR32_T.str] = &tkCHAR32_T;
     }
     datatype_map[tkMAX_ALIGN_T.str] = &tkMAX_ALIGN_T;
+    datatype_map[tkFLOAT16.str] = &tkFLOAT16;
     datatype_map[tkFLOAT32.str] = &tkFLOAT32;
     datatype_map[tkFLOAT64.str] = &tkFLOAT64;
     datatype_map[tkFLOAT128.str] = &tkFLOAT128;
@@ -3078,9 +3241,22 @@ TokenBase *Program::_getToken()
 			if ( !suppress_auto_include_scan
 			  && pending_auto_include_headers.count(incfile) )
 			{
-			    DBG(std::cout << "#include <" << incfile
-				<< "> deferred to auto-include prelude" << std::endl);
-			    return getToken();
+			    // Defer to the auto-include prelude ONLY when a
+			    // named provider (PCH / embedded) can actually
+			    // supply the header — the prelude has no filesystem
+			    // walk, so deferring an unprovided EXPLICIT include
+			    // would drop it silently. Unprovided names fall
+			    // through to the direct path: filesystem walk, loud
+			    // open failure on a true miss (gcc canon: explicit
+			    // includes resolve or error).
+			    std::string defer_pch_path;
+			    if ( named_include_provider_exists(*this, incfile,
+							       defer_pch_path) )
+			    {
+				DBG(std::cout << "#include <" << incfile
+				    << "> deferred to auto-include prelude" << std::endl);
+				return getToken();
+			    }
 			}
 			// Phase 6 (--forest-bind): a grove-backed system header
 			// BINDS instead of tokenizing — install its PP-export
@@ -3131,15 +3307,9 @@ TokenBase *Program::_getToken()
 			// included with a different _Mdouble_ per pass) re-tokenizes.
 			std::string include_key = "<" + incfile + ">";
 			bool name_already_included = include_already_seen(include_key);
-			bool resolves_named = false;
 			std::string pch_path;
-			if ( find_filesystem_precompiled_header(*this, incfile, true, pch_path) )
-			    resolves_named = true;
-			else if ( find_precompiled_header(incfile) )
-			    resolves_named = true;
-			else if ( find_embedded_header(incfile)
-			       && is_embedded_header_allowed(incfile) )
-			    resolves_named = true;
+			bool resolves_named =
+			    named_include_provider_exists(*this, incfile, pch_path);
 			if ( resolves_named && name_already_included )
 			{
 			    // B4a: the include EDGE exists in the source even when
@@ -3567,6 +3737,13 @@ TokenBase *Program::_getToken()
 			    std::string arg;
 			    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 				arg += source.get();
+			    // GCC semantics (see the pack block in madc.h):
+			    // push saves the current value and an optional
+			    // `, N` then sets it; pop restores; pack(N) sets;
+			    // pack() resets to the default layout. Ops are
+			    // QUEUED, not applied — parse-time application
+			    // rides the token side channel (lex-time state
+			    // would be stale by parse time).
 			    if ( arg == "push" )
 			    {
 				while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
@@ -3574,14 +3751,24 @@ TokenBase *Program::_getToken()
 				int val = 0;
 				while ( source.good() && isdigit(source.peek()) )
 				    val = val * 10 + (source.get() - '0');
-				_pack_stack.push(val ? val : 1);
-				DBG(std::cout << "#pragma pack(push, " << (val ? val : 1) << ")" << std::endl);
+				_pending_pack_ops.push_back(std::make_pair(1, val));
+				DBG(std::cout << "#pragma pack(push" << (val ? ", " : "")
+				    << (val ? std::to_string(val) : std::string()) << ") queued" << std::endl);
 			    }
 			    else if ( arg == "pop" )
 			    {
-				if ( !_pack_stack.empty() )
-				    _pack_stack.pop();
-				DBG(std::cout << "#pragma pack(pop)" << std::endl);
+				_pending_pack_ops.push_back(std::make_pair(2, 0));
+				DBG(std::cout << "#pragma pack(pop) queued" << std::endl);
+			    }
+			    else if ( !arg.empty() && isdigit((unsigned char)arg[0]) )
+			    {
+				_pending_pack_ops.push_back(std::make_pair(0, atoi(arg.c_str())));
+				DBG(std::cout << "#pragma pack(" << arg << ") queued" << std::endl);
+			    }
+			    else if ( arg.empty() )
+			    {
+				_pending_pack_ops.push_back(std::make_pair(0, 0));
+				DBG(std::cout << "#pragma pack() reset queued" << std::endl);
 			    }
 			    // discard trailing tokens via the lexer (handles a
 			    // multi-line /* */ comment on this line)
@@ -4779,9 +4966,6 @@ TokenBase *Program::_getToken()
 			// #define substitution: inject the define value into the source stream
 			if ( define_map.count(sid) && !source.macro_disabled(word) )
 			{
-			    if ( word == "inline"
-			      && next_source_word_is(source, "namespace") )
-				return make_ident(word);
 			    std::string &val = define_map[sid];
 			    if ( !val.empty() )
 			    {

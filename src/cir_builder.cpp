@@ -53,6 +53,10 @@ extern "C" {
 }
 
 extern thread_local bool madc_verbose;
+// Object-capture mode (native artifacts): translate_module synthesizes the
+// per-TU static init (rides the image's .init_array) instead of the JIT's
+// __madc_global_init + main-wrap model. Defined in madc_globals.cpp.
+extern thread_local bool madc_object_mode;
 
 namespace {
 class CirNullStreambuf : public std::streambuf
@@ -5761,11 +5765,8 @@ static DataDef *peel_carray_dims(DataDef *dd, std::vector<carray_dim_t> &dims)
 // parameter of the type lowers to a flat scalar pointer.
 static bool carray_chain_has_runtime(DataDef *dd)
 {
-	for (DataDefCArray *c = dynamic_cast<DataDefCArray *>(dd); c;
-	     c = dynamic_cast<DataDefCArray *>(c->element_type))
-		if (c->has_runtime_size())
-			return true;
-	return false;
+	DataDefCArray *c = dynamic_cast<DataDefCArray *>(dd);
+	return c && c->chain_has_runtime_size();
 }
 
 // A parameter type whose pointee CArray chain carries a runtime dim lowers to
@@ -6507,8 +6508,16 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// suffixes AFTER the pointer(s) below (declarator order [POINTER, ARR],
 	// which c2m reads as "pointer to array", vs [ARR, POINTER] = array of ptr).
 	std::vector<carray_dim_t> ptr_array_dims;
-	if (is_ptr)
+	if (is_ptr) {
+		bool vm_pointee = carray_chain_has_runtime(base_dd);
 		base_dd = peel_carray_dims(base_dd, ptr_array_dims);
+		// A variably-modified pointee (`int (*rp)[m]`, runtime m) lowers
+		// FLAT: the row structure lives in the DataDef for the
+		// linearizer / stride machinery, never in the emitted declarator
+		// (c2mir has no VLA types) — emit `int *rp`, no N_ARR suffixes.
+		if (vm_pointee)
+			ptr_array_dims.clear();
+	}
 
 	// A variable whose type is an anonymous aggregate (`struct { ... } x;`)
 	// has no tag to forward-reference, so the body must be emitted inline in
@@ -6622,6 +6631,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		}
 		tl = new_list;
 	}
+
+	// C++ `inline` variable (vague linkage): every including TU defines
+	// it — the attr binds the MIR data item LINKONCE (captured STB_WEAK)
+	// so per-TU copies merge at a multi-.o link, and --emit=c11 renders
+	// __attribute__((weak)). An extern reference is not a definition.
+	if ((v->flags & vfLINKONCE) && !(v->flags & vfEXTERN)
+	    && !(v->flags & vfSTATIC))
+		append(tl, node2(N_ATTR, id("linkonce"), list()));
 
 	node_t share = node1(N_SHARE, tl);
 	std::string emitted_var_name = var_emit_name(*v);
@@ -7467,6 +7484,8 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 	// --- _ZTS<cls>: static char _ZTS...[] = { bytes... };  (explicit byte list) ---
 	{
 		node_t spec = list();
+		// linkonce [S4]: per-TU typeinfo-name copies dedupe at a link
+		append(spec, node2(N_ATTR, id("linkonce"), list()));
 		append(spec, simple(N_CHAR));
 		node_t dl = list();
 		append(dl, node3(N_ARR, ignore(), list(), ignore())); // [] (sized by init)
@@ -7538,6 +7557,8 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 
 	{
 		node_t spec = list();
+		// linkonce [S4]: per-TU typeinfo copies dedupe at a link
+		append(spec, node2(N_ATTR, id("linkonce"), list()));
 		append(spec, simple(N_VOID));
 		node_t dl = list();
 		append(dl, node3(N_ARR, ignore(), list(), ignore())); // []
@@ -7588,6 +7609,8 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 		if (!emitted_thunks.insert(tname).second)
 			return tname;
 		node_t ret_spec = list();
+		// linkonce [S4]: thunks re-emit wherever the vtable does
+		append(ret_spec, node2(N_ATTR, id("linkonce"), list()));
 		node_t throwaway = list();
 		fnptr_decl_pieces(ov, true, ret_spec, throwaway, std::vector<carray_dim_t>());
 		node_t plist = list();
@@ -7627,7 +7650,9 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 	auto make_dtor_thunk = [&](const std::string &target_sym, size_t off,
 				   const char *tag) -> std::string {
 		std::string tname = cdd->name + "__dthunk_" + std::to_string(off) + "_" + tag;
+		// linkonce [S4]: dtor thunks re-emit wherever the vtable does
 		node_t ret_spec = node1(N_LIST, simple(N_VOID));
+		append(ret_spec, node2(N_ATTR, id("linkonce"), list()));
 		node_t pspec = simple(N_SPEC_DECL);
 		append(pspec, node1(N_LIST, simple(N_CHAR)));
 		append(pspec, node2(N_DECL, id("__self"), node1(N_LIST, pointer())));
@@ -7765,8 +7790,11 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 	}
 
 	// void *ClassName__vtable[] = { ... };
+	// linkonce [S4]: every TU that sees the class emits the same vtable
+	// (madc has no key-function model); STB_WEAK dedupes them at a link.
 	std::string vname = cdd->name + "__vtable";
 	node_t spec = list();
+	append(spec, node2(N_ATTR, id("linkonce"), list()));
 	append(spec, simple(N_VOID));
 	node_t dl = list();
 	append(dl, node3(N_ARR, ignore(), list(), ignore())); // [] (sized by init)
@@ -10126,7 +10154,10 @@ node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
 		return NULL;
 
 	// void Class___dtor(struct Class *__this)
+	// linkonce [S4]: the synthesized dtor re-emits in every TU that
+	// destroys the class; per-TU copies dedupe at a link.
 	node_t ret_type = node1(N_LIST, simple(N_VOID));
+	append(ret_type, node2(N_ATTR, id("linkonce"), list()));
 	// A NAMED parameter is an N_SPEC_DECL (matches param_decl); an N_TYPE is
 	// only for unnamed/abstract params and would lose the __this name.
 	node_t pspec = node1(N_LIST, class_tag_ref(cdd));
@@ -14426,6 +14457,160 @@ static bool constant_real_operand(TokenBase *t, long double &out)
 	return false;
 }
 
+// Unwind a subscript token tree to (root variable, index list in the
+// linearizer's order: idxs[ni-1] is the FIRST/outermost subscript i0).
+// Handles the three shapes the parser builds: TokenSubscript over a named
+// variable (extra_indices reversed, then index), a TokenSubscriptExpr chain
+// over a TokenSubscript root, and a TokenSubscriptExpr chain over a bare
+// TokenVar (cast-operand parse). Returns false when tb is not a pure
+// subscript tree over a named root.
+bool CirBuilder::subscript_root_indices(TokenBase *tb, Variable *&root,
+					std::vector<TokenBase *> &idxs)
+{
+	root = NULL;
+	idxs.clear();
+	if (TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(tb)) {
+		for (size_t k = tsub->extra_indices.size(); k > 0; k--)
+			idxs.push_back(tsub->extra_indices[k - 1]);
+		idxs.push_back(tsub->index);
+		root = &tsub->object;
+		return true;
+	}
+	TokenBase *cur = tb;
+	while (TokenSubscriptExpr *e = dynamic_cast<TokenSubscriptExpr *>(cur)) {
+		idxs.push_back(e->index);
+		cur = e->base_expr;
+	}
+	if (idxs.empty())
+		return false;
+	if (TokenSubscript *ts0 = dynamic_cast<TokenSubscript *>(cur)) {
+		if (!ts0->extra_indices.empty())
+			return false;
+		idxs.push_back(ts0->index);
+		root = &ts0->object;
+		return true;
+	}
+	if (TokenVar *tv0 = dynamic_cast<TokenVar *>(cur)) {
+		root = &tv0->var;
+		return true;
+	}
+	// A deref of the root variable is the implicit first subscript
+	// (`(*rp)[j]` == rp[0][j]; `*a` == a[0]) — rewrite deref-as-[0] so
+	// the chain linearizes.
+	Variable *dvar = NULL;
+	if (TokenDerefExpr *tde = dynamic_cast<TokenDerefExpr *>(cur)) {
+		TokenVar *dv = dynamic_cast<TokenVar *>(tde->expr);
+		if (dv && tde->expr->type() == TokenType::ttVariable)
+			dvar = &dv->var;
+	} else if (TokenDeref *td = dynamic_cast<TokenDeref *>(cur))
+		dvar = &td->var;
+	if (dvar) {
+		TokenInt *zero = new TokenInt((int64_t)0);
+		zero->setDataType(&ddUINT64);
+		zero->file = cur->file;
+		zero->line = cur->line;
+		zero->column = cur->column;
+		idxs.push_back(zero);
+		root = dvar;
+		return true;
+	}
+	return false;
+}
+
+// Element-count stride for pointer arithmetic on a flat-lowered
+// runtime-sized array pointer VALUE (C row-pointer semantics: `a + 1` on
+// `int a[n][m]` advances one ROW). The emitted flat pointer is a scalar
+// `T *`, so c2mir scales by the ELEMENT only; the row stride (product of
+// the dims below the operand's row level) must be applied by the builder.
+// Operand shapes: the root variable itself (level 0), a partial subscript
+// VALUE (decays one level per index), and `&subscript` (one level up from
+// the subscript value). Returns NULL when the operand is not
+// flat-VLA-derived or is already at element level (no scaling needed).
+node_t CirBuilder::vla_arith_stride(TokenBase *t, TokenBase *origin)
+{
+	Variable *root = NULL;
+	std::vector<TokenBase *> idxs;
+	size_t level = 0;
+	if (subscript_root_indices(t, root, idxs)) {
+		level = idxs.size();
+	} else if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(t)) {
+		if (!subscript_root_indices(ta->expr, root, idxs)
+		    || idxs.empty())
+			return NULL;
+		level = idxs.size() - 1;
+	} else if (TokenVar *tv = dynamic_cast<TokenVar *>(t)) {
+		// Plain variable only — TokenMember/TokenCallFunc derive from
+		// TokenVar.
+		if (t->type() != TokenType::ttVariable)
+			return NULL;
+		root = &tv->var;
+	} else
+		return NULL;
+	DataDefPTR *rp = root ? dynamic_cast<DataDefPTR *>(root->type) : NULL;
+	DataDefCArray *rc = rp ? dynamic_cast<DataDefCArray *>(rp->base_type)
+			       : NULL;
+	if (!rc || !rc->chain_has_runtime_size())
+		return NULL;
+	std::vector<DataDefCArray *> dims;
+	for (DataDefCArray *c = rc; c;
+	     c = dynamic_cast<DataDefCArray *>(c->element_type))
+		dims.push_back(c);
+	if (level >= dims.size())
+		return NULL;
+	node_t stride = NULL;
+	for (size_t m = level; m < dims.size(); m++) {
+		node_t d = dims[m]->has_runtime_size()
+			   ? translate_expr(dims[m]->count_expr)
+			   : integer((int64_t)dims[m]->count);
+		stride = stride ? node2(N_MUL, stride, d, origin) : d;
+	}
+	return stride;
+}
+
+// Linearized access on a flat VLA pointer. A runtime-sized array (VLA param
+// or malloc'd VLA local) is represented as `T *root` whose pointee DataDef
+// keeps the INNER dims d1..dk as a CArray chain (the outermost dim is decayed
+// away / held in vla_size_expr). With indices i0..i_{n-1} (in the
+// subscript-unwind order subscript_root_indices produces: idxs[ni-1] is i0):
+//   full access  (n == k+1): element lvalue IND(root, ((i0*d1+i1)*d2+...)+ik)
+//   partial access (n <= k): C's row pointer (`a[i]` on `int a[n][m]` has
+//     type int(*)[m]) — under the flat lowering that is scaled pointer
+//     arithmetic: root + lin(i0..i_{n-1}) * (d_n * .. * dk).
+// Returns NULL when root is not a flat runtime-sized chain (fixed arrays and
+// plain pointers keep their native paths) or the access is over-subscripted.
+node_t CirBuilder::vla_flat_subscript(Variable *root,
+				      const std::vector<TokenBase *> &idxs,
+				      TokenBase *origin)
+{
+	DataDefPTR *rp = root ? dynamic_cast<DataDefPTR *>(root->type) : NULL;
+	DataDefCArray *rc = rp ? dynamic_cast<DataDefCArray *>(rp->base_type)
+			       : NULL;
+	// Any runtime dim ANYWHERE in the chain forces the linearized form
+	// (`char a[2][3][N]` — the outer dims are constant but the flat
+	// pointer still strides by N).
+	if (!rc || !carray_chain_has_runtime(rc) || idxs.empty())
+		return NULL;
+	std::vector<node_t> dims; // d1..dk (inner dims)
+	for (DataDefCArray *c = rc; c;
+	     c = dynamic_cast<DataDefCArray *>(c->element_type))
+		dims.push_back(c->has_runtime_size()
+			       ? translate_expr(c->count_expr)
+			       : integer((int64_t)c->count));
+	size_t ni = idxs.size();
+	if (ni > dims.size() + 1)
+		return NULL;
+	node_t lin = translate_expr(idxs[ni - 1]); // i0 (root index)
+	for (size_t m = 1; m < ni; m++)
+		lin = node2(N_ADD, node2(N_MUL, lin, dims[m - 1], origin),
+			    translate_expr(idxs[ni - 1 - m]), origin);
+	node_t rbase = id(var_emit_name(*root).c_str(), origin);
+	if (ni == dims.size() + 1)
+		return node2(N_IND, rbase, lin, origin);
+	for (size_t m = ni - 1; m < dims.size(); m++)
+		lin = node2(N_MUL, lin, dims[m], origin);
+	return node2(N_ADD, rbase, lin, origin);
+}
+
 node_t CirBuilder::translate_expr(TokenBase *tb)
 {
 	if (!tb) return ignore();
@@ -15217,8 +15402,21 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// Address-of expression
 	{
 		TokenAddrExpr *tae = dynamic_cast<TokenAddrExpr *>(tb);
-		if (tae)
+		if (tae) {
+			// `&a[i]...` on a flat runtime-sized array: a PARTIAL
+			// access already linearizes to the address VALUE
+			// (root + lin*stride) — return it directly; N_ADDR
+			// over that non-lvalue arithmetic is invalid. A FULL
+			// access linearizes to the element lvalue IND(...),
+			// which keeps the ordinary N_ADDR.
+			Variable *vroot = NULL;
+			std::vector<TokenBase *> vidxs;
+			if (subscript_root_indices(tae->expr, vroot, vidxs))
+				if (node_t flat = vla_flat_subscript(vroot, vidxs, tb))
+					return CIR_NODE(flat)->base.code == N_IND
+					       ? node1(N_ADDR, flat, tb) : flat;
 			return node1(N_ADDR, translate_expr(tae->expr), tb);
+		}
 	}
 
 	// Dereference variable
@@ -15278,6 +15476,18 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// capture pointer param (`(*name)[i]`).
 				base = node1(N_DEREF, id(tsub->object.name.c_str(), tb), tb);
 			} else {
+				// Flat VLA pointer (runtime-sized param or malloc'd
+				// local): route through the linearizer. A single-index
+				// access on a multi-dim chain is C's row POINTER
+				// (`a[i]` on `int a[n][m]` == a + i*m under the flat
+				// lowering); the generic scalar IND below would mis-read
+				// one element instead.
+				Variable *vroot = NULL;
+				std::vector<TokenBase *> idxs;
+				if (subscript_root_indices(tsub, vroot, idxs))
+					if (node_t flat = vla_flat_subscript(vroot,
+									     idxs, tb))
+						return flat;
 				base = id(var_emit_name(tsub->object).c_str(), tb);
 			}
 			// madc array element read (`arr[i]`): route through the
@@ -15342,49 +15552,19 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// TokenSubscriptExpr(...(TokenSubscript(M1,i0))...,ik) because M1 is
 			// a flat malloc'd pointer (c2mir has no VLA types), so the nested
 			// IND(IND(M1,i0),i1) fails (M1[i0] is a scalar). Unwind the chain to
-			// (root M1, [i0..ik]) and emit ONE linearized subscript
-			// M1[i0*d1*..*dk + i1*d2*..*dk + ... + ik] (row-major), with the
-			// inner dim sizes d1..dk from M1's pointee DataDefCArray chain.
-			std::vector<TokenBase *> idxs; // outermost-first: [ik .. i1]
-			TokenBase *cur = tse;
+			// (root M1, [i0..ik]) via subscript_root_indices and emit ONE
+			// linearized subscript M1[i0*d1*..*dk + i1*d2*..*dk + ... + ik]
+			// (row-major), with the inner dim sizes d1..dk from M1's pointee
+			// DataDefCArray chain. vla_flat_subscript linearizes a FULL access
+			// (one index per dimension = 1 outer + k inner) to a single element
+			// IND, and a PARTIAL access (`a[i][j]` on `int a[n][m][k]`) to the
+			// row pointer a + (i*m+j)*k.
 			Variable *root = NULL;
-			while (TokenSubscriptExpr *e =
-				       dynamic_cast<TokenSubscriptExpr *>(cur)) {
-				idxs.push_back(e->index);
-				cur = e->base_expr;
-			}
-			if (TokenSubscript *ts0 = dynamic_cast<TokenSubscript *>(cur)) {
-				if (ts0->extra_indices.empty()) {
-					idxs.push_back(ts0->index); // i0 (innermost root index)
-					root = &ts0->object;
-				}
-			}
-			DataDefPTR *rp = root ? dynamic_cast<DataDefPTR *>(root->type) : NULL;
-			DataDefCArray *rc = rp ? dynamic_cast<DataDefCArray *>(rp->base_type)
-					       : NULL;
-			// Any runtime dim ANYWHERE in the chain forces the
-			// linearized form (`char a[2][3][N]` — the outer dims are
-			// constant but the flat pointer still strides by N).
-			if (root && rc && carray_chain_has_runtime(rc)) {
-				std::vector<node_t> dims; // d1..dk (inner dims)
-				for (DataDefCArray *c = rc; c;
-				     c = dynamic_cast<DataDefCArray *>(c->element_type))
-					dims.push_back(c->has_runtime_size()
-						       ? translate_expr(c->count_expr)
-						       : integer((int64_t)c->count));
-				size_t ni = idxs.size();
-				// Only flatten a FULL access (one index per dimension =
-				// 1 outer + k inner). idxs is outermost-first, so idxs[ni-1]
-				// is the root index i0.
-				if (ni == dims.size() + 1) {
-					node_t flat = translate_expr(idxs[ni - 1]); // i0
-					for (size_t m = 1; m < ni; m++)
-						flat = node2(N_ADD,
-							     node2(N_MUL, flat, dims[m - 1], tb),
-							     translate_expr(idxs[ni - 1 - m]), tb);
-					node_t rbase = id(var_emit_name(*root).c_str(), tb);
-					return node2(N_IND, rbase, flat, tb);
-				}
+			std::vector<TokenBase *> idxs;
+			if (subscript_root_indices(tse, root, idxs)) {
+				node_t flat = vla_flat_subscript(root, idxs, tb);
+				if (flat)
+					return flat;
 			}
 			return node2(N_IND,
 				translate_expr(tse->base_expr),
@@ -15533,8 +15713,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// element's compile-time alignment (constant), so only sizeof is
 			// lowered this way.
 			DataDefCArray *vca = dynamic_cast<DataDefCArray *>(ttq->query_type);
-			if (vca && vca->has_runtime_size() && !ttq->want_alignof) {
-				node_t total = translate_expr(vca->count_expr);
+			if (vca && vca->chain_has_runtime_size() && !ttq->want_alignof) {
+				// A constant head dim over a runtime inner dim
+				// (`char a[3][n]`) is still variably modified.
+				node_t total = vca->has_runtime_size()
+					       ? translate_expr(vca->count_expr)
+					       : integer((int64_t)vca->count);
 				DataDef *elem = vca->element_type;
 				while (DataDefCArray *inner =
 					       dynamic_cast<DataDefCArray *>(elem)) {
@@ -15547,7 +15731,19 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				node_t elem_szof = node1(N_SIZEOF,
 					node2(N_TYPE, type_list(elem),
 					      node2(N_DECL, ignore(), list())), tb);
-				return node2(N_MUL, total, elem_szof, tb);
+				node_t szval = node2(N_MUL, total, elem_szof, tb);
+				// C11 6.5.3.4p2: the VLA-typed operand is
+				// EVALUATED — emit the carried subscript index
+				// expressions (values discarded) ahead of the
+				// size: (i0, i1, ..., size).
+				node_t evals = NULL;
+				for (TokenBase *sfx : ttq->operand_side_effects) {
+					node_t e = translate_expr(sfx);
+					evals = evals ? node2(N_COMMA, evals, e, tb)
+						      : e;
+				}
+				return evals ? node2(N_COMMA, evals, szval, tb)
+					     : szval;
 			}
 			node_t tl = type_list(ttq->query_type);
 			node_t type_decl = node2(N_DECL, ignore(), list());
@@ -15682,9 +15878,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// array, the same shape the variable-declaration path builds.
 			// Without this the CArray base fell through type_list to `int`
 			// and the dims vanished: the cast emitted `(int *)`.
+			// A variably-modified pointee (`(int (*)[m])`, runtime m)
+			// lowers FLAT like its declaration: `(T *)`, no N_ARR.
 			std::vector<carray_dim_t> cast_arr_dims;
-			if (cast_ptr_levels > 0)
+			if (cast_ptr_levels > 0) {
+				bool vm_pointee = carray_chain_has_runtime(cast_dd);
 				cast_dd = peel_carray_dims(cast_dd, cast_arr_dims);
+				if (vm_pointee)
+					cast_arr_dims.clear();
+			}
 
 			node_t tl = type_list(cast_dd);
 			node_t cast_decl_list = list();
@@ -15777,6 +15979,20 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (node_t ov = class_unary_operator_call(uop, operand_tb, tb))
 				return ov;
 			node_t operand = translate_expr(operand_tb);
+			// ++/-- on a flat row-pointer lvalue steps one ROW, not one
+			// element. Prefix forms are the scaled compound assign; post
+			// forms recover the old value arithmetically:
+			// a++ == ((a += stride) - stride).
+			if (node_t s = vla_arith_stride(operand_tb, tb)) {
+				bool inc = tb->id() == TokenID::tkInc;
+				node_t r = node2(inc ? N_ADD_ASSIGN : N_SUB_ASSIGN,
+						 operand, s, tb);
+				if (is_post)
+					r = node2(inc ? N_SUB : N_ADD, r,
+						  vla_arith_stride(operand_tb, tb),
+						  tb);
+				return r;
+			}
 			c2mir_node_code_t code;
 			if (tb->id() == TokenID::tkInc)
 				code = is_post ? N_POST_INC : N_INC;
@@ -16024,6 +16240,30 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					left = node2(N_CAST, char_ptr_type(), left, tb);
 				if (is_size1_pointer(rdd))
 					right = node2(N_CAST, char_ptr_type(), right, tb);
+			}
+			// Row-pointer arithmetic on a flat runtime-sized array
+			// (`a + 1` on `int a[n][m]` advances one ROW): the emitted
+			// scalar pointer scales by the element only, so multiply the
+			// integer operand by the row stride; a difference of two row
+			// pointers divides the element difference back down.
+			if (code == N_ADD || code == N_SUB) {
+				node_t ls = vla_arith_stride(top->left, tb);
+				node_t rs = vla_arith_stride(top->right, tb);
+				if (code == N_SUB && ls && rs)
+					return node2(N_DIV,
+						     node2(N_SUB, left, right, tb),
+						     ls, tb);
+				if (ls && !rs)
+					right = node2(N_MUL, right, ls, tb);
+				else if (code == N_ADD && rs && !ls)
+					left = node2(N_MUL, left, rs, tb);
+			}
+			// Compound `a += n` / `a -= n` on a flat row-pointer lvalue:
+			// scale the step by the row stride (the lvalue itself stays
+			// the scalar element pointer).
+			if (code == N_ADD_ASSIGN || code == N_SUB_ASSIGN) {
+				if (node_t s = vla_arith_stride(top->left, tb))
+					right = node2(N_MUL, right, s, tb);
 			}
 			// Compound `vp += n` / `vp -= n` on a size-1 pointer lvalue:
 			// the lvalue cannot be cast in place, so lower to
@@ -19987,6 +20227,16 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		append(ret_type, node2(N_ATTR, id("optimize", tf), attr_args, tf));
 	}
 
+	// C++ vague linkage → linkonce [ELF-completion S4]: a template
+	// instantiation or in-class/deferred body is emitted by every TU that
+	// uses it. The attr makes c2mir bind the MIR item LINKONCE, captured
+	// STB_WEAK, so identical per-TU copies merge at a multi-.o link (first
+	// wins) instead of colliding as duplicate strong definitions. Calls to
+	// linkonce functions still inline (copies are ODR-identical); main is
+	// never vague.
+	if (fd->is_linkonce() && tf->var.name != "main")
+		append(ret_type, node2(N_ATTR, id("linkonce", tf), list(), tf));
+
 	// GNU nested-function / [&]-lambda capture context. A capturing function
 	// (has_captures) implicitly captures by reference whatever enclosing
 	// vars/params its body uses (its potential_captures). We translate the body
@@ -20417,15 +20667,18 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	}
 
 	// madc::sys (task #91): a TU that included <ns_madc> populates the
-	// host system object from main's real arguments — ONE injected
-	// __madc_sys_init(argc, argv) call serves the JIT and native lanes
-	// alike, and it runs BEFORE __madc_global_init so dynamic global
-	// initializers may read sys.*. A main declared without parameters
-	// initializes an empty argv. The facts (platform/version/hostname)
-	// initialize at host load and need no call here.
+	// host system object from main's real arguments — the injected
+	// __madc_sys_init(argc, argv) call runs BEFORE __madc_global_init so
+	// dynamic global initializers may read sys.*. A main declared without
+	// parameters initializes an empty argv. The facts (platform/version/
+	// hostname) initialize at host load and need no call here.
+	// JIT lane only: object mode (ELF-completion S3) retires this main
+	// wrap — the per-TU init synthesized in translate_module carries both
+	// calls and rides the image's .init_array (ld.so/glibc run it before
+	// main), so two ctor TUs no longer collide on __madc_global_init.
 	bool want_sys_init = tf->var.name == "main"
 			     && m_prog && m_prog->_include_ns_madc;
-	if (tf->var.name == "main"
+	if (!madc_object_mode && tf->var.name == "main"
 	    && (want_sys_init || !m_global_ctor_stmts.empty())) {
 		node_t outer = list();
 		if (want_sys_init) {
@@ -20538,6 +20791,47 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 // built-ins registered via addGlobal (e.g. `version`) are NOT in top_decls, so
 // emit their storage here. Either way, queue the ctor into m_global_ctor_stmts
 // for func_def to run at main entry, in declaration order.
+void CirBuilder::queue_global_ctor_group(Variable *v, std::vector<node_t> &stmts,
+					 std::vector<node_t> &deferred_globals)
+{
+	m_ctor_groups.push_back(std::make_pair(v, std::vector<node_t>()));
+	std::vector<node_t> &grp = m_ctor_groups.back().second;
+	if (stmts.empty())
+		return;
+	if (v && (v->flags & vfLINKONCE)) {
+		// Linkonce (C++ `inline`) variable: every TU's init body carries
+		// this group, but the merged image holds ONE variable — run the
+		// dynamic init once behind a guard that itself merges weak
+		// (`if (__madc_ivg_<sym> == 0) { __madc_ivg_<sym> = 1; ... }`).
+		std::string gname = "__madc_ivg_" + var_emit_name(*v);
+		node_t gspec = list();
+		append(gspec, node2(N_ATTR, id("linkonce"), list()));
+		append(gspec, simple(N_INT));
+		node_t gdecl = simple(N_SPEC_DECL);
+		append(gdecl, node1(N_SHARE, gspec));
+		append(gdecl, node2(N_DECL, id(gname.c_str()), list()));
+		append(gdecl, ignore());
+		append(gdecl, ignore());
+		append(gdecl, ignore());
+		deferred_globals.push_back(gdecl);
+		node_t items = list();
+		append(items, node2(N_EXPR, list(),
+				    node2(N_ASSIGN, id(gname.c_str()), integer(1))));
+		for (node_t s : stmts)
+			append(items, s);
+		node_t guarded = node4(N_IF, list(),
+				       node2(N_EQ, id(gname.c_str()), integer(0)),
+				       node2(N_BLOCK, list(), items), ignore());
+		m_global_ctor_stmts.push_back(guarded);
+		grp.push_back(guarded);
+		return;
+	}
+	for (node_t s : stmts) {
+		m_global_ctor_stmts.push_back(s);
+		grp.push_back(s);
+	}
+}
+
 void CirBuilder::collect_global_ctors(Program *prog,
 				      std::vector<node_t> &deferred_globals,
 				      std::set<std::string> &emitted_globals)
@@ -20567,19 +20861,12 @@ void CirBuilder::collect_global_ctors(Program *prog,
 			if (!sdecl || !sdecl->initialize)
 				continue;
 			node_t as = translate_expr(sdecl->initialize);
-			m_ctor_groups.push_back(std::make_pair(
-				v, std::vector<node_t>()));
-			std::vector<node_t> &sgrp = m_ctor_groups.back().second;
-			for (node_t p : m_pending_stmts) {
-				m_global_ctor_stmts.push_back(p);
-				sgrp.push_back(p);
-			}
+			std::vector<node_t> sgrp_stmts(m_pending_stmts.begin(),
+						       m_pending_stmts.end());
 			m_pending_stmts.clear();
-			if (as) {
-				node_t st = node2(N_EXPR, list(), as);
-				m_global_ctor_stmts.push_back(st);
-				sgrp.push_back(st);
-			}
+			if (as)
+				sgrp_stmts.push_back(node2(N_EXPR, list(), as));
+			queue_global_ctor_group(v, sgrp_stmts, deferred_globals);
 			continue;
 		}
 		bool already_emitted = emitted_globals.count(v->name) != 0;
@@ -20608,18 +20895,12 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		// ctor calls together with its storage decl (a group's statements
 		// never seed the harvest — they reference their own global, which
 		// would otherwise self-admit every ctor'd global).
-		m_ctor_groups.push_back(std::make_pair(
-			v, std::vector<node_t>()));
-		std::vector<node_t> &grp = m_ctor_groups.back().second;
-		for (node_t p : m_pending_stmts) {
-			m_global_ctor_stmts.push_back(p);
-			grp.push_back(p);
-		}
+		std::vector<node_t> grp_stmts(m_pending_stmts.begin(),
+					      m_pending_stmts.end());
 		m_pending_stmts.clear();
-		if (cc) {
-			m_global_ctor_stmts.push_back(cc);
-			grp.push_back(cc);
-		}
+		if (cc)
+			grp_stmts.push_back(cc);
+		queue_global_ctor_group(v, grp_stmts, deferred_globals);
 	}
 }
 
@@ -21015,7 +21296,11 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	node_t items = list();
 	for (node_t st : stmts) append(items, st);
 	node_t body = node2(N_BLOCK, list(), items);
-	node_t out = node4(N_FUNC_DEF, node1(N_LIST, simple(N_LONG)), decl,
+	// linkonce [S4]: the shim is a deterministic synthesized adapter —
+	// every TU referencing the target emits an identical copy.
+	node_t shim_spec = node1(N_LIST, simple(N_LONG));
+	append(shim_spec, node2(N_ATTR, id("linkonce"), list()));
+	node_t out = node4(N_FUNC_DEF, shim_spec, decl,
 			   list(), body);
 	CIR_NODE(out)->synth_from_origin = true;
 	return out;
@@ -21582,6 +21867,37 @@ static const char *cir_declared_id(node_t n)
 	if (idn && idn->code == N_ID)
 		return idn->u.s.s;
 	return NULL;
+}
+
+// Object-mode per-TU init symbol: __madc_init_<stem>_<fnv32(path)> — a
+// deterministic, gdb-readable, TU-unique C identifier (the function is
+// static, so uniqueness is for debuggability, not correctness; locals
+// never unify at the multi-.o merge).
+static std::string tu_init_symbol(const std::string &tu)
+{
+	uint32_t h = 2166136261u;			// FNV-1a over the full path
+	for (size_t i = 0; i < tu.size(); i++) {
+		h ^= (unsigned char)tu[i];
+		h *= 16777619u;
+	}
+	std::string stem = tu;
+	size_t sl = stem.rfind('/');
+	if (sl != std::string::npos)
+		stem = stem.substr(sl + 1);
+	size_t dot = stem.rfind('.');
+	if (dot != std::string::npos && dot > 0)
+		stem = stem.substr(0, dot);
+	std::string out = "__madc_init_";
+	for (size_t i = 0; i < stem.size(); i++) {
+		char c = stem[i];
+		bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+			  || (c >= '0' && c <= '9');
+		out += ok ? c : '_';
+	}
+	char hx[12];
+	snprintf(hx, sizeof hx, "_%08x", h);
+	out += hx;
+	return out;
 }
 
 node_t CirBuilder::translate_module(Program *prog)
@@ -22514,7 +22830,12 @@ node_t CirBuilder::translate_module(Program *prog)
 	// host-callable user function (see synth_call_shim). Synthesized here so
 	// the value-helper externs flow into Pass 0.8 and the referenced member
 	// symbols (c_str/size protocol, dtors) are seen by the Pass-1.9 fixpoint.
-	synth_call_shims(prog, roots, func_def_nodes);
+	// An artifact that can never be host-called through the value ABI
+	// (standalone executable; any non--shared cross artifact) skips them:
+	// dropping their madc_value_* helper imports keeps a pure program
+	// runtime-free, so the libmadc.so.0 DT_NEEDED cover logic can fire.
+	if (!prog->aot_skip_eval_shims)
+		synth_call_shims(prog, roots, func_def_nodes);
 
 	// (typed_proto_syms is declared above materialize_and_lower — see there.)
 
@@ -23094,16 +23415,28 @@ node_t CirBuilder::translate_module(Program *prog)
 		m_instr_thunk_def = NULL;
 	}
 
-	// Synthesize `void __madc_global_init(void)` — the ONE home for the
-	// file-scope class-global ctor calls (collected by collect_global_ctors).
-	// main's prologue calls it (translate_func), and main-less embedding
-	// sessions invoke it at runtime init via CirJitSession::function_code.
-	// A static once-guard makes a second invocation (host init + run_main)
-	// a no-op. Emitted FIRST among definitions so main's call (and any
-	// earlier-in-source function) sees the definition.
+	// Synthesize the module init — the ONE home for the file-scope
+	// class-global ctor calls (collected by collect_global_ctors).
+	// JIT lane: `void __madc_global_init(void)` — main's prologue calls it
+	// (translate_func), and main-less embedding sessions invoke it at
+	// runtime init via CirJitSession::function_code. Object mode
+	// (ELF-completion S3): a STATIC init under a TU-unique name (locals
+	// never unify at the multi-.o merge, so two ctor TUs coexist) with the
+	// platform init-array signature (int argc, char **argv, char **envp) —
+	// madc_cir registers it into the capture's .init_array, and ld.so /
+	// glibc >= 2.34 / the R4b loader run it before main. A TU that
+	// included <ns_madc> opens its init with __madc_sys_init(argc, argv)
+	// (the runtime guards repopulation), preserving "dynamic global
+	// initializers may read sys.*" — so an object-mode init exists when
+	// the TU has ctors OR included <ns_madc>.
+	// A static once-guard makes a second invocation a no-op. Emitted FIRST
+	// among definitions so main's call (and any earlier-in-source
+	// function) sees the definition.
 	node_t gi_items = NULL;		// rung 3: the init body's stmt list —
 	node_t gi_def = NULL;		// the filter prunes dead ctor groups here
-	if (!m_global_ctor_stmts.empty()) {
+	m_tu_init_name.clear();
+	bool obj_sys_init = madc_object_mode && m_prog && m_prog->_include_ns_madc;
+	if (!m_global_ctor_stmts.empty() || obj_sys_init) {
 		// declaration: N_SPEC_DECL(N_SHARE(specs), declarator, attrs,
 		// asm, initializer) — c2mir.c:538.
 		node_t gspec = list();
@@ -23122,12 +23455,63 @@ node_t CirBuilder::translate_module(Program *prog)
 				    node2(N_RETURN, list(), ignore()), ignore()));
 		append(items, node2(N_EXPR, list(),
 				    node2(N_ASSIGN, id("__madc_gi_done"), integer(1))));
+		if (obj_sys_init) {
+			// __madc_sys_init_once(argc, (void *)argv); — from
+			// the init's own parameters (main's wrap is retired
+			// here). The _once entry yields to a prior
+			// population, so N TU inits and dlopen'd modules
+			// never stomp a running script's sys.* mutations.
+			need_output_extern("__madc_sys_init_once", false,
+					   { { {N_LONG}, false },
+					     { {N_VOID}, true } });
+			node_t sargs = list();
+			append(sargs, id("argc"));
+			append(sargs, node2(N_CAST, void_ptr_type(),
+					    id("argv")));
+			node_t scall = node2(N_CALL,
+					     id("__madc_sys_init_once"),
+					     sargs);
+			CIR_NODE(scall)->synth_from_origin = true;
+			append(items, node2(N_EXPR, list(), scall));
+		}
 		for (node_t s : m_global_ctor_stmts)
 			append(items, s);
 		node_t ibody = node2(N_BLOCK, list(), items);
-		node_t iret = node1(N_LIST, simple(N_VOID));
-		node_t idecl = node2(N_DECL, id("__madc_global_init"),
-				     node1(N_LIST, node1(N_FUNC, list())));
+		node_t iret = list();
+		node_t iparams = list();
+		const char *gi_name = "__madc_global_init";
+		std::string tu_sym;
+		if (madc_object_mode) {
+			tu_sym = tu_init_symbol(m_tu_name);
+			gi_name = tu_sym.c_str();
+			m_tu_init_name = tu_sym;
+			// static linkage: the capture defines it STB_LOCAL
+			append(iret, simple(N_STATIC));
+			// (int argc, char **argv, char **envp)
+			static const char *gi_par[3]
+				= {"argc", "argv", "envp"};
+			for (int gp = 0; gp < 3; gp++) {
+				node_t pspec = list();
+				append(pspec, simple(gp == 0 ? N_INT
+							     : N_CHAR));
+				node_t pdecl = list();
+				if (gp != 0) {
+					append(pdecl, pointer());
+					append(pdecl, pointer());
+				}
+				node_t par = simple(N_SPEC_DECL);
+				append(par, node1(N_SHARE, pspec));
+				append(par, node2(N_DECL, id(gi_par[gp]),
+						  pdecl));
+				append(par, ignore());
+				append(par, ignore());
+				append(par, ignore());
+				append(iparams, par);
+			}
+		}
+		append(iret, simple(N_VOID));
+		node_t idecl = node2(N_DECL, id(gi_name),
+				     node1(N_LIST, node1(N_FUNC, iparams)));
 		gi_items = items;
 		gi_def = node4(N_FUNC_DEF, iret, idecl, list(), ibody);
 		func_def_nodes.insert(func_def_nodes.begin(), gi_def);

@@ -213,15 +213,10 @@ passing work between agents.
 
 ## Key design notes
 
-- **Stream methods** use type-specific wrappers (`ifstream_good`,
-  `ofstream_good`) because `std::ios` is a virtual base class —
-  casting `void*` to `ios*` gives the wrong pointer offset.
-- **String parameters** are pass-by-reference. `voperand()` creates a
-  bare Gp register for `vfPARAM` non-numeric vars; `cleanup()` skips
-  their destruction.
-- **`dtSTRING → dtCHARptr` coercion** happens automatically in
-  `TokenCallFunc::compile()` via `string_cstr()` when a function
-  expects `const char*`.
+- **`std::string` is a real class** (g++ canon): string literals are
+  `const char*` (`ddCHARptr`); `string` ingests them via its real
+  constructors/operators, resolved mangled-direct against libstdc++
+  (no wrapper shims — those were deleted).
 - **MadValue / MadArray** — tagged union + container for PHP-style
   mixed-type arrays. Used internally by php:: array functions.
 - **dlopen functions** use variadic calling: 0 declared params,
@@ -281,7 +276,7 @@ no matter how small.
 | [helper-methods.md](.claude/rules/helper-methods.md) |  12 | Extract ad-hoc checks into named helpers      |
 | [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
 | [parse-once.md](.claude/rules/parse-once.md)     |    24 | New C++ support resolves on the parse-once generic spine (g++ tsubst model), NEVER via re-parse; re-parse is a transitional fallback slated for deletion at suite-wide burndown=0; every change moves the `[why:]` fallback count down or flat |
-| [code-style.md](.claude/rules/code-style.md)     |     9 | C++11, tabs, header guards, naming             |
+| [code-style.md](.claude/rules/code-style.md)     |     6 | C++11, tabs, header guards, DBG                |
 | [enum-over-strings.md](.claude/rules/enum-over-strings.md) | 15 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
 
 ### P3 — Build, test, and validation (gate "done")
@@ -291,7 +286,7 @@ that fails any of these is not merged.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
-| [build.md](.claude/rules/build.md)               |    15 | `make -C src`, asmjit v1.14 at `/usr/local/`   |
+| [build.md](.claude/rules/build.md)               |    15 | `make -C src`, MIR fork pin discipline         |
 | [testing-fulltest.md](.claude/rules/testing-fulltest.md) |  5 | `make -C src fulltest` after every change      |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
@@ -316,10 +311,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **28 rules, 761 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~363 lines** — loaded by Claude via
+- **28 rules, 775 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~358 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1133 lines.**
+- **Grand total loaded by Claude Code per turn: ~1146 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

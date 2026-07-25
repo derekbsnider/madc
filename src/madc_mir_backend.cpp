@@ -73,11 +73,27 @@ long madarray_size(void *ptr)
 	return v->is_array() ? (long)v->as_array().size() : 0;
     }
 
-// madc::sys population (task #91) — injected by the CIR builder at main
-// entry, BEFORE the __madc_global_init call, in TUs that included
-// <ns_madc>. Serves the JIT and native lanes through this one path.
+// madc::sys population (task #91) — injected by the CIR builder in TUs
+// that included <ns_madc>. Two entries over one population:
+// __madc_sys_init is the explicit RUN entry (the JIT lane's main wrap) —
+// unconditional, so a multi-session embedding host repopulates per run.
+// __madc_sys_init_once is the LOAD-time entry (the top of a TU's
+// .init_array init, ELF-completion S3) — it yields to any prior
+// population: several TU inits may call it (same argc/argv, harmless),
+// but a madc-built module dlopen'd MID-program is handed the main
+// program's arguments by ld.so, and repopulating then would stomp the
+// sys.path/sys.argv mutations the running script already made.
+static bool madc_sys_populated = false;
 void __madc_sys_init(long argc, void *argv)
-    { madc::sys_populate_args((int)argc, (char **)argv); }
+    {
+	madc_sys_populated = true;
+	madc::sys_populate_args((int)argc, (char **)argv);
+    }
+void __madc_sys_init_once(long argc, void *argv)
+    {
+	if (!madc_sys_populated)
+	    __madc_sys_init(argc, argv);
+    }
 
 
 } // extern "C"

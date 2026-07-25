@@ -67,7 +67,7 @@ for stage in $stages; do
 		rc=$?
 		echo "sync madc rc=$rc"
 		if [ $rc -ne 0 ]; then rc_total=1; fi
-		rsync -az --delete --exclude="*.o" --exclude="*.a" \
+		rsync -az --delete --exclude="*.o" --exclude="*.a" --exclude="*.d" \
 			-e "ssh -p $PORT" "$LOCAL_MIR/" "$REMOTE:/workspace/mir/"
 		rc=$?
 		echo "sync mir rc=$rc"

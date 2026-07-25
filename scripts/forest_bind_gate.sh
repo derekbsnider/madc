@@ -128,6 +128,43 @@ int main()
 EOF
 run_case struct "smix=16 sblob=8 c=65 i=100"
 
+# --- case: fnptrbody (forest-carriers S1) — `typedef struct Tag {...} Alias;`
+#     whose body carries FUNCTION-POINTER members. The fnptr members route the
+#     aggregate through the CLASS parser (TokenCLASS::parse), whose typedef
+#     branch historically skipped user_typedef_names — so the freeze's flat-
+#     typedef walk never emitted the alias's DK_TYPEDEF record and a bound
+#     consumer lost the name while live parse resolved it. This is darwin's
+#     FILE shape (`typedef struct __sFILE { ... int (*_close)(void *); ... }
+#     FILE;`), caught by the first packed hosted-macOS binaries.
+cat > tmp/fbgate_fnptrbody.h <<'EOF'
+#ifndef FBGATE_FNPTRBODY_H
+#define FBGATE_FNPTRBODY_H
+typedef long fbg_pos_t;
+typedef struct __fbgZ {
+    int _r;
+    int (* _close)(void *);
+    fbg_pos_t (* _seek)(void *, fbg_pos_t, int);
+} FBGZ;
+#endif
+EOF
+cat > tmp/fbgate_fnptrbody_producer.cpp <<'EOF'
+#include <fbgate_fnptrbody.h>
+int main() { FBGZ z; z._r = 0; return z._r; }
+EOF
+cat > tmp/fbgate_fnptrbody_consumer.cpp <<'EOF'
+#include <fbgate_fnptrbody.h>
+#include <cstdio>
+int main()
+{
+    FBGZ z;
+    z._r = 41;
+    z._close = 0;
+    printf("r=%d ptrnull=%d\n", z._r + 1, z._close == 0);
+    return 0;
+}
+EOF
+run_case fnptrbody "r=42 ptrnull=1"
+
 # --- case: nested (slice 3a reach) — a struct with a by-value struct member.
 #     The freeze assigns Inner a system id, then Outer's `in` member references
 #     it; restore's restored_by_sysid map links them (definition order), so a

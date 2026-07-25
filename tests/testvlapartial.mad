@@ -1,0 +1,57 @@
+#include <stdio.h>
+#include <string.h>
+
+void fillrow(int n, int row[n])
+{
+	for (int j = 0; j < n; j++)
+		row[j] = 100 + j;
+}
+
+int sumrow(int n, int *row)
+{
+	int s = 0;
+	for (int j = 0; j < n; j++)
+		s += row[j];
+	return s;
+}
+
+void bar(int n, int m, int a[n][m])
+{
+	int *p = a[1];                 /* partial subscript -> row pointer */
+	p[0] = 7;
+	fillrow(m, a[2]);              /* pass row to a VLA-param callee */
+	printf("sum2 %d\n", sumrow(m, a[2]));
+	printf("p0 %d a10 %d\n", p[0], a[1][0]);
+}
+
+void baz(int n, int m, int k, int a[n][m][k])
+{
+	int *q = a[1][2];              /* 3-D partial: two of three indices */
+	q[3] = 55;
+	fillrow(k, a[2][0]);
+	printf("q3 %d a123 %d sum20 %d\n", q[3], a[1][2][3],
+	       sumrow(k, a[2][0]));
+	/* one-index partial on 3-D: a[1] is a whole plane */
+	printf("plane %d\n", sumrow(m * k, (int *)a[1]));
+}
+
+void loc(int n, int m)
+{
+	int t[n][m];                   /* VLA local: same flat lowering */
+	memset(t, 0, sizeof t);
+	t[1][2] = 9;
+	int *lp = t[1];                /* partial subscript on the local */
+	printf("lp2 %d sum1 %d\n", lp[2], sumrow(m, t[1]));
+}
+
+int main(void)
+{
+	int a[3][4];
+	memset(a, 0, sizeof a);
+	bar(3, 4, a);
+	int b[3][3][4];
+	memset(b, 0, sizeof b);
+	baz(3, 3, 4, b);
+	loc(3, 4);
+	return 0;
+}

@@ -239,12 +239,12 @@ public:
     void set_resolved_type(DataDef *d) { resolved_type = d; }
     virtual DataDef *datadef() const override
     { return resolved_type ? resolved_type : (_datatype ? _datatype : &ddVOID); }
-    virtual TokenBase *clone() { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
-    virtual int64_t ival() const { return 0; }
-    virtual size_t argc() const { return 2; }
+    virtual TokenBase *clone() override { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual int64_t ival() const override { return 0; }
+    virtual size_t argc() const override { return 2; }
     virtual bool is_operator() const override { return true; }
-    virtual inline TokenType type()     const { return TokenType::ttOperator;     }
-    virtual inline TokenID   id()       const { return TokenID::tkOperator;       }
+    virtual inline TokenType type()     const override { return TokenType::ttOperator;     }
+    virtual inline TokenID   id()       const override { return TokenID::tkOperator;       }
     virtual inline TokenAssoc assoc()   const { return TokenAssoc::taLeftToRight; }
     virtual inline int precedence() const  { return 15; } // C Operator Precedence, default to 15 (lowest)
     virtual inline bool operator>(const TokenOperator &op) // used to compare precedence
@@ -277,9 +277,9 @@ class TokenAdd: public TokenOperator
 {
 public:
     TokenAdd() : TokenOperator('+') {}
-    virtual TokenBase *clone() { TokenAdd *to = new TokenAdd(); to->left = left; to->right = right; return to; }
-    virtual inline int precedence() const { return 4; }
-    virtual TokenID id() const { return TokenID::tkAdd; }
+    virtual TokenBase *clone() override { TokenAdd *to = new TokenAdd(); to->left = left; to->right = right; return to; }
+    virtual inline int precedence() const override { return 4; }
+    virtual TokenID id() const override { return TokenID::tkAdd; }
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator+ on a class object
@@ -306,9 +306,9 @@ class TokenSub: public TokenOperator
 {
 public:
     TokenSub() : TokenOperator('-') {}
-    virtual TokenBase *clone() { TokenSub *to = new TokenSub(); to->left = left; to->right = right; return to; }
-    virtual TokenID id() const { return TokenID::tkSub; }
-    virtual inline int precedence() const { return 4; }
+    virtual TokenBase *clone() override { TokenSub *to = new TokenSub(); to->left = left; to->right = right; return to; }
+    virtual TokenID id() const override { return TokenID::tkSub; }
+    virtual inline int precedence() const override { return 4; }
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator- on a class object
@@ -330,11 +330,11 @@ class TokenNeg: public TokenOperator
 {
 public:
     TokenNeg() : TokenOperator('-') {}
-    virtual TokenBase *clone() { TokenNeg *to = new TokenNeg(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
-    virtual TokenID id() const { return TokenID::tkNeg; }
-    virtual inline int precedence() const { return 2; }
-    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
-    virtual size_t argc() const { return 1; }
+    virtual TokenBase *clone() override { TokenNeg *to = new TokenNeg(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenID id() const override { return TokenID::tkNeg; }
+    virtual inline int precedence() const override { return 2; }
+    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
+    virtual size_t argc() const override { return 1; }
     // Propagate unsigned operand type so -1U is uint32, not ddINT;
     // propagate a complex operand so -z stays complex (like the binary ops).
     virtual DataDef *datadef() const override {
@@ -352,9 +352,9 @@ class TokenMul: public TokenOperator
 {
 public:
     TokenMul() : TokenOperator('*') {}
-    virtual TokenBase *clone() { TokenMul *to = new TokenMul(); to->left = left; to->right = right; return to; }
-    virtual TokenID id() const { return TokenID::tkMul; }
-    virtual inline int precedence() const { return 3; }
+    virtual TokenBase *clone() override { TokenMul *to = new TokenMul(); to->left = left; to->right = right; return to; }
+    virtual TokenID id() const override { return TokenID::tkMul; }
+    virtual inline int precedence() const override { return 3; }
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator* on a class object
@@ -369,9 +369,9 @@ class TokenDiv: public TokenOperator
 {
 public:
     TokenDiv() : TokenOperator('/') {}
-    virtual TokenBase *clone() { TokenDiv *to = new TokenDiv(); to->left = left; to->right = right; return to; }
-    virtual TokenID id() const { return TokenID::tkDiv; }
-    virtual inline int precedence() const { return 3; }
+    virtual TokenBase *clone() override { TokenDiv *to = new TokenDiv(); to->left = left; to->right = right; return to; }
+    virtual TokenID id() const override { return TokenID::tkDiv; }
+    virtual inline int precedence() const override { return 3; }
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator/ on a class object
@@ -396,8 +396,8 @@ class TokenInc: public TokenMultiOp
 {
 public:
     TokenInc() : TokenMultiOp("++") {}
-    virtual TokenBase *clone() { TokenInc *to = new TokenInc(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
-    virtual TokenID id() const { return TokenID::tkInc; }
+    virtual TokenBase *clone() override { TokenInc *to = new TokenInc(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenID id() const override { return TokenID::tkInc; }
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;
@@ -405,9 +405,9 @@ public:
 	if ( right ) return right->datadef();
 	return TokenBase::datadef();
     }
-    virtual inline int precedence()   const { return 2; }
-    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
-    virtual size_t argc() const { return 1; }
+    virtual inline int precedence()   const override { return 2; }
+    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
+    virtual size_t argc() const override { return 1; }
 };
 
 // decrement operator --
@@ -415,8 +415,8 @@ class TokenDec: public TokenMultiOp
 {
 public:
     TokenDec() : TokenMultiOp("--") {}
-    virtual TokenBase *clone() { TokenDec *to = new TokenDec(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
-    virtual TokenID id() const { return TokenID::tkDec; }
+    virtual TokenBase *clone() override { TokenDec *to = new TokenDec(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenID id() const override { return TokenID::tkDec; }
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;
@@ -424,9 +424,9 @@ public:
 	if ( right ) return right->datadef();
 	return TokenBase::datadef();
     }
-    virtual inline int precedence()   const { return 2; }
-    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
-    virtual size_t argc() const { return 1; }
+    virtual inline int precedence()   const override { return 2; }
+    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
+    virtual size_t argc() const override { return 1; }
 };
 
 // assignment operator =
@@ -435,8 +435,8 @@ class TokenAssign: public TokenOperator
 public:
     std::vector<Variable *> multi_vars; // for multi-return: a, b := func()
     TokenAssign() : TokenOperator('=') {}
-    virtual TokenBase *clone() { TokenAssign *to = new TokenAssign(); to->left = left; to->right = right; return to; }
-    virtual TokenID id() const { return TokenID::tkAssign; }
+    virtual TokenBase *clone() override { TokenAssign *to = new TokenAssign(); to->left = left; to->right = right; return to; }
+    virtual TokenID id() const override { return TokenID::tkAssign; }
     virtual DataDef *datadef() const override
     {
 	// An assignment-as-expression evaluates to the assigned LHS
@@ -445,8 +445,8 @@ public:
 	if ( left && left->datadef() ) return left->datadef();
 	return TokenOperator::datadef();
     }
-    virtual inline int precedence()   const { return 14; }
-    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
+    virtual inline int precedence()   const override { return 14; }
+    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator += (assignment by sum)
@@ -584,8 +584,8 @@ class TokenBnot: public TokenOperator
 {
 public:
     TokenBnot() : TokenOperator('~') {}
-    virtual TokenID id() const { return TokenID::tkBnot; }
-    virtual TokenBase *clone() { TokenBnot *to = new TokenBnot(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenID id() const override { return TokenID::tkBnot; }
+    virtual TokenBase *clone() override { TokenBnot *to = new TokenBnot(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     // Propagate operand type so ~0U is uint32, not the default ddINT;
     // propagate a complex operand — ~z is the complex conjugate (GNU).
     virtual DataDef *datadef() const override {
@@ -596,9 +596,9 @@ public:
 	    return right->datadef();
 	return TokenOperator::datadef();
     }
-    virtual inline int precedence()   const { return 2; }
-    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
-    virtual size_t argc() const { return 1; }
+    virtual inline int precedence()   const override { return 2; }
+    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
+    virtual size_t argc() const override { return 1; }
 };
 
 // logical not operator !
@@ -843,7 +843,7 @@ public:
 };
 
 // command operator , (perform first, second and return second result)
-class TokenComma: public TokenOperator { public: TokenComma()  : TokenOperator(',') {} virtual TokenID id() const { return TokenID::tkComma; }  virtual TokenBase *clone() { return new TokenComma(); }
+class TokenComma: public TokenOperator { public: TokenComma()  : TokenOperator(',') {} virtual TokenID id() const override { return TokenID::tkComma; }  virtual TokenBase *clone() override { return new TokenComma(); }
     // Comma operator: evaluate left for side effects, return right's value.
     // Used by parseExprStmt to chain `e1, e2, e3;` expression-statements
     // (notably brace-less while/for bodies like `++p, ++i;`). Without this,
@@ -889,11 +889,14 @@ class TokenChar: public TokenBase
 public:
     TokenChar() : TokenBase()       { _datatype = &ddCHAR; }
     TokenChar(int v) : TokenBase(v) { _datatype = &ddCHAR; }
-    virtual TokenBase *clone()      { return new TokenChar(_token); }
-    virtual int64_t ival() const    { return _token; }
-    virtual bool is_constant()	    { return true; }
-    virtual TokenType type() const  { return TokenType::ttChar; }
-    virtual TokenID   id()   const  { return TokenID::tkChar; }
+    virtual TokenBase *clone() override { return new TokenChar(_token); }
+    virtual int64_t ival() const override { return _token; }
+    // const override — the missing const made this HIDE (not override) the
+    // base's is_constant(), so virtual dispatch reported char literals
+    // non-constant (clang -Woverloaded-virtual caught it).
+    virtual bool is_constant() const override { return true; }
+    virtual TokenType type() const override { return TokenType::ttChar; }
+    virtual TokenID   id()   const override { return TokenID::tkChar; }
 };
 
 class TokenInt: public TokenBase
@@ -909,7 +912,7 @@ public:
     TokenInt() : TokenBase()            { _datatype = &ddINT; }
     TokenInt(int64_t v) : TokenBase(v) { _datatype = &ddINT; }
     TokenInt(int64_t v, const std::string &src) : TokenBase(v), source_text(src) { _datatype = &ddINT; }
-    virtual int64_t ival() const        { return _token; }
+    virtual int64_t ival() const override        { return _token; }
     // Semantically wide only when the constant's own TYPE is 16 bytes
     // (ddINT128/ddUINT128, set by the parser's fold); see TokenBase::wival.
     virtual madc_wide_int wival() const override
@@ -919,12 +922,12 @@ public:
 				   | _active_valpool->lo64(wide_handle));
 	return _token;
     }
-    virtual double dval() const    { return (double)_token; }
-    virtual TokenType type() const { return TokenType::ttInteger; }
-    virtual TokenID   id()   const { return TokenID::tkInt; }
-    virtual TokenBase *clone()     { auto *c = new TokenInt(_token); c->source_text = source_text; c->_datatype = _datatype; c->wide_handle = wide_handle; return c; }
+    virtual double dval() const override    { return (double)_token; }
+    virtual TokenType type() const override { return TokenType::ttInteger; }
+    virtual TokenID   id()   const override { return TokenID::tkInt; }
+    virtual TokenBase *clone() override     { auto *c = new TokenInt(_token); c->source_text = source_text; c->_datatype = _datatype; c->wide_handle = wide_handle; return c; }
     virtual bool is_constant() const override { return true; }
-    virtual void setDataType(DataDef *d) { if (d && (d->is_integer() || d->is_complex())) _datatype = d; }
+    virtual void setDataType(DataDef *d) override { if (d && (d->is_integer() || d->is_complex())) _datatype = d; }
 };
 
 // A C++ null-pointer constant: an integer LITERAL of value zero ([conv.ptr]).
@@ -981,6 +984,10 @@ public:
     DataDef *query_type;
     bool want_alignof;
     bool use_cached_runtime_size;
+    // sizeof of a VLA-typed operand EVALUATES the operand (C11 6.5.3.4p2):
+    // the subscript index expressions of a deferred row sizeof, emitted
+    // (values discarded) ahead of the runtime size computation.
+    std::vector<TokenBase *> operand_side_effects;
 
     TokenTypeQuery(DataDef *dd = NULL, bool want_align = false,
 		   bool use_cached_size = true)
@@ -989,7 +996,13 @@ public:
     {
 	_datatype = &ddUINT64;
     }
-    virtual TokenBase *clone() { return new TokenTypeQuery(query_type, want_alignof, use_cached_runtime_size); }
+    virtual TokenBase *clone()
+    {
+	TokenTypeQuery *c = new TokenTypeQuery(query_type, want_alignof,
+					       use_cached_runtime_size);
+	c->operand_side_effects = operand_side_effects;
+	return c;
+    }
     virtual TokenID id() const { return TokenID::tkInt; }
 };
 
@@ -1001,14 +1014,14 @@ public:
     std::string source_text;   // original literal text (suffixes like i, iF, f, L)
     TokenReal() : TokenBase()         { _val = 0; _datatype = &ddDOUBLE; }
     TokenReal(double v) : TokenBase() { _val = v; _datatype = &ddDOUBLE; }
-    virtual int64_t ival() const      { return (int64_t)_val; }
-    virtual double dval() const       { return _val;      }
-    virtual TokenType type() const    { return TokenType::ttReal; }
-    virtual TokenID   id()   const    { return TokenID::tkReal;   }
-    virtual TokenBase *clone()        { auto *c = new TokenReal(_val); c->source_text = source_text; return c; }
+    virtual int64_t ival() const override      { return (int64_t)_val; }
+    virtual double dval() const override       { return _val;      }
+    virtual TokenType type() const override    { return TokenType::ttReal; }
+    virtual TokenID   id()   const override    { return TokenID::tkReal;   }
+    virtual TokenBase *clone() override        { auto *c = new TokenReal(_val); c->source_text = source_text; return c; }
     virtual bool is_constant() const override { return true; }
     virtual bool is_real()     const override { return true; }
-    virtual void setDataType(DataDef *d) { if (d && (d->is_real() || d->is_complex())) _datatype = d; }
+    virtual void setDataType(DataDef *d) override { if (d && (d->is_real() || d->is_complex())) _datatype = d; }
 };
 
 // string based tokens
@@ -1056,11 +1069,11 @@ public:
     TokenStr(std::string k, bool w = false) : TokenIdent(k), str(k), wide(w) {}
     virtual const char *spelling() const override { return str.c_str(); }
     virtual size_t spelling_len() const override { return str.size(); }
-    virtual int64_t ival() const   { return atol(str.c_str()); }
+    virtual int64_t ival() const override   { return atol(str.c_str()); }
     virtual bool is_constant() const override { return true; }
-    virtual TokenType type() const { return TokenType::ttString; }
-    virtual TokenID   id()   const { return TokenID::tkStr; }
-    virtual TokenBase *clone()     { return new TokenStr(str, wide); }
+    virtual TokenType type() const override { return TokenType::ttString; }
+    virtual TokenID   id()   const override { return TokenID::tkStr; }
+    virtual TokenBase *clone() override     { return new TokenStr(str, wide); }
 };
 
 // comment. `str` holds the comment CONTENT (arbitrary text) — retained here.
@@ -1074,9 +1087,9 @@ public:
     virtual const char *spelling() const override { return str.c_str(); }
     virtual size_t spelling_len() const override { return str.size(); }
     virtual bool is_constant() const override { return true; }
-    virtual TokenType type() const { return TokenType::ttComment; }
-    virtual TokenID   id()   const { return TokenID::tkREM; }
-    virtual TokenBase *clone()     { return new TokenREM(str); }
+    virtual TokenType type() const override { return TokenType::ttComment; }
+    virtual TokenID   id()   const override { return TokenID::tkREM; }
+    virtual TokenBase *clone() override     { return new TokenREM(str); }
 };
 
 // keyword tokens. `str` retained (keyword spelling, static; also interned into
@@ -1090,9 +1103,9 @@ public:
     TokenKeyword(std::string k) : TokenIdent(k), str(k) {}
     virtual const char *spelling() const override { return str.c_str(); }
     virtual size_t spelling_len() const override { return str.size(); }
-    virtual TokenType type() const { return TokenType::ttKeyword; }
+    virtual TokenType type() const override { return TokenType::ttKeyword; }
 //  virtual TokenBase *clone(){ return new TokenKeyword(str); }
-    virtual TokenBase *clone(){ return this; }
+    virtual TokenBase *clone() override{ return this; }
     virtual TokenBase *parse(Program &) { return NULL; }
 };
 

@@ -1,6 +1,73 @@
 # Test Status
 
-> **Current (2026-07-20, `develop` @71a36e9d — component-correct GNU
+> **Current (2026-07-25, `develop` — v0.48.0, forest-carriers S3
+> complete):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
+> forest gate green, including the NEW `forest_sidecar_gate` — the
+> carrier discovery chain: sidecar (`<exe>.forest`) and `$MADC_FOREST`
+> arms bind with `-v` engagement evidence + byte parity vs
+> `--no-forest-bind` live parse, arm order pinned (sidecar before
+> env), junk-sidecar and explicit-miss failure surfaces LOUD. The
+> `forest_emitpack_gate` Mach-O legs are now rev-skew-immune (each leg
+> freezes with the same cross madc that emits/dumps). Packed arbiter
+> through **BOTH carriers**: embedded **756/0/0/9** and sidecar
+> (`forest_pack.sh --sidecar`, 240 units in `bin/madc-release.forest`)
+> **756/0/0/9** + smokes (sidecar bind, loud-on-missing,
+> quiet-on-config-mismatch). `--exe` lane **740/0**. Unit tests +6
+> (`test_forest_policy`: policy triad, one-shot notice,
+> config-mismatch matrix). Mac hardware (`~/s3side`): **7/7 legs per
+> arch** (A64 native + X64-Rosetta) — embedded self-dump/bind/run
+> regression, sidecar bind + parity, loud-on-missing,
+> quiet-on-mismatch; AMFI accepted all four binaries. Fork unchanged
+> (`1.0-madc.0.47.0` @74e705e4).
+
+> **Previous (2026-07-25, `develop` — v0.47.0, forest-carriers S2
+> complete):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
+> forest gate green, including the NEW `forest_emitpack_gate` — the
+> `--pack-forest` carrier: ELF leg RUNS the packed emitted executable
+> (rc + output) and pins `--dump-forest` byte-parity container vs
+> packed image plus both refusal arms; Mach-O legs (both arches, cross
+> madcs) pin the same parity through the writer-laid `__MADC,__forest`
+> section. Packed arbiter **756/0/0/9** through `bin/madc-release` +
+> `forest_pack: OK (240 units; bind cache == no-cache)`. `--exe` lane
+> **740/0**. Full battery run twice (pre- and post- macro-collision
+> fix), green both times. Mac hardware (`~/s2pack`): packed emitted
+> binaries carrying the real 30-unit darwin groves ran `emitpack ok`
+> rc=42 under AMFI (A64 native + X64-Rosetta); hosted `--dump-forest`
+> over packed files byte-identical to the containers; full native loop
+> (freeze → pack-emit → AMFI → run → read-back) green on both arches.
+> Fork release `1.0-madc.0.47.0` (@74e705e4 — the extra-section
+> carrier seam).
+
+> **Previous (2026-07-25, `develop` — v0.46.0, forest-carriers S1
+> complete):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
+> forest gate green, including the NEW `forest_bind_gate` case
+> `[fnptrbody]` (typedef-of-fnptr-member-struct — the darwin `FILE`
+> shape that the class-parser typedef branches under-registered).
+> Packed arbiter re-proven at the parser fix: `forest_pack: OK (240
+> units; bind cache == no-cache)` + **756/0/0/9** through
+> `bin/madc-release`. `--exe` lane **740/0**. Hosted darwin binaries
+> ship PACKED (`__MADC,__forest` section, 30 units per arch): Mac
+> hardware matrix GREEN on both architectures — section read-back,
+> all lanes (JIT/AOT × `.mad`/`.c`), grove bind engaged and
+> byte-identical to live parse. Fork unchanged
+> (`1.0-madc.0.45.0` @a3cf84ae).
+
+> **Previous (2026-07-25, `develop` — v0.45.0, madc-on-macOS Route 1
+> Phase 1 complete):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** (+2 this
+> release: `testpragmapack` — GCC pack semantics with parse-time
+> application, gcc-oracle-matched — and `testfnptrdecl` — fn-ptr
+> declarator breadth incl. the C spiral and deref-postinc binding).
+> `--exe` lane **740/0**. G2 on Apple hardware GREEN in every lane on
+> both architectures (hosted arm64 native + x86-64 under Rosetta):
+> JIT, native Mach-O AOT emit+run, labeled POSIX symbols, ctype
+> inlines, stdio macros. Fork release `1.0-madc.0.45.0`
+> (@a3cf84ae).
+
+> **Previous (2026-07-20, `develop` @71a36e9d — component-correct GNU
 > integer `_Complex`, task #69):**
 > fulltest **729 passed, 0 failed, 0 timed out, 13 skipped** (+2:
 > `testcomplexint` — the integer-complex lock, JIT and

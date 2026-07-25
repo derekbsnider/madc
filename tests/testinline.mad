@@ -1,0 +1,38 @@
+#!/../bin/madc
+// The `inline` specifier as a real keyword (un-erased, C++ modes): bodied
+// external-linkage functions and variables it qualifies get vague linkage
+// (linkonce, STB_WEAK in native artifacts), `static inline` stays internal,
+// `inline namespace` members are visible in the enclosing namespace, and an
+// out-of-class `inline` member definition parses. `once` has a dynamic init
+// (bumps `counter`) proving the linkonce init guard runs it exactly once.
+#include <cstdio>
+
+inline int sumv(int a, int b) { return a + b; }
+inline int tunable = 30;
+inline int counter = 0;
+inline int bump() { return ++counter; }
+inline int once = bump();
+
+static inline int internal() { return 2; }
+
+inline namespace v1 {
+    int vn() { return 3; }
+}
+
+class Adder {
+public:
+    int add(int x);
+};
+
+inline int Adder::add(int x) { return x + 1; }
+
+int main()
+{
+    Adder a;
+    printf("fn: %d\n", sumv(tunable, 5));       // 35
+    printf("static: %d\n", internal());          // 2
+    printf("inline-ns: %d\n", vn());             // 3
+    printf("member: %d\n", a.add(4));            // 5
+    printf("once: %d %d\n", once, counter);      // 1 1
+    return 0;
+}

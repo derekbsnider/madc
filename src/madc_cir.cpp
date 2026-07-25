@@ -24,7 +24,6 @@
 #include <setjmp.h>
 #include <dlfcn.h>
 #include <chrono>
-#include <unistd.h>	// cir_selfexe_libdir: readlink(/proc/self/exe)
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
 
@@ -494,6 +493,8 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
 {
     out_builder = NULL;
     CirBuilder *builder = new CirBuilder(c2m);
+    // TU identity for the object-mode per-TU init symbol (S3 init-array).
+    builder->set_tu_name(source_name);
     node_t tree = NULL;
     auto _cir_t0 = std::chrono::steady_clock::now();	// --show-stats: CIR build
     try {
@@ -704,6 +705,25 @@ bool CirJitSession::init_contexts(const char *source_name, bool dump_checked)
     return true;
 }
 
+// Object mode (ELF-completion S3): register a TU's synthesized init into
+// the capture's .init_array (one 8-byte ABS64 slot per TU). Must run after
+// link — the eager gen interface has generated every function by then, so
+// the init's STB_LOCAL symbol is defined in the capture. True when the TU
+// has no init (nothing to register).
+static bool cir_register_tu_init(MIR_context_t ctx, CirBuilder *b,
+				 const char *source_name)
+{
+    if (!b || b->tu_init_name().empty())
+	return true;
+    MIR_object_t o = MIR_gen_get_object(ctx);
+    if (!o || MIR_object_add_init(o, b->tu_init_name().c_str()) != 0) {
+	fprintf(stderr, "%s: cannot register module init '%s' in the object"
+		" capture\n", source_name, b->tu_init_name().c_str());
+	return false;
+    }
+    return true;
+}
+
 bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 {
     if (setjmp(cir_mir_error_jmp)) {
@@ -900,7 +920,13 @@ bool CirJitSession::build(Program *prog, const char *source_name,
 	}
     }
 
-    return load_and_link(source_name, prog);
+    if (!load_and_link(source_name, prog))
+	return false;
+    if (madc_object_mode && !cir_register_tu_init(ctx, builder, source_name)) {
+	teardown();
+	return false;
+    }
+    return true;
 }
 
 bool CirJitSession::build_frozen(const void *image, size_t image_len,
@@ -1102,15 +1128,11 @@ int madc_cir_execute(Program *prog, const char *source_name,
     return result;
 }
 
-bool CirJitSession::emit_native_object(const char *out_path)
+// Write an emitted image buffer (malloc'd; consumed either way) to disk;
+// executables get mode 0755. The one file writer for every native artifact.
+static bool cir_write_image_file(const char *out_path, void *buf, size_t size,
+				 bool executable_mode)
 {
-    if (!ctx || !mod) return false;
-    void *buf = NULL;
-    size_t size = 0;
-    if (c2mir_get_native_object(ctx, &buf, &size) != 0 || !buf) {
-	fprintf(stderr, "madc: native object emission failed\n");
-	return false;
-    }
     FILE *f = fopen(out_path, "wb");
     if (!f) {
 	fprintf(stderr, "madc: cannot open %s: %s\n", out_path,
@@ -1121,35 +1143,272 @@ bool CirJitSession::emit_native_object(const char *out_path)
     bool ok = fwrite(buf, 1, size, f) == size;
     if (fclose(f) != 0) ok = false;
     free(buf);
+    if (ok && executable_mode && chmod(out_path, 0755) != 0) {
+	fprintf(stderr, "madc: chmod %s: %s\n", out_path, strerror(errno));
+	ok = false;
+    }
     if (!ok)
 	fprintf(stderr, "madc: short write to %s\n", out_path);
     return ok;
 }
 
+// --pack-forest=<container> (forest-carriers S2): the emitted native
+// executable carries the container in its self-image carrier. One format,
+// one loader, N carriers: the ELF arm appends the blob after the write
+// (snapshot_append_blob — footer at EOF, byte-equivalent to the
+// --freeze-append placement); the Mach-O arm rides the fork writer's
+// extra-section seam so the blob sits INSIDE the signed image as
+// __MADC,__forest (a signed Mach-O cannot take appended bytes; signed once
+// at emit, no post-link surgery).
+const char *madc_pack_forest_path = NULL;
+
+// Load + validate the container with the production reader — an emitted
+// binary carrying an unopenable carrier would ship dead weight silently,
+// so a non-container file fails the emit loudly instead.
+static bool cir_pack_forest_load(std::vector<uint8_t> &blob)
+{
+    FILE *f = fopen(madc_pack_forest_path, "rb");
+    if (!f) {
+	fprintf(stderr, "madc: --pack-forest: cannot open %s: %s\n",
+		madc_pack_forest_path, strerror(errno));
+	return false;
+    }
+    bool ok = fseek(f, 0, SEEK_END) == 0;
+    long sz = ok ? ftell(f) : -1;
+    ok = ok && sz > 0 && fseek(f, 0, SEEK_SET) == 0;
+    if (ok) {
+	blob.resize((size_t)sz);
+	ok = fread(blob.data(), 1, blob.size(), f) == blob.size();
+    }
+    fclose(f);
+    if (!ok) {
+	fprintf(stderr, "madc: --pack-forest: cannot read %s\n",
+		madc_pack_forest_path);
+	return false;
+    }
+    madc::dis::snapshot_reader r;
+    if (!r.open(blob.data(), blob.size())) {
+	fprintf(stderr, "madc: --pack-forest: %s is not a frozen forest"
+		" container\n", madc_pack_forest_path);
+	return false;
+    }
+    return true;
+}
+
+// The pre-emit half of the carrier: Mach-O images take the blob as the
+// writer's extra section (it must be inside the code signature). The blob
+// must stay live until the emit call returns.
+static void cir_pack_forest_attach(MIR_object_exec_params &xp,
+				   const std::vector<uint8_t> &blob)
+{
+#if MADC_TARGET_APPLE_P
+    if (!blob.empty()) {
+	xp.extra_segname = "__MADC";
+	xp.extra_sectname = "__forest";
+	xp.extra_data = blob.data();
+	xp.extra_size = blob.size();
+    }
+#else
+    (void)xp;
+    (void)blob;		// ELF: the carrier is the post-write trailer
+#endif
+}
+
+// The post-write half: ELF appends the container (pad-to-16 + blob, the
+// placement-2 shape). Mach-O images already carry it under the signature.
+static bool cir_pack_forest_finish(const char *out_path,
+				   const std::vector<uint8_t> &blob)
+{
+    if (blob.empty())
+	return true;
+#if MADC_TARGET_APPLE_P
+    (void)out_path;
+    return true;
+#else
+    if (madc::dis::snapshot_append_blob(out_path, blob.data(), blob.size()))
+	return true;
+    fprintf(stderr, "madc: --pack-forest: cannot append container to %s\n",
+	    out_path);
+    return false;
+#endif
+}
+
+// Pull the finished object capture out of ctx and write it as a
+// relocatable .o. Shared by the single-TU session (-c), the per-TU
+// project loop, and the whole-program -r lane.
+static bool cir_write_native_object(MIR_context_t ctx, const char *out_path)
+{
+    void *buf = NULL;
+    size_t size = 0;
+    if (c2mir_get_native_object(ctx, &buf, &size) != 0 || !buf) {
+	fprintf(stderr, "madc: native object emission failed\n");
+	return false;
+    }
+    return cir_write_image_file(out_path, buf, size, false);
+}
+
+bool CirJitSession::emit_native_object(const char *out_path)
+{
+    if (!ctx || !mod) return false;
+    return cir_write_native_object(ctx, out_path);
+}
+
 // The one writer for -o/-shared images: pull the finished whole-context
+// True when the import named `name` is provided by one of the DT_NEEDED
+// entries in `covers` (spellings like "libc.so.6" / "libcrypt.so"): resolve
+// the symbol in this process (bin/madc has the whole JIT resolution surface
+// loaded), then map the resolved address back to its defining object and
+// prefix-match that object's basename against the cover spellings. A symbol
+// that does not resolve, or resolves outside every cover (including into the
+// madc runtime itself — statically linked into this executable, so dladdr
+// reports the self exe), is NOT covered.
+static bool cir_import_covered(const char *name,
+			       const std::vector<std::string> &covers)
+{
+    void *addr = dlsym(RTLD_DEFAULT, name);
+    if (!addr)
+	return false;
+    Dl_info info;
+    if (!dladdr(addr, &info) || !info.dli_fname || !info.dli_fname[0])
+	return false;
+    const char *bn = strrchr(info.dli_fname, '/');
+    bn = bn ? bn + 1 : info.dli_fname;
+    for (const std::string &c : covers) {
+	size_t slash = c.rfind('/');
+	const char *cb = slash == std::string::npos ? c.c_str()
+						    : c.c_str() + slash + 1;
+	if (strncmp(bn, cb, strlen(cb)) == 0)
+	    return true;
+    }
+    return false;
+}
+
+// Does the image actually need the madc runtime? Walk every module in the
+// context, collect the names its items DEFINE, and classify each IMPORT that
+// no module defines (in --project the TUs satisfy each other's imports
+// in-context). If every external import is covered by the non-madc DT_NEEDED
+// entries, the produced binary is runtime-free and libmadc.so.0 can be
+// dropped. Any uncovered import — a madc runtime symbol, or a symbol only
+// reachable through libmadc's dependency closure — keeps the dependency
+// (conservative: false negatives cost one extra DT_NEEDED, false positives
+// break the binary at load).
+static bool cir_image_needs_madc_runtime(MIR_context_t ctx,
+					 const std::vector<std::string> &covers)
+{
+    std::set<std::string> defined;
+    std::vector<std::string> imports;
+    for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx));
+	 m; m = DLIST_NEXT(MIR_module_t, m)) {
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it)) {
+	    if (it->item_type == MIR_import_item) {
+		imports.push_back(it->u.import_id);
+		continue;
+	    }
+	    if (it->item_type == MIR_export_item
+		|| it->item_type == MIR_forward_item
+		|| it->item_type == MIR_proto_item)
+		continue;
+	    const char *nm = MIR_item_name(ctx, it);
+	    if (nm && nm[0])
+		defined.insert(nm);
+	}
+    }
+    for (const std::string &imp : imports) {
+	if (defined.count(imp))
+	    continue;
+	if (!cir_import_covered(imp.c_str(), covers)) {
+	    DBG(std::cout << "native image needs madc runtime: import '"
+			  << imp << "' is not covered by base/user libs"
+			  << std::endl);
+	    return true;
+	}
+    }
+    return false;
+}
+
+// Split the DT_NEEDED list around libmadc.so.0 (the covers for the
+// runtime-need predicates); returns whether it was present at all.
+static bool cir_split_needed(const std::vector<std::string> &needed,
+			     std::vector<std::string> &other)
+{
+    bool have_madc = false;
+    for (const std::string &l : needed) {
+	if (l == "libmadc.so.0")
+	    have_madc = true;
+	else
+	    other.push_back(l);
+    }
+    return have_madc;
+}
+
+// The flavor → exec-params mapping, in one place. File-scope ctors ride the
+// capture's .init_array in every flavor (DT_INIT_ARRAY when non-empty; the
+// emitter owns the tag) — ld.so runs a shared object's entries at load, and
+// glibc >= 2.34 runs an executable's own array from __libc_start_main.
+// Executables get entry=main and, per gcc parity, the PIE layout unless
+// -no-pie chose fixed-base ET_EXEC.
+static void cir_fill_exec_params(MIR_object_exec_params &xp,
+				 MadcNativeKind kind,
+				 const std::vector<const char *> &libs,
+				 const std::string &runpath)
+{
+    memset(&xp, 0, sizeof xp);
+    xp.needed = libs.data();
+    xp.n_needed = libs.size();
+    if (kind == mnkShared) {
+	xp.shared_p = 1;
+    } else {
+	xp.entry = "main";
+	xp.pie_p = kind == mnkPieExecutable;
+    }
+    xp.runpath = runpath.empty() ? NULL : runpath.c_str();
+}
+
 // capture out of ctx and write it to disk. Shared by the single-TU session
 // (emit_native_executable) and the --project whole-program lane.
 static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 				   const std::vector<std::string> &needed,
-				   const std::string &runpath, bool shared)
+				   const std::string &runpath,
+				   MadcNativeKind kind)
 {
+    bool shared = kind == mnkShared;
+    // Conditional runtime dependency: a program whose every dynamic import
+    // resolves within the base C/C++ and user -l libraries gets no
+    // libmadc.so.0 DT_NEEDED — it runs on hosts without madc installed.
+    std::vector<std::string> other;
+    bool have_madc = cir_split_needed(needed, other);
+    bool drop_madc = have_madc && !cir_image_needs_madc_runtime(ctx, other);
+    DBG(std::cout << "native image DT_NEEDED: libmadc.so.0 "
+		  << (drop_madc ? "dropped (runtime-free)"
+				: (have_madc ? "kept" : "absent"))
+		  << std::endl);
     std::vector<const char *> libs;
-    for (const std::string &l : needed)
+#if MADC_TARGET_APPLE_P
+    // Mach-O: the base C/C++ sonames are cover analysis only — the emitter
+    // links the implicit libSystem, nothing else. A program whose imports
+    // are NOT covered would need a target madc runtime that does not exist:
+    // fail at emit, not at dyld.
+    if (have_madc && !drop_madc) {
+	fprintf(stderr, "madc: %s: program needs the madc runtime, which does"
+		" not exist for Mach-O targets (runtime-free programs only)\n",
+		out_path);
+	return false;
+    }
+#else
+    for (const std::string &l : (drop_madc ? other : needed))
 	libs.push_back(l.c_str());
+#endif
     MIR_object_exec_params xp;
-    memset(&xp, 0, sizeof xp);
-    xp.needed = libs.data();
-    xp.n_needed = libs.size();
-    if (shared) {
-	// A dlopen'd module has no main to run the file-scope ctors:
-	// DT_INIT does it at load (once-guarded, so a host that also
-	// calls it explicitly stays correct). Omitted when the module
-	// has no ctors — the emitter skips undefined init symbols.
-	xp.shared_p = 1;
-	xp.init = "__madc_global_init";
-    } else
-	xp.entry = "main";
-    xp.runpath = runpath.empty() ? NULL : runpath.c_str();
+    cir_fill_exec_params(xp, kind, libs, runpath);
+    // Apple targets: the ad-hoc code-signature identifier is conventionally
+    // the output basename (ignored by the ELF writer).
+    const char *out_base = strrchr(out_path, '/');
+    xp.identifier = out_base ? out_base + 1 : out_path;
+    std::vector<uint8_t> pack_blob;
+    if (madc_pack_forest_path && !cir_pack_forest_load(pack_blob))
+	return false;
+    cir_pack_forest_attach(xp, pack_blob);
     void *buf = NULL;
     size_t size = 0;
     if (c2mir_get_native_executable(ctx, &xp, &buf, &size) != 0 || !buf) {
@@ -1159,32 +1418,17 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 		  " (is main() defined?)\n");
 	return false;
     }
-    FILE *f = fopen(out_path, "wb");
-    if (!f) {
-	fprintf(stderr, "madc: cannot open %s: %s\n", out_path,
-		strerror(errno));
-	free(buf);
-	return false;
-    }
-    bool ok = fwrite(buf, 1, size, f) == size;
-    if (fclose(f) != 0) ok = false;
-    free(buf);
-    if (ok && !shared && chmod(out_path, 0755) != 0) {
-	fprintf(stderr, "madc: chmod %s: %s\n", out_path, strerror(errno));
-	ok = false;
-    }
-    if (!ok)
-	fprintf(stderr, "madc: short write to %s\n", out_path);
-    return ok;
+    return cir_write_image_file(out_path, buf, size, !shared)
+	   && cir_pack_forest_finish(out_path, pack_blob);
 }
 
 bool CirJitSession::emit_native_executable(const char *out_path,
 					   const std::vector<std::string> &needed,
 					   const std::string &runpath,
-					   bool shared)
+					   MadcNativeKind kind)
 {
     if (!ctx || !mod) return false;
-    return cir_write_native_image(ctx, out_path, needed, runpath, shared);
+    return cir_write_native_image(ctx, out_path, needed, runpath, kind);
 }
 
 // bin/madc lives in <root>/bin; the runtime lives in <root>/lib. An
@@ -1192,12 +1436,7 @@ bool CirJitSession::emit_native_executable(const char *out_path,
 // binary's library search path so it works from either layout.
 static std::string cir_selfexe_libdir(void)
 {
-    char exe[4096];
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n <= 0)
-	return std::string();
-    exe[n] = '\0';
-    std::string d(exe);
+    std::string d = madc_self_exe_path();
     size_t slash = d.rfind('/');
     if (slash == std::string::npos)
 	return std::string();
@@ -1215,12 +1454,25 @@ static void cir_native_link_env(const std::vector<std::string> &user_libs,
 				std::string &runpath)
 {
     needed.push_back("libmadc.so.0");
+#ifdef __APPLE__
+    // Cover analysis runs in THIS process (dlsym + dladdr below), so the
+    // base C/C++ cover spellings must name the HOST's runtime images. On
+    // darwin the libc surface dladdr-reports as libsystem_*.dylib pieces
+    // under the libSystem umbrella; libc++/libc++abi carry the C++ runtime.
+    // Prefix-matched, so the bare stems cover every versioned dylib name.
+    // (The Apple emit gate never turns these into load commands — the
+    // emitter links implicit libSystem only.)
+    needed.push_back("libc++");
+    needed.push_back("libsystem_");
+    needed.push_back("libSystem");
+#else
     needed.push_back("libstdc++.so.6");
     needed.push_back("libm.so.6");
     needed.push_back("libc.so.6");
+#endif
     for (const std::string &l : user_libs) {
 	if (l.compare(0, 2, "-l") == 0)
-	    needed.push_back("lib" + l.substr(2) + ".so");
+	    needed.push_back("lib" + l.substr(2) + MADC_DSO_SUFFIX);
 	else
 	    needed.push_back(l);
     }
@@ -1237,12 +1489,27 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
 {
     madc_object_mode = true;	// one-shot CLI path; process exits after this
 
+    // Standalone executables skip the __madc_shim_* eval adapters (Pass
+    // 0.74): nothing can host-call them, and dropping their madc_value_*
+    // imports keeps pure programs runtime-free. Objects and shared objects
+    // keep the shims — they are the embedding / run-objects eval contract.
+    prog->aot_skip_eval_shims = (kind == mnkExecutable || kind == mnkPieExecutable);
+#ifdef MADC_CROSS_TARGET
+    // Emit-only cross build: .o's can never feed the (refused) in-process
+    // eval lane, so only -shared keeps the embedding shims — they carry
+    // meaning on the TARGET, where a host with a target libmadc runtime
+    // may dlopen the artifact.
+    if (kind != mnkShared)
+	prog->aot_skip_eval_shims = true;
+#endif
+
     CirJitSession session;
     bool stop = false;
     if (!session.build(prog, source_name, false, false, false, &stop))
 	return -1;
 
-    if (kind == mnkObject)
+    // -r on a single TU is the same capture as -c: one relocatable .o.
+    if (kind == mnkObject || kind == mnkRelocatable)
 	return session.emit_native_object(out_path) ? 0 : -1;
 
     // MIR assembles the executable (-o) or shared object (-shared)
@@ -1251,7 +1518,7 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
     std::string runpath;
     cir_native_link_env(user_libs, needed, runpath);
     return session.emit_native_executable(out_path, needed, runpath,
-					  kind == mnkShared) ? 0 : -1;
+					  kind) ? 0 : -1;
 }
 
 // R4b resolver: the JIT lane's chain (host-callback regs → dlsym; bin/madc
@@ -1270,14 +1537,14 @@ static void *cir_run_object_resolve(const char *name, void *env)
 
 extern char **environ;
 
-int madc_cir_run_object(const char *path, int argc, char **argv)
+// Read a whole file into bytes; false (with the error printed) on failure.
+static bool cir_read_file(const char *path, std::vector<unsigned char> &bytes)
 {
     FILE *f = fopen(path, "rb");
     if (!f) {
 	fprintf(stderr, "madc: cannot open %s: %s\n", path, strerror(errno));
-	return 1;
+	return false;
     }
-    std::vector<unsigned char> bytes;
     unsigned char chunk[65536];
     size_t n;
     while ((n = fread(chunk, 1, sizeof chunk, f)) > 0)
@@ -1286,8 +1553,40 @@ int madc_cir_run_object(const char *path, int argc, char **argv)
     fclose(f);
     if (read_err) {
 	fprintf(stderr, "madc: read error on %s\n", path);
+	return false;
+    }
+    return true;
+}
+
+// Enter a loaded image's main, running the image's init array first — the
+// loader lane's twin of ld.so/glibc's pre-main init walk (each per-TU init
+// is called with the platform (argc, argv, envp) signature). Old caches
+// have an empty array and keep their main-wrapped ctors. The image is
+// deliberately never unloaded: the program may have registered atexit
+// handlers pointing into it.
+static int cir_enter_loaded_main(MIR_object_loaded_t lo, const char *display,
+				 int argc, char **argv)
+{
+    typedef int (*cir_main_fn)(int, char **, char **);
+    cir_main_fn entry = (cir_main_fn)MIR_object_loaded_sym(lo, "main");
+    if (!entry) {
+	fprintf(stderr, "madc: %s: no main() defined in object\n", display);
 	return 1;
     }
+    typedef void (*cir_init_fn)(int, char **, char **);
+    size_t n_init = 0;
+    void *const *inits = MIR_object_loaded_init_array(lo, &n_init);
+    for (size_t i = 0; i < n_init; i++)
+	((cir_init_fn)inits[i])(argc, argv, environ);
+    fflush(stdout);
+    return entry(argc, argv, environ);
+}
+
+int madc_cir_run_object(const char *path, int argc, char **argv)
+{
+    std::vector<unsigned char> bytes;
+    if (!cir_read_file(path, bytes))
+	return 1;
 
     char err[256];
     MIR_object_loaded_t lo = MIR_object_load(bytes.data(), bytes.size(),
@@ -1297,18 +1596,160 @@ int madc_cir_run_object(const char *path, int argc, char **argv)
 	fprintf(stderr, "madc: %s: cannot load object: %s\n", path, err);
 	return 1;
     }
-    typedef int (*cir_main_fn)(int, char **, char **);
-    cir_main_fn entry = (cir_main_fn)MIR_object_loaded_sym(lo, "main");
-    if (!entry) {
-	fprintf(stderr, "madc: %s: no main() defined in object\n", path);
+    return cir_enter_loaded_main(lo, path, argc, argv);
+}
+
+// Read + merge madc-emitted .o files into one object builder — the
+// multi-object link (fork MIR_object_read: sections concatenate, symbols
+// unify, relocations rebase; cross-object references become internal and
+// resolve at the final emit). NULL on error, with the failing path named.
+static MIR_object_t cir_read_objects(const std::vector<std::string> &paths)
+{
+    MIR_object_t obj = MIR_object_create();
+    if (!obj) {
+	fprintf(stderr, "madc: object builder unavailable on this host\n");
+	return NULL;
+    }
+    for (const std::string &p : paths) {
+	std::vector<unsigned char> bytes;
+	if (!cir_read_file(p.c_str(), bytes)) {
+	    MIR_object_destroy(obj);
+	    return NULL;
+	}
+	char err[256];
+	// -g inputs' DWARF merges too (multi-CU output); a cache emitted
+	// before the cross-section debug relocations existed is refused by
+	// the reader with a re-emit message.
+	if (MIR_object_read(obj, bytes.data(), bytes.size(),
+			    err, sizeof err) != 0) {
+	    fprintf(stderr, "madc: %s: cannot merge object: %s\n",
+		    p.c_str(), err);
+	    MIR_object_destroy(obj);
+	    return NULL;
+	}
+    }
+    // A cache from the pre-init-array model defines __madc_global_init and
+    // relies on a main wrap this madc no longer emits — its ctors would be
+    // silently skipped in a link (the very fence S3 lifts). Refuse loudly.
+    if (MIR_object_find_symbol(obj, "__madc_global_init", NULL, NULL, NULL)) {
+	fprintf(stderr, "madc: input predates the init-array model"
+		" (defines __madc_global_init); re-emit the .o with this"
+		" madc version\n");
+	MIR_object_destroy(obj);
+	return NULL;
+    }
+    return obj;
+}
+
+int madc_cir_link_objects(const std::vector<std::string> &paths,
+			  MadcNativeKind kind, const char *out_path,
+			  const std::vector<std::string> &user_libs)
+{
+    // No compile happens here — the inputs are already captures; the fork
+    // does the whole link (read/merge + emit).
+    MIR_object_t obj = cir_read_objects(paths);
+    if (!obj)
+	return -1;
+    bool ok = false;
+    void *buf = NULL;
+    size_t size = 0;
+    if (kind == mnkRelocatable) {
+	// ld -r shape: the merged builder re-emitted as one .o.
+	if (MIR_object_emit(obj, &buf, &size) != 0 || !buf)
+	    fprintf(stderr, "madc: relocatable link emission failed\n");
+	else
+	    ok = cir_write_image_file(out_path, buf, size, false);
+    } else {
+	std::vector<std::string> needed;
+	std::string runpath;
+	cir_native_link_env(user_libs, needed, runpath);
+	// Conditional libmadc.so.0, same policy as the source lanes; here
+	// the external imports are the merged builder's UNDEF names
+	// (unification already netted out cross-object references).
+	std::vector<std::string> other;
+	bool have_madc = cir_split_needed(needed, other);
+	bool need_rt = false;
+	const char *imp;
+	for (size_t i = 0; !need_rt && (imp = MIR_object_undef_name(obj, i));
+	     i++)
+	    if (!cir_import_covered(imp, other)) {
+		DBG(std::cout << "linked image needs madc runtime: import '"
+			      << imp << "' is not covered by base/user libs"
+			      << std::endl);
+		need_rt = true;
+	    }
+	bool drop_madc = have_madc && !need_rt;
+	DBG(std::cout << "linked image DT_NEEDED: libmadc.so.0 "
+		      << (drop_madc ? "dropped (runtime-free)"
+				    : (have_madc ? "kept" : "absent"))
+		      << std::endl);
+	std::vector<const char *> libs;
+#if MADC_TARGET_APPLE_P
+	// Same Mach-O rule as cir_write_native_image: covers are analysis
+	// only; a runtime-needing link fails at emit, not at dyld.
+	if (have_madc && !drop_madc) {
+	    fprintf(stderr, "madc: %s: program needs the madc runtime, which"
+		    " does not exist for Mach-O targets (runtime-free"
+		    " programs only)\n", out_path);
+	    MIR_object_destroy(obj);
+	    return -1;
+	}
+#else
+	for (const std::string &l : (drop_madc ? other : needed))
+	    libs.push_back(l.c_str());
+#endif
+	MIR_object_exec_params xp;
+	cir_fill_exec_params(xp, kind, libs, runpath);
+	const char *out_base = strrchr(out_path, '/');
+	xp.identifier = out_base ? out_base + 1 : out_path;
+	std::vector<uint8_t> pack_blob;
+	if (madc_pack_forest_path && !cir_pack_forest_load(pack_blob)) {
+	    MIR_object_destroy(obj);
+	    return -1;
+	}
+	cir_pack_forest_attach(xp, pack_blob);
+	if (MIR_object_emit_executable(obj, &xp, &buf, &size) != 0 || !buf)
+	    fprintf(stderr, kind == mnkShared
+		    ? "madc: native shared-object emission failed\n"
+		    : "madc: native executable emission failed"
+		      " (is main() defined?)\n");
+	else
+	    ok = cir_write_image_file(out_path, buf, size,
+				      kind != mnkShared)
+		 && cir_pack_forest_finish(out_path, pack_blob);
+    }
+    MIR_object_destroy(obj);
+    return ok ? 0 : -1;
+}
+
+int madc_cir_run_objects(const std::vector<std::string> &paths,
+			 int argc, char **argv)
+{
+    if (paths.size() == 1)	// the R4b single-cache lane, load-direct
+	return madc_cir_run_object(paths[0].c_str(), argc, argv);
+    MIR_object_t obj = cir_read_objects(paths);
+    if (!obj)
+	return 1;
+    void *buf = NULL;
+    size_t size = 0;
+    int erc = MIR_object_emit(obj, &buf, &size);
+    MIR_object_destroy(obj);
+    if (erc != 0 || !buf) {
+	fprintf(stderr, "madc: multi-object merge emission failed\n");
 	return 1;
     }
-    // Global ctors run from inside main (the builder injects the
-    // __madc_global_init call there), so entering main is the whole
-    // contract. The image is deliberately never unloaded: the program may
-    // have registered atexit handlers pointing into it.
-    fflush(stdout);
-    return entry(argc, argv, environ);
+    char err[256];
+    MIR_object_loaded_t lo = MIR_object_load(buf, size,
+					     cir_run_object_resolve,
+					     (void *)paths[0].c_str(),
+					     err, sizeof err);
+    free(buf);	// the loader copies into its own mapping
+    if (!lo) {
+	fprintf(stderr, "madc: %s (+%zu more): cannot load merged object:"
+		" %s\n", paths[0].c_str(), paths.size() - 1, err);
+	return 1;
+    }
+    return cir_enter_loaded_main(lo, paths[0].c_str(), argc, argv);
 }
 
 // --- B4a: grove payload v2 fill (pack-time recording -> forest payloads) ---
@@ -3051,15 +3492,23 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 	for (std::set<std::string>::const_iterator it = prog->user_typedef_names.begin();
 	     it != prog->user_typedef_names.end(); ++it) {
 		flat_datatype_map_iter dti = prog->datatype_map.find(*it);
-		if (dti == prog->datatype_map.end() || !*dti)
+		if (dti == prog->datatype_map.end() || !*dti) {
+			DBG(std::cout << "arena_complete: flat typedef " << *it
+				      << " has no datatype_map entry — cleanly lacks"
+				      << std::endl);
 			continue;
+		}
 		DataDef *underlying = &(*dti)->definition;
 		if (!underlying)
 			continue;
 		uint32_t uid = forest_serialize_type_id(underlying);
 		if (!(madc::dis::arena_id_is_pinned(uid)
-		      || (madc::dis::arena_id_is_project(uid) && a.has_def(uid))))
+		      || (madc::dis::arena_id_is_project(uid) && a.has_def(uid)))) {
+			DBG(std::cout << "arena_complete: flat typedef " << *it
+				      << " underlying tid=" << uid
+				      << " not resolvable — cleanly lacks" << std::endl);
 			continue;	// underlying not resolvable from the arena — cleanly lack
+		}
 		arena_alias p;
 		p.name_id = a.strings.intern(*it);
 		p.ns_id   = 0;
@@ -3969,7 +4418,7 @@ int madc_cir_execute_frozen(const char *container_path,
     size_t image_len = 0;
     if (!cir_forest_map_image(container_path, image, image_len)) {
 	fprintf(stderr, "madc: %s: cannot map frozen container\n",
-		container_path ? container_path : "/proc/self/exe");
+		container_path ? container_path : "<self-executable>");
 	return -1;
     }
 
@@ -4018,7 +4467,7 @@ int madc_cir_dump_forest(const char *container_path)
     size_t image_len = 0;
     if (!cir_forest_map_image(container_path, image, image_len)) {
 	fprintf(stderr, "madc: %s: cannot map frozen container\n",
-		container_path ? container_path : "/proc/self/exe");
+		container_path ? container_path : "<self-executable>");
 	return -1;
     }
     if (!TokenBase::_active_strpool) {
@@ -4276,8 +4725,9 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 // madc_cir_emit_native. mnkObject emits one .o per TU — object capture is
 // context-wide, so each TU gets its own session/context (gcc semantics:
 // <TU-base>.o in the current directory; out_path overrides only for a
-// single-TU manifest, enforced by the caller). mnkExecutable/mnkShared
-// emit ONE native image of every TU: here the shared context is the RIGHT
+// single-TU manifest, enforced by the caller). The linked kinds (PIE /
+// ET_EXEC executables, -shared) emit ONE native image of every TU: here
+// the shared context is the RIGHT
 // granularity — all TU modules land in one capture, cross-TU references
 // resolve internally at emit, and only genuine runtime imports stay UNDEF
 // (the sentinel resolver, exactly as in the single-TU lane).
@@ -4298,6 +4748,19 @@ int madc_project_emit_native(MadcEngine &engine,
 	if (!project_parse_all(engine, manifest, forest_bind, forest_bind_path,
 			       false, parsed))
 		return -1;	// no MIR/c2m created yet — nothing to tear down
+
+	// Standalone executables — and every non--shared artifact of an
+	// emit-only cross build — skip the __madc_shim_* eval adapters (see
+	// madc_cir_emit_native); stamped per TU before the CIR builds run.
+	{
+		bool skip_shims = (kind == mnkExecutable || kind == mnkPieExecutable);
+#ifdef MADC_CROSS_TARGET
+		skip_shims = skip_shims || kind != mnkShared;
+#endif
+		if (skip_shims)
+			for (CirParsedTU &pt : parsed)
+				pt.prog->aot_skip_eval_shims = true;
+	}
 
 	if (kind == mnkObject) {
 		for (CirParsedTU &pt : parsed) {
@@ -4325,7 +4788,7 @@ int madc_project_emit_native(MadcEngine &engine,
 		return 0;
 	}
 
-	// One image (-o / -shared): the same MIR bracket shape as
+	// One output (-o / -shared / -r): the same MIR bracket shape as
 	// madc_project_execute, in object-capture mode, emitting instead of
 	// running. cir_init reads madc_object_mode → native_object_p.
 	MIR_context_t ctx = MIR_init();
@@ -4376,12 +4839,26 @@ int madc_project_emit_native(MadcEngine &engine,
 	MIR_link(ctx, MIR_set_gen_interface, cir_object_import_resolver);
 	if (madc_debug_info)
 		c2mir_object_attach_debug(ctx);   // R5: whole-program DWARF
+	// Every TU's init joins the capture's .init_array (link order).
+	for (size_t bi = 0; bi < builders.size(); bi++)
+		if (!cir_register_tu_init(ctx, builders[bi],
+					  parsed[bi].name.c_str())) {
+			teardown();
+			return -1;
+		}
 
-	std::vector<std::string> needed;
-	std::string runpath;
-	cir_native_link_env(user_libs, needed, runpath);
-	bool ok = cir_write_native_image(ctx, out_path, needed, runpath,
-					 kind == mnkShared);
+	bool ok;
+	if (kind == mnkRelocatable)
+		// -r: the same whole-program capture, written as ONE
+		// relocatable .o (gcc/ld -r shape) instead of an image.
+		ok = cir_write_native_object(ctx, out_path);
+	else {
+		std::vector<std::string> needed;
+		std::string runpath;
+		cir_native_link_env(user_libs, needed, runpath);
+		ok = cir_write_native_image(ctx, out_path, needed, runpath,
+					    kind);
+	}
 	teardown();
 	return ok ? 0 : -1;
 }

@@ -872,3 +872,683 @@ but not minimal; RELRO for the pool.
 
 Commits: fork @40fdf81b (pinned in MIR_COMMIT), madc = the
 feature/aot-r6-pic-claude merge this block ships in.
+
+---
+
+## PIE LANDED — position-independent executables by default (2026-07-24)
+
+`-o` now emits an ET_DYN PIE (`DT_FLAGS_1 = DF_1_PIE`; `file`: "pie
+executable") — gcc parity, with `-no-pie` keeping the fixed-base ET_EXEC
+and `-pie` naming the default. Single-TU and `--project` lanes both flip
+(`MadcNativeKind` gains `mnkPieExecutable`; flavor→exec-params mapping
+centralized in `cir_write_native_image`).
+
+R6's "a layout flip away" held: the emitter (`MIR_object_exec_params`
+gains `pie_p`) reuses the shared-object image treatment — base 0,
+internal ABS64 slots to `.rela.dyn` as `R_X86_64_RELATIVE` — under the
+executable apparatus (PT_INTERP, `_start`, `e_entry`, import-only
+dynsym). No codegen change; the PIC capture already keeps `.text`
+relocation-free.
+
+Two structural truths the rung surfaced:
+
+- **The one bias-hostile instruction** was the `_start` stub's
+  `mov $entry,%edi` imm32 → now a rip-relative `lea`; ONE 48-byte stub
+  (int3-padded, 16-aligned) serves ET_EXEC and PIE alike
+  (`OBJX_TEXT_BIAS` 32 → 48). Both stub references are link-vaddr PC
+  distances — bias-invariant by construction.
+- **PIE requires PT_PHDR.** glibc derives the main map's load bias from
+  it (`rtld_setup_main_map`: `l_addr = phdr − p_vaddr`); ET_EXEC never
+  needed it (bias 0 by construction) so the emitter never wrote one, and
+  the first PIE crashed inside `dl_main`'s strcmp on the *unrebased*
+  PT_INTERP string. Executables now carry gABI-ordered PT_PHDR +
+  PT_INTERP ahead of the loads (n_phdrs 4 → 5, gcc's exact layout).
+  TRAP (sibling of the R6 TEXTREL law): the loader knows only what the
+  program headers declare — an image can be byte-perfect and still
+  unbootable if a header the loader keys on is missing.
+
+**Gates at landing:** fulltest 753/0/0/9; `--exe` 753/0 — every suite
+executable emitted as a PIE byte-matches its JIT run; packed arbiter
+753/0/0/9 + release forest pack OK; gdb R5 gate re-proven on PIE `-g`
+(break by line at the rebased 0x5555… address, `compute (a=6, b=7)`,
+named bt, `sum = 13`); new unit case probes the image structurally
+(ET_DYN + PT_INTERP + DF_1_PIE + RELATIVE relocs + no TEXTREL; `-no-pie`
+pinned to ET_EXEC); fork object + load-object lanes 1139/2278 ×2.
+Torture not implicated (layout-only; JIT lane untouched).
+
+Commits: fork @798e329b (develop @0f13b036, pinned in MIR_COMMIT), madc
+@654eadd0 (develop merge @036bf164).
+
+Next unfiled rungs (owner-ranked): multi-object linking (lifts the 4
+obj_skips) > RELRO > Mach-O/PE.
+
+---
+
+## MULTI-OBJECT LINKING — LANDED 2026-07-24 (design below implemented as written)
+
+**Commits:** fork @94b2b259 (develop @fda5543a, pinned in MIR_COMMIT),
+madc @ef04cece (develop merge @8133a1cb).
+
+**Gates at landing:** fulltest 753/0/0/9 · `--exe` 753/0 · packed
+arbiter 753/0/0/9 + release pack OK · **`--obj` 737/0 — the four
+multi-TU project obj_skips DELETED** (whole-program `--project -r`
+covers them; lane was 713) · unit test_object_load 4/4 (cross-object
+calls + data through the run, `ld -r`, and PIE-executable lanes;
+duplicate-strong error) · fork object + load-object lanes 1139/2278 ×2
+· no codegen anywhere — torture not implicated.
+
+**Fences shipped loud, filed as the follow-on slice:** `-g` inputs'
+DWARF drops from merged outputs with a warning (stmt_list-pinned
+one-CU-per-object; `--project -g` whole-program DWARF unaffected);
+two inputs both defining `__madc_global_init` (file-scope ctor init)
+hit the duplicate-symbol error — C++ cross-TU ODR/ctor/linkonce
+merging pairs with the DWARF merge slice.
+
+Remaining owner-ranked rungs after this: RELRO > Mach-O/PE.
+
+### Original design (2026-07-24)
+
+Goal (owner-ranked next): combine several precompiled `.o` caches into
+one output — the make model for AOT (recompile one TU, relink) — and
+lift the four `--project` obj_skips. MIR stays the only linker (owner
+law: no external toolchain ever).
+
+### Vocabulary (gcc parity)
+
+- `-r` — relocatable link output (`gcc -r` / `ld -r`): combine inputs
+  into ONE relocatable `.o`. Default output name `a.out` (gcc emits a
+  relocatable a.out for `-r` without `-o`). With a single source it is
+  equivalent to `-c` plus the combine-of-one.
+- `madc a.o b.o … -o prog` — link `.o` caches into a native executable
+  (PIE default / `-no-pie` / `-shared`, exactly as from source).
+- `madc a.o b.o … -r -o one.o` — `ld -r` shape over `.o` caches.
+- `madc a.o b.o … [args]` — multi-object precompiled-cache RUN: the
+  leading run of `.o` positionals are all objects (argv[0] = first
+  object path, remaining positionals the program's argv). Extends
+  R4b's single-object convention.
+- `madc --project p.json -r -o one.o` — whole-program relocatable: the
+  project's one shared-context capture (same granularity as `-o`)
+  emitted as ONE `.o` instead of an executable. `-c` keeps its gcc
+  per-TU meaning untouched.
+- `-c` with `.o` inputs stays a loud error (gcc: input unused).
+
+### Fork primitive — merge INTO the builder
+
+`int MIR_object_read (MIR_object_t obj, const void *buf, size_t size,
+char *err_msg, size_t err_len)` — parse one MIR-emitted ET_REL image
+and APPEND it into a builder; repeated reads = the link. Fifth consumer
+of the ELF core, beside the emitter and loader.
+
+- The ELF scan front (header/section/symtab validation + fixed
+  alloc-set identification by flags+name) is EXTRACTED from
+  `MIR_object_load` into a shared `objx_scan` helper — the loader and
+  the reader parse through one implementation (no parallel parse).
+  Same loud rejections (extra alloc sections, foreign reloc types).
+- Section append: pad dst to the src section's `sh_addralign`, append
+  bytes (bss grows size only); dst section aligns take the max.
+- Symbol unification (file-sym index → dst-sym id map, built per read):
+  - defined LOCAL / section symbols: never unified; locals appended
+    with `value += append_base`; file section symbols map to the dst
+    section symbol.
+  - defined GLOBAL: existing UNDEF of the same name → defined in place
+    (the `MIR_object_define_symbol` path); existing strong definition →
+    LOUD duplicate-definition error; weak loses to strong, first weak
+    wins.
+  - UNDEF: maps to any existing same-name symbol, else appended UNDEF.
+- Reloc rebase: `offset += dst_section_append_base`; addend unchanged
+  for named symbols (their dst value already carries the base), addend
+  `+= src_section_append_base` for section-symbol targets.
+- DWARF (slice 3, deferred): `.debug_*` in a read `.o` is DROPPED with
+  one loud warning line. Reason: the R5 emitter writes ONE CU per
+  object with `DW_AT_stmt_list` fixed at 0 and relocless — valid only
+  while a `.o` holds one CU, so naive section concatenation corrupts
+  CU 2..N. The fix (slice 3) is a `.rela.debug_info` entry for
+  stmt_list against a `.debug_line` section symbol + debug-section
+  concat with the same rebase rules as data. NOT lossy where it
+  matters today: `--project -r -g` and `--project -o -g` capture
+  whole-program in one context = one CU = full DWARF; external ld
+  remains the multi-`.o` `-g` oracle.
+- New accessor for madc's conditional-DT_NEEDED logic (no ctx in the
+  `.o` lane): iterate the merged builder's UNDEF names
+  (`MIR_object_undef_name (obj, i)` → NULL past end); madc applies the
+  same base-lib coverage predicate it uses on ctx imports.
+
+### Consumers — all existing single paths, zero new machinery
+
+merged builder → `MIR_object_emit` (`-r` one `.o`) ·
+`MIR_object_emit_executable` (exe/PIE/`-shared`) ·
+emit → `MIR_object_load` (the multi-`.o` RUN lane; merge-then-load
+resolves cross-object references at emit, so circular a.o↔b.o refs
+need no loader surgery).
+
+### madc surface
+
+- `MadcNativeKind` += `mnkRelocatable` (whole-program/linked `.o`).
+  Project lane: goes through the whole-program shared-context arm
+  (like exe/shared), ends in `c2mir_get_native_object`. Single-TU
+  lane: same capture as `-c`.
+- Positional `.o` detection collects the LEADING RUN of `.o` args.
+  Multiple objects + no output flag → merge/load/run
+  (`madc_cir_run_objects`); + `-o`/`-shared`/`-r` → link
+  (`madc_cir_link_objects`). Entry `main` must be defined in the
+  merged object for an executable (emitter already enforces).
+- Runner `--obj` pass: `-c -o` → `-r -o` uniformly (single-TU output
+  unchanged in substance; project tests now produce one whole-program
+  `.o`), run step drops the compile-only `--project <arg>` pair from
+  the replayed flags (-l is why flags ride along at all), DELETE the
+  four obj_skip fixtures.
+
+### Slices and gates
+
+1. **madc-only:** `-r` + `mnkRelocatable` + project whole-program `.o`
+   + runner switch + obj_skip deletion. Gate: battery (obj lane grows
+   by the four project tests).
+2. **fork + madc:** scan-front refactor + `MIR_object_read` + undef
+   iterator; multi-`.o` CLI lanes; unit tests (cross-object call +
+   data + pool refs, duplicate-strong error named in the message,
+   undef↔defined resolution both directions, run/exe/shared/`-r`
+   outputs). Gate: battery + fork object/load-object lanes; pin bump
+   in the same madc commit.
+3. **DWARF merge** (follow-on): stmt_list reloc + debug concat.
+   Torture: not implicated (no codegen anywhere in this rung).
+
+---
+
+## RELRO — LANDED 2026-07-24 (design below implemented as written)
+
+**Commits:** fork @60384999 (develop merge @f86a5afa, pinned in
+MIR_COMMIT), madc @1dbabbf4 (feature/aot-relro-claude).
+
+**Gates at landing:** battery green end-to-end (fulltest + `--exe` +
+release + forest pack rc=0; packed arbiter 753/0/0/9) · `--obj` 737/0
+(the `.o` ET_REL path is untouched by this rung) · unit
+test_native_shared 4/4, 110 assertions incl. the new RELRO structural
+case (PIE + `-no-pie` + `-shared`) · fork object + load-object lanes
+1139/2278 ×2, 0 fail · gdb R5 gate re-proven on RELRO PIE `-g`
+(break by line, `compute (a=6, b=7)`, named bt, `sum = 13`) · torture
+not implicated (layout-only, zero codegen).
+
+**Runtime proof, not just classification:** live gdb
+`info proc mappings` on the running PIE shows the image's pool +
+`.dynamic` page mapped `r--p` after relocation while `.data` stays
+`rw-p` — ld.so actually applied the protection over exactly the
+designed range. readelf: GNU_RELRO [rw_off, page-aligned end) covering
+`.mir.addrpool` + `.dynamic`; `FLAGS BIND_NOW`; `FLAGS_1 NOW [PIE]`;
+GNU_STACK RW. `-no-pie` images now carry DT_FLAGS_1 too (NOW without
+PIE) — the unit case pins that it never claims DF_1_PIE.
+
+**Companion decision shipped (called out for owner veto):**
+`PT_GNU_STACK` (non-exec). The emitter had never written one, and an
+absent header means an EXECUTABLE stack on x86-64 Linux (kernel compat
+default). MIR emits no stack trampolines, so non-exec is
+unconditionally correct; checksec-style classification is now
+Full RELRO + NX on every image kind.
+
+**Pre-existing observation (not a regression):** gdb prints
+"Probes-based dynamic linker interface failed. Reverting to original
+interface." on MIR-emitted executables — verified present on
+pre-RELRO binaries too; gdb's fallback rendezvous works (every R5
+gate has passed through it). Cosmetic; noted in case a future rung
+wants to emit the DT_DEBUG apparatus.
+
+Remaining owner-ranked rung after this: Mach-O/PE. Unfiled sibling
+slices: `.mir.rodata` split (pure-constant pool entries out of the RW
+segment entirely), multi-`.o` DWARF merge + C++ ODR/ctor merge.
+
+---
+
+## ELF-lane completion track — design (2026-07-24, owner-directed)
+
+Owner resequenced: close the ELF-lane gaps BEFORE Mach-O/PE (which is
+also blocked on the macOS container for end-to-end validation anyway).
+Slices in order; each fork slice lands with battery + fork lanes + gdb
+gates + `MIR_COMMIT` pin discipline.
+
+### Slice 1 — DT_DEBUG (SHIPPED, fork @49e840e6)
+
+One dynamic tag, executables only (ld parity — ld does not add it to
+shared objects). Root cause of the long-standing gdb "Probes-based
+dynamic linker interface failed" warning: gdb locates the `r_debug`
+rendezvous through the executable's DT_DEBUG slot; without it the
+probes interface failed setup and gdb reverted to the legacy fallback.
+VERIFIED in container: warning gone, standard interface active, full
+solib list; ld.so writes the slot before RELRO protection (same as
+every distro PIE), program runs normally. Unit probe added (DT_DEBUG
+present on exe kinds, absent on `-shared`).
+
+### Slice 2 — multi-`.o` DWARF merge — LANDED 2026-07-24 (design below implemented as written)
+
+**Commits:** fork @a6cdb992 (phase A: relocatable debug sections) +
+@704be488 (phases B–D: merge + raw emit paths), develop merge
+@809a318a; madc = the feature/aot-dwarf-merge-claude merge this block
+ships in (`MIR_COMMIT` pinned in-commit).
+
+**What phase A alone fixed:** the `.o`'s bare cross-debug offsets
+(CU abbrev offset, stmt_list, FDE CIE pointers) meant even EXTERNAL
+ld multi-`.o` `-g` links had corrupt CU-2+ line info — the "external
+ld remains the oracle" note in the multi-object fence was optimistic.
+With the R_X86_64_32 section-symbol relocs, the gcc-linked pair now
+gives correct lines/breakpoints in both TUs.
+
+**Phases B–D:** `MIR_object_read` concatenates debug sections into
+the builder's raw store (mutually exclusive with a live debug
+builder) and rebases their relocs with the same section-symbol rules
+as data; `MIR_object_emit` re-emits sections + relocs (`-r` output
+stays externally linkable AND re-mergeable); the executable emitter
+resolves them against the final layout. Old-format `-g` caches are
+refused at nonzero debug base with a re-emit message (valid in first
+position). Loader untouched — debug stays ignored at load.
+
+**Gates at landing:** MIR-linked merged `-g` PIE: `info line` correct
+in both CUs, breakpoint in the second TU with named args, cross-TU
+bt (the design's acceptance gate) · merged `-r`: 2 CUs + re-emitted
+relocs, gcc-linked oracle resolves second-CU lines · run lanes on
+debug-bearing merges unaffected · unit test_object_load + multi-CU
+structural case · fork object + load-object lanes 1139/2278 ×2 ·
+battery green (753/0/0/9 packed) · `--obj` 737/0 · zero codegen —
+torture not implicated.
+
+The `cir_read_objects` drop-warning is deleted; `MIR_object_read`'s
+rc=1 protocol is retired (nothing is dropped anymore).
+
+#### Original design (implemented as written)
+
+Lifts the "-g inputs' DWARF dropped on merge" fence. Architecture:
+**make the `.o`'s debug sections fully relocatable, then merge them
+with the exact rebase rules data sections already use.**
+
+- Today's `.o` emits `.rela.debug_*` ONLY for 8-byte code-address
+  slots (ABS64 vs the `.text` section symbol). Three cross-section
+  offsets are bare, valid only at one-CU-per-object: the CU header's
+  abbrev offset (`.debug_info` → `.debug_abbrev`), `DW_AT_stmt_list`
+  (`.debug_info` → `.debug_line`, pinned 0), and `.debug_frame` FDE
+  CIE pointers (self-section offset). Fix: section symbols for the
+  debug sections + R_X86_64_32 relocs for those three families —
+  external `ld` resolves them natively (the `.o` stays
+  oracle-linkable), and `MIR_object_read` then rebases them with the
+  EXISTING section-symbol addend rules.
+- Builder grows raw-debug storage (four `dwbuf_t` + reloc lists),
+  filled ONLY by the merge reader (a builder with both a live
+  `MIR_debug_t` and raw debug bytes is impossible by construction —
+  the reader runs only in `.o`-input lanes; guard loudly).
+  Cross-debug-section relocs resolve AT READ TIME (both sides' final
+  offsets known after concat); only text-address relocs survive to
+  emit.
+- Emit paths on a merged builder: `.o` writes raw sections + remaining
+  relocs; exe/so emitter applies text-address relocs with final vaddrs
+  (ABS64 vs text section symbol → `code_vaddr + addend`). Output is
+  multi-CU `.debug_info` — standard ld shape; gdb handles it.
+- Acceptance: gdb R5 gate on a MERGED `-g` executable (break by line
+  in a.o's TU AND b.o's TU, named args/bt both) + external-`ld` merge
+  of the same `.o`s as the behavior oracle.
+
+### Slice 3 — ctor/init-array — LANDED 2026-07-24 (lifts the
+`__madc_global_init` dup fence)
+
+**Commits:** fork = the feature/aot-initarr pair (c2mir debug-state
+reset + the init-array object model), madc = the
+feature/aot-initarr-claude merge this block ships in (`MIR_COMMIT`
+pinned in-commit).
+
+**Implemented as designed, with these decided deviations:**
+
+- **Section name is `.init_array` (SHT_INIT_ARRAY), not `.mir.initarr`**
+  — the design's own first line ("adopt the platform model, gcc-shaped")
+  is served literally: an external linker collects the section natively
+  into its output init array (gate-proven: a gcc/ld link of two madc
+  ctor `.o`s runs both inits with no linker-script help), the same
+  external-linkability S2 proved load-bearing for the DWARF relocs.
+- **`MIR_object_exec_params.init` (DT_INIT) is DELETED**, not merely
+  unused — one init model per artifact kind, no parallel paths. The
+  emitter emits `DT_INIT_ARRAY`/`DT_INIT_ARRAYSZ` when the builder's
+  array is non-empty; `.init_array` is exe shdr row 8 unconditionally
+  (rows renumbered: 9=.dynamic 10=.data 11=.bss 12=.symtab 13=.strtab
+  14=.shstrtab = e_shstrndx; debug 15–18).
+- **Two runtime entries over one sys population:** the JIT main wrap
+  keeps `__madc_sys_init` (unconditional — a multi-session embedding
+  host repopulates per run); the per-TU init opens with
+  `__madc_sys_init_once`, which yields to any prior population (N TU
+  inits are idempotent, and a madc `.so` dlopen'd MID-program — handed
+  main's argv by ld.so — no longer stomps the running script's
+  `sys.path`/`sys.argv` mutations).
+- **Old-cache refusal lives madc-side** (the fork's format stays
+  generic): any merge input set whose unified symbols define
+  `__madc_global_init` is refused loudly with a re-emit message —
+  the silently-skipped-ctors direction is closed. The single-`.o`
+  run-direct lane is untouched (an old cache's main wrap is
+  self-consistent). Old READERS refuse new ctor-caches loudly too, via
+  the pre-existing unknown-alloc-section guard.
+- The `.o` emits the section + `.rela.init_array` only when non-empty:
+  ctor-less TUs (all of C, SMAUG) stay byte-identical.
+- Per-TU init symbol: `__madc_init_<stem>_<fnv32(path)>`, STB_LOCAL
+  (locals never unify — merge-safe by construction; the name is for
+  gdb, not correctness). Signature `(int argc, char **argv,
+  char **envp)`; glibc ≥ 2.34 floor documented in mir-debug.h (our
+  `_start` passes init=NULL and csu/libc-start.c's call_init walks the
+  main map's own dynamic segment; container = 2.36).
+
+**Companion fork fix (own commit):** c2mir's R5 debug-capture state
+(`c2m_dbg`, tag/var/funcrec arrays) was process-STATIC while holding
+per-context pointers (AST nodes, MIR items, interned names) — a latent
+use-after-free for any SECOND `-g` compile in one process since R5,
+exposed by this slice's allocation shifts (the unit suite's in-process
+double emission began faulting; the CLI's one-shot lanes never could).
+`c2mir_finish` now resets it (`c2m_dbg_reset`).
+
+**Gates at landing:** ten container gates — two-ctor-TU MIR link → PIE
+runs BOTH inits · loader run lane · `-no-pie` baked entries · readelf
+(INIT_ARRAY/INIT_ARRAYSZ present, DT_INIT absent, `.init_array` inside
+page-padded PT_GNU_RELRO) · external gcc/ld oracle runs both inits ·
+`-shared` dlopen runs the init, DT_INIT_ARRAY replaces DT_INIT ·
+`sys.argv` populated via the array in a native exe · single-TU
+source→exe ctors · `__madc_init_*` locals in `.symtab` · gdb
+source-level breakpoint inside a per-TU init on the merged `-g` PIE
+with the init frame named in `bt` · unit test_object_load 7/7 (+
+two-ctor merge/run + old-cache refusal), test_native_shared 5/5 (+
+init-array-in-RELRO case) · full battery + `--obj` lane + fork lanes
+green (counts in the status snapshot).
+
+#### Original design
+
+Adopt the platform model (gcc-shaped: per-TU ctors ride `.init_array`;
+main is not involved). Today every native lane relies on the builder
+wrapping MAIN with a `__madc_global_init()` call — per-context single,
+so two ctor-TU `.o`s collide and only main's TU's init would ever run.
+
+- New object section `.mir.initarr`: 8-byte ABS64-relocated slots, one
+  per TU init. madc's object-mode translate emits its init LOCAL under
+  a TU-unique name (locals never unify — merge-safe) + one slot; the
+  main-entry init call is RETIRED in object mode (JIT lane unchanged:
+  one context = one init, wrap stays).
+- Init signature follows the platform: `(int argc, char **argv,
+  char **envp)` — ld.so/glibc pass exactly these to DT_INIT_ARRAY
+  entries, and the loader lane passes `(argc, argv, environ)`. A TU
+  that included `<ns_madc>` calls `__madc_sys_init(argc, argv)` at the
+  top of ITS init (once-guarded), preserving "dynamic global
+  initializers may read sys.*" in every lane.
+- exe/PIE: emit `DT_INIT_ARRAY`/`DT_INIT_ARRAYSZ` over the merged
+  array (it lives in the RELRO lead region, like gcc's `.init_array` —
+  ld.so relocates, protects, then reads it to call inits). Our `_start`
+  already passes init=NULL to `__libc_start_main`, and glibc ≥ 2.34
+  then runs the main map's init array itself — that glibc floor gets
+  documented (container = 2.36).
+- `-shared`: `DT_INIT_ARRAY` replaces the `DT_INIT ==
+  "__madc_global_init"` convention. R4b loader: maps/relocates
+  `.mir.initarr` like data + new accessor
+  (`MIR_object_loaded_init_array`); `cir_enter_loaded_main` walks it
+  before `main`. One model per artifact kind — no parallel init paths.
+
+### Slice 4 — ODR/linkonce weak — LANDED 2026-07-24 (two TUs' identical
+copies merge instead of duplicate-strong colliding)
+
+**Commits:** fork = the feature/aot-odr-weak branch (binding enum +
+capture + IO + inliner gate + c2mir attr), madc = the
+feature/aot-odr-weak-claude merge this block ships in (`MIR_COMMIT`
+pinned in-commit).
+
+**Implemented as designed, with these decided refinements:**
+
+- **The item bit is a 3-valued binding enum, not one weak bit** —
+  `MIR_item_binding_t { GLOBAL, WEAK, LINKONCE }`,
+  `MIR_item_set_binding(ctx, item, kind)`. gcc's model has two distinct
+  non-global strengths and collapsing them was proven wrong empirically:
+  `__attribute__((weak))` means *legitimately interposable by a
+  DIFFERENT definition*, so gcc never inlines such a callee — MIR's
+  inliner baking a weak callee's body produced results diverging from
+  the gcc oracle (`22 11` vs `22 22`) the moment link order replaced the
+  copy. LINKONCE (C++ vague linkage) keeps copies ODR-identical, so
+  inlining stays legal — and blunt weak semantics would have cost the
+  JIT every template-instantiation inline. Both kinds capture as
+  STB_WEAK; only WEAK gates `process_inlines`.
+- **c2mir consumes two spec-list attrs** — `__attribute__((weak))`
+  (gcc-parity C surface) and `__attribute__((linkonce))` (madc's
+  internal channel; no gcc equivalent since COMDAT is automatic there).
+  `decl_spec` gains `weak_p`/`linkonce_p`; weak+static errors
+  ("weak declaration of X must be public", gcc-shaped). Trap for C
+  sources through `c2m`: glibc's `sys/cdefs.h` defines
+  `__attribute__(x)` away for non-GNU compilers — after a libc include
+  use `__mirc_attribute__`, madc is immune (builds N_ATTR nodes
+  directly).
+- **The binding survives both MIR serializations** — a trailing
+  `weak <name>` / `linkonce <name>` record (binary) / line (text)
+  written right after the definition item, only when present:
+  binding-less streams stay byte-identical to the pre-S4 format (no
+  version bump; an old reader hitting a new record fails loudly into
+  the mir-cache rebuild fallback). Required by the forest law — a
+  bound MIR-module cache must reproduce the parse exactly.
+- **madc marks the C++ vague-linkage set LINKONCE** via one predicate,
+  `FuncDef::is_linkonce()` = `tsubst_source != NULL || vague_linkage`,
+  where the new parse-layer `vague_linkage` flag is stamped at the
+  three places the parser *knows* the entity is per-TU-replicable:
+  `parse_deferred_function_body` (every in-class/deferred-restored
+  body), `parseFunction` under `fn_template_instantiation_depth > 0`
+  (free-template instantiation products), and — because the lexer
+  still erases the `inline` keyword — bodied C++ free functions whose
+  defining file `is_system_header_path` (libstdc++'s bodied free fns
+  are inline-or-template by construction). The FuncDef
+  rebuild/clone paths (return-type refresh, old-style param rebuild,
+  `clone_funcdef_with_return`, lambda deduction) now carry the flag —
+  the `__gnu_cxx` iterator `operator-` regression proved a deduced
+  `auto` return rebuilds the FuncDef *after* the flag was stamped.
+- **Emission sites:** `func_def()` appends `N_ATTR("linkonce")` to the
+  ret-spec list (the `optimize` attr convention); vtables, `_ZTS`/`_ZTI`
+  typeinfo, synthesized dtors, vtable thunks, and `__madc_shim_*`
+  adapters get the attr at their own builders (madc has no key-function
+  model — every TU emits them, weak dedupes them; matches libstdc++'s
+  observed all-weak shape).
+- **`--emit=c11` renders `linkonce` as `__attribute__((weak))`** — no
+  gcc `linkonce` attr exists; weak is the portable spelling with the
+  same link-time dedupe (gate: two emitted-C TUs gcc-compile with zero
+  attribute warnings, link, dedupe, run).
+- **No capture-level text dedupe (COMDAT groups stay a follow-on):**
+  symbol-level linkonce only — a merged image keeps the losing copy's
+  text as dead bytes, exactly like ld linking plain-weak objects
+  without COMDAT sections.
+
+**Documented boundary — CLOSED by the inline un-erasure landing below:**
+an explicitly-`inline` USER-header free function used to duplicate-strong
+collide at a link (`duplicate symbol 'sumv'`) because the lexer erased
+`inline`/`__inline__` as an "ignored C storage hint". `inline` is now a
+real specifier routed into `vague_linkage` (see the landing block after
+this slice). A bodied non-inline function in a shared user header still
+collides — in g++/ld too; that half of the error is parity.
+
+**Gates (all PASS, container):** two-TU in-class-method PIE link+run;
+STB_WEAK in each `.o` + ONE survivor in the `-r` merge; two-TU
+`vector<int>` instantiations link+run; `-no-pie`; external gcc/ld link
+of madc weak `.o`s (+ `libmadc.so` for the shim runtime) runs; g++
+source oracle agrees; `-shared` dlopen; run-direct merge lane; emit-C
+attr-warning-free gcc link+run; JIT lane unchanged; erased-inline
+boundary still errors loudly. Fork smoke: first-weak-wins / reversed /
+strong-replaces-weak both orders vs the gcc oracle, weak data, binary
++ text MIR round-trips, `c2m` JIT lane.
+
+#### Original design (2026-07-24)
+
+Two TUs instantiating the same template (or emitting the same inline
+body) currently merge-collide as duplicate STRONG definitions. The
+merge rules already implement linkonce semantics (first weak wins,
+strong replaces weak) — recon confirms the capture just never sets
+`weak_p` (mir-gen.c:9890/9900: binding is purely `export_p`). Fix at
+the deepest layer: a weak/linkonce bit on MIR items (fork API), set by
+c2mir from a node attribute, set by madc for template instantiations
+and inline-emitted bodies; the capture then defines them `weak_p=1`.
+
+### Inline un-erasure — LANDED 2026-07-24 (S4 follow-through: `inline`
+is a real specifier; the `sumv` boundary is closed)
+
+**Commits:** madc = the feature/inline-unerasure-claude merge this block
+ships in. **Fork untouched** — S4's attr recognition (`decl_spec
+weak_p/linkonce_p` from the spec-list `N_ATTR` arm) and its gen hooks
+already cover variable declarations; no new MIR/c2mir surface, no
+`MIR_COMMIT` bump.
+
+**One complete slice — functions AND variables AND `inline namespace`,
+every decl-specifier position, C++ modes:**
+
+- **Lexer:** `inline` joins the version-gated C++ reserved-keyword
+  registry (`{ "inline", STD_CPP98 }`, the constexpr precedent); the
+  GNU spellings `__inline__`/`__inline` map to it (the `__signed__` →
+  `signed` idiom). **C modes keep today's erasure** — the C99 inline
+  no-external-definition model is a different feature, not a deferred
+  piece of this slice, and nothing is currently broken there. The old
+  `inline namespace` lexer carve-out (return `inline` as identifier
+  when `namespace` follows) is deleted with its helper
+  (`next_source_word_is`): the keyword path owns the construct now.
+- **Parser consumption:** `TokenCppKeyword::parse` handles `inline`
+  first — `inline namespace` → `parse_namespace_block(true)`; otherwise
+  it sets `parsing_inline_decl` and delegates (tolerating an interposed
+  GNU attribute — the glibc `extern __inline __attribute__((...))`
+  shape). `is_ignored_cpp_specifier_token` and the member-specifier
+  loop admit the spelling, covering mid-declaration positions (`void
+  inline f()`, in-class `inline void m() {...}`).
+- **Threading (the `parsing_static_decl` idiom):** `parseDeclaration`
+  consumes the flag into `gotinline` at entry and clears it (nested
+  declarations never inherit); the function declarator passes
+  `inline_specified = gotinline && !gotstatic` into `parseFunction`
+  (new defaulted parameter), which stamps `FuncDef::vague_linkage` —
+  a fourth arm on the existing S4 stamp chain. `static inline` is
+  internal linkage: never vague, proven by gate (binding identical to
+  plain `static`, and NOT weak).
+- **Inline variables (C++17) ride the same S4 machinery:** new
+  `vfLINKONCE` Variable flag, set for file-scope `inline` (non-static)
+  variables; `var_decl` appends the `linkonce` attr to the data decl's
+  spec list, so the MIR data item binds LINKONCE → captured STB_WEAK →
+  per-TU copies merge. **Dynamic init runs once per merged image**: a
+  linkonce variable's init group is wrapped
+  `if (__madc_ivg_<sym> == 0) { __madc_ivg_<sym> = 1; ... }` where the
+  guard is itself a linkonce global — the g++ guarded COMDAT-init
+  model (`queue_global_ctor_group`, shared by the scalar-dynamic-init
+  and class-ctor arms of `collect_global_ctors`).
+- **`--emit=c11`** renders the variable's linkonce as
+  `__attribute__((weak))` via the existing S4 N_ATTR rendering —
+  emitted TUs gcc-compile warning-free, link, dedupe, run.
+
+**Gates (20/20, container):** JIT integration test
+(`tests/testinline.mad`: inline fn/var, static inline, inline
+namespace, out-of-class inline member, dynamic-init-once); two-TU
+user-header `inline` fn + variable: STB_WEAK for the function AND the
+data symbol in each `.o`; madc native link runs 42; run-direct merge
+42; external gcc/ld link (+ `libmadc.so`) 42; g++ source oracle 42;
+emitted C carries the weak attr, gcc-builds clean, runs 42; the
+dynamic-init once-guard is load-bearing in every 42 (a double-run
+exits 142). Unit: `test_object_load` grew the two-TU weak-merge +
+init-once case (`sym_bind` hoisted to a shared helper).
+
+**Pre-existing gaps surfaced by the gates (verified NOT slice
+regressions; noted for the owner, not queued):** (1) two *emitted-C*
+TUs with dynamic-init globals collide on `__madc_global_init` — the
+emit-C lane still uses the JIT main-wrap model (S3's per-TU init
+renaming is object-mode only); reproduced with plain globals, zero
+`inline` involvement. (2) file-static functions export GLOBAL in
+`.o`s — identical for `static` and `static inline`.
+
+### Slice 5 — `.mir.rodata` split — DEFERRED (owner decision 2026-07-25)
+
+**Owner-deferred; do not implement without a new owner directive.**
+RELRO subsumed most of its hardening value: the pool is already
+read-only after relocation. Remaining value = pre-relocation
+immutability + RO-page sharing + smaller RELRO segment. Real cost is
+larger than the R6-era note implied: entry boundaries are only known
+at CAPTURE time, so the clean fix is a capture-side two-pool split
+(object format grows a section; loader/reader/emitters all learn it) —
+a medium+ change for a hardening rung RELRO already covers. With this
+defer the **ELF-completion track is closed** (S1–S4 + the inline
+un-erasure follow-through landed); the AOT remainder is Mach-O / PE
+assemblers behind the `MIR_object` seam (Track 6.3, needs the owner's
+macOS container for e2e).
+
+### Original design (2026-07-24)
+
+Goal (owner-ranked next): Full RELRO on every MIR-emitted native image —
+after the loader finishes relocation, the pages holding the address pool
+(the GOT) and `.dynamic` are mprotected read-only, closing the classic
+GOT-overwrite escalation. Small hardening rung; zero codegen.
+
+### Why Full RELRO is nearly free here
+
+madc's images have NO lazy binding: no PLT, no `DT_JMPREL`, no
+`DT_PLTGOT` — every import is an eagerly-relocated `.mir.addrpool` slot
+(R6: the pool IS the GOT). `BIND_NOW` is therefore a statement of fact,
+not a behavior change, and the usual Full-RELRO cost (eager resolution
+of a lazy PLT) does not exist. The rung is pure layout + classification.
+
+Verified: nothing writes the protected range after relocation. Pool
+content = const-pool values, address slots, switch tables — all
+runtime-read-only (the `.mir.rodata` sibling slice exists precisely
+because the pure-constant entries are writable-but-never-written). The
+two `.dynamic` tags ld.so writes through (`DT_DEBUG` r_debug, `DT_PLTGOT`
+GOT[1]/[2]) are not emitted. glibc's `_dl_protect_relro` runs after
+relocation and before `DT_INIT`, and `__madc_global_init` writes madc
+globals in `.data`/`.bss`, never pool slots.
+
+### Layout change (fork `mir-debug.c`, `MIR_object_emit_executable` only)
+
+Reorder the R+W segment so the protected pieces LEAD it, and page-pad
+the RELRO boundary (glibc's `_dl_protect_relro` protects only whole
+pages — an unaligned end leaves the last partial page writable, and an
+end page shared with `.data` must not be protected):
+
+```
+rw_off      (page-aligned, unchanged)
+  .mir.addrpool  @ rw_off          (pool_align ≤ 4K ⇒ satisfied directly)
+  [lsm slot]     8-aligned after pool (executables; rides the pool view)
+  .dynamic       8-aligned
+  ── relro_end = ALIGN(., 4K)      (file-backed zero pad, ≤ 4095 bytes)
+  .data          @ relro_end       (data_align ≤ 4K ⇒ satisfied directly)
+  .bss           (NOBITS, unchanged tail arithmetic)
+```
+
+Identity offset↔vaddr mapping preserved throughout. The `_start` stub's
+`call *disp32(%rip)` recomputes automatically (lsm_off moves with the
+pool); all reloc slot offsets and `DT_*` vaddrs are derived, not pinned.
+
+### New program headers (both executables and shared objects)
+
+- `PT_GNU_RELRO`: `p_offset = rw_off`, `filesz = memsz =
+  relro_end − rw_off`, `PF_R`, align 1 — covers pool + lsm slot +
+  `.dynamic` exactly.
+- `PT_GNU_STACK` (`PF_R|PF_W`, sizes 0, align 0x10) — companion
+  hardening DECIDED into this rung: the emitter has never written one,
+  and on x86-64 Linux an absent `PT_GNU_STACK` means an EXECUTABLE
+  stack (kernel compat default). MIR emits no stack trampolines, so
+  non-exec is unconditionally correct. One 56-byte header in the same
+  phdr block; called out for owner veto.
+
+Phdr order follows gcc: [PHDR, INTERP,] LOAD RX, LOAD RW, DYNAMIC,
+GNU_STACK, GNU_RELRO. `n_phdrs`: executables 5 → 7, shared 3 → 5
+(PT_PHDR's filesz derives from n_phdrs — auto-correct).
+
+### Dynamic tags
+
+- `DT_FLAGS = DF_BIND_NOW` (new, always).
+- `DT_FLAGS_1 = DF_1_NOW | (pie ? DF_1_PIE : 0)` (now always emitted;
+  previously only for PIE). checksec's Full-RELRO test = `PT_GNU_RELRO`
+  + BIND_NOW — both present on exe, PIE, and `.so` alike.
+
+### Section-header rows (readelf/gdb view only; loader keys on phdrs)
+
+Rows 7/8/9 renumber to file order: 7 = `.mir.addrpool`, 8 = `.dynamic`,
+9 = `.data` (`objx_shndx` map {6,7,10,8} → {6,9,10,7}; shstrtab name
+array reordered to match). `n_secs` 14 fixed + debug rows 14–17 and
+`e_shstrndx = 13` all UNCHANGED — the R6 e_shstrndx trap re-checked.
+The R4b loader and `MIR_object_read` parse ET_REL only — unaffected.
+
+### Defaults (decide-good-defaults)
+
+RELRO + non-exec stack are UNCONDITIONAL — no `MIR_object_exec_params`
+field, no CLI knob. There is no trade to expose: no lazy binding exists,
+so Full RELRO costs one ≤4K pad page; gcc's distro default is full RELRO
+(`-z relro -z now`). An escape hatch can be a one-field addition if a
+real embedding case ever needs it.
+
+### Validation
+
+readelf -l shows GNU_RELRO ending page-aligned and covering pool +
+`.dynamic`; GNU_STACK RW; readelf -d shows `FLAGS BIND_NOW` +
+`FLAGS_1 (NOW PIE)`; checksec-equivalent classification = Full RELRO +
+NX. Structural probes added to unit `test_native_shared.cpp` (PIE +
+`-shared` cases). Battery (fulltest / exe / release / packed) + `--obj`
+lane + gdb R5 gate on PIE `-g` + fork object/load-object lanes. Pin
+discipline: fork develop merge + `MIR_COMMIT` bump in the same madc
+commit. Torture not implicated (layout-only, zero codegen).

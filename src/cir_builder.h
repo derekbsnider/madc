@@ -108,6 +108,13 @@ class CirBuilder {
 	// base DataDef so we can tell the typedef's own pointer depth apart from
 	// the explicit stars written at the usage site.
 	Program *m_prog;
+	// TU identity (the source path) — set by the caller before
+	// translate_module; seeds the object-mode per-TU init symbol.
+	std::string m_tu_name;
+	// Object mode (ELF-completion S3): the TU-unique STATIC init function
+	// translate_module synthesized (empty = this TU has none). madc_cir
+	// registers it into the capture's .init_array after generation.
+	std::string m_tu_init_name;
 	// True while translating the body of a void-returning function — lets
 	// translate_return lower a gcc-accepted `return <expr>;` to `<expr>;
 	// return;` (c2mir rejects a value in a void return).
@@ -541,6 +548,21 @@ class CirBuilder {
 	// and expression-receiver subscript paths; recv_addr = receiver address.
 	node_t class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 				       TokenBase *index, TokenBase *origin);
+	// Unwind a subscript token tree (TokenSubscript / TokenSubscriptExpr
+	// chain) to its named root variable + index list in the linearizer's
+	// order; false when tb is not a pure subscript tree over a named root.
+	bool subscript_root_indices(TokenBase *tb, class Variable *&root,
+				    std::vector<TokenBase *> &idxs);
+	// Row stride (element count) for pointer arithmetic on a flat-lowered
+	// runtime-sized array pointer value; NULL when no scaling applies.
+	node_t vla_arith_stride(TokenBase *t, TokenBase *origin);
+	// Linearized access on a flat VLA pointer (runtime-sized param or
+	// malloc'd local): full index chains yield the element lvalue, partial
+	// chains yield C's row pointer as scaled pointer arithmetic. idxs is
+	// outermost-first; NULL when root is not a flat runtime-sized chain.
+	node_t vla_flat_subscript(class Variable *root,
+				  const std::vector<TokenBase *> &idxs,
+				  TokenBase *origin);
 	// True when `arg` is `obj[i]` on a class whose operator[] yields a class
 	// object element reached through the returned address.
 	static bool class_subscript_is_object(TokenBase *arg);
@@ -1296,6 +1318,13 @@ public:
 	// (type `cdd`), sourcing its initializer from the linked TokenDecl when
 	// present (user source) or from v->data (a const char* literal, built-ins).
 	node_t global_ctor_call(class Variable *v, DataDefCLASS *cdd, TokenDecl *decl);
+	// Queue one global's init statements as a ctor GROUP (m_ctor_groups +
+	// m_global_ctor_stmts). A linkonce (C++ `inline`) variable's group is
+	// wrapped in a linkonce once-guard so a merged multi-TU image runs its
+	// dynamic init exactly once (the g++ guarded COMDAT-init model); the
+	// guard variable's declaration rides `deferred_globals`.
+	void queue_global_ctor_group(class Variable *v, std::vector<node_t> &stmts,
+				     std::vector<node_t> &deferred_globals);
 
 	// ---- Expression translation ----
 	node_t translate_expr(TokenBase *tb);
@@ -1385,6 +1414,11 @@ public:
 
 	// ---- Top-level module translation ----
 	node_t translate_module(Program *prog);
+	// TU identity for the object-mode per-TU init symbol; call before
+	// translate_module (harmless in JIT mode — unused there).
+	void set_tu_name(const char *s) { m_tu_name = s ? s : ""; }
+	// The synthesized per-TU init's symbol (object mode; empty = none).
+	const std::string &tu_init_name() const { return m_tu_init_name; }
 	// Pack-side c2mir check gate, drop arm (rung 1, layer 4): called by
 	// madc_cir_freeze with the defective top-level child indices reported
 	// by c2mir_check_tree on a COPY of the pristine translated tree. Drops

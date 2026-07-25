@@ -2,9 +2,25 @@
 # Generate src/embedded_headers.cpp from include/madc/* files
 # Supports subdirectories — keys are paths relative to include/madc/
 # e.g. include/madc/sys/wait.h becomes "sys/wait.h"
+#
+# Usage: gen_embedded_headers.sh [extra_dir] [outfile]
+#   extra_dir — optional second root of headers to embed (keys relative to
+#               it), e.g. a hosted mode's generated darwin prelude dir.
+#               Committed include/madc/ names win on collision (first key
+#               in the std::map initializer wins).
+#   outfile   — optional output path; per-mode builds point this into their
+#               obj tree so generated (SDK-derived) content never lands in
+#               the committed src/embedded_headers.cpp.
 
 SRCDIR="$(dirname "$0")/../include/madc"
-OUTFILE="$(dirname "$0")/../src/embedded_headers.cpp"
+EXTRADIR="$1"
+OUTFILE="${2:-$(dirname "$0")/../src/embedded_headers.cpp}"
+
+if [ -n "$EXTRADIR" ] && [ ! -d "$EXTRADIR" ]; then
+    echo "Error: extra embedded-header dir '$EXTRADIR' not found" >&2
+    exit 1
+fi
+
 # Generate into a temp file and only replace OUTFILE when the content actually
 # changes. This keeps the rule safe to run on EVERY build (so a DELETED embedded
 # header is reflected — an mtime-only prereq never sees a deletion) without
@@ -22,19 +38,29 @@ static std::map<std::string, std::string> embedded_headers = {
 HEADER
 
 first=1
-while IFS= read -r f; do
-    [ -f "$f" ] || continue
-    # key = path relative to SRCDIR (e.g. "sys/wait.h")
-    name="${f#${SRCDIR}/}"
-    if [ "$first" -ne 1 ]; then
-        printf ',\n' >> "$OUTFILE"
-    fi
-    first=0
-    printf '    {"%s", ' "$name" >> "$OUTFILE"
-    printf 'R"EMBED(' >> "$OUTFILE"
-    cat "$f" >> "$OUTFILE"
-    printf ')EMBED"}' >> "$OUTFILE"
-done < <(find "$SRCDIR" -type f | sort)
+emit_dir() {
+    local dir="$1"
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        # skip generator scratch (write_on_change temporaries)
+        case "$(basename "$f")" in .*) continue ;; esac
+        # key = path relative to the dir (e.g. "sys/wait.h")
+        name="${f#${dir}/}"
+        if [ "$first" -ne 1 ]; then
+            printf ',\n' >> "$OUTFILE"
+        fi
+        first=0
+        printf '    {"%s", ' "$name" >> "$OUTFILE"
+        printf 'R"EMBED(' >> "$OUTFILE"
+        cat "$f" >> "$OUTFILE"
+        printf ')EMBED"}' >> "$OUTFILE"
+    done < <(find "$dir" -type f | sort)
+}
+
+emit_dir "$SRCDIR"
+if [ -n "$EXTRADIR" ]; then
+    emit_dir "$EXTRADIR"
+fi
 
 cat >> "$OUTFILE" <<'FOOTER'
 

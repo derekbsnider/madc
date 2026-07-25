@@ -25,6 +25,9 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>	// current_resident_bytes: task_info resident size
+#endif
 
 extern thread_local bool madc_verbose;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -2005,6 +2008,15 @@ uint64_t current_cpu_microseconds()
 
 uint64_t current_resident_bytes()
 {
+#ifdef __APPLE__
+    mach_task_basic_info info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if ( task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+		   reinterpret_cast<task_info_t>(&info), &count)
+	 != KERN_SUCCESS )
+	return 0;
+    return info.resident_size;
+#else
     std::ifstream statm("/proc/self/statm");
     uint64_t pages_total = 0;
     uint64_t pages_resident = 0;
@@ -2015,6 +2027,30 @@ uint64_t current_resident_bytes()
     if ( page_size <= 0 )
 	return 0;
     return pages_resident * static_cast<uint64_t>(page_size);
+#endif
+}
+
+// Peak resident set from getrusage, normalized to bytes (Linux reports
+// ru_maxrss in KB, macOS in bytes).
+static uint64_t rusage_maxrss_bytes(const struct rusage &usage)
+{
+    if ( usage.ru_maxrss <= 0 )
+	return 0;
+#ifdef __APPLE__
+    return static_cast<uint64_t>(usage.ru_maxrss);
+#else
+    return static_cast<uint64_t>(usage.ru_maxrss) * UINT64_C(1024);
+#endif
+}
+
+// Path that reopens an inherited file descriptor by number.
+static std::string fd_reopen_path(int fd)
+{
+#ifdef __APPLE__
+    return "/dev/fd/" + std::to_string(fd);
+#else
+    return "/proc/self/fd/" + std::to_string(fd);
+#endif
 }
 
 Program::RegistrationPolicy::RuntimeEvalChildPolicy
@@ -2941,7 +2977,7 @@ struct program::impl
 
 	    bool wrote = false;
 	    {
-		std::ofstream os("/proc/self/fd/" + std::to_string(report_fd),
+		std::ofstream os(fd_reopen_path(report_fd),
 				 std::ios::binary | std::ios::trunc);
 		if ( os )
 		    wrote = write_exec_child_report(os, report);
@@ -3009,9 +3045,7 @@ struct program::impl
 	}
 	if ( current_invoke_limits.memory_bytes > 0 )
 	{
-	    uint64_t used_resident = usage.ru_maxrss > 0
-		? static_cast<uint64_t>(usage.ru_maxrss) * UINT64_C(1024)
-		: 0;
+	    uint64_t used_resident = rusage_maxrss_bytes(usage);
 	    if ( used_resident > current_invoke_limits.memory_bytes )
 	    {
 		std::ostringstream os;
@@ -3841,7 +3875,7 @@ struct program::impl
 
 	    bool wrote = false;
 	    {
-		std::ofstream os("/proc/self/fd/" + std::to_string(report_fd),
+		std::ofstream os(fd_reopen_path(report_fd),
 				 std::ios::binary | std::ios::trunc);
 		if ( os )
 		    wrote = write_exec_child_report(os, report);
@@ -3911,9 +3945,7 @@ struct program::impl
 	}
 	if ( current_invoke_limits.memory_bytes > 0 )
 	{
-	    uint64_t used_resident = usage.ru_maxrss > 0
-		? static_cast<uint64_t>(usage.ru_maxrss) * UINT64_C(1024)
-		: 0;
+	    uint64_t used_resident = rusage_maxrss_bytes(usage);
 	    if ( used_resident > current_invoke_limits.memory_bytes )
 	    {
 		std::ostringstream os;

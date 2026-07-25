@@ -59,6 +59,26 @@ if test "$with_zstd" != no; then
 fi
 AC_SUBST([HAVE_ZSTD])
 
+# Forest carrier shape (forest-carriers plan S3): what the PRODUCT build
+# (make release + the hosted darwin MODEs) produces and expects — embedded
+# packs the container into the binary's own image (the no-installation
+# default), sidecar ships <binary>.forest beside it (the packaged-install
+# shape), none skips the forest (live-parse only, the dev shape). This sets
+# what the build PRODUCES and what the binary EXPECTS (the baked loud-notice
+# default when the forest is missing at runtime) — never a restriction on
+# runtime discovery: the probe chain accepts any carrier it finds.
+AC_ARG_WITH([forest],
+    [AS_HELP_STRING([--with-forest=embedded|sidecar|none],
+        [forest carrier the product build ships (default: embedded)])],
+    [with_forest="$withval"],
+    [with_forest=embedded])
+case "$with_forest" in
+    embedded|sidecar|none) ;;
+    *) AC_MSG_ERROR([bad value '$with_forest' for --with-forest (use embedded, sidecar, or none)]) ;;
+esac
+WITH_FOREST="$with_forest"
+AC_SUBST([WITH_FOREST])
+
 AC_ARG_ENABLE([madcdat],
     [AS_HELP_STRING([--enable-madcdat], [build madcdat storage/federation support @<:@default=yes@:>@])],
     [enable_madcdat="$enableval"],

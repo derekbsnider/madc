@@ -101,9 +101,10 @@ Compile to a relocatable native object (default:
 .TP
 .BI \-o " prog"
 Compile to a native executable \(em MIR assembles the ELF directly.
-The produced program needs
+The produced program depends on
 .B libmadc.so.0
-at run time.
+only when it uses the madc runtime; a plain C program's executable is
+runtime-free.
 .TP
 .BR \-shared " [" \-o " \fIfile.so\fR]"
 Compile to a shared object (ET_DYN; dlopen/#load-consumable; PIC).
@@ -143,6 +144,11 @@ sandboxes.
 Address-space guard (RLIMIT_AS, covers JIT mappings). Default: 4096 MB
 plus 128 MB per \fB\-\-project\fR translation unit; 0 disables. A
 tripped guard names the knob in its error message.
+.TP
+.BI MADC_FOREST= file
+Frozen forest container to bind when neither the binary's own image nor
+the \fI<exe>\fB.forest\fR sidecar beside it carries one (discovery
+arm 3; first usable container wins).
 .SH EXAMPLES
 Run a file as a script (no main, no includes needed):
 .PP
