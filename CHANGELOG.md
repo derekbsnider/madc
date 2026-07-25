@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [v0.46.0] — 2026-07-25
+
+The frozen forest reaches macOS (forest-carriers S1): hosted darwin
+binaries ship PACKED via a `__MADC,__forest` Mach-O section —
+cross-frozen groves, `-sectcreate` embed (no re-signer on the build
+path), section read-back — gate green on Apple hardware, both arches;
+plus the typedef-of-class parser fix the gate caught.
+
 - **feat(forest): the frozen forest reaches macOS — hosted binaries ship
   PACKED via a `__MADC,__forest` Mach-O section (forest-carriers S1).**
   The darwin standard-header groves are cross-frozen in the build
