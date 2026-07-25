@@ -41,6 +41,11 @@ else ifeq ($(MODE),cross-aarch64-linux)
 # that emits native artifacts for the target and refuses every run lane
 # (MADC_CROSS_TARGET below). Same -O0 dev contract as develop.
 BIN = ../bin/madc-aarch64-linux
+else ifeq ($(MODE),cross-x86-64-macos)
+# Mach-O twins (axis B): same emit-only cross model, Mach-O container.
+BIN = ../bin/madc-x86-64-macos
+else ifeq ($(MODE),cross-arm64-macos)
+BIN = ../bin/madc-arm64-macos
 else
 BIN = ../bin/madc
 endif
@@ -92,6 +97,16 @@ ifeq ($(MODE),cross-aarch64-linux)
 MIRLIB	= $(MIRDIR)/build-aarch64-linux/libmir.a
 DEFINES += -DMIR_TARGET_AARCH64_LINUX -DMADC_CROSS_TARGET='"aarch64-linux"'
 endif
+ifeq ($(MODE),cross-x86-64-macos)
+# MADC_CROSS_APPLE: Mach-O link environment (implicit libSystem, no ELF
+# sonames/RUNPATH, runtime-free programs only — madc_cir.cpp).
+MIRLIB	= $(MIRDIR)/build-x86-64-macos/libmir.a
+DEFINES += -DMIR_TARGET_X86_64_MACOS -DMADC_CROSS_TARGET='"x86-64-macos"' -DMADC_CROSS_APPLE
+endif
+ifeq ($(MODE),cross-arm64-macos)
+MIRLIB	= $(MIRDIR)/build-arm64-macos/libmir.a
+DEFINES += -DMIR_TARGET_ARM64_MACOS -DMADC_CROSS_TARGET='"arm64-macos"' -DMADC_CROSS_APPLE
+endif
 DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS) $(MADCDISHDRS)
 
 ifeq ($(HAVE_MADCDAT),1)
@@ -108,6 +123,12 @@ MADC_VERSION ?= $(shell cat ../VERSION 2>/dev/null || echo 0.0.0)
 MADC_SOVERSION ?= $(firstword $(subst ., ,$(MADC_VERSION)))
 LIBMADC_SHARED = $(LIBDIR)/libmadc.so
 LIBMADC_STATIC = $(LIBDIR)/libmadc.a
+# Cross modes get their own archive/solib names: a cross build must never
+# clobber the host-facing ../lib artifacts with cross-guarded objects.
+ifneq (,$(findstring cross-,$(MODE)))
+LIBMADC_STATIC = $(LIBDIR)/libmadc-$(MODE).a
+LIBMADC_SHARED = $(LIBDIR)/libmadc-$(MODE).so
+endif
 # Objects for the library: everything except the main() driver
 LIBMADC_STATIC_OBJS = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
 pkgconfigdir ?= $(libdir)/pkgconfig
@@ -202,6 +223,21 @@ cross-aarch64-linux:
 $(MIRDIR)/build-aarch64-linux/libmir.a:
 	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-aarch64-linux CPPFLAGS='-I. -DMIR_TARGET_AARCH64_LINUX' build-aarch64-linux/libmir.a
 
+# Emit-only cross compilers for the Mach-O targets (axis B): the same MIR
+# variant-lib pattern; the writer signs ad-hoc, so the produced binaries
+# run directly on macOS (Gate B-final = the owner's Macs).
+cross-x86-64-macos:
+	$(MAKE) MODE=cross-x86-64-macos ../bin/madc-x86-64-macos
+
+cross-arm64-macos:
+	$(MAKE) MODE=cross-arm64-macos ../bin/madc-arm64-macos
+
+$(MIRDIR)/build-x86-64-macos/libmir.a:
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-x86-64-macos CPPFLAGS='-I. -DMIR_TARGET_X86_64_MACOS' build-x86-64-macos/libmir.a
+
+$(MIRDIR)/build-arm64-macos/libmir.a:
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-arm64-macos CPPFLAGS='-I. -DMIR_TARGET_ARM64_MACOS' build-arm64-macos/libmir.a
+
 # Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
 # the ELF and would destroy an already-appended forest blob). Pack failure =
 # build failure; the verify step proves the appended blob reads back (pin OK)
@@ -237,7 +273,7 @@ uninstall:
 	@if [ -z "$(DESTDIR)" ]; then ldconfig 2>/dev/null || true; fi
 
 clean:
-	rm -rf ../obj/develop ../obj/debug ../obj/release ../obj/cross-aarch64-linux
+	rm -rf ../obj/develop ../obj/debug ../obj/release ../obj/cross-aarch64-linux ../obj/cross-x86-64-macos ../obj/cross-arm64-macos
 	rm -f ../obj/*.o ../obj/*.d ../obj/pic/*.o ../obj/pic/*.d
 	rm -f $(ALL_TESTBINS)
 	rm -f $(MADDAT_ARCHIVE)
