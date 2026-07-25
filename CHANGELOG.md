@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [v0.47.0] — 2026-07-25
+
+Emitted-pack (forest-carriers S2): `--pack-forest` embeds a frozen
+container in emitted native executables — ELF trailer / Mach-O
+`__MADC,__forest` section signed at emit via a new fork-writer seam, no
+re-signer anywhere on the product path; Mach-O file-probe read-back;
+full native loop green on Apple hardware, both arches.
+
 - **feat(aot): `--pack-forest` — emitted native executables carry a
   frozen container in their self-image carrier (forest-carriers S2).**
   One format, one loader, N carriers: `--pack-forest=<container>` with a
