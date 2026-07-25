@@ -10,7 +10,7 @@ static char stdint_str[]
     "typedef signed char int8_t;\n"
     "typedef short int int16_t;\n"
     "typedef int int32_t;\n"
-#if defined(__APPLE__) || defined(_WIN32)
+#if MIR_TARGET_APPLE_P || defined(_WIN32)
     "typedef long long int int64_t;\n"
 #else
     "typedef long int int64_t;\n"
@@ -19,7 +19,7 @@ static char stdint_str[]
     "typedef unsigned char uint8_t;\n"
     "typedef unsigned short int uint16_t;\n"
     "typedef unsigned int uint32_t;\n"
-#if defined(__APPLE__) || defined(_WIN32)
+#if MIR_TARGET_APPLE_P || defined(_WIN32)
     "typedef unsigned long long int uint64_t;\n"
 #else
     "typedef unsigned long int uint64_t;\n"

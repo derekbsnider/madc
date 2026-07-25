@@ -7,7 +7,7 @@ static char stdarg_str[]
   = "#ifndef __STDARG_H\n"
     "#define __STDARG_H\n"
     "\n"
-#if defined(__APPLE__)
+#if MIR_TARGET_APPLE_P
     "typedef __darwin_va_list va_list;\n"
 #elif defined(__WIN32)
     "typedef char *va_list;\n"
@@ -27,7 +27,7 @@ static char stdarg_str[]
 #endif
     "#define va_arg(ap, type) __builtin_va_arg(ap, (type *) 0)\n"
     "#define va_end(ap) 0\n"
-#if defined(__APPLE__) || defined(__WIN32)
+#if MIR_TARGET_APPLE_P || defined(__WIN32)
     "#define va_copy(dest, src) ((dest) = (src))\n"
 #else
     "#define va_copy(dest, src) ((dest)[0] = (src)[0])\n"

@@ -51,8 +51,7 @@ static char aarch64_mirc[]
     "#define __UINT16_MAX__ (__INT16_MAX__ * 2u + 1u)\n"
     "#define __UINT32_MAX__ (__INT32_MAX__ * 2u + 1u)\n"
     "#define __UINT64_MAX__ (__INT64_MAX__ * 2u + 1u)\n"
-#if defined(__linux__)
-    /* wchar_t is unsigned int in AAPCS64 */
+#if !MIR_TARGET_APPLE_P /* target fact: unsigned in AAPCS64-linux, signed int on darwin */
     "#define __WCHAR_MAX__ 4294967295u\n"
     "#define __WCHAR_MIN__ 0u\n"
 #else
@@ -89,7 +88,7 @@ static char aarch64_mirc[]
     "#define __DBL_MIN__ ((double) 2.22507385850720138309023271733240406e-308L)\n"
     "#define __DBL_EPSILON__ ((double) 2.22044604925031308084726333618164062e-16L)\n"
     "\n"
-#if defined(__APPLE__)
+#if MIR_TARGET_APPLE_P /* LDBL == DBL on darwin-arm64 (matches the mir_ldouble typedef) */
     "#define __LDBL_MIN_EXP__ __DBL_MIN_EXP__\n"
     "#define __LDBL_MAX_EXP__ __DBL_MAX_EXP__\n"
     "#define __LDBL_DIG__ __DBL_DIG__\n"
@@ -112,7 +111,7 @@ static char aarch64_mirc[]
     "typedef unsigned short char16_t;\n"
     "typedef unsigned int char32_t;\n"
     "\n"
-#if defined(__linux__)
+#if defined(__linux__) && !MIR_TARGET_APPLE_P
     "#define __gnu_linux__ 1\n"
     "#define __linux 1\n"
     "#define __linux__ 1\n"
@@ -130,7 +129,7 @@ static char aarch64_mirc[]
     "typedef __builtin_va_list va_list;\n"
     "#define __DEFINED_va_list\n"
 #endif
-#elif defined(__APPLE__)
+#elif MIR_TARGET_APPLE_P
     "#define __APPLE__ 1\n"
     "#define __arm64__\n"
     "#define __DARWIN_OS_INLINE static inline\n"

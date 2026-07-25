@@ -2175,7 +2175,7 @@ void MIR_load_module (MIR_context_t ctx, MIR_module_t m) {
       if (setup_global (ctx, MIR_item_name (ctx, first_item), first_item->addr, first_item)
           && item->item_type == MIR_func_item
           && !func_redef_permission_p
-#ifdef __APPLE__
+#if MIR_TARGET_APPLE_P /* target-code semantics: darwin SDK sources carry these */
           /* macosx can have multiple equal external inline definitions of the same function: */
           && strncmp (item->u.func->name, "__darwin", 8) != 0
 #endif

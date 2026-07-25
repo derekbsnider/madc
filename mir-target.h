@@ -16,6 +16,7 @@
        MIR_TARGET_X86_64_LINUX   =  MIR_TARGET_X86_64
        MIR_TARGET_AARCH64_LINUX  =  MIR_TARGET_AARCH64
        MIR_TARGET_ARM64_MACOS    =  MIR_TARGET_AARCH64 + MIR_TARGET_APPLE
+       MIR_TARGET_X86_64_MACOS   =  MIR_TARGET_X86_64  + MIR_TARGET_APPLE
 
    Only validated arch+OS pairs are accepted -- anything else is a
    compile error.  A cross build translates and CAPTURES code for the
@@ -53,14 +54,23 @@
 #endif
 #endif
 
+#ifdef MIR_TARGET_X86_64_MACOS
+#ifndef MIR_TARGET_X86_64
+#define MIR_TARGET_X86_64 1
+#endif
+#ifndef MIR_TARGET_APPLE
+#define MIR_TARGET_APPLE 1
+#endif
+#endif
+
 /* --- validation: one arch knob at most; only pairs that exist --- */
 
 #if defined(MIR_TARGET_X86_64) && defined(MIR_TARGET_AARCH64)
 #error "conflicting MIR_TARGET arch selection -- define exactly one"
 #endif
 
-#if defined(MIR_TARGET_APPLE) && !defined(MIR_TARGET_AARCH64)
-#error "MIR_TARGET_APPLE is only validated with MIR_TARGET_AARCH64 (arm64-macos)"
+#if defined(MIR_TARGET_APPLE) && !defined(MIR_TARGET_AARCH64) && !defined(MIR_TARGET_X86_64)
+#error "MIR_TARGET_APPLE requires an arch knob (arm64-macos or x86_64-macos)"
 #endif
 
 #if defined(MIR_TARGET_X86_64) || defined(MIR_TARGET_AARCH64)
