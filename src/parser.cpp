@@ -14316,6 +14316,7 @@ Program::Program()
       default_cpp_std(STD_CPP17),
       gnu_dialect(false),
       aot_tracking(false),
+      aot_skip_eval_shims(false),
       instrument_functions(false),
       skip_includes(false),
       root_fn(NULL)
@@ -14349,6 +14350,7 @@ Program::Program(MadcEngine *eng)
       default_cpp_std(STD_CPP17),
       gnu_dialect(false),
       aot_tracking(false),
+      aot_skip_eval_shims(false),
       instrument_functions(false),
       skip_includes(false),
       root_fn(NULL)

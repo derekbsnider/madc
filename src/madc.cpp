@@ -572,6 +572,20 @@ static void print_usage(const char *prog)
 "  -l<name> becomes a DT_NEEDED lib<name>.so in AOT mode (dlopen otherwise).\n";
 }
 
+#ifdef MADC_CROSS_TARGET
+// Cross build (gcc cross model): this binary EMITS native artifacts for
+// MADC_CROSS_TARGET and can never execute target code on this host. Every
+// run lane refuses loudly through here.
+static int cross_refuse_run(const char *lane)
+{
+    std::cerr << "madc: cross build for " MADC_CROSS_TARGET
+              << " is emit-only: cannot " << lane << " on this host."
+                 " Use -c / -o / -shared / -r / --emit=..., then run the"
+                 " artifact on the target." << std::endl;
+    return 1;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     // --show-stats: earliest in-process timestamp, so the phase breakdown can
@@ -987,6 +1001,9 @@ int main(int argc, char **argv)
     // argv.
     if ( !run_object_paths.empty() )
     {
+#ifdef MADC_CROSS_TARGET
+        return cross_refuse_run("execute .o objects in-process");
+#endif
         std::vector<char *> oargv;
         oargv.push_back((char *)run_object_paths[0].c_str());
         for ( int i = filearg; i < argc; ++i )
@@ -998,6 +1015,10 @@ int main(int argc, char **argv)
     // --run-frozen: thaw + compile + run a frozen forest container — no
     // source file, no parse. Remaining positionals become the program's
     // argv (argv[0] is the container / executable path).
+#ifdef MADC_CROSS_TARGET
+    if ( run_frozen || freeze_run )
+        return cross_refuse_run("run a frozen program");
+#endif
     if ( run_frozen )
     {
         std::string ra0 = run_frozen_path ? run_frozen_path : "/proc/self/exe";
@@ -1122,6 +1143,9 @@ int main(int argc, char **argv)
 	    return erc == 0 ? 0 : 1;
 	}
 	// Remaining positionals (filearg..argc) become the program's argv.
+#ifdef MADC_CROSS_TARGET
+	return cross_refuse_run("execute a --project program");
+#endif
 	int run_argc = argc - filearg;
 	char **run_argv = argv + filearg;
 	int rc = madc_project_execute(engine, manifest, run_argc, run_argv,
@@ -1537,6 +1561,12 @@ int main(int argc, char **argv)
 	}
 
 	struct timeval before, after;
+#ifdef MADC_CROSS_TARGET
+	// The default lane compiles AND RUNS (JIT). --dump-* still need the
+	// compile side, but execution of target code on this host is
+	// impossible -- refuse before c2mir/MIR_gen would produce it.
+	return cross_refuse_run("JIT-run a program");
+#endif
 	gettimeofday(&before, NULL);
 	int result = madc_cir_execute(prog.get(), argv[filearg],
 				      argc - filearg, argv + filearg,

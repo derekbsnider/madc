@@ -3800,6 +3800,12 @@ public:
     bool set_language_standard(const std::string &standard);
     bool set_language_standard_option(const std::string &arg);
     bool aot_tracking;
+    bool aot_skip_eval_shims;	// this build's artifact can never be host-called
+				// through the value ABI (standalone executable; any
+				// non--shared artifact of an emit-only cross build),
+				// so the CIR build skips the __madc_shim_* eval
+				// adapters — keeps pure programs runtime-free (the
+				// libmadc.so.0 DT_NEEDED cover-drop can fire)
     bool instrument_functions;
     bool skip_includes;		// --emit-function: lex without processing #include
     std::set<std::string> pending_auto_include_headers;

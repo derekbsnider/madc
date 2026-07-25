@@ -1379,6 +1379,20 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
 {
     madc_object_mode = true;	// one-shot CLI path; process exits after this
 
+    // Standalone executables skip the __madc_shim_* eval adapters (Pass
+    // 0.74): nothing can host-call them, and dropping their madc_value_*
+    // imports keeps pure programs runtime-free. Objects and shared objects
+    // keep the shims — they are the embedding / run-objects eval contract.
+    prog->aot_skip_eval_shims = (kind == mnkExecutable || kind == mnkPieExecutable);
+#ifdef MADC_CROSS_TARGET
+    // Emit-only cross build: .o's can never feed the (refused) in-process
+    // eval lane, so only -shared keeps the embedding shims — they carry
+    // meaning on the TARGET, where a host with a target libmadc runtime
+    // may dlopen the artifact.
+    if (kind != mnkShared)
+	prog->aot_skip_eval_shims = true;
+#endif
+
     CirJitSession session;
     bool stop = false;
     if (!session.build(prog, source_name, false, false, false, &stop))
@@ -4595,6 +4609,19 @@ int madc_project_emit_native(MadcEngine &engine,
 	if (!project_parse_all(engine, manifest, forest_bind, forest_bind_path,
 			       false, parsed))
 		return -1;	// no MIR/c2m created yet — nothing to tear down
+
+	// Standalone executables — and every non--shared artifact of an
+	// emit-only cross build — skip the __madc_shim_* eval adapters (see
+	// madc_cir_emit_native); stamped per TU before the CIR builds run.
+	{
+		bool skip_shims = (kind == mnkExecutable || kind == mnkPieExecutable);
+#ifdef MADC_CROSS_TARGET
+		skip_shims = skip_shims || kind != mnkShared;
+#endif
+		if (skip_shims)
+			for (CirParsedTU &pt : parsed)
+				pt.prog->aot_skip_eval_shims = true;
+	}
 
 	if (kind == mnkObject) {
 		for (CirParsedTU &pt : parsed) {
