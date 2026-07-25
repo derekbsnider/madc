@@ -1318,6 +1318,13 @@ public:
 	// (type `cdd`), sourcing its initializer from the linked TokenDecl when
 	// present (user source) or from v->data (a const char* literal, built-ins).
 	node_t global_ctor_call(class Variable *v, DataDefCLASS *cdd, TokenDecl *decl);
+	// Queue one global's init statements as a ctor GROUP (m_ctor_groups +
+	// m_global_ctor_stmts). A linkonce (C++ `inline`) variable's group is
+	// wrapped in a linkonce once-guard so a merged multi-TU image runs its
+	// dynamic init exactly once (the g++ guarded COMDAT-init model); the
+	// guard variable's declaration rides `deferred_globals`.
+	void queue_global_ctor_group(class Variable *v, std::vector<node_t> &stmts,
+				     std::vector<node_t> &deferred_globals);
 
 	// ---- Expression translation ----
 	node_t translate_expr(TokenBase *tb);

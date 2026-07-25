@@ -1099,16 +1099,18 @@ static bool is_attribute_identifier_token(TokenBase *tb)
 }
 
 // Ignored C++ declaration-specifier keywords. constexpr/consteval/constinit
-// carry no madc codegen (like const/inline) but ARE reserved tokens — so they
+// carry no madc codegen (like const) but ARE reserved tokens — so they
 // must be consumed in declaration-specifier position rather than mistaken for
-// a type name. constexpr is the only one currently reserved (tkCPPKEYWORD);
-// consteval/constinit are listed for when slice 6 reserves them.
+// a type name. `inline` (un-erased, C++ modes) is consumed on the same paths
+// but is NOT a no-op: TokenCppKeyword::parse records it (parsing_inline_decl)
+// so the declaration it qualifies gets vague linkage.
 static bool is_ignored_cpp_specifier_token(TokenBase *tb)
 {
     if ( !tb || tb->id() != TokenID::tkCPPKEYWORD )
 	return false;
     const std::string &s = ((TokenIdent *)tb)->spelling();
-    return s == "constexpr" || s == "consteval" || s == "constinit";
+    return s == "constexpr" || s == "consteval" || s == "constinit"
+	|| s == "inline";
 }
 
 TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
@@ -34328,10 +34330,13 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		}
 	    }
 	    else if ( spec == "constexpr" || spec == "consteval"
-		   || spec == "constinit" )
+		   || spec == "constinit" || spec == "inline" )
 	    {
 		// Ignored declaration-specifiers (no madc codegen) — consume
-		// and continue (`static constexpr int v = ...`).
+		// and continue (`static constexpr int v = ...`). In-class
+		// `inline` adds nothing: every in-class/deferred body is
+		// already vague linkage (parse_deferred_function_body stamps
+		// it), and a `static inline` member keeps member semantics.
 		pgm.nextToken();
 	    }
 	    else
@@ -46162,8 +46167,33 @@ TokenBase *Program::parseKeyword(TokenKeyword *tk)
 // following ttKeyword through parseKeyword).
 TokenBase *TokenCppKeyword::parse(Program &pgm)
 {
+    // `inline` (un-erased, C++ modes): `inline namespace` opens a C++11
+    // inline namespace; otherwise it is a decl-specifier carrying vague
+    // linkage — record it (parseDeclaration consumes the flag exactly like
+    // parsing_static_decl) so the external-linkage function/variable this
+    // delegation parses emits linkonce. A GNU attribute may sit between the
+    // specifier and the declaration (`inline __attribute__((...)) int f()`,
+    // the glibc `extern __inline` shape) — consume it in place.
+    if ( str == "inline" )
+    {
+	TokenBase *pk = pgm.peekToken();
+	if ( pk && pk->id() == TokenID::tkNAMESPACE )
+	{
+	    pgm.nextToken();
+	    return pgm.parse_namespace_block(true);
+	}
+	pgm.parsing_inline_decl = true;
+	TokenBase *tn = pgm.nextToken();
+	if ( !tn )
+	    pgm.Throw(this) << "Unexpected end of input after 'inline'" << flush;
+	if ( is_attribute_identifier_token(tn) )
+	    tn = pgm.consume_gnu_attributes(tn);
+	if ( !tn )
+	    pgm.Throw(this) << "Unexpected end of input after 'inline'" << flush;
+	return pgm.parseStatement(tn);
+    }
     // constexpr / consteval / constinit: ignored specifiers (no madc codegen,
-    // like const/inline). Consume the specifier and continue parsing the
+    // like const). Consume the specifier and continue parsing the
     // declaration it qualifies. A parsing_static_decl / parsing_const_decl flag
     // set by a preceding storage keyword stays in effect across this delegation.
     if ( is_ignored_cpp_specifier_token(this) )
@@ -46803,7 +46833,8 @@ static TokenBase *drop_captured_dim_exprs(TokenBase *chain,
 void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class,
 			    std::vector<DataDef *> *multi_ret, bool return_ref,
 			    std::string return_typedef_alias,
-			    bool static_class_method)
+			    bool static_class_method,
+			    bool inline_specified)
 {
     // Compound balance on THROW: a parse error escaping mid-function leaves the
     // param-scope / body compounds pushed. Callers that swallow the exception
@@ -46970,11 +47001,17 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	func->vague_linkage = true;
     // A bodied C++ free function DEFINED in a system header is inline-or-
     // template by construction (libstdc++'s bodied free functions are all
-    // `inline`, a keyword the lexer erases) — the same vague-linkage set g++
-    // derives from the keyword. Data-driven path test (Rule #7), mirroring
-    // the class from_system_header stamp.
+    // `inline` or emitted through the un-erased keyword path below) — the
+    // same vague-linkage set g++ derives from the keyword. Data-driven path
+    // test (Rule #7), mirroring the class from_system_header stamp.
     else if ( !is_c_mode() && current_linkage == LinkageSpec::Cpp
 	   && is_system_header_path(TokenBase::_parse_file) )
+	func->vague_linkage = true;
+    // The declaration carried the `inline` specifier (un-erased, C++ modes):
+    // the C++ vague-linkage set by definition — every TU including the header
+    // emits the body, linkonce merges them. parseDeclaration already excluded
+    // `static inline` (internal linkage is never vague).
+    else if ( inline_specified )
 	func->vague_linkage = true;
 
     // for multi-return functions, inject hidden __retbuf parameter as first arg
@@ -49091,11 +49128,13 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     Variable *provisional_decl_var = NULL;
     bool gotstatic = is_static || parsing_static_decl;
     bool gotconst = parsing_const_decl;
+    bool gotinline = parsing_inline_decl;
     // The flags cover exactly this declaration. Clear so nested declarations
     // (e.g. locals inside a `static void f() { string s = ...; }` body)
-    // don't inherit static storage or const-ness.
+    // don't inherit static storage, const-ness, or inline-ness.
     parsing_static_decl = false;
     parsing_const_decl = false;
+    parsing_inline_decl = false;
 
     DBG(std::cout << "parseDeclaration(" << tb->spelling() << ") START" << std::endl);
 
@@ -49823,6 +49862,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    provisional_decl_var->fnptr_explicit_stars = decl_fnptr_stars;
 	    if ( gotstatic )
 		provisional_decl_var->flags |= vfSTATIC;
+	    if ( gotinline && !gotstatic && !code )
+		provisional_decl_var->flags |= vfLINKONCE;
 	    if ( parsing_extern_decl )
 		provisional_decl_var->flags |= vfEXTERN;
 	    // Set dims early so self-referencing init expressions like
@@ -50299,6 +50340,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    is_shared_global_extern_reference(code, var);
 	if ( gotstatic )
 	    var->flags |= vfSTATIC;
+	// A C++ `inline` variable has vague linkage: every including TU
+	// defines it, so the CIR backend emits a linkonce data binding
+	// (STB_WEAK — per-TU copies merge at a multi-.o link, and dynamic
+	// init runs once behind a linkonce guard). `static` wins: internal
+	// linkage is never vague.
+	if ( gotinline && !gotstatic
+	  && (code == NULL || code == tkProgram) )
+	    var->flags |= vfLINKONCE;
 	// Mark a SCALAR `const`-declared variable so the CIR backend can enforce
 	// read-only-ness (reject assignment to it — P2.4). The variable itself is
 	// const only when const qualifies the VALUE (`const int x`) or is the
@@ -50725,7 +50774,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( ns_overload_tracked )
 	pending_function_display_name = source_id;
     parseFunction(*decl_type, parse_id, qualified_owner_class, NULL, ret_is_ref,
-		  decl_typedef_alias, qualified_static_member);
+		  decl_typedef_alias, qualified_static_member,
+		  gotinline && !gotstatic);
     pending_function_display_name.clear();
 
     if ( qualified_owner_class && !qualified_member_name.empty() )

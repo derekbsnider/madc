@@ -1345,14 +1345,13 @@ pinned in-commit).
   text as dead bytes, exactly like ld linking plain-weak objects
   without COMDAT sections.
 
-**Documented boundary (LOUD, not silent):** an explicitly-`inline`
-USER-header free function still duplicate-strong collides at a link
-(`madc: cannot merge object: duplicate symbol 'sumv'`) because the
-lexer erases `inline`/`__inline__` as an "ignored C storage hint" —
-there is nothing left to classify by. Follow-on slice: model `inline`
-as a real tracked specifier (the constexpr un-erasure precedent), then
-route it into `vague_linkage`. A bodied non-inline function in a shared
-user header collides in g++/ld too — that half of the error is parity.
+**Documented boundary — CLOSED by the inline un-erasure landing below:**
+an explicitly-`inline` USER-header free function used to duplicate-strong
+collide at a link (`duplicate symbol 'sumv'`) because the lexer erased
+`inline`/`__inline__` as an "ignored C storage hint". `inline` is now a
+real specifier routed into `vague_linkage` (see the landing block after
+this slice). A bodied non-inline function in a shared user header still
+collides — in g++/ld too; that half of the error is parity.
 
 **Gates (all PASS, container):** two-TU in-class-method PIE link+run;
 STB_WEAK in each `.o` + ONE survivor in the `-r` merge; two-TU
@@ -1374,6 +1373,75 @@ strong replaces weak) — recon confirms the capture just never sets
 the deepest layer: a weak/linkonce bit on MIR items (fork API), set by
 c2mir from a node attribute, set by madc for template instantiations
 and inline-emitted bodies; the capture then defines them `weak_p=1`.
+
+### Inline un-erasure — LANDED 2026-07-24 (S4 follow-through: `inline`
+is a real specifier; the `sumv` boundary is closed)
+
+**Commits:** madc = the feature/inline-unerasure-claude merge this block
+ships in. **Fork untouched** — S4's attr recognition (`decl_spec
+weak_p/linkonce_p` from the spec-list `N_ATTR` arm) and its gen hooks
+already cover variable declarations; no new MIR/c2mir surface, no
+`MIR_COMMIT` bump.
+
+**One complete slice — functions AND variables AND `inline namespace`,
+every decl-specifier position, C++ modes:**
+
+- **Lexer:** `inline` joins the version-gated C++ reserved-keyword
+  registry (`{ "inline", STD_CPP98 }`, the constexpr precedent); the
+  GNU spellings `__inline__`/`__inline` map to it (the `__signed__` →
+  `signed` idiom). **C modes keep today's erasure** — the C99 inline
+  no-external-definition model is a different feature, not a deferred
+  piece of this slice, and nothing is currently broken there. The old
+  `inline namespace` lexer carve-out (return `inline` as identifier
+  when `namespace` follows) is deleted with its helper
+  (`next_source_word_is`): the keyword path owns the construct now.
+- **Parser consumption:** `TokenCppKeyword::parse` handles `inline`
+  first — `inline namespace` → `parse_namespace_block(true)`; otherwise
+  it sets `parsing_inline_decl` and delegates (tolerating an interposed
+  GNU attribute — the glibc `extern __inline __attribute__((...))`
+  shape). `is_ignored_cpp_specifier_token` and the member-specifier
+  loop admit the spelling, covering mid-declaration positions (`void
+  inline f()`, in-class `inline void m() {...}`).
+- **Threading (the `parsing_static_decl` idiom):** `parseDeclaration`
+  consumes the flag into `gotinline` at entry and clears it (nested
+  declarations never inherit); the function declarator passes
+  `inline_specified = gotinline && !gotstatic` into `parseFunction`
+  (new defaulted parameter), which stamps `FuncDef::vague_linkage` —
+  a fourth arm on the existing S4 stamp chain. `static inline` is
+  internal linkage: never vague, proven by gate (binding identical to
+  plain `static`, and NOT weak).
+- **Inline variables (C++17) ride the same S4 machinery:** new
+  `vfLINKONCE` Variable flag, set for file-scope `inline` (non-static)
+  variables; `var_decl` appends the `linkonce` attr to the data decl's
+  spec list, so the MIR data item binds LINKONCE → captured STB_WEAK →
+  per-TU copies merge. **Dynamic init runs once per merged image**: a
+  linkonce variable's init group is wrapped
+  `if (__madc_ivg_<sym> == 0) { __madc_ivg_<sym> = 1; ... }` where the
+  guard is itself a linkonce global — the g++ guarded COMDAT-init
+  model (`queue_global_ctor_group`, shared by the scalar-dynamic-init
+  and class-ctor arms of `collect_global_ctors`).
+- **`--emit=c11`** renders the variable's linkonce as
+  `__attribute__((weak))` via the existing S4 N_ATTR rendering —
+  emitted TUs gcc-compile warning-free, link, dedupe, run.
+
+**Gates (20/20, container):** JIT integration test
+(`tests/testinline.mad`: inline fn/var, static inline, inline
+namespace, out-of-class inline member, dynamic-init-once); two-TU
+user-header `inline` fn + variable: STB_WEAK for the function AND the
+data symbol in each `.o`; madc native link runs 42; run-direct merge
+42; external gcc/ld link (+ `libmadc.so`) 42; g++ source oracle 42;
+emitted C carries the weak attr, gcc-builds clean, runs 42; the
+dynamic-init once-guard is load-bearing in every 42 (a double-run
+exits 142). Unit: `test_object_load` grew the two-TU weak-merge +
+init-once case (`sym_bind` hoisted to a shared helper).
+
+**Pre-existing gaps surfaced by the gates (verified NOT slice
+regressions; noted for the owner, not queued):** (1) two *emitted-C*
+TUs with dynamic-init globals collide on `__madc_global_init` — the
+emit-C lane still uses the JIT main-wrap model (S3's per-TU init
+renaming is object-mode only); reproduced with plain globals, zero
+`inline` involvement. (2) file-static functions export GLOBAL in
+`.o`s — identical for `static` and `static inline`.
 
 ### Slice 5 — `.mir.rodata` split (REASSESSED — last, possibly defer)
 

@@ -6632,6 +6632,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		tl = new_list;
 	}
 
+	// C++ `inline` variable (vague linkage): every including TU defines
+	// it — the attr binds the MIR data item LINKONCE (captured STB_WEAK)
+	// so per-TU copies merge at a multi-.o link, and --emit=c11 renders
+	// __attribute__((weak)). An extern reference is not a definition.
+	if ((v->flags & vfLINKONCE) && !(v->flags & vfEXTERN)
+	    && !(v->flags & vfSTATIC))
+		append(tl, node2(N_ATTR, id("linkonce"), list()));
+
 	node_t share = node1(N_SHARE, tl);
 	std::string emitted_var_name = var_emit_name(*v);
 	node_t var_id = id(emitted_var_name.c_str(), origin);
@@ -20783,6 +20791,47 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 // built-ins registered via addGlobal (e.g. `version`) are NOT in top_decls, so
 // emit their storage here. Either way, queue the ctor into m_global_ctor_stmts
 // for func_def to run at main entry, in declaration order.
+void CirBuilder::queue_global_ctor_group(Variable *v, std::vector<node_t> &stmts,
+					 std::vector<node_t> &deferred_globals)
+{
+	m_ctor_groups.push_back(std::make_pair(v, std::vector<node_t>()));
+	std::vector<node_t> &grp = m_ctor_groups.back().second;
+	if (stmts.empty())
+		return;
+	if (v && (v->flags & vfLINKONCE)) {
+		// Linkonce (C++ `inline`) variable: every TU's init body carries
+		// this group, but the merged image holds ONE variable — run the
+		// dynamic init once behind a guard that itself merges weak
+		// (`if (__madc_ivg_<sym> == 0) { __madc_ivg_<sym> = 1; ... }`).
+		std::string gname = "__madc_ivg_" + var_emit_name(*v);
+		node_t gspec = list();
+		append(gspec, node2(N_ATTR, id("linkonce"), list()));
+		append(gspec, simple(N_INT));
+		node_t gdecl = simple(N_SPEC_DECL);
+		append(gdecl, node1(N_SHARE, gspec));
+		append(gdecl, node2(N_DECL, id(gname.c_str()), list()));
+		append(gdecl, ignore());
+		append(gdecl, ignore());
+		append(gdecl, ignore());
+		deferred_globals.push_back(gdecl);
+		node_t items = list();
+		append(items, node2(N_EXPR, list(),
+				    node2(N_ASSIGN, id(gname.c_str()), integer(1))));
+		for (node_t s : stmts)
+			append(items, s);
+		node_t guarded = node4(N_IF, list(),
+				       node2(N_EQ, id(gname.c_str()), integer(0)),
+				       node2(N_BLOCK, list(), items), ignore());
+		m_global_ctor_stmts.push_back(guarded);
+		grp.push_back(guarded);
+		return;
+	}
+	for (node_t s : stmts) {
+		m_global_ctor_stmts.push_back(s);
+		grp.push_back(s);
+	}
+}
+
 void CirBuilder::collect_global_ctors(Program *prog,
 				      std::vector<node_t> &deferred_globals,
 				      std::set<std::string> &emitted_globals)
@@ -20812,19 +20861,12 @@ void CirBuilder::collect_global_ctors(Program *prog,
 			if (!sdecl || !sdecl->initialize)
 				continue;
 			node_t as = translate_expr(sdecl->initialize);
-			m_ctor_groups.push_back(std::make_pair(
-				v, std::vector<node_t>()));
-			std::vector<node_t> &sgrp = m_ctor_groups.back().second;
-			for (node_t p : m_pending_stmts) {
-				m_global_ctor_stmts.push_back(p);
-				sgrp.push_back(p);
-			}
+			std::vector<node_t> sgrp_stmts(m_pending_stmts.begin(),
+						       m_pending_stmts.end());
 			m_pending_stmts.clear();
-			if (as) {
-				node_t st = node2(N_EXPR, list(), as);
-				m_global_ctor_stmts.push_back(st);
-				sgrp.push_back(st);
-			}
+			if (as)
+				sgrp_stmts.push_back(node2(N_EXPR, list(), as));
+			queue_global_ctor_group(v, sgrp_stmts, deferred_globals);
 			continue;
 		}
 		bool already_emitted = emitted_globals.count(v->name) != 0;
@@ -20853,18 +20895,12 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		// ctor calls together with its storage decl (a group's statements
 		// never seed the harvest — they reference their own global, which
 		// would otherwise self-admit every ctor'd global).
-		m_ctor_groups.push_back(std::make_pair(
-			v, std::vector<node_t>()));
-		std::vector<node_t> &grp = m_ctor_groups.back().second;
-		for (node_t p : m_pending_stmts) {
-			m_global_ctor_stmts.push_back(p);
-			grp.push_back(p);
-		}
+		std::vector<node_t> grp_stmts(m_pending_stmts.begin(),
+					      m_pending_stmts.end());
 		m_pending_stmts.clear();
-		if (cc) {
-			m_global_ctor_stmts.push_back(cc);
-			grp.push_back(cc);
-		}
+		if (cc)
+			grp_stmts.push_back(cc);
+		queue_global_ctor_group(v, grp_stmts, deferred_globals);
 	}
 }
 
