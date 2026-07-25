@@ -107,4 +107,13 @@ for h in "${HEADERS[@]}"; do
     write_on_change "$STUB_TMP" "$OUTDIR/$h"
 done
 
+# .MANIFEST: the covered header names in canonical order — the ONE owner of
+# the list. scripts/forest_pack_darwin.sh reads it to generate the grove
+# freeze TU (forest-carriers plan S1), so the frozen units always match the
+# embedded set exactly. Dot-named so gen_embedded_headers.sh's dotfile skip
+# keeps it out of the embedded table.
+MAN_TMP="$OUTDIR/.manifest.$$"
+printf '%s\n' "${HEADERS[@]}" > "$MAN_TMP"
+write_on_change "$MAN_TMP" "$OUTDIR/.MANIFEST"
+
 echo "darwin prelude: $OUTDIR (${#HEADERS[@]} header names)"

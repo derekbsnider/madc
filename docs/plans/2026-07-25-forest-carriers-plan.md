@@ -173,6 +173,22 @@ product path.
    hosted link → darwin section read-back arm → hosted binaries ship
    PACKED. Gate: hosted G2 re-run on hardware; grove bind on the Mac
    == live parse output; Linux packed arbiter untouched.
+   *Implementation notes (landed on `feature/forest-carriers-claude`):*
+   the freezer is the same-arch CROSS madc, which now embeds the same
+   per-target darwin prelude as the hosted binary
+   (`DARWIN_PRELUDE_TARGET` covers cross + hosted MODEs); the freeze
+   reuses `--freeze-append` onto an EMPTY file (placement 2 = the
+   release-pack compression profile; container starts at offset 0, so
+   the file is a valid standalone container for `-sectcreate`);
+   `scripts/forest_pack_darwin.sh` generates the TU from the prelude's
+   `.MANIFEST` (one owner of the header list) and gates on every name
+   being a directory unit; hosted MODEs regained zstd via per-target
+   static libs (`/workspace/zstd/libzstd-{arm64,x86-64}-macos.a`) so
+   the consumer reads the release codec; darwin-inline bodies whose
+   callees are libSystem-private (`__maskrune`, `__swbuf`,
+   `__sincos_stret`…) are unresolvable on the Linux freezer host and
+   revert to DEFBODY body-span carry — consumers derive them on first
+   use (the v26 path, the same lowering G2 proved live).
 2. **S2 — In-house re-signer + darwin `--freeze-run`/emitted-pack:**
    CodeDirectory reuse from `mir-macho.c`; post-link pack + re-sign;
    AMFI acceptance on hardware is the gate.

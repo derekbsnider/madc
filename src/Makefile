@@ -103,43 +103,59 @@ ifeq ($(MODE),cross-aarch64-linux)
 MIRLIB	= $(MIRDIR)/build-aarch64-linux/libmir.a
 DEFINES += -DMIR_TARGET_AARCH64_LINUX -DMADC_CROSS_TARGET='"aarch64-linux"'
 endif
+# Shared Apple-target facts (cross + hosted MODEs). DARWIN_PRELUDE_TARGET is
+# the clang triple the embedded darwin C prelude is generated against — set
+# for EVERY Apple-target mode so the cross madcs embed the SAME prelude text
+# the hosted binaries carry (the darwin grove cross-FREEZER must parse
+# identical text to what the hosted consumer would live-parse; forest-carriers
+# plan S1). DARWIN_ARCH names the target arch as spelled in binary/lib names.
+MACOS_SDK ?= /workspace/sdk/MacOSX.sdk
+MACOS_MINOS ?= 12
 ifeq ($(MODE),cross-x86-64-macos)
 # MADC_CROSS_APPLE: Mach-O link environment (implicit libSystem, no ELF
 # sonames/RUNPATH, runtime-free programs only — madc_cir.cpp).
 MIRLIB	= $(MIRDIR)/build-x86-64-macos/libmir.a
 DEFINES += -DMIR_TARGET_X86_64_MACOS -DMADC_CROSS_TARGET='"x86-64-macos"' -DMADC_CROSS_APPLE
+DARWIN_ARCH = x86-64
+DARWIN_PRELUDE_TARGET = x86_64-apple-macos$(MACOS_MINOS)
 endif
 ifeq ($(MODE),cross-arm64-macos)
 MIRLIB	= $(MIRDIR)/build-arm64-macos/libmir.a
 DEFINES += -DMIR_TARGET_ARM64_MACOS -DMADC_CROSS_TARGET='"arm64-macos"' -DMADC_CROSS_APPLE
+DARWIN_ARCH = arm64
+DARWIN_PRELUDE_TARGET = arm64-apple-macos$(MACOS_MINOS)
 endif
 # --- hosted-on-macOS MODEs (Route 1, docs/plans/2026-07-25-madc-on-macos-plan.md).
 # The darwin toolchain: clang-18 against the owner's staged SDK, linking with
 # ld64.lld. libmir comes from a darwin-HOST variant build (no MIR_TARGET knobs:
 # host detection through the darwin compiler turns MIR_TARGET_APPLE_P on
-# natively, making the Mach-O writer the native writer). madcdat is forced off
-# (Phase 3): its storage backends' headers do not exist in the SDK.
-MACOS_SDK ?= /workspace/sdk/MacOSX.sdk
-MACOS_MINOS ?= 12
+# natively, making the Mach-O writer the native writer). madcdat is forced off:
+# its storage backends' headers do not exist in the SDK.
 ifeq ($(MODE),hosted-arm64-macos)
 HOSTED_DARWIN_TARGET = arm64-apple-macos$(MACOS_MINOS)
+DARWIN_ARCH = arm64
 endif
 ifeq ($(MODE),hosted-x86-64-macos)
 HOSTED_DARWIN_TARGET = x86_64-apple-macos$(MACOS_MINOS)
+DARWIN_ARCH = x86-64
 endif
 ifdef HOSTED_DARWIN_TARGET
+DARWIN_PRELUDE_TARGET = $(HOSTED_DARWIN_TARGET)
 CC  = clang-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK) -fuse-ld=lld
 CXX = clang++-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK) -fuse-ld=lld
 AR  = llvm-ar-18
 MODE_OPTFLAGS = -O2
 MIRLIB	= $(MIRDIR)/build-$(MODE)/libmir.a
-# The configure-probed host packages (madcdat backends, zstd) do not exist
-# in the SDK: hosted modes build as if --enable-madcdat=no, with no
-# optional host libs (zstd codec falls back; forest pack is Phase 3).
+# The configure-probed host packages (madcdat backends) do not exist in the
+# SDK: hosted modes build as if --enable-madcdat=no. zstd — the forest/pch
+# container codec the release pack ships — comes from a per-target static
+# build in the container (/workspace/zstd, forest-carriers plan S1): the
+# hosted binary must READ the zstd containers the cross freezer packs.
 HAVE_MADCDAT = 0
 FEATURE_DEFINES =
-OPTIONAL_CPPFLAGS =
-OPTIONAL_LIBS =
+DARWIN_ZSTD_DIR ?= /workspace/zstd
+OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(DARWIN_ZSTD_DIR)/lib
+OPTIONAL_LIBS = $(DARWIN_ZSTD_DIR)/libzstd-$(DARWIN_ARCH)-macos.a
 MADC_STORAGE_DB_OFILES =
 # darwin link facts: dl*/pthread live in libSystem (no -ldl), executables
 # export their globals to dlsym without -rdynamic, and --whole-archive is
@@ -165,18 +181,34 @@ HOSTTAB_GEN := $(shell CXX="$(CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCL
 # is evaluated — so an edited/added/DELETED embedded header is reflected in
 # embedded_headers.o within a SINGLE make. The generators are idempotent (rewrite
 # only on real content change), so this does not churn mtimes or force rebuilds.
-# Hosted-darwin modes: the SDK-derived flattened C prelude (stdio.h & co for the
-# run-only Macs) is generated into the per-mode obj tree and embedded ALONGSIDE
-# include/madc/; the per-mode embedded_headers.cpp lives in the obj tree so SDK
-# content never reaches the committed src/ file. stderr stays visible — a failed
-# prelude leaves no .cpp and the build stops loudly (silent header degradation
-# is exactly the G2 failure class this exists to prevent).
-ifdef HOSTED_DARWIN_TARGET
+# Apple-target modes (hosted AND cross): the SDK-derived flattened C prelude
+# (stdio.h & co for the run-only Macs) is generated into the per-mode obj tree
+# and embedded ALONGSIDE include/madc/; the per-mode embedded_headers.cpp lives
+# in the obj tree so SDK content never reaches the committed src/ file. stderr
+# stays visible — a failed prelude leaves no .cpp and the build stops loudly
+# (silent header degradation is exactly the G2 failure class this exists to
+# prevent). The cross madcs embed it too: an Apple-target compile resolves
+# Apple headers, and the darwin grove cross-freezer (forest-carriers S1) must
+# parse the IDENTICAL embedded text the hosted consumer carries.
+ifdef DARWIN_PRELUDE_TARGET
 DARWIN_PRELUDE_DIR = $(OBJDIR)/darwin_prelude
 EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
-EMBED_GEN := $(shell mkdir -p $(OBJDIR) && ../scripts/gen_darwin_prelude.sh $(HOSTED_DARWIN_TARGET) $(MACOS_SDK) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null; echo done)
+EMBED_GEN := $(shell mkdir -p $(OBJDIR) && ../scripts/gen_darwin_prelude.sh $(DARWIN_PRELUDE_TARGET) $(MACOS_SDK) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null; echo done)
 else
 EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
+endif
+# Hosted binaries ship PACKED (forest-carriers S1): the darwin groves are
+# cross-frozen by the same-arch cross madc (identical embedded prelude, same
+# target facts -> same context hash + config word) and embedded at link time
+# via -sectcreate — lld signs AFTER section layout, so the build path needs no
+# re-signer (appended blobs are AMFI-illegal on signed Mach-O; the __MADC
+# section is the darwin carrier). Variables here; the rules live below the
+# default targets (a rule this early would hijack the default goal).
+ifdef HOSTED_DARWIN_TARGET
+DARWIN_FOREST_BIN = $(OBJDIR)/forest.bin
+CROSS_MADC_BIN = ../bin/madc-$(DARWIN_ARCH)-macos
+FOREST_EMBED_DEP = $(DARWIN_FOREST_BIN)
+FOREST_EMBED_LDFLAGS = -Wl,-sectcreate,__MADC,__forest,$(DARWIN_FOREST_BIN)
 endif
 DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS) $(MADCDISHDRS)
 
@@ -427,8 +459,8 @@ WHOLE_ARCHIVE_END   ?= -Wl,--no-whole-archive
 $(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB)
 	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(LIBS)
 
-$(BIN): $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB)
-	$(CXX) -o $@ $(OBJDIR)/madc.o $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
+$(BIN): $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB) $(FOREST_EMBED_DEP)
+	$(CXX) -o $@ $(OBJDIR)/madc.o $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS) $(FOREST_EMBED_LDFLAGS)
 
 # lib/libmadc.{a,so} keep ONE path across modes, so make's timestamps alone
 # would silently leave the OTHER mode's libs in place after a mode switch
@@ -477,13 +509,28 @@ $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
-# Hosted-darwin modes compile the PER-MODE embedded_headers.cpp (generated at
+# Apple-target modes compile the PER-MODE embedded_headers.cpp (generated at
 # parse time into the obj tree, EMBED_GEN above) — never src/embedded_headers.cpp,
 # which stays the committed include/madc/-only table for host builds.
-ifdef HOSTED_DARWIN_TARGET
+ifdef DARWIN_PRELUDE_TARGET
 $(OBJDIR)/embedded_headers.o: $(EMBEDDED_HEADERS_CPP) $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+endif
+
+# Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the
+# same-arch cross madc) fresh via a recursive make. FORCE re-runs that make
+# every hosted build (a no-op when current); the freeze itself re-runs only
+# when the freezer binary, the prelude manifest, or the pack script changed
+# (file-mtime prerequisites — the classic if-changed pattern).
+ifdef HOSTED_DARWIN_TARGET
+FORCE:
+
+$(CROSS_MADC_BIN): FORCE
+	@$(MAKE) MODE=cross-$(DARWIN_ARCH)-macos $(CROSS_MADC_BIN)
+
+$(DARWIN_FOREST_BIN): $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh
+	bash ../scripts/forest_pack_darwin.sh $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
 endif
 
 $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)

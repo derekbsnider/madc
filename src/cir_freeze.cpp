@@ -19,6 +19,10 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/getsect.h>	// self-image forest carrier: __MADC,__forest section
+#include <mach-o/ldsyms.h>	// _mh_execute_header (MH_EXECUTE self-probe)
+#endif
 // mir-code-alloc.h (reached via cir_node.h -> c2mir headers) redefines
 // MAP_FAILED to NULL for its own allocator; drop the glibc define so that
 // redefinition is fresh, and compare mmap() results against the real value
@@ -713,6 +717,27 @@ bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 {
 	std::string selfpath;
 	if (!path) {
+#ifdef __APPLE__
+		// Darwin self-image carrier: signed Mach-O forbids appended
+		// bytes (the file must end exactly at the code signature), so
+		// the forest rides a __MADC,__forest section placed at link
+		// time (-sectcreate) or by the post-link packer. The section
+		// data IS the container (footer at its end), already mapped
+		// and slid in the running image — zero-copy, process-lifetime.
+		// _mh_execute_header limits this probe to the executable
+		// image; the shared-library shape (forest-in-dylib) gets its
+		// own dladdr-based arm in the carriers track S4.
+		unsigned long seclen = 0;
+		uint8_t *sec = getsectiondata(&_mh_execute_header, "__MADC",
+					      "__forest", &seclen);
+		if (sec && seclen) {
+			image = sec;
+			len = (size_t)seclen;
+			return true;
+		}
+		// No section: fall through to the file probe (an unpacked dev
+		// binary silently fails the footer check -> live parse).
+#endif
 		selfpath = madc_self_exe_path();
 		if (selfpath.empty())
 			return false;
