@@ -63,6 +63,36 @@ static long MIR_int128_usuboti (void *res, unsigned __int128 a, unsigned __int12
   memcpy (res, &r, 16);
   return ov;
 }
+#ifdef __APPLE__
+/* Checked 128-bit multiply WITHOUT __builtin_mul_overflow: clang lowers the
+   TI case to a __muloti4 libcall, and darwin's libSystem(libcompiler_rt)
+   exports it for x86_64 only -- an arm64-macos link has no home for it (the
+   cross toolchain ships no darwin compiler-rt archive either).  Plain
+   128-bit multiply inlines on both darwin arches, and the wrap check
+   divides with __udivti3, which libSystem exports on both. */
+static long MIR_int128_umul_ov (unsigned __int128 a, unsigned __int128 b, unsigned __int128 *r) {
+  *r = a * b;
+  return a != 0 && *r / a != b;
+}
+static long MIR_int128_muloti (void *res, __int128 a, __int128 b) {
+  unsigned __int128 ua = a < 0 ? -(unsigned __int128) a : (unsigned __int128) a;
+  unsigned __int128 ub = b < 0 ? -(unsigned __int128) b : (unsigned __int128) b;
+  unsigned __int128 ur;
+  int neg = (a < 0) != (b < 0);
+  long ov = MIR_int128_umul_ov (ua, ub, &ur);
+  unsigned __int128 lim = ((unsigned __int128) 1 << 127) - (neg ? 0 : 1);
+  if (ur > lim) ov = 1;
+  __int128 r = neg ? -(__int128) ur : (__int128) ur; /* wraps like the builtin */
+  memcpy (res, &r, 16);
+  return ov;
+}
+static long MIR_int128_umuloti (void *res, unsigned __int128 a, unsigned __int128 b) {
+  unsigned __int128 r;
+  long ov = MIR_int128_umul_ov (a, b, &r);
+  memcpy (res, &r, 16);
+  return ov;
+}
+#else
 static long MIR_int128_muloti (void *res, __int128 a, __int128 b) {
   __int128 r;
   long ov = __builtin_mul_overflow (a, b, &r);
@@ -75,6 +105,7 @@ static long MIR_int128_umuloti (void *res, unsigned __int128 a, unsigned __int12
   memcpy (res, &r, 16);
   return ov;
 }
+#endif
 
 /* AOT: the __mir_*oti overflow helpers have no libgcc equivalent (the
    __divti3 family resolves from libgcc_s in a linked process), so a linked
