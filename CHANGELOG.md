@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+- **feat(aot): `--pack-forest` — emitted native executables carry a
+  frozen container in their self-image carrier (forest-carriers S2).**
+  One format, one loader, N carriers: `--pack-forest=<container>` with a
+  linked native output (`-o` / `-shared`) embeds the container in the
+  emitted image — the ELF arm appends it post-write via the new
+  `madc::dis::snapshot_append_blob` (extracted from
+  `snapshot_writer::append_file` so one owner holds the placement-2
+  pad-to-16 shape; footer at EOF, byte-equivalent to `--freeze-append`),
+  and the Mach-O arm rides a new fork-writer seam
+  (`MIR_object_exec_params.extra_*`): `mir-macho.c` lays a read-only
+  one-section `__MADC,__forest` segment between `__DATA` and
+  `__LINKEDIT` INSIDE the emit-time ad-hoc signature — signed once at
+  emit, no post-link surgery on a signed file, no re-signer anywhere on
+  the product path (the `-sectcreate` insight, now first-class in the
+  emitter). Read-back: `cir_forest_map_image`'s file probe gains a
+  Mach-O arm (pure byte parse of the load commands, host-neutral — the
+  Linux cross madcs verify emitted Mach-O images; macro-proof against
+  `<mach-o/loader.h>` on hosted builds), so `--dump-forest` /
+  `--forest-bind=` / `--run-frozen=` find a packed Mach-O file's
+  container the same way ELF trailers are found. The container is
+  validated with the production reader at emit (a non-container payload
+  fails loudly); `-c` / `-r` / JIT runs refuse the flag at one CLI
+  chokepoint. Gate GREEN on Apple hardware, both arches (A64 native +
+  X64-under-Rosetta): cross-emitted packed binaries carrying the real
+  30-unit darwin groves run under AMFI (rc-exact), hosted
+  `--dump-forest` over the packed files is byte-identical to the
+  containers, and the full native loop — hosted madc freezes, emits
+  packed, AMFI accepts, reads back — is green. Linux: permanent
+  `scripts/forest_emitpack_gate.sh` in fulltest (ELF run + dump parity
+  + both refusal arms; per-arch Mach-O dump-parity legs). The darwin
+  `--freeze-run` half of S2 needed nothing: the hardware probe showed
+  the temp-file + re-exec + file-probe flow already green (no
+  self-rewrite ⇒ no re-signer); the re-signer for rewriting EXISTING
+  signed binaries is consciously deferred (dev convenience, not the
+  product path).
+- **fix(build): per-target MIR variant libs always recurse (FORCE).**
+  The bare `build-*/libmir.a` rules never re-invoked the fork's make
+  once the lib existed, so fork source changes went silently stale
+  under existing build dirs (this slice's writer seam caught it as a
+  stale cross madc rejecting `--pack-forest`). Every variant-lib rule
+  now FORCE-recurses; the fork's `-MMD` tracking decides what rebuilds,
+  and downstream relinks still key off the artifact's real mtime.
+
 ## [v0.46.0] — 2026-07-25
 
 The frozen forest reaches macOS (forest-carriers S1): hosted darwin
