@@ -382,9 +382,17 @@ high-level" — the answer is both.**
   binaries (JIT + native Mach-O AOT) with the embedded darwin C
   prelude; G2 green on Apple hardware, all lanes, both arches
   ([2026-07-25-madc-on-macos-plan.md](2026-07-25-madc-on-macos-plan.md)).
-  REMAINING: MH_OBJECT `.o` flavor (fork); P2 libc++ STD-ABI
-  script-lane flavor; P3 product shape (forest section + re-signer,
-  libmadc.dylib, madcdat). Plan:**
+  Forest-carriers S1 COMPLETE (v0.46.0) — hosted binaries ship PACKED:
+  darwin groves cross-frozen in the container, embedded as a
+  `__MADC,__forest` section via `-sectcreate` (no re-signer on the
+  build path), section read-back; grove bind == live parse on Apple
+  hardware, both arches
+  ([2026-07-25-forest-carriers-plan.md](2026-07-25-forest-carriers-plan.md)).
+  REMAINING: forest-carriers S2–S6 (in-house re-signer +
+  `--freeze-run`/emitted-pack on darwin, carrier probe chain +
+  `--with-forest=` + sidecar, shared shape, `-static-libmadc` Tier A,
+  `madc.ini`); MH_OBJECT `.o` flavor (fork); P2 libc++ STD-ABI
+  script-lane flavor. Plan:**
   [2026-07-25-macho-arm64-plan.md](2026-07-25-macho-arm64-plan.md).
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target

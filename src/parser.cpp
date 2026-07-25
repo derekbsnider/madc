@@ -34022,6 +34022,23 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    tdt = new TokenDataType(alias->spelling(), *dmi->second);
 	    pgm.pack_tap_type(alias->spelling());	// B4a tap (typedef class alias)
 	    pgm.register_scoped_typedef(alias->spelling(), tdt);
+	    // Full live typedef surface, same as the defining-typedef branch
+	    // below: user_typedef_names (freeze visibility + alias-spelled
+	    // use-sites) and the file-scope dkTypedef TopDecl the tree needs
+	    // (the using-alias precedent for a class underlying).
+	    pgm.user_typedef_names.insert(alias->spelling());
+	    if ( pgm.class_scope_stack.empty() && pgm.compounds.empty() )
+	    {
+		Program::TopDecl td;
+		td.kind = Program::DeclKind::dkTypedef;
+		td.name = alias->spelling();
+		td.dd = dmi->second;
+		td.tdt = tdt;
+		td.file = TokenBase::_parse_file;
+		td.line = TokenBase::_parse_line;
+		td.origin = alias;
+		pgm.top_decls.push_back(td);
+	    }
 	    return NULL;
 	}
 	tdt = new TokenDataType(tag->spelling(), *dmi->second);
@@ -35359,6 +35376,29 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	pgm.pack_tap_struct(alias->spelling());
 	pgm.register_scoped_typedef(alias->spelling(), tdt);
 	pgm.struct_map.set(alias->spelling(), ddc);
+	// The alias is a user typedef like any other — the FULL live surface:
+	// user_typedef_names (use-sites emit the alias spelling; the forest
+	// freeze's flat-typedef walk emits its DK_TYPEDEF record) AND a
+	// file-scope dkTypedef TopDecl (the tree carries the `typedef` decl
+	// those alias-spelled use-sites reference — the same shape the
+	// using-alias path records for a class underlying). Historically this
+	// branch registered only the type maps, so a class-parsed alias
+	// (darwin's `typedef struct __sFILE {... fnptr members ...} FILE;`
+	// routes here via the class handoff) was invisible to the freeze and a
+	// grove-bound consumer lost FILE while live parse resolved it.
+	pgm.user_typedef_names.insert(alias->spelling());
+	if ( pgm.class_scope_stack.empty() && pgm.compounds.empty() )
+	{
+	    Program::TopDecl td;
+	    td.kind = Program::DeclKind::dkTypedef;
+	    td.name = alias->spelling();
+	    td.dd = ddc;
+	    td.tdt = tdt;
+	    td.file = TokenBase::_parse_file;
+	    td.line = TokenBase::_parse_line;
+	    td.origin = alias;
+	    pgm.top_decls.push_back(td);
+	}
 	return NULL;
     }
 

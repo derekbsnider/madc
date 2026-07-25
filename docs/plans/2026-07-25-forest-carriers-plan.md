@@ -173,6 +173,41 @@ product path.
    hosted link → darwin section read-back arm → hosted binaries ship
    PACKED. Gate: hosted G2 re-run on hardware; grove bind on the Mac
    == live parse output; Linux packed arbiter untouched.
+   **S1 COMPLETE (2026-07-25): gate GREEN on Apple hardware, both
+   arches** — `--dump-forest` reads 30 units from the running binary's
+   own `__MADC,__forest` section (AMFI accepted the sectcreate'd signed
+   binary); all lanes green (hello 7 / compute 28 / g2x 55 JIT+AOT /
+   aot 33) on A64 native and X64-under-Rosetta; grove bind provably
+   engaged (`-v`: "#include <stdio.h> bound to grove unit 9") and bind
+   output byte-identical to `--no-forest-bind` live parse; Linux
+   fulltest 756/0/0/9 + all forest gates green. The gate caught a real
+   target-independent parser bug: `typedef struct __sFILE {... fnptr
+   members ...} FILE;` (Apple's FILE shape) routes through
+   TokenCLASS::parse, whose typedef branches registered only the type
+   maps — no `user_typedef_names`, no dkTypedef TopDecl — so the
+   freeze never emitted the alias's DK_TYPEDEF record and bound
+   consumers lost `FILE` while live parse resolved it. Fixed at the
+   parser layer (both branches now record the full typedef surface,
+   the using-alias precedent); pinned by the new Linux
+   forest_bind_gate case `[fnptrbody]`. Known follow-on: fnptr
+   TYPEDEFS themselves (darwin `sig_t`) still cleanly lack — they need
+   a DK_FPTR arena kind (the DK_CARRAY precedent).
+   *Implementation notes (landed on `feature/forest-carriers-claude`):*
+   the freezer is the same-arch CROSS madc, which now embeds the same
+   per-target darwin prelude as the hosted binary
+   (`DARWIN_PRELUDE_TARGET` covers cross + hosted MODEs); the freeze
+   reuses `--freeze-append` onto an EMPTY file (placement 2 = the
+   release-pack compression profile; container starts at offset 0, so
+   the file is a valid standalone container for `-sectcreate`);
+   `scripts/forest_pack_darwin.sh` generates the TU from the prelude's
+   `.MANIFEST` (one owner of the header list) and gates on every name
+   being a directory unit; hosted MODEs regained zstd via per-target
+   static libs (`/workspace/zstd/libzstd-{arm64,x86-64}-macos.a`) so
+   the consumer reads the release codec; darwin-inline bodies whose
+   callees are libSystem-private (`__maskrune`, `__swbuf`,
+   `__sincos_stret`…) are unresolvable on the Linux freezer host and
+   revert to DEFBODY body-span carry — consumers derive them on first
+   use (the v26 path, the same lowering G2 proved live).
 2. **S2 — In-house re-signer + darwin `--freeze-run`/emitted-pack:**
    CodeDirectory reuse from `mir-macho.c`; post-link pack + re-sign;
    AMFI acceptance on hardware is the gate.

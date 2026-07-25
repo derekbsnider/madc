@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+## [v0.46.0] — 2026-07-25
+
+The frozen forest reaches macOS (forest-carriers S1): hosted darwin
+binaries ship PACKED via a `__MADC,__forest` Mach-O section —
+cross-frozen groves, `-sectcreate` embed (no re-signer on the build
+path), section read-back — gate green on Apple hardware, both arches;
+plus the typedef-of-class parser fix the gate caught.
+
+- **feat(forest): the frozen forest reaches macOS — hosted binaries ship
+  PACKED via a `__MADC,__forest` Mach-O section (forest-carriers S1).**
+  The darwin standard-header groves are cross-frozen in the build
+  container by the same-arch cross madc (which now embeds the identical
+  per-target darwin prelude, so freezer and consumer parse the same
+  text with the same target facts — same context hash, same config
+  word) and embedded at hosted link time via
+  `-Wl,-sectcreate,__MADC,__forest`: lld computes the ad-hoc code
+  signature AFTER section layout, so the build path needs no re-signer
+  (appended blobs are AMFI-illegal on signed Mach-O — the file must end
+  exactly at the signature; the section is the darwin self-image
+  carrier, the ELF trailer stays untouched on Linux). Read-back:
+  `cir_forest_map_image`'s darwin arm probes the running image's
+  section via `getsectiondata` (zero-copy, slid) before the file probe.
+  `scripts/forest_pack_darwin.sh` generates the freeze TU from the
+  prelude's `.MANIFEST` (one owner of the header list) and gates on
+  every name being a directory unit; hosted MODEs regained zstd via
+  per-target static libs so the consumer reads the release codec.
+  Gate GREEN on Apple hardware, both arches: 30 units read from the
+  binary's own section, all lanes (JIT/AOT × .mad/.c), grove bind
+  provably engaged and byte-identical to `--no-forest-bind` live parse.
+- **fix(parser): typedef-of-class registers the FULL typedef surface
+  (grove-bound darwin `FILE`).** Apple's `typedef struct __sFILE {...
+  fnptr members ...} FILE;` routes through the class parser, whose
+  typedef branches registered only the type maps — no
+  `user_typedef_names`, no dkTypedef TopDecl — so the forest freeze
+  never emitted the alias's DK_TYPEDEF record and a grove-bound
+  consumer lost `FILE` while live parse resolved it. Both branches now
+  record the same surface every other typedef path records (the
+  using-alias precedent); the freeze's silent "cleanly lacks" drops
+  now DBG-log name and reason. New Linux `forest_bind_gate` case
+  `[fnptrbody]` pins the shape. Known follow-on: fnptr TYPEDEFS
+  (darwin `sig_t`) still cleanly lack — they need a DK_FPTR arena kind
+  (the DK_CARRAY precedent).
+
 ## [v0.45.0] — 2026-07-25
 
 madc runs natively on the Macs (madc-on-macOS Route 1, Phase 1 complete):

@@ -241,7 +241,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.45.0): 756 integration tests pass (0 failing, 0 timed out, 9 skipped) through both the live and packed release binaries; the native `--exe` lane is at 740/0. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.46.0): 756 integration tests pass (0 failing, 0 timed out, 9 skipped) through both the live and packed release binaries; the native `--exe` lane is at 740/0. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -282,29 +282,28 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.45.0** — **madc runs natively on macOS** (madc-on-macOS Route 1,
-Phase 1 complete). `make -C src hosted-arm64-macos` /
-`hosted-x86-64-macos` cross-build **full madc binaries for the Macs**
-from Linux (clang-18 + a staged macOS SDK + ld64.lld): JIT **and**
-native signed Mach-O AOT — the v0.44.0 writer becomes the native
-writer through host detection. Hosted binaries carry their own darwin
-C standard headers as an embedded, clang-flattened prelude (macro
-state preserved via `-dD` text; generated per mode from the SDK, never
-committed), fixing the G2 garble at its root — undeclared printf had
-met Apple arm64's stack-varargs ABI. Apple `__asm("_open")` header
-labels now strip to madc's canonical C/dlsym symbol space so the
-labeled POSIX family works in both JIT and AOT lanes. **G2 green on
-Apple hardware in every lane on both architectures.** Real Apple
-headers also shook out target-independent parser depth fixes: full GCC
-`#pragma pack` semantics with parse-time application (balanced
-push/pop regions silently lost packing before), anonymous/nested
-function-pointer parameters, the classic C spiral declarator, postfix
-`++` under a deref of a member chain, `_Float16`. Suites: fulltest
-**756/0/0/9**; `--exe` **740/0**. Ships against MIR fork release
-`1.0-madc.0.45.0` (host-independent object layer, Apple int128 arms).
+**v0.46.0** — **the frozen forest reaches macOS** (forest-carriers plan
+S1): hosted darwin binaries ship **PACKED**. The darwin standard-header
+groves are **cross-frozen** in the build container by the same-arch
+cross madc (which now embeds the identical per-target darwin prelude —
+same text, same target facts, same context hash) and embedded at hosted
+link time as a **`__MADC,__forest` Mach-O section** via `-sectcreate`:
+lld signs after section layout, so the build path needs **no
+re-signer** (appended blobs are AMFI-illegal on signed Mach-O; the ELF
+trailer stays the Linux carrier). Read-back probes the running image's
+section (`getsectiondata`, zero-copy) — `--dump-forest` on a Mac reads
+30 units from the binary itself, and standard `#include`s **bind from
+the forest** with output byte-identical to live parse, hardware-proven
+on both architectures. The gate caught a real parser bug: Apple's
+`typedef struct __sFILE {... fnptr members ...} FILE;` routes through
+the class parser, whose typedef branches under-registered the alias —
+fixed at the parser layer, pinned by the new `forest_bind_gate` case
+`[fnptrbody]`. Suites: fulltest **756/0/0/9**, packed arbiter 240
+units + **756/0/0/9**, `--exe` **740/0**. Ships against MIR fork
+release `1.0-madc.0.45.0` (fork unchanged).
 
 **Branch state:** `master` is at v0.38.0 (promoted 2026-07-23);
-`develop` carries v0.45.0 — the `/promote` Mach-O milestone condition
+`develop` carries v0.46.0 — the `/promote` Mach-O milestone condition
 is met (owner's call). The
 [MIR fork](https://github.com/derekbsnider/mir)'s `master` tracks
 madc's `master` in lockstep; fork releases pair with madc's (see
@@ -312,11 +311,11 @@ madc's `master` in lockstep; fork releases pair with madc's (see
 
 ### Recent Releases
 
+- **v0.46.0** — forest-carriers S1: hosted darwin binaries ship PACKED — darwin groves cross-frozen by the same-arch cross madc (identical embedded prelude), embedded as a `__MADC,__forest` Mach-O section via `-sectcreate` (lld signs after layout: no re-signer on the build path), section read-back via `getsectiondata`; grove bind == live parse on Apple hardware, both arches; typedef-of-class parser fix ([fnptrbody] gate); fulltest 756/0/0/9 + packed 240 units, `--exe` 740/0; fork unchanged (1.0-madc.0.45.0)
 - **v0.45.0** — madc-on-macOS P1 complete: hosted arm64/x86-64 darwin madc binaries (JIT + native Mach-O AOT) with the embedded darwin C prelude (clang-flattened, macro-preserving); Apple asm-label symbol-space strip; parser depth fixes from real Apple headers (#pragma pack parse-time architecture, fnptr declarator breadth, spiral, deref-postinc); G2 green on Apple hardware, all lanes, both arches; fulltest 756/0/0/9, `--exe` 740/0; fork release 1.0-madc.0.45.0
 - **v0.44.0** — Mach-O (axis B writer + cross madcs): `mir-macho.c` MH_EXECUTE writer behind the `MIR_object` seam (PIE, LC_MAIN, classic dyld rebase/bind, ad-hoc SHA-256 code signature — MIR signs its own binaries); `MIR_TARGET_X86_64_MACOS` + target-keyed c2mir predefines; emit-only `bin/madc-{x86-64,arm64}-macos`; Gate B green vs clang+ld64.lld references; Gate B-final green on BOTH owner Macs; fulltest + packed 754/0/0/9, `--exe`/`--obj` 738/0; fork release 1.0-madc.0.44.0
 - **v0.43.0** — aarch64 cross-AOT (Mach-O/ARM64 axis A): emit-only `bin/madc-aarch64-linux` cross compiler; fork `mir-target.h` target selection + full aarch64 PIC-addrpool capture/ELF relocs + aarch64 `_start` stub; gate A green under qemu-aarch64 (gcc-reference parity, madc `.o`-link merge lane runtime-free); eval-shim gating makes standalone executables runtime-free; fulltest + packed 754/0/0/9, `--exe`/`--obj` 738/0; fork release 1.0-madc.0.43.0
 - **v0.42.0** — inline un-erasure (S4 follow-through): `inline` = real C++ specifier → vague linkage; user-header inline fns AND C++17 inline variables merge weak across TUs (fn + data), dynamic init once-guarded (g++ COMDAT-init model); `inline namespace` on the keyword path; `static inline` internal; C modes keep erasure; fork untouched; fulltest + packed 754/0/0/9, `--exe`/`--obj` 738/0
-- **v0.41.0** — ODR/linkonce weak (ELF-completion slice 4): C++ vague-linkage set (instantiations, in-class bodies, vtables, typeinfo, synth members) captured STB_WEAK — identical per-TU copies merge at links, internal and external ld alike; fork binding enum GLOBAL/WEAK/LINKONCE (only interposable weak suppresses inlining, gcc parity); bindings survive MIR binary/text IO; fulltest + packed 753/0/0/9, `--exe`/`--obj` 737/0; fork release 1.0-madc.0.41.0
 
 ## Roadmap
 

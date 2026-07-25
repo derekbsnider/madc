@@ -3399,15 +3399,23 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 	for (std::set<std::string>::const_iterator it = prog->user_typedef_names.begin();
 	     it != prog->user_typedef_names.end(); ++it) {
 		flat_datatype_map_iter dti = prog->datatype_map.find(*it);
-		if (dti == prog->datatype_map.end() || !*dti)
+		if (dti == prog->datatype_map.end() || !*dti) {
+			DBG(std::cout << "arena_complete: flat typedef " << *it
+				      << " has no datatype_map entry — cleanly lacks"
+				      << std::endl);
 			continue;
+		}
 		DataDef *underlying = &(*dti)->definition;
 		if (!underlying)
 			continue;
 		uint32_t uid = forest_serialize_type_id(underlying);
 		if (!(madc::dis::arena_id_is_pinned(uid)
-		      || (madc::dis::arena_id_is_project(uid) && a.has_def(uid))))
+		      || (madc::dis::arena_id_is_project(uid) && a.has_def(uid)))) {
+			DBG(std::cout << "arena_complete: flat typedef " << *it
+				      << " underlying tid=" << uid
+				      << " not resolvable — cleanly lacks" << std::endl);
 			continue;	// underlying not resolvable from the arena — cleanly lack
+		}
 		arena_alias p;
 		p.name_id = a.strings.intern(*it);
 		p.ns_id   = 0;
