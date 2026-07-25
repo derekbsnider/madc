@@ -322,7 +322,23 @@ typedef struct MIR_object_exec_params {
   int pie_p;           /* nonzero: emit the executable as a position-independent
                           ET_DYN (PIE) instead of fixed-base ET_EXEC; ignored when
                           shared_p is set */
+  const char *identifier; /* Apple targets: the code-signature identifier
+                             (conventionally the output basename); NULL =
+                             "mir.image".  Ignored for ELF targets.  Callers
+                             must zero-initialize this struct so newly added
+                             tail fields default off. */
 } MIR_object_exec_params;
+
+/* Apple targets (MIR_TARGET_APPLE_P builds): MIR_object_emit_executable
+   assembles a Mach-O64 MH_EXECUTE image instead of ELF -- PIE, linked
+   against /usr/lib/libSystem.B.dylib (params->needed become additional
+   LC_LOAD_DYLIBs; every import still binds against libSystem), entered
+   through LC_MAIN (no _start stub -- dyld's libdyld glue calls the entry
+   symbol with argc/argv and exits with its return), internal address
+   slots baked + rebase opcodes, imports as `_'-prefixed dyld bind
+   opcodes, and a linker-signed ad-hoc code signature (SHA-256 page
+   hashes, no certificate -- mandatory on arm64).  params->interp and
+   runpath are ignored; shared_p is refused (no dylib emission). */
 extern int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *params,
                                        void **buf, size_t *size);
 

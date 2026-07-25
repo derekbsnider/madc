@@ -1764,6 +1764,12 @@ static const uint8_t objx_start_stub[]
    (x86-64 SSE pool constants: movaps/xorpd fault otherwise) */
 #define OBJX_TEXT_BIAS OBJX_STUB_SIZE
 
+#if MIR_TARGET_APPLE_P
+/* Apple targets swap the executable assembler behind the seam: same
+   builder, Mach-O container (see mir-macho.c's header comment). */
+#include "mir-macho.c"
+#endif
+
 static uint32_t objx_elf_hash (const char *name) {
   uint32_t h = 0, g;
   for (; *name; ++name) {
@@ -1781,6 +1787,9 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   if (size != NULL) *size = 0;
   if (obj == NULL || params == NULL || buf == NULL || size == NULL || !OBJ_TARGET_SUPPORTED_P)
     return -1;
+#if MIR_TARGET_APPLE_P
+  return macho_emit_executable (obj, params, buf, size); /* Mach-O container */
+#endif
   int shared_p = params->shared_p != 0;
   int pie_p = !shared_p && params->pie_p != 0;
   /* pic_image_p: the load bias is unknown (ET_DYN) -- base 0, internal
