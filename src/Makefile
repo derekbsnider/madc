@@ -315,6 +315,14 @@ endif
 debug:
 	$(MAKE) MODE=debug ../bin/madc-debug
 
+# Recursive-make freshness lever (shared): a FORCE prerequisite makes the
+# rule ALWAYS recurse; the inner make's own dependency tracking (the fork's
+# -MMD .d files for the variant libs; per-MODE deps for the cross madc)
+# decides whether anything rebuilds, and downstream relinks still key off
+# the artifact's real mtime. Without it a bare artifact rule goes silently
+# stale when fork sources change under an existing build dir.
+FORCE:
+
 # Emit-only cross compiler for aarch64-linux ELF (the qemu-gated axis A
 # vehicle; the arm64-macos twin arrives with the axis B Mach-O writer).
 cross-aarch64-linux:
@@ -323,7 +331,7 @@ cross-aarch64-linux:
 # MIR variant lib for the cross target: the fork's stock makefile with the
 # target define via its CPPFLAGS hook (-I. is REQUIRED — a CLI CPPFLAGS
 # clobbers the fork makefile's default -I$$(SRC_DIR)).
-$(MIRDIR)/build-aarch64-linux/libmir.a:
+$(MIRDIR)/build-aarch64-linux/libmir.a: FORCE
 	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-aarch64-linux CPPFLAGS='-I. -DMIR_TARGET_AARCH64_LINUX' build-aarch64-linux/libmir.a
 
 # Emit-only cross compilers for the Mach-O targets (axis B): the same MIR
@@ -335,10 +343,10 @@ cross-x86-64-macos:
 cross-arm64-macos:
 	$(MAKE) MODE=cross-arm64-macos ../bin/madc-arm64-macos
 
-$(MIRDIR)/build-x86-64-macos/libmir.a:
+$(MIRDIR)/build-x86-64-macos/libmir.a: FORCE
 	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-x86-64-macos CPPFLAGS='-I. -DMIR_TARGET_X86_64_MACOS' build-x86-64-macos/libmir.a
 
-$(MIRDIR)/build-arm64-macos/libmir.a:
+$(MIRDIR)/build-arm64-macos/libmir.a: FORCE
 	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-arm64-macos CPPFLAGS='-I. -DMIR_TARGET_ARM64_MACOS' build-arm64-macos/libmir.a
 
 # madc hosted on macOS (Route 1): full madc binaries for the Macs.
@@ -351,11 +359,11 @@ hosted-arm64-macos:
 # darwin-HOST MIR variant libs: built BY the darwin compiler, so host
 # detection selects the Apple arms natively — no MIR_TARGET knobs. (The
 # fork makefile has no mkdir rule for new BUILD_DIRs — create it here.)
-$(MIRDIR)/build-hosted-arm64-macos/libmir.a:
+$(MIRDIR)/build-hosted-arm64-macos/libmir.a: FORCE
 	mkdir -p $(MIRDIR)/build-hosted-arm64-macos
 	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-hosted-arm64-macos CC='$(CC)' AR='$(AR)' build-hosted-arm64-macos/libmir.a
 
-$(MIRDIR)/build-hosted-x86-64-macos/libmir.a:
+$(MIRDIR)/build-hosted-x86-64-macos/libmir.a: FORCE
 	mkdir -p $(MIRDIR)/build-hosted-x86-64-macos
 	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-hosted-x86-64-macos CC='$(CC)' AR='$(AR)' build-hosted-x86-64-macos/libmir.a
 
@@ -432,6 +440,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) test
 	@cd .. && bash scripts/class_pattern_equivalence.sh
 	@cd .. && bash scripts/forest_selfexe_gate.sh
 	@cd .. && bash scripts/forest_bind_gate.sh
+	@cd .. && bash scripts/forest_emitpack_gate.sh
 	@cd .. && bash scripts/project_gate.sh
 	@cd .. && bash scripts/forest_index_oracle.sh
 	@cd .. && bash scripts/forest_dm_oracle.sh
@@ -519,13 +528,12 @@ $(OBJDIR)/embedded_headers.o: $(EMBEDDED_HEADERS_CPP) $(DEPENDS)
 endif
 
 # Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the
-# same-arch cross madc) fresh via a recursive make. FORCE re-runs that make
-# every hosted build (a no-op when current); the freeze itself re-runs only
-# when the freezer binary, the prelude manifest, or the pack script changed
-# (file-mtime prerequisites — the classic if-changed pattern).
+# same-arch cross madc) fresh via a recursive make. FORCE (the shared rule
+# by the variant-lib section) re-runs that make every hosted build (a no-op
+# when current); the freeze itself re-runs only when the freezer binary, the
+# prelude manifest, or the pack script changed (file-mtime prerequisites —
+# the classic if-changed pattern).
 ifdef HOSTED_DARWIN_TARGET
-FORCE:
-
 $(CROSS_MADC_BIN): FORCE
 	@$(MAKE) MODE=cross-$(DARWIN_ARCH)-macos $(CROSS_MADC_BIN)
 

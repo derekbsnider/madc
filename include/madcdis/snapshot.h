@@ -143,6 +143,14 @@ public:
     size_t segment_count() const { return _segs.size(); }
 };
 
+// Append a PRE-BUILT container blob to an existing file — the placement-2
+// shape (pad the host to 16 so interior 16-aligned payload offsets stay
+// aligned, then the blob; the footer lands at EOF). The bytes must already
+// be a complete container (snapshot_writer::build's output, or a standalone
+// container file read verbatim). append_file rides this; --pack-forest's
+// ELF carrier arm calls it directly with a container file's bytes.
+bool snapshot_append_blob(const char *path, const void *blob, size_t len);
+
 // Opens a container over a memory image whose LAST bytes are the footer — a
 // standalone snapshot file, or a whole executable with the blob appended. The
 // image must stay live for the reader's lifetime (raw_ptr/read_segment read

@@ -211,6 +211,38 @@ product path.
 2. **S2 — In-house re-signer + darwin `--freeze-run`/emitted-pack:**
    CodeDirectory reuse from `mir-macho.c`; post-link pack + re-sign;
    AMFI acceptance on hardware is the gate.
+   **S2 COMPLETE (2026-07-25): gate GREEN on Apple hardware, both
+   arches** — with the scope the hardware probe narrowed: darwin
+   `--freeze-run` needed nothing (temp-file container + re-exec + file
+   probe, no self-rewrite), and emitted-pack needed **no re-signer at
+   all** — the blob rides the fork writer at emit time. `--pack-forest=
+   <container>` with `-o`/`-shared` embeds a frozen container in the
+   emitted image's self-image carrier: ELF appends the trailer
+   post-write (`snapshot_append_blob`, extracted so ONE owner holds the
+   placement-2 shape); Mach-O passes the blob through a new
+   `MIR_object_exec_params` tail seam (`extra_segname/sectname/data/
+   size`) and `mir-macho.c` lays a read-only one-section `__MADC`
+   segment between `__DATA` and `__LINKEDIT`, covered by the emit-time
+   ad-hoc signature — signed once, no post-link surgery (the
+   `-sectcreate` insight, now first-class in the emitter). Read-back:
+   `cir_forest_map_image`'s file probe gained a Mach-O arm (pure byte
+   parse, host-neutral — Linux cross madcs verify emitted images).
+   Hardware evidence (`~/s2pack`): cross-emitted packed binaries
+   carrying the REAL 30-unit darwin groves run on the Mac (rc 42, AMFI
+   accepted) on A64 native + X64-under-Rosetta; hosted `--dump-forest`
+   over the packed files is byte-identical to the containers; and the
+   FULL NATIVE LOOP — hosted madc freezes, emits packed, AMFI accepts,
+   reads back — is green on both arches. Linux: permanent
+   `forest_emitpack_gate.sh` in fulltest (ELF run + dump parity + both
+   refusal arms; per-arch Mach-O dump-parity legs, SKIP when cross
+   madcs absent). Also fixed en route: per-target MIR variant-lib rules
+   now FORCE-recurse (a fork source change under an existing build dir
+   went silently stale — this slice's writer change caught it), and the
+   Mach-O probe constants are macro-proof against `<mach-o/loader.h>`.
+   **Deferred residue (consciously, LOW priority):** the in-house
+   re-signer for rewriting EXISTING signed binaries (on-Mac self-pack
+   of an already-shipped image = dev convenience; the product path is
+   emit-time/link-time packing, which needs no re-signer anywhere).
 3. **S3 — Carrier probe chain + `--with-forest=` + sidecar:** unify
    discovery behind the ordered arms; sidecar file support; failure
    policy knobs. Gate: all shapes × Linux/macOS matrix green.

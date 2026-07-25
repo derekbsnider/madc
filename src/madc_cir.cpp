@@ -1152,6 +1152,87 @@ static bool cir_write_image_file(const char *out_path, void *buf, size_t size,
     return ok;
 }
 
+// --pack-forest=<container> (forest-carriers S2): the emitted native
+// executable carries the container in its self-image carrier. One format,
+// one loader, N carriers: the ELF arm appends the blob after the write
+// (snapshot_append_blob — footer at EOF, byte-equivalent to the
+// --freeze-append placement); the Mach-O arm rides the fork writer's
+// extra-section seam so the blob sits INSIDE the signed image as
+// __MADC,__forest (a signed Mach-O cannot take appended bytes; signed once
+// at emit, no post-link surgery).
+const char *madc_pack_forest_path = NULL;
+
+// Load + validate the container with the production reader — an emitted
+// binary carrying an unopenable carrier would ship dead weight silently,
+// so a non-container file fails the emit loudly instead.
+static bool cir_pack_forest_load(std::vector<uint8_t> &blob)
+{
+    FILE *f = fopen(madc_pack_forest_path, "rb");
+    if (!f) {
+	fprintf(stderr, "madc: --pack-forest: cannot open %s: %s\n",
+		madc_pack_forest_path, strerror(errno));
+	return false;
+    }
+    bool ok = fseek(f, 0, SEEK_END) == 0;
+    long sz = ok ? ftell(f) : -1;
+    ok = ok && sz > 0 && fseek(f, 0, SEEK_SET) == 0;
+    if (ok) {
+	blob.resize((size_t)sz);
+	ok = fread(blob.data(), 1, blob.size(), f) == blob.size();
+    }
+    fclose(f);
+    if (!ok) {
+	fprintf(stderr, "madc: --pack-forest: cannot read %s\n",
+		madc_pack_forest_path);
+	return false;
+    }
+    madc::dis::snapshot_reader r;
+    if (!r.open(blob.data(), blob.size())) {
+	fprintf(stderr, "madc: --pack-forest: %s is not a frozen forest"
+		" container\n", madc_pack_forest_path);
+	return false;
+    }
+    return true;
+}
+
+// The pre-emit half of the carrier: Mach-O images take the blob as the
+// writer's extra section (it must be inside the code signature). The blob
+// must stay live until the emit call returns.
+static void cir_pack_forest_attach(MIR_object_exec_params &xp,
+				   const std::vector<uint8_t> &blob)
+{
+#if MADC_TARGET_APPLE_P
+    if (!blob.empty()) {
+	xp.extra_segname = "__MADC";
+	xp.extra_sectname = "__forest";
+	xp.extra_data = blob.data();
+	xp.extra_size = blob.size();
+    }
+#else
+    (void)xp;
+    (void)blob;		// ELF: the carrier is the post-write trailer
+#endif
+}
+
+// The post-write half: ELF appends the container (pad-to-16 + blob, the
+// placement-2 shape). Mach-O images already carry it under the signature.
+static bool cir_pack_forest_finish(const char *out_path,
+				   const std::vector<uint8_t> &blob)
+{
+    if (blob.empty())
+	return true;
+#if MADC_TARGET_APPLE_P
+    (void)out_path;
+    return true;
+#else
+    if (madc::dis::snapshot_append_blob(out_path, blob.data(), blob.size()))
+	return true;
+    fprintf(stderr, "madc: --pack-forest: cannot append container to %s\n",
+	    out_path);
+    return false;
+#endif
+}
+
 // Pull the finished object capture out of ctx and write it as a
 // relocatable .o. Shared by the single-TU session (-c), the per-TU
 // project loop, and the whole-program -r lane.
@@ -1324,6 +1405,10 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     // the output basename (ignored by the ELF writer).
     const char *out_base = strrchr(out_path, '/');
     xp.identifier = out_base ? out_base + 1 : out_path;
+    std::vector<uint8_t> pack_blob;
+    if (madc_pack_forest_path && !cir_pack_forest_load(pack_blob))
+	return false;
+    cir_pack_forest_attach(xp, pack_blob);
     void *buf = NULL;
     size_t size = 0;
     if (c2mir_get_native_executable(ctx, &xp, &buf, &size) != 0 || !buf) {
@@ -1333,7 +1418,8 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 		  " (is main() defined?)\n");
 	return false;
     }
-    return cir_write_image_file(out_path, buf, size, !shared);
+    return cir_write_image_file(out_path, buf, size, !shared)
+	   && cir_pack_forest_finish(out_path, pack_blob);
 }
 
 bool CirJitSession::emit_native_executable(const char *out_path,
@@ -1616,6 +1702,12 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	cir_fill_exec_params(xp, kind, libs, runpath);
 	const char *out_base = strrchr(out_path, '/');
 	xp.identifier = out_base ? out_base + 1 : out_path;
+	std::vector<uint8_t> pack_blob;
+	if (madc_pack_forest_path && !cir_pack_forest_load(pack_blob)) {
+	    MIR_object_destroy(obj);
+	    return -1;
+	}
+	cir_pack_forest_attach(xp, pack_blob);
 	if (MIR_object_emit_executable(obj, &xp, &buf, &size) != 0 || !buf)
 	    fprintf(stderr, kind == mnkShared
 		    ? "madc: native shared-object emission failed\n"
@@ -1623,7 +1715,8 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 		      " (is main() defined?)\n");
 	else
 	    ok = cir_write_image_file(out_path, buf, size,
-				      kind != mnkShared);
+				      kind != mnkShared)
+		 && cir_pack_forest_finish(out_path, pack_blob);
     }
     MIR_object_destroy(obj);
     return ok ? 0 : -1;
