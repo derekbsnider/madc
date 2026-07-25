@@ -19,7 +19,12 @@ master stays at v0.38.0 until Mach-O support lands on develop.
   signed image itself (the ELF-track law, unchanged).
 - No macOS build env exists or is planned; the laptop (Apple Silicon)
   runs finished binaries only.
-- Target is **arm64** (x86-64 Mach-O is legacy; not in scope).
+- Target is **arm64** ~~(x86-64 Mach-O is legacy; not in scope)~~ —
+  **superseded by owner directive 2026-07-25 (axis B kickoff): BOTH
+  targets are in scope** — deliver a *madc-A64_MachO* binary (Apple
+  Silicon laptop) AND a *madc-X64_MachO* binary (the owner's Intel Mac
+  test device). Owner shorthand maps to the settled triple-style
+  naming: A64 = `arm64-macos`, X64 = `x86-64-macos`.
 - No slice proliferation: two axes, each shipped complete, each with a
   Linux-side gate.
 
@@ -73,7 +78,14 @@ under qemu.
 
 ### Axis B — Mach-O writer + ad-hoc signature (fork)
 
-Same captured aarch64 code, different container format.
+Same captured code, different container format.  Two legs (owner
+directive 2026-07-25), sequenced X64 → A64: the writer is built once
+and proven first against the long-proven x86-64 capture (Intel Macs
+run unsigned binaries — format bugs isolate from signing bugs), then
+the arm64 leg adds the mandatory ad-hoc signature and rides the
+axis-A aarch64 capture.  Deliverables: **madc-X64_MachO** (Intel Mac)
+and **madc-A64_MachO** (Apple Silicon laptop) test binaries on the
+NAS, each handed over with its exact path + Linux-side evidence.
 
 1. Mach-O64 writer behind the seam: header, `LC_SEGMENT_64`
    (`__TEXT`/`__DATA_CONST`/`__DATA`/`__LINKEDIT`), `LC_SYMTAB`/
@@ -93,10 +105,12 @@ Same captured aarch64 code, different container format.
 5. **Gate B (Linux):** `llvm-otool`/`llvm-readobj`/`llvm-objdump`
    validate structure, symbols, relocations, and signature layout;
    dyld opcode streams decoded and checked.
-6. **Gate B-final (the only macOS step):** owner copies the binary to
-   the Apple Silicon laptop and runs it.  (Owner 2026-07-25: when the
-   first arm64 Mach-O test binary exists, tell the owner exactly where
-   it is — NAS path — along with the Linux-side evidence for it.)
+6. **Gate B-final (the only macOS steps):** owner copies the binaries
+   to the Macs and runs them — the X64 binary on the Intel Mac (can
+   land early, pre-signature), the A64 binary on the Apple Silicon
+   laptop.  (Owner 2026-07-25: when each Mach-O test binary exists,
+   tell the owner exactly where it is — NAS path — along with the
+   Linux-side evidence for it.)
 
 ### Sequencing
 
@@ -140,15 +154,21 @@ compiled stack; no runtime target switching anywhere.
 
 ### Decided defaults (change only on owner directive)
 
-- arm64 only; no x86-64 Mach-O, no arm64e (pointer authentication)
-  — plain arm64 slice runs fine on Apple Silicon.
-  - Owner note 2026-07-25: an x86 macOS test device also exists ("we can
-    test both").  That makes an `x86_64-macos` target a CANDIDATE axis-B
-    de-risking step — validate the Mach-O writer/dyld/signature with the
-    already-proven x86-64 capture before the arm64 leg (Intel Macs also
-    run unsigned binaries, so it isolates format bugs from signing).
-    Not in scope until the owner says so; needs the x86-64-Darwin ABI
-    audit (c2mir/gen `__APPLE__` arms) if adopted.
+- ~~arm64 only~~ **BOTH arm64 AND x86-64 Mach-O (owner directive
+  2026-07-25, axis B kickoff)**; still no arm64e (pointer
+  authentication) — plain arm64 slice runs fine on Apple Silicon.
+  - The `x86_64-macos` de-risking step is ADOPTED and sequenced FIRST:
+    validate the Mach-O writer/dyld/signature with the already-proven
+    x86-64 capture before the arm64 leg (Intel Macs also run unsigned
+    binaries, so it isolates format bugs from signing).
+  - x86-64-Darwin ABI audit result (2026-07-25 recon): MIR's x86-64
+    gen/ABI code (`mir-gen-x86_64.c`, `cx86_64-ABI-code.c`) has ZERO
+    `__APPLE__` sites — Darwin x86-64 is SysV at MIR's level.  The only
+    Apple arms are in the `mirc_x86_64_*` predefined-macro/typedef
+    headers + the `c2mir.c` include chains, i.e. the same
+    target-selection treatment axis A gave aarch64.  `long double` on
+    x86-64-Darwin = 80-bit x87 / 16 bytes = identical to linux — the
+    front end needs zero layout changes for the X64 leg.
 - Classic dyld info before chained fixups; minos 12.0.
 - Container provisioning (`qemu-user`, `gcc-aarch64-linux-gnu`) —
   DONE 2026-07-25 (loop proven: cross-compiled exit-42 binary runs
