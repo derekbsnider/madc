@@ -266,6 +266,12 @@ static void install_resource_guards(size_t project_tus)
     // MADC_MEM_LIMIT overrides the computed default verbatim.
     rlim_t default_mb = 4096 + (project_tus > 1 ? 128 * (rlim_t)project_tus : 0);
     rlim_t mem_mb = env_rlim("MADC_MEM_LIMIT", default_mb);
+#ifdef __APPLE__
+    // darwin does not enforce RLIMIT_AS (setrlimit rejects finite values
+    // with EINVAL) — the address-space guard is a no-op there. The CPU
+    // guard above still applies; a mach-based memory guard is a P3 item.
+    (void)mem_mb;
+#else
     if ( mem_mb > 0 ) {
         struct rlimit rl;
         rl.rlim_cur = (rlim_t)mem_mb * 1024 * 1024;
@@ -277,6 +283,7 @@ static void install_resource_guards(size_t project_tus)
             std::set_new_handler(mem_guard_new_handler);
         }
     }
+#endif
 }
 
 // Walk backwards from a line to include preceding comment block.
