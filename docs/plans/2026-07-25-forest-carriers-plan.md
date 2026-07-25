@@ -246,6 +246,47 @@ product path.
 3. **S3 — Carrier probe chain + `--with-forest=` + sidecar:** unify
    discovery behind the ordered arms; sidecar file support; failure
    policy knobs. Gate: all shapes × Linux/macOS matrix green.
+   **S3 COMPLETE (2026-07-25): gate GREEN — full shape × platform
+   matrix.** `ensure_bind_forest` now walks the ordered chain (first
+   usable container wins): 1. self-image, 2. (S4 slot) library image,
+   3. `<exe>.forest` sidecar, 4. `$MADC_FOREST`, 5. (S6 slot)
+   `madc.ini`/baked default — every arm validated identically
+   (footer + context hash + version pin + v27 config gate); explicit
+   `--forest-bind=` bypasses the chain and is now a LOUD fall-through
+   when it fails to open. Failure policy rides `RegistrationPolicy`:
+   `forest_missing_policy` (silent dev default / loud one-notice
+   packaged-CLI default baked via `MADC_FOREST_EXPECT_*` in product
+   MODEs / strict hard error) + `enable_external_forest` (sandbox knob
+   gating the sidecar/env arms). `--with-forest=embedded|sidecar|none`
+   (configure, default embedded) picks the product carrier: sidecar
+   ships `<bin>.forest` (`forest_pack.sh --sidecar`; hosted darwin
+   keeps the cross-freeze, drops `-sectcreate`; `make install` places
+   `bin/madc.forest`). Evidence — Linux: fulltest 756/0/0/9 + new
+   permanent `forest_sidecar_gate.sh` (both external arms bind with
+   `-v` engagement + byte parity vs live, order pinned, loud junk /
+   explicit-miss surfaces) + full arbiter through BOTH carriers
+   (embedded 756/0/0/9, sidecar 756/0/0/9 + loud-missing +
+   quiet-mismatch smokes) + exe 740/0 + policy unit tests (6 cases).
+   macOS (hardware, A64 native + X64-Rosetta, ~/s3side): 7/7 legs per
+   arch — embedded self-dump/bind/run regression, sidecar bind +
+   parity, loud-on-missing, quiet-on-mismatch; AMFI accepted all four
+   binaries (sidecar-shaped hosted pair = the embedded pair minus the
+   `__MADC` section, forest riding beside). Two bugs the gates caught
+   en route: (a) the packed-CLI loud notice fired on every
+   config-mismatched compile (`--std=` expect_quiet tests) — the
+   chain-end policy now knows WHY it ended empty
+   (`forest_missing_fallback(config_mismatch)`): multi-dialect
+   fall-through is never a notice under loud, still a named hard error
+   under strict; (b) the S2 emitpack gate's Mach-O legs asserted
+   cross-BINARY dump equality — a rev-skew assertion the context-hash
+   pin rightly rejects; each leg now freezes with the same cross madc
+   that emits and dumps (carrier transparency per binary). Also
+   caught: `pipefail` + `grep -q` on multi-MB `-v` captures dies of
+   EPIPE at first-match exit — gate greps read via here-strings.
+   NOT in this slice (stated boundary): the
+   `enable_external_forest=false` negative path is code-reviewed but
+   not integration-tested (the CLI has no knob to flip it; it gets a
+   host-driven test with the S4 embedding-host smoke).
 4. **S4 — Shared shape:** forest-in-library arm; `madc.dylib` /
    versioned `.so` packaging alignment (libmadc track already has the
    `.so`); thin CLI. Gate: embedding-host smoke + CLI parity.

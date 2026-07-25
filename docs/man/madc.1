@@ -144,6 +144,11 @@ sandboxes.
 Address-space guard (RLIMIT_AS, covers JIT mappings). Default: 4096 MB
 plus 128 MB per \fB\-\-project\fR translation unit; 0 disables. A
 tripped guard names the knob in its error message.
+.TP
+.BI MADC_FOREST= file
+Frozen forest container to bind when neither the binary's own image nor
+the \fI<exe>\fB.forest\fR sidecar beside it carries one (discovery
+arm 3; first usable container wins).
 .SH EXAMPLES
 Run a file as a script (no main, no includes needed):
 .PP
