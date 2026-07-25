@@ -80,8 +80,15 @@ static long MIR_int128_umuloti (void *res, unsigned __int128 a, unsigned __int12
    __divti3 family resolves from libgcc_s in a linked process), so a linked
    .o/executable needs them under their import names as dynamic symbols.
    Exported from exactly ONE including TU (c2mir.c defines the macro) via
-   asm-name aliases, mirroring the mir.* builtin exports. */
-#if defined(MIR_INT128_EXPORT_ALIASES) && defined(__GNUC__) && !defined(_WIN32)
+   asm-name aliases, mirroring the mir.* builtin exports.
+   Apple hosts are excluded: Mach-O has no symbol aliases, and the lane the
+   exports serve (ELF executables dyld-binding __mir_* against the host /
+   libmadc.so) does not exist on Apple targets -- there is no libmadc dylib
+   and runtime-needing emits are refused; the JIT resolves these through
+   MIR_int128_helper_resolver in-process.  Revisit with the Mach-O runtime
+   dylib story (note the writer's `_` symbol-prefix convention then). */
+#if defined(MIR_INT128_EXPORT_ALIASES) && defined(__GNUC__) && !defined(_WIN32) \
+  && !defined(__APPLE__)
 extern __typeof (MIR_int128_addoti) MIR_int128_addoti_export asm ("__mir_addoti")
   __attribute__ ((alias ("MIR_int128_addoti"), used));
 extern __typeof (MIR_int128_uaddoti) MIR_int128_uaddoti_export asm ("__mir_uaddoti")
