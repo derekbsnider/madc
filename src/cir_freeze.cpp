@@ -725,13 +725,16 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 static bool cir_macho_find_forest(const uint8_t *m, size_t sz,
 				  const void *&image, size_t &len)
 {
-	const uint32_t MH_MAGIC_64 = 0xfeedfacfu;
-	const uint32_t LC_SEGMENT_64 = 0x19u;
+	// Local values, not the <mach-o/loader.h> names: on darwin hosted
+	// builds that header is already included above and defines them as
+	// macros, which would clobber any same-named declaration here.
+	const uint32_t macho_magic_64 = 0xfeedfacfu;
+	const uint32_t macho_lc_segment_64 = 0x19u;
 	if (sz < 32)
 		return false;
 	uint32_t magic, ncmds, sizeofcmds;
 	memcpy(&magic, m, 4);
-	if (magic != MH_MAGIC_64)
+	if (magic != macho_magic_64)
 		return false;
 	memcpy(&ncmds, m + 16, 4);
 	memcpy(&sizeofcmds, m + 20, 4);
@@ -746,7 +749,7 @@ static bool cir_macho_find_forest(const uint8_t *m, size_t sz,
 		memcpy(&cmdsize, m + off + 4, 4);
 		if (cmdsize < 8 || off + cmdsize > 32 + (size_t)sizeofcmds)
 			return false;
-		if (cmd == LC_SEGMENT_64 && cmdsize >= 72
+		if (cmd == macho_lc_segment_64 && cmdsize >= 72
 		    && memcmp(m + off + 8, "__MADC\0\0\0\0\0\0\0\0\0\0", 16) == 0) {
 			uint32_t nsects;
 			memcpy(&nsects, m + off + 64, 4);
