@@ -1,6 +1,25 @@
 # Test Status
 
-> **Current (2026-07-25, `develop` — v0.46.0, forest-carriers S1
+> **Current (2026-07-25, `develop` — v0.47.0, forest-carriers S2
+> complete):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
+> forest gate green, including the NEW `forest_emitpack_gate` — the
+> `--pack-forest` carrier: ELF leg RUNS the packed emitted executable
+> (rc + output) and pins `--dump-forest` byte-parity container vs
+> packed image plus both refusal arms; Mach-O legs (both arches, cross
+> madcs) pin the same parity through the writer-laid `__MADC,__forest`
+> section. Packed arbiter **756/0/0/9** through `bin/madc-release` +
+> `forest_pack: OK (240 units; bind cache == no-cache)`. `--exe` lane
+> **740/0**. Full battery run twice (pre- and post- macro-collision
+> fix), green both times. Mac hardware (`~/s2pack`): packed emitted
+> binaries carrying the real 30-unit darwin groves ran `emitpack ok`
+> rc=42 under AMFI (A64 native + X64-Rosetta); hosted `--dump-forest`
+> over packed files byte-identical to the containers; full native loop
+> (freeze → pack-emit → AMFI → run → read-back) green on both arches.
+> Fork release `1.0-madc.0.47.0` (@74e705e4 — the extra-section
+> carrier seam).
+
+> **Previous (2026-07-25, `develop` — v0.46.0, forest-carriers S1
 > complete):**
 > fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
 > forest gate green, including the NEW `forest_bind_gate` case
