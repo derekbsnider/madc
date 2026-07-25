@@ -63,6 +63,36 @@ static long MIR_int128_usuboti (void *res, unsigned __int128 a, unsigned __int12
   memcpy (res, &r, 16);
   return ov;
 }
+#ifdef __APPLE__
+/* Checked 128-bit multiply WITHOUT __builtin_mul_overflow: clang lowers the
+   TI case to a __muloti4 libcall, and darwin's libSystem(libcompiler_rt)
+   exports it for x86_64 only -- an arm64-macos link has no home for it (the
+   cross toolchain ships no darwin compiler-rt archive either).  Plain
+   128-bit multiply inlines on both darwin arches, and the wrap check
+   divides with __udivti3, which libSystem exports on both. */
+static long MIR_int128_umul_ov (unsigned __int128 a, unsigned __int128 b, unsigned __int128 *r) {
+  *r = a * b;
+  return a != 0 && *r / a != b;
+}
+static long MIR_int128_muloti (void *res, __int128 a, __int128 b) {
+  unsigned __int128 ua = a < 0 ? -(unsigned __int128) a : (unsigned __int128) a;
+  unsigned __int128 ub = b < 0 ? -(unsigned __int128) b : (unsigned __int128) b;
+  unsigned __int128 ur;
+  int neg = (a < 0) != (b < 0);
+  long ov = MIR_int128_umul_ov (ua, ub, &ur);
+  unsigned __int128 lim = ((unsigned __int128) 1 << 127) - (neg ? 0 : 1);
+  if (ur > lim) ov = 1;
+  __int128 r = neg ? -(__int128) ur : (__int128) ur; /* wraps like the builtin */
+  memcpy (res, &r, 16);
+  return ov;
+}
+static long MIR_int128_umuloti (void *res, unsigned __int128 a, unsigned __int128 b) {
+  unsigned __int128 r;
+  long ov = MIR_int128_umul_ov (a, b, &r);
+  memcpy (res, &r, 16);
+  return ov;
+}
+#else
 static long MIR_int128_muloti (void *res, __int128 a, __int128 b) {
   __int128 r;
   long ov = __builtin_mul_overflow (a, b, &r);
@@ -75,13 +105,21 @@ static long MIR_int128_umuloti (void *res, unsigned __int128 a, unsigned __int12
   memcpy (res, &r, 16);
   return ov;
 }
+#endif
 
 /* AOT: the __mir_*oti overflow helpers have no libgcc equivalent (the
    __divti3 family resolves from libgcc_s in a linked process), so a linked
    .o/executable needs them under their import names as dynamic symbols.
    Exported from exactly ONE including TU (c2mir.c defines the macro) via
-   asm-name aliases, mirroring the mir.* builtin exports. */
-#if defined(MIR_INT128_EXPORT_ALIASES) && defined(__GNUC__) && !defined(_WIN32)
+   asm-name aliases, mirroring the mir.* builtin exports.
+   Apple hosts are excluded: Mach-O has no symbol aliases, and the lane the
+   exports serve (ELF executables dyld-binding __mir_* against the host /
+   libmadc.so) does not exist on Apple targets -- there is no libmadc dylib
+   and runtime-needing emits are refused; the JIT resolves these through
+   MIR_int128_helper_resolver in-process.  Revisit with the Mach-O runtime
+   dylib story (note the writer's `_` symbol-prefix convention then). */
+#if defined(MIR_INT128_EXPORT_ALIASES) && defined(__GNUC__) && !defined(_WIN32) \
+  && !defined(__APPLE__)
 extern __typeof (MIR_int128_addoti) MIR_int128_addoti_export asm ("__mir_addoti")
   __attribute__ ((alias ("MIR_int128_addoti"), used));
 extern __typeof (MIR_int128_uaddoti) MIR_int128_uaddoti_export asm ("__mir_uaddoti")

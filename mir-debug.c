@@ -13,13 +13,15 @@
 #if defined(__has_include)
 #if __has_include(<elf.h>)
 #include <elf.h>
-#define MIR_DEBUG_HAVE_ELF 1
 #endif
 #if __has_include(<sys/mman.h>)
 #include <sys/mman.h>
 #include <unistd.h>
 #define MIR_DEBUG_HAVE_MMAP 1 /* the in-process object loader (MIR_object_load) */
 #endif
+#endif
+#ifndef ELFMAG0 /* hosts without <elf.h> (macOS, Windows): local ELF64 ABI defs */
+#include "mir-elf-defs.h"
 #endif
 
 /* ===== growable byte buffer + LEB128 ===================================== */
@@ -833,7 +835,6 @@ static void emit_line (MIR_debug_t d, dwbuf_t *b, const dwgen_t *g) {
   memcpy (b->p + unit_len_pos, &unit_len, 4);
 }
 
-#ifdef MIR_DEBUG_HAVE_ELF
 /* One ELF section descriptor for the output object assembler below.  A named
    type (rather than an anonymous struct + typeof) so the file stays compilable
    by C frontends without the GNU typeof extension -- e.g. MIR's own c2m, which
@@ -3240,85 +3241,6 @@ const char *MIR_object_undef_name (MIR_object_t obj, size_t idx) {
   }
   return NULL;
 }
-#else
-int MIR_debug_emit (MIR_debug_t d MIR_UNUSED, void **buf, size_t *size) {
-  if (buf != NULL) *buf = NULL;
-  if (size != NULL) *size = 0;
-  return -1; /* no <elf.h> on this host */
-}
-
-MIR_object_t MIR_object_create (void) { return NULL; }
-void MIR_object_destroy (MIR_object_t obj MIR_UNUSED) {}
-size_t MIR_object_text_append (MIR_object_t obj MIR_UNUSED, const void *bytes MIR_UNUSED,
-                               size_t len MIR_UNUSED) {
-  return 0;
-}
-size_t MIR_object_data_append (MIR_object_t obj MIR_UNUSED, const void *bytes MIR_UNUSED,
-                               size_t len MIR_UNUSED, size_t align MIR_UNUSED) {
-  return 0;
-}
-size_t MIR_object_bss_reserve (MIR_object_t obj MIR_UNUSED, size_t len MIR_UNUSED,
-                               size_t align MIR_UNUSED) {
-  return 0;
-}
-size_t MIR_object_addrpool_append (MIR_object_t obj MIR_UNUSED, const void *bytes MIR_UNUSED,
-                                   size_t len MIR_UNUSED, size_t align MIR_UNUSED) {
-  return 0;
-}
-int MIR_object_add_symbol (MIR_object_t obj MIR_UNUSED, const char *name MIR_UNUSED,
-                           int sec MIR_UNUSED, uint64_t value MIR_UNUSED,
-                           uint64_t size MIR_UNUSED, int func_p MIR_UNUSED,
-                           int local_p MIR_UNUSED, int weak_p MIR_UNUSED) {
-  return -1;
-}
-void MIR_object_symbol_define (MIR_object_t obj MIR_UNUSED, int sym_id MIR_UNUSED,
-                               int sec MIR_UNUSED, uint64_t value MIR_UNUSED,
-                               uint64_t size MIR_UNUSED, int func_p MIR_UNUSED,
-                               int local_p MIR_UNUSED, int weak_p MIR_UNUSED) {}
-int MIR_object_section_symbol (MIR_object_t obj MIR_UNUSED, int sec MIR_UNUSED) { return -1; }
-int MIR_object_symbol_defined_p (MIR_object_t obj MIR_UNUSED, int sym_id MIR_UNUSED) { return 0; }
-void MIR_object_add_reloc (MIR_object_t obj MIR_UNUSED, int sec MIR_UNUSED,
-                           uint64_t offset MIR_UNUSED, int sym_id MIR_UNUSED,
-                           int64_t addend MIR_UNUSED, int kind MIR_UNUSED) {}
-int MIR_object_find_symbol (MIR_object_t obj MIR_UNUSED, const char *name MIR_UNUSED,
-                            int *sec MIR_UNUSED, uint64_t *value MIR_UNUSED,
-                            uint64_t *size MIR_UNUSED) {
-  return 0;
-}
-void MIR_object_set_debug (MIR_object_t obj MIR_UNUSED, MIR_debug_t d MIR_UNUSED) {}
-int MIR_object_emit (MIR_object_t obj MIR_UNUSED, void **buf, size_t *size) {
-  if (buf != NULL) *buf = NULL;
-  if (size != NULL) *size = 0;
-  return -1;
-}
-int MIR_object_emit_executable (MIR_object_t obj MIR_UNUSED,
-                                const MIR_object_exec_params *params MIR_UNUSED, void **buf,
-                                size_t *size) {
-  if (buf != NULL) *buf = NULL;
-  if (size != NULL) *size = 0;
-  return -1;
-}
-MIR_object_loaded_t MIR_object_load (const void *buf MIR_UNUSED, size_t size MIR_UNUSED,
-                                     MIR_object_resolver_t resolver MIR_UNUSED,
-                                     void *env MIR_UNUSED, char *err_msg, size_t err_len) {
-  if (err_msg != NULL && err_len != 0)
-    snprintf (err_msg, err_len, "no <elf.h> on this host");
-  return NULL;
-}
-void *MIR_object_loaded_sym (MIR_object_loaded_t lo MIR_UNUSED, const char *name MIR_UNUSED) {
-  return NULL;
-}
-void MIR_object_loaded_unload (MIR_object_loaded_t lo MIR_UNUSED) {}
-int MIR_object_read (MIR_object_t obj MIR_UNUSED, const void *vbuf MIR_UNUSED,
-                     size_t size MIR_UNUSED, char *err_msg, size_t err_len) {
-  if (err_msg != NULL && err_len != 0)
-    snprintf (err_msg, err_len, "no <elf.h> on this host");
-  return -1;
-}
-const char *MIR_object_undef_name (MIR_object_t obj MIR_UNUSED, size_t idx MIR_UNUSED) {
-  return NULL;
-}
-#endif
 
 /* The GDB JIT interface (the process-global __jit_debug_descriptor and
    MIR_debug_gdb_register/unregister) lives in mir-debug-gdb.c -- a separate
