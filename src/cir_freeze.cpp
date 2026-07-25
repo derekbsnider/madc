@@ -711,13 +711,12 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 
 bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 {
-	char selfbuf[4096];
+	std::string selfpath;
 	if (!path) {
-		ssize_t n = readlink("/proc/self/exe", selfbuf, sizeof(selfbuf) - 1);
-		if (n <= 0)
+		selfpath = madc_self_exe_path();
+		if (selfpath.empty())
 			return false;
-		selfbuf[n] = '\0';
-		path = selfbuf;
+		path = selfpath.c_str();
 	}
 	int fd = ::open(path, O_RDONLY);
 	if (fd < 0)

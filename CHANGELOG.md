@@ -2,6 +2,78 @@
 
 ## [Unreleased]
 
+## [v0.45.0] — 2026-07-25
+
+madc runs natively on the Macs (madc-on-macOS Route 1, Phase 1 complete):
+hosted arm64 + x86-64 darwin binaries with a full embedded C header
+story — G2 green on Apple hardware in every lane (JIT, native Mach-O
+AOT, labeled POSIX symbols, ctype inlines) on both architectures.
+Fork release 1.0-madc.0.45.0.
+
+- **feat(hosted-macos): darwin embedded C prelude — hosted madc binaries
+  carry their standard headers (G2 round-2 fix).** Root cause of the A64
+  garble (hardware-proven): hosted binaries shipped with no darwin header
+  story, `<stdio.h>` resolved into the libc++ `c++/v1` wrapper maze (or
+  nothing), printf stayed undeclared, and the dlsym variadic-fallback
+  collides with Apple arm64's stack-varargs ABI (x86-64 was immune by
+  register-ABI coincidence). Fix: `scripts/gen_darwin_prelude.sh` flattens
+  the hosted C standard/POSIX header set against the staged SDK with
+  clang-18 `-E -dD -P -fno-blocks` (`-dD` keeps every `#define` as text so
+  madc's own preprocessor installs `EOF`, `NULL`, `stdin=__stdinp`, … at
+  include time — a `.madh` token stream cannot carry macro state) into ONE
+  umbrella + one-line stubs per header name; `gen_embedded_headers.sh`
+  gained an extra-root/outfile mode and hosted MODEs embed a per-mode
+  table generated into the obj tree (SDK content never reaches committed
+  files; a failed generation stops the build loudly). Embedded headers now
+  classify as system headers for the reachability DCE, and an explicit
+  `#include` defers to the auto-include prelude only when a named provider
+  can actually serve it (gcc canon: explicit includes resolve or error).
+- **fix(parser): deep-layer fixes shaken out by the darwin prelude (all
+  target-independent).** `#pragma pack` gained full GCC semantics
+  (`pack(N)`/`pack()`/valueless `push`) AND a real architecture fix: pack
+  state was lexer-time but consumed at parse time (the file is fully
+  tokenized before parsing), so every BALANCED push/pop region silently
+  lost its packing; pack events now ride a side channel pinned to the next
+  real token, applied one-shot in `nextToken()` (`tests/testpragmapack.mad`).
+  Function-pointer declarators: `*` and cv-qualifiers interleave
+  (`char const * *`), anonymous fn-ptr params (`int (*)(int)`), union tags
+  in fn-ptr params, nested fn-ptr params, and the classic C spiral —
+  a function returning a function pointer (`void (*signal(int, void
+  (*)(int)))(int)`, Apple signal.h) — all parse (`tests/testfnptrdecl.mad`).
+  Postfix `++` now binds inside a deref of a member chain (`*s->p++ = c`
+  is `*((s->p)++) = c` — Apple stdio's `__sputc`). GNU `__asm` labels on
+  plain variable declarators are consumed (glibc/Apple `timezone`), and on
+  Apple targets asm labels drop their leading underscore at the
+  consumption boundary — madc's canonical symbol space is the C/dlsym
+  name; the Mach-O writer re-prepends it (fixes hosted JIT dlsym AND AOT
+  binds for `open`/`fopen`/`kill`/…). `_Float16` registered via the
+  `_FloatN` nearest-supported precedent (macOS 15 SDK declares
+  `__fabsf16` & co unguarded). `RLIMIT_AS` self-limit skipped on darwin
+  (setrlimit EINVALs finite AS caps there).
+- **feat(hosted-macos): madc itself now cross-builds for the Macs
+  (madc-on-macOS Route 1, Phase 1).** `make -C src hosted-arm64-macos` /
+  `hosted-x86-64-macos` build FULL madc binaries (JIT + native Mach-O
+  AOT — the v0.44.0 writer becomes the native writer through host
+  detection) with clang-18 + the owner's SDK + ld64.lld; unstripped
+  `-O2`, madcdat/zstd off (Phase 3). Source port pass (Linux
+  behavior-identical, fulltest + exe lanes green): one
+  `madc_self_exe_path()` helper (readlink vs `_NSGetExecutablePath`)
+  converges all six /proc/self/exe sites; `.dylib` soname synthesis;
+  mach `task_info` memory probe + `ru_maxrss` unit normalization +
+  `/dev/fd` report path; host-keyed errno accessor (`__error`) and
+  host-keyed AOT cover spellings (`libsystem_`/`libc++`/`libSystem`);
+  `MADC_TARGET_APPLE_P` separates target-is-Apple from crossness;
+  `__madc_builtin_mempcpy_chk` darwin arm. Host tables
+  (sys-include paths, predefined macros) now regenerate at Makefile
+  parse time keyed to the mode's compiler, with an SDK→CLT path map
+  for hosted binaries. Fork: object layer made host-independent
+  (`mir-elf-defs.h` local ELF64 ABI defs — no `<elf.h>` needed; gate +
+  stubs deleted), manual checked 128-bit multiply on Apple (libSystem
+  exports no `__muloti4` on arm64). Bonus fix found by clang:
+  `TokenChar::is_constant()` hid (not overrode) its base virtual —
+  char literals reported non-constant through base pointers; headers
+  now carry the 85 missing `override` markers.
+
 ## [v0.44.0] — 2026-07-25
 
 The Mach-O release (Mach-O/ARM64 track, axis B writer + cross madcs):

@@ -505,7 +505,7 @@ public:
     int end_line;			// line of closing } (set by parseCompound)
     bool is_stmt_expr = false;		// true: a GNU statement-expression `({...})`, not a plain `{...}` block
     TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; end_line = 0; }
-    virtual TokenType type() const { return TokenType::ttCompound; }
+    virtual TokenType type() const override { return TokenType::ttCompound; }
     virtual DataDef *datadef() const override {
 	if ( statements.empty() ) return &ddVOID;
 	DataDef *dd = statements.back()->datadef();
@@ -695,8 +695,8 @@ public:
         return _datatype;
     }
     virtual bool is_real() const override { return datadef() && datadef()->is_real(); }
-    virtual size_t argc() const { return parameters.size(); }
-    virtual TokenType type() const { return TokenType::ttCallFunc; }
+    virtual size_t argc() const override { return parameters.size(); }
+    virtual TokenType type() const override { return TokenType::ttCallFunc; }
 };
 
 class TokenScopeContext: public TokenBase
@@ -705,7 +705,7 @@ public:
     Variable &context_var;
     std::vector<Variable *> scope_vars;
     TokenScopeContext(Variable &ctx) : TokenBase(), context_var(ctx) { _datatype = &ddARRAY; }
-    virtual TokenType type() const { return TokenType::ttVariable; }
+    virtual TokenType type() const override { return TokenType::ttVariable; }
     virtual DataDef *datadef() const override { return &ddARRAY; }
 };
 
@@ -719,7 +719,7 @@ public:
         : TokenCallFunc(m), object(o), offset(ofs), parent_expr(nullptr) { _datatype = m.type; }
     TokenMember(Variable &o, Variable &m, size_t ofs, TokenBase *parent)
         : TokenCallFunc(m), object(o), offset(ofs), parent_expr(parent) { _datatype = m.type; }
-    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual TokenType type() const override { return TokenType::ttMember; }
     virtual DataDef *datadef() const override { return _datatype; }
     virtual bool is_real() const override { return _datatype->is_real(); }
     // Member is declared as a fixed array (e.g. `SKILLTYPE *arr[N]`).
@@ -761,7 +761,7 @@ public:
     Variable &var;
     DataDef *ptr_type;  // pointer-to-var type
     TokenAddrOf(Variable &v, DataDef *pt) : var(v), ptr_type(pt) {}
-    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
 };
 
@@ -772,7 +772,7 @@ public:
     TokenBase *expr;
     DataDef *ptr_type;
     TokenAddrExpr(TokenBase *e, DataDef *pt) : expr(e), ptr_type(pt) {}
-    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
 };
 
@@ -783,8 +783,8 @@ public:
     std::string name;
     DataDef *ptr_type;
     TokenLabelAddr(const std::string &n, DataDef *pt) : name(n), ptr_type(pt) {}
-    virtual TokenType type() const { return TokenType::ttBase; }
-    virtual TokenBase *clone() { return new TokenLabelAddr(name, ptr_type); }
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual TokenBase *clone() override { return new TokenLabelAddr(name, ptr_type); }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
 };
 
@@ -806,7 +806,7 @@ public:
     Variable &var;
     DataDef *deref_type;  // pointed-to type
     TokenDeref(Variable &v, DataDef *dt) : var(v), deref_type(dt) { _datatype = dt; }
-    virtual TokenType type() const { return TokenType::ttMember; }  // reuse member type for assignment compat
+    virtual TokenType type() const override { return TokenType::ttMember; }  // reuse member type for assignment compat
     virtual DataDef *datadef() const override { return deref_type; }
 };
 
@@ -817,7 +817,7 @@ public:
     TokenBase *expr;
     DataDef *deref_type;
     TokenDerefExpr(TokenBase *e, DataDef *dt) : expr(e), deref_type(dt) { _datatype = dt; }
-    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual TokenType type() const override { return TokenType::ttMember; }
     virtual DataDef *datadef() const override { return deref_type; }
 };
 
@@ -830,7 +830,7 @@ public:
     TokenComplexPart(TokenBase *e, bool imag)
 	: expr(e), imag_part(imag) {}
 
-    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual TokenType type() const override { return TokenType::ttMember; }
     virtual DataDef *datadef() const override
     {
 	DataDef *expr_dd = expr ? expr->datadef() : NULL;
@@ -855,7 +855,7 @@ public:
     bool increment;
     TokenDerefStep(Variable &v, DataDef *dt, bool inc)
         : var(v), deref_type(dt), increment(inc) { _datatype = dt; }
-    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return deref_type; }
 };
 
@@ -866,7 +866,7 @@ public:
     DataDef *cast_type;   // target type
     TokenBase *expr;      // expression being cast
     TokenCast(DataDef *ct, TokenBase *e) : cast_type(ct), expr(e) {}
-    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return cast_type; }
 };
 
@@ -928,7 +928,7 @@ public:
 	    return NULL;
 	return &fd->return_value_type();
     }
-    virtual TokenType type() const { return TokenType::ttSubscript; }
+    virtual TokenType type() const override { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }
     // The element type is computed in the constructor for every container
     // kind (fixed array, pointer, string, SIMD, vector, map, madc array).
@@ -949,7 +949,7 @@ public:
     {
         _datatype = elem_type ? elem_type : &ddINT64;
     }
-    virtual TokenType type() const { return TokenType::ttSubscript; }
+    virtual TokenType type() const override { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }
     // operand() must return an *lvalue* (Mem) — i.e. the address of
     // the element — not the loaded value. Callers (TokenAssign LHS,
@@ -3709,8 +3709,46 @@ public:
     Variable *script_param_lookup(const std::string &id);
     bool token_is_tu_origin(TokenBase *tb) const;
 
-    std::stack<int> _pack_stack;	// #pragma pack(push, N) / pop stack
-    int pack_stack_top() { return _pack_stack.empty() ? 0 : _pack_stack.top(); }
+    // #pragma pack state, GCC semantics: `pack(N)` sets the current value,
+    // `pack()` resets it, `pack(push[, N])` saves the current value (then
+    // optionally sets it), `pack(pop)` restores the last saved value.
+    //
+    // The file is fully tokenized BEFORE parsing, so lexer-time state would
+    // be stale when struct layout reads it (a balanced push/pop region has
+    // already reset by parse time). Pack events therefore ride a side
+    // channel keyed by the first real token AFTER the directive: the lexer
+    // queues ops in _pending_pack_ops, push_token_with_literal_concat pins
+    // them to the next emitted token, and nextToken() applies them one-shot
+    // at the single consume chokepoint — invisible to peekToken/scanners.
+    // Op encoding: {0,N} set current to N (0 = default layout), {1,N} push
+    // current then set N when N != 0, {2,0} pop.
+    std::stack<int> _pack_stack;	// saved values (push/pop)
+    int _pack_current = 0;		// current alignment; 0 = default layout
+    int pack_current() const { return _pack_current; }
+    std::vector<std::pair<int,int> > _pending_pack_ops;
+    std::unordered_map<const TokenBase *, std::vector<std::pair<int,int> > >
+	_pragma_pack_events;
+    void apply_pragma_pack_op(int op, int val)
+    {
+	if ( op == 1 )
+	{
+	    _pack_stack.push(_pack_current);
+	    if ( val )
+		_pack_current = val;
+	}
+	else if ( op == 2 )
+	{
+	    if ( !_pack_stack.empty() )
+	    {
+		_pack_current = _pack_stack.top();
+		_pack_stack.pop();
+	    }
+	    else
+		_pack_current = 0;
+	}
+	else
+	    _pack_current = val;
+    }
 
     bool colors;
     enum LanguageStd {
@@ -4120,6 +4158,7 @@ public:
     // ends up as one merged literal, not two adjacent tokens whose
     // first one gets dropped by parser exStack semantics.
     void push_token_with_literal_concat(TokenBase *tb);
+    void pin_pending_pack_ops(TokenBase *tb);
 
     // for debugging
     void printt(TokenBase *);
@@ -4204,6 +4243,20 @@ public:
 	    TokenBase::_parse_file   = _cur_token->file;
 	    TokenBase::_parse_line   = _cur_token->line;
 	    TokenBase::_parse_column = _cur_token->column;
+	    // #pragma pack events pinned to this token (see _pragma_pack_events):
+	    // applied once, at first consumption — the empty() guard keeps the
+	    // hot path free for the (usual) pack-less TU.
+	    if ( !_pragma_pack_events.empty() )
+	    {
+		auto pe = _pragma_pack_events.find(_cur_token);
+		if ( pe != _pragma_pack_events.end() )
+		{
+		    for ( size_t i = 0; i < pe->second.size(); ++i )
+			apply_pragma_pack_op(pe->second[i].first,
+					     pe->second[i].second);
+		    _pragma_pack_events.erase(pe);
+		}
+	    }
 	}
 	return _cur_token;
     }

@@ -36,6 +36,30 @@ extern thread_local bool madc_debug_info;
 // DataDefs born in that scope retain speculative provenance after rollback.
 extern thread_local bool madc_class_pattern_capture_active;
 
+// Resolved absolute path of the running executable, empty when unresolvable.
+// The one self-exe discovery point: readlink(/proc/self/exe) on Linux,
+// _NSGetExecutablePath on macOS.
+std::string madc_self_exe_path();
+
+// Host shared-library suffix for dlopen soname synthesis (-l<name>) and
+// native shared-artifact naming.
+#ifdef __APPLE__
+#define MADC_DSO_SUFFIX ".dylib"
+#else
+#define MADC_DSO_SUFFIX ".so"
+#endif
+
+// The native-emit TARGET is an Apple/Mach-O platform: either an emit-only
+// cross madc configured for one (MADC_CROSS_APPLE) or a madc hosted on one
+// (native target == host). Orthogonal to MADC_CROSS_TARGET, which gates the
+// run lanes: a hosted-darwin madc is Apple-target but NOT cross. Lives here
+// (not madc_cir.h) because the parser keys on it too (asm-label symbol space).
+#if defined(MADC_CROSS_APPLE) || defined(__APPLE__)
+#define MADC_TARGET_APPLE_P 1
+#else
+#define MADC_TARGET_APPLE_P 0
+#endif
+
 class TokenBase;
 
 // C fixed-size array dimension. 64-bit: huge dims like

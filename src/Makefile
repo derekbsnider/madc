@@ -46,6 +46,14 @@ else ifeq ($(MODE),cross-x86-64-macos)
 BIN = ../bin/madc-x86-64-macos
 else ifeq ($(MODE),cross-arm64-macos)
 BIN = ../bin/madc-arm64-macos
+else ifeq ($(MODE),hosted-arm64-macos)
+# madc-on-macOS (Route 1): FULL madc binaries cross-COMPILED for Apple
+# hosts (clang-18 + SDK + ld64.lld). Host == target: JIT + native Mach-O
+# AOT both live; no MADC_CROSS_TARGET. Ships unstripped -O2 (stripping
+# invalidates the linker signature; re-signer is Phase 3 of the plan).
+BIN = ../bin/madc-hosted-arm64-macos
+else ifeq ($(MODE),hosted-x86-64-macos)
+BIN = ../bin/madc-hosted-x86-64-macos
 else
 BIN = ../bin/madc
 endif
@@ -62,11 +70,9 @@ HFILES	= madc.h datadef.h tokens.h datatokens.h
 CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o exception_runtime.o pch.o madcdis_snapshot.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
-# Regenerate embedded_headers.cpp NOW, at Makefile parse time, before any target
-# is evaluated — so an edited/added/DELETED embedded header is reflected in
-# embedded_headers.o within a SINGLE make. The generator is idempotent (rewrites
-# only on real content change), so this does not churn mtimes or force rebuilds.
-EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
+# embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
+# MODE blocks — hosted-darwin modes embed a generated SDK prelude alongside
+# include/madc/ and write a per-mode file instead of src/embedded_headers.cpp.
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
 MADDATHDRS = $(wildcard ../include/madcdat/*.h)
 # madc::dis substrate headers: tokens.h/madc.h include these, so they MUST be in
@@ -107,6 +113,71 @@ ifeq ($(MODE),cross-arm64-macos)
 MIRLIB	= $(MIRDIR)/build-arm64-macos/libmir.a
 DEFINES += -DMIR_TARGET_ARM64_MACOS -DMADC_CROSS_TARGET='"arm64-macos"' -DMADC_CROSS_APPLE
 endif
+# --- hosted-on-macOS MODEs (Route 1, docs/plans/2026-07-25-madc-on-macos-plan.md).
+# The darwin toolchain: clang-18 against the owner's staged SDK, linking with
+# ld64.lld. libmir comes from a darwin-HOST variant build (no MIR_TARGET knobs:
+# host detection through the darwin compiler turns MIR_TARGET_APPLE_P on
+# natively, making the Mach-O writer the native writer). madcdat is forced off
+# (Phase 3): its storage backends' headers do not exist in the SDK.
+MACOS_SDK ?= /workspace/sdk/MacOSX.sdk
+MACOS_MINOS ?= 12
+ifeq ($(MODE),hosted-arm64-macos)
+HOSTED_DARWIN_TARGET = arm64-apple-macos$(MACOS_MINOS)
+endif
+ifeq ($(MODE),hosted-x86-64-macos)
+HOSTED_DARWIN_TARGET = x86_64-apple-macos$(MACOS_MINOS)
+endif
+ifdef HOSTED_DARWIN_TARGET
+CC  = clang-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK) -fuse-ld=lld
+CXX = clang++-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK) -fuse-ld=lld
+AR  = llvm-ar-18
+MODE_OPTFLAGS = -O2
+MIRLIB	= $(MIRDIR)/build-$(MODE)/libmir.a
+# The configure-probed host packages (madcdat backends, zstd) do not exist
+# in the SDK: hosted modes build as if --enable-madcdat=no, with no
+# optional host libs (zstd codec falls back; forest pack is Phase 3).
+HAVE_MADCDAT = 0
+FEATURE_DEFINES =
+OPTIONAL_CPPFLAGS =
+OPTIONAL_LIBS =
+MADC_STORAGE_DB_OFILES =
+# darwin link facts: dl*/pthread live in libSystem (no -ldl), executables
+# export their globals to dlsym without -rdynamic, and --whole-archive is
+# spelled -force_load <archive> (two ld64 args: the bare archive path that
+# follows WHOLE_ARCHIVE_BEGIN on the link line is its operand).
+LIBS = -lz -lm $(OPTIONAL_LIBS)
+WHOLE_ARCHIVE_BEGIN = -Wl,-force_load
+WHOLE_ARCHIVE_END =
+# On-Mac header search: map the build sysroot to the standard CLT SDK path
+# (present only if the user installed CLT; the embedded headers carry the
+# no-CLT case, which includes the owner's run-only Macs).
+MADC_SYS_INCLUDE_PREFIX_MAP = $(MACOS_SDK)=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+export MADC_SYS_INCLUDE_PREFIX_MAP
+endif
+# The host-derived tables (system include paths, predefined macros) are
+# regenerated at PARSE time like embedded_headers.cpp — placed HERE because
+# hosted modes override $(CXX) above, and the tables must match the compiler
+# whose binary they end up inside (a mode switch silently left the previous
+# toolchain's tables in place before; the generators are idempotent, so an
+# unchanged toolchain never churns mtimes).
+HOSTTAB_GEN := $(shell CXX="$(CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" ../scripts/gen_sys_includes.sh >/dev/null 2>&1; CXX="$(CXX)" ../scripts/gen_predefined_macros.sh >/dev/null 2>&1; echo done)
+# Regenerate embedded_headers.cpp NOW, at Makefile parse time, before any target
+# is evaluated — so an edited/added/DELETED embedded header is reflected in
+# embedded_headers.o within a SINGLE make. The generators are idempotent (rewrite
+# only on real content change), so this does not churn mtimes or force rebuilds.
+# Hosted-darwin modes: the SDK-derived flattened C prelude (stdio.h & co for the
+# run-only Macs) is generated into the per-mode obj tree and embedded ALONGSIDE
+# include/madc/; the per-mode embedded_headers.cpp lives in the obj tree so SDK
+# content never reaches the committed src/ file. stderr stays visible — a failed
+# prelude leaves no .cpp and the build stops loudly (silent header degradation
+# is exactly the G2 failure class this exists to prevent).
+ifdef HOSTED_DARWIN_TARGET
+DARWIN_PRELUDE_DIR = $(OBJDIR)/darwin_prelude
+EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
+EMBED_GEN := $(shell mkdir -p $(OBJDIR) && ../scripts/gen_darwin_prelude.sh $(HOSTED_DARWIN_TARGET) $(MACOS_SDK) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null; echo done)
+else
+EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
+endif
 DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS) $(MADCDISHDRS)
 
 ifeq ($(HAVE_MADCDAT),1)
@@ -123,9 +194,9 @@ MADC_VERSION ?= $(shell cat ../VERSION 2>/dev/null || echo 0.0.0)
 MADC_SOVERSION ?= $(firstword $(subst ., ,$(MADC_VERSION)))
 LIBMADC_SHARED = $(LIBDIR)/libmadc.so
 LIBMADC_STATIC = $(LIBDIR)/libmadc.a
-# Cross modes get their own archive/solib names: a cross build must never
-# clobber the host-facing ../lib artifacts with cross-guarded objects.
-ifneq (,$(findstring cross-,$(MODE)))
+# Cross and hosted modes get their own archive/solib names: neither may
+# clobber the host-facing ../lib artifacts with foreign objects.
+ifneq (,$(filter cross-% hosted-%,$(MODE)))
 LIBMADC_STATIC = $(LIBDIR)/libmadc-$(MODE).a
 LIBMADC_SHARED = $(LIBDIR)/libmadc-$(MODE).so
 endif
@@ -238,6 +309,24 @@ $(MIRDIR)/build-x86-64-macos/libmir.a:
 $(MIRDIR)/build-arm64-macos/libmir.a:
 	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-arm64-macos CPPFLAGS='-I. -DMIR_TARGET_ARM64_MACOS' build-arm64-macos/libmir.a
 
+# madc hosted on macOS (Route 1): full madc binaries for the Macs.
+hosted-x86-64-macos:
+	$(MAKE) MODE=hosted-x86-64-macos ../bin/madc-hosted-x86-64-macos
+
+hosted-arm64-macos:
+	$(MAKE) MODE=hosted-arm64-macos ../bin/madc-hosted-arm64-macos
+
+# darwin-HOST MIR variant libs: built BY the darwin compiler, so host
+# detection selects the Apple arms natively — no MIR_TARGET knobs. (The
+# fork makefile has no mkdir rule for new BUILD_DIRs — create it here.)
+$(MIRDIR)/build-hosted-arm64-macos/libmir.a:
+	mkdir -p $(MIRDIR)/build-hosted-arm64-macos
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-hosted-arm64-macos CC='$(CC)' AR='$(AR)' build-hosted-arm64-macos/libmir.a
+
+$(MIRDIR)/build-hosted-x86-64-macos/libmir.a:
+	mkdir -p $(MIRDIR)/build-hosted-x86-64-macos
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-hosted-x86-64-macos CC='$(CC)' AR='$(AR)' build-hosted-x86-64-macos/libmir.a
+
 # Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
 # the ELF and would destroy an already-appended forest blob). Pack failure =
 # build failure; the verify step proves the appended blob reads back (pin OK)
@@ -273,7 +362,7 @@ uninstall:
 	@if [ -z "$(DESTDIR)" ]; then ldconfig 2>/dev/null || true; fi
 
 clean:
-	rm -rf ../obj/develop ../obj/debug ../obj/release ../obj/cross-aarch64-linux ../obj/cross-x86-64-macos ../obj/cross-arm64-macos
+	rm -rf ../obj/develop ../obj/debug ../obj/release ../obj/cross-aarch64-linux ../obj/cross-x86-64-macos ../obj/cross-arm64-macos ../obj/hosted-arm64-macos ../obj/hosted-x86-64-macos
 	rm -f ../obj/*.o ../obj/*.d ../obj/pic/*.o ../obj/pic/*.d
 	rm -f $(ALL_TESTBINS)
 	rm -f $(MADDAT_ARCHIVE)
@@ -332,8 +421,8 @@ gcctest-smoke: ../bin/madc
 # the same way. Nothing references them at link time, so plain archive
 # semantics would drop those objects. Force the whole libmadc archive in
 # (with -rdynamic) so every runtime symbol is present in the dynamic table.
-WHOLE_ARCHIVE_BEGIN = -Wl,--whole-archive
-WHOLE_ARCHIVE_END   = -Wl,--no-whole-archive
+WHOLE_ARCHIVE_BEGIN ?= -Wl,--whole-archive
+WHOLE_ARCHIVE_END   ?= -Wl,--no-whole-archive
 
 $(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB)
 	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(LIBS)
@@ -377,7 +466,7 @@ $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
 # Host-specific + gitignored, so generate it if missing (a fresh checkout has
 # none); `make clean` removes it to force a refresh when the toolchain changes.
 sys_include_paths.cpp:
-	CXX="$(CXX)" ../scripts/gen_sys_includes.sh
+	CXX="$(CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" ../scripts/gen_sys_includes.sh
 
 # Host predefined compiler macros, captured from the configured compiler.
 # Same host-specific/gitignored/regenerate-if-missing treatment as above.
@@ -387,6 +476,15 @@ predefined_macros.cpp:
 $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+
+# Hosted-darwin modes compile the PER-MODE embedded_headers.cpp (generated at
+# parse time into the obj tree, EMBED_GEN above) — never src/embedded_headers.cpp,
+# which stays the committed include/madc/-only table for host builds.
+ifdef HOSTED_DARWIN_TARGET
+$(OBJDIR)/embedded_headers.o: $(EMBEDDED_HEADERS_CPP) $(DEPENDS)
+	@mkdir -p $(OBJDIR)
+	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+endif
 
 $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)
 	@mkdir -p $(PICOBJDIR)

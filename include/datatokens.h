@@ -20,8 +20,8 @@ public:
     TokenDataType(const char *k, DataDef &d) : TokenIdent(k), str(k ? k : ""), definition(d) {}
     virtual const char *spelling() const override { return str.c_str(); }
     virtual size_t spelling_len() const override { return str.size(); }
-    virtual TokenType type() const { return TokenType::ttDataType; }
-    virtual TokenBase *clone() { return new TokenDataType(str.c_str(), definition); }
+    virtual TokenType type() const override { return TokenType::ttDataType; }
+    virtual TokenBase *clone() override { return new TokenDataType(str.c_str(), definition); }
 };
 
 // token definitions of integral data types
@@ -246,8 +246,8 @@ class TokenVar: public virtual TokenBase
 public:
     Variable &var;
     TokenVar(Variable &v) : TokenBase(), var(v) { _datatype = v.type; }
-    virtual TokenType type() const { return TokenType::ttVariable; }
-    virtual int64_t get() const { return var.get<int64_t>(); }
+    virtual TokenType type() const override { return TokenType::ttVariable; }
+    virtual int64_t get() const override { return var.get<int64_t>(); }
     virtual int val() const     { return var.get<int>(); }
     // Constant-value view: literal-gated fold sites (e.g. CirBuilder's
     // constant-if pruning) call ival()/dval() on leaves. Without these
@@ -257,9 +257,9 @@ public:
         { return var.is_constant() ? var.get<int64_t>() : 0; }
     virtual double dval() const override
         { return var.is_constant() ? var.get<double>() : 0; }
-    virtual bool is_constant() const { return var.is_constant(); }
-    virtual bool is_real() const { return _datatype->is_real(); }
-    virtual void set(int64_t c) { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
+    virtual bool is_constant() const override { return var.is_constant(); }
+    virtual bool is_real() const override { return _datatype->is_real(); }
+    virtual void set(int64_t c) override { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
 };
 
 #endif // __TOKENDATA_H

@@ -66,6 +66,9 @@ static bool load_precompiled_header_file(const std::string &path,
 static bool push_precompiled_header_tokens(Program &pgm,
 					   const std::string &display_name,
 					   std::deque<TokenBase *> &pch_tokens);
+static bool named_include_provider_exists(Program &pgm,
+					  const std::string &incfile,
+					  std::string &pch_path);
 
 static DataDef *get_complex_compat_type(DataDef *base_type)
 {
@@ -1009,12 +1012,27 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
 	// the merged literal lives in `prev` (already in the stream); refresh its
 	// rec spelling to the concatenated bytes so its ROM stays self-describing.
 	prev->rec.spelling_id = strpool.intern(prev->str);
+	// pin any queued #pragma pack ops to the SURVIVING token (tb dies here)
+	pin_pending_pack_ops(prev);
 	delete tb;
 	return;
     }
     ++_tok_produced;	// --show-stats: a real stream token emitted by the lexer
     finalize_pop1_rec(tb);
     tokens.push_back(tb);
+    pin_pending_pack_ops(tb);
+}
+
+// Pin queued #pragma pack ops to the first real token emitted after the
+// directive (see the pack side-channel block in madc.h); nextToken()
+// applies them when that token is consumed.
+void Program::pin_pending_pack_ops(TokenBase *tb)
+{
+    if ( _pending_pack_ops.empty() || !tb )
+	return;
+    std::vector<std::pair<int,int> > &ev = _pragma_pack_events[tb];
+    ev.insert(ev.end(), _pending_pack_ops.begin(), _pending_pack_ops.end());
+    _pending_pack_ops.clear();
 }
 
 // Predefined compiler macros captured at build time (scripts/gen_predefined_macros.sh
@@ -1104,6 +1122,11 @@ void Program::_tokenizer_init()
     pending_auto_include_identifiers.clear();
     suppress_auto_include_scan = false;
     pending_no_strict_aliasing = false;
+    while ( !_pack_stack.empty() )
+	_pack_stack.pop();
+    _pack_current = 0;
+    _pending_pack_ops.clear();
+    _pragma_pack_events.clear();
     add_keywords();
     add_datatypes();
 
@@ -2042,6 +2065,13 @@ bool Program::is_system_header_path(const char *path) const
 {
     if ( !path || !*path )
 	return false;
+    // Embedded headers carry their bare NAME as the token file (they never
+    // touch the filesystem). They are system/library surface by definition —
+    // notably the hosted-darwin prelude, whose inline bodies must be DCE'd
+    // like any system header's (unreachable darwin inlines would otherwise
+    // demand libSystem imports from every program).
+    if ( find_embedded_header(path) )
+	return true;
     extern const char *madc_sys_include_paths[];
     for ( int i = 0; madc_sys_include_paths[i]; ++i )
     {
@@ -2426,6 +2456,22 @@ static bool find_filesystem_precompiled_header(Program &pgm,
     return false;
 }
 
+// One named-provider probe shared by the explicit-include path and the
+// auto-include defer gate: can <incfile> be served without a filesystem
+// walk — a filesystem .madh, a baked PCH, or an embedded text header?
+// On success pch_path names the filesystem .madh (empty for the others).
+static bool named_include_provider_exists(Program &pgm,
+					  const std::string &incfile,
+					  std::string &pch_path)
+{
+    if ( find_filesystem_precompiled_header(pgm, incfile, true, pch_path) )
+	return true;
+    if ( find_precompiled_header(incfile) )
+	return true;
+    return find_embedded_header(incfile) != NULL
+	&& pgm.is_embedded_header_allowed(incfile);
+}
+
 static bool load_precompiled_header_file(const std::string &path,
 					 std::deque<TokenBase *> &tokens)
 {
@@ -2689,6 +2735,10 @@ void Program::add_datatypes()
     static TokenDataType tkCHAR16_T("char16_t", ddUINT16);
     static TokenDataType tkCHAR32_T("char32_t", ddUINT32);
     static TokenDataType tkMAX_ALIGN_T("max_align_t", ddMAX_ALIGN_T);
+    // _Float16 rides the same nearest-supported approximation the other
+    // _FloatN spellings use (MIR has no half-float): declarations parse;
+    // half-precision ABI fidelity is a MIR floor gap (SIMD-class, Tier 3).
+    static TokenDataType tkFLOAT16("_Float16", ddFLOAT);
     static TokenDataType tkFLOAT32("_Float32", ddFLOAT);
     static TokenDataType tkFLOAT64("_Float64", ddDOUBLE);
     static TokenDataType tkFLOAT128("_Float128", ddDOUBLE);
@@ -2737,6 +2787,7 @@ void Program::add_datatypes()
 	datatype_map[tkCHAR32_T.str] = &tkCHAR32_T;
     }
     datatype_map[tkMAX_ALIGN_T.str] = &tkMAX_ALIGN_T;
+    datatype_map[tkFLOAT16.str] = &tkFLOAT16;
     datatype_map[tkFLOAT32.str] = &tkFLOAT32;
     datatype_map[tkFLOAT64.str] = &tkFLOAT64;
     datatype_map[tkFLOAT128.str] = &tkFLOAT128;
@@ -3067,9 +3118,22 @@ TokenBase *Program::_getToken()
 			if ( !suppress_auto_include_scan
 			  && pending_auto_include_headers.count(incfile) )
 			{
-			    DBG(std::cout << "#include <" << incfile
-				<< "> deferred to auto-include prelude" << std::endl);
-			    return getToken();
+			    // Defer to the auto-include prelude ONLY when a
+			    // named provider (PCH / embedded) can actually
+			    // supply the header — the prelude has no filesystem
+			    // walk, so deferring an unprovided EXPLICIT include
+			    // would drop it silently. Unprovided names fall
+			    // through to the direct path: filesystem walk, loud
+			    // open failure on a true miss (gcc canon: explicit
+			    // includes resolve or error).
+			    std::string defer_pch_path;
+			    if ( named_include_provider_exists(*this, incfile,
+							       defer_pch_path) )
+			    {
+				DBG(std::cout << "#include <" << incfile
+				    << "> deferred to auto-include prelude" << std::endl);
+				return getToken();
+			    }
 			}
 			// Phase 6 (--forest-bind): a grove-backed system header
 			// BINDS instead of tokenizing — install its PP-export
@@ -3120,15 +3184,9 @@ TokenBase *Program::_getToken()
 			// included with a different _Mdouble_ per pass) re-tokenizes.
 			std::string include_key = "<" + incfile + ">";
 			bool name_already_included = include_already_seen(include_key);
-			bool resolves_named = false;
 			std::string pch_path;
-			if ( find_filesystem_precompiled_header(*this, incfile, true, pch_path) )
-			    resolves_named = true;
-			else if ( find_precompiled_header(incfile) )
-			    resolves_named = true;
-			else if ( find_embedded_header(incfile)
-			       && is_embedded_header_allowed(incfile) )
-			    resolves_named = true;
+			bool resolves_named =
+			    named_include_provider_exists(*this, incfile, pch_path);
 			if ( resolves_named && name_already_included )
 			{
 			    // B4a: the include EDGE exists in the source even when
@@ -3556,6 +3614,13 @@ TokenBase *Program::_getToken()
 			    std::string arg;
 			    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 				arg += source.get();
+			    // GCC semantics (see the pack block in madc.h):
+			    // push saves the current value and an optional
+			    // `, N` then sets it; pop restores; pack(N) sets;
+			    // pack() resets to the default layout. Ops are
+			    // QUEUED, not applied — parse-time application
+			    // rides the token side channel (lex-time state
+			    // would be stale by parse time).
 			    if ( arg == "push" )
 			    {
 				while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
@@ -3563,14 +3628,24 @@ TokenBase *Program::_getToken()
 				int val = 0;
 				while ( source.good() && isdigit(source.peek()) )
 				    val = val * 10 + (source.get() - '0');
-				_pack_stack.push(val ? val : 1);
-				DBG(std::cout << "#pragma pack(push, " << (val ? val : 1) << ")" << std::endl);
+				_pending_pack_ops.push_back(std::make_pair(1, val));
+				DBG(std::cout << "#pragma pack(push" << (val ? ", " : "")
+				    << (val ? std::to_string(val) : std::string()) << ") queued" << std::endl);
 			    }
 			    else if ( arg == "pop" )
 			    {
-				if ( !_pack_stack.empty() )
-				    _pack_stack.pop();
-				DBG(std::cout << "#pragma pack(pop)" << std::endl);
+				_pending_pack_ops.push_back(std::make_pair(2, 0));
+				DBG(std::cout << "#pragma pack(pop) queued" << std::endl);
+			    }
+			    else if ( !arg.empty() && isdigit((unsigned char)arg[0]) )
+			    {
+				_pending_pack_ops.push_back(std::make_pair(0, atoi(arg.c_str())));
+				DBG(std::cout << "#pragma pack(" << arg << ") queued" << std::endl);
+			    }
+			    else if ( arg.empty() )
+			    {
+				_pending_pack_ops.push_back(std::make_pair(0, 0));
+				DBG(std::cout << "#pragma pack() reset queued" << std::endl);
 			    }
 			    // discard trailing tokens via the lexer (handles a
 			    // multi-line /* */ comment on this line)

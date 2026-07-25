@@ -19,6 +19,9 @@
 #include "mir.h"
 #include "cir_emit_c.h"   // CirEmitLang
 
+// MADC_TARGET_APPLE_P (target-is-Apple predicate) lives in datadef.h —
+// the parser keys on it too (asm-label symbol space), not just the CIR layer.
+
 // Forward declarations (c2mir types)
 struct c2m_ctx;
 typedef struct c2m_ctx *c2m_ctx_t;

@@ -377,9 +377,14 @@ high-level" — the answer is both.**
   emit-only `bin/madc-{x86-64,arm64}-macos`; Gate B green vs
   clang+ld64.lld references (llvm-18 oracle, independent signature
   re-hash); Gate B-final GREEN on BOTH owner Macs (identical output,
-  exit 28 — AMFI accepted the MIR-generated signature). REMAINING:
-  MH_OBJECT `.o` flavor; then the owner route decision on the larger
-  goal — madc-release running ON macOS. Plan:**
+  exit 28 — AMFI accepted the MIR-generated signature). madc-on-macOS
+  Route 1 Phase 1 COMPLETE (v0.45.0) — hosted arm64/x86-64 darwin madc
+  binaries (JIT + native Mach-O AOT) with the embedded darwin C
+  prelude; G2 green on Apple hardware, all lanes, both arches
+  ([2026-07-25-madc-on-macos-plan.md](2026-07-25-madc-on-macos-plan.md)).
+  REMAINING: MH_OBJECT `.o` flavor (fork); P2 libc++ STD-ABI
+  script-lane flavor; P3 product shape (forest section + re-signer,
+  libmadc.dylib, madcdat). Plan:**
   [2026-07-25-macho-arm64-plan.md](2026-07-25-macho-arm64-plan.md).
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target
