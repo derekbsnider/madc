@@ -2,6 +2,55 @@
 
 ## [Unreleased]
 
+## [v0.43.0] — 2026-07-25
+
+The aarch64 cross-AOT release (Mach-O/ARM64 track, axis A complete):
+`bin/madc-aarch64-linux` emits aarch64 ELF executables, objects, and
+merges from an x86-64 host — MIR is the cross compiler/assembler/linker
+— proven end-to-end under qemu-aarch64. Fork release 1.0-madc.0.43.0.
+
+- **feat(aot): aarch64-linux cross compiler — emit-only
+  `bin/madc-aarch64-linux`, qemu gate A green [Mach-O/ARM64 axis A].**
+  `make -C src cross-aarch64-linux` builds a host binary against the
+  fork's `build-aarch64-linux/libmir.a` variant (gcc cross model: one
+  target per compiled stack, separate emit-only binary, zero mir
+  makefile changes — the variant builds through the stock CPPFLAGS
+  hook). Every run lane refuses loudly (JIT tail, `--project` execute,
+  `.o` in-process eval, `--run-frozen`/`--freeze-run`); every emit lane
+  works. Gate A (all-Linux, qemu-aarch64, no external toolchain on the
+  product path): pure C `-o` matches the `aarch64-linux-gnu-gcc` native
+  reference byte-for-byte on stdout + exit code; `.mad` `-o` runs;
+  `.mad` `-c`×2 → madc `.o`-link → PIE runs runtime-free. Front-end
+  type layout needed NO changes for this target (aarch64-linux is LP64
+  with 16-byte long double, identical to x86-64-linux).
+- **feat(fork): build-time target selection + aarch64 AOT object
+  capture/ELF relocations (fork @588e3a9b).** `mir-target.h` centralizes
+  arch/OS selection (separate knobs + pair helpers + validation; no
+  override = host detection = upstream-identical). The aarch64 gen gains
+  the full PIC addrpool model in object mode: item refs read
+  `.mir.addrpool` slots through relocated `adrp+ldr` pairs ('j'/'p'
+  pattern; movz/movk constraints reject refs so leaks fail loudly),
+  switch tables move to the pool behind `adrp+add`, and
+  `target_object_capture` mirrors x86-64 (S4 weak/linkonce binding
+  identical). The ELF writer maps three new bias-invariant reloc kinds
+  (`ADR_PREL_PG_HI21`/`LDST64_ABS_LO12_NC`/`ADD_ABS_LO12_NC`) per
+  target at every seam (.o emit, executable emit, in-process load,
+  merge read-back), adds an aarch64 `_start` stub, 64K max-page-size
+  (gcc canon), target-selected interp, and a target-gated
+  `.debug_frame` CIE (was host-gated). `c2mir`'s `mir_ldouble` is
+  target-conditional (double for arm64-macos; size-correct binary128
+  for aarch64-linux with host-bounded fold precision, documented).
+- **feat(aot): eval-shim gating — standalone executables are
+  runtime-free.** The `__madc_shim_*` host-call adapters (Pass 0.74)
+  are skipped for executables (nothing can ever host-call a standalone
+  image) and for every non-`-shared` artifact of a cross build (the
+  in-process eval lane those shims serve is refused there). Dropping
+  their `madc_value_*` imports lets the existing `libmadc.so.0`
+  DT_NEEDED cover-drop fire: pure programs now emit with no madc
+  runtime dependency. Host `-c` objects keep the shims — the
+  run-objects eval contract is unchanged (suite: fulltest 754/0/0/9,
+  exe 738/0, obj 738/0, packed 754/0/0/9).
+
 - **chore: last asmjit residue removed.** The backend was deleted long
   ago; this clears what was left — four unit tests still `#include`d
   `<asmjit/x86.h>` (never using a symbol; the test binaries no longer

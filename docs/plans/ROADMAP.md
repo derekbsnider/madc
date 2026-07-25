@@ -367,11 +367,15 @@ high-level" — the answer is both.**
   Slice 5 `.mir.rodata` split is **DEFERRED (owner decision
   2026-07-25** — RELRO subsumed its hardening value; capture-side
   two-pool split not worth the format change), closing the
-  ELF-completion track. **NEXT: the Mach-O/ARM64 track (Track 6.3,
-  ACTIVE — the next `/promote` milestone): aarch64 cross-gen proven
-  under qemu on Linux (axis A), then the Mach-O writer + ad-hoc
-  signature validated with LLVM tools (axis B); the only macOS step is
-  running the finished binary. Plan:**
+  ELF-completion track. **Mach-O/ARM64 track (Track 6.3, ACTIVE — the
+  next `/promote` milestone): axis A COMPLETE (v0.43.0) — the fork's
+  build-time target selection + full aarch64 PIC-addrpool object
+  capture/ELF relocs, and the emit-only `bin/madc-aarch64-linux` cross
+  compiler; gate A green under qemu-aarch64 (pure C matches the gcc
+  reference; `.mad` `-o` and the `-c`→madc-link merge lane run
+  runtime-free). NEXT: axis B — the Mach-O writer + in-emitter ad-hoc
+  signature validated with LLVM tools; the only macOS step is running
+  the finished binary. Plan:**
   [2026-07-25-macho-arm64-plan.md](2026-07-25-macho-arm64-plan.md).
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target
