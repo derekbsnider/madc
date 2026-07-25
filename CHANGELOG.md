@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [v0.45.0] — 2026-07-25
+
+madc runs natively on the Macs (madc-on-macOS Route 1, Phase 1 complete):
+hosted arm64 + x86-64 darwin binaries with a full embedded C header
+story — G2 green on Apple hardware in every lane (JIT, native Mach-O
+AOT, labeled POSIX symbols, ctype inlines) on both architectures.
+Fork release 1.0-madc.0.45.0.
+
 - **feat(hosted-macos): darwin embedded C prelude — hosted madc binaries
   carry their standard headers (G2 round-2 fix).** Root cause of the A64
   garble (hardware-proven): hosted binaries shipped with no darwin header

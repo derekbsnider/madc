@@ -1,6 +1,18 @@
 # Test Status
 
-> **Current (2026-07-20, `develop` @71a36e9d — component-correct GNU
+> **Current (2026-07-25, `develop` — v0.45.0, madc-on-macOS Route 1
+> Phase 1 complete):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** (+2 this
+> release: `testpragmapack` — GCC pack semantics with parse-time
+> application, gcc-oracle-matched — and `testfnptrdecl` — fn-ptr
+> declarator breadth incl. the C spiral and deref-postinc binding).
+> `--exe` lane **740/0**. G2 on Apple hardware GREEN in every lane on
+> both architectures (hosted arm64 native + x86-64 under Rosetta):
+> JIT, native Mach-O AOT emit+run, labeled POSIX symbols, ctype
+> inlines, stdio macros. Fork release `1.0-madc.0.45.0`
+> (@a3cf84ae).
+
+> **Previous (2026-07-20, `develop` @71a36e9d — component-correct GNU
 > integer `_Complex`, task #69):**
 > fulltest **729 passed, 0 failed, 0 timed out, 13 skipped** (+2:
 > `testcomplexint` — the integer-complex lock, JIT and
