@@ -399,7 +399,9 @@ static void gen_record_line (gen_ctx_t gen_ctx, size_t code_offset, MIR_insn_t i
 
 #ifndef TARGET_HAS_OBJECT_CAPTURE
 /* Targets without AOT object-capture support: MIR_gen_set_object_mode fails
-   before this can ever be reached (MIR_object_create is x86-64-only). */
+   before this can ever be reached (MIR_object_create returns NULL for
+   targets without a capture + reloc mapping -- x86-64 and aarch64 have
+   them). */
 static void target_object_capture (gen_ctx_t gen_ctx MIR_UNUSED, uint8_t *code MIR_UNUSED,
                                    size_t code_len MIR_UNUSED) {
   gen_assert (FALSE);

@@ -150,8 +150,9 @@ typedef struct MIR_object *MIR_object_t;
    ADDRPOOL (".mir.addrpool", R6 PIC) is the GOT-shaped address-slot
    section: every 8-byte address the generated code materializes or calls
    through -- const-pool entries and switch tables -- lives here instead of
-   .text, reached by rip-relative PC32 references, so .text carries no
-   relocations at all (no DT_TEXTREL in executables/shared objects).
+   .text, reached by rip-relative PC32 references (x86-64) or adrp+ldr/add
+   page pairs (aarch64), so .text carries no relocations at all (no
+   DT_TEXTREL in executables/shared objects).
    INITARR (".init_array", SHT_INIT_ARRAY -- the platform section, so an
    external linker collects it natively) holds 8-byte function-pointer
    slots, one per registered module initializer (MIR_object_add_init);
@@ -167,15 +168,29 @@ enum {
 
 /* Relocation kinds (mapped to the arch-specific ELF type at emit). */
 enum {
-  MIR_OBJ_RELOC_ABS64 = 0, /* absolute 64-bit address: R_X86_64_64 */
+  MIR_OBJ_RELOC_ABS64 = 0, /* absolute 64-bit address: R_X86_64_64 /
+                              R_AARCH64_ABS64 */
   MIR_OBJ_RELOC_PC32 = 1,  /* rip-relative 32-bit: R_X86_64_PC32 (S+A-P).
                               Never dynamic: resolved by whoever fixes the
                               section layout (external linker for a .o, the
                               executable emitter at emit time, the in-process
                               loader at map time). */
+  /* aarch64 insn-field kinds: the adrp+ldr/add pool pairs the aarch64
+     capture emits against .mir.addrpool.  Like PC32 they are never dynamic
+     (page distances slide with the whole image), and each patches a bitfield
+     of one 4-byte insn. */
+  MIR_OBJ_RELOC_AARCH64_ADR_PG_HI21 = 2, /* adrp: R_AARCH64_ADR_PREL_PG_HI21,
+                                            Page(S+A)-Page(P) into immhi:immlo */
+  MIR_OBJ_RELOC_AARCH64_LDST64_LO12 = 3, /* ldr Xt,[Xn,#lo12]:
+                                            R_AARCH64_LDST64_ABS_LO12_NC,
+                                            (S+A)[11:3] into imm12 */
+  MIR_OBJ_RELOC_AARCH64_ADD_LO12 = 4,    /* add Xd,Xn,#lo12:
+                                            R_AARCH64_ADD_ABS_LO12_NC,
+                                            (S+A)[11:0] into imm12 */
 };
 
-/* Create a builder, or NULL if the host is not a supported ELF target. */
+/* Create a builder, or NULL if the build's target is not a supported ELF
+   object target (x86-64 and aarch64 have the reloc mapping). */
 extern MIR_object_t MIR_object_create (void);
 extern void MIR_object_destroy (MIR_object_t obj);
 
