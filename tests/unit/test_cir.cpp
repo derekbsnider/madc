@@ -19,8 +19,6 @@
 #include <sstream>
 #include <fstream>
 #include <stdint.h>
-#include <asmjit/x86.h>
-
 thread_local bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 

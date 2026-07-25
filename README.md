@@ -71,7 +71,7 @@ compile.
 ## Language Features
 
 - **Data types:** `int8_t`–`int64_t`, `uint8_t`–`uint64_t`, `float`, `double`, `char`, `std::string`, `array`
-- **Typed containers:** `vector<int>`, `map<string, int>`, `set<string>` — also as `std::vector<int>` etc.
+- **Typed containers:** `vector<T>`, `map<K,V>`, `set<T>`, `list<T>` — real template instantiations (also as `std::vector<T>` etc.)
 - **Streams:** `std::cout`, `std::cerr`, `std::cin`, `std::stringstream`, `std::ifstream`, `std::ofstream`, `std::fstream`
 - **Control flow:** `if`/`else`, `for`, `while`, `do`/`while`, `switch`/`case`/`default`, `rust::match`
 - **Range-based for:** `for (string name : names) { ... }` — works with array and vector
@@ -85,7 +85,7 @@ compile.
 - **`:=` short declaration:** `x := 42;` with type inference from RHS
 - **`register` keyword:** explicitly register-only variables (never written to memory)
 - **User-defined structs:** `struct Point { int x; int y; };`
-- **Classes with methods:** `class Counter { int count; void inc() { count = count + 1; } };`
+- **Classes:** the full C++ class model — see **C++ support** below
 - **Namespaces:** `std::cout`, `madc::regex_match()`, `php::explode()`, `perl::grep()`, `python::title()`, `ruby::tr()`, `js::btoa()`, `rust::trim()`
 - **Dialect precedence:** `prefer rust, php, c;` or `#pragma prefer rust, php, c`
 - **Regex:** `madc::regex_match()`, `madc::regex_search()`, `madc::regex_replace()`
@@ -98,6 +98,44 @@ compile.
 - **Subscript operator:** `a[0]`, `nums[i]`, `ages["key"]`
 - **Escape sequences:** `\n`, `\t`, `\r`, `\\`, `\"`, `\0`
 - **C23 coverage (early wave):** `_Bool`, `0b...`, `_Static_assert` / `static_assert`, `alignof` / `_Alignof`, `typeof` / `typeof_unqual`, `nullptr`, digit separators (`1'000'000`)
+
+### C++ support
+
+madc is a C/C++ dialect: C++ lowers Cfront-style to strict C11 on the
+one `cir_node` IR (`--emit=c11` is a first-class output), and madc
+parses the **real glibc/libstdc++ headers** — `#include <vector>`,
+`<string>`, `<iostream>` read the actual installed headers, not
+embedded shims. The current model (all suite-tested):
+
+- **Classes:** constructors/destructors with RAII (destructor injection
+  at every scope exit, return, and unwind path), const methods, static
+  members, access control, `friend`, conversion operators, and operator
+  overloading — including `<=>` three-way comparison with the standard
+  synthesis of the relational operators
+- **Inheritance:** single, multiple, and virtual inheritance on the
+  Itanium model (vtables, vtable thunks, virtual bases constructed
+  once), virtual and pure-virtual methods, virtual destructors, RTTI —
+  `typeid` and `dynamic_cast`, including cross-casts in MI hierarchies
+- **Templates:** class, function, member, and variable templates via
+  real monomorphization on the parse-once spine (the g++ tsubst model:
+  the pattern parses once, instantiations substitute over the saved
+  tree — never re-parsed); `std::move`/`std::forward` instantiate from
+  the real headers
+- **`std::string` and streams are real libstdc++ objects**, called
+  mangled-direct through Itanium symbols — no wrapper layer
+- **Exceptions:** `try`/`catch`/`throw` lowered to setjmp/longjmp with
+  type-dispatched catch; destructors run during unwinding
+- **Lambdas** with `[&]` capture; references (including rvalue
+  references in template instantiation)
+- **Specifiers:** `constexpr` (folded; `if constexpr` discards the dead
+  branch), `consteval`/`constinit` (accepted), `inline` with real C++
+  vague linkage — identical per-TU copies (template instantiations,
+  inline/in-class bodies, vtables, typeinfo, C++17 inline variables)
+  emit `STB_WEAK` and merge at native or external links, with inline
+  variables' dynamic inits once-guarded — plus `inline namespace`,
+  `alignas`, `noexcept`, `auto` return deduction
+- Version-gated via `--std=`: each keyword activates at its introducing
+  standard through the language-standard registry
 
 ### Multi-Language Namespaces
 
@@ -277,9 +315,12 @@ madc's `master` in lockstep; fork releases pair with madc's (see
 ## Roadmap
 
 Canonical roadmap: [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md). The phases
-below were achieved on the **old asmjit/Gecko backend** (now removed); the
-current focus is re-establishing them on the `cir_node` → c2mir → MIR path
-(integration baseline 227/193/56).
+below chart the language build-out. They were originally achieved on the
+**old asmjit/Gecko backend** (since removed) and have been **fully
+re-established — and far surpassed — on the `cir_node` → c2mir → MIR
+path**: the CIR parity gate was met with zero standard-C failures
+outstanding, and the suite stands at the counts in the Testing section
+above.
 
 | Phase | Goal | Status |
 |-------|------|--------|
@@ -294,7 +335,7 @@ current focus is re-establishing them on the `cir_node` → c2mir → MIR path
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
 | **GCC Parity** | GCC torture test suite compatibility | **v0.20.0** — 1536/1685 (91.2%); std namespace cleanup, std::vector |
-| **C++ Model** | Classes, inheritance, vtables, exceptions | **v0.21.0** — ctors/dtors, operators, refs, new/delete, inheritance, vtables, SJLJ exceptions + unwinding |
+| **C++ Model** | Classes, inheritance, vtables, exceptions | **Complete and extended on CIR** — full Itanium class model (MI + virtual bases, RTTI/`dynamic_cast`, vtable thunks), templates via real monomorphization, `<=>`, SJLJ exceptions + unwinding, real libstdc++ headers, vague linkage (see *C++ support* above) |
 | **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/` |
 
 ---

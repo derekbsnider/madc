@@ -77,7 +77,6 @@ MIRDIR	= /workspace/mir
 # string literal so the built-in MADC_VERSION macro tracks the release version —
 # single source of truth, no hardcoded copy in the lexer.
 DEFINES	= -I$(INCDIR) -I$(MIRDIR) -I$(MIRDIR)/c2mir $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS) -DMADC_VERSION_STR='"$(MADC_VERSION)"'
-#LIBS	= -lreadline -lasmjit
 LIBS	= -rdynamic -ldl -lz -lm -lpthread $(OPTIONAL_LIBS)
 MIRLIB	= $(MIRDIR)/libmir.a
 DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS) $(MADCDISHDRS)

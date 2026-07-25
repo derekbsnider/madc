@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **chore: last asmjit residue removed.** The backend was deleted long
+  ago; this clears what was left — four unit tests still `#include`d
+  `<asmjit/x86.h>` (never using a symbol; the test binaries no longer
+  need asmjit headers installed), the commented `-lasmjit` Makefile
+  line, and stale agent-briefing text (`code-style.md`'s asmjit /
+  `regdefp_t` / `compile()/operand()` bullets; AGENTS.md design notes
+  describing removed JIT-era string/stream machinery).
+
 ## [v0.42.0] — 2026-07-25
 
 The inline un-erasure release (ELF-completion S4 follow-through):

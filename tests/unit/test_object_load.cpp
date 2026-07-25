@@ -10,8 +10,6 @@
 thread_local bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
-#include <asmjit/x86.h>
-
 #include <deque>
 #include <fstream>
 #include <iostream>
