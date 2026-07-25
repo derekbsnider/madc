@@ -304,11 +304,12 @@ arbiter embedded **756/0/0/9** + sidecar **756/0/0/9**, `--exe`
 **740/0**. The MIR fork is unchanged (`1.0-madc.0.47.0` remains the
 pinned release).
 
-**Branch state:** `master` is at v0.38.0 (promoted 2026-07-23);
-`develop` carries v0.48.0 — `/promote` rides with/after this slice
-(owner decision 2026-07-25). The
+**Branch state:** `master` is at v0.48.0 (promoted 2026-07-25 — the
+Mach-O milestone promote, per the owner's ride-with-S3 decision);
+`develop` == `master`. The
 [MIR fork](https://github.com/derekbsnider/mir)'s `master` tracks
-madc's `master` in lockstep; fork releases pair with madc's (see
+madc's `master` in lockstep (fast-forwarded to the same
+`1.0-madc.0.47.0` pin); fork releases pair with madc's (see
 [`MIR_VERSION`](MIR_VERSION)).
 
 ### Recent Releases
