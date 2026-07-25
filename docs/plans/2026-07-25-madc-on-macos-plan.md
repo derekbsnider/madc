@@ -93,6 +93,14 @@ decision when we get there).  Own plan doc when the phase starts.
 
 ### Phase 3 — product shape on macOS
 
+> **SUPERSEDED (2026-07-25):** Phase 3 is subsumed by the owner-directed
+> forest-carriers track —
+> [`2026-07-25-forest-carriers-plan.md`](2026-07-25-forest-carriers-plan.md)
+> (Mach-O `__MADC,__forest` section via `-sectcreate` — no re-signer on
+> the build path — in-house re-signer for post-link packing, configurable
+> carriers/install shapes, `-static-libmadc`). The bullets below are the
+> original sketch, kept for history.
+
 - **Forest pack**: the appended-blob model is ILLEGAL on signed Mach-O
   (the file must end exactly at the signature — trailing bytes = AMFI
   kill on arm64).  Design: carry the forest as a real section
