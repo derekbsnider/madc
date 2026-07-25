@@ -626,7 +626,14 @@ extern "C" void *__madc_builtin_memmove_chk(void *dst, const void *src, unsigned
 
 extern "C" void *__madc_builtin_mempcpy_chk(void *dst, const void *src, unsigned long n, unsigned long size)
 {
+#ifdef __APPLE__
+    // mempcpy is a GNU extension darwin's libc lacks; compose the same
+    // fortified semantics from memcpy_chk (identical abort-on-overflow).
+    __builtin___memcpy_chk(dst, src, n, size);
+    return (char *)dst + n;
+#else
     return __builtin___mempcpy_chk(dst, src, n, size);
+#endif
 }
 
 extern "C" void *__madc_builtin_memset_chk(void *dst, int c, unsigned long n, unsigned long size)

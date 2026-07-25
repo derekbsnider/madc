@@ -24,7 +24,6 @@
 #include <setjmp.h>
 #include <dlfcn.h>
 #include <chrono>
-#include <unistd.h>	// cir_selfexe_libdir: readlink(/proc/self/exe)
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
 
@@ -1304,7 +1303,7 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 				: (have_madc ? "kept" : "absent"))
 		  << std::endl);
     std::vector<const char *> libs;
-#ifdef MADC_CROSS_APPLE
+#if MADC_TARGET_APPLE_P
     // Mach-O: the base C/C++ sonames are cover analysis only — the emitter
     // links the implicit libSystem, nothing else. A program whose imports
     // are NOT covered would need a target madc runtime that does not exist:
@@ -1351,12 +1350,7 @@ bool CirJitSession::emit_native_executable(const char *out_path,
 // binary's library search path so it works from either layout.
 static std::string cir_selfexe_libdir(void)
 {
-    char exe[4096];
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n <= 0)
-	return std::string();
-    exe[n] = '\0';
-    std::string d(exe);
+    std::string d = madc_self_exe_path();
     size_t slash = d.rfind('/');
     if (slash == std::string::npos)
 	return std::string();
@@ -1374,12 +1368,25 @@ static void cir_native_link_env(const std::vector<std::string> &user_libs,
 				std::string &runpath)
 {
     needed.push_back("libmadc.so.0");
+#ifdef __APPLE__
+    // Cover analysis runs in THIS process (dlsym + dladdr below), so the
+    // base C/C++ cover spellings must name the HOST's runtime images. On
+    // darwin the libc surface dladdr-reports as libsystem_*.dylib pieces
+    // under the libSystem umbrella; libc++/libc++abi carry the C++ runtime.
+    // Prefix-matched, so the bare stems cover every versioned dylib name.
+    // (The Apple emit gate never turns these into load commands — the
+    // emitter links implicit libSystem only.)
+    needed.push_back("libc++");
+    needed.push_back("libsystem_");
+    needed.push_back("libSystem");
+#else
     needed.push_back("libstdc++.so.6");
     needed.push_back("libm.so.6");
     needed.push_back("libc.so.6");
+#endif
     for (const std::string &l : user_libs) {
 	if (l.compare(0, 2, "-l") == 0)
-	    needed.push_back("lib" + l.substr(2) + ".so");
+	    needed.push_back("lib" + l.substr(2) + MADC_DSO_SUFFIX);
 	else
 	    needed.push_back(l);
     }
@@ -1591,7 +1598,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 				    : (have_madc ? "kept" : "absent"))
 		      << std::endl);
 	std::vector<const char *> libs;
-#ifdef MADC_CROSS_APPLE
+#if MADC_TARGET_APPLE_P
 	// Same Mach-O rule as cir_write_native_image: covers are analysis
 	// only; a runtime-needing link fails at emit, not at dyld.
 	if (have_madc && !drop_madc) {
@@ -4310,7 +4317,7 @@ int madc_cir_execute_frozen(const char *container_path,
     size_t image_len = 0;
     if (!cir_forest_map_image(container_path, image, image_len)) {
 	fprintf(stderr, "madc: %s: cannot map frozen container\n",
-		container_path ? container_path : "/proc/self/exe");
+		container_path ? container_path : "<self-executable>");
 	return -1;
     }
 
@@ -4359,7 +4366,7 @@ int madc_cir_dump_forest(const char *container_path)
     size_t image_len = 0;
     if (!cir_forest_map_image(container_path, image, image_len)) {
 	fprintf(stderr, "madc: %s: cannot map frozen container\n",
-		container_path ? container_path : "/proc/self/exe");
+		container_path ? container_path : "<self-executable>");
 	return -1;
     }
     if (!TokenBase::_active_strpool) {

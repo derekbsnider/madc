@@ -9,7 +9,6 @@
 #include <execinfo.h>
 #include <dlfcn.h>
 #include <unistd.h>
-#include <ucontext.h>
 #include <sys/resource.h>
 #include <new>
 #include <iostream>
@@ -817,13 +816,16 @@ int main(int argc, char **argv)
         } else if (strncmp(argv[i], "-l", 2) == 0 && argv[i][2] != '\0') {
             // -l<name>: dlopen a shared library so its symbols are resolvable by
             // the import resolver at link time (e.g. -lcrypt). Like a linker's
-            // -l, but it dlopen()s lib<name>.so (RTLD_GLOBAL). A name containing
-            // '/' or ending in .so is used verbatim.
+            // -l, but it dlopen()s lib<name>.so / .dylib (RTLD_GLOBAL). A name
+            // containing '/' or ending in the host suffix is used verbatim.
             std::string lib(argv[i] + 2);
+            const std::string dso_sfx = MADC_DSO_SUFFIX;
             if ( lib.find('/') == std::string::npos
-              && (lib.size() < 3 || lib.compare(lib.size() - 3, 3, ".so") != 0) )
+              && (lib.size() < dso_sfx.size()
+                  || lib.compare(lib.size() - dso_sfx.size(), dso_sfx.size(),
+                                 dso_sfx) != 0) )
             {
-                lib = "lib" + lib + ".so";
+                lib = "lib" + lib + dso_sfx;
                 cc_link_args.push_back(argv[i]);   // AOT: forward as -l<name>
             }
             else
@@ -1021,7 +1023,8 @@ int main(int argc, char **argv)
 #endif
     if ( run_frozen )
     {
-        std::string ra0 = run_frozen_path ? run_frozen_path : "/proc/self/exe";
+        std::string ra0 = run_frozen_path ? std::string(run_frozen_path)
+                                          : madc_self_exe_path();
         std::vector<char *> rargv;
         rargv.push_back((char *)ra0.c_str());
         for ( int i = filearg; i < argc; ++i )
@@ -1479,6 +1482,7 @@ int main(int argc, char **argv)
 		return 1;
 	    }
 	    std::string opt = std::string("--run-frozen=") + tmpl;
+	    std::string selfexe = madc_self_exe_path();   // resolved pre-fork
 	    std::vector<char *> cargv;
 	    cargv.push_back(argv[0]);
 	    cargv.push_back((char *)opt.c_str());
@@ -1488,7 +1492,7 @@ int main(int argc, char **argv)
 	    pid_t pid = fork();
 	    if ( pid == 0 )
 	    {
-		execv("/proc/self/exe", cargv.data());
+		execv(selfexe.c_str(), cargv.data());
 		perror("madc: --freeze-run: execv");
 		_exit(127);
 	    }
@@ -1529,7 +1533,7 @@ int main(int argc, char **argv)
 	    {
 		kind = mnkShared;
 		explicit_out = generic_output_path;
-		dflt_suffix = ".so";
+		dflt_suffix = MADC_DSO_SUFFIX;
 	    }
 	    else
 	    {

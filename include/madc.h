@@ -505,7 +505,7 @@ public:
     int end_line;			// line of closing } (set by parseCompound)
     bool is_stmt_expr = false;		// true: a GNU statement-expression `({...})`, not a plain `{...}` block
     TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; end_line = 0; }
-    virtual TokenType type() const { return TokenType::ttCompound; }
+    virtual TokenType type() const override { return TokenType::ttCompound; }
     virtual DataDef *datadef() const override {
 	if ( statements.empty() ) return &ddVOID;
 	DataDef *dd = statements.back()->datadef();
@@ -695,8 +695,8 @@ public:
         return _datatype;
     }
     virtual bool is_real() const override { return datadef() && datadef()->is_real(); }
-    virtual size_t argc() const { return parameters.size(); }
-    virtual TokenType type() const { return TokenType::ttCallFunc; }
+    virtual size_t argc() const override { return parameters.size(); }
+    virtual TokenType type() const override { return TokenType::ttCallFunc; }
 };
 
 class TokenScopeContext: public TokenBase
@@ -705,7 +705,7 @@ public:
     Variable &context_var;
     std::vector<Variable *> scope_vars;
     TokenScopeContext(Variable &ctx) : TokenBase(), context_var(ctx) { _datatype = &ddARRAY; }
-    virtual TokenType type() const { return TokenType::ttVariable; }
+    virtual TokenType type() const override { return TokenType::ttVariable; }
     virtual DataDef *datadef() const override { return &ddARRAY; }
 };
 
@@ -719,7 +719,7 @@ public:
         : TokenCallFunc(m), object(o), offset(ofs), parent_expr(nullptr) { _datatype = m.type; }
     TokenMember(Variable &o, Variable &m, size_t ofs, TokenBase *parent)
         : TokenCallFunc(m), object(o), offset(ofs), parent_expr(parent) { _datatype = m.type; }
-    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual TokenType type() const override { return TokenType::ttMember; }
     virtual DataDef *datadef() const override { return _datatype; }
     virtual bool is_real() const override { return _datatype->is_real(); }
     // Member is declared as a fixed array (e.g. `SKILLTYPE *arr[N]`).
@@ -761,7 +761,7 @@ public:
     Variable &var;
     DataDef *ptr_type;  // pointer-to-var type
     TokenAddrOf(Variable &v, DataDef *pt) : var(v), ptr_type(pt) {}
-    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
 };
 
@@ -772,7 +772,7 @@ public:
     TokenBase *expr;
     DataDef *ptr_type;
     TokenAddrExpr(TokenBase *e, DataDef *pt) : expr(e), ptr_type(pt) {}
-    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
 };
 
@@ -783,8 +783,8 @@ public:
     std::string name;
     DataDef *ptr_type;
     TokenLabelAddr(const std::string &n, DataDef *pt) : name(n), ptr_type(pt) {}
-    virtual TokenType type() const { return TokenType::ttBase; }
-    virtual TokenBase *clone() { return new TokenLabelAddr(name, ptr_type); }
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual TokenBase *clone() override { return new TokenLabelAddr(name, ptr_type); }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
 };
 
@@ -806,7 +806,7 @@ public:
     Variable &var;
     DataDef *deref_type;  // pointed-to type
     TokenDeref(Variable &v, DataDef *dt) : var(v), deref_type(dt) { _datatype = dt; }
-    virtual TokenType type() const { return TokenType::ttMember; }  // reuse member type for assignment compat
+    virtual TokenType type() const override { return TokenType::ttMember; }  // reuse member type for assignment compat
     virtual DataDef *datadef() const override { return deref_type; }
 };
 
@@ -817,7 +817,7 @@ public:
     TokenBase *expr;
     DataDef *deref_type;
     TokenDerefExpr(TokenBase *e, DataDef *dt) : expr(e), deref_type(dt) { _datatype = dt; }
-    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual TokenType type() const override { return TokenType::ttMember; }
     virtual DataDef *datadef() const override { return deref_type; }
 };
 
@@ -830,7 +830,7 @@ public:
     TokenComplexPart(TokenBase *e, bool imag)
 	: expr(e), imag_part(imag) {}
 
-    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual TokenType type() const override { return TokenType::ttMember; }
     virtual DataDef *datadef() const override
     {
 	DataDef *expr_dd = expr ? expr->datadef() : NULL;
@@ -855,7 +855,7 @@ public:
     bool increment;
     TokenDerefStep(Variable &v, DataDef *dt, bool inc)
         : var(v), deref_type(dt), increment(inc) { _datatype = dt; }
-    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return deref_type; }
 };
 
@@ -866,7 +866,7 @@ public:
     DataDef *cast_type;   // target type
     TokenBase *expr;      // expression being cast
     TokenCast(DataDef *ct, TokenBase *e) : cast_type(ct), expr(e) {}
-    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return cast_type; }
 };
 
@@ -928,7 +928,7 @@ public:
 	    return NULL;
 	return &fd->return_value_type();
     }
-    virtual TokenType type() const { return TokenType::ttSubscript; }
+    virtual TokenType type() const override { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }
     // The element type is computed in the constructor for every container
     // kind (fixed array, pointer, string, SIMD, vector, map, madc array).
@@ -949,7 +949,7 @@ public:
     {
         _datatype = elem_type ? elem_type : &ddINT64;
     }
-    virtual TokenType type() const { return TokenType::ttSubscript; }
+    virtual TokenType type() const override { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }
     // operand() must return an *lvalue* (Mem) — i.e. the address of
     // the element — not the loaded value. Callers (TokenAssign LHS,

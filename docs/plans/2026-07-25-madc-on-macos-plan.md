@@ -230,6 +230,44 @@ green is the refactor gate.
 - minos 12.0, plain arm64 (no arm64e) — inherited from the Mach-O
   track.
 
+## Phase 1 landing notes (2026-07-25 — what the build surfaced beyond the audit)
+
+- **Fork: the object layer was host-gated on `<elf.h>`** — on a darwin
+  host the ENTIRE MIR_object layer (including the Mach-O writer) would
+  have compiled to "no <elf.h>" stubs.  Fixed at the root: new
+  `mir-elf-defs.h` (local SysV gABI + psABI definitions, values
+  verified against glibc; the mir-macho.c pattern), the
+  `MIR_DEBUG_HAVE_ELF` gate and its stub block deleted.  The Windows
+  track needs exactly this too.
+- **Fork: `__muloti4` has no home on arm64-macos** — clang lowers
+  `__builtin_mul_overflow(__int128)` to that libcall; darwin libSystem
+  exports it for x86_64 only and Ubuntu's clang ships no darwin
+  compiler-rt.  `MIR_int128_[u]muloti` gained an Apple arm with a
+  manual checked multiply (inline mul + `__udivti3` wrap check — both
+  exported on arm64); bit-exact with the builtin, overflow included.
+- **Fork: the `__mir_*oti` asm-alias exports** are excluded on Apple
+  (Mach-O has no aliases; the lane they serve has no Apple twin yet).
+- **`mempcpy` is a GNU extension** — `__madc_builtin_mempcpy_chk`'s
+  darwin arm composes `memcpy_chk` + `dst + n`.
+- **errno accessor is per-libc**: glibc `__errno_location` vs darwin
+  `__error` — registered under the host's own name (parser.cpp).
+- **Cover analysis is HOST-keyed** (dlsym/dladdr run in-process): the
+  base cover spellings on darwin are `libc++` / `libsystem_` /
+  `libSystem` stems, not ELF sonames — without this every AOT emit on
+  a Mac would be refused as "runtime-needing" (printf dladdr-reports
+  libsystem_c.dylib, which never matches libc.so.6).
+- **Real latent defect found by clang**: `TokenChar::is_constant()`
+  lacked `const`, so it HID (not overrode) the base virtual — char
+  literals reported non-constant through base pointers.  Fixed; plus
+  85 mechanical `override` markers (headers now clang-warning-clean).
+- **remote_build.sh deleted `*.d` on every mir sync** — each sync
+  blinded make to fork header changes (stale objects). Excluded now.
+- **dlsym export surface confirmed on darwin executables**: 2337
+  globals exported with no `-rdynamic` (ld64 default) — the script
+  lane's resolver requirement holds.  The namespace publics mangle
+  with `std::__1` (libc++), confirming the Phase-2 delta.
+- Deliverable sizes: ~6.0 MB unstripped `-O2` per binary.
+
 ## Risks
 
 - **dlsym export visibility on darwin executables** — the entire

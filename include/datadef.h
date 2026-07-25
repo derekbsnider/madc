@@ -36,6 +36,19 @@ extern thread_local bool madc_debug_info;
 // DataDefs born in that scope retain speculative provenance after rollback.
 extern thread_local bool madc_class_pattern_capture_active;
 
+// Resolved absolute path of the running executable, empty when unresolvable.
+// The one self-exe discovery point: readlink(/proc/self/exe) on Linux,
+// _NSGetExecutablePath on macOS.
+std::string madc_self_exe_path();
+
+// Host shared-library suffix for dlopen soname synthesis (-l<name>) and
+// native shared-artifact naming.
+#ifdef __APPLE__
+#define MADC_DSO_SUFFIX ".dylib"
+#else
+#define MADC_DSO_SUFFIX ".so"
+#endif
+
 class TokenBase;
 
 // C fixed-size array dimension. 64-bit: huge dims like

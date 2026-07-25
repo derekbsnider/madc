@@ -15325,7 +15325,15 @@ void Program::populate_builtin_registry()
     builtin_registry.add_process_function("get_argv", datatype_vec_t{ptr_of(ddCHAR), ptr_of(ddVOID), DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
     builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_setenv);
     builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_unsetenv);
+    // errno accessor: the host libc's errno macro expands to a call on this
+    // symbol (glibc: (*__errno_location()); darwin: (*__error())). Register
+    // the host's own accessor under the host's own name so real <errno.h>
+    // resolves. Returns `int*` — C int is 4 bytes vs madc's 8-byte int.
+#ifdef __APPLE__
+    builtin_registry.add_process_function("__error", datatype_vec_t{ptr_of(ddINT32)}, (fVOIDFUNC)__error);
+#else
     builtin_registry.add_process_function("__errno_location", datatype_vec_t{ptr_of(ddINT32)}, (fVOIDFUNC)__errno_location);
+#endif
 
     builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlopen);
     builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{DataType::dtINT64, DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlsym);
