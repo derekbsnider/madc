@@ -143,25 +143,117 @@ enum {
   A_ENUM, A_ENUMERATOR, A_SUBR, A_FPARAM, A_TYPEDEF,
 };
 
-#if defined(__aarch64__)
+/* Target selection via mir-target.h (madc fork): these describe the
+   TARGET of the emitted debug info / objects, not the build host. */
+#if MIR_TARGET_IS_AARCH64
 #define MIR_DEBUG_FP_OP DW_OP_reg29
 #define MIR_DEBUG_EM EM_AARCH64
-#elif defined(__x86_64__)
+#elif MIR_TARGET_IS_X86_64
 #define MIR_DEBUG_FP_OP DW_OP_reg6
 #define MIR_DEBUG_EM EM_X86_64
-#elif defined(__riscv) && __riscv_xlen == 64
+#elif MIR_TARGET_IS_RISCV64
 #define MIR_DEBUG_FP_OP DW_OP_reg6 /* not validated; see frontend note */
 #define MIR_DEBUG_EM EM_RISCV
-#elif defined(__powerpc64__)
+#elif MIR_TARGET_IS_PPC64
 #define MIR_DEBUG_FP_OP DW_OP_reg6
 #define MIR_DEBUG_EM EM_PPC64
-#elif defined(__s390x__)
+#elif MIR_TARGET_IS_S390X
 #define MIR_DEBUG_FP_OP DW_OP_reg6
 #define MIR_DEBUG_EM EM_S390
 #else
 #define MIR_DEBUG_FP_OP DW_OP_reg6
 #define MIR_DEBUG_EM 0
 #endif
+
+/* ---- target ELF relocation model (one target per compiled stack) --------
+   The object layer supports the targets with a reloc mapping below;
+   OBJ_TARGET_SUPPORTED_P gates MIR_object_create / the executable emitter. */
+#define OBJ_TARGET_SUPPORTED_P (MIR_DEBUG_EM == EM_X86_64 || MIR_DEBUG_EM == EM_AARCH64)
+#if MIR_TARGET_IS_AARCH64
+#define OBJ_R_ABS64 R_AARCH64_ABS64
+#define OBJ_R_ABS32 R_AARCH64_ABS32 /* 4-byte cross-debug-section offsets */
+#define OBJ_R_RELATIVE R_AARCH64_RELATIVE
+#else
+#define OBJ_R_ABS64 R_X86_64_64
+#define OBJ_R_ABS32 R_X86_64_32
+#define OBJ_R_RELATIVE R_X86_64_RELATIVE
+#endif
+
+/* MIR_OBJ_RELOC_* kind -> the target's ELF relocation type, or -1 if the
+   kind is not representable on this target. */
+static int obj_kind_rtype (int kind) {
+  switch (kind) {
+#if MIR_TARGET_IS_AARCH64
+  case MIR_OBJ_RELOC_ABS64: return R_AARCH64_ABS64;
+  case MIR_OBJ_RELOC_PC32: return R_AARCH64_PREL32;
+  case MIR_OBJ_RELOC_AARCH64_ADR_PG_HI21: return R_AARCH64_ADR_PREL_PG_HI21;
+  case MIR_OBJ_RELOC_AARCH64_LDST64_LO12: return R_AARCH64_LDST64_ABS_LO12_NC;
+  case MIR_OBJ_RELOC_AARCH64_ADD_LO12: return R_AARCH64_ADD_ABS_LO12_NC;
+#else
+  case MIR_OBJ_RELOC_ABS64: return R_X86_64_64;
+  case MIR_OBJ_RELOC_PC32: return R_X86_64_PC32;
+#endif
+  default: return -1;
+  }
+}
+
+/* The target's ELF relocation type -> MIR_OBJ_RELOC_* kind, or -1 if it is
+   outside the emitter's subset. */
+static int obj_rtype_kind (unsigned rtype) {
+#if MIR_TARGET_IS_AARCH64
+  return rtype == R_AARCH64_ABS64                ? MIR_OBJ_RELOC_ABS64
+         : rtype == R_AARCH64_PREL32             ? MIR_OBJ_RELOC_PC32
+         : rtype == R_AARCH64_ADR_PREL_PG_HI21   ? MIR_OBJ_RELOC_AARCH64_ADR_PG_HI21
+         : rtype == R_AARCH64_LDST64_ABS_LO12_NC ? MIR_OBJ_RELOC_AARCH64_LDST64_LO12
+         : rtype == R_AARCH64_ADD_ABS_LO12_NC    ? MIR_OBJ_RELOC_AARCH64_ADD_LO12
+                                                 : -1;
+#else
+  return rtype == R_X86_64_64 ? MIR_OBJ_RELOC_ABS64 : rtype == R_X86_64_PC32 ? MIR_OBJ_RELOC_PC32 : -1;
+#endif
+}
+
+/* Bytes a kind's slot occupies in its section (ABS64 is the only 8-byte --
+   and the only dynamic-capable -- kind; everything else patches 4 bytes). */
+static size_t obj_kind_slot_size (int kind) { return kind == MIR_OBJ_RELOC_ABS64 ? 8 : 4; }
+
+/* Apply a non-ABS64 relocation kind in place once the layout is fixed:
+   v = the resolved S+A, pc = the slot's own link/runtime address.  PC32
+   writes the 32-bit distance; the aarch64 kinds patch one insn's bitfield
+   (the producer emits the field zeroed, but clear it anyway so reapplication
+   is idempotent).  Returns 0, or -1 on range/alignment overflow. */
+static int obj_apply_field_reloc (int kind, uint8_t *slot, uint64_t v, uint64_t pc) {
+  if (kind == MIR_OBJ_RELOC_PC32) {
+    int64_t d = (int64_t) v - (int64_t) pc;
+    if (d < INT32_MIN || d > INT32_MAX) return -1;
+    int32_t d32 = (int32_t) d;
+    memcpy (slot, &d32, 4);
+    return 0;
+  }
+#if MIR_TARGET_IS_AARCH64
+  uint32_t insn;
+  memcpy (&insn, slot, 4);
+  if (kind == MIR_OBJ_RELOC_AARCH64_ADR_PG_HI21) {
+    int64_t pg = (int64_t) (v & ~(uint64_t) 0xfff) - (int64_t) (pc & ~(uint64_t) 0xfff);
+    if (pg < -((int64_t) 1 << 32) || pg >= ((int64_t) 1 << 32)) return -1;
+    uint64_t imm = ((uint64_t) pg >> 12) & 0x1fffff;
+    insn &= ~(((uint32_t) 3 << 29) | ((uint32_t) 0x7ffff << 5));
+    insn |= (uint32_t) ((imm & 3) << 29) | (uint32_t) (((imm >> 2) & 0x7ffff) << 5);
+  } else if (kind == MIR_OBJ_RELOC_AARCH64_LDST64_LO12) {
+    if ((v & 7) != 0) return -1; /* scaled 64-bit ldr: 8-aligned slots only */
+    insn &= ~((uint32_t) 0xfff << 10);
+    insn |= (uint32_t) (((v & 0xfff) >> 3) << 10);
+  } else if (kind == MIR_OBJ_RELOC_AARCH64_ADD_LO12) {
+    insn &= ~((uint32_t) 0xfff << 10);
+    insn |= (uint32_t) ((v & 0xfff) << 10);
+  } else {
+    return -1;
+  }
+  memcpy (slot, &insn, 4);
+  return 0;
+#else
+  return -1;
+#endif
+}
 
 /* ===== builder state ===================================================== */
 enum { DT_VOID, DT_BASE, DT_PTR, DT_ARRAY, DT_STRUCT, DT_UNION, DT_ENUM, DT_TYPEDEF, DT_FUNC };
@@ -404,7 +496,7 @@ typedef struct {
      (CU header abbrev offset, DW_AT_stmt_list, .debug_frame FDE CIE
      pointers): src/tgt use the sec id space above plus 3 = .debug_abbrev,
      value the offset within the target section.  The .o emitter turns these
-     into R_X86_64_32 relocations against the target debug section's symbol
+     into ABS32 relocations against the target debug section's symbol
      -- without them the offsets are valid only while one CU sits at
      section offset 0, which is exactly what breaks multi-object links. */
   void (*sec_ref) (void *env, int src, size_t pos, int tgt, uint32_t value);
@@ -838,7 +930,7 @@ static int elf_assemble (dwsec_t *S, int ns, uint16_t e_machine, void **buf, siz
 }
 
 /* ===== .debug_frame (CFI) ================================================ */
-/* Authoritative unwind info for the JIT frames (x86-64 only for now).  gdb's
+/* Authoritative unwind info for the JIT frames.  gdb's
    heuristic prologue analysis does not recognize MIR's FP prologue
    (mov %rbp,-8(%rsp); lea -8(%rsp),%rbp -- no push), so without CFI a
    backtrace cannot leave frame 0 even though the in-memory FP chain is
@@ -860,7 +952,7 @@ enum {
 static void buf_patch_u32 (dwbuf_t *b, size_t pos, uint32_t v) { memcpy (b->p + pos, &v, 4); }
 
 static void emit_frame (MIR_debug_t d, dwbuf_t *b, const dwgen_t *g) {
-#if defined(__x86_64__)
+#if MIR_TARGET_IS_X86_64
   static const uint8_t fp_prologue[] = {0x48, 0x89, 0x6c, 0x24, 0xf8,  /* mov %rbp,-0x8(%rsp) */
                                         0x48, 0x8d, 0x6c, 0x24, 0xf8}; /* lea -0x8(%rsp),%rbp */
   /* CIE (DWARF32 .debug_frame v1): CFA = rsp+8, return address at CFA-8 */
@@ -902,6 +994,37 @@ static void emit_frame (MIR_debug_t d, dwbuf_t *b, const dwgen_t *g) {
       buf_uleb (b, 6); /* rbp */
       buf_uleb (b, 16); /* CFA = rbp+16 */
     }
+    while ((b->len - fde_len_pos) % 8 != 0) buf_u8 (b, DW_CFA_nop);
+    buf_patch_u32 (b, fde_len_pos, (uint32_t) (b->len - fde_len_pos - 4));
+  }
+#elif MIR_TARGET_IS_AARCH64
+  /* aarch64 CIE + CIE-default FDE rows: at entry CFA = sp+0 and the return
+     address lives in x30 (the CIE default -- no rule -- means "read the
+     register"), which is exact for frame 0 and leaves.  Prologue-template
+     rows (the stp/mov FP save shape) are the debug track's aarch64 rung,
+     not this AOT slice. */
+  size_t cie_off = b->len, len_pos = b->len;
+  buf_u32 (b, 0); /* length, backpatched */
+  buf_u32 (b, 0xffffffff); /* CIE id */
+  buf_u8 (b, 1); /* version */
+  buf_u8 (b, 0); /* augmentation "" */
+  buf_uleb (b, 4); /* code alignment factor */
+  buf_sleb (b, -8); /* data alignment factor */
+  buf_u8 (b, 30); /* return address register (x30/lr) */
+  buf_u8 (b, DW_CFA_def_cfa);
+  buf_uleb (b, 31); /* sp */
+  buf_uleb (b, 0); /* CFA = sp+0 */
+  while ((b->len - len_pos) % 8 != 0) buf_u8 (b, DW_CFA_nop);
+  buf_patch_u32 (b, len_pos, (uint32_t) (b->len - len_pos - 4));
+
+  for (int i = 0; i < d->n_funcs; i++) {
+    dwfunc_t *fn = &d->funcs[i];
+    if (dw_func_skip_p (g, fn) || fn->size == 0) continue;
+    size_t fde_len_pos = b->len;
+    buf_u32 (b, 0); /* length, backpatched */
+    dw_secref (g, b, 2, 2, (uint32_t) cie_off); /* CIE pointer (section offset) */
+    dw_addr (g, b, 2, (uint64_t) (uintptr_t) fn->addr); /* initial location */
+    buf_u64 (b, (uint64_t) fn->size); /* address range */
     while ((b->len - fde_len_pos) % 8 != 0) buf_u8 (b, DW_CFA_nop);
     buf_patch_u32 (b, fde_len_pos, (uint32_t) (b->len - fde_len_pos - 4));
   }
@@ -1038,7 +1161,7 @@ static char *obj_strdup (const char *s) {
 }
 
 MIR_object_t MIR_object_create (void) {
-  if (MIR_DEBUG_EM != EM_X86_64) return NULL; /* x86-64 first: the reloc mapping */
+  if (!OBJ_TARGET_SUPPORTED_P) return NULL; /* targets with a reloc mapping only */
   MIR_object_t obj = calloc (1, sizeof (struct MIR_object));
   if (obj == NULL) return NULL;
   obj->data_align = obj->bss_align = obj->pool_align = 1;
@@ -1258,7 +1381,7 @@ static void dwsref_record (void *env, int src, size_t pos, int tgt, uint32_t val
 int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   if (buf != NULL) *buf = NULL;
   if (size != NULL) *size = 0;
-  if (obj == NULL || buf == NULL || size == NULL || MIR_DEBUG_EM != EM_X86_64) return -1;
+  if (obj == NULL || buf == NULL || size == NULL || !OBJ_TARGET_SUPPORTED_P) return -1;
 
   /* DWARF relocations bind to the .text section symbol -- make sure it
      exists before the symbol count is snapshotted below. */
@@ -1374,8 +1497,8 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   int bad_p = 0;
   for (size_t i = 0; i < obj->n_rels; i++) {
     objreloc_t *r = &obj->rels[i];
-    if ((r->kind != MIR_OBJ_RELOC_ABS64 && r->kind != MIR_OBJ_RELOC_PC32) || r->sym < 0
-        || (size_t) r->sym >= n
+    int rtype = obj_kind_rtype (r->kind);
+    if (rtype < 0 || r->sym < 0 || (size_t) r->sym >= n
         || (r->sec != MIR_OBJ_SEC_TEXT && r->sec != MIR_OBJ_SEC_DATA
             && r->sec != MIR_OBJ_SEC_ADDRPOOL && r->sec != MIR_OBJ_SEC_INITARR)) {
       bad_p = 1;
@@ -1383,8 +1506,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     }
     Elf64_Rela er;
     er.r_offset = r->offset;
-    er.r_info = ELF64_R_INFO ((uint64_t) final_idx[r->sym],
-                              r->kind == MIR_OBJ_RELOC_PC32 ? R_X86_64_PC32 : R_X86_64_64);
+    er.r_info = ELF64_R_INFO ((uint64_t) final_idx[r->sym], (unsigned) rtype);
     er.r_addend = r->addend;
     buf_bytes (r->sec == MIR_OBJ_SEC_TEXT      ? &rela_text
                : r->sec == MIR_OBJ_SEC_DATA    ? &rela_data
@@ -1396,7 +1518,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   /* DWARF relocations (R5 + multi-object): each 8-byte code-address slot
      zeroed and relocated against the .text section symbol, each 4-byte
      cross-debug-section offset (CU abbrev offset, stmt_list, FDE CIE
-     pointers) zeroed and R_X86_64_32-relocated against the target debug
+     pointers) zeroed and ABS32-relocated against the target debug
      section's symbol -- so an external linker's OR MIR_object_read's
      placement fixes the debug info exactly like the code, multi-CU
      included. */
@@ -1410,7 +1532,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
       memset (tgt->p + sl->pos, 0, 8);
       Elf64_Rela er;
       er.r_offset = sl->pos;
-      er.r_info = ELF64_R_INFO ((uint64_t) text_sym_idx, R_X86_64_64);
+      er.r_info = ELF64_R_INFO ((uint64_t) text_sym_idx, OBJ_R_ABS64);
       er.r_addend = (int64_t) sl->value;
       buf_bytes (rel, &er, sizeof er);
     }
@@ -1421,7 +1543,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
       memset (tgt->p + rf->pos, 0, 4);
       Elf64_Rela er;
       er.r_offset = rf->pos;
-      er.r_info = ELF64_R_INFO ((uint64_t) dbg_secsym[rf->tgt], R_X86_64_32);
+      er.r_info = ELF64_R_INFO ((uint64_t) dbg_secsym[rf->tgt], OBJ_R_ABS32);
       er.r_addend = (int64_t) rf->value;
       buf_bytes (rel, &er, sizeof er);
     }
@@ -1440,8 +1562,8 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
       Elf64_Rela er;
       er.r_offset = dr->off;
       er.r_info = dr->tgt == OBJDBG_TGT_TEXT
-                    ? ELF64_R_INFO ((uint64_t) text_sym_idx, R_X86_64_64)
-                    : ELF64_R_INFO ((uint64_t) dbg_secsym[dr->tgt], R_X86_64_32);
+                    ? ELF64_R_INFO ((uint64_t) text_sym_idx, OBJ_R_ABS64)
+                    : ELF64_R_INFO ((uint64_t) dbg_secsym[dr->tgt], OBJ_R_ABS32);
       er.r_addend = dr->add;
       buf_bytes (rel, &er, sizeof er);
     }
@@ -1519,7 +1641,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     /* non-executable stack marker (its absence makes ld assume an executable
        stack and warn) */
     S[ns++] = (dwsec_t) {".note.GNU-stack", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, NULL, 0};
-    if (plan_ok) rc = elf_assemble (S, ns, EM_X86_64, buf, size);
+    if (plan_ok) rc = elf_assemble (S, ns, MIR_DEBUG_EM, buf, size);
   }
   free (final_idx);
   free (strtab.p);
@@ -1555,7 +1677,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
        mprotected read-only after relocation; BIND_NOW is already the only
        semantics, there is no lazy binding to disable);
      - internal relocations resolve at emit; imports become eager
-       R_X86_64_64 slot relocations in .rela.dyn (no PLT/GOT: MIR calls
+       ABS64 slot relocations in .rela.dyn (no PLT/GOT: MIR calls
        already go through address slots) => DT_TEXTREL until the PIC rung;
      - synthesized _start: SysV stack -> __libc_start_main (entry, argc,
        argv, init=0, fini=0, rtld_fini) through its own reloc slot.
@@ -1563,8 +1685,8 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
    loader picks the bias, so .dynamic/.rela.dyn/.dynsym values stay link-time
    vaddrs the loader rebases), no PT_INTERP/_start/entry, defined globals
    exported in .dynsym, and EVERY relocation kept dynamic -- internal targets
-   as R_X86_64_RELATIVE (bias + link vaddr; -Bsymbolic semantics), imports as
-   R_X86_64_64.  A non-empty builder .init_array emits DT_INIT_ARRAY /
+   as RELATIVE (bias + link vaddr; -Bsymbolic semantics), imports as
+   ABS64.  A non-empty builder .init_array emits DT_INIT_ARRAY /
    DT_INIT_ARRAYSZ (no DT_INIT -- the array is the one init model): ld.so
    runs a shared object's entries at load; an executable's are run by
    glibc >= 2.34's __libc_start_main itself (the _start stub passes
@@ -1577,11 +1699,50 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
    already keeps .text relocation-free. */
 
 #define OBJX_BASE_ADDR 0x400000ull
+#if MIR_TARGET_IS_AARCH64
+/* gcc/binutils aarch64 canon: max-page-size 64K, so the image loads on both
+   4K- and 64K-page kernels (a 4K-aligned binary fails to map on the
+   latter). */
+#define OBJX_PAGE 0x10000ull
+#else
 #define OBJX_PAGE 0x1000ull
+#endif
 #ifndef DF_1_PIE /* pre-2.27 glibc elf.h */
 #define DF_1_PIE 0x08000000
 #endif
 
+#if MIR_TARGET_IS_AARCH64
+/* _start: fp=lr=0; x5=rtld_fini (x0 from the loader); x1=argc ([sp]);
+   x2=argv (sp+8); x6=stack end (sp); x0=entry (adrp+add, patched at
+   @0x18/@0x1c); x3=init=0; x4=fini=0; x16=*__libc_start_main slot in the
+   R+W address-pool region (adrp+ldr, patched at @0x28/@0x2c -- PIC: a
+   dynamic slot in text would fault the loader's write); blr; brk padding
+   to 64.  All references are page-pair distances -- bias-invariant, so the
+   ONE stub serves ET_EXEC and PIE alike. */
+static const uint32_t objx_start_stub_insns[]
+  = {0xd280001d, /* movz x29,#0 */
+     0xd280001e, /* movz x30,#0 */
+     0xaa0003e5, /* mov x5,x0 */
+     0xf94003e1, /* ldr x1,[sp] */
+     0x910023e2, /* add x2,sp,#8 */
+     0x910003e6, /* mov x6,sp */
+     0x90000000, /* adrp x0,entry@page (patched) */
+     0x91000000, /* add x0,x0,#entry@lo12 (patched) */
+     0xd2800003, /* movz x3,#0 */
+     0xd2800004, /* movz x4,#0 */
+     0x90000010, /* adrp x16,lsm@page (patched) */
+     0xf9400210, /* ldr x16,[x16,#lsm@lo12] (patched) */
+     0xd63f0200, /* blr x16 */
+     0xd4200000, /* brk #0 */
+     0xd4200000, /* brk #0 (pad) */
+     0xd4200000 /* brk #0 (pad to 64) */};
+#define objx_start_stub ((const uint8_t *) objx_start_stub_insns)
+#define OBJX_STUB_ENTRY_PG 0x18 /* adrp x0,entry@page */
+#define OBJX_STUB_ENTRY_LO 0x1c /* add x0,x0,#entry@lo12 */
+#define OBJX_STUB_CALL_PG 0x28  /* adrp x16,lsm@page */
+#define OBJX_STUB_CALL_LO 0x2c  /* ldr x16,[x16,#lsm@lo12] */
+#define OBJX_STUB_SIZE 64
+#else
 /* _start: xor ebp; mov rdx->r9; pop rsi (argc); mov rsp->rdx (argv);
    align rsp; push rax; push rsp; r8=0 (fini); ecx=0 (init);
    lea entry(%rip),%rdi (@0x14, disp @0x17 -- rip-relative so the ONE stub
@@ -1598,8 +1759,9 @@ static const uint8_t objx_start_stub[]
 #define OBJX_STUB_ENTRY_DISP 23 /* disp32 of lea entry(%rip),%rdi */
 #define OBJX_STUB_CALL_DISP 29  /* disp32 of call *(%rip) */
 #define OBJX_STUB_SIZE 48
-/* the 48-byte stub keeps the captured text's 16-byte alignment on its own
-   (SSE pool constants: movaps/xorpd fault otherwise) */
+#endif
+/* the stub size keeps the captured text's 16-byte alignment on its own
+   (x86-64 SSE pool constants: movaps/xorpd fault otherwise) */
 #define OBJX_TEXT_BIAS OBJX_STUB_SIZE
 
 static uint32_t objx_elf_hash (const char *name) {
@@ -1617,15 +1779,19 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
                                 void **buf, size_t *size) {
   if (buf != NULL) *buf = NULL;
   if (size != NULL) *size = 0;
-  if (obj == NULL || params == NULL || buf == NULL || size == NULL || MIR_DEBUG_EM != EM_X86_64)
+  if (obj == NULL || params == NULL || buf == NULL || size == NULL || !OBJ_TARGET_SUPPORTED_P)
     return -1;
   int shared_p = params->shared_p != 0;
   int pie_p = !shared_p && params->pie_p != 0;
   /* pic_image_p: the load bias is unknown (ET_DYN) -- base 0, internal
-     ABS64 slots become R_X86_64_RELATIVE for the loader to rebase */
+     ABS64 slots become RELATIVE relocations for the loader to rebase */
   int pic_image_p = shared_p || pie_p;
   uint64_t base = pic_image_p ? 0 : OBJX_BASE_ADDR;
+#if MIR_TARGET_IS_AARCH64
+  const char *interp = params->interp != NULL ? params->interp : "/lib/ld-linux-aarch64.so.1";
+#else
   const char *interp = params->interp != NULL ? params->interp : "/lib64/ld-linux-x86-64.so.2";
+#endif
   const char *entry_nm = params->entry != NULL ? params->entry : "main";
   static const Elf64_Section objx_shndx[5]
     = {6, 10, 11, 7, 8}; /* text/data/bss/pool/initarr shdr indexes */
@@ -1727,19 +1893,17 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
 
   /* executables: import ABS64 relocations survive to .rela.dyn, internal
      ones resolve below; shared objects: the load bias is unknown, so EVERY
-     ABS64 stays dynamic.  PC32 references are bias-invariant and resolve at
-     emit in both modes -- never dynamic.  A dynamic slot inside .text would
-     mean DT_TEXTREL: the PIC capture keeps text clean, but track it loudly
-     rather than assume. */
+     ABS64 stays dynamic.  PC32 / aarch64 page-pair references are
+     bias-invariant and resolve at emit in both modes -- never dynamic.  A
+     dynamic slot inside .text would mean DT_TEXTREL: the PIC capture keeps
+     text clean, but track it loudly rather than assume. */
   size_t n_dyn_rel = shared_p ? 0 : 1; /* the __libc_start_main slot */
   int textrel_p = 0;
   for (size_t i = 0; i < obj->n_rels; i++) {
     objreloc_t *r = &obj->rels[i];
-    if ((r->kind != MIR_OBJ_RELOC_ABS64 && r->kind != MIR_OBJ_RELOC_PC32) || r->sym < 0
-        || (size_t) r->sym >= n)
-      goto done;
-    if (r->kind == MIR_OBJ_RELOC_PC32) {
-      if (!obj->syms[r->sym].defined_p) goto done; /* PC32 against an import: no such producer */
+    if (obj_kind_rtype (r->kind) < 0 || r->sym < 0 || (size_t) r->sym >= n) goto done;
+    if (r->kind != MIR_OBJ_RELOC_ABS64) { /* field kinds resolve at emit */
+      if (!obj->syms[r->sym].defined_p) goto done; /* against an import: no such producer */
       continue;
     }
     if (pic_image_p || !obj->syms[r->sym].defined_p) {
@@ -1946,9 +2110,30 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   } else {
     memcpy (p + interp_off, interp, interp_size);
     memcpy (p + text_off, objx_start_stub, OBJX_STUB_SIZE);
-    /* both stub references are rip-relative link-vaddr distances --
+    /* all stub references are pc-relative link-vaddr distances --
        bias-invariant, so ET_EXEC and PIE patch identically */
     uint64_t entry_vaddr = code_vaddr + obj->syms[entry_i].value;
+#if MIR_TARGET_IS_AARCH64
+    /* adrp+add x0,entry and adrp+ldr x16,lsm-slot: the same field patchers
+       the relocation pass uses below */
+    if (obj_apply_field_reloc (MIR_OBJ_RELOC_AARCH64_ADR_PG_HI21, p + text_off + OBJX_STUB_ENTRY_PG,
+                               entry_vaddr, text_vaddr + OBJX_STUB_ENTRY_PG)
+          != 0
+        || obj_apply_field_reloc (MIR_OBJ_RELOC_AARCH64_ADD_LO12, p + text_off + OBJX_STUB_ENTRY_LO,
+                                  entry_vaddr, 0)
+             != 0
+        || obj_apply_field_reloc (MIR_OBJ_RELOC_AARCH64_ADR_PG_HI21,
+                                  p + text_off + OBJX_STUB_CALL_PG, base + lsm_off,
+                                  text_vaddr + OBJX_STUB_CALL_PG)
+             != 0
+        || obj_apply_field_reloc (MIR_OBJ_RELOC_AARCH64_LDST64_LO12,
+                                  p + text_off + OBJX_STUB_CALL_LO, base + lsm_off, 0)
+             != 0) {
+      free (p);
+      p = NULL;
+      goto done;
+    }
+#else
     uint32_t edisp
       = (uint32_t) (entry_vaddr - (text_vaddr + OBJX_STUB_ENTRY_DISP + 4));
     memcpy (p + text_off + OBJX_STUB_ENTRY_DISP, &edisp, 4);
@@ -1956,6 +2141,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     uint32_t disp
       = (uint32_t) ((base + lsm_off) - (text_vaddr + OBJX_STUB_CALL_DISP + 4));
     memcpy (p + text_off + OBJX_STUB_CALL_DISP, &disp, 4);
+#endif
   }
   if (obj->text.len != 0) memcpy (p + text_off + text_bias, obj->text.p, obj->text.len);
   if (obj->data.len != 0) memcpy (p + data_off, obj->data.p, obj->data.len);
@@ -1969,16 +2155,16 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     if (dw_frame.len != 0) memcpy (p + dw_frame_off, dw_frame.p, dw_frame.len);
   }
 
-  /* relocations: PC32 references resolve at emit in both modes (the whole
-     image slides by one bias, so PC distances are final); executables
-     resolve internal ABS64 targets in place and send imports to .rela.dyn;
-     shared objects send every ABS64 to .rela.dyn -- internal targets as
-     R_X86_64_RELATIVE (loader writes bias + addend) */
+  /* relocations: PC32 / page-pair references resolve at emit in both modes
+     (the whole image slides by one bias, so PC distances are final);
+     executables resolve internal ABS64 targets in place and send imports to
+     .rela.dyn; shared objects send every ABS64 to .rela.dyn -- internal
+     targets as RELATIVE (loader writes bias + addend) */
   {
     Elf64_Rela *er = (Elf64_Rela *) (p + rela_off);
     if (!shared_p) {
       er->r_offset = base + lsm_off;
-      er->r_info = ELF64_R_INFO ((uint64_t) lsm_idx, R_X86_64_64);
+      er->r_info = ELF64_R_INFO ((uint64_t) lsm_idx, OBJ_R_ABS64);
       er->r_addend = 0;
       er++;
     }
@@ -1991,19 +2177,18 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
                                                             : 0)
                           + r->offset;
       objsym_t *s = &obj->syms[r->sym];
-      if (r->kind == MIR_OBJ_RELOC_PC32) {
-        int64_t d = (int64_t) (OBJX_SEC_VADDR (s->sec) + s->value) + r->addend
-                    - (int64_t) (base + slot_off);
-        if (d < INT32_MIN || d > INT32_MAX) {
+      if (r->kind != MIR_OBJ_RELOC_ABS64) {
+        /* field kind (PC32 / aarch64 page pair): bias-invariant, patched in
+           place against the fixed link layout */
+        uint64_t v = OBJX_SEC_VADDR (s->sec) + s->value + (uint64_t) r->addend;
+        if (obj_apply_field_reloc (r->kind, p + slot_off, v, base + slot_off) != 0) {
           free (p);
           p = NULL;
-          goto done; /* image far larger than 2GB: not an emitter reality */
+          goto done; /* range overflow: not an emitter-layout reality */
         }
-        int32_t d32 = (int32_t) d;
-        memcpy (p + slot_off, &d32, 4);
       } else if (s->defined_p && pic_image_p) {
         er->r_offset = base + slot_off;
-        er->r_info = ELF64_R_INFO (0, R_X86_64_RELATIVE);
+        er->r_info = ELF64_R_INFO (0, OBJ_R_RELATIVE);
         er->r_addend = (int64_t) (OBJX_SEC_VADDR (s->sec) + s->value + (uint64_t) r->addend);
         er++;
       } else if (s->defined_p) {
@@ -2011,7 +2196,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
         memcpy (p + slot_off, &v, 8);
       } else {
         er->r_offset = base + slot_off;
-        er->r_info = ELF64_R_INFO ((uint64_t) dyn_idx[r->sym], R_X86_64_64);
+        er->r_info = ELF64_R_INFO ((uint64_t) dyn_idx[r->sym], OBJ_R_ABS64);
         er->r_addend = r->addend;
         er++;
       }
@@ -2069,7 +2254,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     eh->e_ident[EI_VERSION] = EV_CURRENT;
     eh->e_ident[EI_OSABI] = ELFOSABI_SYSV;
     eh->e_type = pic_image_p ? ET_DYN : ET_EXEC;
-    eh->e_machine = EM_X86_64;
+    eh->e_machine = MIR_DEBUG_EM;
     eh->e_version = EV_CURRENT;
     /* the _start stub heads .text; for PIE this is the link-time vaddr
        (base 0) and the loader rebases it with the load bias */
@@ -2313,8 +2498,8 @@ static int objx_scan (objx_scan_t *sc, const void *vbuf, size_t size, char *err_
   memset (sc, 0, sizeof (*sc));
   sc->i_text = sc->i_data = sc->i_bss = sc->i_pool = sc->i_init = sc->i_symtab = -1;
   for (int k = 0; k < OBJDBG_N; k++) sc->i_dbg[k] = -1;
-  if (MIR_DEBUG_EM != EM_X86_64) {
-    OBJLOAD_ERR ("MIR objects are x86-64 only");
+  if (!OBJ_TARGET_SUPPORTED_P) {
+    OBJLOAD_ERR ("MIR objects are not supported on this build's target");
     return -1;
   }
   if (buf == NULL || size < sizeof (Elf64_Ehdr)) {
@@ -2331,8 +2516,9 @@ static int objx_scan (objx_scan_t *sc, const void *vbuf, size_t size, char *err_
     OBJLOAD_ERR ("not a relocatable object (ET_REL)");
     return -1;
   }
-  if (eh->e_machine != EM_X86_64) {
-    OBJLOAD_ERR ("not an x86-64 object");
+  if (eh->e_machine != MIR_DEBUG_EM) {
+    OBJLOAD_ERR ("object's machine %u is not this build's target (%u)",
+                 (unsigned) eh->e_machine, (unsigned) MIR_DEBUG_EM);
     return -1;
   }
   if (eh->e_shentsize != sizeof (Elf64_Shdr) || eh->e_shnum == 0 || eh->e_shoff > size
@@ -2522,13 +2708,14 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
     size_t n_rel = sh[ri].sh_size / sizeof (Elf64_Rela);
     for (size_t k = 0; k < n_rel; k++) {
       unsigned rtype = (unsigned) ELF64_R_TYPE (ra[k].r_info);
-      if (rtype != R_X86_64_64 && rtype != R_X86_64_PC32) {
+      int kind = obj_rtype_kind (rtype);
+      if (kind < 0) {
         OBJLOAD_ERR ("unsupported relocation type %u (loader handles the emitter's "
-                     "R_X86_64_64/R_X86_64_PC32 subset)",
+                     "own subset)",
                      rtype);
         goto fail_unmap;
       }
-      size_t slot_size = rtype == R_X86_64_PC32 ? 4 : 8;
+      size_t slot_size = obj_kind_slot_size (kind);
       size_t si = ELF64_R_SYM (ra[k].r_info);
       if (si >= n_file_syms || ra[k].r_offset > tgt_size
           || tgt_size - ra[k].r_offset < slot_size) {
@@ -2560,15 +2747,14 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
         }
         sval = (uint64_t) rbase + s->st_value;
       }
-      if (rtype == R_X86_64_PC32) {
-        int64_t d = (int64_t) sval + ra[k].r_addend
-                    - (int64_t) (uint64_t) (tgt_base + ra[k].r_offset);
-        if (d < INT32_MIN || d > INT32_MAX) {
-          OBJLOAD_ERR ("PC32 relocation %zu in section %d out of 32-bit range", k, ri);
+      if (kind != MIR_OBJ_RELOC_ABS64) {
+        if (obj_apply_field_reloc (kind, tgt_base + ra[k].r_offset,
+                                   sval + (uint64_t) ra[k].r_addend,
+                                   (uint64_t) (uintptr_t) (tgt_base + ra[k].r_offset))
+            != 0) {
+          OBJLOAD_ERR ("relocation %zu in section %d out of range", k, ri);
           goto fail_unmap;
         }
-        int32_t d32 = (int32_t) d;
-        memcpy (tgt_base + ra[k].r_offset, &d32, 4);
       } else {
         uint64_t v = sval + (uint64_t) ra[k].r_addend;
         memcpy (tgt_base + ra[k].r_offset, &v, 8);
@@ -2964,7 +3150,7 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
           OBJLOAD_ERR ("debug relocation %zu in section %d against a bad symbol index", k, ri);
           goto done;
         }
-        if (rtype == R_X86_64_64 && map_sec[si] == MIR_OBJ_SEC_TEXT) {
+        if (rtype == OBJ_R_ABS64 && map_sec[si] == MIR_OBJ_SEC_TEXT) {
           /* code-address slot: function moved by the text append base */
           if (objdbg_add_rel (obj, tdbg, OBJDBG_TGT_TEXT, ra[k].r_offset + dbg_base[tdbg],
                               ra[k].r_addend + (int64_t) base[MIR_OBJ_SEC_TEXT])
@@ -2972,7 +3158,7 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
             OBJLOAD_ERR ("out of memory");
             goto done;
           }
-        } else if (rtype == R_X86_64_32 && map_dbg[si] >= 0) {
+        } else if (rtype == OBJ_R_ABS32 && map_dbg[si] >= 0) {
           /* cross-debug-section offset: target section moved by ITS base */
           if (objdbg_add_rel (obj, tdbg, map_dbg[si], ra[k].r_offset + dbg_base[tdbg],
                               ra[k].r_addend + (int64_t) dbg_base[(int) map_dbg[si]])
@@ -3001,13 +3187,9 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
     size_t n_rel = sh[ri].sh_size / sizeof (Elf64_Rela);
     for (size_t k = 0; k < n_rel; k++) {
       unsigned rtype = (unsigned) ELF64_R_TYPE (ra[k].r_info);
-      int kind = rtype == R_X86_64_64      ? MIR_OBJ_RELOC_ABS64
-                 : rtype == R_X86_64_PC32 ? MIR_OBJ_RELOC_PC32
-                                          : -1;
+      int kind = obj_rtype_kind (rtype);
       if (kind < 0) {
-        OBJLOAD_ERR ("unsupported relocation type %u (the emitter's subset is "
-                     "R_X86_64_64/R_X86_64_PC32)",
-                     rtype);
+        OBJLOAD_ERR ("unsupported relocation type %u (outside the emitter's own subset)", rtype);
         goto done;
       }
       size_t si = ELF64_R_SYM (ra[k].r_info);
@@ -3021,7 +3203,7 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
     }
   }
   /* A pre-multi-CU .o carries debug sections whose cross-section offsets
-     are bare values (no R_X86_64_32 relocs) -- valid only at append base 0.
+     are bare values (no cross-debug ABS32 relocs) -- valid only at append base 0.
      Appended later, its CU would silently read another object's abbrev /
      line tables.  Refuse loudly; re-emitting the cache fixes it. */
   if (sc.i_dbg[0] >= 0 && sh[sc.i_dbg[0]].sh_size != 0 && dbg_base[0] != 0 && n_dbg32 == 0) {

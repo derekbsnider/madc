@@ -704,6 +704,29 @@ struct label_ref {
 typedef struct label_ref label_ref_t;
 DEF_VARR (label_ref_t);
 
+/* Object mode (PIC): one .mir.addrpool slot per referenced item, read by an
+   adrp+ldr pair ('j' pattern); the recorded pc is the adrp insn, the ldr
+   follows at pc+4, and the capture emits the page/lo12 relocation pair. */
+struct const_ref {
+  size_t pc;        /* offset of the adrp insn of the adrp+ldr pool pair */
+  size_t const_num; /* index into const_pool_items */
+};
+typedef struct const_ref const_ref_t;
+DEF_VARR (const_ref_t);
+
+/* Object mode (PIC): a switch table emitted with the current function -- the
+   capture moves its 8-byte absolute label slots into .mir.addrpool and the
+   table-address adr was emitted as a relocated adrp+add pool pair. */
+struct switch_table_desc {
+  size_t adrp_pc;   /* offset of the adrp insn of the table-address pair */
+  size_t table_off; /* table start in result_code */
+  size_t n_slots;   /* 8-byte label slots */
+};
+typedef struct switch_table_desc switch_table_desc_t;
+DEF_VARR (switch_table_desc_t);
+
+DEF_VARR (MIR_item_t);
+
 struct target_ctx {
   unsigned char alloca_p, block_arg_func_p, leaf_p, short_bb_branch_p;
   size_t small_aggregate_save_area;
@@ -715,6 +738,9 @@ struct target_ctx {
   VARR (label_ref_t) * label_refs;
   VARR (uint64_t) * abs_address_locs;
   VARR (MIR_code_reloc_t) * relocs;
+  VARR (MIR_item_t) * const_pool_items;                 /* object mode: pool slot items */
+  VARR (const_ref_t) * const_refs;                      /* object mode: adrp+ldr pool reads */
+  VARR (switch_table_desc_t) * switch_table_descs;      /* object mode: tables to move */
 };
 
 #define alloca_p gen_ctx->target_ctx->alloca_p
@@ -730,6 +756,9 @@ struct target_ctx {
 #define label_refs gen_ctx->target_ctx->label_refs
 #define abs_address_locs gen_ctx->target_ctx->abs_address_locs
 #define relocs gen_ctx->target_ctx->relocs
+#define const_pool_items gen_ctx->target_ctx->const_pool_items
+#define const_refs gen_ctx->target_ctx->const_refs
+#define switch_table_descs gen_ctx->target_ctx->switch_table_descs
 
 static MIR_disp_t target_get_stack_slot_offset (gen_ctx_t gen_ctx, MIR_type_t type MIR_UNUSED,
                                                 MIR_reg_t slot) {
@@ -1235,6 +1264,8 @@ struct pattern {
      L - reference or label as the 1st or 2nd op which can be present by signed 26-bit pc offset
      (in 4 insn bytes) l - label as the 1st op which can be present by signed 19-bit pc offset (in
      4 insn bytes)
+     j - object (PIC) mode only: item reference materialized through a .mir.addrpool slot
+     (adrp+ldr pair, 'p' replacement) instead of a movz/movk absolute-address sequence
 
      Remember we have no float or (long) double immediate at this stage. They are represented
      by a reference to data item.  */
@@ -1262,6 +1293,9 @@ struct pattern {
      L -- operand-label as 26-bit offset
      l -- operand-label as 19-bit offset
      T -- pc-relative address [5..23]
+     p[0-2] -- object mode: record an adrp+ldr .mir.addrpool read of the n-th (reference)
+     operand at this insn's offset; the capture emits the page/lo12 relocation pair
+     (goes on the adrp insn -- the ldr must immediately follow at pc+4)
      i<one or two hex digits> -- shift value in [10..15]
      I<one or two hex digits> -- shift value in [16..21]
   */
@@ -1308,6 +1342,10 @@ static const struct pattern patterns[] = {
 
   {MIR_MOV, "r ms0", "38a00800:ffa00c00 rd0 m"}, /* ldrsb Rd,[Rn,Rm{,#1}] */
   {MIR_MOV, "r Ms0", "39800000:ffc00000 rd0 M"}, /* ldrsb Rd,[Rn{,#imm12}] */
+
+  /* PIC object mode: Rd = pool[ref] -- adrp Rd,page; ldr Rd,[Rd,#lo12]; the
+     imm fields stay zero for the relocation pair the capture emits: */
+  {MIR_MOV, "r j", "90000000:9f000000 rd0 p1; f9400000:ffc00000 rd0 rn0"},
 
   {MIR_MOV, "r Z0", "d2800000:ff800000 rd0 Z0"}, /* movz Rd, imm */
   {MIR_MOV, "r N0", "92800000:ff800000 rd0 N0"}, /* movn Rd, imm */
@@ -2017,6 +2055,10 @@ static int pattern_match_p (gen_ctx_t gen_ctx, const struct pattern *pat, MIR_in
         if (op.u.d != 0.0) return FALSE;
       } else {
         if (op.mode != MIR_OP_INT && op.mode != MIR_OP_UINT && op.mode != MIR_OP_REF) return FALSE;
+        /* Object mode: an item address is a link-time value -- it must never
+           match a movz/movk immediate sequence, only the 'j' pool pattern
+           that can carry a relocation. */
+        if (op.mode == MIR_OP_REF && object_mode_p) return FALSE;
         gen_assert (('0' <= ch && ch <= '2') || (start_ch == 'Z' && ch == '3'));
         n = ch - '0';
         if (op.mode != MIR_OP_REF) {
@@ -2067,6 +2109,13 @@ static int pattern_match_p (gen_ctx_t gen_ctx, const struct pattern *pat, MIR_in
       break;
     case 'L':
       if (op.mode != MIR_OP_LABEL && op.mode != MIR_OP_REF) return FALSE;
+      break;
+    case 'j':
+      /* Object mode (PIC) only: an item reference materialized through a
+         .mir.addrpool slot (adrp+ldr, 'p' replacement) instead of a
+         movz/movk absolute-address sequence.  Listed before the movz/movk
+         patterns so it wins whenever it applies. */
+      if (op.mode != MIR_OP_REF || !object_mode_p) return FALSE;
       break;
     default: gen_assert (FALSE);
     }
@@ -2161,6 +2210,19 @@ static int64_t get_int64 (uint8_t *addr, int nb) { /* Little endian */
 static uint32_t check_and_set_mask (uint32_t opcode_mask, uint32_t mask) {
   gen_assert ((opcode_mask & mask) == 0);
   return opcode_mask | mask;
+}
+
+/* Object mode: one .mir.addrpool slot per referenced item (dedup by item;
+   slots are zero in the file, each covered by an ABS64 relocation the
+   capture emits). */
+static size_t add_to_const_pool (struct gen_ctx *gen_ctx, MIR_item_t ref_item) {
+  MIR_item_t *items = VARR_ADDR (MIR_item_t, const_pool_items);
+  size_t n, len = VARR_LENGTH (MIR_item_t, const_pool_items);
+
+  for (n = 0; n < len; n++)
+    if (items[n] == ref_item) return n;
+  VARR_PUSH (MIR_item_t, const_pool_items, ref_item);
+  return len;
 }
 
 static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacement,
@@ -2342,6 +2404,18 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
         switch_table_addr_p = TRUE;
         break;
       }
+      case 'p': { /* object mode: adrp+ldr .mir.addrpool read of ops[digit] */
+        const_ref_t cr;
+
+        ch = *++p;
+        gen_assert ('0' <= ch && ch <= '2' && ch - '0' < (int) insn->nops);
+        op = insn->ops[ch - '0'];
+        gen_assert (object_mode_p && op.mode == MIR_OP_REF);
+        cr.pc = VARR_LENGTH (uint8_t, result_code);
+        cr.const_num = add_to_const_pool (gen_ctx, op.u.ref);
+        VARR_PUSH (const_ref_t, const_refs, cr);
+        break;
+      }
       case 'l':
       case 'L': {
         int nop = 0;
@@ -2426,14 +2500,34 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
     [label_ref_num].label_val_disp = VARR_LENGTH (uint8_t, result_code);
 
     if (switch_table_addr_p) switch_table_adr_insn_start = VARR_LENGTH (uint8_t, result_code);
-    put_uint64 (gen_ctx, opcode, 4); /* output the machine insn */
+    if (switch_table_addr_p && object_mode_p) {
+      /* PIC: the table lives in .mir.addrpool -- materialize its address
+         with a relocated adrp+add pair instead of the in-text adr (the
+         capture emits the page/lo12 pair at the recorded offset) */
+      int rd = opcode & 0x1f;
+      put_uint64 (gen_ctx, 0x90000000 | (uint32_t) rd, 4);              /* adrp Rd,page */
+      put_uint64 (gen_ctx, 0x91000000 | ((uint32_t) rd << 5) | (uint32_t) rd, 4); /* add Rd,Rd,#lo12 */
+    } else {
+      put_uint64 (gen_ctx, opcode, 4); /* output the machine insn */
+    }
 
     if (*p == 0) break;
   }
   if (switch_table_adr_insn_start < 0) return;
   if (VARR_LENGTH (uint8_t, result_code) % 8 == 4) put_uint64 (gen_ctx, 0, 4);
-  offset = (VARR_LENGTH (uint8_t, result_code) - switch_table_adr_insn_start) / 4; /* pc offset */
-  *(uint32_t *) (VARR_ADDR (uint8_t, result_code) + switch_table_adr_insn_start) |= (offset << 5);
+  if (object_mode_p) {
+    /* PIC: the capture moves the table into .mir.addrpool -- the adrp+add
+       imm fields stay zero for their relocations, the in-blob table bytes
+       become dead padding (the indirect branch never falls through them). */
+    switch_table_desc_t std;
+    std.adrp_pc = (size_t) switch_table_adr_insn_start;
+    std.table_off = VARR_LENGTH (uint8_t, result_code);
+    std.n_slots = insn->nops - 1;
+    VARR_PUSH (switch_table_desc_t, switch_table_descs, std);
+  } else {
+    offset = (VARR_LENGTH (uint8_t, result_code) - switch_table_adr_insn_start) / 4; /* pc offset */
+    *(uint32_t *) (VARR_ADDR (uint8_t, result_code) + switch_table_adr_insn_start) |= (offset << 5);
+  }
   gen_assert (insn->code == MIR_SWITCH);
   for (size_t i = 1; i < insn->nops; i++) {
     gen_assert (insn->ops[i].mode == MIR_OP_LABEL);
@@ -2481,6 +2575,9 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   VARR_TRUNC (uint8_t, result_code, 0);
   VARR_TRUNC (label_ref_t, label_refs, 0);
   VARR_TRUNC (uint64_t, abs_address_locs, 0);
+  VARR_TRUNC (MIR_item_t, const_pool_items, 0);
+  VARR_TRUNC (const_ref_t, const_refs, 0);
+  VARR_TRUNC (switch_table_desc_t, switch_table_descs, 0);
   for (insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
        insn = DLIST_NEXT (MIR_insn_t, insn)) {
     if (insn->code == MIR_LABEL) {
@@ -2536,6 +2633,95 @@ static void target_rebase (gen_ctx_t gen_ctx, uint8_t *base) {
   _MIR_update_code_arr (gen_ctx->ctx, base, VARR_LENGTH (MIR_code_reloc_t, relocs),
                         VARR_ADDR (MIR_code_reloc_t, relocs));
   gen_setup_lrefs (gen_ctx, base);
+}
+
+/* AOT object mode: the blob was emitted PIC -- every item address is read
+   through an adrp+ldr pair against a .mir.addrpool slot ('j'/'p' pattern;
+   the slot is zeroed under an ABS64 relocation, the pair carries a
+   page/lo12 relocation pair into the pool).  Switch tables move the same
+   way: their 8-byte label slots become pool ABS64s against the text section
+   symbol, the table-address adr was emitted as a relocated adrp+add pair,
+   and the dead in-blob table bytes are zeroed (the indirect branch never
+   executes them).  movz/movk item materializations cannot occur -- the
+   'Z'/'N' constraints reject references in object mode, so a leak fails the
+   pattern match loudly before any code is emitted. */
+#define TARGET_HAS_OBJECT_CAPTURE 1
+static void target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code_len) {
+  MIR_context_t ctx = gen_ctx->ctx;
+  MIR_object_t obj = gen_object;
+  size_t i, j;
+
+  /* switch-table label slots: the slot holds the in-function label
+     displacement; save (offset, disp) then zero the dead bytes -- this must
+     happen before the blob is copied into .text */
+  VARR_TRUNC (MIR_code_reloc_t, relocs, 0);
+  for (i = 0; i < VARR_LENGTH (uint64_t, abs_address_locs); i++) {
+    MIR_code_reloc_t reloc;
+    reloc.offset = VARR_GET (uint64_t, abs_address_locs, i);
+    reloc.value = (void *) (uintptr_t) get_int64 (code + reloc.offset, 8);
+    VARR_PUSH (MIR_code_reloc_t, relocs, reloc);
+    memset (code + reloc.offset, 0, 8);
+  }
+
+  size_t func_off = MIR_object_text_append (obj, code, code_len);
+  int sym = gen_obj_item_sym (gen_ctx, curr_func_item);
+  /* weak/linkonce (MIR_item_set_binding) binds STB_WEAK -- identical per-TU
+     copies merge (first weak wins) instead of duplicate-strong colliding;
+     the ELF writer lets local_p take precedence over weak_p */
+  MIR_object_symbol_define (obj, sym, MIR_OBJ_SEC_TEXT, func_off, code_len, TRUE,
+                            !curr_func_item->export_p,
+                            curr_func_item->binding != MIR_ITEM_BIND_GLOBAL);
+  int text_sec_sym = MIR_object_section_symbol (obj, MIR_OBJ_SEC_TEXT);
+  int pool_sec_sym = MIR_object_section_symbol (obj, MIR_OBJ_SEC_ADDRPOOL);
+
+  /* item slots -> .mir.addrpool, entry n at pool_base + n*8 (zero in the
+     file, ABS64-relocated to the item) */
+  size_t pool_base = 0, n_pool = VARR_LENGTH (MIR_item_t, const_pool_items);
+  for (i = 0; i < n_pool; i++) {
+    MIR_item_t it = VARR_GET (MIR_item_t, const_pool_items, i);
+    uint64_t ent = 0;
+    size_t off = MIR_object_addrpool_append (obj, &ent, 8, 8);
+    if (i == 0) pool_base = off;
+    gen_assert (off == pool_base + i * 8);
+    MIR_object_add_reloc (obj, MIR_OBJ_SEC_ADDRPOOL, off, gen_obj_item_sym (gen_ctx, it), 0,
+                          MIR_OBJ_RELOC_ABS64);
+  }
+  /* every pool read: the page/lo12 pair on the recorded adrp+ldr insns */
+  for (i = 0; i < VARR_LENGTH (const_ref_t, const_refs); i++) {
+    const_ref_t cr = VARR_GET (const_ref_t, const_refs, i);
+    int64_t addend = (int64_t) (pool_base + cr.const_num * 8);
+    MIR_object_add_reloc (obj, MIR_OBJ_SEC_TEXT, func_off + cr.pc, pool_sec_sym, addend,
+                          MIR_OBJ_RELOC_AARCH64_ADR_PG_HI21);
+    MIR_object_add_reloc (obj, MIR_OBJ_SEC_TEXT, func_off + cr.pc + 4, pool_sec_sym, addend,
+                          MIR_OBJ_RELOC_AARCH64_LDST64_LO12);
+  }
+
+  /* switch tables -> .mir.addrpool: the saved (offset, disp) pairs are
+     consumed in emission order, table by table */
+  size_t rel_i = 0;
+  for (i = 0; i < VARR_LENGTH (switch_table_desc_t, switch_table_descs); i++) {
+    switch_table_desc_t std = VARR_GET (switch_table_desc_t, switch_table_descs, i);
+    size_t toff = MIR_object_addrpool_append (obj, NULL, std.n_slots * 8, 8);
+    for (j = 0; j < std.n_slots; j++, rel_i++) {
+      gen_assert (rel_i < VARR_LENGTH (MIR_code_reloc_t, relocs));
+      MIR_code_reloc_t reloc = VARR_GET (MIR_code_reloc_t, relocs, rel_i);
+      gen_assert (reloc.offset == std.table_off + j * 8);
+      MIR_object_add_reloc (obj, MIR_OBJ_SEC_ADDRPOOL, toff + j * 8, text_sec_sym,
+                            (int64_t) func_off + (int64_t) (uintptr_t) reloc.value,
+                            MIR_OBJ_RELOC_ABS64);
+    }
+    MIR_object_add_reloc (obj, MIR_OBJ_SEC_TEXT, func_off + std.adrp_pc, pool_sec_sym,
+                          (int64_t) toff, MIR_OBJ_RELOC_AARCH64_ADR_PG_HI21);
+    MIR_object_add_reloc (obj, MIR_OBJ_SEC_TEXT, func_off + std.adrp_pc + 4, pool_sec_sym,
+                          (int64_t) toff, MIR_OBJ_RELOC_AARCH64_ADD_LO12);
+  }
+  if (rel_i != VARR_LENGTH (MIR_code_reloc_t, relocs))
+    (*MIR_get_error_func (ctx)) (MIR_func_error,
+                                 "AOT object mode: an absolute address slot in text is not "
+                                 "covered by a switch table (func %s)",
+                                 curr_func_item->u.func->name);
+  VARR_TRUNC (MIR_code_reloc_t, relocs, 0);
+  gen_obj_record_lrefs (gen_ctx, func_off);
 }
 
 static void target_change_to_direct_calls (MIR_context_t ctx MIR_UNUSED) {}
@@ -2668,6 +2854,9 @@ static void target_init (gen_ctx_t gen_ctx) {
   VARR_CREATE (label_ref_t, label_refs, alloc, 0);
   VARR_CREATE (uint64_t, abs_address_locs, alloc, 0);
   VARR_CREATE (MIR_code_reloc_t, relocs, alloc, 0);
+  VARR_CREATE (MIR_item_t, const_pool_items, alloc, 0);
+  VARR_CREATE (const_ref_t, const_refs, alloc, 0);
+  VARR_CREATE (switch_table_desc_t, switch_table_descs, alloc, 0);
   patterns_init (gen_ctx);
   temp_jump = MIR_new_insn (ctx, MIR_JMP, MIR_new_label_op (ctx, NULL));
   temp_jump_replacement = find_insn_pattern_replacement (gen_ctx, temp_jump);
@@ -2681,6 +2870,9 @@ static void target_finish (gen_ctx_t gen_ctx) {
   VARR_DESTROY (label_ref_t, label_refs);
   VARR_DESTROY (uint64_t, abs_address_locs);
   VARR_DESTROY (MIR_code_reloc_t, relocs);
+  VARR_DESTROY (MIR_item_t, const_pool_items);
+  VARR_DESTROY (const_ref_t, const_refs);
+  VARR_DESTROY (switch_table_desc_t, switch_table_descs);
   MIR_free (alloc, gen_ctx->target_ctx);
   gen_ctx->target_ctx = NULL;
 }

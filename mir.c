@@ -7346,15 +7346,29 @@ void _MIR_dump_code (const char *name, uint8_t *code, size_t code_len) {
 
 /* New Page */
 
-#if defined(__x86_64__) || defined(_M_AMD64)
+/* Target selection via mir-target.h (madc fork): host detection by
+   default, an OS+ARCH MIR_TARGET_* pair overrides for a cross-capture
+   build (execution paths in the included file are host-only). */
+#if MIR_TARGET_IS_X86_64
 #include "mir-x86_64.c"
-#elif defined(__aarch64__)
+#elif MIR_TARGET_IS_AARCH64
+/* Cross-building the arm64-macos variant on a non-Apple host: inside
+   the aarch64 TARGET file every __APPLE__ test selects the Darwin ABI
+   variant (va_list shape, varargs-on-stack, thunk encodings) -- audit
+   2026-07-25 found no host-side use -- so present the target OS for
+   exactly this include and keep the file pristine for upstream. */
+#if MIR_TARGET_APPLE_P && !defined(__APPLE__)
+#define __APPLE__ 1
 #include "mir-aarch64.c"
-#elif defined(__PPC64__)
+#undef __APPLE__
+#else
+#include "mir-aarch64.c"
+#endif
+#elif MIR_TARGET_IS_PPC64
 #include "mir-ppc64.c"
-#elif defined(__s390x__)
+#elif MIR_TARGET_IS_S390X
 #include "mir-s390x.c"
-#elif defined(__riscv)
+#elif MIR_TARGET_IS_RISCV64
 #if __riscv_xlen != 64 || __riscv_flen < 64 || !__riscv_float_abi_double || !__riscv_mul \
   || !__riscv_div || !__riscv_compressed
 #error "only 64-bit RISCV supported (at least rv64imafdc)"

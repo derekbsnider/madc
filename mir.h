@@ -17,6 +17,7 @@ extern "C" {
 #include <stdio.h>
 #include <stdint.h>
 #include <assert.h>
+#include "mir-target.h"
 #include "mir-dlist.h"
 #include "mir-varr.h"
 #include "mir-htab.h"

@@ -33,15 +33,17 @@
 #include "mir-debug.h"
 #include "mir-gen.h" /* MIR_gen_object_emit for c2mir_get_native_object */
 
-#if defined(__x86_64__) || defined(_M_AMD64)
+/* Target selection via mir-target.h (madc fork): host detection by
+   default, an OS+ARCH MIR_TARGET_* pair overrides for a cross build. */
+#if MIR_TARGET_IS_X86_64
 #include "x86_64/cx86_64.h"
-#elif defined(__aarch64__)
+#elif MIR_TARGET_IS_AARCH64
 #include "aarch64/caarch64.h"
-#elif defined(__PPC64__)
+#elif MIR_TARGET_IS_PPC64
 #include "ppc64/cppc64.h"
-#elif defined(__s390x__)
+#elif MIR_TARGET_IS_S390X
 #include "s390x/cs390x.h"
-#elif defined(__riscv)
+#elif MIR_TARGET_IS_RISCV64
 #include "riscv64/criscv64.h"
 #else
 #error "undefined or unsupported generation target for C"
@@ -351,15 +353,15 @@ typedef struct {
   const char *name, *content;
 } string_include_t;
 
-#if defined(__x86_64__) || defined(_M_AMD64)
+#if MIR_TARGET_IS_X86_64
 #include "x86_64/cx86_64-code.c"
-#elif defined(__aarch64__)
+#elif MIR_TARGET_IS_AARCH64
 #include "aarch64/caarch64-code.c"
-#elif defined(__PPC64__)
+#elif MIR_TARGET_IS_PPC64
 #include "ppc64/cppc64-code.c"
-#elif defined(__s390x__)
+#elif MIR_TARGET_IS_S390X
 #include "s390x/cs390x-code.c"
-#elif defined(__riscv)
+#elif MIR_TARGET_IS_RISCV64
 #include "riscv64/criscv64-code.c"
 #else
 #error "undefined or unsupported generation target for C"
@@ -15574,15 +15576,15 @@ static inline void MIR_UNUSED gen_multiple_load_store (c2m_ctx_t c2m_ctx, struct
   }
 }
 
-#if defined(__x86_64__) || defined(_M_AMD64)
+#if MIR_TARGET_IS_X86_64
 #include "x86_64/cx86_64-ABI-code.c"
-#elif defined(__aarch64__)
+#elif MIR_TARGET_IS_AARCH64
 #include "aarch64/caarch64-ABI-code.c"
-#elif defined(__PPC64__)
+#elif MIR_TARGET_IS_PPC64
 #include "ppc64/cppc64-ABI-code.c"
-#elif defined(__s390x__)
+#elif MIR_TARGET_IS_S390X
 #include "s390x/cs390x-ABI-code.c"
-#elif defined(__riscv)
+#elif MIR_TARGET_IS_RISCV64
 #include "riscv64/criscv64-ABI-code.c"
 #else
 typedef int target_arg_info_t; /* whatever */
@@ -20097,10 +20099,15 @@ static void init_include_dirs (c2m_ctx_t c2m_ctx) {
     VARR_PUSH (char_ptr_t, system_headers,
                "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include");
 #endif
-#if defined(__linux__) && defined(__x86_64__)
+#if defined(__linux__) && MIR_TARGET_IS_X86_64 && !MIR_TARGET_APPLE_P
   VARR_PUSH (char_ptr_t, system_headers, "/usr/include/x86_64-linux-gnu");
-#elif defined(__linux__) && defined(__aarch64__)
+#elif defined(__linux__) && MIR_TARGET_IS_AARCH64 && !MIR_TARGET_APPLE_P
+  /* cross: the target's multiarch headers (gcc-aarch64-linux-gnu layout) */
+#if MIR_CROSS_P
+  VARR_PUSH (char_ptr_t, system_headers, "/usr/aarch64-linux-gnu/include");
+#else
   VARR_PUSH (char_ptr_t, system_headers, "/usr/include/aarch64-linux-gnu");
+#endif
 #elif defined(__linux__) && defined(__PPC64__)
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
   VARR_PUSH (char_ptr_t, system_headers, "/usr/include/powerpc64le-linux-gnu");

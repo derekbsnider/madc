@@ -46,7 +46,15 @@ typedef mir_schar mir_char;
 
 typedef float mir_float;
 typedef double mir_double;
+#if MIR_TARGET_APPLE_P
+typedef double mir_ldouble; /* arm64-macos: long double == double */
+#else
+/* aarch64-linux long double is IEEE binary128.  Cross-building from a host
+   whose long double is narrower (x86-64 x87-80) keeps the SIZE and
+   alignment right but folds constants at host precision -- a documented
+   cross-fidelity limit, not a layout bug. */
 typedef long double mir_ldouble;
+#endif
 
 typedef uint8_t mir_bool;
 typedef int64_t mir_ptrdiff_t;
