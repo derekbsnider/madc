@@ -103,16 +103,85 @@ relocations) with a fully automated Linux gate before any Mach-O byte
 exists. Axis B then rides on proven aarch64 code. The `/promote`
 milestone = both gates green + the laptop run.
 
+### Configuration model — SETTLED with the owner (2026-07-25)
+
+Criterion: most sensible AND least refactoring. One target per
+compiled stack; no runtime target switching anywhere.
+
+- `libmir.a` = the host build, untouched default (upstream-identical
+  behavior; a no-override build must stay behavior-identical).
+- `libmir-arm64-macos.a` / `libmir-aarch64-linux.a` = variant builds
+  of the same sources with the target defines (opt-in build target /
+  configure flag; default builds them not at all).
+- `bin/madc` = host binary, unchanged. `bin/madc-arm64-macos` = a
+  separate emit-only cross binary linked against the variant lib
+  (the gcc cross model — `aarch64-linux-gnu-gcc` ≡ `madc-arm64-macos`);
+  run/JIT mode errors loudly ("cross build is emit-only"). No `--target`
+  runtime dispatch, no dlopen, no symbol prefixing; a thin exec-dispatch
+  driver can be sugar later without changing any of this.
+- madc's own front-end target dependencies (type layout — notably
+  `long double`: 16 bytes x86-64-linux, fp128 aarch64-linux, plain
+  double arm64-macos) are compile-time selected in the cross build by
+  the same defines.
+- Selector shape (owner design): separate primitive knobs
+  (`MIR_TARGET_AARCH64` arch, `MIR_TARGET_APPLE` OS) + pair helpers
+  (`MIR_TARGET_ARM64_MACOS` = both) + a validation block rejecting
+  unsupported combinations — `mir-target.h`, additive.
+- Upstream-file footprint (least-refactoring choice): ONE include line
+  in `mir.h`, SIX small `#if`-chain edits (mir-gen.c, mir.c, c2mir.c
+  ×3 + multiarch header dirs, mir-debug.c constants), and TWO
+  commented include-wraps (`#define __APPLE__ 1` around
+  `#include "mir[-gen]-aarch64.c"` for the arm64-macos variant on a
+  non-Apple host — all 22 `__APPLE__` sites in those files were
+  audited target-ABI, none host-side; the wrap keeps both aarch64
+  files pristine for upstream merges). Everything else is additive.
+
 ### Decided defaults (change only on owner directive)
 
 - arm64 only; no x86-64 Mach-O, no arm64e (pointer authentication)
   — plain arm64 slice runs fine on Apple Silicon.
-- Cross builds are separate library/binary variants (the gcc
-  cross-toolchain model), not runtime target switching — MIR's gen is
-  file-level target-selected and stays that way.
 - Classic dyld info before chained fixups; minos 12.0.
-- Container provisioning (`qemu-user`, `gcc-aarch64-linux-gnu`) is
-  part of axis A step 1.
+- Container provisioning (`qemu-user`, `gcc-aarch64-linux-gnu`) —
+  DONE 2026-07-25 (loop proven: cross-compiled exit-42 binary runs
+  under qemu-aarch64).
+
+### Known cross-fidelity audit items (found in recon, not yet handled)
+
+- `c2mir/aarch64/caarch64.h:49` `typedef long double mir_ldouble;` —
+  c2mir folds target long-double constants in the HOST's type: wrong
+  precision for aarch64-linux (fp128) and wrong size for arm64-macos
+  (= double). Needs a target-selected typedef (3-line conditional) and
+  a fidelity decision for the fp128 case.
+- Execution paths in a cross build (code pages, thunks, ffi, interp)
+  compile against target files but must never run; the first cross
+  build attempt generates the concrete stub/guard worklist.
+
+## Axis A step 1 recon — the override-site map (2026-07-25, container provisioned)
+
+Container now has `qemu-user` + `gcc-aarch64-linux-gnu` +
+`libc6-dev-arm64-cross`; the loop is proven (cross-compiled exit-42
+binary runs under `qemu-aarch64`).
+
+Host-detection sites the target override must switch (fork):
+
+| Site | What it selects | Cross treatment |
+|------|-----------------|-----------------|
+| `mir-gen.c:369` | gen backend include (`mir-gen-<arch>.c`) | target-select — the capture lives here |
+| `mir.c:7349` | runtime/thunk layer (`mir-<arch>.c`) | target-select; audit: execution-only parts (code pages, icache flush, ffi thunks) compile out or stub in a cross build |
+| `c2mir/c2mir.c:36,354,15577` | target ABI headers + code (`<arch>/c<arch>*.{h,c}`) | target-select (aarch64 dirs exist upstream) |
+| `mir-debug.c:149` | DWARF FP reg + ELF `EM_*` | target-select (aarch64 arm already present) |
+| `mir-debug.c:863` | `.debug_frame` prologue byte patterns | needs an aarch64 arm (x86-64-only today) |
+| `mir-debug.c:2238` | gdb-JIT self-registration | HOST feature — stays host-gated |
+| `mir.c:4698,5053` | small host conditionals | audit individually |
+| `mir-debug.c` reloc emission | `R_X86_64_*` constants | `R_AARCH64_*` twins — the bulk of capture porting (addrpool/GOT model on aarch64 ADRP/LDR pairs) |
+
+Scaffold shape: a `mir-target.h` decision block — `MIR_TARGET_AARCH64`
+/ `MIR_TARGET_X86_64` (+ `MIR_TARGET_APPLE` for the `__APPLE__` arms in
+`mir-gen-aarch64.c`) defaulting to host detection when no override is
+given — and the sites above switch on `MIR_TARGET_IS_*`. Safety gate
+for the refactor: a no-override build must behave identically (full
+suites green). Then `make BUILD_DIR=build-aarch64` with the override
+compiles the cross variant; whatever breaks is the audit worklist.
 
 ## Risks
 
