@@ -94,7 +94,9 @@ Same captured aarch64 code, different container format.
    validate structure, symbols, relocations, and signature layout;
    dyld opcode streams decoded and checked.
 6. **Gate B-final (the only macOS step):** owner copies the binary to
-   the Apple Silicon laptop and runs it.
+   the Apple Silicon laptop and runs it.  (Owner 2026-07-25: when the
+   first arm64 Mach-O test binary exists, tell the owner exactly where
+   it is — NAS path — along with the Linux-side evidence for it.)
 
 ### Sequencing
 
@@ -155,6 +157,63 @@ compiled stack; no runtime target switching anywhere.
 - Execution paths in a cross build (code pages, thunks, ffi, interp)
   compile against target files but must never run; the first cross
   build attempt generates the concrete stub/guard worklist.
+
+## Axis A step 2 — aarch64 capture + ELF relocs (LANDED 2026-07-25)
+
+The whole gen+writer step shipped as one piece on the fork
+(`feature/cross-target-claude`); all four Linux functional legs are green
+from the x86-64 container:
+
+1. `c2m -fobject` (aarch64-target build) emits an aarch64 ELF `.o`;
+   `aarch64-linux-gnu-gcc` links it (the SYSTEM linker independently
+   validates our relocations) and it runs under qemu-aarch64 with
+   output + exit code identical to the native-gcc reference.
+2. `MIR_object_emit_executable` ET_EXEC runs under qemu (our own linker,
+   aarch64 `_start` stub — no external toolchain).
+3. Same for PIE (`ET_DYN` + `DF_1_PIE` + RELATIVE pool slots).
+4. Two-TU `.o` merge (`MIR_object_read` ×2 → emit PIE) resolves a
+   cross-TU call + global and runs correctly (exit 42).
+
+Design (mirrors the x86-64 capture, PIC addrpool-as-GOT):
+
+- **Gen** (`mir-gen-aarch64.c`, all object-mode-only — the JIT path is
+  byte-identical): constraint `'j'` (REF && object mode; `Z`/`N` movz/movk
+  constraints now REJECT refs in object mode, so a leak fails the pattern
+  match loudly), pattern `{MIR_MOV, "r j", adrp+ldr}` ahead of the movz/movk
+  rows, replacement char `'p'` records a `const_ref` (pc = adrp insn; ldr at
+  pc+4 by convention); machinize already rewrites every call target through
+  `MOV temp, ref; blr`, so ONE pool pattern covers data refs and calls.
+  Switch tables: the `T` adr is emitted as a relocated adrp+add pair in
+  object mode, slots move to the pool (ABS64 vs the text section symbol),
+  dead in-blob bytes zeroed.  `target_object_capture` mirrors x86-64
+  (8-byte pool entries — no SSE alignment need; S4 weak/linkonce binding
+  args identical).
+- **Reloc kinds** (`mir-debug.h`): `MIR_OBJ_RELOC_AARCH64_ADR_PG_HI21` /
+  `_LDST64_LO12` / `_ADD_LO12`; like PC32 they are bias-invariant and never
+  dynamic — only pool ABS64 slots go dynamic (RELATIVE in PIC images,
+  dyn-ABS64 for imports), exactly the x86-64 model.
+- **Writer** (`mir-debug.c`): central per-target helpers (`obj_kind_rtype`,
+  `obj_rtype_kind`, `obj_apply_field_reloc` — ADRP immhi:immlo / LDST64
+  imm12>>3 / ADD imm12 bitfield patchers) replace the inline x86 constants
+  at every seam: `.o` emit, exe emit (validate + apply), in-process load
+  apply, merge read-back; `OBJ_TARGET_SUPPORTED_P` gates create/emit/read
+  (x86-64 + aarch64).  aarch64 `_start` stub (16 insns, page-pair
+  bias-invariant, patched with the same field patchers), interp default
+  `/lib/ld-linux-aarch64.so.1`, `OBJX_PAGE` 64K for aarch64 (gcc/binutils
+  max-page-size canon — a 4K-aligned binary fails on 64K-page kernels),
+  `e_machine`/`elf_assemble` take `MIR_DEBUG_EM`.  `emit_frame` was
+  host-gated (`__x86_64__`) — now target-gated with an aarch64 CIE arm
+  (RA=x30, code align 4, CIE-default FDE rows; prologue templates are the
+  debug track's rung, not this slice).
+- ⚠️ Trap found in testing: FOUR EM gates existed, not one —
+  `MIR_object_create`, `MIR_object_emit` (line ~1384), `elf_assemble`'s
+  hardcoded `EM_X86_64` (~1644), and the reader's scan gate (~2501).  The
+  first compile+emit attempt failed on the second one.
+
+Remaining axis A after this: cross-madc build wiring (variant lib +
+emit-only `bin/madc-arm64-macos` / test aarch64-linux binary + front-end
+long-double sizing) → GATE A = madc-emitted aarch64 exe/.o-merge under
+qemu; the `mir_ldouble` fidelity item still open (`caarch64.h:49`).
 
 ## Axis A step 1 recon — the override-site map (2026-07-25, container provisioned)
 
