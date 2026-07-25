@@ -22830,7 +22830,12 @@ node_t CirBuilder::translate_module(Program *prog)
 	// host-callable user function (see synth_call_shim). Synthesized here so
 	// the value-helper externs flow into Pass 0.8 and the referenced member
 	// symbols (c_str/size protocol, dtors) are seen by the Pass-1.9 fixpoint.
-	synth_call_shims(prog, roots, func_def_nodes);
+	// An artifact that can never be host-called through the value ABI
+	// (standalone executable; any non--shared cross artifact) skips them:
+	// dropping their madc_value_* helper imports keeps a pure program
+	// runtime-free, so the libmadc.so.0 DT_NEEDED cover logic can fire.
+	if (!prog->aot_skip_eval_shims)
+		synth_call_shims(prog, roots, func_def_nodes);
 
 	// (typed_proto_syms is declared above materialize_and_lower — see there.)
 

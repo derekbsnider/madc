@@ -36,6 +36,11 @@ ifeq ($(MODE),release)
 BIN = ../bin/madc-release
 else ifeq ($(MODE),debug)
 BIN = ../bin/madc-debug
+else ifeq ($(MODE),cross-aarch64-linux)
+# Cross compiler (gcc cross model, Mach-O/ARM64 track axis A): a HOST binary
+# that emits native artifacts for the target and refuses every run lane
+# (MADC_CROSS_TARGET below). Same -O0 dev contract as develop.
+BIN = ../bin/madc-aarch64-linux
 else
 BIN = ../bin/madc
 endif
@@ -79,6 +84,14 @@ MIRDIR	= /workspace/mir
 DEFINES	= -I$(INCDIR) -I$(MIRDIR) -I$(MIRDIR)/c2mir $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS) -DMADC_VERSION_STR='"$(MADC_VERSION)"'
 LIBS	= -rdynamic -ldl -lz -lm -lpthread $(OPTIONAL_LIBS)
 MIRLIB	= $(MIRDIR)/libmir.a
+ifeq ($(MODE),cross-aarch64-linux)
+# One MIR variant lib per target (mir-target.h knobs; zero mir makefile
+# changes — the variant builds through the stock CPPFLAGS hook, rule below).
+# The same target define compiles madc's objects (per-mode obj tree), and
+# MADC_CROSS_TARGET names the target for the driver's emit-only guard.
+MIRLIB	= $(MIRDIR)/build-aarch64-linux/libmir.a
+DEFINES += -DMIR_TARGET_AARCH64_LINUX -DMADC_CROSS_TARGET='"aarch64-linux"'
+endif
 DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS) $(MADCDISHDRS)
 
 ifeq ($(HAVE_MADCDAT),1)
@@ -178,6 +191,17 @@ endif
 debug:
 	$(MAKE) MODE=debug ../bin/madc-debug
 
+# Emit-only cross compiler for aarch64-linux ELF (the qemu-gated axis A
+# vehicle; the arm64-macos twin arrives with the axis B Mach-O writer).
+cross-aarch64-linux:
+	$(MAKE) MODE=cross-aarch64-linux ../bin/madc-aarch64-linux
+
+# MIR variant lib for the cross target: the fork's stock makefile with the
+# target define via its CPPFLAGS hook (-I. is REQUIRED — a CLI CPPFLAGS
+# clobbers the fork makefile's default -I$$(SRC_DIR)).
+$(MIRDIR)/build-aarch64-linux/libmir.a:
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-aarch64-linux CPPFLAGS='-I. -DMIR_TARGET_AARCH64_LINUX' build-aarch64-linux/libmir.a
+
 # Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
 # the ELF and would destroy an already-appended forest blob). Pack failure =
 # build failure; the verify step proves the appended blob reads back (pin OK)
@@ -213,7 +237,7 @@ uninstall:
 	@if [ -z "$(DESTDIR)" ]; then ldconfig 2>/dev/null || true; fi
 
 clean:
-	rm -rf ../obj/develop ../obj/debug ../obj/release
+	rm -rf ../obj/develop ../obj/debug ../obj/release ../obj/cross-aarch64-linux
 	rm -f ../obj/*.o ../obj/*.d ../obj/pic/*.o ../obj/pic/*.d
 	rm -f $(ALL_TESTBINS)
 	rm -f $(MADDAT_ARCHIVE)

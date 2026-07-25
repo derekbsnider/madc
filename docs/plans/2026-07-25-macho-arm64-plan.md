@@ -142,6 +142,13 @@ compiled stack; no runtime target switching anywhere.
 
 - arm64 only; no x86-64 Mach-O, no arm64e (pointer authentication)
   — plain arm64 slice runs fine on Apple Silicon.
+  - Owner note 2026-07-25: an x86 macOS test device also exists ("we can
+    test both").  That makes an `x86_64-macos` target a CANDIDATE axis-B
+    de-risking step — validate the Mach-O writer/dyld/signature with the
+    already-proven x86-64 capture before the arm64 leg (Intel Macs also
+    run unsigned binaries, so it isolates format bugs from signing).
+    Not in scope until the owner says so; needs the x86-64-Darwin ABI
+    audit (c2mir/gen `__APPLE__` arms) if adopted.
 - Classic dyld info before chained fixups; minos 12.0.
 - Container provisioning (`qemu-user`, `gcc-aarch64-linux-gnu`) —
   DONE 2026-07-25 (loop proven: cross-compiled exit-42 binary runs
