@@ -1,6 +1,27 @@
 # Test Status
 
-> **Current (2026-07-25, `develop` — v0.47.0, forest-carriers S2
+> **Current (2026-07-25, `develop` — v0.48.0, forest-carriers S3
+> complete):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
+> forest gate green, including the NEW `forest_sidecar_gate` — the
+> carrier discovery chain: sidecar (`<exe>.forest`) and `$MADC_FOREST`
+> arms bind with `-v` engagement evidence + byte parity vs
+> `--no-forest-bind` live parse, arm order pinned (sidecar before
+> env), junk-sidecar and explicit-miss failure surfaces LOUD. The
+> `forest_emitpack_gate` Mach-O legs are now rev-skew-immune (each leg
+> freezes with the same cross madc that emits/dumps). Packed arbiter
+> through **BOTH carriers**: embedded **756/0/0/9** and sidecar
+> (`forest_pack.sh --sidecar`, 240 units in `bin/madc-release.forest`)
+> **756/0/0/9** + smokes (sidecar bind, loud-on-missing,
+> quiet-on-config-mismatch). `--exe` lane **740/0**. Unit tests +6
+> (`test_forest_policy`: policy triad, one-shot notice,
+> config-mismatch matrix). Mac hardware (`~/s3side`): **7/7 legs per
+> arch** (A64 native + X64-Rosetta) — embedded self-dump/bind/run
+> regression, sidecar bind + parity, loud-on-missing,
+> quiet-on-mismatch; AMFI accepted all four binaries. Fork unchanged
+> (`1.0-madc.0.47.0` @74e705e4).
+
+> **Previous (2026-07-25, `develop` — v0.47.0, forest-carriers S2
 > complete):**
 > fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
 > forest gate green, including the NEW `forest_emitpack_gate` — the
