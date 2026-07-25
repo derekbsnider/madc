@@ -1304,10 +1304,27 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 				: (have_madc ? "kept" : "absent"))
 		  << std::endl);
     std::vector<const char *> libs;
+#ifdef MADC_CROSS_APPLE
+    // Mach-O: the base C/C++ sonames are cover analysis only — the emitter
+    // links the implicit libSystem, nothing else. A program whose imports
+    // are NOT covered would need a target madc runtime that does not exist:
+    // fail at emit, not at dyld.
+    if (have_madc && !drop_madc) {
+	fprintf(stderr, "madc: %s: program needs the madc runtime, which does"
+		" not exist for Mach-O targets (runtime-free programs only)\n",
+		out_path);
+	return false;
+    }
+#else
     for (const std::string &l : (drop_madc ? other : needed))
 	libs.push_back(l.c_str());
+#endif
     MIR_object_exec_params xp;
     cir_fill_exec_params(xp, kind, libs, runpath);
+    // Apple targets: the ad-hoc code-signature identifier is conventionally
+    // the output basename (ignored by the ELF writer).
+    const char *out_base = strrchr(out_path, '/');
+    xp.identifier = out_base ? out_base + 1 : out_path;
     void *buf = NULL;
     size_t size = 0;
     if (c2mir_get_native_executable(ctx, &xp, &buf, &size) != 0 || !buf) {
@@ -1574,10 +1591,24 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 				    : (have_madc ? "kept" : "absent"))
 		      << std::endl);
 	std::vector<const char *> libs;
+#ifdef MADC_CROSS_APPLE
+	// Same Mach-O rule as cir_write_native_image: covers are analysis
+	// only; a runtime-needing link fails at emit, not at dyld.
+	if (have_madc && !drop_madc) {
+	    fprintf(stderr, "madc: %s: program needs the madc runtime, which"
+		    " does not exist for Mach-O targets (runtime-free"
+		    " programs only)\n", out_path);
+	    MIR_object_destroy(obj);
+	    return -1;
+	}
+#else
 	for (const std::string &l : (drop_madc ? other : needed))
 	    libs.push_back(l.c_str());
+#endif
 	MIR_object_exec_params xp;
 	cir_fill_exec_params(xp, kind, libs, runpath);
+	const char *out_base = strrchr(out_path, '/');
+	xp.identifier = out_base ? out_base + 1 : out_path;
 	if (MIR_object_emit_executable(obj, &xp, &buf, &size) != 0 || !buf)
 	    fprintf(stderr, kind == mnkShared
 		    ? "madc: native shared-object emission failed\n"
