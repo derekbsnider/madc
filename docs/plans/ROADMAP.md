@@ -367,8 +367,12 @@ high-level" — the answer is both.**
   Slice 5 `.mir.rodata` split is **DEFERRED (owner decision
   2026-07-25** — RELRO subsumed its hardening value; capture-side
   two-pool split not worth the format change), closing the
-  ELF-completion track. Remaining AOT: Mach-O / PE assemblers behind
-  the same `MIR_object` seam (Track 6.3).
+  ELF-completion track. **NEXT: the Mach-O/ARM64 track (Track 6.3,
+  ACTIVE — the next `/promote` milestone): aarch64 cross-gen proven
+  under qemu on Linux (axis A), then the Mach-O writer + ad-hoc
+  signature validated with LLVM tools (axis B); the only macOS step is
+  running the finished binary. Plan:**
+  [2026-07-25-macho-arm64-plan.md](2026-07-25-macho-arm64-plan.md).
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target
   the CIR path is climbing back to — NOT the current state.
@@ -1005,7 +1009,7 @@ libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
 |-------|------|--------|--------|------|
 | 6.1 | macOS/ARM64 MVP (via MIR — c2mir + MIR are already cross-platform) | 10-15 wk | Planned | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.2 | macOS SIMD (NEON) | 2-3 wk | Blocked on 6.1 | [macos-arm64-port.md](macos-arm64-port.md) |
-| 6.3 | macOS AOT (Mach-O writer) | 4-6 wk | Future | [macos-arm64-port.md](macos-arm64-port.md) |
+| 6.3 | macOS AOT (Mach-O writer + aarch64 cross-gen; the next `/promote` milestone) | 4-6 wk | **ACTIVE** | [2026-07-25-macho-arm64-plan.md](2026-07-25-macho-arm64-plan.md) |
 | 6.4 | Windows port | TBD | Not started | — |
 
 **Dependencies:** 1.3 (IR) dramatically reduces 6.1 effort.
