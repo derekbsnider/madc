@@ -365,6 +365,55 @@ independent reloc validator, the axis-A system-linker trick) →
 (6) madc cross MODEs (`cross-x86-64-macos`, `cross-arm64-macos`) →
 madc-emitted deliverables **madc-X64_MachO** / **madc-A64_MachO**.
 
+## Axis B steps 1–3 LANDED (2026-07-25) — writer + both cross madcs
+
+Fork `feature/macho-writer-claude` (@e760b5fb target selection,
+@77c1e056 writer), madc `feature/aot-macho-claude` (@bb42ddbd cross
+MODEs).  All Linux-side gates green the same day the axis started:
+
+1. **Target selection**: `MIR_TARGET_X86_64_MACOS` pair; the
+   `mirc_{x86_64,aarch64}_*` predefine/typedef headers switch on
+   `MIR_TARGET_APPLE_P` instead of host macros (wchar signedness, LDBL,
+   int64_t spelling, darwin va_list, OS predefine block); two
+   target-code-semantics sites in mir.c/c2mir.c (`__darwin*` handling)
+   flip too.  Default build behavior-identical (probe-verified); both
+   macOS variant c2ms pass target-fact probes.
+2. **The writer** (`mir-macho.c`, ~870 lines, #included by mir-debug.c
+   under `MIR_TARGET_APPLE_P`): MH_EXECUTE per the design section
+   above, including the inline SHA-256 and the linker-signed ad-hoc
+   CodeDirectory.  Gate B evidence: otool layout matches the
+   clang+ld64.lld reference **including identical segment addresses on
+   arm64 (16K pages)**; rebase/bind streams decode (all pool + data
+   pointers rebased, `_printf` → libSystem at its pool slot); adrp
+   pairs land on the pool page; disassembly valid on both arches;
+   two-TU merge → signed PIE; python re-hash independently verifies
+   every signature page and file-ends-at-signature; ELF object +
+   load-object suites 0 failures (default build untouched).
+3. **madc cross MODEs**: `make -C src cross-x86-64-macos` /
+   `cross-arm64-macos` → emit-only `bin/madc-x86-64-macos` /
+   `bin/madc-arm64-macos`.  Cross modes now use per-mode ../lib
+   archive names (a cross build could previously clobber the
+   host-facing libmadc.a — latent since axis A).  `MADC_CROSS_APPLE`:
+   base-lib sonames become cover-analysis-only (implicit libSystem);
+   runtime-needing programs fail AT EMIT with a clear message;
+   signature identifier = output basename.  Lanes proven: pure C
+   `-o`, `.mad` `-o` (madc's include machinery covers `<stdio.h>` —
+   the raw-c2m SDK gap does not bite the .mad lane), `-c` ×2 →
+   madc-link, run-lane refusal.
+4. **Deliverables built and on the NAS**: `bin/madc-X64_MachO` +
+   `bin/madc-A64_MachO` (from `tmp`-side `macho_hello.c`: switch→pool
+   table, global data refs, internal calls, recursion, printf import;
+   expected `madc Mach-O: one three 174 fib(10)=55`, exit 28).
+
+Remaining in axis B: **MH_OBJECT `.o` flavor** (+ ld64.lld as the
+independent reloc validator) — the `-c` artifacts are ELF-container
+dev vehicles until then (madc's own read-back/link consumes them
+fine, as proven above); **front-end long double** stayed untouched by
+design (madc models `long double` as the double-spelling; c2mir owns
+target layout via the axis-A `mir_ldouble` fix — LD-in-struct layout
+is a target-independent audit item, not a Mach-O blocker);
+**Gate B-final** = the owner's Macs.
+
 ## Risks
 
 - Host-arch assumption audit in cross-included gen/c2mir files (sizes,
