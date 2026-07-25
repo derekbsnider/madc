@@ -1800,6 +1800,7 @@ static double forest_stat_now(void)
 // mismatched arm costs footer + directory, not the pool/arena binds (R1).
 static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 					 const char *arm, bool quiet_missing,
+					 bool &config_mismatch,
 					 double &map_secs, double &open_secs)
 {
     double _t0 = forest_stat_now();
@@ -1827,6 +1828,7 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 	open_secs += forest_stat_now() - _t1;
 	DBG(std::cout << "forest-bind: [" << arm << "] producer config"
 	    " mismatch (std/defines) — skipped" << std::endl);
+	config_mismatch = true;
 	delete f;
 	return NULL;
     }
@@ -1855,8 +1857,10 @@ CirFrozenForest *Program::ensure_bind_forest()
     // exists to prevent (strict still hard-errors via the shared fallback).
     if ( !forest_bind_path.empty() )
     {
+	bool cfg_mismatch = false;
 	bind_forest = forest_probe_arm(this, forest_bind_path.c_str(),
 				       "explicit", /*quiet_missing=*/false,
+				       cfg_mismatch,
 				       _forest_map_seconds,
 				       _forest_open_seconds);
 	if ( !bind_forest )
@@ -1878,8 +1882,9 @@ CirFrozenForest *Program::ensure_bind_forest()
     // container wins. Arm 1: self-image — the running binary's own carrier
     // (ELF trailer / Mach-O __MADC,__forest section). An unpacked dev binary
     // misses quietly.
+    bool cfg_mismatch = false;
     bind_forest = forest_probe_arm(this, NULL, "self-image",
-				   /*quiet_missing=*/true,
+				   /*quiet_missing=*/true, cfg_mismatch,
 				   _forest_map_seconds, _forest_open_seconds);
     // Arm 2 (S4 slot): library image — when madc is built shared, the forest
     // rides libmadc's image (dladdr on a libmadc symbol -> the same
@@ -1892,6 +1897,7 @@ CirFrozenForest *Program::ensure_bind_forest()
 	if ( !exe.empty() )
 	    bind_forest = forest_probe_arm(this, (exe + ".forest").c_str(),
 					   "sidecar", /*quiet_missing=*/false,
+					   cfg_mismatch,
 					   _forest_map_seconds,
 					   _forest_open_seconds);
 	// Arm 4: MADC_FOREST environment variable (a configured path; env
@@ -1901,11 +1907,12 @@ CirFrozenForest *Program::ensure_bind_forest()
 	if ( !bind_forest && env && *env )
 	    bind_forest = forest_probe_arm(this, env, "MADC_FOREST",
 					   /*quiet_missing=*/false,
+					   cfg_mismatch,
 					   _forest_map_seconds,
 					   _forest_open_seconds);
     }
     if ( !bind_forest )
-	forest_missing_fallback();
+	forest_missing_fallback(cfg_mismatch);
     return bind_forest;
 }
 
@@ -1914,7 +1921,16 @@ CirFrozenForest *Program::ensure_bind_forest()
 // silent is the configured contract). Called at most once per Program
 // (bind_forest_tried gates the caller). strict_require raises through the
 // standard Throw path so an embedding host sees it as a compile error.
-void Program::forest_missing_fallback()
+//
+// config_mismatch = a container WAS found but its producer config (std/-D)
+// differs from this compile's. Under loud_fallback that is NOT degradation —
+// it is the by-design multi-dialect contract (the packed CLI compiling a C
+// file against its C++-parsed corpus is the everyday case; a notice there
+// would fire on every such compile — caught by the expect_quiet suite tests
+// carrying --std= fixtures). strict_require still hard-errors on it: a host
+// that REQUIRES frozen state wants to know its compile config cannot bind
+// the container it shipped.
+void Program::forest_missing_fallback(bool config_mismatch)
 {
     switch ( registration_policy.forest_missing_policy )
     {
@@ -1923,6 +1939,12 @@ void Program::forest_missing_fallback()
 	    << std::endl);
 	break;
     case RegistrationPolicy::ForestPolicy::loud_fallback:
+	if ( config_mismatch )
+	{
+	    DBG(std::cout << "forest-bind: container config mismatch — live"
+		" parse (multi-dialect fall-through, no notice)" << std::endl);
+	    break;
+	}
 	(error_stream ? *error_stream : std::cerr)
 	    << "madc: no frozen forest found (probed: self-image,"
 	       " <exe>.forest sidecar, $MADC_FOREST); falling back to live"
@@ -1931,6 +1953,11 @@ void Program::forest_missing_fallback()
 	    << std::endl;
 	break;
     case RegistrationPolicy::ForestPolicy::strict_require:
+	if ( config_mismatch )
+	    Throw(NULL) << "frozen forest required (strict forest policy):"
+			   " a container was found but its producer config"
+			   " (std/-D defines) does not match this compile"
+			<< std::flush;
 	Throw(NULL) << "frozen forest required (strict forest policy) but no"
 		       " usable container was found (probed: self-image,"
 		       " <exe>.forest sidecar, $MADC_FOREST)" << std::flush;

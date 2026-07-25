@@ -1964,9 +1964,11 @@ public:
 	// live-parses after ONE stderr notice (the packaged-CLI default,
 	// baked via MADC_FOREST_EXPECT_*), strict_require hard-errors (an
 	// embedding host that must never silently degrade). A producer-config
-	// (std / -D) mismatch is NOT a failure: that fall-through is the
-	// by-design multi-dialect contract and stays silent under every
-	// policy.
+	// (std / -D) mismatch — a container was found but for a different
+	// dialect — is the by-design multi-dialect fall-through: NEVER a
+	// notice under loud_fallback (the packed CLI compiling C against its
+	// C++-parsed corpus is the everyday case); strict_require still
+	// hard-errors on it, naming the mismatch.
 	enum class ForestPolicy { silent_fallback, loud_fallback, strict_require };
 	ForestPolicy forest_missing_policy = ForestPolicy::silent_fallback;
 	bool enable_external_forest = true;
@@ -4067,7 +4069,7 @@ public:
     std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune
     std::set<uint32_t> forest_bind_walking;	// units on the in-flight bind recursion (cycle break)
     CirFrozenForest *ensure_bind_forest();	// open on first use; NULL if unavailable
-    void forest_missing_fallback();		// discovery exhausted: apply forest_missing_policy
+    void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
     int forest_unit_for_include(const std::string &incfile); // spelling/path lookup; -1 miss
     void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables

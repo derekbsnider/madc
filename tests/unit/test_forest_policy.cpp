@@ -85,4 +85,31 @@ TEST_CASE("strict_require: explicit --forest-bind path miss is a hard error") {
 	CHECK_THROWS_AS(prog->ensure_bind_forest(), std::exception);
 }
 
+// The chain-end fallback's config-mismatch matrix (a container WAS seen but
+// its producer std/-D differs — the multi-dialect fall-through). loud must
+// stay SILENT on it (the packed CLI compiling a C file against its
+// C++-parsed corpus is the everyday case; the expect_quiet suite tests with
+// --std= fixtures pin this end-to-end), while strict still hard-errors.
+TEST_CASE("loud_fallback: config mismatch is the silent multi-dialect fall-through") {
+	MadcEngine engine;
+	std::unique_ptr<Program> prog = engine.create_program();
+	std::ostringstream err;
+	prog->error_stream = &err;
+	prog->registration_policy.forest_missing_policy =
+		Program::RegistrationPolicy::ForestPolicy::loud_fallback;
+	prog->forest_missing_fallback(/*config_mismatch=*/true);
+	CHECK(err.str().empty());
+	prog->forest_missing_fallback(/*config_mismatch=*/false);
+	CHECK(err.str().find("no frozen forest found") != std::string::npos);
+}
+
+TEST_CASE("strict_require: config mismatch is still a hard error") {
+	MadcEngine engine;
+	std::unique_ptr<Program> prog = engine.create_program();
+	prog->registration_policy.forest_missing_policy =
+		Program::RegistrationPolicy::ForestPolicy::strict_require;
+	CHECK_THROWS_AS(prog->forest_missing_fallback(true), std::exception);
+	CHECK_THROWS_AS(prog->forest_missing_fallback(false), std::exception);
+}
+
 }
