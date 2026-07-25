@@ -111,6 +111,12 @@ NAS, each handed over with its exact path + Linux-side evidence.
    laptop.  (Owner 2026-07-25: when each Mach-O test binary exists,
    tell the owner exactly where it is — NAS path — along with the
    Linux-side evidence for it.)
+   **✅ GREEN 2026-07-25 (owner-run, BOTH Macs):** `madc-A64_MachO`
+   and `madc-X64_MachO` both printed
+   `madc Mach-O: one three 174 fib(10)=55` and exited 28 — identical
+   behavior on Apple Silicon (AMFI accepted the MIR-generated ad-hoc
+   signature) and Intel.  The writer is validated on real hardware
+   the same day it was written.
 
 ### Sequencing
 
@@ -413,6 +419,38 @@ design (madc models `long double` as the double-spelling; c2mir owns
 target layout via the axis-A `mir_ldouble` fix — LD-in-struct layout
 is a target-independent audit item, not a Mach-O blocker);
 **Gate B-final** = the owner's Macs.
+
+## The larger goal — madc-release ON macOS (owner, 2026-07-25 post-Gate-B-final)
+
+After running both test binaries, the owner clarified the destination:
+**a madc-release binary that runs natively on macOS** — madc-the-
+compiler on the Macs, not only madc targeting them.  This track
+("madc targets macOS") is one step along that way; the remaining
+distance is a **porting/build-provisioning track, route not yet
+decided** (owner decision pending):
+
+- **Route 1 — osxcross-style cross BUILD tool on Linux:** clang +
+  cctools + a macOS SDK build madc's C++ codebase for the Mac from
+  the container.  Does not violate the no-external-toolchain law
+  (that law governs madc's *product path* — what madc emits — not
+  how madc itself is built; madc is already built with g++/clang).
+  Needs the Apple SDK on Linux (owner owns Macs/Xcode; extraction is
+  the owner's licensing call) + a macOS port pass over madc's source
+  (dlopen sonames, /proc/self/exe, glibc-isms) + MIR JIT on macOS
+  (upstream supports Apple Silicon JIT; the fork carries it).
+- **Route 2 — build on a Mac:** Xcode CLT on one of the owner's Macs
+  (contradicts the laptop-is-run-only stance; the Intel Mac could be
+  the build host if the owner re-decides).  Same madc source-port
+  pass; simplest toolchain story, moves build/test off the container.
+- **Route 3 — self-hosting:** madc emits its own compiler as Mach-O.
+  The true north star, but gated on the self-hosting gap list
+  (std::function, containers, streams breadth) — far out; not the
+  vehicle for this goal.
+
+Either serious route also needs the target-side runtime story (a
+Mach-O libmadc / runtime for non-runtime-free programs) and real SDK
+headers for full-fidelity target compiles — both already flagged as
+owner decisions in this plan.
 
 ## Risks
 
