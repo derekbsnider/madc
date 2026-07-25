@@ -51,7 +51,7 @@ static char x86_64_mirc[]
     "#define __UINT16_MAX__ (__INT16_MAX__ * 2u + 1u)\n"
     "#define __UINT32_MAX__ (__INT32_MAX__ * 2u + 1u)\n"
     "#define __UINT64_MAX__ (__INT64_MAX__ * 2u + 1u)\n"
-#if defined(__linux__)
+#if !MIR_TARGET_APPLE_P /* target fact (same value both ways; keyed like the aarch64 twin) */
     "#define __WCHAR_MAX__ 0x7fffffff\n"
 #else
     "#define __WCHAR_MAX__ 2147483647\n"
@@ -99,7 +99,7 @@ static char x86_64_mirc[]
     "typedef unsigned short char16_t;\n"
     "typedef unsigned int char32_t;\n"
     "\n"
-#if defined(__linux__)
+#if defined(__linux__) && !MIR_TARGET_APPLE_P
     "#define __gnu_linux__ 1\n"
     "#define __linux 1\n"
     "#define __linux__ 1\n"
@@ -116,7 +116,7 @@ static char x86_64_mirc[]
     "typedef __builtin_va_list va_list;\n"
     "#define __DEFINED_va_list\n"
 #endif
-#elif defined(__APPLE__)
+#elif MIR_TARGET_APPLE_P
     "#define __APPLE__ 1\n"
     "#define __DARWIN_OS_INLINE static inline\n"
     "typedef struct {\n"

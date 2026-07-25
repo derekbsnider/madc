@@ -21,7 +21,7 @@ static char stddef_str[]
     "typedef int wchar_t;\n"
 #endif
     "\n"
-#if !defined(__APPLE__) && !defined(_WIN32)
+#if !MIR_TARGET_APPLE_P && !defined(_WIN32)
     "#define NULL ((void *) 0)\n"
 #endif
     "\n"

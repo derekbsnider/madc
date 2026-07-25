@@ -7587,7 +7587,7 @@ static void def_symbol (c2m_ctx_t c2m_ctx, enum symbol_mode mode, node_t id, nod
   } else if (linkage == N_IGNORE) {
     if (!decl_spec.typedef_p || !tab_decl_spec.typedef_p
         || !type_eq_p (decl_spec.type, tab_decl_spec.type))
-#if defined(__APPLE__)
+#if MIR_TARGET_APPLE_P /* target-code semantics: our stdarg vs the darwin SDK's */
       /* a hack to use our definition instead of macosx for non-GNU compiler */
       if (strcmp (id->u.s.s, "__darwin_va_list") != 0)
 #endif

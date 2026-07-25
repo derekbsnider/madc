@@ -6,7 +6,7 @@ static char stdarg_str[]
   = "#ifndef __STDARG_H\n"
     "#define __STDARG_H\n"
     "\n"
-#if defined(__APPLE__)
+#if MIR_TARGET_APPLE_P
     "typedef __darwin_va_list va_list;\n"
 #elif defined(__GNU_LIBRARY__)
     "typedef struct {\n"
