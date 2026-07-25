@@ -197,6 +197,33 @@ EMBED_GEN := $(shell mkdir -p $(OBJDIR) && ../scripts/gen_darwin_prelude.sh $(DA
 else
 EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
 endif
+# Forest carrier shape (--with-forest= configure axis; forest-carriers S3).
+# Applies to the PRODUCT modes (release + hosted darwin): what the build
+# produces (packed image / <bin>.forest sidecar / nothing) and what the
+# binary expects (the baked MADC_FOREST_EXPECT_* define defaults the CLI to
+# the loud-fallback notice when no forest is found at runtime). Dev, debug,
+# and cross modes always build the `none` dev shape (silent live parse) —
+# discovery itself is never restricted by this axis.
+WITH_FOREST ?= embedded
+ifneq ($(filter $(MODE),release hosted-arm64-macos hosted-x86-64-macos),)
+ifeq ($(WITH_FOREST),embedded)
+DEFINES += -DMADC_FOREST_EXPECT_EMBEDDED
+else ifeq ($(WITH_FOREST),sidecar)
+DEFINES += -DMADC_FOREST_EXPECT_SIDECAR
+endif
+endif
+# The expectation is BAKED into madc.o (-D above), and -MMD tracks headers,
+# not flags: a WITH_FOREST switch without a clean would silently keep the
+# previous shape's madc.o. The stamp records the shape per obj tree
+# (the .libmode precedent); switching shapes recreates it and recompiles
+# madc.o. Prerequisite-only entry — the recipe stays the pattern rule's.
+FOREST_SHAPE_STAMP = $(OBJDIR)/.forest-shape-$(WITH_FOREST)
+$(FOREST_SHAPE_STAMP):
+	@mkdir -p $(OBJDIR)
+	@rm -f $(OBJDIR)/.forest-shape-*
+	@touch $@
+$(OBJDIR)/madc.o: $(FOREST_SHAPE_STAMP)
+$(PICOBJDIR)/madc.o: $(FOREST_SHAPE_STAMP)
 # Hosted binaries ship PACKED (forest-carriers S1): the darwin groves are
 # cross-frozen by the same-arch cross madc (identical embedded prelude, same
 # target facts -> same context hash + config word) and embedded at link time
@@ -204,11 +231,20 @@ endif
 # re-signer (appended blobs are AMFI-illegal on signed Mach-O; the __MADC
 # section is the darwin carrier). Variables here; the rules live below the
 # default targets (a rule this early would hijack the default goal).
+# --with-forest=sidecar keeps the cross-freeze but drops the -sectcreate:
+# the link rule ships the container as $(BIN).forest instead (FOREST_SIDECAR);
+# --with-forest=none skips the forest entirely.
 ifdef HOSTED_DARWIN_TARGET
 DARWIN_FOREST_BIN = $(OBJDIR)/forest.bin
 CROSS_MADC_BIN = ../bin/madc-$(DARWIN_ARCH)-macos
+ifeq ($(WITH_FOREST),embedded)
 FOREST_EMBED_DEP = $(DARWIN_FOREST_BIN)
 FOREST_EMBED_LDFLAGS = -Wl,-sectcreate,__MADC,__forest,$(DARWIN_FOREST_BIN)
+else ifeq ($(WITH_FOREST),sidecar)
+FOREST_EMBED_DEP = $(DARWIN_FOREST_BIN)
+FOREST_EMBED_LDFLAGS =
+FOREST_SIDECAR = 1
+endif
 endif
 DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS) $(MADCDISHDRS)
 
@@ -371,10 +407,17 @@ $(MIRDIR)/build-hosted-x86-64-macos/libmir.a: FORCE
 # the ELF and would destroy an already-appended forest blob). Pack failure =
 # build failure; the verify step proves the appended blob reads back (pin OK)
 # and survives the stripped binary's dlsym resolver path.
+# --with-forest= picks the carrier: embedded appends the container to the
+# binary (default), sidecar writes bin/madc-release.forest beside it, none
+# skips the pack (live-parse-only product).
 release:
 	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc-release $(LIBMADC_SHARED)
 	strip ../bin/madc-release
+ifeq ($(WITH_FOREST),embedded)
 	cd .. && bash scripts/forest_pack.sh bin/madc-release
+else ifeq ($(WITH_FOREST),sidecar)
+	cd .. && bash scripts/forest_pack.sh --sidecar bin/madc-release
+endif
 
 # Install the release artifacts under $(PREFIX) (DESTDIR-aware). Same layout
 # as the distribution packages (scripts/package_release.sh): the stripped
@@ -388,6 +431,9 @@ install: release
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(INSTALL_LIBDIR) \
 		$(DESTDIR)$(PREFIX)/share/man/man1
 	install -m 755 ../bin/madc-release $(DESTDIR)$(PREFIX)/bin/madc
+ifeq ($(WITH_FOREST),sidecar)
+	install -m 644 ../bin/madc-release.forest $(DESTDIR)$(PREFIX)/bin/madc.forest
+endif
 	install -m 644 ../lib/libmadc.so $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0
 	strip --strip-unneeded $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0
 	ln -sf libmadc.so.0 $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so
@@ -441,6 +487,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) test
 	@cd .. && bash scripts/forest_selfexe_gate.sh
 	@cd .. && bash scripts/forest_bind_gate.sh
 	@cd .. && bash scripts/forest_emitpack_gate.sh
+	@cd .. && bash scripts/forest_sidecar_gate.sh
 	@cd .. && bash scripts/project_gate.sh
 	@cd .. && bash scripts/forest_index_oracle.sh
 	@cd .. && bash scripts/forest_dm_oracle.sh
@@ -470,6 +517,9 @@ $(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB)
 
 $(BIN): $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB) $(FOREST_EMBED_DEP)
 	$(CXX) -o $@ $(OBJDIR)/madc.o $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS) $(FOREST_EMBED_LDFLAGS)
+ifdef FOREST_SIDECAR
+	cp $(DARWIN_FOREST_BIN) $@.forest
+endif
 
 # lib/libmadc.{a,so} keep ONE path across modes, so make's timestamps alone
 # would silently leave the OTHER mode's libs in place after a mode switch

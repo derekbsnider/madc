@@ -393,13 +393,19 @@ high-level" — the answer is both.**
   re-signer anywhere on the product path); Mach-O file-probe read-back
   arm; full native loop (freeze → pack-emit → AMFI → read-back) green
   on Apple hardware, both arches; darwin `--freeze-run` was already
-  green (no self-rewrite)
+  green (no self-rewrite). Forest-carriers S3 COMPLETE (v0.48.0) —
+  carrier discovery chain (self-image → `<exe>.forest` sidecar →
+  `$MADC_FOREST`, S4/S6 slots reserved), `--with-forest=embedded|
+  sidecar|none` configure axis, failure-policy knobs
+  (`forest_missing_policy` silent/loud/strict + `enable_external_forest`
+  in the RegistrationPolicy sandbox family); full shape × platform
+  matrix green (Linux arbiter through BOTH carriers 756/0/0/9; Mac 7/7
+  legs both arches)
   ([2026-07-25-forest-carriers-plan.md](2026-07-25-forest-carriers-plan.md)).
-  REMAINING: forest-carriers S3–S6 (carrier probe chain +
-  `--with-forest=` + sidecar, shared shape, `-static-libmadc` Tier A,
-  `madc.ini`; the existing-signed-binary re-signer is consciously
-  deferred residue); MH_OBJECT `.o` flavor (fork); P2 libc++ STD-ABI
-  script-lane flavor. Plan:**
+  REMAINING: forest-carriers S4–S6 (shared shape / forest-in-library,
+  `-static-libmadc` Tier A, `madc.ini`; the existing-signed-binary
+  re-signer is consciously deferred residue); MH_OBJECT `.o` flavor
+  (fork); P2 libc++ STD-ABI script-lane flavor. Plan:**
   [2026-07-25-macho-arm64-plan.md](2026-07-25-macho-arm64-plan.md).
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target

@@ -1953,6 +1953,25 @@ public:
 	// This is the incremental shim-retirement lever — bypass system shims while
 	// keeping madc's own headers. Data-driven: see embedded_header_is_system_library_shim().
 	bool bypass_system_library_headers = false;
+	// Frozen-forest discovery + failure policy (forest-carriers S3).
+	// enable_external_forest gates the probe-chain arms that read frozen
+	// state from OUTSIDE the binary/library images (the <exe>.forest
+	// sidecar and the MADC_FOREST environment variable): a sandboxed
+	// embedding host turns it off so nothing external can redirect where
+	// the compiler loads frozen state from. forest_missing_policy decides
+	// what happens when the discovery chain finds NO usable container:
+	// silent_fallback live-parses (the dev default), loud_fallback
+	// live-parses after ONE stderr notice (the packaged-CLI default,
+	// baked via MADC_FOREST_EXPECT_*), strict_require hard-errors (an
+	// embedding host that must never silently degrade). A producer-config
+	// (std / -D) mismatch — a container was found but for a different
+	// dialect — is the by-design multi-dialect fall-through: NEVER a
+	// notice under loud_fallback (the packed CLI compiling C against its
+	// C++-parsed corpus is the everyday case); strict_require still
+	// hard-errors on it, naming the mismatch.
+	enum class ForestPolicy { silent_fallback, loud_fallback, strict_require };
+	ForestPolicy forest_missing_policy = ForestPolicy::silent_fallback;
+	bool enable_external_forest = true;
 	std::vector<std::string> allowed_headers;
 	std::vector<std::string> allowed_dlfcn_symbols;
 	RuntimeEvalChildPolicy runtime_eval_source_policy;
@@ -4050,6 +4069,7 @@ public:
     std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune
     std::set<uint32_t> forest_bind_walking;	// units on the in-flight bind recursion (cycle break)
     CirFrozenForest *ensure_bind_forest();	// open on first use; NULL if unavailable
+    void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
     int forest_unit_for_include(const std::string &incfile); // spelling/path lookup; -1 miss
     void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables

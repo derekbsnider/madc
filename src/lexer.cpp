@@ -1772,11 +1772,12 @@ std::string Program::current_source_directory()
 }
 
 // Phase 6 (--forest-bind): open the grove container once, on the first system
-// #include. The container source is forest_bind_path (a standalone --freeze
-// container) or the blob appended to this executable (empty -> /proc/self/exe).
-// A missing/mismatched container leaves bind_forest NULL: every include then
-// live-parses. The mapping is never unmapped — the forest reads from it for the
-// process lifetime.
+// #include. With an explicit --forest-bind=PATH that path is the whole search;
+// otherwise the carrier DISCOVERY CHAIN below probes the ordered arms
+// (forest-carriers plan: one format, one loader, N carriers). A chain that
+// ends empty applies registration_policy.forest_missing_policy — the dev
+// default live-parses silently. The winning mapping is never unmapped: the
+// forest reads from it for the process lifetime.
 // --show-stats wall clock (R0 startup instrumentation).
 static double forest_stat_now(void)
 {
@@ -1785,61 +1786,183 @@ static double forest_stat_now(void)
     return tv.tv_sec + tv.tv_usec / 1e6;
 }
 
-CirFrozenForest *Program::ensure_bind_forest()
+// One discovery arm: map `path` (NULL = the running self-image: ELF trailer /
+// Mach-O __MADC,__forest section) and open it as a forest container. Returns
+// the opened forest, or NULL to fall through to the next arm. quiet_missing
+// silences ONLY the not-a-container case — pass true where an absent blob is
+// normal (the self-image of an unpacked dev binary), false where a concrete
+// file was found and junk warrants the notice (sidecar / env / explicit
+// path). An absent FILE never maps and always skips silently; a version-pin
+// or corruption reject always prints (open_header); a producer-config
+// (std / -D) mismatch always skips silently — the v27 multi-dialect contract
+// (a C compile must not bind a C++-parsed corpus; the packed-binary default
+// relies on it). The config gate reads only the directory header, so a
+// mismatched arm costs footer + directory, not the pool/arena binds (R1).
+static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
+					 const char *arm, bool quiet_missing,
+					 bool &config_mismatch,
+					 double &map_secs, double &open_secs)
 {
-    if ( bind_forest_tried )
-	return bind_forest;
-    bind_forest_tried = true;
     double _t0 = forest_stat_now();
     const void *image = NULL;
     size_t image_len = 0;
-    const char *path = forest_bind_path.empty() ? NULL : forest_bind_path.c_str();
     if ( !cir_forest_map_image(path, image, image_len) )
     {
-	_forest_map_seconds = forest_stat_now() - _t0;
-	DBG(std::cout << "forest-bind: no container at "
-	    << (path ? path : "/proc/self/exe") << " — live parse" << std::endl);
+	map_secs += forest_stat_now() - _t0;
+	DBG(std::cout << "forest-bind: [" << arm << "] no image at "
+	    << (path ? path : "self-image") << std::endl);
 	return NULL;
     }
-    _forest_map_seconds = forest_stat_now() - _t0;
+    map_secs += forest_stat_now() - _t0;
     CirFrozenForest *f = new CirFrozenForest();
     double _t1 = forest_stat_now();
-    if ( !f->open_header(image, image_len, /*quiet_missing=*/true) )
+    if ( !f->open_header(image, image_len, quiet_missing) )
     {
-	_forest_open_seconds = forest_stat_now() - _t1;
-	// open_header() printed real corruption / pin mismatch; a blob-less
-	// binary (the default-on probe of /proc/self/exe) fell through
-	// silently.
+	open_secs += forest_stat_now() - _t1;
 	delete f;
 	return NULL;
     }
-    // v27 producer-config gate: header CONTENT depends on the language
-    // standard (C vs C++ surface, __STRICT_ANSI__) and the -D set, so a
-    // container parsed under a different config must not bind — fall through
-    // silently to live parse (the packed-binary default relies on this: a C
-    // compile resolves the same real glibc paths a C++ corpus carries).
-    // Gated on the directory header BEFORE the heavy pool/arena binds (R1):
-    // a mismatched compile pays only the footer + directory read.
-    if ( f->language_std() != madc_forest_config_word(this)
-      || f->defines_hash() != madc_forest_defines_hash(this) )
+    if ( f->language_std() != madc_forest_config_word(prog)
+      || f->defines_hash() != madc_forest_defines_hash(prog) )
     {
-	_forest_open_seconds = forest_stat_now() - _t1;
-	DBG(std::cout << "forest-bind: producer config mismatch (std/defines)"
-	    << " — live parse" << std::endl);
+	open_secs += forest_stat_now() - _t1;
+	DBG(std::cout << "forest-bind: [" << arm << "] producer config"
+	    " mismatch (std/defines) — skipped" << std::endl);
+	config_mismatch = true;
 	delete f;
 	return NULL;
     }
     if ( !f->complete_open(/*c2m=*/NULL) )
     {
-	_forest_open_seconds = forest_stat_now() - _t1;
+	open_secs += forest_stat_now() - _t1;
 	delete f;
 	return NULL;
     }
-    _forest_open_seconds = forest_stat_now() - _t1;
-    bind_forest = f;
-    DBG(std::cout << "forest-bind: opened container (" << f->unit_count()
-	<< " units)" << std::endl);
+    open_secs += forest_stat_now() - _t1;
+    DBG(std::cout << "forest-bind: [" << arm << "] opened container ("
+	<< f->unit_count() << " units)" << std::endl);
+    return f;
+}
+
+CirFrozenForest *Program::ensure_bind_forest()
+{
+    if ( bind_forest_tried )
+	return bind_forest;
+    bind_forest_tried = true;
+
+    // Arm 0: an explicit --forest-bind=PATH is the whole search (CLI beats
+    // every discovery arm). A named container that fails to open falls back
+    // to live parse LOUDLY regardless of policy — the user pointed at it, so
+    // ignoring it silently is exactly the degradation the failure policy
+    // exists to prevent (strict still hard-errors via the shared fallback).
+    if ( !forest_bind_path.empty() )
+    {
+	bool cfg_mismatch = false;
+	bind_forest = forest_probe_arm(this, forest_bind_path.c_str(),
+				       "explicit", /*quiet_missing=*/false,
+				       cfg_mismatch,
+				       _forest_map_seconds,
+				       _forest_open_seconds);
+	if ( !bind_forest )
+	{
+	    if ( registration_policy.forest_missing_policy
+		 == RegistrationPolicy::ForestPolicy::strict_require )
+		Throw(NULL) << "frozen forest required (strict forest policy):"
+			       " '" << forest_bind_path << "' did not provide"
+			       " a usable container" << std::flush;
+	    (error_stream ? *error_stream : std::cerr)
+		<< "madc: --forest-bind: '" << forest_bind_path
+		<< "' did not provide a usable forest container; falling"
+		   " back to live parse" << std::endl;
+	}
+	return bind_forest;
+    }
+
+    // Discovery chain (forest-carriers plan) — fixed order, first usable
+    // container wins. Arm 1: self-image — the running binary's own carrier
+    // (ELF trailer / Mach-O __MADC,__forest section). An unpacked dev binary
+    // misses quietly.
+    bool cfg_mismatch = false;
+    bind_forest = forest_probe_arm(this, NULL, "self-image",
+				   /*quiet_missing=*/true, cfg_mismatch,
+				   _forest_map_seconds, _forest_open_seconds);
+    // Arm 2 (S4 slot): library image — when madc is built shared, the forest
+    // rides libmadc's image (dladdr on a libmadc symbol -> the same
+    // per-format probe). Lands with the shared shape.
+    if ( !bind_forest && registration_policy.enable_external_forest )
+    {
+	// Arm 3: sidecar container beside the binary (<exe>.forest — the
+	// packaged-install shape; dev iteration without re-packing).
+	std::string exe = madc_self_exe_path();
+	if ( !exe.empty() )
+	    bind_forest = forest_probe_arm(this, (exe + ".forest").c_str(),
+					   "sidecar", /*quiet_missing=*/false,
+					   cfg_mismatch,
+					   _forest_map_seconds,
+					   _forest_open_seconds);
+	// Arm 4: MADC_FOREST environment variable (a configured path; env
+	// outranks the madc.ini key / baked default per the config
+	// precedence rule — those land as arm 5 with S6).
+	const char *env = getenv("MADC_FOREST");
+	if ( !bind_forest && env && *env )
+	    bind_forest = forest_probe_arm(this, env, "MADC_FOREST",
+					   /*quiet_missing=*/false,
+					   cfg_mismatch,
+					   _forest_map_seconds,
+					   _forest_open_seconds);
+    }
+    if ( !bind_forest )
+	forest_missing_fallback(cfg_mismatch);
     return bind_forest;
+}
+
+// The discovery chain ended with no usable container: apply the failure
+// policy (forest-carriers S3 — the G2 lesson: no SILENT degradation unless
+// silent is the configured contract). Called at most once per Program
+// (bind_forest_tried gates the caller). strict_require raises through the
+// standard Throw path so an embedding host sees it as a compile error.
+//
+// config_mismatch = a container WAS found but its producer config (std/-D)
+// differs from this compile's. Under loud_fallback that is NOT degradation —
+// it is the by-design multi-dialect contract (the packed CLI compiling a C
+// file against its C++-parsed corpus is the everyday case; a notice there
+// would fire on every such compile — caught by the expect_quiet suite tests
+// carrying --std= fixtures). strict_require still hard-errors on it: a host
+// that REQUIRES frozen state wants to know its compile config cannot bind
+// the container it shipped.
+void Program::forest_missing_fallback(bool config_mismatch)
+{
+    switch ( registration_policy.forest_missing_policy )
+    {
+    case RegistrationPolicy::ForestPolicy::silent_fallback:
+	DBG(std::cout << "forest-bind: no container — live parse"
+	    << std::endl);
+	break;
+    case RegistrationPolicy::ForestPolicy::loud_fallback:
+	if ( config_mismatch )
+	{
+	    DBG(std::cout << "forest-bind: container config mismatch — live"
+		" parse (multi-dialect fall-through, no notice)" << std::endl);
+	    break;
+	}
+	(error_stream ? *error_stream : std::cerr)
+	    << "madc: no frozen forest found (probed: self-image,"
+	       " <exe>.forest sidecar, $MADC_FOREST); falling back to live"
+	       " parse — startup will be slower. Point --forest-bind=<file>"
+	       " at a container, or silence this with --no-forest-bind."
+	    << std::endl;
+	break;
+    case RegistrationPolicy::ForestPolicy::strict_require:
+	if ( config_mismatch )
+	    Throw(NULL) << "frozen forest required (strict forest policy):"
+			   " a container was found but its producer config"
+			   " (std/-D defines) does not match this compile"
+			<< std::flush;
+	Throw(NULL) << "frozen forest required (strict forest policy) but no"
+		       " usable container was found (probed: self-image,"
+		       " <exe>.forest sidecar, $MADC_FOREST)" << std::flush;
+	break;
+    }
 }
 
 // --show-stats (R0): flatten the forest-bind counters (Program-side timers +

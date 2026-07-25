@@ -536,10 +536,15 @@ static void print_usage(const char *prog)
 "                          canonical order); no value = this executable's blob\n"
 "  --forest-bind[=<file>]  bind grove-backed system #includes from a frozen\n"
 "                          container instead of live-parsing; no value = the\n"
-"                          blob appended to this executable. This is the\n"
-"                          DEFAULT for compiles (silent live fall-through\n"
-"                          when no blob is appended); freeze modes live-parse\n"
-"                          unless it is passed explicitly\n"
+"                          discovery chain below. This is the DEFAULT for\n"
+"                          compiles (live fall-through when nothing is\n"
+"                          found); freeze modes live-parse unless it is\n"
+"                          passed explicitly.\n"
+"                          Discovery order (first usable container wins):\n"
+"                          1. this binary's own image (ELF trailer /\n"
+"                             Mach-O __MADC,__forest section),\n"
+"                          2. <exe>.forest beside the binary (sidecar),\n"
+"                          3. the $MADC_FOREST path\n"
 "  --no-forest-bind        force live parse (overrides the default and an\n"
 "                          explicit --forest-bind; the A/B measurement lever)\n"
 "  --dump-registered       parse, then print the registered name maps\n"
@@ -562,6 +567,9 @@ static void print_usage(const char *prog)
 "  MADC_MEM_LIMIT=<MB>     address-space guard (RLIMIT_AS, covers JIT\n"
 "                          mappings); default 4096 MB + 128 MB per --project\n"
 "                          TU; 0 disables. Trips name the knob.\n"
+"  MADC_FOREST=<file>      frozen forest container to bind when neither the\n"
+"                          binary's own image nor the <exe>.forest sidecar\n"
+"                          carries one (discovery arm 3)\n"
 "\n"
 "AOT output (gcc vocabulary; do not run):\n"
 "  -c [-o file.o]          compile to a relocatable native object\n"
@@ -612,6 +620,17 @@ int main(int argc, char **argv)
     TokenProgram *tp;
 
     prog->colors = true;
+#if defined(MADC_FOREST_EXPECT_EMBEDDED) || defined(MADC_FOREST_EXPECT_SIDECAR)
+    // --with-forest= product expectation (forest-carriers S3): this binary
+    // was built to ship WITH a forest (embedded carrier or sidecar), so a
+    // discovery chain that finds nothing is degradation worth one loud
+    // stderr notice — the CLI liberal default (live parse still runs).
+    // Dev/debug/cross builds bake neither define and stay silent_fallback.
+    prog->registration_policy.forest_missing_policy =
+	Program::RegistrationPolicy::ForestPolicy::loud_fallback;
+    engine.registration_policy.forest_missing_policy =
+	Program::RegistrationPolicy::ForestPolicy::loud_fallback;
+#endif
 
     int filearg = 1;
     const char *emit_object_path = NULL;

@@ -2,6 +2,66 @@
 
 ## [Unreleased]
 
+## [v0.48.0] — 2026-07-25
+
+Forest carriers S3: the frozen forest becomes discoverable — ordered
+carrier probe chain (self-image → `<exe>.forest` sidecar →
+`$MADC_FOREST`), `--with-forest=embedded|sidecar|none` configure axis,
+and the failure-policy pair (loud-fallback CLI / strict embedding
+hosts); full shape × platform matrix green on Linux and Apple hardware.
+
+- **feat(forest): carrier discovery chain — sidecar + `MADC_FOREST`
+  arms, `--with-forest=` configure axis, failure-policy knobs
+  (forest-carriers S3).** One format, one loader, N carriers — this
+  slice adds DISCOVERY. With no explicit `--forest-bind=`, the bind
+  path walks the ordered probe chain, first usable container wins:
+  1. self-image (ELF trailer / Mach-O `__MADC,__forest` section —
+  shipped), 2. (S4 slot) library image via `dladdr`, 3. `<exe>.forest`
+  sidecar beside the binary, 4. the `$MADC_FOREST` path, 5. (S6 slot)
+  `madc.ini` / baked default. Every arm validates identically (footer +
+  context hash + version pin + v27 producer-config gate); a config
+  (std/`-D`) mismatch stays a silent skip under every policy (the
+  multi-dialect contract), a file that exists but is not a container is
+  loud, and an explicit `--forest-bind=` path that fails to open is now
+  a loud fall-through — never silently ignored. Failure policy joins
+  the `RegistrationPolicy` sandbox-knob family: `forest_missing_policy`
+  (`silent_fallback` dev default / `loud_fallback` one stderr notice,
+  the packaged-CLI default baked via `MADC_FOREST_EXPECT_*` in product
+  MODEs / `strict_require` hard error for embedding hosts that must
+  never silently degrade) and `enable_external_forest` (gates the
+  sidecar + env arms so a sandboxed host can forbid external
+  redirection of frozen-state loading). New `--with-forest=embedded|
+  sidecar|none` configure axis (default embedded) selects what the
+  product build ships: embedded = today's pack; sidecar =
+  `<bin>.forest` beside the binary (`forest_pack.sh --sidecar`; hosted
+  darwin keeps the cross-freeze, drops `-sectcreate`, ships
+  `$(BIN).forest`; `make install` places `bin/madc.forest`); none = the
+  live-parse dev shape. Never a restriction on discovery. Gates:
+  `scripts/forest_sidecar_gate.sh` in fulltest (both external arms bind
+  with `-v` engagement evidence + byte parity vs `--no-forest-bind`
+  live parse, arm ordering pinned, loud failure surfaces);
+  `tests/unit/test_forest_policy.cpp` pins the policy triad. A
+  forest-shape stamp recompiles `madc.o` on a `WITH_FOREST` switch
+  (`-MMD` tracks headers, not `-D` flags).
+
+- **fix(forest): config-mismatch fall-through is never a loud notice.**
+  The packed/sidecar CLI (baked `loud_fallback`) fired the
+  missing-forest notice on every compile whose std/`-D` config-gated
+  past the corpus (a `--std=c17` C compile against the C++-parsed
+  pack) — caught by the arbiter's `expect_quiet` tests through BOTH
+  carriers. The chain-end policy now knows WHY it ended empty
+  (`forest_missing_fallback(config_mismatch)`): the multi-dialect
+  fall-through stays silent under `loud_fallback`; `strict_require`
+  still hard-errors on it, naming the mismatch.
+
+- **fix(gate): emitpack Mach-O legs are rev-skew-immune.** The S2 gate
+  dumped a dev-madc-frozen container with the cross madcs —
+  cross-binary dump equality, which the context-hash pin rightly
+  rejects once the dev binary is newer than the cross builds. Each
+  Mach-O leg now freezes its own container with the same cross madc
+  that emits and dumps it: carrier transparency per binary, the claim
+  the gate actually makes.
+
 ## [v0.47.0] — 2026-07-25
 
 Emitted-pack (forest-carriers S2): `--pack-forest` embeds a frozen
