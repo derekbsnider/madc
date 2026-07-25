@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+- **feat(hosted-macos): madc itself now cross-builds for the Macs
+  (madc-on-macOS Route 1, Phase 1).** `make -C src hosted-arm64-macos` /
+  `hosted-x86-64-macos` build FULL madc binaries (JIT + native Mach-O
+  AOT — the v0.44.0 writer becomes the native writer through host
+  detection) with clang-18 + the owner's SDK + ld64.lld; unstripped
+  `-O2`, madcdat/zstd off (Phase 3). Source port pass (Linux
+  behavior-identical, fulltest + exe lanes green): one
+  `madc_self_exe_path()` helper (readlink vs `_NSGetExecutablePath`)
+  converges all six /proc/self/exe sites; `.dylib` soname synthesis;
+  mach `task_info` memory probe + `ru_maxrss` unit normalization +
+  `/dev/fd` report path; host-keyed errno accessor (`__error`) and
+  host-keyed AOT cover spellings (`libsystem_`/`libc++`/`libSystem`);
+  `MADC_TARGET_APPLE_P` separates target-is-Apple from crossness;
+  `__madc_builtin_mempcpy_chk` darwin arm. Host tables
+  (sys-include paths, predefined macros) now regenerate at Makefile
+  parse time keyed to the mode's compiler, with an SDK→CLT path map
+  for hosted binaries. Fork: object layer made host-independent
+  (`mir-elf-defs.h` local ELF64 ABI defs — no `<elf.h>` needed; gate +
+  stubs deleted), manual checked 128-bit multiply on Apple (libSystem
+  exports no `__muloti4` on arm64). Bonus fix found by clang:
+  `TokenChar::is_constant()` hid (not overrode) its base virtual —
+  char literals reported non-constant through base pointers; headers
+  now carry the 85 missing `override` markers.
+
 ## [v0.44.0] — 2026-07-25
 
 The Mach-O release (Mach-O/ARM64 track, axis B writer + cross madcs):
