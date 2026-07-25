@@ -9,6 +9,11 @@
 # packed binary (the trailer must not disturb execution) and pins the two
 # refusal arms (-c refused at the CLI; a non-container refused at emit).
 # Mach-O legs run when the cross madcs exist (plain dev trees: SKIP loudly).
+# Each Mach-O leg freezes its OWN container with the same cross madc that
+# emits and dumps it: the context-hash pin makes cross-BINARY dump equality
+# a rev-skew assertion (a dev bin/madc rebuilt after the cross madcs were
+# last built froze containers they rightly reject), and the gate's claim is
+# carrier transparency per binary, not build synchrony across binaries.
 # AMFI acceptance of the packed Mach-O images is hardware evidence, not
 # this gate.
 #
@@ -69,13 +74,19 @@ for arch in arm64 x86-64; do
         echo "forest_emitpack_gate: $X absent — Mach-O $arch leg SKIPPED"
         continue
     fi
+    CONT_A=tmp/emitpack_$arch.container
+    rm -f "$CONT_A"
+    timeout 120 "$X" --freeze="$CONT_A" "$TU" >/dev/null 2>&1 \
+        || fail "Mach-O $arch --freeze of the payload TU failed"
+    d_cont_a=$(timeout 60 "$X" --dump-forest="$CONT_A" 2>/dev/null) \
+        || fail "Mach-O $arch --dump-forest over the container failed"
     MP=tmp/emitpack_prog_$arch
     rm -f "$MP"
-    timeout 120 "$X" --pack-forest="$CONT" -o "$MP" "$TU" >/dev/null 2>&1 \
+    timeout 120 "$X" --pack-forest="$CONT_A" -o "$MP" "$TU" >/dev/null 2>&1 \
         || fail "Mach-O $arch --pack-forest -o emission failed"
     d_macho=$(timeout 60 "$X" --dump-forest="$MP" 2>/dev/null) \
         || fail "Mach-O $arch --dump-forest over the packed image failed"
-    [ "$d_cont" = "$d_macho" ] \
+    [ "$d_cont_a" = "$d_macho" ] \
         || fail "Mach-O $arch carrier not content-transparent (dump mismatch)"
     echo "forest_emitpack_gate: Mach-O $arch leg OK"
 done
