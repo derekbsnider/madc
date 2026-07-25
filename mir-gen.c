@@ -366,15 +366,25 @@ static void gen_record_line (gen_ctx_t gen_ctx, size_t code_offset, MIR_insn_t i
   VARR_PUSH (MIR_line_map_t, gen_line_map, e);
 }
 
-#if defined(__x86_64__) || defined(_M_AMD64)
+/* Target selection via mir-target.h (madc fork): host detection by
+   default, MIR_TARGET_<ARCH> overrides for a cross-capture build. */
+#if MIR_TARGET_IS_X86_64
 #include "mir-gen-x86_64.c"
-#elif defined(__aarch64__)
+#elif MIR_TARGET_IS_AARCH64
+/* arm64-macos cross variant: __APPLE__ inside the target file means
+   the TARGET ABI (see the twin wrap in mir.c). */
+#if MIR_TARGET_APPLE_P && !defined(__APPLE__)
+#define __APPLE__ 1
 #include "mir-gen-aarch64.c"
-#elif defined(__PPC64__)
+#undef __APPLE__
+#else
+#include "mir-gen-aarch64.c"
+#endif
+#elif MIR_TARGET_IS_PPC64
 #include "mir-gen-ppc64.c"
-#elif defined(__s390x__)
+#elif MIR_TARGET_IS_S390X
 #include "mir-gen-s390x.c"
-#elif defined(__riscv)
+#elif MIR_TARGET_IS_RISCV64
 #if __riscv_xlen != 64 || __riscv_flen < 64 || !__riscv_float_abi_double || !__riscv_mul \
   || !__riscv_div || !__riscv_compressed
 #error "only 64-bit RISCV supported (at least rv64imafd)"

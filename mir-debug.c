@@ -143,19 +143,21 @@ enum {
   A_ENUM, A_ENUMERATOR, A_SUBR, A_FPARAM, A_TYPEDEF,
 };
 
-#if defined(__aarch64__)
+/* Target selection via mir-target.h (madc fork): these describe the
+   TARGET of the emitted debug info / objects, not the build host. */
+#if MIR_TARGET_IS_AARCH64
 #define MIR_DEBUG_FP_OP DW_OP_reg29
 #define MIR_DEBUG_EM EM_AARCH64
-#elif defined(__x86_64__)
+#elif MIR_TARGET_IS_X86_64
 #define MIR_DEBUG_FP_OP DW_OP_reg6
 #define MIR_DEBUG_EM EM_X86_64
-#elif defined(__riscv) && __riscv_xlen == 64
+#elif MIR_TARGET_IS_RISCV64
 #define MIR_DEBUG_FP_OP DW_OP_reg6 /* not validated; see frontend note */
 #define MIR_DEBUG_EM EM_RISCV
-#elif defined(__powerpc64__)
+#elif MIR_TARGET_IS_PPC64
 #define MIR_DEBUG_FP_OP DW_OP_reg6
 #define MIR_DEBUG_EM EM_PPC64
-#elif defined(__s390x__)
+#elif MIR_TARGET_IS_S390X
 #define MIR_DEBUG_FP_OP DW_OP_reg6
 #define MIR_DEBUG_EM EM_S390
 #else
