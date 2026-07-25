@@ -2,6 +2,66 @@
 
 ## [Unreleased]
 
+## [v0.44.0] — 2026-07-25
+
+The Mach-O release (Mach-O/ARM64 track, axis B writer + cross madcs):
+madc on Linux now emits complete, ad-hoc-signed Apple Mach-O executables
+for BOTH arm64 (Apple Silicon) and x86-64 (Intel) — no Apple toolchain
+anywhere in the product path — and the first binaries ran on the owner's
+Macs the same day (identical output, exit 28, AMFI accepted the
+MIR-generated signature). Fork release 1.0-madc.0.44.0.
+
+- **feat(fork): Mach-O64 executable writer behind the `MIR_object` seam
+  (`mir-macho.c`, fork @a13933bd).** For Apple targets
+  `MIR_object_emit_executable` assembles an MH_EXECUTE image from the
+  same builder state the ELF writer consumes:
+  `__PAGEZERO`/`__TEXT`/`__DATA_CONST`(`__mir_addrpool`,
+  `__mod_init_func`)/`__DATA`/`__LINKEDIT`; always PIE; LC_MAIN replaces
+  the `_start` stub (dyld's libdyld glue calls the entry symbol);
+  classic LC_DYLD_INFO_ONLY — internal address slots baked + rebase
+  opcodes, imports as `_`-prefixed binds against the implicit
+  libSystem, no stubs / lazy binding / indirect symbol table (the
+  addrpool IS the GOT); nlist symtab with DYSYMTAB ranges; real
+  LC_FUNCTION_STARTS; deterministic LC_UUID (content SHA-256); and a
+  linker-signed ad-hoc LC_CODE_SIGNATURE (inline SHA-256, 4K signing
+  pages, execSeg = `__TEXT` MAIN_BINARY) — mandatory on Apple Silicon.
+  16K segment pages on arm64, 4K on x86-64. `shared_p` is refused (no
+  dylib emission by design). `MIR_object_exec_params` gains a tail
+  `identifier` field (signature identifier).
+- **feat(fork): x86_64-macos target + target-keyed predefines.**
+  `MIR_TARGET_X86_64_MACOS` pair helper; the `mirc_{x86_64,aarch64}_*`
+  predefine/typedef headers switch on `MIR_TARGET_APPLE_P` instead of
+  host macros (OS predefine block, LDBL==DBL on arm64-macos, darwin
+  `int64_t`/`va_list`/`wchar_t`); two target-code-semantics sites
+  (`__darwin*` redefinition/redecl handling) flip too. A default build
+  stays behavior-identical (probe-verified).
+- **feat(aot): Mach-O cross compilers — emit-only
+  `bin/madc-x86-64-macos` / `bin/madc-arm64-macos`.**
+  `make -C src cross-x86-64-macos` / `cross-arm64-macos` (same MODE
+  isolation as `cross-aarch64-linux`). Apple targets treat the base-lib
+  sonames as cover analysis only (the emitter links the implicit
+  libSystem); a program that would need the madc runtime fails at emit
+  with a clear error instead of at dyld; the signature identifier is
+  stamped from the output basename. Cross modes now use per-mode
+  `../lib` archive names — a cross build can no longer clobber the
+  host-facing `libmadc.a` (latent since axis A). Lanes proven on both
+  targets: pure C `-o`, `.mad` `-o`, `-c`×2 → madc-link, run-lane
+  refusal.
+- **Gate B (all-Linux, llvm-18 oracle + clang/ld64.lld reference
+  binaries):** otool layout matches the reference (identical arm64
+  segment addresses), rebase/bind streams decode, adrp pairs land on
+  the pool page, valid disassembly on both arches, python re-hash
+  independently verifies every signature page, file ends exactly at
+  the signature end. ELF object + load-object suites: 0 failures.
+  **Gate B-final (owner, both Macs): GREEN** — `madc-A64_MachO` and
+  `madc-X64_MachO` printed identical output and exited 28.
+- Host regression battery unchanged and green: fulltest 754/0/0/9,
+  exe 738/0, obj (packed) 754/0/0/9.
+- Remaining in the track: MH_OBJECT `.o` flavor (the `-c` artifacts are
+  ELF-container dev vehicles that madc's own linker consumes); owner
+  route decision recorded for the larger goal — madc-release running
+  ON macOS.
+
 ## [v0.43.0] — 2026-07-25
 
 The aarch64 cross-AOT release (Mach-O/ARM64 track, axis A complete):

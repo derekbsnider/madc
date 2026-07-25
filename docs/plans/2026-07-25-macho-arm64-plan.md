@@ -426,8 +426,18 @@ After running both test binaries, the owner clarified the destination:
 **a madc-release binary that runs natively on macOS** — madc-the-
 compiler on the Macs, not only madc targeting them.  This track
 ("madc targets macOS") is one step along that way; the remaining
-distance is a **porting/build-provisioning track, route not yet
-decided** (owner decision pending):
+distance is a porting/build-provisioning track.
+**ROUTE 1 ADOPTED (owner, 2026-07-25: "I prefer route 1, as
+recommended").**  Gating input = the macOS SDK, extracted by the owner
+from their own Xcode (`gen_sdk_package.sh` or equivalent) and dropped
+on the NAS; then container provisioning (cctools-port; clang-18
+already present) — BUILD tooling only, never madc's product path —
+then the madc source port audit (dlopen `.so` sonames,
+`/proc/self/exe`, glibc-isms, libstdc++→libc++), cross-build
+libmir.a + madc as Mach-O-hosted binaries, ad-hoc sign, and the
+run-only gate on the owner's Macs.  Full track plan
+(`2026-07-25-madc-on-macos-plan.md`) at track start.  The routes
+considered:
 
 - **Route 1 — osxcross-style cross BUILD tool on Linux:** clang +
   cctools + a macOS SDK build madc's C++ codebase for the Mac from

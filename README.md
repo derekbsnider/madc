@@ -241,7 +241,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.42.0): 754 integration tests pass (0 failing, 0 timed out, 9 skipped) through both the live and packed release binaries; the native `--exe` and `--obj` lanes are at 738/0 each. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.44.0): 754 integration tests pass (0 failing, 0 timed out, 9 skipped) through both the live and packed release binaries; the native `--exe` and `--obj` lanes are at 738/0 each. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -282,38 +282,38 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.43.0** is the aarch64 cross-AOT release — Mach-O/ARM64 track
-**axis A complete**. `bin/madc-aarch64-linux`
-(`make -C src cross-aarch64-linux`) is an **emit-only cross compiler in
-the gcc mold**: it produces aarch64 ELF executables, relocatable
-objects, and multi-object merges **from an x86-64 host**, with MIR as
-the cross compiler/assembler/linker — no external toolchain — proven
-end-to-end under qemu-aarch64 (pure-C output matches the
-`aarch64-linux-gnu-gcc` native reference on stdout and exit code; the
-system linker independently validates the emitted relocations). The
-fork gains `mir-target.h` build-time target selection and the full
-aarch64 PIC-addrpool object capture (`adrp+ldr`/`adrp+add` pool pairs,
-three new bias-invariant relocation kinds, an aarch64 `_start` stub,
-64K max-page-size). Standalone executables now skip the eval shims and
-emit **runtime-free** — no `libmadc.so.0` dependency for pure
-programs. Host suites unchanged: fulltest and the packed suite hold
-**754/0/0/9**; `--exe` and `--obj` are at **738/0** each. Ships
-against MIR fork release `1.0-madc.0.43.0`.
+**v0.44.0** is the Mach-O release — Mach-O/ARM64 track **axis B writer
++ cross compilers**. madc on Linux now emits **complete, ad-hoc-signed
+Apple Mach-O executables** for both **arm64 (Apple Silicon)** and
+**x86-64 (Intel)**: `bin/madc-arm64-macos` / `bin/madc-x86-64-macos`
+(`make -C src cross-arm64-macos` / `cross-x86-64-macos`) are emit-only
+cross compilers with MIR as the compiler, assembler, linker, **and
+code signer** — no Apple toolchain anywhere in the product path. The
+fork's new `mir-macho.c` assembles PIE MH_EXECUTE images behind the
+`MIR_object` seam (LC_MAIN entry, classic dyld rebase/bind over the
+addrpool-as-GOT model, nlist symtab, deterministic UUID, linker-signed
+ad-hoc CodeDirectory with inline SHA-256). Validated on Linux against
+clang+ld64.lld reference binaries with the llvm-18 tool suite — and
+**on real hardware**: the first emitted binaries ran identically on an
+Apple Silicon and an Intel Mac the same day (AMFI accepted the
+MIR-generated signature). Host suites unchanged: fulltest and the
+packed suite hold **754/0/0/9**; `--exe` and `--obj` are at **738/0**
+each. Ships against MIR fork release `1.0-madc.0.44.0`.
 
 **Branch state:** `master` is at v0.38.0 (promoted 2026-07-23);
-`develop` carries v0.43.0 — `/promote` is reserved for the Mach-O
-milestone (axis B). The
+`develop` carries v0.44.0 — `/promote` is reserved for the Mach-O
+milestone. The
 [MIR fork](https://github.com/derekbsnider/mir)'s `master` tracks
 madc's `master` in lockstep; fork releases pair with madc's (see
 [`MIR_VERSION`](MIR_VERSION)).
 
 ### Recent Releases
 
+- **v0.44.0** — Mach-O (axis B writer + cross madcs): `mir-macho.c` MH_EXECUTE writer behind the `MIR_object` seam (PIE, LC_MAIN, classic dyld rebase/bind, ad-hoc SHA-256 code signature — MIR signs its own binaries); `MIR_TARGET_X86_64_MACOS` + target-keyed c2mir predefines; emit-only `bin/madc-{x86-64,arm64}-macos`; Gate B green vs clang+ld64.lld references; Gate B-final green on BOTH owner Macs; fulltest + packed 754/0/0/9, `--exe`/`--obj` 738/0; fork release 1.0-madc.0.44.0
 - **v0.43.0** — aarch64 cross-AOT (Mach-O/ARM64 axis A): emit-only `bin/madc-aarch64-linux` cross compiler; fork `mir-target.h` target selection + full aarch64 PIC-addrpool capture/ELF relocs + aarch64 `_start` stub; gate A green under qemu-aarch64 (gcc-reference parity, madc `.o`-link merge lane runtime-free); eval-shim gating makes standalone executables runtime-free; fulltest + packed 754/0/0/9, `--exe`/`--obj` 738/0; fork release 1.0-madc.0.43.0
 - **v0.42.0** — inline un-erasure (S4 follow-through): `inline` = real C++ specifier → vague linkage; user-header inline fns AND C++17 inline variables merge weak across TUs (fn + data), dynamic init once-guarded (g++ COMDAT-init model); `inline namespace` on the keyword path; `static inline` internal; C modes keep erasure; fork untouched; fulltest + packed 754/0/0/9, `--exe`/`--obj` 738/0
 - **v0.41.0** — ODR/linkonce weak (ELF-completion slice 4): C++ vague-linkage set (instantiations, in-class bodies, vtables, typeinfo, synth members) captured STB_WEAK — identical per-TU copies merge at links, internal and external ld alike; fork binding enum GLOBAL/WEAK/LINKONCE (only interposable weak suppresses inlining, gcc parity); bindings survive MIR binary/text IO; fulltest + packed 753/0/0/9, `--exe`/`--obj` 737/0; fork release 1.0-madc.0.41.0
 - **v0.40.0** — ctor/init-array (ELF-completion slice 3): per-TU inits ride `.init_array` (SHT_INIT_ARRAY, RELRO-protected; external-ld collects natively); two-ctor-TU merge fence lifted in every native lane; `DT_INIT` retired; guarded `__madc_sys_init_once`; pre-init-array ctor caches refused loudly; c2mir `-g` capture UAF fixed; fulltest + packed 753/0/0/9, `--exe`/`--obj` 737/0; fork release 1.0-madc.0.40.0
-- **v0.39.0** — AOT hardening + ELF completion: PIE default (`-no-pie` escape, PT_PHDR law); multi-object linking (`.o` caches link/run, `-r`, obj_skips lifted); Full RELRO + NX on every image (pool = GOT leads RW under PT_GNU_RELRO, BIND_NOW); DT_DEBUG; multi-`.o` DWARF merge (multi-CU, fixes external-ld `-g` links too); fulltest + packed 753/0/0/9, `--exe`/`--obj` 737/0; fork release 1.0-madc.0.39.0
 
 ## Roadmap
 

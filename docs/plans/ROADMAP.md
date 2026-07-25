@@ -371,11 +371,15 @@ high-level" — the answer is both.**
   next `/promote` milestone): axis A COMPLETE (v0.43.0) — the fork's
   build-time target selection + full aarch64 PIC-addrpool object
   capture/ELF relocs, and the emit-only `bin/madc-aarch64-linux` cross
-  compiler; gate A green under qemu-aarch64 (pure C matches the gcc
-  reference; `.mad` `-o` and the `-c`→madc-link merge lane run
-  runtime-free). NEXT: axis B — the Mach-O writer + in-emitter ad-hoc
-  signature validated with LLVM tools; the only macOS step is running
-  the finished binary. Plan:**
+  compiler; gate A green under qemu-aarch64. Axis B writer + cross
+  madcs COMPLETE (v0.44.0) — `mir-macho.c` emits ad-hoc-signed
+  MH_EXECUTE PIEs for arm64 AND x86-64 behind the `MIR_object` seam;
+  emit-only `bin/madc-{x86-64,arm64}-macos`; Gate B green vs
+  clang+ld64.lld references (llvm-18 oracle, independent signature
+  re-hash); Gate B-final GREEN on BOTH owner Macs (identical output,
+  exit 28 — AMFI accepted the MIR-generated signature). REMAINING:
+  MH_OBJECT `.o` flavor; then the owner route decision on the larger
+  goal — madc-release running ON macOS. Plan:**
   [2026-07-25-macho-arm64-plan.md](2026-07-25-macho-arm64-plan.md).
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target
