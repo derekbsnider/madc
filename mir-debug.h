@@ -327,6 +327,20 @@ typedef struct MIR_object_exec_params {
                              "mir.image".  Ignored for ELF targets.  Callers
                              must zero-initialize this struct so newly added
                              tail fields default off. */
+  /* Extra read-only carrier section (Apple targets): when extra_data is
+     non-NULL and extra_size nonzero, the writer lays one additional
+     LC_SEGMENT_64 named extra_segname holding a single section
+     extra_sectname with exactly these bytes between the data segments and
+     __LINKEDIT -- covered by the emit-time code signature, so the caller
+     never rewrites a signed file (the `-sectcreate' shape).  Both names
+     are required, at most 16 bytes each (Mach-O name fields).  ELF targets
+     ignore these fields: the ELF carrier for trailing payloads is a blob
+     appended after the write (ELF tolerates trailing bytes; Mach-O does
+     not once signed). */
+  const char *extra_segname;  /* e.g. "__MADC"; NULL = no extra section */
+  const char *extra_sectname; /* e.g. "__forest" */
+  const void *extra_data;
+  size_t extra_size;
 } MIR_object_exec_params;
 
 /* Apple targets (MIR_TARGET_APPLE_P builds): MIR_object_emit_executable
