@@ -38,6 +38,13 @@
    unsigned binaries; ad-hoc signing is pure hashing).  shared_p is
    refused loudly: there is no dylib emission by design.
 
+   params->extra_* (the carrier seam): one optional caller-named read-only
+   segment/section pair laid out between __DATA and __LINKEDIT and covered
+   by the emit-time signature -- a signed Mach-O cannot take appended
+   bytes, so payloads that ride an ELF trailer (madc's frozen-forest
+   containers) ride a section placed here at emit instead (`-sectcreate'
+   without the external linker).
+
    Validation oracle (all-Linux): clang-18 -target *-apple-macos12 +
    ld64.lld-18 reference binaries; llvm-otool/readobj/nm-18. */
 
@@ -358,6 +365,15 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
       n_bind++;
   }
 
+  /* extra carrier section: validated up front (names are mandatory and
+     bounded by the 16-byte Mach-O name fields -- truncation would corrupt
+     the caller's lookup key, so refuse instead) */
+  int extra_p = params->extra_data != NULL && params->extra_size != 0;
+  if (extra_p
+      && (params->extra_segname == NULL || params->extra_sectname == NULL
+          || strlen (params->extra_segname) > 16 || strlen (params->extra_sectname) > 16))
+    return -1;
+
   /* ---- load-command sizing (needed before any file offset exists) */
   uint32_t n_init_sects = obj->initarr.len != 0 ? 1 : 0;
   uint32_t n_data_sects = 1 /* __data (kept even when empty: stable numbering) */
@@ -385,6 +401,10 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     sizeofcmds += machob_lc_str_size (24, params->needed[i]);
     ncmds++;
   }
+  if (extra_p) { /* the carrier segment + its one section */
+    sizeofcmds += 72 + 80;
+    ncmds++;
+  }
 
 #define MACHO_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
   /* ---- layout: identity fileoff <-> vaddr-MACHO_BASE mapping */
@@ -410,7 +430,14 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
   uint64_t data_vm_size
     = MACHO_ALIGN (bss_vaddr + obj->bss_size - (MACHO_BASE + data_off), MACHO_PAGE);
   if (data_vm_size < data_file_size) data_vm_size = data_file_size;
-  uint64_t le_off = data_off + data_file_size; /* __LINKEDIT file start */
+  /* extra carrier segment between __DATA and __LINKEDIT: page-aligned start
+     (data_off/data_file_size already are), identity fileoff <-> vaddr like
+     every other segment, read-only, hashed by the signature like the rest
+     of the file */
+  uint64_t xtra_off = data_off + data_file_size;
+  uint64_t xtra_file_size = extra_p ? MACHO_ALIGN (params->extra_size, MACHO_PAGE) : 0;
+  uint64_t xtra_vaddr = MACHO_BASE + xtra_off;
+  uint64_t le_off = xtra_off + xtra_file_size; /* __LINKEDIT file start */
 
   uint64_t text_vaddr = MACHO_BASE + text_off; /* builder .text offset 0 */
   uint64_t data_vaddr = MACHO_BASE + data_off;
@@ -578,6 +605,7 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
   if (obj->pool.len != 0) memcpy (p + dc_off, obj->pool.p, obj->pool.len);
   /* initarr file bytes: zero, written by the relocation pass below */
   if (obj->data.len != 0) memcpy (p + data_off, obj->data.p, obj->data.len);
+  if (extra_p) memcpy (p + xtra_off, params->extra_data, params->extra_size);
   memcpy (p + le_off + rebase_le, rebase.p, rebase.len);
   memcpy (p + le_off + bind_le, bind.p, bind.len);
   memcpy (p + le_off + fstarts_le, funcstarts.p, funcstarts.len);
@@ -650,6 +678,13 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
       if (obj->bss_size != 0)
         machob_section (&lc, "__bss", "__DATA", bss_vaddr, obj->bss_size, 0, bl2,
                         MACHO_S_ZEROFILL);
+    }
+
+    if (extra_p) {
+      machob_segment (&lc, params->extra_segname, xtra_vaddr, xtra_file_size, xtra_off,
+                      xtra_file_size, MACHO_VM_PROT_READ, 1);
+      machob_section (&lc, params->extra_sectname, params->extra_segname, xtra_vaddr,
+                      params->extra_size, (uint32_t) xtra_off, 3, MACHO_S_REGULAR);
     }
 
     machob_segment (&lc, "__LINKEDIT", MACHO_BASE + le_off, MACHO_ALIGN (le_size, MACHO_PAGE),
