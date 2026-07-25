@@ -1,6 +1,21 @@
 # Test Status
 
-> **Current (2026-07-25, `develop` — v0.45.0, madc-on-macOS Route 1
+> **Current (2026-07-25, `develop` — v0.46.0, forest-carriers S1
+> complete):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
+> forest gate green, including the NEW `forest_bind_gate` case
+> `[fnptrbody]` (typedef-of-fnptr-member-struct — the darwin `FILE`
+> shape that the class-parser typedef branches under-registered).
+> Packed arbiter re-proven at the parser fix: `forest_pack: OK (240
+> units; bind cache == no-cache)` + **756/0/0/9** through
+> `bin/madc-release`. `--exe` lane **740/0**. Hosted darwin binaries
+> ship PACKED (`__MADC,__forest` section, 30 units per arch): Mac
+> hardware matrix GREEN on both architectures — section read-back,
+> all lanes (JIT/AOT × `.mad`/`.c`), grove bind engaged and
+> byte-identical to live parse. Fork unchanged
+> (`1.0-madc.0.45.0` @a3cf84ae).
+
+> **Previous (2026-07-25, `develop` — v0.45.0, madc-on-macOS Route 1
 > Phase 1 complete):**
 > fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** (+2 this
 > release: `testpragmapack` — GCC pack semantics with parse-time
