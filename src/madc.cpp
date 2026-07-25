@@ -527,6 +527,10 @@ static void print_usage(const char *prog)
 "                          Remaining arguments become the program's argv\n"
 "  --freeze-run            freeze to a temp container, then re-exec this\n"
 "                          madc in a FRESH process to run it (round-trip)\n"
+"  --pack-forest=<file>    with -o/-shared: the emitted native image also\n"
+"                          carries this frozen container in its self-image\n"
+"                          carrier (ELF: appended trailer; Mach-O: a\n"
+"                          __MADC,__forest section signed at emit)\n"
 "  --dump-forest[=<file>]  print a container's directory + grove payloads\n"
 "                          (decl index, PP exports, edges, branch macros,\n"
 "                          canonical order); no value = this executable's blob\n"
@@ -777,6 +781,9 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--freeze-run") == 0) {
             freeze_run = true;
             filearg = i + 1;
+        } else if (strncmp(argv[i], "--pack-forest=", 14) == 0) {
+            madc_pack_forest_path = argv[i] + 14;
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--run-frozen") == 0) {
             run_frozen = true;
             filearg = i + 1;
@@ -956,6 +963,19 @@ int main(int argc, char **argv)
     {
         std::cerr << "madc: -r and -shared may not be used together"
                   << std::endl;
+        return 1;
+    }
+
+    // --pack-forest rides a LINKED image (executable or shared object): a
+    // relocatable .o has no self-image carrier, and a JIT run produces no
+    // image at all. One chokepoint for every lane (source, .o link,
+    // --project).
+    if ( madc_pack_forest_path
+         && (!emit_native || compile_object || emit_object_path
+             || emit_relocatable) )
+    {
+        std::cerr << "madc: --pack-forest requires a linked native output"
+                     " (-o executable or -shared)" << std::endl;
         return 1;
     }
 

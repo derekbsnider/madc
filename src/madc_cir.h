@@ -45,6 +45,16 @@ enum MadcNativeKind {
     mnkObject, mnkExecutable, mnkShared, mnkPieExecutable, mnkRelocatable
 };
 
+// --pack-forest=<container>: every emitted native EXECUTABLE additionally
+// carries the named frozen container in its self-image carrier — the ELF
+// arm pads the written image to 16 and appends the blob (footer at EOF,
+// exactly the --freeze-append placement); the Mach-O arm hands the blob to
+// the fork writer as the __MADC,__forest section, signed once at emit (a
+// signed Mach-O cannot take appended bytes). NULL = off. Read at the two
+// executable-emit sites (source lanes and the .o link lane); .o and
+// -shared outputs refuse it loudly at the CLI.
+extern const char *madc_pack_forest_path;
+
 // A compiled-and-linked CIR->c2mir->MIR module held alive for repeated
 // in-process calls — the engine behind libmadc's program::exec / call /
 // eval surface (madc_cir_execute is the same machinery one-shot).

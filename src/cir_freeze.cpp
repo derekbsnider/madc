@@ -713,6 +713,65 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	return true;
 }
 
+// Mach-O FILE carrier probe: a signed Mach-O cannot carry an EOF trailer,
+// so a packed image (a hosted madc binary, or a --pack-forest emitted
+// executable) holds the container in its __MADC,__forest section. This is
+// the FILE arm — pure byte parsing of the mapped image, host-neutral (the
+// Linux cross madcs verify emitted Mach-O images with --dump-forest); the
+// RUNNING self-image on darwin is served by getsectiondata below (slid,
+// zero-copy). Little-endian MH_MAGIC_64 only — exactly what the fork
+// writer and the hosted toolchain produce. False = not a Mach-O or no
+// section; the caller falls through to the EOF-footer probe.
+static bool cir_macho_find_forest(const uint8_t *m, size_t sz,
+				  const void *&image, size_t &len)
+{
+	const uint32_t MH_MAGIC_64 = 0xfeedfacfu;
+	const uint32_t LC_SEGMENT_64 = 0x19u;
+	if (sz < 32)
+		return false;
+	uint32_t magic, ncmds, sizeofcmds;
+	memcpy(&magic, m, 4);
+	if (magic != MH_MAGIC_64)
+		return false;
+	memcpy(&ncmds, m + 16, 4);
+	memcpy(&sizeofcmds, m + 20, 4);
+	if ((uint64_t)32 + sizeofcmds > sz)
+		return false;
+	size_t off = 32;
+	for (uint32_t c = 0; c < ncmds; c++) {
+		if (off + 8 > 32 + (size_t)sizeofcmds)
+			return false;
+		uint32_t cmd, cmdsize;
+		memcpy(&cmd, m + off, 4);
+		memcpy(&cmdsize, m + off + 4, 4);
+		if (cmdsize < 8 || off + cmdsize > 32 + (size_t)sizeofcmds)
+			return false;
+		if (cmd == LC_SEGMENT_64 && cmdsize >= 72
+		    && memcmp(m + off + 8, "__MADC\0\0\0\0\0\0\0\0\0\0", 16) == 0) {
+			uint32_t nsects;
+			memcpy(&nsects, m + off + 64, 4);
+			if ((uint64_t)72 + (uint64_t)nsects * 80 > cmdsize)
+				return false;
+			for (uint32_t s = 0; s < nsects; s++) {
+				const uint8_t *sec = m + off + 72 + (size_t)s * 80;
+				if (memcmp(sec, "__forest\0\0\0\0\0\0\0\0", 16) != 0)
+					continue;
+				uint64_t ssize;
+				uint32_t soff;
+				memcpy(&ssize, sec + 40, 8);
+				memcpy(&soff, sec + 48, 4);
+				if (ssize == 0 || soff >= sz || ssize > sz - soff)
+					return false;
+				image = m + soff;
+				len = (size_t)ssize;
+				return true;
+			}
+		}
+		off += cmdsize;
+	}
+	return false;
+}
+
 bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 {
 	std::string selfpath;
@@ -757,6 +816,12 @@ bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 		return false;
 	// Deliberately never munmap'd: thawed segments read string bytes and
 	// pool blocks from the mapping for the process lifetime.
+	// Mach-O file: the container is the __MADC,__forest section slice
+	// (page-aligned in file, so 16-aligned payload offsets hold), not an
+	// EOF trailer. Anything else keeps the whole file (footer at EOF).
+	if (cir_macho_find_forest((const uint8_t *)m, (size_t)st.st_size,
+				  image, len))
+		return true;
 	image = m;
 	len = (size_t)st.st_size;
 	return true;
