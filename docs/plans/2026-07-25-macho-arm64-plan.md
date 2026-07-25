@@ -269,6 +269,102 @@ for the refactor: a no-override build must behave identically (full
 suites green). Then `make BUILD_DIR=build-aarch64` with the override
 compiles the cross variant; whatever breaks is the audit worklist.
 
+## Axis B design (2026-07-25, recon complete — implementation basis)
+
+**Oracle loop proven on Linux (container):** `clang-18 -target
+{x86_64,arm64}-apple-macos12 -c` emits reference Mach-O objects;
+`ld64.lld-18` (provisioned 2026-07-25, oracle-only like axis A's
+qemu/cross-gcc) links them against a hand-written minimal
+`libSystem.tbd` stub into **reference MH_EXECUTE binaries for both
+arches** — including lld's linker-signed ad-hoc CodeDirectory on
+arm64, a byte-level signature reference.  `llvm-otool-18 -l` of the
+arm64 reference pins the canonical shape: __PAGEZERO(0..0x100000000) /
+__TEXT @0x100000000 (16K pages) / __DATA_CONST(__got) / __DATA /
+__LINKEDIT; LC order: segments, DYLD_INFO_ONLY, SYMTAB, DYSYMTAB,
+LOAD_DYLINKER(/usr/lib/dyld), UUID, BUILD_VERSION(macos 12.0), MAIN,
+LOAD_DYLIB(libSystem.B), FUNCTION_STARTS, DATA_IN_CODE,
+CODE_SIGNATURE.
+
+**Writer placement:** new fork file `mir-macho.c`, `#include`d by
+`mir-debug.c` when `MIR_TARGET_APPLE_P` (house style — included
+target `.c` files).  `MIR_object_emit_executable` diverts to
+`macho_emit_executable` for Apple targets; `shared_p` errors loudly
+(no dylib emission — deliberately out of scope, there is no
+libmadc.dylib by design).  Everything upstream of the assembler
+(capture, sections, symbols, relocs) is shared unchanged.
+
+**Section mapping (ELF → Mach-O):** .text → `__TEXT,__text` (after
+header+LCs); .mir.addrpool → `__DATA_CONST,__mir_addrpool`
+(S_REGULAR — the addrpool-as-GOT model needs NO stubs, NO lazy
+binding, NO indirect symbol table; dyld reads the rebase/bind
+streams); .init_array → `__DATA_CONST,__mod_init_func`
+(S_MOD_INIT_FUNC_POINTERS — dyld runs entries after fixups); .data →
+`__DATA,__data`; .bss → `__DATA,__bss` (S_ZEROFILL vmsize tail).
+Page size 16K arm64 / 4K x86-64; link base 0x100000000; PIE always
+(MH_PIE; dyld slides are page-multiple so the aarch64 page-pair
+field relocs stay bias-invariant, exactly like ELF).
+
+**Relocation mapping:** field kinds (PC32, aarch64 page pairs)
+resolve at emit with the same `obj_apply_field_reloc` patchers.
+Internal ABS64 → link vaddr BAKED into the file bytes + a
+REBASE_TYPE_POINTER opcode (dyld ADDS the slide to the stored value
+— the Mach-O twin of RELATIVE, but the file carries the addend
+result).  Import ABS64 → zero slot + BIND opcode (two-level, library
+ordinal = libSystem, `_`-prefixed symbol name,
+BIND_OPCODE_SET_ADDEND_SLEB when nonzero).  **LC_MAIN kills the
+`_start` stub entirely** — entryoff = the entry symbol's file offset;
+dyld's libdyld glue passes argc/argv/envp/apple and exits with main's
+return.  No __libc_start_main slot, no stub patching.
+
+**Symbols:** nlist_64, local → extdef → undef ordering with
+LC_DYSYMTAB ranges (no indirect table, nindirectsyms=0); `_` prefix
+prepended at write time; undefs carry SET_LIBRARY_ORDINAL(libSystem).
+Export trie empty (executables export nothing — ELF import-only
+dynsym parity).  LC_FUNCTION_STARTS emitted for real (uleb deltas
+from defined func syms); LC_DATA_IN_CODE empty (lld parity);
+LC_UUID = deterministic truncated SHA-256 of image content
+(reproducible builds, no entropy source).
+
+**Ad-hoc signature (arm64 mandatory; emitted for both arches):**
+`LC_CODE_SIGNATURE` → SuperBlob{CodeDirectory v0x20400, flags
+CS_ADHOC|CS_LINKER_SIGNED, SHA-256, 4K signing pages (independent of
+VM page size), nSpecialSlots=0, execSeg = __TEXT with
+CS_EXECSEG_MAIN_BINARY, codeLimit = signature dataoff (16-aligned)}.
+All blob integers big-endian.  SHA-256 implemented inline in the
+fork (no external deps — the no-toolchain law).  Identifier: new
+`MIR_object_exec_params` field (madc passes the output basename;
+NULL → "mir.out").
+
+**mirc predefines:** the `mirc_{x86_64,aarch64}_*.h` Apple/linux arms
+switch on HOST macros today — cross builds flip them to
+`MIR_TARGET_APPLE_P` / `!MIR_TARGET_APPLE_P` directly (precedent:
+`caarch64.h:49`; these headers are small and upstream-stable, so
+direct edits beat include-wraps here).  The arm64-macos predefine arm
+already exists upstream (`__APPLE__ 1`, `__arm64__`,
+`__darwin_va_list`, LDBL==DBL); x86_64-macos gets its twin.
+x86_64+APPLE knob: `MIR_TARGET_X86_64_MACOS` pair helper +
+validation relax in mir-target.h (recon: ZERO `__APPLE__` sites in
+x86-64 gen/ABI code — Darwin x86-64 is SysV at MIR's level; no
+include-wraps needed for the X64 leg).
+
+**Deliberately out of scope (unchanged owner defaults):** dylib
+emission, chained fixups (classic LC_DYLD_INFO_ONLY; research
+checkpoint only if the laptop OS refuses), arm64e, __cstring/
+__unwind_info niceties.  macOS SDK headers remain a later owner
+decision — fork-level gate reducers declare their own prototypes;
+the host /usr/include leak into an Apple-target compile is a known
+audit item for the madc MODE step.
+
+**Axis B sequencing:** (1) x86_64-macos target knob + mirc arms →
+(2) MH_EXECUTE writer, X64 leg, Gate B structural validation vs the
+lld reference → X64 test binary to NAS (runs unsigned on the Intel
+Mac — can ship to the owner pre-signature) → (3) ad-hoc signature →
+(4) A64 leg (16K pages, BUILD_VERSION mandatory) + signature → A64
+test binary to NAS → (5) MH_OBJECT .o flavor (+ ld64.lld as the
+independent reloc validator, the axis-A system-linker trick) →
+(6) madc cross MODEs (`cross-x86-64-macos`, `cross-arm64-macos`) →
+madc-emitted deliverables **madc-X64_MachO** / **madc-A64_MachO**.
+
 ## Risks
 
 - Host-arch assumption audit in cross-included gen/c2mir files (sizes,
