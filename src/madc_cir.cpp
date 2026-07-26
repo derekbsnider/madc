@@ -1526,7 +1526,8 @@ static bool cir_static_libmadc_verify(MIR_context_t ctx, const char *out_path,
 		" ledger, and no carrier provided one (%zu runtime symbol(s)"
 		" would be unresolved). A packed madc carries the ledger in"
 		" its forest container; point at one with --forest-bind=<file>"
-		" or use an installed/release build.\n",
+		" (or a madc.ini forest key) or use an installed/release"
+		" build.\n",
 		out_path, uncovered.size());
 	return false;
     }

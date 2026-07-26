@@ -35,6 +35,12 @@
 RUN_EXE=0
 RUN_OBJ=0
 BACKEND_FLAG=""
+# Hermeticity (forest-carriers S6): the suite must not be perturbed by an
+# ambient madc.ini — one in the repo root, in the developer's config dir, or
+# installed in the system config dir would silently change every test's dialect
+# or include path. Passed to EVERY madc invocation below, including the AOT
+# compile legs (which deliberately do not take $BACKEND_FLAG).
+HERMETIC_FLAGS="--no-config"
 MADC="${MADC_BIN:-bin/madc}"
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -92,9 +98,9 @@ for t in tests/*.mad; do
         # Compile-error test: capture stderr — the diagnostics ARE the
         # expected output.
         if [ -f "$input_file" ]; then
-            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>&1)
+            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>&1)
         else
-            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
+            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
         fi
         rc=$?
         ok=1
@@ -118,9 +124,9 @@ for t in tests/*.mad; do
         # assert it is empty; without the fixture it is simply discarded.
         errf="/tmp/madc_test_stderr_${base}_$$"
         if [ -f "$input_file" ]; then
-            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>"$errf")
+            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>"$errf")
         else
-            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>"$errf")
+            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>"$errf")
         fi
         rc=$?
 
@@ -184,11 +190,11 @@ for t in tests/*.mad; do
             run_flags+=("$fl")
         done
         # -o BEFORE fixture flags — same positional rule as the EXE pass.
-        if "$MADC" -r -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+        if "$MADC" $HERMETIC_FLAGS -r -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
-                obj_out=$(timeout 5 "$MADC" "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
+                obj_out=$(timeout 5 "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
-                obj_out=$(timeout 5 "$MADC" "${run_flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
+                obj_out=$(timeout 5 "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
             fi
             obj_rc=$?
             obj_ok=1
@@ -225,7 +231,7 @@ for t in tests/*.mad; do
         # -o BEFORE the fixture flags: a positional .json manifest (project
         # auto-detect) ends madc's flag parsing — everything after it is the
         # program's argv, so a trailing -o would never reach madc.
-        if "$MADC" -o "$exe_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+        if "$MADC" $HERMETIC_FLAGS -o "$exe_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
                 exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else

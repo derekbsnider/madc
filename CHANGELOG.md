@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+- **feat(cli): `madc.ini` — the optional configuration file, completing
+  the settings precedence rule (forest-carriers S6; the carriers track is
+  now done).** madc optionally reads one `madc.ini`, and settings resolve
+  **CLI > environment > madc.ini > baked defaults**. Keys: `std` (default
+  dialect), `forest` (a frozen-forest container — discovery **arm 5**,
+  the last one), `include` (repeatable extra include dirs, searched after
+  every `-I`), and `cpu-limit` / `mem-limit` (defaults for
+  `MADC_CPU_LIMIT` / `MADC_MEM_LIMIT`). Lookup: `./madc.ini` →
+  `$XDG_CONFIG_HOME/madc/madc.ini` (or `~/.config/madc/madc.ini`) →
+  `<sysconfdir>/madc.ini`, and the **first existing file wins outright**
+  — configs are never merged, because a merged chain makes "why is this
+  setting on?" unanswerable. Relative paths resolve against the config
+  file's own directory (a system-wide `/etc/madc.ini` naming
+  `forest = groves.msnap` means the file beside it, not something in
+  whatever directory madc was started from); a leading `~/` expands.
+  The parser is **strict**: an unknown key, a foreign section, a missing
+  `=`, an empty value, or a non-numeric limit is a hard error naming
+  file:line and the accepted keys. A config file is the user's own file,
+  so half-applying it is the silent degradation this project refuses —
+  `mem-limit = 8G` says so instead of arming an 8 MB guard.
+  New flags: **`--config=<file>`** (that file is the whole search, and it
+  must load — a named file that gets ignored is the same failure as a
+  named forest container that gets ignored) and **`--no-config`** (skip
+  the search entirely; the two together are a contradiction and refuse).
+  The config file is a **CLI feature**: `libmadc` never reads one, since a
+  file that can redirect where the compiler loads frozen state from is an
+  attack surface for a sandboxed host — the CLI parses it and hands the
+  forest path down through the registration policy, where arm 5 sits
+  inside the same `enable_external_forest` gate as the sidecar and
+  environment arms. `configure --disable-config-file` removes the
+  file-reading path entirely for builds that want the surface absent
+  rather than merely unused (`--config=` then refuses, naming the option).
+  Also: `scripts/run_tests.sh` now passes `--no-config` on every madc
+  invocation, so an ambient `madc.ini` cannot perturb the suite, and the
+  probed-arm list in the forest failure diagnostics gained one owner
+  (`Program::forest_probed_arms`) so the loud notice and the strict error
+  can no longer drift from the real chain.
+  Gated by the new permanent `scripts/forest_config_gate.sh` (39 checks /
+  18 legs, every settings leg paired with a baseline that would fail
+  without the file) plus `tests/unit/test_config_file.cpp` (15 cases).
+
 ## [v0.50.0] — 2026-07-26
 
 Forest carriers S5: **`-static-libmadc`** — madc's C-lane runtime becomes

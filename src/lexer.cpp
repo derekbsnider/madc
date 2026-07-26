@@ -1903,16 +1903,38 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 				 cfg_mismatch, _forest_map_seconds,
 				 _forest_open_seconds, require_config_match);
 	// Arm 4: MADC_FOREST environment variable (a configured path; env
-	// outranks the madc.ini key / baked default per the config
-	// precedence rule — those land as arm 5 with S6).
+	// outranks the madc.ini key per the config precedence rule
+	// CLI > environment > madc.ini > baked defaults).
 	const char *env = getenv("MADC_FOREST");
 	if ( !f && env && *env )
 	    f = forest_probe_arm(this, env, "MADC_FOREST",
 				 /*quiet_missing=*/false, cfg_mismatch,
 				 _forest_map_seconds, _forest_open_seconds,
 				 require_config_match);
+	// Arm 5 (forest-carriers S6): the madc.ini `forest =` key — the LAST
+	// arm, because a configured default must lose to everything more
+	// specific. The CLI parses the file and hands the path down through
+	// the registration policy; libmadc hosts leave it empty.
+	if ( !f && !registration_policy.forest_config_path.empty() )
+	    f = forest_probe_arm(this,
+				 registration_policy.forest_config_path.c_str(),
+				 "madc.ini", /*quiet_missing=*/false,
+				 cfg_mismatch, _forest_map_seconds,
+				 _forest_open_seconds, require_config_match);
     }
     return f;
+}
+
+// The arms the discovery chain actually probed, for the failure diagnostics
+// below — ONE owner, so the loud notice and the strict error can never drift
+// from each other or from probe_forest_chain's real arm list.
+std::string Program::forest_probed_arms() const
+{
+    std::string arms("self-image, library image, <exe>.forest / <lib>.forest"
+		     " sidecars, $MADC_FOREST");
+    if ( !registration_policy.forest_config_path.empty() )
+	arms += ", the madc.ini forest key";
+    return arms;
 }
 
 CirFrozenForest *Program::ensure_bind_forest()
@@ -2003,9 +2025,8 @@ void Program::forest_missing_fallback(bool config_mismatch)
 	    break;
 	}
 	(error_stream ? *error_stream : std::cerr)
-	    << "madc: no frozen forest found (probed: self-image, library"
-	       " image, <exe>.forest / <lib>.forest sidecars, $MADC_FOREST);"
-	       " falling back to live parse — startup will be slower. Point"
+	    << "madc: no frozen forest found (probed: " << forest_probed_arms()
+	    << "); falling back to live parse — startup will be slower. Point"
 	       " --forest-bind=<file> at a container, or silence this with"
 	       " --no-forest-bind."
 	    << std::endl;
@@ -2017,9 +2038,8 @@ void Program::forest_missing_fallback(bool config_mismatch)
 			   " (std/-D defines) does not match this compile"
 			<< std::flush;
 	Throw(NULL) << "frozen forest required (strict forest policy) but no"
-		       " usable container was found (probed: self-image,"
-		       " library image, <exe>.forest / <lib>.forest sidecars,"
-		       " $MADC_FOREST)" << std::flush;
+		       " usable container was found (probed: "
+		    << forest_probed_arms() << ")" << std::flush;
 	break;
     }
 }

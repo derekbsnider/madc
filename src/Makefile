@@ -89,7 +89,7 @@ RT_OFILES = $(notdir $(RT_LEDGER_SRCS:.c=.o))
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o $(RT_OFILES) pch.o madcdis_snapshot.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o $(RT_OFILES) pch.o madcdis_snapshot.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -246,6 +246,28 @@ $(FOREST_SHAPE_STAMP):
 	@touch $@
 $(OBJDIR)/madc.o: $(FOREST_SHAPE_STAMP)
 $(PICOBJDIR)/madc.o: $(FOREST_SHAPE_STAMP)
+# Config file (--enable-config-file configure axis; forest-carriers S6). ON
+# bakes the madc.ini lookup into madc_config.o; OFF removes the file-reading
+# path entirely (--config= then refuses loudly) for embedding-host builds that
+# want the surface absent, not merely unused. MADC_SYSCONFDIR names the system
+# config directory searched last — the configured $(sysconfdir) when the tree
+# was configured, else $(PREFIX)/etc, matching the install target's layout.
+ENABLE_CONFIG_FILE ?= 1
+ifeq ($(ENABLE_CONFIG_FILE),1)
+DEFINES += -DMADC_ENABLE_CONFIG_FILE
+endif
+SYSCONFDIR ?= $(if $(sysconfdir),$(sysconfdir),$(PREFIX)/etc)
+DEFINES += -DMADC_SYSCONFDIR='"$(SYSCONFDIR)"'
+# Same baked-define hazard as the forest shape above (-MMD tracks headers, not
+# flags): switching the axis without a clean would keep the previous shape's
+# madc_config.o. Stamp it per obj tree the same way.
+CONFIG_AXIS_STAMP = $(OBJDIR)/.config-file-$(ENABLE_CONFIG_FILE)
+$(CONFIG_AXIS_STAMP):
+	@mkdir -p $(OBJDIR)
+	@rm -f $(OBJDIR)/.config-file-*
+	@touch $@
+$(OBJDIR)/madc_config.o: $(CONFIG_AXIS_STAMP)
+$(PICOBJDIR)/madc_config.o: $(CONFIG_AXIS_STAMP)
 # Link shape (--enable-shared configure axis; forest-carriers S4). 0 =
 # monolithic: libmadc.a is linked into the CLI (the single-binary shape, the
 # default). 1 = thin CLI: the CLI links the SHARED libmadc, so one library
@@ -551,6 +573,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/forest_sidecar_gate.sh
 	@cd .. && bash scripts/forest_library_gate.sh
 	@cd .. && bash scripts/forest_ledger_gate.sh
+	@cd .. && bash scripts/forest_config_gate.sh
 	@cd .. && bash scripts/project_gate.sh
 	@cd .. && bash scripts/forest_index_oracle.sh
 	@cd .. && bash scripts/forest_dm_oracle.sh
