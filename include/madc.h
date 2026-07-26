@@ -4102,13 +4102,18 @@ public:
     // image → sidecars → $MADC_FOREST). Walked by BOTH forest consumers;
     // require_config_match applies the v27 producer-config gate (grove bind
     // yes, AOT ledger no). Sets config_mismatch when an arm was rejected for
-    // that reason alone. Implemented in lexer.cpp.
+    // that reason alone. header_only stops at the container directory —
+    // enough for the container-global segments (the AOT ledger), and it does
+    // NOT need a live string pool, which a no-parse lane has no reason to own.
+    // Implemented in lexer.cpp.
     CirFrozenForest *probe_forest_chain(bool require_config_match,
-					bool &config_mismatch);
+					bool &config_mismatch,
+					bool header_only = false);
     CirFrozenForest *ensure_bind_forest();	// open on first use; NULL if unavailable
     // The container the AOT ledger is read from (-static-libmadc, S5): the
     // already-bound one when it opened, else the SAME discovery chain walked
-    // with the producer-config gate off. NULL = no carrier at all.
+    // with the producer-config gate off and stopping at the directory (the
+    // ledger is a container-global segment). NULL = no carrier at all.
     CirFrozenForest *ensure_ledger_forest();
     void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
     std::string forest_probed_arms() const;	// the arms probe_forest_chain walked, for the failure diagnostics (one owner)

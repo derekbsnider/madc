@@ -241,7 +241,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.52.0): 756 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary, the packed release binary in BOTH carrier shapes (embedded and sidecar), and the thin CLI of the shared shape (library-carried forest); the native `--exe` and `--obj` lanes are both at 740/0. Mach-O targets have a full `.o` lane: `madc -c` writes a real `MH_OBJECT` that `ld64` links and madc reads back. With `-static-libmadc` an emitted binary carries the madc runtime it needs and runs with no madc library installed. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.53.0): 756 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary, the packed release binary in BOTH carrier shapes (embedded and sidecar), and the thin CLI of the shared shape (library-carried forest); the native `--exe` and `--obj` lanes are both at 740/0. Mach-O targets have a full `.o` lane: `madc -c` writes a real `MH_OBJECT` that `ld64` links and madc reads back. With `-static-libmadc` an emitted binary carries the madc runtime it needs and runs with no madc library installed — from source or from precompiled `.o` inputs (compile those with `-fno-eval-shims`). gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -282,41 +282,36 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.52.0** — **Mach-O axis B step 4** (`MH_OBJECT`): `madc -c` for a
-Mach-O target now writes a **real relocatable object** instead of the
-ELF-container dev vehicle it wrote before, and `MIR_object_read` reads
-one back — so every `.o` lane madc has on ELF works on darwin: compile,
-link, the multi-object merge, and `-r`. The object carries one unnamed
-`LC_SEGMENT_64` over the same section names the executable writer uses,
-a real `LC_SYMTAB`/`LC_DYSYMTAB`, and per-section relocations; every
-relocation is external against a symtab entry, with the ELF section
-symbols relocations target becoming `ltmp_*` local labels the way clang
-emits them. **Apple's own linker links it** — `ld64.lld` against the
-macOS SDK, including a mixed link where a clang-compiled TU calls into
-the madc-compiled one — and its applied relocations land where they
-must: pool slots inside `__text` and `__bss`, imports as dyld binds, a
-global constructor's entry kept in `__mod_init_func`. Read-back is
-proven **equivalent, not merely plausible**: `-c` then link
-disassembles identically to the direct `-o` emit, pool contents
-included. That leg caught a real bug immediately — Mach-O has one
-`ARM64_RELOC_PAGEOFF12` where ELF has two kinds, and the opcode
-sniffing that recovers the kind dropped the `sf` bit, reading every
-`add Xd, Xn, #imm12` back as a scaled load (`#0x1` where the direct
-emit had `#0x8`): structurally valid, silently wrong arithmetic. The
-reader now works off a **format-neutral input view** that an ELF or a
-Mach-O front fills, so the fork keeps ONE merge implementation rather
-than a second copy of the symbol-unification and rebasing logic. Also:
-`-g` on a Mach-O target says so once at the CLI and continues without
-debug info, replacing the executable writer's silent drop. New gate
-`make -C src machogate` — 30 assertions, 15 per arch, over two
-independent authorities — rebuilds both cross madcs first so it can
-never validate a stale binary. Suites: fulltest **756/0/0/9**, `--exe`
-**740/0**, `--obj` **740/0** (the ELF `.o` lane, since the merge
-refactor is a shared path). Running an emitted Mach-O binary remains
-the owner's Mac, as in every darwin slice. Fork release
-**1.0-madc.0.52.0**.
+**v0.53.0** — **`-static-libmadc` in the `.o` link lane**, the last
+stated boundary of the AOT-ledger track: a program linked from
+precompiled madc objects can now carry the madc runtime inside its own
+image and run with no madc library present. The runtime enters as one
+more relocatable — the pieces the program needs are pulled into a
+private object-mode context, generated, and merged into the same builder
+as the inputs through `MIR_object_read`. That indirection is the point:
+a builder's symbol table is append-only, and the unification that turns
+the inputs' undefined entries into references to the runtime's
+definitions *is* the merge — so the runtime goes in through the one
+unification implementation, on the read-back path both containers (ELF
+`ET_REL` and Mach-O `MH_OBJECT`) already gate. No new format code, no
+fork change. What the lane actually ran into was the host-call adapters:
+every `.o` carries a `__madc_shim_<sym>` per host-callable function (the
+value-ABI surface a libmadc host calls compiled functions through), and
+those import twelve `madc_value_*` accessors that are Tier B. An
+executable emit from source infers that nothing can call in and skips
+them; a `.o` cannot know — so the build now says it with
+**`-fno-eval-shims`**, the shape `-fPIC` has. Objects compiled with it
+link runtime-free; objects that kept their adapters refuse, naming both
+the symbols and the flag. Fixed on the way: the AOT-ledger carrier now
+opens **header-only** (the ledger is a container-global segment, but the
+probe ran the full thaw, which binds the frozen string pool into live
+parse state a link-only lane has no reason to own), and the cover
+analysis now takes the reference *list* rather than its source, so one
+classifier serves both lanes. Suites: fulltest **756/0/0/9**, `--exe`
+**740/0**, `--obj` **740/0**, `machogate` **30/30**, packed arbiter
+**756/0/0/9**. Fork unchanged (**1.0-madc.0.52.0**).
 
-**Branch state:** `develop` is at v0.52.0; `master` is at v0.48.0
+**Branch state:** `develop` is at v0.53.0; `master` is at v0.48.0
 (promoted 2026-07-25 — the Mach-O milestone promote, per the owner's
 ride-with-S3 decision). The
 [MIR fork](https://github.com/derekbsnider/mir)'s `master` tracks
@@ -325,11 +320,11 @@ fork releases pair with madc's (see [`MIR_VERSION`](MIR_VERSION)).
 
 ### Recent Releases
 
+- **v0.53.0** — `-static-libmadc` in the `.o` LINK lane (forest-carriers S5's last stated boundary): the runtime enters as one more relocatable — pulled into a private object-mode context, generated, emitted, then merged into the same builder as the `.o` inputs through `MIR_object_read`, because a builder's symbol table is append-only and symbol unification lives in the merge (so no new format code and no fork change; it rides the read-back path both containers already gate); new `-fno-eval-shims` lets a build state its artifact will never be host-called through the value ABI, which is what a `.o` headed for a standalone link wants (the `__madc_shim_*` adapters' twelve `madc_value_*` imports are Tier B) — objects that kept their adapters refuse naming both the symbols and the flag; the AOT-ledger carrier now opens header-only (the full thaw binds the frozen pool into live parse state a link-only lane has no reason to own); one cover analysis for both lanes (it takes the reference list, not its source); `forest_ledger_gate` leg 9 flipped from asserting the refusal to proving the lane two objects deep against the libmadc-linked baseline as oracle; fulltest 756/0/0/9, `--exe` 740/0, `--obj` 740/0, machogate 30/30, packed arbiter 756/0/0/9; fork unchanged (1.0-madc.0.52.0)
 - **v0.52.0** — Mach-O axis B step 4 (`MH_OBJECT`): `madc -c` for a Mach-O target writes a real relocatable object (one unnamed `LC_SEGMENT_64`, real `LC_SYMTAB`/`LC_DYSYMTAB`, per-section relocations, all external against symtab entries with `ltmp_*` section labels) that **`ld64.lld` links** — including a mixed link with a clang-compiled TU — with pool slots resolving into `__text`/`__bss`, imports as dyld binds, and a ctor's entry kept in `__mod_init_func`; `MIR_object_read` gained a Mach-O front, so `-c` → link, the two-TU merge and `-r` all work on darwin and the merged `.o` stays linkable by both linkers; read-back proven EQUIVALENT (the `.o` path's image disassembles identically to the direct emit — which is how a real bug surfaced: Mach-O's single `PAGEOFF12` vs ELF's two kinds, opcode sniffing that dropped `sf`, every `add #imm12` read back as a scaled load); ONE merge implementation behind two container fronts via a format-neutral input view; `MIR_object_load` refuses loudly on Apple builds (needs the Mach-O parse AND `MAP_JIT`); `-g` on Mach-O says so once at the CLI; new `make -C src machogate` (30 assertions, 15 per arch); fulltest 756/0/0/9, `--exe` 740/0, `--obj` 740/0; fork release 1.0-madc.0.52.0
 - **v0.51.0** — forest-carriers S6 (`madc.ini`), completing the carriers track: optional config file with the precedence rule CLI > environment > madc.ini > baked defaults; keys `std` / `forest` (discovery arm 5) / `include` (repeatable) / `cpu-limit` / `mem-limit`; lookup `./madc.ini` → `$XDG_CONFIG_HOME/madc/madc.ini` → `<sysconfdir>/madc.ini` with the first existing file winning outright (never merged); relative paths resolve against the config file's directory; STRICT parsing (unknown key / malformed line / non-numeric limit = hard error naming file:line and the accepted keys); new `--config=<file>` and `--no-config`; the reader is schema-blind substrate reusable by madcdat and madcdis-based tools (consumers register their own keys, same split `madcdis/snapshot.h` makes as a content-blind container); libmadc never reads a config file and `--disable-config-file` removes madc's lookup; suite + pack hermeticity via `--no-config`; also fixed the installed `madcdis/snapshot.h` not compiling downstream (`madc_pch.h` now installed) and rewrote `docs/build.md`, which still documented asmjit; `forest_config_gate` (39 checks / 18 legs) in fulltest; fulltest 756/0/0/9, `--exe` 740/0, packed arbiter 756/0/0/9; fork unchanged (1.0-madc.0.47.0)
 - **v0.50.0** — forest-carriers S5 (`-static-libmadc` / AOT ledger): madc's C-lane runtime becomes dual-build C11 sources (`src/rt/`) compiled BOTH into libmadc by the host build and into MIR ledger modules by madc-via-c2mir at pack time, carried in a new optional forest-container segment read independently of the grove bind; `-static-libmadc` (alias `-static`) pulls the needed modules before the link so the emitted image runs with no madc library — the unlock that makes try/catch AOT possible on Mach-O; distinct build-side vs Tier-B refusals; two cover-analysis fixes (copy-relocated libc data; host-vs-target probing on cross builds); `forest_ledger_gate` (14 checks) in fulltest; fulltest 756/0/0/9, `--exe` 740/0, packed arbiter 756/0/0/9, product path emits a zero-libmadc binary that runs under an empty library path; fork unchanged (1.0-madc.0.47.0)
 - **v0.49.0** — forest-carriers S4 (shared shape): forest-in-library discovery arm (`dladdr` → the libmadc image; `<lib>.forest` sidecar behind it; IMAGE arms never gated by `enable_external_forest`, so a sandboxed strict host still binds); `--enable-shared` thin-CLI configure axis with the release pack targeting `lib/libmadc.so` (133 KB CLI + 11.5 MB packed library, 240 units); forest knob family on the public embedding API (`enable_forest_bind` / `forest_missing` / `enable_external_forest` + `allow_external_forest` clamped under `system_locked`); `Program::forest_bind_enabled` folded into `RegistrationPolicy`; `forest_library_gate` in fulltest (9 legs incl. the `enable_external_forest=false` negative test S3 owed); thin-CLI parity 756/0/0/9 and `--enable-shared` product arbiter 756/0/0/9; fork unchanged (1.0-madc.0.47.0)
-- **v0.48.0** — forest-carriers S3 (discovery): ordered carrier probe chain (self-image → `<exe>.forest` sidecar → `$MADC_FOREST`; S4/S6 slots reserved); `--with-forest=embedded|sidecar|none` configure axis (`forest_pack.sh --sidecar`, hosted darwin sidecar shape, `make install` sidecar); failure-policy knobs in the RegistrationPolicy family (silent/loud/strict + `enable_external_forest`); config-mismatch fall-through never a notice; `forest_sidecar_gate` in fulltest; Linux arbiter through both carriers 756/0/0/9, Mac 7/7 legs both arches; fork unchanged (1.0-madc.0.47.0)
 
 ## Roadmap
 

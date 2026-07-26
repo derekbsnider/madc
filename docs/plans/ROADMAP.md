@@ -467,13 +467,31 @@ high-level" — the answer is both.**
   scaled load). One merge implementation, two container fronts, via a
   format-neutral input view. Gate: `make -C src machogate`, 30 assertions
   over both arches.
+  **`-static-libmadc` IN THE `.o` LINK LANE DONE (2026-07-26) — the S5
+  stated boundary is lifted:** the runtime enters as one more
+  relocatable (pulled into a private object-mode context, generated,
+  emitted, then merged into the same builder as the inputs — through the
+  MERGE, because that is where symbol unification lives, and it is the
+  read-back path both containers already gate). The cover analysis now
+  takes the reference LIST rather than its source, so the source lanes
+  pass context imports and this lane passes the merged builder's UNDEF
+  names. Fixed on the way: the AOT-ledger carrier now opens header-only
+  (the ledger is a container-global segment; `complete_open` binds the
+  frozen pool into live parse state a link-only lane has no reason to
+  own). What the lane actually hit was the host-call adapters — a `.o`
+  keeps its `__madc_shim_*` surface by default and its 12 `madc_value_*`
+  imports are Tier B — so the build can now say the artifact will never
+  be host-called: **`-fno-eval-shims`** (the shape `-fPIC` has).
+  `forest_ledger_gate` leg 9 flipped from asserting the refusal to
+  proving the lane, two objects deep, against the libmadc-linked
+  baseline as oracle.
   REMAINING: the S5 Mac hardware legs
   (the darwin cross pack now carries the ledger and refuses without one,
-  but running an emitted Mach-O needs the owner's Mac); `-static-libmadc`
-  in the `.o` link lane (its fork prerequisite is now in place — what
-  remains is madc-side: the ledger's cover analysis has to take the
-  merged builder's UNDEF list as its input instead of a compile
-  context's imports); the in-process `.o` loader on Apple hosts (needs
+  but running an emitted Mach-O needs the owner's Mac); the value ABI as
+  Tier-A C11 runtime, which is what a host-callable
+  `-shared -static-libmadc` plugin needs (that combination refuses today
+  for the same Tier-B reason, independently of the `.o` lane); the
+  in-process `.o` loader on Apple hosts (needs
   `MAP_JIT` + the Mach-O parse; refuses loudly today); the darwin
   **dylib** packaging shape and the existing-signed-binary re-signer
   remain consciously deferred residue; P2 libc++ STD-ABI script-lane

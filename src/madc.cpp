@@ -622,6 +622,12 @@ static void print_usage(const char *prog)
 "                          C++ script-lane runtime refuses, naming the\n"
 "                          symbols. -static is an alias (gcc -static-libgcc\n"
 "                          precedent)\n"
+"  -fno-eval-shims         leave the __madc_shim_* host-call adapters out of\n"
+"                          the artifact: it will not be called through the\n"
+"                          value ABI by a libmadc host. An executable emit\n"
+"                          implies this; pass it when compiling .o files you\n"
+"                          will link with -static-libmadc (the adapters need\n"
+"                          value-ABI accessors, which are not on the ledger)\n"
 "  -pie / -no-pie          keep / drop the PIE layout: -no-pie emits a\n"
 "                          fixed-base ET_EXEC instead of the ET_DYN PIE\n"
 "  -shared [-o file.so]    compile to a shared object (ET_DYN, MIR-assembled;\n"
@@ -806,6 +812,17 @@ int main(int argc, char **argv)
             const char *name = argv[i] + strlen("-fno-builtin-");
             if ( *name )
                 prog->disabled_builtin_names.insert(name);
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-fno-eval-shims") == 0
+                || strcmp(argv[i], "-feval-shims") == 0) {
+            // Whether this artifact can be host-called through the value ABI
+            // is a property of the BUILD, and for a .o only the build knows:
+            // an executable never can (implied), a shared object usually can,
+            // and a .o headed for a standalone link never will. Same shape as
+            // -fPIC — the object's intended use, stated at compile time.
+            // Emit-lane state (like -static-libmadc), so every lane —
+            // single-TU, --project, .o link — sees the same answer.
+            madc_no_eval_shims = strcmp(argv[i], "-fno-eval-shims") == 0;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-cir") == 0) {
             dump_cir = true;
@@ -1164,7 +1181,7 @@ int main(int argc, char **argv)
                          : generic_output_path ? generic_output_path
                          : "a.out";
         return madc_cir_link_objects(run_object_paths, kind, outp,
-                                     cc_link_args) == 0 ? 0 : 1;
+                                     cc_link_args, prog.get()) == 0 ? 0 : 1;
     }
 
     // -l<name>: dlopen each requested library (RTLD_GLOBAL) so the import

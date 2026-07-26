@@ -412,8 +412,16 @@ static int cir_mir_cache_read_byte(MIR_context_t)
 //
 // Collect every import no loaded module defines. The caller's two uses are
 // selection (which ledger modules to pull) and the Tier-B refusal list.
+//
+// `extra` joins the module-level imports as further CANDIDATES filtered by the
+// same "no loaded module defines it" rule: the .o link lane's program is a set
+// of native relocatables, not MIR modules, so its unresolved references arrive
+// as the merged builder's UNDEF names. Selection must see them, and must stop
+// seeing them once a pulled ledger module defines them — which is exactly what
+// this filter does.
 static void cir_ctx_unresolved_imports(MIR_context_t ctx,
-				       std::vector<std::string> &out)
+				       std::vector<std::string> &out,
+				       const std::vector<std::string> *extra = NULL)
 {
     std::set<std::string> defined, seen;
     std::vector<std::string> imports;
@@ -434,6 +442,10 @@ static void cir_ctx_unresolved_imports(MIR_context_t ctx,
 	    if (nm && nm[0])
 		defined.insert(nm);
 	}
+    if (extra)
+	for (const std::string &e : *extra)
+	    if (seen.insert(e).second)
+		imports.push_back(e);
     out.clear();
     for (const std::string &imp : imports)
 	if (!defined.count(imp))
@@ -489,7 +501,12 @@ static bool cir_ledger_read_module(MIR_context_t ctx,
 // owns the diagnostic, because only it knows whether this program needed the
 // runtime at all (a runtime-free program must not be nagged about a missing
 // ledger).
-static void cir_ledger_pull(MIR_context_t ctx, Program *prog)
+//
+// `seed` names references the program has that are NOT module imports — the .o
+// link lane's inputs (see cir_ledger_relocatable). Selection is otherwise
+// identical: one pull implementation, two shapes of program.
+static void cir_ledger_pull(MIR_context_t ctx, Program *prog,
+			    const std::vector<std::string> *seed = NULL)
 {
     if (!madc_static_libmadc || !prog)
 	return;
@@ -508,7 +525,7 @@ static void cir_ledger_pull(MIR_context_t ctx, Program *prog)
     std::vector<bool> pulled(ledger.size(), false);
     for (;;) {
 	std::vector<std::string> undef;
-	cir_ctx_unresolved_imports(ctx, undef);
+	cir_ctx_unresolved_imports(ctx, undef, seed);
 	size_t pulled_now = 0;
 	for (const std::string &nm : undef) {
 	    std::map<std::string, size_t>::const_iterator it = owner.find(nm);
@@ -526,6 +543,103 @@ static void cir_ledger_pull(MIR_context_t ctx, Program *prog)
 	if (!pulled_now)
 	    break;	// fixpoint: nothing new selected this round
     }
+}
+
+// --- AOT ledger as a RELOCATABLE (the .o link lane, -static-libmadc) -------
+//
+// The source lanes pull the ledger into the compile's own context, where the
+// object-mode gen drops the runtime straight into the capture next to the
+// program. The .o link lane has no compile: its program is a set of native
+// relocatables merged through MIR_object_read. So the runtime is generated in
+// a PRIVATE object-mode context and emitted as its own relocatable, which the
+// caller merges into the same builder as the inputs.
+//
+// Through a serialized .o rather than generating into the input builder
+// directly, because a builder's symbol table is append-only
+// (MIR_object_add_symbol never dedupes by name) — the unification that turns
+// the inputs' UNDEF entries into references to the runtime's definitions lives
+// in the MERGE. Going in through the merge reuses that one unification
+// implementation, and it rides the same read-back path the .o lane already
+// gates on both containers (ELF ET_REL and MH_OBJECT), so this adds no format
+// code at all.
+
+// Serialize the private capture. The buffer is malloc'd by the emitter.
+static bool cir_ledger_emit_blob(MIR_context_t ctx, std::vector<uint8_t> &blob)
+{
+    void *buf = NULL;
+    size_t size = 0;
+    if (MIR_gen_object_emit(ctx, &buf, &size) != 0 || !buf || size == 0) {
+	fprintf(stderr, "madc: -static-libmadc: AOT-ledger object emission"
+		" failed\n");
+	free(buf);
+	return false;
+    }
+    blob.assign((const uint8_t *)buf, (const uint8_t *)buf + size);
+    free(buf);
+    return true;
+}
+
+// Object mode + the selection pull. Its own MIR error frame: every module read
+// arms one of its own (cir_ledger_read_module), so a bracket established before
+// the pull is stale afterwards — hence the split from the link/emit frame.
+static bool cir_ledger_obj_pull(MIR_context_t ctx, Program *prog,
+				const std::vector<std::string> &seed)
+{
+    if (setjmp(cir_mir_error_jmp)) {
+	cir_mir_error_armed = false;
+	fprintf(stderr, "madc: -static-libmadc: cannot prepare the AOT ledger:"
+		" %s\n", cir_mir_error_text);
+	return false;
+    }
+    cir_mir_error_armed = true;
+    MIR_gen_set_object_mode(ctx, 1);
+    cir_ledger_pull(ctx, prog, &seed);
+    cir_mir_error_armed = false;
+    return true;
+}
+
+// Link + generate + serialize, under a FRESH error frame (see above).
+static bool cir_ledger_obj_link_emit(MIR_context_t ctx,
+				     std::vector<uint8_t> &blob)
+{
+    if (setjmp(cir_mir_error_jmp)) {
+	cir_mir_error_armed = false;
+	fprintf(stderr, "madc: -static-libmadc: cannot link the AOT ledger"
+		" runtime: %s\n", cir_mir_error_text);
+	return false;
+    }
+    cir_mir_error_armed = true;
+    // Same resolver the source lanes use in object mode: an import stays an
+    // UNDEF symbol in the capture instead of binding to this process.
+    MIR_link(ctx, MIR_set_gen_interface, cir_object_import_resolver);
+    bool ok = cir_ledger_emit_blob(ctx, blob);
+    cir_mir_error_armed = false;
+    return ok;
+}
+
+// `seed` = the merged input builder's UNDEF names (what the program still
+// needs). False = a real failure, already reported. An EMPTY blob is a
+// SUCCESS that selected nothing: whether that was enough is the emit-time
+// verification's question, exactly as in the source lanes.
+static bool cir_ledger_relocatable(Program *prog,
+				   const std::vector<std::string> &seed,
+				   std::vector<uint8_t> &blob)
+{
+    blob.clear();
+    MIR_context_t ctx = MIR_init();
+    if (!ctx) {
+	fprintf(stderr, "madc: -static-libmadc: MIR_init failed\n");
+	return false;
+    }
+    MIR_set_error_func(ctx, cir_mir_error);
+    MIR_gen_init(ctx);
+    MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
+    bool ok = cir_ledger_obj_pull(ctx, prog, seed);
+    if (ok && DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx)) != NULL)
+	ok = cir_ledger_obj_link_emit(ctx, blob);
+    MIR_gen_finish(ctx);
+    MIR_finish(ctx);
+    return ok;
 }
 
 // -----------------------------------------------------------------------
@@ -1294,6 +1408,11 @@ const char *madc_pack_forest_path = NULL;
 // instead of depending on libmadc at run time. See madc_cir.h.
 bool madc_static_libmadc = false;
 
+// -fno-eval-shims: this artifact will never be host-called through the value
+// ABI, so the __madc_shim_* adapters (and their Tier-B madc_value_* imports)
+// are left out. See madc_cir.h.
+bool madc_no_eval_shims = false;
+
 // Load + validate the container with the production reader — an emitted
 // binary carrying an unopenable carrier would ship dead weight silently,
 // so a non-container file fails the emit loudly instead.
@@ -1471,23 +1590,25 @@ static bool cir_import_covered(const char *name,
 #endif
 }
 
-// Does the image actually need the madc runtime? Walk every module in the
-// context, collect the names its items DEFINE, and classify each IMPORT that
-// no module defines (in --project the TUs satisfy each other's imports
-// in-context). If every external import is covered by the non-madc DT_NEEDED
+// Does the image actually need the madc runtime? Classify the program's
+// external references: if every one is covered by the non-madc DT_NEEDED
 // entries, the produced binary is runtime-free and libmadc.so.0 can be
-// dropped. Any uncovered import — a madc runtime symbol, or a symbol only
+// dropped. Any uncovered one — a madc runtime symbol, or a symbol only
 // reachable through libmadc's dependency closure — keeps the dependency
 // (conservative: false negatives cost one extra DT_NEEDED, false positives
 // break the binary at load).
-static void cir_image_uncovered_imports(MIR_context_t ctx,
-					const std::vector<std::string> &covers,
-					std::vector<std::string> &out)
+//
+// The reference LIST is the parameter, not its source, because the two lanes
+// carry the program differently: from source it is the context's unresolved
+// module imports (in --project the TUs satisfy each other's in-context), and in
+// the .o link lane it is the merged builder's UNDEF symbols (unification
+// already netted out cross-object references). One classifier, both lanes.
+static void cir_filter_uncovered(const std::vector<std::string> &imports,
+				 const std::vector<std::string> &covers,
+				 std::vector<std::string> &out)
 {
-    std::vector<std::string> undef;
-    cir_ctx_unresolved_imports(ctx, undef);
     out.clear();
-    for (const std::string &imp : undef)
+    for (const std::string &imp : imports)
 	if (!cir_import_covered(imp.c_str(), covers)) {
 	    DBG(std::cout << "native image needs madc runtime: import '"
 			  << imp << "' is not covered by base/user libs"
@@ -1496,12 +1617,23 @@ static void cir_image_uncovered_imports(MIR_context_t ctx,
 	}
 }
 
-static bool cir_image_needs_madc_runtime(MIR_context_t ctx,
-					 const std::vector<std::string> &covers)
+static bool cir_imports_need_madc_runtime(const std::vector<std::string> &imports,
+					  const std::vector<std::string> &covers)
 {
     std::vector<std::string> uncovered;
-    cir_image_uncovered_imports(ctx, covers, uncovered);
+    cir_filter_uncovered(imports, covers, uncovered);
     return !uncovered.empty();
+}
+
+// The merged builder's unresolved references — the .o link lane's answer to
+// "what does this program still import?".
+static void cir_object_undef_names(MIR_object_t obj,
+				   std::vector<std::string> &out)
+{
+    out.clear();
+    const char *nm;
+    for (size_t i = 0; (nm = MIR_object_undef_name(obj, i)) != NULL; i++)
+	out.push_back(nm);
 }
 
 // -static-libmadc verification (S5). The ledger pull already merged every
@@ -1510,11 +1642,16 @@ static bool cir_image_needs_madc_runtime(MIR_context_t ctx,
 // Refuse LOUDLY and name the symbols: the same contract the Apple cross lane
 // ships, and the only honest answer (silently keeping the dependency would
 // break the flag's whole promise). True = clear to emit.
-static bool cir_static_libmadc_verify(MIR_context_t ctx, const char *out_path,
-				      const std::vector<std::string> &covers)
+// `hint` is an extra, lane-specific line of "what to do about it" printed
+// after the symbol list — the .o link lane can name a concrete fix its inputs
+// were built without, which the source lanes have no equivalent of.
+static bool cir_static_libmadc_verify(const std::vector<std::string> &imports,
+				      const char *out_path,
+				      const std::vector<std::string> &covers,
+				      const char *hint = NULL)
 {
     std::vector<std::string> uncovered;
-    cir_image_uncovered_imports(ctx, covers, uncovered);
+    cir_filter_uncovered(imports, covers, uncovered);
     if (uncovered.empty())
 	return true;
     if (!cir_ledger_available) {
@@ -1537,6 +1674,8 @@ static bool cir_static_libmadc_verify(MIR_context_t ctx, const char *out_path,
 	    " objects):\n", out_path, uncovered.size());
     for (const std::string &s : uncovered)
 	fprintf(stderr, "    %s\n", s.c_str());
+    if (hint)
+	fprintf(stderr, "%s", hint);
     fprintf(stderr, "madc: link against libmadc instead (drop"
 	    " -static-libmadc), or keep the program on the C lane\n");
     return false;
@@ -1593,13 +1732,17 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     // libmadc.so.0 DT_NEEDED — it runs on hosts without madc installed.
     std::vector<std::string> other;
     bool have_madc = cir_split_needed(needed, other);
+    std::vector<std::string> imports;
+    cir_ctx_unresolved_imports(ctx, imports);
     // -static-libmadc: the ledger pull ran before the link, so the runtime is
     // IN the capture. Verify nothing madc-side is left over, then drop the
     // dependency unconditionally — that is the flag's whole promise.
-    if (madc_static_libmadc && !cir_static_libmadc_verify(ctx, out_path, other))
+    if (madc_static_libmadc
+	&& !cir_static_libmadc_verify(imports, out_path, other))
 	return false;
-    bool drop_madc = have_madc && (madc_static_libmadc
-				   || !cir_image_needs_madc_runtime(ctx, other));
+    bool drop_madc = have_madc
+		     && (madc_static_libmadc
+			 || !cir_imports_need_madc_runtime(imports, other));
     DBG(std::cout << "native image DT_NEEDED: libmadc.so.0 "
 		  << (drop_madc ? "dropped (runtime-free)"
 				: (have_madc ? "kept" : "absent"))
@@ -1714,8 +1857,11 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
     // Standalone executables skip the __madc_shim_* eval adapters (Pass
     // 0.74): nothing can host-call them, and dropping their madc_value_*
     // imports keeps pure programs runtime-free. Objects and shared objects
-    // keep the shims — they are the embedding / run-objects eval contract.
-    prog->aot_skip_eval_shims = (kind == mnkExecutable || kind == mnkPieExecutable);
+    // keep the shims — they are the embedding / run-objects eval contract —
+    // unless the build says otherwise with -fno-eval-shims (a .o headed for a
+    // standalone -static-libmadc link).
+    prog->aot_skip_eval_shims = madc_no_eval_shims
+			     || kind == mnkExecutable || kind == mnkPieExecutable;
 #ifdef MADC_CROSS_TARGET
     // Emit-only cross build: .o's can never feed the (refused) in-process
     // eval lane, so only -shared keeps the embedding shims — they carry
@@ -1865,25 +2011,36 @@ static MIR_object_t cir_read_objects(const std::vector<std::string> &paths)
 
 int madc_cir_link_objects(const std::vector<std::string> &paths,
 			  MadcNativeKind kind, const char *out_path,
-			  const std::vector<std::string> &user_libs)
+			  const std::vector<std::string> &user_libs,
+			  Program *prog)
 {
-    // -static-libmadc is not wired into THIS lane yet (forest-carriers S5
-    // stated boundary): the ledger is carried as MIR modules, which merge
-    // into a compile CONTEXT — the .o link lane merges native relocatables
-    // through MIR_object_read instead, and turning ledger modules into
-    // relocatables needs the MH_OBJECT .o flavor the fork still lacks for
-    // Mach-O. Refuse loudly rather than silently keep the dependency.
-    if (madc_static_libmadc) {
-	fprintf(stderr, "madc: -static-libmadc is not supported in the"
-		" multi-object link lane yet; emit the program from source"
-		" (madc -static-libmadc -o %s <sources>)\n", out_path);
-	return -1;
-    }
     // No compile happens here — the inputs are already captures; the fork
     // does the whole link (read/merge + emit).
     MIR_object_t obj = cir_read_objects(paths);
     if (!obj)
 	return -1;
+    // -static-libmadc: the runtime pieces this program needs come in as one
+    // more relocatable, generated from the AOT ledger against the merged
+    // builder's own UNDEF names. -r never reaches here (the CLI requires a
+    // linked output), so the runtime is merged exactly once, at the link that
+    // produces the image — gcc's -static-libgcc placement.
+    if (madc_static_libmadc) {
+	std::vector<std::string> seed;
+	cir_object_undef_names(obj, seed);
+	std::vector<uint8_t> rt;
+	if (!cir_ledger_relocatable(prog, seed, rt)) {
+	    MIR_object_destroy(obj);
+	    return -1;
+	}
+	char err[256];
+	if (!rt.empty()
+	    && MIR_object_read(obj, rt.data(), rt.size(), err, sizeof err) != 0) {
+	    fprintf(stderr, "madc: -static-libmadc: cannot merge the AOT-ledger"
+		    " runtime: %s\n", err);
+	    MIR_object_destroy(obj);
+	    return -1;
+	}
+    }
     bool ok = false;
     void *buf = NULL;
     size_t size = 0;
@@ -1899,20 +2056,30 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	cir_native_link_env(user_libs, needed, runpath);
 	// Conditional libmadc.so.0, same policy as the source lanes; here
 	// the external imports are the merged builder's UNDEF names
-	// (unification already netted out cross-object references).
+	// (unification already netted out cross-object references, and the
+	// ledger merge above already satisfied every piece it carries).
 	std::vector<std::string> other;
 	bool have_madc = cir_split_needed(needed, other);
-	bool need_rt = false;
-	const char *imp;
-	for (size_t i = 0; !need_rt && (imp = MIR_object_undef_name(obj, i));
-	     i++)
-	    if (!cir_import_covered(imp, other)) {
-		DBG(std::cout << "linked image needs madc runtime: import '"
-			      << imp << "' is not covered by base/user libs"
-			      << std::endl);
-		need_rt = true;
-	    }
-	bool drop_madc = have_madc && !need_rt;
+	std::vector<std::string> imports;
+	cir_object_undef_names(obj, imports);
+	// -static-libmadc: same contract as the source lanes — anything still
+	// uncovered is Tier B, so refuse loudly rather than keep a dependency
+	// the flag promised to remove. The usual cause here is the inputs'
+	// host-call adapters: a `.o` carries them by default (it may feed an
+	// embedding host), and their value-ABI imports are Tier B — so name the
+	// compile-time flag that leaves them out.
+	if (madc_static_libmadc
+	    && !cir_static_libmadc_verify(imports, out_path, other,
+		    "madc: if these are madc_value_* accessors, the inputs carry"
+		    " the __madc_shim_* host-call adapters; recompile the"
+		    " objects with -fno-eval-shims for a standalone static"
+		    " link\n")) {
+	    MIR_object_destroy(obj);
+	    return -1;
+	}
+	bool drop_madc = have_madc
+			 && (madc_static_libmadc
+			     || !cir_imports_need_madc_runtime(imports, other));
 	DBG(std::cout << "linked image DT_NEEDED: libmadc.so.0 "
 		      << (drop_madc ? "dropped (runtime-free)"
 				    : (have_madc ? "kept" : "absent"))
@@ -5213,7 +5380,8 @@ int madc_project_emit_native(MadcEngine &engine,
 	// emit-only cross build — skip the __madc_shim_* eval adapters (see
 	// madc_cir_emit_native); stamped per TU before the CIR builds run.
 	{
-		bool skip_shims = (kind == mnkExecutable || kind == mnkPieExecutable);
+		bool skip_shims = madc_no_eval_shims
+			       || kind == mnkExecutable || kind == mnkPieExecutable;
 #ifdef MADC_CROSS_TARGET
 		skip_shims = skip_shims || kind != mnkShared;
 #endif
