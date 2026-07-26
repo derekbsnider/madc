@@ -1,5 +1,13 @@
 -include ../config.mk
 
+# The default goal is ALWAYS `all`, stated explicitly. Several stamp /
+# prerequisite-only rules are defined ABOVE the `all:` target (they must be,
+# to attach to the pattern rules), and GNU make otherwise takes the first
+# rule in the file as the default — so a bare `make -C src` silently "built"
+# nothing but the forest-shape stamp (regression shipped in v0.48.0; explicit
+# goals like `fulltest` and `release` masked it).
+.DEFAULT_GOAL := all
+
 CC ?= clang
 CXX ?= clang++
 # --- Build modes (B4a; docs/plans/2026-07-04-forest-default-mode-design.md §7)
@@ -224,6 +232,20 @@ $(FOREST_SHAPE_STAMP):
 	@touch $@
 $(OBJDIR)/madc.o: $(FOREST_SHAPE_STAMP)
 $(PICOBJDIR)/madc.o: $(FOREST_SHAPE_STAMP)
+# Link shape (--enable-shared configure axis; forest-carriers S4). 0 =
+# monolithic: libmadc.a is linked into the CLI (the single-binary shape, the
+# default). 1 = thin CLI: the CLI links the SHARED libmadc, so one library
+# image serves the CLI and every embedding host — and in the embedded forest
+# carrier the container rides that library image (discovery arm 2). Only the
+# LINK differs, so no object needs rebuilding; the stamp forces the relink
+# when the shape changes (make would otherwise see bin/madc newer than every
+# prerequisite and skip it — the .libmode / .forest-shape precedent).
+ENABLE_SHARED_CLI ?= 0
+LINK_SHAPE_STAMP = $(OBJDIR)/.link-shape-$(ENABLE_SHARED_CLI)
+$(LINK_SHAPE_STAMP):
+	@mkdir -p $(OBJDIR)
+	@rm -f $(OBJDIR)/.link-shape-*
+	@touch $@
 # Hosted binaries ship PACKED (forest-carriers S1): the darwin groves are
 # cross-frozen by the same-arch cross madc (identical embedded prelude, same
 # target facts -> same context hash + config word) and embedded at link time
@@ -262,6 +284,8 @@ MADC_VERSION ?= $(shell cat ../VERSION 2>/dev/null || echo 0.0.0)
 MADC_SOVERSION ?= $(firstword $(subst ., ,$(MADC_VERSION)))
 LIBMADC_SHARED = $(LIBDIR)/libmadc.so
 LIBMADC_STATIC = $(LIBDIR)/libmadc.a
+# Thin-CLI gate vehicle (rule far below, with the other link rules).
+THIN_CLI = $(BINDIR)/madc-thin
 # Cross and hosted modes get their own archive/solib names: neither may
 # clobber the host-facing ../lib artifacts with foreign objects.
 ifneq (,$(filter cross-% hosted-%,$(MODE)))
@@ -410,13 +434,25 @@ $(MIRDIR)/build-hosted-x86-64-macos/libmir.a: FORCE
 # --with-forest= picks the carrier: embedded appends the container to the
 # binary (default), sidecar writes bin/madc-release.forest beside it, none
 # skips the pack (live-parse-only product).
+# In the thin-CLI shape the carrier is the LIBRARY image (forest-carriers S4):
+# one container serves the CLI and every embedding host, so the pack targets
+# lib/libmadc.so — and the same strip-before-pack ordering applies to it (the
+# install step therefore must NOT re-strip it; see install below).
+ifeq ($(ENABLE_SHARED_CLI),1)
+PACK_IMAGE_ARG = --image lib/libmadc.so
+else
+PACK_IMAGE_ARG =
+endif
 release:
 	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc-release $(LIBMADC_SHARED)
 	strip ../bin/madc-release
+ifeq ($(ENABLE_SHARED_CLI),1)
+	strip --strip-unneeded ../lib/libmadc.so
+endif
 ifeq ($(WITH_FOREST),embedded)
-	cd .. && bash scripts/forest_pack.sh bin/madc-release
+	cd .. && bash scripts/forest_pack.sh $(PACK_IMAGE_ARG) bin/madc-release
 else ifeq ($(WITH_FOREST),sidecar)
-	cd .. && bash scripts/forest_pack.sh --sidecar bin/madc-release
+	cd .. && bash scripts/forest_pack.sh --sidecar $(PACK_IMAGE_ARG) bin/madc-release
 endif
 
 # Install the release artifacts under $(PREFIX) (DESTDIR-aware). Same layout
@@ -432,10 +468,19 @@ install: release
 		$(DESTDIR)$(PREFIX)/share/man/man1
 	install -m 755 ../bin/madc-release $(DESTDIR)$(PREFIX)/bin/madc
 ifeq ($(WITH_FOREST),sidecar)
+ifeq ($(ENABLE_SHARED_CLI),1)
+	install -m 644 ../lib/libmadc.so.forest $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0.forest
+else
 	install -m 644 ../bin/madc-release.forest $(DESTDIR)$(PREFIX)/bin/madc.forest
 endif
+endif
 	install -m 644 ../lib/libmadc.so $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0
+# A packed library carries the container as trailing bytes; strip rewrites the
+# ELF image and would discard them (the same law as the packed binary), so the
+# thin-CLI shape strips at release time, BEFORE the pack, and never here.
+ifneq ($(ENABLE_SHARED_CLI),1)
 	strip --strip-unneeded $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0
+endif
 	ln -sf libmadc.so.0 $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so
 	gzip -9n < ../docs/man/madc.1 > $(DESTDIR)$(PREFIX)/share/man/man1/madc.1.gz
 	@if [ -z "$(DESTDIR)" ]; then ldconfig 2>/dev/null || true; fi
@@ -454,6 +499,8 @@ clean:
 	rm -f $(MADDAT_ARCHIVE)
 	rm -f $(LIBMADC_STATIC)
 	rm -f $(LIBMADC_SHARED)
+	rm -f $(LIBDIR)/libmadc.so.$(MADC_SOVERSION)
+	rm -f $(THIN_CLI)
 	rm -f sys_include_paths.cpp
 	rm -f predefined_macros.cpp
 
@@ -476,7 +523,7 @@ test: $(TESTBINS)
 		fi; \
 	done
 
-fulltest: ../bin/madc $(LIBMADC_SHARED) test
+fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/run_tests.sh
 	@cd .. && bash scripts/check-no-std-hardcoding.sh
 	@cd .. && bash scripts/check-call-emit-symbol.sh
@@ -488,6 +535,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) test
 	@cd .. && bash scripts/forest_bind_gate.sh
 	@cd .. && bash scripts/forest_emitpack_gate.sh
 	@cd .. && bash scripts/forest_sidecar_gate.sh
+	@cd .. && bash scripts/forest_library_gate.sh
 	@cd .. && bash scripts/project_gate.sh
 	@cd .. && bash scripts/forest_index_oracle.sh
 	@cd .. && bash scripts/forest_dm_oracle.sh
@@ -515,11 +563,43 @@ WHOLE_ARCHIVE_END   ?= -Wl,--no-whole-archive
 $(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB)
 	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(LIBS)
 
-$(BIN): $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB) $(FOREST_EMBED_DEP)
-	$(CXX) -o $@ $(OBJDIR)/madc.o $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS) $(FOREST_EMBED_LDFLAGS)
+# Where a thin CLI looks for its libmadc: $ORIGIN/../lib resolves in BOTH
+# layouts — bin/madc -> lib/libmadc.so in the build tree, $(PREFIX)/bin/madc ->
+# $(INSTALL_LIBDIR)/libmadc.so.0 once installed. (Apple's spelling is
+# @loader_path; the darwin dylib shape itself rides the later packaging work.)
+ifdef HOSTED_DARWIN_TARGET
+CLI_RPATH = -Wl,-rpath,@loader_path/../lib
+else
+CLI_RPATH = -Wl,-rpath,'$$ORIGIN/../lib'
+endif
+# Link inputs per shape. Monolithic force-includes the WHOLE static archive:
+# runtime helpers are resolved by dlsym(RTLD_DEFAULT), so plain archive
+# semantics would drop those objects. The thin CLI links the shared library
+# instead — its dynamic table already carries every one of them.
+ifeq ($(ENABLE_SHARED_CLI),1)
+CLI_LIB_DEP = $(LIBMADC_SHARED)
+CLI_LINK = -L$(LIBDIR) -lmadc $(CLI_RPATH)
+else
+CLI_LIB_DEP = $(LIBMADC_STATIC)
+CLI_LINK = $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB)
+endif
+
+$(BIN): $(OBJDIR)/madc.o $(CLI_LIB_DEP) $(MIRLIB) $(FOREST_EMBED_DEP) $(LINK_SHAPE_STAMP)
+	$(CXX) -o $@ $(OBJDIR)/madc.o $(CLI_LINK) $(CXXFLAGS) $(DEFINES) $(LIBS) $(FOREST_EMBED_LDFLAGS)
 ifdef FOREST_SIDECAR
 	cp $(DARWIN_FOREST_BIN) $@.forest
 endif
+
+# Thin-CLI vehicle for the library-carrier gate (forest-carriers S4): the SAME
+# madc.o linked against the shared libmadc, so the library-image discovery arm
+# is exercised in a default (monolithic) tree without reconfiguring it. In an
+# --enable-shared tree bin/madc already IS this shape; the gate keeps using its
+# own copy so it can pack a PRIVATE library image without touching lib/.
+# (THIN_CLI itself is defined with the other artifact paths above — a
+# prerequisite list is expanded when the rule is READ, so a definition down
+# here would make `fulltest`'s prerequisite silently empty.)
+$(THIN_CLI): $(OBJDIR)/madc.o $(LIBMADC_SHARED)
+	$(CXX) -o $@ $(OBJDIR)/madc.o -L$(LIBDIR) -lmadc $(CLI_RPATH) $(CXXFLAGS) $(DEFINES) $(LIBS)
 
 # lib/libmadc.{a,so} keep ONE path across modes, so make's timestamps alone
 # would silently leave the OTHER mode's libs in place after a mode switch
@@ -541,6 +621,14 @@ $(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS) $(LIBMODE_STAMP)
 $(LIBMADC_SHARED): $(LIBMADC_OBJECTS) $(MIRLIB) $(LIBMODE_STAMP)
 	mkdir -p $(LIBDIR)
 	$(CXX) -shared -Wl,-soname,libmadc.so.$(MADC_SOVERSION) -o $@ $(LIBMADC_OBJECTS) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
+# A consumer linked with -lmadc gets DT_NEEDED = the SONAME (libmadc.so.0), so
+# the build tree needs that name too or a thin CLI / host binary cannot load
+# from lib/ (the install tree ships the real file under the soname and the
+# .so as the dev symlink — same names, mirrored). Host modes only: a cross
+# mode's foreign .so must never claim the host soname.
+ifeq ($(LIBMADC_SHARED),$(LIBDIR)/libmadc.so)
+	ln -sf libmadc.so $(LIBDIR)/libmadc.so.$(MADC_SOVERSION)
+endif
 
 $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
 	mkdir -p $(LIBDIR)

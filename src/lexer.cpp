@@ -1886,17 +1886,37 @@ CirFrozenForest *Program::ensure_bind_forest()
     bind_forest = forest_probe_arm(this, NULL, "self-image",
 				   /*quiet_missing=*/true, cfg_mismatch,
 				   _forest_map_seconds, _forest_open_seconds);
-    // Arm 2 (S4 slot): library image — when madc is built shared, the forest
-    // rides libmadc's image (dladdr on a libmadc symbol -> the same
-    // per-format probe). Lands with the shared shape.
+    // Arm 2 (forest-carriers S4): library image — in the SHARED shape the
+    // forest rides libmadc's own image, so ONE container serves the thin CLI
+    // and every embedding host. dladdr on a libmadc symbol resolves the image
+    // path; in the monolithic shape that path IS the executable, which arm 1
+    // already probed, so the arm is skipped. Deliberately NOT gated by
+    // enable_external_forest: the library is part of the installation the host
+    // already loaded and executes — not an external redirection of where
+    // frozen state is loaded from.
+    std::string exe = madc_self_exe_path();
+    std::string lib = madc_self_lib_path();
+    bool have_lib_image = !lib.empty() && lib != exe;
+    if ( !bind_forest && have_lib_image )
+	bind_forest = forest_probe_arm(this, lib.c_str(), "library-image",
+				       /*quiet_missing=*/true, cfg_mismatch,
+				       _forest_map_seconds,
+				       _forest_open_seconds);
     if ( !bind_forest && registration_policy.enable_external_forest )
     {
-	// Arm 3: sidecar container beside the binary (<exe>.forest — the
-	// packaged-install shape; dev iteration without re-packing).
-	std::string exe = madc_self_exe_path();
+	// Arm 3: sidecar container beside an image (<exe>.forest, then
+	// <lib>.forest in the shared shape — the packaged-install shape; dev
+	// iteration without re-packing). Same image order as the carriers
+	// above: the executable's sidecar outranks the library's.
 	if ( !exe.empty() )
 	    bind_forest = forest_probe_arm(this, (exe + ".forest").c_str(),
 					   "sidecar", /*quiet_missing=*/false,
+					   cfg_mismatch,
+					   _forest_map_seconds,
+					   _forest_open_seconds);
+	if ( !bind_forest && have_lib_image )
+	    bind_forest = forest_probe_arm(this, (lib + ".forest").c_str(),
+					   "lib-sidecar", /*quiet_missing=*/false,
 					   cfg_mismatch,
 					   _forest_map_seconds,
 					   _forest_open_seconds);
@@ -1946,10 +1966,11 @@ void Program::forest_missing_fallback(bool config_mismatch)
 	    break;
 	}
 	(error_stream ? *error_stream : std::cerr)
-	    << "madc: no frozen forest found (probed: self-image,"
-	       " <exe>.forest sidecar, $MADC_FOREST); falling back to live"
-	       " parse — startup will be slower. Point --forest-bind=<file>"
-	       " at a container, or silence this with --no-forest-bind."
+	    << "madc: no frozen forest found (probed: self-image, library"
+	       " image, <exe>.forest / <lib>.forest sidecars, $MADC_FOREST);"
+	       " falling back to live parse — startup will be slower. Point"
+	       " --forest-bind=<file> at a container, or silence this with"
+	       " --no-forest-bind."
 	    << std::endl;
 	break;
     case RegistrationPolicy::ForestPolicy::strict_require:
@@ -1960,7 +1981,8 @@ void Program::forest_missing_fallback(bool config_mismatch)
 			<< std::flush;
 	Throw(NULL) << "frozen forest required (strict forest policy) but no"
 		       " usable container was found (probed: self-image,"
-		       " <exe>.forest sidecar, $MADC_FOREST)" << std::flush;
+		       " library image, <exe>.forest / <lib>.forest sidecars,"
+		       " $MADC_FOREST)" << std::flush;
 	break;
     }
 }
@@ -3264,9 +3286,9 @@ TokenBase *Program::_getToken()
 			// restore the forest's typed decl records into the symbol
 			// tables (forest_restore_decls, once per compile), and
 			// return WITHOUT re-parsing the header. Non-forest headers
-			// fall through to live parse. Gated on forest_bind_enabled
+			// fall through to live parse. Gated on the policy knob
 			// so the default path is one predicted branch.
-			if ( forest_bind_enabled )
+			if ( registration_policy.enable_forest_bind )
 			{
 			    int fu = forest_unit_for_include(incfile);
 			    if ( fu >= 0 )
@@ -3394,7 +3416,7 @@ TokenBase *Program::_getToken()
 		    // double-define its contents ("Repeated item declaration").
 		    // Keyed on the RESOLVED path (the name the freeze tokenized
 		    // the unit under). #include_next keeps its positional walk.
-		    if ( forest_bind_enabled && !is_include_next
+		    if ( registration_policy.enable_forest_bind && !is_include_next
 		      && !full_path.empty() )
 		    {
 			int fu = forest_unit_for_include(full_path);

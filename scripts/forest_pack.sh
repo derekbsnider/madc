@@ -3,7 +3,7 @@
 # with a madc binary (the release pack step; design doc
 # 2026-07-04-forest-default-mode-design.md §7).
 #
-#   bash scripts/forest_pack.sh [--sidecar] [bin/madc]
+#   bash scripts/forest_pack.sh [--sidecar] [--image <file>] [bin/madc]
 #
 # Default (embedded carrier): append the container to the binary itself.
 # MUST run AFTER strip: strip rewrites the ELF image and discards appended
@@ -13,21 +13,33 @@
 # until the next relink).
 #
 # --sidecar (forest-carriers S3, --with-forest=sidecar): write the container
-# as a standalone <bin>.forest file beside the binary instead — a
+# as a standalone <image>.forest file beside the image instead — a
 # --freeze-append onto an EMPTY file IS a valid standalone container
 # (placement 2, container at offset 0; the S1 darwin cross-freeze precedent).
-# The runtime discovery chain finds it as arm 3 (sidecar beside the image).
+# The runtime discovery chain finds it as a sidecar arm.
+#
+# --image <file> (forest-carriers S4, --enable-shared): pack a carrier image
+# OTHER than the binary — the shared libmadc, whose image the thin CLI and
+# every embedding host load, so one container serves them all (discovery arm
+# 2). The named binary still does the freezing and the verification; only the
+# carrier changes. Same strip-before-pack ordering applies to that image.
 #
 # Pack failure = build failure (set -e).
 set -e
 cd "$(dirname "$0")/.."
 
 SIDECAR=0
-if [ "$1" = "--sidecar" ]; then
-    SIDECAR=1
-    shift
-fi
+IMAGE=
+while [ $# -gt 0 ]; do
+    case "$1" in
+	--sidecar) SIDECAR=1; shift ;;
+	--image) IMAGE="$2"; shift 2 ;;
+	--image=*) IMAGE="${1#--image=}"; shift ;;
+	*) break ;;
+    esac
+done
 BIN="${1:-bin/madc}"
+IMAGE="${IMAGE:-$BIN}"
 LIST=scripts/forest_pack_headers.txt
 mkdir -p tmp
 TU=tmp/forest_pack_tu.cpp
@@ -47,45 +59,56 @@ cp "$BIN" tmp/forest_packer_madc
 
 ulimit -t 900
 if [ "$SIDECAR" = 1 ]; then
-    OUT="$BIN.forest"
+    OUT="$IMAGE.forest"
     rm -f "$OUT"
-    timeout 900 tmp/forest_packer_madc --freeze-mir-cache --freeze-append="$OUT" "$TU"
+    APPEND_TO="$OUT"
+elif [ "$IMAGE" = "$BIN" ]; then
+    OUT="$IMAGE"
+    APPEND_TO="$OUT"
 else
-    OUT="$BIN"
-    timeout 900 tmp/forest_packer_madc --freeze-mir-cache --freeze-append="$BIN" "$TU"
+    # A carrier image that is not the binary is (in the shared shape) the
+    # libmadc the PACKER ITSELF has loaded. Append to a copy and rename it
+    # over the image: the running mapping is never written through, and the
+    # replacement is atomic.
+    OUT="$IMAGE"
+    APPEND_TO=tmp/forest_pack_image.bin
+    cp -p "$IMAGE" "$APPEND_TO"
+fi
+timeout 900 tmp/forest_packer_madc --freeze-mir-cache --freeze-append="$APPEND_TO" "$TU"
+if [ "$APPEND_TO" != "$OUT" ]; then
+    mv -f "$APPEND_TO" "$OUT"
 fi
 
 # Verify: the container reads back (context-hash pin + directory) and the
 # binary still runs the frozen module — the dlsym-heavy smoke that proves
-# plain strip kept .dynsym intact. Embedded reads the binary's own blob;
-# sidecar names the file explicitly (and --run-frozen= takes the same path).
-if [ "$SIDECAR" = 1 ]; then
-    timeout 120 "$BIN" --dump-forest="$OUT" > tmp/forest_pack_dump.txt
-else
+# plain strip kept .dynsym intact. Packing the binary's OWN image verifies
+# through the self-image arm (no path: the running executable's blob); every
+# other carrier names the container file explicitly.
+if [ "$OUT" = "$BIN" ]; then
     timeout 120 "$BIN" --dump-forest > tmp/forest_pack_dump.txt
+    timeout 120 "$BIN" --run-frozen
+else
+    timeout 120 "$BIN" --dump-forest="$OUT" > tmp/forest_pack_dump.txt
+    timeout 120 "$BIN" --run-frozen="$OUT"
 fi
 grep -q '^forest	units=' tmp/forest_pack_dump.txt
-if [ "$SIDECAR" = 1 ]; then
-    timeout 120 "$BIN" --run-frozen="$OUT"
-else
-    timeout 120 "$BIN" --run-frozen
-fi
 
 # MIR-cache bind-lane equivalence (rung 3, opt-in lane): the packed binary
 # compiling a real test with MADC_MIR_CACHE_BIND=1 must (a) actually engage
 # the cache lane — a silent fallback would pass every equality check while
 # testing nothing — and (b) produce byte-identical output vs the default
-# (lane off) run: the blob is DERIVED state, never semantic. In sidecar mode
-# the bind reaches the container through the DISCOVERY chain (<bin>.forest
-# beside the binary), so this doubles as the sidecar-arm smoke.
-MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" -v tests/testfreezerun.mad 2>/dev/null \
-    | grep -aq 'mir cache: bind module staged'
+# (lane off) run: the blob is DERIVED state, never semantic. The bind reaches
+# its container through the DISCOVERY chain, so for a sidecar or a library
+# image this doubles as that carrier's arm smoke.
+v=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" -v tests/testfreezerun.mad 2>&1 | tr -d '\0')
+grep -aq 'mir cache: bind module staged' <<<"$v"
 out_cache=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
 out_nocache=$(timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
 [ "$out_cache" = "$out_nocache" ]
 
+units=$(grep -c '^unit	' tmp/forest_pack_dump.txt)
 if [ "$SIDECAR" = 1 ]; then
-    echo "forest_pack: OK ($(grep -c '^unit	' tmp/forest_pack_dump.txt) units in sidecar $OUT; bind cache == no-cache)"
+    echo "forest_pack: OK ($units units in sidecar $OUT; bind cache == no-cache)"
 else
-    echo "forest_pack: OK ($(grep -c '^unit	' tmp/forest_pack_dump.txt) units appended to $BIN; bind cache == no-cache)"
+    echo "forest_pack: OK ($units units appended to $OUT; bind cache == no-cache)"
 fi

@@ -40,7 +40,7 @@ TEST_CASE("silent_fallback: chain miss returns NULL with no notice") {
 	std::unique_ptr<Program> prog = engine.create_program();
 	std::ostringstream err;
 	prog->error_stream = &err;
-	prog->forest_bind_enabled = true;
+	prog->registration_policy.enable_forest_bind = true;
 	CHECK(prog->ensure_bind_forest() == (CirFrozenForest *)NULL);
 	CHECK(err.str().empty());
 }
@@ -51,7 +51,7 @@ TEST_CASE("loud_fallback: chain miss returns NULL after one notice") {
 	std::unique_ptr<Program> prog = engine.create_program();
 	std::ostringstream err;
 	prog->error_stream = &err;
-	prog->forest_bind_enabled = true;
+	prog->registration_policy.enable_forest_bind = true;
 	prog->registration_policy.forest_missing_policy =
 		Program::RegistrationPolicy::ForestPolicy::loud_fallback;
 	CHECK(prog->ensure_bind_forest() == (CirFrozenForest *)NULL);
@@ -67,7 +67,7 @@ TEST_CASE("strict_require: chain miss is a hard error") {
 	unsetenv("MADC_FOREST");
 	MadcEngine engine;
 	std::unique_ptr<Program> prog = engine.create_program();
-	prog->forest_bind_enabled = true;
+	prog->registration_policy.enable_forest_bind = true;
 	prog->registration_policy.forest_missing_policy =
 		Program::RegistrationPolicy::ForestPolicy::strict_require;
 	// Throw prints to stderr (never DBG-gated) then raises std::exception.
@@ -78,7 +78,7 @@ TEST_CASE("strict_require: explicit --forest-bind path miss is a hard error") {
 	unsetenv("MADC_FOREST");
 	MadcEngine engine;
 	std::unique_ptr<Program> prog = engine.create_program();
-	prog->forest_bind_enabled = true;
+	prog->registration_policy.enable_forest_bind = true;
 	prog->forest_bind_path = "tmp/definitely-absent.msnap";
 	prog->registration_policy.forest_missing_policy =
 		Program::RegistrationPolicy::ForestPolicy::strict_require;
@@ -101,6 +101,19 @@ TEST_CASE("loud_fallback: config mismatch is the silent multi-dialect fall-throu
 	CHECK(err.str().empty());
 	prog->forest_missing_fallback(/*config_mismatch=*/false);
 	CHECK(err.str().find("no frozen forest found") != std::string::npos);
+}
+
+// The library-image arm (forest-carriers S4) keys off image IDENTITY: in a
+// monolithic link — this unit binary, and bin/madc by default — libmadc's code
+// lives in the executable itself, so the arm must resolve to the very path
+// arm 1 already probed and be skipped. (The shared shape, where the two
+// differ, is integration-gated by scripts/forest_library_gate.sh.)
+TEST_CASE("library image resolves to the executable in a monolithic link") {
+	std::string exe = madc_self_exe_path();
+	std::string lib = madc_self_lib_path();
+	CHECK(!exe.empty());
+	CHECK(!lib.empty());
+	CHECK(lib == exe);
 }
 
 TEST_CASE("strict_require: config mismatch is still a hard error") {

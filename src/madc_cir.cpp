@@ -4581,7 +4581,7 @@ static bool project_parse_all(MadcEngine &engine,
 		// Each TU binds the one embedded/standalone forest (compiles
 		// BIND; only the build-time pack freezes). ensure_bind_forest()
 		// falls through to live parse when no container is present.
-		prog->forest_bind_enabled = forest_bind;
+		prog->registration_policy.enable_forest_bind = forest_bind;
 		prog->forest_bind_path = forest_bind_path;
 		prog->class_pattern_live_capture = class_pattern_live_capture;
 		for (const std::string &inc : tu.include_dirs)

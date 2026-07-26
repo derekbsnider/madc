@@ -400,12 +400,23 @@ high-level" — the answer is both.**
   (`forest_missing_policy` silent/loud/strict + `enable_external_forest`
   in the RegistrationPolicy sandbox family); full shape × platform
   matrix green (Linux arbiter through BOTH carriers 756/0/0/9; Mac 7/7
-  legs both arches)
+  legs both arches). Forest-carriers S4 COMPLETE (v0.49.0) — the SHARED
+  shape: forest-in-library discovery arm (`dladdr` → the libmadc image;
+  `<lib>.forest` sidecar behind it; image arms deliberately ungated by
+  `enable_external_forest`, so a sandboxed strict host still binds),
+  `--enable-shared` thin-CLI configure axis with the release pack
+  targeting `lib/libmadc.so`, and the forest knob family on the public
+  embedding API (`enable_forest_bind` / `forest_missing` /
+  `enable_external_forest`; `Program::forest_bind_enabled` folded into
+  `RegistrationPolicy`); permanent `forest_library_gate` (9 legs incl.
+  the `enable_external_forest=false` negative test S3 owed) + thin-CLI
+  parity 756/0/0/9 + `--enable-shared` product arbiter 756/0/0/9
   ([2026-07-25-forest-carriers-plan.md](2026-07-25-forest-carriers-plan.md)).
-  REMAINING: forest-carriers S4–S6 (shared shape / forest-in-library,
-  `-static-libmadc` Tier A, `madc.ini`; the existing-signed-binary
-  re-signer is consciously deferred residue); MH_OBJECT `.o` flavor
-  (fork); P2 libc++ STD-ABI script-lane flavor. Plan:**
+  REMAINING: forest-carriers S5–S6 (`-static-libmadc` Tier A,
+  `madc.ini`; the darwin **dylib** packaging shape and the
+  existing-signed-binary re-signer are consciously deferred residue);
+  MH_OBJECT `.o` flavor (fork); P2 libc++ STD-ABI script-lane flavor.
+  Plan:**
   [2026-07-25-macho-arm64-plan.md](2026-07-25-macho-arm64-plan.md).
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
   ~97.9% and ~475 integration tests passed. Retained only as the parity target

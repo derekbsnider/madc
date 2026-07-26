@@ -1,6 +1,31 @@
 # Test Status
 
-> **Current (2026-07-25, `develop` — v0.48.0, forest-carriers S3
+> **Current (2026-07-26, `develop` — v0.49.0, forest-carriers S4
+> complete):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
+> forest gate green, including the NEW `forest_library_gate` — the
+> shared shape's carrier: nine legs over a staged `bin/` + `lib/`
+> install (thin-CLI live parity; **library-image** bind with `-v` arm
+> naming + byte parity vs `--no-forest-bind`; arm order — the library
+> image beats a present `<exe>.forest` AND a junk `MADC_FOREST`;
+> `<lib>.forest` bind; and the embedding-host legs with no CLI knob:
+> strict+sandboxed binding THROUGH the library image, the
+> `enable_external_forest=false` refusal the S3 slice owed (same env,
+> knob flipped, opposite outcome), strict-on-empty, silent library
+> default). Thin-CLI parity suite (`MADC_BIN=bin/madc-thin`)
+> **756/0/0/9** — the shared-linked CLI behaves exactly like the
+> monolithic one. PRODUCT `--enable-shared` shape: `make release`
+> packs `lib/libmadc.so` (**240 units**), packed arbiter
+> **756/0/0/9** through the library carrier, and the installed tree
+> (133 KB `usr/bin/madc` + 11.5 MB `usr/lib/libmadc.so.0`) binds 240
+> units via `[library-image]`. The DEFAULT monolithic product shape was
+> re-run too (`forest_pack.sh` was refactored this slice): release packs
+> `bin/madc-release` (240 units), packed arbiter **756/0/0/9**.
+> `--exe` lane **740/0**. Unit tests +1
+> (`test_forest_policy`: monolithic image identity). Fork unchanged
+> (`1.0-madc.0.47.0` @74e705e4).
+
+> **Previous (2026-07-25, `develop` — v0.48.0, forest-carriers S3
 > complete):**
 > fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
 > forest gate green, including the NEW `forest_sidecar_gate` — the

@@ -2,6 +2,66 @@
 
 ## [Unreleased]
 
+## [v0.49.0] — 2026-07-26
+
+Forest carriers S4: the shared shape — the frozen forest can ride the
+**libmadc image**, so a packaged install (thin CLI + versioned `.so`)
+serves the compiler and every embedding host from ONE container; plus
+the forest knob family on the public embedding API and the
+`enable_external_forest` negative test the S3 slice owed.
+
+- **feat(forest): shared shape — forest-in-library (`dladdr` arm), thin
+  CLI, embedding-host policy surface (forest-carriers S4).** The
+  discovery chain gains its library arms, so a packaged install can put
+  ONE container where the CLI and every embedding host find it:
+  arm 2 is the **libmadc image** itself (`madc_self_lib_path()` —
+  `dladdr` on a libmadc-resident symbol → the same per-format probe;
+  skipped in the monolithic shape, where that path IS the executable
+  arm 1 already probed), and the sidecar arm gains **`<lib>.forest`**
+  after `<exe>.forest`. The image arms are deliberately NOT gated by
+  `enable_external_forest`: the library is the installation the host
+  already loaded, not an external redirection — so a sandboxed strict
+  host still binds its groves. New **`--enable-shared`** configure axis
+  links the CLI against the shared libmadc (the "thin CLI"; monolithic
+  stays the default), in which shape `make release` packs
+  `lib/libmadc.so` (`forest_pack.sh --image`) and `make install` ships
+  the packed library — strip-before-pack, so the install step no longer
+  re-strips it. `libmadc.so.0` now also exists in the build tree (a
+  `-lmadc` consumer's DT_NEEDED is the soname).
+- **feat(libmadc): frozen-forest knobs on the public embedding API.**
+  `madc::compile_options` gains `enable_forest_bind` (ON by default — a
+  host linked against a packed libmadc gets grove-backed system headers
+  for free; the library twin of `--no-forest-bind`), `forest_missing`
+  (`madc::forest_policy::silent_fallback|loud_fallback|strict_require`)
+  and `enable_external_forest`; `madc::security_policy` gains the
+  permission twin `allow_external_forest`, and `system_locked`
+  authority clamps it off (an ambient `MADC_FOREST` must not inject
+  declarations into a locked host's compiles). A runtime-eval child now
+  INHERITS both forest knobs instead of silently reverting to the
+  liberal defaults.
+- **refactor(forest): one owner for "may this compile bind frozen
+  state".** `Program::forest_bind_enabled` moved into the policy family
+  as `RegistrationPolicy::enable_forest_bind`, so it flows engine →
+  program → child like every other knob (and reaches hosts through
+  `compile_options`). CLI semantics are unchanged: compiles turn it on,
+  freezes live-parse.
+- **fix(build): a bare `make -C src` built nothing but a stamp.** The
+  forest-shape stamp rule (v0.48.0) is defined above `all:`, and GNU
+  make takes the first rule as the default goal — explicit goals
+  (`fulltest`, `release`) masked it. `.DEFAULT_GOAL := all` is now
+  stated explicitly.
+- **test(forest): `scripts/forest_library_gate.sh` (permanent, in
+  fulltest)** — 9 legs over a staged bin/ + lib/ install: thin-CLI live
+  parity, library-image bind (`-v` names the arm) with output parity,
+  arm order (library image beats a present `<exe>.forest` and a junk
+  `MADC_FOREST`), `<lib>.forest` sidecar bind, and the host legs that
+  have no CLI knob — strict+sandboxed binding through the library
+  image, the `enable_external_forest=false` negative test the S3 slice
+  owed (same env, knob flipped, opposite outcome), strict-on-empty, and
+  the silent library default. Plus `tests/libmadc_forest_smoke.cpp`
+  (public-API host) and a unit case pinning the monolithic image
+  identity.
+
 ## [v0.48.0] — 2026-07-25
 
 Forest carriers S3: the frozen forest becomes discoverable — ordered

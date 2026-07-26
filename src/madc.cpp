@@ -543,8 +543,9 @@ static void print_usage(const char *prog)
 "                          Discovery order (first usable container wins):\n"
 "                          1. this binary's own image (ELF trailer /\n"
 "                             Mach-O __MADC,__forest section),\n"
-"                          2. <exe>.forest beside the binary (sidecar),\n"
-"                          3. the $MADC_FOREST path\n"
+"                          2. the libmadc image, when linked shared,\n"
+"                          3. <exe>.forest, then <lib>.forest (sidecars),\n"
+"                          4. the $MADC_FOREST path\n"
 "  --no-forest-bind        force live parse (overrides the default and an\n"
 "                          explicit --forest-bind; the A/B measurement lever)\n"
 "  --dump-registered       parse, then print the registered name maps\n"
@@ -567,9 +568,9 @@ static void print_usage(const char *prog)
 "  MADC_MEM_LIMIT=<MB>     address-space guard (RLIMIT_AS, covers JIT\n"
 "                          mappings); default 4096 MB + 128 MB per --project\n"
 "                          TU; 0 disables. Trips name the knob.\n"
-"  MADC_FOREST=<file>      frozen forest container to bind when neither the\n"
-"                          binary's own image nor the <exe>.forest sidecar\n"
-"                          carries one (discovery arm 3)\n"
+"  MADC_FOREST=<file>      frozen forest container to bind when no earlier\n"
+"                          discovery arm (binary image, libmadc image,\n"
+"                          <exe>.forest / <lib>.forest sidecars) carries one\n"
 "\n"
 "AOT output (gcc vocabulary; do not run):\n"
 "  -c [-o file.o]          compile to a relocatable native object\n"
@@ -820,12 +821,12 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--forest-bind") == 0) {
             // Phase 6 (opt-in): bind grove-backed system #includes from the
             // blob appended to this executable instead of live-parsing them.
-            prog->forest_bind_enabled = true;
+            prog->registration_policy.enable_forest_bind = true;
             filearg = i + 1;
         } else if (strncmp(argv[i], "--forest-bind=", 14) == 0) {
             // --forest-bind=PATH: bind from a standalone --freeze container
             // (dev/testing without appending to the binary).
-            prog->forest_bind_enabled = true;
+            prog->registration_policy.enable_forest_bind = true;
             prog->forest_bind_path = argv[i] + 14;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--no-forest-bind") == 0) {
@@ -963,11 +964,11 @@ int main(int argc, char **argv)
     // freezing stays an explicit test-harness request, never the default.
     if ( no_forest_bind )
     {
-        prog->forest_bind_enabled = false;
+        prog->registration_policy.enable_forest_bind = false;
         prog->forest_bind_path.clear();
     }
-    else if ( !prog->forest_bind_enabled && !freeze_path && !freeze_run )
-        prog->forest_bind_enabled = true;
+    else if ( !prog->registration_policy.enable_forest_bind && !freeze_path && !freeze_run )
+        prog->registration_policy.enable_forest_bind = true;
 
     // AOT (-c / -shared / -o / --emit-*): compile through gen object-capture
     // mode and write a native artifact instead of running. -o without -c or
@@ -1187,7 +1188,7 @@ int main(int argc, char **argv)
 			        : "a.out";   // -r too: gcc emits a relocatable a.out
 	    int erc = madc_project_emit_native(engine, manifest, kind, outpath,
 					       cc_link_args,
-					       prog->forest_bind_enabled,
+					       prog->registration_policy.enable_forest_bind,
 					       prog->forest_bind_path);
 	    return erc == 0 ? 0 : 1;
 	}
@@ -1198,7 +1199,7 @@ int main(int argc, char **argv)
 	int run_argc = argc - filearg;
 	char **run_argv = argv + filearg;
 	int rc = madc_project_execute(engine, manifest, run_argc, run_argv,
-				      prog->forest_bind_enabled,
+				      prog->registration_policy.enable_forest_bind,
 				      prog->forest_bind_path,
 				      prog->class_pattern_live_capture);
 	return (rc < 0) ? 1 : rc;
