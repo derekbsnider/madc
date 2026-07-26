@@ -133,6 +133,15 @@ endif
 # plan S1). DARWIN_ARCH names the target arch as spelled in binary/lib names.
 MACOS_SDK ?= /workspace/sdk/MacOSX.sdk
 MACOS_MINOS ?= 12
+# Apple-target C++ header search, made EXPLICIT. `--sysroot`/`-isysroot` alone
+# is not enough: when the build host has its own libc++ installed (we install
+# libc++-18-dev for the Linux -stdlib=libc++ lane), clang puts its OWN
+# <driver>/../include/c++/v1 FIRST and the SDK's libc++ never gets looked at —
+# silently compiling Mach-O-targeting code against the glibc-flavored libc++,
+# and baking a build-host path into a binary that will run on a Mac. The
+# standard cross spelling fixes it: drop the toolchain's C++ dirs, name the
+# SDK's. C is unaffected (-nostdinc++ is C++-only), so $(CC) does not carry it.
+DARWIN_CXX_ISYS = -nostdinc++ -isystem $(MACOS_SDK)/usr/include/c++/v1
 ifeq ($(MODE),cross-x86-64-macos)
 # MADC_CROSS_APPLE: Mach-O link environment (implicit libSystem, no ELF
 # sonames/RUNPATH, runtime-free programs only — madc_cir.cpp).
@@ -140,12 +149,14 @@ MIRLIB	= $(MIRDIR)/build-x86-64-macos/libmir.a
 DEFINES += -DMIR_TARGET_X86_64_MACOS -DMADC_CROSS_TARGET='"x86-64-macos"' -DMADC_CROSS_APPLE
 DARWIN_ARCH = x86-64
 DARWIN_PRELUDE_TARGET = x86_64-apple-macos$(MACOS_MINOS)
+HOSTTAB_CXX = clang++-18 -target $(DARWIN_PRELUDE_TARGET) --sysroot $(MACOS_SDK) $(DARWIN_CXX_ISYS)
 endif
 ifeq ($(MODE),cross-arm64-macos)
 MIRLIB	= $(MIRDIR)/build-arm64-macos/libmir.a
 DEFINES += -DMIR_TARGET_ARM64_MACOS -DMADC_CROSS_TARGET='"arm64-macos"' -DMADC_CROSS_APPLE
 DARWIN_ARCH = arm64
 DARWIN_PRELUDE_TARGET = arm64-apple-macos$(MACOS_MINOS)
+HOSTTAB_CXX = clang++-18 -target $(DARWIN_PRELUDE_TARGET) --sysroot $(MACOS_SDK) $(DARWIN_CXX_ISYS)
 endif
 # --- hosted-on-macOS MODEs (Route 1, docs/plans/2026-07-25-madc-on-macos-plan.md).
 # The darwin toolchain: clang-18 against the owner's staged SDK, linking with
@@ -164,7 +175,7 @@ endif
 ifdef HOSTED_DARWIN_TARGET
 DARWIN_PRELUDE_TARGET = $(HOSTED_DARWIN_TARGET)
 CC  = clang-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK) -fuse-ld=lld
-CXX = clang++-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK) -fuse-ld=lld
+CXX = clang++-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK) $(DARWIN_CXX_ISYS) -fuse-ld=lld
 AR  = llvm-ar-18
 MODE_OPTFLAGS = -O2
 MIRLIB	= $(MIRDIR)/build-$(MODE)/libmir.a
@@ -192,13 +203,23 @@ WHOLE_ARCHIVE_END =
 MADC_SYS_INCLUDE_PREFIX_MAP = $(MACOS_SDK)=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
 export MADC_SYS_INCLUDE_PREFIX_MAP
 endif
+# The compiler whose `#include <...>` world and predefined-macro environment
+# this madc presents to the code it COMPILES. Normally $(CXX) — the compiler
+# that builds madc is the one whose headers it will read — with the CROSS
+# Apple modes as the deliberate exception: that binary emits Mach-O, so it must
+# search the SDK's headers and predefine the TARGET's macros. Both tables, not
+# just the include list: libc++'s __config branches on __APPLE__/__MACH__, so a
+# cross madc predefining __linux__ cannot configure libc++ however good its
+# header search is. No prefix map on the cross side — a cross build reads those
+# headers right here, at the paths the generator captured.
+HOSTTAB_CXX ?= $(CXX)
 # The host-derived tables (system include paths, predefined macros) are
 # regenerated at PARSE time like embedded_headers.cpp — placed HERE because
 # hosted modes override $(CXX) above, and the tables must match the compiler
 # whose binary they end up inside (a mode switch silently left the previous
 # toolchain's tables in place before; the generators are idempotent, so an
 # unchanged toolchain never churns mtimes).
-HOSTTAB_GEN := $(shell CXX="$(CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" ../scripts/gen_sys_includes.sh >/dev/null 2>&1; CXX="$(CXX)" ../scripts/gen_predefined_macros.sh >/dev/null 2>&1; echo done)
+HOSTTAB_GEN := $(shell CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" ../scripts/gen_sys_includes.sh >/dev/null 2>&1; CXX="$(HOSTTAB_CXX)" ../scripts/gen_predefined_macros.sh >/dev/null 2>&1; echo done)
 # Regenerate embedded_headers.cpp NOW, at Makefile parse time, before any target
 # is evaluated — so an edited/added/DELETED embedded header is reflected in
 # embedded_headers.o within a SINGLE make. The generators are idempotent (rewrite
@@ -701,12 +722,12 @@ $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
 # Host-specific + gitignored, so generate it if missing (a fresh checkout has
 # none); `make clean` removes it to force a refresh when the toolchain changes.
 sys_include_paths.cpp:
-	CXX="$(CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" ../scripts/gen_sys_includes.sh
+	CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" ../scripts/gen_sys_includes.sh
 
 # Host predefined compiler macros, captured from the configured compiler.
 # Same host-specific/gitignored/regenerate-if-missing treatment as above.
 predefined_macros.cpp:
-	CXX="$(CXX)" ../scripts/gen_predefined_macros.sh
+	CXX="$(HOSTTAB_CXX)" ../scripts/gen_predefined_macros.sh
 
 $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 	@mkdir -p $(OBJDIR)
