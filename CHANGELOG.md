@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [v0.53.0] — 2026-07-26
+
+`-static-libmadc` works in the **`.o` link lane** — the last stated
+boundary of the AOT-ledger track. The runtime enters as one more
+relocatable, merged through the same read-back path both containers
+already gate, and `-fno-eval-shims` lets a build say its artifact will
+never be host-called through the value ABI.
+
 - **feat(aot): `-static-libmadc` works in the `.o` LINK lane — the S5 stated
   boundary is lifted.** The AOT ledger is carried as MIR modules, so the
   pieces a program needs are now pulled into a private object-mode context,

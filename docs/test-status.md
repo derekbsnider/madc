@@ -1,6 +1,39 @@
 # Test Status
 
-> **Current (2026-07-26, `develop` — v0.52.0, Mach-O axis B step 4:
+> **Current (2026-07-26, `develop` — v0.53.0, `-static-libmadc` in the
+> `.o` LINK lane — forest-carriers S5's last stated boundary is lifted):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped**, `--exe`
+> **740/0**, `--obj` **740/0**, `machogate` **30/30** both arches, and the
+> packed release arbiter **756/0/0/9** (`make release`: 240 units + the
+> ledger, 2 modules / 22 symbols / 3175 bytes). The whole battery was run
+> because the change touches the shared emit/cover path, not just the new
+> lane. Fork unchanged (**1.0-madc.0.52.0** @ba216dea).
+> `scripts/forest_ledger_gate.sh` grew from 14 checks to **19**: leg 9
+> flipped from asserting the `.o`-lane REFUSAL to proving the lane.
+> Its shape is the discipline the earlier legs set — two `-c` objects, one
+> needing try/catch and one needing VLA scope exit (so a per-object merge,
+> or a missed one, cannot pass); the baseline link proved runtime-needing
+> FIRST, so the `-static-libmadc` assertions cannot pass vacuously; then
+> no madc library and no `__madc_*` imports in the image, output identical
+> to that same baseline binary (**the baseline IS the oracle** — same
+> objects, same link, only the runtime's origin differs), a run under an
+> empty library path, the shim-carrying variant refusing with BOTH the
+> symbols and the fixing flag named, and `-static-libmadc -r` still
+> refusing at the CLI.
+> Two findings worth keeping. (1) The AOT-ledger probe was running the
+> FULL container thaw, which binds the frozen string pool and arena into
+> LIVE parse state — so in a lane that links precompiled objects (no
+> lexer, no pool) it died with "forest thaw requires a live string pool".
+> The ledger is a container-GLOBAL segment; it opens header-only now. The
+> source lanes had hidden the layer confusion by always having a pool.
+> (2) Every `.o` carries `__madc_shim_*` host-call adapters whose twelve
+> `madc_value_*` imports are Tier B, so the first working link still
+> refused — accurately. `-fno-eval-shims` lets the build say the artifact
+> will never be host-called; `madc -static-libmadc -shared` from source
+> hits the identical wall by design, which is the tracked follow-on (the
+> value ABI as Tier-A C11), not a `.o`-lane defect.
+
+> **Previous (2026-07-26, `develop` — v0.52.0, Mach-O axis B step 4:
 > the darwin `.o` lane is real — axis B is DONE):**
 > fulltest **756 passed, 0 failed, 0 timed out, 9 skipped**, `--exe`
 > **740/0**, and `--obj` **740/0** — the ELF `.o` lane run explicitly,
