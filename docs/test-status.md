@@ -1,6 +1,44 @@
 # Test Status
 
-> **Current (2026-07-26, `develop` — v0.51.0, forest-carriers S6
+> **Current (2026-07-26, `develop` — v0.52.0, Mach-O axis B step 4:
+> the darwin `.o` lane is real — axis B is DONE):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped**, `--exe`
+> **740/0**, and `--obj` **740/0** — the ELF `.o` lane run explicitly,
+> because `MIR_object_read` was refactored onto a format-neutral input
+> view so the fork keeps ONE merge implementation behind two container
+> fronts. Unit tests unchanged (`test_object_load` among them, exercising
+> the refactored reader).
+> NEW gate `scripts/macho_obj_gate.sh` / `make -C src machogate`:
+> **30 assertions, 15 per arch (arm64 + x86_64)**, over TWO INDEPENDENT
+> AUTHORITIES. (a) `ld64.lld-18` + the macOS SDK: Apple's own linker
+> links our `MH_OBJECT`, including a MIXED link where a clang-18 TU calls
+> into the madc-compiled one, and the relocations it applies land where
+> they must — pool slots inside `__text` and `__bss`, the import slot as a
+> real dyld bind, a global constructor's entry kept in
+> `__mod_init_func`. (b) madc's own read-back: `-c` then link
+> disassembles IDENTICALLY to the direct `-o` emit, pool contents
+> included (a full-file `cmp` differs only in the code-signature
+> identifier, which is the output basename). The gate is NOT in fulltest —
+> its cross-madc / llvm-18 / SDK prerequisites would make it silently
+> skip there — so the make target rebuilds both cross madcs first and it
+> can never validate a stale binary.
+> That equivalence leg is the one that earned its keep: it caught a real
+> read-back bug every structural check passed over. Mach-O has ONE
+> `ARM64_RELOC_PAGEOFF12` where ELF has `LDST64_LO12` and `ADD_LO12`, so
+> the reader recovers the kind from the instruction's opcode — and the
+> first mask dropped bit 31 (`sf`), reading every `add Xd, Xn, #imm12`
+> back as a scaled load: immediate `#0x1` where the direct emit had
+> `#0x8`. Structurally valid, silently wrong arithmetic. Lesson kept in
+> the plan doc: for a format round trip, assert EQUIVALENCE against the
+> path that does not round-trip, not just "the linker accepted it".
+> Gate-craft trap found the same way: `llvm-otool -s` dumps section bytes
+> as 4-byte WORDS on arm64 and single BYTES on x86-64, so a byte-only
+> parser silently finds zero slots and fails on one arch only.
+> Still the owner's Mac: RUNNING any emitted Mach-O binary (every darwin
+> slice's RUN leg).
+> Fork release **1.0-madc.0.52.0** (@ba216dea).
+
+> **Previous (2026-07-26, `develop` — v0.51.0, forest-carriers S6
 > complete — the carriers track is DONE):**
 > fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
 > forest gate green, including the NEW `forest_config_gate` — the
@@ -48,7 +86,7 @@
 > original `fatal error` with the header removed.
 > Fork unchanged (`1.0-madc.0.47.0` @74e705e4).
 
-> **Previous (2026-07-26, `develop` — v0.50.0, forest-carriers S5
+> **Earlier (2026-07-26, `develop` — v0.50.0, forest-carriers S5
 > complete):**
 > fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
 > forest gate green, including the NEW `forest_ledger_gate` — the

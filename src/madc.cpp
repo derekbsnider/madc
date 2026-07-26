@@ -1102,6 +1102,20 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // -g on a Mach-O target: neither the executable writer nor the .o writer
+    // emits __DWARF sections yet. Say so ONCE, here, where the user's -g is
+    // visible, and continue without debug info — the alternative was the
+    // executable writer silently dropping an attached debug builder while the
+    // .o writer refused the emit outright.
+#if MADC_TARGET_APPLE_P
+    if ( madc_debug_info )
+    {
+        std::cerr << "madc: -g: DWARF is not emitted for Mach-O targets yet;"
+                     " continuing without debug info" << std::endl;
+        madc_debug_info = false;
+    }
+#endif
+
     // --pack-forest rides a LINKED image (executable or shared object): a
     // relocatable .o has no self-image carrier, and a JIT run produces no
     // image at all. One chokepoint for every lane (source, .o link,
