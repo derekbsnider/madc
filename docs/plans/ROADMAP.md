@@ -456,13 +456,28 @@ high-level" — the answer is both.**
   compiles downstream (`madc_pch.h`, which its public signatures need, was
   never installed), and `docs/build.md` — which still documented asmjit as
   a build requirement — was rewritten.
+  **MH_OBJECT `.o` FLAVOR DONE (2026-07-26, axis B step 4 — axis B is
+  complete):** `madc -c` for a Mach-O target writes a real `MH_OBJECT`
+  that **`ld64.lld` links** (mixed with a clang TU too), and
+  `MIR_object_read` reads one back, so `-c` → link, the two-TU merge and
+  `-r` all work on darwin. Read-back is proven EQUIVALENT — the `.o`
+  path's image disassembles identically to the direct emit, which is how
+  a real bug surfaced (Mach-O's single `PAGEOFF12` vs ELF's two kinds:
+  the opcode sniffing dropped `sf`, reading every `add #imm12` back as a
+  scaled load). One merge implementation, two container fronts, via a
+  format-neutral input view. Gate: `make -C src machogate`, 30 assertions
+  over both arches.
   REMAINING: the S5 Mac hardware legs
   (the darwin cross pack now carries the ledger and refuses without one,
-  but running an emitted Mach-O needs the owner's Mac) and the `.o` link
-  lane (blocked on the fork's MH_OBJECT flavor) are stated S5
-  boundaries; the darwin **dylib** packaging shape and the
-  existing-signed-binary re-signer remain consciously deferred residue;
-  MH_OBJECT `.o` flavor (fork); P2 libc++ STD-ABI script-lane flavor.
+  but running an emitted Mach-O needs the owner's Mac); `-static-libmadc`
+  in the `.o` link lane (its fork prerequisite is now in place — what
+  remains is madc-side: the ledger's cover analysis has to take the
+  merged builder's UNDEF list as its input instead of a compile
+  context's imports); the in-process `.o` loader on Apple hosts (needs
+  `MAP_JIT` + the Mach-O parse; refuses loudly today); the darwin
+  **dylib** packaging shape and the existing-signed-binary re-signer
+  remain consciously deferred residue; P2 libc++ STD-ABI script-lane
+  flavor.
   Plan:**
   [2026-07-25-macho-arm64-plan.md](2026-07-25-macho-arm64-plan.md).
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached

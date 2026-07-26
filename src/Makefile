@@ -455,6 +455,14 @@ $(MIRDIR)/build-x86-64-macos/libmir.a: FORCE
 $(MIRDIR)/build-arm64-macos/libmir.a: FORCE
 	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-arm64-macos CPPFLAGS='-I. -DMIR_TARGET_ARM64_MACOS' build-arm64-macos/libmir.a
 
+# The MH_OBJECT `.o` gate (Mach-O axis B step 4): builds BOTH cross madcs
+# first, so the gate can never validate a stale binary, then runs the two
+# independent authorities — ld64.lld + the SDK, and madc's own read-back.
+# Not part of fulltest: it needs the cross madcs, llvm-18 and a macOS SDK,
+# and it skips (rc 0) when any is missing, which would make it silent there.
+machogate: cross-arm64-macos cross-x86-64-macos
+	@cd .. && bash scripts/macho_obj_gate.sh
+
 # madc hosted on macOS (Route 1): full madc binaries for the Macs.
 hosted-x86-64-macos:
 	$(MAKE) MODE=hosted-x86-64-macos ../bin/madc-hosted-x86-64-macos

@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+- **feat(macho): `MH_OBJECT` — `madc -c` writes a real Mach-O relocatable,
+  and the merge reader reads one back (Mach-O axis B step 4; axis B is now
+  complete).** Until now a darwin-target `-c` wrote an ELF `ET_REL` — a
+  documented interim ("ELF-container dev vehicles") that madc's own reader
+  consumed but no Apple tool could. `MIR_object_emit` on an Apple target now
+  assembles an `MH_OBJECT`: one unnamed `LC_SEGMENT_64` over the same section
+  names the executable writer uses (`__TEXT,__text` · `__DATA,__data` ·
+  `__DATA,__bss` zerofill last · `__DATA_CONST,__mir_addrpool` ·
+  `__DATA_CONST,__mod_init_func`), a real `LC_SYMTAB`/`LC_DYSYMTAB`, and
+  per-section `relocation_info` arrays. **`ld64.lld` links it** — including a
+  mixed link where a clang-compiled TU calls into the madc-compiled one —
+  and the relocations resolve to the right targets (pool slots into `__text`
+  and `__bss`, imports as dyld binds).
+- **feat(macho): the `.o` merge reader — every `.o` lane madc has on ELF now
+  works on darwin.** `MIR_object_read` gained a Mach-O front, so `-c` → link,
+  the two-TU merge, and `-r` (two `.o` → one) all work for Mach-O targets;
+  the merged `.o` stays linkable by BOTH madc and `ld64`. Read-back is
+  proven equivalent, not just plausible: `-c` then link disassembles
+  IDENTICALLY to the direct `-o` emit (pool contents included), which is how
+  a real bug surfaced — Mach-O has one `ARM64_RELOC_PAGEOFF12` where ELF has
+  two kinds, and the opcode sniffing that recovers the kind first dropped
+  the `sf` bit, reading every `add Xd, Xn, #imm12` back as a scaled load
+  (immediate `#0x1` where the direct emit had `#0x8`).
+- **refactor(object): ONE merge implementation, two container fronts.** The
+  reader now works off a format-neutral input view (section bodies +
+  alignments, symbols, relocations, debug) that an ELF front or a Mach-O
+  front fills — compile-time exclusive, since one target per compiled stack
+  — instead of growing a second copy of the symbol-unification and rebasing
+  logic. ELF behavior is unchanged (`fulltest` + `--exe` + `--obj`).
+- **fix(cli): `-g` on a Mach-O target says so once.** Neither Mach-O writer
+  emits `__DWARF` yet; madc now prints one notice and continues without
+  debug info, replacing the executable writer's silent drop of an attached
+  debug builder (the `.o` writer refuses one outright, so the layers agree).
+- **New gate: `scripts/macho_obj_gate.sh` / `make -C src machogate`** — 30
+  assertions, 15 per arch, over two independent authorities (`ld64.lld` + the
+  macOS SDK, and madc's own read-back round trip), including a global
+  constructor's `__mod_init_func` entry surviving both linkers. The target
+  rebuilds both cross madcs first so the gate can never validate a stale
+  binary. Running an emitted Mach-O binary remains the owner's Mac, as in
+  every darwin slice.
+
 ## [v0.51.0] — 2026-07-26
 
 Forest carriers S6: **`madc.ini`** — the optional configuration file completes
