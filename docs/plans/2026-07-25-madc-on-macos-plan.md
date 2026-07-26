@@ -82,8 +82,19 @@ using `std::string`/STL containers/iostreams.
 
 ### Phase 2 — libc++ STD-ABI flavor (script-lane C++ types)
 
+> **TRACK STARTED 2026-07-26 (owner-prioritized, ahead of the remaining
+> Mach-O polish). Own plan doc:**
+> [`2026-07-26-darwin-cpp-lane-plan.md`](2026-07-26-darwin-cpp-lane-plan.md)
+> — four pieces: target-derived header search for the CROSS lane (the
+> hosted MODEs already generate an SDK-derived table; the cross MODEs
+> bake Linux libstdc++ paths), the libc++ parse burn-down, the
+> `std::__1` ABI flavor, and freezing the libc++ groves into the darwin
+> packs so a Mac without Command Line Tools compiles C++ from the forest
+> (LOADED == parsed) rather than from an embedded header twin.
+
 `madc_mangle.cpp` is the single mangling authority (plus ~8 call sites
-carrying `__cxx11` knowledge) — give it an ABI flavor switch:
+carrying `__cxx11` knowledge — 21 references across 7 files as counted
+2026-07-26) — give it an ABI flavor switch:
 `std::__cxx11::`/libstdc++ layouts on GNU hosts, `std::__1::`/libc++
 layouts on Apple hosts.  Includes the object-size/layout table
 (string/stream sizes used for stack reservation), `cout`/`cerr`/`cin`
