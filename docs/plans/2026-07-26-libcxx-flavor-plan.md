@@ -173,21 +173,55 @@ The denominator, measured over the SDK's libc++ 18 headers:
 | compiler **type-trait intrinsics** (`__remove_reference_t`, `__add_lvalue_reference`, `__decay`, `__is_destructible`, `__array_rank`, …) | **41** |
 | ordinary `__builtin_*` functions (most already in madc's table) | 18 |
 
-So the burn-down is not a diffuse "make libc++ parse" slog: it is a
-bounded set of self-contained sema intrinsics with clang as an exact
-oracle. Metric: **N of 41 trait intrinsics implemented**.
+**Second measurement, and it shortens the critical path a lot: only TWO
+of those 41 are mandatory.** libc++'s `__type_traits/` contains exactly
+two hard `#error`s —
+
+```
+#  error "remove_reference not implemented!"
+#  error is_trivially_destructible is not implemented
+```
+
+— and every other trait has a C++ template fallback behind its
+`__has_builtin` guard. So madc does not need 41 intrinsics to compile
+libc++; it needs `__has_builtin` plus **two** traits, after which libc++
+configures on its fallbacks. The other 39 become a
+compile-speed/robustness follow-on, not a blocker.
+
+The `__has_*` surface libc++ leans on (uses in the SDK's libc++ 18),
+none of which madc implements today — all silently evaluate to 0:
+
+| operator | uses |
+|---|---:|
+| `__has_builtin` | 122 |
+| `__has_attribute` | 29 |
+| `__has_include` | 18 |
+| `__has_feature` | 10 |
+| `__has_cpp_attribute` | 8 |
+| `__has_keyword` · `__has_extension` · `__has_declspec_attribute` | 11 |
 
 Slice order follows from that:
 
-1. **`__has_builtin` as a real preprocessor operator**, answered from
-   madc's builtin registry — and answering **truthfully**. Claiming a
-   builtin madc does not implement would trade libc++'s clean `#error`
-   for a mystifying failure deeper in the header, which is the opposite
-   of the loud-failure contract.
-2. Traits in dependency order (`__remove_reference_t` → `__decay` → the
-   `__is_*` family), each one flipping a libc++ header from `#error` to
-   compiling. Registry-driven, so a new trait is a registry entry plus
-   its sema, never a call-site special case (Rule #7).
+1. **The `__has_*` family as real preprocessor operators**, each answered
+   from madc's own state and each answering **truthfully**:
+   `__has_include` from the existing include-resolution path,
+   `__has_builtin` from the builtin registry, the attribute forms from
+   the attribute handler's known set, `__has_feature`/`__has_extension`/
+   `__has_keyword` from the `LanguageStd`/keyword registry. Claiming
+   support madc lacks would trade libc++'s clean `#error` for a
+   mystifying failure deeper in the header — the opposite of the
+   loud-failure contract. They slot in beside `defined` in
+   `Program::evaluateIfCondition`'s `parse_primary`.
+2. **The two mandatory intrinsics**, `__remove_reference_t` and
+   `__is_trivially_destructible`. Registry-driven, so each is a registry
+   entry plus its sema, never a call-site special case (Rule #7).
+3. Then the burn-down proper — and expect it to land in **template
+   metaprogramming**, not intrinsics: with the fallbacks in play, libc++
+   compiles `<type_traits>` through exactly the dependent-name /
+   partial-specialization machinery the tsubst spine owns. That is the
+   real work, and it is the same muscle the libstdc++ burn-down built.
+4. The remaining 39 intrinsics, as a speed/robustness pass: each one
+   swaps a fallback template instantiation for a direct answer.
 
 Same method as the libstdc++ burn-down: compile a real
 `#include <string>` / `<vector>` / `<iostream>` against libc++, reduce
