@@ -66,6 +66,17 @@ extern const char *madc_pack_forest_path;
 // madc_pack_forest_path: read at both native-emit sites.
 extern bool madc_static_libmadc;
 
+// -fno-eval-shims: omit the __madc_shim_<sym> host-call adapters from this
+// artifact. They are the value-ABI surface a libmadc host calls a compiled
+// function through, so every artifact that CAN be host-called carries them —
+// but a `.o` headed for a standalone link never will be, and the adapters'
+// madc_value_* imports are Tier B (not on the AOT ledger), which would make
+// -static-libmadc refuse. Whether the artifact is host-callable is a property
+// of the BUILD; an executable emit infers it (nothing can call in), a `.o`
+// cannot, so the build says it — the shape -fPIC has. Emit-lane state, read
+// wherever aot_skip_eval_shims is stamped (the source lanes and --project).
+extern bool madc_no_eval_shims;
+
 // A compiled-and-linked CIR->c2mir->MIR module held alive for repeated
 // in-process calls — the engine behind libmadc's program::exec / call /
 // eval surface (madc_cir_execute is the same machinery one-shot).
@@ -208,12 +219,18 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
 // combined .o (ld -r), executables (PIE default/-no-pie) and -shared as
 // from source; -g inputs' DWARF merges into the output (multi-CU; a cache
 // emitted before the cross-section debug relocations is refused with a
-// re-emit message). Returns 0/-1.
+// re-emit message). Returns 0/-1. `prog` supplies the forest carrier the
+// AOT ledger is read from under -static-libmadc (the runtime enters as one
+// more relocatable, generated against the merged builder's UNDEF names);
+// nothing else in this lane reads it, so a caller with no compile state may
+// pass NULL — with -static-libmadc that reads as "no carrier", the same
+// build-side refusal an unpacked madc gets.
 // madc_cir_run_objects: merge in memory, load, run main (argv[0] = the
 // first object path); a single path takes the R4b direct-load lane.
 int madc_cir_link_objects(const std::vector<std::string> &paths,
 			  MadcNativeKind kind, const char *out_path,
-			  const std::vector<std::string> &user_libs);
+			  const std::vector<std::string> &user_libs,
+			  Program *prog);
 int madc_cir_run_objects(const std::vector<std::string> &paths,
 			 int argc, char **argv);
 

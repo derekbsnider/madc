@@ -212,7 +212,7 @@ TEST_SUITE("madc_cir_run_object") {
 	REQUIRE(!r_path.empty());
 	std::vector<std::string> user_libs;
 	REQUIRE(madc_cir_link_objects(paths, mnkRelocatable, r_path.c_str(),
-				      user_libs) == 0);
+				      user_libs, NULL) == 0);
 	char *rargv[] = { (char *)r_path.c_str(), NULL };
 	CHECK(madc_cir_run_object(r_path.c_str(), 1, rargv) == 72);
 
@@ -221,7 +221,7 @@ TEST_SUITE("madc_cir_run_object") {
 	    write_temp("/tmp/madc_unit_objload_XXXXXX.bin", 4, "");
 	REQUIRE(!x_path.empty());
 	REQUIRE(madc_cir_link_objects(paths, mnkPieExecutable,
-				      x_path.c_str(), user_libs) == 0);
+				      x_path.c_str(), user_libs, NULL) == 0);
 	{
 	    std::ifstream f(x_path.c_str(), std::ios::binary);
 	    std::string img((std::istreambuf_iterator<char>(f)),
@@ -239,7 +239,7 @@ TEST_SUITE("madc_cir_run_object") {
 	    write_temp("/tmp/madc_unit_objload_XXXXXX.o", 2, "");
 	REQUIRE(!d_path.empty());
 	CHECK(madc_cir_link_objects(dup, mnkRelocatable, d_path.c_str(),
-				    user_libs) != 0);
+				    user_libs, NULL) != 0);
 
 	std::remove(a_path.c_str());
 	std::remove(b_path.c_str());
@@ -294,7 +294,7 @@ TEST_SUITE("madc_cir_run_object") {
 	REQUIRE(!r_path.empty());
 	std::vector<std::string> user_libs;
 	REQUIRE(madc_cir_link_objects(paths, mnkRelocatable, r_path.c_str(),
-				      user_libs) == 0);
+				      user_libs, NULL) == 0);
 	CHECK(initarr_size(r_path) == 16);
 	char *rargv[] = { (char *)r_path.c_str(), NULL };
 	CHECK(madc_cir_run_object(r_path.c_str(), 1, rargv) == 42);
@@ -343,7 +343,7 @@ TEST_SUITE("madc_cir_run_object") {
 	REQUIRE(!r_path.empty());
 	std::vector<std::string> user_libs;
 	REQUIRE(madc_cir_link_objects(paths, mnkRelocatable, r_path.c_str(),
-				      user_libs) == 0);
+				      user_libs, NULL) == 0);
 	CHECK(sym_bind(r_path, "Adder__add") == STB_WEAK);
 	char *rargv[] = { (char *)r_path.c_str(), NULL };
 	CHECK(madc_cir_run_object(r_path.c_str(), 1, rargv) == 42);
@@ -396,7 +396,7 @@ TEST_SUITE("madc_cir_run_object") {
 	REQUIRE(!r_path.empty());
 	std::vector<std::string> user_libs;
 	REQUIRE(madc_cir_link_objects(paths, mnkRelocatable, r_path.c_str(),
-				      user_libs) == 0);
+				      user_libs, NULL) == 0);
 	CHECK(sym_bind(r_path, "sumv") == STB_WEAK);
 	CHECK(sym_bind(r_path, "tunable") == STB_WEAK);
 	char *rargv[] = { (char *)r_path.c_str(), NULL };
@@ -436,7 +436,7 @@ TEST_SUITE("madc_cir_run_object") {
 	    write_temp("/tmp/madc_unit_objload_XXXXXX.o", 2, "");
 	REQUIRE(!out_path.empty());
 	CHECK(madc_cir_link_objects(paths, mnkRelocatable, out_path.c_str(),
-				    user_libs) != 0);
+				    user_libs, NULL) != 0);
 	std::remove(o_path.c_str());
 	std::remove(out_path.c_str());
     }
@@ -466,7 +466,7 @@ TEST_SUITE("madc_cir_run_object") {
 	REQUIRE(!r_path.empty());
 	std::vector<std::string> user_libs;
 	REQUIRE(madc_cir_link_objects(paths, mnkRelocatable, r_path.c_str(),
-				      user_libs) == 0);
+				      user_libs, NULL) == 0);
 	{
 	    std::ifstream f(r_path.c_str(), std::ios::binary);
 	    std::string img((std::istreambuf_iterator<char>(f)),

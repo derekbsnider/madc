@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+- **feat(aot): `-static-libmadc` works in the `.o` LINK lane — the S5 stated
+  boundary is lifted.** The AOT ledger is carried as MIR modules, so the
+  pieces a program needs are now pulled into a private object-mode context,
+  generated, and emitted as one more relocatable that merges into the same
+  builder as the `.o` inputs. Deliberately through the merge rather than
+  generating into the input builder: a builder's symbol table is append-only,
+  and the unification that turns the inputs' UNDEF entries into references to
+  the runtime's definitions IS the merge — the same read-back path the `.o`
+  lane already gates on both containers (ELF `ET_REL` and `MH_OBJECT`), so
+  this added no format code and no fork change.
+- **feat(aot): `-fno-eval-shims` — state that an artifact will never be
+  host-called through the value ABI.** Every `.o` carries a
+  `__madc_shim_<sym>` adapter per host-callable function (the surface a
+  libmadc host calls compiled functions through), and those adapters import 12
+  `madc_value_*` accessors, which are Tier B. An executable emit from source
+  infers that nothing can call in and skips them; a `.o` cannot know, so the
+  build says it — the shape `-fPIC` has. Objects compiled with the flag link
+  runtime-free under `-static-libmadc`; objects that kept their adapters
+  refuse, naming both the symbols and the flag. (`-shared -static-libmadc`
+  hits the same Tier-B wall by design; the real fix is the value ABI as
+  Tier-A C11 runtime, tracked separately.)
+- **fix(forest): the AOT-ledger carrier opens header-only.** The ledger is a
+  container-GLOBAL segment, so `ensure_ledger_forest` now stops at the
+  directory instead of running `complete_open`, which binds the frozen string
+  pool and arena into LIVE parse state that a link-only lane has no reason to
+  own. Before this the ledger probe died with "forest thaw requires a live
+  string pool" in any lane without a lexer.
+- **refactor(aot): one cover analysis, two program shapes.** The
+  runtime-need classifier and the `-static-libmadc` verification now take the
+  reference LIST rather than its source, so the source lanes pass the
+  context's unresolved imports and the `.o` lane passes the merged builder's
+  UNDEF names — same classifier, same two diagnostics (no-carrier vs Tier-B).
+  `cir_ledger_pull` likewise grew a seed list instead of a second pull.
+
 ## [v0.52.0] — 2026-07-26
 
 Mach-O axis B step 4: **`madc -c` for a Mach-O target writes a real

@@ -1798,11 +1798,16 @@ static double forest_stat_now(void)
 // (a C compile must not bind a C++-parsed corpus; the packed-binary default
 // relies on it). The config gate reads only the directory header, so a
 // mismatched arm costs footer + directory, not the pool/arena binds (R1).
+// header_only stops right there, at the directory: the container-global
+// segments (the AOT ledger) live outside the groves, so a consumer that only
+// wants those must not be made to bind the frozen string pool / arena into
+// live parse state it does not have (the .o link lane never parses).
 static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 					 const char *arm, bool quiet_missing,
 					 bool &config_mismatch,
 					 double &map_secs, double &open_secs,
-					 bool require_config_match = true)
+					 bool require_config_match = true,
+					 bool header_only = false)
 {
     double _t0 = forest_stat_now();
     const void *image = NULL;
@@ -1834,7 +1839,7 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 	delete f;
 	return NULL;
     }
-    if ( !f->complete_open(/*c2m=*/NULL) )
+    if ( !header_only && !f->complete_open(/*c2m=*/NULL) )
     {
 	open_secs += forest_stat_now() - _t1;
 	delete f;
@@ -1842,7 +1847,9 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
     }
     open_secs += forest_stat_now() - _t1;
     DBG(std::cout << "forest-bind: [" << arm << "] opened container ("
-	<< f->unit_count() << " units)" << std::endl);
+	<< (header_only ? "directory only"
+			: std::to_string(f->unit_count()) + " units") << ")"
+	<< std::endl);
     return f;
 }
 
@@ -1854,7 +1861,8 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 // binds regardless of the producer's std/-D). Keeping ONE walker keeps the arm
 // ORDER — the thing carriers are actually about — in a single place.
 CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
-					     bool &cfg_mismatch)
+					     bool &cfg_mismatch,
+					     bool header_only)
 {
     // Arm 0: an explicit --forest-bind=PATH is the whole search (CLI beats
     // every discovery arm).
@@ -1862,14 +1870,16 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 	return forest_probe_arm(this, forest_bind_path.c_str(),
 				"explicit", /*quiet_missing=*/false,
 				cfg_mismatch, _forest_map_seconds,
-				_forest_open_seconds, require_config_match);
+				_forest_open_seconds, require_config_match,
+				header_only);
 
     // Arm 1: self-image — the running binary's own carrier (ELF trailer /
     // Mach-O __MADC,__forest section). An unpacked dev binary misses quietly.
     CirFrozenForest *f = forest_probe_arm(this, NULL, "self-image",
 					  /*quiet_missing=*/true, cfg_mismatch,
 					  _forest_map_seconds, _forest_open_seconds,
-					  require_config_match);
+					  require_config_match,
+					  header_only);
     // Arm 2 (forest-carriers S4): library image — in the SHARED shape the
     // forest rides libmadc's own image, so ONE container serves the thin CLI
     // and every embedding host. dladdr on a libmadc symbol resolves the image
@@ -1885,7 +1895,8 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 	f = forest_probe_arm(this, lib.c_str(), "library-image",
 			     /*quiet_missing=*/true, cfg_mismatch,
 			     _forest_map_seconds, _forest_open_seconds,
-			     require_config_match);
+			     require_config_match,
+			     header_only);
     if ( !f && registration_policy.enable_external_forest )
     {
 	// Arm 3: sidecar container beside an image (<exe>.forest, then
@@ -1896,12 +1907,14 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 	    f = forest_probe_arm(this, (exe + ".forest").c_str(),
 				 "sidecar", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
-				 _forest_open_seconds, require_config_match);
+				 _forest_open_seconds, require_config_match,
+				 header_only);
 	if ( !f && have_lib_image )
 	    f = forest_probe_arm(this, (lib + ".forest").c_str(),
 				 "lib-sidecar", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
-				 _forest_open_seconds, require_config_match);
+				 _forest_open_seconds, require_config_match,
+				 header_only);
 	// Arm 4: MADC_FOREST environment variable (a configured path; env
 	// outranks the madc.ini key per the config precedence rule
 	// CLI > environment > madc.ini > baked defaults).
@@ -1910,7 +1923,8 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 	    f = forest_probe_arm(this, env, "MADC_FOREST",
 				 /*quiet_missing=*/false, cfg_mismatch,
 				 _forest_map_seconds, _forest_open_seconds,
-				 require_config_match);
+				 require_config_match,
+				 header_only);
 	// Arm 5 (forest-carriers S6): the madc.ini `forest =` key — the LAST
 	// arm, because a configured default must lose to everything more
 	// specific. The CLI parses the file and hands the path down through
@@ -1920,7 +1934,8 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 				 registration_policy.forest_config_path.c_str(),
 				 "madc.ini", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
-				 _forest_open_seconds, require_config_match);
+				 _forest_open_seconds, require_config_match,
+				 header_only);
     }
     return f;
 }
@@ -1988,8 +2003,12 @@ CirFrozenForest *Program::ensure_ledger_forest()
 	return ledger_forest;
     }
     bool cfg_mismatch = false;
+    // header_only: the ledger is a container-GLOBAL segment, so the directory
+    // is the whole requirement — binding the frozen string pool and arena is
+    // grove work, and it needs live parse state this consumer may not have
+    // (the .o link lane links precompiled objects: no lexer, no pool).
     ledger_forest = probe_forest_chain(/*require_config_match=*/false,
-				       cfg_mismatch);
+				       cfg_mismatch, /*header_only=*/true);
     DBG(std::cout << "ledger: carrier "
 	<< (ledger_forest ? "opened" : "not found") << std::endl);
     return ledger_forest;

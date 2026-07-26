@@ -577,6 +577,77 @@ product path.
    no-op, the unit tests agree with the axis, and the axis-ON restore
    re-reads the file.
 
+## S5 boundary lift: `-static-libmadc` in the `.o` LINK lane (2026-07-26)
+
+S5 shipped the ledger for the SOURCE lanes and refused loudly in the
+multi-object link lane, for a stated reason: the ledger is carried as
+MIR modules, which merge into a compile *context*, while that lane
+merges native relocatables through `MIR_object_read` — and turning
+ledger modules into relocatables needed the MH_OBJECT `.o` flavor the
+fork lacked for Mach-O. Mach-O axis B step 4 (v0.52.0) removed that
+prerequisite, so the lane is now wired:
+
+- **The runtime enters as one more relocatable.** The pieces the program
+  needs are pulled into a PRIVATE object-mode context, generated, and
+  emitted with `MIR_gen_object_emit`; the caller merges that blob into
+  the same builder as the inputs. Not straight into the input builder,
+  because a builder's symbol table is append-only
+  (`MIR_object_add_symbol` never dedupes by name) — the unification that
+  turns the inputs' UNDEF entries into references to the runtime's
+  definitions lives in the MERGE. Going in through the merge reuses that
+  one unification implementation, and it rides the same read-back path
+  the `.o` lane already gates on BOTH containers, so the slice added no
+  format code and no fork change at all.
+- **Selection is seeded, not re-implemented.** `cir_ledger_pull` grew an
+  `extra` candidate list: the merged builder's UNDEF names join the
+  module-level imports under the same "no loaded module defines it"
+  filter, so one pull serves both shapes of program (a set of MIR
+  modules, or a set of native relocatables) and still fixpoints over the
+  pulled modules' own imports.
+- **The cover analysis is now list-driven.** `cir_filter_uncovered` /
+  `cir_static_libmadc_verify` take the reference LIST, not its source:
+  the source lanes pass the context's unresolved imports, the `.o` lane
+  passes `MIR_object_undef_name`. Same classifier, same two diagnostics
+  (no-carrier vs Tier-B), both lanes.
+- **The carrier opens header-only.** The ledger is a container-GLOBAL
+  segment, so `ensure_ledger_forest` now stops at the directory:
+  `complete_open` binds the frozen string pool and arena into LIVE parse
+  state, and a lane that links precompiled objects has no lexer and no
+  pool. Before this, the ledger probe died with "forest thaw requires a
+  live string pool" — a layer confusion the source lanes hid by always
+  having a pool.
+
+**What the lane actually ran into — the host-call shims.** Every `.o`
+carries a `__madc_shim_<sym>` adapter per host-callable function (the
+value-ABI surface a libmadc host calls a compiled function through), and
+those adapters import 12 `madc_value_*` accessors, which are **Tier B**.
+An executable emit from source skips the adapters (nothing can call in);
+a `.o` cannot know, so it keeps them. Whether an artifact is
+host-callable is a property of the BUILD, so the build now says it:
+**`-fno-eval-shims`** omits the adapters — the shape `-fPIC` has (the
+object's intended use, stated at compile time). Objects compiled with it
+link runtime-free under `-static-libmadc`; objects that kept their
+adapters refuse, naming both the symbols and the flag.
+
+Note this is NOT a `.o`-lane defect: `madc -static-libmadc -shared` from
+source hits the identical refusal, because `-shared` keeps its adapters
+by design. The real fix — the value-ABI accessor family and its cell
+allocator as Tier-A C11 in `src/rt/` (dual-build, so libmadc keeps ONE
+implementation) — is tracked as its own task, and it makes a
+self-contained *host-callable* plugin possible. Until then
+`-fno-eval-shims` is the answer for standalone links.
+
+*Evidence:* `scripts/forest_ledger_gate.sh` leg 9 (in fulltest) — two
+`-c` objects, one needing try/catch and one needing VLA scope exit, so a
+per-object merge or a missed one cannot pass: the baseline link is
+proved runtime-needing first, the `-static-libmadc` link has no madc
+library and no `__madc_*` imports, its output matches the
+libmadc-linked baseline byte for byte (the baseline IS the oracle — same
+objects, same link, only the runtime's origin differs), it runs with an
+empty library path, shim-carrying objects refuse with both the symbols
+and the flag named, and `-static-libmadc -r` still refuses at the CLI so
+the runtime rides the final link only.
+
 Windows arms (overlay carrier, `.madc` section, `madc.dll`) ride the
 Windows/PE track when it starts — the probe-chain design above is
 already shaped for them.
