@@ -7,7 +7,9 @@
 > because `MIR_object_read` was refactored onto a format-neutral input
 > view so the fork keeps ONE merge implementation behind two container
 > fronts. Unit tests unchanged (`test_object_load` among them, exercising
-> the refactored reader).
+> the refactored reader). Packed release arbiter **756/0/0/9** (`make
+> release`: 240 units + the ledger, 2 modules / 22 symbols / 3175 bytes) —
+> the fork's ELF merge path rides libmir into the release binary too.
 > NEW gate `scripts/macho_obj_gate.sh` / `make -C src machogate`:
 > **30 assertions, 15 per arch (arm64 + x86_64)**, over TWO INDEPENDENT
 > AUTHORITIES. (a) `ld64.lld-18` + the macOS SDK: Apple's own linker
