@@ -96,7 +96,12 @@ re-signer anyway).
    - *none*: live-parse fallback only (dev shape; what unpacked
      `bin/madc` is today).
 3. **Config file** — `--enable-config-file`: `madc.ini` lookup
-   (see below). OFF by default in embedding-host builds.
+   (see below). Default **yes** — the sandboxing rule is met by WHO
+   reads the file, not by the default: `libmadc` never reads one, so an
+   embedding host is unaffected by the axis and the standalone CLI gets
+   its config file. `--disable-config-file` removes the file-reading
+   path from the binary for builds that want the surface ABSENT rather
+   than merely unused (S6).
 
 The runtime probe chain accepts any carrier it finds regardless of the
 configured default — configure sets what the BUILD produces and what
@@ -121,10 +126,20 @@ the binary EXPECTS, not an artificial restriction on discovery.
   Windows) → user config dir → system config dir; first hit wins.
 - Initial keys: forest sidecar path, include-path additions, default
   `--std=`, resource-limit overrides (liberal-defaults rule applies).
-- **Sandboxing rule:** OFF by default for embedding-host builds — a
-  config file that can redirect where the compiler loads frozen state
-  from is an attack surface for sandboxed madc (`fork`+`rlimit`+
-  `seccomp` hosts). The standalone CLI enables it freely.
+- **Sandboxing rule:** a config file that can redirect where the
+  compiler loads frozen state from is an attack surface for sandboxed
+  madc (`fork`+`rlimit`+`seccomp` hosts). **As shipped (S6):** the
+  reader is a CLI-shape feature — `libmadc` never consults a config
+  file, so a host is safe by construction rather than by a build
+  default; the forest key rides `enable_external_forest` with the
+  sidecar/env arms, so a sandboxed host that turned those off also
+  turns arm 5 off; and `--disable-config-file` removes the code path
+  entirely for deployments that want the surface gone.
+- **As shipped (S6):** relative paths in the file resolve against the
+  FILE's directory, a leading `~/` expands, and the parser is STRICT —
+  an unknown key or malformed line is a hard error naming file:line,
+  never a warning that half-applies. `--config=<file>` names one file
+  (and must load); `--no-config` skips the search.
 
 ## `-static-libmadc` — madc-emitted binaries with zero madc-library dependency
 
@@ -249,8 +264,8 @@ product path.
    **S3 COMPLETE (2026-07-25): gate GREEN — full shape × platform
    matrix.** `ensure_bind_forest` now walks the ordered chain (first
    usable container wins): 1. self-image, 2. (S4 slot) library image,
-   3. `<exe>.forest` sidecar, 4. `$MADC_FOREST`, 5. (S6 slot)
-   `madc.ini`/baked default — every arm validated identically
+   3. `<exe>.forest` sidecar, 4. `$MADC_FOREST`, 5. (S6 slot) the
+   `madc.ini` forest key — every arm validated identically
    (footer + context hash + version pin + v27 config gate); explicit
    `--forest-bind=` bypasses the chain and is now a LOUD fall-through
    when it fails to open. Failure policy rides `RegistrationPolicy`:
@@ -444,6 +459,123 @@ product path.
    lowers those builtins to native MIR ops instead of calls.
 6. **S6 — `madc.ini`** (configure-gated, smallest slice, anytime after
    S3).
+   **S6 COMPLETE (2026-07-26): gate GREEN — the carriers track is done.**
+   `madc.ini` is a small hand-written reader (`src/madc_config.cpp`,
+   `include/madc_config.h`) with a single-owner key table, and the
+   precedence rule it completes — **CLI > environment > madc.ini > baked
+   defaults** — is enforced in ONE visible place (`main()`, after the
+   argument loop) rather than spread across the consumers:
+   a `--std=` on the command line wins via `cli_set_std`; `-I` dirs are
+   already in front of the ini's `include` dirs because the loop ran
+   first (gcc searches configured dirs last); the environment wins by
+   being read at each use site *before* the ini value
+   (`MADC_FOREST` is discovery arm 4, the `forest` key is **arm 5**;
+   `install_resource_guards` checks `MADC_*_LIMIT` before `cpu-limit` /
+   `mem-limit`). Keys: `std`, `forest`, `include` (repeatable),
+   `cpu-limit`, `mem-limit`. Lookup: `./madc.ini` →
+   `$XDG_CONFIG_HOME/madc/madc.ini` (or `~/.config/…`) →
+   `<sysconfdir>/madc.ini`, and the first EXISTING file wins outright —
+   configs are never merged, because a merged chain makes "why is this
+   setting on?" unanswerable. Relative paths resolve against the config
+   FILE's directory (a system-wide `/etc/madc.ini` naming
+   `forest = groves.msnap` cannot sensibly mean something in whatever
+   directory madc was started from) and a leading `~/` expands.
+   *Layering (owner-directed, 3R credo): the reader is SCHEMA-BLIND and
+   shared.* `madc::cfg::config_file` (`include/madc_config_file.h`,
+   `src/madc_config_file.cpp`) owns the FORMAT — the lookup chain, the
+   grammar, path resolution, the strict diagnostics — and the consumer
+   registers the keys it accepts (`accept_text` / `accept_text_list` /
+   `accept_path` / `accept_path_list` / `accept_count` / `accept_flag`).
+   It is the same split `madcdis/snapshot.h` makes for the pool
+   container: that container is CONTENT-blind with consumer-defined
+   `kind`s, this reader is SCHEMA-blind with consumer-registered keys, so
+   madcdat and any madcdis-based tool get one lookup rule, one set of
+   path semantics and one diagnostic style instead of a copied parser
+   each. Construct it with the application name and everything
+   app-specific follows: `config_file("madcdat")` reads `madcdat.ini`,
+   searches madcdat's config dir, accepts a `[madcdat]` section, and its
+   unknown-key diagnostic lists ITS keys — nothing in the reader knows a
+   madc key spelling. `src/madc_config.cpp` is now only madc's schema
+   (five `accept_*` calls) plus the CLI application. The header is
+   deliberately PRIVATE (uninstalled): `include/madcdis/*.h` is installed
+   wholesale, so putting it there would freeze a first-draft interface
+   into shipped headers, and in-tree consumers need no such promise —
+   promote it once a second consumer has exercised the interface.
+   Two things fell out of writing the second consumer's test, which is
+   why that test exists: `accept_text_list` (peer NAMES are not paths, so
+   a verbatim repeatable list is a real kind madc happens not to use) and
+   a diagnostic-only `units` noun on `accept_count`, so a key can read
+   "needs a whole number of megabytes" without the reader knowing what it
+   means.
+   *Two deliberate design calls.* **STRICT, not tolerant:** an unknown
+   key, a foreign section, a missing `=`, an empty value, or a
+   non-numeric limit is a hard error naming file:line and the accepted
+   keys — a config file is the user's own file, and half-applying it is
+   exactly the silent degradation this project refuses (`mem-limit = 8G`
+   must say so, not arm an 8 MB guard). **No TOML dependency** (the
+   question was raised and answered): the grammar is `key = value` for
+   five flat scalars, this code reads a file an attacker may influence
+   in a sandboxed deployment so it is sized to be auditable, and a
+   template-heavy header library would raise the self-hosting bar for
+   every file under `src/`. The reader is one class behind a
+   parse-to-value-object seam, so swapping the format later touches one
+   file.
+   *Where it lives:* the config file is a **CLI-shape feature**.
+   `libmadc` never reads one — a file that can redirect where the
+   compiler loads frozen state from is an attack surface for a sandboxed
+   host — so the CLI parses it and hands the forest path down through
+   `RegistrationPolicy::forest_config_path` (on the POLICY, not a plain
+   Program field, so `--project` TUs and runtime-eval children inherit it
+   through the one propagation point, exactly like `enable_forest_bind`).
+   Arm 5 sits inside the `enable_external_forest` gate with the
+   sidecar/env arms. A host that wants ini semantics calls the reader
+   itself. The `--enable-config-file` configure axis (default **yes**)
+   removes the file-reading path entirely for builds that want the
+   surface ABSENT rather than merely unused; `--config=` then refuses
+   loudly, naming the configure option. New flags: `--config=<file>`
+   (the whole search, and it MUST load — a named file that gets ignored
+   is the same failure as a named forest container that gets ignored) and
+   `--no-config` (skip the search; the two together are a contradiction
+   and refuse). The failure diagnostics gained ONE owner for the probed-
+   arm list (`Program::forest_probed_arms`), so the loud notice and the
+   strict error can no longer drift from the real chain.
+   *Hermeticity:* `scripts/run_tests.sh` now passes `--no-config` on
+   every madc invocation (including the AOT compile legs, which
+   deliberately take no `$BACKEND_FLAG`) — an ambient `madc.ini` in the
+   repo root, the developer's config dir, or the system config dir would
+   otherwise silently change every test's dialect or include path. A
+   local `madc.ini` is gitignored.
+   *Evidence:* permanent `scripts/forest_config_gate.sh` in fulltest —
+   39 checks over 18 legs, each settings leg PAIRED with a baseline that proves the
+   assertion would fail without the config file (the dialect baseline is
+   the ABSENCE of `__STDC_VERSION__`, so `std = c99` → `199901L` cannot
+   pass by accident; the include fixture is unreachable without the ini;
+   `mem-limit = 24` trips the guard and the message names the ini value,
+   then `MADC_MEM_LIMIT=4096` overrides it). Arm 5 gets the S3 ordering
+   treatment: a valid `$MADC_FOREST` must bind with NO not-a-container
+   notice (proving arm 5 was never probed), while the same junk ini path
+   with an empty environment IS reached and IS loud. Plus
+   `tests/unit/test_config_file.cpp` (19 cases / 86 assertions: the
+   strict diagnostics, `[madc]`-only sections, case-insensitive keys,
+   quoted values, last-wins scalars, relative/`~` resolution, the
+   "explicit 0 is a value, not an absence" distinction the `has_*` flags
+   exist for, the search-chain order — and a **schema-blind reader reuse**
+   suite driving the reader as `"madcdat"` with madcdat's own keys, the
+   only test that proves reusability rather than generic SHAPE, and the
+   guard that fails if anyone re-welds madc's schema into it).
+   Suites: fulltest **756/0/0/9** with `forest_config_gate: OK`; `--exe`
+   **740/0** and the packed arbiter **756/0/0/9** were measured at the
+   feature commit (`3edccef2`) — the layering re-cut after it touches no
+   codegen, no emit path, no forest format and no pack script, and was
+   covered by a grouped fulltest plus the gate and unit suites (test
+   scoping by blast radius: owner directive 2026-07-26 — do not run the
+   whole battery for every change; run it for a GROUP of changes).
+   The **axis-OFF shape** was validated
+   directly (a gate cannot reconfigure the tree): rebuilt with
+   `ENABLE_CONFIG_FILE=0`, an ambient `./madc.ini` is not read,
+   `--config=` refuses naming `enable-config-file`, `--no-config` stays a
+   no-op, the unit tests agree with the axis, and the axis-ON restore
+   re-reads the file.
 
 Windows arms (overlay carrier, `.madc` section, `madc.dll`) ride the
 Windows/PE track when it starts — the probe-chain design above is

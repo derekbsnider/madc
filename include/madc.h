@@ -1975,6 +1975,17 @@ public:
 	enum class ForestPolicy { silent_fallback, loud_fallback, strict_require };
 	ForestPolicy forest_missing_policy = ForestPolicy::silent_fallback;
 	bool enable_external_forest = true;
+	// Discovery arm 5 (forest-carriers S6): the container path a madc.ini
+	// `forest = <file>` key configured. Empty = no config file said
+	// anything, which is also the library default — libmadc never reads a
+	// config file; the CLI parses one and puts the result here. It rides
+	// the POLICY rather than being a plain Program field so every child (a
+	// --project TU, a runtime-eval child) inherits it through the one
+	// propagation point, exactly like enable_forest_bind. Gated by
+	// enable_external_forest with the sidecar/env arms: a file that can
+	// redirect where the compiler loads frozen state from is precisely
+	// what a sandboxed host turns off.
+	std::string forest_config_path;
 	// May this compile bind frozen state at all (the --forest-bind /
 	// --no-forest-bind switch, and the library's enable_forest_bind
 	// compile_option)? OFF is the Program default because a FREEZE must
@@ -4100,6 +4111,7 @@ public:
     // with the producer-config gate off. NULL = no carrier at all.
     CirFrozenForest *ensure_ledger_forest();
     void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
+    std::string forest_probed_arms() const;	// the arms probe_forest_chain walked, for the failure diagnostics (one owner)
     int forest_unit_for_include(const std::string &incfile); // spelling/path lookup; -1 miss
     void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables

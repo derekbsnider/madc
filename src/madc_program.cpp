@@ -2119,6 +2119,7 @@ runtime_eval_registration_policy_for_source_child(const Program::RegistrationPol
     child.forest_missing_policy = parent.forest_missing_policy;
     child.enable_external_forest = parent.enable_external_forest;
     child.enable_forest_bind = parent.enable_forest_bind;
+    child.forest_config_path = parent.forest_config_path;
     child.runtime_eval_source_policy = parent.runtime_eval_source_policy;
     return child;
 }

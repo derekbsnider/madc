@@ -85,7 +85,11 @@ else
     APPEND_TO=tmp/forest_pack_image.bin
     cp -p "$IMAGE" "$APPEND_TO"
 fi
-timeout 900 tmp/forest_packer_madc --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU"
+# --no-config: the pack must be reproducible. An ambient madc.ini (repo root,
+# developer config dir, system config dir) carrying a `std` or `include` key
+# would silently change the frozen corpus's PRODUCER CONFIG, after which every
+# ordinary compile would fall through the v27 config gate.
+timeout 900 tmp/forest_packer_madc --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU"
 if [ "$APPEND_TO" != "$OUT" ]; then
     mv -f "$APPEND_TO" "$OUT"
 fi

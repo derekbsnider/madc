@@ -28,6 +28,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_pch.h"
+#include "madc_config.h"  // madc.ini reader (forest-carriers S6)
 #include "cir_emit_c.h"   // CirEmitLang
 #include "madc_project.h" // --project: compile_commands.json multi-TU driver
 
@@ -239,9 +240,13 @@ static void cpu_guard_handler(int sig)
     raise(sig);
 }
 
-static void install_resource_guards(size_t project_tus)
+static void install_resource_guards(size_t project_tus,
+                                    const madc::config_settings &cfg)
 {
-    rlim_t cpu_secs = env_rlim("MADC_CPU_LIMIT", 0);
+    // Precedence for both guards: environment > madc.ini > baked default
+    // (neither has a CLI flag, so the CLI layer of the rule is vacuous here).
+    rlim_t cpu_secs = env_rlim("MADC_CPU_LIMIT",
+                               cfg.has_cpu_limit ? (rlim_t)cfg.cpu_limit_secs : 0);
     if ( cpu_secs > 0 ) {
         struct rlimit rl;
         rl.rlim_cur = cpu_secs;
@@ -263,8 +268,12 @@ static void install_resource_guards(size_t project_tus)
     // single file. Give each TU a 128 MB allowance on top of the single-file
     // default: SMAUG's 51-TU manifest measures ~2.9 GB peak VA (~57 MB/TU),
     // so 128 keeps ~2x headroom while a true runaway still trips.
-    // MADC_MEM_LIMIT overrides the computed default verbatim.
-    rlim_t default_mb = 4096 + (project_tus > 1 ? 128 * (rlim_t)project_tus : 0);
+    // MADC_MEM_LIMIT — or a madc.ini mem-limit key — overrides the computed
+    // default verbatim (an explicitly configured ceiling is a ceiling; it does
+    // not silently grow with the manifest).
+    rlim_t default_mb = cfg.has_mem_limit
+                      ? (rlim_t)cfg.mem_limit_mb
+                      : 4096 + (project_tus > 1 ? 128 * (rlim_t)project_tus : 0);
     rlim_t mem_mb = env_rlim("MADC_MEM_LIMIT", default_mb);
 #ifdef __APPLE__
     // darwin does not enforce RLIMIT_AS (setrlimit rejects finite values
@@ -549,7 +558,8 @@ static void print_usage(const char *prog)
 "                             Mach-O __MADC,__forest section),\n"
 "                          2. the libmadc image, when linked shared,\n"
 "                          3. <exe>.forest, then <lib>.forest (sidecars),\n"
-"                          4. the $MADC_FOREST path\n"
+"                          4. the $MADC_FOREST path,\n"
+"                          5. the madc.ini `forest' key\n"
 "  --no-forest-bind        force live parse (overrides the default and an\n"
 "                          explicit --forest-bind; the A/B measurement lever)\n"
 "  --dump-registered       parse, then print the registered name maps\n"
@@ -565,6 +575,20 @@ static void print_usage(const char *prog)
 "  -v, --verbose           verbose / debug output\n"
 "  -h, -?, --help          show this help\n"
 "\n"
+"Configuration file (optional; CLI > environment > madc.ini > defaults):\n"
+"  --config=<file>         read this madc.ini instead of searching; a file\n"
+"                          that fails to load is an error, never ignored\n"
+"  --no-config             skip the search entirely (hermetic builds)\n"
+"  Searched in order, first existing file wins (never merged): ./madc.ini,\n"
+"  $XDG_CONFIG_HOME/madc/madc.ini (or ~/.config/madc/madc.ini), then the\n"
+"  system config dir. Keys — an unknown one is an error, not a warning:\n"
+"    std = c17            default dialect (a --std= on the CLI wins)\n"
+"    forest = <file>      frozen forest container (discovery arm 5)\n"
+"    include = <dir>      extra include dir, repeatable, searched after -I\n"
+"    cpu-limit = <secs>   MADC_CPU_LIMIT default (0 = off)\n"
+"    mem-limit = <MB>     MADC_MEM_LIMIT default (0 = off)\n"
+"  Relative paths resolve against the config file's own directory; ~/ works.\n"
+"\n"
 "Environment:\n"
 "  MADC_CPU_LIMIT=<secs>   arm an RLIMIT_CPU guard (default: off — madc also\n"
 "                          runs the program, so no finite default is safe;\n"
@@ -574,7 +598,10 @@ static void print_usage(const char *prog)
 "                          TU; 0 disables. Trips name the knob.\n"
 "  MADC_FOREST=<file>      frozen forest container to bind when no earlier\n"
 "                          discovery arm (binary image, libmadc image,\n"
-"                          <exe>.forest / <lib>.forest sidecars) carries one\n"
+"                          <exe>.forest / <lib>.forest sidecars) carries one;\n"
+"                          beats the madc.ini `forest' key, which is last\n"
+"  XDG_CONFIG_HOME=<dir>   where the madc.ini search looks for the user config\n"
+"                          (<dir>/madc/madc.ini; default ~/.config)\n"
 "\n"
 "AOT output (gcc vocabulary; do not run):\n"
 "  -c [-o file.o]          compile to a relocatable native object\n"
@@ -678,6 +705,9 @@ int main(int argc, char **argv)
     bool dump_registered = false;         // --dump-registered: post-parse name maps (oracle side B)
     bool dump_macro_table = false;        // -dM: effective macro table after lex (gcc -dM -E analogue)
     bool no_forest_bind = false;          // --no-forest-bind: force live parse (overrides the default and --forest-bind)
+    const char *config_path = NULL;       // --config=<file>: this madc.ini instead of the lookup chain
+    bool no_config = false;               // --no-config: skip the madc.ini lookup entirely
+    bool cli_set_std = false;             // --std= came from the COMMAND LINE (so a madc.ini `std` key must not override it)
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -865,6 +895,18 @@ int main(int argc, char **argv)
             // an explicit --forest-bind (the A/B lever for measurement).
             no_forest_bind = true;
             filearg = i + 1;
+        } else if (strncmp(argv[i], "--config=", 9) == 0) {
+            // madc.ini (S6): this file is the WHOLE search — a named config
+            // that silently failed to load is the same failure class as a
+            // named forest container that was ignored.
+            config_path = argv[i] + 9;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--no-config") == 0) {
+            // Skip the madc.ini lookup entirely (hermetic builds and test
+            // runs: no ambient file in the CWD or the user's config dir can
+            // change what this compile does).
+            no_config = true;
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-registered") == 0) {
             dump_registered = true;
             filearg = i + 1;
@@ -910,6 +952,7 @@ int main(int argc, char **argv)
             do_emit = true;
             filearg = i + 1;
         } else if (prog->set_language_standard_option(argv[i])) {
+            cli_set_std = true;
             filearg = i + 1;
         } else if (strncmp(argv[i], "--std=", 6) == 0) {
             std::cerr << "Unknown --std target: " << (argv[i] + 6) << std::endl;
@@ -932,6 +975,48 @@ int main(int argc, char **argv)
         print_usage(argv[0]);
         return 0;
     }
+
+    // madc.ini (forest-carriers S6). The precedence rule is
+    // CLI > environment > madc.ini > baked defaults, and it is enforced HERE,
+    // in one visible place:
+    //   - the command line has already been parsed, so a --std= on it wins
+    //     (cli_set_std) and its -I dirs are already in front of these;
+    //   - the environment beats these because each consumer reads its env var
+    //     first (MADC_FOREST is discovery arm 4, the forest key is arm 5;
+    //     install_resource_guards checks MADC_*_LIMIT before the ini value);
+    //   - what is left is the baked default, which these replace.
+    madc::config_settings config;
+    if ( config_path && !*config_path )
+    {
+        std::cerr << "madc: --config= needs a file path" << std::endl;
+        return 1;
+    }
+    // Both together is a contradiction, and resolving it either way would mean
+    // silently ignoring one of two explicit instructions.
+    if ( config_path && no_config )
+    {
+        std::cerr << "madc: --config= and --no-config may not be used together"
+                  << std::endl;
+        return 1;
+    }
+    if ( !no_config && !madc::config_load(config_path, config, std::cerr) )
+        return 1;
+    if ( config.has_std && !cli_set_std
+      && !prog->set_language_standard(config.std_option) )
+    {
+        std::cerr << "madc: " << config.source_path << ": unknown std '"
+                  << config.std_option << "'" << std::endl;
+        return 1;
+    }
+    // Appended AFTER the command line's -I dirs (gcc searches configured
+    // directories last).
+    for ( const std::string &dir : config.include_dirs )
+        prog->add_include_dir(dir);
+    // Discovery arm 5, on both the program and the engine — the engine's copy
+    // is what --project TU programs and runtime-eval children inherit (the
+    // MADC_FOREST_EXPECT_* block above sets the pair the same way).
+    prog->registration_policy.forest_config_path = config.forest;
+    engine.registration_policy.forest_config_path = config.forest;
 
     // A .json input file with no explicit --project defaults to project mode:
     // `madc compile_commands.json [args...]` == `madc --project compile_commands.json
@@ -985,7 +1070,7 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    install_resource_guards(manifest.tus.size());
+    install_resource_guards(manifest.tus.size(), config);
 
     // Embedded-forest default (Phase 4): with no explicit forest flag, bind
     // system #includes from the blob appended to this executable —

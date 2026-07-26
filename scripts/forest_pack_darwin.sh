@@ -69,7 +69,9 @@ TU="$OUT.tu.c"
 
 : > "$OUT"
 ulimit -t 900
-timeout 900 "$CROSS" --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$OUT" "$TU"
+# --no-config for the same reason as the native pack: an ambient madc.ini must
+# never change the frozen corpus's producer config (see scripts/forest_pack.sh).
+timeout 900 "$CROSS" --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$OUT" "$TU"
 
 # Verify: the container reads back (context-hash pin + directory), and every
 # manifest name is a directory unit — a missing stub unit means a consumer's

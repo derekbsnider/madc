@@ -429,7 +429,34 @@ high-level" — the answer is both.**
   `bin/madc-release` (240 units + 2 ledger modules) emits a try/catch
   program with zero `libmadc` DT_NEEDED that runs under an empty library
   path; fulltest 756/0/0/9, `--exe` 740/0, packed arbiter 756/0/0/9.
-  REMAINING: forest-carriers S6 (`madc.ini`); the S5 Mac hardware legs
+  **Forest-carriers S6 COMPLETE (v0.51.0) — the carriers track is DONE:**
+  `madc.ini`, completing the settings precedence rule **CLI >
+  environment > madc.ini > baked defaults**, enforced in one visible
+  place. Keys `std` / `forest` (discovery **arm 5**, the last one) /
+  `include` (repeatable, after every `-I`) / `cpu-limit` / `mem-limit`;
+  lookup `./madc.ini` → `$XDG_CONFIG_HOME/madc/madc.ini` →
+  `<sysconfdir>/madc.ini` with the first existing file winning outright
+  (never merged); relative paths resolve against the config FILE's
+  directory. The parser is STRICT — an unknown key or malformed line is a
+  hard error naming file:line, never a warning that half-applies — and
+  hand-written rather than a TOML dependency (auditable, and it keeps the
+  self-hosting bar low). New `--config=<file>` / `--no-config`; the
+  reader is a CLI feature (libmadc never consults a config file) and the
+  forest key rides `enable_external_forest` with the sidecar/env arms;
+  `configure --disable-config-file` removes the path entirely. Suite
+  hermeticity: `run_tests.sh` and both pack scripts pass `--no-config`.
+  The reader is **schema-blind and shared** (`madc::cfg::config_file`) —
+  it owns the format, each consumer registers its own keys, so madcdat and
+  madcdis-based tools reuse it instead of copying a parser (the same split
+  `madcdis/snapshot.h` makes as a content-blind container). Permanent
+  `forest_config_gate` (39 checks / 18 legs, every settings leg paired
+  with a baseline that would fail without the file) + `test_config_file`
+  (19 cases, incl. a reuse suite driving the reader as a different
+  application). Batched with it: the installed `madcdis/snapshot.h` now
+  compiles downstream (`madc_pch.h`, which its public signatures need, was
+  never installed), and `docs/build.md` — which still documented asmjit as
+  a build requirement — was rewritten.
+  REMAINING: the S5 Mac hardware legs
   (the darwin cross pack now carries the ledger and refuses without one,
   but running an emitted Mach-O needs the owner's Mac) and the `.o` link
   lane (blocked on the fork's MH_OBJECT flavor) are stated S5

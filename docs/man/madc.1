@@ -156,6 +156,16 @@ Verbose / debug output.
 .BR \-h ", " \-? ", " \-\-help
 Show the full option list, including the frozen-forest (compile-once)
 and dump/diagnostic options not listed here.
+.TP
+.BI \-\-config= file
+Read this configuration file instead of searching for one (see
+.B FILES
+below). A named file that cannot be loaded is an error \(em never
+silently ignored.
+.TP
+.B \-\-no\-config
+Skip the configuration-file search entirely, so no ambient file can
+affect the compile. Build systems and test harnesses should pass this.
 .SH ENVIRONMENT
 .TP
 .BI MADC_CPU_LIMIT= secs
@@ -174,7 +184,96 @@ one. The chain, first usable container wins: the binary's own image,
 the
 .B libmadc
 image when madc is linked shared, the \fI<exe>\fB.forest\fR and
-\fI<lib>\fB.forest\fR sidecars, then this path.
+\fI<lib>\fB.forest\fR sidecars, this path, and finally the
+.B forest
+key of a configuration file.
+.TP
+.BI XDG_CONFIG_HOME= dir
+Where the configuration-file search looks for the per-user file
+(\fIdir\fB/madc/madc.ini\fR); defaults to \fB~/.config\fR.
+.SH FILES
+.B madc
+optionally reads one
+.B madc.ini
+configuration file. Settings resolve in this order, most specific first:
+.B command line
+>
+.B environment
+>
+.B madc.ini
+> built-in defaults.
+.PP
+Unless
+.BI \-\-config= file
+or
+.B \-\-no\-config
+is given, these are tried in order and the
+.I first existing
+file wins outright \(em configuration files are never merged:
+.PP
+.nf
+    ./madc.ini
+    $XDG_CONFIG_HOME/madc/madc.ini   (or ~/.config/madc/madc.ini)
+    <sysconfdir>/madc.ini            (baked at build time)
+.fi
+.PP
+The format is \fBkey = value\fR, one per line, with
+.B #
+or
+.B ;
+comments and an optional
+.B [madc]
+section header. Values may be quoted. A relative path resolves against
+the configuration file's own directory, and a leading
+.B ~/
+expands. An unknown key, a malformed line, or a non-numeric limit is an
+.I error
+\(em a configuration file that half-applies is worse than one that
+refuses. Keys:
+.TP
+.BI std= dialect
+Default language standard, as for
+.BR \-\-std= .
+A
+.B \-\-std=
+on the command line overrides it.
+.TP
+.BI forest= file
+Frozen forest container, used as the last discovery arm (see
+.B MADC_FOREST
+above, which outranks it).
+.TP
+.BI include= dir
+Additional include directory, repeatable, searched after every
+.B \-I
+directory from the command line. It is applied through the same path as
+.BR \-I ,
+so it behaves identically \(em including in
+.B \-\-project
+mode, where the manifest's own include paths are what each translation
+unit gets.
+.TP
+.BI cpu\-limit= secs
+Default for
+.BR MADC_CPU_LIMIT ;
+.B 0
+disables. The environment variable overrides it.
+.TP
+.BI mem\-limit= MB
+Default for
+.BR MADC_MEM_LIMIT ;
+.B 0
+disables. The environment variable overrides it.
+.PP
+Configuration-file support is a build-time option
+(\fBconfigure \-\-disable\-config\-file\fR removes it, which embedding
+hosts and sandboxed deployments want: a file that can redirect where the
+compiler loads frozen state from is an attack surface).
+.B libmadc
+itself never reads a configuration file \(em this is a
+.BR madc (1)
+feature, and an embedding host configures its compiles through the
+library API.
 .SH EXAMPLES
 Run a file as a script (no main, no includes needed):
 .PP

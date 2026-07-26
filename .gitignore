@@ -28,3 +28,8 @@ ftp_game.org
 inbox/
 src/predefined_macros.cpp
 dist/
+
+# A developer madc.ini (forest-carriers S6) is local configuration, never
+# committed: the suite passes --no-config so an ambient one cannot perturb it,
+# but it must not reach the repo either.
+/madc.ini
