@@ -84,13 +84,16 @@ using `std::string`/STL containers/iostreams.
 
 > **TRACK STARTED 2026-07-26 (owner-prioritized, ahead of the remaining
 > Mach-O polish). Own plan doc:**
-> [`2026-07-26-darwin-cpp-lane-plan.md`](2026-07-26-darwin-cpp-lane-plan.md)
-> — four pieces: target-derived header search for the CROSS lane (the
-> hosted MODEs already generate an SDK-derived table; the cross MODEs
-> bake Linux libstdc++ paths), the libc++ parse burn-down, the
-> `std::__1` ABI flavor, and freezing the libc++ groves into the darwin
-> packs so a Mac without Command Line Tools compiles C++ from the forest
-> (LOADED == parsed) rather than from an embedded header twin.
+> [`2026-07-26-libcxx-flavor-plan.md`](2026-07-26-libcxx-flavor-plan.md)
+> — and note the owner's correction the same day: **libc++ is a standard
+> LIBRARY, not a platform** (Apple, the Android NDK, FreeBSD, and clang
+> on Linux all use it), so the track is madc's second stdlib flavor
+> selected by `-stdlib=`, with darwin as its first consumer. The
+> consequence is that the library work — the parse burn-down and the
+> mangled-direct ABI flavor — is developed and gated ON LINUX against
+> `libc++-18-dev`, and only the target plumbing (SDK-derived include +
+> predefined-macro tables for the cross MODEs, then the frozen libc++
+> groves in the darwin packs) is darwin-specific and hardware-gated.
 
 `madc_mangle.cpp` is the single mangling authority (plus ~8 call sites
 carrying `__cxx11` knowledge — 21 references across 7 files as counted
