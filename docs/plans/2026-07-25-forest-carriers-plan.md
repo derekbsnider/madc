@@ -480,6 +480,33 @@ product path.
    FILE's directory (a system-wide `/etc/madc.ini` naming
    `forest = groves.msnap` cannot sensibly mean something in whatever
    directory madc was started from) and a leading `~/` expands.
+   *Layering (owner-directed, 3R credo): the reader is SCHEMA-BLIND and
+   shared.* `madc::cfg::config_file` (`include/madc_config_file.h`,
+   `src/madc_config_file.cpp`) owns the FORMAT — the lookup chain, the
+   grammar, path resolution, the strict diagnostics — and the consumer
+   registers the keys it accepts (`accept_text` / `accept_text_list` /
+   `accept_path` / `accept_path_list` / `accept_count` / `accept_flag`).
+   It is the same split `madcdis/snapshot.h` makes for the pool
+   container: that container is CONTENT-blind with consumer-defined
+   `kind`s, this reader is SCHEMA-blind with consumer-registered keys, so
+   madcdat and any madcdis-based tool get one lookup rule, one set of
+   path semantics and one diagnostic style instead of a copied parser
+   each. Construct it with the application name and everything
+   app-specific follows: `config_file("madcdat")` reads `madcdat.ini`,
+   searches madcdat's config dir, accepts a `[madcdat]` section, and its
+   unknown-key diagnostic lists ITS keys — nothing in the reader knows a
+   madc key spelling. `src/madc_config.cpp` is now only madc's schema
+   (five `accept_*` calls) plus the CLI application. The header is
+   deliberately PRIVATE (uninstalled): `include/madcdis/*.h` is installed
+   wholesale, so putting it there would freeze a first-draft interface
+   into shipped headers, and in-tree consumers need no such promise —
+   promote it once a second consumer has exercised the interface.
+   Two things fell out of writing the second consumer's test, which is
+   why that test exists: `accept_text_list` (peer NAMES are not paths, so
+   a verbatim repeatable list is a real kind madc happens not to use) and
+   a diagnostic-only `units` noun on `accept_count`, so a key can read
+   "needs a whole number of megabytes" without the reader knowing what it
+   means.
    *Two deliberate design calls.* **STRICT, not tolerant:** an unknown
    key, a foreign section, a missing `=`, an empty value, or a
    non-numeric limit is a hard error naming file:line and the accepted
@@ -528,13 +555,22 @@ product path.
    treatment: a valid `$MADC_FOREST` must bind with NO not-a-container
    notice (proving arm 5 was never probed), while the same junk ini path
    with an empty environment IS reached and IS loud. Plus
-   `tests/unit/test_config_file.cpp` (15 cases / 60 assertions: the
+   `tests/unit/test_config_file.cpp` (19 cases / 86 assertions: the
    strict diagnostics, `[madc]`-only sections, case-insensitive keys,
    quoted values, last-wins scalars, relative/`~` resolution, the
    "explicit 0 is a value, not an absence" distinction the `has_*` flags
-   exist for, and the search-chain order). Suites: fulltest
-   **{FULLTEST}** with `forest_config_gate: OK`, `--exe` **{EXE}**,
-   packed arbiter **{PACKED}**. The **axis-OFF shape** was validated
+   exist for, the search-chain order — and a **schema-blind reader reuse**
+   suite driving the reader as `"madcdat"` with madcdat's own keys, the
+   only test that proves reusability rather than generic SHAPE, and the
+   guard that fails if anyone re-welds madc's schema into it).
+   Suites: fulltest **756/0/0/9** with `forest_config_gate: OK`; `--exe`
+   **740/0** and the packed arbiter **756/0/0/9** were measured at the
+   feature commit (`3edccef2`) — the layering re-cut after it touches no
+   codegen, no emit path, no forest format and no pack script, and was
+   covered by a grouped fulltest plus the gate and unit suites (test
+   scoping by blast radius: owner directive 2026-07-26 — do not run the
+   whole battery for every change; run it for a GROUP of changes).
+   The **axis-OFF shape** was validated
    directly (a gate cannot reconfigure the tree): rebuilt with
    `ENABLE_CONFIG_FILE=0`, an ambient `./madc.ini` is not read,
    `--config=` refuses naming `enable-config-file`, `--no-config` stays a

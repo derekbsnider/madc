@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [v0.51.0] — 2026-07-26
+
+Forest carriers S6: **`madc.ini`** — the optional configuration file completes
+the settings precedence rule (CLI > environment > madc.ini > baked defaults)
+and fills the last discovery arm, finishing the forest-carriers track. The
+reader is schema-blind substrate, so madcdat and madcdis-based tools reuse it
+rather than copying a parser.
+
 - **feat(cli): `madc.ini` — the optional configuration file, completing
   the settings precedence rule (forest-carriers S6; the carriers track is
   now done).** madc optionally reads one `madc.ini`, and settings resolve
@@ -39,9 +47,40 @@
   probed-arm list in the forest failure diagnostics gained one owner
   (`Program::forest_probed_arms`) so the loud notice and the strict error
   can no longer drift from the real chain.
+  The reader is **schema-blind and shared** (`madc::cfg::config_file` in
+  `include/madc_config_file.h`): it owns the format — lookup chain,
+  grammar, path resolution, strict diagnostics — while each consumer
+  registers the keys it accepts. Same split `madcdis/snapshot.h` makes for
+  the pool container (content-blind, consumer-defined `kind`s), so
+  madcdat and any madcdis-based tool get one lookup rule and one
+  diagnostic style instead of a copied parser each:
+  `config_file("madcdat")` reads `madcdat.ini`, accepts a `[madcdat]`
+  section, and its unknown-key diagnostic lists *its* keys.
+  `src/madc_config.cpp` is now just madc's schema plus the CLI
+  application.
   Gated by the new permanent `scripts/forest_config_gate.sh` (39 checks /
   18 legs, every settings leg paired with a baseline that would fail
-  without the file) plus `tests/unit/test_config_file.cpp` (15 cases).
+  without the file) plus `tests/unit/test_config_file.cpp` (19 cases,
+  including a reuse suite that drives the reader as a *different*
+  application with different keys).
+
+- **fix(build): installed `madcdis/snapshot.h` now compiles downstream.**
+  It names `PchCompression` in its public signatures, but `madc_pch.h`
+  was not installed, so a consumer of the shipped header hit
+  `fatal error: madc_pch.h: No such file or directory`. `madc_pch.h` is
+  self-contained (standard includes only), so it now installs alongside.
+  Verified by staging an install and compiling a TU that includes only
+  `<madcdis/snapshot.h>`. The deeper issue is a layering inversion — the
+  substrate depends *upward* on the PCH layer for the compression
+  vocabulary, which should live in the substrate — tracked as a
+  follow-up, since moving it touches ~15 files.
+
+- **docs(build): `docs/build.md` rewritten — it still documented asmjit.**
+  The removed x86-64 JIT was listed as a build requirement, complete with
+  install-from-source instructions and `-lasmjit` in the flag table,
+  while the MIR fork, `./configure` and its axes, the per-mode build
+  targets, and the real object/test-binary paths were all absent or
+  wrong.
 
 ## [v0.50.0] — 2026-07-26
 

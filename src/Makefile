@@ -89,7 +89,7 @@ RT_OFILES = $(notdir $(RT_LEDGER_SRCS:.c=.o))
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o $(RT_OFILES) pch.o madcdis_snapshot.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o $(RT_OFILES) pch.o madcdis_snapshot.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -247,9 +247,11 @@ $(FOREST_SHAPE_STAMP):
 $(OBJDIR)/madc.o: $(FOREST_SHAPE_STAMP)
 $(PICOBJDIR)/madc.o: $(FOREST_SHAPE_STAMP)
 # Config file (--enable-config-file configure axis; forest-carriers S6). ON
-# bakes the madc.ini lookup into madc_config.o; OFF removes the file-reading
-# path entirely (--config= then refuses loudly) for embedding-host builds that
-# want the surface absent, not merely unused. MADC_SYSCONFDIR names the system
+# bakes madc's madc.ini LOOKUP into madc_config.o (the schema half); OFF removes
+# it, so such a build never searches for nor opens a madc.ini and --config=
+# refuses loudly. The schema-blind reader (madc_config_file.o) is ordinary
+# in-tree code either way — it is shared with madcdat / madcdis-based consumers,
+# and a parser nobody calls is not a call path. MADC_SYSCONFDIR names the system
 # config directory searched last — the configured $(sysconfdir) when the tree
 # was configured, else $(PREFIX)/etc, matching the install target's layout.
 ENABLE_CONFIG_FILE ?= 1
@@ -389,6 +391,14 @@ install-libmadc: libmadc
 	$(INSTALL_DATA) ../include/madc_api.h $(DESTDIR)$(includedir)/madc_api.h
 	@for h in $(LIBMADDHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/libmadc/; done
 	@for h in $(MADCDISHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/madcdis/; done
+	# madcdis/snapshot.h names PchCompression in its PUBLIC signatures, so the
+	# installed header did not compile downstream without this. madc_pch.h is
+	# self-contained (standard includes only), so shipping it closes the hole.
+	# The deeper issue is a layering INVERSION — the substrate (madcdis)
+	# depends upward on the PCH layer for the compression vocabulary, which
+	# should live in the substrate and be consumed by PCH. That move touches
+	# ~15 files, so it is a tracked follow-up, not a build-recipe fix.
+	$(INSTALL_DATA) ../include/madc_pch.h $(DESTDIR)$(includedir)/madc_pch.h
 	@if [ -f ../libmadc.pc ]; then $(INSTALL_DIR) $(DESTDIR)$(pkgconfigdir) && $(INSTALL_DATA) ../libmadc.pc $(DESTDIR)$(pkgconfigdir)/libmadc.pc; fi
 
 ifeq ($(HAVE_MADCDAT),1)

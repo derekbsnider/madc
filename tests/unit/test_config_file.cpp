@@ -1,10 +1,16 @@
-// Unit tests for the madc.ini reader (forest-carriers S6): parsing, the strict
-// diagnostics, path resolution, and the lookup chain's shape.
+// Unit tests for the configuration-file layer (forest-carriers S6): parsing,
+// the strict diagnostics, path resolution, and the lookup chain's shape.
 //
-// These are the PARSER's tests. How the values then win or lose against the
-// command line and the environment (the CLI > env > madc.ini > baked rule) is
-// integration-gated by scripts/forest_config_gate.sh, because the precedence
-// lives at the CLI layer where the settings land, not in this reader.
+// Two layers are covered. madc::config_* is madc's SCHEMA (its five keys), and
+// madc::cfg::config_file is the schema-blind READER shared with madcdat and any
+// madcdis-based consumer — the last suite below drives it with a different
+// application name and different keys, which is the only test that actually
+// proves it is reusable rather than merely generic-shaped.
+//
+// How the values then win or lose against the command line and the environment
+// (the CLI > env > madc.ini > baked rule) is integration-gated by
+// scripts/forest_config_gate.sh, because the precedence lives at the CLI layer
+// where the settings land, not in either of these layers.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
@@ -20,6 +26,7 @@ thread_local bool madc_verbose = false;
 #include <unistd.h>
 
 #include "madc_config.h"
+#include "madc_config_file.h"
 
 namespace {
 
@@ -242,6 +249,111 @@ TEST_CASE("config_file_supported reports the configure axis") {
 #else
 	CHECK(!madc::config_file_supported());
 #endif
+}
+
+}
+
+// The reader is SCHEMA-BLIND, and this suite is the proof: a second consumer
+// with its own application name and its own keys — nothing madc-specific —
+// gets the same lookup rule, path semantics and strict diagnostics. If someone
+// later welds madc's schema back into the reader, these cases fail.
+TEST_SUITE("schema-blind reader reuse") {
+
+TEST_CASE("a different application name drives the whole lookup chain") {
+	setenv("XDG_CONFIG_HOME", "/xdg", 1);
+	std::vector<std::string> paths =
+		madc::cfg::config_file("madcdat").search_paths();
+	REQUIRE(paths.size() >= 2);
+	CHECK(paths[0] == "madcdat.ini");
+	CHECK(paths[1] == "/xdg/madcdat/madcdat.ini");
+#ifdef MADC_SYSCONFDIR
+	REQUIRE(paths.size() == 3);
+	CHECK(paths[2] == std::string(MADC_SYSCONFDIR) + "/madcdat.ini");
+#endif
+	unsetenv("XDG_CONFIG_HOME");
+}
+
+TEST_CASE("a consumer's own keys parse, including kinds madc does not use") {
+	std::string path = write_ini("dat",
+		"[madcdat]\n"
+		"backend = sqlite3\n"
+		"store = data/madcdat.db\n"
+		"peer = alpha\n"
+		"peer = beta\n"
+		"cache-mb = 256\n"
+		"federation = yes\n");
+	std::string backend, store;
+	std::vector<std::string> peers;
+	unsigned long cache = 0;
+	bool federate = false, saw_backend = false, saw_cache = false;
+	madc::cfg::config_file cf("madcdat");
+	cf.accept_text("backend", backend, &saw_backend);
+	cf.accept_path("store", store);
+	// peer NAMES, not paths: a text list is taken verbatim, where a path
+	// list would (correctly) resolve each value against the file's directory.
+	cf.accept_text_list("peer", peers);
+	cf.accept_count("cache-mb", cache, &saw_cache);
+	cf.accept_flag("federation", federate);
+	std::ostringstream err;
+	REQUIRE(cf.parse_file(path, err));
+	CHECK(err.str().empty());
+	CHECK(saw_backend);
+	CHECK(backend == "sqlite3");
+	CHECK(store == "/tmp/data/madcdat.db");	// resolved against the file's dir
+	REQUIRE(peers.size() == 2);
+	CHECK(peers[0] == "alpha");
+	CHECK(peers[1] == "beta");
+	CHECK(saw_cache);
+	CHECK(cache == 256);
+	CHECK(federate);
+	unlink(path.c_str());
+}
+
+TEST_CASE("boolean spellings, and a bad one is refused") {
+	std::string path = write_ini("bool", "federation = off\n");
+	bool federate = true;
+	madc::cfg::config_file cf("madcdat");
+	cf.accept_flag("federation", federate);
+	std::ostringstream err;
+	REQUIRE(cf.parse_file(path, err));
+	CHECK(!federate);
+	unlink(path.c_str());
+
+	path = write_ini("bool2", "federation = maybe\n");
+	bool f2 = false;
+	madc::cfg::config_file cf2("madcdat");
+	cf2.accept_flag("federation", f2);
+	std::ostringstream err2;
+	CHECK(!cf2.parse_file(path, err2));
+	CHECK(err2.str().find("federation needs yes/no") != std::string::npos);
+	unlink(path.c_str());
+}
+
+// The strict diagnostics belong to the reader, so a consumer inherits them
+// without writing any: the accepted-key list is generated from what IT
+// registered, and the section it accepts is ITS application name.
+TEST_CASE("diagnostics name the consumer's own schema, not madc's") {
+	std::string path = write_ini("datbad", "backend = x\nstd = c99\n");
+	std::string backend;
+	madc::cfg::config_file cf("madcdat");
+	cf.accept_text("backend", backend);
+	std::ostringstream err;
+	CHECK(!cf.parse_file(path, err));
+	std::string msg = err.str();
+	// `std` is a madc key; this consumer never registered it, so it is
+	// unknown here — and the accepted list is the consumer's, not madc's.
+	CHECK(msg.find("unknown key 'std'") != std::string::npos);
+	CHECK(msg.find("accepted: backend") != std::string::npos);
+	CHECK(msg.find("forest") == std::string::npos);
+	unlink(path.c_str());
+
+	path = write_ini("datsect", "[madc]\nbackend = x\n");
+	madc::cfg::config_file cf2("madcdat");
+	cf2.accept_text("backend", backend);
+	std::ostringstream err2;
+	CHECK(!cf2.parse_file(path, err2));
+	CHECK(err2.str().find("only [madcdat] is accepted") != std::string::npos);
+	unlink(path.c_str());
 }
 
 }

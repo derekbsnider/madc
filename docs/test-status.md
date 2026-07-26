@@ -1,6 +1,54 @@
 # Test Status
 
-> **Current (2026-07-26, `develop` — v0.50.0, forest-carriers S5
+> **Current (2026-07-26, `develop` — v0.51.0, forest-carriers S6
+> complete — the carriers track is DONE):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
+> forest gate green, including the NEW `forest_config_gate` — the
+> `madc.ini` promise: **39 checks over 18 legs**, and every settings leg is
+> PAIRED with a baseline that would fail without the config file. The
+> dialect baseline is the ABSENCE of `__STDC_VERSION__` (so `std = c99` →
+> `199901L` cannot pass by accident), the include fixture is unreachable
+> without the ini, and `mem-limit = 24` trips the address-space guard with
+> the message NAMING the ini value — then `MADC_MEM_LIMIT=4096` overrides
+> it, which is the precedence rule proved rather than asserted. The
+> `forest` key is discovery **arm 5** and gets the S3 ordering treatment:
+> a valid `$MADC_FOREST` binds with NO not-a-container notice (proving arm
+> 5 was never probed), while the same junk ini path with an empty
+> environment IS reached and IS loud. Strictness has its own legs: unknown
+> key (naming file:line + the accepted set), foreign section, missing
+> `=`, non-numeric limit, and a named `--config=` that does not exist all
+> refuse nonzero.
+> Unit tests **+4 cases** (`test_config_file`: 19 cases / 86 assertions),
+> including a **schema-blind reader reuse** suite that drives the reader as
+> `"madcdat"` with madcdat's own keys — the only test that proves the
+> reader is reusable rather than merely generic-shaped, and the guard that
+> fails if anyone re-welds madc's schema into it.
+> Suite hermeticity: `run_tests.sh` now passes `--no-config` on EVERY madc
+> invocation (including the AOT compile legs, which take no
+> `$BACKEND_FLAG`), and both pack scripts do too — an ambient `madc.ini`
+> would otherwise change the frozen corpus's producer config and send every
+> ordinary compile through the dialect gate.
+> `--exe` lane **740/0** and packed arbiter **756/0/0/9** (measured at the
+> feature commit `3edccef2`; the layering re-cut after it touches no
+> codegen, emit path, forest format or pack script, and was covered by a
+> grouped fulltest — test scoping by blast radius, owner directive
+> 2026-07-26).
+> Configure-axis evidence, which no gate can produce because a gate cannot
+> reconfigure the tree: `--disable-config-file` → `ENABLE_CONFIG_FILE=0` in
+> config.mk → the define drops and the axis stamp flips; an ambient
+> `./madc.ini` is not read; `--config=` refuses naming
+> `enable-config-file`; `--no-config` stays a no-op; bare `./configure`
+> restores. That exercise is what caught the missing `config.mk.in`
+> substitution — without it `--disable-config-file` would have been a
+> SILENT no-op.
+> Also fixed: the installed `madcdis/snapshot.h` did not compile downstream
+> (it names `PchCompression` in public signatures but `madc_pch.h` was
+> never installed) — proven both ways by staging an install and compiling a
+> TU that includes only `<madcdis/snapshot.h>`, then reproducing the
+> original `fatal error` with the header removed.
+> Fork unchanged (`1.0-madc.0.47.0` @74e705e4).
+
+> **Previous (2026-07-26, `develop` — v0.50.0, forest-carriers S5
 > complete):**
 > fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
 > forest gate green, including the NEW `forest_ledger_gate` — the

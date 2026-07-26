@@ -445,9 +445,17 @@ high-level" — the answer is both.**
   forest key rides `enable_external_forest` with the sidecar/env arms;
   `configure --disable-config-file` removes the path entirely. Suite
   hermeticity: `run_tests.sh` and both pack scripts pass `--no-config`.
-  Permanent `forest_config_gate` (39 checks / 18 legs, every settings leg
-  paired with a baseline that would fail without the file) +
-  `test_config_file` (15 cases).
+  The reader is **schema-blind and shared** (`madc::cfg::config_file`) —
+  it owns the format, each consumer registers its own keys, so madcdat and
+  madcdis-based tools reuse it instead of copying a parser (the same split
+  `madcdis/snapshot.h` makes as a content-blind container). Permanent
+  `forest_config_gate` (39 checks / 18 legs, every settings leg paired
+  with a baseline that would fail without the file) + `test_config_file`
+  (19 cases, incl. a reuse suite driving the reader as a different
+  application). Batched with it: the installed `madcdis/snapshot.h` now
+  compiles downstream (`madc_pch.h`, which its public signatures need, was
+  never installed), and `docs/build.md` — which still documented asmjit as
+  a build requirement — was rewritten.
   REMAINING: the S5 Mac hardware legs
   (the darwin cross pack now carries the ledger and refuses without one,
   but running an emitted Mach-O needs the owner's Mac) and the `.o` link
