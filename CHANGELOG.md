@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [v0.49.0] — 2026-07-26
+
+Forest carriers S4: the shared shape — the frozen forest can ride the
+**libmadc image**, so a packaged install (thin CLI + versioned `.so`)
+serves the compiler and every embedding host from ONE container; plus
+the forest knob family on the public embedding API and the
+`enable_external_forest` negative test the S3 slice owed.
+
 - **feat(forest): shared shape — forest-in-library (`dladdr` arm), thin
   CLI, embedding-host policy surface (forest-carriers S4).** The
   discovery chain gains its library arms, so a packaged install can put
