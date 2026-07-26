@@ -8,10 +8,12 @@ text-emission cruft. Build P1.1 as `cir_node` lowering of `TokenTRY` in
 `project_recycle_old_transpiler_carefully`, `project_north_star_c23_cpp23`.)
 
 ## ✅ The runtime is ALREADY LIVE — recycle nothing, just call it
-`src/exception_runtime.cpp` survived the transpiler removal and is in the Makefile
-(`CORE_OFILES`). It is complete and backend-agnostic. The contract:
+`src/rt/rt_except.c` (was `src/exception_runtime.cpp` before forest-carriers S5
+made it a dual-build C11 source — the host build compiles it into libmadc AND
+madc compiles it into an AOT ledger module for `-static-libmadc`) is in the
+Makefile via `RT_OFILES`. It is complete and backend-agnostic. The contract:
 
-Structs (defined in exception_runtime.cpp):
+Structs (defined in src/rt/rt_except.c):
 - `MadcTryContext { jmp_buf jbuf; MadcTryContext *prev; MadcCleanupEntry *cleanup_mark; }`
 - `MadcCleanupEntry { void **fn_indirect; void *obj_ptr; uint8_t *guard; uint8_t is_chain_tail; MadcCleanupEntry *prev; }`
 - exception type tags: `NONE=0 INT=1 DOUBLE=2 CSTR=3 ANY=99`
@@ -71,7 +73,7 @@ cleanup-attribute timing across the setjmp/longjmp boundary.
 - the static-guard dtor hack (prefer the runtime cleanup stack, option 1).
 
 ## Reference anchors (read ONLY to confirm structure — never copy)
-- LIVE runtime + contract: `src/exception_runtime.cpp` (current tree).
+- LIVE runtime + contract: `src/rt/rt_except.c` (current tree).
 - Old lowering shape: `42e9b6e~1:src/madc_emit_c.cpp` — `emit_try_catch` (~2826), `emit_try_body_dtors_guarded` (~2658), `throw_func_for_type` (~513), `exception_type_for_catch` (~523), `collect_catch_clauses` (~494).
 - SJLJ design rule: `.claude/rules/c11-transpiler.md` (Exceptions section).
 - Parser side: `TokenTRY`/catch/throw already tokenize+parse (the gap is purely CIR lowering — `cir error: unhandled expression: TokenTRY`).

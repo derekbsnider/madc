@@ -1470,6 +1470,75 @@ bool CirFrozenForest::mir_module_bytes(std::vector<uint8_t> &out) const
 	return true;
 }
 
+// AOT ledger read-back (S5). Layout: header, module_count directory entries,
+// then the name / symbol / MIR blocks in directory order. Every length is
+// bounds-checked against the remaining payload — a truncated segment is a
+// loud refusal, never a partial ledger (a half-read ledger would look like a
+// Tier-B program and refuse for the wrong reason).
+bool CirFrozenForest::ledger_modules(std::vector<cir_ledger_module> &out) const
+{
+	out.clear();
+	const madc::dis::snapshot_segment *s =
+		_reader.find(CIR_FOREST_SEG_LEDGER);
+	if (!s || s->kind != SNAP_KIND_CIR_LEDGER
+	    || s->raw_size < sizeof(cir_forest_ledger_header))
+		return false;	// no ledger segment: the normal case
+	std::vector<uint8_t> payload;
+	if (!_reader.read_segment(*s, payload)
+	    || payload.size() < sizeof(cir_forest_ledger_header)) {
+		fprintf(stderr, "madc: ledger: malformed segment\n");
+		return false;
+	}
+	cir_forest_ledger_header lh;
+	memcpy(&lh, payload.data(), sizeof(lh));
+	uint32_t api_x100 = (uint32_t)(_MIR_get_api_version() * 100.0 + 0.5);
+	if (lh.forest_version != CIR_FOREST_FORMAT_VERSION
+	    || lh.mir_api_x100 != api_x100) {
+		fprintf(stderr, "madc: ledger: stamp mismatch (forest v%u vs v%u,"
+			" MIR api %u vs %u) — ledger ignored\n",
+			lh.forest_version, (unsigned)CIR_FOREST_FORMAT_VERSION,
+			lh.mir_api_x100, api_x100);
+		return false;
+	}
+	size_t pos = sizeof(lh);
+	size_t dir_bytes = (size_t)lh.module_count * sizeof(cir_forest_ledger_entry);
+	if (lh.module_count == 0 || payload.size() < pos + dir_bytes) {
+		fprintf(stderr, "madc: ledger: truncated directory (%u module(s))\n",
+			lh.module_count);
+		return false;
+	}
+	std::vector<cir_forest_ledger_entry> dir(lh.module_count);
+	memcpy(dir.data(), payload.data() + pos, dir_bytes);
+	pos += dir_bytes;
+	for (const cir_forest_ledger_entry &e : dir) {
+		size_t need = (size_t)e.name_bytes + e.sym_bytes + e.mir_bytes;
+		if (payload.size() - pos < need) {
+			fprintf(stderr, "madc: ledger: truncated payload\n");
+			out.clear();
+			return false;
+		}
+		cir_ledger_module m;
+		m.name.assign((const char *)payload.data() + pos, e.name_bytes);
+		pos += e.name_bytes;
+		// NUL-separated symbol names (a trailing NUL per name, so the
+		// final entry ends the block cleanly).
+		for (size_t i = 0, start = 0; i < e.sym_bytes; i++)
+			if (payload[pos + i] == '\0') {
+				if (i > start)
+					m.syms.push_back(std::string(
+						(const char *)payload.data() + pos + start,
+						i - start));
+				start = i + 1;
+			}
+		pos += e.sym_bytes;
+		m.bytes.assign(payload.begin() + pos,
+			       payload.begin() + pos + e.mir_bytes);
+		pos += e.mir_bytes;
+		out.push_back(std::move(m));
+	}
+	return true;
+}
+
 bool CirFrozenForest::unit_tokens(uint32_t unit, std::vector<uint8_t> &madh_payload,
 				  uint32_t &token_count)
 {

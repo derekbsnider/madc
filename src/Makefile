@@ -75,7 +75,21 @@ INSTALL_PROGRAM ?= $(INSTALL) -m 755
 INSTALL_DIR ?= $(INSTALL) -d
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o exception_runtime.o pch.o madcdis_snapshot.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
+# src/rt/ — the DUAL-BUILD C-lane runtime (forest-carriers S5). Strict C11
+# sources with no compiler builtins: the host build compiles them into libmadc
+# (rule below, via $(CXX) -x c so every MODE's target/sysroot flags apply), and
+# madc compiles the SAME sources through c2mir at pack time into AOT ledger
+# modules, so -static-libmadc programs carry this machinery in their own image.
+# One list, both consumers: scripts/ledger_sources.txt is its single owner,
+# read here and by scripts/forest_pack.sh (repo-root-relative paths there).
+RT_LEDGER_SRCS = $(patsubst src/%,%,$(shell grep -vE '^[[:space:]]*(#|$$)' ../scripts/ledger_sources.txt))
+RT_OFILES = $(notdir $(RT_LEDGER_SRCS:.c=.o))
+# An empty list would link a madc whose try/catch and VLA runtime is simply
+# ABSENT — it builds and then dies at run time. Fail the build instead.
+ifeq ($(strip $(RT_OFILES)),)
+$(error scripts/ledger_sources.txt lists no C-lane runtime sources)
+endif
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o $(RT_OFILES) pch.o madcdis_snapshot.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -536,6 +550,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/forest_emitpack_gate.sh
 	@cd .. && bash scripts/forest_sidecar_gate.sh
 	@cd .. && bash scripts/forest_library_gate.sh
+	@cd .. && bash scripts/forest_ledger_gate.sh
 	@cd .. && bash scripts/project_gate.sh
 	@cd .. && bash scripts/forest_index_oracle.sh
 	@cd .. && bash scripts/forest_dm_oracle.sh
@@ -656,6 +671,15 @@ $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
+# src/rt/*.c — the dual-build C-lane runtime. Driven through $(CXX) with
+# `-x c` rather than a separate $(CC) so every MODE's target/sysroot flags
+# (the hosted-darwin CXX carries -target/--sysroot) apply unchanged; the
+# C++ standard flag from CXXFLAGS must NOT come along, hence its own flag set.
+RT_CFLAGS = -x c -std=c11 -Wall $(MODE_OPTFLAGS)
+$(OBJDIR)/%.o: rt/%.c $(DEPENDS)
+	@mkdir -p $(OBJDIR)
+	$(CXX) -c -o $@ $(RT_CFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+
 # Apple-target modes compile the PER-MODE embedded_headers.cpp (generated at
 # parse time into the obj tree, EMBED_GEN above) — never src/embedded_headers.cpp,
 # which stays the committed include/madc/-only table for host builds.
@@ -682,6 +706,10 @@ endif
 $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)
 	@mkdir -p $(PICOBJDIR)
 	$(CXX) -c -o $@ $(PIC_CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+
+$(PICOBJDIR)/%.o: rt/%.c $(DEPENDS)
+	@mkdir -p $(PICOBJDIR)
+	$(CXX) -c -o $@ $(RT_CFLAGS) -fPIC $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
 # Auto-generated per-object header dependencies (from -MMD -MP above). A changed
 # .h rebuilds every .o that includes it, preventing stale-object ABI skew (e.g.

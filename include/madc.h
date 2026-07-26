@@ -3979,6 +3979,14 @@ public:
     }
     CirFrozenForest *bind_forest = NULL;	// lazily opened on first system include
     bool bind_forest_tried = false;	// one-shot open attempt (success or fail)
+    // AOT ledger carrier (forest-carriers S5): the container the emit lane
+    // reads its C-lane runtime modules from under -static-libmadc. Usually
+    // bind_forest itself; a SEPARATE open when the grove bind never happened
+    // (a source with no system include) or fell through the v27 producer-
+    // config gate — the ledger is madc's own runtime, target-specific but
+    // dialect-agnostic, so a --std=c99 compile must still link it.
+    CirFrozenForest *ledger_forest = NULL;
+    bool ledger_forest_tried = false;	// one-shot open attempt (success or fail)
     // MIR module cache, rung 3 (JIT bind lane ONLY — the emit/dump lanes never
     // populate this, keeping their output byte-identical to live). Func names
     // exported by the container's MIR cache module: the m&l fixpoint emits a
@@ -4079,7 +4087,18 @@ public:
     std::vector<uint32_t> forest_chain;		// bound units, include order (bind-order record)
     std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune
     std::set<uint32_t> forest_bind_walking;	// units on the in-flight bind recursion (cycle break)
+    // The ordered carrier discovery chain (explicit → self-image → library
+    // image → sidecars → $MADC_FOREST). Walked by BOTH forest consumers;
+    // require_config_match applies the v27 producer-config gate (grove bind
+    // yes, AOT ledger no). Sets config_mismatch when an arm was rejected for
+    // that reason alone. Implemented in lexer.cpp.
+    CirFrozenForest *probe_forest_chain(bool require_config_match,
+					bool &config_mismatch);
     CirFrozenForest *ensure_bind_forest();	// open on first use; NULL if unavailable
+    // The container the AOT ledger is read from (-static-libmadc, S5): the
+    // already-bound one when it opened, else the SAME discovery chain walked
+    // with the producer-config gate off. NULL = no carrier at all.
+    CirFrozenForest *ensure_ledger_forest();
     void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
     int forest_unit_for_include(const std::string &incfile); // spelling/path lookup; -1 miss
     void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain

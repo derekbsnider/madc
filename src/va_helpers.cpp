@@ -325,14 +325,29 @@ extern "C" int __madc_sub_overflow_uu64(long long a, long long b, uint64_t *res)
 extern "C" int __madc_mul_overflow_uu64(long long a, long long b, uint64_t *res)
 { return madc_overflow_store_uu64(a, b, res, [](unsigned __int128 x, unsigned __int128 y) { return x * y; }); }
 
-// VLA scope-exit cleanup: a C99 variable-length-array local is lowered to a
-// `T *` backed by malloc; the cir_builder attaches __attribute__((cleanup(
-// __madc_vla_free))) to it, so c2mir calls this with &a (a `T **`) on scope
-// exit. Free the pointed-to storage. NULL-safe (free(NULL) is a no-op).
-extern "C" void __madc_vla_free(void *pp)
-{
-    if (pp) free(*(void **)pp);
-}
+// (__madc_vla_free lives in src/rt/rt_vla.c — a dual-build C11 source the AOT
+// ledger also carries, so `-static-libmadc` covers VLA scope exit.)
+
+// ── Atomic builtins ──────────────────────────────────────────────────────────
+// gcc/clang INLINE the `__atomic_*` builtins (they are not real symbols — only
+// the unprefixed C11 `atomic_thread_fence` lives in libatomic). c2mir does not
+// inline them; it emits external calls that fail to link. madc's cir_builder
+// lowers `__atomic_thread_fence` / `__atomic_fetch_add` to these real-symbol
+// wrappers (resolved via dlsym(RTLD_DEFAULT) at MIR-link), implemented here with
+// the genuine builtins — this runtime TU is gcc/clang-compiled, so they become
+// real atomic instructions / fences. libstdc++'s <ext/atomicity.h> refcount path
+// (the read/write memory barriers and __exchange_and_add) reaches them through
+// <memory>, which the vector reallocation chain pulls in.
+// They live with the other builtin shims (below) and NOT on the AOT ledger:
+// a ledger source is compiled by madc, which would lower the `__atomic_*` here
+// straight back into these same wrappers — an infinite self-call. Programs
+// needing them are Tier B and refuse loudly under -static-libmadc.
+extern "C" void __madc_atomic_thread_fence(int memorder) { __atomic_thread_fence(memorder); }
+extern "C" void __madc_atomic_signal_fence(int memorder) { __atomic_signal_fence(memorder); }
+extern "C" int  __madc_atomic_fetch_add_i(int *p, int v, int memorder)
+{ return __atomic_fetch_add(p, v, memorder); }
+extern "C" long __madc_atomic_fetch_add_l(long *p, long v, int memorder)
+{ return __atomic_fetch_add(p, v, memorder); }
 
 // __builtin_bswap*: byte-swap fixed-width integer values.
 extern "C" uint16_t __madc_bswap16(uint16_t x)

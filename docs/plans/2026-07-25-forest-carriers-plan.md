@@ -342,6 +342,106 @@ product path.
    merge at emit; loud Tier-B refusal. Gate: a try/catch-using C-lane
    program emits `-static-libmadc` and runs with zero madc library on
    a clean machine (Linux + Mac).
+   **S5 COMPLETE (2026-07-26): Linux gate GREEN.** The C-lane runtime
+   became **dual-build C11 sources** under `src/rt/`
+   (`rt_except.c` = the whole SJLJ try/throw/catch + cleanup runtime,
+   `rt_vla.c` = VLA scope exit): the host build compiles them into
+   libmadc (`$(CXX) -x c -std=c11`, so every MODE's target/sysroot
+   flags apply unchanged) and **madc compiles the very same sources
+   through c2mir at pack time** into MIR ledger modules. ONE
+   implementation, two consumers; `scripts/ledger_sources.txt` is the
+   single owner of the list, read by `src/Makefile`,
+   `scripts/forest_pack.sh` and `scripts/forest_pack_darwin.sh`.
+   `src/exception_runtime.cpp` is deleted, its `__atomic_*` wrappers
+   moved to `va_helpers.cpp` beside the other builtin shims — where
+   they belong and where they must stay: madc lowers `__builtin_x` to
+   `__madc_x`, so a builtin shim compiled BY madc would call straight
+   back into itself. That is the real Tier-A boundary, sharper than
+   "C-compilable": **strict C11, no compiler builtins.**
+   *Carrier:* a new OPTIONAL container segment (`CIR_FOREST_SEG_LEDGER`,
+   header + directory + per-module symbol index and `.bmir` bytes), so
+   the ledger rides every carrier the forest already rides — self-image,
+   library image, sidecars, `$MADC_FOREST` — for free. It is read
+   INDEPENDENTLY of the grove bind: the discovery chain was factored
+   into one walker (`Program::probe_forest_chain`) that both consumers
+   share, with the v27 producer-config gate applied to the grove bind
+   only. The ledger is target-specific but dialect-agnostic, so a
+   `--std=c99` compile that cannot bind the groves still links the
+   runtime. `--dump-forest` reports `ledger`/`ledgermod` lines.
+   *Emit:* `-static-libmadc` (+ `-static` alias) pulls ledger modules
+   into the compile context BEFORE `MIR_link` — transitively, to a
+   fixpoint, whole modules at a time (gcc's .a-member granularity) —
+   so the eager object-mode gen puts their code in the capture; at emit
+   the existing cover analysis verifies nothing madc-side is left and
+   the `libmadc.so.0` DT_NEEDED is dropped unconditionally. Two
+   diagnostics, deliberately distinct: **no ledger reached the pull** is
+   a BUILD-side message (this madc ships none — use a packed/installed
+   build or `--forest-bind=`), while leftover symbols are the **Tier-B
+   refusal**, listing them. Evidence: permanent
+   `scripts/forest_ledger_gate.sh` in fulltest — 13 checks (ledger
+   packs + `--dump-forest` reports it; baseline WITHOUT the flag keeps
+   `libmadc.so.0`, so the next leg proves the flag and not an accident;
+   try/catch emits with no madc library, no `__madc_*` imports, output
+   identical to the JIT run, and runs under an empty library path; VLA
+   likewise; Tier-B refusal names symbols; no-ledger carrier gets the
+   build-side message and never blames Tier B; `-c` and the .o link
+   lane refuse at their own layers).
+   Three real bugs fixed en route, each at its own layer: (a) the
+   ledger compile activated its own Programs' token/value/type pools
+   and then destroyed them, leaving the caller's freeze interning into
+   freed memory (SIGSEGV) — the side excursion now restores the
+   previously-active Program; (b) every ledger function was getting a
+   `__madc_shim_<sym>` MadValue adapter, importing `madc_value_*` —
+   precisely the libmadc dependency the flag exists to remove — fixed
+   with the existing `aot_skip_eval_shims` knob (a ledger module is
+   never host-called through the value ABI); (c) **the cover analysis
+   mis-classified COPY-RELOCATED libc data**: `dlsym`+`dladdr` answers
+   "where does the process's winning definition live", and `stderr` is
+   copied into `bin/madc`'s own `.bss`, so it looked uncovered and
+   EVERY AOT program touching stderr kept a needless `libmadc.so.0`
+   DT_NEEDED. The cover libraries are now asked directly
+   (`dlopen(soname, RTLD_NOLOAD)` + `dlsym`) before falling back to
+   dladdr — a fix that improves the default lane too.
+   **DARWIN, up to the hardware line.** `forest_pack_darwin.sh` packs
+   the ledger with the cross madc (so the modules carry darwin-target
+   MIR) and FAILS the pack if the container ends up without one — there
+   is no dylib to fall back to on Mach-O, so a hosted madc with no
+   ledger could never emit a try/catch program at all. Verified on both
+   arches from Linux: the cross-freeze carries the ledger (2 modules /
+   22 symbols), the SAME program that still refuses without the flag
+   ("program needs the madc runtime, which does not exist as a library
+   for Mach-O targets; build it into the image with -static-libmadc")
+   now emits a valid `Mach-O 64-bit arm64 / x86_64 executable
+   (NOUNDEFS|DYLDLINK|TWOLEVEL|PIE)` with the ledger pulled, ZERO
+   strings naming libmadc and ZERO undefined `__madc_*` symbols.
+   That exposed the LAST bug of the slice, the cross form of the
+   copy-relocation one: **cover analysis on a cross build was probing
+   the HOST's symbol universe.** darwin's `stderr` is `__stderrp`,
+   absent from glibc, so `dlsym` said "uncovered" and the emit refused.
+   A cross build cannot answer "does the target's libc provide this" by
+   probing — but it CAN answer the question the analysis actually asks,
+   "does LIBMADC define this", because libmadc is loaded in this very
+   process. Under `MADC_CROSS_TARGET` the check is now exactly that;
+   anything libmadc does not define belongs to the target system, and a
+   genuinely missing symbol surfaces at the target's loader instead of
+   as a bogus madc-runtime refusal — the ordinary cross-compiler
+   contract. (Native builds are untouched: the branch is
+   preprocessor-excluded.)
+   **STATED BOUNDARIES:** (i) **running** an emitted Mach-O binary
+   still needs the owner's Mac, like every S1–S3 darwin leg — the
+   emit side is proven, the AMFI/run leg is not. (ii) the **.o link
+   lane** (`madc -static-libmadc -o prog a.o`)
+   refuses loudly: the ledger is carried as MIR modules, which merge
+   into a compile CONTEXT, while that lane merges native relocatables
+   through `MIR_object_read` — bridging them needs the MH_OBJECT `.o`
+   flavor the fork still lacks (task #4). (iii) a `-static-libmadc`
+   image carries **process-global** exception state, not per-thread:
+   MIR has no TLS (a Tier-3 floor gap), so the ledger build defines
+   `MADC_RT_TLS` empty. Documented in the man page; single-threaded
+   programs are unaffected. (iv) Tier-A breadth is the exception +
+   VLA runtime; the builtin-shim family (`__madc_popcount`,
+   `__madc_bswap*`, the overflow helpers) stays Tier B until madc
+   lowers those builtins to native MIR ops instead of calls.
 6. **S6 — `madc.ini`** (configure-gated, smallest slice, anytime after
    S3).
 

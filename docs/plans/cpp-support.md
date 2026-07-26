@@ -228,7 +228,7 @@ These produce wrong answers or crashes on valid C++. Highest priority.
 - **P1.1 — exceptions (try/catch/throw)**. Lower `TokenTRY` to SJLJ as `cir_node`
   in `CirBuilder` (CIR builder currently errors `unhandled expression: TokenTRY`;
   parser already tokenizes/parses try/catch/throw). **The SJLJ runtime is ALREADY
-  LIVE** — `src/exception_runtime.cpp` survived the transpiler removal and is in the
+  LIVE** — `src/rt/rt_except.c` (formerly `src/exception_runtime.cpp`) is in the
   Makefile (`__madc_try_push/pop`, `__madc_throw_int/double/cstr`, `__madc_rethrow`,
   `__madc_exception_type/int/double/cstr`, `__madc_exception_clear`, cleanup stack).
   So P1.1 recycles NO runtime — only writes the lowering that calls it.

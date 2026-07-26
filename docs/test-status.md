@@ -1,6 +1,31 @@
 # Test Status
 
-> **Current (2026-07-26, `develop` — v0.49.0, forest-carriers S4
+> **Current (2026-07-26, `develop` — v0.50.0, forest-carriers S5
+> complete):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
+> forest gate green, including the NEW `forest_ledger_gate` — the
+> `-static-libmadc` promise: 14 checks over a container the gate freezes
+> itself with `--freeze-ledger=` (the same call the release pack makes).
+> A **baseline leg per program** proves the program is genuinely
+> runtime-needing (it keeps `libmadc.so.0` WITHOUT the flag), so the
+> `-static-libmadc` legs cannot pass vacuously; then try/catch and VLA
+> each emit with **no madc library and no `__madc_*` imports**, output
+> byte-identical to the JIT run, and the try/catch binary runs under an
+> **empty library path**. Failure surfaces are separated: a Tier-B (C++
+> script-lane) program refuses NAMING its symbols, while a carrier with
+> no ledger gets the BUILD-side message and never blames Tier B; `-c`
+> and the `.o` link lane refuse at their own layers.
+> **PRODUCT path** (the real one, no `--forest-bind`): `make release`
+> packs `bin/madc-release` with 240 units **plus the ledger** (2 modules,
+> 22 symbols), that packed binary reports it via `--dump-forest`, emits a
+> try/catch program with **0 `libmadc` DT_NEEDED entries**, and the
+> program runs correctly under `env -i LD_LIBRARY_PATH=/nonexistent`.
+> Packed arbiter **756/0/0/9**; `--exe` lane **740/0**. Unit tests +1
+> (`test_forest_policy`: the ledger carrier probe is silent and
+> policy-free on an empty chain). Fork unchanged (`1.0-madc.0.47.0`
+> @74e705e4).
+
+> **Previous (2026-07-26, `develop` — v0.49.0, forest-carriers S4
 > complete):**
 > fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
 > forest gate green, including the NEW `forest_library_gate` — the
@@ -25,7 +50,7 @@
 > (`test_forest_policy`: monolithic image identity). Fork unchanged
 > (`1.0-madc.0.47.0` @74e705e4).
 
-> **Previous (2026-07-25, `develop` — v0.48.0, forest-carriers S3
+> **Earlier (2026-07-25, `develop` — v0.48.0, forest-carriers S3
 > complete):**
 > fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
 > forest gate green, including the NEW `forest_sidecar_gate` — the

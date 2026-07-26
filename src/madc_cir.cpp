@@ -23,6 +23,7 @@
 #include <stdarg.h>
 #include <setjmp.h>
 #include <dlfcn.h>
+#include <limits.h>	// PATH_MAX (cross-build cover analysis: realpath buffer)
 #include <chrono>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
@@ -407,6 +408,126 @@ static int cir_mir_cache_read_byte(MIR_context_t)
     return (*cir_mir_cache_read_src)[cir_mir_cache_read_pos++];
 }
 
+// --- AOT ledger pull (-static-libmadc, forest-carriers S5) ----------------
+//
+// Collect every import no loaded module defines. The caller's two uses are
+// selection (which ledger modules to pull) and the Tier-B refusal list.
+static void cir_ctx_unresolved_imports(MIR_context_t ctx,
+				       std::vector<std::string> &out)
+{
+    std::set<std::string> defined, seen;
+    std::vector<std::string> imports;
+    for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx));
+	 m; m = DLIST_NEXT(MIR_module_t, m))
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it)) {
+	    if (it->item_type == MIR_import_item) {
+		if (it->u.import_id && seen.insert(it->u.import_id).second)
+		    imports.push_back(it->u.import_id);
+		continue;
+	    }
+	    if (it->item_type == MIR_export_item
+		|| it->item_type == MIR_forward_item
+		|| it->item_type == MIR_proto_item)
+		continue;
+	    const char *nm = MIR_item_name(ctx, it);
+	    if (nm && nm[0])
+		defined.insert(nm);
+	}
+    out.clear();
+    for (const std::string &imp : imports)
+	if (!defined.count(imp))
+	    out.push_back(imp);
+}
+
+// Was a ledger actually AVAILABLE for the last pull? Distinguishes "this madc
+// ships no ledger" from "this program needs Tier-B pieces" — two very
+// different user actions, so they must not share a diagnostic.
+static bool cir_ledger_available = false;
+
+// Read ONE ledger module's .bmir into `ctx` and load it. The MIR error
+// bracket lives in its own frame on purpose: a longjmp leaves automatic
+// variables MODIFIED since the setjmp indeterminate, so arming it inside the
+// caller's selection loop would corrupt that loop's state at -O2. Here the
+// only automatics are the unmodified parameter and `before`, both set before
+// the setjmp. False = nothing new was loaded.
+static bool cir_ledger_read_module(MIR_context_t ctx,
+				   const cir_ledger_module &m)
+{
+    MIR_module_t before = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+    if (setjmp(cir_mir_error_jmp)) {
+	cir_mir_error_armed = false;
+	cir_mir_cache_read_src = NULL;
+	fprintf(stderr, "madc: ledger: %s: MIR_read failed: %s\n",
+		m.name.c_str(), cir_mir_error_text);
+	return false;
+    }
+    cir_mir_error_armed = true;
+    cir_mir_cache_read_src = &m.bytes;
+    cir_mir_cache_read_pos = 0;
+    MIR_read_with_func(ctx, cir_mir_cache_read_byte);
+    cir_mir_cache_read_src = NULL;
+    cir_mir_error_armed = false;
+    MIR_module_t got = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+    if (!got || got == before) {
+	fprintf(stderr, "madc: ledger: %s: no module in the blob\n",
+		m.name.c_str());
+	return false;
+    }
+    MIR_load_module(ctx, got);
+    return true;
+}
+
+// Merge the ledger modules this program needs into `ctx`, BEFORE MIR_link, so
+// the eager object-mode gen puts their code in the capture and the emit-time
+// cover analysis sees the symbols defined. Transitive: a pulled module's own
+// unresolved imports select further ledger modules, to a fixpoint. Whole
+// modules are the granularity (gcc's .a-member model) — a module is pulled
+// once, in full.
+//
+// Silent when there is no carrier or no ledger: the emit-time verification
+// owns the diagnostic, because only it knows whether this program needed the
+// runtime at all (a runtime-free program must not be nagged about a missing
+// ledger).
+static void cir_ledger_pull(MIR_context_t ctx, Program *prog)
+{
+    if (!madc_static_libmadc || !prog)
+	return;
+    CirFrozenForest *forest = prog->ensure_ledger_forest();
+    if (!forest)
+	return;
+    std::vector<cir_ledger_module> ledger;
+    if (!forest->ledger_modules(ledger))
+	return;
+    cir_ledger_available = true;
+    std::map<std::string, size_t> owner;	// symbol -> ledger module index
+    for (size_t i = 0; i < ledger.size(); i++)
+	for (const std::string &s : ledger[i].syms)
+	    owner.insert(std::make_pair(s, i));
+
+    std::vector<bool> pulled(ledger.size(), false);
+    for (;;) {
+	std::vector<std::string> undef;
+	cir_ctx_unresolved_imports(ctx, undef);
+	size_t pulled_now = 0;
+	for (const std::string &nm : undef) {
+	    std::map<std::string, size_t>::const_iterator it = owner.find(nm);
+	    if (it == owner.end() || pulled[it->second])
+		continue;
+	    pulled[it->second] = true;	// once, whether or not the read works
+	    if (cir_ledger_read_module(ctx, ledger[it->second])) {
+		pulled_now++;
+		DBG(std::cout << "ledger: pulled " << ledger[it->second].name
+			      << " for '" << nm << "' ("
+			      << ledger[it->second].syms.size() << " symbols)"
+			      << std::endl);
+	    }
+	}
+	if (!pulled_now)
+	    break;	// fixpoint: nothing new selected this round
+    }
+}
+
 // -----------------------------------------------------------------------
 // JIT symbolization for the crash handler
 // -----------------------------------------------------------------------
@@ -762,6 +883,13 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
     if (cache_mod)
 	cir_prebind_cache_traps(ctx, cache_mod, mod);
     mc_lap("cache traps");
+    // -static-libmadc: merge the AOT-ledger runtime modules this program
+    // needs BEFORE the link, so the eager object-mode gen puts their code in
+    // the capture. Object mode only — the JIT lane resolves the same symbols
+    // out of the live libmadc it is already running inside.
+    if (madc_object_mode)
+	cir_ledger_pull(ctx, prog);
+    mc_lap("ledger pull");
     cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
     cir_active_dl_syms = prog ? &prog->dl_symbol_map : NULL;
     if (cache_mod) {
@@ -1162,6 +1290,10 @@ static bool cir_write_image_file(const char *out_path, void *buf, size_t size,
 // at emit, no post-link surgery).
 const char *madc_pack_forest_path = NULL;
 
+// -static-libmadc (S5): merge the AOT-ledger runtime into the emitted image
+// instead of depending on libmadc at run time. See madc_cir.h.
+bool madc_static_libmadc = false;
+
 // Load + validate the container with the production reader — an emitted
 // binary carrying an unopenable carrier would ship dead weight silently,
 // so a non-container file fails the emit loudly instead.
@@ -1262,9 +1394,64 @@ bool CirJitSession::emit_native_object(const char *out_path)
 // that does not resolve, or resolves outside every cover (including into the
 // madc runtime itself — statically linked into this executable, so dladdr
 // reports the self exe), is NOT covered.
+#ifdef MADC_CROSS_TARGET
+// Is `name` a symbol the MADC RUNTIME owns — i.e. one libmadc itself defines?
+// dladdr the process's definition and compare the defining image against this
+// madc's own (the shared libmadc, or the executable in the monolithic shape,
+// where a static libmadc IS the exe's text).
+static bool cir_symbol_from_madc_image(const char *name)
+{
+    void *addr = dlsym(RTLD_DEFAULT, name);
+    if (!addr)
+	return false;
+    Dl_info info;
+    if (!dladdr(addr, &info) || !info.dli_fname || !info.dli_fname[0])
+	return false;
+    char real[PATH_MAX];
+    std::string img = realpath(info.dli_fname, real) ? real : info.dli_fname;
+    return img == madc_self_lib_path() || img == madc_self_exe_path();
+}
+#endif
+
 static bool cir_import_covered(const char *name,
 			       const std::vector<std::string> &covers)
 {
+#ifdef MADC_CROSS_TARGET
+    // A CROSS build's target system libraries are not this host's: dlsym here
+    // sees the host's libc, so "does the target's libc provide __stderrp"
+    // (darwin's backing symbol for stderr) simply cannot be probed — it is
+    // absent from glibc, and the old answer, "uncovered", made every darwin
+    // program touching stderr look like it needed the madc runtime.
+    // The question that IS answerable, and the one the runtime-need analysis
+    // actually asks, is "does LIBMADC define this?" — libmadc is loaded in
+    // this very process. Anything it does not define belongs to the target
+    // system, exactly as with any cross compiler: a genuinely missing symbol
+    // surfaces at the target's loader, not as a bogus madc-runtime refusal.
+    (void)covers;
+    return !cir_symbol_from_madc_image(name);
+#else
+    // Ask each cover library DIRECTLY first: does IT define this symbol?
+    // dladdr answers "where does the process's winning definition live",
+    // which is the wrong question for a COPY-relocated libc data symbol —
+    // `stderr`/`stdout`/`environ` are copied into bin/madc's own .bss by the
+    // static linker, so dladdr reports the executable and the symbol looked
+    // uncovered (every AOT program touching stderr kept a needless
+    // libmadc.so.0 DT_NEEDED; under -static-libmadc it would refuse
+    // outright). RTLD_NOLOAD: these libraries are already mapped — we are
+    // interrogating them, never loading anything new.
+    for (const std::string &c : covers) {
+	if (c.find(".so") == std::string::npos
+	    && c.find(".dylib") == std::string::npos)
+	    continue;	// a bare stem (darwin's libsystem_/libc++) is a
+			// prefix cover, handled by the dladdr pass below
+	void *h = dlopen(c.c_str(), RTLD_LAZY | RTLD_NOLOAD);
+	if (!h)
+	    continue;
+	void *sym = dlsym(h, name);
+	dlclose(h);
+	if (sym)
+	    return true;
+    }
     void *addr = dlsym(RTLD_DEFAULT, name);
     if (!addr)
 	return false;
@@ -1281,6 +1468,7 @@ static bool cir_import_covered(const char *name,
 	    return true;
     }
     return false;
+#endif
 }
 
 // Does the image actually need the madc runtime? Walk every module in the
@@ -1292,38 +1480,64 @@ static bool cir_import_covered(const char *name,
 // reachable through libmadc's dependency closure — keeps the dependency
 // (conservative: false negatives cost one extra DT_NEEDED, false positives
 // break the binary at load).
-static bool cir_image_needs_madc_runtime(MIR_context_t ctx,
-					 const std::vector<std::string> &covers)
+static void cir_image_uncovered_imports(MIR_context_t ctx,
+					const std::vector<std::string> &covers,
+					std::vector<std::string> &out)
 {
-    std::set<std::string> defined;
-    std::vector<std::string> imports;
-    for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx));
-	 m; m = DLIST_NEXT(MIR_module_t, m)) {
-	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
-	     it = DLIST_NEXT(MIR_item_t, it)) {
-	    if (it->item_type == MIR_import_item) {
-		imports.push_back(it->u.import_id);
-		continue;
-	    }
-	    if (it->item_type == MIR_export_item
-		|| it->item_type == MIR_forward_item
-		|| it->item_type == MIR_proto_item)
-		continue;
-	    const char *nm = MIR_item_name(ctx, it);
-	    if (nm && nm[0])
-		defined.insert(nm);
-	}
-    }
-    for (const std::string &imp : imports) {
-	if (defined.count(imp))
-	    continue;
+    std::vector<std::string> undef;
+    cir_ctx_unresolved_imports(ctx, undef);
+    out.clear();
+    for (const std::string &imp : undef)
 	if (!cir_import_covered(imp.c_str(), covers)) {
 	    DBG(std::cout << "native image needs madc runtime: import '"
 			  << imp << "' is not covered by base/user libs"
 			  << std::endl);
-	    return true;
+	    out.push_back(imp);
 	}
+}
+
+static bool cir_image_needs_madc_runtime(MIR_context_t ctx,
+					 const std::vector<std::string> &covers)
+{
+    std::vector<std::string> uncovered;
+    cir_image_uncovered_imports(ctx, covers, uncovered);
+    return !uncovered.empty();
+}
+
+// -static-libmadc verification (S5). The ledger pull already merged every
+// Tier-A piece this program selected, so anything still uncovered is Tier B —
+// the C++ script-lane runtime, which exists only as host-toolchain objects.
+// Refuse LOUDLY and name the symbols: the same contract the Apple cross lane
+// ships, and the only honest answer (silently keeping the dependency would
+// break the flag's whole promise). True = clear to emit.
+static bool cir_static_libmadc_verify(MIR_context_t ctx, const char *out_path,
+				      const std::vector<std::string> &covers)
+{
+    std::vector<std::string> uncovered;
+    cir_image_uncovered_imports(ctx, covers, uncovered);
+    if (uncovered.empty())
+	return true;
+    if (!cir_ledger_available) {
+	// No ledger reached the pull at all: this madc's carrier chain found
+	// no container, or the container carries no ledger segment (packed
+	// without --freeze-ledger=, or --with-forest=none). A build problem, not a
+	// program one — say so instead of blaming the program's symbols.
+	fprintf(stderr, "madc: %s: -static-libmadc needs this madc's AOT"
+		" ledger, and no carrier provided one (%zu runtime symbol(s)"
+		" would be unresolved). A packed madc carries the ledger in"
+		" its forest container; point at one with --forest-bind=<file>"
+		" or use an installed/release build.\n",
+		out_path, uncovered.size());
+	return false;
     }
+    fprintf(stderr, "madc: %s: -static-libmadc cannot cover %zu runtime"
+	    " symbol(s) — they are not on the AOT ledger (Tier B: the C++"
+	    " script-lane runtime, which exists only as host-toolchain"
+	    " objects):\n", out_path, uncovered.size());
+    for (const std::string &s : uncovered)
+	fprintf(stderr, "    %s\n", s.c_str());
+    fprintf(stderr, "madc: link against libmadc instead (drop"
+	    " -static-libmadc), or keep the program on the C lane\n");
     return false;
 }
 
@@ -1378,7 +1592,13 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     // libmadc.so.0 DT_NEEDED — it runs on hosts without madc installed.
     std::vector<std::string> other;
     bool have_madc = cir_split_needed(needed, other);
-    bool drop_madc = have_madc && !cir_image_needs_madc_runtime(ctx, other);
+    // -static-libmadc: the ledger pull ran before the link, so the runtime is
+    // IN the capture. Verify nothing madc-side is left over, then drop the
+    // dependency unconditionally — that is the flag's whole promise.
+    if (madc_static_libmadc && !cir_static_libmadc_verify(ctx, out_path, other))
+	return false;
+    bool drop_madc = have_madc && (madc_static_libmadc
+				   || !cir_image_needs_madc_runtime(ctx, other));
     DBG(std::cout << "native image DT_NEEDED: libmadc.so.0 "
 		  << (drop_madc ? "dropped (runtime-free)"
 				: (have_madc ? "kept" : "absent"))
@@ -1391,7 +1611,8 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     // fail at emit, not at dyld.
     if (have_madc && !drop_madc) {
 	fprintf(stderr, "madc: %s: program needs the madc runtime, which does"
-		" not exist for Mach-O targets (runtime-free programs only)\n",
+		" not exist as a library for Mach-O targets; build it into the"
+		" image with -static-libmadc (C-lane machinery only)\n",
 		out_path);
 	return false;
     }
@@ -1645,6 +1866,18 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 			  MadcNativeKind kind, const char *out_path,
 			  const std::vector<std::string> &user_libs)
 {
+    // -static-libmadc is not wired into THIS lane yet (forest-carriers S5
+    // stated boundary): the ledger is carried as MIR modules, which merge
+    // into a compile CONTEXT — the .o link lane merges native relocatables
+    // through MIR_object_read instead, and turning ledger modules into
+    // relocatables needs the MH_OBJECT .o flavor the fork still lacks for
+    // Mach-O. Refuse loudly rather than silently keep the dependency.
+    if (madc_static_libmadc) {
+	fprintf(stderr, "madc: -static-libmadc is not supported in the"
+		" multi-object link lane yet; emit the program from source"
+		" (madc -static-libmadc -o %s <sources>)\n", out_path);
+	return -1;
+    }
     // No compile happens here — the inputs are already captures; the fork
     // does the whole link (read/merge + emit).
     MIR_object_t obj = cir_read_objects(paths);
@@ -4187,8 +4420,191 @@ static bool cir_forest_mir_cache_blob(const void *image, size_t image_len,
     return ok;
 }
 
+// Serialize one built module to .bmir bytes. Its own frame, for the same
+// reason as cir_ledger_read_module: a longjmp out of the MIR error bracket
+// must not leave the caller's loop variables indeterminate.
+static bool cir_ledger_write_module(MIR_context_t ctx, MIR_module_t mod,
+				    const char *name,
+				    std::vector<uint8_t> &out)
+{
+    if (setjmp(cir_mir_error_jmp)) {
+	cir_mir_error_armed = false;
+	cir_mir_cache_sink = NULL;
+	fprintf(stderr, "madc: ledger: %s: MIR error while serializing: %s\n",
+		name, cir_mir_error_text);
+	return false;
+    }
+    cir_mir_error_armed = true;
+    cir_mir_cache_sink = &out;
+    MIR_write_module_with_func(ctx, cir_mir_cache_write_byte, mod);
+    cir_mir_cache_sink = NULL;
+    cir_mir_error_armed = false;
+    return true;
+}
+
+// --- AOT ledger (forest-carriers S5) -------------------------------------
+//
+// Compile each C-lane runtime source through the SAME front end a user
+// program takes (engine -> Program -> tokenize -> parse -> build_tu_module)
+// and serialize the resulting MIR module. The module is target-correct by
+// construction: it is this madc, with this madc's target and headers, so a
+// cross madc packs a cross-target ledger from the identical sources.
+//
+// MADC_RT_TLS is defined EMPTY here: MIR has no thread-local storage, so the
+// ledger's copy of the exception state is process-global (see src/rt/rt_except.c).
+bool madc_cir_ledger_compile(MadcEngine &engine,
+			     const std::vector<std::string> &sources,
+			     std::vector<cir_ledger_module> &out,
+			     Program *restore)
+{
+    out.clear();
+    if (sources.empty())
+	return true;
+
+    // Parse every source before any MIR context exists — tokenize()/parse()
+    // can throw, and a throw inside the MIR bracket would leak the contexts
+    // (the project lane's ordering rule, project_parse_all).
+    std::vector<std::unique_ptr<Program> > parsed;
+    for (const std::string &src : sources) {
+	std::unique_ptr<Program> prog = engine.create_program();
+	prog->colors = true;
+	// A ledger source is madc's OWN runtime: never bind grove state into
+	// it (the container being packed is the one we would bind), and read
+	// it as the C dialect gcc uses for a .c file.
+	prog->registration_policy.enable_forest_bind = false;
+	// A ledger module is madc's own runtime, merged into a program's image
+	// — never host-called through the MadValue ABI. Without this every
+	// exported runtime function would carry a __madc_shim_<sym> adapter
+	// importing madc_value_*, which is exactly the libmadc dependency
+	// -static-libmadc exists to remove.
+	prog->aot_skip_eval_shims = true;
+	prog->add_cli_define("MADC_RT_TLS=");
+	prog->set_language_standard_option("--std=gnu17");
+	TokenProgram *tp = prog->tokenize(src.c_str());
+	if (!tp) {
+	    fprintf(stderr, "madc: ledger: %s: tokenize failed\n", src.c_str());
+	    return false;
+	}
+	if (!prog->parse(tp)) {
+	    fprintf(stderr, "madc: ledger: %s: parse failed\n", src.c_str());
+	    return false;
+	}
+	parsed.push_back(std::move(prog));
+    }
+
+    MIR_context_t ctx = MIR_init();
+    MIR_set_error_func(ctx, cir_mir_error);
+    c2mir_init(ctx);
+    c2m_ctx_t c2m = cir_init(ctx, /*debug_p=*/false);
+    std::vector<CirBuilder *> builders;
+    bool ok = true;
+    if (!c2m) {
+	fprintf(stderr, "madc: ledger: cir_init failed\n");
+	ok = false;
+    }
+    for (size_t i = 0; ok && i < parsed.size(); i++) {
+	CirBuilder *builder = NULL;
+	bool stop = false;
+	MIR_module_t mod = build_tu_module(ctx, c2m, parsed[i].get(),
+					   sources[i].c_str(),
+					   false, false, false, builder, stop);
+	builders.push_back(builder);
+	if (!mod) {
+	    fprintf(stderr, "madc: ledger: %s: module build failed\n",
+		    sources[i].c_str());
+	    ok = false;
+	    break;
+	}
+	cir_ledger_module lm;
+	lm.name = sources[i];
+	// The DEFINED symbol set is the selection index: every func / data
+	// item the module owns. Imports, protos and forwards define nothing.
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it)) {
+	    if (it->item_type == MIR_import_item
+		|| it->item_type == MIR_export_item
+		|| it->item_type == MIR_forward_item
+		|| it->item_type == MIR_proto_item)
+		continue;
+	    const char *nm = MIR_item_name(ctx, it);
+	    if (nm && nm[0])
+		lm.syms.push_back(nm);
+	}
+	if (!cir_ledger_write_module(ctx, mod, sources[i].c_str(), lm.bytes)) {
+	    ok = false;
+	    break;
+	}
+	if (lm.bytes.empty() || lm.syms.empty()) {
+	    fprintf(stderr, "madc: ledger: %s: empty module (%zu symbols,"
+		    " %zu bytes)\n", sources[i].c_str(), lm.syms.size(),
+		    lm.bytes.size());
+	    ok = false;
+	    break;
+	}
+	DBG(std::cout << "ledger: " << lm.name << ": " << lm.syms.size()
+		      << " symbols, " << lm.bytes.size() << " bytes"
+		      << std::endl);
+	out.push_back(std::move(lm));
+    }
+    for (CirBuilder *b : builders) delete b;
+    if (c2m)
+	cir_finish(c2m);
+    c2mir_finish(ctx);
+    MIR_finish(ctx);
+    // build_tu_module made each ledger Program the ACTIVE owner of the
+    // process-global token/value/type pools; those Programs die when `parsed`
+    // unwinds, so leaving them active would hand the caller dangling pools
+    // (a freeze interning into freed memory — SIGSEGV, seen 2026-07-26).
+    // Restore whoever was active on entry: this is a side excursion, and it
+    // owns putting the statics back.
+    if (restore)
+	restore->activate_token_pools();
+    if (!ok)
+	out.clear();
+    return ok;
+}
+
+// Serialize the compiled ledger into its container segment payload:
+// header, directory, then the name / symbol / MIR blocks in the same order
+// (the read side is CirFrozenForest::ledger_modules).
+static void cir_ledger_serialize(const std::vector<cir_ledger_module> &ledger,
+				 std::vector<uint8_t> &out)
+{
+    cir_forest_ledger_header lh;
+    memset(&lh, 0, sizeof lh);
+    lh.forest_version = CIR_FOREST_FORMAT_VERSION;
+    lh.mir_api_x100 = (uint32_t)(_MIR_get_api_version() * 100.0 + 0.5);
+    lh.module_count = (uint32_t)ledger.size();
+    out.assign((const uint8_t *)&lh, (const uint8_t *)&lh + sizeof lh);
+
+    std::vector<std::string> symblocks;
+    for (const cir_ledger_module &m : ledger) {
+	std::string syms;
+	for (const std::string &s : m.syms) {
+	    syms += s;
+	    syms += '\0';
+	}
+	symblocks.push_back(std::move(syms));
+    }
+    for (size_t i = 0; i < ledger.size(); i++) {
+	cir_forest_ledger_entry e;
+	memset(&e, 0, sizeof e);
+	e.name_bytes = (uint32_t)ledger[i].name.size();
+	e.sym_bytes = (uint32_t)symblocks[i].size();
+	e.mir_bytes = (uint32_t)ledger[i].bytes.size();
+	out.insert(out.end(), (const uint8_t *)&e,
+		   (const uint8_t *)&e + sizeof e);
+    }
+    for (size_t i = 0; i < ledger.size(); i++) {
+	out.insert(out.end(), ledger[i].name.begin(), ledger[i].name.end());
+	out.insert(out.end(), symblocks[i].begin(), symblocks[i].end());
+	out.insert(out.end(), ledger[i].bytes.begin(), ledger[i].bytes.end());
+    }
+}
+
 int madc_cir_freeze(Program *prog, const char *source_name,
-		    const char *out_path, bool append, bool mir_cache)
+		    const char *out_path, bool append, bool mir_cache,
+		    const std::vector<cir_ledger_module> *ledger)
 {
     // The type graph rides the parse-populated DefArena (v18): a Program that
     // parsed with forest_arena_enabled OFF would freeze a type-less container
@@ -4372,6 +4788,31 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 				    "blob packed\n", source_name, mblob.size());
 		    }
 		}
+		// AOT ledger (--freeze-ledger=): the C-lane runtime as MIR
+		// modules, so -static-libmadc programs carry it inside their
+		// own image. Unlike the mir cache this is NOT best-effort — the
+		// caller asked for a ledger, and a container that silently
+		// lacks one turns every later -static-libmadc into a
+		// Tier-B-looking refusal.
+		if (staged && ledger && !ledger->empty()) {
+		    std::vector<uint8_t> lblob;
+		    cir_ledger_serialize(*ledger, lblob);
+		    if (!w.add_segment(CIR_FOREST_SEG_LEDGER,
+				       SNAP_KIND_CIR_LEDGER,
+				       lblob.data(), lblob.size(), codec,
+				       append ? 15 : 0)) {
+			fprintf(stderr, "%s: ledger: segment add failed\n",
+				source_name);
+			staged = false;
+		    } else {
+			size_t nsym = 0;
+			for (const cir_ledger_module &m : *ledger)
+			    nsym += m.syms.size();
+			fprintf(stderr, "%s: ledger: %zu module(s), %zu symbols,"
+				" %zu bytes packed\n", source_name, ledger->size(),
+				nsym, lblob.size());
+		    }
+		}
 		if (!staged) {
 		    fprintf(stderr, "%s: forest container assembly failed\n",
 			    source_name);
@@ -4483,6 +4924,24 @@ int madc_cir_dump_forest(const char *container_path)
 	std::vector<uint8_t> mblob;
 	if (forest.mir_module_bytes(mblob))
 	    printf("mircache\tbytes=%zu\n", mblob.size());
+    }
+    {
+	// AOT ledger (S5): the C-lane runtime this container carries. One
+	// summary line plus one per module — the surface the ledger gate
+	// asserts against, and the answer to "can this madc -static-libmadc?".
+	std::vector<cir_ledger_module> ledger;
+	if (forest.ledger_modules(ledger)) {
+	    size_t nsym = 0, nbytes = 0;
+	    for (const cir_ledger_module &m : ledger) {
+		nsym += m.syms.size();
+		nbytes += m.bytes.size();
+	    }
+	    printf("ledger\tmodules=%zu\tsymbols=%zu\tbytes=%zu\n",
+		   ledger.size(), nsym, nbytes);
+	    for (const cir_ledger_module &m : ledger)
+		printf("ledgermod\t%s\tsymbols=%zu\tbytes=%zu\n",
+		       m.name.c_str(), m.syms.size(), m.bytes.size());
+	}
     }
     for (size_t i = 0; i < forest.libs().size(); ++i)
 	printf("lib\t%s\n", forest.libs()[i].c_str());
@@ -4836,6 +5295,13 @@ int madc_project_emit_native(MadcEngine &engine,
 
 	for (MIR_module_t m : modules)
 		MIR_load_module(ctx, m);
+	// -static-libmadc: the whole-program capture pulls its AOT-ledger
+	// runtime here, once for the program (not once per TU) — the imports
+	// the TUs satisfy for each other are already netted out by the loads
+	// above. Any TU's Program answers for the carrier; they share one
+	// installation.
+	if (!parsed.empty())
+		cir_ledger_pull(ctx, parsed[0].prog.get());
 	MIR_link(ctx, MIR_set_gen_interface, cir_object_import_resolver);
 	if (madc_debug_info)
 		c2mir_object_attach_debug(ctx);   // R5: whole-program DWARF
