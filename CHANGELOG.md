@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v0.52.0] — 2026-07-26
+
+Mach-O axis B step 4: **`madc -c` for a Mach-O target writes a real
+relocatable object** — one `ld64` links, and one madc reads back — so every
+`.o` lane madc has on ELF works on darwin. The fork keeps ONE merge
+implementation behind two container fronts.
+
 - **feat(macho): `MH_OBJECT` — `madc -c` writes a real Mach-O relocatable,
   and the merge reader reads one back (Mach-O axis B step 4; axis B is now
   complete).** Until now a darwin-target `-c` wrote an ELF `ET_REL` — a
