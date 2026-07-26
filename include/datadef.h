@@ -41,6 +41,14 @@ extern thread_local bool madc_class_pattern_capture_active;
 // _NSGetExecutablePath on macOS.
 std::string madc_self_exe_path();
 
+// Resolved absolute path of the IMAGE that contains libmadc's own code: the
+// shared library when the CLI/host links libmadc dynamically, the executable
+// itself in the monolithic shape (static libmadc). dladdr on a libmadc-resident
+// symbol; empty when unresolvable. The one self-library discovery point — the
+// forest discovery chain's library-image arm compares it against
+// madc_self_exe_path() to know whether a distinct library carrier exists.
+std::string madc_self_lib_path();
+
 // Host shared-library suffix for dlopen soname synthesis (-l<name>) and
 // native shared-artifact naming.
 #ifdef __APPLE__

@@ -2111,6 +2111,14 @@ runtime_eval_registration_policy_for_source_child(const Program::RegistrationPol
     child.restrict_dlfcn_symbols_to_allowlist = source.restrict_dlfcn_symbols_to_allowlist;
     child.allowed_headers = source.allowed_headers;
     child.allowed_dlfcn_symbols = source.allowed_dlfcn_symbols;
+    // Frozen-forest discovery is INHERITED from the parent, never widened: a
+    // sandboxed host that turned the external arms off must not get them back
+    // in a runtime-eval child, and a host that requires frozen state wants the
+    // same contract there (the child is default-constructed, so without this
+    // both knobs would silently revert to the liberal library defaults).
+    child.forest_missing_policy = parent.forest_missing_policy;
+    child.enable_external_forest = parent.enable_external_forest;
+    child.enable_forest_bind = parent.enable_forest_bind;
     child.runtime_eval_source_policy = parent.runtime_eval_source_policy;
     return child;
 }
@@ -2133,6 +2141,25 @@ Program::RegistrationPolicy registration_policy_from_compile_options(const compi
     policy.enable_rust_namespace = options.enable_rust_namespace;
     policy.restrict_headers_to_allowlist = false;
     policy.restrict_dlfcn_symbols_to_allowlist = false;
+    // Frozen-forest discovery knobs (forest-carriers S4): the public enum is
+    // the host-facing spelling of Program::RegistrationPolicy::ForestPolicy.
+    switch ( options.forest_missing )
+    {
+    case forest_policy::loud_fallback:
+	policy.forest_missing_policy =
+	    Program::RegistrationPolicy::ForestPolicy::loud_fallback;
+	break;
+    case forest_policy::strict_require:
+	policy.forest_missing_policy =
+	    Program::RegistrationPolicy::ForestPolicy::strict_require;
+	break;
+    case forest_policy::silent_fallback:
+	policy.forest_missing_policy =
+	    Program::RegistrationPolicy::ForestPolicy::silent_fallback;
+	break;
+    }
+    policy.enable_external_forest = options.enable_external_forest;
+    policy.enable_forest_bind = options.enable_forest_bind;
     policy.allowed_headers = options.allowed_headers;
     policy.allowed_dlfcn_symbols = options.allowed_dlfcn_symbols;
     append_unique_strings(policy.allowed_dlfcn_symbols,
@@ -2157,6 +2184,7 @@ compile_options compile_options_from_security_policy(const security_policy &poli
     options.enable_ruby_namespace = policy.allow_ruby_namespace;
     options.enable_js_namespace = policy.allow_js_namespace;
     options.enable_rust_namespace = policy.allow_rust_namespace;
+    options.enable_external_forest = policy.allow_external_forest;
     options.allowed_headers = policy.allowed_headers;
     options.allowed_dlfcn_symbols = policy.allowed_dlfcn_symbols;
     return options;
@@ -2180,6 +2208,7 @@ security_policy security_policy_from_compile_options(const compile_options &opti
     policy.allow_ruby_namespace = options.enable_ruby_namespace;
     policy.allow_js_namespace = options.enable_js_namespace;
     policy.allow_rust_namespace = options.enable_rust_namespace;
+    policy.allow_external_forest = options.enable_external_forest;
     policy.allowed_headers = options.allowed_headers;
     policy.allowed_dlfcn_symbols = options.allowed_dlfcn_symbols;
     return policy;
@@ -2195,6 +2224,11 @@ compile_options clamp_compile_options_for_authority_mode(const compile_options &
 	clamped.enable_dlfcn_functions = false;
 	clamped.enable_runtime_eval_source_scope_access = false;
 	clamped.enable_runtime_eval_expression_scope_access = false;
+	// A system-locked authority owns where frozen state comes from: an
+	// ambient MADC_FOREST / sidecar would let an outside file inject
+	// declarations into every compile. The image arms (self / libmadc)
+	// are unaffected — they are the installation itself.
+	clamped.enable_external_forest = false;
     }
     return clamped;
 }
@@ -2209,6 +2243,7 @@ security_policy clamp_security_policy_for_authority_mode(const security_policy &
 	clamped.allow_dlfcn_functions = false;
 	clamped.allow_runtime_eval_source_scope_access = false;
 	clamped.allow_runtime_eval_expression_scope_access = false;
+	clamped.allow_external_forest = false;
     }
     return clamped;
 }

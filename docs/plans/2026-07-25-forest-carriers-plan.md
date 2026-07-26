@@ -290,6 +290,53 @@ product path.
 4. **S4 — Shared shape:** forest-in-library arm; `madc.dylib` /
    versioned `.so` packaging alignment (libmadc track already has the
    `.so`); thin CLI. Gate: embedding-host smoke + CLI parity.
+   **S4 COMPLETE (2026-07-26): gate GREEN.** The chain gained its
+   library arms — arm 2 is the **libmadc image** itself
+   (`madc_self_lib_path()`: `dladdr` on a libmadc-resident symbol →
+   the same per-format probe; skipped when that path IS the executable,
+   i.e. the monolithic shape arm 1 already covered), and the sidecar
+   arm gained **`<lib>.forest`** after `<exe>.forest`. The IMAGE arms
+   are deliberately NOT gated by `enable_external_forest` — the library
+   is the installation the host already loaded, not an external
+   redirection — so a sandboxed strict host still binds its groves;
+   that asymmetry is the slice's central semantic. New
+   **`--enable-shared`** configure axis (axis 1 of this plan) links the
+   CLI against the shared libmadc; in that shape `make release` packs
+   `lib/libmadc.so` (`forest_pack.sh --image`, strip-before-pack) and
+   `make install` ships the packed library without re-stripping it.
+   The public embedding API grew the knob family
+   (`madc::compile_options::enable_forest_bind` / `forest_missing` /
+   `enable_external_forest`, `security_policy::allow_external_forest`,
+   clamped off under `system_locked`), and
+   `Program::forest_bind_enabled` moved into `RegistrationPolicy` so
+   ONE owner flows engine → program → child → host. Evidence:
+   permanent `scripts/forest_library_gate.sh` in fulltest — 9 legs over
+   a staged `bin/` + `lib/` install (thin-CLI live parity;
+   library-image bind with `-v` arm naming + output parity; arm order:
+   library image beats a present `<exe>.forest` AND a junk
+   `MADC_FOREST`; `<lib>.forest` bind; and the host legs with no CLI
+   knob — strict+sandboxed binding through the library image, the
+   `enable_external_forest=false` refusal S3 owed (same env, knob
+   flipped, opposite outcome, chain-empty message never a config
+   mismatch), strict-on-empty, silent library default) — plus
+   `tests/libmadc_forest_smoke.cpp` (public-API host) and a unit case
+   pinning monolithic image identity. Suites: fulltest 756/0/0/9,
+   `--exe` 740/0, **thin-CLI parity 756/0/0/9**, and the PRODUCT
+   `--enable-shared` shape (release packs the library) arbiter
+   756/0/0/9 + an installed-tree run binding through the library image.
+   Two real bugs fixed en route: a bare `make -C src` had been building
+   nothing but the forest-shape stamp since v0.48.0 (the stamp rule
+   sits above `all:` and GNU make takes the first rule as the default
+   goal — now `.DEFAULT_GOAL := all`), and a runtime-eval CHILD program
+   reverted both forest knobs to the liberal defaults instead of
+   inheriting them.
+   **NOT in this slice (stated boundary):** the darwin **dylib**
+   packaging shape (`-dynamiclib` + `@rpath` install_name for the
+   hosted MODEs, its `-sectcreate` carrier, and the Mac hardware legs).
+   The hosted darwin build produces no shared library today; the
+   discovery code is platform-neutral (the Mach-O file probe already
+   reads dylibs), so this is packaging + hardware validation, and it
+   rides the darwin packaging work with the Windows/PE arms.
 5. **S5 — `-static-libmadc` Tier A:** ledger modules built by c2mir at
    madc build time, carried per-target; cover-analysis selection +
    merge at emit; loud Tier-B refusal. Gate: a try/catch-using C-lane

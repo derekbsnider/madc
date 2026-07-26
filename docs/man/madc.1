@@ -146,9 +146,12 @@ plus 128 MB per \fB\-\-project\fR translation unit; 0 disables. A
 tripped guard names the knob in its error message.
 .TP
 .BI MADC_FOREST= file
-Frozen forest container to bind when neither the binary's own image nor
-the \fI<exe>\fB.forest\fR sidecar beside it carries one (discovery
-arm 3; first usable container wins).
+Frozen forest container to bind when no earlier discovery arm carries
+one. The chain, first usable container wins: the binary's own image,
+the
+.B libmadc
+image when madc is linked shared, the \fI<exe>\fB.forest\fR and
+\fI<lib>\fB.forest\fR sidecars, then this path.
 .SH EXAMPLES
 Run a file as a script (no main, no includes needed):
 .PP

@@ -2,11 +2,13 @@
 #include <string.h>
 #include <stdint.h>
 #include <string>
+#include <dlfcn.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #include <limits.h>
 #else
 #include <unistd.h>
+#include <limits.h>
 #endif
 
 thread_local bool madc_verbose __attribute__((weak)) = false;
@@ -34,5 +36,21 @@ std::string madc_self_exe_path()
 	buf[n] = '\0';
 	return std::string(buf);
 #endif
+}
+
+// Resolved absolute path of the image holding libmadc's code (see datadef.h).
+// This function itself is the probe symbol: it is compiled into libmadc, so
+// dladdr maps it to libmadc.so / madc.dylib in the shared shape and to the
+// executable in the monolithic one (a static libmadc IS the exe's text).
+std::string madc_self_lib_path()
+{
+	Dl_info info;
+	if (!dladdr((void *)&madc_self_lib_path, &info)
+	    || !info.dli_fname || !info.dli_fname[0])
+		return std::string();
+	char real[PATH_MAX];
+	if (realpath(info.dli_fname, real))
+		return std::string(real);
+	return std::string(info.dli_fname);
 }
 

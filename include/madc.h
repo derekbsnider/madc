@@ -1955,10 +1955,13 @@ public:
 	bool bypass_system_library_headers = false;
 	// Frozen-forest discovery + failure policy (forest-carriers S3).
 	// enable_external_forest gates the probe-chain arms that read frozen
-	// state from OUTSIDE the binary/library images (the <exe>.forest
-	// sidecar and the MADC_FOREST environment variable): a sandboxed
-	// embedding host turns it off so nothing external can redirect where
-	// the compiler loads frozen state from. forest_missing_policy decides
+	// state from OUTSIDE the binary/library images (the <exe>.forest and
+	// <lib>.forest sidecars and the MADC_FOREST environment variable): a
+	// sandboxed embedding host turns it off so nothing external can
+	// redirect where the compiler loads frozen state from. The IMAGE arms
+	// (self-image, and libmadc's own image in the shared shape) stay
+	// enabled — they are the installation the host already loaded, not a
+	// redirection. forest_missing_policy decides
 	// what happens when the discovery chain finds NO usable container:
 	// silent_fallback live-parses (the dev default), loud_fallback
 	// live-parses after ONE stderr notice (the packaged-CLI default,
@@ -1972,6 +1975,13 @@ public:
 	enum class ForestPolicy { silent_fallback, loud_fallback, strict_require };
 	ForestPolicy forest_missing_policy = ForestPolicy::silent_fallback;
 	bool enable_external_forest = true;
+	// May this compile bind frozen state at all (the --forest-bind /
+	// --no-forest-bind switch, and the library's enable_forest_bind
+	// compile_option)? OFF is the Program default because a FREEZE must
+	// live-parse: the CLI turns it on for compiles, and every libmadc host
+	// gets it on through compile_options. It rides the policy so a child
+	// Program (runtime eval, --project TU) inherits it with everything else.
+	bool enable_forest_bind = false;
 	std::vector<std::string> allowed_headers;
 	std::vector<std::string> allowed_dlfcn_symbols;
 	RuntimeEvalChildPolicy runtime_eval_source_policy;
@@ -3951,10 +3961,11 @@ public:
     // system #include naming a frozen grove unit BINDS instead of tokenizing:
     // its PP-export delta installs along the include DAG, then the forest's
     // decl records restore into the symbol tables (forest_restore_decls) — the
-    // header is never re-parsed. All gated on forest_bind_enabled, so the
-    // default path is one predicted branch; flag OFF = byte-identical behavior.
-    bool forest_bind_enabled = false;	// --forest-bind[=path]
-    std::string forest_bind_path;	// container source; empty = /proc/self/exe blob
+    // header is never re-parsed. All gated on
+    // registration_policy.enable_forest_bind (the ONE owner of "may this
+    // compile bind frozen state"), so the default path is one predicted
+    // branch; knob OFF = byte-identical behavior.
+    std::string forest_bind_path;	// explicit container; empty = the discovery chain
     // v24: the TU's ROOT source file (set by tokenize/tokenize_buffer). The
     // forest holds the #include files' state ONLY — never the program's — so
     // the freeze stamps every record whose defining file IS the root
