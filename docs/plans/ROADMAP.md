@@ -412,9 +412,29 @@ high-level" — the answer is both.**
   the `enable_external_forest=false` negative test S3 owed) + thin-CLI
   parity 756/0/0/9 + `--enable-shared` product arbiter 756/0/0/9
   ([2026-07-25-forest-carriers-plan.md](2026-07-25-forest-carriers-plan.md)).
-  REMAINING: forest-carriers S5–S6 (`-static-libmadc` Tier A,
-  `madc.ini`; the darwin **dylib** packaging shape and the
-  existing-signed-binary re-signer are consciously deferred residue);
+  Forest-carriers S5 COMPLETE (v0.50.0) — **`-static-libmadc`**: the
+  C-lane runtime became dual-build C11 sources (`src/rt/rt_except.c`,
+  `src/rt/rt_vla.c`) that the host build compiles into libmadc AND madc
+  compiles through c2mir at pack time into **AOT ledger** MIR modules,
+  carried in a new optional forest-container segment (so they ride every
+  carrier, read independently of the grove bind — the ledger is
+  target-specific but dialect-agnostic). At emit the needed modules are
+  pulled transitively before the link and the cover analysis verifies
+  the image is madc-free; distinct refusals for "this build ships no
+  ledger" vs the Tier-B symbol list. Also fixed the copy-relocated
+  libc-data cover bug (`stderr` in `bin/madc`'s own `.bss` had been
+  forcing a needless `libmadc.so.0` on every AOT program that touched
+  it). Permanent `forest_ledger_gate` (14 checks, baseline-per-program
+  so nothing passes vacuously) + PRODUCT path proven: packed
+  `bin/madc-release` (240 units + 2 ledger modules) emits a try/catch
+  program with zero `libmadc` DT_NEEDED that runs under an empty library
+  path; fulltest 756/0/0/9, `--exe` 740/0, packed arbiter 756/0/0/9.
+  REMAINING: forest-carriers S6 (`madc.ini`); the S5 Mac hardware legs
+  (the darwin cross pack now carries the ledger and refuses without one,
+  but running an emitted Mach-O needs the owner's Mac) and the `.o` link
+  lane (blocked on the fork's MH_OBJECT flavor) are stated S5
+  boundaries; the darwin **dylib** packaging shape and the
+  existing-signed-binary re-signer remain consciously deferred residue;
   MH_OBJECT `.o` flavor (fork); P2 libc++ STD-ABI script-lane flavor.
   Plan:**
   [2026-07-25-macho-arm64-plan.md](2026-07-25-macho-arm64-plan.md).

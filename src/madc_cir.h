@@ -12,6 +12,7 @@
 #ifndef __MADC_CIR_H
 #define __MADC_CIR_H 1
 
+#include <cstdint>
 #include <cstdio>
 #include <map>
 #include <string>
@@ -54,6 +55,16 @@ enum MadcNativeKind {
 // executable-emit sites (source lanes and the .o link lane); .o and
 // -shared outputs refuse it loudly at the CLI.
 extern const char *madc_pack_forest_path;
+
+// -static-libmadc (forest-carriers S5; gcc's -static-libgcc precedent): the
+// emitted image carries the madc runtime pieces it needs INSIDE itself, so
+// there is no libmadc.so.0 DT_NEEDED / dylib load command. The pieces come
+// from the AOT ledger in this madc's forest container (Tier A: the C-lane
+// machinery); a program needing a Tier-B piece (the C++ script-lane runtime)
+// refuses loudly at emit, listing the symbols. libc/libstdc++ stay dynamic —
+// the flag spelling scopes exactly what it promises. Emit-lane state, like
+// madc_pack_forest_path: read at both native-emit sites.
+extern bool madc_static_libmadc;
 
 // A compiled-and-linked CIR->c2mir->MIR module held alive for repeated
 // in-process calls — the engine behind libmadc's program::exec / call /
@@ -233,6 +244,17 @@ int madc_project_emit_native(MadcEngine &engine,
 			     bool forest_bind,
 			     const std::string &forest_bind_path);
 
+// One AOT-ledger module (forest-carriers S5), decoded: a C-lane madc runtime
+// source compiled to a MIR module, with the symbol set it DEFINES — the
+// selection index the -static-libmadc emit matches unresolved imports
+// against. The wire form lives in cir_freeze.h (CIR_FOREST_SEG_LEDGER).
+struct cir_ledger_module
+{
+	std::string              name;	 // the ledger source path (module name)
+	std::vector<std::string> syms;	 // defined symbols
+	std::vector<uint8_t>     bytes;	 // MIR_write_module bytes
+};
+
 // Freeze the parsed Program's module tree (PRE-check — c2mir's checker
 // mutates trees it compiles) into a forest snapshot container at out_path:
 // per-unit segments, string-pool/position/type-name closure, link libs,
@@ -241,9 +263,28 @@ int madc_project_emit_native(MadcEngine &engine,
 // `mir_cache` additionally compiles the assembled container's module and
 // packs its MIR binary form as an optional cache segment
 // (--freeze-mir-cache; blob failure never fails the freeze).
+// `ledger` (non-empty) packs the AOT ledger segment — the C-lane runtime
+// modules a -static-libmadc emit merges into the produced image (S5).
 // Returns 0 on success, -1 on failure.
 int madc_cir_freeze(Program *prog, const char *source_name,
-		    const char *out_path, bool append, bool mir_cache = false);
+		    const char *out_path, bool append, bool mir_cache = false,
+		    const std::vector<cir_ledger_module> *ledger = NULL);
+
+// Compile the AOT ledger sources (--freeze-ledger=, one per call site entry;
+// scripts/ledger_sources.txt is the canonical list) into MIR modules with
+// their defined-symbol index, ready to pack into a forest container. Each
+// source is a normal madc compile through the SAME front end a user program
+// takes — a ledger module is madc's own runtime, compiled by madc, for the
+// target this madc emits. Prints a diagnostic and returns false on the first
+// failure. (S5; see docs/plans/2026-07-25-forest-carriers-plan.md.)
+// `restore` is the Program that must own the process-global token/value/type
+// pools when this returns — the ledger compile activates its own Programs and
+// then destroys them, so the caller's Program must be re-activated or its next
+// intern touches freed memory. Pass the Program the caller goes on to use.
+bool madc_cir_ledger_compile(MadcEngine &engine,
+			     const std::vector<std::string> &sources,
+			     std::vector<cir_ledger_module> &out,
+			     Program *restore);
 
 // Thaw + compile + run a frozen forest: from the container file at
 // `container_path`, or from the blob appended to the running executable

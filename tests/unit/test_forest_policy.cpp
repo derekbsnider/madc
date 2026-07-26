@@ -116,6 +116,27 @@ TEST_CASE("library image resolves to the executable in a monolithic link") {
 	CHECK(lib == exe);
 }
 
+// The AOT-ledger carrier probe (forest-carriers S5) walks the SAME discovery
+// chain as the grove bind, but it must stay SILENT when the chain ends empty
+// and it must not consult the failure policy: only the emit lane knows whether
+// this program needed the runtime at all, so it owns the diagnostic. A strict
+// host compiling a runtime-free program must not be hard-errored by a ledger
+// probe. (The unit binary is unpacked, so the chain is empty here.)
+TEST_CASE("ledger carrier probe is silent and policy-free when the chain is empty") {
+	unsetenv("MADC_FOREST");
+	MadcEngine engine;
+	std::unique_ptr<Program> prog = engine.create_program();
+	std::ostringstream err;
+	prog->error_stream = &err;
+	prog->registration_policy.forest_missing_policy =
+		Program::RegistrationPolicy::ForestPolicy::strict_require;
+	CHECK(!prog->ensure_ledger_forest());
+	CHECK(err.str().empty());
+	// One-shot: a second call must not re-probe (and must not start talking).
+	CHECK(!prog->ensure_ledger_forest());
+	CHECK(err.str().empty());
+}
+
 TEST_CASE("strict_require: config mismatch is still a hard error") {
 	MadcEngine engine;
 	std::unique_ptr<Program> prog = engine.create_program();

@@ -63,6 +63,7 @@
 #include <vector>
 
 #include "cir_node.h"
+#include "madc_cir.h"		// cir_ledger_module — the decoded AOT-ledger form
 #include "madcdis/intern_table.h"
 #include "madcdis/snapshot.h"
 #include "madcdis/pod_record.h"	// pod_append / pod_read / pod_words — the fixed-stride record codec
@@ -111,7 +112,12 @@ enum : uint32_t
 	// bytes) — DERIVED state, regenerated per pack from the same compile
 	// --run-frozen proves executable. OPTIONAL segment: absent = no cache,
 	// consumers fall back to node materialization + c2mir bit-for-bit. ---
-	SNAP_KIND_CIR_MIR_MODULE       = madc::dis::SNAP_KIND_CONSUMER + 21  // container-global: cir_forest_mir_header + .bmir module bytes
+	SNAP_KIND_CIR_MIR_MODULE       = madc::dis::SNAP_KIND_CONSUMER + 21, // container-global: cir_forest_mir_header + .bmir module bytes
+	// --- AOT ledger (forest-carriers S5): the C-lane madc runtime as MIR
+	// modules, so a -static-libmadc emit merges the needed pieces into the
+	// produced image. OPTIONAL segment: absent = no ledger (the flag then
+	// refuses loudly). See cir_forest_ledger_header. ---
+	SNAP_KIND_CIR_LEDGER           = madc::dis::SNAP_KIND_CONSUMER + 22  // container-global: cir_forest_ledger_header + entries + payload
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -214,6 +220,7 @@ enum : uint32_t
 	CIR_FOREST_SEG_EXTERN_LOCS      = 18,	// cir_forest_extern_loc[] (extern decl index, v20)
 	CIR_FOREST_SEG_ARENA_TOKBYTES   = 19,	// v23: DefArena::tokbytes (param-default token runs)
 	CIR_FOREST_SEG_MIR_MODULE       = 20,	// MIR module cache (optional; absent = no cache)
+	CIR_FOREST_SEG_LEDGER           = 21,	// S5 AOT ledger (optional; absent = no ledger)
 	CIR_FOREST_SEG_UNIT_BASE     = 24,
 	CIR_FOREST_SEGS_PER_UNIT     = 8	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
@@ -243,6 +250,42 @@ struct cir_forest_mir_header
 {
 	uint32_t forest_version;	// CIR_FOREST_FORMAT_VERSION at pack
 	uint32_t mir_api_x100;		// (uint32_t)(_MIR_get_api_version() * 100)
+};
+
+// --- AOT ledger (forest-carriers S5) -------------------------------------
+// The C-lane madc runtime, precompiled to MIR modules at pack time and
+// carried in THIS container so a `-static-libmadc` emit can merge the pieces
+// a program needs into its own image (no libmadc.so.0 / dylib at run time).
+// Rides every carrier the forest rides (self-image, library image, sidecar,
+// $MADC_FOREST) because it IS a forest segment.
+//
+// Read INDEPENDENTLY of the grove bind: the ledger is madc's own runtime,
+// so it is target-specific but dialect-agnostic — the v27 producer-config
+// gate (language std + -D fold) must NOT keep a --std=c99 compile from
+// linking the runtime. Only the footer / context-hash / version pins apply.
+//
+// OPTIONAL, like the MIR module cache: a container without the segment is
+// well-formed and simply carries no ledger (-static-libmadc then refuses
+// loudly). That is why adding it needs no format-version bump.
+struct cir_forest_ledger_header
+{
+	uint32_t forest_version;	// CIR_FOREST_FORMAT_VERSION at pack
+	uint32_t mir_api_x100;		// (uint32_t)(_MIR_get_api_version() * 100)
+	uint32_t module_count;
+	uint32_t _pad;
+};
+
+// Per-module directory entry, immediately following the header (one per
+// module, in canonical order); the name / symbol / byte blocks follow the
+// whole directory, each addressed by these lengths in the same order.
+// (The DECODED form, cir_ledger_module, lives in madc_cir.h — the emit lane
+// consumes it too, and this header holds only the wire shapes.)
+struct cir_forest_ledger_entry
+{
+	uint32_t name_bytes;	// module name (the ledger source path)
+	uint32_t sym_bytes;	// NUL-separated defined-symbol names
+	uint32_t mir_bytes;	// MIR_write_module bytes
+	uint32_t _pad;
 };
 
 struct cir_forest_dir_unit
@@ -1015,6 +1058,13 @@ public:
 	// loud — a mismatched cache means a coupling bug, not routine fallback),
 	// or a malformed segment. Reader-only; independent of unit/node state.
 	bool mir_module_bytes(std::vector<uint8_t> &out) const;
+	// AOT ledger (S5): the C-lane runtime modules this container carries,
+	// with their defined-symbol index. False = no ledger segment (the
+	// normal case for a container packed without --freeze-ledger=), stamp
+	// mismatch, or a malformed segment (both logged loud). Reader-only and
+	// deliberately NOT gated on the producer-config match — the ledger is
+	// madc's own runtime, not dialect-dependent parse state.
+	bool ledger_modules(std::vector<cir_ledger_module> &out) const;
 	// B3 (v18): reconstruct the type graph from the dumped DefArena (idempotent;
 	// lazy — allocates on the first call). Reads defrec/memberrec/baserec/
 	// methodrec/anonrec/paramrec, applying at LOAD time the same selection rules

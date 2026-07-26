@@ -522,6 +522,10 @@ static void print_usage(const char *prog)
 "  --freeze-mir-cache      also compile the frozen module and pack its MIR\n"
 "                          binary form as a cache segment (consumers skip\n"
 "                          node rebuild + c2mir; absent = normal fallback)\n"
+"  --freeze-ledger=<src>   also compile this C-lane runtime source into the\n"
+"                          container's AOT ledger segment, so -static-libmadc\n"
+"                          programs carry it (repeatable; the build's list is\n"
+"                          scripts/ledger_sources.txt)\n"
 "  --run-frozen[=<file>]   thaw + compile + run a frozen container; with no\n"
 "                          value, load the blob appended to this executable.\n"
 "                          Remaining arguments become the program's argv\n"
@@ -583,6 +587,14 @@ static void print_usage(const char *prog)
 "                          the ELF directly (no external toolchain); needs\n"
 "                          libmadc.so at run time (DT_RUNPATH is set);\n"
 "                          position-independent (PIE) by default, gcc parity\n"
+"  -static-libmadc         carry the madc runtime pieces the program needs\n"
+"                          INSIDE the emitted image (from this binary's AOT\n"
+"                          ledger), so it runs with no madc library at all;\n"
+"                          libc/libstdc++ stay dynamic. Covers the C lane\n"
+"                          (try/catch, VLA scope exit); a program needing the\n"
+"                          C++ script-lane runtime refuses, naming the\n"
+"                          symbols. -static is an alias (gcc -static-libgcc\n"
+"                          precedent)\n"
 "  -pie / -no-pie          keep / drop the PIE layout: -no-pie emits a\n"
 "                          fixed-base ET_EXEC instead of the ET_DYN PIE\n"
 "  -shared [-o file.so]    compile to a shared object (ET_DYN, MIR-assembled;\n"
@@ -657,6 +669,7 @@ int main(int argc, char **argv)
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
     bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
     bool freeze_mir_cache = false;        // --freeze-mir-cache: pack the compiled MIR module blob
+    std::vector<std::string> freeze_ledger_srcs;  // --freeze-ledger=: AOT ledger sources (S5)
     bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
     bool freeze_run = false;              // --freeze-run: freeze, then re-exec fresh to run
@@ -798,11 +811,29 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--freeze-mir-cache") == 0) {
             freeze_mir_cache = true;
             filearg = i + 1;
+        } else if (strncmp(argv[i], "--freeze-ledger=", 16) == 0) {
+            // Repeatable: each C-lane runtime source compiled into the
+            // container's AOT ledger segment (forest-carriers S5). The
+            // canonical list is scripts/ledger_sources.txt, handed over by
+            // scripts/forest_pack.sh — never spelled out here.
+            freeze_ledger_srcs.push_back(argv[i] + 16);
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--freeze-run") == 0) {
             freeze_run = true;
             filearg = i + 1;
         } else if (strncmp(argv[i], "--pack-forest=", 14) == 0) {
             madc_pack_forest_path = argv[i] + 14;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-static-libmadc") == 0
+                   || strcmp(argv[i], "-static") == 0) {
+            // gcc's -static-libgcc precedent: carry the madc runtime pieces
+            // this program needs INSIDE the emitted image (from the AOT
+            // ledger), so it runs with no madc library installed. libc and
+            // libstdc++ stay dynamic. `-static` is accepted as the alias
+            // where full-static cannot exist (darwin has no static
+            // libSystem) and is reserved for a future true full-static on
+            // Linux — same promise either way today.
+            madc_static_libmadc = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--run-frozen") == 0) {
             run_frozen = true;
@@ -996,6 +1027,20 @@ int main(int argc, char **argv)
     {
         std::cerr << "madc: --pack-forest requires a linked native output"
                      " (-o executable or -shared)" << std::endl;
+        return 1;
+    }
+
+    // -static-libmadc rides a LINKED image too: the runtime pieces are merged
+    // at the link that produces the final image, exactly as gcc resolves
+    // -static-libgcc there. Putting them in a .o would duplicate them into
+    // every object of a multi-TU program.
+    if ( madc_static_libmadc
+         && (!emit_native || compile_object || emit_object_path
+             || emit_relocatable) )
+    {
+        std::cerr << "madc: -static-libmadc requires a linked native output"
+                     " (-o executable or -shared); the runtime is merged at"
+                     " the final link" << std::endl;
         return 1;
     }
 
@@ -1502,8 +1547,19 @@ int main(int argc, char **argv)
 	// a forest snapshot container; do not run.
 	if ( freeze_path )
 	{
+	    // --freeze-ledger=: compile the C-lane runtime sources into ledger
+	    // modules FIRST (each an independent compile with its own Program),
+	    // then pack them alongside the groves. A ledger failure fails the
+	    // freeze — a container that silently lacks the ledger it was asked
+	    // for is worse than no container at all.
+	    std::vector<cir_ledger_module> ledger;
+	    if ( !freeze_ledger_srcs.empty()
+		 && !madc_cir_ledger_compile(engine, freeze_ledger_srcs, ledger,
+						 prog.get()) )
+		return 1;
 	    int frc = madc_cir_freeze(prog.get(), argv[filearg], freeze_path,
-				      freeze_append, freeze_mir_cache);
+				      freeze_append, freeze_mir_cache,
+				      ledger.empty() ? NULL : &ledger);
 	    print_stats();
 	    return frc == 0 ? 0 : 1;
 	}

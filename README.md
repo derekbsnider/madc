@@ -241,7 +241,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.49.0): 756 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary, the packed release binary in BOTH carrier shapes (embedded and sidecar), and the thin CLI of the shared shape (library-carried forest); the native `--exe` lane is at 740/0. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.50.0): 756 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary, the packed release binary in BOTH carrier shapes (embedded and sidecar), and the thin CLI of the shared shape (library-carried forest); the native `--exe` lane is at 740/0. With `-static-libmadc` an emitted binary carries the madc runtime it needs and runs with no madc library installed. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -282,29 +282,37 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.49.0** — **forest carriers S4** (the shared shape): the frozen
-forest can ride the **libmadc image**, so a packaged install — a thin
-CLI plus the versioned `libmadc.so` — serves the compiler *and* every
-embedding host from ONE container. Discovery arm 2 resolves that image
-with `dladdr` and reads it with the same per-format probe (skipped in
-the monolithic shape, where it IS the executable); a `<lib>.forest`
-sidecar sits behind it. The **image** arms are deliberately never
-sandbox-gated: `enable_external_forest` governs only what comes from
-outside the images, so a strict, sandboxed host still binds the groves
-its own library carries. A new **`--enable-shared`** configure axis
-links the thin CLI (monolithic stays the default); in that shape the
-release packs `lib/libmadc.so` and `make install` ships it — a 133 KB
-CLI beside an 11.5 MB library carrying all 240 frozen units. The public
-embedding API gains the forest knob family (`enable_forest_bind`,
-`forest_missing`, `enable_external_forest`, plus
-`security_policy::allow_external_forest` clamped off under
-`system_locked`), and `Program::forest_bind_enabled` folds into the
-policy so one owner flows engine → program → child → host. Suites:
-fulltest **756/0/0/9**, `--exe` **740/0**, thin-CLI parity
-**756/0/0/9**, `--enable-shared` product arbiter **756/0/0/9**. The MIR
-fork is unchanged (`1.0-madc.0.47.0` remains the pinned release).
+**v0.50.0** — **forest carriers S5** (`-static-libmadc`): a program that
+uses `try`/`catch`/`throw` or a VLA needed `libmadc.so.0` at run time —
+and on Mach-O, where no madc library exists, could not be emitted at
+all. Now `madc -static-libmadc -o prog prog.c` carries the runtime
+pieces the program actually uses **inside** its own image, and the
+binary runs on a machine with no madc installed (libc and libstdc++ stay
+dynamic — the flag promises exactly what its name says; `-static` is the
+alias, per gcc's `-static-libgcc`). The pieces come from a new **AOT
+ledger**: madc's C-lane runtime, turned into dual-build C11 sources
+(`src/rt/rt_except.c`, `src/rt/rt_vla.c`) that the host build compiles
+into libmadc *and* **madc itself compiles through c2mir** at pack time
+into MIR modules. Those modules ride a new optional forest-container
+segment, so they reach every carrier the forest already reaches — but
+are read independently of the grove bind, because madc's own runtime is
+target-specific and dialect-agnostic. At emit the needed modules are
+pulled transitively before the link, then the cover analysis confirms
+the image really is madc-free. Two refusals, never conflated: *this madc
+ships no ledger* points at the build, while a **Tier-B** program (one
+needing the C++ script-lane runtime) is refused with its symbols listed.
+Two cover-analysis bugs that had been forcing needless `libmadc.so.0`
+dependencies are fixed along the way: copy-relocated libc data
+(`stderr` lives in `bin/madc`'s own `.bss`) and host-vs-target symbol
+probing on cross builds (darwin's `__stderrp`). Suites: fulltest
+**756/0/0/9** (with the new 14-check `forest_ledger_gate`), `--exe`
+**740/0**, packed arbiter **756/0/0/9**; the packed `bin/madc-release`
+emits a try/catch binary with **zero** `libmadc` DT_NEEDED entries that
+runs under an empty library path, and both Apple arches cross-emit a
+valid Mach-O executable with no libmadc reference. The MIR fork is
+unchanged (`1.0-madc.0.47.0` remains the pinned release).
 
-**Branch state:** `develop` is at v0.49.0; `master` is at v0.48.0
+**Branch state:** `develop` is at v0.50.0; `master` is at v0.48.0
 (promoted 2026-07-25 — the Mach-O milestone promote, per the owner's
 ride-with-S3 decision). The
 [MIR fork](https://github.com/derekbsnider/mir)'s `master` tracks
@@ -314,11 +322,11 @@ madc's `master` in lockstep (fast-forwarded to the same
 
 ### Recent Releases
 
+- **v0.50.0** — forest-carriers S5 (`-static-libmadc` / AOT ledger): madc's C-lane runtime becomes dual-build C11 sources (`src/rt/`) compiled BOTH into libmadc by the host build and into MIR ledger modules by madc-via-c2mir at pack time, carried in a new optional forest-container segment read independently of the grove bind; `-static-libmadc` (alias `-static`) pulls the needed modules before the link so the emitted image runs with no madc library — the unlock that makes try/catch AOT possible on Mach-O; distinct build-side vs Tier-B refusals; two cover-analysis fixes (copy-relocated libc data; host-vs-target probing on cross builds); `forest_ledger_gate` (14 checks) in fulltest; fulltest 756/0/0/9, `--exe` 740/0, packed arbiter 756/0/0/9, product path emits a zero-libmadc binary that runs under an empty library path; fork unchanged (1.0-madc.0.47.0)
 - **v0.49.0** — forest-carriers S4 (shared shape): forest-in-library discovery arm (`dladdr` → the libmadc image; `<lib>.forest` sidecar behind it; IMAGE arms never gated by `enable_external_forest`, so a sandboxed strict host still binds); `--enable-shared` thin-CLI configure axis with the release pack targeting `lib/libmadc.so` (133 KB CLI + 11.5 MB packed library, 240 units); forest knob family on the public embedding API (`enable_forest_bind` / `forest_missing` / `enable_external_forest` + `allow_external_forest` clamped under `system_locked`); `Program::forest_bind_enabled` folded into `RegistrationPolicy`; `forest_library_gate` in fulltest (9 legs incl. the `enable_external_forest=false` negative test S3 owed); thin-CLI parity 756/0/0/9 and `--enable-shared` product arbiter 756/0/0/9; fork unchanged (1.0-madc.0.47.0)
 - **v0.48.0** — forest-carriers S3 (discovery): ordered carrier probe chain (self-image → `<exe>.forest` sidecar → `$MADC_FOREST`; S4/S6 slots reserved); `--with-forest=embedded|sidecar|none` configure axis (`forest_pack.sh --sidecar`, hosted darwin sidecar shape, `make install` sidecar); failure-policy knobs in the RegistrationPolicy family (silent/loud/strict + `enable_external_forest`); config-mismatch fall-through never a notice; `forest_sidecar_gate` in fulltest; Linux arbiter through both carriers 756/0/0/9, Mac 7/7 legs both arches; fork unchanged (1.0-madc.0.47.0)
 - **v0.47.0** — forest-carriers S2 (emitted-pack): `--pack-forest=<container>` embeds a frozen container in emitted native executables — ELF trailer / Mach-O `__MADC,__forest` section laid by the fork writer inside the emit-time signature (fork seam `MIR_object_exec_params.extra_*`; no re-signer on the product path); host-neutral Mach-O file-probe read-back; full native loop (freeze → pack-emit → AMFI → read-back) green on Apple hardware both arches; `forest_emitpack_gate` in fulltest; fulltest 756/0/0/9 + packed 240 units, `--exe` 740/0; fork release 1.0-madc.0.47.0
 - **v0.46.0** — forest-carriers S1: hosted darwin binaries ship PACKED — darwin groves cross-frozen by the same-arch cross madc (identical embedded prelude), embedded as a `__MADC,__forest` Mach-O section via `-sectcreate` (lld signs after layout: no re-signer on the build path), section read-back via `getsectiondata`; grove bind == live parse on Apple hardware, both arches; typedef-of-class parser fix ([fnptrbody] gate); fulltest 756/0/0/9 + packed 240 units, `--exe` 740/0; fork unchanged (1.0-madc.0.45.0)
-- **v0.45.0** — madc-on-macOS P1 complete: hosted arm64/x86-64 darwin madc binaries (JIT + native Mach-O AOT) with the embedded darwin C prelude (clang-flattened, macro-preserving); Apple asm-label symbol-space strip; parser depth fixes from real Apple headers (#pragma pack parse-time architecture, fnptr declarator breadth, spiral, deref-postinc); G2 green on Apple hardware, all lanes, both arches; fulltest 756/0/0/9, `--exe` 740/0; fork release 1.0-madc.0.45.0
 
 ## Roadmap
 

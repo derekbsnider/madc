@@ -108,6 +108,29 @@ runtime-free.
 .TP
 .BR \-shared " [" \-o " \fIfile.so\fR]"
 Compile to a shared object (ET_DYN; dlopen/#load-consumable; PIC).
+.TP
+.BR \-static\-libmadc ", " \-static
+Carry the madc runtime pieces the program needs INSIDE the emitted
+image, so it runs with no madc library installed at all
+.RB ( gcc "'s " \-static\-libgcc " precedent)."
+The pieces come from this madc's AOT ledger \(em the C\-lane runtime
+compiled to MIR modules and carried in its frozen\-forest container, so
+a packed or installed madc has one and a bare development build does
+not (point at a container with
+.BR \-\-forest\-bind= \fIfile\fR).
+Covers the C lane: try/catch/throw and VLA scope exit. A program that
+needs the C++ script\-lane runtime refuses at emit, naming the symbols.
+libc and libstdc++ stay dynamic \(em the flag scopes exactly what it
+promises;
+.B \-static
+is an alias (full\-static cannot exist on darwin, which has no static
+libSystem). Requires a linked output: the runtime merges at the link
+that produces the final image, not into a
+.BR \-c " .o."
+Note that a
+.B \-static\-libmadc
+image carries PROCESS\-GLOBAL exception state rather than per\-thread:
+MIR has no thread\-local storage.
 .SH SOURCE OUTPUT (do not run)
 .TP
 .B \-\-emit=c11\fR|\fBmc11

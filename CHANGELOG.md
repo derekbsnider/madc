@@ -2,6 +2,73 @@
 
 ## [Unreleased]
 
+## [v0.50.0] — 2026-07-26
+
+Forest carriers S5: **`-static-libmadc`** — madc's C-lane runtime becomes
+dual-build C11 sources that madc compiles into an **AOT ledger** carried
+in its forest container, so an emitted binary can hold the runtime pieces
+it needs and run with no madc library at all — which is also what makes
+try/catch AOT possible on Mach-O, where no madc library exists.
+
+- **feat(aot): `-static-libmadc` — the AOT ledger carries madc's C-lane
+  runtime into the emitted image (forest-carriers S5).** A program that
+  uses `try`/`catch`/`throw` or a VLA needed `libmadc.so.0` at run time;
+  on Mach-O, where no madc library exists, it could not be emitted at
+  all. Now `madc -static-libmadc -o prog prog.c` merges the runtime
+  pieces the program actually uses into its own image, and the binary
+  runs on a machine with no madc installed (libc/libstdc++ stay dynamic
+  — the flag spelling scopes exactly what it promises; `-static` is the
+  alias, per gcc's `-static-libgcc`).
+  The pieces come from an **AOT ledger**: the C-lane runtime, moved to
+  **dual-build C11 sources** under `src/rt/` (`rt_except.c`, `rt_vla.c`)
+  that the host build compiles into libmadc AND madc itself compiles
+  through c2mir at pack time into MIR modules. One implementation, two
+  consumers; `scripts/ledger_sources.txt` is the single owner of the
+  list. The modules ride a new OPTIONAL forest-container segment, so
+  they reach every carrier the forest already reaches (self-image,
+  libmadc image, sidecars, `$MADC_FOREST`) — but are read independently
+  of the grove bind, since madc's own runtime is target-specific and
+  dialect-agnostic (a `--std=c99` compile still links it). At emit the
+  needed modules are pulled transitively before the link, and the cover
+  analysis then verifies the image really is madc-free. Two distinct
+  refusals: **no ledger in this build** (use a packed/installed madc, or
+  `--forest-bind=<file>`) and the **Tier-B refusal**, which names the
+  symbols a program needs from the C++ script-lane runtime. Gated by
+  `scripts/forest_ledger_gate.sh` (13 checks) in `fulltest`;
+  `--dump-forest` reports the ledger it finds.
+  `src/exception_runtime.cpp` is retired into `src/rt/rt_except.c`; its
+  `__atomic_*` wrappers move to `va_helpers.cpp` with the other builtin
+  shims, which is also the Tier-A membership rule: strict C11, no
+  compiler builtins (madc lowers `__builtin_x` to `__madc_x`, so a
+  builtin shim compiled by madc would call back into itself).
+  *Boundaries:* the `.o` link lane refuses (the ledger merges into a
+  compile context; that lane merges native relocatables — it needs the
+  fork's MH_OBJECT flavor), and a `-static-libmadc` image carries
+  process-global rather than per-thread exception state because MIR has
+  no TLS (documented in the man page).
+- **fix(aot, cross): the darwin cross lane no longer mistakes the
+  TARGET's libc for a missing madc runtime.** Cover analysis probed the
+  host's symbol universe with `dlsym`, but darwin's `stderr` is
+  `__stderrp`, which glibc does not have — so a cross emit called it
+  uncovered and refused. A cross build cannot probe the target's libc;
+  it can answer the question the analysis really asks — "does libmadc
+  define this?" — because libmadc is loaded in the compiler's own
+  process. Under `MADC_CROSS_TARGET` that is now the check, and a
+  genuinely missing symbol surfaces at the target's loader like it
+  would with any cross compiler. With it, a try/catch program that
+  previously could not be emitted for Mach-O at all now produces a
+  valid arm64 / x86_64 Mach-O executable under `-static-libmadc`
+  (native builds untouched — the branch is preprocessor-excluded).
+- **fix(aot): a copy-relocated libc data symbol no longer forces a
+  needless `libmadc.so.0` dependency.** The runtime-need cover analysis
+  asked `dlsym`+`dladdr` where the process's winning definition lives —
+  but `stderr`, `stdout` and friends are copy-relocated into `bin/madc`'s
+  own `.bss`, so they resolved to the executable and looked uncovered.
+  Every emitted program that touched stderr therefore kept the
+  dependency even when it was otherwise runtime-free. The cover
+  libraries are now asked directly (`dlopen(soname, RTLD_NOLOAD)` +
+  `dlsym`) before the dladdr fallback.
+
 ## [v0.49.0] — 2026-07-26
 
 Forest carriers S4: the shared shape — the frozen forest can ride the
