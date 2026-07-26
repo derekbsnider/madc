@@ -223,6 +223,66 @@ Slice order follows from that:
 4. The remaining 39 intrinsics, as a speed/robustness pass: each one
    swaps a fallback template instantiation for a direct answer.
 
+**Slice 1 landed (2026-07-26): the `__has_*` operators are real.**
+`__has_builtin` answers from madc's builtin knowledge (the 138-entry
+alias table that IS its implementation for that family — an alias
+rewrites the call to the libc function, so membership is exactly "madc
+compiles this"), `__has_include` / `__has_include_next` answer through
+the SAME resolver `#include` uses, so "can I include this?" and "will
+including it work?" cannot disagree. The rest of the family
+(`__has_attribute`, `__has_cpp_attribute`, `__has_declspec_attribute`,
+`__has_feature`, `__has_extension`, `__has_keyword`) parse and answer 0
+deliberately, which is what they already answered by accident — madc
+does support a real subset of each, but there is no registry to ask yet,
+and an unbacked yes is the failure mode this whole design refuses.
+
+One layer down, the fix that made it correct: `#if` operands are
+macro-expanded before evaluation, and madc **aliases 138 builtins in
+`define_map`** — so `__has_builtin(__builtin_memcpy)` was arriving as
+`__has_builtin(memcpy)` and answering NO for a builtin madc implements.
+`defined` was already protected from expansion; the `__has_*` family now
+is too, operand group and all (`<a/b.h>`, `"a.h"`, `clang::foo` survive
+intact).
+
+### P2.2b — the embedded-header partition vs libc++'s C wrappers
+
+**Found immediately after slice 1, and it is the next real subject.**
+With honest `__has_*` answers, the Linux libc++ probe stops here:
+
+```
+cstddef:50: #error <cstddef> tried including <stddef.h> but didn't find
+libc++'s <stddef.h> header. ... The header search paths should contain
+the C++ Standard Library headers before any C Standard Library
+```
+
+madc embeds the freestanding set — `stddef.h`, `stdint.h`, `limits.h`,
+`float.h`, `stdarg.h`, `stdbool.h` — and **libc++ ships its own wrappers
+for several of those names**, which must be found FIRST (they
+`#include_next` the C library's afterwards). madc's embedded copies
+shadow them, so libc++ detects that its wrapper was bypassed and
+refuses.
+
+This is the header-partition question
+(`madc-header-partition-handoff.md`) meeting a real C++ standard
+library, and the resolution has to be principled rather than a
+name-based exception list:
+
+- clang's own order is **c++/v1 → compiler resource dir → C library**,
+  and madc's embedded freestanding headers are precisely its "compiler
+  resource dir". So the ordering rule is already written down by the
+  canon compiler: the C++ standard library's headers outrank madc's
+  embedded set, which in turn outranks the C library's.
+- Which means embedded headers must become a **fallback for names a real
+  search path cannot satisfy**, not an unconditional first hit. That
+  keeps the header-less-Mac promise (nothing on the search path → the
+  embedded copy serves) while letting a present libc++ win, and it is
+  the same precedence P2.4's frozen groves will need.
+- The darwin lane will hit the identical wall once its trait blocker is
+  gone; fixing it here fixes it there.
+
+Sequencing note: this now precedes the two mandatory intrinsics, because
+on the Linux lane it fires first.
+
 Same method as the libstdc++ burn-down: compile a real
 `#include <string>` / `<vector>` / `<iostream>` against libc++, reduce
 each failure to a minimal `.cpp`, fix at the **deepest layer**, never
