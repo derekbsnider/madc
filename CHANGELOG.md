@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [v0.50.0] — 2026-07-26
+
+Forest carriers S5: **`-static-libmadc`** — madc's C-lane runtime becomes
+dual-build C11 sources that madc compiles into an **AOT ledger** carried
+in its forest container, so an emitted binary can hold the runtime pieces
+it needs and run with no madc library at all — which is also what makes
+try/catch AOT possible on Mach-O, where no madc library exists.
+
 - **feat(aot): `-static-libmadc` — the AOT ledger carries madc's C-lane
   runtime into the emitted image (forest-carriers S5).** A program that
   uses `try`/`catch`/`throw` or a VLA needed `libmadc.so.0` at run time;
