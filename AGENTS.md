@@ -313,6 +313,7 @@ no matter how small.
 | [pre-edit-checklist.md](.claude/rules/pre-edit-checklist.md) |  19 | Trace data flow, search for existing handling, identify write-back target — before every edit (Top 10 Rule #10) |
 | [cpp-first-api.md](.claude/rules/cpp-first-api.md) |  20 | Design embedding and `libmadc` APIs as C++ first; keep C shims thin and late; extern-C exports are the C-host API only — script-facing namespace publics resolve mangled-direct |
 | [helper-methods.md](.claude/rules/helper-methods.md) |  12 | Extract ad-hoc checks into named helpers      |
+| [fix-what-you-find.md](.claude/rules/fix-what-you-find.md) |   21 | A defect you DISCOVER is yours to fix — "pre-existing" is not a disposition; silent wrong answers jump the queue; the fix ships a reducer |
 | [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
 | [parse-once.md](.claude/rules/parse-once.md)     |    24 | New C++ support resolves on the parse-once generic spine (g++ tsubst model), NEVER via re-parse; re-parse is a transitional fallback slated for deletion at suite-wide burndown=0; every change moves the `[why:]` fallback count down or flat |
 | [code-style.md](.claude/rules/code-style.md)     |     6 | C++11, tabs, header guards, DBG                |
@@ -351,10 +352,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **30 rules, 830 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **31 rules, 851 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~382 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1240 lines.**
+- **Grand total loaded by Claude Code per turn: ~1265 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the
@@ -387,6 +388,8 @@ sibling `docs/rules/` reasoning file. Refresh these counts by running
 
 ## When in doubt
 
+- A bug you find is a bug you own. There is no other maintainer — see
+  `fix-what-you-find.md`. Do not stop at proving it predates your change.
 - Trace what's broken first. Don't rapid-cycle fixes — when a bug is
   hard, stop and form a hypothesis before editing.
 - Prefer small, self-contained commits that each fix one thing.
