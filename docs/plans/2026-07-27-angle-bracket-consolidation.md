@@ -1,25 +1,28 @@
 # Angle-bracket disambiguation: one rule, one implementation
 
-**Status: round 1 executed 2026-07-27.** The parse bug is FIXED, four scanners
-are migrated, and the rule now has a gate. See "Round 1 outcome" at the bottom
-— it corrects two load-bearing claims in the analysis below, which is kept as
-written for the history.
+**Status: rounds 1–5 executed 2026-07-27.** The parse bug is fixed, **13
+scanners migrated**, the rule has a gate, and the token family is down to the
+ctor-initializer scan alone. Everything below the first divider is the original
+analysis, kept for the history — **two of its load-bearing claims turned out to
+be wrong**, and the round sections at the bottom say how.
 
-> ### The correction that matters
+> ### Read this before trusting anything below
 >
-> **The consolidated tracker already existed** — `DelimDepth`
-> (`src/parser.cpp:2891`, forward-declared in `include/madc.h`), with an index
-> helper `delim_scan_step()` and a stream helper `Program::delimStepStream()`.
-> Slice 2 below says "extract the one tracker". It did not need extracting; it
-> needed **adopting**. Its own header comment already said it was the single
-> shared bookkeeping, and four call sites used it while twenty-five hand-rolled
-> locals did not.
+> **1. The consolidated tracker already existed.** `DelimDepth`
+> (`src/parser.cpp`, forward-declared in `include/madc.h`), with an index helper
+> `delim_scan_step()` and a stream helper `Program::delimStepStream()`. Slice 2
+> below says "extract the one tracker" — it needed **adopting**, not extracting.
+> Its own header comment already called it the single shared bookkeeping, and
+> four call sites used it while twenty-seven hand-rolled locals did not.
 >
-> `DelimDepth` is also **more complete than either site nominated as a
-> reference** — it knows a `<` only opens after a template-id head
-> (`_Tp(-1) < _Tp(0)`), records paren depth per angle open so `A<(B > C)>`
-> balances, and consumes operator-function-ids opaquely. Copying either
-> nominated site would have been a downgrade.
+> **2. But it was NOT complete, and round 1 wrongly said it was.** It lacked the
+> paren guard, so `decltype(a < b)` opened an angle that never closed. The one
+> site holding that guard was the one about to be migrated onto it — adopting it
+> blindly would have reintroduced the bug `2e853dee` fixed. See "Round 4".
+>
+> The durable lesson: **"the shared owner exists" is not "the shared owner is
+> complete."** Before adopting an owner at a site that carries a local guard,
+> diff the *rules*, not the outcomes, and ask what that guard was added to fix.
 
 ## The bug
 
@@ -548,3 +551,36 @@ the *rules* rather than the outcomes, and ask what that guard was added to fix.
 Here the answer was sitting in a commit message naming the exact shape.
 
 Only the ctor-initializer scan (4 locals) remains in the token family.
+
+---
+
+## Round 5 — fix the helper asymmetry, then the migration falls out
+
+Round 4 recorded a blocker: `operator_id_token_span()` (index form) is tolerant,
+`parseOperatorId()` (stream form, via `delimStepStream`) is strict and throws on
+a conversion-function-id. That asymmetry — not the delimiter rule — was what
+stopped `skip_template_nonclass_declaration` from fully migrating.
+
+**What was deliberately NOT done:** teaching `parseOperatorId` conversion
+operators. Probing first showed the feature is broken well past parsing —
+`s.operator U()` fails with *"Unidentified member 'operator'"*, and an implicit
+`int x = s;` fails in CIR with *"incompatible types in assignment"*. A
+parse-only fix would mint a name that resolves nowhere: a half-feature, worse
+than a recorded gap. It stays as KG `Gap{conversion_function_id_unparsed}`.
+
+**What was done — one decision, two consumers.** Extracted
+`operator_id_tail_span(sym, next)`: how many tokens follow the `operator`
+keyword. `operator_id_token_span()` now returns `1 + tail`, and
+`delimStepStream()` consumes exactly `tail` tokens from the stream. The two can
+no longer disagree about what an operator-id **spans**; only the parser's reader
+still judges whether it is well-**formed**.
+
+That is the right split. A scanner walking a declaration madc has already
+declined to parse needs the extent of a name, never its validity — so
+strictness there is not caution, it is a bug that aborts a whole compile over a
+construct nobody was going to look at.
+
+With `delimStepStream` tolerant, `skip_template_nonclass_declaration`'s
+hand-rolled `consume_operator_spelling` / `operator_paren_depth` /
+`operator_square_depth` machine is **deleted** — ~40 lines — and the function is
+now entirely on the shared helpers.

@@ -2866,6 +2866,55 @@ static bool token_is_operator_id_start(TokenBase *t)
 // [+ closing )/] for operator()/operator[]]), or 0 if toks[i] is not an
 // operator-id start. For index-based scanners that walk a captured token
 // sequence (templated so it serves both std::vector and the std::deque queue).
+// A conversion-function-id names a TYPE where every other operator-id names a
+// symbol: `operator _Tp()`, `operator const char *()` [class.conv.fct]. Its
+// conversion-type-id runs to the `(` of the parameter list.
+static bool token_starts_conversion_type_id(TokenBase *t)
+{
+    if ( !t )
+	return false;
+    if ( t->id() == TokenID::tkNEW || t->id() == TokenID::tkDELETE )
+	return false;                   // operator new / operator delete
+    return is_contextual_identifier_token(t)
+	|| t->type() == TokenType::ttDataType
+	|| t->type() == TokenType::ttKeyword;
+}
+
+// How many tokens FOLLOW the `operator` keyword. ONE decision, shared by the
+// index form below and the stream form (Program::delimStepStream) — the two
+// must never disagree about how far an operator-id reaches.
+template<typename Seq>
+static size_t operator_id_tail_span(const Seq &toks, size_t sym_idx)
+{
+    if ( sym_idx >= toks.size() )
+	return 0;
+    TokenBase *sym = toks[sym_idx];
+    TokenBase *next = sym_idx + 1 < toks.size() ? toks[sym_idx + 1] : NULL;
+    if ( !sym )
+	return 1;
+    if ( sym->type() == TokenType::ttString && next
+      && is_contextual_identifier_token(next) )
+	return 2;   // user-defined literal: operator "" suffix
+    if ( (sym->id() == TokenID::tkOpBrk || sym->id() == TokenID::tkOpSqr) && next )
+	return 2;   // operator() / operator[]
+    if ( sym->id() == TokenID::tkNEW || sym->id() == TokenID::tkDELETE )
+	return 1;   // a trailing `[]` balances under ordinary delimiter tracking
+    if ( token_starts_conversion_type_id(sym) )
+    {
+	// Multi-token conversion-type-id: `const char *`, `unsigned long`,
+	// `std::size_t`. Runs to the parameter list's `(`.
+	size_t n = 0;
+	while ( sym_idx + n < toks.size()
+	     && toks[sym_idx + n]
+	     && toks[sym_idx + n]->id() != TokenID::tkOpBrk )
+	    ++n;
+	// No `(` in view (truncated / malformed): fall back to one token rather
+	// than swallowing the rest of the sequence.
+	return (n && sym_idx + n < toks.size()) ? n : 1;
+    }
+    return 1;       // operator + single symbol token (<, <<, <=, >, >>, …)
+}
+
 template<typename Seq>
 static size_t operator_id_token_span(const Seq &toks, size_t i)
 {
@@ -2873,14 +2922,7 @@ static size_t operator_id_token_span(const Seq &toks, size_t i)
 	return 0;
     if ( i + 1 >= toks.size() )
 	return 1;
-    TokenBase *sym = toks[i + 1];
-    if ( sym->type() == TokenType::ttString && i + 2 < toks.size()
-      && is_contextual_identifier_token(toks[i + 2]) )
-	return 3;   // user-defined literal: operator "" suffix
-    if ( (sym->id() == TokenID::tkOpBrk || sym->id() == TokenID::tkOpSqr)
-      && i + 2 < toks.size() )
-	return 3;   // operator() / operator[]
-    return 2;       // operator + single symbol token (<, <<, <=, >, >>, …)
+    return 1 + operator_id_tail_span(toks, i + 1);
 }
 
 // Balanced-delimiter depth for token scans: (), [], {}, <>. The hand-rolled
@@ -19546,6 +19588,25 @@ std::string Program::parseOperatorId(TokenBase *operator_tok,
 	take();
 	return "operator[]";
     }
+    // Conversion-function-id [class.conv.fct]: `operator conversion-type-id`.
+    // The "symbol" is a TYPE, not an operator — `operator _Tp() const` in
+    // libstdc++ bits/max_size_type.h:75, `operator const char *()`. The
+    // type-id runs to the `(` of the parameter list; the same extent rule the
+    // scanners use lives in operator_id_tail_span(), so read it from there
+    // rather than re-deciding it here.
+    if ( token_starts_conversion_type_id(op_tok) )
+    {
+	std::string name = "operator " + template_token_fragment(op_tok);
+	// tail_span counted from the type-id's FIRST token, which is already
+	// consumed as op_tok — so the remainder is one fewer.
+	size_t remaining = operator_id_tail_span(tokens, 0);
+	if ( remaining > 0 && !tokens.empty()
+	  && tokens[0]->id() != TokenID::tkOpBrk )
+	    for ( size_t k = 0; k < remaining && peekToken()
+			     && peekToken()->id() != TokenID::tkOpBrk; ++k )
+		name += template_token_fragment(take());
+	return name;
+    }
     char sym = (char)op_tok->get();
     if ( !sym )
 	Throw(op_tok) << "Unrecognized operator symbol" << flush;
@@ -19560,12 +19621,21 @@ bool Program::isOperatorIdStart(TokenBase *t)
 void Program::delimStepStream(TokenBase *t, DelimDepth &d,
 			      std::vector<TokenBase *> *extra)
 {
-    if ( isOperatorIdStart(t) )
+    if ( !isOperatorIdStart(t) )
     {
-	parseOperatorId(t, extra);
+	d.update(t);
 	return;
     }
-    d.update(t);
+    // Consume the operator-function-id opaquely, using the SAME extent rule as
+    // the index form and as parseOperatorId's conversion branch. A scanner only
+    // needs to know how far the name reaches, never whether it is well-formed.
+    size_t tail = operator_id_tail_span(tokens, 0);
+    for ( size_t k = 0; k < tail && peekToken(); ++k )
+    {
+	TokenBase *sym = nextToken();
+	if ( extra && sym )
+	    extra->push_back(sym);
+    }
 }
 
 static bool is_named_cpp_cast(const std::string &name)
@@ -38679,61 +38749,18 @@ void Program::skip_constraint_expression()
 void Program::skip_template_nonclass_declaration(TokenBase *first,
 					       std::vector<TokenBase *> *seen)
 {
-    // DelimDepth owns the NESTING rule (its `<` guard is now the union of this
-    // function's old paren test and the template-id-head test).
-    //
-    // The operator-function-id skip below is deliberately NOT delimStepStream():
-    // that calls parseOperatorId(), which is STRICT and throws "Unrecognized
-    // operator symbol" on a conversion-function-id — `operator _Tp() const`, as
-    // in libstdc++ bits/max_size_type.h:75. A SKIPPER must be tolerant: it is
-    // walking a declaration madc has already decided not to parse. Note the two
-    // shared step helpers disagree on this — the index form
-    // (operator_id_token_span) is tolerant, the stream form is not. Fix that
-    // asymmetry in the shared layer (teach parseOperatorId conversion-function-
-    // ids, or give delimStepStream a tolerant path) and this block can go.
+    // DelimDepth owns the NESTING rule (its `<` guard is the union of this
+    // function's old paren test and the template-id-head test), and
+    // delimStepStream() consumes an operator-function-id opaquely — including a
+    // conversion-function-id, which the parser's strict reader rejects. The
+    // operator's own symbol tokens are appended to `seen` so signature
+    // extraction still sees the full operator-id.
     DelimDepth d;
-    bool consume_operator_spelling = false;
-    int operator_paren_depth = 0;
-    int operator_square_depth = 0;
     TokenBase *t = first;
     while ( t )
     {
 	if ( seen )
 	    seen->push_back(t);
-	if ( operator_paren_depth > 0 )
-	{
-	    if ( t->id() == TokenID::tkOpBrk )
-		++operator_paren_depth;
-	    else if ( t->id() == TokenID::tkClBrk )
-		--operator_paren_depth;
-	    t = nextToken();
-	    continue;
-	}
-	if ( operator_square_depth > 0 )
-	{
-	    if ( t->id() == TokenID::tkOpSqr )
-		++operator_square_depth;
-	    else if ( t->id() == TokenID::tkClSqr )
-		--operator_square_depth;
-	    t = nextToken();
-	    continue;
-	}
-	if ( consume_operator_spelling )
-	{
-	    consume_operator_spelling = false;
-	    if ( t->id() == TokenID::tkOpBrk )
-		operator_paren_depth = 1;
-	    else if ( t->id() == TokenID::tkOpSqr )
-		operator_square_depth = 1;
-	    t = nextToken();
-	    continue;
-	}
-	if ( t->id() == TokenID::tkOPEROVER )
-	{
-	    consume_operator_spelling = true;
-	    t = nextToken();
-	    continue;
-	}
 	// A TRAILING requires-clause (between the declarator and the function
 	// body: `... noexcept(...) requires requires { ... } { body }`): the
 	// constraint is consumed as a unit so a requires-expression's braces
@@ -38775,7 +38802,7 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
 	}
 	if ( t->id() == TokenID::tkSemi && d.top() )
 	    return;
-	d.update(t);
+	delimStepStream(t, d, seen);
 	t = nextToken();
     }
 }
