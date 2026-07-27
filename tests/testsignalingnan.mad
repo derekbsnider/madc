@@ -1,0 +1,47 @@
+// __builtin_nans / nansf / nansl — SIGNALING NaN.
+//
+// Not a copy of the quiet trio: 0.0/0.0 yields a QUIET NaN, and no arithmetic
+// can produce a signaling one, because every operation on a signaling NaN
+// quiets it. So these materialize the bit pattern. Aliasing them to the quiet
+// forms would compile and then make numeric_limits<T>::signaling_NaN() quietly
+// wrong — libc++'s <limits> is what reaches them.
+//
+// The float and double patterns are gcc's and clang's, which agree exactly.
+// The long-double line does NOT match either canon, deliberately: madc's
+// `long double` is 64-bit (sizeof 8, against 16 for the x87 80-bit type both
+// canons use on x86-64), so it cannot hold 7fff:a000…, and this emits a real
+// signaling NaN of the type madc actually has rather than a truncated
+// imitation of one it does not. Revisit with the long-double width itself.
+#include <stdio.h>
+#include <string.h>
+
+int main()
+{
+	float sf = __builtin_nansf("");
+	unsigned int bf;
+	memcpy(&bf, &sf, 4);
+
+	double sd = __builtin_nans("");
+	unsigned long long bd;
+	memcpy(&bd, &sd, 8);
+
+	// the quiet pair, as a guard that this change left them alone
+	float qf = __builtin_nanf("");
+	unsigned int qbf;
+	memcpy(&qbf, &qf, 4);
+
+	double qd = __builtin_nan("");
+	unsigned long long qbd;
+	memcpy(&qbd, &qd, 8);
+
+	long double sl = __builtin_nansl("");
+	unsigned long long bl;
+	memcpy(&bl, &sl, 8);
+
+	printf("nansf=%08x nans=%016llx\n", bf, bd);
+	printf("nanf=%08x nan=%016llx\n", qbf, qbd);
+	printf("nansl_low64=%016llx\n", bl);
+	// a signaling NaN is still a NaN: it must compare unequal to itself
+	printf("isnan=%d %d\n", sf != sf, sd != sd);
+	return 0;
+}

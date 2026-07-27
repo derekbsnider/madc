@@ -1586,6 +1586,44 @@ void Program::_tokenizer_init()
 	macro_map["__builtin_nanl"] = nanl;
     }
     {
+	// SIGNALING NaN — deliberately not a copy of the quiet trio above.
+	// 0.0/0.0 yields a QUIET NaN (it folds to the canon pattern bit-for-bit,
+	// which is why the block above is correct), and no arithmetic can
+	// produce a signaling one: every operation on a signaling NaN quiets it.
+	// So the pattern is materialized directly. Aliasing these to the quiet
+	// forms would compile and then make numeric_limits<T>::signaling_NaN()
+	// silently wrong — libc++'s <limits> is what reaches them.
+	//
+	// Patterns are gcc's and clang's, verified identical on x86-64:
+	//   nansf 7fa00000   nans 7ff4000000000000   nansl 7fff:a000000000000000
+	// A statement expression rather than a C11 compound literal purely
+	// because that is what madc parses today (an anonymous-union compound
+	// literal is a separate front-end gap); c2mir supports statement
+	// expressions natively and both canon compilers accept them.
+	MacroDef nans;
+	nans.params = {"__tag"};
+	nans.body = "(__extension__ ({ union { unsigned long long __i; double __d; } __u;"
+		    " __u.__i = 0x7ff4000000000000ULL; __u.__d; }))";
+	macro_map["__builtin_nans"] = nans;
+	MacroDef nansf;
+	nansf.params = {"__tag"};
+	nansf.body = "(__extension__ ({ union { unsigned int __i; float __f; } __u;"
+		     " __u.__i = 0x7fa00000U; __u.__f; }))";
+	macro_map["__builtin_nansf"] = nansf;
+	// The long-double form uses the DOUBLE pattern on purpose: madc's
+	// `long double` is currently 64-bit (sizeof 8, against 16 for the x87
+	// 80-bit extended type both canons use on x86-64), so it has nowhere to
+	// put an 80-bit 7fff:a000… and writing one yields the mantissa alone.
+	// The double pattern is a real signaling NaN of the type madc actually
+	// has, which beats a truncated imitation of one it does not. Revisit
+	// together with the long-double width itself.
+	MacroDef nansl;
+	nansl.params = {"__tag"};
+	nansl.body = "(__extension__ ({ union { unsigned long long __i; long double __l; } __u;"
+		     " __u.__i = 0x7ff4000000000000ULL; __u.__l; }))";
+	macro_map["__builtin_nansl"] = nansl;
+    }
+    {
 	MacroDef isnan;
 	isnan.params = {"__x"};
 	isnan.body = "((__x) != (__x))";
