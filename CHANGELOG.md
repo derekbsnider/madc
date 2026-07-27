@@ -8,6 +8,37 @@ default, the Android NDK's STL, FreeBSD's system C++ library, and available
 anywhere clang is — so it is developed and gated on Linux against
 `libc++-18-dev`, with only the target plumbing needing a Mac.
 
+- **fix: immediately-invoked lambdas, aggregate member init, base-member
+  lifetime.** Three C++ defects found while probing the delimiter migration, two
+  producing *silent* wrong answers. An immediately-invoked lambda
+  (`[](int x){ return x + 99; }(1)`) failed five ways: in argument position it
+  compiled and evaluated to the lambda's own argument; in a declaration or
+  assignment it reported `use of undeclared identifier 'x'`, because `[` was
+  taken as a subscript whenever anything sat on the expression stack and the
+  body was then parsed in the enclosing scope; under `auto` it produced garbage.
+  Both dispatch sites now share one path that continues the postfix chain, and
+  the `auto` path gained the value-vs-call test its sibling branch already had.
+  `Foo() : p{1,2}` on an aggregate member left it uninitialized with no
+  diagnostic — the CIR builder `continue`d on any argument count but one; it now
+  fills fields in declaration order, with nested braces flattened at parse time
+  so a member initializer and a declaration of the same aggregate agree. Members
+  flattened in from a base subobject were constructed *and* destroyed twice
+  (`struct N : Box<Box<int> >` rejected as "too few arguments"; a counted member
+  showed 1 ctor / 2 dtor calls), in both the user-written and synthesized
+  destructor paths.
+
+- **fix(gates): the delimiter ratchet reported GREEN while 19 hand-rolled
+  trackers remained.** Its marker matched a *spelling* (`int angle_depth`), so
+  eleven scanners named plain `angle` / `paren` / `square` were invisible —
+  including the campaign's original unguarded `++angle` on every `tkLT`. A green
+  gate is worse than no gate: a red light gets investigated. The marker now
+  matches the concept, all eleven are migrated (19 → 0), and the char-level half
+  is consolidated into `include/spelling_delim.h` — one `SpellingDelimDepth`,
+  one template-id splitter, the two implementations' differing tail policy now
+  an explicit argument rather than an accidental difference. Migrating also
+  surfaced a lambda mutating its enclosing scan's depth counters by reference,
+  corrupting the outer parameter walk.
+
 - **fix(parser): the constructor mem-initializer scan adopts `DelimDepth` — the
   token delimiter family is CLOSED.** The last hand-rolled tracker held all four
   remaining locals and counted *every* `<` as a template-argument open, with
