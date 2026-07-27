@@ -1,0 +1,89 @@
+// Constructor mem-initializer-list scanning — the delimiter hazards.
+//
+// The capture scan between a ctor's ':' and its body '{' used to hand-roll its
+// own paren/square/angle/brace counters. It counted EVERY '<' as a template-
+// argument open, so a relational '<' in an initializer ARGUMENT left the angle
+// depth stuck past the ')': the body '{' was never recognised and the scan ran
+// to EOF ("Unexpected end of data"). It also decremented on a '}' whose '{' it
+// had never counted.
+//
+// It is now on the shared DelimDepth tracker, which applies the template-id
+// head-context test and the paren guard ([temp.names]). Every shape below must
+// compile and print exactly what g++ and clang++ print.
+
+#include <stdio.h>
+
+template<typename T>
+struct Box
+{
+    T v;
+    Box(T x) : v(x) { }
+};
+
+template<typename A, typename B>
+struct Pair
+{
+    A a;
+    B b;
+    Pair(A x, B y) : a(x), b(y) { }
+};
+
+template<bool B>
+struct Sel { enum { value = B ? 1 : 0 }; };
+
+struct Rel
+{
+    int lt, gt, both;
+    // Relational '<' and '>' as ORDINARY OPERATORS inside initializer args.
+    // The '<' must not open an angle level that never closes.
+    Rel(int a, int b)
+	: lt(a < b ? 10 : 20),
+	  gt(a > b ? 30 : 40),
+	  both((a < b) == (b > a) ? 50 : 60)
+    { }
+};
+
+struct Derived : Box<int>
+{
+    int n;
+    // A genuine template-id base — this '<' DOES open an angle level — then a
+    // top-level brace-init member after the top-level comma.
+    Derived(int x) : Box<int>(x), n{7} { }
+};
+
+struct Commas : Pair<int,int>
+{
+    int k;
+    // Three kinds of comma in one list: inside the base's template-argument
+    // list, inside its call parens, and separating initializers at top level.
+    // Only the last one starts a new mem-initializer.
+    Commas() : Pair<int,int>(1, 2), k(Sel<(2 > 1)>::value) { }
+};
+
+struct Braces
+{
+    int a, b, c;
+    // Brace-init mixed with paren-init, and a relational '<' reading members
+    // initialized earlier in the same list.
+    Braces()
+	: a(Sel<(1 < 2)>::value),
+	  b{4},
+	  c(a < b ? a : b)
+    { }
+};
+
+int main()
+{
+    Rel r(1, 2);
+    printf("rel %d %d %d\n", r.lt, r.gt, r.both);
+
+    Derived d(5);
+    printf("derived %d %d\n", d.v, d.n);
+
+    Commas cm;
+    printf("commas %d %d %d\n", cm.a, cm.b, cm.k);
+
+    Braces br;
+    printf("braces %d %d %d\n", br.a, br.b, br.c);
+    return 0;
+}

@@ -1,10 +1,13 @@
 # Angle-bracket disambiguation: one rule, one implementation
 
-**Status: rounds 1–5 executed 2026-07-27.** The parse bug is fixed, **13
-scanners migrated**, the rule has a gate, and the token family is down to the
-ctor-initializer scan alone. Everything below the first divider is the original
-analysis, kept for the history — **two of its load-bearing claims turned out to
-be wrong**, and the round sections at the bottom say how.
+**Status: rounds 1–6 executed 2026-07-27 — the token family is CLOSED.** The
+parse bug is fixed, **13 scanners migrated**, the ratchet is at **0**
+(`DelimDepth` is the only token-delimiter tracker in `src/` and `include/`), and
+five latent bugs were fixed along the way. The char-level family is still
+partially consolidated — see the round-6 section. Everything below the first
+divider is the original analysis, kept for the history — **two of its
+load-bearing claims turned out to be wrong**, and the round sections at the
+bottom say how.
 
 > ### Read this before trusting anything below
 >
@@ -575,12 +578,111 @@ keyword. `operator_id_token_span()` now returns `1 + tail`, and
 no longer disagree about what an operator-id **spans**; only the parser's reader
 still judges whether it is well-**formed**.
 
-That is the right split. A scanner walking a declaration madc has already
-declined to parse needs the extent of a name, never its validity — so
-strictness there is not caution, it is a bug that aborts a whole compile over a
-construct nobody was going to look at.
-
 With `delimStepStream` tolerant, `skip_template_nonclass_declaration`'s
 hand-rolled `consume_operator_spelling` / `operator_paren_depth` /
 `operator_square_depth` machine is **deleted** — ~40 lines — and the function is
 now entirely on the shared helpers.
+
+### ⚠️ Correction — the first attempt at this was a shim, and the owner caught it
+
+The paragraphs above describe the *second* attempt. The first routed
+`delimStepStream` **around** `parseOperatorId` and left the parser unable to
+read a conversion-function-id, justified with this sentence:
+
+> A scanner walking a declaration madc has already declined to parse needs the
+> extent of a name, never its validity.
+
+That sentence is **true**, and it is exactly what made the shim invisible. The
+layer chain reads:
+
+```
+skipper -> delimStepStream -> parseOperatorId cannot read a
+                              conversion-function-id   <- DEEPEST
+```
+
+and the edit was at `delimStepStream`. Written out that way it is
+self-evidently the wrong layer; argued in prose it sounded like architecture.
+**A plausible principle is the best camouflage a shortcut can wear.** The fix
+landed in `parseOperatorId` instead (`ed61bb66`), which is why the extent rule
+could then be shared by all three consumers rather than forked between them.
+
+This is the incident that produced `check-rule-trailers.sh` and the `Layer:`
+trailer — see `docs/rules/rule-trailers.md`.
+
+## Round 6 — the last copy. Ratchet 4 → 0, family CLOSED
+
+The four remaining locals were all in one scanner: the constructor
+mem-initializer capture loop in `parseFunction` (`parser.cpp` ~48389), which
+walks from the ctor's `:` to its body `{`, capturing the tokens for replay at
+class completion ([class.base.init] — initializer arguments are complete-class
+context).
+
+**Two live bugs, both confirmed against g++ AND clang++-18 before editing.**
+
+| reducer | g++ / clang++-18 | madc (before) |
+|---|---|---|
+| `Foo(int a,int b) : v(a < b ? 10 : 20) {}` | `v 10` | `Unexpected end of data` |
+| same with `>` instead of `<` | `v 20` | `v 20` ✅ |
+| `Foo() : q{ {1,2}, 3 } {}` | `q 1 2 3` | `Unexpected end of input in class definition` |
+| `Foo() : n{5} {}` (flat) | `n 5` | `n 5` ✅ |
+
+The `>`-for-`<` swap is what isolated bug 1: the scan counted **every** `<` as a
+template-argument open — no template-id head test, no paren guard — so the
+relational `<` inside the initializer argument opened a level whose `>` never
+came. The depth stayed stuck past the `)`, the body `{` never satisfied the
+"all depths zero" break, and the loop ran to EOF. The diagnostic pointed at the
+`struct`, six lines above the defect.
+
+Bug 2: the scan decremented `brace_depth` on a `}` whose `{` it had never
+counted, so a nested brace inside a brace-init dropped the depth to zero
+mid-list; the following comma then re-armed `expecting_initializer` and the
+body `{` was swallowed as an initializer.
+
+Both are fixed by **adoption** — `DelimDepth` already had the head-context test
+and the paren guard, and counts braces symmetrically. No new logic.
+
+### What stayed in the caller
+
+`expecting_initializer`, which distinguishes `m{1,2}` from the body's `{` —
+both appear at top level — is layered on top and tested against the depth
+*before* each token is applied. Unify how depth is **updated**; leave each
+site's *use* of it alone.
+
+### Two defects found and deliberately NOT fixed here
+
+Bug 2's reducer still fails, one layer down, and the discriminator is clean:
+the **out-of-class** ctor form (`Foo::Foo() : q{ {1,2}, 3 } { }`) never runs
+the capture scan and fails identically. So the residual is in
+`parse_ctor_initializer_list` (`parser.cpp:32631`), which loops `parseExpression`
+until the closing brace and has no model of a braced-init-list as an argument.
+Recorded as KG `Gap{ctor_init_braced_init_list_arg}`.
+
+Separately, `struct N : Box<Box<int> > { N() : Box<Box<int> >(Box<int>(3)) {} }`
+fails with *"too few arguments"* at the CIR check — while a **local**
+`Box<Box<int> > b(Box<int>(3))` works and the out-of-class ctor form fails the
+same way. Base construction, not parsing. KG `Gap{nested_template_id_base_ctor}`.
+
+Neither belongs in a delimiter-migration commit; both would otherwise have been
+rediscovered from scratch.
+
+### Gates
+
+- `scripts/check-one-delim-tracker.sh` baseline **0** — `GREEN — DelimDepth is
+  the only delimiter tracker.` Negative control run at the new baseline: a
+  planted `int angle_depth = 0;` in a scratch `src/` file is caught and named,
+  exit 1.
+- `tests/testctorinitdelim.mad` + `.expect` + `.expect_quiet` — the hazard set
+  this scanner uniquely owns: relational `<`/`>` in arguments, a real
+  template-id base, a top-level brace-init, and all three kinds of comma
+  (inside the base's template-argument list, inside its call parens, and
+  separating initializers). Output is byte-identical across g++, clang++-18 and
+  madc, with empty stderr.
+
+### The family, closed
+
+**13 scanners migrated, token-level ratchet 27 → 0**, over six rounds. The
+char-level family (`char_level_angle_scanning`, 9 sites) remains partially
+consolidated: `SpellingDelimDepth` owns the `parser.cpp` pair, while
+`madc_mangle.cpp` (6) and `cir_builder.cpp` (3) still hand-roll. That one needs
+a header move plus a reducer per site, because mangling output is externally
+visible.

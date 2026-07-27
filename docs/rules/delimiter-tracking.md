@@ -117,3 +117,41 @@ not track braces — `top()` also requires `brace == 0` and would silently widen
 the condition.
 
 See `.claude/rules/delimiter-tracking.md` for the bare rules.
+
+## The family is closed (round 6, 2026-07-27)
+
+The ratchet baseline is **0**: `DelimDepth` is the only token-delimiter tracker
+in `src/` and `include/`. Thirteen scanners were migrated over six rounds.
+
+The last one — the constructor mem-initializer capture scan in `parseFunction`
+— is the clearest illustration of why the count mattered. It held four
+hand-rolled locals and counted **every** `<` as a template-argument open, with
+neither the template-id head test nor the paren guard. So an ordinary
+relational operator in an initializer argument:
+
+```cpp
+struct Foo { int v; Foo(int a, int b) : v(a < b ? 10 : 20) { } };
+```
+
+opened an angle level whose `>` never came. The depth stayed stuck past the
+`)`, the body `{` never satisfied the "all depths zero" break test, and the
+scan ran to EOF — reported as `Unexpected end of data` pointing at the
+`struct`, six lines above the actual defect. Replacing `>` for `<` in the same
+reducer compiled and ran correctly, which is what isolated it.
+
+The same scan also decremented `brace_depth` on a `}` whose `{` it had never
+counted (a nested brace inside a brace-init), dropping the depth to zero
+mid-list so a following comma re-armed `expecting_initializer` and the body
+brace was consumed as an initializer.
+
+Both were fixed by adoption, not by new logic. Note the shape of that: the
+rule was correct in `DelimDepth` and wrong in the copy, for **seven weeks**,
+in a scanner nobody would think to look at while fixing angle brackets.
+
+### What survives the migration
+
+`expecting_initializer` — the flag distinguishing `m{1,2}` (a brace-init) from
+the body's opening `{`, both of which appear at top level — stays in the
+caller, tested against the depth *before* each token is applied. That is the
+rule the file states generally: unify how depth is **updated**; leave each
+site's *use* of the depth alone.

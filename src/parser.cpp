@@ -48386,69 +48386,36 @@ paramdecl:
 	pending_deferred_ctor_inits.clear();
 	if ( !parse_ctor_initializers || defer_ctor_initializers )
 	{
-	    int paren_depth = 0;
-	    int square_depth = 0;
-	    int angle_depth = 0;
-	    int brace_depth = 0;
+	    DelimDepth d;
 	    bool expecting_initializer = true;
 	    while ( (nt = nextToken()) )
 	    {
-		if ( isOperatorIdStart(nt) )
+		// Caller-specific logic, layered ON TOP of DelimDepth and
+		// tested against the depth BEFORE this token is applied.
+		// A `{` at top level is the function BODY — unless a
+		// mem-initializer is still expected, in which case it opens a
+		// brace-init (`m{1,2}`) and is just another nesting level.
+		if ( d.top() )
 		{
-		    if ( defer_ctor_initializers )
-		    {
-			std::vector<TokenBase *> opsyms;
-			pending_deferred_ctor_inits.push_back(nt);
-			parseOperatorId(nt, &opsyms);
-			for ( size_t oi = 0; oi < opsyms.size(); ++oi )
-			    pending_deferred_ctor_inits.push_back(opsyms[oi]);
-		    }
-		    else
-			parseOperatorId(nt);
-		    continue;
-		}
-		if ( paren_depth == 0 && square_depth == 0
-		  && angle_depth == 0 && brace_depth == 0
-		  && nt->id() == TokenID::tkComma )
-		{
-		    expecting_initializer = true;
-		    if ( defer_ctor_initializers )
-			pending_deferred_ctor_inits.push_back(nt);
-		    continue;
-		}
-		if ( nt->id() == TokenID::tkOpBrk )
-		{
-		    ++paren_depth;
-		    if ( square_depth == 0 && angle_depth == 0 && brace_depth == 0 )
+		    if ( nt->id() == TokenID::tkOpBrc && !expecting_initializer )
+			break;
+		    if ( nt->id() == TokenID::tkComma )
+			expecting_initializer = true;
+		    else if ( nt->id() == TokenID::tkOpBrk
+			   || nt->id() == TokenID::tkOpBrc )
 			expecting_initializer = false;
 		}
-		else if ( nt->id() == TokenID::tkClBrk && paren_depth > 0 )
-		    --paren_depth;
-		else if ( nt->id() == TokenID::tkOpSqr )
-		    ++square_depth;
-		else if ( nt->id() == TokenID::tkClSqr && square_depth > 0 )
-		    --square_depth;
-		else if ( nt->id() == TokenID::tkLT )
-		    ++angle_depth;
-		else if ( nt->id() == TokenID::tkGT && angle_depth > 0 )
-		    --angle_depth;
-		else if ( nt->id() == TokenID::tkBSR && angle_depth > 0 )
-		    angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
-		else if ( nt->id() == TokenID::tkOpBrc
-		       && paren_depth == 0 && square_depth == 0
-		       && angle_depth == 0 && expecting_initializer )
-		{
-		    ++brace_depth;
-		    expecting_initializer = false;
-		}
-		else if ( nt->id() == TokenID::tkClBrc && brace_depth > 0 )
-		    --brace_depth;
-		else if ( nt->id() == TokenID::tkOpBrc
-		       && paren_depth == 0 && square_depth == 0
-		       && angle_depth == 0 && brace_depth == 0 )
-		    break;
+		// operator-ids (operator<, operator T) are NAMES; the stream
+		// helper consumes them opaquely so their symbols are never
+		// counted as delimiters.
+		std::vector<TokenBase *> opsyms;
+		delimStepStream(nt, d, &opsyms);
 		if ( defer_ctor_initializers )
+		{
 		    pending_deferred_ctor_inits.push_back(nt);
+		    for ( TokenBase *s : opsyms )
+			pending_deferred_ctor_inits.push_back(s);
+		}
 	    }
 	    if ( pattern_ctor_meminit )
 		pattern_ctor_init_toks.swap(pending_deferred_ctor_inits);
