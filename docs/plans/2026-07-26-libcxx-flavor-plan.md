@@ -623,38 +623,88 @@ answers 0, per slice 1's deliberate "no registry to ask yet"), so the line is a
 plain `using ::isalnum;`, sitting just after libc++'s block of `#undef`s of the
 ctype *macros*.
 
-**A two-line reducer, and it is not an include-resolution bug:**
+**⚠️ The first version of this section was written from a broken bisect harness
+and its conclusions were wrong.** The harness classified a compile by whether
+its first output line was empty — and madc prints a blank line before every
+diagnostic, so *every failure read as a pass*. `<string_view>`, `<stdexcept>`
+and `<__string/char_traits.h>` do **not** compile alone; the "two-line reducer"
+was really a one-line one. Measured again on **exit status**:
 
-```cpp
-#include <string_view>
-#include <cwchar>        // -> cwctype -> cctype:111: 'isalnum' is not a declaration in '::'
+| Header alone, `-stdlib=libc++` | Result |
+|---|---|
+| `<ctype.h>` `<cctype>` `<cwctype>` `<wctype.h>` `<wchar.h>` `<climits>` | compile |
+| `<cwchar>` | `cwchar:202` — `std::wcslen`, a **call**, not a using-declaration |
+| `<__string/char_traits.h>` | `__functional/reference_wrapper.h:51` |
+| `<string_view>`, `<string>` | `cctype:111` — `using ::isalnum;` |
+| `<stdexcept>` | `cstddef:50` — **libc++'s own `#error`** |
+
+Five *distinct* failures, not one. That reading is what made the next step
+findable, and it is why the harness bug is recorded here rather than quietly
+fixed. See [[feedback_reducers_need_flags]] — third instance.
+
+### The one that cracked: `<cstddef>` — FIXED
+
+libc++'s `#error` says it outright: *"`<cstddef>` tried including `<stddef.h>`
+but didn't find libc++'s `<stddef.h>` header."* libc++'s `stddef.h` is
+**deliberately re-includable** —
+
+```c
+#if defined(__need_ptrdiff_t) || defined(__need_size_t) || ...
+#  include_next <stddef.h>          // does NOT define _LIBCPP_STDDEF_H
+#elif !defined(_LIBCPP_STDDEF_H)
+#  define _LIBCPP_STDDEF_H
 ```
 
-Six hypotheses eliminated by measurement, each worth not re-testing:
+so a first visit through the `__need_*` branch must be followed by a second,
+full visit. That second visit only happens under gcc's guard-checked
+multiple-include semantics, which `should_tokenize_include()` applies to
+**system** headers; a header read as *user* code gets madc's require-once rule
+and the second visit is dropped forever.
+
+And every libc++ header was being read as user code. `should_tokenize_include()`
+canonicalizes the file through `realpath`, while `is_system_header_path()`
+prefix-matched the **raw** generated table entry — and clang reports its own
+search dir as `/usr/lib/llvm-18/bin/../include/c++/v1`. The two spellings never
+match. GNU's paths are already canonical, which is why this never surfaced
+before libc++.
+
+Fixed by canonicalizing the prefixes (cached per flavor) and matching either
+spelling; entries that do not resolve keep their raw form, so cross/hosted
+tables naming an absent sysroot still work. **Proven before it was written**: a
+build with `MADC_SYS_INCLUDE_PREFIX_MAP` rewriting the path to its canonical
+form made the `#error` disappear, and the real fix reproduces that against the
+un-rewritten table. Gate leg 11 pins it.
+
+Consequence worth noting beyond this bug: `is_system_header_path()` also gates
+CIR inline-body emission (reachability DCE), so libc++ headers were on the wrong
+side of *that* decision too.
+
+### Still open: `cctype:111`
+
+`using ::isalnum;` still fails from `<string_view>`, with canonical paths in
+place — so it is **not** the same bug. Eliminated by measurement:
 
 | Eliminated | Evidence |
 |---|---|
-| include resolution / `#include_next` | `-v` trace shows the exact clang chain: `cctype` → `c++/v1/ctype.h` → `/usr/include/ctype.h`. glibc's header **is** read. |
-| PCH divergence | zero `precompiled` hits in the `-v` trace for this compile |
+| include resolution / `#include_next` | `-v` trace shows the exact clang chain: `cctype` → `c++/v1/ctype.h` → `/usr/include/ctype.h`. glibc's header **is** read, once, immediately before line 111. |
+| the system/user misclassification above | persists after the fix |
+| PCH divergence | zero `precompiled` hits in the trace |
 | inline namespace | `namespace std { inline namespace __1 { using ::isalnum; } }` compiles |
 | `#undef` dropping the function | `#define isalnum(c) 0` then `#undef isalnum` then `using ::isalnum;` compiles |
-| `<string_view>` poisoning global lookup | `<string_view>` + `<ctype.h>` + `using ::isalnum;` compiles; so does `<string_view>` + `<cctype>` |
-| each header on its own | `<cctype>`, `<cwctype>`, `<__string/char_traits.h>`, `<string_view>`, `<stdexcept>` all compile alone |
+| `<ctype.h>` not declaring it | `<ctype.h>` + `using ::isalnum;` compiles, both flavors |
 
-So it needs `<cwchar>` specifically, **and** a prior header — `<cwchar>` alone gets
-*past* cctype and fails later at its own `cwchar:202` (a `std::wcslen` **call**,
-a different construct with a different diagnostic). Note `<string_view>` already
-pulls `<cwchar>` transitively, so the explicit second include should be a
-guard-skip no-op and yet changes the outcome. That is the thread to pull: it
-points at parse/registration state rather than at which file was opened.
+Next thread: `<cctype>` compiles alone and *inside `<cwchar>`*, but not inside
+`<string_view>` — so ask what registration state ~290 preceding headers leave
+behind, and whether glibc's `ctype.h` takes a different branch there (its
+`__exctype` / `__isctype_f` declarations are gated on feature macros).
 
-**A caution recorded from getting this wrong once here:** `isalnum(65)` *compiles
-under madc whether or not `isalnum` is declared*, via the implicit-function
-fallback. An early probe used exactly that and I read "the chain works" out of
-it. Probe a declaration with `using ::X;`, never with a call.
+**A caution worth keeping:** `isalnum(65)` *compiles under madc whether or not
+`isalnum` is declared*, via the implicit-function fallback. An early probe used
+exactly that and I read "the chain works" out of it. Probe a declaration with
+`using ::X;`, never with a call.
 
-Worth noting for the same reason as everything else in this track: nothing above
-is libc++-specific machinery — it is madc's own include/registration state.
+Nothing here is libc++-specific machinery — it is madc's own include and
+registration state, which is the pattern this whole track keeps producing.
 
 ### The worklist as first written (2026-07-27, verified by reducer at HEAD)
 

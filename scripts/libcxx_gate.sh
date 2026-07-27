@@ -37,6 +37,13 @@
 #   9  the build's default flavor stays selectable, by name and by omission
 #  10  an unknown flavor errors and names what this binary was built with
 #
+# Leg 11 pins the CLASSIFICATION the other two rest on: a libc++ header must
+# read as SYSTEM code whatever spelling it arrived by, or it gets require-once
+# instead of gcc's guard-checked multiple-include and its deliberately
+# re-includable wrappers lose their second visit.
+#
+#  11  libc++'s re-includable wrappers get gcc multiple-include semantics
+#
 # libc++ and clang are container artifacts, so the gate SKIPS (rc 0) when
 # either is missing and says which. LIBCXX_INCLUDE overrides discovery.
 set -u
@@ -241,6 +248,34 @@ elif grep -q "Unknown -stdlib flavor" "$D/l10.err" && grep -q "libc++" "$D/l10.e
 	pass "an unknown -stdlib flavor errors and names the available set"
 else
 	fail "unknown flavor rejected without naming the set: $(head -c 200 "$D/l10.err")"
+fi
+
+# --- leg 11: a libc++ header is SYSTEM code, whatever spelling it arrived by --
+# libc++'s <stddef.h>/<stdint.h> wrappers are written to be included TWICE: the
+# first visit may take the `#if defined(__need_size_t)` branch, which
+# deliberately does not define _LIBCPP_STDDEF_H, so a later full include must
+# re-enter. That only happens under gcc's guard-checked multiple-include
+# semantics, which madc applies to SYSTEM headers; a header misread as user code
+# gets require-once instead and its second visit is dropped forever. <cstddef>
+# then #errors, and it says exactly why, which is what makes this testable.
+#
+# The classification is a prefix match against the generated table, and clang
+# reports its own search dir non-canonically (.../bin/../include/c++/v1) while a
+# file found there is recorded by realpath — so the compare has to canonicalize
+# or every libc++ header lands on the wrong side of it.
+cat > "$D/twice.cpp" <<'EOF'
+#include <cstddef>
+#include <stddef.h>
+#include <cstddef>
+int main(void) { return (int)sizeof(size_t) == 8 ? 0 : 1; }
+EOF
+if run "$MADC" -stdlib=libc++ "$D/twice.cpp" >/dev/null 2>"$D/l11.err"; then
+	pass "libc++'s re-includable wrappers get gcc multiple-include semantics"
+elif grep -q "didn't find libc++'s" "$D/l11.err"; then
+	fail "libc++ headers classified as USER code — the second visit was dropped \
+(canonicalize the search-dir prefixes; clang reports .../bin/../include/c++/v1)"
+else
+	fail "re-include of libc++ wrappers: $(head -c 200 "$D/l11.err")"
 fi
 
 # --- leg 6: the redefinition diagnostic survives ---------------------------

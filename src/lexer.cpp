@@ -2266,6 +2266,39 @@ const char *Program::compiler_owned_include_dir() const
     return f->compiler_owned_dir ? f->compiler_owned_dir : "";
 }
 
+// The same search dirs, resolved through realpath — because a compiler reports
+// its search list in whatever spelling it computed, and those spellings are not
+// always canonical. clang says `/usr/lib/llvm-18/bin/../include/c++/v1`, and a
+// file found there is recorded by its realpath, so a raw prefix compare between
+// the two MISSES and every libc++ header classifies as user code. Cached per
+// flavor: realpath touches the filesystem, and this is asked once per token file.
+//
+// Entries that do not resolve (a cross/hosted table naming a sysroot that does
+// not exist on this machine) keep their original spelling, so the raw compare
+// below still covers them.
+const std::vector<std::string> &Program::sys_include_prefixes_canonical() const
+{
+    const madc_stdlib_flavor *f = stdlib_flavor ? stdlib_flavor : &madc_stdlib_flavors[0];
+    if ( _canon_prefix_flavor == f && !_canon_prefixes.empty() )
+	return _canon_prefixes;
+    _canon_prefixes.clear();
+    const char *const *paths = sys_include_paths();
+    for ( int i = 0; paths[i]; ++i )
+    {
+	std::string p = paths[i];
+	if ( char *rp = realpath(paths[i], NULL) )
+	{
+	    p = rp;
+	    free(rp);
+	    if ( p.empty() || p.back() != '/' )
+		p += '/';
+	}
+	_canon_prefixes.push_back(p);
+    }
+    _canon_prefix_flavor = f;
+    return _canon_prefixes;
+}
+
 std::string Program::stdlib_flavor_names() const
 {
     std::string out;
@@ -2395,6 +2428,19 @@ bool Program::is_system_header_path(const char *path) const
 	const char *prefix = sys_paths[i];
 	size_t plen = strlen(prefix);
 	if ( plen && strncmp(path, prefix, plen) == 0 )
+	    return true;
+    }
+    // Then the canonical spellings, for a caller that realpath'd its file (as
+    // should_tokenize_include does) against a table entry that is not canonical.
+    // Getting this wrong is not cosmetic: a system header misread as user code
+    // gets madc's require-once semantics instead of gcc's guard-checked
+    // multiple-include, which permanently drops the second visit to a header
+    // written to be included twice — libc++'s <stddef.h>/<stdint.h> wrappers are
+    // exactly that, and <cstddef> #errors when its second visit never happens.
+    const std::vector<std::string> &canon = sys_include_prefixes_canonical();
+    for ( size_t i = 0; i < canon.size(); ++i )
+    {
+	if ( !canon[i].empty() && strncmp(path, canon[i].c_str(), canon[i].size()) == 0 )
 	    return true;
     }
     return false;

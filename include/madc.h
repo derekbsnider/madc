@@ -3298,6 +3298,8 @@ public:
     // include/madc_sys_includes.h. Orthogonal to the target/object format: a
     // Mach-O target defaults to libc++, it never MEANS libc++.
     const madc_stdlib_flavor *stdlib_flavor = NULL;
+    mutable std::vector<std::string> _canon_prefixes;		// cache: see sys_include_prefixes_canonical()
+    mutable const madc_stdlib_flavor *_canon_prefix_flavor = NULL;
     void add_include_dir(const std::string &dir);	// normalize (trailing '/') + append to include_paths
     void add_cli_define(const std::string &def);	// split NAME[=VALUE] (bare => "1") into cli_defines
     std::map<std::string, bool> included_files;	// #include files already tokenized (require_once semantics)
@@ -4201,6 +4203,9 @@ public:
     // compiler to probe.
     const char *const *sys_include_paths() const;
     const char *compiler_owned_include_dir() const;
+    // realpath'd copy of the above, cached per flavor — a compiler's reported
+    // search list is not always canonical (clang: `.../bin/../include/c++/v1`).
+    const std::vector<std::string> &sys_include_prefixes_canonical() const;
     // -stdlib=<name>: true when consumed. An unknown/unbuilt flavor is NOT
     // consumed, so the caller reports it (available flavors are a build-host
     // property, so the diagnostic has to name what this binary actually has).
