@@ -8,6 +8,31 @@ default, the Android NDK's STL, FreeBSD's system C++ library, and available
 anywhere clang is — so it is developed and gated on Linux against
 `libc++-18-dev`, with only the target plumbing needing a Mac.
 
+- **fix(parser): the constructor mem-initializer scan adopts `DelimDepth` — the
+  token delimiter family is CLOSED.** The last hand-rolled tracker held all four
+  remaining locals and counted *every* `<` as a template-argument open, with
+  neither the template-id head-context test nor the paren guard. So an ordinary
+  relational operator in an initializer argument —
+  `Foo(int a, int b) : v(a < b ? 10 : 20) { }` — opened an angle level whose `>`
+  never came: the depth stayed stuck past the `)`, the body `{` never satisfied
+  the "all depths zero" break, and the scan ran to EOF, reported as
+  `Unexpected end of data` pointing at the `struct` six lines above the defect.
+  Swapping `>` for `<` compiled and ran correctly, which is what isolated it.
+  The same scan also decremented `brace_depth` on a `}` whose `{` it had never
+  counted, so a nested brace-init dropped to depth zero mid-list and the body
+  brace was swallowed as an initializer. Both fixed by **adoption** — the shared
+  tracker already had every guard. `expecting_initializer`, which distinguishes
+  `m{1,2}` from the body `{`, stays in the caller. Ratchet **4 → 0**: 13
+  scanners migrated over six rounds, 27 → 0, and `DelimDepth` is now the only
+  token-delimiter tracker in `src/` and `include/`. New gate
+  `tests/testctorinitdelim.mad`, byte-identical across g++, clang++-18 and madc.
+
+- **build(scripts): `remote_build.sh` gains an `obj` stage.** The single-object
+  loader lane has always been in the recorded baseline but had no stage, so the
+  only way to run it bypassed the container busy-check — a hole in the
+  mechanical guard rather than a missing convenience. `battery` is now
+  fulltest + exe + obj + release + packed.
+
 - **fix(parser): `&S::n` — a qualifier before `::` may be a class.**
   `parseAddressOfExpression` consulted only the namespace map, so taking the
   address of a static data member reported "Unknown namespace 'S'" — a
