@@ -9,48 +9,66 @@ that path has already been measured and rejected.
 
 ---
 
-## Read this first — the obvious plan is WRONG, and one command proves it
+## Read this first — BOTH halves are needed, and the two stdlibs need opposite things
 
-The plan this task started from was: "mangle class statics to their Itanium
-symbol so a reference resolves against libstdc++." That is **not sufficient,
-and for the motivating symbols it is impossible.**
+This section was rewritten after source recon into `/workspace/gcc`,
+`/workspace/llvm-clang-src` and the container's libc++. The first draft was
+based on libstdc++ evidence alone and reached a conclusion that is only half
+right.
+
+### The model is confirmed by BOTH canons
+
+- **gcc:** `finish_static_data_member_decl` (`gcc/cp/decl2.cc:1167`) creates the
+  VAR_DECL while parsing the class body, marks it `DECL_IN_AGGR_P`, pushes it to
+  `pending_statics`; the out-of-class definition completes THAT decl.
+- **clang:** `Sema::ActOnCXXMemberDeclarator` (`clang/lib/Sema/SemaDeclCXX.cpp:3440`)
+  computes `isInstField` from the storage class (:3535) and routes a static
+  through `HandleDeclarator` (:3650), producing a `VarDecl` at declaration time.
+
+Same model, reached differently. Creating the decl at the declaration is right.
+
+### But libstdc++ and libc++ differ in the load-bearing way
+
+**libstdc++ — hidden, private, never odr-used by user code:**
 
 ```
-$ nm -D /usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep _ZNSt6locale7_S_onceE
-$                                  # empty — not exported
-$ nm -D /usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep _ZSt4cout
-000000000027a580 B _ZSt4cout@@GLIBCXX_3.4
+libstdc++-v3/include/bits/locale_classes.h:364   static __gthread_once_t _S_once;   // private: at :335
+libstdc++-v3/include/bits/locale_classes.h:420   static __gthread_once_t _S_once;   // private: at :407
+libstdc++-v3/src/c++98/locale.cc:75              __gthread_once_t locale::_S_once = ...
+$ nm -D libstdc++.so.6 | grep _ZNSt6locale7_S_onceE      # EMPTY — not exported
 ```
 
-libstdc++ exports 620 data symbols, and `std::cout` is one of them — so the
-alias mechanism itself is sound. But `std::locale::_S_once`,
-`std::locale::id::_S_refcount` and `std::ios_base::Init::_S_synced_with_stdio`
-are **hidden**. There is nothing to link against, for madc or for anyone.
+Private, so no user code can odr-use it; defined inside the library; not
+exported. Nothing should ever reference it, and madc referencing it was the
+whole bug.
 
-**And nothing should be trying to.** g++ compiling `#include <locale>` emits no
-reference to `_S_once`: only libstdc++'s own internals odr-use it. A
-declaration alone emits nothing. madc's error was never a missing alias — it
-was **emitting a reference to a static member that nothing in the program
-uses.**
+**libc++ — public, exported, genuinely odr-used:**
 
----
+```
+$ grep -n "static locale::id id;" <libc++>/__locale     # 8+ facet classes
+$ nm -D libc++.so.1 | grep -cE "2idE"                   # 32 exported
+00000000000fc988 V _ZNSt3__110moneypunctIcLb0EE2idE
+```
 
-## The actual defect
+`std::use_facet<F>(loc)` reads `F::id`. These are PUBLIC, exported as weak
+object symbols, and user code odr-uses them for real. **Under `-stdlib=libc++`
+the alias is not optional — `use_facet` cannot work without it.**
 
-`cff57761` made every static data member DECLARATION create a storage
-`Variable`. That is right for a member the program uses and wrong for the
-hundreds a system header merely declares — those then reached emission and
-produced `undeclared identifier locale___S_once`.
+Note these are TEMPLATE-class statics (`moneypunct<char,false>::id`). I twice
+called that the "harder subset" needing new template-argument mangling. It is
+not, and it is not an edge case either — it is the common case here. See
+SETTLED #2.
 
-Two placeholder guards were added to contain that, and this task removes the
-second:
+### So both steps are required, and they are complementary
 
-- `has_inclass_init` — **KEEP.** g++'s own `DECL_INITIAL` distinction
-  (`decl_constant_value`, `gcc/cp/init.cc:2582`). A member with an in-class
-  initializer folds.
-- `from_system_header` — **DELETE.** Labelled a placeholder in the code, the
-  commit, the changelog and the release notes. Removing it is the acceptance
-  test.
+1. **Create on odr-use** — kills the spurious references to hidden statics like
+   `_S_once`, and is what deletes the placeholder guard.
+2. **Alias when the symbol is exported** — makes an odr-used system-header
+   static resolve against the library, which libc++'s facet `id`s need.
+
+Neither alone is sufficient. Step 1 without step 2 leaves `use_facet` broken
+under libc++; step 2 without step 1 keeps emitting references to hidden
+symbols.
 
 ---
 
@@ -77,11 +95,14 @@ completes that same Variable through `addVariable`'s existing-symbol branch
 (adopt type/count, clear `vfEXTERN`). If a program genuinely odr-uses a hidden
 library static, it gets a link error — which is what g++ gives too.
 
-3. **Then** set `storage_alias_name` for the case where it IS correct: a static
-   whose defining class comes from a system header AND whose mangled symbol is
-   exported. Use `itanium_mangle_nested_var` — see SETTLED below. Treat this as
-   a second, separate commit; step 1–2 stands on its own and is what deletes
-   the guard.
+3. **Then** set `storage_alias_name` via `itanium_mangle_nested_var` for a
+   static whose defining class comes from a system header. Separate commit;
+   steps 1–2 stand alone and are what delete the guard. This step is what makes
+   `std::use_facet` work under `-stdlib=libc++`, so it is REQUIRED for the
+   flavor track, not a nicety. Do NOT gate it on "is the symbol exported" by
+   probing the `.so` — emit the alias and let the link fail loudly if the
+   library genuinely lacks it; a probe of the host's `.so` is exactly the
+   platform-means-library conflation this track exists to undo.
 
 ---
 
@@ -128,8 +149,10 @@ library static, it gets a link error — which is what g++ gives too.
   `tests/testmadceval.mad`, `testmadcevalexpr.mad`,
   `testmadcevalexprtyped.mad`, `testmadcevalscope.mad`.
 - `tests/teststaticmemberstorage.mad` must stay byte-identical to g++.
-- Add a case that reads an **exported** system-header static (`std::cout` is
-  the proven-exported example) if step 3 is done.
+- For step 3, the gate is `std::use_facet` under BOTH flavors: it exercises an
+  exported, odr-used, template-class static (`_ZNSt3__110moneypunctIcLb0EE2idE`
+  and its libstdc++ equivalent) — precisely the shape steps 1 and 2 have to
+  agree on. `libcxx_gate.sh` is where the libc++ leg belongs.
 
 ⚠️ **A reducer cannot catch the failure this task is about.** Two of the three
 batteries on `cff57761` went red on exactly it while all 45 reducers in
