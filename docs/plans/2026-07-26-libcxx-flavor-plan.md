@@ -216,17 +216,33 @@ Slice order follows from that:
    `__is_trivially_destructible`. Registry-driven, so each is a registry
    entry plus its sema, never a call-site special case (Rule #7).
 
-   Sharpened by the 2026-07-27 measurement: only
-   `__is_trivially_destructible` remains mandatory on Linux libc++ 18, and
-   libc++ accepts **either** it or `__has_trivial_destructor` — one
-   intrinsic unblocks `<type_traits>` and therefore `<string>`. Note the
-   coupling this creates with slice 1: libc++ guards the trait with
-   `#if __has_builtin(__is_trivially_destructible)`, and these names do
-   **not** carry the `__builtin_` prefix, so the trait registry must be a
-   source `has_builtin` consults. One registry, two consumers (the
-   preprocessor query and the parser's sema) — which is exactly the
-   "answer from madc's own state" contract slice 1 established, extended to
-   a second kind of state rather than a second mechanism.
+   **RESOLVED 2026-07-27 — and it required no new intrinsic at all.**
+   libc++ accepts **either** `__is_trivially_destructible` **or**
+   `__has_trivial_destructor`, and madc has implemented the latter all
+   along: `type_trait_arity()` in parser.cpp is a real registry of nine
+   traits madc answers faithfully from its DataDef model (`__is_class`,
+   `__is_union`, `__is_enum`, `__has_trivial_destructor`, `__is_trivial`,
+   `__is_empty`, `__is_standard_layout`, `__is_pod`, plus the arity-2
+   `__is_same`, `__is_base_of`, `__is_assignable`).
+
+   The `#error` fired only because slice 1's `has_builtin` did not know
+   that registry existed — trait intrinsics carry no `__builtin_` prefix,
+   so it answered no for a trait madc implements. `is_type_trait_builtin()`
+   is now declared in `madc.h` and consulted by `has_builtin`: **one
+   registry, two consumers** (the preprocessor query and the parser's
+   sema), which is the same "answer from madc's own state" contract slice 1
+   established, extended to a second kind of state rather than a second
+   mechanism.
+
+   Verified zero blast radius on the existing lane: every `__has_builtin`
+   guard in libstdc++ 13 names a trait madc does *not* implement
+   (`__builtin_bit_cast`, `__reference_constructs_from_temporary`,
+   `__is_convertible`, …), so all of them still answer no exactly as
+   before. Only libc++ asks about a trait madc has.
+
+   The lesson is Rule #4, sharply: the registry, its sema, and the nine
+   traits were all already there. Building a new intrinsic would have
+   duplicated working machinery to fix a one-line lookup gap.
 3. Then the burn-down proper — and expect it to land in **template
    metaprogramming**, not intrinsics: with the fallbacks in play, libc++
    compiles `<type_traits>` through exactly the dependent-name /
@@ -399,9 +415,35 @@ libc++ lane is simply the first path that reached one.
 
 The frontier moved to **exactly the second of the two mandatory intrinsics the
 plan predicted**, and `remove_reference` no longer blocks (Linux libc++ 18
-carries a fallback for it where the SDK copy measured earlier did not). So the
-next slice is the plan's step 2, now down to a single hard requirement:
-`__is_trivially_destructible`.
+carries a fallback for it where the SDK copy measured earlier did not).
+
+**Then step 2 landed the same day** (see above — it was a registry-lookup gap,
+not a missing intrinsic), and the frontier moved again:
+
+```
+__utility/declval.h:22: use of undeclared identifier '_Pragma'
+__type_traits/aligned_storage.h:100: use of undeclared identifier '_Pragma'
+```
+
+### Next slice: `_Pragma`
+
+`_Pragma("...")` is the C99/C++11 token-form of `#pragma` — it destringizes its
+operand and processes it as a pragma directive. libc++ reaches it through
+`_LIBCPP_SUPPRESS_DEPRECATED_PUSH` and friends, which are warning-control
+pragmas madc only needs to *accept*, not act on. Two constraints shape it:
+
+- It must route to madc's EXISTING pragma handling, not a second copy — the
+  `#pragma pack` machinery is the one that matters and must keep working
+  identically. Today that handler reads char-by-char straight off `source`,
+  so the slice's real work is extracting a text-driven entry point both the
+  directive and the operator call. That is the whole reason this is its own
+  slice rather than a bolt-on.
+- Unknown pragmas must stay ignorable (gcc's behaviour), so the destringized
+  content follows exactly the path an unrecognized `#pragma` line already
+  takes.
+
+Note it is not libc++-specific: `_Pragma` is standard C since C99, and any
+header may use it (doctest's own macros do).
 
 **Gate:** `scripts/libcxx_gate.sh`, wired into `fulltest`, six legs — the
 wrapper wins when libc++ precedes the slot; the embedded copy still serves

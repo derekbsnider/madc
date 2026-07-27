@@ -5708,9 +5708,17 @@ std::string Program::expandIfMacros(const std::string &raw)
 // in doubt the answer is 0: that costs a fast path, never correctness.
 bool Program::has_builtin(const std::string &name)
 {
+    // Compiler type-trait intrinsics carry no __builtin_ prefix, and madc
+    // implements a real subset of them (__is_class, __has_trivial_destructor,
+    // …). Answer from THAT registry — it is the same "answer from madc's own
+    // state" contract, applied to a second kind of state. Saying no here is
+    // what made libc++ #error on a trait madc had all along.
+    if ( is_type_trait_builtin(name) )
+	return true;
     if ( name.compare(0, 10, "__builtin_") != 0 )
-	return false;	// the trait intrinsics (__remove_reference_t and the
-			// rest of libc++'s 41) have no implementation yet — see
+	return false;	// trait intrinsics madc does NOT implement
+			// (__remove_reference_t and the rest of libc++'s 41)
+			// answer no — see
 			// docs/plans/2026-07-26-libcxx-flavor-plan.md
     // The alias table IS madc's builtin implementation for this family: each
     // entry rewrites the call to the libc function that implements it, so

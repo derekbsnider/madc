@@ -9595,7 +9595,10 @@ static int type_trait_arity(const std::string &name)
     return 0;   // not a supported trait
 }
 
-static bool is_type_trait_builtin(const std::string &name)
+// Declared in madc.h: __has_builtin answers from this same registry, so a
+// library guarding a trait with `#if __has_builtin(__has_trivial_destructor)`
+// learns what madc really implements.
+bool is_type_trait_builtin(const std::string &name)
 {
     return type_trait_arity(name) != 0;
 }
