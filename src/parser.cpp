@@ -11773,29 +11773,19 @@ void Program::skip_discarded_statement()
 
 static bool constant_initializer_has_runtime_access(Program &pgm)
 {
-    int paren_depth = 0;
-    int square_depth = 0;
-    int brace_depth = 0;
+    // Explicit paren/square/brace, NOT d.top(): this scan never tracked angle
+    // brackets, and top() also demands angle == 0 — `a < b;` would open one and
+    // silently stop the `;` from terminating the scan.
+    DelimDepth d;
     for ( size_t i = 0; i < pgm.tokens.size(); ++i )
     {
 	TokenBase *t = pgm.tokens[i];
 	if ( !t )
 	    continue;
 	if ( t->id() == TokenID::tkSemi
-	  && paren_depth == 0 && square_depth == 0 && brace_depth == 0 )
+	  && d.paren == 0 && d.square == 0 && d.brace == 0 )
 	    break;
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
-	else if ( t->id() == TokenID::tkOpBrc )
-	    ++brace_depth;
-	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
-	    --brace_depth;
+	d.update(t);
 	if ( t->id() == TokenID::tkDot || t->id() == TokenID::tkDeRef )
 	    return true;
 	if ( !is_contextual_identifier_token(t) )
@@ -19166,25 +19156,10 @@ static TokenCallMethod *make_unary_object_operator_call(Variable *recv,
 TokenBase *Program::consume_unresolved_dependent_call(TokenBase *open)
 {
     TokenBase *t = open;
-    int paren_depth = 1;
-    int square_depth = 0;
-    int brace_depth = 0;
-    while ( paren_depth > 0 && peekToken() )
-    {
-	t = nextToken();
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
-	else if ( t->id() == TokenID::tkOpBrc )
-	    ++brace_depth;
-	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
-	    --brace_depth;
-    }
+    DelimDepth d;
+    d.update(open);            // `open` is the '(' — seeds paren depth at 1
+    while ( d.paren > 0 && peekToken() )
+	d.update(t = nextToken());
     return t;
 }
 
@@ -35355,27 +35330,17 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    }
 		    else
 		    {
-			    int paren_depth = 0;
-			    int square_depth = 0;
-			    int brace_depth = 0;
+			    // Explicit paren/square/brace, NOT d.top(): this scan
+			    // never tracked angle brackets, and top() also demands
+			    // angle == 0 — `a < b;` would open one and swallow the ';'.
+			    DelimDepth d;
 			    while ( (tn = pgm.nextToken()) )
 			    {
 				if ( tn->id() == TokenID::tkSemi
-				  && paren_depth == 0 && square_depth == 0
-				  && brace_depth == 0 )
+				  && d.paren == 0 && d.square == 0
+				  && d.brace == 0 )
 				    break;
-				if ( tn->id() == TokenID::tkOpBrk )
-				    ++paren_depth;
-				else if ( tn->id() == TokenID::tkClBrk && paren_depth > 0 )
-				    --paren_depth;
-			else if ( tn->id() == TokenID::tkOpSqr )
-			    ++square_depth;
-			else if ( tn->id() == TokenID::tkClSqr && square_depth > 0 )
-			    --square_depth;
-			else if ( tn->id() == TokenID::tkOpBrc )
-				    ++brace_depth;
-				else if ( tn->id() == TokenID::tkClBrc && brace_depth > 0 )
-				    --brace_depth;
+				d.update(tn);
 			    }
 		    if ( !tn )
 			pgm.Throw(this) << "Unexpected end of input in static member initializer" << flush;
@@ -38340,66 +38305,42 @@ bool Program::consume_ellipsis()
 std::vector<TokenBase *> Program::collect_template_default_argument()
 {
     std::vector<TokenBase *> out;
-    int angle_depth = 0;
-    int paren_depth = 0;
-    int square_depth = 0;
+    DelimDepth d;
     while ( peekToken() )
     {
 	TokenBase *pt = peekToken();
-	if ( angle_depth == 0 && paren_depth == 0 && square_depth == 0
+	if ( d.angle == 0 && d.paren == 0 && d.square == 0
 	  && is_template_param_separator(pt) )
 	    return out;
 	TokenBase *t = nextToken();
-	if ( t->id() == TokenID::tkLT )
+	// `>>` is the only token this scan REWRITES: when it closes template
+	// argument lists it must reach `out` as separate `>` tokens. Ask
+	// DelimDepth how many levels it actually closed rather than assuming —
+	// inside parens opened within the list (`A<(x >> y)>`) it closes NONE
+	// and the shift must survive verbatim.
+	if ( t->id() == TokenID::tkBSR )
 	{
-	    out.push_back(t->clone());
-	    ++angle_depth;
-	}
-	else if ( t->id() == TokenID::tkGT )
-	{
-	    out.push_back(t->clone());
-	    if ( angle_depth > 0 )
-		--angle_depth;
-	}
-	else if ( t->id() == TokenID::tkBSR )
-	{
-	    if ( angle_depth > 1 )
+	    int before = d.angle;
+	    d.update(t);
+	    int closed = before - d.angle;
+	    if ( closed == 0 )
+		out.push_back(t->clone());
+	    else if ( closed > 1 )
 	    {
 		out.push_back(new TokenGT());
 		out.push_back(new TokenGT());
-		angle_depth -= 2;
-	    }
-	    else if ( angle_depth > 0 )
-	    {
-		out.push_back(new TokenGT());
-		angle_depth = 0;
-		pushToken(new TokenGT());
 	    }
 	    else
-		out.push_back(t->clone());
+	    {
+		// Only one list was open; the second `>` belongs to the
+		// enclosing context, so hand it back to the stream.
+		out.push_back(new TokenGT());
+		pushToken(new TokenGT());
+	    }
+	    continue;
 	}
-	else if ( t->id() == TokenID::tkOpBrk )
-	{
-	    out.push_back(t->clone());
-	    ++paren_depth;
-	}
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	{
-	    out.push_back(t->clone());
-	    --paren_depth;
-	}
-	else if ( t->id() == TokenID::tkOpSqr )
-	{
-	    out.push_back(t->clone());
-	    ++square_depth;
-	}
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	{
-	    out.push_back(t->clone());
-	    --square_depth;
-	}
-	else
-	    out.push_back(t->clone());
+	out.push_back(t->clone());
+	d.update(t);
     }
     return out;
 }
@@ -46581,36 +46522,28 @@ static bool old_style_param_name_exists(const std::vector<std::string> &ids,
 
 bool Program::old_style_parameter_head_has_declaration_suffix()
 {
-    int paren_depth = 0;
-    int square_depth = 0;
+    DelimDepth d;
     for ( size_t i = 0; i < tokens.size(); ++i )
     {
 	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk )
+	// The unmatched ')' that closes the parameter head — decided BEFORE the
+	// depth update, since DelimDepth clamps a close at depth 0.
+	if ( t->id() == TokenID::tkClBrk && d.paren == 0 )
 	{
-	    if ( paren_depth == 0 )
-	    {
-		TokenBase *after = (i + 1 < tokens.size())
-		    ? tokens[i + 1] : NULL;
-		// Bare identifier list with an EMPTY declaration list —
-		// `f(x) { ... }` — is the other C89 old-style form: every
-		// parameter defaults to int (the declaration-list loop after
-		// the parameter loop already defaults undeclared identifiers
-		// to ddINT32).
-		if ( after && after->id() == TokenID::tkOpBrc )
-		    return true;
-		return is_old_style_parameter_declaration_start(after);
-	    }
-	    --paren_depth;
+	    TokenBase *after = (i + 1 < tokens.size())
+		? tokens[i + 1] : NULL;
+	    // Bare identifier list with an EMPTY declaration list —
+	    // `f(x) { ... }` — is the other C89 old-style form: every
+	    // parameter defaults to int (the declaration-list loop after
+	    // the parameter loop already defaults undeclared identifiers
+	    // to ddINT32).
+	    if ( after && after->id() == TokenID::tkOpBrc )
+		return true;
+	    return is_old_style_parameter_declaration_start(after);
 	}
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
+	d.update(t);
     }
     return false;
 }

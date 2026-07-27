@@ -23,11 +23,20 @@
 set -u
 cd "$(dirname "$0")/.."
 
-BASELINE=25
+BASELINE=10
 
 # A hand-rolled tracker always declares at least one delimiter-depth local.
+#
+# EXCLUDED, deliberately — validate_expression_source() in madc_program.cpp is a
+# raw-SOURCE mini-lexer with quote and comment states, not token-delimiter
+# bookkeeping. It also tracks whether each paren level was preceded by an
+# identifier, to allow commas in call args but not in grouping parens. The
+# tie-breaker ("would a change to the delimiter rule require editing it?") says
+# no: it would evolve with expression-validation, not with [temp.names].
+# Merging it into DelimDepth would be worse than the duplication.
 hits=$(grep -rnE '\bint +(angle|paren|square|brace)_depth\b' src/ include/ \
-  | grep -vE '^include/doctest\.h:' )
+  | grep -vE '^include/doctest\.h:' \
+  | grep -vE '^src/madc_program\.cpp:' )
 n=$(printf '%s' "$hits" | grep -c . )
 
 echo "one-delim-tracker ratchet: $n hand-rolled delimiter-depth locals (baseline $BASELINE, target 0)"

@@ -379,3 +379,61 @@ compile, because that was `head`'s status.
 `fulltest` rc=0 · JIT **762**/0/0/9 (baseline 761) · EXE **746**/0 (745) ·
 OBJ **746**/0 (745) · packed **762**/0 · `libcxx_gate` **11/11**.
 Every lane +1 — `tests/testtemplateanglelt.mad`. No regressions.
+
+---
+
+## Round 2 (same session) — ratchet 25 → 13 → 9
+
+Five more scanners migrated, all behaviour-preserving:
+
+| Site | Function | Care taken |
+|---|---|---|
+| 11776 | `constant_initializer_has_runtime_access` | explicit `d.paren/square/brace`, **not** `d.top()` |
+| 19169 | `consume_unresolved_dependent_call` | `d.update(open)` seeds paren at 1 |
+| 35333 | static-member-initializer skip (`TokenCLASS::parse`) | same `top()` caution |
+| 46559 | `old_style_parameter_head_has_declaration_suffix` | close decided BEFORE update — DelimDepth clamps a close at depth 0 |
+| 38305 | `collect_template_default_argument` | see below |
+
+**`d.top()` is a trap for every one of these.** It also requires `angle == 0`,
+and these scans never tracked angle brackets. `a < b;` opens one, so `top()`
+would silently stop the `;` from terminating the scan. Always use the explicit
+axes the original tracked.
+
+**`collect_template_default_argument` was the interesting one** — it *rewrites*
+`>>` into separate `TokenGT`s and pushes one back to the stream. Instead of
+assuming how many levels a `>>` closes, it now asks:
+
+```cpp
+int before = d.angle;
+d.update(t);
+int closed = before - d.angle;   // 0, 1 or 2
+```
+
+`closed == 0` means the `>>` was a genuine shift (e.g. inside parens opened
+within the list, `A<(x >> y)>`) and must survive verbatim — which the original
+got **wrong**, always treating a `>>` at `angle > 0` as a closer.
+
+### `madc_program.cpp:1119` is a FALSE POSITIVE — excluded from the gate
+
+`validate_expression_source()` is a raw-**source** mini-lexer with quote and
+comment states that also tracks whether each paren level was preceded by an
+identifier (commas are legal in call args, not in grouping parens). The
+tie-breaker — *would a change to the delimiter rule require editing it?* — says
+no: it evolves with expression validation, not with [temp.names]. Merging it
+into `DelimDepth` would be worse than the duplication. Excluded in the gate with
+that reason written down.
+
+### Deliberately NOT migrated — read this before attempting them
+
+- **The ctor-initializer scan.** `expecting_initializer` is driven by brace
+  transitions, and a `{` at top level means *brace-init* or *body start*
+  depending on that flag. A `{` inside parens is counted by `DelimDepth` but was
+  NOT counted by the original. Getting this subtly wrong breaks constructor
+  parsing everywhere; it needs its own cycle with room to iterate.
+- **`skip_template_nonclass_declaration`** — body-brace detector plus an
+  operator-spelling state machine, and it pops from a `seen` vector.
+- **The char-level pair.** A shared walk is the obvious move, but
+  `primary_name_from_cpp_spelling` assigns `name_end` at **every** top-level
+  `<`, so it is the **LAST** one, not the first. A helper that returns "the
+  first top-level `<`" silently changes `A<B>::C<D>`. Whoever writes the
+  char-level sibling must preserve that.
