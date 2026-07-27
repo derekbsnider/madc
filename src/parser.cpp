@@ -19980,15 +19980,15 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	if ( code && code->method && code->method->owner_class )
 	{
 	    DataDefCLASS *cls = code->method->owner_class;
-	    if ( DataDef *static_dd = resolve_class_static_member_type(cls, name) )
-	    {
-		int64_t cv = 0;
-		resolve_class_static_member_const_value(cls, name, cv);
-		TokenInt *ti = new TokenInt(cv);
-		ti->setDataType(static_dd);
-		copy_token_location(ti, head);
-		result = ti;
-	    }
+	    // The shared resolver owns the constant-vs-storage choice — see the
+	    // comment on resolve_class_static_member_value. This site folded
+	    // unconditionally, so a storage-backed `static int n;` read as a
+	    // SILENT 0 from inside the class's own body no matter what the
+	    // out-of-class definition set it to, and every write reported
+	    // "lvalue required as left operand of assignment".
+	    if ( TokenBase *sval =
+		    resolve_class_static_member_value(*this, cls, name, head) )
+		result = sval;
 	    else
 	    {
 		ssize_t ofs = cls->m_offset(name);
@@ -26812,16 +26812,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		{
 		    DataDefCLASS *cls = code->method->owner_class;
 		    std::string mname = member_lookup_name;
-		    if ( DataDef *static_dd = resolve_class_static_member_type(cls, mname) )
+		    // Second copy of the same fold — the twin of the one in
+		    // parsePostfixChain, with the identical silent-0 read and
+		    // "lvalue required" write. Both now defer to the shared
+		    // resolver, which prefers real storage and folds only a
+		    // genuine in-class constant.
+		    if ( TokenBase *sval =
+			    resolve_class_static_member_value(*this, cls, mname, tb) )
 		    {
-			int64_t cv = 0;
-			resolve_class_static_member_const_value(cls, mname, cv);
-			TokenInt *ti = new TokenInt(cv);
-			ti->setDataType(static_dd);
-			ti->file = tb->file;
-			ti->line = tb->line;
-			ti->column = tb->column;
-			exStack.push(ti);
+			exStack.push(sval);
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    ssize_t ofs = cls->m_offset(mname);
