@@ -1,9 +1,25 @@
 # Angle-bracket disambiguation: one rule, one implementation
 
-**Status:** planned, not started. This is the **first** item of the next
-session — it blocks the libc++ track
-(`docs/plans/2026-07-26-libcxx-flavor-plan.md`) and it is a live C++
-correctness bug in its own right.
+**Status: round 1 executed 2026-07-27.** The parse bug is FIXED, four scanners
+are migrated, and the rule now has a gate. See "Round 1 outcome" at the bottom
+— it corrects two load-bearing claims in the analysis below, which is kept as
+written for the history.
+
+> ### The correction that matters
+>
+> **The consolidated tracker already existed** — `DelimDepth`
+> (`src/parser.cpp:2891`, forward-declared in `include/madc.h`), with an index
+> helper `delim_scan_step()` and a stream helper `Program::delimStepStream()`.
+> Slice 2 below says "extract the one tracker". It did not need extracting; it
+> needed **adopting**. Its own header comment already said it was the single
+> shared bookkeeping, and four call sites used it while twenty-five hand-rolled
+> locals did not.
+>
+> `DelimDepth` is also **more complete than either site nominated as a
+> reference** — it knows a `<` only opens after a template-id head
+> (`_Tp(-1) < _Tp(0)`), records paren depth per angle open so `A<(B > C)>`
+> balances, and consumes operator-function-ids opaquely. Copying either
+> nominated site would have been a downgrade.
 
 ## The bug
 
@@ -196,3 +212,99 @@ Baseline to hold: **761/0/0/9 JIT, 745/0 EXE, 745/0 OBJ, `libcxx_gate` 11/11**.
   move that produced the current state.
 - `2e853dee` is worth reading for the prior effort that went into getting this
   right the first time.
+
+---
+
+## Round 1 outcome (2026-07-27)
+
+### The culprit
+
+`Program::collect_template_argument_spelling` (`src/parser.cpp:3316`).
+Confirmed by backtrace, not inference:
+
+```
+#1 Program::nextToken()                             <- include/madc.h:4357 throw
+#2 Program::collect_template_argument_spelling(...)
+#3 TokenTEMPLATE::parse(Program&)
+```
+
+The "Unexpected end of data" text is `nextToken()`'s generic exhaustion throw,
+not a scanner-specific message — which is why grepping the message found only a
+comment. That comment (at the reference site) was itself the strongest clue.
+
+### What changed
+
+Four scanners migrated onto `DelimDepth`:
+
+| Site | Function | Note |
+|---|---|---|
+| 3316 | `collect_template_argument_spelling` | **the culprit** — the fix |
+| 38422 | `skip_template_id_suffix` | `depth` counter + operator-ids → one `do/while` |
+| 45460 | `skip_template_suffix_tokens` | index form via `delim_scan_step` |
+| 46855 | `scan_old_style_definition_suffix` | paren/square only |
+
+Plus:
+
+- `tests/testtemplateanglelt.mad` — five hazard shapes, expected output taken
+  from **g++ and clang++-18** (byte-identical to madc).
+- `.claude/rules/delimiter-tracking.md` + `docs/rules/delimiter-tracking.md`.
+- `scripts/check-one-delim-tracker.sh`, wired into `fulltest` — a **ratchet**
+  at 25 that fails on any increase and tells you to lower it on any decrease.
+- `AGENTS.md`: P4 index entry, and Top-10 Rule #4 now demands that the search
+  be **stated** before a new helper is introduced.
+
+### The family is bigger than the audit said — 25, not 8
+
+The gate's first run found **27** hand-rolled delimiter-depth locals (25 after
+this round), including one in `src/madc_program.cpp` — a file no angle-bracket
+audit had ever looked at.
+
+Three counts, three undercounts, one cause: **the marker matched a spelling,
+not the concept.**
+
+| Count | Marker | Missed |
+|---|---|---|
+| 6 | `++angle_depth` | a counter named plain `depth` |
+| 8 | `++angle_depth` | `DelimDepth`'s own `++angle` — the fix itself |
+| 27 | `int *_depth` | (found `madc_program.cpp`) |
+
+Every paren/square/brace-only scanner is the same rule with one axis dropped.
+The angle-specific marker was blind to all of them.
+
+### What the test asserts, and what it deliberately does not
+
+The partial-specialization hazard is wrapped in a `namespace` with a probe
+declared *after* it (`ns::after_hazard`). That is the real libc++ failure mode
+in miniature: a runaway scan leaves the namespace unclosed and everything
+after it unreachable from `::`. If the bug returns, the probe cannot be found
+and the test fails to compile.
+
+Which specialization `cmp` **selects** needs decltype-SFINAE partial-spec
+matching. madc parses the head correctly now but still picks the primary
+(`0 0 0` where g++/clang give `1 0 1`). That is the deferred
+`is_destructible` / SFINAE-`declval` tsubst item, a different family — so the
+test does not assert it rather than enshrine the wrong value.
+
+Also found and **out of scope**: trailing-return function templates
+(`template <class A, class B> auto f(A,B) -> decltype(a < b)`) do not register
+the function name at all. A negative control (`decltype(a + b)`, no comparison)
+fails identically, so this is not an angle-bracket defect.
+
+### Remaining — round 2
+
+25 locals across ~9 functions. The three intricate ones need care because they
+do not merely *track* depth, they *rewrite* output while tracking it:
+
+- `collect_template_default_argument` (38343) — rewrites `>>` into `TokenGT`s
+  and pushes one back to the stream.
+- `skip_template_nonclass_declaration` (38684) — the body-brace detector plus
+  an operator-spelling state machine; this is the site that carries the
+  paren/square guard.
+- the ctor-initializer scan (48396) — `expecting_initializer` is driven by
+  brace transitions, so `DelimDepth`'s unconditional brace counting is a
+  behaviour change unless handled.
+
+Then the char-level pair (`namespace_scope_from_cpp_spelling`,
+`primary_name_from_cpp_spelling`) — same rule, character alphabet — and the
+paren/square-only scanners at 11776, 19169, 35358, 46584, and
+`madc_program.cpp:1119`.

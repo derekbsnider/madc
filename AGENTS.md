@@ -80,7 +80,13 @@ agent must follow them without exception.
    helper, or handling path is missing — search first. The codebase
    is large; something that looks absent is often already there under
    a different name or in a different file. Reinventing existing
-   machinery creates duplication and divergence.
+   machinery creates duplication and divergence. **State the search and
+   its result before introducing any new named helper** — the grep you
+   ran, the *concept* you searched for, and what came back. A search
+   leaves no trace when skipped, which is why it fails silently.
+   Standing instances: balanced-delimiter scanning is `DelimDepth`
+   (`delimiter-tracking.md`); path canonicalization for comparison is
+   `canonical_path_for_compare()`.
    (`pre-edit-checklist.md`, `design-principles.md`)
 
 5. **Do not cross layer boundaries.** Parsers parse, compilers emit
@@ -315,6 +321,7 @@ editing — don't try to memorize all of them.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [mc11-ir.md](.claude/rules/mc11-ir.md)           |    26 | **SET IN STONE.** `cir_node` = MC11-IR: derives from c2mir `node_t` (c2mir sees lowered) AND carries originating tokens + parse tree + file/line/col (madc sees high-level). It is BOTH; render targets share the `--std=` enum |
+| [delimiter-tracking.md](.claude/rules/delimiter-tracking.md) | 23 | **ONE tracker for `(` `[` `{` `<`.** Never hand-roll `++paren_depth` / `--angle_depth` / `>>`-splitting — use `DelimDepth` + `delim_scan_step()` / `delimStepStream()`. Gated by `check-one-delim-tracker.sh` |
 | [backend-strategy.md](.claude/rules/backend-strategy.md) | 30 | **Forward trajectory (ADR 0001).** c2mir/C-AST IR is the sole backend; direct-MIR is a scalpel for runtime internals + REPL/debug tier; `--emit=c11` is first-class; CIR coverage parity gates promotion to master |
 | [lowering-vs-raising.md](.claude/rules/lowering-vs-raising.md) | 39 | Where a missing feature gets fixed: Tier 1 lower/resolve in madc (default) · Tier 2 raise c2mir for semantic primitives · Tier 3 raise MIR for floor gaps (SIMD). Verify c2mir's real surface — stmt-exprs/_Generic/_Complex are supported |
 | [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 44 | Compare with `gcc -S -fverbose-asm` first, fix at deepest layer, operator self-determination |
@@ -327,10 +334,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **28 rules, 775 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~358 lines** — loaded by Claude via
+- **29 rules, 802 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~366 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1146 lines.**
+- **Grand total loaded by Claude Code per turn: ~1196 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

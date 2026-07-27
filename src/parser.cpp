@@ -3317,17 +3317,15 @@ TokenBase *Program::collect_template_argument_spelling(TokenBase *first,
 						     std::string &spelling,
 						     std::vector<TokenBase *> *tokens_out)
 {
-    int angle_depth = 0;
-    int paren_depth = 0;
-    int square_depth = 0;
+    DelimDepth d;
     TokenBase *t = first;
     while ( t )
     {
-	if ( angle_depth == 0 && paren_depth == 0 && square_depth == 0
+	if ( d.angle == 0 && d.paren == 0 && d.square == 0
 	  && (t->id() == TokenID::tkComma || t->id() == TokenID::tkGT
 	   || t->id() == TokenID::tkBSR) )
 	    return t;
-	if ( t->id() == TokenID::tkBSR && angle_depth == 1 )
+	if ( t->id() == TokenID::tkBSR && d.angle == 1 )
 	{
 	    spelling += ">";
 	    if ( tokens_out )
@@ -3376,20 +3374,7 @@ TokenBase *Program::collect_template_argument_spelling(TokenBase *first,
 	}
 	if ( tokens_out )
 	    tokens_out->push_back(t->clone());
-	if ( t->id() == TokenID::tkLT )
-	    ++angle_depth;
-	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
-	    --angle_depth;
-	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
-	    angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
-	else if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
+	d.update(t);
 	t = nextToken();
     }
     Throw(first) << "Unexpected end of input in template argument list" << flush;
@@ -38423,31 +38408,14 @@ void Program::skip_template_id_suffix()
 {
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
 	return;
-    nextToken(); // consume '<'
-    int depth = 1;
-    while ( depth > 0 && peekToken() )
-    {
-	TokenBase *t = nextToken();
-	// operator-function-id (`operator<`, `operator>>`, …): the operator
-	// symbol is part of a NAME, never an angle bracket — consume it opaquely
-	// so e.g. `__void_t<decltype(operator<(a,b))>` balances correctly.
-	if ( isOperatorIdStart(t) )
-	{
-	    parseOperatorId(t);
-	    continue;
-	}
-	if ( t->id() == TokenID::tkLT )
-	    ++depth;
-	else if ( t->id() == TokenID::tkGT )
-	    --depth;
-	else if ( t->id() == TokenID::tkBSR )
-	{
-	    if ( depth > 1 )
-		depth -= 2;
-	    else
-		depth = 0;
-	}
-    }
+    // DelimDepth owns the whole rule: the `<` only opens in a template-id head
+    // context, a `>` inside parens opened within the list is greater-than, and
+    // an operator-function-id (`operator<`, `operator>>`) is consumed opaquely
+    // as part of a NAME — so `__void_t<decltype(operator<(a,b))>` balances.
+    DelimDepth d;
+    do
+	delimStepStream(nextToken(), d);
+    while ( d.angle > 0 && peekToken() );
 }
 
 std::vector<DataDef *> Program::capture_call_template_args()
@@ -45462,27 +45430,12 @@ static void skip_template_suffix_tokens(const std::vector<TokenBase *> &param,
 {
     if ( idx >= param.size() || param[idx]->id() != TokenID::tkLT )
 	return;
-    int angle_depth = 0;
+    DelimDepth d;
     while ( idx < param.size() )
     {
-	TokenBase *t = param[idx++];
-	if ( t->id() == TokenID::tkLT )
-	    ++angle_depth;
-	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
-	{
-	    --angle_depth;
-	    if ( angle_depth == 0 )
-		break;
-	}
-	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
-	{
-	    if ( angle_depth > 1 )
-		angle_depth -= 2;
-	    else
-		angle_depth = 0;
-	    if ( angle_depth == 0 )
-		break;
-	}
+	idx += delim_scan_step(param, idx, d);
+	if ( d.angle == 0 )
+	    break;
     }
 }
 
@@ -46899,8 +46852,7 @@ bool Program::scan_old_style_definition_suffix(
     if ( !is_old_style_parameter_declaration_start(peekToken()) )
 	return false;
 
-    int paren_depth = 0;
-    int square_depth = 0;
+    DelimDepth d;
     for ( size_t guard = 0; guard < 512; ++guard )
     {
 	TokenBase *t = nextToken();
@@ -46908,18 +46860,14 @@ bool Program::scan_old_style_definition_suffix(
 	    return false;
 	suffix.push_back(t);
 
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
-	else if ( t->id() == TokenID::tkOpBrc && paren_depth == 0 && square_depth == 0 )
-	    return true;
-	else if ( t->id() == TokenID::tkClBrc && paren_depth == 0 && square_depth == 0 )
-	    return false;
+	if ( d.paren == 0 && d.square == 0 )
+	{
+	    if ( t->id() == TokenID::tkOpBrc )
+		return true;
+	    if ( t->id() == TokenID::tkClBrc )
+		return false;
+	}
+	d.update(t);
     }
     return false;
 }

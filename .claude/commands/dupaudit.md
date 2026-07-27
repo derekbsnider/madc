@@ -84,7 +84,30 @@ might exist elsewhere." That instinct is usually right.
 6. **Cap the report at THREE families.** Say plainly what was dropped and why.
    An audit that emits fifty findings produces zero fixes.
 
-7. **Record every reported family in the KG**, so the next sweep re-checks
+7. **Before recording a marker, prove it is a good one.** Every undercount this
+   audit has produced came from a bad marker, and a bad marker is worse than no
+   marker — it reports a smaller family with confidence.
+
+   - **Match the CONCEPT, not one spelling of the bookkeeping.** The
+     angle-bracket family was counted at 6, then 8, then 27. `++angle_depth`
+     missed a counter named plain `depth`; it also missed `DelimDepth`'s own
+     `++angle` — *the consolidated implementation itself* — and every
+     paren/square/brace-only scanner, which are the same rule with one axis
+     dropped. The concept was "a local balanced-delimiter counter."
+   - **Count IMPLEMENTATIONS, not USES.** `sys_include_table_consumers` was
+     seeded with a grep counting *callers* of the consolidated accessor. A
+     rising caller count is good news, but the marker read it as regrowth. For
+     a consolidated family, assert instead that the OLD token appears nowhere
+     outside its owner.
+   - **Sanity-check before recording:** does the marker match the known-good
+     implementation too? If not, it is keyed on a spelling. Widen it, re-count,
+     and report the number the WIDER marker gives.
+   - **Search for the consolidated owner before declaring a family homeless.**
+     Twice now the single shared implementation already existed and simply had
+     not been adopted — in which case the finding is "N sites ignore X", not
+     "N sites need a new X", and the fix is adoption, not extraction.
+
+8. **Record every reported family in the KG**, so the next sweep re-checks
    instead of rediscovering:
    ```
    MERGE (f:DupFamily {name:'<slug>'})
@@ -95,7 +118,7 @@ might exist elsewhere." That instinct is usually right.
        f.status = 'open'   // -> 'consolidated' -> 'gated'
    ```
 
-8. **Report per family:**
+9. **Report per family:**
    - the rule, in one sentence
    - every site as `file:line`, marking which one differs
    - what the divergence does when hit (or "none — redundant only")
