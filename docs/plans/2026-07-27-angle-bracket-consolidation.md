@@ -40,10 +40,30 @@ header first drags in `is_pointer_in_range.h`*.
 A parse error that silently corrupts scope nesting is the dangerous part. The
 diagnostic pointed six headers away from the defect.
 
-## The real finding: six copies of one rule
+## The real finding: eight copies of one rule, and none of them is complete
 
-`grep -n "++angle_depth" src/parser.cpp` returns **six** sites. **One** is
-guarded.
+> **Corrected 2026-07-27 by the first `/dupaudit` run.** This section first said
+> "six copies, one guarded". Both numbers were wrong. There are **eight** sites,
+> and the counting error had a cause worth keeping: the marker grepped for
+> `++angle_depth`, but `Program::skip_template_id_suffix` (parser.cpp:38422)
+> implements the same rule with a counter named plain `depth` — invisible to
+> that grep, and it is precisely the site that knows something the others do
+> not. **A marker must match the rule, not one spelling of its bookkeeping.**
+
+**No single site has the complete rule.** Two different pieces are each
+implemented exactly once:
+
+- **the paren/square guard** (a `<` inside `(...)`/`[...]` is an operator) —
+  only at parser.cpp:38783;
+- **operator-function-ids** (`operator<`, `operator>>` are part of a *name*, not
+  brackets; consumed via `isOperatorIdStart`/`parseOperatorId`) — only at
+  parser.cpp:38422.
+
+So the reference implementation cited below is itself incomplete, and any
+consolidation must take the union of the two, not adopt either wholesale.
+
+`grep -n "++angle_depth" src/parser.cpp` returns **seven** sites (the eighth
+uses `depth`). **One** is guarded.
 
 | Site | Function | `<` guarded by paren/square depth? | Introduced |
 |---|---|---|---|
@@ -53,6 +73,7 @@ guarded.
 | 45470 | `skip_template_suffix_tokens` | no | `e7b06f30` 2026-06-05 |
 | 48486 | inner scope (real-header path) | no | `c9fd2227` **2026-06-09** |
 | 18089 / 18114 | `namespace_scope_from_cpp_spelling`, `primary_name_from_cpp_spelling` | no — char-level, over a spelling string | `e7b06f30` 2026-06-05 |
+| **38422** | `skip_template_id_suffix` — counter named `depth`, **missed by the original marker** | no — but it is the ONLY site handling `operator<` / `operator>>` as name tokens | audit 2026-07-27 |
 
 The history is the point:
 
@@ -69,7 +90,7 @@ it. This is the failure mode Rule #4 exists to prevent: new code written without
 first reading what is already there. Site 3379 is the sharpest illustration — it
 *computes* `paren_depth` and simply does not consult it on the `<`.
 
-**Therefore the fix is not "add the guard five more times."** That would leave
+**Therefore the fix is not "add the guard six more times."** That would leave
 six copies and guarantee a seventh. The fix is to make one implementation and
 delete the rest.
 
@@ -110,7 +131,7 @@ public:
 };
 ```
 
-Migrate the token-level sites (3379, 38371, 38782, 45470, 48486) onto it,
+Migrate the token-level sites (3379, 38371, 38782, 38422, 45470, 48486) onto it,
 deleting their inline bookkeeping. Build with `-Wall` and let
 `-Wunused-variable` on the removed `angle_depth`/`paren_depth` locals confirm
 each cut was complete (`no-parallel-implementations.md`).
