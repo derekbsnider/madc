@@ -437,3 +437,43 @@ that reason written down.
   `<`, so it is the **LAST** one, not the first. A helper that returns "the
   first top-level `<`" silently changes `A<B>::C<D>`. Whoever writes the
   char-level sibling must preserve that.
+
+---
+
+## Round 3 (same session) — the char-level pair, ratchet 10 → 8
+
+`SpellingDelimDepth` + `scan_cpp_spelling()` (parser.cpp, beside the two
+readers) now own the char-level rule, and `namespace_scope_from_cpp_spelling`
+and `primary_name_from_cpp_spelling` share one walk.
+
+This is the campaign's **first genuinely new machinery**, and it is justified by
+a search that came back empty: unlike the token side, no char-level owner
+existed. It is named and commented as the **sibling** of `DelimDepth` so the two
+read as one rule in two alphabets, not as a second opinion.
+
+**The trap, recorded because it is invisible on a skim.**
+`primary_name_from_cpp_spelling` assigned `name_end` at **every** top-level `<`,
+so it meant the **LAST** one. A shared helper returning "the first top-level
+`<`" silently breaks `A<B>::C<D>`, which must yield scope `A<B>` and primary
+name `C`. The field is `last_template_id` and says so in a comment.
+
+**Intended behaviour change:** a `<` now opens only after a name character and
+outside `()`, `[]`, `{}`. `vt<decltype(declval<T>()<declval<U>())>::type`
+previously desynced the angle count and returned the wrong `::`. Spaces do not
+reset the name-character test (`A <B>` still opens), and the boundary is
+recorded only when the rule actually opened a level, so a `<` classified as
+less-than can never move the name boundary.
+
+Validation: `fulltest` rc=0, JIT 762/0/0/9, EXE 746/0, `libcxx_gate` 11/11.
+
+### Where the two families stand
+
+| Family | Was | Now | Owner |
+|---|---|---|---|
+| token delimiter depth | 27 locals | **8** | `DelimDepth` (pre-existing) |
+| char-level angle scanning | 19 lines | **9** | `SpellingDelimDepth` (new, this round) |
+
+Remaining token sites are the two entangled ones only:
+`skip_template_nonclass_declaration` and the ctor-initializer scan. Remaining
+char-level sites are `madc_mangle.cpp` (6) and `cir_builder.cpp` (3) — and
+those are now **adoption**, not extraction, because the owner exists.
