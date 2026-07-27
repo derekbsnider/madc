@@ -10,10 +10,13 @@ Genuinely unsupported by c2mir (lower or avoid):
   the JIT, emit-C → gcc/clang for real SIMD. Roadmapped to be added (Track 1.6,
   raise MIR). See `.claude/rules/lowering-vs-raising.md`.
 - No inline assembly
-- No `wchar_t` / wide string literals
 - No `typeof` (C11 has none — resolve to the concrete type at sema time)
 
 **Already supported — do NOT lower these (the old list was stale):**
+- `wchar_t` and wide string literals — verified 2026-07-27: `wchar_t c;`,
+  `wcslen(L"ab")` and `#include <wchar.h>` all compile and run correctly
+  against the g++ oracle. The old "no wchar_t" entry sent a libc++
+  investigation down the wrong path before it was checked.
 - `_Complex` — native in the **madc MIR fork** (no `struct __madc_cX` lowering;
   the `_Complex` entry under "Lowering patterns" below is superseded).
 - `_Generic` — c2mir handles it natively (`N_GENERIC`).
