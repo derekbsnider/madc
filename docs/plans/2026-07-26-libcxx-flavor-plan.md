@@ -486,7 +486,7 @@ distinct blockers remain, and they are independent:
 | Blocker | Reached via | Shape |
 |---|---|---|
 | `__builtin_nans` / `nansf` / `nansl` undeclared | `<limits>`, so `<utility>` `<string>` `<vector>` | madc has the **quiet**-NaN family (`__builtin_nan{,f,l}`) and `__builtin_inf*` / `__builtin_huge_val*` in the same `macro_map` block; only the **signaling** trio is absent |
-| libc++'s `std::` names do not register | `#include <type_traits>` then `std::is_same` | header content IS reached (`_LIBCPP_TYPE_TRAITS` is defined) and `std::__1` DOES resolve as a namespace — but the trait is not a member of it |
+| `std::is_destructible` evaluates wrong | `std::is_trivially_destructible<T>::value` | madc says 0 where clang says 1 for a trivial struct |
 
 On the first: do **not** alias the signaling trio to `(0.0/0.0)` to make the
 error go away. That is a quiet NaN; `numeric_limits<T>::signaling_NaN()` would
@@ -494,33 +494,87 @@ then be silently wrong. A signaling NaN is a distinct bit pattern, and these are
 used in constant expressions, so the slice is a real question about how madc
 spells one — not a table entry to copy from its neighbour.
 
-On the second, four hypotheses are already **eliminated by reducer**, which is
-the useful part of the handoff:
+**libc++'s traits DO work.** `std::is_same<int,int>`, `std::is_same<int,long>`
+and `std::is_class<Plain>` all evaluate correctly against libc++ 18 and match
+the clang oracle. An earlier draft of this section claimed the `std::` names did
+not register at all; that was wrong, and the way it was wrong is worth keeping,
+because it cost a chain of dead-end hypotheses (inline namespaces, attributed
+namespaces, attributed class heads, skipped `#if` guards — all four eliminated
+by reducer, all four innocent). Every probe had been written as
+`(int)std::is_same<int,int>::value`, and the **cast** was the thing failing:
 
-1. *Inline namespaces unsupported* — no; `namespace outer { inline namespace v1 { … } }` resolves.
-2. *Attribute between `namespace` and its name* (libc++ writes `namespace _LIBCPP_TYPE_VISIBILITY_DEFAULT std {`) — no; madc parses and resolves it.
-3. *Attribute between `struct` and the class name* (`struct _LIBCPP_TEMPLATE_VIS is_same`) — no; madc compiles and runs it, plain and template alike, as both canons do.
-4. *Content skipped by a `#if` guard* — no; the header's own guard macro is defined afterwards.
-
-What is left, and where the next trace should start, is the base-clause itself:
-
-```cpp
-template <class _Tp, class _Up>
-struct _LIBCPP_TEMPLATE_VIS is_same : _BoolConstant<__is_same(_Tp, _Up)> {};
+```
+S::n              → works          (int)S::n        → "undeclared identifier 'S'"
+S::value          → works          (int)S::value    → same
+Box<int>::type    → works          &S::n            → "Unknown namespace 'S'"
+Box<int>::get()   → works
 ```
 
-— an **alias template specialized on a compiler intrinsic** used as a non-type
-template argument. madc's `type_trait_arity()` registry does carry `__is_same`
-at arity 2, so the question is whether it is usable in that position, and
-whether a failure there drops the enclosing declaration without a diagnostic.
-A silent drop would be its own defect regardless of the trait: read the
-registration path before probing further. `src/parser.cpp` carries 109 `catch`
-sites, several of which set a result to NULL and continue, so a swallowed
-failure is entirely plausible — but plausible is not traced. The cheapest first
-diagnostic is `bin/madc -v` on `tmp/leaf.cpp` (a direct
-`#include <__type_traits/is_same.h>`, the smallest file that reproduces it):
-DBG will show what was registered and under what name, which separates "dropped"
-from "registered elsewhere" without another guess.
+So the real defect is **a C-style cast (or `&`) whose operand is a qualified
+name** — `(T)X::y`. It is not libc++-specific, not template-specific and not
+namespace-specific; it is core C++ that happens to appear on every line of
+trait-using code. Lesson for the next reducer: when a probe fails, reduce the
+*probe* before theorizing about the library.
+
+### The real worklist (2026-07-27, verified by reducer at HEAD)
+
+1. **`(T)X::y` — cast with a qualified-name operand — fails to parse.** Highest
+   value: it masks everything else and is the universal spelling for trait use.
+   `X::y` alone parses fine, so the gap is in how the cast's operand is parsed,
+   not in qualified lookup.
+
+   **Localized (2026-07-27) — the fix is one missing arm.** A C-style cast whose
+   operand is a bare identifier routes to `Program::parsePostfixChain()`
+   (`src/parser.cpp`, from the cast branch at ~27931), *not* to the shunting-yard
+   identifier arm that owns `::` at statement level. `parsePostfixChain` already
+   has a `tkNS` block at **parser.cpp:19675** — and it was written for exactly
+   this case, its comment citing `(int)Size::Large` — but it resolves only when
+   the qualifier is a **namespace** or a scoped-enum pseudo-namespace
+   (`namespace_map` / `namespace_datatype_map`). A **class** qualifier falls past
+   it to `findVariable("S")` and dies as "undeclared identifier 'S'". Confirmed
+   by the split: `(int)N::n` with `namespace N` works, `(int)S::n` with
+   `struct S` does not.
+
+   The missing arm is symmetric with the one above it and needs no new
+   machinery: `resolve_expression_class_scope(name)` maps the qualifier to a
+   `DataDefCLASS`, and `resolve_class_static_member_type()` /
+   `resolve_class_static_member_const_value()` turn the member into a typed
+   value — the same pair `parsePostfixChain` already calls sixty lines below for
+   the *implicit* enclosing-class case (parser.cpp:19738). Fixing it here rather
+   than in the cast branch fixes all ~10 `parsePostfixChain` callers at once.
+
+   **Do not simply resolve every static through the const-value pair.** It
+   returns 0 for a member that has real storage, which would turn defect (2)'s
+   loud-ish failure into a silent wrong answer in one more place. Either resolve
+   storage-backed statics to their `TokenVar`, or restrict the new arm to
+   compile-time constants and let the rest keep erroring — decide with (2), not
+   around it.
+
+   Note `(int)(S::n)` already works: parenthesizing routes the operand through
+   the generic branch instead. That is the workaround, not the fix, and it is
+   also why the defect can hide.
+2. **Out-of-line static data member definitions are not bound to their
+   declaration.** `struct S { static int n; }; int S::n = 5;` then reading
+   `S::n` yields **0** — a silent wrong value, which makes this the most
+   dangerous of the five — and `S::n = 9` fails with "lvalue required as left
+   operand of assignment". In-class `static const int n = 5;` works, and so do
+   `enum { n = 5 };` members, so the gap is specifically the out-of-line
+   definition.
+3. **`&S::n` reports "Unknown namespace 'S'"** — probably the same parse path as
+   (1), but confirm rather than assume.
+4. **`std::is_destructible` yields the wrong answer**, which is what makes
+   `is_trivially_destructible` wrong: libc++ defines the latter as
+   `is_destructible<_Tp>::value && __has_trivial_destructor(_Tp)`, and madc's
+   own `__has_trivial_destructor` is **correct** (`1 0 1` on
+   trivial/non-trivial/`int`, matching g++ exactly). So the defect is upstream of
+   the intrinsic, in the SFINAE/`declval` chain libc++ builds on it. This is the
+   genuine template-metaprogramming burn-down the plan predicted at step 3 —
+   note `__utility/declval.h` only became reachable once `_Pragma` landed.
+5. **`__builtin_nans{,f,l}`** as above.
+
+Items 1–3 are core-C++ defects that owe nothing to libc++; the track keeps
+paying out that way, which is the argument for treating it as C++ conformance
+work that libc++ happens to measure.
 
 **Gate:** `scripts/libcxx_gate.sh`, wired into `fulltest`, six legs — the
 wrapper wins when libc++ precedes the slot; the embedded copy still serves

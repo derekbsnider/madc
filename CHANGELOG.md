@@ -47,10 +47,27 @@ anywhere clang is — so it is developed and gated on Linux against
   `clang++ -stdlib=libc++` as the oracle that owns this library. Discovers
   libc++ by asking clang rather than hardcoding a path, and skips *loudly*
   when clang or libc++ is absent.
+- **feat(pp): `_Pragma("...")` routes to the one pragma handler.** The C99 /
+  C++11 token form of `#pragma`. Because madc's pragma handling was already
+  text-driven it needed extracting rather than duplicating: one
+  implementation is entered with the source positioned at the pragma text,
+  the `#pragma` directive arrives already positioned, and the operator
+  destringizes its operand into the same stream first — so `#pragma pack` and
+  `#pragma push_macro`, the two madc genuinely acts on, cannot behave
+  differently depending on how they were spelled. The operand is read as a
+  *token* rather than as characters, because the standard macro-expands it
+  first and real headers depend on that (`_Pragma(#x)`,
+  `_Pragma(_LIBCPP_TOSTRING(...))`); the lexer's string case has already
+  undone `\"` and `\\`, so no second unescaper exists to drift. Not gated on
+  `--std=` — both canons accept it in every mode, `-std=c89 -pedantic`
+  included.
 
-`<cstddef>`, `<cstdint>`, `<climits>` and libc++'s `<stdio.h>` wrapper now
-compile and run under libc++, oracle-matched. Linux baseline unmoved
-throughout: 756/0/0/9 JIT, 740/0 EXE, 740/0 OBJ.
+`<cstddef>`, `<cstdint>`, `<climits>` and libc++'s `<stdio.h>` wrapper compile
+and run under libc++, oracle-matched — and with `_Pragma` in place so does
+**`<type_traits>`**, whose `std::is_same` / `std::is_class` now evaluate
+correctly against the clang oracle. Linux baseline: 757/0/0/9 JIT, 741/0 EXE,
+741/0 OBJ, `libcxx_gate` OK — the whole delta from 756/740/740 is the one test
+added for `_Pragma`.
 
 ## [v0.53.0] — 2026-07-26
 
