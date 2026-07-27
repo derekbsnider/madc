@@ -5483,16 +5483,51 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    std::string word;
 	    while ( i < expr.size() && (isalnum((unsigned char)expr[i]) || expr[i] == '_') )
 		word += expr[i++];
+	    // `defined` and the clang `__has_*` family are #if OPERATORS, not
+	    // macros, and their operands are NOT macro-expanded. That is not a
+	    // fine point for madc: it aliases 138 builtins in define_map
+	    // (__builtin_memcpy -> memcpy), so expanding the operand would turn
+	    // __has_builtin(__builtin_memcpy) into __has_builtin(memcpy) and
+	    // answer NO for a builtin madc implements.
+	    bool is_has_op = word.size() > 6 && word.compare(0, 6, "__has_") == 0;
 	    // B4a: every identifier a #if/#elif condition consults (including
 	    // `defined` operands, which the evaluator resolves later) is a
-	    // branch-relevant macro name for the pack container.
-	    if ( word != "defined" )
+	    // branch-relevant macro name for the pack container. The operators
+	    // themselves are not macros and are not recorded.
+	    if ( word != "defined" && !is_has_op )
 		pack_record_branch_macro(word);
-	    // Don't expand 'defined' — it's a #if operator
 	    if ( word == "defined" )
 	    {
 		out += word;
 		preserve_defined_operand = true;
+		continue;
+	    }
+	    if ( is_has_op )
+	    {
+		out += word;
+		// Copy the whole parenthesized operand through verbatim — one
+		// group, so `<a/b.h>`, `"a.h"` and `clang::foo` all survive
+		// intact for the operator to interpret.
+		size_t j = i;
+		while ( j < expr.size() && (expr[j] == ' ' || expr[j] == '\t') )
+		    ++j;
+		if ( j < expr.size() && expr[j] == '(' )
+		{
+		    int pdepth = 0;
+		    while ( j < expr.size() )
+		    {
+			if ( expr[j] == '(' )
+			    ++pdepth;
+			else if ( expr[j] == ')' && --pdepth == 0 )
+			{
+			    ++j;
+			    break;
+			}
+			++j;
+		    }
+		    out += expr.substr(i, j - i);
+		    i = j;
+		}
 		continue;
 	    }
 	    if ( preserve_defined_operand )
@@ -5625,6 +5660,98 @@ std::string Program::expandIfMacros(const std::string &raw)
 	if ( !changed ) break;
     }
     return expr;
+}
+
+// --- the clang `__has_*` preprocessor operators ------------------------------
+//
+// A modern standard library does not merely *prefer* compiler intrinsics — it
+// asks for them and then commits: libc++ 18 queries `__has_builtin` 122 times
+// and, where it has no fallback, `#error`s outright. madc answered every one
+// of those by falling through parse_primary's "unknown identifier = 0", which
+// is the right ANSWER for a builtin it lacks but arrived by accident, and left
+// `__has_include` — a question madc can answer exactly — answering no.
+//
+// THE RULE FOR EVERY QUERY HERE: answer from madc's own state, and answer
+// truthfully. A yes madc cannot back trades a library's clean "not
+// implemented" #error for a mystifying failure deep inside its headers. When
+// in doubt the answer is 0: that costs a fast path, never correctness.
+bool Program::has_builtin(const std::string &name)
+{
+    if ( name.compare(0, 10, "__builtin_") != 0 )
+	return false;	// the trait intrinsics (__remove_reference_t and the
+			// rest of libc++'s 41) have no implementation yet — see
+			// docs/plans/2026-07-26-libcxx-flavor-plan.md
+    // The alias table IS madc's builtin implementation for this family: each
+    // entry rewrites the call to the libc function that implements it, so
+    // membership is exactly "madc compiles a call to this". -fno-builtin-foo
+    // deliberately does NOT change the answer, matching clang: the flag
+    // suppresses the optimization, it does not unimplement the builtin.
+    return define_map.count(name) > 0 || macro_map.count(name) > 0;
+}
+
+int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr,
+				  size_t &pos)
+{
+    while ( pos < expr.size() && (expr[pos] == ' ' || expr[pos] == '\t') )
+	++pos;
+    if ( pos >= expr.size() || expr[pos] != '(' )
+	return 0;	// bare identifier: no query to answer
+    ++pos;
+    // Take the argument as raw text to the matching ')': the forms differ per
+    // operator (`<a/b.h>`, `"a.h"`, `clang::foo`, a bare identifier), so the
+    // shape belongs to the operator, not to this scanner.
+    std::string arg;
+    int depth = 1;
+    while ( pos < expr.size() )
+    {
+	char c = expr[pos];
+	if ( c == '(' )
+	    ++depth;
+	else if ( c == ')' && --depth == 0 )
+	{
+	    ++pos;
+	    break;
+	}
+	arg += c;
+	++pos;
+    }
+    size_t b = arg.find_first_not_of(" \t");
+    size_t e = arg.find_last_not_of(" \t");
+    arg = (b == std::string::npos) ? std::string() : arg.substr(b, e - b + 1);
+    if ( arg.empty() )
+	return 0;
+
+    if ( op == "__has_builtin" )
+	return has_builtin(arg) ? 1 : 0;
+
+    if ( op == "__has_include" || op == "__has_include_next" )
+    {
+	// Answered EXACTLY, by the same resolver `#include` itself uses — so
+	// "can I include this?" and "will including it work?" can never
+	// disagree. resolve_include_path returns the bare name when it finds
+	// nothing, so the probe is the file opening, not the string.
+	bool is_system = arg[0] == '<';
+	if ( (is_system && arg.back() != '>')
+	  || (!is_system && (arg[0] != '"' || arg.back() != '"')) )
+	    return 0;
+	std::string file = arg.substr(1, arg.size() - 2);
+	if ( file.empty() )
+	    return 0;
+	std::string path = op == "__has_include_next"
+			 ? resolve_include_next_path(file)
+			 : resolve_include_path(file, is_system);
+	std::ifstream probe(path.c_str());
+	return probe.good() ? 1 : 0;
+    }
+
+    // __has_attribute / __has_cpp_attribute / __has_declspec_attribute /
+    // __has_feature / __has_extension / __has_keyword: madc supports a real
+    // subset of each (cleanup, vector_size, the C++11 keyword set the
+    // LanguageStd gate already knows), but there is no registry to ask yet, so
+    // claiming any of it would be exactly the unbacked yes this file refuses.
+    // 0 keeps every library on its portable path — the same answer they got
+    // before these operators existed, now given deliberately.
+    return 0;
 }
 
 bool Program::evaluateIfCondition()
@@ -5809,6 +5936,14 @@ bool Program::evaluateIfCondition()
 		    ++pos;
 		return (define_map.count(name) > 0 || macro_map.count(name) > 0) ? 1 : 0;
 	    }
+
+	    // The clang __has_* family. Modern standard libraries gate whole
+	    // implementation strategies on these — libc++ 18 asks __has_builtin
+	    // 122 times and #errors outright for a trait it has no fallback for —
+	    // and madc answered every one by falling through to "unknown
+	    // identifier = 0". Now they are real operators.
+	    if ( word.compare(0, 6, "__has_") == 0 )
+		return evaluateHasQuery(word, expr, pos);
 
 	    auto it = define_map.find(word);
 	    if ( it != define_map.end() )

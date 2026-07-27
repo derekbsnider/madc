@@ -2063,6 +2063,17 @@ protected:
     TokenBase *_getToken();
     TokenBase *skipConditionalBlock();
     bool evaluateIfCondition();
+    // The clang `__has_*` preprocessor operators, evaluated inside an #if.
+    // `pos` enters at the operator's '(' and leaves past its ')'. Every one
+    // answers from madc's OWN state and answers TRUTHFULLY: a yes madc cannot
+    // back turns a library's clean "#error not implemented" into a mystifying
+    // failure deeper in its headers, so an unknown query answers 0.
+    int64_t evaluateHasQuery(const std::string &op, const std::string &expr,
+			     size_t &pos);
+    // Does madc implement this builtin? (`__has_builtin`, and the same
+    // question the parser answers when it sees the call.)
+    // (not const: intern_keyed_map::count() is not const-qualified)
+    bool has_builtin(const std::string &name);
     void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
 //  inline int get(std::istream &is) { ++_column; return is.get(); }
     // initializers / finalizers
