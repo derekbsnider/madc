@@ -5215,6 +5215,13 @@ static bool project_parse_all(MadcEngine &engine,
 			prog->add_include_dir(inc);
 		for (const std::string &d : tu.defines)
 			prog->add_cli_define(d);
+		if (!tu.stdlib_option.empty()
+		 && !prog->set_stdlib_flavor_option("-stdlib=" + tu.stdlib_option)) {
+			fprintf(stderr, "%s: unknown -stdlib flavor '%s' (this madc was built with: %s)\n",
+				tu.file.c_str(), tu.stdlib_option.c_str(),
+				prog->stdlib_flavor_names().c_str());
+			return false;
+		}
 		if (!tu.std_option.empty())
 			prog->set_language_standard_option("--std=" + tu.std_option);
 		else if (is_c_source_file(tu.file))

@@ -526,7 +526,7 @@ trait-using code. Lesson for the next reducer: when a probe fails, reduce the
 | 4 | `std::is_destructible` evaluates wrong | open — the SFINAE/`declval` chain, i.e. the real tsubst burn-down |
 | 5 | `__builtin_nans{,f,l}` | **FIXED** @51e224e2, completed @e8e7b4e8 |
 | — | `long double` was 64-bit | **FIXED** @114b13a8 — surfaced by (5); see below |
-| — | P2.0 `-stdlib=` | **now the frontier**, see below |
+| — | P2.0 `-stdlib=` | **DONE** — the flag replaces the search list; see below |
 
 **`long double` (found via item 5, fixed @114b13a8).** It lexed to the *double*
 DataDef: `sizeof` 8 against 16, `printf("%Lg")` printing `nan`, and the mangler
@@ -554,9 +554,10 @@ done until every workaround *citing* it is revisited (the same grep-for-citation
 move as the asmjit sweep, applied to a two-commit-old comment); and scope
 assertions to the property, not to today's representation.
 
-### Next: P2.0 `-stdlib=`, and why `-I` has run out
+### P2.0 `-stdlib=` — DONE, and why `-I` had run out
 
-A real `std::string` compile now gets past every parse blocker and fails here:
+The boundary this plan predicted arrived exactly where it said it would. A real
+`std::string` compile got past every parse blocker and then failed here:
 
 ```
 /usr/include/c++/13/stdlib.h:38: 'abort' is not a member of namespace 'std'
@@ -566,10 +567,69 @@ That is **libstdc++'s** header inside a libc++ compile. libc++'s `<cstdlib>`
 does `#include_next <stdlib.h>`, which walks past libc++'s own directory and
 lands on GNU's, because madc's search table is generated from `g++` and always
 carries `/usr/include/c++/13`. Real `clang -stdlib=libc++` does not have those
-directories on the path at all. So `-stdlib=libc++` has to **replace** the
-libstdc++ dirs rather than merely precede them — which is exactly the boundary
-this plan predicted when it called `-I<libc++>` "testable today, before
-`-stdlib=` exists".
+directories on the path at all. So selecting a library has to **replace** the
+C++ search list, not prepend to it — `-I` can put libc++ first, and first is not
+the same as only.
+
+**Shape of the fix.** A search list is a property of the *flavor*, so
+`gen_sys_includes.sh` now emits **one table per flavor** and `-stdlib=` picks
+which — the same thing clang's driver does, one list built per library rather
+than one list reordered. `src/sys_include_paths.cpp` grew a
+`madc_stdlib_flavors[]` of `{ name, paths, compiler_owned_dir }`; the resource
+dir is per-flavor too, since gcc's and clang's differ and it is the slot madc's
+embedded set occupies.
+
+Three properties worth keeping:
+
+- **Which flavors exist is a build-host fact, discovered, never listed.** The
+  default is whatever `$(CXX)` resolves to; an alternate is recorded when some
+  probe reports a *different* library. Candidate probe commands
+  (`$(CXX) -stdlib=…`, `clang++-18 -stdlib=libc++`, …) are tool spellings, not
+  answers — each is asked what it actually resolved to, by reading the library's
+  own `_LIBCPP_VERSION` / `__GLIBCXX__`. A candidate whose compiler or library
+  is absent reports nothing and drops out, and the `!= default` test is what
+  makes a silent fallback impossible to mistake for a second flavor.
+- **One reader.** All five consumers (the lexer's `<...>` resolution, the
+  system-header classifier, `#include_next`, and the two embedded-header
+  partition predicates) went through `Program::sys_include_paths()` /
+  `compiler_owned_include_dir()`, which also collapsed three copies of the
+  no-compiler fallback list into one. Deleting the old globals let the compiler
+  confirm the sweep was complete.
+- **An unavailable flavor fails loud**, naming what the binary was built with —
+  because availability is a property of the machine that built it, a diagnostic
+  listing the flag's possible spellings would be useless.
+
+Reachable from all three surfaces a flavor can arrive on: `-stdlib=` on the
+command line, `stdlib =` in `madc.ini` (CLI wins, same precedence as `std`), and
+`-stdlib=` in a `compile_commands.json` entry — that last one because a libc++
+project's manifest carries it and ignoring it would compile silently against the
+wrong library's headers.
+
+Gate legs 7–10 in `scripts/libcxx_gate.sh` cover it. Leg 7 is the tight one:
+under `-stdlib=libc++`, `_LIBCPP_VERSION` is defined and `__GLIBCXX__` is *not*
+— a statement about which library served, with nothing in it about paths.
+
+### The frontier after P2.0
+
+`std::string` under `-stdlib=libc++` now reaches deep into libc++ and stops in
+its `<cctype>`:
+
+```
+c++/v1/cctype:111: 'isalnum' is not a declaration in '::'
+```
+
+`_LIBCPP_USING_IF_EXISTS` is empty for madc (`__has_attribute(using_if_exists)`
+answers 0, per slice 1's deliberate "no registry to ask yet"), so the line is a
+plain `using ::isalnum;`. **The obvious hypothesis is already eliminated:** that
+declaration compiles under *both* flavors in isolation, at global scope and
+inside `namespace std`, and `<ctype.h>` alone under `-stdlib=libc++` declares and
+calls `isalnum` fine. So this is an include-chain visibility/ordering problem
+inside the libc++ header chain, not a gap in `using`-declaration parsing — start
+by tracing which `ctype.h` serves at that point and whether the multiple-include
+optimization skipped a visit that `#include_next` needed.
+
+Worth noting for the same reason as everything else in this track: two of the
+three plausible causes there are madc-generic, not libc++-specific.
 
 ### The worklist as first written (2026-07-27, verified by reducer at HEAD)
 
@@ -692,6 +752,20 @@ Layouts and sizes are NOT part of the switch: they come from the parsed
 headers. If a size turns out to be baked somewhere, that is a bug to fix
 at its source, not a second table to maintain.
 
+**One such place is already known** (found while doing P2.0, left alone
+because the native link lane is a different surface):
+`cir_native_link_env()` in `src/madc_cir.cpp` picks the C++ runtime for
+`DT_NEEDED` — `libc++` versus `libstdc++.so.6` — behind a host
+`#ifdef __APPLE__`. That is the platform-means-library conflation this
+whole track exists to undo, and it is doubly confused: the `#ifdef` is a
+property of the machine madc was *built* on, while `DT_NEEDED` describes
+the *target*. It works today only because the two happen to agree. The
+runtime library a program links is the same flavor question `-stdlib=`
+already answers, so it belongs in this switch — and the comment there is
+right that cover analysis needs the *host's* image names, which is a
+genuinely separate concern that should stop sharing one `#ifdef` with the
+target's.
+
 ### P2.4 — freeze the libc++ groves into the darwin packs
 
 A Mac without Command Line Tools has **no SDK headers at all**, and
@@ -750,9 +824,10 @@ rather than a platform.
 
 ## Sequencing
 
-1. **P2.0 — `-stdlib=` and the flavor plumbing**, plus `libc++-18-dev`
+1. ~~**P2.0 — `-stdlib=` and the flavor plumbing**, plus `libc++-18-dev`
    in the container (`scripts/provision_container.sh`). Makes everything
-   after it measurable on Linux.
+   after it measurable on Linux.~~ **DONE** — see "P2.0 `-stdlib=` — DONE"
+   above; gate legs 7–10.
 2. **P2.2** burn-down slice 1: `<string>` parses under
    `-stdlib=libc++` on Linux.
 3. **P2.3** ABI flavor: `std::string` round-trips mangled-direct against

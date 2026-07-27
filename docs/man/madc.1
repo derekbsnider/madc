@@ -59,6 +59,26 @@ C++ keywords reserved). A
 .I .c
 translation unit under \fB\-\-project\fR defaults to C mode.
 .TP
+.BI \-stdlib= lib
+C++ standard library flavor, in clang's spelling:
+.B libstdc++
+or
+.BR libc++ ,
+whichever this build could probe \(em an unknown or unbuilt flavor is an
+error naming the ones this binary actually has. Selecting a flavor
+.I replaces
+the C++ include search list, exactly as clang's driver does; it is not
+the same as putting the library first with
+.BR \-I ,
+because a library reaches the C headers behind it through
+.BR #include_next ,
+which would otherwise walk into the other library's directories.
+Orthogonal to the target: a Mach\-O target
+.I defaults
+to libc++, it never
+.I means
+libc++.
+.TP
 .BI \-D name\fR[=\fIvalue\fR]
 Define a preprocessor macro.
 .TP
@@ -236,6 +256,13 @@ Default language standard, as for
 .BR \-\-std= .
 A
 .B \-\-std=
+on the command line overrides it.
+.TP
+.BI stdlib= lib
+Default C++ standard library flavor, as for
+.BR \-stdlib= .
+A
+.B \-stdlib=
 on the command line overrides it.
 .TP
 .BI forest= file

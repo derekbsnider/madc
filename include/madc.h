@@ -36,6 +36,7 @@
 class Method;
 class Program;
 class CirFrozenForest;	// forest grove binding (cir_freeze.h); pointer member only
+struct madc_stdlib_flavor;	// generated stdlib flavor table (madc_sys_includes.h); pointer member only
 class MadcEngine;
 class TokenBase;
 class TokenSWITCH;
@@ -3292,6 +3293,11 @@ public:
     std::map<std::string, std::stack<std::string>> _macro_save_stack; // #pragma push_macro / pop_macro
     std::vector<std::string> include_paths;	// -I include search paths (for #include "file.h")
     std::vector<std::pair<std::string,std::string>> cli_defines;	// -DNAME[=VALUE] command-line defines (applied after builtins)
+    // Selected C++ standard library flavor (-stdlib=), NULL = the build's
+    // default. It picks a WHOLE generated search list, never a prefix — see
+    // include/madc_sys_includes.h. Orthogonal to the target/object format: a
+    // Mach-O target defaults to libc++, it never MEANS libc++.
+    const madc_stdlib_flavor *stdlib_flavor = NULL;
     void add_include_dir(const std::string &dir);	// normalize (trailing '/') + append to include_paths
     void add_cli_define(const std::string &def);	// split NAME[=VALUE] (bare => "1") into cli_defines
     std::map<std::string, bool> included_files;	// #include files already tokenized (require_once semantics)
@@ -4160,7 +4166,7 @@ public:
     bool embedded_header_is_system_library_shim(const std::string &name) const;
     // True iff a search directory that OUTRANKS madc's embedded set supplies
     // `name`. The embedded freestanding headers ARE madc's compiler resource
-    // dir, so they sit at the madc_compiler_owned_include_dir slot: C++ stdlib
+    // dir, so they sit at the compiler_owned_include_dir() slot: C++ stdlib
     // dirs (and every -I dir) come before it and win; C library dirs come after
     // it and lose. Lets a real libc++/libstdc++ wrapper header take precedence
     // while an unsupplied name still resolves from the embedded copy.
@@ -4189,6 +4195,17 @@ public:
     std::string resolve_include_path(const std::string &incfile, bool is_system);
     std::string resolve_include_next_path(const std::string &incfile);
     bool is_system_header_path(const char *path) const;
+    // The ONE reader of the generated include tables: every consumer asks these
+    // rather than the globals, so selecting a -stdlib= flavor switches the whole
+    // search order in one place. Both fall back when the build host had no
+    // compiler to probe.
+    const char *const *sys_include_paths() const;
+    const char *compiler_owned_include_dir() const;
+    // -stdlib=<name>: true when consumed. An unknown/unbuilt flavor is NOT
+    // consumed, so the caller reports it (available flavors are a build-host
+    // property, so the diagnostic has to name what this binary actually has).
+    bool set_stdlib_flavor_option(const std::string &arg);
+    std::string stdlib_flavor_names() const;	// ", "-joined, for that diagnostic
     std::string expandIfMacros(const std::string &raw);
     bool should_tokenize_include(const std::string &path);
     bool auto_include_standard_identifier(const std::string &word);

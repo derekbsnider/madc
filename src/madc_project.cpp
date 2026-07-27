@@ -33,7 +33,7 @@ std::string resolve(const std::string &base, const std::string &p) {
 	return b + p;
 }
 
-// Scan argv tokens for -D/-I/-std=, filling the TU. Ignores everything else.
+// Scan argv tokens for -D/-I/-std=/-stdlib=, filling the TU. Ignores the rest.
 void apply_args(const std::vector<std::string> &args,
 		const std::string &dir, ProjectTU &tu) {
 	for (size_t k = 0; k < args.size(); k++) {
@@ -50,6 +50,11 @@ void apply_args(const std::vector<std::string> &args,
 			if (!v.empty()) tu.include_dirs.push_back(resolve(dir, v));
 		} else if (a.rfind("-std=", 0) == 0) {
 			tu.std_option = a.substr(5);
+		} else if (a.rfind("-stdlib=", 0) == 0) {
+			// A libc++ project's manifest carries this, and ignoring
+			// it would silently compile against the WRONG standard
+			// library's headers.
+			tu.stdlib_option = a.substr(8);
 		}
 	}
 }

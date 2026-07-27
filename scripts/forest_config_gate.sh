@@ -128,7 +128,7 @@ err=$(env -u MADC_FOREST timeout 120 "$MADC" --config="$ROOT/$D/bad.ini" "$D/con
 [ $? -ne 0 ] || fail "[unknown-key] an unknown key was tolerated"
 grep -q <<<"$err" "unknown key 'frost'" || fail "[unknown-key] did not name the key: $err"
 grep -q <<<"$err" "bad.ini:4" || fail "[unknown-key] did not name file:line: $err"
-grep -q <<<"$err" "accepted: std, forest, include, cpu-limit, mem-limit" \
+grep -q <<<"$err" "accepted: std, stdlib, forest, include, cpu-limit, mem-limit" \
     || fail "[unknown-key] did not list the accepted keys: $err"
 
 printf 'std c99\n' > "$D/malformed.ini"

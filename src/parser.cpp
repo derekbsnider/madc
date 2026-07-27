@@ -17685,11 +17685,7 @@ bool Program::is_runtime_eval_expression_scope_access_enabled() const
 //   - no real twin (ns_php/__madc__ internals) -> madc-own (keep embedded).
 bool Program::embedded_header_is_system_library_shim(const std::string &name) const
 {
-    extern const char *madc_sys_include_paths[];
-    extern const char *madc_compiler_owned_include_dir;
-    const std::string owned =
-	(madc_compiler_owned_include_dir && *madc_compiler_owned_include_dir)
-	? madc_compiler_owned_include_dir : std::string();
+    const std::string owned = compiler_owned_include_dir();
     // Freestanding (bucket 1/2): if the compiler supplies it, madc owns it.
     if ( !owned.empty() )
     {
@@ -17697,12 +17693,7 @@ bool Program::embedded_header_is_system_library_shim(const std::string &name) co
 	if ( probe.good() )
 	    return false;
     }
-    static const char *fallback_paths[] = {
-	"/usr/local/include/", "/usr/include/", "/usr/include/x86_64-linux-gnu/",
-	(const char *)0
-    };
-    const char **paths = (madc_sys_include_paths[0] != NULL)
-			 ? madc_sys_include_paths : fallback_paths;
+    const char *const *paths = sys_include_paths();
     for ( int i = 0; paths[i]; ++i )
     {
 	if ( !owned.empty() && owned == paths[i] )
@@ -17724,8 +17715,8 @@ bool Program::embedded_header_is_system_library_shim(const std::string &name) co
 // says "keep embedded" — yet a C++ standard library on the path must still win.
 //
 // madc's embedded freestanding headers ARE its compiler resource dir, so they
-// belong at the slot the generated table records as
-// madc_compiler_owned_include_dir. Both canon compilers search
+// belong at the slot the generated table records as the flavor's
+// compiler_owned_include_dir(). Both canon compilers search
 //
 //     C++ stdlib (c++/v1, c++/NN) -> compiler resource dir -> C library
 //
@@ -17750,21 +17741,18 @@ bool Program::embedded_header_outranked(const std::string &name) const
 	if ( probe.good() )
 	    return true;
     }
-    extern const char *madc_sys_include_paths[];
-    extern const char *madc_compiler_owned_include_dir;
-    const std::string owned =
-	(madc_compiler_owned_include_dir && *madc_compiler_owned_include_dir)
-	? madc_compiler_owned_include_dir : std::string();
+    const std::string owned = compiler_owned_include_dir();
     // No slot recorded (no compiler at build time, or the fallback list is in
     // use): the embedded set keeps its historical unconditional precedence
     // over the system dirs rather than guessing a position.
     if ( owned.empty() )
 	return false;
-    for ( int i = 0; madc_sys_include_paths[i]; ++i )
+    const char *const *paths = sys_include_paths();
+    for ( int i = 0; paths[i]; ++i )
     {
-	if ( owned == madc_sys_include_paths[i] )
+	if ( owned == paths[i] )
 	    return false;   // reached the slot — everything after it loses
-	std::ifstream probe((std::string(madc_sys_include_paths[i]) + name).c_str());
+	std::ifstream probe((std::string(paths[i]) + name).c_str());
 	if ( probe.good() )
 	    return true;
     }

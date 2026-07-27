@@ -28,6 +28,15 @@
 #   6  a genuine user-vs-user typedef conflict STILL errors (the max_align_t
 #      fix must not have cost the diagnostic)
 #
+# Legs 1-6 use -I, which proves the search-ORDER partition. Legs 7-10 prove the
+# SELECTION: `-stdlib=` replaces the C++ search list the way clang's driver
+# does, which is what #include_next needs and what -I cannot give.
+#
+#   7  -stdlib=libc++ replaces the list (libc++ serves; __GLIBCXX__ absent)
+#   8  <cstdlib> reaches the C library through #include_next under -stdlib=
+#   9  the build's default flavor stays selectable, by name and by omission
+#  10  an unknown flavor errors and names what this binary was built with
+#
 # libc++ and clang are container artifacts, so the gate SKIPS (rc 0) when
 # either is missing and says which. LIBCXX_INCLUDE overrides discovery.
 set -u
@@ -155,6 +164,83 @@ if run "$CLANGXX" -stdlib=libc++ -o "$D/oracle" "$D/chain.cpp" 2>"$D/l5.err"; th
 	fi
 else
 	fail "oracle build failed: $(head -c 200 "$D/l5.err")"
+fi
+
+# --- legs 7-10: -stdlib=libc++ REPLACES the search list --------------------
+# The legs above prove the search-order PARTITION using -I, which puts libc++
+# ahead of everything. That is not the same as selecting the library, and it
+# runs out at the first #include_next: libc++'s <cstdlib> reaches the C library
+# that way, and with the GNU C++ dirs still behind libc++ the walk lands on
+# /usr/include/c++/NN/stdlib.h and dies on its `using std::abort;`. Real
+# -stdlib=libc++ does not have those directories on the path at all, so madc's
+# flag has to REPLACE the list rather than prepend to it.
+
+# The tightest possible statement of "replaced": libc++'s own version macro is
+# defined and libstdc++'s is NOT. Nothing about paths, everything about which
+# library actually served the include.
+cat > "$D/replaced.cpp" <<'EOF'
+#include <cstddef>
+#ifndef _LIBCPP_VERSION
+#error LIBCXX_DID_NOT_SERVE
+#endif
+#ifdef __GLIBCXX__
+#error LIBSTDCXX_IS_STILL_ON_THE_PATH
+#endif
+int main(void) { return 0; }
+EOF
+
+# The failure that motivated the flag, as a test: <cstdlib> #include_next's its
+# way to the C library, and `std::abort` has to arrive from it.
+cat > "$D/cstdlib.cpp" <<'EOF'
+#include <cstdlib>
+#include <stdio.h>
+int main(void)
+{
+	printf("%d\n", (int)sizeof(std::size_t));
+	return 0;
+}
+EOF
+
+if run "$MADC" -stdlib=libc++ "$D/replaced.cpp" >/dev/null 2>"$D/l7.err"; then
+	pass "-stdlib=libc++ replaces the list (libc++ serves, libstdc++ absent)"
+elif grep -q "Unknown -stdlib flavor" "$D/l7.err"; then
+	fail "madc was built without the libc++ flavor though libc++ is installed — \
+re-run scripts/gen_sys_includes.sh (make clean) so the build re-probes"
+else
+	fail "-stdlib=libc++ did not replace the list: $(head -c 200 "$D/l7.err")"
+fi
+
+got7=$(run "$MADC" -stdlib=libc++ "$D/cstdlib.cpp" 2>"$D/l8.err")
+if [ "$got7" = "8" ]; then
+	pass "<cstdlib> reaches the C library through #include_next under -stdlib="
+else
+	fail "<cstdlib> under -stdlib=libc++: got '$got7' $(head -c 200 "$D/l8.err")"
+fi
+
+# The default flavor must still be nameable explicitly, and must still be what
+# an unflagged compile gets — the flag selects, it does not merely enable.
+cat > "$D/default.cpp" <<'EOF'
+#include <cstddef>
+#ifndef __GLIBCXX__
+#error DEFAULT_FLAVOR_IS_NOT_LIBSTDCXX
+#endif
+int main(void) { return 0; }
+EOF
+if run "$MADC" -stdlib=libstdc++ "$D/default.cpp" >/dev/null 2>"$D/l9.err" \
+&& run "$MADC" "$D/default.cpp" >/dev/null 2>>"$D/l9.err"; then
+	pass "-stdlib=libstdc++ and no flag both select the build's default"
+else
+	fail "default flavor not selectable: $(head -c 200 "$D/l9.err")"
+fi
+
+# Which flavors exist is a BUILD-host property, so an unknown one must say so
+# and name what this binary actually has — never fall back silently.
+if run "$MADC" -stdlib=libfoo++ "$D/default.cpp" >/dev/null 2>"$D/l10.err"; then
+	fail "an unknown -stdlib flavor was accepted"
+elif grep -q "Unknown -stdlib flavor" "$D/l10.err" && grep -q "libc++" "$D/l10.err"; then
+	pass "an unknown -stdlib flavor errors and names the available set"
+else
+	fail "unknown flavor rejected without naming the set: $(head -c 200 "$D/l10.err")"
 fi
 
 # --- leg 6: the redefinition diagnostic survives ---------------------------

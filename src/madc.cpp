@@ -500,6 +500,10 @@ static void print_usage(const char *prog)
 "  --std=<std>             c89/c90/c99/c11/c17/c23 (c = c11), c++NN, or madc\n"
 "                          (default; C++ keywords reserved). A .c TU under\n"
 "                          --project defaults to C mode.\n"
+"  -stdlib=<lib>           C++ standard library flavor (clang's spelling):\n"
+"                          libstdc++ / libc++, whichever this build could probe.\n"
+"                          REPLACES the C++ include search list, as clang does —\n"
+"                          it is not the same as putting the library first with -I.\n"
 "  -D<name>[=value]        define a preprocessor macro\n"
 "  -I<dir>                 add an include search directory\n"
 "  -l<name>                dlopen lib<name>.so (RTLD_GLOBAL) so its symbols\n"
@@ -583,6 +587,7 @@ static void print_usage(const char *prog)
 "  $XDG_CONFIG_HOME/madc/madc.ini (or ~/.config/madc/madc.ini), then the\n"
 "  system config dir. Keys — an unknown one is an error, not a warning:\n"
 "    std = c17            default dialect (a --std= on the CLI wins)\n"
+"    stdlib = libc++      default C++ stdlib flavor (a -stdlib= on the CLI wins)\n"
 "    forest = <file>      frozen forest container (discovery arm 5)\n"
 "    include = <dir>      extra include dir, repeatable, searched after -I\n"
 "    cpu-limit = <secs>   MADC_CPU_LIMIT default (0 = off)\n"
@@ -974,6 +979,16 @@ int main(int argc, char **argv)
         } else if (strncmp(argv[i], "--std=", 6) == 0) {
             std::cerr << "Unknown --std target: " << (argv[i] + 6) << std::endl;
             return 1;
+        } else if (prog->set_stdlib_flavor_option(argv[i])) {
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "-stdlib=", 8) == 0) {
+            // Which flavors exist is a property of the BUILD host (what
+            // gen_sys_includes.sh could probe), so name the ones this binary
+            // actually has rather than the ones the flag could spell.
+            std::cerr << "Unknown -stdlib flavor: " << (argv[i] + 8)
+                      << " (this madc was built with: " << prog->stdlib_flavor_names()
+                      << ")" << std::endl;
+            return 1;
         } else {
             filearg = i;
             break;
@@ -1023,6 +1038,16 @@ int main(int argc, char **argv)
     {
         std::cerr << "madc: " << config.source_path << ": unknown std '"
                   << config.std_option << "'" << std::endl;
+        return 1;
+    }
+    // A -stdlib= on the command line already set prog->stdlib_flavor, and CLI
+    // outranks madc.ini — same precedence as `std` above.
+    if ( config.has_stdlib && !prog->stdlib_flavor
+      && !prog->set_stdlib_flavor_option("-stdlib=" + config.stdlib_option) )
+    {
+        std::cerr << "madc: " << config.source_path << ": unknown stdlib '"
+                  << config.stdlib_option << "' (this madc was built with: "
+                  << prog->stdlib_flavor_names() << ")" << std::endl;
         return 1;
     }
     // Appended AFTER the command line's -I dirs (gcc searches configured

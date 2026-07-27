@@ -33,6 +33,7 @@ namespace {
 void register_madc_keys(cfg::config_file &cf, config_settings &out)
 {
 	cf.accept_text("std", out.std_option, &out.has_std);
+	cf.accept_text("stdlib", out.stdlib_option, &out.has_stdlib);
 	cf.accept_path("forest", out.forest);
 	cf.accept_path_list("include", out.include_dirs);
 	cf.accept_count("cpu-limit", out.cpu_limit_secs, &out.has_cpu_limit,

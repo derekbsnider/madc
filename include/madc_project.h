@@ -11,6 +11,7 @@ struct ProjectTU {
 	std::vector<std::string> defines;	// "NAME" or "NAME=VALUE"
 	std::vector<std::string> include_dirs;	// -I paths
 	std::string std_option;			// e.g. "c89"; empty = madc default
+	std::string stdlib_option;		// e.g. "libc++"; empty = the build's default flavor
 };
 
 // A whole project: the TU list + how to link/run it.

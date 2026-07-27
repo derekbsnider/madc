@@ -39,6 +39,8 @@ struct config_settings
     std::string source_path;			// file these came from; empty = none loaded
     std::string std_option;			// std = c17         -> --std=c17
     bool has_std = false;
+    std::string stdlib_option;			// stdlib = libc++   -> -stdlib=libc++
+    bool has_stdlib = false;
     std::string forest;				// forest = <file>   -> discovery arm 5
     std::vector<std::string> include_dirs;	// include = <dir>   (repeatable)
     unsigned long cpu_limit_secs = 0;		// cpu-limit = <secs>

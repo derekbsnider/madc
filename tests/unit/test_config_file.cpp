@@ -53,6 +53,7 @@ TEST_CASE("every key parses, with comments, a section header and quotes") {
 		"\n"
 		"[madc]\n"
 		"std = c99\n"
+		"stdlib = libc++\n"
 		"forest = /abs/groves.msnap\n"
 		"include = /abs/one\n"
 		"include = /abs/two\n"
@@ -65,6 +66,8 @@ TEST_CASE("every key parses, with comments, a section header and quotes") {
 	CHECK(cfg.source_path == path);
 	CHECK(cfg.has_std);
 	CHECK(cfg.std_option == "c99");
+	CHECK(cfg.has_stdlib);
+	CHECK(cfg.stdlib_option == "libc++");
 	CHECK(cfg.forest == "/abs/groves.msnap");
 	REQUIRE(cfg.include_dirs.size() == 2);
 	// Order is the file's order: the caller appends them after the -I dirs.
@@ -150,7 +153,7 @@ TEST_CASE("an unknown key is an error naming the key, the line and the accepted 
 	std::string msg = err.str();
 	CHECK(msg.find("unknown key 'frost'") != std::string::npos);
 	CHECK(msg.find(":2:") != std::string::npos);
-	CHECK(msg.find("std, forest, include, cpu-limit, mem-limit") != std::string::npos);
+	CHECK(msg.find("std, stdlib, forest, include, cpu-limit, mem-limit") != std::string::npos);
 	unlink(path.c_str());
 }
 
