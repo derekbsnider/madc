@@ -1,0 +1,94 @@
+// A static data member DECLARATION introduces the entity; the out-of-class
+// definition completes it.
+//
+// madc registered the storage only at the definition, so a member-function
+// body — parsed while the class body is being parsed, BEFORE that definition
+// exists — found no storage. The shared resolver then fell to its constant
+// branch and baked in a 0: reading `n` from inside its own class gave 0 where
+// g++ gives 42, SILENTLY, exit 0. Writing it reported "lvalue required as
+// left operand of assignment". Out of line, or from outside the class, the
+// same member was always correct — which is what identified the cause as
+// parse ORDER rather than the constant-vs-storage choice.
+//
+// g++ does it the other way round (finish_static_data_member_decl): the decl
+// is created while parsing the class body, marked DECL_IN_AGGR_P, and the
+// definition completes THAT decl rather than making a second one. madc's
+// DECL_IN_AGGR_P is vfEXTERN, which addVariable already honours.
+//
+// Every value here is checked against g++ and clang++ on the same source.
+#include <stdio.h>
+
+struct C
+{
+	static int n;
+	static int hits;
+	static const int folded = 7;	// genuine in-class constant: still folds
+
+	// Read and write from inside the class's own body — the broken cases.
+	static int get(void) { return n; }
+	static int get_qualified(void) { return C::n; }
+	static int bump(void) { ++hits; return hits; }
+	static int add_to(int d) { n += d; return n; }
+
+	// A NON-static method reaching the static member is the same lookup.
+	int get_from_instance(void) { return n; }
+};
+
+int C::n = 42;
+int C::hits = 0;
+
+struct Arr
+{
+	static int a[3];
+	static int sum(void) { return a[0] + a[1] + a[2]; }
+};
+
+int Arr::a[3] = { 5, 6, 7 };
+
+// A method defined OUT OF LINE, after the definition, always worked — it is
+// the control that isolates parse order as the cause.
+struct D
+{
+	static int m;
+	static int get(void);
+};
+
+int D::m = 9;
+int D::get(void) { return m; }
+
+int main(void)
+{
+	C c;
+
+	printf("read %d %d %d\n", C::get(), C::get_qualified(), c.get_from_instance());
+	printf("outside %d\n", C::n);
+
+	// Writes from inside the body: these were compile errors. Sequenced
+	// into separate statements on purpose — two calls as sibling printf
+	// ARGUMENTS have unspecified evaluation order, and g++ evaluates them
+	// right-to-left where madc goes left-to-right. Both are conforming, so
+	// a test that depends on the order tests nothing.
+	int b1 = C::bump();
+	int b2 = C::bump();
+	printf("bump %d %d\n", b1, b2);
+	printf("hits %d\n", C::hits);
+	printf("add %d\n", C::add_to(8));
+	printf("after %d\n", C::n);
+
+	// A write from OUTSIDE must reach the same storage the body reads.
+	C::n = 100;
+	printf("shared %d %d\n", C::get(), C::n);
+
+	// A genuine in-class constant still folds — the case the resolver is
+	// supposed to fold, and the one a naive "always use storage" fix breaks.
+	printf("folded %d\n", C::folded);
+
+	// Array statics: the declaration cannot know the definition's extent,
+	// so the definition must complete it.
+	printf("array %d %d\n", Arr::sum(), Arr::a[1]);
+
+	// The out-of-line control.
+	printf("control %d\n", D::get());
+
+	return 0;
+}

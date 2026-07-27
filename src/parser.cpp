@@ -35485,6 +35485,72 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( is_static_member )
 	    {
 		ddc->static_member_types[mname] = cmember_dd;
+		// The DECLARATION introduces the entity, exactly as g++'s
+		// finish_static_data_member_decl does while parsing the class
+		// body: it creates the VAR_DECL, marks it DECL_IN_AGGR_P
+		// ("declared, not yet defined"), and the out-of-class definition
+		// COMPLETES THAT SAME DECL rather than creating a second one.
+		// madc's DECL_IN_AGGR_P is vfEXTERN, and addVariable's
+		// existing-symbol branch already implements the completion — it
+		// adopts the definition's type and count and clears the flag.
+		//
+		// Registering it only at the definition made a member-function
+		// body parsed HERE, before that definition exists, find no
+		// storage: resolve_class_static_member_value then fell to its
+		// constant branch and BAKED IN a 0. `static int n;` read from
+		// inside its own class body gave 0 where g++ gave 42 — silently,
+		// exit 0 — and every write reported "lvalue required as left
+		// operand of assignment". Out of line, or from outside the class,
+		// the same member was always correct, which is what identified
+		// the cause as parse ORDER rather than the fold itself.
+		//
+		// ONLY for a member with NO in-class initializer — g++'s own
+		// distinction (DECL_INITIAL present or not, the same one
+		// decl_constant_value folds on). A member written `= <init>` is
+		// a constant as far as madc is concerned, and giving it storage
+		// instead produced a reference to a symbol that nothing in the
+		// translation unit ever defines: `basic_string<...>::npos` and
+		// `memory_resource::_S_max_align` are declared with initializers
+		// madc cannot capture as integers (`static_cast<size_type>(-1)`,
+		// `alignof(max_align_t)`) and have no out-of-class definition
+		// here, so the emitted C failed with "undeclared identifier".
+		bool has_inclass_init = pgm.peekToken()
+		    && pgm.peekToken()->id() == TokenID::tkAssign;
+		// And only for a class WE compile. A system header's class static
+		// is defined in the LIBRARY, not in this translation unit:
+		// std::locale::_S_once, std::locale::id::_S_refcount and
+		// std::ios_base::Init::_S_synced_with_stdio are declared in
+		// <locale>/<ios> with no initializer and defined in libstdc++.so.
+		// madc names class statics by its own folded spelling
+		// (`locale___S_once`) and sets no storage_alias_name for them, so
+		// there is no Itanium symbol here for a reference to resolve
+		// against — synthesizing storage turns a silent 0 into a hard
+		// "undeclared identifier" without making anything correct. Those
+		// keep the pre-existing fold; referencing them properly needs an
+		// extern declaration plus the mangled alias, which is its own
+		// piece of the mangled-direct work.
+		bool from_system_header = tag && tag->file
+		    && pgm.is_system_header_path(tag->file);
+		if ( cmember_dd && pgm.tkProgram && !has_inclass_init
+		  && !from_system_header )
+		{
+		    const std::string storage =
+			class_static_member_storage_name(ddc, mname);
+		    if ( !pgm.tkProgram->findVariable(pgm.strpool, storage) )
+		    {
+			uint32_t scount = member_count ? (uint32_t)member_count : 1;
+			if ( Variable *sv = pgm.addVariable(NULL, *cmember_dd,
+						storage, scount, NULL, true) )
+			{
+			    sv->flags |= vfEXTERN;
+			    if ( member_is_array )
+			    {
+				sv->flags |= vfFIXEDARRAY;
+				sv->dims = member_dims;
+			    }
+			}
+		    }
+		}
 		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
 		{
 		    pgm.nextToken(); // consume '='
