@@ -8,6 +8,38 @@ default, the Android NDK's STL, FreeBSD's system C++ library, and available
 anywhere clang is — so it is developed and gated on Linux against
 `libc++-18-dev`, with only the target plumbing needing a Mac.
 
+- **fix: a static data member's DECLARATION introduces its storage.** Reading
+  `static int n;` from inside its own class body gave `0` where g++ gives `42` —
+  silently, exit 0 — and writing it reported `lvalue required as left operand of
+  assignment`. Storage was registered only by the out-of-class definition, which
+  is parsed *after* the member-function bodies, so the resolver found none and
+  folded a `0` into the tree. g++ does the reverse
+  (`finish_static_data_member_decl`): the decl is created while parsing the class
+  body and the definition **completes that same decl**. madc's `DECL_IN_AGGR_P`
+  turns out to be `vfEXTERN`, and `addVariable` already implemented the
+  completion, so the declaration now registers the storage and the definition
+  adopts it. A member *with* an in-class initializer still folds — g++'s own
+  `DECL_INITIAL` distinction. Gate: `tests/teststaticmemberstorage.mad`.
+
+  A second guard excludes system-header classes and is a **placeholder, not a
+  design decision**: `std::locale::_S_once` and friends are defined in
+  `libstdc++.so`, and madc sets `storage_alias_name` only for namespace-scope
+  variables, never for class statics. Since `itanium_mangle_nested_var` already
+  takes an arbitrary qualifier chain, a class name is one more qualifier than a
+  namespace — the guard should be deleted when that alias lands.
+
+- **fix: a nested type is a member of its enclosing scope, `struct` included.**
+  `class Outer { struct Inner {…}; };` left `Outer::Inner` unresolvable and
+  `struct Outer { struct Inner {…}; };` reported `Unknown namespace 'Outer'`,
+  while the identical bodies spelled `class` worked. Two causes: the nested-*struct*
+  path never registered the scope entry the nested-*class* path did, and a
+  `struct` was never a `::` scope at all. The second is fixed on the principle
+  the promotion site already states — *the keyword does not decide
+  struct-vs-class, the contents do*: an object member and an NSDMI already
+  earned class-hood, and a nested type, which is what makes an aggregate a
+  scope, now does too. Structs without one are untouched. Gate:
+  `tests/testnestedtypescope.mad`.
+
 - **fix: a qualified name is only the HEAD of a postfix-expression.**
   `(int)N::f("abc")` compiled, exited 0, and evaluated to `"abc"` — the emitted
   C11 was literally `return "abc";`, the cast and the call both gone and the
