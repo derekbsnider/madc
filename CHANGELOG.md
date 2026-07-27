@@ -8,6 +8,50 @@ default, the Android NDK's STL, FreeBSD's system C++ library, and available
 anywhere clang is — so it is developed and gated on Linux against
 `libc++-18-dev`, with only the target plumbing needing a Mac.
 
+- **fix: a qualified name is only the HEAD of a postfix-expression.**
+  `(int)N::f("abc")` compiled, exited 0, and evaluated to `"abc"` — the emitted
+  C11 was literally `return "abc";`, the cast and the call both gone and the
+  *argument* left as the value. `parsePostfixChain` resolves a head and then
+  continues the chain at its tail, but its **qualified** arms returned the
+  resolved value bare, so every `(`, `[`, `.` and `->` after a qualified name in
+  an operand position was dropped and re-read by the caller as a fresh
+  expression: the orphaned `[` of `(int)N::arr[1]` reached the *lambda*-
+  introducer dispatch and reported `Expecting ] in lambda expression`.
+  `(` also needed an arm of its own — it *is* a postfix operator, but an
+  unqualified `f(x)` cast operand is claimed earlier by
+  `parse_cast_function_call_operand`, so the hole only opened once a qualifier
+  put the head on a path that reaches the chain. Chaining and overload
+  selection (`N::mk(4).b`, `N::slot(1)[1]`, `N::pick(1)` vs `N::pick("a")`) were
+  always correct and simply never reached. Gate:
+  `tests/testqualifiedpostfix.mad`.
+
+  This also **corrects a misdiagnosis**: the same symptom was recorded last
+  session as "a using-declaration loses the function's return type". The
+  using-declaration was innocent — a function *defined* in a namespace failed
+  identically with no using-declaration present, and a global `using ::wcslen;`
+  called unqualified was correct.
+
+- **fix: class-qualified static member function in an operand position.**
+  `(int)S::f(4)` reported `undeclared identifier 'S'`, naming the qualifier
+  rather than anything wrong with it, while `S::f(4)` on its own worked — the
+  shape every string header is built from (`(size_t)char_traits<char>::length(p)`).
+  The operand path carried a narrow *copy* of the class-qualifier rule that
+  handled static **data** members and handed every other shape to a plain
+  variable lookup. Replaced by `resolve_class_qualified_expression`, the shared
+  owner that four other callers already use. Gate:
+  `tests/testclassqualifiedcall.mad`.
+
+- **refactor: the static-member constant-vs-storage fold has one owner.** Two
+  sites re-decided for themselves whether a static data member folds to an
+  in-class constant or references real storage, both taking the branch
+  `resolve_class_static_member_value`'s own comment warns about. Both now defer
+  to it. Stated plainly: this does *not* by itself fix the silent `0` that a
+  static data member reads as from inside its own class body — that is parse
+  order (the body is parsed before the out-of-class definition registers
+  storage) and is the next fix, now scoped against g++'s model, where
+  `finish_static_data_member_decl` creates the decl while parsing the class
+  body and the definition completes that same decl.
+
 - **fix: immediately-invoked lambdas, aggregate member init, base-member
   lifetime.** Three C++ defects found while probing the delimiter migration, two
   producing *silent* wrong answers. An immediately-invoked lambda
