@@ -2553,6 +2553,16 @@ static bool resolve_class_static_member_const_value(DataDefCLASS *cls,
 //
 // Returns NULL when `member` is not a static data member of `scope` at all,
 // leaving the caller's own not-found path in charge.
+// The global name an out-of-class definition of `C::m` registers — parseDeclaration
+// folds the `::` into `__`. Written once because two callers need DIFFERENT answers
+// about the same name: a VALUE may fold to an in-class constant, while an ADDRESS
+// must be of real storage (there is nothing to point at otherwise).
+static std::string class_static_member_storage_name(DataDefCLASS *scope,
+						    const std::string &member)
+{
+    return scope->name + "__" + member;
+}
+
 static TokenBase *resolve_class_static_member_value(Program &pgm,
 						    DataDefCLASS *scope,
 						    const std::string &member,
@@ -2562,8 +2572,7 @@ static TokenBase *resolve_class_static_member_value(Program &pgm,
     if ( !static_dd )
 	return NULL;
 
-    // The one name its out-of-class definition registers.
-    const std::string storage_name = scope->name + "__" + member;
+    const std::string storage_name = class_static_member_storage_name(scope, member);
     int64_t cv = 0;
     const bool have_const =
 	resolve_class_static_member_const_value(scope, member, cv);
@@ -20512,9 +20521,16 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
     std::string aname = contextual_identifier_name(addr_tb);
     if ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
+	// A qualifier before `::` is a namespace OR a class — `&S::n` for a static
+	// data member is as ordinary as `&N::m`. Resolving only namespaces here made
+	// a class qualifier report "Unknown namespace 'S'", which named the wrong
+	// thing entirely. Symmetric with the arm parsePostfixChain gained for the
+	// value side; both end up in the same tail below.
 	namespace_map_t::iterator nsi = namespace_map.find(aname);
-	if ( nsi == namespace_map.end() )
-	    Throw(addr_tb) << "Unknown namespace '" << aname << "'" << flush;
+	DataDefCLASS *aclass = (nsi == namespace_map.end())
+			     ? resolve_expression_class_scope(aname) : NULL;
+	if ( nsi == namespace_map.end() && !aclass )
+	    Throw(addr_tb) << "Unknown namespace or class '" << aname << "'" << flush;
 	nextToken(); // consume ::
 	TokenBase *member_tb = nextToken();
 	if ( !member_tb || !is_contextual_identifier_token(member_tb) )
@@ -20522,34 +20538,53 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 		<< "Expecting identifier after '" << aname << "::'" << flush;
 	std::string member_name = contextual_identifier_name(member_tb);
 	Variable *ns_var = NULL;
-	variable_map_iter vmi = nsi->second.find(member_name);
-	if ( vmi != nsi->second.end() )
-	    ns_var = vmi->second;
+	if ( aclass )
+	{
+	    // Deliberately NOT resolve_class_static_member_value(): that prefers a
+	    // folded in-class constant, and a constant has no address. An address is
+	    // the address of the STORAGE its out-of-class definition created.
+	    if ( !resolve_class_static_member_type(aclass, member_name) )
+		Throw(member_tb) << "'" << member_name
+				 << "' is not a static data member of '"
+				 << aname << "'" << flush;
+	    ns_var = findVariable(
+		class_static_member_storage_name(aclass, member_name));
+	    if ( !ns_var )
+		Throw(member_tb) << "cannot take the address of '" << aname << "::"
+				 << member_name
+				 << "': it is declared but never defined" << flush;
+	}
 	else
 	{
-	    std::map<std::string, void *>::iterator dli = dlopen_map.find(aname);
-	    if ( dli != dlopen_map.end() )
+	    variable_map_iter vmi = nsi->second.find(member_name);
+	    if ( vmi != nsi->second.end() )
+		ns_var = vmi->second;
+	    else
 	    {
-		if ( !is_dynamic_symbol_fallback_enabled() )
-		    Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
-		if ( !is_dynamic_symbol_allowed(member_name) )
-		    Throw(member_tb) << "dynamic symbol '" << member_name
-				     << "' is not allowed by registration policy" << flush;
-		void *sym = dlsym(dli->second, member_name.c_str());
-		if ( sym )
+		std::map<std::string, void *>::iterator dli = dlopen_map.find(aname);
+		if ( dli != dlopen_map.end() )
 		{
-		    std::string func_id = "__dl_" + aname + "_" + member_name;
-		    ns_var = addFunction(func_id,
-			datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)sym);
-		    dl_symbol_map[func_id] = sym;
-		    namespace_variables_for_write(aname)[member_name] = ns_var;
+		    if ( !is_dynamic_symbol_fallback_enabled() )
+			Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
+		    if ( !is_dynamic_symbol_allowed(member_name) )
+			Throw(member_tb) << "dynamic symbol '" << member_name
+					 << "' is not allowed by registration policy" << flush;
+		    void *sym = dlsym(dli->second, member_name.c_str());
+		    if ( sym )
+		    {
+			std::string func_id = "__dl_" + aname + "_" + member_name;
+			ns_var = addFunction(func_id,
+			    datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)sym);
+			dl_symbol_map[func_id] = sym;
+			namespace_variables_for_write(aname)[member_name] = ns_var;
+		    }
 		}
 	    }
+	    if ( !ns_var )
+		Throw(member_tb) << "'" << member_name
+				 << "' is not a member of namespace '"
+				 << aname << "'" << flush;
 	}
-	if ( !ns_var )
-	    Throw(member_tb) << "'" << member_name
-			     << "' is not a member of namespace '"
-			     << aname << "'" << flush;
 	if ( ns_var->type && ns_var->type->is_function()
 	  && peekToken() && peekToken()->id() == TokenID::tkLT )
 	    skip_template_id_suffix();

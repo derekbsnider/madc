@@ -1,0 +1,75 @@
+// Taking the address of a static data member: `&S::n`.
+//
+// The qualifier before `::` may be a namespace OR a class, and both are
+// ordinary. Resolving only namespaces made a class qualifier report
+// "Unknown namespace 'S'" — a diagnostic that named the wrong thing.
+//
+// Every value here is checked against g++ and clang++ on the same source.
+#include <stdio.h>
+
+struct S
+{
+	static int n;
+	static double d;
+};
+
+int S::n = 5;
+double S::d = 2.5;
+
+struct Counter
+{
+	static int hits;
+};
+
+int Counter::hits = 0;
+
+namespace N { int m = 7; }
+
+// A static member's address is a real object address: writing through the
+// pointer must be visible through the qualified name, and vice versa.
+static void bump(int *p) { *p += 10; }
+
+int main(void)
+{
+	int *p = &S::n;
+	int *q = &N::m;
+
+	printf("read %d %d\n", *p, *q);
+
+	// Through the pointer, seen through the name.
+	*p = 11;
+	printf("via ptr %d\n", S::n);
+
+	// Through the name, seen through the pointer.
+	S::n = 12;
+	printf("via name %d\n", *p);
+
+	// The address is stable across expressions — not a copy of the value.
+	printf("same object %d\n", (&S::n == p) ? 1 : 0);
+
+	// Passed to a function that mutates it.
+	bump(&S::n);
+	printf("after bump %d\n", S::n);
+
+	// A non-int static member, so the pointer type comes from the member
+	// rather than from a default.
+	double *dp = &S::d;
+	*dp = 4.75;
+	printf("double %.2f %.2f\n", S::d, *dp);
+
+	// Namespace qualifier still works — the arm added for classes must not
+	// have disturbed it.
+	*q = 8;
+	printf("ns %d\n", N::m);
+
+	// Two different classes' members are distinct objects.
+	int *cp = &Counter::hits;
+	*cp = 3;
+	printf("distinct %d %d\n", S::n, Counter::hits);
+
+	// sizeof through the pointer type, to pin that the type is int* and not
+	// some wider fallback.
+	printf("sizes %d %d\n", (int)sizeof(*p), (int)sizeof(*dp));
+
+	return 0;
+}
