@@ -8,6 +8,25 @@ default, the Android NDK's STL, FreeBSD's system C++ library, and available
 anywhere clang is — so it is developed and gated on Linux against
 `libc++-18-dev`, with only the target plumbing needing a Mac.
 
+- **feat(headers): `-stdlib=` selects a C++ standard library flavor, and
+  selecting one REPLACES the include search list.** A search list is a property
+  of the library, not an ordering preference, so the generated table became one
+  table per flavor and the flag picks between them — what clang's driver does,
+  one list built per library rather than one list reordered. This is the
+  difference `-I` could not express: libc++'s `<cstdlib>` reaches the C library
+  through `#include_next <stdlib.h>`, so with the GNU C++ dirs still behind
+  libc++ that walk landed in `/usr/include/c++/13/stdlib.h` and died on its
+  `using std::abort;`. Which flavors exist is a **build-host fact, discovered**
+  — candidate probe commands are tool spellings, and each is asked what it
+  actually resolved to by reading the library's own `_LIBCPP_VERSION` /
+  `__GLIBCXX__`, so an absent compiler or library drops out and a silent
+  fallback cannot pass for a second flavor. An unavailable flavor fails loud,
+  naming what *this binary* was built with. Available from all three surfaces a
+  flavor arrives on: the command line, `stdlib =` in `madc.ini`, and a
+  `compile_commands.json` entry — that last because a libc++ project's manifest
+  carries it and ignoring it would compile silently against the wrong headers.
+  Internally the five consumers of the include tables collapsed onto one
+  accessor pair, taking three copies of the fallback list with them.
 - **feat(pp): the clang `__has_*` preprocessor operators are real.**
   `__has_builtin` answers from madc's own builtin knowledge; `__has_include` /
   `__has_include_next` answer through the *same* resolver `#include` uses, so
@@ -101,6 +120,12 @@ correctly against the clang oracle. Linux baseline: 760/0/0/9 JIT, 744/0 EXE,
 tests. Every one of these fixes is a core-C++ defect that owes nothing to
 libc++; the library is acting as a stricter measuring instrument than
 libstdc++, failing loudly where libstdc++ silently takes a fallback.
+
+With `-stdlib=` in place, a real `std::string` compile no longer stops at the
+search path — it reaches deep into libc++ and stops in its `<cctype>`, on a
+`using ::isalnum;`. That one has a two-line reducer and six eliminated
+hypotheses recorded in the plan doc; notably it is *not* include resolution
+(the `-v` trace shows the exact chain clang takes, glibc's `ctype.h` included).
 
 ## [v0.53.0] — 2026-07-26
 

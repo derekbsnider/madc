@@ -620,16 +620,41 @@ c++/v1/cctype:111: 'isalnum' is not a declaration in '::'
 
 `_LIBCPP_USING_IF_EXISTS` is empty for madc (`__has_attribute(using_if_exists)`
 answers 0, per slice 1's deliberate "no registry to ask yet"), so the line is a
-plain `using ::isalnum;`. **The obvious hypothesis is already eliminated:** that
-declaration compiles under *both* flavors in isolation, at global scope and
-inside `namespace std`, and `<ctype.h>` alone under `-stdlib=libc++` declares and
-calls `isalnum` fine. So this is an include-chain visibility/ordering problem
-inside the libc++ header chain, not a gap in `using`-declaration parsing — start
-by tracing which `ctype.h` serves at that point and whether the multiple-include
-optimization skipped a visit that `#include_next` needed.
+plain `using ::isalnum;`, sitting just after libc++'s block of `#undef`s of the
+ctype *macros*.
 
-Worth noting for the same reason as everything else in this track: two of the
-three plausible causes there are madc-generic, not libc++-specific.
+**A two-line reducer, and it is not an include-resolution bug:**
+
+```cpp
+#include <string_view>
+#include <cwchar>        // -> cwctype -> cctype:111: 'isalnum' is not a declaration in '::'
+```
+
+Six hypotheses eliminated by measurement, each worth not re-testing:
+
+| Eliminated | Evidence |
+|---|---|
+| include resolution / `#include_next` | `-v` trace shows the exact clang chain: `cctype` → `c++/v1/ctype.h` → `/usr/include/ctype.h`. glibc's header **is** read. |
+| PCH divergence | zero `precompiled` hits in the `-v` trace for this compile |
+| inline namespace | `namespace std { inline namespace __1 { using ::isalnum; } }` compiles |
+| `#undef` dropping the function | `#define isalnum(c) 0` then `#undef isalnum` then `using ::isalnum;` compiles |
+| `<string_view>` poisoning global lookup | `<string_view>` + `<ctype.h>` + `using ::isalnum;` compiles; so does `<string_view>` + `<cctype>` |
+| each header on its own | `<cctype>`, `<cwctype>`, `<__string/char_traits.h>`, `<string_view>`, `<stdexcept>` all compile alone |
+
+So it needs `<cwchar>` specifically, **and** a prior header — `<cwchar>` alone gets
+*past* cctype and fails later at its own `cwchar:202` (a `std::wcslen` **call**,
+a different construct with a different diagnostic). Note `<string_view>` already
+pulls `<cwchar>` transitively, so the explicit second include should be a
+guard-skip no-op and yet changes the outcome. That is the thread to pull: it
+points at parse/registration state rather than at which file was opened.
+
+**A caution recorded from getting this wrong once here:** `isalnum(65)` *compiles
+under madc whether or not `isalnum` is declared*, via the implicit-function
+fallback. An early probe used exactly that and I read "the chain works" out of
+it. Probe a declaration with `using ::X;`, never with a call.
+
+Worth noting for the same reason as everything else in this track: nothing above
+is libc++-specific machinery — it is madc's own include/registration state.
 
 ### The worklist as first written (2026-07-27, verified by reducer at HEAD)
 
