@@ -522,7 +522,7 @@ trait-using code. Lesson for the next reducer: when a probe fails, reduce the
 |---|---|---|
 | 1 | `(T)X::y` cast with a qualified operand | **FIXED** @3167da3c (class qualifier) + @08593822 (template-id) |
 | 2 | out-of-line static data member unbound | **FIXED** @3167da3c |
-| 3 | `&S::n` → "Unknown namespace 'S'" | open — `parseAddressOfExpression`, a *different* function; did not fall out of (1) |
+| 3 | `&S::n` → "Unknown namespace 'S'" | **FIXED** @cf8f035c — the address-side twin of (1); `parseAddressOfExpression` resolved only namespaces |
 | 4 | `std::is_destructible` evaluates wrong | open — the SFINAE/`declval` chain, i.e. the real tsubst burn-down |
 | 5 | `__builtin_nans{,f,l}` | **FIXED** @51e224e2, completed @e8e7b4e8 |
 | — | `long double` was 64-bit | **FIXED** @114b13a8 — surfaced by (5); see below |

@@ -8,6 +8,28 @@ default, the Android NDK's STL, FreeBSD's system C++ library, and available
 anywhere clang is — so it is developed and gated on Linux against
 `libc++-18-dev`, with only the target plumbing needing a Mac.
 
+- **fix(parser): `&S::n` — a qualifier before `::` may be a class.**
+  `parseAddressOfExpression` consulted only the namespace map, so taking the
+  address of a static data member reported "Unknown namespace 'S'" — a
+  diagnostic naming the wrong thing entirely. The address-side twin of the
+  value-side arm added earlier; both now converge on one tail. Deliberately
+  *not* routed through the value resolver, which prefers a folded in-class
+  constant — a constant has no address, so the address path asks for the
+  storage the out-of-class definition created, and a member declared but never
+  defined now says so instead of yielding a pointer to nothing.
+- **fix(pp): a system header is system code in either path spelling.** libc++'s
+  `<stddef.h>` is deliberately re-includable — a first visit through its
+  `__need_*` branch does not define `_LIBCPP_STDDEF_H`, so a second full visit
+  must re-enter, which only happens under gcc's guard-checked multiple-include
+  semantics that madc applies to *system* headers. Every libc++ header was
+  being read as *user* code and getting require-once instead: the include
+  bookkeeping canonicalizes each file through `realpath` while the classifier
+  prefix-matched the raw generated table entry, and clang reports its own
+  search dir as `…/bin/../include/c++/v1`. The two spellings never match; GNU's
+  paths are already canonical, which is why this waited for libc++ to surface
+  it. The classifier now matches either spelling, cached per flavor. The same
+  predicate gates CIR inline-body DCE, so libc++ headers were on the wrong side
+  of that decision too.
 - **feat(headers): `-stdlib=` selects a C++ standard library flavor, and
   selecting one REPLACES the include search list.** A search list is a property
   of the library, not an ordering preference, so the generated table became one
