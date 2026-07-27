@@ -516,7 +516,62 @@ namespace-specific; it is core C++ that happens to appear on every line of
 trait-using code. Lesson for the next reducer: when a probe fails, reduce the
 *probe* before theorizing about the library.
 
-### The real worklist (2026-07-27, verified by reducer at HEAD)
+### Worklist status (2026-07-27, end of session)
+
+| # | Item | State |
+|---|---|---|
+| 1 | `(T)X::y` cast with a qualified operand | **FIXED** @3167da3c (class qualifier) + @08593822 (template-id) |
+| 2 | out-of-line static data member unbound | **FIXED** @3167da3c |
+| 3 | `&S::n` → "Unknown namespace 'S'" | open — `parseAddressOfExpression`, a *different* function; did not fall out of (1) |
+| 4 | `std::is_destructible` evaluates wrong | open — the SFINAE/`declval` chain, i.e. the real tsubst burn-down |
+| 5 | `__builtin_nans{,f,l}` | **FIXED** @51e224e2, completed @e8e7b4e8 |
+| — | `long double` was 64-bit | **FIXED** @114b13a8 — surfaced by (5); see below |
+| — | P2.0 `-stdlib=` | **now the frontier**, see below |
+
+**`long double` (found via item 5, fixed @114b13a8).** It lexed to the *double*
+DataDef: `sizeof` 8 against 16, `printf("%Lg")` printing `nan`, and the mangler
+emitting Itanium `e` for a value passed as a `d`. The cause is worth recording
+because it generalizes — the original asmjit JIT could not emit x87 80-bit, so
+the front end substituted a double to let such source compile. Every *other*
+layer was already built for the real type (`dtLDOUBLE`, `is_real()`, the `e`
+mangling, `__LDBL_MAX__` in the generated macro table, `copysignl`'s
+registration), which is the signature of a narrow backend workaround rather than
+a design choice. asmjit went away, c2mir/MIR support the type fully, and nothing
+marked the mapping provisional — so it survived the backend swap and became
+wrong. **When a backend constraint is lifted, grep for the decisions that cite
+it.** An audit of the remaining asmjit references found two live behaviours
+still justified by it (`TokenFunc::is_overridden`, lambda hoisting); both are
+still correct for other reasons and only their comments were stale.
+
+**A miss worth keeping.** @51e224e2 wrote `__builtin_nansl` against the 64-bit
+`long double` with a comment saying "revisit together with the long-double width
+itself"; @114b13a8 changed the width without revisiting it, leaving the macro
+writing 8 bytes into a 16-byte type — uninitialized stack in the exponent. The
+full battery passed over it, because the test asserted `nansl_low64`, which had
+been the entire value when the test was written. An assertion scoped to the old
+type's width cannot observe the new bytes. Two rules: fixing a constraint is not
+done until every workaround *citing* it is revisited (the same grep-for-citations
+move as the asmjit sweep, applied to a two-commit-old comment); and scope
+assertions to the property, not to today's representation.
+
+### Next: P2.0 `-stdlib=`, and why `-I` has run out
+
+A real `std::string` compile now gets past every parse blocker and fails here:
+
+```
+/usr/include/c++/13/stdlib.h:38: 'abort' is not a member of namespace 'std'
+```
+
+That is **libstdc++'s** header inside a libc++ compile. libc++'s `<cstdlib>`
+does `#include_next <stdlib.h>`, which walks past libc++'s own directory and
+lands on GNU's, because madc's search table is generated from `g++` and always
+carries `/usr/include/c++/13`. Real `clang -stdlib=libc++` does not have those
+directories on the path at all. So `-stdlib=libc++` has to **replace** the
+libstdc++ dirs rather than merely precede them — which is exactly the boundary
+this plan predicted when it called `-I<libc++>` "testable today, before
+`-stdlib=` exists".
+
+### The worklist as first written (2026-07-27, verified by reducer at HEAD)
 
 1. **`(T)X::y` — cast with a qualified-name operand — fails to parse.** Highest
    value: it masks everything else and is the universal spelling for trait use.

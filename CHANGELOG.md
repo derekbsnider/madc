@@ -62,12 +62,45 @@ anywhere clang is — so it is developed and gated on Linux against
   `--std=` — both canons accept it in every mode, `-std=c89 -pedantic`
   included.
 
+- **fix(parser): a static data member with storage reads and writes its
+  storage.** `struct S { static int n; }; int S::n = 5;` then `S::n` read
+  **0** — the value, not an error — and `S::n = 9` refused to compile at all.
+  The storage was never missing: the out-of-class definition declares a global
+  `S__n`. The *reader* asked the class for an in-class integral constant, found
+  none, and folded to the constant it did not have. One resolver now owns the
+  constant-vs-storage choice for both kinds, and `parsePostfixChain` gained the
+  class-qualifier arm, so `(int)S::n` parses where it previously reported
+  "undeclared identifier 'S'".
+- **fix(parser): a template-id qualifier resolves in operand position.**
+  `(int)std::is_same<A,B>::value` failed while the same expression without the
+  cast evaluated correctly — the shunting-yard arm handled the shape and the
+  operand path did not. Both spellings now route through the *same*
+  instantiation entry point; partial specializations included.
+- **feat(builtins): real signaling NaNs** — `__builtin_nans` / `nansf` /
+  `nansl`. Not the quiet trio renamed: `0.0/0.0` yields a *quiet* NaN and no
+  arithmetic can produce a signaling one, so aliasing them would have compiled
+  and then made `numeric_limits<T>::signaling_NaN()` silently wrong.
+- **fix(types): `long double` is its own type again** — x87 80-bit, `sizeof`
+  16. It had lexed straight to the *double* DataDef, so `sizeof` reported 8,
+  `printf("%Lg")` printed `nan` (glibc reads 80 bits off the varargs stack),
+  and the mangler emitted Itanium `e` for a value passed as a `d`. The cause
+  was an asmjit-era workaround — that backend could not emit 80-bit — which
+  outlived its constraint: every other layer (the `dtLDOUBLE` enum,
+  `is_real()`, the mangling, `__LDBL_MAX__`, `copysignl`'s registration) was
+  already built for the real type. Fixed in both halves, type *and* literal
+  value: `TokenReal` now carries a `long double` and literals parse with
+  `strtold`, without which a long-double literal still passed as 8 bytes and
+  `1.0L/3.0L` folded at double precision — the same expression giving one
+  answer folded and another through a cast.
+
 `<cstddef>`, `<cstdint>`, `<climits>` and libc++'s `<stdio.h>` wrapper compile
 and run under libc++, oracle-matched — and with `_Pragma` in place so does
 **`<type_traits>`**, whose `std::is_same` / `std::is_class` now evaluate
-correctly against the clang oracle. Linux baseline: 757/0/0/9 JIT, 741/0 EXE,
-741/0 OBJ, `libcxx_gate` OK — the whole delta from 756/740/740 is the one test
-added for `_Pragma`.
+correctly against the clang oracle. Linux baseline: 760/0/0/9 JIT, 744/0 EXE,
+744/0 OBJ, `libcxx_gate` OK — the whole delta from 756/740/740 is four new
+tests. Every one of these fixes is a core-C++ defect that owes nothing to
+libc++; the library is acting as a stricter measuring instrument than
+libstdc++, failing loudly where libstdc++ silently takes a fallback.
 
 ## [v0.53.0] — 2026-07-26
 
