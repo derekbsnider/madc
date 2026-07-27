@@ -19782,6 +19782,21 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 // that token remains consumable by the caller on the next nextToken().
 // Used by unary `*` to avoid parseExpression's greedy consumption of
 // trailing binary operators such as `== '$'`.
+// THE resolver for a CLASS qualifier before `::` in an expression — defined
+// below, declared here because the postfix-operand path needs it too. Either
+// it pushes a finished expression (PushedExpression) or it hands back the
+// static member FUNCTION for the caller to call (ResolvedFunction).
+enum class QualifiedClassExprAction {
+    PushedExpression,
+    ResolvedFunction
+};
+
+static QualifiedClassExprAction resolve_class_qualified_expression(
+	Program &pgm, DataDefCLASS *scope, const std::string &scope_name,
+	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	Variable **var_out, TokenBase **tb_out,
+	DataDefCLASS **owner_out = NULL, std::string *member_out = NULL);
+
 static Variable *postfix_expr_variable(TokenBase *result)
 {
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(result) )
@@ -19890,24 +19905,55 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	// usual spelling for trait use (`(int)is_same<A,B>::value`), so the gap
 	// sat in front of a great deal of ordinary C++.
 	//
-	// Confirm the member really is a static data member BEFORE consuming
-	// anything: on any other shape (a class-scope enumerator, a member
-	// function) this must leave the token stream untouched so the existing
-	// paths below still see it, which keeps the change strictly additive.
+	// The shared resolver owns this. A narrow copy here used to probe for a
+	// static DATA member and decline everything else, which left a static
+	// member FUNCTION — `(size_t)char_traits<char>::length(p)`, the shape
+	// every string header is built from — falling through to
+	// findVariable("S") and the same wrong diagnostic. One rule, one
+	// implementation: the resolver handles nested scopes, operator-ids,
+	// explicit template args, access control and dependent surfaces, and
+	// reaches the identical resolve_class_static_member_value for the case
+	// the copy did cover.
 	if ( DataDefCLASS *class_scope = resolve_expression_class_scope(name) )
 	{
-	    TokenBase *probe = tokens.size() > 1 ? tokens[1] : NULL;
-	    if ( probe && is_contextual_identifier_token(probe)
-	      && resolve_class_static_member_type(
-		    class_scope, contextual_identifier_name(probe)) )
+	    std::stack<TokenBase *> qstack;
+	    Variable *qvar = NULL;
+	    TokenBase *qtb = NULL;
+	    DataDefCLASS *qowner = NULL;
+	    std::string qmember;
+	    TokenBase *value = NULL;
+	    if ( resolve_class_qualified_expression(*this, class_scope, name,
+			head, qstack, &qvar, &qtb, &qowner, &qmember)
+		 == QualifiedClassExprAction::PushedExpression )
 	    {
-		nextToken();			// consume '::'
-		TokenBase *member_tb = nextToken();
-		if ( TokenBase *sval = resolve_class_static_member_value(
-			*this, class_scope,
-			contextual_identifier_name(member_tb), member_tb) )
-		    return sval;
+		if ( !qstack.empty() )
+		    value = qstack.top();
 	    }
+	    else if ( qvar )
+	    {
+		// ResolvedFunction leaves the `(` for the caller — the same
+		// contract the main expression loop honours — so that the
+		// overload can be RESELECTED once the argument types are
+		// known ([over.match]). That is why the call is built here
+		// rather than by the chain's generic `(` arm.
+		TokenCallFunc *tc = new TokenCallFunc(*qvar);
+		if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+		    tc->explicit_template_args = capture_call_template_args();
+		TokenBase *open = nextToken();
+		if ( !open || open->id() != TokenID::tkOpBrk )
+		    Throw(open ? open : head)
+			<< "expected '(' in call to '" << name << "::"
+			<< qmember << "'" << flush;
+		tc->file = open->file;
+		tc->line = open->line;
+		tc->column = open->column;
+		parseCallFunc(tc);
+		if ( qowner )
+		    tc = reselect_static_member_overload(tc, qowner, qmember);
+		value = tc;
+	    }
+	    if ( value )
+		return parsePostfixChainFrom(value, postfix_expr_variable(value));
 	}
     }
     Variable *var = findVariable(name);
@@ -20889,16 +20935,11 @@ static std::string method_access_violation(DataDef *owner_type,
 				 display_name, cur_class, cur_function);
 }
 
-enum class QualifiedClassExprAction {
-    PushedExpression,
-    ResolvedFunction
-};
-
 static QualifiedClassExprAction resolve_class_qualified_expression(
 	Program &pgm, DataDefCLASS *scope, const std::string &scope_name,
 	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
 	Variable **var_out, TokenBase **tb_out,
-	DataDefCLASS **owner_out = NULL, std::string *member_out = NULL)
+	DataDefCLASS **owner_out /* = NULL */, std::string *member_out /* = NULL */)
 {
     TokenBase *member_tb = NULL;
     std::string member_name;

@@ -1,0 +1,92 @@
+// A CLASS qualifier before `::` in an operand position.
+//
+// `(int)S::f(4)` — a static member FUNCTION as a cast operand — reported
+// "undeclared identifier 'S'", naming the qualifier rather than anything
+// wrong with it, while the identical `S::f(4)` standing on its own worked.
+// The operand path carried a narrow copy of the class-qualifier rule that
+// probed for a static DATA member and declined every other shape; the shared
+// resolver (the one the main expression parser uses) handles the whole family.
+//
+// This is the shape every string header is built from —
+// `(size_t)char_traits<char>::length(p)` — so it sat in front of a great deal
+// of ordinary C++.
+//
+// Every value here is checked against g++ and clang++ on the same source.
+#include <stdio.h>
+
+struct S
+{
+	static int n;
+	static int arr[3];
+
+	static int f(int x) { return x + 5; }
+
+	// Overloads, so the reselect-by-argument-type step is exercised.
+	static int pick(int x) { return 100; }
+	static int pick(const char *s) { return 200; }
+
+	static const char *name(void) { return "S"; }
+};
+
+int S::n = 5;
+int S::arr[3] = { 11, 22, 33 };
+
+// Spelled `class` deliberately. The identical body spelled `struct` fails
+// with "Unknown namespace 'Outer'" — in BOTH the operand path and the main
+// expression parser, so it is a separate gap in a different layer
+// (resolve_expression_class_scope ends in a dynamic_cast<DataDefCLASS *>, and
+// a `struct` never becomes one), not part of the family fixed here.
+class Outer
+{
+    public:
+	class Inner
+	{
+	    public:
+		static int triple(int x) { return x * 3; }
+	};
+};
+
+// The counter is a file-scope global on purpose. A `static int calls;` MEMBER
+// read from inside the class's own body is a separate open defect — the body
+// is parsed before the out-of-class definition registers the storage, so the
+// read folds to a constant 0 (and a write reports "lvalue required"). Out of
+// line, or from outside the class, the same member is correct. Keeping that
+// out of this test keeps it a gate for the qualifier fix and nothing else.
+int counted_calls = 0;
+
+struct Counted
+{
+	static int bump(void) { ++counted_calls; return counted_calls; }
+};
+
+int main(void)
+{
+	// The defect: a static member function as a cast operand.
+	printf("call %d\n", (int)S::f(4));
+
+	// Overload selection through the same path.
+	printf("overload %d\n", (int)S::pick(1) + (int)S::pick("a"));
+
+	// Static DATA members must keep working — that is the case the narrow
+	// copy already covered, and the shared resolver reaches the same
+	// resolve_class_static_member_value for it.
+	printf("data %d\n", (int)S::n);
+	printf("data[idx] %d\n", (int)S::arr[1]);
+
+	// Nested class qualifier.
+	printf("nested %d\n", (int)Outer::Inner::triple(7));
+
+	// A pointer-returning static, so the result type is not integral.
+	printf("name %s\n", S::name());
+
+	// Called for effect, and the count read back: proves the call is made
+	// exactly once through the operand path, not dropped or duplicated.
+	int a = (int)Counted::bump();
+	int b = (int)Counted::bump();
+	printf("counted %d %d %d\n", a, b, counted_calls);
+
+	// Control: the same calls with no cast in front, which always worked.
+	printf("control %d %d\n", S::f(4), Outer::Inner::triple(7));
+
+	return 0;
+}
