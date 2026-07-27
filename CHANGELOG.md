@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v0.54.0] — 2026-07-27
+
+Six C++ correctness fixes, four of them silent wrong answers, all found by
+following one reducer down: a qualified name in an operand position lost its
+entire postfix chain, and the layer beneath that turned out to hold a static
+data member that read as 0 from inside its own class.
+
 Work in progress on `feature/libcxx-flavor-claude`: madc's second C++
 **standard-library flavor**. libc++ is a library, not a platform — Apple's
 default, the Android NDK's STL, FreeBSD's system C++ library, and available

@@ -28,6 +28,23 @@ high-level" — the answer is both.**
 
 ## Current State
 
+- **v0.54.0 (2026-07-27): six C++ correctness fixes, four SILENT.** One
+  reducer chain: a qualified name in an OPERAND position was returned bare
+  instead of continuing its postfix chain, so `(int)N::f(x)` became `(int)(x)`
+  at exit 0 and `(int)N::arr[1]` reached the lambda-introducer dispatch; under
+  it, `(int)S::f(4)` reported `undeclared identifier 'S'` because the operand
+  path carried a narrow copy of the class-qualifier rule the shared resolver
+  already owned; under that, a static data member read as `0` from inside its
+  own class body, because storage was registered only by the out-of-class
+  definition, which is parsed *after* member-function bodies (g++ creates the
+  decl in the class body and lets the definition complete it — madc's
+  `DECL_IN_AGGR_P` is `vfEXTERN`, whose completion `addVariable` already had).
+  A nested type is now a member of its enclosing scope with `struct` spelled
+  too. Suites 769/0/0/9, `--exe` 753/0, `--obj` 753/0, packed 769/0/0/9.
+  Two labelled placeholders shipped: system-header class statics still fold
+  (needs the Itanium `storage_alias_name` for class statics — NEXT), and two
+  scopes each declaring `struct Inner` still collide.
+
 - **Slice B class-KIND parse-once (2026-07-15): B2 COMPLETE; B3 NEXT.** The
   standalone design in
   `docs/plans/2026-07-14-class-kind-parse-once-DESIGN.md` inventories the
