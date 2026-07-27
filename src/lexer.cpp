@@ -3154,7 +3154,7 @@ TokenBase *Program::make_int(int64_t value, const std::string &src)
     return new TokenInt(value, src);
 }
 
-TokenBase *Program::make_real(double value)
+TokenBase *Program::make_real(long double value)
 {
     return new TokenReal(value);
 }
@@ -4303,7 +4303,7 @@ TokenBase *Program::_getToken()
 		    }
 		    if ( eat_imag_suffix() )
 		    {
-			TokenReal *tr = (TokenReal *)make_real(strtod(lit_text.c_str(), NULL));
+			TokenReal *tr = (TokenReal *)make_real(strtold(lit_text.c_str(), NULL));
 			char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
 			tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
 			// Preserve full literal text with imaginary suffix for transpiler
@@ -4314,9 +4314,11 @@ TokenBase *Program::_getToken()
 			return tr;
 		    }
 		    {
-			TokenReal *tr = (TokenReal *)make_real(strtod(lit_text.c_str(), NULL));
+			TokenReal *tr = (TokenReal *)make_real(strtold(lit_text.c_str(), NULL));
 			if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
 			    tr->setDataType(&ddFLOAT);
+			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
+			    tr->setDataType(&ddLDOUBLE);
 			return tr;
 		    }
 		    }
@@ -4391,7 +4393,7 @@ TokenBase *Program::_getToken()
 				lit_text += (char)source.get();
 			    }
 			}
-			double num = strtod(lit_text.c_str(), NULL);
+			long double num = strtold(lit_text.c_str(), NULL);
 			if ( eat_imag_suffix() )
 			{
 			    TokenReal *tr = (TokenReal *)make_real(num);
@@ -4463,7 +4465,7 @@ TokenBase *Program::_getToken()
 			    lit_text += (char)source.get();
 		    }
 		}
-		double num = strtod(lit_text.c_str(), NULL);
+		long double num = strtold(lit_text.c_str(), NULL);
 		if ( eat_imag_suffix() )
 		{
 		    TokenReal *tr = (TokenReal *)make_real(num);
@@ -4483,6 +4485,11 @@ TokenBase *Program::_getToken()
 		    // mixed float/float-_Complex arithmetic to double precision.
 		    if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
 			tr->setDataType(&ddFLOAT);
+		    // An `L` literal is a long double, the same way `f` is a float:
+		    // the suffix is the only thing that says so, and without this the
+		    // value was parsed at full precision and then typed as a double.
+		    else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
+			tr->setDataType(&ddLDOUBLE);
 		    return tr;
 		}
 	    }
@@ -5249,8 +5256,13 @@ TokenBase *Program::_getToken()
 			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
 			    return make_datatype("double", ddDOUBLE);
 			case TS_LONG + TS_DOUBLE:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
-			    return make_datatype("long double", ddDOUBLE);
+			    // ddLDOUBLE, not ddDOUBLE: `long double` is its own type
+			    // (x87 80-bit on x86-64). Mapping it to the double DataDef
+			    // made sizeof 8, broke printf("%Lg") at the varargs
+			    // boundary, and left the mangler emitting Itanium `e` for a
+			    // value passed as a double.
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddLDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("long double", ddLDOUBLE);
 			default:
 			    // Unrecognized combination — push back consumed words
 			    // in reverse and fall through to identifier/keyword lookup.

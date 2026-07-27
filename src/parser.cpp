@@ -12030,6 +12030,7 @@ DataDefINT128 ddINT128;
 DataDefUINT128 ddUINT128;
 DataDefFLOAT ddFLOAT;
 DataDefDOUBLE ddDOUBLE;
+DataDefLDOUBLE ddLDOUBLE;
 DataDefSTRUCT ddMAX_ALIGN_T("max_align_t", 0);
 DataDefARRAY ddARRAY;
 // Out-of-line (ddCHAR is declared above; DataDefLPSTR IS-A DataDefPTR now). Keep
@@ -18744,6 +18745,7 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	    case DataType::dtARRAY:   return &ddARRAY;
 	    case DataType::dtFLOAT:   return &ddFLOAT;
 	    case DataType::dtDOUBLE:  return &ddDOUBLE;
+	    case DataType::dtLDOUBLE: return &ddLDOUBLE;
 	}
     };
 
@@ -37803,8 +37805,11 @@ TokenBase *TokenTRY::parse(Program &pgm)
 	    else if ( dt == DataType::dtINT || dt == DataType::dtINT32
 	      || dt == DataType::dtINT64 )
 		tag = 1; // MADC_EXCEPT_INT
-	    else if ( dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT )
-		tag = 2; // MADC_EXCEPT_DOUBLE
+	    else if ( dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT
+	           || dt == DataType::dtLDOUBLE )
+		tag = 2; // MADC_EXCEPT_DOUBLE (long double narrows here, as it
+			 // did when it WAS a double — the exception runtime
+			 // carries one real payload width)
 	    else if ( dt == DataType::dtCHAR )
 		tag = 3; // MADC_EXCEPT_CSTR (char* conceptually)
 	    catch_types.push_back(tag);

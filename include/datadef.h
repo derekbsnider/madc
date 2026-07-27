@@ -1135,6 +1135,13 @@ class DataDefUINT128:   public DataDef { public:
 	virtual size_t alignment() const { return 16; } };
 class DataDefFLOAT:     public DataDef { public: DataDefFLOAT() :  DataDef("float", 4,    DataType::dtFLOAT) {} };
 class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("double", 8,   DataType::dtDOUBLE) {} };
+// x86-64 SysV: the x87 80-bit extended type, 10 significant bytes but sizeof 16
+// and 16-byte aligned — which is what both canons report and what the generated
+// macro table (__LDBL_MAX__ 1.189e+4932) has always advertised. `long double`
+// used to lex straight to ddDOUBLE, so sizeof said 8, printf("%Lg") read 80 bits
+// off the varargs stack and printed nan, and the mangler emitted Itanium `e`
+// for a value passed as a double.
+class DataDefLDOUBLE:   public DataDef { public: DataDefLDOUBLE(): DataDef("long double", 16, DataType::dtLDOUBLE) {} };
 
 // generic pointer-to-type — tracks what the pointer points to
 // pointers are 64-bit integers at the ABI level (stored in Gp registers)
@@ -1422,6 +1429,7 @@ extern DataDefINT128 ddINT128;
 extern DataDefUINT128 ddUINT128;
 extern DataDefFLOAT ddFLOAT;
 extern DataDefDOUBLE ddDOUBLE;
+extern DataDefLDOUBLE ddLDOUBLE;
 extern DataDefSTRUCT ddMAX_ALIGN_T;
 extern DataDefLPSTR ddLPSTR;
 

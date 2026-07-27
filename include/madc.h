@@ -2054,7 +2054,7 @@ protected:
     TokenBase *make_ident(const std::string &spelling);        // TokenIdent
     TokenBase *make_int(int64_t value);                        // TokenInt
     TokenBase *make_int(int64_t value, const std::string &src);// TokenInt + text
-    TokenBase *make_real(double value);                        // TokenReal
+    TokenBase *make_real(long double value);                   // TokenReal
     TokenBase *make_str(const std::string &bytes, bool wide = false); // TokenStr
     TokenBase *make_char(int code);                            // TokenChar
     TokenBase *make_datatype(const char *name, DataDef &dd);   // TokenDataType

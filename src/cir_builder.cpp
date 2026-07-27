@@ -397,6 +397,17 @@ node_t CirBuilder::real_float(float val, TokenBase *origin)
 	return cn->as_node();
 }
 
+// Extended-precision real literal (`1.0L`) — c2mir's N_LD constant node, the
+// one its own lexer builds via new_ld_node/strtold. Emitting N_D here instead
+// cost both the literal's extra mantissa bits AND its width at the varargs
+// boundary, so printf("%Lg", 1.0L) read 16 bytes off an 8-byte argument.
+node_t CirBuilder::real_ldouble(long double val, TokenBase *origin)
+{
+	cir_node *cn = make(N_LD, origin);
+	cn->base.u.ld = val;
+	return cn->as_node();
+}
+
 // An IMAGINARY literal (`1.0i`, `2.0iF`, `3i`) — the lexer types it as a
 // DataDefCOMPLEX whose element_type carries the float/double/long-double width.
 // c2mir models such a literal as an N_CF/N_CD/N_CLD node whose stored value is
@@ -3989,6 +4000,10 @@ static std::vector<c2mir_node_code_t> native_scalar_specs(DataDef *dd)
 	case DataType::dtBOOL:   return {N_BOOL};
 	case DataType::dtFLOAT:  return {N_FLOAT};
 	case DataType::dtDOUBLE: return {N_DOUBLE};
+	// C spells long double as the SPECIFIER PAIR — c2mir has no N_LDOUBLE
+	// node because the language has no single token for it, the same way
+	// dtUINT64 below is {N_UNSIGNED, N_LONG}.
+	case DataType::dtLDOUBLE: return {N_LONG, N_DOUBLE};
 	case DataType::dtUINT8:
 	case DataType::dtUINT16:
 	case DataType::dtUINT32: return {N_UNSIGNED, N_INT};
@@ -4143,6 +4158,10 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 		break;
 	case DataType::dtFLOAT:  append(lst, simple(N_FLOAT)); break;
 	case DataType::dtDOUBLE: append(lst, simple(N_DOUBLE)); break;
+	case DataType::dtLDOUBLE:		// the specifier PAIR, see above
+		append(lst, simple(N_LONG));
+		append(lst, simple(N_DOUBLE));
+		break;
 	default:
 		append(lst, simple(N_INT));
 	}
@@ -14431,6 +14450,8 @@ static bool constant_real_operand(TokenBase *t, long double &out)
 		DataDef *dt = t->datadef();
 		if (dt && dt->rawtype() == DataType::dtFLOAT)
 			out = (long double)(float)t->dval();
+		else if (TokenReal *tr = dynamic_cast<TokenReal *>(t))
+			out = tr->ldval();	// full stored precision; dval() narrows
 		else
 			out = (long double)t->dval();
 		return true;
@@ -14641,6 +14662,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		DataDef *rdd = tb->datadef();
 		if (rdd && rdd->rawtype() == DataType::dtFLOAT && !rdd->is_complex())
 			return real_float((float)tb->dval(), tb);
+		// N_LD, and read through ldval(): dval() narrows to double, which
+		// would throw away both the literal's extra mantissa bits and its
+		// width at the varargs boundary.
+		if (rdd && rdd->rawtype() == DataType::dtLDOUBLE && !rdd->is_complex())
+			if (TokenReal *tr = dynamic_cast<TokenReal *>(tb))
+				return real_ldouble(tr->ldval(), tb);
 		return real(tb->dval(), tb);
 	}
 
@@ -17362,7 +17389,11 @@ node_t CirBuilder::translate_throw_call(TokenTHROW *th)
 	ExternParam ep;
 	bool throw_object_cstr = is_class_object_value(th->throw_expr)
 			      || object_returning_call_class(th->throw_expr);
-	if (dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT) {
+	// dtLDOUBLE rides the double path: the throw runtime carries one real
+	// payload width, and this is where a long double went when it WAS a
+	// double. The catch-tag side (parser.cpp, MADC_EXCEPT_DOUBLE) agrees.
+	if (dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT
+	    || dt == DataType::dtLDOUBLE) {
 		sym = "__madc_throw_double";
 		ep = { {N_DOUBLE}, false };
 	} else if ((edd && edd->is_pointer()) || throw_object_cstr) {
