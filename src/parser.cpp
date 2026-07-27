@@ -1628,6 +1628,29 @@ static bool is_typeof_identifier(const std::string &name)
 	|| name == "__typeof" || name == "__typeof__";
 }
 
+// The name position of a typedef declarator accepts more than a plain
+// identifier. A real system header may re-typedef a name madc already
+// registers as a base datatype — gcc's <stddef.h> carries
+// `typedef struct {...} max_align_t;`, and madc pre-registers max_align_t
+// (it holds a stable value-ABI type id) — and C++ keywords that are valid C
+// identifiers arrive here the same way from C headers. TokenDataType and
+// TokenKeyword both derive from TokenIdent, so one cast reaches the virtual
+// spelling(). Returns NULL when the token cannot name a typedef alias.
+static const char *typedef_alias_spelling(TokenBase *tb)
+{
+    if ( !tb )
+	return NULL;
+    switch ( tb->type() )
+    {
+	case TokenType::ttIdentifier:
+	case TokenType::ttDataType:
+	case TokenType::ttKeyword:
+	    return ((TokenIdent *)tb)->spelling();
+	default:
+	    return NULL;
+    }
+}
+
 static bool is_decltype_identifier(const std::string &name)
 {
     return name == "decltype";
@@ -17609,6 +17632,63 @@ bool Program::embedded_header_is_system_library_shim(const std::string &name) co
     return false;          // no real twin -> madc-own -> keep embedded
 }
 
+// Header partition, second question (libc++ flavor P2.2b): does a search
+// directory that OUTRANKS madc's embedded set supply <name>?
+//
+// The sibling predicate above asks "is this embedded header a redundant twin of
+// a C-library header?". This one asks where the embedded copy sits in the SEARCH
+// ORDER, which is a different question with a different answer: gcc's own
+// stddef.h lives in the compiler-owned dir, so the classifier above correctly
+// says "keep embedded" — yet a C++ standard library on the path must still win.
+//
+// madc's embedded freestanding headers ARE its compiler resource dir, so they
+// belong at the slot the generated table records as
+// madc_compiler_owned_include_dir. Both canon compilers search
+//
+//     C++ stdlib (c++/v1, c++/NN) -> compiler resource dir -> C library
+//
+// so directories BEFORE that slot outrank the embedded copy, and directories
+// after it lose to it. -I dirs precede the compiler's whole list and so outrank
+// it unconditionally, matching gcc's precedence for -I over its own resource dir.
+//
+// This is what lets libc++'s <stddef.h> / <stdint.h> / <float.h> / <stdbool.h>
+// wrappers win when libc++ is on the path — they #include_next the C library's
+// copy afterwards, so shadowing them makes libc++ detect the bypass and #error.
+// A name no earlier directory supplies still resolves from the embedded copy,
+// which is the header-less-Mac promise (nothing on the path -> madc serves it).
+//
+// Position is derived from the generated table, never a name list (Rule #7):
+// madc's own ns_*/__madc__ headers need no exception because no real directory
+// ships those names.
+bool Program::embedded_header_outranked(const std::string &name) const
+{
+    for ( std::size_t i = 0; i < include_paths.size(); ++i )
+    {
+	std::ifstream probe((include_paths[i] + name).c_str());
+	if ( probe.good() )
+	    return true;
+    }
+    extern const char *madc_sys_include_paths[];
+    extern const char *madc_compiler_owned_include_dir;
+    const std::string owned =
+	(madc_compiler_owned_include_dir && *madc_compiler_owned_include_dir)
+	? madc_compiler_owned_include_dir : std::string();
+    // No slot recorded (no compiler at build time, or the fallback list is in
+    // use): the embedded set keeps its historical unconditional precedence
+    // over the system dirs rather than guessing a position.
+    if ( owned.empty() )
+	return false;
+    for ( int i = 0; madc_sys_include_paths[i]; ++i )
+    {
+	if ( owned == madc_sys_include_paths[i] )
+	    return false;   // reached the slot — everything after it loses
+	std::ifstream probe((std::string(madc_sys_include_paths[i]) + name).c_str());
+	if ( probe.good() )
+	    return true;
+    }
+    return false;          // slot not in the list — preserve the old order
+}
+
 bool Program::is_embedded_header_allowed(const std::string &name) const
 {
     // Bypass an embedded SYSTEM-library shim so the real header is used, while
@@ -31833,14 +31913,26 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		alias_dd = pgm.getPointerType(alias_dd);
 	    }
 	    tn = pgm.nextToken();
-		if ( !tn || tn->type() != TokenType::ttIdentifier )
+		// The alias position accepts more than a plain identifier: a real
+		// header may re-typedef a name madc already registers as a base
+		// datatype (gcc's <stddef.h>: `typedef struct {...} max_align_t;`).
+		// The general typedef path already accepts ttDataType / ttKeyword
+		// here, so this path must agree — otherwise valid C fails only
+		// because the body happens to be a struct. All three token kinds
+		// derive from TokenIdent, so the cast still reaches spelling().
+		if ( !typedef_alias_spelling(tn) )
 		    pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
 		TokenIdent *alias = (TokenIdent *)tn;
 		alias_dd = pgm.parse_typedef_array_suffix(alias_dd, alias->spelling(), tn);
 		pgm.consume_typedef_gnu_attributes();
 		bmi = pgm.datatype_map.find(alias->spelling());
+	    // A name madc pre-registered itself is not a user declaration, so a
+	    // real header's typedef of it (gcc's <stddef.h> -> max_align_t) is a
+	    // re-registration, not a conflict. A user-vs-user redefinition still
+	    // throws, which is what this check was written to catch.
 	    if ( bmi != pgm.datatype_map.end() && pgm.compounds.empty()
-	      && &(*bmi)->definition != alias_dd )
+	      && &(*bmi)->definition != alias_dd
+	      && !(*bmi)->builtin )
 		pgm.Throw(tn) << "Identifier '" << alias->spelling() << "' already defined" << flush;
 	    tdt = new TokenDataType(alias->spelling(), *alias_dd);
 	    pgm.register_scoped_typedef(alias->spelling(), tdt);
@@ -36542,12 +36634,8 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     tn = pgm.nextToken();
     TokenBase *alias_tok = tn;   // per-occurrence alias token (CIR origin)
     std::string alias;
-    if ( tn->type() == TokenType::ttIdentifier )
-	alias = ((TokenIdent *)tn)->spelling();
-    else if ( tn->type() == TokenType::ttDataType )
-	alias = ((TokenDataType *)tn)->spelling();
-    else if ( tn->type() == TokenType::ttKeyword )
-	alias = ((TokenKeyword *)tn)->spelling();
+    if ( const char *alias_sp = typedef_alias_spelling(tn) )
+	alias = alias_sp;
     else if ( tn && tn->id() == TokenID::tkSemi
 	   && pgm.is_system_header_path(TokenBase::_parse_file) )
     {

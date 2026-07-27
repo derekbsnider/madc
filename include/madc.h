@@ -4146,6 +4146,13 @@ public:
     // madc-own header with no real twin). Used to bypass embedded system-library
     // shims to the real headers while keeping madc-own + freestanding embedded.
     bool embedded_header_is_system_library_shim(const std::string &name) const;
+    // True iff a search directory that OUTRANKS madc's embedded set supplies
+    // `name`. The embedded freestanding headers ARE madc's compiler resource
+    // dir, so they sit at the madc_compiler_owned_include_dir slot: C++ stdlib
+    // dirs (and every -I dir) come before it and win; C library dirs come after
+    // it and lose. Lets a real libc++/libstdc++ wrapper header take precedence
+    // while an unsupplied name still resolves from the embedded copy.
+    bool embedded_header_outranked(const std::string &name) const;
     bool is_dynamic_symbol_allowed(const std::string &name) const;
     bool is_known_namespace(const std::string &name) const;
     Variable *runtime_eval_scope_target(Variable *var) const;

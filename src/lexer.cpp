@@ -2689,8 +2689,15 @@ static bool named_include_provider_exists(Program &pgm,
 	return true;
     if ( find_precompiled_header(incfile) )
 	return true;
+    // The embedded arm answers only when nothing OUTRANKS the embedded copy —
+    // the embedded set sits at madc's compiler-resource-dir slot, so a C++
+    // standard library (or any -I dir) ahead of that slot supplies the name
+    // instead. Gated here as well as at the tokenize site so the once-only
+    // dedup key and the auto-include defer gate agree with what actually
+    // resolves; a name they disagreed about would be dropped silently.
     return find_embedded_header(incfile) != NULL
-	&& pgm.is_embedded_header_allowed(incfile);
+	&& pgm.is_embedded_header_allowed(incfile)
+	&& !pgm.embedded_header_outranked(incfile);
 }
 
 static bool load_precompiled_header_file(const std::string &path,
@@ -3017,6 +3024,18 @@ void Program::add_datatypes()
     datatype_map[tkDECIMAL32.str] = &tkDECIMAL32;
     datatype_map[tkDECIMAL64.str] = &tkDECIMAL64;
     datatype_map[tkDECIMAL128.str] = &tkDECIMAL128;
+
+    // Everything registered above is one of madc's OWN base datatypes, never a
+    // user declaration. Marking the whole map here keeps that automatic — a
+    // future builtin needs no second edit — and lets the typedef paths accept a
+    // real header re-declaring one of these names (gcc's <stddef.h> carries
+    // `typedef struct {...} max_align_t;`) without weakening the genuine
+    // user-vs-user redefinition diagnostic.
+    datatype_map.for_each([](const char *, TokenDataType *&tdt) {
+	if ( tdt )
+	    tdt->builtin = true;
+	return false;	// visit every entry
+    });
 }
 
 
@@ -3453,6 +3472,18 @@ TokenBase *Program::_getToken()
 			{
 			    DBG(std::cout << "#include <" << incfile
 				<< "> embedded stub disallowed by policy; using filesystem" << std::endl);
+			    embedded = NULL;
+			}
+			// Outranked by a directory ahead of madc's resource-dir
+			// slot (a C++ standard library's own wrapper, or any -I
+			// dir): the real header wins and we fall through to the
+			// filesystem walk below. Shadowing libc++'s <stddef.h>
+			// here is exactly what makes it #error that its wrapper
+			// was bypassed.
+			if ( embedded && embedded_header_outranked(incfile) )
+			{
+			    DBG(std::cout << "#include <" << incfile
+				<< "> outranked by an earlier search dir; using the real header" << std::endl);
 			    embedded = NULL;
 			}
 			if ( embedded )

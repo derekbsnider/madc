@@ -215,6 +215,18 @@ Slice order follows from that:
 2. **The two mandatory intrinsics**, `__remove_reference_t` and
    `__is_trivially_destructible`. Registry-driven, so each is a registry
    entry plus its sema, never a call-site special case (Rule #7).
+
+   Sharpened by the 2026-07-27 measurement: only
+   `__is_trivially_destructible` remains mandatory on Linux libc++ 18, and
+   libc++ accepts **either** it or `__has_trivial_destructor` — one
+   intrinsic unblocks `<type_traits>` and therefore `<string>`. Note the
+   coupling this creates with slice 1: libc++ guards the trait with
+   `#if __has_builtin(__is_trivially_destructible)`, and these names do
+   **not** carry the `__builtin_` prefix, so the trait registry must be a
+   source `has_builtin` consults. One registry, two consumers (the
+   preprocessor query and the parser's sema) — which is exactly the
+   "answer from madc's own state" contract slice 1 established, extended to
+   a second kind of state rather than a second mechanism.
 3. Then the burn-down proper — and expect it to land in **template
    metaprogramming**, not intrinsics: with the fallbacks in play, libc++
    compiles `<type_traits>` through exactly the dependent-name /
@@ -332,6 +344,73 @@ resolver fixes the query with no second edit.
 **Testable today, before `-stdlib=` exists**: `-I/usr/lib/llvm-18/include/c++/v1`
 puts libc++ ahead of the slot, since `-I` dirs precede the generated
 list — which is also gcc's own precedence for `-I` over its resource dir.
+
+**P2.2b LANDED (2026-07-27).** `Program::embedded_header_outranked()` lives
+beside its sibling classifier in the header-partition area and is consulted
+at both embedded-selection sites (the tokenize branch and
+`named_include_provider_exists`, so the once-only dedup key and the
+auto-include defer gate agree with what actually resolves). The predicted
+`#include_next` behaviour held exactly: libc++'s wrapper chains past the slot
+to gcc's real freestanding `stddef.h`, so no second mechanism was needed on
+Linux — the embedded copy is the fallback only where no real resource dir
+exists, which is the header-less-Mac case.
+
+**A real parse defect surfaced immediately behind it, and it was NOT a libc++
+quirk.** With libc++'s wrapper winning, the chain reached gcc's `stddef.h` and
+died on its `typedef struct {...} max_align_t;`:
+
+```
+/usr/lib/gcc/x86_64-linux-gnu/13/include/stddef.h:436: Expecting alias name in typedef
+```
+
+madc pre-registers `max_align_t` as a base datatype (it carries a stable
+value-ABI type id, `MADC_TYPEID_MAX_ALIGN_T`), so the name lexes as a
+`TokenDataType`. Two independent bugs, both in madc's own machinery:
+
+1. **The struct-typedef path accepted only `ttIdentifier` in the alias
+   position, while the general typedef path already accepted `ttDataType` and
+   `ttKeyword`.** `typedef int max_align_t;` compiled; `typedef struct {...}
+   max_align_t;` did not — the same declaration failing purely because the
+   body was a struct. Fixed by extracting the accept set into one helper
+   (`typedef_alias_spelling`) that both paths now share, so they cannot drift
+   apart again.
+2. **The duplicate-name check could not tell madc's own pre-registration from
+   a user declaration.** Relaxing it by token kind would have cost the genuine
+   `typedef struct{int a;}Foo; typedef struct{int b;}Foo;` diagnostic that gcc
+   and clang both emit. Instead `TokenDataType` gained a `builtin` flag that
+   `add_datatypes()` stamps across the whole map in one pass (so a future
+   builtin needs no second edit), and the check skips only when the *existing*
+   entry is madc's own. The user-vs-user conflict still errors.
+
+Worth stating plainly because it generalizes: **this was never about libc++.**
+Any real toolchain header that typedefs a name madc pre-registers hit it; the
+libc++ lane is simply the first path that reached one.
+
+### Measured burn-down (2026-07-27, Linux, `-I<libc++ 18>`)
+
+| Header | Before P2.2b | After |
+|---|---|---|
+| `<cstddef>` | `#error` — libc++ wrapper bypassed | **compiles + runs** |
+| `<cstdint>` | (unreached) | **compiles + runs** |
+| `<climits>` | (unreached) | **compiles + runs** |
+| `<stdio.h>` via libc++'s wrapper | (unreached) | **compiles + runs** |
+| `<type_traits>` | (unreached) | `#error is_trivially_destructible is not implemented` |
+| `<string>` | `#error remove_reference` | same `is_trivially_destructible` `#error` |
+
+The frontier moved to **exactly the second of the two mandatory intrinsics the
+plan predicted**, and `remove_reference` no longer blocks (Linux libc++ 18
+carries a fallback for it where the SDK copy measured earlier did not). So the
+next slice is the plan's step 2, now down to a single hard requirement:
+`__is_trivially_destructible`.
+
+**Gate:** `scripts/libcxx_gate.sh`, wired into `fulltest`, six legs — the
+wrapper wins when libc++ precedes the slot; the embedded copy still serves
+when nothing does; the `<cstddef>` chain compiles *and runs*; `<cstdint>` +
+`<climits>` likewise; `clang++ -stdlib=libc++` agrees as the oracle that owns
+this library; and the conflicting-typedef diagnostic still fires. It discovers
+libc++ by asking clang (`-stdlib=libc++ -E -v`) rather than hardcoding a path,
+and SKIPS loudly when clang or libc++ is absent, per the machogate lesson that
+a silent skip reads as green.
 
 Sequencing note: this now precedes the two mandatory intrinsics, because
 on the Linux lane it fires first.

@@ -17,6 +17,12 @@ public:
     // pool. Kept here (like TokenKeyword); spelling() overrides the pool path.
     std::string str;
     DataDef &definition;
+    // True for the base datatypes madc pre-registers itself (Program::
+    // add_datatypes marks the whole map). A real header may legitimately
+    // typedef one of these names — gcc's <stddef.h> defines max_align_t,
+    // which madc also pre-registers — so a redefinition check must be able
+    // to tell madc's own registration apart from a user declaration.
+    bool builtin = false;
     TokenDataType(const char *k, DataDef &d) : TokenIdent(k), str(k ? k : ""), definition(d) {}
     virtual const char *spelling() const override { return str.c_str(); }
     virtual size_t spelling_len() const override { return str.size(); }
