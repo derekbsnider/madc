@@ -48838,7 +48838,9 @@ static DataDef *deduce_expr_type(Program *pgm, TokenBase *expr)
 // parse a lambda expression: [](type arg, ...) { body }
 // Returns a TokenVar referencing the lambda's anonymous function variable.
 // The lambda is pushed onto ast as a top-level TokenFunc so it compiles
-// before the enclosing function (asmjit can't nest addFunc/endFunc).
+// before the enclosing function. (Originally because asmjit could not nest
+// addFunc/endFunc; still correct without it, since C has no nested functions
+// and lambdas lower to hoisted free functions plus a function pointer.)
 //
 // Find the first `return <expr>;` statement reachable from a parsed body and
 // report its expression's deduced type — the C++14 lambda return type.

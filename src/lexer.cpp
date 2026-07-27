@@ -1610,17 +1610,16 @@ void Program::_tokenizer_init()
 	nansf.body = "(__extension__ ({ union { unsigned int __i; float __f; } __u;"
 		     " __u.__i = 0x7fa00000U; __u.__f; }))";
 	macro_map["__builtin_nansf"] = nansf;
-	// The long-double form uses the DOUBLE pattern on purpose: madc's
-	// `long double` is currently 64-bit (sizeof 8, against 16 for the x87
-	// 80-bit extended type both canons use on x86-64), so it has nowhere to
-	// put an 80-bit 7fff:a000… and writing one yields the mantissa alone.
-	// The double pattern is a real signaling NaN of the type madc actually
-	// has, which beats a truncated imitation of one it does not. Revisit
-	// together with the long-double width itself.
+	// x87 80-bit: mantissa in the low 8 bytes, sign+exponent in the next 2,
+	// so BOTH halves must be written — a union over a single 64-bit field
+	// would leave the exponent bytes uninitialized now that `long double` is
+	// genuinely 16 bytes wide. (It read as the double pattern plus stack
+	// garbage while long double was still mapped to double.)
 	MacroDef nansl;
 	nansl.params = {"__tag"};
-	nansl.body = "(__extension__ ({ union { unsigned long long __i; long double __l; } __u;"
-		     " __u.__i = 0x7ff4000000000000ULL; __u.__l; }))";
+	nansl.body = "(__extension__ ({ union { unsigned long long __i[2]; long double __l; } __u;"
+		     " __u.__i[0] = 0xa000000000000000ULL; __u.__i[1] = 0x7fffULL;"
+		     " __u.__l; }))";
 	macro_map["__builtin_nansl"] = nansl;
     }
     {

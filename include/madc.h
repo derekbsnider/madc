@@ -532,12 +532,16 @@ class TokenFunc: public TokenVar, public TokenCpnd
 public:
     // True when a later definition of the same function overrides this
     // one. Set during compile pre-pass by walking pending_funcs in
-    // reverse and marking earlier duplicates. Overridden TokenFuncs
-    // skip both prepareFuncNode and body emission so asmjit's Compiler
-    // sees exactly one addFunc per funcnode — without this, calling
-    // addFunc(node) twice for the same FuncNode causes asmjit to lose
-    // track of every other funcnode added between the duplicate calls,
-    // leaving their labels unbound.
+    // reverse and marking earlier duplicates. Overridden TokenFuncs skip
+    // both prepareFuncNode and body emission, so exactly one definition
+    // is emitted per function.
+    // (Still required, but no longer for the reason originally recorded
+    // here: this was written for an asmjit Compiler defect where a second
+    // addFunc on the same FuncNode unbound the labels of every funcnode
+    // added in between. asmjit is gone; emitting one body twice is now
+    // simply a duplicate definition to c2mir. Same behaviour, different
+    // reason — see the long-double case for one where the behaviour did
+    // NOT survive the backend swap.)
     bool is_overridden = false;
     TokenFunc(Variable &v) : TokenVar(v), TokenCpnd() {}
     virtual size_t argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }

@@ -6,12 +6,12 @@
 // forms would compile and then make numeric_limits<T>::signaling_NaN() quietly
 // wrong — libc++'s <limits> is what reaches them.
 //
-// The float and double patterns are gcc's and clang's, which agree exactly.
-// The long-double line does NOT match either canon, deliberately: madc's
-// `long double` is 64-bit (sizeof 8, against 16 for the x87 80-bit type both
-// canons use on x86-64), so it cannot hold 7fff:a000…, and this emits a real
-// signaling NaN of the type madc actually has rather than a truncated
-// imitation of one it does not. Revisit with the long-double width itself.
+// All three patterns are gcc's and clang's, which agree exactly. The
+// long-double one is x87 80-bit: mantissa in the low 8 bytes, sign+exponent in
+// the next 2, so both halves have to be written — while `long double` was
+// wrongly mapped to double this line read the double pattern plus uninitialized
+// stack bytes, and it only looked correct because a 64-bit check cannot see the
+// exponent. Print all 10 bytes so it can.
 #include <stdio.h>
 #include <string.h>
 
@@ -35,12 +35,37 @@ int main()
 	memcpy(&qbd, &qd, 8);
 
 	long double sl = __builtin_nansl("");
-	unsigned long long bl;
-	memcpy(&bl, &sl, 8);
+	unsigned char bl[16];
+	memset(bl, 0, 16);
+	memcpy(bl, &sl, sizeof sl);
+
+	// the quiet long-double pair, which fold from 0.0L/0.0L and 1.0L/0.0L —
+	// only meaningful once long double was genuinely 80-bit, and pinned here
+	// at full width so a width regression cannot hide in the exponent
+	long double ql = __builtin_nanl("");
+	unsigned char bq[16];
+	memset(bq, 0, 16);
+	memcpy(bq, &ql, sizeof ql);
+
+	long double il = __builtin_infl();
+	unsigned char bi[16];
+	memset(bi, 0, 16);
+	memcpy(bi, &il, sizeof il);
 
 	printf("nansf=%08x nans=%016llx\n", bf, bd);
 	printf("nanf=%08x nan=%016llx\n", qbf, qbd);
-	printf("nansl_low64=%016llx\n", bl);
+	printf("nansl=");
+	for (int i = 9; i >= 0; --i)
+		printf("%02x", bl[i]);
+	printf("\n");
+	printf("nanl=");
+	for (int i = 9; i >= 0; --i)
+		printf("%02x", bq[i]);
+	printf("\n");
+	printf("infl=");
+	for (int i = 9; i >= 0; --i)
+		printf("%02x", bi[i]);
+	printf("\n");
 	// a signaling NaN is still a NaN: it must compare unequal to itself
 	printf("isnan=%d %d\n", sf != sf, sd != sd);
 	return 0;
