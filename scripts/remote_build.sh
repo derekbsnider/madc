@@ -14,11 +14,12 @@
 #   unittest  make -C src test
 #   fulltest  make -C src fulltest
 #   exe       bash scripts/run_tests.sh --exe
+#   obj       bash scripts/run_tests.sh --obj  (single-object loader lane)
 #   release   make -C src release
 #   packed    MADC_BIN=bin/madc-release bash scripts/run_tests.sh
 #   pull      rsync container-built bin/madc (+ madc-release) back to
 #             the NAS (ABI-identical userlands; QNAP never compiles)
-#   battery   fulltest + exe + release + packed (the push gate)
+#   battery   fulltest + exe + obj + release + packed (the push gate)
 #   shell     print the ssh command and exit
 #
 # Every remote invocation is one ssh call running a generated script, so
@@ -35,7 +36,7 @@ if [ -z "$stages" ]; then
 	stages="sync build"
 fi
 if [ "$stages" = "battery" ]; then
-	stages="sync build fulltest exe release packed"
+	stages="sync build fulltest exe obj release packed"
 fi
 case " $stages " in
 	*" shell "*) echo "ssh -p $PORT $REMOTE"; exit 0;;
@@ -120,6 +121,9 @@ for stage in $stages; do
 		;;
 	exe)
 		run_remote "exe" "cd /workspace/madc; bash scripts/run_tests.sh --exe"
+		;;
+	obj)
+		run_remote "obj" "cd /workspace/madc; bash scripts/run_tests.sh --obj"
 		;;
 	release)
 		run_remote "release" "make -C /workspace/madc/src -j20 release"
