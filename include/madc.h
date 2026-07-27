@@ -4232,6 +4232,13 @@ public:
     TokenBase *getToken();
     TokenBase *getRealToken();
     void consume_directive_line_tail();
+    // One pragma implementation, two callers: handle_pragma_body() reads the
+    // pragma text off `source` wherever it came from, and
+    // handle_pragma_operator() destringizes a _Pragma("...") operand into
+    // `source` before calling it. Keeping the body text-driven is what stops
+    // the operator needing a second copy of the pack / push_macro handling.
+    void handle_pragma_body();
+    void handle_pragma_operator();
 //  TokenProgram *tokenize(std::istream &);
     TokenProgram *tokenize(const char *);
     // Bind this Program's pools to the process-global active-owner statics

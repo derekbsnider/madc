@@ -410,8 +410,8 @@ libc++ lane is simply the first path that reached one.
 | `<cstdint>` | (unreached) | **compiles + runs** |
 | `<climits>` | (unreached) | **compiles + runs** |
 | `<stdio.h>` via libc++'s wrapper | (unreached) | **compiles + runs** |
-| `<type_traits>` | (unreached) | `#error is_trivially_destructible is not implemented` |
-| `<string>` | `#error remove_reference` | same `is_trivially_destructible` `#error` |
+| `<type_traits>` | (unreached) | `#error is_trivially_destructible is not implemented` → after slice 2 + `_Pragma`, **compiles + runs** |
+| `<string>` | `#error remove_reference` | same `is_trivially_destructible` `#error` → now `__builtin_nansf` in `<limits>` |
 
 The frontier moved to **exactly the second of the two mandatory intrinsics the
 plan predicted**, and `remove_reference` no longer blocks (Linux libc++ 18
@@ -444,6 +444,83 @@ pragmas madc only needs to *accept*, not act on. Two constraints shape it:
 
 Note it is not libc++-specific: `_Pragma` is standard C since C99, and any
 header may use it (doctest's own macros do).
+
+**LANDED 2026-07-27.** `handle_pragma_body()` is now the one implementation,
+entered with `source` positioned at the pragma text; the `#pragma` directive
+arrives already positioned and `handle_pragma_operator()` destringizes into the
+same stream before calling it. Because the body was already text-driven, the
+operator needed no copy of the `pack` / `push_macro` handling — which is the
+whole point, since those are the two pragmas madc genuinely acts on.
+
+Three details worth keeping:
+
+- **The operand is read as a TOKEN, not as characters.** The standard
+  macro-expands it first and real headers depend on that: libc++ writes both
+  `_Pragma(#x)` and `_Pragma(_LIBCPP_TOSTRING(clang diagnostic ignored str))`,
+  neither of which is a string literal until expansion has run. Going through
+  the lexer buys that expansion for free, and its string case has already
+  undone `\"` and `\\` — which `_Pragma("GCC diagnostic ignored
+  \"-Wdeprecated\"")` needs — so the token's text IS the destringized pragma
+  line, with no second unescaper to drift out of sync.
+- **The pushed-back text is newline-terminated**, and that is load-bearing:
+  every branch of the handler ends by discarding the rest of its directive
+  line, so without a terminator the discard runs off the end of the pushback
+  and eats real code. Pushed-back newlines do not advance the line counter, so
+  `__LINE__` after a `_Pragma` is unchanged (the test pins this).
+- **Not gated on `--std=`.** Both canons accept `_Pragma` in every mode,
+  `-std=c89 -pedantic` included; the name is reserved to the implementation, so
+  it cannot collide with user code.
+
+Gated by `tests/testpragmaoperator.mad` rather than a libc++ gate leg, since the
+feature is standard C: it asserts that the directive and operator spellings
+produce the *same* layout (`pack(1)` written both ways), covers `push_macro` /
+`pop_macro` and the `DO_PRAGMA(x)` stringize idiom, and matches gcc and clang
+byte-for-byte.
+
+### Frontier after `_Pragma` (2026-07-27)
+
+`<type_traits>` now **compiles and runs clean** — the template-metaprogramming
+long pole this plan predicted at step 3 did not materialize as a wall. Two
+distinct blockers remain, and they are independent:
+
+| Blocker | Reached via | Shape |
+|---|---|---|
+| `__builtin_nans` / `nansf` / `nansl` undeclared | `<limits>`, so `<utility>` `<string>` `<vector>` | madc has the **quiet**-NaN family (`__builtin_nan{,f,l}`) and `__builtin_inf*` / `__builtin_huge_val*` in the same `macro_map` block; only the **signaling** trio is absent |
+| libc++'s `std::` names do not register | `#include <type_traits>` then `std::is_same` | header content IS reached (`_LIBCPP_TYPE_TRAITS` is defined) and `std::__1` DOES resolve as a namespace — but the trait is not a member of it |
+
+On the first: do **not** alias the signaling trio to `(0.0/0.0)` to make the
+error go away. That is a quiet NaN; `numeric_limits<T>::signaling_NaN()` would
+then be silently wrong. A signaling NaN is a distinct bit pattern, and these are
+used in constant expressions, so the slice is a real question about how madc
+spells one — not a table entry to copy from its neighbour.
+
+On the second, four hypotheses are already **eliminated by reducer**, which is
+the useful part of the handoff:
+
+1. *Inline namespaces unsupported* — no; `namespace outer { inline namespace v1 { … } }` resolves.
+2. *Attribute between `namespace` and its name* (libc++ writes `namespace _LIBCPP_TYPE_VISIBILITY_DEFAULT std {`) — no; madc parses and resolves it.
+3. *Attribute between `struct` and the class name* (`struct _LIBCPP_TEMPLATE_VIS is_same`) — no; madc compiles and runs it, plain and template alike, as both canons do.
+4. *Content skipped by a `#if` guard* — no; the header's own guard macro is defined afterwards.
+
+What is left, and where the next trace should start, is the base-clause itself:
+
+```cpp
+template <class _Tp, class _Up>
+struct _LIBCPP_TEMPLATE_VIS is_same : _BoolConstant<__is_same(_Tp, _Up)> {};
+```
+
+— an **alias template specialized on a compiler intrinsic** used as a non-type
+template argument. madc's `type_trait_arity()` registry does carry `__is_same`
+at arity 2, so the question is whether it is usable in that position, and
+whether a failure there drops the enclosing declaration without a diagnostic.
+A silent drop would be its own defect regardless of the trait: read the
+registration path before probing further. `src/parser.cpp` carries 109 `catch`
+sites, several of which set a result to NULL and continue, so a swallowed
+failure is entirely plausible — but plausible is not traced. The cheapest first
+diagnostic is `bin/madc -v` on `tmp/leaf.cpp` (a direct
+`#include <__type_traits/is_same.h>`, the smallest file that reproduces it):
+DBG will show what was registered and under what name, which separates "dropped"
+from "registered elsewhere" without another guess.
 
 **Gate:** `scripts/libcxx_gate.sh`, wired into `fulltest`, six legs — the
 wrapper wins when libc++ precedes the slot; the embedded copy still serves

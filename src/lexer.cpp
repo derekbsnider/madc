@@ -3847,158 +3847,7 @@ TokenBase *Program::_getToken()
 		}
 		if ( directive == "pragma" )
 		{
-		    while ( source.peek() == ' ' || source.peek() == '\t' )
-			source.get();
-		    std::string pragma;
-		    int pragma_line = source.line();
-		    int pragma_col = source.column();
-		    while ( source.good() && !source.eof() && (isalpha(source.peek()) || source.peek() == '_') )
-			pragma += source.get();
-		    if ( pragma == "pack" )
-		    {
-			while ( source.peek() == ' ' || source.peek() == '\t' )
-			    source.get();
-			if ( source.peek() == '(' )
-			{
-			    source.get(); // consume (
-			    while ( source.peek() == ' ' || source.peek() == '\t' )
-				source.get();
-			    std::string arg;
-			    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
-				arg += source.get();
-			    // GCC semantics (see the pack block in madc.h):
-			    // push saves the current value and an optional
-			    // `, N` then sets it; pop restores; pack(N) sets;
-			    // pack() resets to the default layout. Ops are
-			    // QUEUED, not applied — parse-time application
-			    // rides the token side channel (lex-time state
-			    // would be stale by parse time).
-			    if ( arg == "push" )
-			    {
-				while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
-				    source.get();
-				int val = 0;
-				while ( source.good() && isdigit(source.peek()) )
-				    val = val * 10 + (source.get() - '0');
-				_pending_pack_ops.push_back(std::make_pair(1, val));
-				DBG(std::cout << "#pragma pack(push" << (val ? ", " : "")
-				    << (val ? std::to_string(val) : std::string()) << ") queued" << std::endl);
-			    }
-			    else if ( arg == "pop" )
-			    {
-				_pending_pack_ops.push_back(std::make_pair(2, 0));
-				DBG(std::cout << "#pragma pack(pop) queued" << std::endl);
-			    }
-			    else if ( !arg.empty() && isdigit((unsigned char)arg[0]) )
-			    {
-				_pending_pack_ops.push_back(std::make_pair(0, atoi(arg.c_str())));
-				DBG(std::cout << "#pragma pack(" << arg << ") queued" << std::endl);
-			    }
-			    else if ( arg.empty() )
-			    {
-				_pending_pack_ops.push_back(std::make_pair(0, 0));
-				DBG(std::cout << "#pragma pack() reset queued" << std::endl);
-			    }
-			    // discard trailing tokens via the lexer (handles a
-			    // multi-line /* */ comment on this line)
-			    consume_directive_line_tail();
-			}
-		    }
-		    else if ( pragma == "push_macro" || pragma == "pop_macro" )
-		    {
-			bool is_push = (pragma == "push_macro");
-			while ( source.peek() == ' ' || source.peek() == '\t' )
-			    source.get();
-			if ( source.peek() == '(' )
-			{
-			    source.get(); // consume (
-			    while ( source.peek() == ' ' || source.peek() == '\t' )
-				source.get();
-			    // Expect "macro_name"
-			    if ( source.peek() == '"' )
-			    {
-				source.get(); // consume opening "
-				std::string mname;
-				while ( source.good() && !source.eof() && source.peek() != '"' )
-				    mname += source.get();
-				if ( source.peek() == '"' )
-				    source.get(); // consume closing "
-				if ( is_push )
-				{
-				    auto it = define_map.find(mname);
-				    std::string val = (it != define_map.end()) ? *it : std::string("\x01");
-				    _macro_save_stack[mname].push(val);
-				    DBG(std::cout << "#pragma push_macro(\"" << mname << "\") saved=\"" << val << "\"" << std::endl);
-				}
-				else
-				{
-				    auto sit = _macro_save_stack.find(mname);
-				    if ( sit != _macro_save_stack.end() && !sit->second.empty() )
-				    {
-					std::string val = sit->second.top();
-					sit->second.pop();
-					if ( val == "\x01" )
-					    define_map.erase(mname);
-					else
-					    define_map[mname] = val;
-					DBG(std::cout << "#pragma pop_macro(\"" << mname << "\") restored=\"" << val << "\"" << std::endl);
-				    }
-				}
-			    }
-			}
-			// discard trailing tokens via the lexer (handles a
-			// multi-line /* */ comment on this line)
-			consume_directive_line_tail();
-		    }
-		    else if ( pragma == "prefer" )
-		    {
-			std::vector<std::string> order;
-			while ( source.peek() == ' ' || source.peek() == '\t' )
-			    source.get();
-			while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			{
-			    while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
-				source.get();
-			    if ( source.peek() == '\n' || source.peek() == '\r' || source.eof() )
-				break;
-			    std::string name;
-			    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
-				name += source.get();
-			    if ( !name.empty() )
-				order.push_back(name);
-			    while ( source.peek() == ' ' || source.peek() == '\t' )
-				source.get();
-			}
-
-			TokenBase *tb = make_token(TokenID::tkPREFER);
-			tb->line = pragma_line;
-			tb->column = pragma_col;
-			injected_tokens.push_back(tb);
-			for ( size_t i = 0; i < order.size(); ++i )
-			{
-			    TokenIdent *ti = (TokenIdent *)make_ident(order[i]);
-			    ti->line = pragma_line;
-			    ti->column = pragma_col;
-			    injected_tokens.push_back(ti);
-			    if ( i + 1 < order.size() )
-			    {
-				tb = make_token(TokenID::tkComma);
-				tb->line = pragma_line;
-				tb->column = pragma_col;
-				injected_tokens.push_back(tb);
-			    }
-			}
-			tb = make_token(TokenID::tkSemi);
-			tb->line = pragma_line;
-			tb->column = pragma_col;
-			injected_tokens.push_back(tb);
-		    }
-		    else
-		    {
-			// consume the rest of the directive line for unknown
-			// pragmas; discard trailing tokens via the lexer
-			consume_directive_line_tail();
-		    }
+		    handle_pragma_body();
 		    return _getToken();
 		}
 	    }
@@ -5127,6 +4976,18 @@ TokenBase *Program::_getToken()
 		if ( word == "__LINE__" )
 		{
 		    source.pushback(std::to_string(source.line()));
+		    return getToken();
+		}
+		// _Pragma("...") — the token form of #pragma (C99, C++11), routed
+		// to the same handler the directive uses. It sits here, after the
+		// define_map check above, so a user `#define _Pragma …` still wins,
+		// exactly as it does for __FILE__ / __LINE__. Deliberately NOT gated
+		// on --std=: both canon compilers accept _Pragma in every mode,
+		// -std=c89 -pedantic included (its name is reserved to the
+		// implementation, so it can never collide with user code).
+		if ( word == "_Pragma" )
+		{
+		    handle_pragma_operator();
 		    return getToken();
 		}
 		// __FUNCTION__ / __func__ / __PRETTY_FUNCTION__: keep these
@@ -6284,6 +6145,212 @@ void Program::consume_directive_line_tail()
     TokenBase *t;
     while ( (t = getToken()) && t->type() != TokenType::ttEOL )
 	/* discard — same as getRealToken() drops trivia */;
+}
+
+// The ONE pragma implementation, entered with `source` positioned at the pragma
+// text itself (`pack(1)`, `push_macro("min")`, …). Both of the language's
+// spellings reach it: the `#pragma` directive, which arrives already
+// positioned, and the C99/C++11 `_Pragma("...")` operator, which destringizes
+// its operand into the source stream first (handle_pragma_operator below).
+// Staying text-driven is precisely what lets one implementation serve both — a
+// pragma must behave identically however it was written, and pack / push_macro
+// are the two madc genuinely acts on rather than ignores.
+void Program::handle_pragma_body()
+{
+    while ( source.peek() == ' ' || source.peek() == '\t' )
+	source.get();
+    std::string pragma;
+    int pragma_line = source.line();
+    int pragma_col = source.column();
+    while ( source.good() && !source.eof() && (isalpha(source.peek()) || source.peek() == '_') )
+	pragma += source.get();
+    if ( pragma == "pack" )
+    {
+	while ( source.peek() == ' ' || source.peek() == '\t' )
+	    source.get();
+	if ( source.peek() == '(' )
+	{
+	    source.get(); // consume (
+	    while ( source.peek() == ' ' || source.peek() == '\t' )
+		source.get();
+	    std::string arg;
+	    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+		arg += source.get();
+	    // GCC semantics (see the pack block in madc.h):
+	    // push saves the current value and an optional
+	    // `, N` then sets it; pop restores; pack(N) sets;
+	    // pack() resets to the default layout. Ops are
+	    // QUEUED, not applied — parse-time application
+	    // rides the token side channel (lex-time state
+	    // would be stale by parse time).
+	    if ( arg == "push" )
+	    {
+		while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
+		    source.get();
+		int val = 0;
+		while ( source.good() && isdigit(source.peek()) )
+		    val = val * 10 + (source.get() - '0');
+		_pending_pack_ops.push_back(std::make_pair(1, val));
+		DBG(std::cout << "#pragma pack(push" << (val ? ", " : "")
+		    << (val ? std::to_string(val) : std::string()) << ") queued" << std::endl);
+	    }
+	    else if ( arg == "pop" )
+	    {
+		_pending_pack_ops.push_back(std::make_pair(2, 0));
+		DBG(std::cout << "#pragma pack(pop) queued" << std::endl);
+	    }
+	    else if ( !arg.empty() && isdigit((unsigned char)arg[0]) )
+	    {
+		_pending_pack_ops.push_back(std::make_pair(0, atoi(arg.c_str())));
+		DBG(std::cout << "#pragma pack(" << arg << ") queued" << std::endl);
+	    }
+	    else if ( arg.empty() )
+	    {
+		_pending_pack_ops.push_back(std::make_pair(0, 0));
+		DBG(std::cout << "#pragma pack() reset queued" << std::endl);
+	    }
+	    // discard trailing tokens via the lexer (handles a
+	    // multi-line /* */ comment on this line)
+	    consume_directive_line_tail();
+	}
+    }
+    else if ( pragma == "push_macro" || pragma == "pop_macro" )
+    {
+	bool is_push = (pragma == "push_macro");
+	while ( source.peek() == ' ' || source.peek() == '\t' )
+	    source.get();
+	if ( source.peek() == '(' )
+	{
+	    source.get(); // consume (
+	    while ( source.peek() == ' ' || source.peek() == '\t' )
+		source.get();
+	    // Expect "macro_name"
+	    if ( source.peek() == '"' )
+	    {
+		source.get(); // consume opening "
+		std::string mname;
+		while ( source.good() && !source.eof() && source.peek() != '"' )
+		    mname += source.get();
+		if ( source.peek() == '"' )
+		    source.get(); // consume closing "
+		if ( is_push )
+		{
+		    auto it = define_map.find(mname);
+		    std::string val = (it != define_map.end()) ? *it : std::string("\x01");
+		    _macro_save_stack[mname].push(val);
+		    DBG(std::cout << "#pragma push_macro(\"" << mname << "\") saved=\"" << val << "\"" << std::endl);
+		}
+		else
+		{
+		    auto sit = _macro_save_stack.find(mname);
+		    if ( sit != _macro_save_stack.end() && !sit->second.empty() )
+		    {
+			std::string val = sit->second.top();
+			sit->second.pop();
+			if ( val == "\x01" )
+			    define_map.erase(mname);
+			else
+			    define_map[mname] = val;
+			DBG(std::cout << "#pragma pop_macro(\"" << mname << "\") restored=\"" << val << "\"" << std::endl);
+		    }
+		}
+	    }
+	}
+	// discard trailing tokens via the lexer (handles a
+	// multi-line /* */ comment on this line)
+	consume_directive_line_tail();
+    }
+    else if ( pragma == "prefer" )
+    {
+	std::vector<std::string> order;
+	while ( source.peek() == ' ' || source.peek() == '\t' )
+	    source.get();
+	while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+	{
+	    while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
+		source.get();
+	    if ( source.peek() == '\n' || source.peek() == '\r' || source.eof() )
+		break;
+	    std::string name;
+	    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+		name += source.get();
+	    if ( !name.empty() )
+		order.push_back(name);
+	    while ( source.peek() == ' ' || source.peek() == '\t' )
+		source.get();
+	}
+
+	TokenBase *tb = make_token(TokenID::tkPREFER);
+	tb->line = pragma_line;
+	tb->column = pragma_col;
+	injected_tokens.push_back(tb);
+	for ( size_t i = 0; i < order.size(); ++i )
+	{
+	    TokenIdent *ti = (TokenIdent *)make_ident(order[i]);
+	    ti->line = pragma_line;
+	    ti->column = pragma_col;
+	    injected_tokens.push_back(ti);
+	    if ( i + 1 < order.size() )
+	    {
+		tb = make_token(TokenID::tkComma);
+		tb->line = pragma_line;
+		tb->column = pragma_col;
+		injected_tokens.push_back(tb);
+	    }
+	}
+	tb = make_token(TokenID::tkSemi);
+	tb->line = pragma_line;
+	tb->column = pragma_col;
+	injected_tokens.push_back(tb);
+    }
+    else
+    {
+	// consume the rest of the directive line for unknown
+	// pragmas; discard trailing tokens via the lexer
+	consume_directive_line_tail();
+    }
+}
+
+// _Pragma("...") — the C99 (and C++11) token form of #pragma, which
+// destringizes its operand and processes it as though it had been written as a
+// directive. libc++ reaches it through _LIBCPP_SUPPRESS_DEPRECATED_PUSH and
+// friends; it is not libc++-specific, though (doctest's macros use it too).
+//
+// The operand is read as a TOKEN rather than character-by-character because the
+// standard macro-expands it first, and real headers depend on that: libc++
+// writes both `_Pragma(#x)` and
+// `_Pragma(_LIBCPP_TOSTRING(clang diagnostic ignored str))`, neither of which is
+// a string literal until expansion has run. Going through the lexer gets that
+// expansion for free — and the string case has already undone \" and \\, which
+// `_Pragma("GCC diagnostic ignored \"-Wdeprecated\"")` needs — so the token's
+// text IS the destringized pragma line, with no second unescaper to drift.
+void Program::handle_pragma_operator()
+{
+    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t'
+			   || source.peek() == '\n' || source.peek() == '\r') )
+	source.get();
+    if ( source.peek() != '(' )
+	Throw << "_Pragma expects a parenthesized string literal" << flush;
+    source.get();				// consume (
+    TokenBase *operand = getRealToken();
+    if ( !operand || operand->type() != TokenType::ttString )
+	Throw << "_Pragma expects a parenthesized string literal" << flush;
+    std::string text = ((TokenIdent *)operand)->spelling();
+    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t'
+			   || source.peek() == '\n' || source.peek() == '\r') )
+	source.get();
+    if ( source.peek() != ')' )
+	Throw << "_Pragma: expected ')' after the pragma string" << flush;
+    source.get();				// consume )
+    DBG(std::cout << "_Pragma(\"" << text << "\")" << std::endl);
+    // Hand the text back to the shared handler as a pragma line. The trailing
+    // newline is load-bearing: every branch of handle_pragma_body ends by
+    // discarding the rest of its directive line, so without a terminator that
+    // discard would run off the end of the pushback and eat real code. A
+    // pushed-back newline does not advance the line counter, so diagnostics
+    // after a _Pragma still name the line it was written on.
+    source.pushback(text + "\n");
+    handle_pragma_body();
 }
 
 // Exact source text of a trivia token (whitespace via its RLE count, comment

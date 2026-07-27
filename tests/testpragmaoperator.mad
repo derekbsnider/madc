@@ -1,0 +1,59 @@
+// _Pragma("...") — the C99 / C++11 token form of #pragma. The lexer routes it
+// to the SAME handler the #pragma directive uses, so the two spellings must
+// produce identical results; the first three structs assert exactly that.
+// Layout oracle: gcc -O0 and clang -O0 agree, LP64.
+#include <stdio.h>
+
+// The DO_PRAGMA idiom: the operand is a macro invocation rather than a string
+// literal until stringization has run, so _Pragma must macro-expand it first.
+// libc++ writes this shape, and so does a great deal of ordinary C.
+#define DO_PRAGMA(x) _Pragma(#x)
+#define PACK_TO(n) DO_PRAGMA(pack(n))
+
+#pragma pack(1)
+struct viaDirective { char c; int i; };
+#pragma pack()
+
+_Pragma("pack(1)")
+struct viaOperator { char c; int i; };
+_Pragma("pack()")
+
+PACK_TO(2)
+struct viaStringize { char c; int i; };
+_Pragma("pack()")
+
+struct natural { char c; int i; };
+
+// push_macro / pop_macro is the other pragma madc genuinely acts on, so it has
+// to work through the operator form too.
+#define VAL 111
+_Pragma("push_macro(\"VAL\")")
+#undef VAL
+#define VAL 222
+_Pragma("pop_macro(\"VAL\")")
+
+// Warning-control and wholly unknown pragmas: accepted and ignored, as gcc
+// does. The embedded \" must survive destringization.
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Wunused-variable\"")
+_Pragma("totally unknown pragma here")
+_Pragma("GCC diagnostic pop")
+
+// The libc++ shape: several _Pragma calls inside one macro, expanded inline in
+// the middle of a function body rather than at file scope.
+#define SUPPRESS_PUSH _Pragma("GCC diagnostic push") _Pragma("GCC diagnostic ignored \"-Wdeprecated\"")
+#define SUPPRESS_POP  _Pragma("GCC diagnostic pop")
+
+int main()
+{
+    SUPPRESS_PUSH
+    int x = 7;
+    SUPPRESS_POP
+    printf("directive=%zu operator=%zu stringize=%zu natural=%zu\n",
+	   sizeof(struct viaDirective), sizeof(struct viaOperator),
+	   sizeof(struct viaStringize), sizeof(struct natural));
+    // __LINE__ pins that a pushed-back pragma line does not disturb the line
+    // counter — every _Pragma above is on one physical line of this file.
+    printf("VAL=%d x=%d line=%d\n", VAL, x, __LINE__);
+    return 0;
+}
