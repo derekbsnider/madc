@@ -2588,6 +2588,33 @@ static TokenBase *resolve_class_static_member_value(Program &pgm,
     return ti;
 }
 
+// `Tmpl<args>::member` once the template-id has already been instantiated to a
+// concrete type: resolve the trailing `::member` static data member to a value.
+//
+// Consumes the `::` and the member name ONLY when it can resolve them, so a
+// caller that speculatively instantiated a template-id can fall through with the
+// token stream intact. Shared by the unqualified (`Box<int>::value`) and
+// namespace-qualified (`std::is_same<A,B>::value`) operand arms, which differ
+// only in how they reach the instantiation.
+static TokenBase *resolve_template_id_static_member(Program &pgm,
+						    TokenDataType *inst)
+{
+    if ( !inst || !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+	return NULL;
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(&inst->definition);
+    if ( !cls )
+	return NULL;
+    TokenBase *probe = pgm.tokens.size() > 1 ? pgm.tokens[1] : NULL;
+    if ( !probe || !is_contextual_identifier_token(probe) )
+	return NULL;
+    const std::string member = contextual_identifier_name(probe);
+    if ( !resolve_class_static_member_type(cls, member) )
+	return NULL;
+    pgm.nextToken();				// consume '::'
+    TokenBase *member_tb = pgm.nextToken();	// consume the member name
+    return resolve_class_static_member_value(pgm, cls, member, member_tb);
+}
+
 // get-or-create the placeholder DataDef for template parameter `name` at 0-based
 // `index`. Pooled by (name, index) and owned by template_param_pool for the
 // Program's lifetime (same never-freed convention as ptr_type_cache), so a Tree-1
@@ -19719,6 +19746,20 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	return NULL;
 
     std::string name = contextual_identifier_name(head);
+    // Unqualified template-id `Tmpl<args>::member` (`(int)is_same<A,B>::value`
+    // with the trait in scope). The qualified spelling is handled inside the
+    // `::` block below; this is the same shape without a namespace in front, so
+    // it has to be checked BEFORE it, where the next token is `<` and not `::`.
+    // Guarded on the template registry rather than probing with
+    // instantiate_template_id, whose token-stream behaviour on a non-template is
+    // not part of its contract — a speculative call could eat the `<`.
+    if ( peekToken() && peekToken()->id() == TokenID::tkLT
+      && find_template(name) )
+    {
+	if ( TokenDataType *inst = instantiate_template_id(name, head) )
+	    if ( TokenBase *sval = resolve_template_id_static_member(*this, inst) )
+		return sval;
+    }
     // Scoped-enum value `Tag::Value` (e.g. inside a cast `(int)Size::Large`).
     // The enumerators live in the tag's pseudo-namespace (see TokenENUM::parse)
     // — QUALIFIED by the declaring namespace, so resolve scope-relatively and
@@ -19749,6 +19790,23 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 		    Throw(head) << "Expecting identifier after '" << deeper << "::'" << flush;
 		ns_name = deeper;
 		member = contextual_identifier_name(member_tb);
+	    }
+	    // `ns::Tmpl<args>::member` — a TEMPLATE-ID between the namespace and
+	    // the member, which is how every trait is spelled
+	    // (`std::is_same<A,B>::value`). The shunting-yard arm already
+	    // resolves this shape, so the bare expression evaluates correctly;
+	    // only the operand path reached here and reported the misleading
+	    // "'is_same' is not a member of 'std'". Same instantiation entry
+	    // point as that arm — this is a second CALLER, not a second
+	    // implementation.
+	    if ( peekToken() && peekToken()->id() == TokenID::tkLT
+	      && template_declared_in_namespace(member, ns_name) )
+	    {
+		if ( TokenDataType *inst =
+			instantiate_template_id(member, member_tb, ns_name) )
+		    if ( TokenBase *sval =
+			    resolve_template_id_static_member(*this, inst) )
+			return sval;
 	    }
 	    namespace_map_t::iterator nsi = namespace_map.find(ns_name);
 	    variable_map_iter vmi;

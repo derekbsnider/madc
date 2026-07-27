@@ -27,6 +27,18 @@ int counter::hits = 5;
 
 namespace N { const int scoped = 11; }
 
+// A TEMPLATE-ID qualifier is the same operand-path question one step harder,
+// and it is how every type trait is spelled. Both the unqualified and the
+// namespace-qualified form must work as a cast operand, partial specializations
+// included — `(int)std::is_same<A,B>::value` is the shape that matters.
+template <class T, class U> struct same_p { static const bool value = false; };
+template <class T> struct same_p<T, T> { static const bool value = true; };
+
+namespace M {
+	template <class T, class U> struct sp { static const bool value = false; };
+	template <class T> struct sp<T, T> { static const bool value = true; };
+}
+
 int main()
 {
 	printf("read=%d cast=%d\n", counter::hits, (int)counter::hits);
@@ -34,5 +46,8 @@ int main()
 	printf("write=%d bump=%d\n", counter::hits, counter::hits + 1);
 	printf("konst=%d castkonst=%d\n", counter::limit, (int)counter::limit);
 	printf("enumtag=%d ns=%d\n", (int)counter::tag, (int)N::scoped);
+	printf("tmpl=%d %d nstmpl=%d %d\n",
+	       (int)same_p<int, int>::value, (int)same_p<int, long>::value,
+	       (int)M::sp<int, int>::value, (int)M::sp<int, long>::value);
 	return 0;
 }
