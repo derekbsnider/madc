@@ -280,6 +280,59 @@ name-based exception list:
 - The darwin lane will hit the identical wall once its trait blocker is
   gone; fixing it here fixes it there.
 
+**The mechanism, and it needs no name list.** The embedded set becomes a
+**virtual directory positioned in the search list**, at the slot the
+generated table ALREADY records as `madc_compiler_owned_include_dir`.
+Dirs before it outrank it; dirs after it lose to it. On the current
+Linux g++ build that slot is index 3 of 7:
+
+```
+0 /usr/include/c++/13/                      ┐
+1 /usr/include/x86_64-linux-gnu/c++/13/     │ C++ stdlib — outranks embedded
+2 /usr/include/c++/13/backward/             ┘
+3 /usr/lib/gcc/x86_64-linux-gnu/13/include/ ← the slot: madc's embedded set
+4 /usr/local/include/                       ┐
+5 /usr/include/x86_64-linux-gnu/            │ C library — embedded outranks
+6 /usr/include/                             ┘
+```
+
+So the position is derived from the same generated table the search
+already uses — no second list, no `#ifdef`, no per-name exception
+(Rule #7). `ns_php.h` and friends need no special case either: no real
+dir ships those names, so they resolve from the virtual dir wherever it
+sits.
+
+**Measured 2026-07-26 — the change is provably baseline-neutral.**
+
+| madc embeds | libstdc++ 13 ships | libc++ 18 ships |
+|---|---|---|
+| `float.h` | — | **yes** |
+| `limits.h` | — | no |
+| `stdarg.h` | — | no |
+| `stdbool.h` | — | **yes** |
+| `stddef.h` | — | **yes** |
+| `stdint.h` | — | **yes** |
+
+libstdc++ ships **none** of the six, so on the existing Linux lane the
+reordering cannot change a single resolution. libc++ ships **four** —
+exactly the wrappers that must win. Three further checks confirm the
+regression surface is empty: the baked-PCH table is generated empty, no
+test fixture uses `-I` at all, and no copy of any of the six exists
+anywhere under `tests/` or `include/` outside `include/madc/` itself.
+
+**`#include_next` is part of the fix, not a follow-on.** libc++'s
+`stddef.h` is a wrapper: it does `#include_next <stddef.h>` and guards a
+second one with `__has_include_next(<stddef.h>)`. So a `#include_next`
+from a dir BEFORE the slot must be able to land ON the embedded copy —
+otherwise libc++'s wrapper reaches past madc's freestanding header
+entirely. Slice 1 bought this for free: because `__has_include_next`
+answers through the same resolver `#include_next` uses, fixing the
+resolver fixes the query with no second edit.
+
+**Testable today, before `-stdlib=` exists**: `-I/usr/lib/llvm-18/include/c++/v1`
+puts libc++ ahead of the slot, since `-I` dirs precede the generated
+list — which is also gcc's own precedence for `-I` over its resource dir.
+
 Sequencing note: this now precedes the two mandatory intrinsics, because
 on the Linux lane it fires first.
 
