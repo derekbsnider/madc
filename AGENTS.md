@@ -61,6 +61,22 @@ repo is the historical gap analysis that drove madc's Phase A–F.
 These are the rules that cause the most damage when violated. Every
 agent must follow them without exception.
 
+**They are GATED — assertion is not enough, you must show the work.**
+Every commit touching `src/` or `include/` carries four trailers, and
+`scripts/check-rule-trailers.sh` (in `fulltest`) fails without them:
+
+```
+Hypothesis: <what you believed was wrong, written BEFORE editing>      (#3)
+Layer:      <the layer chain, and why the one you edited is deepest>   (#2,#5)
+Searched:   <the grep you ran, the CONCEPT, and what came back>        (#4)
+Oracle:     <what gcc/clang did on a reducer, and what madc did>       (#1)
+```
+
+`n/a — <reason>` is allowed; silence is not. If you cannot write
+`Layer:` — the chain, and why yours is the deepest — **you are shimming;
+stop and go lower.** A true principle is not a substitute for the
+deepest layer. See `.claude/rules/rule-trailers.md`.
+
 1. **GCC is canon.** Before fixing any codegen or runtime bug, run
    `gcc -S -fverbose-asm -O0` and study the output. madc must match
    GCC's behavior. No exceptions. (`gcc-parity.md`, `gcc-methodology.md`)
@@ -281,6 +297,7 @@ history, or spam agent-permission prompts. Apply them unconditionally.
 | [session-handoff.md](.claude/rules/session-handoff.md) |   19 | KG-first hand-off flow, hypothesis-first execution, concise hand-off note |
 | [knowledge-graph.md](.claude/rules/knowledge-graph.md) |   14 | KG as authoritative project memory, mirrored back into repo files |
 | [scratch-files.md](.claude/rules/scratch-files.md) |     8 | All scratch / temp / reducer files go in `tmp/` (gitignored) — never in `tests/` or repo root |
+| [rule-trailers.md](.claude/rules/rule-trailers.md) |    28 | **Show the Top 5 work, don't assert it.** Every `src/`/`include/` commit carries `Hypothesis:` / `Layer:` / `Searched:` / `Oracle:`; gated by `check-rule-trailers.sh`. Can't write `Layer:`? You're shimming |
 
 Shell-command hygiene (single commands, no `&&` chains) is a P1 rule
 too; it's stated in the "Shell command hygiene" section of this file.
@@ -334,10 +351,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **29 rules, 802 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~366 lines** — loaded by Claude via
+- **30 rules, 830 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~382 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1196 lines.**
+- **Grand total loaded by Claude Code per turn: ~1240 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

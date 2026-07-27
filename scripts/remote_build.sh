@@ -41,6 +41,37 @@ case " $stages " in
 	*" shell "*) echo "ssh -p $PORT $REMOTE"; exit 0;;
 esac
 
+# MECHANICAL GUARD — refuse to touch the container while it is busy.
+#
+# Two rules used to depend on the operator remembering them: "never rebuild
+# mid-suite (phantom failures)" and "one heavy container job at a time". Both
+# were broken in the same stretch on 2026-07-27 — a relink landed under a live
+# suite, then a second suite started beside it — and the damage READ AS GREEN
+# (rc=0 twice, both untrustworthy, both discarded). A green you cannot trust is
+# worse than a red, so this is a refusal, not a warning.
+#
+# MADC_ALLOW_CONCURRENT=1 overrides it. If you set that, you own the result.
+container_busy_check() {
+	case " $stages " in
+		*" shell "*) return 0;;
+	esac
+	if [ "${MADC_ALLOW_CONCURRENT:-0}" = "1" ]; then
+		echo "=== container busy-check SKIPPED (MADC_ALLOW_CONCURRENT=1) ==="
+		return 0
+	fi
+	busy=$($SSH 'pgrep -fa "run_tests\.sh|make -C .*/src|make -C /workspace/madc" 2>/dev/null | grep -v pgrep' 2>/dev/null)
+	if [ -n "$busy" ]; then
+		echo "REFUSING: a build or test run is already live in the container." >&2
+		printf '%s\n' "$busy" | sed 's/^/  /' >&2
+		echo "" >&2
+		echo "Rebuilding or starting a second suite now produces phantom" >&2
+		echo "passes AND phantom failures. Wait for it, or override with" >&2
+		echo "MADC_ALLOW_CONCURRENT=1 and own the result." >&2
+		exit 1
+	fi
+}
+container_busy_check
+
 rc_total=0
 
 run_remote() {

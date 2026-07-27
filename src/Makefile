@@ -603,6 +603,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-no-std-hardcoding.sh
 	@cd .. && bash scripts/check-call-emit-symbol.sh
 	@cd .. && bash scripts/check-one-delim-tracker.sh
+	@cd .. && bash scripts/check-rule-trailers.sh
 	@cd .. && bash scripts/warn_census.sh --check
 	@cd .. && bash scripts/tag_arith_burndown.sh --check
 	@cd .. && bash scripts/tsubst_flagon_gate.sh --check
