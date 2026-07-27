@@ -19814,7 +19814,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
     {
 	if ( TokenDataType *inst = instantiate_template_id(name, head) )
 	    if ( TokenBase *sval = resolve_template_id_static_member(*this, inst) )
-		return sval;
+		return parsePostfixChainFrom(sval, postfix_expr_variable(sval));
     }
     // Scoped-enum value `Tag::Value` (e.g. inside a cast `(int)Size::Large`).
     // The enumerators live in the tag's pseudo-namespace (see TokenENUM::parse)
@@ -19862,7 +19862,8 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 			instantiate_template_id(member, member_tb, ns_name) )
 		    if ( TokenBase *sval =
 			    resolve_template_id_static_member(*this, inst) )
-			return sval;
+			return parsePostfixChainFrom(sval,
+						     postfix_expr_variable(sval));
 	    }
 	    namespace_map_t::iterator nsi = namespace_map.find(ns_name);
 	    variable_map_iter vmi;
@@ -19873,7 +19874,13 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    r->file = head->file;
 	    r->line = head->line;
 	    r->column = head->column;
-	    return r;
+	    // A qualified name is only the HEAD of a postfix-expression. Bare,
+	    // it dropped every `(`, `[`, `.` and `->` that followed, and the
+	    // caller re-read them as a fresh expression: `(int)N::f(x)` became
+	    // `(int)(x)` SILENTLY, and `(int)N::arr[1]` reached the lambda-
+	    // introducer dispatch and reported "Expecting ] in lambda
+	    // expression". Same tail as the unqualified path below.
+	    return parsePostfixChainFrom(r, postfix_expr_variable(r));
 	}
 	// Same syntax, CLASS qualifier: `S::n`. This is the path a postfix or
 	// cast operand takes (`(int)S::n`), and it knew only about namespaces
@@ -20191,6 +20198,28 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	    else if ( !handled_fixed_array && base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
 		elem_type = unwrap_subscript_element_type(base_type);
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);
+	    continue;
+	}
+	if ( pid == TokenID::tkOpBrk )
+	{
+	    // `(` is a postfix operator too ([expr.post]) — a call on a
+	    // function-typed head. Only the QUALIFIED operand paths reach it:
+	    // an unqualified `f(x)` cast operand is claimed earlier by
+	    // parse_cast_function_call_operand, so the chain never needed this
+	    // arm until `(int)N::f(x)` was traced. Without it the `(x)` was
+	    // left in the stream and re-read as a parenthesized expression,
+	    // whose value silently replaced the call.
+	    Variable *callee = postfix_expr_variable(result);
+	    if ( !callee || !callee->type || !callee->type->is_function() )
+		break;			// a grouping paren, not a call
+	    TokenBase *open = nextToken();
+	    TokenCallFunc *tc = new TokenCallFunc(*callee);
+	    tc->file = open->file;
+	    tc->line = open->line;
+	    tc->column = open->column;
+	    parseCallFunc(tc);
+	    result = tc;
+	    var = &tc->var;
 	    continue;
 	}
 	break;

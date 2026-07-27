@@ -1,0 +1,85 @@
+// A qualified name is only the HEAD of a postfix-expression.
+//
+// `N::f` resolved in an OPERAND position (a cast operand, a deref operand, an
+// address-of operand) used to be returned bare, dropping every postfix
+// operator that followed it. The dropped tokens were then re-read by the
+// caller as a fresh expression, so:
+//
+//   (int)N::f(x)     silently became (int)(x)  — the ARGUMENT was the value
+//   (int)N::arr[1]   reached the LAMBDA-introducer dispatch and reported
+//                    "Expecting ] in lambda expression"
+//   (int)N::s.b      reported "member reference is not a structure or union"
+//
+// Two of those three were silent. Every value here is checked against g++ and
+// clang++ on the same source.
+#include <stdio.h>
+
+namespace N
+{
+	int arr[4] = { 5, 6, 7, 8 };
+
+	unsigned long len(const char *s)
+	{
+		unsigned long n = 0;
+		while ( s[n] )
+			++n;
+		return n;
+	}
+
+	int add(int a, int b) { return a + b; }
+
+	// Overloads: the call must still pick by argument type once the chain
+	// actually builds the call.
+	int pick(int x) { return 10; }
+	int pick(const char *s) { return 20; }
+
+	int *slot(int i) { return arr + i; }
+
+	struct P { int a; int b; };
+	P origin = { 3, 9 };
+	P make(int v) { P p; p.a = v; p.b = v * 2; return p; }
+}
+
+namespace Outer { namespace Inner { int twice(int x) { return x * 2; } } }
+
+// A using-declaration imports the SAME entity; the qualified call through the
+// alias must behave exactly like the direct one.
+unsigned long plain_len(const char *s) { return N::len(s); }
+namespace Alias { using ::plain_len; }
+
+int main(void)
+{
+	// A call as a cast operand — the silent case.
+	printf("call %d\n", (int)N::len("abcde"));
+	printf("call2 %d\n", (int)N::add(4, 5));
+
+	// A subscript on a qualified array.
+	printf("subscript %d\n", (int)N::arr[2]);
+
+	// A member of a qualified struct object.
+	printf("member %d %d\n", (int)N::origin.a, (int)N::origin.b);
+
+	// The chain must CONTINUE past the call, not stop at it.
+	printf("call.member %d\n", (int)N::make(4).b);
+	printf("call[idx] %d\n", (int)N::slot(1)[1]);
+
+	// Overload selection survives the new call path.
+	printf("overload %d\n", (int)N::pick(1) + (int)N::pick("a"));
+
+	// Nested namespace qualifier.
+	printf("nested %d\n", (int)Outer::Inner::twice(21));
+
+	// Through a using-declaration alias, and directly, for comparison.
+	printf("alias %d %d\n", (int)Alias::plain_len("abcd"), (int)plain_len("abcd"));
+
+	// Not a cast: a deref operand and an address-of operand are the same
+	// operand path.
+	printf("deref %d\n", *N::slot(3));
+
+	// The value must also be right when it is NOT the operand of a cast,
+	// which is the control that says the call itself was never broken.
+	unsigned long v = N::len("abcde");
+	printf("control %d\n", (int)v);
+
+	return 0;
+}
