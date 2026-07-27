@@ -308,3 +308,74 @@ Then the char-level pair (`namespace_scope_from_cpp_spelling`,
 `primary_name_from_cpp_spelling`) — same rule, character alphabet — and the
 paren/square-only scanners at 11776, 19169, 35358, 46584, and
 `madc_program.cpp:1119`.
+
+### Slice 3 answered: the char-level scanners are a SEPARATE, larger family
+
+Slice 3 said to verify the char-level pair can actually see the hazard before
+writing machinery for it. Answered — and the pair is not a pair.
+
+Searched for an existing char-level delimiter scanner (the Rule #4 step, stated
+so its absence is checkable):
+
+```
+grep -rn "== '<'" src/*.cpp
+grep -rn "spelling.*depth\|depth.*spelling" src/*.cpp include/*.h
+```
+
+**No shared owner exists** — unlike the token family, where `DelimDepth` was
+already there. And the family is **19 lines across three files**, not two
+functions in one:
+
+| File | angle-scan lines |
+|---|---|
+| `src/parser.cpp` | 10 (18073, 18095, 21395, 24060, 24156, 40865, …) |
+| `src/madc_mangle.cpp` | 6 (305, 326, 348, …) |
+| `src/cir_builder.cpp` | 3 (11561, 11573, …) |
+
+Every one of them was invisible to all three earlier audits: they count with
+`depth` or `d`, never `angle_depth`, and two of the files were never in scope.
+
+**Can they see the hazard?** Yes. These scan a canonical C++ type spelling for
+the top-level `::`, `,` or `<`, and a template-argument spelling can legitimately
+contain `vt<decltype(declval<T>()<declval<U>())>::type`. A spurious angle open
+makes them pick the wrong `::`.
+
+Writing a char-level sibling of `DelimDepth` **is** justified new machinery —
+the search was performed and came back empty. That is round 2's job, not a
+bolt-on: it needs its own reducer, its own three-way g++/clang comparison, and
+its own gate. Deliberately not started here, because a half-migration across
+three files with the battery already running is how the original mess was made.
+
+No gate was added for this family yet, on purpose. The obvious markers
+(`== '<'`, a bare `depth`) are exactly the spelling-keyed kind this document
+argues against, and a bad marker is worse than none — it reports a smaller
+family with confidence.
+
+### Slice 5 — payoff collected
+
+Measured in the container (the NAS's `sys_include_paths.cpp` is a stale
+pre-P2.0 flat table and libc++ headers exist only in the container, so a
+`-stdlib=libc++` probe there fails with "Failed to open include file" for
+reasons that have nothing to do with this fix).
+
+| Probe | Before | After |
+|---|---|---|
+| `<cctype>` + `using ::isalnum;` | `cctype:111` failure | **rc=0** |
+| `<type_traits>` | — | **rc=0** |
+| `<string_view>` | `cctype:111` cascade | rc=1, new + deeper defect |
+
+**The `cctype:111` cascade is cleared.** `<string_view>` now dies at
+`.../c++/v1/cwchar:202: 'wcslen' is not a member of namespace 'std'` — wide-char
+declarations, a genuinely new blocker rather than a remnant. That is the next
+libc++ item, ahead of `<compare>` → `math.h:414 'std::__math'` (which belongs to
+the `qualifier_before_scope_resolution` family, not this one).
+
+Classify these probes **by exit status, never by scraping output**: the first
+run of this table piped through `head` and reported `rc=0` for a failing
+compile, because that was `head`'s status.
+
+### Round 1 validation
+
+`fulltest` rc=0 · JIT **762**/0/0/9 (baseline 761) · EXE **746**/0 (745) ·
+OBJ **746**/0 (745) · packed **762**/0 · `libcxx_gate` **11/11**.
+Every lane +1 — `tests/testtemplateanglelt.mad`. No regressions.
