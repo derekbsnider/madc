@@ -679,7 +679,60 @@ Consequence worth noting beyond this bug: `is_system_header_path()` also gates
 CIR inline-body emission (reachability DCE), so libc++ headers were on the wrong
 side of *that* decision too.
 
-### Still open: `cctype:111`
+### `cctype:111` — ROOT CAUSE FOUND (fix not yet written)
+
+It is **not a libc++ problem and not an include problem**. It is a C++ parser
+bug, reducible to eight lines with no library headers at all:
+
+```cpp
+template <class T> T declval();
+template <class...> struct vt { typedef void type; };
+template <class T, class U, class = void> struct cmp { static const int v = 0; };
+template <class T, class U>
+struct cmp<T, U, typename vt<decltype(declval<T>() < declval<U>())>::type> { static const int v = 1; };
+// madc: "Unexpected end of data"      g++/clang: prints `1 0`
+```
+
+The `<` in `declval<T>() < declval<U>()` is a **less-than operator**, but the
+scanner reading the partial specialization's template-argument list treats it as
+opening a nested argument list. It then consumes `declval<U>`'s `>` as the
+closer and runs to EOF looking for a delimiter that does not exist.
+
+**The whole cascade came from this one defect, six headers upstream of where it
+was reported.** libc++'s `__utility/is_pointer_in_range.h` contains exactly that
+construct. It dies mid-header, so its `_LIBCPP_BEGIN_NAMESPACE_STD` never opens
+a namespace — and the matching `_LIBCPP_END_NAMESPACE_STD` then *closes scopes
+that were never opened*. From that point the scope stack is wrong, so later
+global declarations (glibc's `isalnum` among them) are not reachable from `::`,
+and `using ::isalnum;` fails in a file that is itself perfectly fine. Every
+order-dependence in the earlier bisects was this: whichever header first drags
+in `is_pointer_in_range.h` determines where the damage surfaces.
+
+**The correct rule is already implemented — in one place.** `parser.cpp:38774`
+tracks angle brackets *only outside parens and subscripts*, and its comment
+cites this exact shape (`decltype(forward<_Tp>(t) < forward<_Up>(u))`) along
+with the same "consumed to EOF" symptom. A sibling scanner lacks the guard.
+There are six `angle_depth` scanners; audit them against that one:
+
+| Site | Function | Has `paren_depth`? |
+|---|---|---|
+| parser.cpp:38716 | (the fixed one — reference implementation) | yes, with the citation |
+| parser.cpp:3320 | `collect_template_argument_spelling` | yes |
+| parser.cpp:38358 | `collect_template_default_argument` | audit |
+| parser.cpp:45465 | `skip_template_suffix_tokens` | audit |
+| parser.cpp:48445 | (inner scope) | audit |
+| parser.cpp:18083/18104 | spelling helpers (string-level) | audit |
+
+Six copies of one rule is the real finding — the fix is to make them share it,
+not to add the guard a seventh time (`design-principles.md`,
+`no-parallel-implementations.md`).
+
+**A second bug is queued behind it**, seen once `is_pointer_in_range.h` is
+worked around: `compare` → `math.h:414: Unknown namespace 'std::__math'` — a
+*nested* namespace qualifier, the same family as the `&S::n` fix but for a
+qualified `std::__math` name.
+
+### Superseded: the earlier "still open" analysis
 
 `using ::isalnum;` still fails from `<string_view>`, with canonical paths in
 place — so it is **not** the same bug. Eliminated by measurement:
