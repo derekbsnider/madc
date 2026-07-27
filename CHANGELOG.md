@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+Work in progress on `feature/libcxx-flavor-claude`: madc's second C++
+**standard-library flavor**. libc++ is a library, not a platform — Apple's
+default, the Android NDK's STL, FreeBSD's system C++ library, and available
+anywhere clang is — so it is developed and gated on Linux against
+`libc++-18-dev`, with only the target plumbing needing a Mac.
+
+- **feat(pp): the clang `__has_*` preprocessor operators are real.**
+  `__has_builtin` answers from madc's own builtin knowledge; `__has_include` /
+  `__has_include_next` answer through the *same* resolver `#include` uses, so
+  "can I include this?" and "will including it work?" cannot disagree. The
+  attribute/feature forms parse their operand and answer 0 **deliberately** —
+  the same answer they gave by accident, now given on purpose, because an
+  unbacked yes trades a library's clean `#error` for a mystifying failure deep
+  in its headers. One layer down: `#if` operands are macro-expanded and madc
+  aliases 138 builtins, so `__has_builtin(__builtin_memcpy)` was arriving as
+  `__has_builtin(memcpy)`; the `__has_*` family is now protected from
+  expansion, whole parenthesized operand included.
+- **feat(pp): the embedded header set is a POSITIONED directory, not an
+  unconditional first hit.** madc's six embedded freestanding headers ARE its
+  compiler resource dir, so they now sit at the slot the generated table
+  records as `madc_compiler_owned_include_dir` — both canon compilers' own
+  `c++/v1 → resource dir → C library` order. Directories before the slot
+  outrank the embedded copy; directories after it lose to it; `-I` outranks it
+  unconditionally, matching gcc. Position is derived from the generated table,
+  so there is no name list and no `#ifdef`, and the header-less-Mac promise is
+  intact: nothing on the path → the embedded copy still serves. Measured
+  baseline-neutral — libstdc++ 13 ships none of the six, libc++ 18 ships four.
+- **fix(parser): a struct typedef may name a type madc pre-registers.** The
+  struct-typedef path accepted only a plain identifier in the alias position
+  while madc's own general typedef path already accepted type and keyword
+  tokens, so `typedef int max_align_t;` compiled but gcc's
+  `typedef struct {...} max_align_t;` did not — the same declaration failing
+  purely because its body was a struct. Both paths now share one accept-set
+  helper. The duplicate-name check gained a precise discriminator
+  (`TokenDataType::builtin`) so it skips only madc's *own* pre-registrations;
+  a genuine user-vs-user redefinition still errors, as gcc and clang report it.
+- **fix(pp): `__has_builtin` answers from the type-trait registry too.**
+  Trait intrinsics carry no `__builtin_` prefix, so `has_builtin` was
+  answering no for traits madc implements — which cost libc++ a working
+  `is_trivially_destructible` fallback it was entitled to. One registry, two
+  consumers (the preprocessor query and the parser's sema).
+- **test: `scripts/libcxx_gate.sh`** in `fulltest` — six legs, with
+  `clang++ -stdlib=libc++` as the oracle that owns this library. Discovers
+  libc++ by asking clang rather than hardcoding a path, and skips *loudly*
+  when clang or libc++ is absent.
+
+`<cstddef>`, `<cstdint>`, `<climits>` and libc++'s `<stdio.h>` wrapper now
+compile and run under libc++, oracle-matched. Linux baseline unmoved
+throughout: 756/0/0/9 JIT, 740/0 EXE, 740/0 OBJ.
+
 ## [v0.53.0] — 2026-07-26
 
 `-static-libmadc` works in the **`.o` link lane** — the last stated
