@@ -2537,6 +2537,57 @@ static bool resolve_class_static_member_const_value(DataDefCLASS *cls,
     return false;
 }
 
+// `Class::member` where member is a STATIC DATA MEMBER — resolve it to a value
+// token. Two kinds of static live behind one syntax and they resolve
+// differently, which is the whole reason this is a shared helper:
+//
+//   static const int n = 5;   an in-class integral constant -> fold to its value
+//   static int n;  int S::n;  STORAGE -> the `Class__member` global that its
+//                             out-of-class definition declared (parseDeclaration
+//                             folds the `::` in `int S::n = 5;` to `S__n`)
+//
+// Getting that choice wrong is not a diagnostic-quality issue: folding a
+// storage-backed member to its (absent) constant yields a silent 0 on every
+// read and "lvalue required" on every write. A class-TYPED static is always an
+// object, so it checks storage first and never folds.
+//
+// Returns NULL when `member` is not a static data member of `scope` at all,
+// leaving the caller's own not-found path in charge.
+static TokenBase *resolve_class_static_member_value(Program &pgm,
+						    DataDefCLASS *scope,
+						    const std::string &member,
+						    TokenBase *at)
+{
+    DataDef *static_dd = resolve_class_static_member_type(scope, member);
+    if ( !static_dd )
+	return NULL;
+
+    // The one name its out-of-class definition registers.
+    const std::string storage_name = scope->name + "__" + member;
+    int64_t cv = 0;
+    const bool have_const =
+	resolve_class_static_member_const_value(scope, member, cv);
+    // Objects never fold; scalars prefer a real in-class constant and fall back
+    // to storage. `static const int n = 5;` with a later `const int S::n;`
+    // still reads 5, which is what both canons do.
+    const bool storage_first = dynamic_cast<DataDefCLASS *>(static_dd) != NULL;
+    if ( storage_first || !have_const )
+    {
+	if ( Variable *svar = pgm.findVariable(storage_name) )
+	{
+	    TokenVar *tv = new TokenVar(*svar);
+	    copy_token_location(tv, at);
+	    return tv;
+	}
+    }
+    // No storage: an in-class constant, or a declared-but-never-defined static
+    // (unchanged behaviour — cv stays 0).
+    TokenInt *ti = new TokenInt(cv);
+    ti->setDataType(static_dd);
+    copy_token_location(ti, at);
+    return ti;
+}
+
 // get-or-create the placeholder DataDef for template parameter `name` at 0-based
 // `index`. Pooled by (name, index) and owned by template_param_pool for the
 // Program's lifetime (same never-freed convention as ptr_type_cache), so a Tree-1
@@ -19710,6 +19761,33 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    r->column = head->column;
 	    return r;
 	}
+	// Same syntax, CLASS qualifier: `S::n`. This is the path a postfix or
+	// cast operand takes (`(int)S::n`), and it knew only about namespaces
+	// and scoped-enum tags — so a class qualifier fell through to
+	// findVariable("S") and reported "undeclared identifier 'S'", while the
+	// identical expression parsed fine standing on its own. A cast is the
+	// usual spelling for trait use (`(int)is_same<A,B>::value`), so the gap
+	// sat in front of a great deal of ordinary C++.
+	//
+	// Confirm the member really is a static data member BEFORE consuming
+	// anything: on any other shape (a class-scope enumerator, a member
+	// function) this must leave the token stream untouched so the existing
+	// paths below still see it, which keeps the change strictly additive.
+	if ( DataDefCLASS *class_scope = resolve_expression_class_scope(name) )
+	{
+	    TokenBase *probe = tokens.size() > 1 ? tokens[1] : NULL;
+	    if ( probe && is_contextual_identifier_token(probe)
+	      && resolve_class_static_member_type(
+		    class_scope, contextual_identifier_name(probe)) )
+	    {
+		nextToken();			// consume '::'
+		TokenBase *member_tb = nextToken();
+		if ( TokenBase *sval = resolve_class_static_member_value(
+			*this, class_scope,
+			contextual_identifier_name(member_tb), member_tb) )
+		    return sval;
+	    }
+	}
     }
     Variable *var = findVariable(name);
     if ( !var && name == "this" )
@@ -20783,35 +20861,15 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	    return QualifiedClassExprAction::ResolvedFunction;
 	}
 
-	if ( DataDef *static_dd = resolve_class_static_member_type(scope, member_name) )
+	// Static data member: the shared resolver owns the constant-vs-storage
+	// choice. That choice used to be made here and only for CLASS-typed
+	// members, so a scalar `static int n;` fell into the integral fold and
+	// read a silent 0 no matter what its out-of-class definition had
+	// initialized it to.
+	if ( TokenBase *sval =
+		resolve_class_static_member_value(pgm, scope, member_name, member_tb) )
 	{
-	    // A CLASS-typed static data member is an OBJECT: resolve to its
-	    // storage (the Class__member global its out-of-class definition
-	    // declared — `inline constexpr partial_ordering
-	    // partial_ordering::less(...)`), never to the integral-constant
-	    // fold below (which silently zeroes every use).
-	    if ( dynamic_cast<DataDefCLASS *>(static_dd) )
-	    {
-		std::string storage_name = scope->name + "__" + member_name;
-		if ( Variable *svar = pgm.findVariable(storage_name) )
-		{
-		    TokenVar *tv = new TokenVar(*svar);
-		    tv->file = member_tb->file;
-		    tv->line = member_tb->line;
-		    tv->column = member_tb->column;
-		    exStack.push(tv);
-		    *tb_out = member_tb;
-		    return QualifiedClassExprAction::PushedExpression;
-		}
-	    }
-	    int64_t cv = 0;
-	    resolve_class_static_member_const_value(scope, member_name, cv);
-	    TokenInt *ti = new TokenInt(cv);
-	    ti->setDataType(static_dd);
-	    ti->file = member_tb->file;
-	    ti->line = member_tb->line;
-	    ti->column = member_tb->column;
-	    exStack.push(ti);
+	    exStack.push(sval);
 	    *tb_out = member_tb;
 	    return QualifiedClassExprAction::PushedExpression;
 	}

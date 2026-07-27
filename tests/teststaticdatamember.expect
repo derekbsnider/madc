@@ -1,0 +1,4 @@
+read=5 cast=5
+write=9 bump=10
+konst=7 castkonst=7
+enumtag=3 ns=11
