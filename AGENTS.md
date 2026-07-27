@@ -194,6 +194,22 @@ instructions.
 Skip `tests/include_helper.mad` when running by hand; it is included
 by `testinclude.mad`, not a standalone test.
 
+## Duplication audit
+
+`/dupaudit` (`.claude/commands/dupaudit.md`) is a **recon** pass for *semantic*
+duplication — N sites implementing one rule where at least one differs. That
+divergence is the bug; the redundancy is only the cost. It is not a clone
+detector: the case that hurts here shares no text (six angle-bracket scanners,
+one guarded, a sixth unguarded copy written two days *after* the fix landed in
+the first).
+
+Run it **before merging a feature branch, scoped to the subsystem the feature
+touched** — that is where new copies are born. Findings are recorded as
+`DupFamily` nodes in `madc-knowledge` so later sweeps re-check instead of
+rediscovering, and every family that gets consolidated leaves a gate in
+`fulltest` so it cannot regrow. Non-Claude tools: read the command file and
+follow its steps directly.
+
 ## Session hand-off
 
 Cross-agent work in this repo uses
