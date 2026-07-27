@@ -31312,6 +31312,19 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	dds->tag_explicit_align = explicit_align;	// __attribute__((aligned(N))) on the tag
     DBG(cout << "TokenSTRUCT::parse() defining struct " << dds->name << endl);
 
+    // Nested TYPE declarations seen in this body. A nested type makes the
+    // enclosing aggregate a SCOPE, and only a DataDefCLASS can be one
+    // (type_aliases / enclosing_class live there) — so it joins the object
+    // member and the NSDMI as a feature a struct EARNS class-hood from, on
+    // exactly the principle stated at the promotion site: the keyword does not
+    // decide struct-vs-class, the contents do. Registered as scope entries
+    // AFTER promotion, since that is when the object that persists exists.
+    // Without this, `struct Outer { struct Inner {...}; };` parsed fine and
+    // then `Outer::Inner` — as a type OR as a `::` qualifier — reported
+    // "Unknown namespace 'Outer'", while the identical body spelled `class`
+    // worked.
+    std::vector<std::pair<std::string, DataDef *> > nested_type_decls;
+
     // Thin forwarder to the shared Program::parse_bitfield_width (also used by
     // the class body parser). Storage size is a pure function of the member
     // type, so the outer `dds` is a valid `target` for nested members too.
@@ -31741,6 +31754,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			pgm.Throw(stag) << "Nested class '" << sname
 			    << "' not registered by class parser" << flush;
 		    mtype = new TokenDataType(sname.c_str(), *ndmi->second);
+		    nested_type_decls.push_back(
+			std::make_pair(sname, ndmi->second));
 		}
 		else if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
 		{
@@ -31770,6 +31785,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // so it is emitted first.
 		    record_struct(inner, stag);
 		    mtype = new TokenDataType(sname.c_str(), *inner);
+		    nested_type_decls.push_back(std::make_pair(sname, inner));
 		}
 		else
 		{
@@ -32079,7 +32095,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	// structs that actually carry an `= init`), so it keeps trivial C structs
 	// untouched.
 	bool has_default_init = !dds->member_default_inits.empty();
-	if ( ( has_object_member || has_default_init ) && !dynamic_cast<DataDefCLASS *>(dds) ) {
+	// A nested TYPE is the third such feature. It makes the aggregate a
+	// SCOPE, and a scope is a DataDefCLASS thing — type_aliases and
+	// enclosing_class have no DataDefSTRUCT equivalent, and
+	// resolve_expression_class_scope ends in a dynamic_cast<DataDefCLASS *>.
+	// A struct with no nested type is untouched, so trivial C structs stay
+	// plain DataDefSTRUCTs exactly as before.
+	bool has_nested_type = !nested_type_decls.empty();
+	if ( ( has_object_member || has_default_init || has_nested_type )
+	  && !dynamic_cast<DataDefCLASS *>(dds) ) {
 	    DataDefCLASS *ddc = new DataDefCLASS(dds->name, dds->size, dds->rawtype());
 	    static_cast<DataDefSTRUCT &>(*ddc) = *dds; // copy the parsed struct state
 	    if ( was_pre_registered && tag )
@@ -32090,6 +32114,21 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // refers to the class for the rest of this function (registration/typedef/return).
 	    dds = ddc;
 	}
+	// Now that `dds` is final, publish the nested types as scope members
+	// ([class.nest]). Done here rather than at each nested declaration
+	// because the enclosing object only becomes a DataDefCLASS above.
+	if ( DataDefCLASS *scope = dynamic_cast<DataDefCLASS *>(dds) )
+	    for ( size_t i = 0; i < nested_type_decls.size(); ++i )
+	    {
+		if ( !nested_type_decls[i].second )
+		    continue;
+		pgm.set_class_type_alias(scope, nested_type_decls[i].first,
+					 nested_type_decls[i].second);
+		if ( DataDefCLASS *nested =
+			dynamic_cast<DataDefCLASS *>(nested_type_decls[i].second) )
+		    if ( !nested->enclosing_class )
+			nested->enclosing_class = scope;
+	    }
     }
 
     // register the struct type
@@ -32145,6 +32184,18 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    DBG(cout << "TokenSTRUCT::parse() registered struct " << tag_store_key << " size=" << dds->size << endl);
 	}
 	register_cpp_aggregate_name(tag->spelling(), dds);
+	// A nested STRUCT is a member of its enclosing class's scope, exactly as
+	// a nested CLASS is ([class.nest]) — the nested-class path does this at
+	// its own registration (set_class_type_alias(nested_owner_class, ...)),
+	// and only the struct spelling was missing it. Without the alias,
+	// `class Outer { struct Inner { ... }; };` parsed fine and then
+	// `Outer::Inner i;` failed, because resolve_class_type_alias had nothing
+	// to find. Registered post-promotion so the alias names the object that
+	// persists in struct_map. The bare tag stays registered too, which is the
+	// C spelling and unchanged.
+	if ( !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() )
+	    pgm.set_class_type_alias(pgm.class_scope_stack.back(),
+				     tag->spelling(), dds);
 	// B3 SLICE 1e: dual-populate the arena record for the FINAL registered aggregate
 	// (dds is the self-registered / forward-completed / newly-registered object here,
 	// post-promotion — the object that persists in struct_map). Reads stay on dds.

@@ -1,0 +1,7 @@
+struct/struct 11
+qualifier 21
+qualifier-cast 15
+class/struct 3 4
+class/class 24
+own statics 42 42
+plain 1 2 8
