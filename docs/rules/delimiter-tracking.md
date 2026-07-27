@@ -25,10 +25,25 @@ fails the build instead of surviving for seven weeks.
 
 Each of these is a real bug that a fresh `++angle_depth` chain reintroduces:
 
-1. **A `<` opens a template-argument list only in a template-id head context.**
-   After `)`, `]`, or a literal it is less-than. Real `<type_traits>` writes
-   `integral_constant<bool, _Tp(-1) < _Tp(0)>`; counting that `<` as an open
-   desynced the scan by one level for the next ~1300 header lines.
+1. **A `<` opens a template-argument list only in a template-id head context
+   AND outside `(...)` / `[...]`. Both tests are required** — each catches a
+   shape the other misses, and this is the single most important thing in the
+   file:
+   - *head context* catches `declval<T>() < declval<U>()` — prev is `)`, so the
+     `<` cannot begin a template-id. Real `<type_traits>` writes
+     `integral_constant<bool, _Tp(-1) < _Tp(0)>`; counting that `<` as an open
+     desynced the scan by one level for the next ~1300 header lines.
+   - *nesting* catches `decltype(a < b)` — prev **is** an identifier, so the
+     head-context test passes and only the paren test rejects it. Without it the
+     angle opened there never closes (its `>` is inside the parens too), the
+     depth stays stuck past the `)`, and a scan looking for a top-level `;` or
+     body `{` runs to EOF.
+
+   `DelimDepth` shipped with only the first test; the second lived in exactly
+   one hand-rolled scanner (`skip_template_nonclass_declaration`, added by
+   `2e853dee`). Adopting the shared tracker there would have **reintroduced**
+   the bug that commit fixed. The union was merged into `DelimDepth` on
+   2026-07-27 — see "The claim that was wrong" below.
 2. **A `>` inside parens opened *within* the list is greater-than**, not a
    close. `DelimDepth` records the paren depth at each angle open
    (`angle_paren`) precisely so `A<(B > C)>` balances.
@@ -41,6 +56,24 @@ No hand-rolled copy in the tree had all four. The two that were nominated as
 "the reference implementation" during the 2026-07-27 audit each had exactly one
 of them, which is why consolidation had to take the **union** rather than copy
 either.
+
+## The claim that was wrong
+
+During round 1 this document (and the commit message, and the handoff) said
+`DelimDepth` was **"strictly more correct than any hand-rolled copy."** That was
+overstated, and the overstatement was load-bearing: it would have justified a
+migration that reintroduced a fixed bug.
+
+`DelimDepth` had the head-context test but **not** the paren guard.
+`skip_template_nonclass_declaration` had the paren guard but not the head-context
+test. Neither subsumed the other — `decltype(a < b)` is caught only by the
+guard, `declval<T>() < declval<U>()` only by the context test.
+
+The lesson generalises past this family: **"the shared owner already exists" is
+not the same as "the shared owner is complete."** Before adopting an owner at a
+site that carries a local guard, diff the *rules*, not just the outcomes — and
+ask what that site's guard was added to fix. Here the answer was a commit
+message (`2e853dee`) naming the exact shape.
 
 ## The incident
 

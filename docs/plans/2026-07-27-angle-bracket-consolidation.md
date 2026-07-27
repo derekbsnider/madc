@@ -477,3 +477,74 @@ Remaining token sites are the two entangled ones only:
 `skip_template_nonclass_declaration` and the ctor-initializer scan. Remaining
 char-level sites are `madc_mangle.cpp` (6) and `cir_builder.cpp` (3) — and
 those are now **adoption**, not extraction, because the owner exists.
+
+---
+
+## Round 4 — the union was NOT what round 1 claimed. Ratchet 8 → 4
+
+Migrating `skip_template_nonclass_declaration` (the site holding the paren
+guard) onto `DelimDepth` **would have reintroduced the bug `2e853dee` fixed.**
+Traced before editing, not discovered after.
+
+`DelimDepth::update` opened an angle on `angle_open_context(prev)` alone, with
+no paren guard:
+
+- `declval<T>() < declval<U>()` — prev is `)`, context test rejects it. ✅
+- `decltype(a < b)` — prev **is** an identifier, so the context test *passes*.
+  The angle opens inside the parens, its `>` is also inside the parens, and the
+  depth stays **stuck at 1 past the `)`** — after which no `;` or body `{` ever
+  reads as top-level and the scan runs to EOF.
+
+So the two tests are independent and both are required. Round 1's claim that
+`DelimDepth` was "strictly more correct than any hand-rolled copy" was **wrong**,
+and wrong in the direction that would have caused damage. Corrected in
+`docs/rules/delimiter-tracking.md` under "The claim that was wrong".
+
+**The real union is now merged into `DelimDepth`:**
+
+```cpp
+case TokenID::tkLT:
+    if ( !paren && !square && angle_open_context(prev) )
+    { ++angle; angle_paren.push_back(paren); }
+```
+
+Because angles now only ever open at paren depth 0, `angle_paren` is uniformly
+zero and `close_angle()`'s existing `paren > angle_paren.back()` test becomes
+the matching guard on `>` for free.
+
+`skip_template_nonclass_declaration`'s delimiter counters then migrated onto
+`DelimDepth`. Its **operator-id skip did NOT migrate**, and that is a second
+finding, caught by the suite rather than by reading:
+
+> Replacing the hand-rolled `consume_operator_spelling` machine with
+> `delimStepStream()` broke `testifconstexpr` and `testinvocable` —
+> `/usr/include/c++/13/bits/max_size_type.h:75: operator _Tp() const noexcept`
+> → **"Unrecognized operator symbol"**.
+
+`delimStepStream()` calls `parseOperatorId()`, which is **strict**: it throws on
+anything that is not a known operator symbol, and a **conversion-function-id**
+(`operator _Tp()`) is not one. The hand-rolled machine was **tolerant** — it
+consumed whatever followed `operator` without validating. For a *skipper*,
+walking a declaration madc has already decided not to parse, tolerance is the
+correct behaviour.
+
+**The two shared step helpers disagree**, which is the real defect:
+`operator_id_token_span()` (index form) is tolerant; `parseOperatorId()` (stream
+form) is strict. Until that asymmetry is fixed in the shared layer — teach
+`parseOperatorId` conversion-function-ids, or give `delimStepStream` a tolerant
+path — this site cannot fully migrate. The tolerant block stays with a comment
+naming the exact blocker and the two ways out.
+
+Underneath it is a genuine language gap worth its own work: **madc cannot parse
+a conversion operator anywhere `parseOperatorId` is used.** It only ever went
+unnoticed because the one place that met `operator _Tp()` in real headers was a
+skipper that never validated.
+
+### The generalisable lesson
+
+**"The shared owner already exists" is not the same as "the shared owner is
+complete."** Before adopting an owner at a site that carries a local guard, diff
+the *rules* rather than the outcomes, and ask what that guard was added to fix.
+Here the answer was sitting in a commit message naming the exact shape.
+
+Only the ctor-initializer scan (4 locals) remains in the token family.

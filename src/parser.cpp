@@ -2922,8 +2922,21 @@ struct DelimDepth {
 	    case TokenID::tkClSqr: if ( square > 0 ) --square; break;
 	    case TokenID::tkOpBrc: ++brace; break;
 	    case TokenID::tkClBrc: if ( brace > 0 )  --brace;  break;
+	    // Two independent tests, and BOTH are required — each catches a
+	    // shape the other misses:
+	    //   angle_open_context : `declval<T>() < declval<U>()` — prev is
+	    //                        `)`, so this `<` cannot begin a template-id.
+	    //   !paren && !square  : `decltype(a < b)` — prev IS an identifier,
+	    //                        so the context test passes and only the
+	    //                        nesting test rejects it. Without this the
+	    //                        angle opened here never closes (its `>` is
+	    //                        inside the parens too), the depth stays
+	    //                        stuck past the `)`, and a scan looking for
+	    //                        a top-level `;` or body `{` runs to EOF.
+	    // Inside `(...)`/`[...]` the paren balancing alone locates the
+	    // enclosing construct, so angles there are simply not tracked.
 	    case TokenID::tkLT:
-		if ( angle_open_context(prev) )
+		if ( !paren && !square && angle_open_context(prev) )
 		{
 		    ++angle;
 		    angle_paren.push_back(paren);
@@ -38666,10 +38679,19 @@ void Program::skip_constraint_expression()
 void Program::skip_template_nonclass_declaration(TokenBase *first,
 					       std::vector<TokenBase *> *seen)
 {
-    int angle_depth = 0;
-    int paren_depth = 0;
-    int square_depth = 0;
-    int brace_depth = 0;
+    // DelimDepth owns the NESTING rule (its `<` guard is now the union of this
+    // function's old paren test and the template-id-head test).
+    //
+    // The operator-function-id skip below is deliberately NOT delimStepStream():
+    // that calls parseOperatorId(), which is STRICT and throws "Unrecognized
+    // operator symbol" on a conversion-function-id — `operator _Tp() const`, as
+    // in libstdc++ bits/max_size_type.h:75. A SKIPPER must be tolerant: it is
+    // walking a declaration madc has already decided not to parse. Note the two
+    // shared step helpers disagree on this — the index form
+    // (operator_id_token_span) is tolerant, the stream form is not. Fix that
+    // asymmetry in the shared layer (teach parseOperatorId conversion-function-
+    // ids, or give delimStepStream a tolerant path) and this block can go.
+    DelimDepth d;
     bool consume_operator_spelling = false;
     int operator_paren_depth = 0;
     int operator_square_depth = 0;
@@ -38707,16 +38729,19 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
 	    continue;
 	}
 	if ( t->id() == TokenID::tkOPEROVER )
+	{
 	    consume_operator_spelling = true;
+	    t = nextToken();
+	    continue;
+	}
 	// A TRAILING requires-clause (between the declarator and the function
 	// body: `... noexcept(...) requires requires { ... } { body }`): the
 	// constraint is consumed as a unit so a requires-expression's braces
 	// are never mistaken for the body brace below. Constraint tokens are
 	// deliberately not appended to `seen` (signature extraction must not
 	// see them).
-	else if ( angle_depth == 0 && paren_depth == 0 && square_depth == 0
-	       && brace_depth == 0 && is_contextual_identifier_token(t)
-	       && contextual_identifier_name(t) == "requires" )
+	if ( d.top() && is_contextual_identifier_token(t)
+	  && contextual_identifier_name(t) == "requires" )
 	{
 	    if ( seen && !seen->empty() && seen->back() == t )
 		seen->pop_back();
@@ -38724,41 +38749,13 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
 	    t = nextToken();
 	    continue;
 	}
-	// Track template angle brackets ONLY outside parens/subscripts. Inside
-	// `(...)` or `[...]` a `<`/`>` is a comparison/shift operator, not a
-	// template bracket — e.g. a trailing return `-> decltype(a < b)` or
-	// `decltype(forward<_Tp>(t) < forward<_Up>(u))`. Without this guard a lone
-	// `<` bumped angle_depth with no matching `>`, so the body `{` was treated
-	// as nested (the angle_depth!=0 check below) and the declaration was
-	// consumed to EOF ("Unexpected end of data"). Inside parens the `()`
-	// balancing alone locates the body brace.
-	else if ( t->id() == TokenID::tkLT && paren_depth == 0 && square_depth == 0 )
-	    ++angle_depth;
-	else if ( t->id() == TokenID::tkGT && angle_depth > 0
-		&& paren_depth == 0 && square_depth == 0 )
-	    --angle_depth;
-	else if ( t->id() == TokenID::tkBSR && angle_depth > 0
-		&& paren_depth == 0 && square_depth == 0 )
+	if ( t->id() == TokenID::tkOpBrc )
 	{
-	    if ( angle_depth > 1 )
-		angle_depth -= 2;
-	    else
-		angle_depth = 0;
-	}
-	else if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
-	else if ( t->id() == TokenID::tkOpBrc )
-	{
-	    if ( paren_depth != 0 || square_depth != 0 || angle_depth != 0
-	      || brace_depth != 0 )
+	    // Decided BEFORE the depth update: a `{` at top level is the body,
+	    // anything deeper is nested.
+	    if ( !d.top() )
 	    {
-		++brace_depth;
+		d.update(t);
 		t = nextToken();
 		continue;
 	    }
@@ -38776,12 +38773,9 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
 		nextToken();
 	    return;
 	}
-	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
-	    --brace_depth;
-	else if ( t->id() == TokenID::tkSemi
-	       && angle_depth == 0 && paren_depth == 0 && square_depth == 0
-	       && brace_depth == 0 )
+	if ( t->id() == TokenID::tkSemi && d.top() )
 	    return;
+	d.update(t);
 	t = nextToken();
     }
 }
