@@ -27409,6 +27409,17 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		// subscript: var[index] or lambda: [](params) { body }
 		if ( tb->id() == TokenID::tkOpSqr )
 		{
+		    // `[` is the SUBSCRIPT operator only in postfix position —
+		    // immediately after a complete operand. Everywhere else it
+		    // opens a lambda-introducer. A NON-EMPTY exStack is not that
+		    // test: in `v = [](int x){ ... }(1)` the `v` sits on exStack
+		    // with the `=` still pending on opStack, so the branches
+		    // below took the introducer as a subscript on `v`, parsed
+		    // the lambda body in the ENCLOSING scope, and reported
+		    // "use of undeclared identifier 'x'" — pointing inside a
+		    // lambda it had already decided was not a lambda.
+		    if ( !isPostfixPosition() )
+			return parseLambdaExprStep(exStack, opStack, done);
 		    if ( !opStack.empty()
 		      && (opStack.top()->type() == TokenType::ttCallFunc
 		       || opStack.top()->type() == TokenType::ttCallMethod) )
@@ -27636,9 +27647,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			}
 		    }
 		    DBG(cout << "parseExpression: detected [ — parsing lambda" << endl);
-		    TokenBase *lambda = parseLambda();
-		    exStack.push(lambda);
-		    return done ? ExprStep::Done : ExprStep::Break;
+		    return parseLambdaExprStep(exStack, opStack, done);
 		}
 		if ( tb->id() == TokenID::tkOpBrk )
 		{
@@ -32592,6 +32601,27 @@ void Program::enqueue_deferred_function_body(Variable *var,
     deferred_function_body_sink->push_back(body);
 }
 
+// Consume a braced-init-list from the stream and append its SCALARS to `args`,
+// flattening nested braces. `Q q = { {1,2}, 3 }` and `: q{ {1,2}, 3 }` must
+// produce the same argument sequence — the declaration path already flattens,
+// and the field-wise filler in the CIR builder consumes one flat sequence.
+void Program::collect_braced_init_args(std::vector<TokenBase *> &args)
+{
+    nextToken();				// the '{'
+    while ( peekToken() && peekToken()->id() != TokenID::tkClBrc )
+    {
+	if ( peekToken()->id() == TokenID::tkOpBrc )
+	    collect_braced_init_args(args);
+	else
+	    args.push_back(parseExpression(nextToken(), true));
+	if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+	    nextToken();
+    }
+    if ( !peekToken() )
+	Throw << "Unexpected end of input in braced initializer" << flush;
+    nextToken();				// the '}'
+}
+
 // Parse a constructor mem-initializer-list from the token stream (positioned
 // after the ':') into func->ctor_initializers, consuming through the body '{'.
 // Returns the '{' token. Called eagerly for out-of-class ctor definitions and
@@ -32628,11 +32658,52 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
 		<< "Expecting '(' or '{' in constructor initializer" << flush;
 	TokenID close_id = open->id() == TokenID::tkOpBrk
 	    ? TokenID::tkClBrk : TokenID::tkClBrc;
+	init.braced = open->id() == TokenID::tkOpBrc;
 	while ( peekToken() && peekToken()->id() != close_id )
 	{
+	    // A nested braced-init-list ARGUMENT — `q{ {1,2}, 3 }`. The
+	    // declaration path flattens `Q q = { {1,2}, 3 };` to the scalar
+	    // sequence 1,2,3 and fills fields in declaration order; flatten the
+	    // same way here so a member initializer and a declaration of the
+	    // same aggregate agree. Previously parseExpression was handed the
+	    // inner `{`, which it does not parse, and the list fell apart into
+	    // "Expecting member or base name".
+	    if ( peekToken()->id() == TokenID::tkOpBrc )
+	    {
+		collect_braced_init_args(init.args);
+		TokenBase *bsep = peekToken();
+		if ( bsep && bsep->id() == TokenID::tkComma )
+		{
+		    nextToken();
+		    continue;
+		}
+		if ( !bsep || bsep->id() == close_id )
+		    break;
+		Throw(bsep) << "Expecting ',' or '"
+			    << (close_id == TokenID::tkClBrk ? ")" : "}")
+			    << "' in constructor initializer for '" << init.name
+			    << "'" << flush;
+	    }
 	    init.args.push_back(parseExpression(nextToken(), true));
-	    if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+	    TokenBase *sep = peekToken();
+	    if ( sep && sep->id() == TokenID::tkComma )
+	    {
 		nextToken();
+		continue;
+	    }
+	    if ( !sep || sep->id() == close_id )
+		break;
+	    // Neither a separator nor the close: parseExpression stopped part
+	    // way through this argument. Looping again would take the
+	    // remainder as a SEPARATE argument and initialize the member from
+	    // the wrong one — silently, exit 0. Every other comma-separated
+	    // list in this file validates its separator the same way
+	    // ("Expecting ',' or '>' in T<...>"); this one did not, which is
+	    // what made an under-consumption invisible instead of loud.
+	    Throw(sep) << "Expecting ',' or '"
+		       << (close_id == TokenID::tkClBrk ? ")" : "}")
+		       << "' in constructor initializer for '" << init.name
+		       << "'" << flush;
 	}
 	if ( !peekToken() || peekToken()->id() != close_id )
 	    Throw(open) << "Unexpected end of constructor initializer arguments" << flush;
@@ -49019,6 +49090,76 @@ TokenBase *Program::parseLambda()
     return new TokenVar(*var);
 }
 
+// THE lambda dispatch for expression context. A lambda-expression is a
+// primary-expression ([expr.prim.lambda]), so the postfix chain continues
+// through it — it can be invoked immediately:
+//
+//     [](int x){ return x + 99; }(1)
+//
+// Pushing the lambda as a bare VALUE and returning left the trailing `(...)`
+// to be read as a separate parenthesized expression. In argument position that
+// produced no diagnostic at all — the argument list simply took the LAST
+// expression, so `printf("%d", [](int x){ return x + 99; }(1))` printed 1
+// instead of 100, exit 0. Silent wrong answers are why this is one function
+// and not a check repeated at each dispatch site.
+//
+// The call is built the same way the function-pointer paths build theirs
+// (TokenCallFunc + parseCallFunc, pushed on opStack): a lambda IS a function
+// pointer here, so it takes the same road rather than a private one.
+Program::ExprStep Program::parseLambdaExprStep(std::stack<TokenBase *> &exStack,
+					       std::stack<TokenBase *> &opStack,
+					       bool &done)
+{
+    TokenBase *lambda = parseLambda();
+    TokenVar *lv = dynamic_cast<TokenVar *>(lambda);
+    if ( lv && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+    {
+	TokenBase *ob = nextToken();		// the call's '('
+	TokenCallFunc *tc = new TokenCallFunc(lv->var);
+	tc->file = ob->file;
+	tc->line = ob->line;
+	tc->column = ob->column;
+	TokenBase *after = parseCallFunc(tc);
+	DBG(cout << "parseExpression: immediately-invoked lambda "
+		 << lv->var.name << endl);
+	opStack.push(tc);
+	if ( after && after->id() == TokenID::tkSemi )
+	    done = true;
+	return done ? ExprStep::Done : ExprStep::Break;
+    }
+    exStack.push(lambda);
+    return done ? ExprStep::Done : ExprStep::Break;
+}
+
+// Is the lambda whose introducer is at the head of the stream immediately
+// invoked? Walks the balanced introducer, parameter list and body with the
+// shared DelimDepth tracker and asks whether a '(' follows the body.
+//
+// The `auto x = <init>` path needs this BEFORE parsing: `auto f = [](int){…};`
+// deduces a function pointer, while `auto v = [](int x){…}(1);` deduces the
+// CALL's return type. Its sibling branch already made exactly this distinction
+// for a function NAME (`followed_by_call`) and the lambda branch did not.
+bool Program::lambdaIsImmediatelyInvoked()
+{
+    DelimDepth d;
+    bool seen_body = false;
+    size_t i = 0;
+    while ( i < tokens.size() && tokens[i] )
+    {
+	// The body '{' is the one opened at top level; a brace inside the
+	// parameter list (a default argument) is not it.
+	bool opens_body = tokens[i]->id() == TokenID::tkOpBrc && d.top();
+	size_t n = delim_scan_step(tokens, i, d);
+	i += n ? n : 1;
+	if ( opens_body )
+	    seen_body = true;
+	if ( seen_body && d.top() )
+	    return i < tokens.size() && tokens[i]
+		&& tokens[i]->id() == TokenID::tkOpBrk;
+    }
+    return false;
+}
+
 void Program::configure_nested_function_captures(FuncDef *func)
 {
     if ( !func )
@@ -49780,7 +49921,16 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	// (`auto r = foo(args);`) is a general expression whose deduced type is the
 	// call's RETURN type — distinguished by the token following the identifier
 	// (tokens[0] is the identifier itself, tokens[1] the next token).
-	bool rhs_is_lambda = rhs_tok && rhs_tok->id() == TokenID::tkOpSqr;
+	// A lambda VALUE takes the fn-ptr path (`auto f = [](int){…};` deduces
+	// a function pointer). An IMMEDIATELY INVOKED lambda does not — its
+	// type is the CALL's return type, so it belongs on the general
+	// deduction path below. This is the same value-vs-call distinction the
+	// function-NAME branch just below already makes via `followed_by_call`;
+	// the lambda branch tested only "next token is '['", so
+	// `auto v = [](int x){ return x + 99; }(1);` bound v to the lambda,
+	// dropped the call, and left v uninitialised — garbage, exit 0.
+	bool rhs_is_lambda = rhs_tok && rhs_tok->id() == TokenID::tkOpSqr
+			     && !lambdaIsImmediatelyInvoked();
 	bool rhs_is_func_name = false;
 	if ( !rhs_is_lambda && rhs_tok && rhs_tok->type() == TokenType::ttIdentifier )
 	{

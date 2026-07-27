@@ -284,6 +284,12 @@ public:
     struct CtorInitializer {
 	std::string name;
 	std::vector<TokenBase *> args;
+	// `m{...}` (list-init) vs `m(...)` (direct-init) — [dcl.init]. For an
+	// aggregate member the brace form initializes its FIELDS in order, so
+	// the two cannot be collapsed: `p{1,2}` fills p.a and p.b, while
+	// `p(other)` copies one value. Nested braces are flattened at parse
+	// time to one scalar sequence, matching the declaration path.
+	bool braced = false;
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
@@ -4401,6 +4407,9 @@ public:
 		       bool inline_specified = false);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
+    // Consume `{ ... }` from the stream, appending its scalars to `args` and
+    // flattening nested braces (the declaration path's model).
+    void collect_braced_init_args(std::vector<TokenBase *> &args);
     TokenBase *parseCallMethod(TokenCallMethod *);
     // C++17 init-statement, shared by `if` and `switch` ([stmt.pre]): call
     // immediately after consuming the opening `(`. When a top-level `;`
@@ -5095,6 +5104,17 @@ public:
 					 bool have_result,
 					 const std::string &result_name = "__madc_expr_value");
     TokenBase *parseLambda();  // parse [](params) { body } lambda expression
+    // THE lambda dispatch for expression context: parse the lambda AND
+    // continue the postfix chain, so an immediately-invoked lambda
+    // (`[](int x){ return x + 99; }(1)`) becomes a call and not a value
+    // followed by a stray parenthesized expression.
+    ExprStep parseLambdaExprStep(std::stack<TokenBase *> &exStack,
+				 std::stack<TokenBase *> &opStack,
+				 bool &done);
+    // Is the lambda whose introducer is at the head of the token stream
+    // IMMEDIATELY INVOKED? Looks past the balanced introducer / parameter
+    // list / body with the shared DelimDepth tracker.
+    bool lambdaIsImmediatelyInvoked();
 
     // Compile the parsed program. The asmjit JIT codegen backend has
     // been removed; CIR (madc parse → cir_node → c2mir → MIR) is the

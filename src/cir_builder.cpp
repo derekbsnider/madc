@@ -9161,14 +9161,35 @@ node_t CirBuilder::madc_array_subscript_read(node_t container_void,
 	return id(name, origin);
 }
 
+// A member flattened in from a BASE subobject (member_origin >= 0) belongs to
+// that base's lifetime whenever the base's own constructor ran. Constructing it
+// again here re-runs a constructor on an already-constructed object, and when
+// that constructor takes arguments the no-arg call does not even typecheck:
+// `struct N : Box<Box<int> >` emitted `Box_int32_t__Box_int32_t(&__this->v)`
+// against a two-parameter ctor — "too few arguments" at the c2mir check.
+//
+// The test is "did WE emit a ctor for that base", not "is it inherited": a base
+// with no user ctor gets no call, and its object members are then genuinely
+// ours to construct.
+static bool member_owned_by_done_base(DataDefCLASS *cdd, size_t mi,
+				      const std::set<int> *done_bases)
+{
+	if (!done_bases || done_bases->empty()) return false;
+	int origin = mi < cdd->member_origin.size() ? cdd->member_origin[mi] : -1;
+	return origin >= 0 && done_bases->count(origin) != 0;
+}
+
 bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
 					std::vector<node_t> &out, TokenBase *origin,
-					const std::set<std::string> *skip)
+					const std::set<std::string> *skip,
+					const std::set<int> *done_bases)
 {
 	if (!cdd) return false;
 	bool any = false;
-	for (const auto &m : cdd->members) {
+	for (size_t mi = 0; mi < cdd->members.size(); mi++) {
+		const auto &m = cdd->members[mi];
 		if (skip && skip->count(m.first)) continue;
+		if (member_owned_by_done_base(cdd, mi, done_bases)) continue;
 		if (is_array_object(m.second)) {
 			flush_pending_stmts(out);
 			out.push_back(array_member_runtime_call(
@@ -9361,6 +9382,24 @@ bool CirBuilder::class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 			}
 			continue;
 		}
+		// Aggregate LIST-init of a plain-struct member ([dcl.init.aggr]):
+		// `Foo() : p{1,2}` fills p's fields in declaration order. This
+		// used to fall into the `continue` below, which left the member
+		// UNINITIALISED and said nothing — `p{1,2}` printed garbage
+		// where g++ printed "1 2". A single argument whose type is the
+		// member's own type is a copy, not a field fill, and keeps the
+		// scalar assign path.
+		if (ci->braced && dynamic_cast<DataDefSTRUCT *>(m.second)
+		    && !(ci->args.size() == 1 && ci->args[0]
+			 && ci->args[0]->datadef() == m.second)) {
+			std::vector<std::string> path(1, m.first);
+			size_t ai = 0;
+			flush_pending_stmts(out);
+			if (aggregate_member_init_stmts(path, m.second, ci->args,
+							ai, out, origin))
+				any = true;
+			continue;
+		}
 		if (ci->args.size() != 1 || !ci->args[0])
 			continue;
 		node_t init = translate_expr(ci->args[0]);
@@ -9377,6 +9416,46 @@ bool CirBuilder::class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 		flush_pending_stmts(out);
 		out.push_back(node2(N_EXPR, list(), asgn, origin));
 		any = true;
+	}
+	return any;
+}
+
+// Aggregate list-initialization of a member: assign the flattened argument
+// sequence to the member's fields in declaration order, recursing into nested
+// aggregates. `Foo() : q{ {1,2}, 3 }` arrives here as the scalar sequence
+// 1,2,3 (the parser flattens, matching the declaration path) and fills
+// q.p.a, q.p.b, q.n.
+//
+// The access expression is rebuilt from `path` for every statement rather than
+// shared: a c2mir node_t is a tree node, so handing the same one to two parents
+// corrupts the tree.
+bool CirBuilder::aggregate_member_init_stmts(std::vector<std::string> &path,
+					     DataDef *mtype,
+					     const std::vector<TokenBase *> &args,
+					     size_t &ai, std::vector<node_t> &out,
+					     TokenBase *origin)
+{
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(mtype);
+	if (!sdd) {
+		if (ai >= args.size() || !args[ai]) return false;
+		node_t lhs = node2(N_DEREF_FIELD, id("__this", origin),
+				   id(path[0].c_str(), origin));
+		for (size_t i = 1; i < path.size(); i++)
+			lhs = node2(N_FIELD, lhs, id(path[i].c_str(), origin));
+		node_t asgn = node2(N_ASSIGN, lhs, translate_expr(args[ai++]),
+				    origin);
+		out.push_back(node2(N_EXPR, list(), asgn, origin));
+		return true;
+	}
+	// Fewer initializers than fields is legal — the rest are
+	// value-initialized, which the zero-init/NSDMI paths already own.
+	bool any = false;
+	for (size_t f = 0; f < sdd->members.size() && ai < args.size(); f++) {
+		path.push_back(sdd->members[f].first);
+		if (aggregate_member_init_stmts(path, sdd->members[f].second,
+						args, ai, out, origin))
+			any = true;
+		path.pop_back();
 	}
 	return any;
 }
@@ -9413,13 +9492,17 @@ bool CirBuilder::emit_member_default_inits(DataDefCLASS *cdd, const char *recv,
 }
 
 bool CirBuilder::class_member_destruct(DataDefCLASS *cdd,
-				       std::vector<node_t> &out, TokenBase *origin)
+				       std::vector<node_t> &out, TokenBase *origin,
+				       const std::set<int> *done_bases)
 {
 	if (!cdd) return false;
 	bool any = false;
 	// Destruct in reverse declaration order (mirrors C++ member teardown).
 	for (size_t i = cdd->members.size(); i-- > 0; ) {
 		const auto &m = cdd->members[i];
+		// Mirror of the ctor side: a base whose dtor we emit destroys
+		// its own members. Doing it here too is a DOUBLE destruction.
+		if (member_owned_by_done_base(cdd, i, done_bases)) continue;
 		if (is_array_object(m.second)) {
 			out.push_back(array_member_runtime_call(
 				"madarray_destruct", false, "__this", m.first,
@@ -10195,7 +10278,17 @@ node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
 	// Body: destruct object members (reverse order), then base dtors in REVERSE
 	// declaration order (MI), each with `this` adjusted to that base's subobject.
 	std::vector<node_t> stmts;
-	class_member_destruct(cdd, stmts, NULL);
+	// Which bases THIS dtor tears down — computed before the member pass,
+	// with the SAME predicate the emit loop below uses. Their flattened
+	// members are destroyed by the base dtor, so destroying them here too
+	// runs ~C() twice on one object (g++ counted 1, madc counted 2).
+	std::set<int> done_bases;
+	for (size_t bi = 0; bi < cdd->bases.size(); bi++) {
+		if (cdd->bases[bi].is_virtual) continue;
+		if (class_needs_dtor(cdd->bases[bi].base))
+			done_bases.insert((int)bi);
+	}
+	class_member_destruct(cdd, stmts, NULL, &done_bases);
 	for (size_t bi = cdd->bases.size(); bi-- > 0; ) {
 		if (cdd->bases[bi].is_virtual) continue; // vbases: complete-object dtor
 		DataDefCLASS *b = cdd->bases[bi].base;
@@ -20533,6 +20626,9 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				for (const auto &m : ocls->members)
 					if (ci.name == m.first || last_scope_part(ci.name) == m.first)
 						explicit_member_inits.insert(m.first);
+		// Bases whose ctor/dtor THIS function emits: their flattened
+		// members are their lifetime, not ours (see member_origin).
+		std::set<int> done_bases;
 		// Construct each base in declaration order, with `this` adjusted to that
 		// base's subobject (MI). Single inheritance = one base @ offset 0.
 		if (is_ctor && !delegating_ci)
@@ -20550,7 +20646,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 						base_addr_at(b, ocls->base_offset_of(b)),
 						b, ci->args, tf);
 					flush_pending_stmts(prologue);
-					if (stmt) prologue.push_back(stmt);
+					if (stmt) {
+						prologue.push_back(stmt);
+						done_bases.insert((int)bi);
+					}
 					continue;
 				}
 				if (b->has_user_ctor) {
@@ -20565,6 +20664,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 						ocls->base_offset_of(b),
 						bctor ? ctor_call_symbol(b, bctor)
 						      : b->name + "__" + b->name));
+					done_bases.insert((int)bi);
 				}
 			}
 		// Set each subobject's vptr to its group's address point in the flat
@@ -20606,11 +20706,21 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		// Construct embedded object members at ctor entry (after base ctor),
 		// destruct them at dtor exit (before base dtor) — C++ member lifetime.
 		if (is_ctor && !delegating_ci)
-			class_member_construct(ocls, prologue, tf, &explicit_member_inits);
-		if (is_dtor)
-			class_member_destruct(ocls, epilogue, tf);
+			class_member_construct(ocls, prologue, tf,
+					       &explicit_member_inits, &done_bases);
 		// Destroy NON-VIRTUAL bases in REVERSE declaration order (MI), offset-adjusted.
 		// Virtual bases are destroyed once by the complete-object dtor (_dtor_complete).
+		// Collected BEFORE the member teardown below so a base that destroys
+		// its own members is not destroyed twice.
+		if (is_dtor)
+			for (size_t bi = ocls->bases.size(); bi-- > 0; ) {
+				if (ocls->bases[bi].is_virtual) continue;
+				DataDefCLASS *b = ocls->bases[bi].base;
+				if (b->has_user_dtor)
+					done_bases.insert((int)bi);
+			}
+		if (is_dtor)
+			class_member_destruct(ocls, epilogue, tf, &done_bases);
 		if (is_dtor)
 			for (size_t bi = ocls->bases.size(); bi-- > 0; ) {
 				if (ocls->bases[bi].is_virtual) continue;

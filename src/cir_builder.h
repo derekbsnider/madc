@@ -1195,9 +1195,13 @@ public:
 	// pointer. The called symbols come from the member class registration.
 	// Used to give a class with object members proper member lifetime inside
 	// its (possibly synthesized) ctor/dtor. Returns true if it emitted any.
+	// `done_bases` = indices of BASE subobjects whose ctor/dtor this
+	// function already emitted. Members flattened in from those bases are
+	// that base's lifetime, not ours — see member_origin in datadef.h.
 	bool class_member_construct(DataDefCLASS *cdd, std::vector<node_t> &out,
 				    TokenBase *origin,
-				    const std::set<std::string> *skip = NULL);
+				    const std::set<std::string> *skip = NULL,
+				    const std::set<int> *done_bases = NULL);
 	// `sym((void*)recv->member)` expression statement — madarray_construct /
 	// madarray_destruct on a madc `array` (madc::value) data member.
 	node_t array_member_runtime_call(const char *sym, bool returns_value,
@@ -1210,6 +1214,17 @@ public:
 					 DataDefCLASS *scls, TokenBase *origin);
 	bool class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 				    std::vector<node_t> &out, TokenBase *origin);
+	// Aggregate list-initialization of a member ([dcl.init.aggr]):
+	// `Foo() : p{1,2}` assigns the flattened argument sequence to the
+	// member's FIELDS in declaration order, recursing into nested
+	// aggregates. `path` is the field chain from `__this`; the access
+	// expression is rebuilt per statement so no c2mir node is shared
+	// between two parents.
+	bool aggregate_member_init_stmts(std::vector<std::string> &path,
+				    DataDef *mtype,
+				    const std::vector<TokenBase *> &args,
+				    size_t &ai, std::vector<node_t> &out,
+				    TokenBase *origin);
 	// Apply C++11 default member initializers (NSDMI: `int x = 5;`) for any
 	// scalar/pointer member not explicitly initialized (not in `skip`). The
 	// receiver is `recv`, accessed `recv->member` when `arrow` (a ctor body's
@@ -1220,7 +1235,8 @@ public:
 				    TokenBase *origin,
 				    const std::set<std::string> *skip = NULL);
 	bool class_member_destruct(DataDefCLASS *cdd, std::vector<node_t> &out,
-				   TokenBase *origin);
+				   TokenBase *origin,
+				   const std::set<int> *done_bases = NULL);
 	// True when the class has at least one embedded object member needing
 	// construction/destruction (so it requires a ctor/dtor even if the user
 	// wrote none).

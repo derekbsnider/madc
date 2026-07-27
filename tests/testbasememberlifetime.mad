@@ -1,0 +1,90 @@
+// Base-subobject member lifetime.
+//
+// madc flattens a base's data members into the derived class's member list
+// (single inheritance = base at offset 0), tagging each with `member_origin`.
+// The ctor/dtor member passes iterated that flattened list without consulting
+// the tag, so a member belonging to an already-constructed base was
+// constructed a SECOND time:
+//
+//   struct N : Box<Box<int> > { N() : Box<Box<int> >(Box<int>(3)) { } };
+//
+// emitted `Box_int32_t__Box_int32_t(&__this->v)` — a no-argument call against a
+// two-parameter constructor, rejected by the c2mir check as "too few
+// arguments". Where the base ctor took no arguments it type-checked fine and
+// simply ran twice, and the destructor side ran twice too.
+//
+// The test is "did we emit a ctor for that base", not "is the member
+// inherited": a base with NO user constructor gets no call, so its object
+// members are genuinely the derived class's to construct — Plain below.
+
+#include <stdio.h>
+
+static int ctor_calls = 0;
+static int dtor_calls = 0;
+
+struct Counted
+{
+    int v;
+    Counted() : v(0) { ctor_calls++; }
+    Counted(int x) : v(x) { ctor_calls++; }
+    ~Counted() { dtor_calls++; }
+};
+
+template<typename T>
+struct Box
+{
+    T v;
+    Box(T x) : v(x) { }
+};
+
+// The reducer: a base whose template argument is itself a class template.
+struct Nested : Box<Box<int> >
+{
+    Nested() : Box<Box<int> >(Box<int>(3)) { }
+};
+
+// A base with a user ctor and an object member: the member must be
+// constructed exactly ONCE (by the base), and destroyed exactly once.
+struct HasMember
+{
+    Counted c;
+    HasMember() : c(7) { }
+};
+struct Derived : HasMember
+{
+    int extra;
+    Derived() : extra(9) { }
+};
+
+// A base with NO user constructor: its object member is still the derived
+// class's responsibility, so it must not be skipped.
+struct Plain
+{
+    Counted c;
+};
+struct FromPlain : Plain
+{
+    int tag;
+    FromPlain() : tag(11) { }
+};
+
+int main()
+{
+    Nested n;
+    printf("nested %d\n", n.v.v);
+
+    {
+	Derived d;
+	printf("derived %d %d\n", d.c.v, d.extra);
+    }
+    printf("counts %d %d\n", ctor_calls, dtor_calls);
+
+    ctor_calls = 0;
+    dtor_calls = 0;
+    {
+	FromPlain f;
+	printf("fromplain %d\n", f.tag);
+    }
+    printf("plaincounts %d %d\n", ctor_calls, dtor_calls);
+    return 0;
+}
