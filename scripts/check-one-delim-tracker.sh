@@ -18,6 +18,18 @@
 # `++angle_depth`, which missed a counter named plain `depth`, missed
 # DelimDepth's own `++angle`, and missed every paren/square/brace-only scanner.
 #
+# ...and then THIS GATE made the same mistake, which is worse, because a green
+# gate stops you looking. Its first marker was `int (angle|paren|square|brace)_depth`
+# — a SPELLING. It reported "GREEN, 0 trackers" on 2026-07-27 while eleven
+# hand-rolled scanners named plain `angle` / `paren` / `square` sat in
+# parser.cpp, one of them (22581) the very unguarded `++angle` on every tkLT
+# that this whole campaign exists to eliminate.
+#
+# The marker now matches any local int whose NAME CONTAINS a delimiter word,
+# including the `int depth = 0, angle = 0, square = 0;` multi-declarator form.
+# If you find yourself narrowing it to make the count go down, you are doing
+# the thing this comment is about.
+#
 # Ratchet: the count must never rise. Target is 0. Lower BASELINE whenever a
 # scanner is migrated; never raise it.
 set -u
@@ -34,9 +46,16 @@ BASELINE=0
 # tie-breaker ("would a change to the delimiter rule require editing it?") says
 # no: it would evolve with expression-validation, not with [temp.names].
 # Merging it into DelimDepth would be worse than the duplication.
-hits=$(grep -rnE '\bint +(angle|paren|square|brace)_depth\b' src/ include/ \
+# EXCLUDED, deliberately: the two shared trackers' OWN member declarations.
+#   src/parser.cpp          — DelimDepth (token level)
+#   include/spelling_delim.h — SpellingDelimDepth (char level, shared header)
+hits=$(grep -rnE '\bint +[a-z_]*(angle|paren|square|brace)[a-z_]* *= *0|, *[a-z_]*(angle|paren|square|brace)[a-z_]* *= *0' \
+    src/ include/ \
   | grep -vE '^include/doctest\.h:' \
-  | grep -vE '^src/madc_program\.cpp:' )
+  | grep -vE '^src/madc_program\.cpp:' \
+  | grep -vE '^include/spelling_delim\.h:' \
+  | grep -vE '^src/parser\.cpp:[0-9]+:    int paren = 0, square = 0, brace = 0, angle = 0;$' \
+  | grep -vE 'size_t' )        # `size_t lparen = 0` is an INDEX, not a counter
 n=$(printf '%s' "$hits" | grep -c . )
 
 echo "one-delim-tracker ratchet: $n hand-rolled delimiter-depth locals (baseline $BASELINE, target 0)"

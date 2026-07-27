@@ -7,6 +7,7 @@
 // nested names, constructors (C1), destructors (D1).
 
 #include "madc_mangle.h"
+#include "spelling_delim.h"
 #include <cstring>
 #include <typeinfo>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -294,45 +295,20 @@ std::string mstrip(const std::string &s)
 	return s.substr(a, b - a + 1);
 }
 
-// Split a comma-separated template-arg list at top level (respecting <>).
+// Split a comma-separated template-arg list at top level. The depth rule is
+// the shared one (include/spelling_delim.h) — the local copy tracked only
+// `<`/`>`, so a `<` inside `(...)` or after a non-name character (`operator<`)
+// counted as a template open.
 std::vector<std::string> split_targs(const std::string &s)
 {
-	std::vector<std::string> out;
-	int depth = 0;
-	size_t start = 0;
-	for (size_t i = 0; i < s.size(); ++i) {
-		char c = s[i];
-		if (c == '<') depth++;
-		else if (c == '>') depth--;
-		else if (c == ',' && depth == 0) {
-			out.push_back(mstrip(s.substr(start, i - start)));
-			start = i + 1;
-		}
-	}
-	std::string last = mstrip(s.substr(start));
-	if (!last.empty()) out.push_back(last);
-	return out;
+	return split_template_args_spelling(s);
 }
 
 // Split a qualified name "a::b::c<...>" into component strings at top-level
 // "::" (respecting <>). Each component may still carry its own <...>.
 std::vector<std::string> split_scope(const std::string &s)
 {
-	std::vector<std::string> out;
-	int depth = 0;
-	size_t start = 0;
-	for (size_t i = 0; i + 1 < s.size(); ++i) {
-		char c = s[i];
-		if (c == '<') depth++;
-		else if (c == '>') depth--;
-		else if (c == ':' && s[i + 1] == ':' && depth == 0) {
-			out.push_back(s.substr(start, i - start));
-			i++;            // skip second ':'
-			start = i + 1;
-		}
-	}
-	out.push_back(s.substr(start));
-	return out;
+	return split_scope_spelling(s);
 }
 
 TypeNode parse_type(const std::string &raw);
@@ -341,23 +317,16 @@ TypeNode parse_type(const std::string &raw);
 NameComponent parse_component(const std::string &raw)
 {
 	NameComponent nc;
-	std::string s = mstrip(raw);
-	size_t lt = std::string::npos;
-	int depth = 0;
-	for (size_t i = 0; i < s.size(); ++i) {
-		if (s[i] == '<') { if (depth == 0) { lt = i; } depth++; }
-		else if (s[i] == '>') depth--;
-	}
-	if (lt == std::string::npos) {
-		nc.ident = s;
+	std::vector<std::string> targs;
+	// A component arrives already split at top-level "::", so its template-id
+	// is the only one — first and last coincide. Ignore is the historical
+	// policy for anything trailing the closing '>'; the local copy expressed
+	// it by taking rfind('>') as the close.
+	if (!split_template_id_parts(mstrip(raw), nc.ident, targs,
+				     SpellingTail::Ignore))
 		return nc;
-	}
-	nc.ident = mstrip(s.substr(0, lt));
-	// strip the matching outer < >
-	size_t gt = s.rfind('>');
-	std::string inside = s.substr(lt + 1, gt - lt - 1);
 	nc.is_template = true;
-	for (const auto &a : split_targs(inside))
+	for (const auto &a : targs)
 		nc.targs.push_back(parse_type(a));
 	return nc;
 }

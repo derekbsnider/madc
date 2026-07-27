@@ -47,6 +47,7 @@
 #include "cir_builder.h"
 #include "cir_freeze.h"	// CirFrozenForest: load an INLINE method's saved body on use
 #include "madc_mangle.h"
+#include "spelling_delim.h"
 
 extern "C" {
 #include "c2mir/c2mir_api.h"
@@ -11646,45 +11647,17 @@ static std::string strip_ref_ws_only(const std::string &in)
 bool split_template_id_w2(const std::string &in, std::string &head,
 			  std::vector<std::string> &args)
 {
-	std::string s = strip_cv_ref_w2(in);
-	size_t lt = std::string::npos;
-	int depth = 0;
-	for (size_t i = 0; i < s.size(); ++i)
-	{
-		if (s[i] == '<') { if (depth == 0) { lt = i; } ++depth; break; }
-	}
-	if (lt == std::string::npos) { head = s; return false; }
-	head = s.substr(0, lt);
-	// trim head
-	size_t hb = head.find_last_not_of(' ');
-	if (hb != std::string::npos) head = head.substr(0, hb + 1);
-	depth = 0;
-	size_t start = lt + 1;
-	for (size_t i = lt; i < s.size(); ++i)
-	{
-		char c = s[i];
-		if (c == '<') ++depth;
-		else if (c == '>')
-		{
-			if (--depth == 0)
-			{
-				std::string a = s.substr(start, i - start);
-				size_t x = a.find_first_not_of(' ');
-				size_t y = a.find_last_not_of(' ');
-				if (x != std::string::npos) args.push_back(a.substr(x, y - x + 1));
-				break;
-			}
-		}
-		else if (c == ',' && depth == 1)
-		{
-			std::string a = s.substr(start, i - start);
-			size_t x = a.find_first_not_of(' ');
-			size_t y = a.find_last_not_of(' ');
-			if (x != std::string::npos) args.push_back(a.substr(x, y - x + 1));
-			start = i + 1;
-		}
-	}
-	return true;
+	// Depth tracking is the shared rule (include/spelling_delim.h). The
+	// local copy counted only `<`/`>`, so a `<` inside `(...)` or one
+	// following a non-name character opened a level that never closed.
+	//
+	// Ignore, not Reject: every caller here is overload/param matching on a
+	// rendered type spelling, and historically tolerated text after the
+	// closing '>' (`A<B>::C<D>` yields head A, args [B]). That policy is
+	// preserved deliberately — it is now stated instead of being an
+	// accidental property of a second copy of the splitter.
+	return split_template_id_parts(strip_cv_ref_w2(in), head, args,
+				       SpellingTail::Ignore);
 }
 
 // A minimal C++ type spelling for an argument's DataDef — enough to compare

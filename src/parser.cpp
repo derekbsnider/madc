@@ -48,6 +48,7 @@
 #include "token_arena.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "spelling_delim.h"
 #include "madc_mangle.h"
 #include "ns_common.h"
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest decl records (forest_restore_decls)
@@ -4789,17 +4790,18 @@ static Program::ClassParseReason class_pattern_eligibility_note(
 static bool class_body_friend_needs_parse(
 	const std::vector<TokenBase *> &body, size_t i)
 {
-    int parens = 0;
+    DelimDepth d;
     for ( size_t j = i + 1; j < body.size(); ++j )
     {
 	TokenBase *t = body[j];
 	if ( !t )
 	    continue;
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++parens;
-	else if ( t->id() == TokenID::tkClBrk )
-	    --parens;
-	else if ( parens == 0 )
+	if ( t->id() == TokenID::tkOpBrk || t->id() == TokenID::tkClBrk )
+	{
+	    d.update(t);
+	    continue;
+	}
+	if ( !d.paren )
 	{
 	    if ( t->id() == TokenID::tkOpBrc )
 		return true;	// definition body
@@ -18115,38 +18117,6 @@ Variable *Program::find_namespace_member(const std::string &ns_name, const std::
 // `vt<decltype(declval<T>()<declval<U>())>::type` does not desync and hand back
 // the wrong `::`. Two encodings of one rule; keep them in step.
 // See .claude/rules/delimiter-tracking.md.
-struct SpellingDelimDepth
-{
-    int paren = 0, square = 0, brace = 0, angle = 0;
-    char prev = '\0';
-    static bool name_char(char c)
-    { return isalnum((unsigned char)c) || c == '_'; }
-    void update(char c)
-    {
-	switch ( c )
-	{
-	    case '(': ++paren; break;
-	    case ')': if ( paren > 0 )  --paren;  break;
-	    case '[': ++square; break;
-	    case ']': if ( square > 0 ) --square; break;
-	    case '{': ++brace; break;
-	    case '}': if ( brace > 0 )  --brace;  break;
-	    case '<':
-		if ( !paren && !square && !brace
-		  && (prev == '\0' || name_char(prev)) )
-		    ++angle;
-		break;
-	    case '>':
-		if ( angle > 0 && !paren && !square && !brace )
-		    --angle;
-		break;
-	    default: break;
-	}
-	if ( c != ' ' )
-	    prev = c;
-    }
-};
-
 // ONE walk over a spelling, shared by the two readers below: the last
 // top-level `::` and the last top-level template-id `<`.
 // NOTE both are the LAST, not the first — `A<B>::C<D>` must yield scope `A<B>`
@@ -21483,24 +21453,12 @@ static std::string trim_spelling(const std::string &s)
 static bool split_template_id_spelling(const std::string &s, std::string &outer,
 				       std::vector<std::string> &args)
 {
-    std::string b = strip_type_namespace(trim_spelling(s));
-    size_t lt = b.find('<');
-    if ( lt == std::string::npos || b.empty() || b[b.size() - 1] != '>' )
-	return false;
-    outer = trim_spelling(b.substr(0, lt));
-    std::string inner = b.substr(lt + 1, b.size() - lt - 2);
-    int depth = 0;
-    std::string cur;
-    for ( size_t i = 0; i < inner.size(); ++i )
-    {
-	char c = inner[i];
-	if ( c == '<' ) { ++depth; cur += c; }
-	else if ( c == '>' ) { --depth; cur += c; }
-	else if ( c == ',' && depth == 0 ) { args.push_back(trim_spelling(cur)); cur.clear(); }
-	else cur += c;
-    }
-    args.push_back(trim_spelling(cur));
-    return true;
+    // Depth tracking is the shared rule (include/spelling_delim.h). Reject, not
+    // Ignore: this reader's original "the spelling must END in '>'" test exists
+    // precisely so a qualified name whose primary template-id is a LATER one
+    // (`A<B>::C<D>`) is not mistaken for the template-id `A<B>`.
+    return split_template_id_parts(strip_type_namespace(trim_spelling(s)),
+				   outer, args, SpellingTail::Reject);
 }
 
 // Drop every space from a spelling so two renderings of the same type compare
@@ -22621,15 +22579,19 @@ class ClassPatternNormalizer
 	if ( !base )
 	{
 	    size_t member_sep = tokens.size();
-	    int angle = 0;
-	    for ( size_t i = 0; i < tokens.size(); ++i )
+	    // This was the campaign's original defect shape, still live: a bare
+	    // `++angle` on every tkLT, with no template-id head-context test and
+	    // no paren guard, so `A<(x > y)>::t` or a relational `<` desynced the
+	    // scan and the LAST top-level `::` came back wrong. DelimDepth has
+	    // both guards. Same axis as before — angle only.
+	    DelimDepth d;
+	    for ( size_t i = 0; i < tokens.size(); )
 	    {
-		if ( tokens[i]->id() == TokenID::tkLT )
-		    ++angle;
-		else if ( tokens[i]->id() == TokenID::tkGT && angle > 0 )
-		    --angle;
-		else if ( tokens[i]->id() == TokenID::tkNS && angle == 0 )
+		if ( !tokens[i] ) { ++i; continue; }
+		if ( !d.angle && tokens[i]->id() == TokenID::tkNS )
 		    member_sep = i;
+		size_t n = delim_scan_step(tokens, i, d);
+		i += n ? n : 1;
 	    }
 	    if ( member_sep < tokens.size() && member_sep > 0
 	      && member_sep + 1 < tokens.size() )
@@ -33473,31 +33435,17 @@ static bool template_list_close_index(const TokenStream &toks,
 static bool template_param_slice_has_default(
 	const TokenStream &toks, size_t begin, size_t end)
 {
-    int angle = 0;
-    int paren = 0;
-    int square = 0;
-    for ( size_t i = begin; i < end; ++i )
+    DelimDepth d;
+    for ( size_t i = begin; i < end; )
     {
 	TokenBase *t = toks[i];
 	if ( !t )
-	    continue;
-	if ( t->id() == TokenID::tkLT && paren == 0 && square == 0 )
-	    ++angle;
-	else if ( t->id() == TokenID::tkGT && angle > 0 && paren == 0 && square == 0 )
-	    --angle;
-	else if ( t->id() == TokenID::tkBSR && angle > 0 && paren == 0 && square == 0 )
-	    angle = angle > 1 ? angle - 2 : 0;
-	else if ( t->id() == TokenID::tkOpBrk )
-	    ++paren;
-	else if ( t->id() == TokenID::tkClBrk && paren > 0 )
-	    --paren;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square;
-	else if ( t->id() == TokenID::tkClSqr && square > 0 )
-	    --square;
-	else if ( t->id() == TokenID::tkAssign
-	       && angle == 0 && paren == 0 && square == 0 )
+	    { ++i; continue; }
+	if ( t->id() == TokenID::tkAssign
+	  && !d.angle && !d.paren && !d.square )
 	    return true;
+	size_t n = delim_scan_step(toks, i, d);
+	i += n ? n : 1;
     }
     return false;
 }
@@ -33522,35 +33470,20 @@ static std::string template_param_name_from_slice(
 	return std::string();
     }
 
-    int angle = 0;
-    int paren = 0;
-    int square = 0;
+    DelimDepth d;
     std::string last_name;
-    for ( size_t i = begin; i < end; ++i )
+    for ( size_t i = begin; i < end; )
     {
 	TokenBase *t = toks[i];
 	if ( !t )
-	    continue;
-	if ( t->id() == TokenID::tkLT && paren == 0 && square == 0 )
-	    ++angle;
-	else if ( t->id() == TokenID::tkGT && angle > 0 && paren == 0 && square == 0 )
-	    --angle;
-	else if ( t->id() == TokenID::tkBSR && angle > 0 && paren == 0 && square == 0 )
-	    angle = angle > 1 ? angle - 2 : 0;
-	else if ( t->id() == TokenID::tkOpBrk )
-	    ++paren;
-	else if ( t->id() == TokenID::tkClBrk && paren > 0 )
-	    --paren;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square;
-	else if ( t->id() == TokenID::tkClSqr && square > 0 )
-	    --square;
-	else if ( t->id() == TokenID::tkAssign
-	       && angle == 0 && paren == 0 && square == 0 )
+	    { ++i; continue; }
+	bool outside = !d.angle && !d.paren && !d.square;
+	if ( outside && t->id() == TokenID::tkAssign )
 	    break;
-	else if ( angle == 0 && paren == 0 && square == 0
-	       && is_contextual_identifier_token(t) )
+	if ( outside && is_contextual_identifier_token(t) )
 	    last_name = contextual_identifier_name(t);
+	size_t n = delim_scan_step(toks, i, d);
+	i += n ? n : 1;
     }
     return last_name;
 }
@@ -33560,9 +33493,7 @@ static bool collect_defaulted_template_param_names(
 	std::set<std::string> &names)
 {
     size_t param_begin = begin;
-    int angle = 0;
-    int paren = 0;
-    int square = 0;
+    DelimDepth d;
     for ( size_t i = begin; i <= end; ++i )
     {
 	bool at_end = i == end;
@@ -33570,23 +33501,11 @@ static bool collect_defaulted_template_param_names(
 	bool split = at_end;
 	if ( t )
 	{
-	    if ( t->id() == TokenID::tkLT && paren == 0 && square == 0 )
-		++angle;
-	    else if ( t->id() == TokenID::tkGT && angle > 0 && paren == 0 && square == 0 )
-		--angle;
-	    else if ( t->id() == TokenID::tkBSR && angle > 0 && paren == 0 && square == 0 )
-		angle = angle > 1 ? angle - 2 : 0;
-	    else if ( t->id() == TokenID::tkOpBrk )
-		++paren;
-	    else if ( t->id() == TokenID::tkClBrk && paren > 0 )
-		--paren;
-	    else if ( t->id() == TokenID::tkOpSqr )
-		++square;
-	    else if ( t->id() == TokenID::tkClSqr && square > 0 )
-		--square;
-	    else if ( t->id() == TokenID::tkComma
-		   && angle == 0 && paren == 0 && square == 0 )
+	    if ( t->id() == TokenID::tkComma
+	      && !d.angle && !d.paren && !d.square )
 		split = true;
+	    else
+		d.update(t);
 	}
 	if ( !split )
 	    continue;
@@ -33606,46 +33525,32 @@ static bool collect_defaulted_template_param_names(
 static size_t member_template_decl_end(const TokenStream &toks,
 				       size_t start)
 {
-    int angle = 0;
-    int paren = 0;
-    int square = 0;
-    for ( size_t i = start; i < toks.size(); ++i )
+    DelimDepth d;
+    for ( size_t i = start; i < toks.size(); )
     {
 	TokenBase *t = toks[i];
 	if ( !t )
-	    continue;
-	if ( t->id() == TokenID::tkLT && paren == 0 && square == 0 )
-	    ++angle;
-	else if ( t->id() == TokenID::tkGT && angle > 0 && paren == 0 && square == 0 )
-	    --angle;
-	else if ( t->id() == TokenID::tkBSR && angle > 0 && paren == 0 && square == 0 )
-	    angle = angle > 1 ? angle - 2 : 0;
-	else if ( t->id() == TokenID::tkOpBrk )
-	    ++paren;
-	else if ( t->id() == TokenID::tkClBrk && paren > 0 )
-	    --paren;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square;
-	else if ( t->id() == TokenID::tkClSqr && square > 0 )
-	    --square;
-	else if ( t->id() == TokenID::tkSemi
-	       && angle == 0 && paren == 0 && square == 0 )
+	    { ++i; continue; }
+	bool outside = !d.angle && !d.paren && !d.square;
+	if ( outside && t->id() == TokenID::tkSemi )
 	    return i;
-	else if ( t->id() == TokenID::tkOpBrc
-	       && angle == 0 && paren == 0 && square == 0 )
+	if ( outside && t->id() == TokenID::tkOpBrc )
 	{
-	    int braces = 1;
-	    for ( size_t j = i + 1; j < toks.size(); ++j )
+	    // The body: run to its matching '}' on the shared tracker.
+	    DelimDepth b;
+	    for ( size_t j = i; j < toks.size(); )
 	    {
 		if ( !toks[j] )
-		    continue;
-		if ( toks[j]->id() == TokenID::tkOpBrc )
-		    ++braces;
-		else if ( toks[j]->id() == TokenID::tkClBrc && --braces == 0 )
-		    return j;
+		    { ++j; continue; }
+		size_t bn = delim_scan_step(toks, j, b);
+		j += bn ? bn : 1;
+		if ( !b.brace )
+		    return j - 1;
 	    }
 	    return toks.size();
 	}
+	size_t n = delim_scan_step(toks, i, d);
+	i += n ? n : 1;
     }
     return toks.size();
 }
@@ -40038,7 +39943,6 @@ static bool extract_free_signature(
     // (...), dropping a trailing parameter NAME. Angle tracking keeps a comma
     // inside `<...>` template args from splitting a parameter.
     std::vector<std::string> params;
-    int depth = 0, angle = 0, square = 0;
     size_t pstart = lparen + 1;
     auto flush_param = [&](size_t pend) {
 	size_t real_end = pend;
@@ -40049,30 +39953,23 @@ static bool extract_free_signature(
 	if ( !sp.empty() && sp != "void" )   // `f(void)` == zero params
 	    params.push_back(sp);
     };
-    for ( size_t i = lparen + 1; i < tokens.size(); ++i )
+    DelimDepth d;
+    for ( size_t i = lparen + 1; i < tokens.size(); )
     {
 	TokenBase *t = tokens[i];
-	if ( !t ) continue;
-	TokenID id = (TokenID)t->id();
-	if ( id == TokenID::tkOpBrk ) ++depth;
-	else if ( id == TokenID::tkClBrk )
-	{
-	    if ( depth == 0 && angle == 0 && square == 0 )
+	if ( !t ) { ++i; continue; }
+	// The scan starts INSIDE the parameter list, so "top" here is the
+	// list's own level: no braces were tracked by the original.
+	bool outside = !d.paren && !d.angle && !d.square;
+	if ( outside && t->id() == TokenID::tkClBrk )
 	    { flush_param(i); break; }
-	    if ( depth > 0 ) --depth;
-	}
-	else if ( id == TokenID::tkOpSqr ) ++square;
-	else if ( id == TokenID::tkClSqr ) { if ( square > 0 ) --square; }
-	else if ( id == TokenID::tkLT && depth == 0 && square == 0 ) ++angle;
-	else if ( id == TokenID::tkGT && angle > 0 && depth == 0 && square == 0 )
-	    --angle;
-	else if ( id == TokenID::tkBSR && angle > 0 && depth == 0 && square == 0 )
-	    angle = angle > 1 ? angle - 2 : 0;
-	else if ( id == TokenID::tkComma && depth == 0 && angle == 0 && square == 0 )
+	if ( outside && t->id() == TokenID::tkComma )
 	{
 	    flush_param(i);
 	    pstart = i + 1;
 	}
+	size_t n = delim_scan_step(tokens, i, d);
+	i += n ? n : 1;
     }
     // A zero-parameter function template (resolved entirely by explicit
     // template arguments — e.g. libstdc++ `__check_constructible<V,T>()`) is
@@ -40106,26 +40003,23 @@ static bool skipped_template_function_signature_spellings(
 
     auto param_type_end = [&](size_t begin, size_t end) -> size_t {
 	size_t real_end = end;
-	int depth = 0, angle = 0, square = 0;
-	for ( size_t i = begin; i < end && i < tokens.size(); ++i )
+	// Its OWN tracker. This lambda used to mutate the enclosing scan's
+	// depth counters by reference — it is called from flush_param, i.e.
+	// from inside that loop, so every default-argument scan corrupted the
+	// outer parameter walk's idea of where it was.
+	DelimDepth pd;
+	for ( size_t i = begin; i < end && i < tokens.size(); )
 	{
 	    TokenBase *t = tokens[i];
-	    if ( !t ) continue;
-	    TokenID id = (TokenID)t->id();
-	    if ( id == TokenID::tkOpBrk ) ++depth;
-	    else if ( id == TokenID::tkClBrk && depth > 0 ) --depth;
-	    else if ( id == TokenID::tkOpSqr ) ++square;
-	    else if ( id == TokenID::tkClSqr && square > 0 ) --square;
-	    else if ( id == TokenID::tkLT && depth == 0 && square == 0 ) ++angle;
-	    else if ( id == TokenID::tkGT && angle > 0 && depth == 0 && square == 0 )
-		--angle;
-	    else if ( id == TokenID::tkBSR && angle > 0 && depth == 0 && square == 0 )
-		angle = angle > 1 ? angle - 2 : 0;
-	    else if ( id == TokenID::tkAssign && depth == 0 && angle == 0 && square == 0 )
+	    if ( !t ) { ++i; continue; }
+	    if ( t->id() == TokenID::tkAssign
+	      && !pd.paren && !pd.angle && !pd.square )
 	    {
 		real_end = i;
 		break;
 	    }
+	    size_t n = delim_scan_step(tokens, i, pd);
+	    i += n ? n : 1;
 	}
 	size_t last = real_end;
 	while ( last > begin && !tokens[last - 1] )
@@ -40144,7 +40038,6 @@ static bool skipped_template_function_signature_spellings(
     };
 
     param_spellings.clear();
-    int depth = 0, angle = 0, square = 0;
     size_t pstart = lparen + 1;
     auto flush_param = [&](size_t pend) {
 	size_t real_end = param_type_end(pstart, pend);
@@ -40152,30 +40045,23 @@ static bool skipped_template_function_signature_spellings(
 	if ( !sp.empty() && sp != "void" )
 	    param_spellings.push_back(sp);
     };
-    for ( size_t i = lparen + 1; i < tokens.size(); ++i )
+    DelimDepth d;
+    for ( size_t i = lparen + 1; i < tokens.size(); )
     {
 	TokenBase *t = tokens[i];
-	if ( !t ) continue;
-	TokenID id = (TokenID)t->id();
-	if ( id == TokenID::tkOpBrk ) ++depth;
-	else if ( id == TokenID::tkClBrk )
-	{
-	    if ( depth == 0 && angle == 0 && square == 0 )
+	if ( !t ) { ++i; continue; }
+	// The scan starts INSIDE the parameter list, so "top" here is the
+	// list's own level: no braces were tracked by the original.
+	bool outside = !d.paren && !d.angle && !d.square;
+	if ( outside && t->id() == TokenID::tkClBrk )
 	    { flush_param(i); break; }
-	    if ( depth > 0 ) --depth;
-	}
-	else if ( id == TokenID::tkOpSqr ) ++square;
-	else if ( id == TokenID::tkClSqr ) { if ( square > 0 ) --square; }
-	else if ( id == TokenID::tkLT && depth == 0 && square == 0 ) ++angle;
-	else if ( id == TokenID::tkGT && angle > 0 && depth == 0 && square == 0 )
-	    --angle;
-	else if ( id == TokenID::tkBSR && angle > 0 && depth == 0 && square == 0 )
-	    angle = angle > 1 ? angle - 2 : 0;
-	else if ( id == TokenID::tkComma && depth == 0 && angle == 0 && square == 0 )
+	if ( outside && t->id() == TokenID::tkComma )
 	{
 	    flush_param(i);
 	    pstart = i + 1;
 	}
+	size_t n = delim_scan_step(tokens, i, d);
+	i += n ? n : 1;
     }
     return true;
 }
@@ -43730,17 +43616,18 @@ static void tsubst_drop_pack_decl_ellipsis(FuncDef *fd,
 	    packs.insert(fd->template_param_names[i]);
     if ( packs.empty() )
 	return;
-    int paren = 0, square = 0, brace = 0;
-    for ( size_t i = 0; i < def_tokens.size(); ++i )
+    DelimDepth d;
+    for ( size_t i = 0; i < def_tokens.size(); )
     {
 	TokenBase *t = def_tokens[i];
 	if ( !t )
-	    continue;
-	if ( paren == 0 && square == 0 && brace == 0
-	  && t->id() == TokenID::tkClBrk )
+	    { ++i; continue; }
+	// The original tracked paren/square/brace only; angle was never part
+	// of its condition, so keep testing exactly those three axes.
+	bool outside = !d.paren && !d.square && !d.brace;
+	if ( outside && t->id() == TokenID::tkClBrk )
 	    break;	// end of the function declarator's parameter list
-	if ( paren == 0 && square == 0 && brace == 0
-	  && tsubst_pack_param_token(t, packs) )
+	if ( outside && tsubst_pack_param_token(t, packs) )
 	{
 	    size_t k = i + 1;
 	    while ( k < def_tokens.size() && def_tokens[k]
@@ -43750,15 +43637,11 @@ static void tsubst_drop_pack_decl_ellipsis(FuncDef *fd,
 	    {
 		def_tokens.erase(def_tokens.begin() + k,
 				 def_tokens.begin() + k + 3);
-		continue;
+		continue;	// re-examine this token, depth unchanged
 	    }
 	}
-	if ( t->id() == TokenID::tkOpBrk ) ++paren;
-	else if ( t->id() == TokenID::tkClBrk && paren > 0 ) --paren;
-	else if ( t->id() == TokenID::tkOpSqr ) ++square;
-	else if ( t->id() == TokenID::tkClSqr && square > 0 ) --square;
-	else if ( t->id() == TokenID::tkOpBrc ) ++brace;
-	else if ( t->id() == TokenID::tkClBrc && brace > 0 ) --brace;
+	size_t n = delim_scan_step(def_tokens, i, d);
+	i += n ? n : 1;
     }
 }
 
@@ -46002,7 +45885,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	std::string concept_name = is_contextual_identifier_token(cname_tok)
 				 ? contextual_identifier_name(cname_tok)
 				 : std::string();
-	int paren = 0, square = 0, brace = 0;
+	DelimDepth d;
 	TokenBase *t;
 	// Capture the constraint tokens (after the top-level `=`, up to `;`) for a
 	// future concept-satisfaction evaluator. Storage-only today.
@@ -46010,19 +45893,20 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	bool past_eq = false;
 	while ( (t = pgm.nextToken()) )
 	{
-	    if ( t->id() == TokenID::tkSemi
-	      && paren == 0 && square == 0 && brace == 0 )
+	    // Tested BEFORE the token is applied, and on the same three axes
+	    // the original used (angle was never in its condition).
+	    bool outside = !d.paren && !d.square && !d.brace;
+	    if ( outside && t->id() == TokenID::tkSemi )
 		break;
-	    if ( t->id() == TokenID::tkOpBrk ) ++paren;
-	    else if ( t->id() == TokenID::tkClBrk && paren > 0 ) --paren;
-	    else if ( t->id() == TokenID::tkOpSqr ) ++square;
-	    else if ( t->id() == TokenID::tkClSqr && square > 0 ) --square;
-	    else if ( t->id() == TokenID::tkOpBrc ) ++brace;
-	    else if ( t->id() == TokenID::tkClBrc && brace > 0 ) --brace;
+	    std::vector<TokenBase *> opsyms;
+	    pgm.delimStepStream(t, d, &opsyms);
 	    if ( past_eq )
+	    {
 		constraint.push_back(t->clone());
-	    else if ( t->id() == TokenID::tkAssign
-		   && paren == 0 && square == 0 && brace == 0 )
+		for ( TokenBase *o : opsyms )
+		    constraint.push_back(o->clone());
+	    }
+	    else if ( outside && t->id() == TokenID::tkAssign )
 		past_eq = true;
 	}
 	if ( !concept_name.empty() && past_eq && !constraint.empty() )
