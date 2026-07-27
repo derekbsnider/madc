@@ -23,7 +23,7 @@
 set -u
 cd "$(dirname "$0")/.."
 
-BASELINE=10
+BASELINE=8
 
 # A hand-rolled tracker always declares at least one delimiter-depth local.
 #

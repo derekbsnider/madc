@@ -18053,50 +18053,94 @@ Variable *Program::find_namespace_member(const std::string &ns_name, const std::
     return vmi == nsi->second.end() ? NULL : vmi->second;
 }
 
+// Char-level sibling of DelimDepth: the SAME [temp.names] rule applied to a
+// canonical C++ type SPELLING instead of a token stream. A `<` opens a
+// template-argument list only where one can begin — after a name character and
+// outside any (), [] or {} — so a spelling like
+// `vt<decltype(declval<T>()<declval<U>())>::type` does not desync and hand back
+// the wrong `::`. Two encodings of one rule; keep them in step.
+// See .claude/rules/delimiter-tracking.md.
+struct SpellingDelimDepth
+{
+    int paren = 0, square = 0, brace = 0, angle = 0;
+    char prev = '\0';
+    static bool name_char(char c)
+    { return isalnum((unsigned char)c) || c == '_'; }
+    void update(char c)
+    {
+	switch ( c )
+	{
+	    case '(': ++paren; break;
+	    case ')': if ( paren > 0 )  --paren;  break;
+	    case '[': ++square; break;
+	    case ']': if ( square > 0 ) --square; break;
+	    case '{': ++brace; break;
+	    case '}': if ( brace > 0 )  --brace;  break;
+	    case '<':
+		if ( !paren && !square && !brace
+		  && (prev == '\0' || name_char(prev)) )
+		    ++angle;
+		break;
+	    case '>':
+		if ( angle > 0 && !paren && !square && !brace )
+		    --angle;
+		break;
+	    default: break;
+	}
+	if ( c != ' ' )
+	    prev = c;
+    }
+};
+
+// ONE walk over a spelling, shared by the two readers below: the last
+// top-level `::` and the last top-level template-id `<`.
+// NOTE both are the LAST, not the first — `A<B>::C<D>` must yield scope `A<B>`
+// and primary name `C`. A helper returning the FIRST `<` silently breaks that.
+struct CppSpellingSplit
+{
+    size_t last_scope;		// index of the last top-level "::", or npos
+    size_t last_template_id;	// index of the last top-level '<', or npos
+};
+
+static CppSpellingSplit scan_cpp_spelling(const std::string &s)
+{
+    CppSpellingSplit out = { std::string::npos, std::string::npos };
+    SpellingDelimDepth d;
+    for ( size_t i = 0; i < s.size(); ++i )
+    {
+	char c = s[i];
+	if ( c == ':' && i + 1 < s.size() && s[i + 1] == ':' && d.angle == 0 )
+	{
+	    out.last_scope = i;
+	    d.update(c);
+	    d.update(c);
+	    ++i;
+	    continue;
+	}
+	int before = d.angle;
+	d.update(c);
+	// Record only a genuine top-level template-id open, so a `<` that the
+	// rule classified as less-than never moves the name boundary.
+	if ( c == '<' && before == 0 && d.angle == 1 )
+	    out.last_template_id = i;
+    }
+    return out;
+}
+
 static std::string namespace_scope_from_cpp_spelling(const std::string &spelling)
 {
-    int angle_depth = 0;
-    size_t last_ns = std::string::npos;
-    for ( size_t i = 0; i + 1 < spelling.size(); ++i )
-    {
-	char c = spelling[i];
-	if ( c == '<' )
-	    ++angle_depth;
-	else if ( c == '>' && angle_depth > 0 )
-	    --angle_depth;
-	else if ( c == ':' && spelling[i + 1] == ':' && angle_depth == 0 )
-	{
-	    last_ns = i;
-	    ++i;
-	}
-    }
+    size_t last_ns = scan_cpp_spelling(spelling).last_scope;
     return last_ns == std::string::npos ? std::string()
 					: spelling.substr(0, last_ns);
 }
 
 static std::string primary_name_from_cpp_spelling(const std::string &spelling)
 {
-    int angle_depth = 0;
-    size_t name_start = 0;
-    size_t name_end = spelling.size();
-    for ( size_t i = 0; i < spelling.size(); ++i )
-    {
-	char c = spelling[i];
-	if ( c == '<' )
-	{
-	    if ( angle_depth == 0 )
-		name_end = i;
-	    ++angle_depth;
-	}
-	else if ( c == '>' && angle_depth > 0 )
-	    --angle_depth;
-	else if ( c == ':' && i + 1 < spelling.size()
-	       && spelling[i + 1] == ':' && angle_depth == 0 )
-	{
-	    name_start = i + 2;
-	    ++i;
-	}
-    }
+    CppSpellingSplit sp = scan_cpp_spelling(spelling);
+    size_t name_start = sp.last_scope == std::string::npos
+		      ? 0 : sp.last_scope + 2;
+    size_t name_end = sp.last_template_id == std::string::npos
+		    ? spelling.size() : sp.last_template_id;
     if ( name_end < name_start )
 	name_end = spelling.size();
     return spelling.substr(name_start, name_end - name_start);
