@@ -2244,6 +2244,24 @@ void Program::forest_install_pp(uint32_t unit)
 // reaches the C library through `#include_next <stdlib.h>`, so leaving the GNU
 // C++ dirs on the path behind libc++ makes that walk land in
 // /usr/include/c++/NN/stdlib.h and fail on its `using std::abort;`.
+// Canonicalize a filesystem path for COMPARISON. The one owner of that step:
+// include bookkeeping keys files by their resolved path, and the search-dir
+// prefixes must be resolved the same way or the two never match (clang reports
+// `.../bin/../include/c++/v1`). Returns the input unchanged when it does not
+// resolve — a cross/hosted table may name a sysroot absent from this machine.
+// NOT for resolving argv[0] or a dladdr image name; those are different rules
+// with their own call sites.
+static std::string canonical_path_for_compare(const std::string &path)
+{
+    if ( char *rp = realpath(path.c_str(), NULL) )
+    {
+	std::string out(rp);
+	free(rp);
+	return out;
+    }
+    return path;
+}
+
 static const char *madc_fallback_include_paths[] = {
     "/usr/local/include/",
     "/usr/include/",
@@ -2285,14 +2303,9 @@ const std::vector<std::string> &Program::sys_include_prefixes_canonical() const
     const char *const *paths = sys_include_paths();
     for ( int i = 0; paths[i]; ++i )
     {
-	std::string p = paths[i];
-	if ( char *rp = realpath(paths[i], NULL) )
-	{
-	    p = rp;
-	    free(rp);
-	    if ( p.empty() || p.back() != '/' )
-		p += '/';
-	}
+	std::string p = canonical_path_for_compare(paths[i]);
+	if ( p != paths[i] && (p.empty() || p.back() != '/') )
+	    p += '/';		// realpath drops the trailing '/' a prefix needs
 	_canon_prefixes.push_back(p);
     }
     _canon_prefix_flavor = f;
@@ -2713,16 +2726,11 @@ void Program::dump_macros(FILE *out)
 
 bool Program::should_tokenize_include(const std::string &path)
 {
+    // Same canonicalization the search-dir prefixes get — they are compared
+    // against each other, so one owner (canonical_path_for_compare) or they drift.
     std::string canonical = path;
     if ( !path.empty() && path[0] != '<' )
-    {
-	char *rp = realpath(path.c_str(), NULL);
-	if ( rp )
-	{
-	    canonical = rp;
-	    free(rp);
-	}
-    }
+	canonical = canonical_path_for_compare(path);
     if ( !path.empty() && path[0] == '<' )
     {
 	// Named (embedded/PCH) include keys: blanket once-only — the baked
