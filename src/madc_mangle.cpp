@@ -589,16 +589,18 @@ public:
 	                                   const std::vector<std::string> &params)
 	{
 		reset();
+		// An operator name encodes as its Itanium operator-name code in
+		// EVERY scope — ::operator new(size_t) is _Znwm, std::operator<<
+		// is _ZStls…, N::operator+ is _ZN1NplE…. Only the global branch
+		// had this; the std and qualified branches fell to source_name,
+		// producing invalid symbols like _ZSt10operator<<.
+		std::string opcode;
+		if (name.compare(0, 8, "operator") == 0)
+			opcode = operator_code(name.substr(8));
 		// GLOBAL-scope function: _Z<name><params> with no N..E nesting.
-		// An operator name encodes as its Itanium operator-name code —
-		// ::operator new(size_t) is _Znwm, sized ::operator delete is
-		// _ZdlPvm (the libstdc++ allocation-operator exports).
 		if (qualifiers.empty()) {
-			std::string code;
-			if (name.compare(0, 8, "operator") == 0)
-				code = operator_code(name.substr(8));
-			std::string out = "_Z" + (code.empty() ? source_name(name)
-			                                       : code);
+			std::string out = "_Z" + (opcode.empty() ? source_name(name)
+			                                         : opcode);
 			if (params.empty())
 				out += "v";
 			else
@@ -611,7 +613,8 @@ public:
 		// (_ZNSt<name>E…). libstdc++ exports e.g. std::terminate() as
 		// _ZSt9terminatev — the St-direct form is what resolves at link.
 		if (qualifiers.size() == 1 && qualifiers[0] == "std") {
-			std::string out = "_ZSt" + source_name(name);
+			std::string out = "_ZSt" + (opcode.empty() ? source_name(name)
+			                                           : opcode);
 			if (params.empty())
 				out += "v";
 			else
@@ -624,7 +627,7 @@ public:
 			chain.push_back(parse_component(q));
 		std::string out = "_ZN";
 		out += encode_name(chain, /*standalone=*/false);
-		out += source_name(name);
+		out += opcode.empty() ? source_name(name) : opcode;
 		out += "E";
 		if (params.empty())
 			out += "v";

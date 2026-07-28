@@ -83,6 +83,22 @@ TEST_SUITE("Itanium type encoding") {
 		      == "_ZSt24__throw_out_of_range_fmtPKcz");
 	}
 
+	TEST_CASE("Free operators encode their operator code in EVERY scope") {
+		// The std and general-qualified branches fell to source_name,
+		// emitting the invalid _ZSt10operator<< — only the global branch
+		// consulted operator_code(). Oracle: c++filt on each expected form
+		// demangles to the intended declaration.
+		// c++filt _ZStlsii -> std::operator<<(int, int)
+		CHECK(itanium_mangle_nested_sub({"std"}, "operator<<", {"int", "int"})
+		      == "_ZStlsii");
+		// c++filt _ZN5mylibplEii -> mylib::operator+(int, int)
+		CHECK(itanium_mangle_nested_sub({"mylib"}, "operator+", {"int", "int"})
+		      == "_ZN5mylibplEii");
+		// Plain names unchanged; real libstdc++ export.
+		CHECK(itanium_mangle_nested_sub({"std"}, "terminate", {})
+		      == "_ZSt9terminatev");
+	}
+
 	TEST_CASE("Desugared typedef params match libstdc++ exports") {
 		// __basic_file<char>::seekoff(streamoff, _Ios_Seekdir) — streamoff
 		// desugars to long ('l'); the enum keeps its own name. Oracle:
