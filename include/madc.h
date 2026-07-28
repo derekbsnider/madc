@@ -2716,9 +2716,18 @@ public:
     // concrete void IFF every Arg (a `typename PARAM::member` dependent type) resolves
     // after substituting the already-deduced params. The SFINAE half of the std
     // detection idiom (__detected_or / __iterator_traits / allocator_traits).
+    // `slot_tokens` (the spec pattern slot's token run) enables the EXPRESSION
+    // probe arm — `__void_t<decltype(EXPR)>` (libc++ __common_type2_imp) —
+    // which substitutes the deduced params into the decltype token run and
+    // resolves it through the real decltype machinery.
     bool eval_void_t_detection_slot(const std::string &slot_spelling,
 	    const std::string &concrete_spelling,
-	    const std::map<std::string, DataDef *> &ded, int &score);
+	    const std::map<std::string, DataDef *> &ded, int &score,
+	    const std::vector<TokenBase *> *slot_tokens = NULL);
+    // Evaluate the nth `decltype ( ... )` run inside a spec-pattern slot's
+    // tokens under the deduced-param substitution; true iff it names a type.
+    bool eval_decltype_probe_tokens(const std::vector<TokenBase *> &slot_tokens,
+	    size_t nth, const std::map<std::string, DataDef *> &ded);
     // Confirm that a dependent member chain `BASE::seg1::seg2::...` (where some
     // seg names a TEMPLATE member, e.g. `rebind<_Up>`) resolves to a real type —
     // the part of the __void_t SFINAE probe the plain type-alias walk cannot do.

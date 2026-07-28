@@ -24619,8 +24619,10 @@ bool Program::confirm_dependent_member_type(DataDef *base,
 
 bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
 	const std::string &concrete_spelling,
-	const std::map<std::string, DataDef *> &ded, int &score)
+	const std::map<std::string, DataDef *> &ded, int &score,
+	const std::vector<TokenBase *> *slot_tokens)
 {
+    size_t decltype_probe_index = 0;
     // The pattern slot must itself be a `__void_t<...>`.
     std::string pouter;
     std::vector<std::string> pargs;
@@ -24654,6 +24656,20 @@ bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
 	const std::string tn = "typename";
 	if ( a.compare(0, tn.size(), tn) == 0 )
 	    a = trim_spelling(a.substr(tn.size()));
+	// `__void_t<decltype( EXPR )>` — an EXPRESSION well-formedness probe
+	// (libc++ __common_type2_imp: `decltype(true ? declval<_Tp>() :
+	// declval<_Up>())`). Substitute the deduced params into the decltype
+	// token run and resolve it through the real decltype machinery
+	// (resolve_type_token_range carries the SFINAE trap). Resolves ->
+	// this Arg is well-formed; fails -> the spec is SFINAE-rejected.
+	if ( a.compare(0, 8, "decltype") == 0 )
+	{
+	    if ( !slot_tokens
+	      || !eval_decltype_probe_tokens(*slot_tokens,
+					     decltype_probe_index++, ded) )
+		return false;
+	    continue;
+	}
 	// Split into `PARAM :: member :: member...` at top-level `::` — the
 	// shared rule (include/spelling_delim.h). This block hand-rolled it
 	// with only angle depth and predated the consolidation sweep. The
@@ -24713,6 +24729,62 @@ bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
     }
     score += 30;                                   // detection succeeded -> select this spec
     return true;
+}
+
+bool Program::eval_decltype_probe_tokens(const std::vector<TokenBase *> &slot_tokens,
+	size_t nth, const std::map<std::string, DataDef *> &ded)
+{
+    // Locate the nth `decltype` in the slot's token run (Args are visited in
+    // order, so the nth spelled probe is the nth token occurrence).
+    size_t start = slot_tokens.size();
+    size_t seen = 0;
+    for ( size_t i = 0; i < slot_tokens.size(); ++i )
+    {
+	TokenBase *t = slot_tokens[i];
+	if ( t && is_contextual_identifier_token(t)
+	  && contextual_identifier_name(t) == "decltype" )
+	    if ( seen++ == nth )
+	    { start = i; break; }
+    }
+    if ( start >= slot_tokens.size()
+      || start + 1 >= slot_tokens.size()
+      || !slot_tokens[start + 1]
+      || slot_tokens[start + 1]->id() != TokenID::tkOpBrk )
+	return false;
+    // Span the balanced `( ... )` on the shared tracker.
+    DelimDepth d;
+    size_t end = start + 1;
+    while ( end < slot_tokens.size() )
+    {
+	size_t n = delim_scan_step(slot_tokens, end, d);
+	end += n ? n : 1;
+	if ( end > start + 1 && !d.paren )
+	    break;
+    }
+    if ( d.paren )
+	return false;
+    // Clone [start, end) substituting deduced params (name -> bound type).
+    std::vector<TokenBase *> body;
+    for ( size_t k = start; k < end; ++k )
+    {
+	TokenBase *t = slot_tokens[k];
+	if ( t && t->type() == TokenType::ttIdentifier )
+	{
+	    const std::string &nm = ((TokenIdent *)t)->spelling();
+	    std::map<std::string, DataDef *>::const_iterator di = ded.find(nm);
+	    if ( di != ded.end() && di->second )
+	    {
+		body.push_back(new TokenDataType(di->second->name.c_str(),
+						 *di->second));
+		continue;
+	    }
+	}
+	body.push_back(t ? t->clone() : NULL);
+    }
+    DataDef *rt = resolve_type_token_range(body, 0, body.size());
+    for ( TokenBase *t : body )
+	delete t;
+    return rt != NULL;
 }
 
 static bool parse_simple_template_non_type_value(const std::string &spelling,
@@ -25433,7 +25505,8 @@ Program::TemplateDef *Program::match_partial_specialization(
 					 &tmpl_ded, &pack_ded)
 	      && !eval_void_t_detection_slot(
 					 pattern_spelling,
-					 arg_spellings[i], ded, score) )
+					 arg_spellings[i], ded, score,
+					 &spec.spec_pattern[i]) )
 	    { ok = false; break; }
 	}
 	if ( !ok )
