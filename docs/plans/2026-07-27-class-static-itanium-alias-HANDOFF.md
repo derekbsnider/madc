@@ -314,6 +314,45 @@ accordingly, and expect the layer count to be >2.
 
 NOT a blocker for `use_facet` (GAP B) — that one is namespace-scoped already.
 
+## ⚠️ OPEN REGRESSION — 34b2f245 breaks the four *_realhdr comparison tests
+
+**Bisected with the harness on 2026-07-28. FIX THIS BEFORE MERGING.**
+
+    681275c2 (code == 91afcd3d, last green battery)   4 passed
+    34b2f245 (class statics -> real Itanium symbol)   0 passed, 4 FAILED
+
+`testcompare_realhdr`, `testcompareops_realhdr`, `testdefaultedcmp_realhdr`,
+`testrewritten_realhdr` — all report **"use of undeclared identifier
+'strong_ordering'"**.
+
+Almost certainly the alias itself: `std::strong_ordering::less` / `::equal` /
+`::greater` are static data members of a SYSTEM-HEADER class, which is exactly
+what `class_static_member_itanium_symbol()` began aliasing. Start by checking
+whether those statics take the alias when they should not (they are
+`static const strong_ordering` OBJECTS with in-class initializers — if the
+initializer is not captured, `has_inclass_init` is false and they wrongly get
+storage + an alias).
+
+### ⚠️ METHOD FAILURE THAT COST ~6 BUILDS — DO NOT REPEAT
+
+I ran these tests as `bin/madc tests/testcompare_realhdr.mad`, bare. They carry
+
+    tests/testcompare_realhdr.flags  ->  --std=c++20 --no-embedded-headers
+
+so **every bare run failed for the wrong reason**, and the whole first bisect
+measured nothing. It "confirmed" guard 1 of the global-template fix, then
+survived three successive narrowings that changed nothing, and only collapsed
+when a docs-only commit (whose code state had a GREEN battery) also "failed".
+
+- A tests/ file is NOT a reducer. Run it through `run_tests.sh` (or
+  `TESTS='<name>' remote_build.sh tests`), which applies `.flags`/`.input`/
+  `.expect`. Reserve bare `bin/madc` for `tmp/` reducers you wrote yourself.
+- The tell was there early: the same code both passed a battery and failed a
+  bare run. When that happens the HARNESS is wrong, not the code.
+- Compounding cause: the battery for `1c44c10d` was aborted, so there was no
+  green baseline between it and `c3d7fbe1`. Do not stack code commits without a
+  green battery between them.
+
 ## Also open, unrelated
 
 `Gap{nested_tag_not_scoped_to_struct_body}` — two scopes each declaring a
