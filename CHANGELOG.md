@@ -59,7 +59,12 @@ oracle-verified test. Suite 784 → 792.
   parsed, silent wrong answer — the packed-lane `testcommontype` failure).
   v34 records carry the dependent return-type range in the record's
   previously-empty constraint-run slot; the flush stamps restored
-  placeholders directly. Gate: `forest_bind_gate.sh` `[declonlymt]`.
+  placeholders directly. v34 also makes the stdlib FLAVOR producer-config
+  identity: a libstdc++-parsed container bound into a `-stdlib=libc++`
+  compile served the wrong `<stddef.h>` (libc++ `<cstddef>` `#error` — the
+  packed `testcommontype_libcxx` failure); a flavor mismatch now takes the
+  config gate's silent live fall-through, and a same-flavor consumer still
+  binds. Gates: `forest_bind_gate.sh` `[declonlymt]` + `[flavorgate]`.
 - **Frontier after all of it:** `<string_view>` parses, compiles through
   c2mir, and RUNS under `-stdlib=libc++`. Next: the stdlib-flavor ABI
   switch (P2.3) to unlock the native exe/obj lanes, then `<string>` (P2.4).
