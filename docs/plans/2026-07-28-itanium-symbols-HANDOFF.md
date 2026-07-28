@@ -128,13 +128,63 @@ owner", never new machinery:
 5. `namespace_function_symbol` invented `__ns__name` for the GLOBAL namespace,
    which nothing looks up.
 
-**DO run `/dupaudit` scoped to the expression-parsing paths before merging.**
-Five instances in one session is the signal that command exists for.
+~~**DO run `/dupaudit` scoped to the expression-parsing paths before merging.**~~
+**RUN 2026-07-28** — results in §2b below and in the KG (`DupFamily` /
+`Gap` nodes). Six instances by session end (the ctor-receiver fix was the
+sixth).
 
-Related, still true and still unfixed: `namespace_function_symbol` also carries
-a **divergent copy of the Itanium operator table** (`_lt`, `_pl`, `_ix`, `_cl`)
-duplicating `operator_code()` in `src/madc_mangle.cpp:150`. One rule, two
-implementations, one non-canon by construction.
+**CORRECTED — the operator-table claim below was a FALSE POSITIVE.** The
+audit read both sites: `namespace_function_symbol`'s table produces a
+disposable parse-time KEY (erased once the display name registers); the
+real ABI path already routes through `operator_code()` via
+`namespace_cpp_function_symbol` → `emit_symbol`. Tie-breaker fails — an
+ABI-rule change edits ONE place. Do not merge them. Reading it did find a
+REAL bug though: the table has no `~`/`,` cases, so `operator~` and
+`operator,` in one namespace collide into the same parse key → silent
+overload collapse (`Gap{ns_function_symbol_tilde_comma_collision}`).
+
+## 2b. /dupaudit results (2026-07-28, scope: code this branch touched)
+
+Three families reported (capped per the skill; dropped: the
+punct→mnemonic sanitizer redundancy — recorded low-priority in the KG —
+and three families re-verified STABLE):
+
+1. **`DupFamily{var_emit_name_bypass}`** — THE session's shape, now
+   counted: after `a81f86e1` fixed the 7 ctor-receiver sites, **11
+   live-bug-possible raw-name emission sites remain** in cir_builder.cpp:
+   `TokenDeref` 15559 / `TokenDerefStep` 15578 (their siblings `TokenVar`
+   15464 and `TokenAddrOf` 15524 route correctly), the four
+   `TokenScopeContext` value reads 16753–16766 (walks ALL globals, no
+   alias check), `class_subscript_addr` 14127 (its own sibling branch
+   resolves), `var_decl`'s array early-return 6539 (same function
+   resolves at 6691), and the function DECLARATOR at
+   `func_proto`/`func_def` 14437/20453 (+cyg_profile self-arg
+   20814/20819) — an asm-labeled function with a body would be DEFINED
+   as `foo` while every call site calls `bar`. Fix ships WITH
+   `scripts/check-var-emit-name-bypass.sh` (model:
+   `check-call-emit-symbol.sh`, allowed-exception markers; ~30 legit
+   hits are tags/labels/fields/captures/locals).
+2. **`DupFamily{qualifier_before_scope_resolution}`** — first honest
+   count: **3 implementations that DISAGREE** — `parseExpr_identifierArm`
+   (26595) checks class-before-namespace; `parsePostfixChain` (19899) and
+   `parseAddressOfExpression` (20738) check namespace-first. Error text
+   diverges too. One `classify_qualifier_before_scope()` helper; gate:
+   `resolve_expression_class_scope` call sites == 1.
+3. **`DupFamily{char_level_angle_scanning}` REGREW** (pre-consolidation
+   misses, not post-fix growth): parser.cpp:24313
+   (`confirm_dependent_member_type`, comma-split ≙
+   `split_template_args_spelling`) and 24409 (`eval_void_t_detection_slot`,
+   `::`-split ≙ `split_scope_spelling`, missing the owner's guards). Both
+   predate `spelling_delim.h`. **Gate weakness found:**
+   `check-one-delim-tracker.sh` keys on variable NAMES
+   (`angle|paren|square|brace`) — a plain `d`/`depth` counter slips past.
+
+Plus two plain bugs (KG `Gap` nodes): the `~`/`,` parse-key collision
+above, and **`Gap{mangler_std_branch_operator_gap}`** —
+`mangle_nested_function` routes operators through `operator_code()` only
+on its global-scope branch (:599); the std branch (:614) falls to
+`source_name`, so `std::operator<<` would mangle as the invalid
+`_ZSt10operator<<`. Directly relevant to GAP B.
 
 ---
 
