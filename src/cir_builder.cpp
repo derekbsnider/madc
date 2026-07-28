@@ -16694,6 +16694,20 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		const char *cn = tsc->context_var.name.c_str();
 		for (Variable *sv : tsc->scope_vars) {
 			if (!sv || !sv->type) continue;
+			// A declaration no definition in this TU ever completed
+			// (addVariable clears vfEXTERN when one does) has no decl in
+			// the emitted module. Every capture below is read as a bare
+			// id() — this path never records referenced_globals, so pass
+			// 0.78 emits no `extern <type> name;` for it — and c2mir then
+			// reported "undeclared identifier <name>" once per eval call
+			// site, on stderr, while the program still exited 0.
+			// is_runtime_eval_scope_supported_variable states the same rule
+			// for parse-time constants; it belongs HERE rather than beside
+			// it because "did a definition arrive" is only settled once the
+			// whole TU is parsed. A plain `extern int g;` reproduces it with
+			// no class in the picture; std::locale::_S_once, declared in
+			// <locale> and defined inside libstdc++.so, is what exposed it.
+			if (sv->flags & vfEXTERN) continue;
 			const char *setter;
 			node_t val;
 			ExternParam val_shape;

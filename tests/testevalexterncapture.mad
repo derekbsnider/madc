@@ -1,0 +1,61 @@
+// A DECLARATION with no definition in this translation unit must not be
+// captured into the runtime-eval scope context.
+//
+// The scope-context lowering reads each captured variable as a bare `id()` in
+// the emitted module — it never goes through the TokenVar path that records
+// referenced_globals — so nothing emits `extern <type> name;` on its behalf.
+// Capturing a variable that has no definition here therefore emitted a
+// reference to a name c2mir had never seen:
+//
+//   tests/testmadceval.mad:12:38: undeclared identifier locale___S_once
+//   tests/testmadceval.mad:12:38: incompatible argument type for arithmetic
+//                                 type parameter
+//
+// on EVERY eval call site, to stderr, while the program still exited 0.
+//
+// is_runtime_eval_scope_supported_variable already stated exactly this rule
+// for parse-time constants ("has no declaration in the emitted module — reads
+// of it FOLD to its value, so the by-name capture would emit an undeclared
+// identifier"). It simply did not cover the other half of its own domain.
+//
+// `extern int undefined_global;` below reproduces it with no class anywhere in
+// the picture. The shape that EXPOSED it was a class static — std::locale's
+// _S_once and friends, declared in <locale> and defined inside libstdc++.so —
+// which is why this was briefly mistaken for a class-static problem and
+// "skipped classes from system headers" instead of fixing the collector.
+#include <iostream>
+using namespace std;
+#include <ns_madc>
+#include <stdio.h>
+
+// Declared here, defined NOWHERE in this translation unit, and never
+// referenced. Its mere presence in scope at the eval call sites is the test.
+extern int undefined_global;
+
+// The same shape reached through a class. The storage global that a static
+// data member's DECLARATION introduces stays vfEXTERN until an out-of-class
+// definition completes it, and there is no `int Holder::count;` here — exactly
+// the state every std::locale / std::ios_base static is in.
+struct Holder
+{
+	static int count;
+};
+
+// The controls: variables that ARE defined here must still be captured, or
+// the fix would be "stop capturing" rather than "stop capturing the
+// undefinable".
+int defined_global = 40;
+
+int main()
+{
+	int bonus = 2;
+
+	printf("source=%d\n", madc::eval_int("return defined_global + bonus;"));
+	printf("expr=%d\n", madc::eval_expression_int("defined_global + bonus"));
+
+	// A local shadowing nothing, captured alongside the globals.
+	int local_only = 7;
+	printf("local=%d\n", madc::eval_expression_int("local_only * 6"));
+
+	return 0;
+}

@@ -17962,6 +17962,13 @@ bool is_runtime_eval_scope_supported_variable(Variable *var)
     // capturable.
     if ( var->is_constant() && !(var->flags & vfCONSTDECL) )
 	return false;
+    // A DECLARATION never completed by a definition (vfEXTERN) is excluded by
+    // the same rule, but NOT here: whether a definition arrives is a
+    // whole-TU property, and this predicate runs at the eval call site, where
+    // the rest of the file is still unparsed. `extern int g;` before the call
+    // with `int g = 5;` after it is capturable, and rejecting it here would
+    // drop it. The test lives in the CIR scope-context lowering instead,
+    // beside the pointer/unsupported-type skips, where the flag is final.
 
     DataType raw = var->type->rawtype();
     return raw == DataType::dtBOOL
@@ -35567,23 +35574,20 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		// here, so the emitted C failed with "undeclared identifier".
 		bool has_inclass_init = pgm.peekToken()
 		    && pgm.peekToken()->id() == TokenID::tkAssign;
-		// And only for a class WE compile. A system header's class static
-		// is defined in the LIBRARY, not in this translation unit:
-		// std::locale::_S_once, std::locale::id::_S_refcount and
-		// std::ios_base::Init::_S_synced_with_stdio are declared in
-		// <locale>/<ios> with no initializer and defined in libstdc++.so.
-		// madc names class statics by its own folded spelling
-		// (`locale___S_once`) and sets no storage_alias_name for them, so
-		// there is no Itanium symbol here for a reference to resolve
-		// against — synthesizing storage turns a silent 0 into a hard
-		// "undeclared identifier" without making anything correct. Those
-		// keep the pre-existing fold; referencing them properly needs an
-		// extern declaration plus the mangled alias, which is its own
-		// piece of the mangled-direct work.
-		bool from_system_header = tag && tag->file
-		    && pgm.is_system_header_path(tag->file);
-		if ( cmember_dd && pgm.tkProgram && !has_inclass_init
-		  && !from_system_header )
+		// There is deliberately no "...and only for a class WE compile"
+		// test here. A system header's class static was briefly skipped,
+		// because giving std::locale::_S_once storage made the emitted C
+		// fail with "undeclared identifier locale___S_once". That guard was
+		// a placeholder for a defect one layer down, and it is gone: the
+		// runtime-eval scope collector was capturing every visible global BY
+		// NAME, including declarations with no definition in this TU, which
+		// is a failure a plain `extern int g;` reproduces with no class
+		// anywhere in it. The rule now lives in
+		// is_runtime_eval_scope_supported_variable, beside the identical one
+		// it already stated for parse-time constants. g++ creates the decl
+		// for EVERY static data member while parsing the class body; so does
+		// madc, with no origin-keyed exception.
+		if ( cmember_dd && pgm.tkProgram && !has_inclass_init )
 		{
 		    const std::string storage =
 			class_static_member_storage_name(ddc, mname);
