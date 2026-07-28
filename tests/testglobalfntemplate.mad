@@ -1,0 +1,58 @@
+// A function template at GLOBAL namespace scope.
+//
+// `template<typename T> T ident(T x) { return x; }` called as `ident(7)`
+// reported "use of undeclared identifier 'ident'", while the IDENTICAL
+// template inside `namespace nn`, called as `nn::ident(7)`, worked. [temp]
+// does not require a namespace; the suite simply never covered the shape.
+//
+// Three layers, and the first two were only HALF the story — with both of them
+// fixed the reducers still failed identically, which is what forced a `-v`
+// trace instead of a third guess:
+//
+//   1. register_skipped_namespace_template_function opened with
+//      `if (current_namespace().empty()) return;` — never registered.
+//   2. The instantiation lookup bailed on `fd->namespace_name.empty()`.
+//   3. THE ACTUAL BLOCKER: the placeholder was registered under the invented
+//      name `__ns__ident` (namespace_function_symbol prefixing an EMPTY
+//      namespace), while every unqualified call site looks up the plain name.
+//      -v showed both halves in sequence:
+//         "Added new function declaration name: __ns__ident"
+//         "findVariable(ident) not found"
+//      An unqualified name at global scope is its own key — there is nothing
+//      to qualify it with.
+//
+// Every value here is checked against g++ 13 on the same source.
+#include <cstdio>
+
+// Deduced from the argument.
+template<typename T> T ident(T x) { return x; }
+
+// NON-DEDUCIBLE from the arguments — the explicit form is required. This is
+// the shape std::use_facet<F>(loc) has.
+template<typename T> T make(int x) { return (T)x; }
+
+// Two type parameters, and a call that mixes deduction with an explicit arg.
+template<typename A, typename B> A first_of(A a, B b) { return a; }
+
+// The control: the same template inside a namespace, which always worked.
+namespace nn { template<typename T> T ident(T x) { return x; } }
+
+int main()
+{
+	printf("deduced %d\n", (int)ident(7));
+	printf("explicit %d\n", (int)ident<int>(8));
+
+	// Non-deducible return type: only the explicit form can work.
+	printf("nondeducible %d\n", (int)make<int>(9));
+
+	// In an operand position too — that path lost the template-argument
+	// list separately (see testqualifiedpostfix).
+	printf("operand %d\n", (int)make<int>(10) + (int)ident<int>(1));
+
+	printf("mixed %d\n", (int)first_of(11, 'c'));
+
+	// Namespace control: unchanged behaviour.
+	printf("nscontrol %d\n", (int)nn::ident(12));
+
+	return 0;
+}

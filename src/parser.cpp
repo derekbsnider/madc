@@ -1967,6 +1967,15 @@ bool Program::function_local_class_identity(DataDefCLASS *cdd,
 static std::string namespace_function_symbol(const std::string &ns_name,
 					     const std::string &member_name)
 {
+    // GLOBAL scope has nothing to qualify with, and the invented `__ns__name`
+    // was findable by nobody: the registration stored the Variable under it
+    // while every unqualified call site looks up the PLAIN name, so
+    // `ident(7)` reported "use of undeclared identifier 'ident'" even after
+    // the template registered (confirmed with -v: "Added new function
+    // declaration name: __ns__ident" followed by "findVariable(ident) not
+    // found"). An unqualified name at global scope IS its own key.
+    if ( ns_name.empty() )
+	return member_name;
     std::string sym = "__ns_";
     for ( size_t i = 0; i < ns_name.size(); ++i )
     {
@@ -40701,8 +40710,10 @@ static void register_skipped_namespace_template_function(
 	const std::vector<bool> *typeparam_is_type,
 	const std::vector<bool> *typeparam_is_pack)
 {
-    if ( pgm.current_namespace().empty() )
-	return;
+    // NO empty-namespace bail. A function template at GLOBAL scope is an
+    // ordinary function template — [temp] does not require a namespace — and
+    // skipping registration made `ident(7)` report "use of undeclared
+    // identifier" while the IDENTICAL template inside `namespace nn` worked.
 #ifdef MADC_DEBUG_GETREG
     if ( getenv("MADC_DEBUG_GETREG") )
     {
@@ -43432,8 +43443,10 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
     // required (stod's empty-pack shape). The template's presence in
     // fn_template_map is the signal; the inst_key memo dedupes.
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
-    if ( !fd
-      || fd->namespace_name.empty() || fd->function_display_name.empty() )
+    // A GLOBAL-scope template has an empty namespace_name, which is a valid key
+    // component, not a reason to refuse instantiation — the other half of the
+    // same assumption removed at the registration site.
+    if ( !fd || fd->function_display_name.empty() )
 	return;
     std::string fn_key = fd->namespace_name + "::" + fd->function_display_name;
     std::vector<FnTemplateDef> *mi = fn_template_map.find(fn_key);
