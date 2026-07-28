@@ -208,6 +208,20 @@ public:
     std::string function_display_name;
     std::string namespace_name;
     std::string inline_builtin_kind;
+    // TRUE when this FuncDef is a BUILTIN-STYLE registration (the
+    // builtin_registry core/process/dlfcn loops — the caller passes the
+    // intent into Program::addFunction). An explicit source (re)declaration
+    // REPLACES such an entry wholesale (gcc canon: an explicit prototype
+    // replaces a builtin) — parameters, return type, and any wrapper
+    // binding (local_emit_name) all come from the source declaration.
+    // parseFunction consumes this at its already-declared check.
+    // NOT stamped on addFunction's OTHER mints — namespace fn-template
+    // placeholders, member-template instantiation registrations, __dl_
+    // dynamic symbols, host embedding — a later source declaration of
+    // those ids is a definition/refinement, not a builtin override
+    // (clobbering _M_construct instantiation entries mid-header broke the
+    // freeze producer's .tcc body parses).
+    bool builtin_registration = false;
     // For an externally-bound ctor (emit_symbol set) whose real ABI takes a
     // trailing reference argument that madc has no value for, pass the object's
     // own address (&this) as that trailing arg.
@@ -4238,7 +4252,7 @@ public:
 				 const std::string &display_name = "__madc_runtime_eval_expression",
 				 const madc::value *context = NULL);
 
-    Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false);
+    Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false, bool builtin_registration=false);
 
     // manage compound nesting
     void pushCompound();

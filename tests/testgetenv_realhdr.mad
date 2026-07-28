@@ -1,0 +1,18 @@
+// Gap{builtin_redecl_half_adopt}: real <stdlib.h> re-declares getenv/setenv,
+// which madc pre-registers as builtins with wrapper conventions (getenv's
+// 2-param result-buffer __madc_getenv). gcc canon: an explicit prototype
+// replaces a builtin — the header's 1-param getenv must win WHOLESALE and the
+// call must bind the real libc symbol (not the wrapper). The setenv→getenv
+// round-trip proves the calls really hit libc.
+// Oracle: gcc/g++ compile and print "1" then "roundtrip".
+#include <stdlib.h>
+#include <stdio.h>
+
+int main()
+{
+	char *p = getenv("HOME");
+	printf("%d\n", p != 0);
+	setenv("MADC_GETENV_TEST", "roundtrip", 1);
+	printf("%s\n", getenv("MADC_GETENV_TEST"));
+	return 0;
+}

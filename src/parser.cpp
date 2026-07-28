@@ -14450,14 +14450,6 @@ int64_t madc_system(void *cmd)
     return (int64_t)system((const char *)cmd);
 }
 
-void *madc_getenv(void *result, void *name)
-{
-    std::string &out = *(std::string *)result;
-    const char *value = getenv((const char *)name);
-    out = value ? value : "";
-    return result;
-}
-
 const char *madc_get_argv(void *argv_ptr, int64_t index)
 {
     char **argv = (char **)argv_ptr;
@@ -14472,21 +14464,6 @@ const char *madc_get_argv(void *argv_ptr, int64_t index)
 extern "C" const char *get_argv(void *argv_ptr, int64_t index)
 {
     return madc_get_argv(argv_ptr, index);
-}
-
-extern "C" void *__madc_getenv(void *result, void *name)
-{
-    return madc_getenv(result, name);
-}
-
-void madc_setenv(void *name, void *value)
-{
-    setenv((const char *)name, (const char *)value, 1);
-}
-
-void madc_unsetenv(void *name)
-{
-    unsetenv((const char *)name);
 }
 
 static void register_std_namespace_spec(Program &pgm)
@@ -15557,10 +15534,18 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("copysignf", datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float,float))copysignf);
     builtin_registry.add_core_function("copysignl", datatype_vec_t{DataType::dtLDOUBLE, DataType::dtLDOUBLE, DataType::dtLDOUBLE}, (fVOIDFUNC)(long double(*)(long double,long double))copysignl);
     builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_system);
-    builtin_registry.add_process_function("getenv", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)__madc_getenv);
+    // getenv/setenv/unsetenv are the REAL C/POSIX functions — the real shapes,
+    // bound to real libc. The old madc conveniences (getenv's 2-param
+    // std::string result-buffer __madc_getenv, setenv's 2-param overwrite=1
+    // wrapper) were a private dialect the C headers know nothing about: any
+    // include chain reaching real <stdlib.h> re-declares these names, the
+    // prototype replaces the builtin (gcc canon), and the two conventions
+    // cannot coexist on one name. madc is C under the hood — one shape, C's.
+    // `string s = getenv("HOME")` ingests the char* via string's real ctor.
+    builtin_registry.add_process_function("getenv", datatype_vec_t{ptr_of(ddCHAR), ptr_of(ddCHAR)}, (fVOIDFUNC)::getenv);
     builtin_registry.add_process_function("get_argv", datatype_vec_t{ptr_of(ddCHAR), ptr_of(ddVOID), DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
-    builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_setenv);
-    builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_unsetenv);
+    builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtINT32, ptr_of(ddCHAR), ptr_of(ddCHAR), DataType::dtINT32}, (fVOIDFUNC)::setenv);
+    builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtINT32, ptr_of(ddCHAR)}, (fVOIDFUNC)::unsetenv);
     // errno accessor: the host libc's errno macro expands to a call on this
     // symbol (glibc: (*__errno_location()); darwin: (*__error())). Register
     // the host's own accessor under the host's own name so real <errno.h>
@@ -15606,7 +15591,7 @@ void Program::add_core_functions()
     for ( std::vector<FunctionRegistrationSpec>::const_iterator it = builtin_registry.core_functions.begin();
 	  it != builtin_registry.core_functions.end(); ++it )
     {
-	Variable *var = addFunction(it->id, it->params, it->extfunc, it->is_method);
+	Variable *var = addFunction(it->id, it->params, it->extfunc, it->is_method, true);
 	if ( var && it->id == "__builtin_va_start" )
 	{
 	    FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
@@ -15628,18 +15613,7 @@ void Program::add_process_functions()
     // madc's `*p` deref read 8 bytes and silently broke errno comparisons.
     for ( std::vector<FunctionRegistrationSpec>::const_iterator it = builtin_registry.process_functions.begin();
 	  it != builtin_registry.process_functions.end(); ++it )
-    {
-	Variable *var = addFunction(it->id, it->params, it->extfunc, it->is_method);
-	if ( var && it->id == "getenv" )
-	{
-	    FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
-	    if ( fd )
-	    {
-		fd->local_emit_name = "__madc_getenv";
-		funcdef_map["__madc_getenv"] = fd;
-	    }
-	}
-    }
+	addFunction(it->id, it->params, it->extfunc, it->is_method, true);
 }
 
 void Program::add_dlfcn_functions()
@@ -15649,7 +15623,7 @@ void Program::add_dlfcn_functions()
     {
 	if ( !is_dynamic_symbol_allowed(it->id) )
 	    continue;
-	addFunction(it->id, it->params, it->extfunc, it->is_method);
+	addFunction(it->id, it->params, it->extfunc, it->is_method, true);
     }
 }
 
@@ -18843,7 +18817,7 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 }
 
 // add a function definition
-Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod)
+Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod, bool builtin_registration)
 {
     variable_map_iter vmi;
     funcdef_map_iter fmi;
@@ -18917,6 +18891,14 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     dd = resolve_data_type(params[0]);
 
     func = new FuncDef(*dd);
+    // Builtin-style provenance is the CALLER's declaration of intent (the
+    // builtin_registry loops pass true): an explicit source re-declaration
+    // then replaces this entry wholesale (gcc canon: an explicit prototype
+    // replaces a builtin). addFunction's other mints (namespace fn-template
+    // placeholders, member-template instantiation registrations, __dl_
+    // dynamic symbols) stay false — a source declaration of those ids is a
+    // definition, not a builtin override.
+    func->builtin_registration = builtin_registration;
     if ( !isMethod )
     {
 	pack_tap_name(id, pdkFunction);	// B4a: decl-index tap
@@ -47542,11 +47524,28 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     {
 	func = fmi->second;
 	func_already_declared = true;
+	// A MACHINE-registered FuncDef (builtin_registry, host embedding,
+	// dlsym namespace mint) is replaced WHOLESALE by an explicit source
+	// (re)declaration — gcc canon: an explicit prototype replaces a
+	// builtin. Nothing carries over: the registration's parameter list
+	// and wrapper binding (getenv's 2-param result-buffer convention,
+	// local_emit_name = __madc_getenv) are conventions the header knows
+	// nothing about. A half-adopt (return refreshed below, params kept)
+	// left a hybrid prototype nothing declares — getenv("HOME") under
+	// real <stdlib.h> errored "expected 2 got 1". The fresh FuncDef
+	// carries no local_emit_name, so the call emits the source name and
+	// MIR-link dlsym binds the real libc symbol.
+	if ( func->builtin_registration )
+	{
+	    func = new FuncDef(returnDecl(dd, return_ref));
+	    funcdef_map[id] = func;
+	    func_already_declared = false;
+	}
 	// C `f()` is an old-style declaration with unspecified parameters,
 	// not a real zero-parameter prototype. When the later definition
 	// provides the actual parameter list, rebuild the FuncDef from
 	// scratch so the body binds those names normally.
-	if ( !func->is_void_params && func->parameters.empty() )
+	else if ( !func->is_void_params && func->parameters.empty() )
 	{
 	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref));
 	    fresh->return_types = func->return_types;

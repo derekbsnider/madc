@@ -282,8 +282,8 @@ in.close();
 | `std::stod(str)` | String to double |
 | `strlen(str)` | String length |
 | `system(cmd)` | Run shell command |
-| `getenv(result, name)` | Get environment variable |
-| `setenv(name, value)` | Set environment variable |
+| `getenv(name)` | Get environment variable (real C `getenv`, returns `char *`; `string s = getenv("HOME")` ingests it) |
+| `setenv(name, value, overwrite)` | Set environment variable (real POSIX `setenv`) |
 | `dlopen(filename)` | Open shared library |
 | `dlsym(handle, name)` | Look up symbol |
 | `dlcall(funcptr, args...)` | Call through function pointer |
