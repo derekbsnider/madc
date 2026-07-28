@@ -1,9 +1,12 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-07-28 (v0.56.0: real C
-under real headers — prototype replaces builtin wholesale, getenv/setenv are
-real libc; explicit template args reach every layer, use_facet binds the real
-libstdc++ export; suites 776/760/760 green; warning ratchet 0).
+Master plan linking all workstreams. Updated 2026-07-28 (v0.57.0: the libc++
+burn-down — eight core-C++ defects fixed in one chain: inline-namespace
+transparency in lookup AND name resolution, using-alias fn-ptr declarators,
+self-referential instantiation bounded in both lanes/both cache regimes,
+braced-list ctor ranking per [dcl.init.list]/3, `__underlying_type`, partial
+specs of a decl-only primary; `-stdlib=libc++` frontier now ONE defect from
+`<string_view>`/`<string>`; suites 784/768/768 green; warning ratchet 0).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
