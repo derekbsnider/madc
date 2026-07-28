@@ -31,6 +31,29 @@ SSH="ssh -p $PORT $REMOTE"
 LOCAL_MADC=/workspace/madc
 LOCAL_MIR=/workspace/mir
 
+# ALWAYS keep a full transcript, whether or not the caller redirects.
+#
+# On 2026-07-28 a ~30-minute battery was run as `remote_build.sh battery |
+# tail -60`. It reported `total rc=1`, and the stage that produced it had
+# already scrolled out of the pipe — the whole run had to be thrown away. The
+# fix is not "remember to redirect": stdout here stays SHORT (stage lines plus
+# a summary), the full output goes to the log, and the log path is printed at
+# both ends. There is nothing left worth piping through `tail`.
+if [ -z "$MADC_RB_LOGGING" ]; then
+	case " $* " in
+		*" shell "*) : ;;   # prints one line; no log needed
+		*)
+			mkdir -p "$LOCAL_MADC/tmp/logs"
+			_log="$LOCAL_MADC/tmp/logs/rb-$(date +%Y%m%d-%H%M%S).log"
+			echo "=== full log: $_log"
+			MADC_RB_LOGGING=1 "$0" "$@" 2>&1 | tee "$_log"
+			_rc=${PIPESTATUS[0]}
+			echo "=== full log: $_log"
+			exit $_rc
+			;;
+	esac
+fi
+
 stages="$*"
 if [ -z "$stages" ]; then
 	stages="sync build"
@@ -75,6 +98,16 @@ container_busy_check
 
 rc_total=0
 
+stage_summary=""
+
+note_stage() {
+	# $1 = label, $2 = rc. Recorded so the final summary can name the stage
+	# that failed — `total rc=1` on its own sent a whole battery to waste.
+	stage_summary="$stage_summary
+  $1 rc=$2"
+	if [ "$2" -ne 0 ]; then rc_total=1; fi
+}
+
 run_remote() {
 	# $1 = label, $2 = remote command string
 	# /usr/lib/ccache first so clang++/g++ resolve to the ccache wrappers.
@@ -82,7 +115,7 @@ run_remote() {
 	$SSH "export PATH=/usr/lib/ccache:\$PATH; $2"
 	rc=$?
 	echo "$1 rc=$rc"
-	if [ $rc -ne 0 ]; then rc_total=1; fi
+	note_stage "$1" "$rc"
 }
 
 for stage in $stages; do
@@ -98,12 +131,12 @@ for stage in $stages; do
 			-e "ssh -p $PORT" "$LOCAL_MADC/" "$REMOTE:/workspace/madc/"
 		rc=$?
 		echo "sync madc rc=$rc"
-		if [ $rc -ne 0 ]; then rc_total=1; fi
+		note_stage "sync madc" "$rc"
 		rsync -az --delete --exclude="*.o" --exclude="*.a" --exclude="*.d" \
 			-e "ssh -p $PORT" "$LOCAL_MIR/" "$REMOTE:/workspace/mir/"
 		rc=$?
 		echo "sync mir rc=$rc"
-		if [ $rc -ne 0 ]; then rc_total=1; fi
+		note_stage "sync mir" "$rc"
 		;;
 	build)
 		run_remote "build mir" "make -C /workspace/mir -j20 libmir.a"
@@ -118,6 +151,29 @@ for stage in $stages; do
 		;;
 	fulltest)
 		run_remote "fulltest" "make -C /workspace/madc/src -j20 fulltest"
+		;;
+	tests)
+		# TARGETED subset — the inner loop. TESTS holds basename globs.
+		# Scope a run to the blast radius of the change and save the full
+		# suite for pre-merge (.claude/rules/build.md, build-test-efficiency).
+		if [ -z "$TESTS" ]; then
+			echo "stage 'tests' needs TESTS='<glob> [glob...]'" >&2
+			note_stage "tests" 1
+		else
+			run_remote "tests" "cd /workspace/madc; bash scripts/run_tests.sh $TESTS"
+		fi
+		;;
+	tests-all)
+		# The same subset across every execution lane (JIT + exe + obj) —
+		# the targeted equivalent of the battery, for the surface touched.
+		if [ -z "$TESTS" ]; then
+			echo "stage 'tests-all' needs TESTS='<glob> [glob...]'" >&2
+			note_stage "tests-all" 1
+		else
+			run_remote "tests jit" "cd /workspace/madc; bash scripts/run_tests.sh $TESTS"
+			run_remote "tests exe" "cd /workspace/madc; bash scripts/run_tests.sh --exe $TESTS"
+			run_remote "tests obj" "cd /workspace/madc; bash scripts/run_tests.sh --obj $TESTS"
+		fi
 		;;
 	exe)
 		run_remote "exe" "cd /workspace/madc; bash scripts/run_tests.sh --exe"
@@ -146,7 +202,7 @@ for stage in $stages; do
 			"$REMOTE:/workspace/madc/bin/madc" "$LOCAL_MADC/bin/madc"
 		rc=$?
 		echo "pull madc rc=$rc"
-		if [ $rc -ne 0 ]; then rc_total=1; fi
+		note_stage "pull madc" "$rc"
 		chmod +x "$LOCAL_MADC/bin/madc" 2>/dev/null
 		if $SSH "test -f /workspace/madc/bin/madc-release"; then
 			rsync -az --no-perms --no-owner --no-group \
@@ -155,7 +211,7 @@ for stage in $stages; do
 				"$LOCAL_MADC/bin/madc-release"
 			rc=$?
 			echo "pull madc-release rc=$rc"
-			if [ $rc -ne 0 ]; then rc_total=1; fi
+			note_stage "pull madc-release" "$rc"
 			chmod +x "$LOCAL_MADC/bin/madc-release" 2>/dev/null
 		fi
 		;;
@@ -166,5 +222,7 @@ for stage in $stages; do
 	esac
 done
 
+echo ""
+echo "=== stage summary ===$stage_summary"
 echo "remote_build total rc=$rc_total"
 exit $rc_total

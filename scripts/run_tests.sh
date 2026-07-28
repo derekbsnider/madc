@@ -51,6 +51,13 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# Remaining positional arguments are basename GLOBS selecting a SUBSET of the
+# suite: `run_tests.sh 'testmadceval*' testevalexterncapture`. No test name is
+# hard-coded here — the caller supplies the pattern, so this stays a generic
+# runner capability (.claude/rules/test-fixtures.md). With no globs the whole
+# suite runs, which is what every pre-merge invocation does.
+TEST_GLOBS="$*"
+
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")"; pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.."; pwd -P)
 EXE_LD_LIBRARY_PATH="$REPO_ROOT/lib:/usr/local/lib"
@@ -63,9 +70,18 @@ EXE_PASS=0
 EXE_FAIL=0
 OBJ_PASS=0
 OBJ_FAIL=0
+SELECTED=0
 for t in tests/*.mad; do
     base=$(basename "$t" .mad)
     [ "$base" = "include_helper" ] && continue
+    if [ -n "$TEST_GLOBS" ]; then
+        keep=0
+        for g in $TEST_GLOBS; do
+            case "$base" in $g) keep=1; break ;; esac
+        done
+        [ $keep -eq 0 ] && continue
+    fi
+    SELECTED=$((SELECTED+1))
 
     input_file="tests/$base.input"
     argv_file="tests/$base.argv"
@@ -263,6 +279,12 @@ for t in tests/*.mad; do
         fi
     fi
 done
+if [ -n "$TEST_GLOBS" ]; then
+    # Never let a filtered run read as a full one. A subset that says
+    # only "N passed" is indistinguishable from the suite at a glance,
+    # and that is exactly how a partial run gets quoted as a baseline.
+    echo "SUBSET RUN — filter: $TEST_GLOBS ($SELECTED of $(ls tests/*.mad | wc -l) tests; NOT a suite baseline)"
+fi
 echo "$PASS passed, $FAIL failed, $TIMEOUTS timed out, $SKIP skipped"
 if [ $RUN_EXE -eq 1 ]; then
     echo "EXE: $EXE_PASS passed, $EXE_FAIL failed (of $PASS JIT-passing tests)"
