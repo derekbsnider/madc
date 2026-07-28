@@ -8537,6 +8537,31 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    return tdt;
 	return NULL;
     }
+    // Leading `::` — the global-scope qualifier ([namespace.qual]):
+    // `typedef ::timespec t;` / `using A = ::T;` / `::wrap w;` resolve the
+    // name against the GLOBAL scope only (libc++ __threading_support:54 is
+    // the motivating use). Global types register in the flat datatype_map
+    // under their bare name (namespace members key mangled), so the direct
+    // probe IS the global-only lookup; template-ids and member chains then
+    // continue exactly as for a bare global name. A `::ns::T` chain (global-
+    // qualified NAMESPACE) stays unhandled here and returns NULL as before.
+    if ( tb->id() == TokenID::tkNS )
+    {
+	TokenBase *gt = peekToken();
+	if ( !gt || !is_contextual_identifier_token(gt) )
+	    return NULL;
+	std::string gname = contextual_identifier_name(gt);
+	flat_datatype_map_iter gi = datatype_map.find(gname);
+	if ( gi == datatype_map.end() )
+	    return NULL;
+	nextToken();	// consume the global name
+	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+	    if ( TokenDataType *inst = instantiate_template_id(gname, gt) )
+		return resolve_member_chain_or_type(inst, gt,
+						    consume_class_member_chain);
+	return resolve_member_chain_or_type((TokenDataType *)(*gi), gt,
+					    consume_class_member_chain);
+    }
     if ( !is_contextual_identifier_token(tb) )
 	return NULL;
 
@@ -37351,9 +37376,15 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    base_source_spelling =
 		template_type_arg_spelling((TokenDataType *)tn, "");
     }
-    else if ( is_contextual_identifier_token(tn) )
+    else if ( is_contextual_identifier_token(tn)
+	   || tn->id() == TokenID::tkNS )
     {
-	std::string tname = contextual_identifier_name(tn);
+	// A leading `::` (global-scope qualifier, `typedef ::timespec t;`)
+	// carries no name of its own: the empty spelling misses the map and
+	// the qualified-type arm below hands the token to the resolver,
+	// whose global-scope arm owns it.
+	std::string tname = tn->id() == TokenID::tkNS
+			  ? std::string() : contextual_identifier_name(tn);
 	flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	if ( tdmi != pgm.datatype_map.end() )
 	{
