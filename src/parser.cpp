@@ -18204,6 +18204,63 @@ Variable *Program::find_namespace_member(const std::string &ns_name, const std::
     return NULL;
 }
 
+std::string Program::canonical_nested_namespace(const std::string &parent,
+						const std::string &comp)
+{
+    // [namespace.qual] applied to NAMESPACE names: PARENT::COMP may name a
+    // namespace declared in PARENT's inline namespace set (libc++ registers
+    // __math as std::__1::__math while its headers say std::__math).
+    // Returns the canonical registered name, or empty. Scoped-enum
+    // pseudo-namespaces live in namespace_datatype_map, so both maps count
+    // as "exists" — same dual probe the descent loops always used.
+    std::string cand = parent.empty() ? comp : parent + "::" + comp;
+    if ( namespace_map.find(cand) != namespace_map.end()
+      || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
+	return cand;
+    std::map<std::string, std::vector<std::string>>::const_iterator ci =
+	inline_namespace_children.find(parent);
+    if ( ci == inline_namespace_children.end() )
+	return std::string();
+    std::vector<std::string> pending = ci->second;
+    for ( size_t pi = 0; pi < pending.size(); ++pi )
+    {
+	cand = pending[pi] + "::" + comp;
+	if ( namespace_map.find(cand) != namespace_map.end()
+	  || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
+	    return cand;
+	ci = inline_namespace_children.find(pending[pi]);
+	if ( ci != inline_namespace_children.end() )
+	    for ( size_t i = 0; i < ci->second.size(); ++i )
+		pending.push_back(ci->second[i]);
+    }
+    return std::string();
+}
+
+std::string Program::canonical_namespace_path(const std::string &base,
+					      const std::string &dotted)
+{
+    // Fold each `::` component of DOTTED through canonical_nested_namespace
+    // starting at BASE ("" = global): ("", "std::__math") resolves to
+    // "std::__1::__math". Empty = some component names no namespace.
+    std::string cur = base;
+    size_t pos = 0;
+    for (;;)
+    {
+	size_t next = dotted.find("::", pos);
+	std::string comp = next == std::string::npos
+			 ? dotted.substr(pos) : dotted.substr(pos, next - pos);
+	if ( comp.empty() )
+	    return std::string();
+	cur = canonical_nested_namespace(cur, comp);
+	if ( cur.empty() )
+	    return std::string();
+	if ( next == std::string::npos )
+	    break;
+	pos = next + 2;
+    }
+    return cur;
+}
+
 // Char-level sibling of DelimDepth: the SAME [temp.names] rule applied to a
 // canonical C++ type SPELLING instead of a token stream. A `<` opens a
 // template-argument list only where one can begin — after a name character and
@@ -18289,14 +18346,16 @@ std::string Program::resolve_namespace_name_in_scope(
 {
     if ( name.empty() )
 	return std::string();
+    // Candidates resolve through canonical_namespace_path so a component
+    // declared in an inline namespace canonicalizes
+    // ("std::__math" -> "std::__1::__math"), per [namespace.qual].
     if ( !current_namespace().empty() )
     {
 	std::string cur = current_namespace();
 	for (;;)
 	{
-	    std::string candidate = cur + "::" + name;
-	    if ( namespace_map.find(candidate) != namespace_map.end()
-	      || namespace_datatype_map.find(candidate) != namespace_datatype_map.end() )
+	    std::string candidate = canonical_namespace_path(cur, name);
+	    if ( !candidate.empty() )
 		return candidate;
 	    size_t pos = cur.rfind("::");
 	    if ( pos == std::string::npos )
@@ -18304,10 +18363,7 @@ std::string Program::resolve_namespace_name_in_scope(
 	    cur = cur.substr(0, pos);
 	}
     }
-    if ( namespace_map.find(name) != namespace_map.end()
-      || namespace_datatype_map.find(name) != namespace_datatype_map.end() )
-	return name;
-    return std::string();
+    return canonical_namespace_path("", name);
 }
 
 std::string Program::active_cpp_lookup_namespace()
@@ -19944,9 +20000,8 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    std::string member = contextual_identifier_name(member_tb);
 	    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	    {
-		std::string deeper = ns_name + "::" + member;
-		if ( namespace_map.find(deeper) == namespace_map.end()
-		  && namespace_datatype_map.find(deeper) == namespace_datatype_map.end() )
+		std::string deeper = canonical_nested_namespace(ns_name, member);
+		if ( deeper.empty() )
 		    break;
 		nextToken(); // consume '::'
 		member_tb = nextToken();
@@ -26662,11 +26717,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 
 		    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		    {
-			std::string nested_ns_name = ns_name + "::" + member_name;
-			bool nested_exists =
-			    namespace_map.find(nested_ns_name) != namespace_map.end()
-			    || namespace_datatype_map.find(nested_ns_name) != namespace_datatype_map.end();
-			if ( !nested_exists )
+			std::string nested_ns_name =
+			    canonical_nested_namespace(ns_name, member_name);
+			if ( nested_ns_name.empty() )
 			    break;
 			nextToken(); // consume '::'
 			ns_name = nested_ns_name;
@@ -30336,11 +30389,6 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	pgm.pack_tap_type(name);	// B4a: decl-index tap (using-import)
 	pgm.datatype_map[name] = src;
     };
-    auto namespace_exists = [&](const std::string &name) -> bool
-    {
-	return pgm.namespace_map.find(name) != pgm.namespace_map.end()
-	    || pgm.namespace_datatype_map.find(name) != pgm.namespace_datatype_map.end();
-    };
     auto resolve_source_namespace = [&](const std::string &name) -> std::string
     {
 	// C++ unqualified namespace lookup walks OUTWARD through ENCLOSING
@@ -30351,11 +30399,14 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	// `std::ranges` and `using ranges::get;` (ranges_util.h:780) throws
 	// "'get' is not a member of namespace 'ranges'" though std::ranges has it.
 	// (Also handles `ranges::__detail` from inside `std::__detail`.)
+	// Each candidate resolves through canonical_namespace_path, so a
+	// component declared in an inline namespace canonicalizes
+	// ("std::__math" -> "std::__1::__math", math.h:414).
 	std::string scope = pgm.current_namespace();
 	while ( !scope.empty() )
 	{
-	    std::string cand = scope + "::" + name;
-	    if ( namespace_exists(cand) )
+	    std::string cand = pgm.canonical_namespace_path(scope, name);
+	    if ( !cand.empty() )
 		return cand;
 	    size_t pos = scope.rfind("::");
 	    if ( pos == std::string::npos )
@@ -30363,9 +30414,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    scope = scope.substr(0, pos);
 	}
 	// Global / already-fully-qualified fallback.
-	if ( namespace_exists(name) )
-	    return name;
-	return "";
+	return pgm.canonical_namespace_path("", name);
     };
     auto using_declaration_name = [&](TokenBase *tok) -> std::string
     {

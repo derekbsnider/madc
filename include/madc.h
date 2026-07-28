@@ -4220,6 +4220,8 @@ public:
     Variable *decl_init_self = NULL;
     void set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb = NULL);
     Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name);
+    std::string canonical_nested_namespace(const std::string &parent, const std::string &comp);
+    std::string canonical_namespace_path(const std::string &base, const std::string &dotted);
     Variable *resolve_preferred_identifier(class TokenIdent *ident_tb, bool expression_head);
     void set_expression_context_root(const madc::value *root);
     void clear_expression_context_root();
