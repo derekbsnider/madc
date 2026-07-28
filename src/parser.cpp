@@ -2789,6 +2789,33 @@ DataDefCLASS *Program::resolve_expression_class_scope(const std::string &name)
     return dynamic_cast<DataDefCLASS *>(dd);
 }
 
+// THE one classify policy for "what does this qualifier name before `::` in
+// an expression". Three arms (postfix chain, address-of, identifier arm)
+// each hand-rolled a slice of it and diverged three ways: one checked class
+// before namespace while two checked namespace first, one skipped alias
+// resolution entirely, and only one consulted namespace_datatype_map. The
+// populations are disjoint today, so the order disagreements were latent
+// coin-flips — and a name that genuinely resolves BOTH ways is diagnosed
+// loudly (both canons reject the ambiguity; picking a winner silently is
+// how the arms would drift apart again).
+Program::QualifierScope Program::classify_qualifier_before_scope(
+	const std::string &name, TokenBase *at)
+{
+    QualifierScope r;
+    r.cls = resolve_expression_class_scope(name);
+    r.ns_name = name;
+    std::string resolved = resolve_namespace_name_in_scope(name);
+    if ( !resolved.empty() )
+	r.ns_name = resolved;
+    r.has_variable_ns = namespace_map.find(r.ns_name) != namespace_map.end();
+    r.has_datatype_ns =
+	namespace_datatype_map.find(r.ns_name) != namespace_datatype_map.end();
+    if ( r.cls && r.is_namespace() )
+	Throw(at) << "'" << name
+		  << "' names both a class and a namespace in this scope" << flush;
+    return r;
+}
+
 static TokenDataType *make_alias_type_token(const std::string &name,
 					    DataDef *dd, TokenBase *at)
 {
@@ -19900,12 +19927,11 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
     // walk nested qualifiers (`std::__cmp_cat::_Ord::less`).
     if ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
-	std::string ns_name = name;
-	std::string resolved_ns = resolve_namespace_name_in_scope(ns_name);
-	if ( !resolved_ns.empty() )
-	    ns_name = resolved_ns;
-	if ( namespace_map.find(ns_name) != namespace_map.end()
-	  || namespace_datatype_map.find(ns_name) != namespace_datatype_map.end() )
+	// One classify policy — classify_qualifier_before_scope owns alias
+	// resolution, the dual-registry probe, and the collision diagnosis.
+	QualifierScope qscope = classify_qualifier_before_scope(name, head);
+	std::string ns_name = qscope.ns_name;
+	if ( qscope.is_namespace() )
 	{
 	    nextToken(); // consume '::'
 	    TokenBase *member_tb = nextToken();
@@ -19977,7 +20003,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	// explicit template args, access control and dependent surfaces, and
 	// reaches the identical resolve_class_static_member_value for the case
 	// the copy did cover.
-	if ( DataDefCLASS *class_scope = resolve_expression_class_scope(name) )
+	if ( DataDefCLASS *class_scope = qscope.cls )
 	{
 	    std::stack<TokenBase *> qstack;
 	    Variable *qvar = NULL;
@@ -20746,9 +20772,15 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	// a class qualifier report "Unknown namespace 'S'", which named the wrong
 	// thing entirely. Symmetric with the arm parsePostfixChain gained for the
 	// value side; both end up in the same tail below.
-	namespace_map_t::iterator nsi = namespace_map.find(aname);
-	DataDefCLASS *aclass = (nsi == namespace_map.end())
-			     ? resolve_expression_class_scope(aname) : NULL;
+	// One classify policy — classify_qualifier_before_scope. This arm
+	// GAINS alias resolution (a namespace alias in `&A::x` previously
+	// threw "Unknown namespace"); its member lookup still serves the
+	// VARIABLE namespace registry only, exactly as before.
+	QualifierScope qscope = classify_qualifier_before_scope(aname, addr_tb);
+	namespace_map_t::iterator nsi = qscope.has_variable_ns
+				      ? namespace_map.find(qscope.ns_name)
+				      : namespace_map.end();
+	DataDefCLASS *aclass = qscope.cls;
 	if ( nsi == namespace_map.end() && !aclass )
 	    Throw(addr_tb) << "Unknown namespace or class '" << aname << "'" << flush;
 	nextToken(); // consume ::
@@ -26577,8 +26609,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		{
 		    std::string ns_name = ident_tb->spelling();
-		    if ( DataDefCLASS *class_scope =
-			    resolve_expression_class_scope(ns_name) )
+		    // One classify policy — classify_qualifier_before_scope
+		    // (this arm previously checked class BEFORE namespace while
+		    // its two siblings checked namespace first; the shared
+		    // classifier diagnoses a genuine collision instead).
+		    QualifierScope qscope =
+			classify_qualifier_before_scope(ns_name, tb);
+		    if ( DataDefCLASS *class_scope = qscope.cls )
 		    {
 			QualifiedClassExprAction action =
 			    resolve_class_qualified_expression(*this, class_scope,
@@ -26588,10 +26625,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    goto ns_resolved;
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
-		    std::string resolved_ns_name =
-			resolve_namespace_name_in_scope(ns_name);
-		    if ( !resolved_ns_name.empty() )
-			ns_name = resolved_ns_name;
+		    ns_name = qscope.ns_name;
 		    namespace_map_t::iterator nsi = namespace_map.find(ns_name);
 		    if ( nsi == namespace_map.end() )
 		    {
@@ -26609,7 +26643,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    instantiating_canonical_spelling.c_str(), up.c_str());
 			}
 #endif
-			Throw(tb) << "Unknown namespace '" << ns_name << "'" << flush;
+			// Truthful text: this arm tried the class registry too
+			// (the classifier's cls probe above).
+			Throw(tb) << "Unknown namespace or class '" << ns_name << "'" << flush;
 		    }
 		    nextToken(); // consume '::'
 		    TokenBase *member_tb = nextToken(); // consume member identifier

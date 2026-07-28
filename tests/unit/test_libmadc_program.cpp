@@ -932,7 +932,10 @@ TEST_SUITE("madc::program") {
 	const madc::error *err = pgm.last_error();
 	REQUIRE(err != NULL);
 	CHECK(err->stage == madc::error::phase::parser);
-	CHECK(err->message == "Unknown namespace 'php'");
+	// "or class": the identifier arm resolves through the shared qualifier
+	// classifier, which probes the class registry too — the diagnostic
+	// names everything that was actually tried.
+	CHECK(err->message == "Unknown namespace or class 'php'");
     }
 
     TEST_CASE("invoke_limits roundtrip through program surface") {

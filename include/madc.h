@@ -4937,6 +4937,19 @@ public:
     bool fold_constant_qualified_member(TokenBase *first, madc_wide_int &out);
     Variable *find_variable_for_contextual_type_name(const std::string &name);
     DataDefCLASS *resolve_expression_class_scope(const std::string &name);
+    // What a qualifier names before `::` in an expression — THE one classify
+    // policy for the expression arms (postfix chain, address-of, identifier
+    // arm). Owns alias resolution and the collision diagnosis; each arm reads
+    // the registry slice its continuation actually serves.
+    struct QualifierScope {
+	DataDefCLASS *cls;	// non-NULL: names a class in expression scope
+	std::string ns_name;	// alias-resolved qualifier spelling
+	bool has_variable_ns;	// present in namespace_map
+	bool has_datatype_ns;	// present in namespace_datatype_map
+	bool is_namespace() const { return has_variable_ns || has_datatype_ns; }
+    };
+    QualifierScope classify_qualifier_before_scope(const std::string &name,
+						   TokenBase *at);
     // Class-body parsing: detect when a struct body needs the class parser /
     // an inline enum follows, parse anonymous aggregates, bind a declared C++
     // member symbol, mint a unique overload symbol, collect a deferred function
