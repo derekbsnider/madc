@@ -11166,6 +11166,14 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 {
 	if (!v || !cdd) return NULL;
 
+	// The receiver must be named through var_emit_name — the single
+	// Variable->emitted-name owner. A global with storage_alias_name (a
+	// system-header class static bound to its real Itanium symbol, completed
+	// by its out-of-class definition — <compare>'s strong_ordering::less) has
+	// its storage DEFINED under the alias; constructing raw v->name here was
+	// a reference to a name nothing defines. Locals resolve to v->name.
+	const std::string vname = var_emit_name(*v);
+
 	// ABSTRACT class: declaring a variable of a type with an unoverridden
 	// pure virtual is a compile error (matches g++'s "cannot declare
 	// variable ... to be of abstract type"). The array/heap/member sites
@@ -11187,7 +11195,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// Initializer-carrying class arrays keep their existing paths below.
 	if (v->is_fixed_array() && ctor_args.empty()) {
 		long n = (long)v->total_elements();
-		return class_array_construct_loop(v->name.c_str(),
+		return class_array_construct_loop(vname.c_str(),
 			[&]() -> node_t { return integer(n, origin); },
 			cdd, origin);
 	}
@@ -11201,7 +11209,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	if (!cdd->has_user_ctor) {
 		std::vector<node_t> stmts;
 		complete_object_construct_stmts([&]() -> node_t {
-			return node1(N_ADDR, id(v->name.c_str(), origin), origin);
+			return node1(N_ADDR, id(vname.c_str(), origin), origin);
 		}, cdd, ctor_args, origin, stmts);
 		if (stmts.empty()) return NULL;
 		if (stmts.size() == 1) return stmts[0];
@@ -11218,7 +11226,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		// IMPLICIT COPY CONSTRUCTOR: `T c = <T value>` with no matching
 		// ctor (see try_implicit_copy_construct).
 		if (node_t cc = try_implicit_copy_construct(
-				id(v->name.c_str(), origin), cdd, ctor_args,
+				id(vname.c_str(), origin), cdd, ctor_args,
 				origin))
 			return cc;
 		if (cdd->ctors.empty() || ctor_args.empty()) {
@@ -11238,7 +11246,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// the iostream:80 __ioinit warning).
 	bool external_ctor = ctor && !ctor->emit_symbol.empty();
 	node_t args = list();
-	node_t self_addr = node1(N_ADDR, id(v->name.c_str(), origin), origin);
+	node_t self_addr = node1(N_ADDR, id(vname.c_str(), origin), origin);
 	append(args, external_ctor
 		     ? node2(N_CAST, void_ptr_type(), self_addr, origin)
 		     : self_addr); // &v
@@ -11284,7 +11292,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		// the parsed declaration supplied no call-site value. See
 		// FuncDef::ctor_trailing_self.
 	if (ctor && ctor->ctor_trailing_self) {
-		node_t self2 = node1(N_ADDR, id(v->name.c_str(), origin), origin);
+		node_t self2 = node1(N_ADDR, id(vname.c_str(), origin), origin);
 		append(args, external_ctor
 			     ? node2(N_CAST, void_ptr_type(), self2, origin)
 			     : self2);
@@ -20921,11 +20929,14 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 		return class_ctor_call(v, cdd, none, NULL);
 	}
 	const std::string init = (v->data ? *(std::string *)v->data : std::string());
+	// var_emit_name for the same reason as class_ctor_call's receiver: the
+	// one Variable->emitted-name owner (identity for an unaliased built-in).
+	const std::string vname = var_emit_name(*v);
 	node_t args = list();
-	append(args, node1(N_ADDR, id(v->name.c_str(), NULL), NULL)); // &v (this)
+	append(args, node1(N_ADDR, id(vname.c_str(), NULL), NULL)); // &v (this)
 	append(args, str(init.c_str(), init.size() + 1, NULL));       // const char*
 	if (cstr_ctor->ctor_trailing_self)
-		append(args, node1(N_ADDR, id(v->name.c_str(), NULL), NULL));
+		append(args, node1(N_ADDR, id(vname.c_str(), NULL), NULL));
 	std::string sym = ctor_call_symbol(cdd, cstr_ctor);
 	std::vector<ExternParam> eparams;
 	eparams.push_back({ {N_VOID}, true });
