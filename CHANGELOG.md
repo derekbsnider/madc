@@ -50,6 +50,16 @@ oracle-verified test. Suite 784 → 792.
   base-less, vptr-less class now takes the plain-struct C INIT path.
   Found while reducing the comma-return defect; fixed in its own commit per
   fix-what-you-find. Gate: `testaggrclassinit`.
+- **fix: decl-only member templates freeze their pattern state (forest v34).**
+  The forest froze only BODY-BEARING member templates, so a thawed
+  declaration-only one (libstdc++'s `__do_common_type_impl::_S_test` SFINAE
+  idiom — the dependent return type IS the answer) restored as a bare
+  placeholder and `decltype(_S_test<A,B>(0))` fell to the implicit 64-bit
+  return: `common_type<A,B>`'s base materialized as `int64_t` (LOADED !=
+  parsed, silent wrong answer — the packed-lane `testcommontype` failure).
+  v34 records carry the dependent return-type range in the record's
+  previously-empty constraint-run slot; the flush stamps restored
+  placeholders directly. Gate: `forest_bind_gate.sh` `[declonlymt]`.
 - **Frontier after all of it:** `<string_view>` parses, compiles through
   c2mir, and RUNS under `-stdlib=libc++`. Next: the stdlib-flavor ABI
   switch (P2.3) to unlock the native exe/obj lanes, then `<string>` (P2.4).
