@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+Milestone: libc++ `<string_view>` compiles AND RUNS end-to-end (the canonical
+probe prints "5 e") — the P2.2 burn-down is complete. Eleven defects fell
+across the two pushes; this release carries the final four, each a gap in
+madc's own generic C++ machinery, each matching g++ AND clang++ on an
+oracle-verified test. Suite 784 → 792.
+
+- **feat: non-type template parameter defaults + SFINAE overload selection.**
+  libc++'s defaulted-pointer-NTTP idiom `__enable_if_t<_Cond, int>* = nullptr`
+  now works end-to-end, four layers deep: the template-parameter scanner
+  consumes declarator suffixes (`*`/`&`/`&&`); defaults on NON-type params
+  fold through `fold_nontype_arg_constant` to the same decimal-named binding
+  shape call-site capture mints; per-param constraint token runs are captured
+  at parse and re-evaluated at instantiation under the DEFINING namespace
+  (leftover tokens = substitution failure, rejected BEFORE the memo — real
+  SFINAE, both the `::type` member-miss and the pointer-default idioms); and
+  value-distinct instantiations (`g<int,3>` vs `g<int,7>`) get distinct
+  overload identities via the instantiation key folded into the overload-set
+  spelling. Forest format v33 (constraint runs ride the previously empty spec
+  slot of fn-template records). Gate: `testnttpsfinae` (named/unnamed/pointer
+  NTTP defaults; explicit, partial, and deduced calls; both SFINAE idioms,
+  global and namespaced).
+- **fix: merged `>>` at a template-id flush against the enclosing close.**
+  `skip_template_id_suffix` hand-split only nested `>>`; a template-id
+  ending exactly at the argument-list close (`foo<pair<T,U>>` as a template
+  ARGUMENT, `uses_allocator_construction.h:186`) swallowed the enclosing
+  close. The scanner now pushes the leftover `>` back when a `>>` arrives
+  with exactly one open angle level — the same rule the default-argument
+  collector already applied. Gates: flush shapes on function and class heads
+  in `testnttpsfinae`.
+- **fix: C++ comma-operator returns; the dialect multi-return is GATED.**
+  libc++ asserts expand to `return _LIBCPP_ASSERT(...), value;` — a comma
+  operator ([expr.comma]) that madc's dialect multi-return hijacked into the
+  `__retbuf` ABI, so `string_view::operator[]` declared `char*` but defined
+  multi-return (the `<string_view>` c2mir duplicate-declaration stop). The
+  dialect lane is now STD_MADC-and-not-a-system-header; the std lane chains
+  the comma unconditionally (the dialect heuristic silently TRUNCATED
+  `return f(x), v;` chains); reference-returning comma lowers as
+  `N_COMMA(left, &right)` since `&(a,b)` is not an lvalue in C. Gate:
+  `testcommareturn` (`--std=c++`).
+- **fix: braced aggregate init on a class-promoted struct emits, not drops.**
+  `struct SV { const char *d_; int n_; int probe() const; }; SV s = {"hi",7};`
+  — methods do not disqualify aggregate-ness ([dcl.init.aggr]), but the CIR
+  decl emission deferred EVERY class instance's init to a ctor call an
+  aggregate never emits: the initializer was silently dropped (bare
+  `struct SV s;`, garbage member reads). Braced init on a ctor-less,
+  base-less, vptr-less class now takes the plain-struct C INIT path.
+  Found while reducing the comma-return defect; fixed in its own commit per
+  fix-what-you-find. Gate: `testaggrclassinit`.
+- **Frontier after all of it:** `<string_view>` parses, compiles through
+  c2mir, and RUNS under `-stdlib=libc++`. Next: the stdlib-flavor ABI
+  switch (P2.3) to unlock the native exe/obj lanes, then `<string>` (P2.4).
+
 ## [v0.57.0] — 2026-07-28
 
 Eight core-C++ defects, one chain: the libc++ parse frontier fell from
