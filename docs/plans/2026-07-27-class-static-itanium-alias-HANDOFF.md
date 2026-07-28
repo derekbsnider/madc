@@ -109,6 +109,33 @@ template-id. `resolve_template_id_static_member` already does the analogous job
 for the value side; the address side needs the same, minus the constant fold
 (an address needs real storage). **This is the next concrete fix.**
 
+EXACT MECHANISM, traced 2026-07-28 — start here, do not re-derive:
+`Program::parseAddressOfExpression` (`src/parser.cpp:20603`), qualifier arm at
+`:20702`. For `&std::numpunct<char>::id` it does:
+
+1. `aname` = `std` -> found in `namespace_map`, so `aclass` stays NULL;
+2. consumes `::`;
+3. takes the NEXT identifier as the member name — so `member_name` becomes
+   `numpunct`, and `<char>::id` is never looked at;
+4. `numpunct` is not a variable in `std`, so it falls through to the dlopen
+   fallback and dies.
+
+THE FIX: after step 3, if `peekToken()` is `tkLT` and `member_name` names a
+class TEMPLATE in that namespace, instantiate the template-id to a
+`DataDefCLASS *`, then fall into the EXISTING `aclass` branch (`:20707-20721`)
+unchanged — it already resolves a static data member's storage by
+`class_static_member_storage_name` and already throws the right diagnostic when
+the member is declared but never defined. Do NOT write a second static-member
+lookup beside it.
+
+THE ONE PIECE STILL TO LOCATE: the entry point that parses + instantiates a
+template-id from an expression-operand position and yields the instantiated
+`DataDefCLASS *`. The value side reaches it before calling
+`resolve_template_id_static_member(pgm, inst)`, which takes an ALREADY-instantiated
+`TokenDataType *inst` — so find that caller and reuse it. Grep the callers of
+`resolve_template_id_static_member` first; the instantiation happens immediately
+above them.
+
 **GAP B — `std::use_facet` binds to the invented `__ns_std_use_facet`.**
 It is declared ONLY as a friend inside `class locale`
 (`locale_classes.h:81`); the namespace-scope definition arrives too late at
