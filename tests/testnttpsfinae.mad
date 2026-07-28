@@ -10,7 +10,10 @@
 //   widtht: the libstdc++ idiom — typename enable_if<cond,bool>::type = true pair
 //   nn::width: the pointer idiom inside a NAMESPACE (the real frontier shape —
 //              constraint resolution must run in the DEFINING namespace)
-// Oracle: g++ 13 and clang++-18 print "3 7 3 1 2 4 8 4 8 4 8".
+//   fl / FW:   NTTP whose template-id type closes FLUSH against the list
+//              close — the merged `>>` must split one level back to the list
+//              (libc++ uses_allocator_construction.h:186 shape)
+// Oracle: g++ 13 and clang++-18 print "3 7 3 1 2 4 8 4 8 4 8 5 6".
 #include <cstdio>
 
 template <bool B, class T = void> struct my_enable_if {};
@@ -47,11 +50,19 @@ template <class T, ns_enable_if_t<sizeof(T) == 8>* = nullptr>
 int width(T) { return 8; }
 }
 
+template <class T, my_enable_if_t<sizeof(T) == 4, int>>
+int fl(T) { return 5; }
+
+template <class T, my_enable_if_t<sizeof(T) == 4, int>>
+struct FW { int v() { return 6; } };
+
 int main()
 {
-    printf("%d %d %d %d %d %d %d %d %d %d %d\n",
+    FW<int, 0> fw;
+    printf("%d %d %d %d %d %d %d %d %d %d %d %d %d\n",
 	   g(1), g<int, 7>(1), g<int>(1), h(1), k(1),
 	   widthp(1), widthp(1.0), widtht(1), widtht(1.0),
-	   nn::width(1), nn::width(1.0));
+	   nn::width(1), nn::width(1.0),
+	   fl<int, 0>(1), fw.v());
     return 0;
 }

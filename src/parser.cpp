@@ -39241,7 +39241,20 @@ void Program::skip_template_id_suffix()
     // as part of a NAME — so `__void_t<decltype(operator<(a,b))>` balances.
     DelimDepth d;
     do
-	delimStepStream(nextToken(), d);
+    {
+	TokenBase *t = nextToken();
+	int before = d.angle;
+	delimStepStream(t, d);
+	// A merged `>>` (tkBSR) closes TWO levels. Arriving with only ONE of
+	// ours open (`enable_if_t<..., int>>` flush against the ENCLOSING
+	// list's close — libc++ uses_allocator_construction.h:186), the
+	// second `>` belongs to the enclosing context: hand it back
+	// (collect_template_default_argument's rule). Inside parens opened
+	// within the list the BSR closed nothing (d.angle unchanged) and
+	// stays a shift — no pushback.
+	if ( t->id() == TokenID::tkBSR && before == 1 && d.angle == 0 )
+	    pushToken(new TokenGT());
+    }
     while ( d.angle > 0 && peekToken() );
 }
 
