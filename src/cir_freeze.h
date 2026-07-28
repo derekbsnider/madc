@@ -203,7 +203,12 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // only member template kept a bare placeholder, so decltype(_S_test<A,B>(0))
 // fell to the implicit 64-bit return and common_type<A,B>'s base materialized
 // as int64_t (LOADED != parsed, silent wrong answer — the packed-lane
-// testcommontype failure) — the version pin rejects it.
+// testcommontype failure) — the version pin rejects it. v34 also folds the
+// stdlib FLAVOR's effective name into madc_forest_config_word (bits 17..31):
+// a libstdc++-parsed container bound into a -stdlib=libc++ compile served
+// the wrong <stddef.h> and tripped libc++'s <cstddef> #error (the packed-lane
+// testcommontype_libcxx failure); a flavor mismatch now takes the v27 gate's
+// silent live fall-through.
 //
 // v33: FN-TEMPLATE PER-PARAM CONSTRAINT RUNS — CIR_TMPLK_FN/FN_DECL records
 // carry each template parameter's captured constraint-TYPE token run

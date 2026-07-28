@@ -36,6 +36,7 @@ extern thread_local bool madc_verbose;
 #include "tokens.h"
 #include "datatokens.h"	// Variable (Phase 6 3d: reconstruct method Variables on load)
 #include "madc.h"		// FuncDef (Phase 6 3d: reconstruct method FuncDefs on load)
+#include "madc_sys_includes.h"	// stdlib flavor table (v34 config-word: flavor is config identity)
 #include "token_arena.h"
 #include "madcdis/id_table.h"
 #include "cir_freeze.h"
@@ -100,14 +101,30 @@ uint64_t madc_cir_context_hash()
 }
 
 // v27 producer-config gate: the ONE derivation shared by freeze (stamp) and
-// bind (compare). A container parsed under one language standard / -D set
-// must never bind into a compile under another — header CONTENT differs (C
-// vs C++ surface, __STRICT_ANSI__, feature macros). Per-compile state, so it
-// cannot ride the process-invariant context hash above.
+// bind (compare). A container parsed under one language standard / -D set /
+// stdlib FLAVOR must never bind into a compile under another — header
+// CONTENT differs (C vs C++ surface, __STRICT_ANSI__, feature macros; a
+// libstdc++-parsed corpus bound into a -stdlib=libc++ compile served the
+// wrong <stddef.h> and tripped libc++'s <cstddef> #error). Per-compile
+// state, so it cannot ride the process-invariant context hash above.
 uint32_t madc_forest_config_word(const Program *prog)
 {
-	return (uint32_t)prog->language_std
-	     | ((uint32_t)(prog->gnu_dialect ? 1 : 0) << 16);
+	uint32_t word = (uint32_t)prog->language_std
+		      | ((uint32_t)(prog->gnu_dialect ? 1 : 0) << 16);
+	// The EFFECTIVE flavor name, not the CLI spelling: an explicit
+	// -stdlib=<build default> is the same config as no flag at all.
+	const char *flavor = prog->stdlib_flavor && prog->stdlib_flavor->name
+			   ? prog->stdlib_flavor->name
+			   : madc_default_stdlib_flavor;
+	if (flavor) {
+		uint32_t h = 2166136261u;	// FNV-1a, folded into bits 17..31
+		for (const char *c = flavor; *c; ++c) {
+			h ^= (uint8_t)*c;
+			h *= 16777619u;
+		}
+		word ^= ((h ^ (h >> 15)) & 0x7fffu) << 17;
+	}
+	return word;
 }
 
 uint32_t madc_forest_defines_hash(const Program *prog)
