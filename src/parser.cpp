@@ -30546,6 +30546,31 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		pgm.nextToken();
 		alias_dd = pgm.getPointerType(alias_dd);
 	    }
+	    // Function-pointer alias: using NAME = RET (*)(params);
+	    // The ABSTRACT twin of typedef Form 2 (typedef RET (*NAME)(params);)
+	    // — same parseFnPtrParams owner, the alias name came before '='.
+	    // libc++: `using terminate_handler = void (*)();`
+	    // (__exception/operations.h:29), new_handler, and friends.
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+	    {
+		pgm.nextToken(); // consume '('
+		TokenBase *star = pgm.nextToken();
+		if ( !star || star->id() != TokenID::tkMul )
+		    pgm.Throw(star ? star : tn)
+			<< "Expecting '*' in function pointer alias" << flush;
+		TokenBase *rbrk = pgm.nextToken();
+		if ( !rbrk || rbrk->id() != TokenID::tkClBrk )
+		    pgm.Throw(rbrk ? rbrk : tn)
+			<< "Expecting ')' in function pointer alias" << flush;
+		TokenBase *open = pgm.nextToken();
+		if ( !open || open->id() != TokenID::tkOpBrk )
+		    pgm.Throw(open ? open : tn)
+			<< "Expecting '(' for parameter list" << flush;
+		FuncDef *func = pgm.parseFnPtrParams(*alias_dd);
+		DataDefFPTR *fptr = new DataDefFPTR(func);
+		fptr->ptr_syntax = true;   // explicit `(*)` — pointer alias
+		alias_dd = fptr;
+	    }
 	    if ( pgm.peekToken()
 	      && (pgm.peekToken()->id() == TokenID::tkBand
 	       || pgm.peekToken()->id() == TokenID::tkLand) )
