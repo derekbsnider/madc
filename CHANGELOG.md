@@ -2,11 +2,14 @@
 
 ## [Unreleased]
 
+## [v0.58.0] — 2026-07-28
+
 Milestone: libc++ `<string_view>` compiles AND RUNS end-to-end (the canonical
 probe prints "5 e") — the P2.2 burn-down is complete. Eleven defects fell
 across the two pushes; this release carries the final four, each a gap in
 madc's own generic C++ machinery, each matching g++ AND clang++ on an
-oracle-verified test. Suite 784 → 792.
+oracle-verified test — plus the forest-v34 pair the pre-merge packed battery
+surfaced. Suite 784 → 792, green in all lanes (JIT / exe / obj / packed).
 
 - **feat: non-type template parameter defaults + SFINAE overload selection.**
   libc++'s defaulted-pointer-NTTP idiom `__enable_if_t<_Cond, int>* = nullptr`
