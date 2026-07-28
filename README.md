@@ -241,7 +241,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.54.0): 769 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary and the packed release binary; the native `--exe` and `--obj` lanes are both at 753/0. Mach-O targets have a full `.o` lane: `madc -c` writes a real `MH_OBJECT` that `ld64` links and madc reads back. With `-static-libmadc` an emitted binary carries the madc runtime it needs and runs with no madc library installed — from source or from precompiled `.o` inputs (compile those with `-fno-eval-shims`). `-stdlib=` selects the C++ standard-library flavor, with the flavors discovered from the build host. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.55.0): 774 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary and the packed release binary; the native `--exe` and `--obj` lanes are both at 758/0. Mach-O targets have a full `.o` lane: `madc -c` writes a real `MH_OBJECT` that `ld64` links and madc reads back. With `-static-libmadc` an emitted binary carries the madc runtime it needs and runs with no madc library installed — from source or from precompiled `.o` inputs (compile those with `-fno-eval-shims`). `-stdlib=` selects the C++ standard-library flavor, with the flavors discovered from the build host. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -282,33 +282,31 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.54.0** — **six C++ correctness fixes, four of them silent wrong
-answers**, all found by following one reducer down. `(int)N::f("abc")`
-compiled, exited 0, and evaluated to `"abc"`: a qualified name in an
-operand position was returned bare instead of continuing its postfix
-chain, so every `(`, `[`, `.` and `->` after it was dropped and re-read
-by the caller as a fresh expression — the orphaned `[` of
-`(int)N::arr[1]` even reached the *lambda-introducer* dispatch. Under
-that sat `(int)S::f(4)` reporting `undeclared identifier 'S'` (the shape
-every string header is built from), and under *that*, a static data
-member reading as `0` from inside its own class body where g++ gives
-`42`. The last one transferred g++'s model exactly:
-`finish_static_data_member_decl` creates the decl while parsing the class
-body and the out-of-class definition completes *that* decl — madc's
-`DECL_IN_AGGR_P` turned out to be `vfEXTERN`, whose completion
-`addVariable` already implemented. Also: a nested type is now a member of
-its enclosing scope with `struct` spelled too, earning class-hood
-alongside an object member and an NSDMI on the principle the promotion
-site already stated. The release carries the `-stdlib=` standard-library
-flavor selector (one search list *per* flavor, replacing rather than
-reordering — clang's model, with flavors discovered from the build host),
-the duplication campaign that consolidated 27 token and 19 char-level
-delimiter scanners onto one tracker, and two gates that enforce the Top 5
-rules instead of restating them. Suites: fulltest **769/0/0/9**, `--exe`
-**753/0**, `--obj` **753/0**, packed arbiter **769/0/0/9**. Fork
-unchanged (**1.0-madc.0.52.0**).
+**v0.55.0** — **class statics bind to their real Itanium symbols, and the
+emitter gets ONE enforced name owner.** A static data member of a library
+class now carries its ABI symbol — `&std::numpunct<char>::id` resolves to
+the same address `dlsym("_ZNSt7__cxx118numpunctIcE2idE")` returns,
+byte-identical to g++ — with non-type template arguments encoded as
+literals (`moneypunct<char,false>` → `Lb0E`, not the identifier `5false`)
+in the one mangler. The regression that exposed became a campaign: seven
+instances of one defect shape — *a rule written once, applied to half its
+domain* — fixed around `var_emit_name`, most found by the `/dupaudit`
+merge gate. Globals are constructed under their emitted names (the
+`<compare>` `strong_ordering::less` regression), asm-labeled functions
+with bodies work end to end (`testasmlabelfn`), the eval scope capture
+reads aliased globals correctly, and `check-var-emit-name-bypass.sh` in
+fulltest keeps the family closed (strict zero plus a growth-forbidden
+ratchet, both negative-controlled). Also: dlfcn builtins declare their
+real POSIX pointer types; one qualifier-before-`::` classifier for the
+three expression arms (`&alias::x` now resolves through namespace
+aliases); `operator~`/`operator,` no longer collide into one namespace
+parse key; free operators mangle their Itanium code in every scope
+(`std::operator<<` was the invalid `_ZSt10operator<<`). Suites: fulltest
+**774/0/0/9**, `--exe` **758/0**, `--obj` **758/0**, packed arbiter
+**774/0/0/9**, warning ratchet **0**. Fork unchanged
+(**1.0-madc.0.52.0**).
 
-**Branch state:** `develop` is at v0.54.0; `master` is at v0.48.0
+**Branch state:** `develop` is at v0.55.0; `master` is at v0.48.0
 (promoted 2026-07-25 — the Mach-O milestone promote, per the owner's
 ride-with-S3 decision). The
 [MIR fork](https://github.com/derekbsnider/mir)'s `master` tracks
@@ -317,12 +315,11 @@ fork releases pair with madc's (see [`MIR_VERSION`](MIR_VERSION)).
 
 ### Recent Releases
 
+- **v0.55.0** — class statics bind to their real Itanium symbols (`&std::numpunct<char>::id` == `dlsym` of the exported object, byte-identical to g++; non-type template args as literals in the one mangler) and Variable emission gets ONE enforced owner: seven "one rule, half its domain" instances fixed around `var_emit_name` (ctor receivers — the `<compare>` `strong_ordering::less` regression; deref arms; eval-capture value reads; the function declarator — asm-labeled functions with bodies now work, `testasmlabelfn`; the host-shim target with a KEY-vs-CODE split; the range-for array base), gated by `check-var-emit-name-bypass.sh`; /dupaudit merge gate also consolidated the qualifier-before-`::` classifier (three arms disagreed on order/alias/registry; `&alias::x` now resolves), adopted two pre-sweep spelling scanners, fixed the `operator~`/`operator,` parse-key collision (`testnsopregister`), and free operators mangle their Itanium code in every scope; dlfcn builtins declare real POSIX pointer types; fulltest 774/0/0/9, `--exe` 758/0, `--obj` 758/0, packed arbiter 774/0/0/9, warning ratchet 0; fork unchanged (1.0-madc.0.52.0)
 - **v0.54.0** — six C++ correctness fixes, four SILENT: a qualified name in an operand position lost its whole postfix chain (`(int)N::f(x)` became `(int)(x)`, exit 0; `(int)N::arr[1]` reached the lambda-introducer dispatch), class-qualified static member functions reported `undeclared identifier 'S'` where the operand path carried a narrow copy of the class-qualifier rule, a static data member read as 0 from inside its own class body because storage was registered only by the out-of-class definition (g++ creates the decl in the class body and lets the definition complete it — madc's `DECL_IN_AGGR_P` is `vfEXTERN`, whose completion `addVariable` already had), a nested type is now a member of its enclosing scope with `struct` spelled too, plus immediately-invoked lambdas (five forms), aggregate member list-init, and base-subobject member lifetime; `-stdlib=` selects a standard-library flavor (one search list per flavor, replacing the list rather than reordering it, flavors discovered from the build host); the delimiter-tracker duplication family closed (27 token + 19 char-level scanners onto one tracker, ratchet gated) after the gate itself was caught matching a spelling instead of the concept; the Top 5 rules gated mechanically rather than restated; fulltest 769/0/0/9, `--exe` 753/0, `--obj` 753/0, packed arbiter 769/0/0/9; fork unchanged (1.0-madc.0.52.0)
 - **v0.53.0** — `-static-libmadc` in the `.o` LINK lane (forest-carriers S5's last stated boundary): the runtime enters as one more relocatable — pulled into a private object-mode context, generated, emitted, then merged into the same builder as the `.o` inputs through `MIR_object_read`, because a builder's symbol table is append-only and symbol unification lives in the merge (so no new format code and no fork change; it rides the read-back path both containers already gate); new `-fno-eval-shims` lets a build state its artifact will never be host-called through the value ABI, which is what a `.o` headed for a standalone link wants (the `__madc_shim_*` adapters' twelve `madc_value_*` imports are Tier B) — objects that kept their adapters refuse naming both the symbols and the flag; the AOT-ledger carrier now opens header-only (the full thaw binds the frozen pool into live parse state a link-only lane has no reason to own); one cover analysis for both lanes (it takes the reference list, not its source); `forest_ledger_gate` leg 9 flipped from asserting the refusal to proving the lane two objects deep against the libmadc-linked baseline as oracle; fulltest 756/0/0/9, `--exe` 740/0, `--obj` 740/0, machogate 30/30, packed arbiter 756/0/0/9; fork unchanged (1.0-madc.0.52.0)
 - **v0.52.0** — Mach-O axis B step 4 (`MH_OBJECT`): `madc -c` for a Mach-O target writes a real relocatable object (one unnamed `LC_SEGMENT_64`, real `LC_SYMTAB`/`LC_DYSYMTAB`, per-section relocations, all external against symtab entries with `ltmp_*` section labels) that **`ld64.lld` links** — including a mixed link with a clang-compiled TU — with pool slots resolving into `__text`/`__bss`, imports as dyld binds, and a ctor's entry kept in `__mod_init_func`; `MIR_object_read` gained a Mach-O front, so `-c` → link, the two-TU merge and `-r` all work on darwin and the merged `.o` stays linkable by both linkers; read-back proven EQUIVALENT (the `.o` path's image disassembles identically to the direct emit — which is how a real bug surfaced: Mach-O's single `PAGEOFF12` vs ELF's two kinds, opcode sniffing that dropped `sf`, every `add #imm12` read back as a scaled load); ONE merge implementation behind two container fronts via a format-neutral input view; `MIR_object_load` refuses loudly on Apple builds (needs the Mach-O parse AND `MAP_JIT`); `-g` on Mach-O says so once at the CLI; new `make -C src machogate` (30 assertions, 15 per arch); fulltest 756/0/0/9, `--exe` 740/0, `--obj` 740/0; fork release 1.0-madc.0.52.0
 - **v0.51.0** — forest-carriers S6 (`madc.ini`), completing the carriers track: optional config file with the precedence rule CLI > environment > madc.ini > baked defaults; keys `std` / `forest` (discovery arm 5) / `include` (repeatable) / `cpu-limit` / `mem-limit`; lookup `./madc.ini` → `$XDG_CONFIG_HOME/madc/madc.ini` → `<sysconfdir>/madc.ini` with the first existing file winning outright (never merged); relative paths resolve against the config file's directory; STRICT parsing (unknown key / malformed line / non-numeric limit = hard error naming file:line and the accepted keys); new `--config=<file>` and `--no-config`; the reader is schema-blind substrate reusable by madcdat and madcdis-based tools (consumers register their own keys, same split `madcdis/snapshot.h` makes as a content-blind container); libmadc never reads a config file and `--disable-config-file` removes madc's lookup; suite + pack hermeticity via `--no-config`; also fixed the installed `madcdis/snapshot.h` not compiling downstream (`madc_pch.h` now installed) and rewrote `docs/build.md`, which still documented asmjit; `forest_config_gate` (39 checks / 18 legs) in fulltest; fulltest 756/0/0/9, `--exe` 740/0, packed arbiter 756/0/0/9; fork unchanged (1.0-madc.0.47.0)
-- **v0.50.0** — forest-carriers S5 (`-static-libmadc` / AOT ledger): madc's C-lane runtime becomes dual-build C11 sources (`src/rt/`) compiled BOTH into libmadc by the host build and into MIR ledger modules by madc-via-c2mir at pack time, carried in a new optional forest-container segment read independently of the grove bind; `-static-libmadc` (alias `-static`) pulls the needed modules before the link so the emitted image runs with no madc library — the unlock that makes try/catch AOT possible on Mach-O; distinct build-side vs Tier-B refusals; two cover-analysis fixes (copy-relocated libc data; host-vs-target probing on cross builds); `forest_ledger_gate` (14 checks) in fulltest; fulltest 756/0/0/9, `--exe` 740/0, packed arbiter 756/0/0/9, product path emits a zero-libmadc binary that runs under an empty library path; fork unchanged (1.0-madc.0.47.0)
-- **v0.49.0** — forest-carriers S4 (shared shape): forest-in-library discovery arm (`dladdr` → the libmadc image; `<lib>.forest` sidecar behind it; IMAGE arms never gated by `enable_external_forest`, so a sandboxed strict host still binds); `--enable-shared` thin-CLI configure axis with the release pack targeting `lib/libmadc.so` (133 KB CLI + 11.5 MB packed library, 240 units); forest knob family on the public embedding API (`enable_forest_bind` / `forest_missing` / `enable_external_forest` + `allow_external_forest` clamped under `system_locked`); `Program::forest_bind_enabled` folded into `RegistrationPolicy`; `forest_library_gate` in fulltest (9 legs incl. the `enable_external_forest=false` negative test S3 owed); thin-CLI parity 756/0/0/9 and `--enable-shared` product arbiter 756/0/0/9; fork unchanged (1.0-madc.0.47.0)
 
 ## Roadmap
 

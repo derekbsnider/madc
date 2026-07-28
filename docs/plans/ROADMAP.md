@@ -1,8 +1,8 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-07-15 (class-KIND parse-once
-B2 complete; live/packed suites 696/0/0/16; host and source warning censuses
-clean; B3 vector closure next).
+Master plan linking all workstreams. Updated 2026-07-28 (v0.55.0: Itanium
+symbols for class statics + the var_emit_name emission-owner sweep; suites
+774/758/758 green; warning ratchet 0).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -27,6 +27,22 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **v0.55.0 (2026-07-28): class statics bind to their real Itanium symbols,
+  and the emitter gets ONE name owner.** Static data members of library
+  classes carry their ABI symbol (`std::numpunct<char>::id` ==
+  `dlsym("_ZNSt7__cxx118numpunctIcE2idE")`, byte-identical to g++); non-type
+  template args encode as literals. The regression it exposed became a
+  campaign: SEVEN instances of "one rule, half its domain" fixed around
+  `var_emit_name` — definitions, ctor receivers, deref arms, eval captures,
+  the host-shim target, asm-labeled functions (`testasmlabelfn`) — now held
+  by `check-var-emit-name-bypass.sh` in fulltest. A /dupaudit merge gate also
+  consolidated the qualifier-before-`::` classifier, adopted the two
+  spelling scanners the July 27 sweep missed, fixed the `operator~`/`,`
+  parse-key collision, and made free operators mangle their Itanium code in
+  every scope. dlfcn builtins declare real POSIX pointer types. Open, with
+  reducers: `Gap{builtin_redecl_half_adopt}` (getenv under real headers),
+  GAP B (`std::use_facet`), `Gap{ns_unary_operator_dispatch}`.
 
 - **v0.54.0 (2026-07-27): six C++ correctness fixes, four SILENT.** One
   reducer chain: a qualified name in an OPERAND position was returned bare

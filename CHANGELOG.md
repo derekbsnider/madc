@@ -2,6 +2,69 @@
 
 ## [Unreleased]
 
+## [v0.55.0] — 2026-07-28
+
+Class statics bind to their real Itanium symbols, and Variable emission gets
+ONE name owner — seven instances of "a rule written once, applied to half its
+domain" fixed and gated, most found by the /dupaudit merge gate.
+
+- **feat: class statics bind to their real Itanium symbol.** A static data
+  member of a library-owned class now carries `storage_alias_name` = its
+  Itanium ABI name (`std::numpunct<char>::id` → `_ZNSt7__cxx118numpunctIcE2idE`),
+  the integration point every other entity category already had. Non-type
+  template arguments encode as literals (`moneypunct<char,false>` →
+  `Lb0E`, not the identifier `5false`) via `nontype_literal_code()` in the ONE
+  mangler. `&Class<T>::static` resolves through the address-of arm, records a
+  global reference, and binds byte-identical to `dlsym` of the real symbol
+  (gate `testclassstaticitanium`, verified against both libstdc++ spellings).
+  Explicit template args join the postfix head (`(int)nn::ident<int>(7)`), and
+  a function template at global scope registers as an ordinary function
+  template (gates `testqualifiedpostfix`, `testglobalfntemplate`).
+
+- **fix: a global is CONSTRUCTED under its emitted name.** The alias work
+  regressed four `*_realhdr` tests: `<compare>`'s out-of-class definitions
+  (`inline constexpr strong_ordering strong_ordering::less(...)`) DEFINED
+  storage under the Itanium alias while the queued global ctor call named the
+  raw invention (`&strong_ordering__less` — undeclared). `class_ctor_call` and
+  `global_ctor_call` now route the receiver through `var_emit_name`.
+
+- **fix: every Variable emission consults `var_emit_name` — and a gate keeps
+  it that way.** The /dupaudit count of the same family found 13 more raw-name
+  emission sites (TokenDeref/TokenDerefStep, the eval-capture value reads,
+  `class_subscript_addr`, `var_decl`'s array early-return, the function
+  DECLARATOR and cyg-profile self-args, the host-call shim's target, the
+  range-for array base). An asm-labeled function with a body now works end to
+  end (`int foo(int) asm("renamed_foo"); int foo(int x){...}` — defined under
+  the label, called under the label; gate `testasmlabelfn`). Definitions
+  follow `var_emit_name`; calls follow `call_emit_symbol` — `emit_symbol`
+  must not rename a madc-emitted body (vtable slots bind the local body; the
+  forest self-exe gate caught the first, wrong mapping). New
+  `check-var-emit-name-bypass.sh` in fulltest: strict zero on Token-held
+  Variable emissions plus a growth-forbidden bare-pointer ratchet.
+
+- **fix: dlfcn builtins declare their real POSIX pointer types.** `dlsym` was
+  registered as `long(long, char*)`; under `--no-embedded-headers` the real
+  `<dlfcn.h>` re-declaration half-applied (return refreshed, parameters kept),
+  emitting the hybrid `void *dlsym(long, char *)` and a c2mir warning on every
+  `dlsym(RTLD_DEFAULT, ...)` call. Handles and dlsym's return are `void*` now;
+  the wrappers are unchanged (ABI-identical). Still open, recorded with a
+  reducer: the half-adopting re-declaration path itself
+  (`Gap{builtin_redecl_half_adopt}` — `getenv("HOME")` under real headers
+  errors "expected 2 got 1").
+
+- **refactor: one qualifier-before-`::` classifier for the three expression
+  arms.** They disagreed on class-vs-namespace order, alias resolution, and
+  registry coverage; `classify_qualifier_before_scope` owns the decision and
+  diagnoses a genuine collision loudly. `&alias::x` now resolves through a
+  namespace alias.
+
+- **fix: `operator~` and `operator,` get distinct namespace parse keys** (both
+  previously keyed `__ns_N_operator_`; the second declaration re-parsed its
+  parameters into the first's shared FuncDef — gate `testnsopregister`), and
+  **free operators mangle their Itanium code in EVERY scope** (`std::operator<<`
+  was the invalid `_ZSt10operator<<`; three new mangle CHECKs). Two hand-rolled
+  spelling scanners that predated `spelling_delim.h` adopted the owners.
+
 - **fix: a declaration with no definition in the TU is not capturable eval
   scope.** `madc::eval_*` captures the caller's visible scope by name, and the
   CIR lowering reads each captured variable as a bare `id()` — bypassing the
