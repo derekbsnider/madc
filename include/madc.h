@@ -714,6 +714,20 @@ public:
 	    return (fptr->target != NULL) ? &fptr->target->returns : &ddVOID;
 	return &((FuncDef *)var.type)->returns;
     }
+    // Does this call yield a REFERENCE (an lvalue of the referent)? The
+    // reference-ness lives in EITHER the callee's declared return
+    // (FuncDef::returns_reference) OR the parse-time substituted return of a
+    // template call (returns_ref_override — set when explicit template args
+    // form the return type without a body). THE one test every "is this call
+    // an lvalue / may a reference bind to it" consumer must use — checking
+    // only the FuncDef half sent a placeholder-bound
+    // `T &r = std::use_facet<F>(loc)` down the address-of-the-callee arm.
+    bool call_returns_reference() const {
+	if ( returns_ref_override )
+	    return true;
+	FuncDef *fd = dynamic_cast<FuncDef *>(var.type);
+	return fd && fd->returns_reference();
+    }
     virtual DataDef *datadef()  const override {
         if ( var.type->is_function() )
             return returns();

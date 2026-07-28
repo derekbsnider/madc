@@ -20644,8 +20644,9 @@ static bool is_addressable_expression(TokenBase *expr)
 	return tcp->expr && tcp->expr->datadef() && tcp->expr->datadef()->is_complex();
     if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr) )
     {
-	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
-	if ( fd && fd->returns_reference() )
+	// Both sources of call reference-ness (declared return OR the
+	// token's substituted return) — the one TokenCallFunc owner.
+	if ( tcf->call_returns_reference() )
 	    return true;
     }
     return dynamic_cast<TokenMember *>(expr)
@@ -45127,9 +45128,12 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	    }
 	}
 	if ( !is_trailing )
+	    // Test the token's SPELLING across token kinds: in C++ modes
+	    // `const`/`inline` are KEYWORD tokens (ttKeyword), not contextual
+	    // identifiers — the identifier-only test left `const _Facet&`'s
+	    // const in the range and the resolve failed (std::use_facet).
 	    while ( rs < re && ft.decl[rs]
-		 && is_contextual_identifier_token(ft.decl[rs])
-		 && specifiers.count(contextual_identifier_name(ft.decl[rs])) )
+		 && specifiers.count(template_token_fragment(ft.decl[rs])) )
 		++rs;
 	// Fold a trailing `&` / `&&` off the end (a reference return collapses to
 	// the referenced type for type identity; tr_ref then drives the DataDefREF
@@ -49726,8 +49730,12 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
     // is not a FuncDef), so it keeps its existing TokenAddrOf / TokenAddrExpr path.
     {
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr);
-	FuncDef *cfd = tcf ? dynamic_cast<FuncDef *>(tcf->var.type) : NULL;
-	if ( cfd && cfd->returns_reference() )
+	// call_returns_reference covers BOTH sources of reference-ness: the
+	// callee FuncDef's declared return AND the token's substituted return
+	// (returns_ref_override — a placeholder-bound template call with
+	// explicit args, `std::use_facet<F>(loc)`, carries its `const F&`
+	// there; the placeholder FuncDef itself returns a value type).
+	if ( tcf && tcf->call_returns_reference() )
 	{
 	    TokenAddrExpr *addr = new TokenAddrExpr(expr, ptr_type);
 	    copy_token_location(addr, expr);
@@ -49746,13 +49754,18 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 	bound->setDataType(ptr_type);
 	return bound;
     }
-    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
-    {
-	tv->var.flags |= vfADDRTAKEN;
-	TokenAddrOf *addr = new TokenAddrOf(tv->var, ptr_type);
-	copy_token_location(addr, expr);
-	return addr;
-    }
+    // A call token DERIVES FROM TokenVar (TokenCallFunc : TokenVar); a
+    // VALUE-returning call reaching this arm would take the address of its
+    // callee FUNCTION (`&__ns_std_use_facet`) — a silent wrong bind. Exclude
+    // calls: a prvalue call falls to the lvalue diagnostic below (loud).
+    if ( !dynamic_cast<TokenCallFunc *>(expr) )
+	if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+	{
+	    tv->var.flags |= vfADDRTAKEN;
+	    TokenAddrOf *addr = new TokenAddrOf(tv->var, ptr_type);
+	    copy_token_location(addr, expr);
+	    return addr;
+	}
     if ( is_addressable_expression(expr) )
     {
 	TokenAddrExpr *addr = new TokenAddrExpr(expr, ptr_type);

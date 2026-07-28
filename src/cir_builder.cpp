@@ -4866,7 +4866,10 @@ DataDef *CirBuilder::ref_returning_call_type(TokenBase *arg)
 	if (!tcf) return NULL;
 	FuncDef *raw_fd = call_target_funcdef_raw(tcf);
 	FuncDef *cfd = call_target_funcdef(tcf);
-	if (!tcf->returns_ref_override && !(cfd && cfd->returns_reference()))
+	// Token half via the one TokenCallFunc owner (override OR the parse-bound
+	// FuncDef); cfd is the CIR-RESOLVED callee, which can differ and is
+	// checked in addition.
+	if (!tcf->call_returns_reference() && !(cfd && cfd->returns_reference()))
 		return NULL;
 	// Type by the call_target_funcdef-RESOLVED callee: for a late-bound
 	// overload set the parse-bound var is an arbitrary set member (the
@@ -12884,15 +12887,26 @@ static std::string requalify_head(const std::string &spell, const std::string &q
 {
 	if (qhead.empty()) return spell;
 	size_t lt = spell.find('<');
-	if (lt == std::string::npos) return spell;
 	// Replace only the head NAME — keep leading cv-qualifiers, or
 	// "const basic_string<...>&" would lose its const (RK -> R, wrong symbol).
 	size_t h = 0;
+	size_t stop = lt == std::string::npos ? spell.size() : lt;
 	for (;;) {
-		while (h < lt && spell[h] == ' ') ++h;
+		while (h < stop && spell[h] == ' ') ++h;
 		if (spell.compare(h, 6, "const ") == 0) { h += 6; continue; }
 		if (spell.compare(h, 9, "volatile ") == 0) { h += 9; continue; }
 		break;
+	}
+	if (lt == std::string::npos) {
+		// Non-template-id head (`const locale&`): the head name runs to the
+		// first trailing decoration (&, *, space) — replace exactly it.
+		size_t e = h;
+		while (e < spell.size()
+		       && (isalnum((unsigned char)spell[e]) || spell[e] == '_'
+			   || spell[e] == ':'))
+			++e;
+		if (e <= h) return spell;
+		return spell.substr(0, h) + qhead + spell.substr(e);
 	}
 	return spell.substr(0, h) + qhead + spell.substr(lt);
 }
@@ -12929,14 +12943,41 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 	std::vector<DataDefCLASS *> best_pcls;          // matched (base) class per param
 	std::map<std::string, std::string> best_binding;
 	std::map<std::string, std::string> best_qmap;   // unqualified head -> qualified head
+	std::map<std::string, DataDef *> best_binding_dd; // explicit targ DataDefs by tparam
 	for (const Program::FreeOperatorOverload &ov : m_prog->free_function_overloads) {
 		if (ov.ns != ns || ov.opname != name) continue;
 		if (ov.param_spellings.size() != argc) continue;
 		std::map<std::string, std::string> binding;
 		std::map<std::string, std::string> qmap;   // phead -> qualified head (this overload)
+		std::map<std::string, DataDef *> binding_dd;
 		std::vector<size_t> offs(argc, 0);
 		std::vector<DataDefCLASS *> pcls(argc, NULL);
 		bool ok = true;
+		// [temp.arg.explicit]: explicit template args bind the leading
+		// template params BEFORE deduction — the non-deducible cell
+		// (`use_facet<F>(const locale&)`: F appears in no parameter, so
+		// argument deduction alone can never bind it). Spell each as its
+		// canonical C++ form, the same source the deduction path binds
+		// from (collect_self_and_base_spellings); keep the DataDef so the
+		// return type can resolve from the binding below.
+		if (!tcf->explicit_template_args.empty()) {
+			if (tcf->explicit_template_args.size() > ov.template_params.size())
+				continue;
+			for (size_t ti = 0; ti < tcf->explicit_template_args.size(); ++ti) {
+				DataDef *td = tcf->explicit_template_args[ti];
+				DataDefCLASS *tdc = td ? as_class_instance(td) : NULL;
+				std::string sp;
+				if (tdc)
+					sp = tdc->canonical_cpp_spelling().empty()
+					   ? tdc->name : tdc->canonical_cpp_spelling();
+				else if (td)
+					sp = datadef_cpp_spelling_w2(td);
+				if (sp.empty()) { ok = false; break; }
+				binding[ov.template_params[ti]] = sp;
+				binding_dd[ov.template_params[ti]] = td;
+			}
+			if (!ok) continue;
+		}
 		for (size_t i = 0; i < argc && ok; i++) {
 			std::string pspell = ov.param_spellings[i];
 			// Only template-id reference params participate in deduction; a
@@ -12950,15 +12991,41 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 			DataDefCLASS *acls = as_class_instance(argdd);
 			if (acls) {
 				std::string qhead;
-				if (!deduce_param_against_class(pspell, acls, ov.template_params,
-								binding, offs[i], qhead, &pcls[i])) {
+				if (deduce_param_against_class(pspell, acls, ov.template_params,
+							       binding, offs[i], qhead, &pcls[i])) {
+					std::string phead; std::vector<std::string> pargs;
+					split_template_id_w2(pspell, phead, pargs);
+					qmap[phead] = qhead;   // fully-qualified head for mangling
+					FFDBG(fprintf(stderr, "[FFCALL] %s param[%zu] phead=%s -> qhead='%s' off=%zu\n",
+						name.c_str(), i, phead.c_str(), qhead.c_str(), offs[i]));
+				} else if (template_placeholder_spelling(pspell, ov.template_params)
+					   == pspell) {
+					// CONCRETE class param (use_facet's `const locale&`):
+					// no template-id to deduce against — match the param
+					// core to the arg's class (self or a base) and take
+					// the matched class's canonical head so the mangler
+					// qualifies it (RKSt6locale, never a bare 6locale).
+					std::string core = strip_cv_ref_w2(pspell);
+					std::vector<BaseCand> ccands;
+					collect_self_and_base_spellings(acls, 0, ccands);
+					bool cm = false;
+					for (const auto &cand : ccands) {
+						std::string chead; std::vector<std::string> cargs2;
+						if (!split_template_id_w2(cand.spelling, chead, cargs2))
+							chead = cand.spelling;
+						if (strip_leading_qualifier(chead)
+						    != strip_leading_qualifier(core))
+							continue;
+						qmap[core] = chead;
+						offs[i] = cand.off;
+						pcls[i] = cand.cls;
+						cm = true;
+						break;
+					}
+					if (!cm) { ok = false; break; }
+				} else {
 					ok = false; break;
 				}
-				std::string phead; std::vector<std::string> pargs;
-				split_template_id_w2(pspell, phead, pargs);
-				qmap[phead] = qhead;   // fully-qualified head for mangling
-				FFDBG(fprintf(stderr, "[FFCALL] %s param[%zu] phead=%s -> qhead='%s' off=%zu\n",
-					name.c_str(), i, phead.c_str(), qhead.c_str(), offs[i]));
 			} else if (!bind_member_template_param(pspell,
 					datadef_cpp_spelling_w2(argdd),
 					ov.template_params, binding)) {
@@ -12980,6 +13047,7 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 		best_pcls = pcls;
 		best_binding = binding;
 		best_qmap = qmap;
+		best_binding_dd = binding_dd;
 	}
 	if (!best) return NULL;
 	if (m_prog->fn_template_map.count(ns + "::" + name)
@@ -12991,8 +13059,17 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 	// names to $Tn markers (parse_type -> T_/T0_/...).
 	auto qualify_and_param = [&](const std::string &spell) -> std::string {
 		std::string h; std::vector<std::string> a;
-		std::string q = (split_template_id_w2(spell, h, a) && best_qmap.count(h))
-				? best_qmap[h] : std::string();
+		std::string q;
+		if (split_template_id_w2(spell, h, a)) {
+			if (best_qmap.count(h))
+				q = best_qmap[h];
+		} else {
+			// Non-template-id param (`const locale&`): the concrete-param
+			// arm keyed its qualified head by the cv/ref-stripped core.
+			std::string core = strip_cv_ref_w2(spell);
+			if (best_qmap.count(core))
+				q = best_qmap[core];
+		}
 		return substitute_tparams(requalify_head(spell, q), best->template_params);
 	};
 	best_ret = qualify_and_param(best->return_spelling);
@@ -13029,6 +13106,23 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 			    && b2 == best_binding && off2 == 0)
 				ret_dd = mc;
 		}
+		// `const _Facet&` — the return names a template param the call
+		// bound EXPLICITLY: the referent class IS that argument
+		// (use_facet<numpunct<char>>). The param scan above cannot see
+		// it (no parameter mentions _Facet).
+		if (!ret_dd) {
+			auto bit = best_binding_dd.find(strip_cv_ref_w2(rspell));
+			if (bit != best_binding_dd.end())
+				ret_dd = as_class_instance(bit->second);
+		}
+	} else if (!rspell.empty() && rspell.back() == '*') {
+		// `const _Facet*` (__try_use_facet): pointer to an explicitly
+		// bound template param's class.
+		std::string core = rspell.substr(0, rspell.size() - 1);
+		auto bit = best_binding_dd.find(strip_cv_ref_w2(core));
+		if (bit != best_binding_dd.end())
+			if (DataDefCLASS *rc = as_class_instance(bit->second))
+				ret_dd = m_prog->getPointerType(rc);
 	}
 	if (!ret_dd) return NULL;
 

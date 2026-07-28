@@ -1,0 +1,27 @@
+// GAP B: a system-header free function template whose template parameter is
+// NOT deducible from its arguments (std::use_facet<F>(const locale&) — F
+// appears in no parameter) must bind via its EXPLICIT template args instead
+// of falling to the bodyless __ns_ placeholder. The call binds mangled-direct
+// to the real libstdc++ weak export (_ZSt9use_facetINSt7__cxx118numpunctIcEEE...).
+// The other three cells of the 2x2 (user/system x deducible/non-deducible)
+// are pinned here so a fix to one cell cannot silently regress another.
+// Oracle: g++ -std=c++17 prints 9, 4, "." and exits 0.
+#include <locale>
+#include <cstdio>
+
+template<typename T> T make(int v) { return (T)v; }
+
+int main()
+{
+	// user template, non-deducible (explicit arg only)
+	printf("%d\n", make<int>(9));
+	// user template, deducible
+	printf("%d\n", make<long>(7) == 7 ? 1 : 0);
+	// system header, deducible (explicit arg names the deduced type)
+	printf("%d\n", std::max<int>(3, 4));
+	// system header, NON-deducible — the failing cell
+	const std::numpunct<char> &np =
+		std::use_facet<std::numpunct<char> >(std::locale::classic());
+	printf("%c\n", np.decimal_point());
+	return np.decimal_point() == '.' ? 0 : 1;
+}
