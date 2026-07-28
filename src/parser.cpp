@@ -18602,6 +18602,13 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
     // above and leaves its storage class untouched.
     if ( parsing_extern_decl )
 	var->flags |= vfEXTERN;
+    // Minted while instantiating a template — a derived entity, re-created from
+    // the pattern at bind time. pack_tap_name refuses these for the decl index
+    // on the same `_inst_depth > 0` test; recording it on the Variable is what
+    // lets dump_registered_names apply the identical rule after the parse, when
+    // the depth counter is long back to zero.
+    if ( _inst_depth > 0 )
+	var->flags |= vfINSTPRODUCT;
     if ( !current_namespace().empty() && parsing_extern_decl
       && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
 	var->storage_alias_name =
@@ -52217,7 +52224,13 @@ void Program::dump_registered_names(FILE *out)
     //  - instantiation products (canonical spelling / key carries a
     //    bracketed template-id): tsubst re-creates them from the pattern;
     //  - class METHODS registered as namespace variables (Class__member):
-    //    member lookup goes through the class, whose own name is indexed.
+    //    member lookup goes through the class, whose own name is indexed;
+    //  - anything minted DURING instantiation (vfINSTPRODUCT), which since
+    //    static data members gained storage at their declaration includes an
+    //    instantiated class's static (numpunct<char>::id -> the global
+    //    `numpunct_char__id`). Methods of such a class were already excluded
+    //    by the function-type test above — this is the other half of that same
+    //    Class__member rule, for the DATA members.
     auto instantiation_product = [](DataDef *dd) -> bool {
 	DataDefCLASS *dc = dynamic_cast<DataDefCLASS *>(dd);
 	return dc && dc->canonical_cpp_spelling().find('<') != std::string::npos;
@@ -52335,6 +52348,9 @@ void Program::dump_registered_names(FILE *out)
 		continue;
 	    if ( it->second && it->second->type && it->second->type->is_function() )
 		continue;	// methods/functions-as-variables: not a lookup entry
+	    if ( it->second && (it->second->flags & vfINSTPRODUCT) )
+		continue;	// minted by instantiation: re-created from the pattern
+	    
 	    lines.insert(std::string("variable\t")
 			 + (ni->first.empty() ? std::string() : (ni->first + "::"))
 			 + it->first);

@@ -155,6 +155,15 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			                        // including TU defines it — the CIR backend
 			                        // emits a linkonce data binding (STB_WEAK) so
 			                        // per-TU copies merge at a multi-.o link
+			  vfINSTPRODUCT=1048576, // minted while a template was being
+			                        // instantiated (_inst_depth > 0). A DERIVED
+			                        // entity: bind time re-mints it from the
+			                        // pattern, so it is never a header export
+			                        // and never a lookup surface. Same rule
+			                        // pack_tap_name applies to the decl index —
+			                        // this is how the two stay consistent.
+			                        // (Fresh bit: 65536 is RETIRED, and reusing
+			                        // it would misread older serialized flags.)
 			} varflag_t;
 
 // The rt{None,Val,Ptr,Ref,DePtr,DeRef} tag-arithmetic macros are retired:
