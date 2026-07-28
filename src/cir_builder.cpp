@@ -3224,7 +3224,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 						"tsubst: unbound deferred-construction type"));
 				auto var_addr = [&]() -> node_t {
 					return node1(N_ADDR,
-						id(tdcl->var.name.c_str(), tdcl), tdcl);
+						id(tdcl->var.name.c_str(), tdcl), tdcl);	// allowed-exception: deferred-construction local
 				};
 				if (cir_node *done = tsubst_relower_deferred_construction(
 						tdcl->ctor_args, tdcl, concrete_class,
@@ -6536,7 +6536,9 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// madarray_construct is emitted as a separate statement by translate_block;
 	// the cleanup attribute on the storage handles scope-exit destruction.
 	if (is_array_object(v->type))
-		return array_storage_decl(v->name.c_str(), origin);
+		// var_emit_name like the general shapes below (line ~6700): this
+		// early return was the one path in var_decl that skipped it.
+		return array_storage_decl(var_emit_name(*v).c_str(), origin);
 
 	DataDef *base_dd = v->type;
 	bool is_ptr = base_dd && base_dd->is_pointer();
@@ -8390,7 +8392,7 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 		return recv_is_ptr ? recv_node : node1(N_ADDR, recv_node, origin);
 	}
 	recv_type = tm->object.type;
-	recv_node = id(tm->object.name.c_str(), origin);
+	recv_node = id(var_emit_name(tm->object).c_str(), origin);
 	from_var = true;
 	recv_class = class_behind(recv_type);
 	// madc-array receiver as a named variable (`a.count()`): same deliberate
@@ -8686,7 +8688,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 		std::string sym = func_emit_name(tm->var, callee);
 		if (!sym.empty()) {
 			node_t args = list();
-			append(args, id(tm->object.name.c_str(), origin));
+			append(args, id(tm->object.name.c_str(), origin));	// allowed-exception: tsubst pattern placeholder
 			// Unknown formals (deduced at instantiation): a REFERENCE-
 			// returning call argument (std::forward/std::move) forwards
 			// its POINTER — its call value already IS the object/scalar
@@ -14123,8 +14125,10 @@ node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 		recv_addr = object_var_addr(tsub->object, origin);
 	else {
 		// __this: value receiver -> &obj, pointer receiver -> obj.
+		// var_emit_name like the emit_symbol branch above (which routes
+		// through object_var_addr): the receiver can be an aliased global.
 		bool recv_is_ptr = tsub->object.type && tsub->object.type->is_pointer();
-		node_t recv = id(tsub->object.name.c_str(), origin);
+		node_t recv = id(var_emit_name(tsub->object).c_str(), origin);
 		recv_addr = recv_is_ptr ? recv : node1(N_ADDR, recv, origin);
 	}
 	return class_subscript_addr_on(cls, recv_addr, tsub->index, origin);
@@ -14434,7 +14438,13 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 
 	node_t func_inner = node1(N_FUNC, param_list);
 
-	node_t func_id = id(tf->var.name.c_str(), tf);
+	// var_emit_name (NOT func_emit_name): an asm-labeled function's
+	// definition goes under its label — but emit_symbol must NOT rename
+	// a madc-emitted BODY: a header method whose body madc materializes
+	// keeps its internal name (vtable slots bind the LOCAL body while
+	// value calls prefer the library symbol; renaming the definition
+	// orphaned the vtable slot — the forest_selfexe_gate SIGABRT).
+	node_t func_id = id(var_emit_name(tf->var).c_str(), tf);
 	node_t decl_list = list();
 	append(decl_list, func_inner);
 	if (ret_fnptr) {
@@ -15434,7 +15444,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// bypass note_capture and the captured reference would be left
 				// undeclared in the body.
 				note_capture(&tv->var);
-				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);
+				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);	// allowed-exception: reference PARAMETER deref
 			}
 			// Two-tree tsubst: while building a dependent-pattern body
 			// (m_tsubst_pattern_mode), the body-bound TokenVar may have lost the
@@ -15454,13 +15464,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					    && pv->type && pv->type->is_pointer()
 					    && pv->name == tv->var.name)
 						return node1(N_DEREF,
-							id(tv->var.name.c_str(), tb), tb);
+							id(tv->var.name.c_str(), tb), tb);	// allowed-exception: tsubst pattern-mode ref param
 			}
 			// GNU nested-function / [&]-lambda capture: an enclosing local/param
 			// the body reads is captured by reference, lowered to a hidden
 			// pointer parameter `T *name`. The value read is `(*name)`.
 			if (note_capture(&tv->var))
-				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);
+				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL (note_capture)
 			return id(var_emit_name(tv->var).c_str(), tb);
 		}
 	}
@@ -15509,7 +15519,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		if (ta) {
 			// `&capturedvar` inside a nested fn IS the capture pointer param.
 			if (note_capture(&ta->var))
-				return id(ta->var.name.c_str(), tb);
+				return id(ta->var.name.c_str(), tb);	// allowed-exception: captured LOCAL (note_capture)
 			// `&ref` where ref is a T& parameter (lowered to a T* with
 			// vfREFERENCE): the variable's stored VALUE is already the
 			// referent's address, so &ref is just that value — NOT
@@ -15553,10 +15563,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// `*p` where p is a captured pointer var: the capture param is
 			// `T **p` (&enclosing-p), so the enclosing p's value is `(*p)` and
 			// the user deref is `(*(*p))`.
+			// var_emit_name, like the TokenVar/TokenAddrOf siblings
+			// below: a pointer GLOBAL can carry storage_alias_name
+			// (asm label / system-header static) — raw td->var.name
+			// was the one dispatch arm that never got that fix.
 			if (note_capture(&td->var))
 				return node1(N_DEREF,
-					node1(N_DEREF, id(td->var.name.c_str(), tb), tb), tb);
-			return node1(N_DEREF, id(td->var.name.c_str(), tb), tb);
+					node1(N_DEREF, id(var_emit_name(td->var).c_str(), tb), tb), tb);
+			return node1(N_DEREF, id(var_emit_name(td->var).c_str(), tb), tb);
 		}
 	}
 
@@ -15574,8 +15588,9 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	{
 		TokenDerefStep *tds = dynamic_cast<TokenDerefStep *>(tb);
 		if (tds) {
+			// var_emit_name for the same reason as TokenDeref above.
 			node_t step = node1(tds->increment ? N_POST_INC : N_POST_DEC,
-					    id(tds->var.name.c_str(), tb), tb);
+					    id(var_emit_name(tds->var).c_str(), tb), tb);
 			return node1(N_DEREF, step, tb);
 		}
 	}
@@ -15601,7 +15616,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			} else if (note_capture(&tsub->object)) {
 				// Captured container: subscript through the deref of the
 				// capture pointer param (`(*name)[i]`).
-				base = node1(N_DEREF, id(tsub->object.name.c_str(), tb), tb);
+				base = node1(N_DEREF, id(tsub->object.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL (note_capture)
 			} else {
 				// Flat VLA pointer (runtime-sized param or malloc'd
 				// local): route through the linearizer. A single-index
@@ -15726,13 +15741,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			else if (note_capture(&tm->object))
 				// Captured struct object: `(*name).field` (the `.`/`->`
 				// selection below is unchanged — `(*name)` is the struct lvalue).
-				obj = node1(N_DEREF, id(tm->object.name.c_str(), tb), tb);
+				obj = node1(N_DEREF, id(tm->object.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL (note_capture)
 			else
 				// var_emit_name resolves a namespace extern's Itanium
 				// storage alias (madc::sys -> _ZN4madc3sysE), matching
 				// the subscript path and the extern decl's own id.
 				obj = id(var_emit_name(tm->object).c_str(), tb);
-			node_t member = id(tm->var.name.c_str(), tb);
+			node_t member = id(tm->var.name.c_str(), tb);	// allowed-exception: member SELECTOR, not storage
 			// `.` requires a struct lvalue; `->` requires a pointer. The
 			// object's declared type drives this: a pointer-typed object uses
 			// `->` (the parser already marks pointer-arithmetic parents like
@@ -16746,24 +16761,29 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			node_t val;
 			ExternParam val_shape;
 			DataType raw = sv->type->rawtype();
+			// The VALUE reads below emit CODE references — route them
+			// through var_emit_name (a completed aliased global reads
+			// under its Itanium name). The str() KEY argument further
+			// down stays sv->name: it is the SOURCE-name lookup key the
+			// eval scope resolves against, not a code reference.
 			if (sv->type->is_pointer()) {
 				continue;   // a pointer is not a capturable value
 			} else if (raw == DataType::dtBOOL || sv->type->is_integer()) {
 				setter = "__madc_scope_set_int_runtime";
-				val = id(sv->name.c_str(), tb);
+				val = id(var_emit_name(*sv).c_str(), tb);
 				val_shape = { {N_LONG}, false };
 			} else if (sv->type->is_real()) {
 				setter = "__madc_scope_set_real_runtime";
-				val = id(sv->name.c_str(), tb);
+				val = id(var_emit_name(*sv).c_str(), tb);
 				val_shape = { {N_DOUBLE}, false };
 			} else if (sv->type->marshals_value_text()) {
 				// the host reads the text object by pointer
 				setter = "__madc_scope_set_string_runtime";
-				val = node1(N_ADDR, id(sv->name.c_str(), tb), tb);
+				val = node1(N_ADDR, id(var_emit_name(*sv).c_str(), tb), tb);
 				val_shape = { {N_VOID}, true };
 			} else if (raw == DataType::dtARRAY) {
 				setter = "__madc_scope_set_array_runtime";
-				val = node1(N_ADDR, id(sv->name.c_str(), tb), tb);
+				val = node1(N_ADDR, id(var_emit_name(*sv).c_str(), tb), tb);
 				val_shape = { {N_VOID}, true };
 			} else {
 				continue;   // collector admits bool/int/real/text/array
@@ -17414,7 +17434,7 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 				if (is_array_object(ctd->var.type)) {
 					append(class_init_items, var_decl(&ctd->var, ctd));
 					append(class_init_items,
-					       array_ctor_call(ctd->var.name.c_str(), ctd));
+					       array_ctor_call(ctd->var.name.c_str(), ctd));	// allowed-exception: for-init scope local
 					return;
 				}
 				// Scalar declarator: var_decl folds ctd->initialize
@@ -17444,7 +17464,7 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 			} else {
 				append(class_init_items, var_decl(&td->var, td));
 				append(class_init_items,
-				       array_ctor_call(td->var.name.c_str(), td));
+				       array_ctor_call(td->var.name.c_str(), td));	// allowed-exception: for-init scope local
 			}
 			init = ignore();
 		} else {
@@ -18068,7 +18088,11 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 // g++'s array range-for lowering. No madc-array runtime helper.
 node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv)
 {
-	const char *arrname = ctv->var.name.c_str();
+	// var_emit_name: the container can be a file-scope global (a class-static
+	// fixed array carries storage_alias_name) — the subscripts below must
+	// name the emitted storage, not the raw source name.
+	const std::string arrname_s = var_emit_name(ctv->var);
+	const char *arrname = arrname_s.c_str();
 	long count = (long)ctv->var.total_elements();
 
 	char idx[32];
@@ -18543,7 +18567,7 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		referenced_funcs.insert(isym);
 		node_t cargs = list();
 		append(cargs, node1(N_ADDR,
-			id(sdcl->var.name.c_str(), sdcl), sdcl));
+			id(sdcl->var.name.c_str(), sdcl), sdcl));	// allowed-exception: guarded !file_global
 		// A retbuf-returning METHOD call (`T v = obj.m();`,
 		// TokenCallMethod : TokenMember) needs its hidden __this
 		// receiver between the retbuf and the explicit args —
@@ -18602,7 +18626,7 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		if (iinst && !iinst->returns_reference()
 		    && class_return_via_retbuf(&iinst->return_value_type()) == cdcl) {
 			node_t slot = node1(N_ADDR,
-				id(sdcl->var.name.c_str(), sdcl),
+				id(sdcl->var.name.c_str(), sdcl),	// allowed-exception: guarded !file_global
 				sdcl);
 			bool slot_used = false;
 			node_t oc = class_operator_external_call(
@@ -18645,7 +18669,7 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		DataDef *idd = ctor_args[0]->datadef();
 		if (idd && (idd->is_struct() || idd->is_object())
 		    && !idd->is_pointer()) {
-			node_t lhs = id(sdcl->var.name.c_str(), sdcl);
+			node_t lhs = id(sdcl->var.name.c_str(), sdcl);	// allowed-exception: guarded !file_global
 			node_t rhs = translate_expr(ctor_args[0]);
 			// A sub-call may have queued pending temps; flush first.
 			for (node_t p : m_pending_stmts)
@@ -18813,7 +18837,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					append(items, node2(N_EXPR, ll, integer(0)));
 				}
 				append(items, var_decl(&sdcl->var, sdcl));
-				append(items, array_ctor_call(sdcl->var.name.c_str(), sdcl));
+				append(items, array_ctor_call(sdcl->var.name.c_str(), sdcl));	// allowed-exception: guarded !file_global
 				continue;
 			}
 			// Class instance declared with constructor args `Foo f(a,b)` or an
@@ -20450,7 +20474,13 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 
 	node_t func_inner = node1(N_FUNC, param_list);
 
-	node_t func_id = id(tf->var.name.c_str(), tf);
+	// var_emit_name (NOT func_emit_name): an asm-labeled function's
+	// definition goes under its label — but emit_symbol must NOT rename
+	// a madc-emitted BODY: a header method whose body madc materializes
+	// keeps its internal name (vtable slots bind the LOCAL body while
+	// value calls prefer the library symbol; renaming the definition
+	// orphaned the vtable slot — the forest_selfexe_gate SIGABRT).
+	node_t func_id = id(var_emit_name(tf->var).c_str(), tf);
 	node_t decl_list = list();
 	append(decl_list, func_inner);
 	if (ret_fnptr) {
@@ -20810,13 +20840,15 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		append(iattrs, node2(N_ATTR, id("cleanup", tf), iattr_args, tf));
 		append(isd, iattrs);
 		append(isd, ignore());   // asm
+		// var_emit_name: <self> must name the emitted definition (see
+		// the declarator above) or the profiler tags the wrong symbol.
 		append(isd, node2(N_CAST, void_ptr_type(),
-				  id(tf->var.name.c_str(), tf), tf));
+				  id(var_emit_name(tf->var).c_str(), tf), tf));
 		CIR_NODE(isd)->synth_from_origin = true;
 		// __cyg_profile_func_enter((void *)<self>, (void *)0);
 		node_t eargs = list();
 		append(eargs, node2(N_CAST, void_ptr_type(),
-				    id(tf->var.name.c_str(), tf), tf));
+				    id(var_emit_name(tf->var).c_str(), tf), tf));
 		append(eargs, node2(N_CAST, void_ptr_type(), integer(0, tf), tf));
 		node_t ecall = node2(N_CALL,
 				     id("__cyg_profile_func_enter", tf), eargs, tf);
@@ -21225,8 +21257,14 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		return NULL;
 	}
 
-	std::string target_sym = call_emit_symbol(fd, fvar->name);
-	std::string shim_name = "__madc_shim_" + target_sym;
+	// Two different names, deliberately: what the shim CALLS is the emitted
+	// symbol (Variable& overload — an asm-labeled function's definition is
+	// under its label), while the shim's own NAME stays keyed on the source
+	// name so the host's shim_symbol_for(func, name) recomputes the same
+	// handle signature-blind. Same KEY-vs-CODE split as the eval scope
+	// capture (key = source name, value read = emitted name).
+	std::string target_sym = call_emit_symbol(*fvar, fd);
+	std::string shim_name = "__madc_shim_" + call_emit_symbol(fd, fvar->name);
 	referenced_funcs.insert(target_sym);
 
 	// Value-helper externs (compiler machinery; resolved from the host).

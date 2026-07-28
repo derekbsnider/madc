@@ -1,0 +1,12 @@
+// An asm-labeled FUNCTION WITH A BODY is DEFINED under its label; callers call the label.
+// oracle: g++ prints 42.
+#include <cstdio>
+
+int foo(int x) asm("renamed_foo");
+int foo(int x) { return x * 3; }
+
+int main()
+{
+	printf("%d\n", foo(14));
+	return 0;
+}
