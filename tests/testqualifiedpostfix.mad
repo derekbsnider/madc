@@ -35,6 +35,11 @@ namespace N
 
 	int *slot(int i) { return arr + i; }
 
+	// A function TEMPLATE, called with an EXPLICIT template-argument list.
+	// `T` is deducible here, so the explicit form is the thing under test,
+	// not a necessity.
+	template<typename T> T pick_t(T x) { return x; }
+
 	struct P { int a; int b; };
 	P origin = { 3, 9 };
 	P make(int v) { P p; p.a = v; p.b = v * 2; return p; }
@@ -75,6 +80,22 @@ int main(void)
 	// Not a cast: a deref operand and an address-of operand are the same
 	// operand path.
 	printf("deref %d\n", *N::slot(3));
+
+	// An explicit template-argument list is part of the postfix-expression's
+	// HEAD. In an operand position the `<` fell out of the chain and was
+	// re-read as a declarator: "Expecting identifier". The CLASS form
+	// (`S::make<int>(7)`) already worked, which is what identified this as
+	// the same operand-path family as the arms above rather than a template
+	// defect.
+	printf("targs %d\n", (int)N::pick_t<int>(11));
+	printf("targs2 %d\n", (int)N::pick_t<int>(11) + (int)N::pick_t<int>(1));
+
+	// Controls: the same call NOT in an operand position, and the deduced
+	// form in one. Both always worked — they are what bound the defect to
+	// "explicit template args in an operand position" specifically.
+	int tv = N::pick_t<int>(11);
+	printf("targs_control %d\n", tv);
+	printf("deduced_control %d\n", (int)N::pick_t(11));
 
 	// The value must also be right when it is NOT the operand of a cast,
 	// which is the control that says the call itself was never broken.

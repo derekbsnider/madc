@@ -20072,9 +20072,29 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	return NULL;
 
     TokenBase *chain_head = result;
+    // Explicit template arguments captured from a `<...>` seen just before the
+    // call's `(`, held until the call arm below builds the TokenCallFunc.
+    std::vector<DataDef *> pending_targs;
     while ( peekToken() )
     {
 	TokenID pid = peekToken()->id();
+	if ( pid == TokenID::tkLT )
+	{
+	    // `N::f<int>(x)` — an explicit template-argument list is part of the
+	    // postfix-expression's head, not something the caller can re-read.
+	    // The CLASS arm already captured these (`S::make<int>(7)` works);
+	    // the namespace arm handed its head straight here, so in an operand
+	    // position `(int)nn::ident<int>(7)` the `<` fell out of the chain and
+	    // was re-read as a declarator, reporting "Expecting identifier".
+	    // Without the cast it parses (a different path), which is what
+	    // identified this as the same operand-path family as the `(`/`[`/`.`
+	    // arms rather than a template defect.
+	    Variable *tcallee = postfix_expr_variable(result);
+	    if ( !tcallee || !tcallee->type || !tcallee->type->is_function() )
+		break;			// a less-than, not a template-id
+	    pending_targs = capture_call_template_args();
+	    continue;
+	}
 	if ( pid == TokenID::tkDeRef || pid == TokenID::tkDot )
 	{
 	    bool is_arrow = (pid == TokenID::tkDeRef);
@@ -20311,6 +20331,11 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	    tc->file = open->file;
 	    tc->line = open->line;
 	    tc->column = open->column;
+	    if ( !pending_targs.empty() )
+	    {
+		tc->explicit_template_args = pending_targs;
+		pending_targs.clear();
+	    }
 	    parseCallFunc(tc);
 	    result = tc;
 	    var = &tc->var;
