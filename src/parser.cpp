@@ -36527,6 +36527,43 @@ TokenBase *TokenRETURN::parse(Program &pgm)
 	if ( p->type() == TokenType::ttDataType ) return false;
 	return true;
     };
+    // C/C++ [expr.comma]: `return a, b;` evaluates a for side effects and
+    // returns b. libc++'s hardening asserts expand to exactly this shape as a
+    // constexpr-friendly single statement
+    // (`return _LIBCPP_ASSERT_...(...), __data_[__pos];` —
+    // basic_string_view::operator[]). Multi-return is madc DIALECT syntax: it
+    // applies only in STD_MADC mode AND only to USER code — a SYSTEM HEADER
+    // is real C/C++ whatever mode the program compiles under (madc-mode
+    // programs #include real libstdc++/libc++). Letting the dialect hijack a
+    // header's comma operator flipped such a method onto the multi-return
+    // `long *__retbuf` ABI against its direct-return call proto
+    // ("incompatible types of ... declarations"). Chain TokenComma — the
+    // parseExprStmt comma-operator node (left for side effects, right's
+    // value/type). Unlike looks_like_second_return (a HEURISTIC for the
+    // dialect), a consumed comma is unambiguous here: [expr.comma] requires
+    // an expression next, which may legitimately start with a type name
+    // (`_Traits::length(__s)` instantiates to a ttDataType head) or a symbol
+    // (`(b)`).
+    if ( pgm.language_std != Program::STD_MADC
+      || (file && pgm.is_system_header_path(file)) )
+    {
+	while ( pgm.curToken() && pgm.curToken()->id() == TokenID::tkComma
+	     && pgm.peekToken() )
+	{
+	    tn = pgm.nextToken();
+	    TokenBase *right = pgm.parseExpression(tn);
+	    if ( !right )
+		break;
+	    TokenComma *seq = new TokenComma();
+	    seq->left   = returns;
+	    seq->right  = right;
+	    seq->file   = returns ? returns->file : file;
+	    seq->line   = returns ? returns->line : line;
+	    seq->column = returns ? returns->column : column;
+	    returns = seq;
+	}
+	return this;
+    }
     if ( looks_like_second_return() )
     {
 	return_exprs.push_back(returns);

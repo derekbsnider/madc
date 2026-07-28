@@ -1,0 +1,33 @@
+// C/C++ comma-OPERATOR return ([expr.comma]): `return a, b;` evaluates a
+// for side effects and returns b — it is NOT madc's dialect multi-return
+// (which stays gated to --std=madc). libc++'s hardening asserts expand to
+// exactly this shape as a constexpr-friendly single statement
+// (`return _LIBCPP_ASSERT_...(...), __data_[__pos];` —
+// basic_string_view::operator[], string_view:398); the hijack flipped the
+// method onto the multi-return __retbuf ABI against its direct-return call
+// proto. Covers: scalar comma-return, REFERENCE comma-return through a
+// method (the operator[] shape), and a 3-element chain.
+// Runs under --std=c++ (see .flags). Oracle: g++ 13 and clang++-18 print
+// "7 3 i 9".
+#include <cstdio>
+
+static int side = 0;
+static int bump() { side = 7; return 99; }
+static int f() { return bump(), 3; }
+
+struct SV {
+    const char *d_;
+    int probe() const { return 0; }
+    const char &at(unsigned long p) const { return probe(), d_[p]; }
+};
+
+static int g3() { return bump(), bump(), 9; }
+
+int main()
+{
+    int r = f();
+    SV s;
+    s.d_ = "hi";
+    printf("%d %d %c %d\n", side, r, s.at(1), g3());
+    return 0;
+}
