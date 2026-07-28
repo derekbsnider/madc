@@ -2,6 +2,51 @@
 
 ## [Unreleased]
 
+## [v0.56.0] — 2026-07-28
+
+Real C under real headers: an explicit prototype replaces a builtin
+registration wholesale, and explicit template args reach every layer a
+non-deducible call crosses — `getenv("HOME")` and
+`std::use_facet<F>(loc)` both work against real glibc/libstdc++ now.
+
+- **fix: an explicit prototype REPLACES a builtin registration — wholesale.**
+  `FuncDef::builtin_registration` is the caller's declared intent, passed by
+  the three `builtin_registry` loops only; parseFunction replaces such an
+  entry wholesale on a source (re)declaration (gcc canon) instead of the old
+  half-adopt (return refreshed, parameters and wrapper binding kept) that
+  errored `getenv("HOME")` under real `<stdlib.h>` with "expected 2 got 1".
+  getenv/setenv/unsetenv register as the REAL C/POSIX functions bound to real
+  libc; the private madc conveniences (getenv's 2-param string result-buffer
+  `__madc_getenv`, setenv's 2-param overwrite=1 wrapper) are deleted — they
+  could not coexist with real headers on one name, and the half-adopt bug was
+  accidentally load-bearing for them. madc is C under the hood: one shape,
+  C's. Gate `testgetenv_realhdr` (header-replaced getenv + builtin POSIX
+  setenv round-trip through real libc). Trap recorded: stamping the flag
+  inside `addFunction` itself clobbered member-template instantiation mints
+  (`_M_construct`) and ns placeholders in the FREEZE lane only — live parses
+  defer those `.tcc` bodies; the forest and packed lanes caught what the live
+  lane structurally cannot.
+
+- **fix: explicit template args reach EVERY layer a non-deducible call
+  crosses (GAP B).** `std::use_facet<numpunct<char>>(loc)` bound the bodyless
+  `__ns_std_use_facet` placeholder. Three layers each implemented one rule on
+  half its domain: `TokenCallFunc::call_returns_reference()` is now the ONE
+  owner of call reference-ness (the reference-init parser took the address of
+  the callee FUNCTION; a call token derives from TokenVar), the fn-template
+  return resolver's specifier skip now covers KEYWORD tokens (C++ `const`
+  broke `const _Facet&` substitution), and the CIR mangled-direct
+  instantiation seeds bindings from explicit template args
+  ([temp.arg.explicit]) with concrete-class-param matching and
+  `const F&`/`const F*` returns from the binding. The call binds the real
+  libstdc++ weak export (`_ZSt9use_facetINSt7__cxx118numpunctIcEEE…` — nm
+  shows all 44 standard use_facet AND __try_use_facet specializations
+  exported). A value-returning call in a reference initializer now fails
+  loudly instead of silently binding `&callee`. Gate `testusefacet_realhdr`
+  pins all four cells of the user/system × deducible/non-deducible 2×2.
+  Open remainder (KG `Gap{user_facet_body_instantiation}`): user-DEFINED
+  facets have no exported specialization and need `__try_use_facet` body
+  instantiation on the parse-once spine.
+
 ## [v0.55.0] — 2026-07-28
 
 Class statics bind to their real Itanium symbols, and Variable emission gets

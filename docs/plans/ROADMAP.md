@@ -1,8 +1,9 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-07-28 (v0.55.0: Itanium
-symbols for class statics + the var_emit_name emission-owner sweep; suites
-774/758/758 green; warning ratchet 0).
+Master plan linking all workstreams. Updated 2026-07-28 (v0.56.0: real C
+under real headers — prototype replaces builtin wholesale, getenv/setenv are
+real libc; explicit template args reach every layer, use_facet binds the real
+libstdc++ export; suites 776/760/760 green; warning ratchet 0).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The

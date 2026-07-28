@@ -191,18 +191,36 @@ on its global-scope branch (:599); the std branch (:614) falls to
 ## 3. Open work, in priority order
 
 1. ~~**THE REGRESSION** (§0). Blocks merge.~~ FIXED @`a81f86e1` (+`1ad16f46`).
-1b. **`Gap{builtin_redecl_half_adopt}`** — a real-header re-declaration of a
-   builtin-registered function HALF-applies: parseFunction's return-type
-   refresh (parser.cpp:47541) keeps the OLD parameter list (param-push gated
-   on `!func_already_declared`, 48175). Live failure: `getenv("HOME")` under
-   `--no-embedded-headers` errors "expected 2 got 1" (`__madc_getenv`'s
-   2-param result-buffer convention shadows the header's 1-param prototype);
-   g++ compiles it. Reducer: `tmp/getenv_realhdr.mad`. The fix is TWO layers
-   and needs its own battery: adopt the header prototype wholesale (gcc
-   canon: an explicit prototype replaces a builtin) AND bind the call to the
-   real libc symbol, not the madc wrapper. SMAUG calls getenv — this blocks
-   real C89 code under real headers.
-2. **GAP B — `std::use_facet` binds to the invented `__ns_std_use_facet`.**
+1b. ~~**`Gap{builtin_redecl_half_adopt}`**~~ FIXED @`e45b69ab`
+   (feature/getenv-builtin-redecl-claude, merged to develop):
+   `FuncDef::builtin_registration` = the CALLER's intent from the three
+   builtin_registry loops ONLY; parseFunction replaces such an entry
+   WHOLESALE on a source re-declaration (gcc canon). getenv/setenv/unsetenv
+   re-registered as the real C/POSIX functions; the `__madc_getenv`
+   result-buffer convention + wrappers DELETED (testlang/docs adopt C
+   usage — the half-adopt was accidentally load-bearing for the private
+   dialect). Gate: `tests/testgetenv_realhdr.mad`. TRAP recorded: stamping
+   inside addFunction itself clobbered `_M_construct` instantiation mints
+   + ns placeholders in the FREEZE lane only (live parses defer .tcc
+   bodies) — caught by forest_selfexe_gate + the packed lane, attributed
+   by env-gated A/B + a replacement log.
+2. ~~**GAP B**~~ FIXED @`114879b8` (feature/use-facet-claude) — three
+   layers, each "one rule on half its domain":
+   `TokenCallFunc::call_returns_reference()` is now the ONE owner of call
+   reference-ness (reference_bind_address_expr took `&callee` of the
+   placeholder); the return resolver's specifier skip now covers KEYWORD
+   tokens (C++ `const` broke `const _Facet&` substitution); the CIR
+   mangled-direct instantiation seeds bindings from EXPLICIT template args
+   + accepts concrete class params + resolves `const F&`/`const F*`
+   returns from the binding — the call binds the real libstdc++ weak
+   export (nm REFUTED the "no extern template ⇒ do not bind
+   mangled-direct" note below: all 44 use_facet AND __try_use_facet
+   specializations ARE exported). Gate: `tests/testusefacet_realhdr.mad`
+   (pins all four 2×2 cells). OPEN REMAINDER: a USER-DEFINED facet has no
+   exported specialization — needs `__try_use_facet` BODY instantiation
+   (its try_instantiate fails; parse-once spine work).
+   Original analysis (mechanism half right — kept for the record):
+   **GAP B — `std::use_facet` binds to the invented `__ns_std_use_facet`.**
    Characterised by a clean 2×2 (all four measured):
 
    | | deducible from args | non-deducible |
