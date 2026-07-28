@@ -70,7 +70,82 @@ declaration; an odr-use site only has the element type).
 
 ---
 
-## STILL OPEN — step 2, the Itanium alias
+## STEP 2 LANDED @`34b2f245` — what it fixed, and what it did NOT
+
+The alias is IN. `class_static_member_itanium_symbol()` sets
+`storage_alias_name` for a static of a system-header class, reusing
+`itanium_mangle_nested_var` + `split_scope_spelling`. Verified against
+`nm -D libstdc++.so.6` (UNANCHORED):
+
+| madc | libstdc++ | |
+|---|---|---|
+| `_ZNSt8numpunctIcE2idE` | same | ✓ |
+| `_ZNSt7__cxx118numpunctIcE2idE` | same | ✓ |
+| `_ZNSt10moneypunctIcLb0EE2idE` | same | ✓ (was `…Ic5falseE…`) |
+
+That third one was a SECOND defect found by fixing the first: a NON-TYPE
+template argument was mangled as a TYPE. `nontype_literal_code()` now sits
+beside `builtin_code()` in the same mangler. **Integers deliberately still fall
+through** — Itanium takes the type from the PARAMETER's declaration, so `8` is
+`Li8E` for `int` but `Lm8E` for `size_t` (`std::array`, `std::bitset`), and the
+mangler receives only a spelling. Fixing that means carrying the parameter's
+declared type into the spelling callers pass. Guessing = an invisibly-wrong
+symbol instead of a visibly-wrong one.
+
+### The alias is NECESSARY BUT NOT SUFFICIENT — two gaps sit in front of it
+
+Both were found by reducers, after the plan had already assumed they didn't
+exist. Neither is exercised by the suite today.
+
+**GAP A — address-of a namespace-qualified template-id static.**
+`&std::numpunct<char>::id` → parser error "use of undeclared identifier 'id'".
+DISCRIMINATED by a control: `Box<int>::value` (user template, value context)
+resolves fine and reaches MIR, failing only with `import of undefined item
+Box_int32_t__value` — correct, since the reducer never defines it. So template-id
+statics work on the VALUE path; the gap is the ADDRESS-OF path
+(`parseAddressOfExpression`, `src/parser.cpp:20655` region), whose qualifier
+resolver takes `std` and then expects a plain identifier — it never considers a
+template-id. `resolve_template_id_static_member` already does the analogous job
+for the value side; the address side needs the same, minus the constant fold
+(an address needs real storage). **This is the next concrete fix.**
+
+**GAP B — `std::use_facet` binds to the invented `__ns_std_use_facet`.**
+It is declared ONLY as a friend inside `class locale`
+(`locale_classes.h:81`); the namespace-scope definition arrives too late at
+`locale_classes.tcc:192`. `--dump-registered` shows BOTH `template std::use_facet`
+AND a bodyless `function __ns_std_use_facet`, and the call site picks the
+placeholder, which has no body → "undeclared identifier __ns_std_use_facet".
+
+⚠️ Do NOT "fix" this by binding `use_facet` mangled-direct on the
+`free_function_overloads` path. Checked: libstdc++ has `extern template` for the
+facet CLASSES (`locale_facets.tcc:1322`) but **none for `use_facet` itself**, so
+the library expects the compiler to instantiate its small inline body — which
+references `_Facet::id`, i.e. GAP A. Fix A first; B likely follows.
+
+### VERIFIED FALSE POSITIVE — do not "fix" this
+
+A recon sweep reported that namespace-scope C++ variables in the GLOBAL
+namespace never get `storage_alias_name`, because the gate requires
+`!current_namespace().empty()` on top of `parsing_extern_decl`, and called that
+extra condition unjustified.
+
+It is justified. The Itanium ABI does not mangle a variable at global namespace
+scope. Measured against g++ 13:
+
+```
+int global_var = 5;
+namespace ns { int ns_var = 6; }
+    ->   D global_var          (UNMANGLED)
+         D _ZN2ns6ns_varE
+```
+
+Emitting `_Z…` for a global-scope variable would CREATE the wrong-symbol bug
+this track exists to remove. The gate stays.
+
+Kept here because the sweep was right about everything else, which is exactly
+what makes a single confident wrong item dangerous.
+
+## SUPERSEDED — step 2 as originally written
 
 Required on EVERY stdlib flavor (see the correction below), and NOT deleted
 by step 1.
