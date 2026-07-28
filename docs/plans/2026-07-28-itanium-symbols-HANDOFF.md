@@ -12,7 +12,25 @@ not have to repeat it.
 
 ---
 
-## 0. READ THIS FIRST — the branch does not merge
+## 0. ~~READ THIS FIRST — the branch does not merge~~ FIXED @`a81f86e1`
+
+**RESOLVED 2026-07-28.** Root cause was NEITHER of the two leads below:
+`class_ctor_call` (and `global_ctor_call`'s built-in arm) emitted the ctor
+RECEIVER by raw `v->name`, bypassing `var_emit_name` — so an aliased global
+(a system-header class static completed by its out-of-class definition) was
+DEFINED under the Itanium name but CONSTRUCTED under the invented one. The
+emitted C showed it directly: `struct strong_ordering
+_ZNSt15strong_ordering4lessE;` (definition, aliased) vs
+`strong_ordering__strong_ordering((&strong_ordering__less), -1);` (ctor,
+raw). All seven receiver sites now route through `var_emit_name` — the
+sixth instance of this session's "one owner, half its consumers" shape.
+Lead 1 was wrong (the alias IS applied; `canonical_cpp_spelling` is fine
+for `strong_ordering`); lead 2 was moot (storage is defined in-module, no
+extern needed). The follow-up warning-ratchet item it surfaced (dlfcn
+builtin typing) is fixed in `1ad16f46`; the DEEPER layer that fix exposed
+is recorded as `Gap{builtin_redecl_half_adopt}` — see §3.
+
+Original blocker text kept for the record:
 
 `34b2f245` introduced a regression in **four** tests. They are red at branch
 HEAD. Everything else is green. **Fix this before anything else, and before any
@@ -122,7 +140,18 @@ implementations, one non-canon by construction.
 
 ## 3. Open work, in priority order
 
-1. **THE REGRESSION** (§0). Blocks merge.
+1. ~~**THE REGRESSION** (§0). Blocks merge.~~ FIXED @`a81f86e1` (+`1ad16f46`).
+1b. **`Gap{builtin_redecl_half_adopt}`** — a real-header re-declaration of a
+   builtin-registered function HALF-applies: parseFunction's return-type
+   refresh (parser.cpp:47541) keeps the OLD parameter list (param-push gated
+   on `!func_already_declared`, 48175). Live failure: `getenv("HOME")` under
+   `--no-embedded-headers` errors "expected 2 got 1" (`__madc_getenv`'s
+   2-param result-buffer convention shadows the header's 1-param prototype);
+   g++ compiles it. Reducer: `tmp/getenv_realhdr.mad`. The fix is TWO layers
+   and needs its own battery: adopt the header prototype wholesale (gcc
+   canon: an explicit prototype replaces a builtin) AND bind the call to the
+   real libc symbol, not the madc wrapper. SMAUG calls getenv — this blocks
+   real C89 code under real headers.
 2. **GAP B — `std::use_facet` binds to the invented `__ns_std_use_facet`.**
    Characterised by a clean 2×2 (all four measured):
 
