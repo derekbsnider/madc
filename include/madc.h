@@ -4181,6 +4181,7 @@ public:
 	std::string key;			// the placeholder's funcdef_map symbol (the record key)
 	std::string disp;			// live method_display_name (the declarator name)
 	std::vector<TokenBase *> tokens;	// decl + params + body (sans template<> header)
+	std::vector<TokenBase *> ret_tokens;	// v34 decl-only: the dependent return-type range (no decl tokens exist)
 	std::vector<std::string> typeparams;
 	std::vector<bool> is_pack;
 	PendingForestMemberTmpl() : owner(NULL) {}

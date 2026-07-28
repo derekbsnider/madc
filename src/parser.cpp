@@ -17087,13 +17087,17 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	}
 	case CIR_TMPLK_MEMBER:
 	{
-	    // A body-bearing member function template of a restored class.
-	    // Stage the restored tokens + params keyed by the placeholder's
-	    // funcdef_map symbol (the record key); the post-tkProgram flush
-	    // hydrates the verbatim-restored placeholder with the pattern
-	    // fields — or falls back to the full live registration
-	    // (register_skipped_class_template_function) when the placeholder
-	    // did not restore. An owner the load dropped cleanly lacks.
+	    // A member function template of a restored class. Body-bearing:
+	    // the decl+body token run. Decl-only (v34): no decl tokens exist —
+	    // the record carries the dependent return-type range in the
+	    // (otherwise empty) constraint-run slot instead. Stage the tokens
+	    // + params keyed by the placeholder's funcdef_map symbol (the
+	    // record key); the post-tkProgram flush hydrates the
+	    // verbatim-restored placeholder with the pattern fields — or, for
+	    // a body-bearing record whose placeholder did not restore, falls
+	    // back to the full live registration
+	    // (register_skipped_class_template_function). An owner the load
+	    // dropped cleanly lacks.
 	    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(rt.owner);
 	    if ( !owner )
 		break;
@@ -17102,7 +17106,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    pm.key   = rt.key  ? rt.key  : "";
 	    pm.disp  = rt.name ? rt.name : "";
 	    restore_run(rt.body, pm.tokens);
-	    if ( pm.tokens.empty() )
+	    restore_run(rt.constraint, pm.ret_tokens);
+	    if ( pm.tokens.empty() && pm.ret_tokens.empty() )
 		break;
 	    for ( size_t p = 0; p < rt.params.size(); ++p )
 	    {
@@ -17127,6 +17132,11 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 // for the flush).
 static void stamp_member_template_pattern(
 	DataDefCLASS *owner, FuncDef *fd, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams,
+	const std::vector<bool> &typeparam_is_pack, const std::string &name);
+static void stamp_member_template_pattern_decl_only(
+	DataDefCLASS *owner, FuncDef *fd,
+	const std::vector<TokenBase *> &ret_tokens,
 	const std::vector<std::string> &typeparams,
 	const std::vector<bool> &typeparam_is_pack, const std::string &name);
 static void register_skipped_class_template_function(
@@ -17289,25 +17299,37 @@ void Program::flush_forest_pending_globals()
     for ( size_t i = 0; i < forest_pending_member_tmpls.size(); ++i )
     {
 	PendingForestMemberTmpl &pm = forest_pending_member_tmpls[i];
-	if ( !pm.owner || pm.tokens.empty() )
+	if ( !pm.owner || (pm.tokens.empty() && pm.ret_tokens.empty()) )
 	    continue;
 	funcdef_map_iter fit = pm.key.empty() ? funcdef_map.end()
 					      : funcdef_map.find(pm.key);
 	if ( fit != funcdef_map.end() && fit->second
 	  && fit->second->is_member_template )
 	{
-	    stamp_member_template_pattern(pm.owner, fit->second, pm.tokens,
-					  pm.typeparams, pm.is_pack, pm.disp);
+	    if ( !pm.tokens.empty() )
+		stamp_member_template_pattern(pm.owner, fit->second, pm.tokens,
+					      pm.typeparams, pm.is_pack, pm.disp);
+	    else
+		// v34 decl-only record: no decl tokens to derive from — stamp
+		// the restored return-type range + params directly.
+		stamp_member_template_pattern_decl_only(pm.owner, fit->second,
+		    pm.ret_tokens, pm.typeparams, pm.is_pack, pm.disp);
 	    DBG(std::cout << "flush_forest_pending_globals: member template of "
 		<< pm.owner->name << " hydrated placeholder " << pm.key
 		<< " (" << pm.typeparams.size() << " param(s), "
-		<< pm.tokens.size() << " tokens, decl="
+		<< pm.tokens.size() << " tokens, "
+		<< pm.ret_tokens.size() << " ret tokens, decl="
 		<< fit->second->member_template_decl.size() << ", owner="
 		<< (fit->second->member_template_owner ? 1 : 0) << ", fd="
 		<< (void *)fit->second << ", cls=" << (void *)pm.owner
 		<< ")" << std::endl);
 	    continue;
 	}
+	// A DECL-ONLY record cannot fall back to the live registration — there
+	// are no declaration tokens to re-run it over; the placeholder either
+	// restored (hydrated above) or the member stays a bare method.
+	if ( pm.tokens.empty() )
+	    continue;
 	std::vector<bool> saved_pack = last_skipped_template_typeparam_is_pack;
 	last_skipped_template_typeparam_is_pack = pm.is_pack;
 	// Live ran this registration INSIDE the owner's class body — the
@@ -46059,25 +46081,59 @@ static void stamp_member_template_pattern(
 	    fd->member_template_return_tokens.push_back(
 		tokens[i] ? tokens[i]->clone() : NULL);
     }
+    // The declaring class, body or not: the return-type resolution pushes it
+    // as the lookup scope ([temp.inst] — a member's names resolve in its
+    // class's context), and the forest freeze keys the member-template record
+    // by it (a decl-only member template has no other owner trace).
+    fd->member_template_owner = owner;
     // Retain the body of a body-bearing member function template so an ODR-use
     // call site can instantiate it locally (instantiate_member_fn_template_for_call)
     // when the owner is a madc-LOCAL class libstdc++ does not export. Both STATIC
     // and INSTANCE (this-taking) member templates qualify: a static one
     // instantiates as a free function, an instance one as a METHOD of the owner
     // (the clang/gcc model — static-ness is just a flag). Bodyless declarations
-    // stay on the existing mangled-direct paths.
+    // stay on the existing mangled-direct paths; a non-empty member_template_decl
+    // MEANS body-bearing everywhere downstream — never set it for a declaration.
     bool has_body = false;
     for ( size_t i = 0; i < tokens.size(); ++i )
 	if ( tokens[i] && tokens[i]->id() == TokenID::tkOpBrc )
 	{ has_body = true; break; }
     if ( has_body )
     {
-	fd->member_template_owner = owner;
 	fd->member_template_decl.clear();
 	for ( size_t i = 0; i < tokens.size(); ++i )
 	    fd->member_template_decl.push_back(tokens[i] ? tokens[i]->clone()
 							 : NULL);
     }
+}
+
+// Decl-only twin of stamp_member_template_pattern for a forest-restored
+// placeholder (v34): a body-less member template retains no declaration
+// tokens, so its record carries only the dependent return-type range — stamp
+// exactly the fields the live registration derives for that shape. The
+// signature SPELLINGS are underivable from the range alone, so the
+// spelling-scored deduction lanes stay unlit for a thawed decl-only member;
+// the all-explicit decltype lane (resolve_member_template_call_return_type),
+// the one that consumes the range, reproduces. member_template_decl stays
+// EMPTY — non-empty means body-bearing everywhere downstream.
+static void stamp_member_template_pattern_decl_only(
+	DataDefCLASS *owner, FuncDef *fd,
+	const std::vector<TokenBase *> &ret_tokens,
+	const std::vector<std::string> &typeparams,
+	const std::vector<bool> &typeparam_is_pack, const std::string &name)
+{
+    if ( !fd )
+	return;
+    fd->method_display_name = name;
+    fd->is_member_template = true;
+    fd->template_param_names = typeparams;
+    if ( typeparam_is_pack.size() == typeparams.size() )
+	fd->template_param_is_pack = typeparam_is_pack;
+    fd->member_template_owner = owner;
+    fd->member_template_return_tokens.clear();
+    for ( size_t i = 0; i < ret_tokens.size(); ++i )
+	fd->member_template_return_tokens.push_back(
+	    ret_tokens[i] ? ret_tokens[i]->clone() : NULL);
 }
 
 static void register_skipped_class_template_function(
@@ -46172,8 +46228,9 @@ static void register_skipped_class_template_function(
 	    owner->ctors.push_back(var);
 	owner->has_user_ctor = true;
     }
-    // (Body retention for a body-bearing pattern — member_template_owner +
-    // member_template_decl — is stamped by stamp_member_template_pattern above.)
+    // (member_template_owner — every member template — and body retention for
+    // a body-bearing pattern — member_template_decl — are stamped by
+    // stamp_member_template_pattern above.)
 }
 
 std::vector<TokenBase *> Program::collect_template_class_prefix()

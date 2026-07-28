@@ -413,6 +413,50 @@ int main()
 EOF
 run_case anon "t=7 b0=D b1=C sz=12"
 
+# --- case: declonlymt (v34: DECL-ONLY member templates) — libstdc++'s
+#     __do_common_type_impl::_S_test SFINAE idiom in miniature: a plain struct
+#     with body-LESS static member function templates whose DEPENDENT return
+#     type carries the answer, consumed via `using type = decltype(_S_pick<A,
+#     B>(0))` inside a class template that privately inherits the impl. A
+#     body-less member template retains no decl tokens, so pre-v34 the freeze
+#     emitted no CIR_TMPLK_MEMBER record for it; the thawed placeholder had no
+#     member_template_return_tokens and decltype fell to the implicit 64-bit
+#     return — common_type<A,B>'s base materialized as int64_t (the packed-lane
+#     testcommontype failure, task #31). The consumer instantiates FRESH
+#     specializations (never frozen), forcing the thawed resolution path.
+cat > tmp/fbgate_declonlymt.h <<'EOF'
+#ifndef FBGATE_DECLONLYMT_H
+#define FBGATE_DECLONLYMT_H
+template<typename T> struct fbg_success { typedef T type; };
+struct fbg_impl {
+    template<typename T, typename U>
+    static fbg_success<U> _S_pick(int);
+    template<typename T, typename U>
+    static fbg_success<T> _S_pick(...);
+};
+template<typename A, typename B>
+struct fbg_common : private fbg_impl {
+    using type = decltype(_S_pick<A, B>(0));
+};
+#endif
+EOF
+cat > tmp/fbgate_declonlymt_producer.cpp <<'EOF'
+#include <fbgate_declonlymt.h>
+int main() { fbg_common<int, long>::type r; (void)r; return 0; }
+EOF
+cat > tmp/fbgate_declonlymt_consumer.cpp <<'EOF'
+#include <fbgate_declonlymt.h>
+#include <cstdio>
+int main()
+{
+    using R = fbg_common<char, short>::type;	/* fbg_success<short> */
+    using V = R::type;				/* short */
+    printf("r=%zu v=%zu\n", sizeof(R), sizeof(V));
+    return 0;
+}
+EOF
+run_case declonlymt "r=1 v=2"
+
 # --- case: strbind (v12 corpus — the FIRST std:: library class bound end-to-end) ---
 #     Freeze the REAL system <string>, then bind it while compiling a consumer that
 #     default-CONSTRUCTS a std::string, ASSIGNS a C-string to it, SIZES it, and (at
@@ -844,5 +888,5 @@ fi
 rm -f "$sub_snap" "$sub_vlog"
 echo "forest_bind_gate: [subbind] OK — OWNER'S BAR: tests/testsubscript.mad freeze+bind == live == .expect (default arguments restored)"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + subbind grove headers bound (no re-parse), output == live == g++"
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + declonlymt + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + subbind grove headers bound (no re-parse), output == live == g++"
 exit 0
