@@ -1,15 +1,15 @@
 # madc — Mad-C Programming Language
 
-**My Advanced Dialect of C** — a C-like scripting language built around the **MC11-IR**: a `cir_node` AST tree that *derives from* [c2mir](https://github.com/vnmakarov/mir)'s `node_t`, so it feeds c2mir → MIR and executes in-process — no bytecode, no separate compilation step. The same tree also carries its originating tokens, so it renders back to source (`.c` / `.mc11`) and forward to other targets from one representation.
+**My Advanced Dialect of C** — a JIT compiled implementation of C/C++ (current aim is C23 / C++17)
+It can JIT-execute as well as compile and link binaries (self contained) without requiring any
+external toolchains. It can also optionally emit standard C code if you want to use an external
+C compiler.
 
-The "Mad" in Mad-C: mix functions from multiple programming languages in a single program.
+MadC _is_ C/C++ plus it (optionally) modernizes the language with support for auto-including
+the standard system headers (which are also pre-compiled and embedded into the binary), and brings
+in features and functions from other languages.
 
-> **Contributing / using an AI agent?** Start with [`AGENTS.md`](AGENTS.md)
-> — it's the canonical briefing for every agent (Claude Code, Codex CLI,
-> Gemini CLI, Copilot, Cursor, Aider, Windsurf). Rules are in
-> [`.claude/rules/`](.claude/rules/), with reasoning in
-> [`docs/rules/`](docs/rules/). Cross-agent session flow lives in
-> [`docs/agent-handoff.md`](docs/agent-handoff.md).
+The "Mad" in MadC: mix functions from multiple programming languages in a single program.
 
 ---
 
@@ -277,6 +277,15 @@ feeds them stdin and argv respectively and asserts on their output.)
 | [`AGENTS.md`](AGENTS.md) | Agent briefing — project rules, architecture, multi-tool setup |
 | [`docs/rules/`](docs/rules/) | Reasoning behind each rule in `.claude/rules/` |
 | [`CHANGELOG.md`](CHANGELOG.md) | Change history |
+
+---
+
+> **Contributing / using an AI agent?** Start with [`AGENTS.md`](AGENTS.md)
+> — it's the canonical briefing for every agent (Claude Code, Codex CLI,
+> Gemini CLI, Copilot, Cursor, Aider, Windsurf). Rules are in
+> [`.claude/rules/`](.claude/rules/), with reasoning in
+> [`docs/rules/`](docs/rules/). Cross-agent session flow lives in
+> [`docs/agent-handoff.md`](docs/agent-handoff.md).
 
 ---
 
