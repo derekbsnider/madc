@@ -1,0 +1,43 @@
+// Qualified lookup through a namespace must see its inline namespace set
+// TRANSITIVELY and WHILE THE BLOCK IS STILL OPEN ([namespace.qual]) — not
+// only after close-time mirroring. libc++'s entire body is `std::X` calls
+// inside a still-open `namespace std { inline namespace __1 {` block;
+// <cwchar>:202 ("'wcslen' is not a member of namespace 'std'") was the
+// reported casualty, six headers of include-chain away from the cause.
+#include <stdio.h>
+
+extern "C" unsigned long wcslen(const wchar_t *);
+
+// using-introduced function, qualified use, same still-open block
+namespace std { inline namespace __1 {
+using ::wcslen;
+unsigned long use_wcslen(const wchar_t *s) { return std::wcslen(s); }
+}}
+
+namespace outer {
+inline namespace v1 {
+    // defined function, qualified self-lookup, same still-open block
+    int seven() { return 7; }
+    int call_seven() { return outer::seven(); }
+    inline namespace v2 {
+        int eight() { return 8; }
+    }
+    // through TWO inline levels (transitive set), v1 still open
+    int call_eight() { return outer::eight(); }
+    const int ten = 10;
+}
+}
+
+// after close: the mirrored path still serves (control)
+int call_seven_closed() { return outer::seven(); }
+
+int main()
+{
+    printf("w=%d\n", (int)std::use_wcslen(L"abcd"));
+    printf("a=%d\n", outer::call_seven());
+    printf("b=%d\n", outer::call_eight());
+    printf("c=%d\n", call_seven_closed());
+    printf("d=%d\n", outer::ten);
+    printf("e=%d\n", ::outer::seven());
+    return 0;
+}

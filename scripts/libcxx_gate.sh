@@ -278,6 +278,28 @@ else
 	fail "re-include of libc++ wrappers: $(head -c 200 "$D/l11.err")"
 fi
 
+# --- leg 12: <cwchar> — qualified lookup inside a still-open std{__1{ -------
+# libc++'s <cwchar> calls std::wcslen from __constexpr_wcslen INSIDE the same
+# still-open `namespace std { inline namespace __1 {` block that imported it
+# ([namespace.qual]: members of N include N's inline namespace set, visible
+# immediately — not only after close-time mirroring). This header gated
+# <string_view>, <__string/char_traits.h> and <string> for the whole track.
+cat > "$D/wide.cpp" <<'EOF'
+#include <cwchar>
+#include <stdio.h>
+int main(void)
+{
+	printf("%d\n", (int)std::wcslen(L"abcd"));
+	return 0;
+}
+EOF
+got12=$(run "$MADC" -stdlib=libc++ "$D/wide.cpp" 2>"$D/l12.err")
+if [ "$got12" = "4" ]; then
+	pass "<cwchar> compiles and runs (std::X inside the open std{__1{ block)"
+else
+	fail "<cwchar>: got '$got12' $(head -c 200 "$D/l12.err")"
+fi
+
 # --- leg 6: the redefinition diagnostic survives ---------------------------
 if run "$MADC" "$D/conflict.c" >/dev/null 2>"$D/l6.err"; then
 	fail "a conflicting user typedef was accepted (diagnostic lost)"

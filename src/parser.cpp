@@ -9275,9 +9275,8 @@ bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
 	    if ( member_tb && is_contextual_identifier_token(member_tb) )
 	    {
 		std::string member = contextual_identifier_name(member_tb);
-		variable_map_iter vmi = nsi->second.find(member);
-		if ( vmi != nsi->second.end()
-		  && read_constant_integer(vmi->second, out) )
+		Variable *nsv = find_namespace_member(name, member);
+		if ( nsv && read_constant_integer(nsv, out) )
 		    return true;
 	    }
 	    tokens = saved_tokens;
@@ -18167,11 +18166,42 @@ void Program::set_namespace_preference(const std::vector<std::string> &order, To
 
 Variable *Program::find_namespace_member(const std::string &ns_name, const std::string &member_name)
 {
+    // [namespace.qual]: the members of N include the members of N's inline
+    // namespace set, TRANSITIVELY — and they are visible while the inline
+    // namespace block is still OPEN, not only after
+    // mirror_inline_namespace_into_parent() copies them up at its close.
+    // libc++'s entire body is `std::X` calls inside a still-open
+    // `namespace std { inline namespace __1 {` block, so a flat probe of
+    // N's own map fails every one of them (<cwchar>:202).
     namespace_map_t::const_iterator nsi = namespace_map.find(ns_name);
-    if ( nsi == namespace_map.end() )
+    if ( nsi != namespace_map.end() )
+    {
+	variable_map_t::const_iterator vmi = nsi->second.find(member_name);
+	if ( vmi != nsi->second.end() )
+	    return vmi->second;
+    }
+    std::map<std::string, std::vector<std::string>>::const_iterator ci =
+	inline_namespace_children.find(ns_name);
+    if ( ci == inline_namespace_children.end() )
 	return NULL;
-    variable_map_t::const_iterator vmi = nsi->second.find(member_name);
-    return vmi == nsi->second.end() ? NULL : vmi->second;
+    // Children only exist for a handful of namespaces (std, std::ranges, …);
+    // the pending vector is not on the miss-free hot path above.
+    std::vector<std::string> pending = ci->second;
+    for ( size_t pi = 0; pi < pending.size(); ++pi )
+    {
+	nsi = namespace_map.find(pending[pi]);
+	if ( nsi != namespace_map.end() )
+	{
+	    variable_map_t::const_iterator vmi = nsi->second.find(member_name);
+	    if ( vmi != nsi->second.end() )
+		return vmi->second;
+	}
+	ci = inline_namespace_children.find(pending[pi]);
+	if ( ci != inline_namespace_children.end() )
+	    for ( size_t i = 0; i < ci->second.size(); ++i )
+		pending.push_back(ci->second[i]);
+    }
+    return NULL;
 }
 
 // Char-level sibling of DelimDepth: the SAME [temp.names] rule applied to a
@@ -18239,25 +18269,13 @@ Variable *Program::find_namespace_member_in_scope_chain(
 						      const std::string &ns_name,
 						      const std::string &member_name)
 {
+    // find_namespace_member() owns the inline-namespace-set walk; this
+    // adds only the outward walk over the enclosing namespace chain.
     std::string cur = ns_name;
-    std::set<std::string> seen;
     while ( !cur.empty() )
     {
-	std::vector<std::string> pending;
-	pending.push_back(cur);
-	for ( size_t pi = 0; pi < pending.size(); ++pi )
-	{
-	    const std::string &scope = pending[pi];
-	    if ( !seen.insert(scope).second )
-		continue;
-	    if ( Variable *var = find_namespace_member(scope, member_name) )
-		return var;
-	    std::map<std::string, std::vector<std::string>>::iterator ci =
-		inline_namespace_children.find(scope);
-	    if ( ci != inline_namespace_children.end() )
-		for ( size_t i = 0; i < ci->second.size(); ++i )
-		    pending.push_back(ci->second[i]);
-	}
+	if ( Variable *var = find_namespace_member(cur, member_name) )
+	    return var;
 	size_t pos = cur.rfind("::");
 	if ( pos == std::string::npos )
 	    break;
@@ -18331,24 +18349,21 @@ Variable *Program::using_namespace_call_fallback(Variable *var, size_t argc)
 	return var;
     for ( size_t n = 0; n < active_using_namespaces.size(); ++n )
     {
-	namespace_map_t::iterator nsi =
-	    namespace_map.find(active_using_namespaces[n]);
-	if ( nsi == namespace_map.end() )
+	Variable *nsv = find_namespace_member(active_using_namespaces[n],
+					      var->name);
+	if ( !nsv || nsv == var )
 	    continue;
-	variable_map_iter vmi = nsi->second.find(var->name);
-	if ( vmi == nsi->second.end() || !vmi->second || vmi->second == var )
-	    continue;
-	FuncDef *nfd = dynamic_cast<FuncDef *>(vmi->second->type);
+	FuncDef *nfd = dynamic_cast<FuncDef *>(nsv->type);
 	if ( !nfd )
 	    continue;
 	if ( nfd->parameters.empty() && !nfd->is_void_params )
-	    return vmi->second;   // placeholder/K&R: accepts any count
+	    return nsv;   // placeholder/K&R: accepts any count
 	size_t npn = nfd->parameters.size() - (nfd->is_varargs ? 1 : 0);
 	bool nacc = nfd->is_varargs
 		  ? argc >= npn
 		  : (argc >= nfd->required_param_count() && argc <= npn);
 	if ( nacc )
-	    return vmi->second;
+	    return nsv;
     }
     return var;
 }
@@ -19958,12 +19973,10 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 			return parsePostfixChainFrom(sval,
 						     postfix_expr_variable(sval));
 	    }
-	    namespace_map_t::iterator nsi = namespace_map.find(ns_name);
-	    variable_map_iter vmi;
-	    if ( nsi == namespace_map.end()
-	      || (vmi = nsi->second.find(member)) == nsi->second.end() )
+	    Variable *nsv = find_namespace_member(ns_name, member);
+	    if ( !nsv )
 		Throw(member_tb) << "'" << member << "' is not a member of '" << ns_name << "'" << flush;
-	    TokenBase *r = new TokenVar(*vmi->second);
+	    TokenBase *r = new TokenVar(*nsv);
 	    r->file = head->file;
 	    r->line = head->line;
 	    r->column = head->column;
@@ -20833,10 +20846,8 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	}
 	else
 	{
-	    variable_map_iter vmi = nsi->second.find(member_name);
-	    if ( vmi != nsi->second.end() )
-		ns_var = vmi->second;
-	    else
+	    ns_var = find_namespace_member(aname, member_name);
+	    if ( !ns_var )
 	    {
 		std::map<std::string, void *>::iterator dli = dlopen_map.find(aname);
 		if ( dli != dlopen_map.end() )
@@ -26789,8 +26800,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    }
 			}
 		    }
-		    variable_map_iter vmi = nsi->second.find(member_name);
-		    if ( vmi == nsi->second.end() )
+		    Variable *ns_member = find_namespace_member(ns_name,
+								 member_name);
+		    if ( !ns_member )
 		    {
 			// try dlsym fallback if this namespace was loaded via #load
 			std::map<std::string, void *>::iterator dli = dlopen_map.find(ns_name);
@@ -26818,7 +26830,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			DBG(cout << "parseExpression() dlsym resolved " << ns_name << "::" << member_name << " at " << (uint64_t)sym << endl);
 		    }
 		    else
-			var = vmi->second;
+			var = ns_member;
 		// Cross-namespace seed clash: namespace_map[ns][name] can hold a
 		// placeholder seed from a DIFFERENT namespace (observed: qualified
 		// std::get resolving to the std::ranges::get niebloid seed). When the
@@ -29771,12 +29783,11 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    Throw(member_tb ? member_tb : name_tb)
 				<< "Expecting identifier after namespace '::'" << flush;
 			std::string member_name = contextual_identifier_name(member_tb);
-			variable_map_iter vmi = nsi->second.find(member_name);
-			if ( vmi == nsi->second.end() )
+			var = find_namespace_member(gname, member_name);
+			if ( !var )
 			    Throw(member_tb) << "'" << member_name
 					     << "' is not a member of namespace '"
 					     << gname << "'" << flush;
-			var = vmi->second;
 			tb = member_tb;
 		    }
 		    else
@@ -30456,13 +30467,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	}
 	else
 	{
-	    namespace_map_t::iterator nsi = pgm.namespace_map.find(source_ns);
-	    if ( nsi != pgm.namespace_map.end() )
-	    {
-		variable_map_iter vmi = nsi->second.find(name);
-		if ( vmi != nsi->second.end() )
-		    v = vmi->second;
-	    }
+	    v = pgm.find_namespace_member(source_ns, name);
 	    nti = pgm.namespace_datatype_map.find(source_ns);
 	    if ( nti != pgm.namespace_datatype_map.end() )
 		ns_dti = nti->find(name);
@@ -30640,14 +30645,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	std::string ns_name = resolve_source_namespace(requested_ns_name);
 	if ( ns_name.empty() )
 	    pgm.Throw(tn) << "Unknown namespace '" << requested_ns_name << "'" << flush;
-	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
-	variable_map_iter vmi;
-	bool have_var = false;
-	if ( nsi != pgm.namespace_map.end() )
-	{
-	    vmi = nsi->second.find(member_name);
-	    have_var = vmi != nsi->second.end();
-	}
+	Variable *use_var = pgm.find_namespace_member(ns_name, member_name);
+	bool have_var = use_var != NULL;
 	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(ns_name);
 	datatype_map_iter dti;
 	bool have_type = false;
@@ -30678,7 +30677,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		pgm.pack_tap_name(pgm.current_namespace() + "::" + name,
 				  Program::pdkVariable);	// B4a tap
 		pgm.namespace_variables_for_write(
-		    pgm.current_namespace())[name] = vmi->second;
+		    pgm.current_namespace())[name] = use_var;
 	    }
 	    if ( have_type )
 	    {
@@ -30689,7 +30688,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	else
 	{
 	    if ( have_var && !pgm.findVariable(name) )
-		import_namespace_member(name, vmi->second);
+		import_namespace_member(name, use_var);
 	    if ( have_type )
 		import_namespace_type(name, dti->second);
 	}
@@ -40512,13 +40511,10 @@ static bool skipped_template_body_returns_inline_addressof(
 	std::string ns_name = pgm.current_namespace();
 	if ( parts.size() > 1 )
 	    ns_name = join_scope_parts(parts, parts.size() - 1);
-	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
-	if ( nsi == pgm.namespace_map.end() )
+	Variable *cv = pgm.find_namespace_member(ns_name, callee);
+	if ( !cv )
 	    continue;
-	variable_map_iter vi = nsi->second.find(callee);
-	if ( vi == nsi->second.end() || !vi->second )
-	    continue;
-	FuncDef *fd = dynamic_cast<FuncDef *>(vi->second->type);
+	FuncDef *fd = dynamic_cast<FuncDef *>(cv->type);
 	if ( fd && fd->inline_builtin_kind == "addressof" )
 	    return true;
     }

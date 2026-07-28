@@ -759,6 +759,43 @@ exactly that and I read "the chain works" out of it. Probe a declaration with
 Nothing here is libc++-specific machinery — it is madc's own include and
 registration state, which is the pattern this whole track keeps producing.
 
+### cwchar:202 — ROOT CAUSE FOUND AND FIXED (2026-07-28)
+
+**The defect was never about `using`, wide chars, or libc++.** Qualified
+lookup `N::m` probed only N's own variable map; members of N's **inline
+namespace set** were invisible until `mirror_inline_namespace_into_parent()`
+copied them up at the namespace's CLOSE ([namespace.qual] says they are
+members immediately). libc++'s entire body is `std::X` calls inside a
+still-open `namespace std { inline namespace __1 {` block, so the first
+qualified use of anything in the block — `std::wcslen` inside
+`__constexpr_wcslen`, six headers away from where the damage was reported —
+failed.
+
+**Why six synthetic reducers missed it:** every hand-built approximation
+placed the qualified use after the block's close (shape H), unqualified
+(shape F), or qualified through `std::__1::` (shape G) — all of which work.
+The failing shape needs the use INSIDE the same still-open block (shapes
+C/I/L; types are served by a different path and never failed, K). What
+found it: bisecting the real `madc -E` output of `#include <cwchar>` (2893
+lines → 22) instead of rebuilding from guesses — the KG note "the
+assembled-from-parts approach has now failed six times" was the right
+directive.
+
+Fixed in `find_namespace_member()` — the owner of "member of N" — as a
+lookup-time walk of the inline set (allocation-free when N has no inline
+children); nine flat-probe consumer sites adopted it and the scope-chain
+walker's duplicate BFS was deleted. Gates: `tests/testinlinensopen.mad`
+(madc == g++ == clang++ byte-identical) and `libcxx_gate` leg 12
+(`<cwchar>` compiles and runs against the real header).
+
+**Frontier after the fix:** `<cwchar>`, `<cwctype>`, `<cctype>`,
+`<__string/char_traits.h>` all compile and run under `-stdlib=libc++`.
+`<string_view>` stops at `__exception/operations.h:29` — `using
+terminate_handler = void (*)();`, a using-alias to a FUNCTION-POINTER type
+madc's alias parser does not accept (KG
+`Gap{using_alias_function_pointer_type}`). `<string>` stops at the
+already-queued `math.h:414` `std::__math` nested-namespace qualifier.
+
 ### The worklist as first written (2026-07-27, verified by reducer at HEAD)
 
 1. **`(T)X::y` — cast with a qualified-name operand — fails to parse.** Highest
