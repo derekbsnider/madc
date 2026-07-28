@@ -23030,31 +23030,79 @@ class ClassPatternNormalizer
 	    pattern.types[base].kind = Program::ClassTypePatternKind::TemplateId;
 	    std::vector<TokenBase *> head(tokens.begin(), tokens.begin() + open);
 	    pattern.types[base].name = class_pattern_tokens_spelling(head);
-	    std::vector<TokenBase *> arg;
-		int depth = 0;
-		for ( size_t i = open + 1; i < tokens.size(); ++i )
+	    // Structural representability gate: a bare TemplateId replays at
+	    // materialization with owner=NULL under a DIFFERENT class stack, so
+	    // a head that resolves only as a MEMBER alias of some class (cond2
+	    // inside doer — the __cond_t shape) is capture-time context the
+	    // resolver cannot reproduce. Reject the pattern; the token-parser
+	    // lane owns member-alias lookup ([basic.lookup.unqual], layer 1).
+	    if ( pattern.types[base].name.find("::") == std::string::npos )
+	    {
+		const Program::TemplateAliasDef *head_alias =
+		    pgm.find_template_alias(pattern.types[base].name,
+					    std::string(), NULL);
+		bool member_alias_head = head_alias && head_alias->owner_class;
+		bool free_head = (head_alias && !head_alias->owner_class)
+		    || pgm.find_template(pattern.types[base].name,
+					 std::string(), NULL);
+		if ( member_alias_head || !free_head )
 		{
-		    TokenID id = tokens[i]->id();
-		    bool close = id == TokenID::tkGT && depth == 0;
-		if ( close || (id == TokenID::tkComma && depth == 0) )
+		    fail(Program::ClassParseReason::UnnormalizableType);
+		    return base;
+		}
+	    }
+	    // Argument split on the shared tracker (delimiter-tracking.md).
+	    // The hand-rolled ++depth/--depth walk this replaces treated the
+	    // merged '>>' token (tkBSR closes TWO angle levels) as an ordinary
+	    // token: it was pushed INTO the pending argument, the head's close
+	    // was never seen, and `decay2<cond2<T1,T2>>` captured with ZERO
+	    // arguments — the resolver then replayed `decay2<>`. When one of
+	    // tkBSR's closes belongs to a nested argument list, the swallowed
+	    // '>' is materialized back so the recursive normalize sees a
+	    // balanced argument.
+	    DelimDepth ad;
+	    delim_scan_step(tokens, open, ad);	// the head's '<' — ad.angle == 1
+	    std::vector<TokenBase *> arg;
+	    for ( size_t i = open + 1; i < tokens.size(); )
+	    {
+		TokenBase *t = tokens[i];
+		size_t before_angle = ad.angle;
+		size_t n = delim_scan_step(tokens, i, ad);
+		if ( !n )
+		    n = 1;
+		if ( !ad.angle )		// this step closed the head's list
+		{
+		    if ( t->id() == TokenID::tkBSR && before_angle >= 2 )
+			arg.push_back(new TokenGT());
+		    if ( !arg.empty() )
+		    {
+			// normalize_token_type recurses into append_type() and
+			// can REALLOCATE pattern.types — resolve it into a
+			// local BEFORE indexing types[base] (C++11 leaves the
+			// order of the index and the call unspecified).
+			Program::ClassTypePatternId argument =
+			    normalize_token_type(arg);
+			pattern.types[base].arguments.push_back(argument);
+		    }
+		    break;
+		}
+		if ( t->id() == TokenID::tkComma && ad.angle == 1
+		  && !ad.paren && !ad.square && !ad.brace )
 		{
 		    if ( !arg.empty() )
 		    {
 			Program::ClassTypePatternId argument =
 			    normalize_token_type(arg);
 			pattern.types[base].arguments.push_back(argument);
-		    }
 			arg.clear();
-			if ( close )
-			    break;
-			continue;
 		    }
-		    if ( id == TokenID::tkLT )
-			++depth;
-		    else if ( id == TokenID::tkGT && depth > 0 )
-			--depth;
-		    arg.push_back(tokens[i]);
+		    i += n;
+		    continue;
 		}
+		for ( size_t k = 0; k < n && i + k < tokens.size(); ++k )
+		    arg.push_back(tokens[i + k]);
+		i += n;
+	    }
 	    }
 	}
 

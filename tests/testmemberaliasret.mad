@@ -1,0 +1,44 @@
+// Member alias template referenced from a member-template's RETURN TYPE —
+// the std::common_type keystone shape ([basic.lookup.unqual] in a member
+// context: an unqualified alias-template name inside the return-type range
+// resolves against the owner class tree — including a PRIVATE base — before
+// namespace scope). Mirrors GCC 13 type_traits __do_common_type_impl:
+//   - cond2   = member alias template of the privately-inherited base
+//               (body: decltype of a ternary over declval — unevaluated)
+//   - _S_test = member-template OVERLOAD SET ((int) + (...)), explicit args
+//   - impl    = primary with defaulted params referencing earlier params
+//               + a repeated-param partial spec <T1,T2,T1,T2>
+//   - ct      = derives from the dependent member type impl<...>::type
+// Oracle: g++ 13 and clang++-18 both print 8 8.
+#include <utility>
+#include <type_traits>
+#include <cstdio>
+template<class T> struct success { using type = T; };
+struct failure {};
+template<class T> using decay2 = typename std::decay<T>::type;
+struct doer {
+    template<class A, class B>
+    using cond2 = decltype(true ? std::declval<A>() : std::declval<B>());
+    template<class A, class B>
+    static success<decay2<cond2<A, B>>> _S_test(int);
+    template<class, class>
+    static failure _S_test_2(...);
+    template<class A, class B>
+    static decltype(_S_test_2<A, B>(0)) _S_test(...);
+};
+template<class T1, class T2> struct ct;
+template<class T1, class T2, class D1 = decay2<T1>, class D2 = decay2<T2>>
+struct impl {
+    using type = ct<D1, D2>;
+};
+template<class T1, class T2>
+struct impl<T1, T2, T1, T2> : private doer {
+    using type = decltype(_S_test<T1, T2>(0));
+};
+template<class T1, class T2>
+struct ct : public impl<T1, T2>::type { };
+int main() {
+    using R = ct<long long, long long>::type;
+    printf("%d\n", (int)sizeof(R));
+    return 0;
+}
