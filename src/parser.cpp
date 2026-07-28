@@ -15537,9 +15537,15 @@ void Program::populate_builtin_registry()
     builtin_registry.add_process_function("__errno_location", datatype_vec_t{ptr_of(ddINT32)}, (fVOIDFUNC)__errno_location);
 #endif
 
-    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlopen);
-    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{DataType::dtINT64, DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlsym);
-    builtin_registry.add_dlfcn_function("dlclose", datatype_vec_t{DataType::dtVOID, DataType::dtINT64}, (fVOIDFUNC)madc_dlclose);
+    // Declared with the real POSIX pointer types (handles and dlsym's return
+    // are void*) — the wrappers already cast internally, and the old dtINT64
+    // declarations survived a real <dlfcn.h> re-declaration half-applied
+    // (return refreshed, params kept), emitting `void *dlsym(long, char *)` —
+    // a hybrid prototype nothing anywhere declares, and a c2mir pointer/int
+    // warning on every dlsym(RTLD_DEFAULT, ...) call.
+    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlopen);
+    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlsym);
+    builtin_registry.add_dlfcn_function("dlclose", datatype_vec_t{DataType::dtVOID, ptr_of(ddVOID)}, (fVOIDFUNC)madc_dlclose);
     builtin_registry.add_dlfcn_function("dlcall", datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)NULL);
 
     builtin_registry.defaults_loaded = true;

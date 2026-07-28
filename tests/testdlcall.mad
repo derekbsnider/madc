@@ -5,8 +5,8 @@ using namespace std;
 int main()
 {
     string libname = "libc.so.6";
-    long handle;
-    long fn;
+    void *handle;
+    void *fn;
     int result;
 
     // dlopen
