@@ -6592,7 +6592,23 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	++_class_inst_opaque;
 	return instantiate_opaque_template_use(td, tname, tb);
 	}
-    if ( td.has_non_type_params && td.body.empty() && !try_spec_real_inst )
+    // A body-less PRIMARY whose registered PARTIAL SPECS carry the bodies
+    // (libc++'s `__underlying_type_impl<_Tp, bool>` — declared only, both
+    // bodies in the <_Tp,false>/<_Tp,true> specs) must reach the
+    // partial-spec match below even without the member-chain
+    // real-instantiation flags — the spec swap is what materializes
+    // `::type`. No matching spec still falls back to the opaque
+    // placeholder downstream. Scope: only OUTSIDE a class body and outside
+    // a dependent pattern parse — inside those, the args can reference the
+    // enclosing template's parameters (`__select<sizeof(_Tp), _UInts>` in
+    // libstdc++'s __make_unsigned_selector) and the real lane's eager arg
+    // resolution desyncs where the opaque lane tolerated the tokens; those
+    // uses keep the opaque route exactly as before.
+    bool spec_may_serve = partial_entry && partial_entry->find(td.owner_class)
+		       && class_scope_stack.empty()
+		       && !dependent_parse_in_progress;
+    if ( td.has_non_type_params && td.body.empty() && !try_spec_real_inst
+      && !spec_may_serve )
 	{
 	++_class_inst_opaque;
 	return instantiate_opaque_template_use(td, tname, tb);
@@ -8557,6 +8573,48 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	tdt->line = tb->line;
 	tdt->column = tb->column;
 	return tdt;
+    }
+    // `__underlying_type(E)` — the type-yielding intrinsic BOTH standard
+    // libraries build std::underlying_type on (libstdc++'s typedef and
+    // libc++'s __underlying_type_impl<_Tp, true>). Answered from the
+    // DataDefENUM's recorded underlying type (declared fixed base, or the
+    // canon range rule computed at the definition's close).
+    if ( tname == "__underlying_type" )
+    {
+	if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	    return NULL;
+	nextToken(); // consume '('
+	TokenBase *op_tb = nextToken();
+	if ( !op_tb )
+	    Throw(tb) << "Expecting a type in __underlying_type(...)" << flush;
+	TokenDataType *op = resolve_declared_type_token(op_tb, true,
+							allow_lazy_types);
+	TokenBase *close = nextToken();
+	if ( !close || close->id() != TokenID::tkClBrk )
+	    Throw(close ? close : tb)
+		<< "Expecting ')' after __underlying_type(...)" << flush;
+	if ( !op )
+	    Throw(tb) << "Could not resolve the __underlying_type(...) operand"
+		      << flush;
+	DataDef *odd = &op->definition;
+	if ( DataDefENUM *edd = dynamic_cast<DataDefENUM *>(odd) )
+	{
+	    DataDef *u = edd->underlying ? edd->underlying
+					 : static_cast<DataDef *>(&ddINT32);
+	    TokenDataType *tdt = new TokenDataType(u->name.c_str(), *u);
+	    tdt->file = tb->file;
+	    tdt->line = tb->line;
+	    tdt->column = tb->column;
+	    return tdt;
+	}
+	// A still-DEPENDENT operand (an opaque dependent-surface shell):
+	// defer by returning the operand — the concrete instantiation's
+	// re-parse resolves it against the real enum. A concrete non-enum
+	// is an error, as both canons report.
+	if ( odd->type() == DataType::dtRESERVED )
+	    return op;
+	Throw(tb) << "__underlying_type applied to non-enumeration type '"
+		  << odd->name << "'" << flush;
     }
 
     if ( peekToken() && peekToken()->id() == TokenID::tkLT )
@@ -37723,14 +37781,23 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	pgm.nextToken(); // consume tag name
     }
 
-    // optional underlying type: `enum class Tag : int { ... }`. We lower a
-    // scoped enum to a plain C enum / int (I2), so the underlying type only
-    // affects storage width; parse and discard the type tokens here.
+    // optional underlying type: `enum class Tag : int { ... }`. The enum's
+    // storage still lowers to a plain C enum / int (I2); the base is
+    // RESOLVED and RECORDED so __underlying_type / std::underlying_type
+    // answer the declared type (libc++ __atomic/memory_order.h pins
+    // `enum class memory_order : __memory_order_underlying_t` on it).
+    DataDef *fixed_base = NULL;
     tn = pgm.peekToken();
     if ( tn && tn->id() == TokenID::tkTerC )
     {
 	pgm.nextToken(); // consume ':'
-	// skip the underlying-type tokens up to '{'
+	TokenBase *base_tb = pgm.nextToken();
+	TokenDataType *base_tdt = base_tb
+	    ? pgm.resolve_declared_type_token(base_tb, true, true) : NULL;
+	if ( base_tdt )
+	    fixed_base = &base_tdt->definition;
+	// tolerate anything the resolver left (multi-token spellings the
+	// resolver consumed already; this only drains stragglers)
 	while ( (tn = pgm.peekToken())
 	     && tn->id() != TokenID::tkOpBrc
 	     && tn->id() != TokenID::tkSemi )
@@ -37750,7 +37817,9 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	{
 	    if ( pgm.datatype_map.find(enum_tag) == pgm.datatype_map.end() )
 	    {
-		DataDef *enum_dd = new DataDefENUM(enum_tag);
+		DataDefENUM *opaque_enum_dd = new DataDefENUM(enum_tag);
+		opaque_enum_dd->underlying = fixed_base;
+		DataDef *enum_dd = opaque_enum_dd;
 		if ( !pgm.class_scope_stack.empty() )
 		{
 		    DataDefCLASS *owner = pgm.class_scope_stack.back();
@@ -37801,7 +37870,9 @@ TokenBase *TokenENUM::parse(Program &pgm)
     DataDef *enum_dd = NULL;
     if ( !enum_tag.empty() && (scoped || !pgm.is_c_mode()) )
     {
-	enum_dd = new DataDefENUM(enum_tag);
+	DataDefENUM *def_enum_dd = new DataDefENUM(enum_tag);
+	def_enum_dd->underlying = fixed_base;
+	enum_dd = def_enum_dd;
 	if ( !pgm.class_scope_stack.empty() )
 	{
 	    DataDefCLASS *owner = pgm.class_scope_stack.back();
@@ -37837,6 +37908,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	? &pgm.namespace_variables_for_write(scoped_ns_key) : NULL;
 
     int64_t val = 0;
+    int64_t enum_min_val = 0, enum_max_val = 0;
     while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
 	if ( tn->id() == TokenID::tkComma ) { pgm.nextToken(); continue; }
@@ -37898,12 +37970,37 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    }
 	    DBG(std::cout << "TokenENUM::parse() " << name << " = " << val << std::endl);
 	}
+	if ( val < enum_min_val )
+	    enum_min_val = val;
+	if ( val > enum_max_val )
+	    enum_max_val = val;
 	val++;
     }
 
     if ( !tn )
 	pgm.Throw << "Unterminated enum" << flush;
     pgm.nextToken(); // consume '}'
+
+    // [dcl.enum] underlying type for an UNFIXED enum, the canon g++/clang
+    // rule (verified against both, 2026-07-28): scoped -> int; unscoped with
+    // a negative enumerator -> int (long if it does not fit); all
+    // non-negative -> unsigned int (unsigned long if it does not fit).
+    if ( DataDefENUM *under_edd = dynamic_cast<DataDefENUM *>(enum_dd) )
+	if ( !under_edd->underlying )
+	{
+	    if ( scoped )
+		under_edd->underlying = &ddINT32;
+	    else if ( enum_min_val < 0 )
+		under_edd->underlying =
+		    (enum_min_val >= INT32_MIN && enum_max_val <= INT32_MAX)
+		    ? static_cast<DataDef *>(&ddINT32)
+		    : static_cast<DataDef *>(&ddINT64);
+	    else
+		under_edd->underlying =
+		    (enum_max_val <= (int64_t)UINT32_MAX)
+		    ? static_cast<DataDef *>(&ddUINT32)
+		    : static_cast<DataDef *>(&ddUINT64);
+	}
 
     // consume optional semicolon
     if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )

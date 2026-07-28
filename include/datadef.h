@@ -1320,6 +1320,17 @@ class DataDefENUM : public DataDef
 {
 public:
     std::string enum_name;
+    // The enumeration's underlying type ([dcl.enum]): the declared fixed
+    // base (`enum E : short`) when present, else computed from the
+    // enumerator range at the definition's close (the canon g++/clang
+    // rule: non-negative -> unsigned int, negatives -> int, wider values
+    // -> the 64-bit twin; scoped unfixed -> int). NULL only for an opaque
+    // declaration — readers fall back to int. Serves __underlying_type,
+    // which both libstdc++'s and libc++'s std::underlying_type are built
+    // on. NOTE the enum's own storage still LOWERS to int (I2); a fixed
+    // base narrower than int changes only what __underlying_type answers,
+    // not (yet) the enum's layout.
+    DataDef *underlying = NULL;
 
     DataDefENUM(const std::string &name)
 	: DataDef(name, sizeof(int), DataType::dtINT), enum_name(name) {}

@@ -1,0 +1,23 @@
+// A DECLARATION-ONLY primary template whose partial specializations carry
+// the bodies (libc++'s __underlying_type_impl<_Tp, bool>, and every
+// impl-selector trait shaped like it). The body-less-primary opaque bail
+// must defer to partial-spec matching in EVERY lane — the spec swap is
+// what materializes ::type.
+#include <stdio.h>
+
+template <class T, bool B> struct impl;
+template <class T> struct impl<T, false> { typedef char type; };
+template <class T> struct impl<T, true> { typedef T type; };
+
+using D1 = impl<int, true>::type;      // literal bool arg
+using D2 = impl<int, false>::type;
+
+template <class T> struct tr { static const bool value = sizeof(T) >= 4; };
+using D3 = impl<long, tr<long>::value>::type;   // trait-member bool arg
+
+int main()
+{
+	D1 a = 0; D2 b = 0; D3 c = 0;
+	printf("%zu %zu %zu\n", sizeof(a), sizeof(b), sizeof(c));
+	return 0;
+}

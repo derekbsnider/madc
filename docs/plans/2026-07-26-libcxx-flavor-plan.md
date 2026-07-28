@@ -796,6 +796,49 @@ madc's alias parser does not accept (KG
 `Gap{using_alias_function_pointer_type}`). `<string>` stops at the
 already-queued `math.h:414` `std::__math` nested-namespace qualifier.
 
+### The 2026-07-28 burn-down — nine defects, one session, all core C++
+
+After the cwchar fix (above), the frontier fell in a chain, every defect a
+gap in madc's own generic machinery (none libc++-specific), every fix
+gated by an oracle-verified test:
+
+| # | Defect | Fix | Gate |
+|---|---|---|---|
+| 1 | qualified lookup blind to the inline set while the block is OPEN | `find_namespace_member` owns the walk; 9 consumers adopted | testinlinensopen + gate leg 12 |
+| 2 | `using X = void (*)();` rejected | abstract twin of typedef Form 2, same parseFnPtrParams owner | testusingaliasfnptr |
+| 3 | `std::__math` unknown (nested ns in inline set) | `canonical_nested_namespace` + path fold, 4 resolvers adopted | testnestedinlinens |
+| 4 | `<string>` stack-overflow SIGSEGV (allocator CRTP base-arg self-reference) | ONE in-flight registry, both lanes, both cache regimes | testcrtpbasearg + gate leg 13 |
+| 5 | `nullopt_t::__secret_tag{}` "not a static member" | nested-TYPE construction arm in the shared resolver | testnestedtagctor |
+| 6 | braced ctor lists dropped args after the first (ANY class!) | [dcl.init.list]/3: non-empty braced list of a ctor-ful class routes to ctor selection | testbracedctor |
+| 7 | no `__underlying_type` intrinsic; enum fixed base DISCARDED | DataDefENUM.underlying + canon range rule + the intrinsic (decltype model) | testunderlyingtype |
+| 8 | decl-only primary + partial specs never real-instantiate | `spec_may_serve` defers the opaque bail (scoped: outside class bodies / dependent parses) | testdeclonlyspec |
+
+Suite grew 776 → 784 along the way, zero failures throughout, every fix
+matching g++ AND clang++ byte-for-byte on its reducer.
+
+**Frontier after all of it:** `<cwchar>` `<cctype>` `<cwctype>`
+`<__string/char_traits.h>` `<optional>`'s nullopt line, and
+`__atomic/memory_order.h` all compile under `-stdlib=libc++`. BOTH
+`<string_view>` and `<string>` now stop at ONE defect:
+`Gap{common_type_dependent_member_key_explosion}` — `<chrono>` duration
+arithmetic instantiates `common_type` with UNRESOLVED
+`common_type<...>::type` member-type arguments; the spellings become
+instantiation keys and compound exponentially until the MADC_MEM_LIMIT
+guard trips (loud, names the knob — the guard did its job at 4G and 12G).
+The `::type` in template-ARG position must resolve to its concrete target
+before keying. Same dependent-member-type family as the
+`std::is_destructible` item — this IS the tsubst burn-down the plan
+predicted at step 3, now with a precise reproducer
+(`MADC_MTI_PROBE_CLASS=_` shows the compounding key).
+
+Known remainders recorded on the way (KG): plain empty nested
+`struct tag {};` doesn't register in the class type-alias surface
+(nested_tag family); `&A::B::c` address-of has no nested-namespace
+descent; class-scope member aliases over decl-only-primary specs keep the
+opaque route (the #8 scoping); enum STORAGE still lowers to int (a fixed
+base narrower than int changes only what `__underlying_type` answers, not
+layout).
+
 ### The worklist as first written (2026-07-27, verified by reducer at HEAD)
 
 1. **`(T)X::y` — cast with a qualified-name operand — fails to parse.** Highest
