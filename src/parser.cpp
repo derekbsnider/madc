@@ -20717,6 +20717,41 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	    Throw(member_tb ? member_tb : addr_tb)
 		<< "Expecting identifier after '" << aname << "::'" << flush;
 	std::string member_name = contextual_identifier_name(member_tb);
+	// `&ns::Tmpl<args>::member` — a TEMPLATE-ID between the namespace and the
+	// member, which is how a facet's id is spelled (`&std::numpunct<char>::id`).
+	// The value side already resolves this shape (parsePostfixChain's `::`
+	// block); the address side took the identifier after `::` as the MEMBER,
+	// so `numpunct` became the member name and `<char>::id` was never looked
+	// at — reporting "use of undeclared identifier 'id'", which names the
+	// wrong thing entirely. Same instantiation entry point as that arm: a
+	// second CALLER, not a second implementation. The instantiated class then
+	// falls into the class-qualifier branch below UNCHANGED, so the storage
+	// lookup and the "declared but never defined" diagnostic stay in one place.
+	if ( !aclass && peekToken() && peekToken()->id() == TokenID::tkLT
+	  && template_declared_in_namespace(member_name, aname) )
+	{
+	    if ( TokenDataType *inst =
+		    instantiate_template_id(member_name, member_tb, aname) )
+		if ( DataDefCLASS *icls =
+			dynamic_cast<DataDefCLASS *>(&inst->definition) )
+		{
+		    // instantiate_template_id consumes through the closing `>`
+		    // (the value-side arm relies on the same contract), so `::`
+		    // is next.
+		    TokenBase *ns_tok = nextToken();
+		    if ( !ns_tok || ns_tok->id() != TokenID::tkNS )
+			Throw(ns_tok ? ns_tok : member_tb)
+			    << "Expecting '::' after '" << aname << "::"
+			    << member_name << "<...>'" << flush;
+		    member_tb = nextToken();
+		    if ( !member_tb || !is_contextual_identifier_token(member_tb) )
+			Throw(member_tb ? member_tb : ns_tok)
+			    << "Expecting identifier after '" << aname << "::"
+			    << member_name << "<...>::'" << flush;
+		    member_name = contextual_identifier_name(member_tb);
+		    aclass = icls;
+		}
+	}
 	Variable *ns_var = NULL;
 	if ( aclass )
 	{

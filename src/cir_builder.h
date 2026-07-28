@@ -711,6 +711,10 @@ public:
 	// asm-label emits the labeled symbol directly. Non-aliased variables return
 	// their own name.
 	std::string var_emit_name(const class Variable &v) const;
+	// Record a file-scope reference so pass 0.78 emits its extern decl.
+	// THE one owner: every path that reads a global BY NAME must call it,
+	// or the emitted C references an identifier c2mir never saw.
+	void note_global_reference(const class Variable &v);
 	std::string func_emit_name(const class Variable &v, class FuncDef *fd) const;
 	// THE single source of truth for the C symbol a CALL references. Precedence:
 	// an external ABI bind (emit_symbol, madc emits no body) wins; then a

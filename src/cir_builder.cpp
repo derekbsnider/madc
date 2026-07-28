@@ -283,6 +283,33 @@ std::string CirBuilder::var_emit_name(const Variable &v) const
 	return v.storage_alias_name;
 }
 
+// Record a file-scope reference so pass 0.78 can emit `extern <type> name;`.
+//
+// Two shapes reach here and they need OPPOSITE treatment, which is why this is
+// one function rather than a check copied per call site:
+//  - unaliased global (stderr/stdout/stdin, lazily registered and never in
+//    top_decls): record under its own name;
+//  - alias to a LOCALLY DEFINED variable (`b __attribute__((alias("a")))`):
+//    record NOTHING — the emitted name is `a`, which is defined here, and
+//    recording `b` would re-introduce an undefined import;
+//  - alias to an EXTERNAL symbol (a system-header class static bound to its
+//    real Itanium name, `std::numpunct<char>::id` ->
+//    _ZNSt7__cxx118numpunctIcE2idE): record under the EMITTED name, because
+//    nothing in this TU defines it and without a decl the reference is an
+//    undeclared identifier.
+// vfEXTERN separates the last two: it survives only when no definition in this
+// TU ever completed the declaration.
+void CirBuilder::note_global_reference(const Variable &v)
+{
+	if (v.flags & (vfLOCAL | vfPARAM))
+		return;
+	std::string en = var_emit_name(v);
+	if (en == v.name)
+		referenced_globals[v.name] = const_cast<Variable *>(&v);
+	else if (v.flags & vfEXTERN)
+		referenced_globals[en] = const_cast<Variable *>(&v);
+}
+
 // THE single source of truth for the C symbol a call references. Precedence:
 //   1. emit_symbol     — bound to an EXTERNAL ABI symbol; madc emits no body.
 //   2. local_emit_name — a madc-emitted body's non-default symbol (a hoisted
@@ -15382,14 +15409,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// translate_module can emit extern decls for libc globals
 			// (stderr/stdout/stdin) that were registered lazily and never
 			// reached top_decls. Locals/params already have in-scope decls.
-			if (!(tv->var.flags & vfLOCAL) && !(tv->var.flags & vfPARAM)) {
-				// An aliased global (`b __attribute__((alias("a")))`) emits
-				// the TARGET's symbol, so record the target under its own name
-				// — recording `b` would re-introduce the undefined import.
-				std::string en = var_emit_name(tv->var);
-				if (en == tv->var.name)
-					referenced_globals[tv->var.name] = &tv->var;
-			}
+			note_global_reference(tv->var);
 			// A numeric reference parameter (`int &x`) is lowered to a
 			// pointer parameter (`int *x`) by the parser, with vfREFERENCE
 			// set for auto-deref. Every value use of the reference reads
@@ -15486,6 +15506,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// vfREFERENCE): the variable's stored VALUE is already the
 			// referent's address, so &ref is just that value — NOT
 			// N_ADDR(slot) (which would yield a T**). (C++ reference semantics.)
+			// Taking a global's ADDRESS reads it by name just as a
+			// value use does, so it owes the same extern decl. This
+			// path emitted the name without recording it, so
+			// `&std::numpunct<char>::id` produced a reference to
+			// _ZNSt7__cxx118numpunctIcE2idE that nothing declared.
+			note_global_reference(ta->var);
 			if (ta->var.is_reference())
 				return id(var_emit_name(ta->var).c_str(), tb);
 			return node1(N_ADDR, id(var_emit_name(ta->var).c_str(), tb), tb);
