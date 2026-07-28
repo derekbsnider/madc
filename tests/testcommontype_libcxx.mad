@@ -1,0 +1,26 @@
+// std::common_type<A,B>::type resolves to the real common type — the keystone
+// the <chrono> duration machinery (and thereby libc++ <string_view>/<string>)
+// instantiates recursively. Resolving it requires the whole chain:
+//   - unqualified member-alias-template lookup from a member-template's
+//     return-type range through a PRIVATE base ([basic.lookup.unqual] —
+//     __cond_t inside __do_common_type_impl, GCC 13 type_traits:2263)
+//   - defaulted params referencing earlier params (__decay_t<_Tp1>)
+//   - the repeated-param partial spec __common_type_impl<T,U,T,U>
+//   - decltype over a member-template overload set (_S_test<T,U>(0))
+//   - the dependent member-type base common_type<...> : __common_type_impl<...>::type
+// Before the fix the unresolved spelling became the instantiation key and
+// compounded exponentially (26MB of probe log on libc++ <string_view>).
+// Oracle: g++ 13 and clang++-18 print identical output.
+#include <type_traits>
+#include <cstdio>
+int main() {
+    using CT = std::common_type<long long, long long>::type;
+    CT x = 5;
+    std::common_type<long long, long long>::type y = 7;
+    std::common_type<int, int>::type z = 9;
+    printf("%d %d %d %d %d %d\n",
+	   (int)x, (int)sizeof(x),
+	   (int)y, (int)sizeof(y),
+	   (int)z, (int)sizeof(z));
+    return 0;
+}

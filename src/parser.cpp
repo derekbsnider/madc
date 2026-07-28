@@ -45427,6 +45427,39 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	if ( di != fn_template_decl_map.end() )
 	    for ( FnTemplateDef &c : *di ) cands.push_back(&c);
     }
+    // [namespace.qual]: members of N include N's inline namespace set — a
+    // qualified key (`std::__declval`) must also probe the inline children
+    // transitively (`std::__1::__declval`, where libc++ actually declares
+    // it). Same walk find_template_alias's qualified branch does over its
+    // own registry; each registry owns its copy today.
+    if ( cands.empty() )
+    {
+	size_t sep = key.rfind("::");
+	if ( sep != std::string::npos )
+	{
+	    std::string base_name = key.substr(sep + 2);
+	    std::map<std::string, std::vector<std::string>>::iterator ci =
+		inline_namespace_children.find(key.substr(0, sep));
+	    std::vector<std::string> pending =
+		ci == inline_namespace_children.end()
+		? std::vector<std::string>() : ci->second;
+	    for ( size_t pi = 0; pi < pending.size() && cands.empty(); ++pi )
+	    {
+		std::string child_key = pending[pi] + "::" + base_name;
+		std::vector<FnTemplateDef> *cmi = fn_template_map.find(child_key);
+		if ( cmi != fn_template_map.end() )
+		    for ( FnTemplateDef &c : *cmi ) cands.push_back(&c);
+		std::vector<FnTemplateDef> *cdi =
+		    fn_template_decl_map.find(child_key);
+		if ( cdi != fn_template_decl_map.end() )
+		    for ( FnTemplateDef &c : *cdi ) cands.push_back(&c);
+		ci = inline_namespace_children.find(pending[pi]);
+		if ( ci != inline_namespace_children.end() )
+		    for ( size_t k = 0; k < ci->second.size(); ++k )
+			pending.push_back(ci->second[k]);
+	    }
+	}
+    }
     if ( cands.empty() )
 	return NULL;
     static const std::set<std::string> specifiers = {
@@ -45620,8 +45653,25 @@ DataDef *Program::resolve_decltype_call_return(
       || !is_contextual_identifier_token(sub[op_s]) )
 	return NULL;
     std::string inner_name = contextual_identifier_name(sub[op_s]);
-    // A template-id call: IDENT `<` targs `>` `(` args `)`.
+    // A template-id call: IDENT `<` targs `>` `(` args `)`. The callee may be
+    // NAMESPACE-QUALIFIED — libc++ spells the declval probe
+    // `decltype(std::__declval<_Tp>(0))` where libstdc++'s is bare — so
+    // consume leading `IDENT ::` segments into the lookup namespace and match
+    // the template-id on the terminal identifier. Without this the operand
+    // failed the IDENT `<` shape test, the resolver returned NULL, and the
+    // call's type fell to the implicit 64-bit return:
+    // decltype(std::declval<int>()) sized as 8 (silent wrong answer).
     size_t p = op_s + 1;
+    std::string qual;
+    while ( p + 1 < op_e && sub[p] && sub[p]->id() == TokenID::tkNS
+	 && sub[p + 1] && is_contextual_identifier_token(sub[p + 1]) )
+    {
+	if ( !qual.empty() )
+	    qual += "::";
+	qual += inner_name;
+	inner_name = contextual_identifier_name(sub[p + 1]);
+	p += 2;
+    }
     if ( p >= op_e || !sub[p] || sub[p]->id() != TokenID::tkLT )
 	return NULL;
     // Match the angle brackets; collect comma-separated type-arg segments.
@@ -45658,7 +45708,17 @@ DataDef *Program::resolve_decltype_call_return(
     }
     if ( inner_args.empty() )
 	return NULL;
-    return resolve_fn_template_return_by_key(ns + "::" + inner_name,
+    // A spelled qualifier wins over the caller's context namespace. Resolve it
+    // globally through the inline-namespace-aware canonicalizer (std ->
+    // std::__1 under libc++); an unresolvable spelling keeps the raw qualifier
+    // (no worse than the pre-fix NULL, which fell to the 64-bit fallback).
+    std::string lookup_ns = ns;
+    if ( !qual.empty() )
+    {
+	std::string canon = canonical_namespace_path(std::string(), qual);
+	lookup_ns = canon.empty() ? qual : canon;
+    }
+    return resolve_fn_template_return_by_key(lookup_ns + "::" + inner_name,
 					     inner_args, ret_ref, depth + 1);
 }
 
