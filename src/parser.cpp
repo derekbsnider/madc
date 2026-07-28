@@ -24308,21 +24308,10 @@ bool Program::confirm_dependent_member_type(DataDef *base,
 	size_t gt = seg.rfind('>');
 	std::string inner = ( gt != std::string::npos && gt > lt )
 			  ? seg.substr(lt + 1, gt - lt - 1) : std::string();
-	std::vector<std::string> iargs;
-	{
-	    int d = 0; std::string cur;
-	    for ( size_t j = 0; j < inner.size(); ++j )
-	    {
-		char c = inner[j];
-		if ( c == '<' ) { ++d; cur += c; }
-		else if ( c == '>' ) { --d; cur += c; }
-		else if ( c == ',' && d == 0 )
-		{ iargs.push_back(trim_spelling(cur)); cur.clear(); }
-		else cur += c;
-	    }
-	    if ( !trim_spelling(cur).empty() || !iargs.empty() )
-		iargs.push_back(trim_spelling(cur));
-	}
+	// Top-level comma split is the shared rule (include/spelling_delim.h) —
+	// this block hand-rolled it with only angle depth (no paren/brace guard)
+	// and predated the consolidation sweep that owns it.
+	std::vector<std::string> iargs = split_template_args_spelling(inner);
 	for ( size_t a = 0; a < iargs.size(); ++a )
 	{
 	    if ( a ) seq.push_back(new TokenComma());
@@ -24403,21 +24392,13 @@ bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
 	const std::string tn = "typename";
 	if ( a.compare(0, tn.size(), tn) == 0 )
 	    a = trim_spelling(a.substr(tn.size()));
-	// Split into `PARAM :: member :: member...` at top-level `::`.
-	std::vector<std::string> segs;
-	{
-	    int depth = 0; std::string cur;
-	    for ( size_t j = 0; j < a.size(); ++j )
-	    {
-		char c = a[j];
-		if ( c == '<' ) { ++depth; cur += c; }
-		else if ( c == '>' ) { --depth; cur += c; }
-		else if ( c == ':' && j + 1 < a.size() && a[j + 1] == ':' && depth == 0 )
-		{ segs.push_back(trim_spelling(cur)); cur.clear(); ++j; }
-		else cur += c;
-	    }
-	    segs.push_back(trim_spelling(cur));
-	}
+	// Split into `PARAM :: member :: member...` at top-level `::` — the
+	// shared rule (include/spelling_delim.h). This block hand-rolled it
+	// with only angle depth and predated the consolidation sweep. The
+	// owner returns raw components; trimming stays a caller concern.
+	std::vector<std::string> segs = split_scope_spelling(a);
+	for ( size_t si = 0; si < segs.size(); ++si )
+	    segs[si] = trim_spelling(segs[si]);
 	if ( segs.size() < 2 )
 	{
 	    // A bare `PARAM` carrying only declarator suffixes (`_Tp*`, `_Tp&`,
