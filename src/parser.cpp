@@ -2008,6 +2008,13 @@ static std::string namespace_function_symbol(const std::string &ns_name,
 	    case ']': break;
 	    case '(': sym += "_cl"; break;
 	    case ')': break;
+	    // ~ and , previously fell to the bare-underscore default, so
+	    // operator~ and operator, in ONE namespace produced an IDENTICAL
+	    // key — the second declaration found the first via findVariable
+	    // and re-parsed its parameters into the SHARED FuncDef (silent
+	    // overload collapse). Mnemonics follow operator_code (co, cm).
+	    case '~': sym += "_co"; break;
+	    case ',': sym += "_cm"; break;
 	    default:  sym += (isalnum((unsigned char)c) || c == '_') ? c : '_'; break;
 	    }
 	}
