@@ -6511,6 +6511,22 @@ static TokenDataType *instantiate_basic_class_pattern(
 }
 }
 
+// RAII in-flight marker for a class instantiation, shared by BOTH lanes
+// (pattern serve and legacy body re-parse). While a key is in flight, a
+// re-entering instantiation of the SAME specialization returns the
+// early-registered incomplete shell (instantiate_template_use's cache-hit
+// branch) instead of recursing — the bound for cyclic dependency webs and
+// for a base clause naming the template's own specialization as a template
+// ARGUMENT (libc++'s allocator : __non_trivial_if<..., allocator<_Tp>>).
+struct ClassInstInFlightGuard {
+    std::set<std::string> &set;
+    std::string key;
+    bool inserted;
+    ClassInstInFlightGuard(std::set<std::string> &s, const std::string &k)
+	: set(s), key(k), inserted(s.insert(k).second) {}
+    ~ClassInstInFlightGuard() { if ( inserted ) set.erase(key); }
+};
+
 TokenDataType *Program::instantiate_template_use(const std::string &tname,
 					       TokenBase *tb,
 					       const std::string &ns_hint,
@@ -6926,12 +6942,15 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    ++_class_inst_cache;
 	    return use_site_type_token(cached, tb);
 	}
-	if ( class_pattern_inst_in_progress.count(registered_mangled) )
+	if ( class_inst_in_progress.count(registered_mangled) )
 	{
-	    // This specialization is being pattern-instantiated up-stack; its
-	    // shell is registered but incomplete. Returning the shell is the
-	    // parse lane's self-reference semantics; re-instantiating here
-	    // recurses forever through cyclic dependency webs.
+	    // This specialization is being instantiated up-stack (pattern
+	    // serve OR legacy body re-parse); its shell is registered but
+	    // incomplete. Returning the shell is the parse lane's
+	    // self-reference semantics; re-instantiating here recurses
+	    // forever — cyclic dependency webs, and a base clause naming the
+	    // template's own specialization as a template ARGUMENT
+	    // (allocator : __non_trivial_if<..., allocator<_Tp>>).
 	    ++_class_inst_cache;
 	    return use_site_type_token(cached, tb);
 	}
@@ -6942,8 +6961,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // Only a fully concrete-arg variadic template proceeds to body parse below.
     // Re-entering the SAME mangled instantiation while sticky forwarding is active is a
     // self-referential trait loop → fall to the opaque placeholder to bound recursion.
-    bool recursive_opaque = want_sticky
-	&& variadic_inst_in_progress.count(registered_mangled);
+    // Likewise a re-entry of an instantiation ALREADY IN FLIGHT that has not yet
+    // registered a shell (a base clause naming the template's own specialization
+    // as a template ARGUMENT, resolved BEFORE TokenCLASS::parse registers the
+    // name): the cache-hit branch above cannot serve it, so bound it here with
+    // the same opaque placeholder — pending completion recognizes the shell.
+    bool recursive_opaque = (want_sticky
+	&& variadic_inst_in_progress.count(registered_mangled))
+	|| class_inst_in_progress.count(registered_mangled);
     if ( td.body.empty() || (pack_real_inst && dependent_surface)
       || recursive_opaque )
     {
@@ -7088,14 +7113,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    }
 	    TokenDataType *served;
 	    {
-		struct InFlightGuard {
-		    std::set<std::string> &set;
-		    const std::string &key;
-		    bool inserted;
-		    InFlightGuard(std::set<std::string> &s, const std::string &k)
-			: set(s), key(k), inserted(s.insert(k).second) {}
-		    ~InFlightGuard() { if ( inserted ) set.erase(key); }
-		} in_flight(class_pattern_inst_in_progress, registered_mangled);
+		ClassInstInFlightGuard in_flight(class_inst_in_progress,
+						 registered_mangled);
 		NamespaceScope namespace_scope(*this, td.defining_namespace);
 		served = instantiate_basic_class_pattern(*this, binding);
 	    }
@@ -7487,6 +7506,13 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    }
 	}
     } sticky_guard(*this, registered_mangled, want_sticky);
+
+    // The re-parse below is an instantiation in flight exactly like a pattern
+    // serve: mark it so a self-referential re-entry (base clause naming this
+    // very specialization as a template argument) is served the incomplete
+    // shell by the cache-hit branch instead of re-instantiating forever.
+    ClassInstInFlightGuard reparse_in_flight(class_inst_in_progress,
+					     registered_mangled);
 
     ClassParseCensusScope class_parse_scope(*this, class_profile_identity,
 	legacy_reason, canon);

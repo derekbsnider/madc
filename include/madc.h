@@ -2973,12 +2973,15 @@ public:
     // the same key while variadic_real_inst_sticky is on returns the opaque placeholder
     // instead of recursing — the recursion bound for the sticky forwarding-trait path.
     std::set<std::string> variadic_inst_in_progress;
-    // Pattern-lane instantiations in flight, keyed by registered mangled name.
-    // A cyclic dependency web (the resolver instantiates a dependency whose
-    // own pattern instantiation references back) re-enters here mid-flight;
-    // the re-entry returns the early-registered incomplete shell — the same
-    // semantics a parse-lane self-reference gets — instead of recursing.
-    std::set<std::string> class_pattern_inst_in_progress;
+    // Class instantiations in flight — BOTH lanes (pattern serve AND legacy
+    // body re-parse) — keyed by registered mangled name. A cyclic dependency
+    // web, or a template whose base clause names its own specialization as a
+    // template ARGUMENT (libc++'s
+    // `allocator : __non_trivial_if<..., allocator<_Tp>>`), re-enters here
+    // mid-flight; the re-entry returns the early-registered incomplete shell
+    // instead of recursing. The re-parse lane going unguarded was a stack
+    // overflow on `#include <string>` under -stdlib=libc++.
+    std::set<std::string> class_inst_in_progress;
     // Alias-template uses currently being resolved (keyed tname + arg spellings).
     // Re-entering the SAME key is a resolution CYCLE (a self-referential trait, now
     // reachable because variadic members really instantiate) — it short-circuits to

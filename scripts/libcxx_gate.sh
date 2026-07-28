@@ -300,6 +300,43 @@ else
 	fail "<cwchar>: got '$got12' $(head -c 200 "$D/l12.err")"
 fi
 
+# --- leg 13: self-referential instantiation is BOUNDED, not a stack overflow
+# libc++'s allocator derives from __non_trivial_if<..., allocator<_Tp>> — the
+# base clause names the template's OWN specialization as a template ARGUMENT.
+# The in-flight registry serves the incomplete shell on re-entry in BOTH lanes;
+# the legacy re-parse lane going unguarded was a SIGSEGV (stack overflow) on
+# `#include <string>`. The forced-legacy synthetic pins that lane; the real
+# header pins "terminates loudly" even while later blockers keep it from
+# compiling clean (crash or hang = fail, ordinary diagnostics = pass).
+cat > "$D/crtparg.cpp" <<'EOF'
+#include <stdio.h>
+template <bool _Bp, class _Unique> struct nontrivial_if {};
+template <class T> class alloc : nontrivial_if<true, alloc<T> > {
+public:
+	int nine() { return 9; }
+};
+int main(void)
+{
+	alloc<char> a;
+	printf("%d\n", a.nine());
+	return 0;
+}
+EOF
+got13=$(run env MADC_CLASS_PATTERN_FORCE_LEGACY=1 "$MADC" "$D/crtparg.cpp" 2>"$D/l13.err")
+if [ "$got13" = "9" ]; then
+	pass "base-clause self-argument instantiation bounded (legacy lane)"
+else
+	fail "CRTP base-arg (forced legacy): got '$got13' $(head -c 200 "$D/l13.err")"
+fi
+printf '#include <string>\nint main(void){return 0;}\n' > "$D/stringinc.cpp"
+run "$MADC" -stdlib=libc++ "$D/stringinc.cpp" >/dev/null 2>"$D/l13b.err"
+rc13=$?
+if [ $rc13 -eq 0 ] || [ $rc13 -eq 1 ]; then
+	pass "<string> parse terminates without a signal (rc=$rc13)"
+else
+	fail "<string> crashed or hung (rc=$rc13): $(head -c 200 "$D/l13b.err")"
+fi
+
 # --- leg 6: the redefinition diagnostic survives ---------------------------
 if run "$MADC" "$D/conflict.c" >/dev/null 2>"$D/l6.err"; then
 	fail "a conflicting user typedef was accepted (diagnostic lost)"

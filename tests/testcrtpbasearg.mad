@@ -1,0 +1,22 @@
+// A template whose BASE CLAUSE names its own specialization as a template
+// ARGUMENT (libc++'s allocator : __non_trivial_if<..., allocator<_Tp>>).
+// Instantiating alloc<char> instantiates the base, whose argument is
+// alloc<char> itself — the in-flight registry must serve the incomplete
+// shell on re-entry instead of recursing (this was a stack-overflow SIGSEGV
+// on `#include <string>` under -stdlib=libc++).
+#include <stdio.h>
+
+template <bool _Bp, class _Unique> struct nontrivial_if {};
+
+template <class T> class alloc : nontrivial_if<true, alloc<T> > {
+public:
+    int nine() { return 9; }
+};
+
+int main()
+{
+	alloc<char> a;
+	alloc<int> b;
+	printf("%d %d\n", a.nine(), b.nine());
+	return 0;
+}
