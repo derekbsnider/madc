@@ -36,6 +36,30 @@ static bool ends_with(const std::string &s, const std::string &suffix)
 }
 
 // Try to match a builtin type name, return its Itanium code or empty string
+// A NON-TYPE template argument is an expression, not a type: Itanium encodes it
+// `L <type> <value> E`. parse_component sends every template argument through
+// parse_type, so `moneypunct<char,false>` mangled the VALUE `false` as if it
+// were a type name — `_ZNSt10moneypunctIc5falseE2idE` where libstdc++ exports
+// `_ZNSt10moneypunctIcLb0EE2idE`. A wrong symbol links against nothing, which
+// is the whole failure mode Rule #1 exists to prevent.
+//
+// Only literals whose TYPE is unambiguous from their spelling are encoded here.
+// `true`/`false` are bool by definition, so `Lb1E`/`Lb0E` are exact.
+//
+// An INTEGER literal deliberately falls through: Itanium takes the type from
+// the template PARAMETER's declaration, not the argument, so the same spelling
+// `8` is `Li8E` for `int`, `Lm8E` for `size_t` (std::array, std::bitset),
+// `Lj8E` for `unsigned`. The mangler is handed only a spelling and cannot tell
+// them apart — guessing would trade a visibly-wrong symbol for an
+// invisibly-wrong one. Fixing it means carrying the parameter's declared type
+// into the spelling the caller passes; see the KG gap.
+static std::string nontype_literal_code(const std::string &t)
+{
+	if (t == "false") return "Lb0E";
+	if (t == "true")  return "Lb1E";
+	return std::string();
+}
+
 static std::string builtin_code(const std::string &t)
 {
 	if (t == "void")                return "v";
@@ -387,6 +411,17 @@ TypeNode parse_type(const std::string &raw)
 		std::string ps = s.substr(fp + 4, pend - (fp + 4));
 		for (const auto &a : split_targs(ps))
 			if (!a.empty() && a != "void") t.fp_params.push_back(parse_type(a));
+		return t;
+	}
+
+	// A non-type argument rides the builtin channel: encode_core emits
+	// `builtin` verbatim and, unlike a class type, registers NO substitution
+	// candidate — which is exactly right, since an expression literal is not
+	// a substitutable <type> under the ABI.
+	std::string lit = nontype_literal_code(s);
+	if (!lit.empty()) {
+		t.is_builtin = true;
+		t.builtin = lit;
 		return t;
 	}
 

@@ -2564,6 +2564,40 @@ static std::string class_static_member_storage_name(DataDefCLASS *scope,
     return scope->name + "__" + member;
 }
 
+// The REAL Itanium symbol for `Class::member` when the class is library-owned.
+//
+// Rule #1: g++ names a static data member by the Itanium ABI, so madc must too.
+// The name above is a madc invention (`scope->name` is the INTERNAL TAG —
+// `numpunct_char`, not the C++ spelling `numpunct<char>`), which is fine only
+// while madc emits both the storage and every reference. For a class declared
+// in a system header the storage lives in the LIBRARY: libstdc++ exports 51
+// facet `id` objects and libc++ 32, and `std::use_facet<F>` odr-uses `F::id`.
+// Emitting `numpunct_char__id` against those is a reference to a name nothing
+// defines, while `_ZNSt10numpunctIcE2idE` is sitting right there.
+//
+// This is the integration point every OTHER entity category already had and
+// static data members did not — ctors/dtors/methods/operators bind via
+// bind_declared_cpp_symbol, namespace functions via namespace_cpp_function_symbol,
+// namespace variables via namespace_cpp_variable_symbol. Returns "" when the
+// class is madc's own, which keeps the invented name for the case where it is
+// harmless (madc emits the definition too).
+static std::string class_static_member_itanium_symbol(DataDefCLASS *scope,
+						      const std::string &member)
+{
+    if ( !scope || !scope->from_system_header )
+	return std::string();
+    const std::string &cls = scope->canonical_cpp_spelling();
+    if ( cls.empty() )
+	return std::string();
+    // split_scope_spelling() owns `::`-splitting that must not cut inside a
+    // template argument list (`map<int,string>::x`) — never hand-rolled here,
+    // that family is consolidated and ratchet-gated (spelling_delim.h).
+    std::vector<std::string> quals = split_scope_spelling(cls);
+    if ( quals.empty() )
+	return std::string();
+    return itanium_mangle_nested_var(quals, member);
+}
+
 static TokenBase *resolve_class_static_member_value(Program &pgm,
 						    DataDefCLASS *scope,
 						    const std::string &member,
@@ -35605,6 +35639,13 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 						storage, scount, NULL, true) )
 			{
 			    sv->flags |= vfEXTERN;
+			    // Library-owned class: bind the storage to its REAL
+			    // Itanium symbol. var_emit_name() is the single place
+			    // that maps a Variable to its emitted name and already
+			    // consults storage_alias_name, so nothing downstream
+			    // needs to know.
+			    sv->storage_alias_name =
+				class_static_member_itanium_symbol(ddc, mname);
 			    if ( member_is_array )
 			    {
 				sv->flags |= vfFIXEDARRAY;

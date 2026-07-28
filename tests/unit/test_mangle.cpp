@@ -100,6 +100,29 @@ TEST_SUITE("Itanium type encoding") {
 			      {"$T0"}, false)
 		      == "_ZNSo9_M_insertIlEERSoT_");
 	}
+
+	TEST_CASE("Class static data members match libstdc++ exports") {
+		// A static data member of a LIBRARY-owned class must carry its real
+		// Itanium symbol: the storage lives in libstdc++, and madc's own
+		// `<tag>__<member>` spelling (numpunct_char__id) names nothing.
+		// Oracles, all `nm -D libstdc++.so.6` (probe UNANCHORED — these
+		// carry @@GLIBCXX version suffixes, and a `$`-anchored grep reports
+		// a false zero).
+		CHECK(itanium_mangle_nested_var({"std", "numpunct<char>"}, "id")
+		      == "_ZNSt8numpunctIcE2idE");
+		CHECK(itanium_mangle_nested_var({"std", "__cxx11", "numpunct<char>"}, "id")
+		      == "_ZNSt7__cxx118numpunctIcE2idE");
+		// A NON-TYPE template argument is an expression, not a type:
+		// `false` is `Lb0E`, not the identifier `5false`. This one mangled
+		// wrong until the literal encoding landed.
+		CHECK(itanium_mangle_nested_var({"std", "moneypunct<char,false>"}, "id")
+		      == "_ZNSt10moneypunctIcLb0EE2idE");
+		CHECK(itanium_mangle_nested_var({"std", "moneypunct<char,true>"}, "id")
+		      == "_ZNSt10moneypunctIcLb1EE2idE");
+		// A plain namespace-scope variable is the same call with a shorter
+		// chain — the class name is just one more qualifier.
+		CHECK(itanium_mangle_nested_var({"std"}, "cout") == "_ZSt4cout");
+	}
 }
 
 TEST_SUITE("Itanium function mangling") {
