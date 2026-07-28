@@ -31773,6 +31773,33 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // not dds->name, so the rename is transparent to lookups.
 	    dds->name = pgm.class_scope_stack.back()->name + "__" + tag->spelling();
 	}
+	// Sibling-NAMESPACE same-tag definitions (namespace A { struct S{}; }
+	// namespace B { struct S{}; }): the bare tag names a COMPLETE struct
+	// from a DIFFERENT scope — qualify the store key by the namespace and
+	// rename the emitted identity, the enclosing-class twin above applied
+	// to namespaces. Qualified lookup is served per-namespace by
+	// register_cpp_aggregate_name (keyed on the SOURCE tag); an
+	// incomplete existing entry is this scope's own forward decl and
+	// completes in place as before.
+	else if ( tag_store_key == tag->spelling()
+	       && !pgm.current_namespace().empty() )
+	{
+	    datadef_map_citer prior = pgm.struct_map.find(tag->spelling());
+	    DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
+		? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
+	    std::string here_spelling =
+		pgm.current_namespace() + "::" + tag->spelling();
+	    if ( prior_sd && prior_sd->is_complete
+	      && prior_sd->canonical_cpp_spelling() != here_spelling )
+	    {
+		tag_store_key = pgm.current_namespace() + "::" + tag->spelling();
+		std::string ns_flat = pgm.current_namespace();
+		for ( size_t fi = 0; fi < ns_flat.size(); ++fi )
+		    if ( ns_flat[fi] == ':' )
+			ns_flat[fi] = '_';
+		dds->name = ns_flat + "__" + tag->spelling();
+	    }
+	}
     }
     dds->union_layout = is_union;
     if ( is_packed || pgm.pack_current() == 1 )
@@ -34343,7 +34370,15 @@ TokenDataType *Program::register_class_shell(DataDefCLASS *ddc,
     if ( owner )
 	set_class_type_alias(owner, source_name, ddc);
     if ( !current_namespace().empty() )
+    {
 	namespace_datatype_map[current_namespace()][registered_name] = tdt;
+	// A namespace-collision re-key (registered_name = ns__source) must
+	// still serve qualified lookup under the SOURCE name (B::C finds the
+	// re-keyed class). Owner-nested classes are excluded: aliasing a
+	// nested Owner::C to ns::C would bind the wrong scope.
+	if ( registered_name != source_name && !owner )
+	    namespace_datatype_map[current_namespace()][source_name] = tdt;
+    }
     if ( register_source_alias )
 	register_scoped_typedef(source_name, tdt);
     set_class_type_alias(ddc, source_name, ddc);
@@ -34945,6 +34980,36 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	pgm.Throw(tn) << "Class definition requires a name" << flush;
 
     pgm.nextToken(); // consume '{'
+
+    // Sibling-SCOPE same-name class definitions (namespace A { class C {...}; }
+    // namespace B { class C {...}; } — the shape libc++'s variant header uses
+    // in its two sibling detail namespaces): the bare tag already
+    // names a COMPLETE aggregate from a DIFFERENT scope (its canonical
+    // spelling disagrees), and this definition is namespace-scoped. Re-key
+    // THIS class by the namespace — the nested-owner precedent above (the
+    // emitted identity must be C-valid and unique per scope);
+    // class_source_name keeps the source, and register_class_shell's
+    // per-namespace SOURCE alias serves qualified lookup. A same-scope
+    // complete entry falls through to the redefinition throw; an incomplete
+    // entry is this scope's own forward decl and completes in place.
+    if ( !pgm.current_namespace().empty() && !nested_owner_class
+      && !has_local_class_identity )
+    {
+	datadef_map_citer prior = pgm.struct_map.find(tag->spelling());
+	DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
+	    ? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
+	std::string here_spelling =
+	    pgm.current_namespace() + "::" + class_source_name;
+	if ( prior_sd && prior_sd->is_complete
+	  && prior_sd->canonical_cpp_spelling() != here_spelling )
+	{
+	    std::string ns_flat = pgm.current_namespace();
+	    for ( size_t fi = 0; fi < ns_flat.size(); ++fi )
+		if ( ns_flat[fi] == ':' )
+		    ns_flat[fi] = '_';
+	    pgm.set_token_spelling(tag, ns_flat + "__" + class_source_name);
+	}
+    }
 
     // Redefinition guard: reject a second definition unless the existing entry
     // is the incomplete class created for `class Name;`.
