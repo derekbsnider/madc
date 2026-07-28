@@ -6837,6 +6837,20 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// (translate_block), never by a C initializer on the storage declaration.
 		// Leave init_node empty for such instances.
 	bool class_instance = (!is_ptr) && as_class_instance(base_dd) != NULL;
+	// [dcl.init.aggr]: a braced init on an AGGREGATE class (a promoted
+	// struct — no user ctor, no bases, no vptr; METHODS do not disqualify
+	// aggregate-ness) memberwise-initializes, so it emits the C INIT list
+	// below exactly like a plain struct. Only a class that needs real
+	// construction defers to the block-level constructor call — for an
+	// aggregate that path emits NOTHING and the braced initializer was
+	// silently DROPPED (`SV s = {"hi", 7};` read garbage).
+	if (class_instance && tdecl
+	    && (tdecl->has_brace_init || !tdecl->init_list.empty())) {
+		DataDefCLASS *aggc = as_class_instance(base_dd);
+		if (aggc && !aggc->has_user_ctor && !aggc->has_any_vptr()
+		    && aggc->bases.empty() && !aggc->base_class)
+			class_instance = false;
+	}
 	// A static/global fixed array whose constant initializer the parser baked
 	// into v->data and then cleared init_list (initialize_static_fixed_array_data
 	// in parser.cpp). For a brace `{...}` init has_brace_init stays set so the
