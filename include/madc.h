@@ -2716,9 +2716,18 @@ public:
     // concrete void IFF every Arg (a `typename PARAM::member` dependent type) resolves
     // after substituting the already-deduced params. The SFINAE half of the std
     // detection idiom (__detected_or / __iterator_traits / allocator_traits).
+    // `slot_tokens` (the spec pattern slot's token run) enables the EXPRESSION
+    // probe arm — `__void_t<decltype(EXPR)>` (libc++ __common_type2_imp) —
+    // which substitutes the deduced params into the decltype token run and
+    // resolves it through the real decltype machinery.
     bool eval_void_t_detection_slot(const std::string &slot_spelling,
 	    const std::string &concrete_spelling,
-	    const std::map<std::string, DataDef *> &ded, int &score);
+	    const std::map<std::string, DataDef *> &ded, int &score,
+	    const std::vector<TokenBase *> *slot_tokens = NULL);
+    // Evaluate the nth `decltype ( ... )` run inside a spec-pattern slot's
+    // tokens under the deduced-param substitution; true iff it names a type.
+    bool eval_decltype_probe_tokens(const std::vector<TokenBase *> &slot_tokens,
+	    size_t nth, const std::map<std::string, DataDef *> &ded);
     // Confirm that a dependent member chain `BASE::seg1::seg2::...` (where some
     // seg names a TEMPLATE member, e.g. `rebind<_Up>`) resolves to a real type —
     // the part of the __void_t SFINAE probe the plain type-alias walk cannot do.
@@ -2824,6 +2833,13 @@ public:
     // BEFORE its body parses (the hidden-friend access grant compares
     // display names mid-body). Cleared after the parseFunction call.
     std::string pending_function_display_name;
+    // The inst_key of the fn-template instantiation whose substituted decl is
+    // being re-parsed (instantiate_fn_template_binding). parseFunction's
+    // overload tracking folds it into the overload identity: two
+    // specializations differing only in a non-type value (g<int,3> / g<int,7>)
+    // share a parameter spelling but are distinct functions
+    // ([temp.over.link]). Saved/restored around nested instantiations.
+    std::string pending_fn_instantiation_identity;
     std::vector<std::string> last_skipped_template_typeparams;
     // Pack-ness of last_skipped_template_typeparams (parallel vector), so a
     // skipped member template's variadic typeparam (`typename... _Args`) is
@@ -2906,6 +2922,13 @@ public:
     struct FnTemplateDef {
 	std::vector<std::string> typeparams;
 	std::vector<std::vector<TokenBase *>> typeparam_defaults;
+	// Per-parameter constraint-TYPE token runs (parallel to typeparams;
+	// an empty run = unconstrained). Captured for a NON-TYPE parameter
+	// whose type is a compound type-specifier (`__enable_if_t<...>*`,
+	// `typename enable_if<C,bool>::type`) — the SFINAE carrier evaluated
+	// under the completed binding at instantiation, so overload selection
+	// rejects the candidate on substitution failure ([temp.deduct]/8).
+	std::vector<std::vector<TokenBase *>> typeparam_constraints;
 	std::vector<bool> typeparam_is_type;
 	std::vector<bool> typeparam_is_pack;
 	std::vector<TokenBase *> decl;
@@ -2931,7 +2954,8 @@ public:
 	// mint duplicate definitions — g++ has one instantiation per
 	// (template, binding). Set to the placeholder's stable symbol.
 	std::string inst_identity;
-	FnTemplateDef() : typeparams(), typeparam_defaults(), typeparam_is_type(),
+	FnTemplateDef() : typeparams(), typeparam_defaults(),
+	    typeparam_constraints(), typeparam_is_type(),
 	    typeparam_is_pack(), decl(), ns(), inline_builtin_kind(),
 	    owner_class(NULL), instance_method(false), inst_identity() {}
     };
@@ -4157,6 +4181,7 @@ public:
 	std::string key;			// the placeholder's funcdef_map symbol (the record key)
 	std::string disp;			// live method_display_name (the declarator name)
 	std::vector<TokenBase *> tokens;	// decl + params + body (sans template<> header)
+	std::vector<TokenBase *> ret_tokens;	// v34 decl-only: the dependent return-type range (no decl tokens exist)
 	std::vector<std::string> typeparams;
 	std::vector<bool> is_pack;
 	PendingForestMemberTmpl() : owner(NULL) {}
@@ -4653,10 +4678,12 @@ public:
     // substituting the already-bound type parameters in, then resolving in an
     // isolated token stream (handles trait-expression / template-id defaults like
     // `R = __conditional_t<...>`). Returns NULL for a still-dependent default.
+    // require_full_parse: the run must consume to the sentinel (SFINAE
+    // constraint evaluation — a member-type-chain miss leaves tokens behind).
     DataDef *resolve_template_param_default_type(
 		const std::vector<TokenBase *> &default_tokens,
 		const std::map<std::string, DataDef *> &binding,
-		DataDefCLASS *owner);
+		DataDefCLASS *owner, bool require_full_parse = false);
     // Consume a declarator's pointer-star run: a sequence of `*` interleaved with
     // cv-qualifiers (const/volatile/restrict). Each `*` on a NON-fn-ptr base wraps
     // `dd` via getPointerType (the type reflects the indirection); a DataDefFPTR

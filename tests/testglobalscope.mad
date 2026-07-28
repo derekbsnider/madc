@@ -1,0 +1,18 @@
+// The global-scope qualifier ([namespace.qual]) in TYPE positions: a leading
+// `::` pins the name lookup to the global scope — `typedef ::timespec t;`
+// (libc++ __threading_support:54, the <string_view> frontier) and a
+// using-alias target. Both route through resolve_declared_type_token, whose
+// global-scope arm owns the lookup. NOT yet covered: statement-position
+// `::wrap w;` — the statement dispatch routes a leading `::` to the
+// expression lane before the type resolver sees it (recorded follow-up).
+// Oracle: g++ 13 and clang++-18 print 5 9.
+#include <ctime>
+#include <cstdio>
+typedef ::timespec td_ts;
+using ua_ts = ::timespec;
+int main() {
+    td_ts a; a.tv_sec = 5;
+    ua_ts b; b.tv_sec = 9;
+    printf("%d %d\n", (int)a.tv_sec, (int)b.tv_sec);
+    return 0;
+}

@@ -3476,13 +3476,24 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	r.pattern_reason = (uint32_t)pattern_reason;
 	// v24: a pattern CAPTURED in the TU's root file (the program's own
 	// templates) is fenced from the bind restore. Provenance = the first
-	// body/decl token carrying a file.
+	// body/decl token carrying a file; a record with no body run (a
+	// decl-only member template's return range, a concept's constraint)
+	// derives it from the constraint run instead.
+	bool fenced_provenance = false;
 	for (TokenBase *t : body)
 		if (t && t->file) {
 			if (prog->forest_is_tu_root_file(t->file))
 				r.flags |= CIR_TMPLF_TU_ROOT;
+			fenced_provenance = true;
 			break;
 		}
+	if (!fenced_provenance)
+		for (TokenBase *t : constraint)
+			if (t && t->file) {
+				if (prog->forest_is_tu_root_file(t->file))
+					r.flags |= CIR_TMPLF_TU_ROOT;
+				break;
+			}
 	// Serialize every run's TOKEN BYTES before appending any payload words,
 	// then lay the params + run table down contiguously (resolve-first).
 	std::vector<cir_forest_token_run> runs;
@@ -3648,7 +3659,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
-		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, NULL,
+		 fd.typeparam_defaults, fd.decl, no_toks,
+		 fd.typeparam_constraints, NULL,
 		 Program::ClassParseReason::None);
 	return false;
     });
@@ -3658,7 +3670,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
-		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, NULL,
+		 fd.typeparam_defaults, fd.decl, no_toks,
+		 fd.typeparam_constraints, NULL,
 		 Program::ClassParseReason::None);
 	return false;
     });
@@ -3686,11 +3699,20 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
     // registration over the restored tokens, so every derived field
     // (return-token range, spellings, static/instance, ctor-hood) reproduces
     // by the one production path. An owner not in the arena cleanly lacks.
+    // v34: DECL-ONLY member templates (the __do_common_type_impl::_S_test
+    // SFINAE shape) retain no decl tokens — only the dependent return-type
+    // range, which rides the record's otherwise-empty constraint-run slot;
+    // the flush stamps the restored placeholder's fields directly. Without
+    // the record a thawed decltype(_S_test<...>(0)) fell to the placeholder's
+    // implicit 64-bit return (LOADED != parsed, silent wrong answer).
     for (funcdef_map_iter fi = prog->funcdef_map.begin();
 	 fi != prog->funcdef_map.end(); ++fi) {
 	FuncDef *fd = fi->second;
-	if (!fd || !fd->is_member_template || fd->member_template_decl.empty())
+	if (!fd || !fd->is_member_template)
 	    continue;
+	bool body_bearing = !fd->member_template_decl.empty();
+	if (!body_bearing && fd->member_template_return_tokens.empty())
+	    continue;	// nothing restorable: no body, no return range
 	DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
 	if (!owner)
 	    continue;
@@ -3702,7 +3724,9 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	     instance ? CIR_TMPLF_INSTANCE_METHOD : 0,
 	     fd->template_param_names, fd->template_param_is_type,
 	     fd->template_param_is_pack, no_multi,
-	     fd->member_template_decl, no_toks, no_multi, NULL,
+	     fd->member_template_decl,
+	     body_bearing ? no_toks : fd->member_template_return_tokens,
+	     no_multi, NULL,
 	     Program::ClassParseReason::None);
     }
 

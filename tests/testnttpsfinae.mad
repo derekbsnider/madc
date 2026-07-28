@@ -1,0 +1,68 @@
+// Non-type template parameters: defaults + SFINAE overload selection.
+// Task #27 (libc++ <string_view> frontier): uninitialized_algorithms.h:572
+// declares `template <..., __enable_if_t<cond>* = nullptr>` — an unnamed
+// pointer NTTP whose dependent type is the SFINAE carrier and whose default
+// (nullptr) is taken at deduction. Covers, in order:
+//   g:      named int NTTP default    — deduced call, explicit-all, explicit-partial
+//   h:      unnamed int NTTP default
+//   k:      unnamed pointer NTTP with nullptr default (parse: `void* = nullptr`)
+//   widthp: the libc++ idiom  — enable_if_t<cond>* = nullptr overload pair
+//   widtht: the libstdc++ idiom — typename enable_if<cond,bool>::type = true pair
+//   nn::width: the pointer idiom inside a NAMESPACE (the real frontier shape —
+//              constraint resolution must run in the DEFINING namespace)
+//   fl / FW:   NTTP whose template-id type closes FLUSH against the list
+//              close — the merged `>>` must split one level back to the list
+//              (libc++ uses_allocator_construction.h:186 shape)
+// Oracle: g++ 13 and clang++-18 print "3 7 3 1 2 4 8 4 8 4 8 5 6".
+#include <cstdio>
+
+template <bool B, class T = void> struct my_enable_if {};
+template <class T> struct my_enable_if<true, T> { typedef T type; };
+template <bool B, class T = void> using my_enable_if_t = typename my_enable_if<B, T>::type;
+
+template <class T, int N = 3>
+int g(T) { return N; }
+
+template <class T, int = 5>
+int h(T) { return 1; }
+
+template <class T, void* = nullptr>
+int k(T) { return 2; }
+
+template <class T, my_enable_if_t<sizeof(T) == 4>* = nullptr>
+int widthp(T) { return 4; }
+template <class T, my_enable_if_t<sizeof(T) == 8>* = nullptr>
+int widthp(T) { return 8; }
+
+template <class T, typename my_enable_if<sizeof(T) == 4, bool>::type = true>
+int widtht(T) { return 4; }
+template <class T, typename my_enable_if<sizeof(T) == 8, bool>::type = true>
+int widtht(T) { return 8; }
+
+namespace nn {
+template <bool B, class T = void> struct ns_enable_if {};
+template <class T> struct ns_enable_if<true, T> { typedef T type; };
+template <bool B, class T = void> using ns_enable_if_t = typename ns_enable_if<B, T>::type;
+
+template <class T, ns_enable_if_t<sizeof(T) == 4>* = nullptr>
+int width(T) { return 4; }
+template <class T, ns_enable_if_t<sizeof(T) == 8>* = nullptr>
+int width(T) { return 8; }
+}
+
+template <class T, my_enable_if_t<sizeof(T) == 4, int>>
+int fl(T) { return 5; }
+
+template <class T, my_enable_if_t<sizeof(T) == 4, int>>
+struct FW { int v() { return 6; } };
+
+int main()
+{
+    FW<int, 0> fw;
+    printf("%d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+	   g(1), g<int, 7>(1), g<int>(1), h(1), k(1),
+	   widthp(1), widthp(1.0), widtht(1), widtht(1.0),
+	   nn::width(1), nn::width(1.0),
+	   fl<int, 0>(1), fw.v());
+    return 0;
+}

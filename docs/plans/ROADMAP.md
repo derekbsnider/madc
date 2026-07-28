@@ -1,12 +1,14 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-07-28 (v0.57.0: the libc++
-burn-down — eight core-C++ defects fixed in one chain: inline-namespace
-transparency in lookup AND name resolution, using-alias fn-ptr declarators,
-self-referential instantiation bounded in both lanes/both cache regimes,
-braced-list ctor ranking per [dcl.init.list]/3, `__underlying_type`, partial
-specs of a decl-only primary; `-stdlib=libc++` frontier now ONE defect from
-`<string_view>`/`<string>`; suites 784/768/768 green; warning ratchet 0).
+Master plan linking all workstreams. Updated 2026-07-28 (v0.58.0: the
+`<string_view>` milestone — libc++ `<string_view>` COMPILES AND RUNS
+end-to-end under `-stdlib=libc++` (P2.2 burn-down complete): NTTP defaults +
+SFINAE overload selection, merged-`>>` template-id flush, comma-operator
+returns gated from the dialect multi-return, aggregate init on
+class-promoted structs, plus forest v34 (decl-only member templates freeze
+their pattern state; the stdlib flavor is producer-config identity). Suites
+792/775/775 green incl. the packed lane; next: P2.3 stdlib-ABI switch, then
+`<string>` P2.4).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The

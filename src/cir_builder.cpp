@@ -6837,6 +6837,20 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// (translate_block), never by a C initializer on the storage declaration.
 		// Leave init_node empty for such instances.
 	bool class_instance = (!is_ptr) && as_class_instance(base_dd) != NULL;
+	// [dcl.init.aggr]: a braced init on an AGGREGATE class (a promoted
+	// struct — no user ctor, no bases, no vptr; METHODS do not disqualify
+	// aggregate-ness) memberwise-initializes, so it emits the C INIT list
+	// below exactly like a plain struct. Only a class that needs real
+	// construction defers to the block-level constructor call — for an
+	// aggregate that path emits NOTHING and the braced initializer was
+	// silently DROPPED (`SV s = {"hi", 7};` read garbage).
+	if (class_instance && tdecl
+	    && (tdecl->has_brace_init || !tdecl->init_list.empty())) {
+		DataDefCLASS *aggc = as_class_instance(base_dd);
+		if (aggc && !aggc->has_user_ctor && !aggc->has_any_vptr()
+		    && aggc->bases.empty() && !aggc->base_class)
+			class_instance = false;
+	}
 	// A static/global fixed array whose constant initializer the parser baked
 	// into v->data and then cleared init_list (initialize_static_fixed_array_data
 	// in parser.cpp). For a brace `{...}` init has_brace_init stays set so the
@@ -17132,6 +17146,22 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 				     translate_expr(cls_ref_assign->left), tr);
 			expr_is_address = true;
 		}
+	} else if (m_cur_func_returns_ref && tr->returns
+		   && tr->returns->id() == TokenID::tkComma
+		   && ((TokenOperator *)tr->returns)->left
+		   && ((TokenOperator *)tr->returns)->right) {
+		// [expr.comma] under a T&-return (`return assert_expr, __data_[__pos];`
+		// — TokenRETURN's C/C++ comma-operator chain): `&(a, b)` is not an
+		// lvalue in the C lowering, so evaluate the left operand for side
+		// effects and take the address of the RIGHTMOST operand —
+		// N_COMMA(left, &right). A longer chain left-nests, so the left
+		// translates whole as a value expression.
+		TokenOperator *cm = (TokenOperator *)tr->returns;
+		node_t rnode = reference_member_value_is_stored_address(cm->right)
+			     ? translate_expr(cm->right)
+			     : node1(N_ADDR, translate_expr(cm->right), tr);
+		expr = node2(N_COMMA, translate_expr(cm->left), rnode, tr);
+		expr_is_address = true;
 	} else
 		expr = tr->returns ? translate_expr(tr->returns) : ignore();
 	// Integer-_Complex return conversions (GNU ext, struct spine): a complex

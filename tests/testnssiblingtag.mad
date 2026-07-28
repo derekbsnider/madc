@@ -1,0 +1,31 @@
+// Sibling-scope same-name aggregates: two namespaces may each define a
+// struct/class with the same tag ([basic.scope.namespace] — they are
+// distinct types). madc collided them on the bare struct_map key ("Struct
+// 'S' already defined") — the v0.54.0 two-scope struct-Inner placeholder,
+// which became the libc++ <string_view> frontier as <variant>'s
+// __access::__base vs __visitation::__base (variant:490). The fix re-keys a
+// colliding namespace-scoped definition by its namespace (store key +
+// emitted identity), the same twin the enclosing-class disambiguation uses;
+// qualified lookup is served per-namespace under the SOURCE tag.
+// Covers: data-only structs, static-method structs (class-promoted), real
+// classes, and the libc++ shape (inline-ns → nested sibling namespaces).
+// Oracle: g++ 13 and clang++-18 print 7 8 1 2 3 4 5 6.
+#include <cstdio>
+namespace A { struct S { int x; }; }
+namespace B { struct S { int y; }; }
+namespace C1 { struct M { static int id() { return 1; } }; }
+namespace C2 { struct M { static int id() { return 2; } }; }
+namespace D1 { class K { public: int f() { return 3; } }; }
+namespace D2 { class K { public: int f() { return 4; } }; }
+namespace outer { inline namespace v1 {
+namespace acc { struct base { static int id() { return 5; } }; }
+namespace vis { struct base { static int id() { return 6; } }; }
+}}
+int main() {
+    A::S a; a.x = 7;
+    B::S b; b.y = 8;
+    D1::K k1; D2::K k2;
+    printf("%d %d %d %d %d %d %d %d\n", a.x, b.y, C1::M::id(), C2::M::id(),
+	   k1.f(), k2.f(), outer::acc::base::id(), outer::vis::base::id());
+    return 0;
+}

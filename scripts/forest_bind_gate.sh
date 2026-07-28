@@ -413,6 +413,91 @@ int main()
 EOF
 run_case anon "t=7 b0=D b1=C sz=12"
 
+# --- case: declonlymt (v34: DECL-ONLY member templates) — libstdc++'s
+#     __do_common_type_impl::_S_test SFINAE idiom in miniature: a plain struct
+#     with body-LESS static member function templates whose DEPENDENT return
+#     type carries the answer, consumed via `using type = decltype(_S_pick<A,
+#     B>(0))` inside a class template that privately inherits the impl. A
+#     body-less member template retains no decl tokens, so pre-v34 the freeze
+#     emitted no CIR_TMPLK_MEMBER record for it; the thawed placeholder had no
+#     member_template_return_tokens and decltype fell to the implicit 64-bit
+#     return — common_type<A,B>'s base materialized as int64_t (the packed-lane
+#     testcommontype failure, task #31). The consumer instantiates FRESH
+#     specializations (never frozen), forcing the thawed resolution path.
+cat > tmp/fbgate_declonlymt.h <<'EOF'
+#ifndef FBGATE_DECLONLYMT_H
+#define FBGATE_DECLONLYMT_H
+template<typename T> struct fbg_success { typedef T type; };
+struct fbg_impl {
+    template<typename T, typename U>
+    static fbg_success<U> _S_pick(int);
+    template<typename T, typename U>
+    static fbg_success<T> _S_pick(...);
+};
+template<typename A, typename B>
+struct fbg_common : private fbg_impl {
+    using type = decltype(_S_pick<A, B>(0));
+};
+#endif
+EOF
+cat > tmp/fbgate_declonlymt_producer.cpp <<'EOF'
+#include <fbgate_declonlymt.h>
+int main() { fbg_common<int, long>::type r; (void)r; return 0; }
+EOF
+cat > tmp/fbgate_declonlymt_consumer.cpp <<'EOF'
+#include <fbgate_declonlymt.h>
+#include <cstdio>
+int main()
+{
+    using R = fbg_common<char, short>::type;	/* fbg_success<short> */
+    using V = R::type;				/* short */
+    printf("r=%zu v=%zu\n", sizeof(R), sizeof(V));
+    return 0;
+}
+EOF
+run_case declonlymt "r=1 v=2"
+
+# --- case: flavorgate (v34: the stdlib FLAVOR is producer-config identity) ---
+# A container frozen under the build's default flavor (libstdc++) must NOT
+# bind into a -stdlib=libc++ compile — the corpus carries the WRONG stdlib's
+# headers (binding served libstdc++'s <stddef.h> and tripped libc++ <cstddef>'s
+# #error: the packed-lane testcommontype_libcxx failure). The v27 gate's
+# response to a config mismatch is a SILENT live fall-through: output stays
+# correct AND the -v trace shows no grove binding. Skips when this build has
+# no libc++ flavor.
+if printf 'int main(){return 0;}\n' > tmp/fbgate_flavor_probe.cpp \
+   && timeout 60 "$BIN" -stdlib=libc++ tmp/fbgate_flavor_probe.cpp >/dev/null 2>&1; then
+    fl_snap="tmp/fbgate_flavor.msnap"
+    fl_vlog="tmp/fbgate_flavor_v.log"
+    cat > tmp/fbgate_flavor.cpp <<'EOF'
+#include <cstddef>
+#include <cstdio>
+int main() { size_t n = 7; printf("n=%zu\n", n); return 0; }
+EOF
+    if ! timeout 600 "$BIN" --freeze="$fl_snap" tmp/fbgate_flavor.cpp >/dev/null 2>&1; then
+        fail "[flavorgate] --freeze (default flavor) FAILED"
+    fi
+    fl_out=$(timeout 60 "$BIN" --forest-bind="$fl_snap" -stdlib=libc++ tmp/fbgate_flavor.cpp 2>/dev/null)
+    [ "$fl_out" = "n=7" ] || fail "[flavorgate] -stdlib=libc++ consumer output '$fl_out' != 'n=7' (flavor-mismatched container bound?)"
+    timeout 60 "$BIN" -v --forest-bind="$fl_snap" -stdlib=libc++ tmp/fbgate_flavor.cpp >"$fl_vlog" 2>/dev/null
+    if grep -aq "bound to grove unit" "$fl_vlog"; then
+        rm -f "$fl_snap" "$fl_vlog"
+        fail "[flavorgate] a libstdc++-flavor container BOUND into a -stdlib=libc++ compile (config gate missed the flavor)"
+    fi
+    # Control: the SAME-flavor consumer still binds (the gate is a mismatch
+    # gate, not a flavor kill-switch).
+    timeout 60 "$BIN" -v --forest-bind="$fl_snap" tmp/fbgate_flavor.cpp >"$fl_vlog" 2>/dev/null
+    if ! grep -aq "bound to grove unit" "$fl_vlog"; then
+        rm -f "$fl_snap" "$fl_vlog"
+        fail "[flavorgate] the SAME-flavor consumer did not bind (over-wide gate?)"
+    fi
+    rm -f "$fl_snap" "$fl_vlog" tmp/fbgate_flavor.cpp tmp/fbgate_flavor_probe.cpp
+    echo "forest_bind_gate: [flavorgate] OK — flavor-mismatched container falls through to live parse; same-flavor still binds"
+else
+    rm -f tmp/fbgate_flavor_probe.cpp
+    echo "forest_bind_gate: [flavorgate] SKIP — this build has no libc++ flavor"
+fi
+
 # --- case: strbind (v12 corpus — the FIRST std:: library class bound end-to-end) ---
 #     Freeze the REAL system <string>, then bind it while compiling a consumer that
 #     default-CONSTRUCTS a std::string, ASSIGNS a C-string to it, SIZES it, and (at
@@ -844,5 +929,5 @@ fi
 rm -f "$sub_snap" "$sub_vlog"
 echo "forest_bind_gate: [subbind] OK — OWNER'S BAR: tests/testsubscript.mad freeze+bind == live == .expect (default arguments restored)"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + subbind grove headers bound (no re-parse), output == live == g++"
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + subbind grove headers bound (no re-parse), output == live == g++"
 exit 0
