@@ -2,6 +2,67 @@
 
 ## [Unreleased]
 
+## [v0.57.0] — 2026-07-28
+
+Eight core-C++ defects, one chain: the libc++ parse frontier fell from
+`<cwchar>` to the last blocker before `<string_view>`/`<string>`, every fix
+a gap in madc's own generic machinery, every fix matching g++ AND clang++
+byte-for-byte on an oracle-verified test. Suite 776 → 784.
+
+- **fix: qualified lookup sees the inline namespace set while the block is
+  still OPEN** ([namespace.qual]). Members of N include N's inline namespace
+  set immediately — not only after the close-time mirror copies them up.
+  `find_namespace_member()` owns the walk (allocation-free when no inline
+  children); nine flat-probe consumers adopted; the scope-chain walker's
+  duplicate BFS deleted. This was libc++ `<cwchar>:202` ("'wcslen' is not a
+  member of namespace 'std'") — the whole string stack's gate, six failed
+  synthetic reducers deep, found by bisecting the real `madc -E` output
+  (2893 lines → 22). Gates: `testinlinensopen`, libcxx_gate leg 12.
+- **fix: using-alias accepts the abstract function-pointer declarator.**
+  `using terminate_handler = void (*)();` — the abstract twin of typedef
+  Form 2, same `parseFnPtrParams` owner. Gate: `testusingaliasfnptr`.
+- **fix: namespace-NAME resolution walks the inline set.** libc++ registers
+  `__math` as `std::__1::__math`; math.h says `using std::__math::fpclassify;`.
+  New owner `canonical_nested_namespace()` + `canonical_namespace_path()`
+  fold, adopted at both expression descents and both scope resolvers.
+  Gate: `testnestedinlinens`.
+- **fix: self-referential class instantiation is BOUNDED** in both lanes and
+  both cache regimes. libc++'s
+  `allocator : __non_trivial_if<..., allocator<_Tp>>` names its own
+  specialization as a base-clause template ARGUMENT; the in-flight registry
+  guarded only the pattern lane's cache-hit branch, and `#include <string>`
+  was a stack-overflow SIGSEGV. One registry (`class_inst_in_progress`),
+  one guard, both lanes; the miss-path re-entry mints the opaque shell the
+  forward-declaration machinery completes in place. Gates: `testcrtpbasearg`,
+  libcxx_gate leg 13 (`<string>` terminates loudly, never a signal).
+- **fix: braced construction, two layers.** `Class::NestedTag{}` in
+  expression position is a temporary construction (new nested-TYPE arm in
+  the shared class-qualified resolver, served by the same functional-cast
+  machinery the namespace arm uses); and a NON-empty braced list on a class
+  WITH constructors ranks the ctor overload set ([dcl.init.list]/3) instead
+  of field-filling through the aggregate path — which had silently dropped
+  every argument after the first for ANY `T v{a, b}`. Gates:
+  `testnestedtagctor`, `testbracedctor`.
+- **feat: `__underlying_type(T)`** — the intrinsic both standard libraries
+  build `std::underlying_type` on. `DataDefENUM.underlying` records the
+  declared fixed base (the `: T` tokens now resolve instead of being
+  discarded) or the canon range rule at definition close; plus partial
+  specs of a DECLARATION-ONLY primary now reach the spec match outside the
+  member-chain flag lanes (libc++'s `__underlying_type_impl<_Tp, bool>` is
+  decl-only with the bodies in its specs). Gates: `testunderlyingtype`,
+  `testdeclonlyspec`.
+- **chore: gdb baked into container provisioning** — a stack-overflow's
+  recursion cycle is visible in three backtrace frames; the built-in
+  handler prints raw addresses.
+- **Frontier after all of it:** `<cwchar>`, `<cctype>`, `<cwctype>`,
+  `<__string/char_traits.h>`, `<optional>`'s nullopt line and
+  `__atomic/memory_order.h` compile under `-stdlib=libc++`; BOTH
+  `<string_view>` and `<string>` stop at ONE recorded defect
+  (`Gap{common_type_dependent_member_key_explosion}` — unresolved
+  `common_type<...>::type` template-args compound the instantiation key
+  until the MADC_MEM_LIMIT guard trips loudly; the dependent-member-type
+  tsubst family, next up).
+
 ## [v0.56.0] — 2026-07-28
 
 Real C under real headers: an explicit prototype replaces a builtin
