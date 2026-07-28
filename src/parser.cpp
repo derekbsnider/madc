@@ -21512,8 +21512,30 @@ Program::TemplateAliasDef *Program::find_template_alias(
 {
     const template_alias_registry_entry_t *entry =
 	template_alias_map.find_readonly(name_id);
+    if ( !entry )
+	return NULL;
+    // [basic.lookup.unqual] in a member context: an unqualified alias-template
+    // name resolves against the active class scopes (including bases and
+    // enclosing classes) BEFORE namespace scope — a member alias shadows a
+    // namespace-level alias of the same name. This is how the return-type range
+    // of a member template reaches a member alias of its owner (__cond_t inside
+    // __do_common_type_impl, the std::common_type keystone): the owner is on
+    // class_scope_stack, but only the free bucket was searched. owner_hint or a
+    // non-empty ns_hint means a qualified lookup — skip the walk; the tree walk
+    // re-enters this function WITH an owner_hint, so it cannot recurse.
+    if ( !owner_hint && ns_hint.empty() )
+	for ( std::vector<DataDefCLASS *>::reverse_iterator ci =
+		  class_scope_stack.rbegin();
+	      ci != class_scope_stack.rend(); ++ci )
+	{
+	    DataDefCLASS *matched = NULL;
+	    if ( const Program::TemplateAliasDef *member_found =
+		    find_template_alias_in_class_tree(*this, name_id, *ci,
+						      &matched) )
+		return const_cast<Program::TemplateAliasDef *>(member_found);
+	}
     const std::vector<Program::TemplateAliasDef> *found =
-	entry ? entry->find(owner_hint) : NULL;
+	entry->find(owner_hint);
     std::vector<Program::TemplateAliasDef> *g = const_cast<
 	std::vector<Program::TemplateAliasDef> *>(found);
     if ( !g || g->empty() )
