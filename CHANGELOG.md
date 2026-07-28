@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+- **fix: a declaration with no definition in the TU is not capturable eval
+  scope.** `madc::eval_*` captures the caller's visible scope by name, and the
+  CIR lowering reads each captured variable as a bare `id()` — bypassing the
+  path that records `referenced_globals` and gets an `extern` declaration
+  emitted. Capturing anything undefined in this TU therefore emitted a name
+  c2mir had never seen: `undeclared identifier locale___S_once`, once per eval
+  call site, on stderr, **while still exiting 0**. A plain `extern int g;` in
+  scope reproduces it with no class in the picture.
+  `is_runtime_eval_scope_supported_variable` already stated the rule for
+  parse-time constants ("has no declaration in the emitted module … would emit
+  an undeclared identifier"); it covered half its domain. The test lives in the
+  CIR lowering rather than beside it, because "did a definition arrive" is a
+  whole-TU property and the collector runs with the rest of the file unparsed.
+  This DELETES the `from_system_header` placeholder guard shipped in v0.54.0:
+  madc now creates the decl for every static data member with no in-class
+  initializer, with no origin-keyed exception, as both canons do.
+  New gate `testevalexterncapture`; the four existing `testmadceval*` tests had
+  no `.expect_quiet`, so diagnostics with exit 0 passed on stdout alone — all
+  five have one now.
+
+- **fix: a variable minted during instantiation is not a lookup surface.**
+  Fallout caught by `forest_index_oracle` while all 770 tests passed in all
+  four lanes: with statics getting storage at their declaration, instantiating
+  `numpunct<char>` mints `numpunct_char__id`. It is correctly absent from the
+  decl index (`pack_tap_name` refuses anything at `_inst_depth > 0` — bind time
+  re-mints it from the pattern), but `dump_registered_names`, side B of the
+  same oracle, did not apply that rule. Its own comment already described it
+  and named the shape, excluding `Class__member` for METHODS but not for static
+  DATA members. New `vfINSTPRODUCT` flag (fresh bit; 65536 is retired) records
+  it on the Variable so the rule survives past the parse. No name allowlisted.
+
+- **tooling: the suite logs itself, names the failing stage, and can run a
+  subset.** `remote_build.sh` always tees to `tmp/logs/rb-<stamp>.log`, prints
+  a per-stage rc summary (a bare `total rc=1` cost a full battery), and gains
+  `tests` / `tests-all` driven by `TESTS='<glob> …'`. `run_tests.sh` accepts
+  basename globs and labels a filtered run `SUBSET RUN — … NOT a suite
+  baseline`. Full-suite runs stay the pre-merge gate; targeted runs are the
+  inner loop.
+
 ## [v0.54.0] — 2026-07-27
 
 Six C++ correctness fixes, four of them silent wrong answers, all found by

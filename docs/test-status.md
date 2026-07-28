@@ -1,6 +1,25 @@
 # Test Status
 
-> **Current (2026-07-27, `develop` — v0.54.0, six C++ correctness fixes,
+> **Current (2026-07-28, `feature/class-static-alias-claude` — eval scope
+> capture + the instantiation-product lookup surface):** fulltest **770 passed,
+> 0 failed, 0 timed out, 9 skipped**, `--exe` **754/0**, `--obj` **754/0**, and
+> the packed release arbiter **770/0/0/9**. All gates green: `libcxx_gate` OK,
+> `forest_index_oracle` OK (5180 indexed names cover 3487 registered lookups,
+> 40 allowlisted), delimiter ratchet at 0, rule-trailer gate clean.
+> Fork unchanged (**1.0-madc.0.52.0** @ba216dea).
+> New gate: `testevalexterncapture` (+1 baseline), plus `.expect_quiet` added
+> to the four `testmadceval*` tests — they had none, so a flood of
+> "undeclared identifier" diagnostics on stderr passed on stdout alone.
+> Worth keeping from the run: **`fulltest` went rc=2 with every one of the 770
+> tests passing in all four lanes.** The failure was `forest_index_oracle`, and
+> the only reason it was actionable is that the driver now prints a per-stage rc
+> summary — the previous battery reported a bare `total rc=1` through a `tail`
+> pipe that had discarded the stage, and the whole ~30-minute run was wasted.
+> The tooling fix (self-logging, stage summary, `TESTS=` subset runs) shipped
+> with the same batch; targeted runs are the inner loop now, full suite is the
+> pre-merge gate.
+
+> **Previous (2026-07-27, `develop` — v0.54.0, six C++ correctness fixes,
 > four of them silent wrong answers):** fulltest **769 passed, 0 failed,
 > 0 timed out, 9 skipped**, `--exe` **753/0**, `--obj` **753/0**, and the
 > packed release arbiter **769/0/0/9**. All gates green: the delimiter
