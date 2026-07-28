@@ -325,7 +325,31 @@ NOT a blocker for `use_facet` (GAP B) — that one is namespace-scoped already.
 `testrewritten_realhdr` — all report **"use of undeclared identifier
 'strong_ordering'"**.
 
-Almost certainly the alias itself: `std::strong_ordering::less` / `::equal` /
+### THE REAL DIAGNOSTIC (with `.flags` applied — the bare run's message was noise)
+
+    /usr/include/c++/13/compare:162:35: undeclared identifier partial_ordering__unordered
+    /usr/include/c++/13/compare:342:34: undeclared identifier strong_ordering__less
+    /usr/include/c++/13/compare:345:34: undeclared identifier strong_ordering__equal
+    /usr/include/c++/13/compare:351:34: undeclared identifier strong_ordering__greater
+    ... each followed by "lvalue required as unary & operand"
+
+Note the name: the INVENTED `strong_ordering__less`, **not** a mangled
+`_ZNSt14strong_ordering4lessE`. So the alias is NOT being applied to these, and
+the first hypothesis below is WRONG — they get storage with neither an alias
+nor an extern declaration, and the reference is an address-of (`&`) inside
+<compare> itself, at the out-of-class definition site.
+
+Two things to check first, in this order:
+1. Why `class_static_member_itanium_symbol()` declines them — `from_system_header`
+   is true for <compare>, so the likely answer is an empty
+   `canonical_cpp_spelling()` on those classes.
+2. Why no extern decl is emitted. At 34b2f245 `note_global_reference` did not
+   exist yet (it arrived in 88a6ab7b) and the address-of path recorded nothing,
+   so the later commit may already have changed this failure's shape — RE-RUN
+   THE FOUR TESTS AT BRANCH HEAD before assuming the 34b2f245 diagnosis still
+   describes it.
+
+Superseded first hypothesis (kept so it is not re-derived):  `std::strong_ordering::less` / `::equal` /
 `::greater` are static data members of a SYSTEM-HEADER class, which is exactly
 what `class_static_member_itanium_symbol()` began aliasing. Start by checking
 whether those statics take the alias when they should not (they are
