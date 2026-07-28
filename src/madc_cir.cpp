@@ -3648,7 +3648,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
-		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, NULL,
+		 fd.typeparam_defaults, fd.decl, no_toks,
+		 fd.typeparam_constraints, NULL,
 		 Program::ClassParseReason::None);
 	return false;
     });
@@ -3658,7 +3659,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
-		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, NULL,
+		 fd.typeparam_defaults, fd.decl, no_toks,
+		 fd.typeparam_constraints, NULL,
 		 Program::ClassParseReason::None);
 	return false;
     });

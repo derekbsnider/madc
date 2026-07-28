@@ -17011,6 +17011,14 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		if ( p < rt.defaults.size() )
 		    restore_run(rt.defaults[p], fd.typeparam_defaults.back());
 	    }
+	    // v33: per-param constraint-TYPE runs ride the record's spec slot
+	    // (empty for a class-partial-style use — FN records never carried
+	    // spec patterns before v33).
+	    for ( size_t sp = 0; sp < rt.spec.size(); ++sp )
+	    {
+		fd.typeparam_constraints.push_back(std::vector<TokenBase *>());
+		restore_run(rt.spec[sp], fd.typeparam_constraints.back());
+	    }
 	    restore_run(rt.body, fd.decl);
 	    if ( rt.kind == CIR_TMPLK_FN )
 		fn_template_map[key].push_back(fd);
@@ -39363,6 +39371,17 @@ bool Program::consume_template_parameter_type_suffix()
 	    skip_template_id_suffix();
 	consumed = true;
     }
+    // Pointer / reference declarator suffix on a non-type parameter's type
+    // (`void* = nullptr`, `__enable_if_t<...>* = nullptr`, `T* p`): part of
+    // the parameter's TYPE, so the caller sees the optional parameter name /
+    // '=' / separator next.
+    while ( peekToken() && (peekToken()->id() == TokenID::tkMul
+			 || peekToken()->id() == TokenID::tkBand
+			 || peekToken()->id() == TokenID::tkLand) )
+    {
+	nextToken();
+	consumed = true;
+    }
     return consumed;
 }
 
@@ -41133,7 +41152,8 @@ static bool retain_namespace_fn_template_body(
 	const std::vector<std::vector<TokenBase *>> *typeparam_defaults,
 	const std::vector<bool> *typeparam_is_type,
 	const std::vector<bool> *typeparam_is_pack,
-	const std::string &name)
+	const std::string &name,
+	const std::vector<std::vector<TokenBase *>> *typeparam_constraints = NULL)
 {
     if ( name.empty() || typeparams.empty() )
 	return false;
@@ -41144,6 +41164,7 @@ static bool retain_namespace_fn_template_body(
     Program::FnTemplateDef ft;
     ft.typeparams = typeparams;
     if ( typeparam_defaults ) ft.typeparam_defaults = *typeparam_defaults;
+    if ( typeparam_constraints ) ft.typeparam_constraints = *typeparam_constraints;
     if ( typeparam_is_type )  ft.typeparam_is_type = *typeparam_is_type;
     if ( typeparam_is_pack )  ft.typeparam_is_pack = *typeparam_is_pack;
     ft.decl = tokens;
@@ -41173,7 +41194,8 @@ static void register_skipped_namespace_template_function(
 	const std::vector<std::string> &typeparams,
 	const std::vector<std::vector<TokenBase *>> *typeparam_defaults,
 	const std::vector<bool> *typeparam_is_type,
-	const std::vector<bool> *typeparam_is_pack)
+	const std::vector<bool> *typeparam_is_pack,
+	const std::vector<std::vector<TokenBase *>> *typeparam_constraints = NULL)
 {
     // NO empty-namespace bail. A function template at GLOBAL scope is an
     // ordinary function template — [temp] does not require a namespace — and
@@ -41198,7 +41220,8 @@ static void register_skipped_namespace_template_function(
 	// matching operand shape for a retained free operator template.
 	retain_namespace_fn_template_body(pgm, tokens, typeparams,
 					  typeparam_defaults, typeparam_is_type,
-					  typeparam_is_pack, captured_opname);
+					  typeparam_is_pack, captured_opname,
+					  typeparam_constraints);
 	return;
     }
     // W2: also record stream manipulators (endl/flush/ends) for `os << endl`
@@ -41216,7 +41239,7 @@ static void register_skipped_namespace_template_function(
     // std::__detail::__to_chars_10_impl inside stoi/to_string).
     bool retained_body = retain_namespace_fn_template_body(pgm, tokens,
 	typeparams, typeparam_defaults, typeparam_is_type, typeparam_is_pack,
-	name);
+	name, typeparam_constraints);
     variable_map_t &ns = pgm.namespace_variables_for_write(
 	pgm.current_namespace());
     Variable *var = NULL;
@@ -42254,10 +42277,50 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	fprintf(stderr, "\n");
     }
 #endif
-    return instantiate_fn_template_binding(pgm, ft, key, binding, pack_param,
-					    pack_empty, var_out, pack_elems, tid_packs,
+    bool inst_ok = instantiate_fn_template_binding(pgm, ft, key, binding,
+					    pack_param, pack_empty, var_out,
+					    pack_elems, tid_packs,
 					    tid_pack_spellings, tid_packs_nontype,
 					    type_args_out, type_arg_packs_out);
+    // Pin a SOURCE-EXPLICIT call to the specialization just chosen: extend
+    // its explicit template args to the FULL ordered binding (defaults
+    // included), so rank_fn_overload_candidates discriminates
+    // same-param-list specializations that differ only in a non-type value
+    // (g<int,3> vs g<int,7>, both `int g(int)` — the explicit prefix
+    // ["int"] matched BOTH). Ranking compares NAMES; the binding holds the
+    // canonical decimal-named value-DataDefs.
+    // ONLY when the call already carries CONCRETE explicit args: tc is a
+    // parse-tree node shared across enclosing-template instantiations
+    // (parse-once), so the extension must be idempotent — a concrete
+    // explicit prefix determines the full binding every run. Pinning a
+    // DEDUCED call bakes the first instantiation's types into the shared
+    // node and poisons the next deduction (vector's _Construct chain died
+    // as a placeholder import). Pack shapes rank apart already; a
+    // placeholder arg means a dependent context — never pin.
+    if ( inst_ok && tc && !tc->explicit_template_args.empty()
+      && tc->explicit_template_args.size() < ft.typeparams.size() )
+    {
+	bool concrete = true;
+	for ( DataDef *ea : tc->explicit_template_args )
+	{
+	    DataDefCLASS *ec = dynamic_cast<DataDefCLASS *>(ea);
+	    if ( !ea || (ec && ec->is_dependent_placeholder) )
+	    { concrete = false; break; }
+	}
+	std::vector<DataDef *> full;
+	for ( size_t i = 0; concrete && i < ft.typeparams.size(); ++i )
+	{
+	    std::map<std::string, DataDef *>::const_iterator bi =
+		binding.find(ft.typeparams[i]);
+	    if ( bi != binding.end() && bi->second )
+		full.push_back(bi->second);
+	    else
+		concrete = false;
+	}
+	if ( concrete )
+	    tc->explicit_template_args = full;
+    }
+    return inst_ok;
 }
 
 // Resolve a fn-template parameter's DEFAULT token run (`R = T*`,
@@ -42273,7 +42336,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 DataDef *Program::resolve_template_param_default_type(
 		const std::vector<TokenBase *> &default_tokens,
 		const std::map<std::string, DataDef *> &binding,
-		DataDefCLASS *owner)
+		DataDefCLASS *owner, bool require_full_parse)
 {
     if ( default_tokens.empty() )
 	return NULL;
@@ -42304,6 +42367,14 @@ DataDef *Program::resolve_template_param_default_type(
     if ( owner )
     { class_scope_stack.push_back(owner); pushed_owner = true; }
 
+    // Mute std::cerr for the speculative resolve: a Throw inside it prints
+    // via throwbuf::sync() BEFORE the exception is caught (the same hazard
+    // fold_nontype_arg_constant documents), and a resolution MISS here is an
+    // expected event (an unsatisfied SFINAE constraint per rejected overload,
+    // an unresolvable default), not an error to surface.
+    std::streambuf *saved_cerr = std::cerr.rdbuf();
+    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    std::cerr.rdbuf(&g_madc_null_streambuf);
     TokenDataType *resolved = NULL;
     try
     {
@@ -42324,6 +42395,17 @@ DataDef *Program::resolve_template_param_default_type(
 	}
     }
     catch ( ... ) { resolved = NULL; }
+    // A SFINAE constraint must resolve AS A WHOLE: leftover tokens before the
+    // sentinel mean a member-type-chain miss that resolve_member_chain_or_type
+    // tolerated by returning the class itself (`enable_if<false,bool>::type`
+    // -> the class, `::type` unconsumed) — for constraint evaluation that IS
+    // the substitution failure. Off for the defaults-fill callers (their
+    // established contract accepts a resolved base).
+    if ( resolved && require_full_parse
+      && peekToken() && peekToken()->id() != TokenID::tkSemi )
+	resolved = NULL;
+    std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
 
     if ( pushed_owner && !class_scope_stack.empty()
       && class_scope_stack.back() == owner )
@@ -42457,6 +42539,23 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	if ( i < ft.typeparam_defaults.size()
 	  && !ft.typeparam_defaults[i].empty() )
 	{
+	    // NON-TYPE parameter default (`int N = 3`, `bool = true`,
+	    // `enable_if_t<...>* = nullptr` — TokenNullptr IS a TokenInt):
+	    // fold the run to a VALUE and bind the same decimal-named DataDef
+	    // shape the explicit-arg path mints (capture_call_template_args),
+	    // so substitution emits a TokenInt for it. A default that does not
+	    // fold (references another parameter's value) bails as before.
+	    if ( i < ft.typeparam_is_type.size() && !ft.typeparam_is_type[i] )
+	    {
+		int64_t ntv = 0;
+		if ( pgm.fold_nontype_arg_constant(ft.typeparam_defaults[i], ntv) )
+		{
+		    binding[ft.typeparams[i]] =
+			new DataDef(std::to_string(ntv), 8, DataType::dtINT64);
+		    continue;
+		}
+		return false;
+	    }
 	    const std::vector<TokenBase *> &dtoks = ft.typeparam_defaults[i];
 	    DataDef *base = NULL;
 	    bool ok = true;
@@ -42498,6 +42597,30 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    { binding[ft.typeparams[i]] = rd; continue; }
 	}
 	return false;
+    }
+
+    // SFINAE overload selection: a parameter whose TYPE was captured as a
+    // constraint run (`__enable_if_t<cond>*`, `enable_if<C,bool>::type`) must
+    // RESOLVE under the completed binding; a substitution failure removes the
+    // candidate ([temp.deduct]/8), so the caller's specialization-ordered loop
+    // tries the next overload. resolve_template_param_default_type is the
+    // SFINAE-clean resolver (isolated stream, rewound diagnostics, NULL on
+    // failure). Resolution runs in the template's DEFINING namespace — the
+    // constraint names its neighbors unqualified (`__enable_if_t` in
+    // std::__1), and the call site's namespace is unrelated ([temp.point]).
+    if ( !ft.typeparam_constraints.empty() )
+    {
+	Program::NamespaceScope ns_scope(pgm, ft.ns);
+	for ( size_t i = 0; i < ft.typeparam_constraints.size()
+			    && i < ft.typeparams.size(); ++i )
+	{
+	    if ( ft.typeparam_constraints[i].empty() )
+		continue;
+	    if ( !pgm.resolve_template_param_default_type(
+		    ft.typeparam_constraints[i], binding, ft.owner_class,
+		    /*require_full_parse=*/true) )
+		return false;
+	}
     }
 
     // Memo identity: a member-template instantiation's registration key is a
@@ -43224,6 +43347,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
     std::streambuf *saved_cerr = std::cerr.rdbuf();
     std::ios::iostate saved_cerr_state = std::cerr.rdstate();
     std::cerr.rdbuf(&g_madc_null_streambuf);
+    std::string saved_inst_identity = pgm.pending_fn_instantiation_identity;
+    pgm.pending_fn_instantiation_identity = inst_key;
     ++pgm.fn_template_instantiation_depth;
     try
     {
@@ -43258,6 +43383,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 #endif
     }
     --pgm.fn_template_instantiation_depth;
+    pgm.pending_fn_instantiation_identity = saved_inst_identity;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
     if ( !ok )
@@ -46532,6 +46658,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     // and explicit specializations (`template<>`).
     std::vector<std::string> typeparams;
     std::vector<std::vector<TokenBase *>> typeparam_defaults;
+    std::vector<std::vector<TokenBase *>> typeparam_constraints;
     std::vector<bool> typeparam_is_type;
     std::vector<bool> typeparam_is_pack;
     auto add_template_parameter = [&](const std::string &name, bool is_type,
@@ -46541,10 +46668,37 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	typeparam_is_type.push_back(is_type);
 	typeparam_is_pack.push_back(is_pack);
     };
+    // Capture the tokens a compound parameter-TYPE consumption pops (the
+    // savepos/consumed_since O(1) idiom the requires-clause capture uses)
+    // as [head, ...suffix...] clones: the parameter's constraint-type run,
+    // evaluated for SFINAE overload selection at instantiation
+    // (instantiate_fn_template_binding). Only a COMPOUND type is captured
+    // (suffix consumed); a bare head (`int N`) stays unconstrained. A
+    // pushback during the consumption (split `>>`) fails the prefix guard —
+    // the run stays empty (unconstrained), never mis-captured.
+    auto capture_type_suffix = [&pgm](TokenBase *head,
+				      std::vector<TokenBase *> &run) -> bool
+    {
+	TokenStream::Pos before = pgm.tokens.savepos();
+	size_t before_size = pgm.tokens.size();
+	bool consumed_any = pgm.consume_template_parameter_type_suffix();
+	size_t consumed = before_size > pgm.tokens.size()
+			? before_size - pgm.tokens.size() : 0;
+	std::vector<TokenBase *> popped = pgm.tokens.consumed_since(before);
+	if ( consumed_any && head && popped.size() == consumed )
+	{
+	    run.push_back(head->clone());
+	    for ( TokenBase *p : popped )
+		if ( p )
+		    run.push_back(p->clone());
+	}
+	return consumed_any;
+    };
     size_t anon_param_index = 0;
     bool has_non_type_params = false;
     for (;;)
     {
+	std::vector<TokenBase *> param_constraint;
 	tn = pgm.nextToken();
 	if ( pgm.consume_template_close(tn) )
 	    break;
@@ -46609,7 +46763,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		  && (pgm.peekToken()->id() == TokenID::tkLT
 		   || pgm.peekToken()->id() == TokenID::tkNS) )
 		{
-		    pgm.consume_template_parameter_type_suffix();
+		    capture_type_suffix(tn, param_constraint);
 		    if ( pgm.peekToken()
 		      && is_template_parameter_decl_name(pgm.peekToken()) )
 			pgm.nextToken();   // optional (unused) parameter name
@@ -46624,7 +46778,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	else if ( tn->type() == TokenType::ttIdentifier
 	       || tn->type() == TokenType::ttDataType )
 	{
-	    bool qualified_type = pgm.consume_template_parameter_type_suffix();
+	    bool qualified_type = capture_type_suffix(tn, param_constraint);
 	    TokenBase *param_name = pgm.peekToken();
 	    if ( pgm.consume_ellipsis() )
 	    {
@@ -46661,6 +46815,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    pgm.nextToken();
 	    typeparam_defaults.back() = pgm.collect_template_default_argument();
 	}
+	typeparam_constraints.push_back(param_constraint);
 	tn = pgm.nextToken();
 	if ( tn->id() == TokenID::tkComma ) continue;
 	if ( pgm.consume_template_close(tn) ) break;
@@ -46952,7 +47107,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 							typeparams,
 							&typeparam_defaults,
 							&typeparam_is_type,
-							&typeparam_is_pack);
+							&typeparam_is_pack,
+							&typeparam_constraints);
 	return NULL;
     }
     TokenBase *name_tb = pgm.nextToken();
@@ -51966,6 +52122,16 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	{
 	    ns_overload_tracked = true;
 	    ns_overload_spelling = peek_param_list_spelling();
+	    // A template-INSTANTIATION product's overload identity includes
+	    // its BINDING (inst_key): two specializations differing only in a
+	    // non-type value (g<int,3> / g<int,7>) share a parameter spelling
+	    // but are distinct functions ([temp.over.link]) — without the fold
+	    // the same-spelling reuse handed the second the first's symbol
+	    // (repeated MIR item declaration). Binding-derived, so identical
+	    // bindings still reuse/match (forest LOADED == PARSED preserved).
+	    if ( fn_template_instantiation_depth > 0
+	      && !pending_fn_instantiation_identity.empty() )
+		ns_overload_spelling += "\x01@" + pending_fn_instantiation_identity;
 	    std::vector<NamespaceFnOverload> &ovset =
 		namespace_fn_overload_sets[current_namespace() + "::" + source_id];
 	    Variable *same = NULL;
@@ -51991,14 +52157,28 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     }
     else if ( !qualified_owner_class && !is_c_mode()
 	   && current_linkage == LinkageSpec::Cpp
-	   && source_id.compare(0, 8, "operator") == 0 )
+	   && (source_id.compare(0, 8, "operator") == 0
+	    || fn_template_instantiation_depth > 0) )
     {
-	// C++ free-OPERATOR overloading at GLOBAL scope: the same per-overload
+	// C++ free-function overloading at GLOBAL scope, for OPERATORS and
+	// fn-template INSTANTIATION PRODUCTS: the same per-overload
 	// Variable/FuncDef model as namespace functions, registered under the
-	// empty-namespace key ("::operatorX"), so operator-expression dispatch
-	// (find_free_operator_function) can enumerate and rank the parsed set.
+	// empty-namespace key ("::name" / "::operatorX") — global scope IS the
+	// empty namespace. Operator-expression dispatch
+	// (find_free_operator_function) enumerates and ranks the operator sets;
+	// instantiation-product sets serve call ranking and fn-template
+	// re-entry (a SFINAE overload pair instantiates TWO same-name globals
+	// — width(int) / width(double) — which need distinct symbols and a set
+	// to rank, and whose display name lets a repeat call re-enter
+	// deduction). A PLAIN global function stays on the legacy path: its
+	// declaration-only form must import by SOURCE NAME for the dlsym
+	// fallback (libc declarations — tracking it would mangle the import).
 	ns_overload_tracked = true;
 	ns_overload_spelling = peek_param_list_spelling();
+	// Same binding-identity fold as the namespace branch above.
+	if ( fn_template_instantiation_depth > 0
+	  && !pending_fn_instantiation_identity.empty() )
+	    ns_overload_spelling += "\x01@" + pending_fn_instantiation_identity;
 	std::vector<NamespaceFnOverload> &ovset =
 	    namespace_fn_overload_sets["::" + source_id];
 	Variable *same = NULL;
