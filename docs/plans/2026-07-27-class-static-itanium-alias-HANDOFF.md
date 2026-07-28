@@ -282,6 +282,38 @@ stderr with exit 0 passed on stdout alone. All five carry one now.
 
 ---
 
+## GAP C — free function templates at GLOBAL scope (NEW, open, sized as NOT small)
+
+`template<typename T> T ident(T x) { return x; }` at file scope, called as
+`ident(7)`, reports **"use of undeclared identifier 'ident'"**. The IDENTICAL
+template inside `namespace nn`, called as `nn::ident(7)`, works. Deduced and
+explicit forms both fail. The suite does not cover this shape at all.
+
+TRACED, and the first two hypotheses were WRONG — do not repeat them:
+
+1. `register_skipped_namespace_template_function` (`src/parser.cpp:40697`) opens
+   with `if ( pgm.current_namespace().empty() ) return;`.
+2. The instantiation lookup (`src/parser.cpp:43436`) bails on
+   `fd->namespace_name.empty()`.
+3. The map key is `ns + "::" + name`, i.e. `"::ident"` at global scope.
+
+I relaxed (1) and (2) together, rebuilt, and **NOTHING CHANGED** — all five
+reducers failed identically. So `register_skipped_namespace_template_function`
+is not even REACHED for a global-scope template; the decision is further
+upstream, in whatever routes a template declaration to the "skipped" path
+(its only call site is `src/parser.cpp:46418`, guarded merely by
+`!pgm.deferred_function_body_sink`). Those edits were REVERTED rather than
+shipped — they are unverified and had no effect. Start by finding what decides
+a global-scope template declaration is skipped/deferred in the first place.
+
+SIZING: this is NOT the "adopt an existing owner" shape the other fixes in this
+release had. `namespace_name.empty()` / `current_namespace().empty()` appears
+**53 times** in parser.cpp; "a function template lives in a namespace" is a
+design assumption threaded through the front end, not one missing case. Budget
+accordingly, and expect the layer count to be >2.
+
+NOT a blocker for `use_facet` (GAP B) — that one is namespace-scoped already.
+
 ## Also open, unrelated
 
 `Gap{nested_tag_not_scoped_to_struct_body}` — two scopes each declaring a
