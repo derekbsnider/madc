@@ -1,6 +1,23 @@
 # Test Status
 
-> **Current (2026-07-28, `feature/class-static-alias-claude` — eval scope
+> **Current (2026-07-28, `develop` — v0.57.0, the libc++ burn-down: eight
+> core-C++ defects in one chain):** fulltest **784 passed, 0 failed,
+> 0 timed out, 9 skipped**, `--exe` **768/0**, `--obj` **768/0**, and the
+> packed release arbiter **784/0/0/9**. All gates green: `libcxx_gate` OK
+> (two new legs: `<cwchar>` compiles AND runs; the CRTP base-arg shape is
+> bounded on the forced-legacy lane and `<string>` terminates loudly, never
+> with a signal), delimiter ratchet at 0, rule-trailer gate clean, tsubst
+> ratchet 0. Fork unchanged (**1.0-madc.0.52.0** @ba216dea).
+> Eight new gates this release, each byte-identical across g++ 13 and
+> clang++-18: `testinlinensopen`, `testusingaliasfnptr`,
+> `testnestedinlinens`, `testcrtpbasearg`, `testnestedtagctor`,
+> `testbracedctor`, `testunderlyingtype`, `testdeclonlyspec`.
+> The `-stdlib=libc++` parse frontier now stops at ONE recorded defect for
+> both `<string_view>` and `<string>`:
+> `Gap{common_type_dependent_member_key_explosion}`.
+> Battery log: `tmp/logs/rb-20260728-162624.log`.
+
+> **Previous (2026-07-28, `feature/class-static-alias-claude` — eval scope
 > capture + the instantiation-product lookup surface):** fulltest **770 passed,
 > 0 failed, 0 timed out, 9 skipped**, `--exe` **754/0**, `--obj` **754/0**, and
 > the packed release arbiter **770/0/0/9**. All gates green: `libcxx_gate` OK,
