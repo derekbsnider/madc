@@ -21308,6 +21308,26 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	    return QualifiedClassExprAction::ResolvedFunction;
 	}
 
+	// Nested TYPE of the class in EXPRESSION position followed by a braced
+	// or parenthesized initializer — a temporary construction
+	// (`nullopt_t::__secret_tag{}`, libc++ <optional>:280). The declaration
+	// path already resolves the nested type through the same alias walker;
+	// this is its expression twin, served by the same functional-cast
+	// machinery the namespace-qualified arm uses. Placed AFTER the method
+	// arm (`Class::method(args)` stays a call) and gated inside
+	// parse_functional_type_expression on `{`/`(`, so a bare type-id still
+	// falls through to the member arms below.
+	if ( DataDef *nested_dd = resolve_class_type_alias(scope, member_name) )
+	{
+	    if ( TokenBase *ctor_expr =
+		    pgm.parse_functional_type_expression(member_tb, nested_dd) )
+	    {
+		exStack.push(ctor_expr);
+		*tb_out = member_tb;
+		return QualifiedClassExprAction::PushedExpression;
+	    }
+	}
+
 	// Static data member: the shared resolver owns the constant-vs-storage
 	// choice. That choice used to be made here and only for CLASS-typed
 	// members, so a scalar `static int n;` fell into the integral fold and
@@ -50474,16 +50494,36 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // char-array string-initializer path below.
 
     // Constructor call syntax: ClassName var(arg1, arg2, ...);
-    // Only for user-defined classes with a constructor.
+    // AND direct-list-initialization: ClassName var{arg1, arg2, ...} —
+    // [dcl.init.list]/3: when the class has constructors, the braced list's
+    // elements are CTOR ARGUMENTS ranked against the overload set, exactly
+    // like the paren form (libc++:
+    // `nullopt_t nullopt{nullopt_t::__secret_tag{}, ...}`). Routing it to
+    // the aggregate `= { ... }` machinery below field-filled a ctor-ful
+    // class and dropped every argument after the first. Aggregates (no user
+    // ctor) still take the brace-list path below. Only the paren form can
+    // be a function declaration (most vexing parse); braces never are.
     if ( !ret_is_ref
-      && nt->id() == TokenID::tkOpBrk && arr_dims.empty()
+      && (nt->id() == TokenID::tkOpBrk || nt->id() == TokenID::tkOpBrc)
+      && arr_dims.empty()
       && decl_type->basetype() == BaseType::btClass
-      && !paren_group_is_function_def() )
+      && !(nt->id() == TokenID::tkOpBrk && paren_group_is_function_def()) )
     {
 	DataDefCLASS *ddc = static_cast<DataDefCLASS *>(decl_type);
-	if ( ddc->has_user_ctor )
+	// An EMPTY braced list (`T x{}`) is value-initialization and keeps its
+	// existing brace-init route below; a NON-empty list with user ctors is
+	// a ctor-argument list and belongs here.
+	bool braced_ctor_args = nt->id() == TokenID::tkOpBrc
+	    && tokens.size() > 1 && tokens[1]
+	    && tokens[1]->id() != TokenID::tkClBrc;
+	if ( ddc->has_user_ctor
+	  && (nt->id() == TokenID::tkOpBrk || braced_ctor_args) )
 	{
-	    nextToken(); // consume '('
+	    TokenID ctor_close_id = nt->id() == TokenID::tkOpBrk
+				  ? TokenID::tkClBrk : TokenID::tkClBrc;
+	    const char *ctor_close_sp =
+		ctor_close_id == TokenID::tkClBrk ? ")" : "}";
+	    nextToken(); // consume '(' or '{'
 	    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
 	    bool alloc = (!code || gotstatic) ? true : false;
 	    var = addVariable(code, *decl_type, id, 1, NULL, alloc);
@@ -50500,7 +50540,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // captured tokens). Same cursor tap as the v23 param defaults.
 	    DefCapState ctor_cap;
 	    bool ctor_capturing = param_default_capture_begin(ctor_cap);
-	    while ( peekToken() && peekToken()->id() != TokenID::tkClBrk )
+	    while ( peekToken() && peekToken()->id() != ctor_close_id )
 	    {
 		TokenBase *arg = parseExpression(nextToken(), true);
 		td->ctor_args.push_back(arg);
@@ -50509,9 +50549,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    }
 	    if ( ctor_capturing && !td->ctor_args.empty() )
 		param_default_capture_end(ctor_cap, td->ctor_arg_src);
-	    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
-		Throw(tb) << "Expected ')' after constructor arguments" << flush;
-	    nextToken(); // consume ')'
+	    if ( !peekToken() || peekToken()->id() != ctor_close_id )
+		Throw(tb) << "Expected '" << ctor_close_sp
+			  << "' after constructor arguments" << flush;
+	    nextToken(); // consume ')' or '}'
 	    // A member-template constructor (e.g. _Rb_tree::_Auto_node's variadic
 	    // ctor) is registered declaration-only; deduce + instantiate the concrete
 	    // ctor for THESE argument types so select_ctor_overload can bind it.
