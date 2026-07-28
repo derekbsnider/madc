@@ -1,181 +1,189 @@
-# HANDOFF — class static data members: create on odr-use, alias when exported
+# HANDOFF — class statics: storage DONE, the Itanium alias still open
 
-**Status:** open, NEXT. **Branch:** cut a fresh one off `develop`
-(`feature/class-static-alias-claude`); develop is at v0.54.0 @`52b05376`.
+**Status:** step 1 **DONE** @`2b50b0ab` (branch `feature/class-static-alias-claude`,
+off develop v0.54.0 @`52b05376`). Step 2 (the alias) **open**.
 **KG node:** `Gap{class_static_itanium_alias}`.
 
-This is an imperative handoff. Where it says DO, do that; where it says DO NOT,
-that path has already been measured and rejected.
-
 ---
 
-## Read this first — BOTH halves are needed, and the two stdlibs need opposite things
+## Read this first — this handoff's own plan was wrong, and how it was caught
 
-This section was rewritten after source recon into `/workspace/gcc`,
-`/workspace/llvm-clang-src` and the container's libc++. The first draft was
-based on libstdc++ evidence alone and reached a conclusion that is only half
-right.
+The first two drafts of this document planned to fix the `from_system_header`
+placeholder guard by **creating a class static's storage on odr-use** instead of
+at its declaration. That plan was wrong, and following it would have shipped a
+second shim at the same wrong layer.
 
-### The model is confirmed by BOTH canons
+It was caught by refusing to build on the handoff's premise. The guard was
+deleted **alone**, with nothing else changed, purely to read the diagnostic it
+had been hiding:
+
+```
+tests/testmadceval.mad:12:38: undeclared identifier locale___S_once
+tests/testmadceval.mad:12:38: incompatible argument type for arithmetic type parameter
+```
+
+— once per eval call site, on stderr, **while still exiting 0**.
+
+That is not a mangling failure and not a class-static failure. It is
+`madc::eval`'s scope capture: the CIR lowering reads every captured variable as
+a bare `id()`, bypassing the path that records `referenced_globals` and gets an
+`extern` declaration emitted, so capturing anything with **no definition in this
+TU** emits a name c2mir never saw. A plain `extern int g;` in scope reproduces
+it with no class in the picture.
+
+The rule was already written in `is_runtime_eval_scope_supported_variable`, for
+parse-time constants: *"has no declaration in the emitted module — reads of it
+FOLD to its value, so the by-name capture would emit an undeclared identifier."*
+It simply never covered the other half of its own domain.
+
+**Lesson worth keeping:** the handoff asserted a root cause it had not
+instrumented. One bisect build — delete the suspect guard, change nothing else,
+read the error — replaced three paragraphs of plan with the actual answer. Do
+that before designing, every time, no matter how confident the previous session
+sounded.
+
+Second-order note: the test was first placed in the parse-time collector and
+then **moved** to the CIR lowering. "Did a definition ever arrive" is a whole-TU
+property, and the collector runs at the eval call site with the rest of the file
+unparsed, so it would have dropped `extern int g;` … `int g = 5;`. The lowering
+runs after the whole parse, where `vfEXTERN` is final.
+
+### What that means for the storage model
+
+madc now creates the decl for **every** static data member with no in-class
+initializer, with no origin-keyed exception — matching both canons:
 
 - **gcc:** `finish_static_data_member_decl` (`gcc/cp/decl2.cc:1167`) creates the
-  VAR_DECL while parsing the class body, marks it `DECL_IN_AGGR_P`, pushes it to
-  `pending_statics`; the out-of-class definition completes THAT decl.
-- **clang:** `Sema::ActOnCXXMemberDeclarator` (`clang/lib/Sema/SemaDeclCXX.cpp:3440`)
-  computes `isInstField` from the storage class (:3535) and routes a static
-  through `HandleDeclarator` (:3650), producing a `VarDecl` at declaration time.
+  VAR_DECL while parsing the class body, marks it `DECL_IN_AGGR_P`; the
+  out-of-class definition completes THAT decl.
+- **clang:** `Sema::ActOnCXXMemberDeclarator`
+  (`clang/lib/Sema/SemaDeclCXX.cpp:3440`) computes `isInstField` from the
+  storage class (:3535) and routes a static through `HandleDeclarator` (:3650).
 
-Same model, reached differently. Creating the decl at the declaration is right.
+The `has_inclass_init` guard **stays** — it is g++'s own `DECL_INITIAL`
+distinction, and it is what keeps `basic_string<...>::npos` and
+`memory_resource::_S_max_align` folding.
 
-### But libstdc++ and libc++ differ in the load-bearing way
-
-**libstdc++ — hidden, private, never odr-used by user code:**
-
-```
-libstdc++-v3/include/bits/locale_classes.h:364   static __gthread_once_t _S_once;   // private: at :335
-libstdc++-v3/include/bits/locale_classes.h:420   static __gthread_once_t _S_once;   // private: at :407
-libstdc++-v3/src/c++98/locale.cc:75              __gthread_once_t locale::_S_once = ...
-$ nm -D libstdc++.so.6 | grep _ZNSt6locale7_S_onceE      # EMPTY — not exported
-```
-
-Private, so no user code can odr-use it; defined inside the library; not
-exported. Nothing should ever reference it, and madc referencing it was the
-whole bug.
-
-**libc++ — public, exported, genuinely odr-used:**
-
-```
-$ grep -n "static locale::id id;" <libc++>/__locale     # 8+ facet classes
-$ nm -D libc++.so.1 | grep -cE "2idE"                   # 32 exported
-00000000000fc988 V _ZNSt3__110moneypunctIcLb0EE2idE
-```
-
-`std::use_facet<F>(loc)` reads `F::id`. These are PUBLIC, exported as weak
-object symbols, and user code odr-uses them for real. **Under `-stdlib=libc++`
-the alias is not optional — `use_facet` cannot work without it.**
-
-Note these are TEMPLATE-class statics (`moneypunct<char,false>::id`). I twice
-called that the "harder subset" needing new template-argument mangling. It is
-not, and it is not an edge case either — it is the common case here. See
-SETTLED #2.
-
-### So both steps are required, and they are complementary
-
-1. **Create on odr-use** — kills the spurious references to hidden statics like
-   `_S_once`, and is what deletes the placeholder guard.
-2. **Alias when the symbol is exported** — makes an odr-used system-header
-   static resolve against the library, which libc++'s facet `id`s need.
-
-Neither alone is sufficient. Step 1 without step 2 leaves `use_facet` broken
-under libc++; step 2 without step 1 keeps emitting references to hidden
-symbols.
+**Do NOT reintroduce odr-use creation.** It is unnecessary now, and it would
+cost the declared array extent (`static int a[3];` records `member_dims` at the
+declaration; an odr-use site only has the element type).
 
 ---
 
-## DO — create the storage on odr-use, not at declaration
+## STILL OPEN — step 2, the Itanium alias
 
-Move the creation from the declaration site into
-`resolve_class_static_member_value` (`src/parser.cpp:2567`), which is already
-THE owner of the constant-vs-storage choice and is reached exactly when a
-member is actually *referenced*:
+Required on EVERY stdlib flavor (see the correction below), and NOT deleted
+by step 1.
 
-1. It already prefers an existing storage `Variable` and folds a real in-class
-   constant. Add one branch: when there is no in-class constant **and** no
-   storage Variable exists, CREATE it there (with `vfEXTERN`, via
-   `class_static_member_storage_name`) and return a `TokenVar` to it.
-2. **Remove the creation from `TokenCLASS::parse` entirely**, along with the
-   `from_system_header` guard. The declaration goes back to recording only
-   `static_member_types` and any constant.
+**⚠️ CORRECTED 2026-07-28 — this is a BOTH-flavors requirement, not a libc++
+one.** Earlier drafts said libstdc++'s class statics are private and unexported
+while libc++'s are public, and framed step 2 as a libc++ need. That was drawn
+from three `_S_*` symbols and does not generalize. The probe that produced it
+was also wrong: `nm -D … | grep -E "2idE$"` returns 0 because these symbols
+carry `@@GLIBCXX_3.4` version suffixes, so the `$` anchor never matches. Always
+probe UNANCHORED, and suspect the probe before the conclusion.
 
-Why this is the right layer, not a relocation of the same hack: a reference is
-precisely an odr-use, so nothing is created for a member nobody touches —
-system-header or not, with no origin-keyed test anywhere. A user class's member
-is created when its body reads it, and the out-of-class definition still
-completes that same Variable through `addVariable`'s existing-symbol branch
-(adopt type/count, clear `vfEXTERN`). If a program genuinely odr-uses a hidden
-library static, it gets a link error — which is what g++ gives too.
+Measured, both unanchored:
 
-3. **Then** set `storage_alias_name` via `itanium_mangle_nested_var` for a
-   static whose defining class comes from a system header. Separate commit;
-   steps 1–2 stand alone and are what delete the guard. This step is what makes
-   `std::use_facet` work under `-stdlib=libc++`, so it is REQUIRED for the
-   flavor track, not a nicety. Do NOT gate it on "is the symbol exported" by
-   probing the `.so` — emit the alias and let the link fail loudly if the
-   library genuinely lacks it; a probe of the host's `.so` is exactly the
-   platform-means-library conflation this track exists to undo.
+| symbol class | libstdc++ 13 | libc++ 18 |
+|---|---|---|
+| facet `id` objects, exported | **51** (+40 `_ZGV` guards = 91 lines) | **32** |
+| `locale::_S_once` | **0** — private (`locale_classes.h:335`), defined in `src/c++98/locale.cc:75` | n/a |
 
----
+So the split is not libstdc++-vs-libc++, it is **`_S_*` internals vs facet
+`id`s**:
 
-## SETTLED — verified by reading the source on 2026-07-27, do not re-derive
+- The `_S_*` trio is private, unexported, and never odr-used from any inline
+  body (they appear in the headers as declarations only). Nothing should
+  reference them; after step 1 nothing does.
+- Facet `id`s are **public and exported in BOTH stdlibs**, and
+  `std::use_facet<F>(loc)` odr-uses `F::id` for real. This is what step 2 is
+  for, on every flavor. It reinforces SETTLED item 5 rather than contradicting
+  it.
 
-1. **The mangler exists and is general.**
-   `itanium_mangle_nested_var(const std::vector<std::string> &qualifiers,
-   const std::string &name)` — `include/madc_mangle.h:130`, body
-   `src/madc_mangle.cpp:952` → `ItaniumMangler::mangle_nested_variable` (:602).
-   An arbitrary qualifier chain; a class name is one more qualifier than a
-   namespace.
+Live evidence that these are already reachable on a plain libstdc++ build: the
+10 names `forest_index_oracle` flagged after step 1 (`numpunct_char__id`,
+`codecvt_..._id`, `num_get_..._id`, `num_put_..._id`) are exactly these facet
+`id` statics, now instantiated and given storage.
 
-2. **Template-class statics are NOT a harder subset.** I claimed twice that they
-   would need template-argument mangling. They do not: `mangle_nested_variable`
-   runs each qualifier through `parse_component` (`src/madc_mangle.cpp:317`),
-   which detects a template-id with `split_template_id_parts` and parses its
-   arguments via `parse_type`.
+**DO:** set `storage_alias_name` via `itanium_mangle_nested_var` for a static
+whose defining class comes from a system header. Do NOT gate it on "is the
+symbol exported" by probing the host's `.so` — emit the alias and let the link
+fail loudly if the library genuinely lacks it. Probing the host `.so` is exactly
+the platform-means-library conflation this track exists to undo.
 
+### SETTLED — verified by reading the source, do not re-derive
+
+1. **The mangler exists and is general.** `itanium_mangle_nested_var(const
+   std::vector<std::string> &qualifiers, const std::string &name)` —
+   `include/madc_mangle.h:130`, body `src/madc_mangle.cpp:952` →
+   `ItaniumMangler::mangle_nested_variable` (:602). An arbitrary qualifier
+   chain; a class name is one more qualifier than a namespace.
+2. **Template-class statics are NOT a harder subset.** They were called that
+   twice and it is wrong: `mangle_nested_variable` runs each qualifier through
+   `parse_component` (`src/madc_mangle.cpp:317`), which detects a template-id via
+   `split_template_id_parts` and parses its arguments with `parse_type`. The
+   exported `moneypunct<char,false>::id` — present in BOTH stdlibs — is the
+   COMMON case here, not an edge.
 3. **Extern emission already exists.** `cir_builder.cpp:6582` emits `N_EXTERN`
-   for a `vfEXTERN` global; `cir_builder.cpp:270` is the single place mapping a
-   `Variable` to its emitted symbol and already reads `storage_alias_name`.
-
+   for a `vfEXTERN` global; `var_emit_name` (`cir_builder.cpp:260`) is the single
+   place mapping a `Variable` to its emitted symbol and already reads
+   `storage_alias_name`.
 4. **`addVariable` already implements g++'s completion semantics** — the
    existing-symbol branch (`src/parser.cpp:18575`) adopts the definition's type
-   and count, clears `vfEXTERN`, and returns the SAME Variable. `vfEXTERN` is
-   madc's `DECL_IN_AGGR_P`.
-
-5. **Not libc++-specific.** libstdc++ and libc++ are both Itanium; libc++ only
-   adds the `__1` inline namespace to the chain, which `namespace_qualifiers()`
-   already handles.
-
+   and count, clears `vfEXTERN`, returns the SAME Variable. `vfEXTERN` is madc's
+   `DECL_IN_AGGR_P`.
+5. **Not libc++-specific.** Both stdlibs are Itanium; libc++ only adds the `__1`
+   inline namespace, which `namespace_qualifiers()` already handles.
 6. **Precedent to copy:** `namespace_cpp_variable_symbol`
-   (`src/parser.cpp:2112`), wired in `addVariable` at `:18587` / `:18601`.
-
+   (`src/parser.cpp:2112`), wired in `addVariable` at `:18587` / `:18601` — note
+   it is gated on `parsing_extern_decl`, which is false at a class-body
+   declaration, so the class-static wiring is a new call site, not a condition
+   to widen.
 7. **Splitting a qualified spelling** is owned by `split_scope_spelling()` in
-   `include/spelling_delim.h`. DO NOT hand-roll it — that family was
-   consolidated this release and is ratchet-gated.
+   `include/spelling_delim.h`. DO NOT hand-roll it — ratchet-gated.
+
+### Gate for step 2
+
+`std::use_facet` under BOTH flavors — it exercises an exported, odr-used,
+template-class static (`_ZNSt3__110moneypunctIcLb0EE2idE` and libstdc++'s
+`_ZNSt10moneypunctIcLb0EE2idE`). `libcxx_gate.sh` is where the libc++ leg
+belongs; the libstdc++ leg is an ordinary integration test, because those 51
+exports make it reachable without any flavor flag.
+
+Note also `forest_index_oracle`: once these statics carry an alias they are
+still vfINSTPRODUCT, so they stay off the lookup surface (see `91afcd3d`).
+Re-run that gate for step 2 — it is not in the targeted lanes.
 
 ---
 
-## Gate
+## Tooling changed under you — read this before running anything
 
-- The four tests that exposed the guard must pass with it gone:
-  `tests/testmadceval.mad`, `testmadcevalexpr.mad`,
-  `testmadcevalexprtyped.mad`, `testmadcevalscope.mad`.
-- `tests/teststaticmemberstorage.mad` must stay byte-identical to g++.
-- For step 3, the gate is `std::use_facet` under BOTH flavors: it exercises an
-  exported, odr-used, template-class static (`_ZNSt3__110moneypunctIcLb0EE2idE`
-  and its libstdc++ equivalent) — precisely the shape steps 1 and 2 have to
-  agree on. `libcxx_gate.sh` is where the libc++ leg belongs.
+`scripts/remote_build.sh` @`7f5f8524`:
 
-⚠️ **A reducer cannot catch the failure this task is about.** Two of the three
-batteries on `cff57761` went red on exactly it while all 45 reducers in
-`tmp/udecl/` stayed green — a user class's static always has its definition in
-the same file, so the shape is structurally unreachable from a reducer. Run
-`bash scripts/remote_build.sh battery` and expect it to be what finds the
-problem.
+- It **always** writes `tmp/logs/rb-<stamp>.log`. Do not pipe it through `tail`;
+  that is what cost a full battery on 2026-07-28. `grep` the log.
+- It prints a **stage summary** naming every stage's rc. `total rc=1` on its own
+  is no longer possible.
+- `TESTS='<glob> …' remote_build.sh sync build tests` runs a SUBSET (JIT);
+  `tests-all` runs the subset across JIT + exe + obj. **Scope the inner loop to
+  the blast radius; the full battery is the pre-merge gate, not the default.**
+- A filtered run prints `SUBSET RUN — … NOT a suite baseline`. Never quote one
+  as a baseline.
 
----
-
-## Method note worth keeping
-
-The premise of this handoff's first draft was killed by a single `nm -D`. Run
-the cheap existence check on a symbol you intend to link against **before**
-designing around it — a plan built on an assumed symbol is a plan that compiles
-in your head and nowhere else.
+⚠️ **A reducer could not have caught the failure step 1 fixed.** Two of three
+batteries on `cff57761` went red on it while all 45 reducers in `tmp/udecl/`
+stayed green — a user class's static always has its definition in the same file,
+so the shape is unreachable from a reducer. What made it *detectable* was
+`.expect_quiet`: those four `testmadceval*` tests had none, so diagnostics on
+stderr with exit 0 passed on stdout alone. All five carry one now.
 
 ---
 
 ## Also open, unrelated
 
 `Gap{nested_tag_not_scoped_to_struct_body}` — two scopes each declaring a
-`struct Inner` collide. Plan recorded in `claude_status.json` handoff #29:
-valid C cannot produce the collision, so no `--std=` gate is needed, and
-`parser.cpp:31285` already qualifies a nested tag's store key — it just
-requires `class_scope_stack` non-empty, and only `TokenCLASS::parse` pushes it.
+`struct Inner` collide. Plan in `claude_status.json` handoff #29: valid C cannot
+produce the collision, so no `--std=` gate is needed, and `parser.cpp:31285`
+already qualifies a nested tag's store key — it just requires
+`class_scope_stack` non-empty, and only `TokenCLASS::parse` pushes it.
