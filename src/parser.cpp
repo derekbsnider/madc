@@ -8597,7 +8597,10 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	tdt->file = tb->file;
 	tdt->line = tb->line;
 	tdt->column = tb->column;
-	return tdt;
+	// [dcl.type.simple]: a decltype-specifier can head a qualified name —
+	// `decltype(_S_test<A,B>(0))::type` (the file-scope common_type
+	// idiom). Continue the member chain exactly as the named-type arms do.
+	return resolve_member_chain_or_type(tdt, tb, consume_class_member_chain);
     }
     // `__underlying_type(E)` — the type-yielding intrinsic BOTH standard
     // libraries build std::underlying_type on (libstdc++'s typedef and

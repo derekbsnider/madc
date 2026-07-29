@@ -9,6 +9,11 @@
 //   - impl    = primary with defaulted params referencing earlier params
 //               + a repeated-param partial spec <T1,T2,T1,T2>
 //   - ct      = derives from the dependent member type impl<...>::type
+//   - S       = FILE-SCOPE class-qualified decltype over the overload set
+//               with a ::type chain (decltype(doer::_S_test<A,B>(0))::type
+//               — [dcl.type.simple]: a decltype-specifier heads a qualified
+//               name; the resolver's decltype arm continues the member
+//               chain like the named-type arms)
 // Oracle: g++ 13 and clang++-18 both print 8 8.
 #include <utility>
 #include <type_traits>
@@ -37,8 +42,9 @@ struct impl<T1, T2, T1, T2> : private doer {
 };
 template<class T1, class T2>
 struct ct : public impl<T1, T2>::type { };
+using S = decltype(doer::_S_test<long long, long long>(0))::type;
 int main() {
     using R = ct<long long, long long>::type;
-    printf("%d\n", (int)sizeof(R));
+    printf("%d %d\n", (int)sizeof(R), (int)sizeof(S));
     return 0;
 }
