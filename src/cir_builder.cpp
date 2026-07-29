@@ -5098,6 +5098,12 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 			marker->set_datadef(target);
 			return marker->as_node();
 		}
+		if (getenv("MADC_XTEST_DEPARG_DEBUG"))
+			fprintf(stderr, "[DEPARG-PAT] arg=%s dd=%s target=%s in=%s\n",
+				describe_token(arg).c_str(),
+				arg && arg->datadef() ? arg->datadef()->name.c_str() : "?",
+				target ? target->name.c_str() : "?",
+				m_cur_method ? m_cur_method->returns.name.c_str() : "?");
 		return error_node("tsubst: dependent-arg object construction", arg);
 	}
 	// The same recursion exists at HIT time: the per-instantiation relower
@@ -5108,8 +5114,15 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 	// grounded from an unknown-typed arg: refuse, so the relower's error
 	// sweep falls back to the shell carrier.
 	if (arg && (template_param_under_type_layers(arg->datadef())
-		    || dependent_placeholder_under_type_layers(arg->datadef())))
+		    || dependent_placeholder_under_type_layers(arg->datadef()))) {
+		if (getenv("MADC_XTEST_DEPARG_DEBUG"))
+			fprintf(stderr, "[DEPARG-HIT] arg=%s dd=%s target=%s in=%s\n",
+				describe_token(arg).c_str(),
+				arg && arg->datadef() ? arg->datadef()->name.c_str() : "?",
+				target ? target->name.c_str() : "?",
+				m_cur_method ? m_cur_method->returns.name.c_str() : "?");
 		return error_node("tsubst: dependent-arg object construction", arg);
+	}
 	char name[32];
 	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
 	Variable *tmp = new Variable(name, *target, 1, NULL, false);

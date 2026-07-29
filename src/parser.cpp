@@ -7669,6 +7669,23 @@ bool Program::alias_use_args_all_concrete(const TemplateAliasDef &td,
     return all_concrete;
 }
 
+bool Program::alias_arg_tokens_dependent(const std::vector<TokenBase *> &toks)
+{
+    for ( TokenBase *t : toks )
+    {
+	if ( !t )
+	    continue;
+	if ( is_contextual_identifier_token(t)
+	  && resolve_template_param(contextual_identifier_name(t)) )
+	    return true;
+	if ( t->type() == TokenType::ttDataType
+	  && datadef_has_unresolved_dependent_surface(
+		&((TokenDataType *)t)->definition) )
+	    return true;
+    }
+    return false;
+}
+
 TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 						     TokenBase *tb,
 						     const std::string &ns_hint,
@@ -7798,6 +7815,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	{
 	    std::map<std::string, const std::vector<TokenBase *> *> tok_subst;
 	    std::set<std::string> pack_param_names;
+	    std::set<std::string> used_params;
 	    for ( size_t i = 0; i < td.typeparams.size() && i < arg_tokens.size(); ++i )
 	    {
 		tok_subst[td.typeparams[i]] = &arg_tokens[i];
@@ -7815,6 +7833,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 			tok_subst.find(nm);
 		    if ( si != tok_subst.end() )
 		    {
+			used_params.insert(nm);
 			for ( TokenBase *rt : *si->second )
 			    body.push_back(rt->clone());
 			// A PACK param (`_Args`) in the alias body is followed by a
@@ -7851,6 +7870,20 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    {
 		TokenBase *head = nextToken();
 		resolved = resolve_declared_type_token(head, true, true);
+		// The substituted body IS the type spelling: tokens left
+		// before the `;` sentinel mean the resolution did not cover
+		// it — a FAILURE, not a success (#27's require_full_parse
+		// rule). The leak: `enable_if<false,void>::type` — the
+		// member-miss probe declines without consuming, the chain
+		// tolerance hands back the CLASS, and the dangling `::type`
+		// silently passed, so enable_if_t<false> "resolved" and
+		// defeated SFINAE (__or_/__and_'s catch-all never won —
+		// std::is_destructible read wrong through the whole family).
+		if ( resolved && peekToken()
+		  && peekToken()->id() != TokenID::tkSemi
+		  && !dependent_parse_in_progress
+		  && !class_pattern_capture_in_progress )
+		    resolved = NULL;
 	    }
 	    catch ( ... ) { resolved = NULL; }
 
@@ -7860,6 +7893,15 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		class_scope_stack.pop_back();
 
 	    tokens.swap_back(std::move(saved_tokens));
+	    DBG({
+		std::string aj;
+		for ( size_t i = 0; i < args.size(); ++i )
+		    aj += (i ? "," : "") + args[i];
+		std::cout << "alias_nontype_use: " << tname << "<" << aj
+			  << "> resolved="
+			  << (resolved ? resolved->definition.name : "(fail)")
+			  << std::endl;
+	    });
 	    if ( !resolved )
 	    {
 		diagnostics.resize(saved_diag_count);
@@ -7881,7 +7923,88 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		    return NULL;
 	    }
 	    else
-		return use_site_type_token(resolved, tb);
+	    {
+		// [temp.deduct]/8: EVERY template argument must be valid in
+		// the immediate context — INCLUDING args the alias target
+		// never names. gcc 13's whole __or_fn/__and_fn design hangs
+		// on exactly this: `__first_t<false_type,
+		// __enable_if_t<!bool(_Bn::value)>...>` succeeds or SFINAE-
+		// fails on the UNUSED pack args. Validate each arg the
+		// substitution did not splice into the body: a failing
+		// concrete arg is a substitution failure (NULL); a DEPENDENT
+		// arg (names a live template parameter / dependent surface)
+		// keeps the opaque placeholder below, as before.
+		// A DEPENDENT parse skips the validation entirely (args
+		// legitimately unresolvable now); the resolved body still
+		// returns, exactly as before.
+		const bool skip_validation = dependent_parse_in_progress
+					  || class_pattern_capture_in_progress;
+		bool unused_failed = false, unused_dependent = false;
+		for ( size_t i = 0; !skip_validation && i < arg_tokens.size()
+			     && !unused_failed && !unused_dependent; ++i )
+		{
+		    // An EMPTY arg slot (`__void_t<>` — an empty pack) is not
+		    // an argument at all; nothing to validate.
+		    if ( arg_tokens[i].empty() )
+			continue;
+		    const std::string &pname =
+			i < td.typeparams.size() ? td.typeparams[i]
+			: (!td.typeparams.empty() ? td.typeparams.back()
+						  : std::string());
+		    if ( used_params.count(pname) )
+			continue;
+		    bool arg_is_type = i < td.typeparam_is_type.size()
+				     ? td.typeparam_is_type[i] : true;
+		    if ( !arg_is_type )
+		    {
+			int64_t v = 0;
+			if ( !fold_nontype_arg_constant(arg_tokens[i], v) )
+			{
+			    if ( alias_arg_tokens_dependent(arg_tokens[i]) )
+				unused_dependent = true;
+			    else
+				unused_failed = true;
+			}
+			continue;
+		    }
+		    std::vector<TokenBase *> probe;
+		    for ( TokenBase *t : arg_tokens[i] )
+			if ( t )
+			    probe.push_back(t->clone());
+		    probe.push_back(new TokenSemi());
+		    size_t sdc = diagnostics.size();
+		    Program::ErrorInfo se = last_error;
+		    TokenStream::State st = tokens.swap_in(std::move(probe));
+		    TokenDataType *art = NULL;
+		    try
+		    {
+			art = resolve_declared_type_token(nextToken(), true, true);
+			if ( art && peekToken()
+			  && peekToken()->id() != TokenID::tkSemi )
+			    art = NULL;	// leftover before the sentinel = fail
+		    }
+		    catch ( ... ) { art = NULL; }
+		    tokens.swap_back(std::move(st));
+		    diagnostics.resize(sdc);
+		    last_error = se;
+		    if ( !art )
+		    {
+			if ( alias_arg_tokens_dependent(arg_tokens[i]) )
+			    unused_dependent = true;
+			else
+			    unused_failed = true;
+		    }
+		    else if ( datadef_has_unresolved_dependent_surface(
+				&art->definition) )
+			unused_dependent = true;
+		}
+		if ( unused_failed )
+		    return NULL;
+		if ( !unused_dependent )
+		    return use_site_type_token(resolved, tb);
+		// a dependent unused arg: the whole alias-id is dependent —
+		// fall through to the opaque placeholder below.
+	    }
 	}
 
 	std::string mangled = tname;
@@ -8809,7 +8932,19 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
     try
     {
 	TokenDataType *rt = resolve_declared_type_token(nextToken(), true, true);
-	if ( rt )
+	// The range IS the type spelling: anything left before the sentinel
+	// means the resolution did not cover it — a SUBSTITUTION FAILURE, not
+	// a success (the #27 require_full_parse rule). The motivating leak:
+	// `enable_if<false,void>::type` — the member-miss probe declines
+	// without consuming, the tolerance hands back the CLASS, and the
+	// dangling `::type` silently passed, so enable_if_t<false> "resolved"
+	// and defeated SFINAE (__or_/__and_'s catch-all never won).
+	// A DEPENDENT parse (pattern registration / capture) legitimately
+	// leaves dependent tails unconsumed — enforce completeness only in
+	// concrete contexts, where leftovers mean substitution failure.
+	if ( rt && (dependent_parse_in_progress
+		 || class_pattern_capture_in_progress
+		 || (peekToken() && peekToken()->id() == TokenID::tkSemi)) )
 	    result = &rt->definition;
     }
     catch ( ... )
@@ -10117,6 +10252,33 @@ struct TraitTypeArg
     }
 };
 
+// A SUBSTITUTED trait argument arrives as ONE type token with the reference
+// already baked into the DataDef (`_Tp` bound to `int&` substitutes a
+// DataDefREF; `const T&` a REF wrapping a CONST) — there are no trailing
+// `&`/`&&`/`const` tokens for the arg parsers to set the flags from. Un-unwrapped,
+// the REF read as a non-class prvalue — never assignable-to — so
+// is_move_assignable<int> silently folded FALSE through the whole
+// __and_fn/__conditional_t chain; a baked REF also never same_as-matched the
+// spelled form of the same type. Normalize to the referent+flags shape the
+// spelled form produces. madc's IR keeps ONE reference kind post-resolution,
+// so a baked reference reads as the LVALUE form (trait uses that need the
+// rvalue distinction spell it with trailing `&&` tokens, which win above).
+static void unwrap_baked_trait_arg(TraitTypeArg &a)
+{
+    if ( a.is_lref || a.is_rref )
+	return;
+    if ( DataDefREF *rdd = dynamic_cast<DataDefREF *>(a.dd) )
+    {
+	a.is_lref = true;
+	a.dd = rdd->base_type;
+    }
+    if ( DataDefCONST *cdd = dynamic_cast<DataDefCONST *>(a.dd) )
+    {
+	a.referent_const = true;
+	a.dd = cdd->base_type;
+    }
+}
+
 // Tri-state: 1 = yes, 0 = no, -1 = madc cannot determine faithfully (the caller
 // raises a clear error rather than emit a WRONG bool — a wrong trait result would
 // silently corrupt SFINAE; see the correctness-first note on type_trait_arity).
@@ -10247,6 +10409,7 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	{ nextToken(); a.is_lref = true; }
 	else if ( peekToken() && peekToken()->id() == TokenID::tkLand )
 	{ nextToken(); a.is_rref = true; }
+	unwrap_baked_trait_arg(a);
 	args.push_back(a);
 	TokenBase *sep = nextToken();
 	if ( sep && sep->id() == TokenID::tkComma )
@@ -13764,50 +13927,23 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     return selected;
 }
 
-DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
-		const std::vector<DataDef *> &explicit_targs)
+// Substitute a retained dependent return-type token range with a positional
+// binding + trailing-pack elements (the clang SubstDecl model, return-type
+// only — no body instantiation). A pack-expansion `pattern...` naming the
+// pack (`declval<_ArgTypes>()...`, `__enable_if_t<!bool(_Bn::value)>...`) is
+// repeated once per pack element with the pack name substituted per element;
+// the pack name itself is left raw in the forward pass so the just-appended
+// pattern still carries it, then lifted out and re-emitted on the `...`.
+// The ONE implementation, shared by the member-template resolver
+// (resolve_member_template_call_return_type) and the namespace fn-template
+// by-key resolver (resolve_fn_template_return_by_key).
+static std::vector<TokenBase *> substitute_return_range_tokens(
+	const std::vector<TokenBase *> &rtoks,
+	const std::map<std::string, DataDef *> &binding,
+	const std::string &pack_name,
+	const std::vector<DataDef *> &pack_elems)
 {
-    if ( !fd || fd->member_template_return_tokens.empty()
-      || fd->template_param_names.empty() )
-	return NULL;
-    // Bind type parameters from the EXPLICIT template args (the common library
-    // shape `_S_test<F, Args...>(0)` is all-explicit). A binding deduced from
-    // the call argument types is a follow-up (sub-wall (c)). The trailing
-    // parameter may be a PACK (`typename... _Args`): explicit args beyond the
-    // leading fixed params all belong to it — bind the fixed params singly and
-    // collect the pack's elements (the `__invoke_result`/`__result_of` keystone
-    // `_S_test<_Functor, _ArgTypes...>(0)` where _ArgTypes is multi-element).
-    std::map<std::string, DataDef *> binding;
-    std::string pack_name;
-    size_t nfixed = fd->template_param_names.size();
-    if ( fd->template_param_is_pack.size() == fd->template_param_names.size()
-      && !fd->template_param_is_pack.empty()
-      && fd->template_param_is_pack.back() )
-    {
-	pack_name = fd->template_param_names.back();
-	nfixed = fd->template_param_names.size() - 1;
-    }
-    std::vector<DataDef *> pack_elems;
-    for ( size_t i = 0; i < explicit_targs.size(); ++i )
-    {
-	if ( !explicit_targs[i] )
-	    continue;
-	if ( i < nfixed )
-	    binding[fd->template_param_names[i]] = explicit_targs[i];
-	else if ( !pack_name.empty() )
-	    pack_elems.push_back(explicit_targs[i]);
-    }
-    if ( binding.empty() && pack_elems.empty() )
-	return NULL;
-    // Substitute: clone the dependent return-type tokens, replacing each
-    // type-parameter name with the bound type (the clang SubstDecl model,
-    // return-type only — no body instantiation). A pack-expansion `pattern...`
-    // naming the pack (`declval<_ArgTypes>()...`) is repeated once per pack
-    // element with the pack name substituted per element; the pack name itself
-    // is left raw in the forward pass so the just-appended pattern still carries
-    // it, then lifted out and re-emitted on the `...`.
     std::vector<TokenBase *> sub;
-    const std::vector<TokenBase *> &rtoks = fd->member_template_return_tokens;
     for ( size_t i = 0; i < rtoks.size(); ++i )
     {
 	TokenBase *t = rtoks[i];
@@ -13862,7 +13998,7 @@ DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
 		sub.push_back(t->clone());
 		continue;
 	    }
-	    std::map<std::string, DataDef *>::iterator bi = binding.find(tn);
+	    std::map<std::string, DataDef *>::const_iterator bi = binding.find(tn);
 	    if ( bi != binding.end() && bi->second )
 	    {
 		sub.push_back(new TokenDataType(bi->second->name.c_str(),
@@ -13872,6 +14008,48 @@ DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
 	}
 	sub.push_back(t ? t->clone() : NULL);
     }
+    return sub;
+}
+
+DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
+		const std::vector<DataDef *> &explicit_targs)
+{
+    if ( !fd || fd->member_template_return_tokens.empty()
+      || fd->template_param_names.empty() )
+	return NULL;
+    // Bind type parameters from the EXPLICIT template args (the common library
+    // shape `_S_test<F, Args...>(0)` is all-explicit). A binding deduced from
+    // the call argument types is a follow-up (sub-wall (c)). The trailing
+    // parameter may be a PACK (`typename... _Args`): explicit args beyond the
+    // leading fixed params all belong to it — bind the fixed params singly and
+    // collect the pack's elements (the `__invoke_result`/`__result_of` keystone
+    // `_S_test<_Functor, _ArgTypes...>(0)` where _ArgTypes is multi-element).
+    std::map<std::string, DataDef *> binding;
+    std::string pack_name;
+    size_t nfixed = fd->template_param_names.size();
+    if ( fd->template_param_is_pack.size() == fd->template_param_names.size()
+      && !fd->template_param_is_pack.empty()
+      && fd->template_param_is_pack.back() )
+    {
+	pack_name = fd->template_param_names.back();
+	nfixed = fd->template_param_names.size() - 1;
+    }
+    std::vector<DataDef *> pack_elems;
+    for ( size_t i = 0; i < explicit_targs.size(); ++i )
+    {
+	if ( !explicit_targs[i] )
+	    continue;
+	if ( i < nfixed )
+	    binding[fd->template_param_names[i]] = explicit_targs[i];
+	else if ( !pack_name.empty() )
+	    pack_elems.push_back(explicit_targs[i]);
+    }
+    if ( binding.empty() && pack_elems.empty() )
+	return NULL;
+    // Substitute — the ONE shared implementation (see
+    // substitute_return_range_tokens).
+    std::vector<TokenBase *> sub = substitute_return_range_tokens(
+	fd->member_template_return_tokens, binding, pack_name, pack_elems);
     // Resolve in the owner's class scope (so an owner-scope typedef / member
     // type in the return resolves). resolve_type_token_range carries its own
     // SFINAE trap (returns NULL on substitution failure — a non-viable
@@ -24976,6 +25154,7 @@ static bool read_local_type_arg(Program &pgm,
     { out.is_lref = true; ++i; }
     else if ( i < toks.size() && toks[i] && toks[i]->id() == TokenID::tkLand )
     { out.is_rref = true; ++i; }
+    unwrap_baked_trait_arg(out);
     return true;
 }
 
@@ -42129,6 +42308,24 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    for ( size_t a = i; a < tc->parameters.size(); ++a )
 	    {
 		DataDef *adp = pgm.operand_value_datadef(tc->parameters[a]);
+#ifdef MADC_DBG_PACK
+		{
+		    TokenBase *pt_ = tc->parameters[a];
+		    TokenCallFunc *cf_ = dynamic_cast<TokenCallFunc *>(pt_);
+		    TokenVar *tv_ = dynamic_cast<TokenVar *>(pt_);
+		    DBG_PACK("  absorb[%zu] tok=%p cls=%s id=%d callee=%s var=%s@%p ovr=%s raw=%s dd=%s\n",
+			     a, (void *)pt_,
+			     pt_ ? typeid(*pt_).name() : "null",
+			     pt_ ? (int)pt_->id() : -1,
+			     cf_ ? cf_->var.name.c_str() : "-",
+			     tv_ ? tv_->var.name.c_str() : "-",
+			     tv_ ? (void *)&tv_->var : NULL,
+			     cf_ && cf_->return_override
+				 ? cf_->return_override->name.c_str() : "-",
+			     pt_ && pt_->datadef() ? pt_->datadef()->name.c_str() : "-",
+			     adp ? adp->name.c_str() : "(null)");
+		}
+#endif
 		adp = fn_template_pack_arg_element(sp, pack_param, adp);
 		if ( !adp )
 		    return false;
@@ -45709,7 +45906,12 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
     if ( !tc || tc->explicit_template_args.empty() )
 	return NULL;
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
-    if ( !fd || fd->namespace_name.empty() || fd->function_display_name.empty() )
+    // The GLOBAL namespace is a namespace: registration keys a global fn
+    // template as "::name" (current_namespace() is empty), and this key
+    // derivation matches it — so an empty namespace_name must NOT bail
+    // (it made decltype(and_fn<...>(0)) keep the placeholder's `auto`).
+    // function_display_name is the placeholder-shape discriminator.
+    if ( !fd || fd->function_display_name.empty() )
 	return NULL;
     std::string key = fd->namespace_name + "::" + fd->function_display_name;
     return resolve_fn_template_return_by_key(key, tc->explicit_template_args,
@@ -45777,6 +45979,25 @@ DataDef *Program::resolve_fn_template_return_by_key(
     }
     if ( cands.empty() )
 	return NULL;
+    // [over.match.best]/[over.ics.ellipsis]: an ellipsis-only candidate
+    // (`auto __or_fn(...) -> true_type`, the SFINAE catch-all) loses to any
+    // viable non-ellipsis one. This resolver takes the FIRST candidate whose
+    // return RESOLVES (a substitution failure `continue`s to the next), so
+    // ordering the non-ellipsis candidates first IS the tiebreak: the
+    // catch-all serves only when every SFINAE overload's return fails.
+    std::stable_partition(cands.begin(), cands.end(),
+	[](FnTemplateDef *c) {
+	    const std::string nm =
+		skipped_template_function_declarator_name(c->decl);
+	    for ( size_t i = 0; i + 4 < c->decl.size(); ++i )
+		if ( c->decl[i] && is_skipped_template_function_name(c->decl[i])
+		  && skipped_template_function_name(c->decl[i]) == nm
+		  && c->decl[i+1] && c->decl[i+1]->id() == TokenID::tkOpBrk )
+		    return !(c->decl[i+2] && c->decl[i+2]->id() == TokenID::tkDot
+			  && c->decl[i+3] && c->decl[i+3]->id() == TokenID::tkDot
+			  && c->decl[i+4] && c->decl[i+4]->id() == TokenID::tkDot);
+	    return true;
+	});
     static const std::set<std::string> specifiers = {
 	"static", "constexpr", "inline", "virtual", "friend", "extern",
 	"typename", "const", "volatile", "auto"
@@ -45784,8 +46005,21 @@ DataDef *Program::resolve_fn_template_return_by_key(
     for ( FnTemplateDef *ftp : cands )
     {
 	FnTemplateDef &ft = *ftp;
-	if ( ft.typeparams.empty()
-	  || explicit_args.size() > ft.typeparams.size() )
+	if ( ft.typeparams.empty() )
+	    continue;
+	// A TRAILING TYPE pack absorbs any surplus explicit args (gcc 13's
+	// `__or_fn<_Bn...>` takes N trait args against ONE pack param); the
+	// pack-blind arity gate skipped every such candidate and decltype of
+	// the call fell to the placeholder's `auto`.
+	size_t nfixed = ft.typeparams.size();
+	std::string pack_name;
+	if ( ft.typeparam_is_pack.size() == ft.typeparams.size()
+	  && !ft.typeparam_is_pack.empty() && ft.typeparam_is_pack.back() )
+	{
+	    pack_name = ft.typeparams.back();
+	    nfixed = ft.typeparams.size() - 1;
+	}
+	if ( pack_name.empty() && explicit_args.size() > ft.typeparams.size() )
 	    continue;
 	std::string name = skipped_template_function_declarator_name(ft.decl);
 	if ( name.empty() )
@@ -45858,18 +46092,28 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// pair ctor (map<K,string>::operator[]). Skip such a kind-mismatched candidate
 	// so the viable by-INDEX overload (or full instantiation) supplies the type.
 	std::map<std::string, DataDef *> binding;
+	std::vector<DataDef *> pack_elems;
 	bool kind_mismatch = false;
-	for ( size_t i = 0; i < explicit_args.size()
-			 && i < ft.typeparams.size(); ++i )
+	for ( size_t i = 0; i < explicit_args.size(); ++i )
 	    if ( explicit_args[i] )
 	    {
+		if ( i >= nfixed )
+		{
+		    if ( pack_name.empty() )
+			break;	// surplus arg, no pack (gated above; belt)
+		    // A TYPE pack: a value arg is a kind mismatch here too.
+		    if ( datadef_is_nontype_constant(explicit_args[i]) )
+			{ kind_mismatch = true; break; }
+		    pack_elems.push_back(explicit_args[i]);
+		    continue;
+		}
 		bool tp_is_type = i >= ft.typeparam_is_type.size()
 			       || ft.typeparam_is_type[i];
 		if ( tp_is_type && datadef_is_nontype_constant(explicit_args[i]) )
 		    { kind_mismatch = true; break; }
 		binding[ft.typeparams[i]] = explicit_args[i];
 	    }
-	if ( kind_mismatch || binding.empty() )
+	if ( kind_mismatch || (binding.empty() && pack_elems.empty()) )
 	    continue;
 	// A return type that references a template parameter NOT bound by the
 	// explicit arguments cannot be resolved from explicit args alone — it
@@ -45890,6 +46134,8 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		if ( !t || !is_contextual_identifier_token(t) )
 		    continue;
 		const std::string nm = contextual_identifier_name(t);
+		if ( !pack_name.empty() && nm == pack_name )
+		    continue;	// the pack IS bound (via pack_elems)
 		for ( size_t tj = 0; tj < ft.typeparams.size(); ++tj )
 		    if ( ft.typeparams[tj] == nm && !binding.count(nm) )
 		    { return_has_unbound_tp = true; break; }
@@ -45897,25 +46143,13 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	    if ( return_has_unbound_tp )
 		continue;
 	}
-	// Substitute each type-parameter name with its bound type, then resolve
-	// (resolve_type_token_range carries its own SFINAE trap -> NULL on failure).
-	std::vector<TokenBase *> sub;
-	for ( size_t i = rs; i < re; ++i )
-	{
-	    TokenBase *t = ft.decl[i];
-	    if ( t && is_contextual_identifier_token(t) )
-	    {
-		std::map<std::string, DataDef *>::iterator bi =
-		    binding.find(contextual_identifier_name(t));
-		if ( bi != binding.end() && bi->second )
-		{
-		    sub.push_back(new TokenDataType(bi->second->name.c_str(),
-						    *bi->second));
-		    continue;
-		}
-	    }
-	    sub.push_back(t ? t->clone() : NULL);
-	}
+	// Substitute each type-parameter name with its bound type — the ONE
+	// shared implementation, incl. `pattern...` trailing-pack expansion
+	// (resolve_type_token_range below carries its own SFINAE trap ->
+	// NULL on failure).
+	std::vector<TokenBase *> range(ft.decl.begin() + rs, ft.decl.begin() + re);
+	std::vector<TokenBase *> sub = substitute_return_range_tokens(
+	    range, binding, pack_name, pack_elems);
 	// A `-> decltype(inner_call)` return (declval's `decltype(__declval<_Tp>
 	// (0))`): recurse into the inner call's template return type WITHOUT
 	// emitting it. madc has no true unevaluated context, so routing the
@@ -45924,11 +46158,48 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// resolver reads the substituted decl tokens directly — no emission.
 	DataDef *rt = NULL;
 	bool dt_ref = false;
-	if ( !sub.empty() && sub[0] && is_contextual_identifier_token(sub[0])
-	  && contextual_identifier_name(sub[0]) == "decltype" )
-	    rt = resolve_decltype_call_return(sub, ft.ns, &dt_ref, depth);
-	else
-	    rt = resolve_type_token_range(sub, 0, sub.size());
+	{
+	    // [temp.names]: unqualified names in the candidate's return type
+	    // bind in its DEFINITION context — gcc 13's `__and_fn` (defined in
+	    // std::__detail) names `__first_t` (std::__detail) and
+	    // `__enable_if_t` (std, via the enclosing-namespace walk)
+	    // unqualified. Without the push the alias lookup ran in the DEMAND
+	    // context, missed both, and the ellipsis catch-all won every time.
+	    Program::NamespaceScope ns_scope(*this, ft.ns);
+	    if ( !sub.empty() && sub[0] && is_contextual_identifier_token(sub[0])
+	      && contextual_identifier_name(sub[0]) == "decltype" )
+		rt = resolve_decltype_call_return(sub, ft.ns, &dt_ref, depth);
+	    else
+		rt = resolve_type_token_range(sub, 0, sub.size());
+	}
+	// An ORIGIN-LESS opaque placeholder is not a resolution — an alias body
+	// that could not fold (std::get's `__enable_if_t<(sizeof...(_Elements)
+	// > __i)>` SFINAE guard) falls through to a minted placeholder with NO
+	// DependentDerivedOrigin record: tsubst can never re-derive it, so
+	// taking it as this candidate's return stamps a dead-end
+	// return_override that survives to translate as an untranslatable
+	// dependent-typed arg (the pair piecewise-ctor `std::get<_Indexes>`
+	// calls inside map::operator[]). Treat it as a substitution failure:
+	// fall to the next candidate, or return NULL and defer to full
+	// instantiation. A TEMPLATE-PARAM placeholder return (`_Tp&&` bound to
+	// a pack name at PATTERN time — std::forward<_Args>) stays: it is
+	// exactly the carrier the per-element pack window substitutes at HIT
+	// relower; NULLing it froze the pattern's type at a concrete wrong
+	// 'tuple' that no elem_subst could remap (@tuple@tuple@tuple).
+	if ( rt && !rt->is_template_param() )
+	    if ( DataDefCLASS *rtc = dynamic_cast<DataDefCLASS *>(rt) )
+		if ( rtc->is_dependent_placeholder
+		  && !dependent_derived_origin.count(rt) )
+		    rt = NULL;
+	DBG({
+	    std::string spelled;
+	    for ( TokenBase *t : sub )
+		if ( t ) spelled += template_token_fragment(t);
+	    std::cout << "fn_tpl_return_by_key: " << key << " cand='" << name
+		      << "' trailing=" << is_trailing << " pack=" << pack_name
+		      << "(" << pack_elems.size() << ") sub='" << spelled
+		      << "' -> " << (rt ? rt->name : "(fail)") << std::endl;
+	});
 	for ( TokenBase *t : sub )
 	    delete t;
 	if ( rt )

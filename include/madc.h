@@ -4891,6 +4891,11 @@ public:
     // deferred dependent use.
     bool alias_use_args_all_concrete(const TemplateAliasDef &td,
 			 const std::vector<std::vector<TokenBase *> > &arg_tokens);
+    // An arg token sequence is DEPENDENT when it names a live template
+    // parameter or carries a dependent-surface type token — such an arg
+    // legitimately fails to resolve NOW and resolves at instantiation;
+    // any other resolution failure is a substitution failure ([temp.deduct]).
+    bool alias_arg_tokens_dependent(const std::vector<TokenBase *> &toks);
     // Resolve a template-id `Name<...>` to its concrete type: an alias template
     // first, then a class template (the order every call site used by hand).
     // Single seam for the namespace hint so qualified uses pick the right
