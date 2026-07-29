@@ -2738,14 +2738,22 @@ public:
     // probe arm — `__void_t<decltype(EXPR)>` (libc++ __common_type2_imp) —
     // which substitutes the deduced params into the decltype token run and
     // resolves it through the real decltype machinery.
+    // `concrete_dd` is the concrete slot's resolved type, needed by the BARE
+    // `decltype(EXPR)` arm — libc++'s spelling of the same idiom, which carries no
+    // void_t wrapper to force void, so the probe's resolved type must be COMPARED
+    // against the concrete arg rather than merely proven well-formed.
     bool eval_void_t_detection_slot(const std::string &slot_spelling,
 	    const std::string &concrete_spelling,
 	    const std::map<std::string, DataDef *> &ded, int &score,
-	    const std::vector<TokenBase *> *slot_tokens = NULL);
+	    const std::vector<TokenBase *> *slot_tokens = NULL,
+	    DataDef *concrete_dd = NULL);
     // Evaluate the nth `decltype ( ... )` run inside a spec-pattern slot's
     // tokens under the deduced-param substitution; true iff it names a type.
+    // `out_type` optionally receives the resolved type (the bare-decltype arm
+    // needs the type itself, not just well-formedness).
     bool eval_decltype_probe_tokens(const std::vector<TokenBase *> &slot_tokens,
-	    size_t nth, const std::map<std::string, DataDef *> &ded);
+	    size_t nth, const std::map<std::string, DataDef *> &ded,
+	    DataDef **out_type = NULL);
     // Confirm that a dependent member chain `BASE::seg1::seg2::...` (where some
     // seg names a TEMPLATE member, e.g. `rebind<_Up>`) resolves to a real type —
     // the part of the __void_t SFINAE probe the plain type-alias walk cannot do.

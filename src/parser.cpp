@@ -25777,10 +25777,57 @@ bool Program::confirm_dependent_member_type(DataDef *base,
 bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
 	const std::string &concrete_spelling,
 	const std::map<std::string, DataDef *> &ded, int &score,
-	const std::vector<TokenBase *> *slot_tokens)
+	const std::vector<TokenBase *> *slot_tokens,
+	DataDef *concrete_dd)
 {
     size_t decltype_probe_index = 0;
-    // The pattern slot must itself be a `__void_t<...>`.
+    // A BARE `decltype( EXPR )` slot — the SAME detection idiom without a
+    // void_t wrapper, which is how libc++ spells it:
+    //
+    //	template <class _Alloc, class = void> struct __has_max_size : false_type {};
+    //	template <class _Alloc>
+    //	struct __has_max_size<_Alloc, decltype((void)declval<_Alloc&>().max_size())>
+    //	    : true_type {};
+    //
+    // libstdc++ writes `__void_t<decltype(EXPR)>` and this evaluator was keyed on
+    // that ONE spelling, so every libc++ detector answered with the primary —
+    // silently FALSE, no diagnostic. __has_max_size<allocator<char>> reading false
+    // is what made allocator_traits<A>::max_size unresolvable on the <string> path.
+    //
+    // Handled before split_template_id_spelling because a bare decltype is not a
+    // template-id: `decltype((void)0)` has no angle brackets at all, and
+    // `decltype(declval<A&>().max_size())` has them in the WRONG place (inside the
+    // expression), which that splitter would happily mis-decompose.
+    //
+    // The wrapper form only needs WELL-FORMEDNESS — void_t forces void — but a bare
+    // decltype contributes its own type, so this must also compare: `decltype(EXPR)`
+    // yielding `unsigned long` matches a concrete `unsigned long` and must NOT match
+    // a concrete `void`. Type identity is name equality, the same test __is_same
+    // uses (TraitTypeArg::same_as).
+    {
+	std::string bare = trim_spelling(slot_spelling);
+	size_t dtl = 8;                                 // strlen("decltype")
+	if ( bare.compare(0, dtl, "decltype") == 0 )
+	{
+	    // Require the delimiter, so an identifier merely BEGINNING with
+	    // "decltype" (a legal name) is not mistaken for the operator.
+	    size_t p = dtl;
+	    while ( p < bare.size() && bare[p] == ' ' ) ++p;
+	    if ( p < bare.size() && bare[p] == '(' )
+	    {
+		DataDef *probe = NULL;
+		if ( !slot_tokens
+		  || !eval_decltype_probe_tokens(*slot_tokens, 0, ded, &probe)
+		  || !probe || !concrete_dd )
+		    return false;              // ill-formed EXPR -> SFINAE reject
+		if ( probe->name != concrete_dd->name )
+		    return false;              // well-formed but a different type
+		score += 30;                   // detection succeeded -> select this spec
+		return true;
+	    }
+	}
+    }
+    // Otherwise the pattern slot must itself be a `__void_t<...>`.
     std::string pouter;
     std::vector<std::string> pargs;
     if ( !split_template_id_spelling(slot_spelling, pouter, pargs) )
@@ -25889,8 +25936,11 @@ bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
 }
 
 bool Program::eval_decltype_probe_tokens(const std::vector<TokenBase *> &slot_tokens,
-	size_t nth, const std::map<std::string, DataDef *> &ded)
+	size_t nth, const std::map<std::string, DataDef *> &ded,
+	DataDef **out_type)
 {
+    if ( out_type )
+	*out_type = NULL;
     // Locate the nth `decltype` in the slot's token run (Args are visited in
     // order, so the nth spelled probe is the nth token occurrence).
     size_t start = slot_tokens.size();
@@ -25938,9 +25988,39 @@ bool Program::eval_decltype_probe_tokens(const std::vector<TokenBase *> &slot_to
 	}
 	body.push_back(t ? t->clone() : NULL);
     }
-    DataDef *rt = resolve_type_token_range(body, 0, body.size());
+    // A failing probe IS the SFINAE answer, not an error. Rewinding the
+    // diagnostics watermark is not enough on its own: throwbuf::sync prints to
+    // cerr BEFORE the exception is caught, so the miss must also be muted through
+    // g_madc_null_streambuf — the same pairing fold_nontype_arg_constant and the
+    // discarded-condition folder use. Without it, answering "no, const nope has no
+    // max_size()" — the CORRECT answer — printed `error: no member named
+    // 'max_size'`, and every libc++ detector would narrate each negative arm it
+    // evaluates on the way to a right answer.
+    size_t saved_diag_count = diagnostics.size();
+    ErrorInfo saved_error = last_error;
+    std::streambuf *saved_cerr = std::cerr.rdbuf();
+    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    std::cerr.rdbuf(&g_madc_null_streambuf);
+    DataDef *rt = NULL;
+    try
+    {
+	rt = resolve_type_token_range(body, 0, body.size());
+    }
+    catch ( ... ) { rt = NULL; }
+    std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
     for ( TokenBase *t : body )
 	delete t;
+    if ( !rt )
+    {
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
+    }
+    // A `__void_t<decltype(EXPR)>` wrapper only needs well-formedness, but a BARE
+    // decltype slot must also compare its resolved type against the concrete arg
+    // — hand it back rather than resolve the same tokens twice.
+    if ( out_type )
+	*out_type = rt;
     return rt != NULL;
 }
 
@@ -26698,7 +26778,8 @@ Program::TemplateDef *Program::match_partial_specialization(
 	      && !eval_void_t_detection_slot(
 					 pattern_spelling,
 					 arg_spellings[i], ded, score,
-					 &spec.spec_pattern[i]) )
+					 &spec.spec_pattern[i],
+					 &arg_types_by_slot[i]->definition) )
 	    { ok = false; break; }
 	}
 	if ( !ok )
