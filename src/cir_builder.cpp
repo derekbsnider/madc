@@ -8420,6 +8420,17 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 		// lvalue into a temp and call the method on the copy. Detected before
 		// translate_expr so the call is emitted once (inside object_arg_addr).
 		bool recv_is_ptr = recv_type && recv_type->is_pointer();
+		// A cast-to-REFERENCE receiver (static_cast<_Base1&>(*this) —
+		// libc++ __compressed_pair's accessor shape) is the ONE
+		// reference-typed head whose translation preserves the operand
+		// LVALUE (lvalue cast, see the addressable-temp classifier);
+		// every other DataDefREF head (subscript, member, call) carries
+		// the reference's pointer VALUE and stays on the raw-pass path.
+		// Route the lvalue through the value tail's N_ADDR (the same
+		// disease the ref-returning-call re-wrap below fixes).
+		if (TokenCast *rcast = dynamic_cast<TokenCast *>(tm->parent_expr))
+			if (rcast->cast_type && rcast->cast_type->is_reference())
+				recv_is_ptr = false;
 		if (!recv_is_ptr
 		    && (tm->parent_expr->type() == TokenType::ttCallFunc
 			|| tm->parent_expr->type() == TokenType::ttCallMethod)
