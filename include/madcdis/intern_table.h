@@ -43,6 +43,10 @@
 namespace madc {
 namespace dis {
 
+// Out-of-line breakpoint anchor for the env-gated map-write trap
+// (MADC_MAPWRITE_TRAP): defined in src/lexer.cpp.
+void madcdis_mapwrite_trap_hit(const char *key);
+
 class intern_table
 {
 public:
@@ -433,7 +437,15 @@ public:
     const V *find_readonly(const std::string &k) const
 	{ return find_readonly(_pool->intern(k)); }
     size_t count(const std::string &k)       { return count(_pool->intern(k)); }
-    V     &operator[](const std::string &k)  { return (*this)[_pool->intern(k)]; }
+    V     &operator[](const std::string &k)
+    {
+	// Env-gated write trap (MADC_MAPWRITE_TRAP=<exact key>): break here
+	// in a debugger / print the insertion site of a poisoned key.
+	static const char *trap = ::getenv("MADC_MAPWRITE_TRAP");
+	if ( trap && *trap && k == trap )
+	    madcdis_mapwrite_trap_hit(k.c_str());
+	return (*this)[_pool->intern(k)];
+    }
     size_t erase(const std::string &k)       { return erase(_pool->intern(k)); }
 
     // Enumerate live entries: fn(const char *key, V &value) for each present
