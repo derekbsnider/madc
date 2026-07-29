@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+## [v0.61.0] — 2026-07-29
+
+The stdlib-flavor switch (task #16, P2.3): the std:: inline ABI namespace
+follows the PARSED stdlib configuration, and native-emit DT_NEEDED follows
+the active `-stdlib=` flavor — de-conflating "target is Apple" from "stdlib
+is libc++". The libc++ native legs unlock: `--exe`/`--obj` grow 780 → 782.
+
+- **feat: the std ABI inline namespace comes from the parsed config, never a
+  literal.** The mangler gains flavor state with two setters named after the
+  parsed facts: `_GLIBCXX_USE_CXX11_ABI` (libstdc++: 1 ⇒ `__cxx11` on the
+  cxx11-tagged components only) and `_LIBCPP_ABI_NAMESPACE` (libc++: the
+  namespace itself, e.g. `__1`, on EVERY component). The `__cxx11` spelling
+  now lives only in `src/madc_mangle.cpp`, its one permitted home.
+  `Program::note_std_abi_define()` pushes the fact the moment it is
+  recorded, from all three `define_map` write sites (`#define` directive,
+  forest PP replay, CLI `-D`). All canonical std:: spelling helpers
+  (string/stringstream/vector/map/set) and `itanium_mangle_std_var`
+  (`_ZSt4cout` vs `_ZNSt3__14coutE`) build per-flavor shapes;
+  `marshals_value_text`'s carrier cache re-evaluates on a flavor change.
+  Unit-gated against the clang++-18 `-stdlib=libc++` oracle
+  (`NSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE`),
+  including the pre-C++11-ABI `Ss` form under `_GLIBCXX_USE_CXX11_ABI=0`.
+- **feat: flavor-keyed native link environment.** `madc_stdlib_flavor` gains
+  `link_libs` — the flavor's C++ runtime DT_NEEDED set, probed at build time
+  from the toolchain's OWN empty-program link (`-Wl,--no-as-needed` +
+  readelf, minus the platform base) — no hardcoded flavor→SONAME table.
+  `cir_native_link_env()` consumes it per active flavor: a
+  `-stdlib=libc++` emit names `libc++.so.1`/`libc++abi.so.1`, the default
+  emit matches g++'s own NEEDED shape (gains `libgcc_s.so.1`). The
+  `#ifdef __APPLE__` arm remains a pure platform (Mach-O/libSystem)
+  concern. The `--project` link resolves its flavor from the manifest.
+- **feat: the libc++ native legs run.** `testcommontype_libcxx.exe_skip`
+  and `testdestructible_libcxx.exe_skip` removed — both tests now pass the
+  `--exe` and `--obj` lanes end-to-end (emit, link, execute).
+- `Program::active_stdlib_flavor()` consolidates the repeated
+  "selected-or-default" table fallback; `madc_stdlib_flavor_lookup()` is
+  the one by-name table lookup.
+
+Suites: fulltest 798/0/0/9; `--exe` 782/0; `--obj` 782/0; packed arbiter
+798/0/0/9. MIR fork unchanged (1.0-madc.0.52.0).
+
 ## [v0.60.0] — 2026-07-29
 
 std::is_destructible / is_trivially_destructible answer correctly under BOTH

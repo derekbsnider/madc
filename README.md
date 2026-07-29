@@ -241,7 +241,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.60.0): 798 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary and the packed release binary; the native `--exe` and `--obj` lanes are both at 780/0. Mach-O targets have a full `.o` lane: `madc -c` writes a real `MH_OBJECT` that `ld64` links and madc reads back. With `-static-libmadc` an emitted binary carries the madc runtime it needs and runs with no madc library installed — from source or from precompiled `.o` inputs (compile those with `-fno-eval-shims`). `-stdlib=` selects the C++ standard-library flavor, with the flavors discovered from the build host. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.61.0): 798 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary and the packed release binary; the native `--exe` and `--obj` lanes are both at 782/0. Mach-O targets have a full `.o` lane: `madc -c` writes a real `MH_OBJECT` that `ld64` links and madc reads back. With `-static-libmadc` an emitted binary carries the madc runtime it needs and runs with no madc library installed — from source or from precompiled `.o` inputs (compile those with `-fno-eval-shims`). `-stdlib=` selects the C++ standard-library flavor, with the flavors discovered from the build host. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -282,25 +282,24 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.60.0** — **is_destructible, both flavors, every lane.**
-std::is_destructible / is_trivially_destructible answer correctly under
-libstdc++ AND libc++, live, forest-bound, and packed. `__is_destructible`
-joins the trait-builtin registry (libc++'s `__has_builtin` branch serves
-directly, including deleted / member-deleted / private destructors); the
-libstdc++ SFINAE/declval chain fixed at four layers — deleted destructors
-recorded when dropped, explicit destructor calls on deleted destructors
-rejected in every context (the substitution failure inside SFINAE
-decltypes), call-result receivers (`declval<_Tp1&>().~_Tp1()`) reach the
-explicit-destructor recognition, and member templates capture per-param
-DEFAULT token runs enforced per [temp.deduct]/8 (a failing default drops
-the candidate to the ellipsis catch-all). The forest lane can no longer
-bake a constant past an unenforceable SFINAE (capture poisons instead;
-format v36 carries the default runs). New gates: `testdestructible`,
-`testdestructible_libcxx` — both exact on g++ 13 == clang++-18. Suites:
-fulltest **798/0/0/9**, `--exe` **780/0**, `--obj` **780/0**, packed
+**v0.61.0** — **the stdlib-flavor switch (P2.3).**
+The std:: inline ABI namespace follows the PARSED stdlib configuration —
+`_GLIBCXX_USE_CXX11_ABI` (libstdc++: 1 ⇒ `__cxx11` on the cxx11-tagged
+components) and `_LIBCPP_ABI_NAMESPACE` (libc++: e.g. `__1`, on every
+component) — pushed into the mangler the moment the parsed define is
+recorded, never a hardcoded literal (`__cxx11` now lives only in the
+mangler, its one permitted home). Native-emit DT_NEEDED follows the
+active `-stdlib=` flavor: each flavor's C++ runtime link set is probed
+at build time from its own toolchain (no flavor→SONAME table), and
+`#ifdef __APPLE__` remains purely the Mach-O/libSystem platform arm —
+"target is Apple" no longer means "stdlib is libc++". A
+`-stdlib=libc++` emit links `libc++.so.1`/`libc++abi.so.1` and runs:
+the libc++ native legs unlock (`testcommontype_libcxx` +
+`testdestructible_libcxx` now pass `--exe`/`--obj` end-to-end). Suites:
+fulltest **798/0/0/9**, `--exe` **782/0**, `--obj` **782/0**, packed
 arbiter **798/0/0/9**. Fork unchanged (**1.0-madc.0.52.0**).
 
-**Branch state:** `develop` is at v0.60.0; `master` is at v0.48.0
+**Branch state:** `develop` is at v0.61.0; `master` is at v0.48.0
 (promoted 2026-07-25 — the Mach-O milestone promote, per the owner's
 ride-with-S3 decision). The
 [MIR fork](https://github.com/derekbsnider/mir)'s `master` tracks
@@ -309,8 +308,8 @@ fork releases pair with madc's (see [`MIR_VERSION`](MIR_VERSION)).
 
 ### Recent Releases
 
+- **v0.61.0** — the stdlib-flavor switch (P2.3): the std ABI inline namespace from the PARSED config (`_GLIBCXX_USE_CXX11_ABI` ⇒ `__cxx11` on tagged components; `_LIBCPP_ABI_NAMESPACE` ⇒ e.g. `__1` on everything), pushed into the mangler from all three define-write sites (directive / forest replay / CLI `-D`) — `__cxx11` lives only in the mangler; all canonical std:: spellings, `itanium_mangle_std_var` (`_ZSt4cout` vs `_ZNSt3__14coutE`), and the marshalling carrier follow the flavor (clang++-18 oracle, incl. the pre-cxx11 `Ss` form); `cir_native_link_env` de-conflated — per-flavor C++ runtime DT_NEEDED probed from each toolchain's own empty link, `__APPLE__` purely platform; the libc++ native legs unlock (both `_libcxx` gates pass `--exe`/`--obj`); fulltest 798/0/0/9, `--exe` 782/0, `--obj` 782/0, packed arbiter 798/0/0/9; fork unchanged (1.0-madc.0.52.0)
 - **v0.60.0** — is_destructible both flavors, every lane: `__is_destructible` trait builtin ([meta.unary.prop] incl. deleted/member-deleted/private dtors) serving libc++'s `__has_builtin` branch; the libstdc++ SFINAE/declval chain fixed at four layers (deleted-dtor recording, deleted-dtor call rejection = the SFINAE substitution failure, call-result pseudo-dtor receivers, member-template per-param DEFAULT runs enforced per [temp.deduct]/8 with candidate fallback to the ellipsis catch-all); the forest capture poisons instead of baking a constant past an unenforceable SFINAE (v36 carries the default runs; the [traitfold] lesson's alias-node twin); gates testdestructible + testdestructible_libcxx; fulltest 798/0/0/9, `--exe` 780/0, `--obj` 780/0, packed arbiter 798/0/0/9; fork unchanged (1.0-madc.0.52.0)
 - **v0.59.0** — the trait-engine release: gcc13's `__and_/__or_/__not_` SFINAE machine + the constructible/assignable trait family fold correctly in every lane — [temp.deduct]/8 unused-alias-arg validation (a failing concrete arg is a substitution failure even for args the alias target never names) with baked-ref (`DataDefREF`) trait args; `__is_constructible`/`__is_nothrow_constructible` builtins tri-state with honest declines; lexer-erased `noexcept` re-lexed as `throw()` into `FuncDef::noexcept_spec` (patterns + forest DK_FUNC flags); variadic bases real-instantiate at the base-clause resolution (vector reallocation takes g++'s move_iterator lane; the class-wide sticky arming that broke the c++20 legs bisected out and replaced); absent-trailing-pack elisions in both substitution lanes; instantiation keys split pointer from reference args (`X<int*>` ≠ `X<int&>`, `*`→P/`&`→R, forest v35); trait folds refuse dependent args (the freeze's capture parse froze `__bool_constant<0>` as is_assignable's base — packed-lane catch, bind-gate `[traitfold]`); gates `testtraitassign`/`testconstructible`/`testtplargkey`/`testvariadicstatic`; fulltest 796/0/0/9, `--exe` 779/0, `--obj` 779/0, packed arbiter 796/0/0/9; fork unchanged (1.0-madc.0.52.0)
 - **v0.58.0** — the `<string_view>` milestone: libc++ `<string_view>` compiles AND RUNS end-to-end under `-stdlib=libc++` (probe "5 e"; P2.2 burn-down complete) — NTTP defaults + SFINAE overload selection four layers deep (declarator suffixes on NTTP types, folded value defaults, per-param constraint runs captured at parse and re-evaluated at instantiation under the defining namespace with leftover-tokens = substitution failure, instantiation-key identity folded into the overload-set spelling so `g<int,3>` ≠ `g<int,7>`; forest v33 carries the constraint runs); merged `>>` flush at a template-id ending exactly at the argument-list close; comma-operator returns ([expr.comma]) gated from the dialect multi-return (STD_MADC-and-not-a-system-header; the std lane chains unconditionally, ref-return comma lowers `N_COMMA(left, &right)`); braced aggregate init on class-promoted structs emits instead of silently dropping; forest v34 from the packed battery: decl-only member templates freeze their return-type range (thawed `decltype(_S_test<A,B>(0))` no longer collapses to int64_t) and the stdlib flavor is producer-config identity (a libstdc++ forest live-falls-through under `-stdlib=libc++`); fulltest 792/0/0/9, `--exe` 775/0, `--obj` 775/0, packed arbiter 792/0/0/9, warning ratchet 0; fork unchanged (1.0-madc.0.52.0)
 - **v0.57.0** — the libc++ burn-down session: eight core-C++ defects in one chain, the `-stdlib=libc++` parse frontier falling from `<cwchar>` to the last blocker before `<string_view>`/`<string>` — qualified lookup (members and namespace names) sees the inline namespace set while the block is still OPEN ([namespace.qual]; `find_namespace_member` owns the member walk with nine consumers adopted, `canonical_nested_namespace` + path fold own the name walk with four resolvers adopted); `using X = void (*)();` (abstract twin of typedef Form 2, same `parseFnPtrParams` owner); self-referential instantiation bounded in BOTH lanes and BOTH cache regimes (libc++'s `allocator : __non_trivial_if<..., allocator<_Tp>>` was a stack-overflow SIGSEGV on `#include <string>`; one `class_inst_in_progress` registry); braced construction ranks ctors per [dcl.init.list]/3 (the aggregate reroute dropped args after the first for ANY `T v{a,b}`) and `Class::NestedTag{}` temporaries parse; `__underlying_type(T)` implemented with enum fixed-base recording + the canon range rule, and decl-only-primary partial specs reach the spec match; gdb baked into provisioning; frontier: both string headers stop at ONE recorded defect (common_type dependent-member key explosion, guard trips loudly); fulltest 784/0/0/9, `--exe` 768/0, `--obj` 768/0, packed arbiter 784/0/0/9, warning ratchet 0; fork unchanged (1.0-madc.0.52.0)
-- **v0.56.0** — real C under real headers: an explicit prototype replaces a builtin registration WHOLESALE (`FuncDef::builtin_registration` = the registration loops' declared intent; the old half-adopt errored `getenv("HOME")` under real `<stdlib.h>` with "expected 2 got 1"), getenv/setenv/unsetenv become the real C/POSIX functions everywhere and the `__madc_getenv` result-buffer convention is deleted (gate `testgetenv_realhdr`); explicit template args reach every layer a non-deducible call crosses (GAP B: `TokenCallFunc::call_returns_reference()` as the ONE owner of call reference-ness, keyword-token specifier skip in the return resolver, explicit-args seeding + concrete-class params + `const F&`/`const F*` returns in mangled-direct instantiation — `std::use_facet<numpunct<char>>` binds the real `_ZSt9use_facet…` weak export; gate `testusefacet_realhdr` pins the 2×2); the freeze/packed lanes caught a mis-stamped provenance flag live parses structurally cannot see; fulltest 776/0/0/9, `--exe` 760/0, `--obj` 760/0, packed arbiter 776/0/0/9, warning ratchet 0; fork unchanged (1.0-madc.0.52.0)
