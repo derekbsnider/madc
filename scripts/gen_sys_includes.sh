@@ -75,6 +75,42 @@ detect_flavor() {
         | head -1
 }
 
+# The flavor's C++ runtime DT_NEEDED set, asked of the toolchain ITSELF: link
+# an empty C++ program (-Wl,--no-as-needed so the driver's full runtime list
+# survives an --as-needed default) and read the produced binary's NEEDED
+# entries, minus the platform base the emitter adds unconditionally
+# (libc/libm/the loader). No SONAME is hardcoded per flavor — a toolchain that
+# names a different runtime reports it here. Empty on probe failure (no
+# linkable runtime, no readelf): the emitter then falls back.
+link_libs() {
+    command -v readelf >/dev/null 2>&1 || return 0
+    local tmp
+    tmp=$(mktemp) || return 0
+    if echo 'int main(){return 0;}' \
+        | "$@" -Wl,--no-as-needed -x c++ - -o "$tmp" 2>/dev/null; then
+        readelf -d "$tmp" 2>/dev/null \
+            | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p' \
+            | grep -v -e '^libc\.' -e '^libm\.' -e '^ld-'
+    fi
+    rm -f "$tmp"
+}
+
+emit_link_libs_array() {
+    # $1 = array suffix, rest = probe command
+    local idx="$1"; shift
+    local libs l
+    libs=$(link_libs "$@")
+    echo "static const char *madc_stdlib_link_libs_$idx[] = {"
+    if [ -n "$libs" ]; then
+        while IFS= read -r l; do
+            [ -z "$l" ] && continue
+            printf '    "%s",\n' "$l"
+        done <<< "$libs"
+    fi
+    echo '    (const char *)0'
+    echo '};'
+}
+
 emit_paths_array() {
     # $1 = array suffix, rest = probe command
     local idx="$1"; shift
@@ -131,19 +167,23 @@ emit() {
     echo '#include "madc_sys_includes.h"'
     echo
     emit_paths_array 0 $CXX
+    echo
+    emit_link_libs_array 0 $CXX
     if [ -n "$ALT_CXX" ]; then
         echo
         emit_paths_array 1 $ALT_CXX
+        echo
+        emit_link_libs_array 1 $ALT_CXX
     fi
     echo
     echo 'const madc_stdlib_flavor madc_stdlib_flavors[] = {'
-    printf '    { "%s", madc_sys_include_paths_0, "%s" },\n' \
+    printf '    { "%s", madc_sys_include_paths_0, "%s", madc_stdlib_link_libs_0 },\n' \
            "$DEFAULT_FLAVOR" "$(resource_dir $CXX)"
     if [ -n "$ALT_CXX" ]; then
-        printf '    { "%s", madc_sys_include_paths_1, "%s" },\n' \
+        printf '    { "%s", madc_sys_include_paths_1, "%s", madc_stdlib_link_libs_1 },\n' \
                "$ALT_FLAVOR" "$(resource_dir $ALT_CXX)"
     fi
-    echo '    { (const char *)0, (const char *const *)0, "" }'
+    echo '    { (const char *)0, (const char *const *)0, "", (const char *const *)0 }'
     echo '};'
     echo "const char *madc_default_stdlib_flavor = \"$DEFAULT_FLAVOR\";"
 }

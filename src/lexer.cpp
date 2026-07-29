@@ -33,6 +33,7 @@
 #include "madc.h"
 #include "madc_pch.h"
 #include "madc_sys_includes.h"	// generated per-stdlib-flavor include search tables
+#include "madc_mangle.h"	// std ABI namespace push (note_std_abi_define)
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest — parse-time grove binding
 
 // --show-stats: RAII accumulator for time spent loading source into the lex
@@ -1792,7 +1793,10 @@ void Program::_tokenizer_init()
     // Command-line -D defines, applied AFTER the builtins/predefined so a -D
     // overrides one (matching gcc). Object-like only: -DNAME=VALUE / -DNAME (=> "1").
     for ( const std::pair<std::string,std::string> &d : cli_defines )
+    {
 	define_map[d.first] = d.second;
+	note_std_abi_define(d.first, d.second);
+    }
 }
 
 bool Program::include_already_seen(const std::string &path)
@@ -2210,6 +2214,7 @@ void Program::forest_install_pp(uint32_t unit)
 	    {
 		const char *b = body_id ? bind_forest->pool_str(body_id) : NULL;
 		define_map[name] = b ? std::string(b) : std::string();
+		note_std_abi_define(name, define_map[name]);
 	    }
 	    else // peDefineFn
 	    {
@@ -2271,7 +2276,7 @@ static const char *madc_fallback_include_paths[] = {
 
 const char *const *Program::sys_include_paths() const
 {
-    const madc_stdlib_flavor *f = stdlib_flavor ? stdlib_flavor : &madc_stdlib_flavors[0];
+    const madc_stdlib_flavor *f = active_stdlib_flavor();
     // Minimal C list when detection produced nothing (no compiler at build time).
     if ( !f->paths || !f->paths[0] )
 	return madc_fallback_include_paths;
@@ -2280,7 +2285,7 @@ const char *const *Program::sys_include_paths() const
 
 const char *Program::compiler_owned_include_dir() const
 {
-    const madc_stdlib_flavor *f = stdlib_flavor ? stdlib_flavor : &madc_stdlib_flavors[0];
+    const madc_stdlib_flavor *f = active_stdlib_flavor();
     return f->compiler_owned_dir ? f->compiler_owned_dir : "";
 }
 
@@ -2296,7 +2301,7 @@ const char *Program::compiler_owned_include_dir() const
 // below still covers them.
 const std::vector<std::string> &Program::sys_include_prefixes_canonical() const
 {
-    const madc_stdlib_flavor *f = stdlib_flavor ? stdlib_flavor : &madc_stdlib_flavors[0];
+    const madc_stdlib_flavor *f = active_stdlib_flavor();
     if ( _canon_prefix_flavor == f && !_canon_prefixes.empty() )
 	return _canon_prefixes;
     _canon_prefixes.clear();
@@ -2329,23 +2334,58 @@ std::string Program::stdlib_flavor_names() const
 		       : out;
 }
 
+const madc_stdlib_flavor *madc_stdlib_flavor_lookup(const std::string &name)
+{
+    if ( name.empty() )
+	return NULL;	// an empty name must not match an unnamed flavor entry
+    for ( int i = 0; madc_stdlib_flavors[i].name; ++i )
+	if ( name == madc_stdlib_flavors[i].name )
+	    return &madc_stdlib_flavors[i];
+    return NULL;	// unknown or not built with this flavor
+}
+
 bool Program::set_stdlib_flavor_option(const std::string &arg)
 {
     static const std::string opt = "-stdlib=";
     if ( arg.compare(0, opt.size(), opt) != 0 )
 	return false;
-    const std::string want = arg.substr(opt.size());
-    if ( want.empty() )
-	return false;	// bare `-stdlib=` must not match an unnamed flavor entry
-    for ( int i = 0; madc_stdlib_flavors[i].name; ++i )
+    const madc_stdlib_flavor *f = madc_stdlib_flavor_lookup(arg.substr(opt.size()));
+    if ( !f )
+	return false;	// caller diagnoses with stdlib_flavor_names()
+    stdlib_flavor = f;
+    return true;
+}
+
+const madc_stdlib_flavor *Program::active_stdlib_flavor() const
+{
+    return stdlib_flavor ? stdlib_flavor : &madc_stdlib_flavors[0];
+}
+
+// The std:: inline ABI namespace follows the PARSED stdlib configuration —
+// never a literal keyed on the flavor name. Each stdlib declares it via the
+// macro that exists for exactly this purpose:
+//   libc++:    _LIBCPP_ABI_NAMESPACE  (the namespace itself, e.g. __1)
+//   libstdc++: _GLIBCXX_USE_CXX11_ABI (1 => the cxx11-tagged ABI, 0 => not)
+// Pushes the fact into the mangler the moment it is recorded, from every
+// define_map write site (#define directive, forest PP replay, CLI -D).
+void Program::note_std_abi_define(const std::string &name, const std::string &value)
+{
+    if ( name == "_LIBCPP_ABI_NAMESPACE" )
     {
-	if ( want == madc_stdlib_flavors[i].name )
-	{
-	    stdlib_flavor = &madc_stdlib_flavors[i];
-	    return true;
-	}
+	size_t b = value.find_first_not_of(" \t");
+	size_t e = value.find_last_not_of(" \t");
+	if ( b == std::string::npos )
+	    return;		// empty value: nothing to record
+	std::string ns = value.substr(b, e - b + 1);
+	DBG(std::cout << "std ABI namespace (libc++): " << ns << std::endl);
+	madc_mangle_set_stdlib_llvm(ns);
     }
-    return false;	// unknown or not built with this flavor — caller diagnoses
+    else if ( name == "_GLIBCXX_USE_CXX11_ABI" )
+    {
+	bool on = strtol(value.c_str(), NULL, 10) != 0;
+	DBG(std::cout << "std ABI namespace (libstdc++): cxx11=" << on << std::endl);
+	madc_mangle_set_stdlib_gnu(on);
+    }
 }
 
 std::string Program::resolve_include_path(const std::string &incfile, bool is_system)
@@ -3864,6 +3904,7 @@ TokenBase *Program::_getToken()
 			source.get();
 		    std::string value = read_macro_body(source);
 		    define_map[name] = value;
+		    note_std_abi_define(name, value);
 		    pack_record_define(name, value);
 		    DBG(std::cout << "#define " << name << " " << value << std::endl);
 		    return getToken();

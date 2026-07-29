@@ -36,6 +36,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_cir.h"
+#include "madc_sys_includes.h"	// per-flavor C++ runtime link set (cir_native_link_env)
 #include "madc_project.h"
 #include "cir_builder.h"
 #include "cir_emit_c.h"
@@ -1814,7 +1815,12 @@ static std::string cir_selfexe_libdir(void)
 // builtin exports, libz/libzstd, libpthread), the C++/C runtimes, and
 // the user's -l libraries ("-lfoo" → the same lib<foo>.so spelling the
 // JIT dlopen lane uses; a path form passes through verbatim).
-static void cir_native_link_env(const std::vector<std::string> &user_libs,
+// The C++ runtime set is the ACTIVE stdlib flavor's own (probed from its
+// toolchain at build time — madc_stdlib_flavor::link_libs), never a host
+// #ifdef: a -stdlib=libc++ emit from a libstdc++-built madc names
+// libc++.so.1. NULL flavor = the build default (table entry 0).
+static void cir_native_link_env(const madc_stdlib_flavor *flavor,
+				const std::vector<std::string> &user_libs,
 				std::vector<std::string> &needed,
 				std::string &runpath)
 {
@@ -1827,11 +1833,20 @@ static void cir_native_link_env(const std::vector<std::string> &user_libs,
     // Prefix-matched, so the bare stems cover every versioned dylib name.
     // (The Apple emit gate never turns these into load commands — the
     // emitter links implicit libSystem only.)
+    (void)flavor;
     needed.push_back("libc++");
     needed.push_back("libsystem_");
     needed.push_back("libSystem");
 #else
-    needed.push_back("libstdc++.so.6");
+    if (!flavor)
+	flavor = &madc_stdlib_flavors[0];
+    if (flavor->link_libs && flavor->link_libs[0])
+	for (int i = 0; flavor->link_libs[i]; i++)
+	    needed.push_back(flavor->link_libs[i]);
+    else
+	// No probed link set (no compiler at build time): the historical
+	// GNU default this binary was linked against itself.
+	needed.push_back("libstdc++.so.6");
     needed.push_back("libm.so.6");
     needed.push_back("libc.so.6");
 #endif
@@ -1884,7 +1899,8 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
     // directly — no external toolchain.
     std::vector<std::string> needed;
     std::string runpath;
-    cir_native_link_env(user_libs, needed, runpath);
+    cir_native_link_env(prog->active_stdlib_flavor(), user_libs, needed,
+			runpath);
     return session.emit_native_executable(out_path, needed, runpath,
 					  kind) ? 0 : -1;
 }
@@ -2053,7 +2069,8 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
     } else {
 	std::vector<std::string> needed;
 	std::string runpath;
-	cir_native_link_env(user_libs, needed, runpath);
+	cir_native_link_env(prog ? prog->active_stdlib_flavor() : NULL,
+			    user_libs, needed, runpath);
 	// Conditional libmadc.so.0, same policy as the source lanes; here
 	// the external imports are the merged builder's UNDEF names
 	// (unification already netted out cross-object references, and the
@@ -5542,7 +5559,17 @@ int madc_project_emit_native(MadcEngine &engine,
 	else {
 		std::vector<std::string> needed;
 		std::string runpath;
-		cir_native_link_env(user_libs, needed, runpath);
+		// The link's stdlib flavor comes from the manifest: the
+		// first TU that names one (a mixed-flavor project is
+		// already ill-formed). None named = the build default.
+		const madc_stdlib_flavor *flavor = NULL;
+		for (const ProjectTU &tu : manifest.tus)
+			if (!tu.stdlib_option.empty()) {
+				flavor = madc_stdlib_flavor_lookup(
+						tu.stdlib_option);
+				break;
+			}
+		cir_native_link_env(flavor, user_libs, needed, runpath);
 		ok = cir_write_native_image(ctx, out_path, needed, runpath,
 					    kind);
 	}

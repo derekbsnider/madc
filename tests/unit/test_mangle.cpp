@@ -595,3 +595,56 @@ TEST_SUITE("Itanium substitution: type encoder sanity") {
 		CHECK(itanium_encode_type_sub("const char*") == "PKc");
 	}
 }
+
+TEST_SUITE("Stdlib flavor: LLVM ABI namespace from parsed config") {
+
+	// The setters model what Program::note_std_abi_define pushes when the
+	// PARSED stdlib config defines _LIBCPP_ABI_NAMESPACE (libc++) or
+	// _GLIBCXX_USE_CXX11_ABI (libstdc++). Oracle: clang++-18 -stdlib=libc++
+	// on the container (see _Z1fRKNSt3__112basic_stringI... below).
+
+	TEST_CASE("libc++ spellings and encodings follow _LIBCPP_ABI_NAMESPACE") {
+		madc_mangle_set_stdlib_llvm("__1");
+		CHECK(std_string_type()
+		      == "std::__1::basic_string<char,std::__1::char_traits<char>,"
+		         "std::__1::allocator<char>>");
+		// clang++-18: unsigned long f(const std::string&) →
+		// _Z1fRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE
+		CHECK(itanium_encode_type_sub(std_string_type())
+		      == "NSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE");
+		CHECK(itanium_mangle_nested_sub({}, "f",
+		                                {"const " + std_string_type() + "&"})
+		      == "_Z1fRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE");
+		// clang++-18: &std::cout → _ZNSt3__14coutE
+		CHECK(itanium_mangle_std_var("cout") == "_ZNSt3__14coutE");
+
+		// marshals_value_text must re-evaluate its cached carrier on a
+		// flavor flip — the libc++ string IS the text carrier now, the
+		// GNU spelling is NOT.
+		DataDef llvmstr("basic_string", 24, DataType::dtVOID);
+		llvmstr.set_canonical_spelling(std_string_type());
+		CHECK(llvmstr.marshals_value_text());
+		DataDef gnustr("basic_string", 32, DataType::dtVOID);
+		gnustr.set_canonical_spelling(
+			"std::__cxx11::basic_string<char,std::char_traits<char>,"
+			"std::allocator<char>>");
+		CHECK_FALSE(gnustr.marshals_value_text());
+
+		// Restore the build default and prove the flip back.
+		madc_mangle_set_stdlib_gnu(true);
+		CHECK(gnustr.marshals_value_text());
+		CHECK_FALSE(llvmstr.marshals_value_text());
+		CHECK(itanium_mangle_std_var("cout") == "_ZSt4cout");
+	}
+
+	TEST_CASE("libstdc++ pre-cxx11 ABI drops __cxx11 (Ss form)") {
+		madc_mangle_set_stdlib_gnu(false);
+		CHECK(std_string_type()
+		      == "std::basic_string<char,std::char_traits<char>,"
+		         "std::allocator<char>>");
+		CHECK(itanium_encode_type_sub(std_string_type()) == "Ss");
+		madc_mangle_set_stdlib_gnu(true);
+		CHECK(itanium_encode_type_sub(std_string_type())
+		      == "NSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE");
+	}
+}

@@ -34,6 +34,24 @@ high-level" — the answer is both.**
 
 ## Current State
 
+- **v0.61.0 (2026-07-29): the stdlib-flavor switch (task #16, P2.3).**
+  The std ABI inline namespace follows the PARSED stdlib config —
+  `_GLIBCXX_USE_CXX11_ABI` (1 ⇒ `__cxx11` on the cxx11-tagged components)
+  / `_LIBCPP_ABI_NAMESPACE` (e.g. `__1`, on every component) — pushed
+  into the mangler from all three define-write sites (directive, forest
+  PP replay, CLI `-D`); `__cxx11` now lives ONLY in the mangler. All
+  canonical std:: spellings, `itanium_mangle_std_var` (`_ZSt4cout` vs
+  `_ZNSt3__14coutE`), and the marshalling carrier follow the flavor
+  (clang++-18 oracle; pre-cxx11 `Ss` form under `=0`).
+  `cir_native_link_env` de-conflated: per-flavor C++ runtime DT_NEEDED
+  (`madc_stdlib_flavor::link_libs`, probed from each toolchain's own
+  empty link at build time — no flavor→SONAME table); `__APPLE__` stays
+  purely platform. The libc++ native legs UNLOCK: both `_libcxx` gates
+  pass `--exe`/`--obj` end-to-end. fulltest 798/0/0/9, `--exe` 782/0,
+  `--obj` 782/0, packed 798/0/0/9. Fork unchanged. NEXT: #17 (P2.4,
+  libc++ `<string>` end-to-end — incl. cout-under-`std::__1` symbol
+  round-trip and the inline/abi-tagged method resolution strategy).
+
 - **v0.60.0 (2026-07-29): is_destructible, both flavors, every lane.**
   `__is_destructible` joins the trait-builtin registry (libc++'s
   `__has_builtin` branch serves directly, incl. deleted/member-deleted/
