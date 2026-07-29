@@ -515,6 +515,14 @@ public:
     size_t max_align;	// largest member alignment (for finalizing struct size)
     size_t tag_explicit_align;	// __attribute__((aligned(N))) on the struct TAG (0 = none)
     bool union_layout;	// true: all members start at offset 0; size is max member size
+    // `struct X final { }` / `class X final { }` ([class.pre]/4): may not be a
+    // base. Lives HERE, not on DataDefCLASS, because `final` applies to every
+    // class type and a struct is only PROMOTED to DataDefCLASS when it earns it
+    // (object member / NSDMI / nested type) — `struct X final { int x; };` stays
+    // a plain DataDefSTRUCT. Same reasoning as trait_is_class casting to
+    // DataDefSTRUCT. The class head's `final` is consumed so the body parses;
+    // this records it so __is_final can answer.
+    bool struct_is_final = false;
     bool is_complete;	// true: a `{ ... }` body was parsed (even if empty) — distinguishes
 			// `struct X {}` (complete, zero members) from `struct X;` (forward decl)
     bool has_anon_aggregate;	// true: addAnonymousAggregate() was used to flatten members

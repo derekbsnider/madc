@@ -1,0 +1,42 @@
+// __is_final(T) ([class.pre]/4): T is a class declared with the `final`
+// class-virt-specifier and so can never be a base.
+//
+// madc consumed `final` in the class head — it had to, or the body mis-parsed —
+// but never RECORDED it, and did not implement the intrinsic at all. libc++
+// cannot lay out __compressed_pair without the answer: its empty-base
+// specialization is chosen by
+//	bool _CanBeEmptyBase = is_empty<_Tp>::value && !__libcpp_is_final<_Tp>::value
+// where __libcpp_is_final is integral_constant<bool, __is_final(_Tp)> with NO
+// __has_builtin guard. With the intrinsic missing that whole default was
+// unfoldable, the member-holding primary won, and sizeof(std::string) came out
+// 32 against clang's 24.
+//
+// Both spellings are covered because they take DIFFERENT parse paths: `struct X
+// final` is consumed by TokenSTRUCT::parse, which must eat the token before it
+// can decide to delegate, so the flag crosses via a handoff; `class X final`
+// reaches the class parser with the token still on the stream. Derived-from-final
+// is not tested here — that is a diagnostic, and madc does not reject it yet.
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	0 1 0 1 0 0 1
+#include <cstdio>
+
+struct PlainS { int x; };
+struct FinalS final { int x; };
+class PlainC { public: int x; };
+class FinalC final { public: int x; };
+struct EmptyF final { };
+struct WithBase final : PlainS { int y; };
+
+int main()
+{
+	printf("%d %d %d %d %d %d %d\n",
+	       (int)__is_final(PlainS),
+	       (int)__is_final(FinalS),
+	       (int)__is_final(PlainC),
+	       (int)__is_final(FinalC),
+	       (int)__is_final(int),		// non-class: never final
+	       (int)__is_final(PlainS *),	// pointer to final-less class
+	       (int)__is_final(WithBase));	// final WITH a base clause
+	return 0;
+}

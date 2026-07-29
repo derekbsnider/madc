@@ -7,13 +7,23 @@
 // mangled-direct, and the JIT must have the selected flavor's runtime loaded so
 // those exports resolve.
 //
-// Oracle: clang++-18 -std=c++11 -stdlib=libc++ prints "5 hello".
+// sizeof is asserted because it is the LAYOUT-parity claim, and it is
+// flavor-specific: libc++'s basic_string is 24 bytes and libstdc++'s is 32 (see
+// tests/teststringsize.mad for the default-flavor twin). Getting 24 needs
+// libc++'s __compressed_pair to take its empty-BASE specialization for the
+// allocator, which is selected by
+//	bool _CanBeEmptyBase = is_empty<_Tp>::value && !__libcpp_is_final<_Tp>::value
+// — so it needs __is_final, which madc did not implement at all. Without it that
+// default was unfoldable, the member-holding primary won, and the empty
+// allocator cost a byte: 32.
+//
+// Oracle: clang++-18 -std=c++11 -stdlib=libc++ prints "24 5 hello".
 #include <string>
 #include <cstdio>
 
 int main()
 {
 	std::string s = "hello";
-	printf("%zu %s\n", s.size(), s.c_str());
+	printf("%zu %zu %s\n", sizeof(std::string), s.size(), s.c_str());
 	return 0;
 }

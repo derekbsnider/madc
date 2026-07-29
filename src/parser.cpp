@@ -10264,7 +10264,8 @@ static int type_trait_arity(const std::string &name)
     if ( name == "__is_class" || name == "__is_union" || name == "__is_enum"
       || name == "__has_trivial_destructor" || name == "__is_trivial"
       || name == "__is_empty" || name == "__is_standard_layout"
-      || name == "__is_pod" || name == "__is_destructible" )
+      || name == "__is_pod" || name == "__is_destructible"
+      || name == "__is_final" )
 	return 1;
     if ( name == "__is_constructible" || name == "__is_nothrow_constructible" )
 	return TRAIT_ARITY_VARIADIC;
@@ -10295,6 +10296,26 @@ static bool trait_is_union(DataDef *dd)
 {
     DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
     return s && s->union_layout;
+}
+// __is_final(T) ([class.pre]/4): T is a class declared with the `final`
+// class-virt-specifier, so it can never be a base. A non-class type is not final
+// (is_final<int> = false), matching both canons. The flag is recorded from the
+// class head.
+//
+// libc++ cannot lay out __compressed_pair without this: its empty-base
+// specialization is selected by
+//   bool _CanBeEmptyBase = is_empty<_Tp>::value && !__libcpp_is_final<_Tp>::value
+// and __libcpp_is_final is integral_constant<bool, __is_final(_Tp)> with NO
+// __has_builtin guard. Missing the intrinsic left that whole default unfoldable,
+// so the member-holding primary won and an empty allocator cost a byte inside
+// every compressed pair — the basic_string size came out 8 bytes over the clang
+// oracle. Gate: tests/teststring_libcxx.mad asserts the size per flavor.
+static bool trait_is_final(DataDef *dd)
+{
+    // DataDefSTRUCT, not DataDefCLASS: `struct X final { int x; };` never earns
+    // promotion to a class, and a union is a class type too ([class.union]).
+    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    return s && s->struct_is_final;
 }
 // __is_empty(T) ([meta.unary.prop]): T is a non-union class with NO non-static
 // data members, no virtual functions, no virtual bases, and every base class is
@@ -11093,6 +11114,8 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	result = trait_is_union(args[0].dd);
     else if ( name == "__is_empty" )
 	result = trait_is_empty(args[0].dd);
+    else if ( name == "__is_final" )
+	result = trait_is_final(args[0].dd);
     else if ( name == "__is_base_of" )
 	result = trait_is_base_of(args[0].dd, args[1].dd);
     else if ( name == "__has_trivial_destructor" )
@@ -26189,6 +26212,7 @@ static bool eval_local_type_trait(Program &pgm,
     else if ( nm == "__is_class" )          r = trait_is_class(targs[0].dd);
     else if ( nm == "__is_union" )          r = trait_is_union(targs[0].dd);
     else if ( nm == "__is_empty" )          r = trait_is_empty(targs[0].dd);
+    else if ( nm == "__is_final" )          r = trait_is_final(targs[0].dd);
     else if ( nm == "__is_enum" )           r = trait_is_enum(targs[0].dd);
     else if ( nm == "__is_same" )           r = targs[0].same_as(targs[1]);
     else if ( nm == "__is_base_of" )        r = trait_is_base_of(targs[0].dd, targs[1].dd);
@@ -32878,6 +32902,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // `final` (not `{`/`:`), declines to delegate, and the body mis-parses
     // (libstdc++ `struct _Decay_copy final`). `final` is contextual; only
     // consumed in this class-head position.
+    bool struct_head_final = false;
     if ( tn && is_contextual_identifier_token(tn)
       && contextual_identifier_name(tn) == "final"
       && pgm.tokens.size() >= 2 && pgm.tokens[1]
@@ -32885,6 +32910,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
        || pgm.tokens[1]->id() == TokenID::tkColon) )
     {
 	pgm.nextToken();           // consume 'final'
+	// Consuming it made the body parse; `final` is ALSO an answerable
+	// property ([class.pre]/4) that __is_final has to report, and this
+	// parser is about to hand the class off, so carry it across.
+	struct_head_final = true;
 	tn = pgm.peekToken();
 	if ( !tn )
 	    pgm.Throw << "Unexpected end of input after 'final'" << flush;
@@ -32903,8 +32932,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	pgm.pushToken(class_tag);
 	bool saved_cpp_struct_class = pgm.parsing_cpp_struct_class;
 	bool saved_cpp_union_class = pgm.parsing_cpp_union_class;
+	bool saved_cpp_final_class = pgm.parsing_cpp_final_class;
 	pgm.parsing_cpp_struct_class = true;
 	pgm.parsing_cpp_union_class = is_union;
+	pgm.parsing_cpp_final_class = struct_head_final;
 	TokenCLASS class_parser;
 	TokenBase *result = NULL;
 	try
@@ -32915,10 +32946,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	{
 	    pgm.parsing_cpp_struct_class = saved_cpp_struct_class;
 	    pgm.parsing_cpp_union_class = saved_cpp_union_class;
+	    pgm.parsing_cpp_final_class = saved_cpp_final_class;
 	    throw;
 	}
 	pgm.parsing_cpp_struct_class = saved_cpp_struct_class;
 	pgm.parsing_cpp_union_class = saved_cpp_union_class;
+	pgm.parsing_cpp_final_class = saved_cpp_final_class;
 	return result;
     }
 
@@ -33025,6 +33058,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     pgm.nextToken(); // consume '{'
 
     DataDefSTRUCT *dds = tag ? new DataDefSTRUCT(tag->spelling(), 0) : new_anon_struct();
+    // `struct X final { int x; }` never earns promotion to DataDefCLASS and so
+    // never reaches the class parser's recording arm — record it here, on the
+    // non-delegating path, or __is_final answers 0 for it.
+    if ( struct_head_final )
+	dds->struct_is_final = true;
     dds->definition_origin = aggregate_definition_origin(
 	pgm, tag ? tag->file : file);
     std::string tag_store_key = tag ? tag->spelling() : "";
@@ -35903,6 +35941,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // to THIS class only (consume it so nested members don't inherit it).
     bool union_class = pgm.parsing_cpp_union_class;
     pgm.parsing_cpp_union_class = false;
+    // Same one-class-only handoff for `final` (TokenSTRUCT::parse had to consume
+    // the token to decide to delegate). The class parser's OWN class-head arm
+    // below ORs into this for the `class X final` spelling, which arrives here
+    // with the token still on the stream.
+    bool head_final = pgm.parsing_cpp_final_class;
+    pgm.parsing_cpp_final_class = false;
     bool do_typedef = pgm.parsing_typedef_decl
 	|| (pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false);
     flat_datatype_map_iter bmi;
@@ -36022,6 +36066,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
        || pgm.tokens[1]->id() == TokenID::tkColon) )
     {
 	pgm.nextToken();           // consume 'final'
+	head_final = true;         // answerable property, not just syntax
 	tn = pgm.peekToken();
 	if ( !tn )
 	    pgm.Throw << "Unexpected end of input after 'final'" << flush;
@@ -36437,6 +36482,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     }
     if ( !ddc )
 	ddc = new DataDefCLASS(tag->spelling(), 0, DataType::dtRESERVED);
+    // Only ever SET it: completing a forward declaration reuses the incomplete
+    // class object, and a re-entered definition must not un-final it.
+    if ( head_final )
+	ddc->struct_is_final = true;
     ddc->definition_origin = aggregate_definition_origin(pgm, tag->file);
     if ( has_local_class_identity )
 	pgm.function_local_class_identities[ddc] = local_class_identity;

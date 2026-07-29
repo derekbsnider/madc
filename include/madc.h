@@ -3719,6 +3719,12 @@ public:
     // to the class parser ([class.union]); TokenCLASS::parse consumes it and
     // marks the DataDefCLASS union_layout.
     bool parsing_cpp_union_class = false;
+    // `struct X final { }` delegated from TokenSTRUCT::parse: that parser must
+    // CONSUME `final` before it can decide to delegate (otherwise the body
+    // mis-parses), so the class parser never sees the token. Same one-class-only
+    // handoff as parsing_cpp_union_class above — set before the delegation, read
+    // and cleared on entry, so nested members do not inherit it.
+    bool parsing_cpp_final_class = false;
     // Statement-level qualified-call (`php::foo(args);`): the CALLEE namespace
     // override for HEAD resolution only ([basic.lookup] — the qualification
     // applies to the called name, not the arguments). Deliberately NOT part of
