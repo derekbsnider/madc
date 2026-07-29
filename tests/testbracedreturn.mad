@@ -1,0 +1,37 @@
+// Braced-init-list return ([stmt.return]/2): the returned object is
+// copy-list-initialized from the braced list.
+//
+// Regression shape, from libc++'s <__memory/allocate_at_least.h>:
+//	return {__alloc.allocate(__n), __n};
+// That `{` went straight to parseExpression, which read the first element and
+// then let the [expr.comma] loop chain `alloc(__n) , __n` into a COMMA
+// expression whose value is `__n` — silently discarding the aggregate and
+// returning a scalar from a function returning a struct. A wrong answer with
+// no diagnostic, not a parse error.
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	ab 7
+//	0 0 9 0 1 2 77
+#include <cstdio>
+
+struct pair2 { char *p; unsigned long n; };
+struct pt { int x; int y; };
+struct nest { pt a; unsigned long n; };
+
+static pair2 alloc_like(char *p, unsigned long n) { return {p, n}; }
+static pt zero() { return {}; }			// value-init: all zeroes
+static pt partial(int a) { return {a}; }	// y zero-init'd
+static nest deep(int a, int b, unsigned long n) { return {{a, b}, n}; }
+
+int main()
+{
+	char buf[4] = "ab";
+	pair2 r = alloc_like(buf, 7);
+	pt z = zero();
+	pt p = partial(9);
+	nest d = deep(1, 2, 77);
+
+	printf("%s %lu\n", r.p, r.n);
+	printf("%d %d %d %d %d %d %lu\n", z.x, z.y, p.x, p.y, d.a.x, d.a.y, d.n);
+	return 0;
+}
