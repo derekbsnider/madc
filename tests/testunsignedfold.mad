@@ -1,0 +1,21 @@
+// Constant-folded functional casts must carry the TARGET's signedness into
+// the fold's wide carrier: `T(-1) < T(0)` with T = unsigned long is FALSE
+// ((unsigned long)(-1) zero-extends to 2^64-1). The pre-fix 8-byte cast arm
+// sign-carried unconditionally, folding is_signed=1 / digits=63 for every
+// 64-bit unsigned — libc++ __libcpp_numeric_limits' exact member chain,
+// including the `type(...)` cast spelled through the class's member typedef
+// (which the runtime-access pre-scan must classify as a cast, not a call).
+// Oracle: g++ 13 == clang++-18 print "64 0".
+#include <cstdio>
+template <class T> struct is_ar { static const bool value = true; };
+template <class T, bool = is_ar<T>::value> struct base2 {};
+template <class T> struct base2<T, true> {
+    typedef T type;
+    static const bool is_signed = type(-1) < type(0);
+    static const int digits = static_cast<int>(sizeof(type) * 8 - is_signed);
+};
+template <class T> struct lim2 : private base2<T> {
+    typedef base2<T> __base;
+    static const int digits = __base::digits;
+};
+int main(){ printf("%d %d\n", (int)lim2<unsigned long>::digits, (int)base2<unsigned long>::is_signed); return 0; }

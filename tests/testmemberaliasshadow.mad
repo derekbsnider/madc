@@ -1,0 +1,16 @@
+// [basic.scope.class]: a class's OWN member type alias shadows a same-named
+// namespace-scope class. libc++ declares a real `std::__1::__function::
+// __base` class template; its flat tag entry must not hijack another
+// class's local `typedef ... __base;` (pre-fix, numeric_limits' member
+// typedef resolved to the decoy and its typedefs/values collapsed).
+// Oracle: g++ 13 == clang++-18 print "8 1".
+#include <cstdio>
+struct __base { char pad[64]; };
+template <class T> struct impl { typedef T type; static const bool ok = true; };
+struct user {
+    typedef impl<unsigned long> __base;
+    typedef __base::type type;
+    static const bool ok = __base::ok;
+    static unsigned long width() { return sizeof(type); }
+};
+int main(){ printf("%lu %d\n", user::width(), (int)user::ok); return 0; }
