@@ -337,6 +337,36 @@ else
 	fail "<string> crashed or hung (rc=$rc13): $(head -c 200 "$D/l13b.err")"
 fi
 
+# --- leg 14: a std:: free-function symbol is scoped for the ACTIVE flavor ---
+# libstdc++ entities sit directly in `std`, so Itanium's `St` abbreviation and
+# an <unscoped-name> are right: _ZStplI...  libc++ entities live in the inline
+# namespace std::__1, so the same function is a <nested-name> _ZNSt3__1plI...E
+# whose St3__1 prefix is ALSO substitution candidate S_ — which is why libc++'s
+# inner names read NS_11char_traitsIcEE. Two manglers used to hardcode the GNU
+# form while the VARIABLE mangler was already flavor-aware, producing a HYBRID
+# (_ZStplIcNSt3__1...): a GNU outer name around libc++ inner names, undefined
+# for a reason that pointed nowhere. Assert the shape per flavor, both
+# directions — a one-sided check passes if the switch is stuck.
+printf '#include <string>\nint main(void){std::string a="he",b="llo",c=a+b;return (int)c.size();}\n' \
+	> "$D/plusop.cpp"
+gnu_sym=$(run "$MADC" --emit=c11 "$D/plusop.cpp" 2>/dev/null \
+	| grep -o -E '_Z[A-Za-z0-9_]*plI[A-Za-z0-9_]*' | sort -u | head -1)
+llvm_sym=$(run "$MADC" -stdlib=libc++ --emit=c11 "$D/plusop.cpp" 2>/dev/null \
+	| grep -o -E '_Z[A-Za-z0-9_]*plI[A-Za-z0-9_]*' | sort -u | head -1)
+case "$gnu_sym" in
+_ZStplI*)   pass "libstdc++ std::operator+ keeps the St-direct form ($gnu_sym)" ;;
+"")         fail "no std::operator+ symbol emitted in the libstdc++ lane" ;;
+*)          fail "libstdc++ std::operator+ lost the St-direct form: $gnu_sym" ;;
+esac
+case "$llvm_sym" in
+_ZNSt3__1plI*NS_*)
+	pass "libc++ std::operator+ is a nested-name with S_ inner refs ($llvm_sym)" ;;
+_ZStplI*NSt3__1*)
+	fail "libc++ std::operator+ regressed to the HYBRID form: $llvm_sym" ;;
+"")	fail "no std::operator+ symbol emitted in the libc++ lane" ;;
+*)	fail "libc++ std::operator+ has an unexpected scope: $llvm_sym" ;;
+esac
+
 # --- leg 6: the redefinition diagnostic survives ---------------------------
 if run "$MADC" "$D/conflict.c" >/dev/null 2>"$D/l6.err"; then
 	fail "a conflicting user typedef was accepted (diagnostic lost)"

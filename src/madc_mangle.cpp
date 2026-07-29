@@ -448,6 +448,32 @@ TypeNode parse_param_type(const std::string &raw)
 	return t;
 }
 
+// ---- stdlib flavor state ----------------------------------------------------
+// Declared HERE, above the encoder, because the SCOPE of a std:: entity depends
+// on the active flavor: under libstdc++ `std::terminate` really is in `std`,
+// while under libc++ it is in the inline namespace `std::__1`, and a mangled
+// name that gets that scope wrong does not resolve. The setters and the
+// source-spelling helpers stay below, next to the rest of the flavor surface.
+// The "__cxx11" spelling and the LLVM namespace policy live in this file and
+// only in this file — the mangler is the one permitted home for std:: symbol
+// knowledge. The LLVM namespace is never a literal: it arrives from the parsed
+// _LIBCPP_ABI_NAMESPACE via madc_mangle_set_stdlib_llvm().
+
+static MangleStdlib g_std_stdlib = mstdlibGnu;
+static std::string g_std_abi_ns = "__cxx11";	// build default: GNU cxx11 ABI
+static unsigned g_std_abi_gen = 0;		// bumped on change; caches key on it
+
+// The inline namespace a std:: ENTITY lives in for the active flavor, or empty
+// when it lives directly in `std`. GNU's `__cxx11` is an ABI TAG on selected
+// components (basic_string et al), not a scope every name sits in — so only the
+// LLVM flavor answers non-empty here. Keeping that distinction in one predicate
+// is what stops `__cxx11` from leaking into unrelated GNU symbols.
+static const std::string &std_entity_inline_ns()
+{
+	static const std::string none;
+	return g_std_stdlib == mstdlibLlvm ? g_std_abi_ns : none;
+}
+
 // ---- the encoder -----------------------------------------------------------
 //
 // One ordered candidate table per top-level symbol. Each candidate is keyed by
@@ -571,16 +597,36 @@ public:
 	        const std::vector<std::string> &params)
 	{
 		reset();
-		// The function-template NAME is itself substitution candidate #0 (per the
+		// The SCOPE is encoded FIRST because under libc++ it is a nested-name
+		// whose std::__1 prefix is substitution candidate #0 — which is what
+		// shifts every later slot by one (the same operator+ reads S6_/S9_
+		// under libc++ and S5_/S8_ under libstdc++).
+		bool nested = false;
+		std::string scope = std_entity_scope(nested);
+		// The function-template NAME is the next substitution candidate (per the
 		// Itanium ABI: "<template-prefix>" of a function template is substitutable;
 		// e.g. the spec's `first<Duo>` example registers `first` as S_). It is
 		// rarely back-referenced but it shifts every later slot by one.
 		add_sub("@fn:" + opOrName);
-		std::string out = "_ZSt" + opOrName + "I";
+		std::string out = (nested ? "_ZN" : "_Z") + scope + opOrName + "I";
 		for (const auto &a : targs) out += encode_type(parse_type(a));
-		out += "E";
+		out += "E";			// close the template-args
+		if (nested) out += "E";		// close the <nested-name>
 		out += encode_type(parse_type(ret));
 		for (const auto &p : params) out += encode_type(parse_param_type(p));
+		return out;
+	}
+
+	// A namespace-scope std:: VARIABLE (cout, cin, …). Same scope rule as the
+	// functions above, so it shares the one owner rather than spelling the
+	// prefix again: GNU _ZSt4cout, libc++ _ZNSt3__14coutE.
+	std::string mangle_std_var(const std::string &name)
+	{
+		reset();
+		bool nested = false;
+		std::string scope = std_entity_scope(nested);
+		std::string out = (nested ? "_ZN" : "_Z") + scope + source_name(name);
+		if (nested) out += "E";
 		return out;
 	}
 
@@ -608,13 +654,18 @@ public:
 					out += encode_type(parse_param_type(p));
 			return out;
 		}
-		// A function directly in namespace std is an Itanium <unscoped-name>
-		// using the St abbreviation (_ZSt<name>…), NOT a nested-name
-		// (_ZNSt<name>E…). libstdc++ exports e.g. std::terminate() as
-		// _ZSt9terminatev — the St-direct form is what resolves at link.
+		// A function directly in namespace std. Under libstdc++ that is an
+		// Itanium <unscoped-name> using the St abbreviation (_ZSt9terminatev),
+		// with NO nested-name wrapper; under libc++ the entity really lives in
+		// std::__1, so it is a <nested-name> (_ZNSt3__19terminateEv).
+		// std_entity_scope owns that split — the St-direct form is only correct
+		// for the flavor whose entities are directly in std.
 		if (qualifiers.size() == 1 && qualifiers[0] == "std") {
-			std::string out = "_ZSt" + (opcode.empty() ? source_name(name)
-			                                           : opcode);
+			bool nested = false;
+			std::string scope = std_entity_scope(nested);
+			std::string out = (nested ? "_ZN" : "_Z") + scope
+			                + (opcode.empty() ? source_name(name) : opcode);
+			if (nested) out += "E";
 			if (params.empty())
 				out += "v";
 			else
@@ -773,6 +824,29 @@ private:
 		if (scope == "std::basic_string"   && a.size() == 3 && ct
 		    && canon_type(a[2]) == "std::allocator<#c>")           return "Ss";
 		return "";
+	}
+
+	// The mangled scope a std:: ENTITY sits in under the active stdlib flavor,
+	// and whether the name therefore needs the nested-name `N…E` wrapper.
+	// Registers the substitution candidate the scope creates, so a caller must
+	// invoke this BEFORE encoding anything else in the symbol.
+	//
+	// GNU:  `St` — the Itanium abbreviation for ::std::, an <unscoped-name>, so
+	//       NO wrapper. libstdc++ exports _ZSt9terminatev, _ZStplIc…E…
+	// LLVM: the entity really lives in the inline namespace std::__1, so the
+	//       scope is a two-component <nested-name> `St3__1` and the wrapper IS
+	//       required. libc++ exports _ZNSt3__1plIc…EE… — and that prefix is
+	//       also substitution candidate S_, which is why libc++'s inner names
+	//       read NS_11char_traitsIcEE and every later slot sits exactly one
+	//       higher than the GNU symbol's (S6_/S9_ vs S5_/S8_ on operator+).
+	std::string std_entity_scope(bool &needs_nesting)
+	{
+		const std::string &ins = std_entity_inline_ns();
+		needs_nesting = !ins.empty();
+		if (!needs_nesting)
+			return "St";		// abbreviation: consumes no slot
+		add_sub("std::" + ins);		// the key the type encoder looks up
+		return "St" + source_name(ins);
 	}
 
 	// ---- name encoding -------------------------------------------------------
@@ -995,14 +1069,8 @@ std::string itanium_mangle_nested_var(const std::vector<std::string> &qualifiers
 }
 
 // ---- stdlib flavor / std ABI inline namespace --------------------------------
-// See madc_mangle.h. The "__cxx11" spelling lives HERE and only here — the
-// mangler is the one permitted home for std:: symbol knowledge. The LLVM
-// namespace is never a literal: it arrives from the parsed
-// _LIBCPP_ABI_NAMESPACE via madc_mangle_set_stdlib_llvm().
-
-static MangleStdlib g_std_stdlib = mstdlibGnu;
-static std::string g_std_abi_ns = "__cxx11";	// build default: GNU cxx11 ABI
-static unsigned g_std_abi_gen = 0;		// bumped on change; caches key on it
+// See madc_mangle.h. The state itself is declared ABOVE the encoder (it decides
+// what scope a std:: name is mangled in); this is the rest of the surface.
 
 void madc_mangle_set_stdlib_gnu(bool cxx11_abi)
 {
@@ -1042,10 +1110,12 @@ std::string itanium_mangle_std_var(const std::string &name)
 {
 	// GNU: namespace-scope std vars (cout, cin, ...) live directly in std
 	// (never in __cxx11): _ZSt <length-prefixed-name>. LLVM: everything
-	// lives in the ABI namespace: _ZN St <ns> <name> E.
-	if (g_std_stdlib == mstdlibLlvm && !g_std_abi_ns.empty())
-		return "_ZNSt" + source_name(g_std_abi_ns) + source_name(name) + "E";
-	return "_ZSt" + source_name(name);
+	// lives in the ABI namespace: _ZN St <ns> <name> E. Both spellings come
+	// from ItaniumMangler::std_entity_scope, the one owner of that rule —
+	// this used to build the prefix itself, which is how the FUNCTION
+	// manglers came to disagree with it.
+	ItaniumMangler m;
+	return m.mangle_std_var(name);
 }
 
 // ---- canonical std:: type spellings -----------------------------------------
