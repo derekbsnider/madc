@@ -1045,10 +1045,37 @@ P2.7 finish line, not the lane's existence.
 
 Sampled causes in the 25-test non-stream tail, each still to be
 attributed: a HYBRID mangling (`_ZStplI…NSt3__1…` — a libstdc++ outer
-template name with libc++ inner ABI segments), an unresolved
-`__ns_std____1____math_isinf`, and two tests that fail on **output
-mismatch with no compile error** — that last class outranks the rest,
-being a silent wrong answer.
+template name with libc++ inner ABI segments; **fixed 2026-07-29
+@640c0244**, which exposed the real follow-on: that operator is
+`_LIBCPP_HIDE_FROM_ABI`, so it must compile from the headers rather than
+resolve mangled-direct), an unresolved `__ns_std____1____math_isinf`,
+and two tests that fail on **output mismatch with no compile error** —
+that last class outranks the rest, being a silent wrong answer.
+
+### Re-measured 2026-07-29 @640c0244: 536 / 282 — the gap did NOT move
+
+`536 passed / 282 failed / 0 timed out / 10 skipped`. The +2 over the
+534 baseline is exactly the two tests added in between
+(`testnestedqualified`, `testdefaultedctortrait`), both of which pass
+under libc++ too. **Failed is unchanged at 282, and the stream-header
+subset is unchanged at exactly 257.** Zero previously-failing tests
+flipped.
+
+That is worth stating plainly rather than reading the passed-count as
+progress, because the session that produced it fixed three real
+frontier defects (ios:441, ios:455, `<mutex>`:47) and walked the
+`<iostream>` frontier three headers deeper. The lesson is structural:
+**a blocked include is blocked wherever it stops.** Moving the failure
+from mutex.h:47 to condition_variable.h:211 changes nothing measurable
+until the last blocker in the chain falls and the header completes.
+So the burn-down metric for this ladder rung is not "how deep is the
+frontier" but "does `#include <iostream>` compile" — a binary that stays
+0 until it is 1, then moves ~257 tests at once.
+
+The failing set is now recorded in `docs/parity/libcxx-failset.txt` so
+later runs DIFF instead of inferring. This re-measurement had to deduce
+"nothing changed" from the totals plus a stream-header tally, which
+cannot distinguish that from an equal number fixed and newly broken.
 
 ## Decided defaults (no owner question needed)
 
