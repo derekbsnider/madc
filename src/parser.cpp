@@ -53013,6 +53013,25 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		parseFunction(*rtypes[0], id, NULL, &rtypes);
 		return NULL;
 	    }
+	    // Statement-leading global-scope qualifier ([stmt.ambig]): `::T w;`
+	    // is a DECLARATION when ::T names a global type — route through
+	    // the type resolver, whose tkNS arm owns the global-scope lookup
+	    // (it returns NULL without consuming when the name is not a
+	    // registered type, so a `::globalfn(...)` / `::x = 5` expression
+	    // statement falls through to the expression lane unchanged).
+	    if ( tb->id() == TokenID::tkNS )
+	    {
+		bool saved_vri = allow_variadic_real_inst;
+		allow_variadic_real_inst = true;
+		TokenDataType *resolved = resolve_declared_type_token(tb, true, true);
+		allow_variadic_real_inst = saved_vri;
+		if ( resolved )
+		{
+		    DBG(std::cout << "parseStatement(::) global-scope declaration "
+			<< resolved->definition.name << std::endl);
+		    return parseDeclaration(resolved);
+		}
+	    }
 	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") calling parseExprStmt" << std::endl);
 	    resetPrevToken();
 	    return parseExprStmt(tb);
