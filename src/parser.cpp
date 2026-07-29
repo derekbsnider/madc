@@ -46576,13 +46576,37 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // (that is what makes the enable_if a deduced context). Deduction left it
     // unbound, instantiation bailed, and the call stayed on its declaration-only
     // placeholder — an undefined MIR import for a body the header defines.
-    // Purely additive: the fill runs only for parameters `binding` does not
-    // already hold, so a deducible default-carrying param is unaffected.
-    // Tokens are SHARED, not cloned — the same convention the registration path
-    // uses (madc_register_fn_template's plain assignment); the resolver clones
-    // into its own isolated stream.
+    // The fill runs only for parameters `binding` does not already hold, so a
+    // deducible default-carrying param is unaffected. Tokens are SHARED, not
+    // cloned — the same convention the registration path uses
+    // (madc_register_fn_template's plain assignment); the resolver clones into
+    // its own isolated stream.
+    //
+    // TYPE parameters ONLY. A non-type parameter carries its SFINAE in its
+    // declared TYPE — `typename enable_if<COND, bool>::type = true` — and this
+    // lane does not capture those constraint runs: FnTemplateDef::
+    // typeparam_constraints stays empty for member templates (the known widening
+    // step). Filling such a default would ASSERT a viability nothing evaluated.
+    // It did: libstdc++'s pair template ctor
+    //   template<class _U1, class _U2, typename enable_if<...,bool>::type=true>
+    //   pair(_U1&& __x, _U2&& __y)
+    // became viable with its condition unchecked and then WON on exact-match
+    // scoring over the correct `pair(const _T1&, const _T2&)` — so a
+    // pair<const_iterator,bool> was built from an ITERATOR and a
+    // pair<node*,node*> from (node**, int), 32 c2mir pointer-fidelity warnings
+    // across the map/set suite from one line.
+    // [temp.deduct]/8: a substitution that cannot be performed makes the
+    // candidate NOT viable. Refusing is the correct answer under incomplete
+    // information — and it is exactly what this lane did before defaults were
+    // carried at all, so a non-type default loses nothing that ever worked.
+    // Widening it means capturing the constraints, not relaxing this.
     if ( fd->member_template_param_defaults.size() == ft.typeparams.size() )
+    {
 	ft.typeparam_defaults = fd->member_template_param_defaults;
+	for ( size_t i = 0; i < ft.typeparam_defaults.size(); ++i )
+	    if ( i >= ft.typeparam_is_type.size() || !ft.typeparam_is_type[i] )
+		ft.typeparam_defaults[i].clear();   // MY copy; tokens stay the FuncDef's
+    }
     ft.ns = std::string();
     // The instantiated definition gets a DISTINCT name (so it keeps its real
     // parameters instead of colliding with the varargs declaration-only
@@ -46867,10 +46891,17 @@ void Program::instantiate_member_ctor_template_for_construction(
     else
 	ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
     // Per-param defaults — same [temp.deduct]/8 carriage as the call twin
-    // (instantiate_member_fn_template_for_call); a ctor template parameter the
-    // construction's arguments cannot deduce is bound from its default.
+    // (instantiate_member_fn_template_for_call), TYPE parameters only, for the
+    // same reason: a non-type parameter's SFINAE lives in its declared type and
+    // this lane captures no constraint runs, so defaulting it would assert an
+    // unevaluated viability. See the call twin for the pair-ctor incident.
     if ( fd->member_template_param_defaults.size() == ft.typeparams.size() )
+    {
 	ft.typeparam_defaults = fd->member_template_param_defaults;
+	for ( size_t i = 0; i < ft.typeparam_defaults.size(); ++i )
+	    if ( i >= ft.typeparam_is_type.size() || !ft.typeparam_is_type[i] )
+		ft.typeparam_defaults[i].clear();
+    }
     ft.ns = std::string();
     ft.owner_class = cdd;
     ft.instance_method = true;
