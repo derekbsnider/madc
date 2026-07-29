@@ -2655,6 +2655,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					(fr.flags & madc::dis::DF_IS_CONST_METHOD) != 0;
 				fd->pure_virtual =
 					(fr.flags & madc::dis::DF_PURE_VIRTUAL) != 0;
+				fd->noexcept_spec =
+					(fr.flags & madc::dis::DF_NOEXCEPT_TRUE) ? FuncDef::NxTrue
+					: (fr.flags & madc::dis::DF_NOEXCEPT_UNKNOWN) ? FuncDef::NxUnknown
+					: FuncDef::NxNone;
 				fd->is_varargs =
 					(fr.flags & madc::dis::DF_IS_VARARGS) != 0;
 				fd->is_void_params =
@@ -3084,6 +3088,9 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				fd->emit_symbol = es;
 		fd->is_varargs       = (r.flags & madc::dis::DF_IS_VARARGS) != 0;
 		fd->is_void_params   = (r.flags & madc::dis::DF_IS_VOID_PARAMS) != 0;
+		fd->noexcept_spec    = (r.flags & madc::dis::DF_NOEXCEPT_TRUE) ? FuncDef::NxTrue
+				     : (r.flags & madc::dis::DF_NOEXCEPT_UNKNOWN) ? FuncDef::NxUnknown
+				     : FuncDef::NxNone;
 		// v21: the free-function source identity + FuncDef-intrinsic
 		// template state the live registration sets. On a DF_IS_FREE_FUNC
 		// record disp_id carries function_display_name; ns_id carries

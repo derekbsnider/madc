@@ -3283,6 +3283,7 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	    hash.add_bool(method.declaration_only);
 	    hash.add_bool(method.defaulted_or_deleted);
 	    hash.add_bool(method.is_deleted);
+	    hash.add_u64(method.noexcept_spec);
 	    hash.add_bool(method.pure_virtual);
 	    hash.add_bool(method.is_const_method);
 	    hash.add_bool(method.is_member_template);
@@ -5912,6 +5913,7 @@ static void register_basic_class_pattern_method(
     fd->declaration_only = pattern.declaration_only;
     fd->defaulted_or_deleted = pattern.defaulted_or_deleted;
     fd->is_deleted = pattern.is_deleted;
+    fd->noexcept_spec = pattern.noexcept_spec;
     fd->pure_virtual = pattern.pure_virtual;
     fd->decl_file = basic_class_pattern_source_file(binding.definition);
     fd->is_const_method = pattern.is_const_method;
@@ -6527,6 +6529,16 @@ struct ClassInstInFlightGuard {
     ~ClassInstInFlightGuard() { if ( inserted ) set.erase(key); }
 };
 
+// Env-gated diagnostics for the variadic real-instantiation routing and the
+// [temp.deduct]/8 alias-arg validation (MADC_XTEST_VRI_DEBUG=1): prints the
+// entry flags per class-template instantiation, the base-clause arming, the
+// per-alias-use skip decision, and the classifier's dependence verdicts.
+static bool vri_debug_enabled()
+{
+    static const char *e = ::getenv("MADC_XTEST_VRI_DEBUG");
+    return e != NULL;
+}
+
 TokenDataType *Program::instantiate_template_use(const std::string &tname,
 					       TokenBase *tb,
 					       const std::string &ns_hint,
@@ -6579,6 +6591,12 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	partial_spec_map.find_readonly(tname_id);
     bool try_spec_real_inst = (allow_variadic_real_inst || variadic_real_inst_sticky)
 			   && partial_entry && partial_entry->find(td.owner_class);
+    if ( vri_debug_enabled() )
+	fprintf(stderr, "[vriprobe] inst %s vri=%d sticky=%d dep=%d cap=%d\n",
+		tname.c_str(), (int)allow_variadic_real_inst,
+		(int)variadic_real_inst_sticky,
+		(int)dependent_parse_in_progress,
+		(int)class_pattern_capture_in_progress);
     allow_variadic_real_inst = false;
     // When this real-instantiation forwards through a dependent-member base
     // (`: Base<...>::type`), keep real-instantiation on for the nested base/arg
@@ -7228,14 +7246,32 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    }
 	    std::map<std::string, std::vector<TokenDataType *> >::iterator pki =
 		pack_subst.find(s);
-	    if ( pki != pack_subst.end() )
+	    // An ABSENT trailing pack (`C<int>` against `C<T, A...>`) records
+	    // NO pack_subst entry at all (the arg loop's "leave pack_subst
+	    // without an entry" case) — route it through the SAME empty-pack
+	    // elision as a present-but-empty entry, or the raw `A ...` tokens
+	    // survive into the clone (`__is_constructible(T, A...)` became
+	    // `__is_constructible(int, A...)` and the trait Threw).
+	    static const std::vector<TokenDataType *> absent_pack_elems;
+	    const std::vector<TokenDataType *> *pack_elems_p =
+		pki != pack_subst.end() ? &pki->second : NULL;
+	    if ( !pack_elems_p )
+		for ( size_t tp = 0; tp < td.typeparams.size(); ++tp )
+		    if ( td.typeparams[tp] == s
+		      && tp < td.typeparam_is_pack.size()
+		      && td.typeparam_is_pack[tp] )
+		    {
+			pack_elems_p = &absent_pack_elems;
+			break;
+		    }
+	    if ( pack_elems_p )
 	    {
 		// Pack expansion `_Types...`: emit the absorbed element types
 		// comma-separated. An EMPTY pack (the common allocator-rebind
 		// case) must drop the immediately-preceding `,` already emitted
 		// (so `C<_Up, _Types...>` -> `C<_Up>`, never `C<_Up,>`). The
 		// trailing `...` (three tkDot) in the body is then consumed.
-		const std::vector<TokenDataType *> &elems = pki->second;
+		const std::vector<TokenDataType *> &elems = *pack_elems_p;
 		// EMPTY function-PARAMETER pack with a declarator suffix
 		// (`const _Tail&... __tail`): the pack name is followed by cv/ref/ptr
 		// tokens THEN `...`. The whole parameter — leading cv already in
@@ -7669,19 +7705,78 @@ bool Program::alias_use_args_all_concrete(const TemplateAliasDef &td,
     return all_concrete;
 }
 
+TokenDataType *Program::namespace_chain_datatype(const std::string &nm)
+{
+    std::string scope = current_namespace();
+    while ( !scope.empty() )
+    {
+	namespace_datatype_map_t::iterator nti =
+	    namespace_datatype_map.find(scope);
+	if ( nti != namespace_datatype_map.end() )
+	{
+	    datatype_map_iter ndmi = nti->find(nm);
+	    if ( ndmi != nti->end() )
+		return ndmi->second;
+	}
+	size_t sp = scope.rfind("::");
+	scope = sp == std::string::npos ? std::string() : scope.substr(0, sp);
+    }
+    return NULL;
+}
+
 bool Program::alias_arg_tokens_dependent(const std::vector<TokenBase *> &toks)
 {
+    TokenBase *prev = NULL;
     for ( TokenBase *t : toks )
     {
 	if ( !t )
 	    continue;
-	if ( is_contextual_identifier_token(t)
-	  && resolve_template_param(contextual_identifier_name(t)) )
-	    return true;
+	// A MEMBER name (`__not_<...>::value`) is looked up in its owner, not
+	// in scope — its unresolvability here says nothing about dependence
+	// (every trait's `::value` would otherwise classify dependent and
+	// silently skip the [temp.deduct]/8 validation in dependent parses).
+	// The OWNER name before the `::` still classifies normally.
+	bool after_scope_op = prev && prev->id() == TokenID::tkNS;
+	prev = t;
+	if ( !after_scope_op && is_contextual_identifier_token(t) )
+	{
+	    const std::string nm = contextual_identifier_name(t);
+	    if ( resolve_template_param(nm) )
+	    {
+		if ( vri_debug_enabled() )
+		    fprintf(stderr, "[vriprobe] argdep: tparam %s\n", nm.c_str());
+		return true;
+	    }
+	    // An identifier that resolves to NOTHING in scope — not a type,
+	    // value, or template — names a template parameter whose frame is
+	    // not active (a member alias template's OWN param `_Iter` inside
+	    // its declaration: `__enable_if_t<is_convertible<_Iter,...>>`).
+	    // That is DEPENDENT, not a substitution failure; a genuine SFINAE
+	    // miss (enable_if<false,T>::type) has every name resolvable and
+	    // still fails composition.
+	    const uint32_t nm_id = template_name_pool.intern(nm);
+	    if ( datatype_map.find(nm) == datatype_map.end()
+	      && !namespace_chain_datatype(nm)
+	      && !findVariable(nm)
+	      && !find_template(nm_id, std::string(), NULL)
+	      && !find_template_alias(nm_id, std::string(), NULL)
+	      && !namespace_map.count(nm)
+	      && !resolve_builtin_type_spelling(nm) )
+	    {
+		if ( vri_debug_enabled() )
+		    fprintf(stderr, "[vriprobe] argdep: unresolvable %s\n", nm.c_str());
+		return true;
+	    }
+	}
 	if ( t->type() == TokenType::ttDataType
 	  && datadef_has_unresolved_dependent_surface(
 		&((TokenDataType *)t)->definition) )
+	{
+	    if ( vri_debug_enabled() )
+		fprintf(stderr, "[vriprobe] argdep: dep-surface type %s\n",
+			((TokenDataType *)t)->definition.name.c_str());
 	    return true;
+	}
     }
     return false;
 }
@@ -7822,6 +7917,16 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		if ( i < td.typeparam_is_pack.size() && td.typeparam_is_pack[i] )
 		    pack_param_names.insert(td.typeparams[i]);
 	    }
+	    // ALL declared pack params — an ABSENT trailing pack (the alias
+	    // used with fewer args: `__is_constructible_impl<_Tp>`) has no
+	    // arg slot and thus no tok_subst entry; its body mention must be
+	    // ELIDED (with its `...` and a preceding comma), or the raw name
+	    // survives into the substituted body and the whole alias falls to
+	    // the opaque placeholder (silent wrong trait values).
+	    std::set<std::string> declared_packs;
+	    for ( size_t i = 0; i < td.typeparams.size(); ++i )
+		if ( i < td.typeparam_is_pack.size() && td.typeparam_is_pack[i] )
+		    declared_packs.insert(td.typeparams[i]);
 	    std::vector<TokenBase *> body;
 	    for ( size_t bi = 0; bi < td.target.size(); ++bi )
 	    {
@@ -7831,6 +7936,21 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		    const std::string &nm = ((TokenIdent *)bt)->spelling();
 		    std::map<std::string, const std::vector<TokenBase *> *>::iterator si =
 			tok_subst.find(nm);
+		    if ( si == tok_subst.end() && declared_packs.count(nm) )
+		    {
+			if ( !body.empty() && body.back()
+			  && body.back()->id() == TokenID::tkComma )
+			{
+			    delete body.back();
+			    body.pop_back();
+			}
+			if ( bi + 3 < td.target.size()
+			  && td.target[bi+1] && td.target[bi+1]->id() == TokenID::tkDot
+			  && td.target[bi+2] && td.target[bi+2]->id() == TokenID::tkDot
+			  && td.target[bi+3] && td.target[bi+3]->id() == TokenID::tkDot )
+			    bi += 3;
+			continue;
+		    }
 		    if ( si != tok_subst.end() )
 		    {
 			used_params.insert(nm);
@@ -7934,11 +8054,31 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		// concrete arg is a substitution failure (NULL); a DEPENDENT
 		// arg (names a live template parameter / dependent surface)
 		// keeps the opaque placeholder below, as before.
-		// A DEPENDENT parse skips the validation entirely (args
-		// legitimately unresolvable now); the resolved body still
-		// returns, exactly as before.
-		const bool skip_validation = dependent_parse_in_progress
-					  || class_pattern_capture_in_progress;
+		// A capture parse skips the validation entirely. A DEPENDENT
+		// parse skips it only when the use itself is dependent — an
+		// arg naming a live/unbound template parameter (`__enable_if_t
+		// <is_convertible<_Iter,_Iterator>::value>` inside
+		// __normal_iterator's member alias template is legitimately
+		// unresolvable now). A NON-dependent use validates even inside
+		// a dependent parse: `__first_t<true_type, __enable_if_t<
+		// bool(...)>...>` with concrete args inside _M_realloc_insert's
+		// materialization must SFINAE-fail, or __and_ folds the wrong
+		// branch (the vecbind move/copy lane divergence). The
+		// discriminator is DEPENDENCE, not concreteness: a genuine
+		// SFINAE miss (enable_if<false,T>::type) has every name
+		// resolvable — not dependent — and must still fail here.
+		bool alias_use_dependent = false;
+		for ( size_t i = 0; !alias_use_dependent && i < arg_tokens.size(); ++i )
+		    alias_use_dependent = alias_arg_tokens_dependent(arg_tokens[i]);
+		const bool skip_validation = class_pattern_capture_in_progress
+					  || (dependent_parse_in_progress
+					      && alias_use_dependent);
+		if ( vri_debug_enabled() )
+		    fprintf(stderr, "[vriprobe] alias-validate %s skip=%d dep=%d cap=%d argdep=%d\n",
+			    tname.c_str(), (int)skip_validation,
+			    (int)dependent_parse_in_progress,
+			    (int)class_pattern_capture_in_progress,
+			    (int)alias_use_dependent);
 		bool unused_failed = false, unused_dependent = false;
 		for ( size_t i = 0; !skip_validation && i < arg_tokens.size()
 			     && !unused_failed && !unused_dependent; ++i )
@@ -8800,32 +8940,16 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
     }
 
     // Unqualified type lookup inside a namespace: C++ searches the enclosing
-    // namespace chain (std::pmr -> std) BEFORE the global scope. Namespace-
-    // scope aliases live ONLY in namespace_datatype_map (not flat-leaked), so
-    // a header class inside namespace std deriving from bare `true_type`
-    // resolves here.
+    // namespace chain (std::pmr -> std) BEFORE the global scope
+    // (namespace_chain_datatype owns the walk).
+    if ( TokenDataType *proto = namespace_chain_datatype(tname) )
     {
-	std::string scope = current_namespace();
-	while ( !scope.empty() )
-	{
-	    namespace_datatype_map_t::iterator nti =
-		namespace_datatype_map.find(scope);
-	    if ( nti != namespace_datatype_map.end() )
-	    {
-		datatype_map_iter ndmi = nti->find(tname);
-		if ( ndmi != nti->end() )
-		{
-		    TokenDataType *use = (TokenDataType *)ndmi->second->clone();
-		    use->file   = tb->file;
-		    use->line   = tb->line;
-		    use->column = tb->column;
-		    return resolve_member_chain_or_type(use, tb,
-							consume_class_member_chain);
-		}
-	    }
-	    size_t sp = scope.rfind("::");
-	    scope = sp == std::string::npos ? std::string() : scope.substr(0, sp);
-	}
+	TokenDataType *use = (TokenDataType *)proto->clone();
+	use->file   = tb->file;
+	use->line   = tb->line;
+	use->column = tb->column;
+	return resolve_member_chain_or_type(use, tb,
+					    consume_class_member_chain);
     }
 
     flat_datatype_map_iter dmi = datatype_map.find(tname);
@@ -10034,6 +10158,8 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 // Implement EXACTLY the gcc-13 trait builtins that madc can answer faithfully —
 // no more: providing a builtin gcc lacks (e.g. __is_pointer/__is_void, which gcc
 // implements in libstdc++, not the compiler) could shadow a library identifier.
+static const int TRAIT_ARITY_VARIADIC = -2;   // one-or-more type arguments
+
 static int type_trait_arity(const std::string &name)
 {
     if ( name == "__is_same" || name == "__is_base_of"
@@ -10044,6 +10170,8 @@ static int type_trait_arity(const std::string &name)
       || name == "__is_empty" || name == "__is_standard_layout"
       || name == "__is_pod" )
 	return 1;
+    if ( name == "__is_constructible" || name == "__is_nothrow_constructible" )
+	return TRAIT_ARITY_VARIADIC;
     return 0;   // not a supported trait
 }
 
@@ -10377,6 +10505,334 @@ static int trait_is_assignable(const TraitTypeArg &to, const TraitTypeArg &from)
     return trait_class_assignable(to_class);
 }
 
+// Is `from` implicitly convertible to the scalar (arithmetic / enum / pointer)
+// type `to` by copy-initialization? The same conversion core the assignable
+// trait models, plus the enum asymmetry: nothing converts TO an enum but the
+// enum itself ([dcl.init] — no implicit arithmetic->enum), while enum->
+// arithmetic depends on scoped-ness madc does not record (-1).
+static int trait_scalar_convertible_from(DataDef *to, const TraitTypeArg &from)
+{
+    if ( !to || !from.dd )
+	return -1;
+    if ( dynamic_cast<DataDefENUM *>(to) )
+	return (to == from.dd || to->name == from.dd->name) ? 1 : 0;
+    if ( dynamic_cast<DataDefENUM *>(from.dd) )
+	return -1;
+    return trait_scalar_assignable_from(to, from.dd);
+}
+
+static int trait_is_constructible(const TraitTypeArg &to,
+				  const std::vector<TraitTypeArg> &args,
+				  bool need_nothrow, int depth);
+
+// The IMPLICITLY-declared default/copy/move constructor: available iff every
+// base and every data member is itself so constructible ([class.default.ctor],
+// [class.copy.ctor]); for the nothrow question the same walk ANDs the members'
+// nothrow-ness (the implicit ctor's noexcept is exactly that conjunction,
+// [except.spec]p7). copy_form distinguishes the memberwise-copy walk from the
+// default-init walk.
+static int trait_class_memberwise_ctor(DataDefCLASS *c, bool copy_form,
+					bool need_nothrow, int depth)
+{
+    std::vector<DataDefCLASS *> parents;
+    if ( c->base_class )
+	parents.push_back(c->base_class);
+    for ( size_t i = 0; i < c->bases.size(); ++i )
+	if ( c->bases[i].base && c->bases[i].base != c->base_class )
+	    parents.push_back(c->bases[i].base);
+    for ( size_t i = 0; i < parents.size(); ++i )
+    {
+	TraitTypeArg to;
+	to.dd = parents[i];
+	std::vector<TraitTypeArg> pargs;
+	if ( copy_form )
+	{
+	    TraitTypeArg a;
+	    a.dd = parents[i];
+	    a.is_lref = true;
+	    a.referent_const = true;
+	    pargs.push_back(a);
+	}
+	int s = trait_is_constructible(to, pargs, need_nothrow, depth + 1);
+	if ( s != 1 )
+	    return s;
+    }
+    for ( size_t i = 0; i < c->members.size(); ++i )
+    {
+	DataDef *m = c->members[i].second;
+	if ( !m )
+	    continue;
+	if ( dynamic_cast<DataDefREF *>(m) )
+	{
+	    if ( copy_form )
+		continue;            // copying a bound reference member is fine
+	    return -1;               // default-init needs an NSDMI madc does not
+				     // surface here — refuse, don't guess
+	}
+	while ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(m) )
+	{
+	    if ( !arr->element_type )
+		return -1;
+	    m = arr->element_type;   // element-wise: the element type decides
+	}
+	if ( DataDefCLASS *mc = dynamic_cast<DataDefCLASS *>(m) )
+	{
+	    TraitTypeArg to;
+	    to.dd = mc;
+	    std::vector<TraitTypeArg> margs;
+	    if ( copy_form )
+	    {
+		TraitTypeArg a;
+		a.dd = mc;
+		a.is_lref = true;
+		a.referent_const = true;
+		margs.push_back(a);
+	    }
+	    int s = trait_is_constructible(to, margs, need_nothrow, depth + 1);
+	    if ( s != 1 )
+		return s;
+	}
+	// scalar / pointer / enum / plain-struct member: default-init and
+	// memberwise copy are both well-formed and non-throwing
+    }
+    return 1;
+}
+
+// __is_constructible(T, Args...) for a class T: does ONE non-deleted
+// constructor accept the argument list, at the fidelity madc models —
+// exact/derived class matches and scalar conversions per parameter. A
+// candidate needing unmodeled machinery (a constructor TEMPLATE's SFINAE
+// constraints, a class-type conversion) makes a NO answer undeterminable
+// (-1); a positive match from a plain candidate stays decisive.
+static int trait_class_constructible(DataDefCLASS *c,
+				     const std::vector<TraitTypeArg> &args,
+				     bool need_nothrow, int depth)
+{
+    bool same_class_arg = args.size() == 1 && args[0].dd
+	&& (args[0].dd == c || args[0].dd->name == c->name);
+    // Deleted special members are dropped from `ctors` at class parse; the
+    // recorded class flags are their only trace ([class.copy.ctor]: a deleted
+    // selected ctor makes the initialization ill-formed).
+    if ( args.empty() && c->has_deleted_default_ctor )
+	return 0;
+    if ( same_class_arg && c->has_deleted_copy_ctor )
+	return 0;
+    bool saw_unmodelable = false;
+    bool saw_user_ctor = false;
+    bool matched_deleted = false;
+    bool defaulted_default = c->has_defaulted_default_ctor;
+    int matched = 0;
+    int matched_nothrow = -1;     // agreed nothrow answer of the matches
+    int movelike_nx = -2;         // nothrow of the T&/T&& (non-const) candidate
+    int copylike_nx = -2;         // nothrow of the const T& candidate
+    for ( size_t ci = 0; ci < c->ctors.size(); ++ci )
+    {
+	FuncDef *fd = c->ctors[ci]
+	    ? dynamic_cast<FuncDef *>(c->ctors[ci]->type) : NULL;
+	if ( !fd )
+	    continue;
+	if ( fd->is_member_template )
+	{
+	    saw_unmodelable = true;   // a ctor template can accept nearly anything
+	    continue;
+	}
+	saw_user_ctor = true;
+	// A `= default` special member behaves as the implicit one — the
+	// memberwise walk below owns it (its noexcept is the conjunction).
+	// An explicitly-defaulted DEFAULT ctor must keep the class default-
+	// constructible even beside other user ctors ([class.default.ctor]:
+	// the suppression rule counts user-DECLARED ctors, and this one is
+	// the default ctor itself).
+	if ( fd->defaulted_or_deleted && !fd->is_deleted )
+	{
+	    if ( args.empty() && fd->parameters.size() <= 1 )
+		defaulted_default = true;
+	    continue;
+	}
+	size_t nparams = fd->parameters.empty() ? 0 : fd->parameters.size() - 1;
+	size_t ndefaults = 0;
+	for ( size_t i = fd->param_defaults.size(); i-- > 1; )
+	{
+	    bool has_def = fd->param_defaults[i]
+		|| (i < fd->param_default_tokens.size()
+		    && !fd->param_default_tokens[i].empty());
+	    if ( !has_def )
+		break;
+	    ++ndefaults;
+	}
+	if ( args.size() > nparams || args.size() + ndefaults < nparams )
+	    continue;                 // arity mismatch — not viable
+	bool viable = true;
+	bool unmodelable = false;
+	for ( size_t i = 0; i < args.size() && viable; ++i )
+	{
+	    DataDef *pdd = fd->parameters[i + 1];
+	    DataDef *pref = pdd;
+	    if ( DataDefPTR *pr = dynamic_cast<DataDefPTR *>(pref) )
+		if ( pr->is_reference() && pr->base_type )
+		    pref = pr->base_type;
+	    if ( DataDefCONST *pc = dynamic_cast<DataDefCONST *>(pref) )
+		pref = pc->base_type ? pc->base_type : pref;
+	    const TraitTypeArg &a = args[i];
+	    if ( !pref || !a.dd )
+	    { unmodelable = true; viable = false; break; }
+	    if ( DataDefCLASS *pcl = dynamic_cast<DataDefCLASS *>(pref) )
+	    {
+		if ( a.dd == pcl || a.dd->name == pcl->name )
+		    continue;
+		if ( dynamic_cast<DataDefCLASS *>(a.dd)
+		  && trait_is_base_of(pcl, a.dd) )
+		    continue;
+		unmodelable = true;   // would need a conversion madc can't rank
+		viable = false;
+		break;
+	    }
+	    int s = trait_scalar_convertible_from(pref, a);
+	    if ( s == 1 )
+		continue;
+	    if ( s < 0 )
+		unmodelable = true;
+	    viable = false;
+	}
+	if ( unmodelable )
+	{ saw_unmodelable = true; continue; }
+	if ( !viable )
+	    continue;
+	if ( fd->is_deleted )
+	{ matched_deleted = true; continue; }
+	// NxNone cannot answer "may throw": the LEXER erases conditional
+	// `noexcept(expr)` specifiers, so an unspecified FuncDef is
+	// indistinguishable from an erased one — only a captured
+	// unconditional spec (NxTrue) is decisive. Refuse rather than guess.
+	int nx = fd->noexcept_spec == FuncDef::NxTrue ? 1 : -1;
+	if ( matched && matched_nothrow != nx )
+	    matched_nothrow = -1;     // ambiguous selection — refuse the nothrow claim
+	else
+	    matched_nothrow = nx;
+	// Classify a same-class single-arg candidate by its parameter's
+	// const-ness (madc's one post-resolution reference kind: the MOVE
+	// ctor's param is the non-const reference, the COPY ctor's the const
+	// one) for the value-category preference below.
+	if ( same_class_arg && nparams >= 1 )
+	{
+	    bool p_const = 1 < fd->const_params.size() && fd->const_params[1];
+	    DataDef *p1 = fd->parameters[1];
+	    if ( DataDefPTR *pr = dynamic_cast<DataDefPTR *>(p1) )
+		if ( pr->is_reference() && pr->base_type )
+		{
+		    if ( dynamic_cast<DataDefCONST *>(pr->base_type) )
+			p_const = true;
+		    if ( p_const )
+			copylike_nx = nx;
+		    else
+			movelike_nx = nx;
+		}
+	}
+	++matched;
+    }
+    if ( matched )
+    {
+	if ( !need_nothrow )
+	    return 1;
+	if ( matched == 1 || matched_nothrow != -1 )
+	    return matched_nothrow;
+	// Disagreeing matches: the reduced [over.ics.rank] preference — an
+	// RVALUE same-class argument selects the T&&/T& (non-const) overload
+	// over const T&; an lvalue (or const) argument the const T& one.
+	if ( same_class_arg )
+	{
+	    int pick = (args[0].is_rref && !args[0].referent_const)
+		     ? movelike_nx : copylike_nx;
+	    if ( pick != -2 )
+		return pick;
+	}
+	return -1;
+    }
+    if ( matched_deleted )
+	return 0;
+    if ( saw_unmodelable )
+	return -1;
+    // No explicit candidate: the implicit/defaulted special members remain.
+    // Any user-declared ctor suppresses the implicit DEFAULT ctor
+    // ([class.default.ctor]p1); the implicit copy/move survives.
+    if ( args.empty() )
+	return (saw_user_ctor && !defaulted_default)
+	     ? 0 : trait_class_memberwise_ctor(c, false, need_nothrow, depth);
+    if ( same_class_arg )
+	return trait_class_memberwise_ctor(c, true, need_nothrow, depth);
+    return 0;                        // no converting ctor takes these args
+}
+
+// __is_constructible(T, Args...) / __is_nothrow_constructible(T, Args...):
+// is the variable definition `T t(declval<Args>()...)` well-formed (and,
+// for the nothrow form, known non-throwing)? Tri-state like the assignable
+// trait: -1 = madc cannot answer faithfully (the caller raises a clear
+// error / declines the fold rather than emit a wrong bool).
+static int trait_is_constructible(const TraitTypeArg &to,
+				  const std::vector<TraitTypeArg> &args,
+				  bool need_nothrow, int depth)
+{
+    if ( !to.dd )
+	return -1;
+    if ( depth > 32 )
+	return -1;                   // pathological nesting — refuse, don't hang
+    if ( to.is_lref || to.is_rref )
+    {
+	// [dcl.init.ref] at this fidelity: same-type (or derived-to-base
+	// class) sources bind per value category; const-lvalue/rvalue refs
+	// also bind a convertible scalar temporary. Reference binding never
+	// throws, so the nothrow answer is the same.
+	if ( args.size() != 1 )
+	    return 0;
+	const TraitTypeArg &a = args[0];
+	if ( !a.dd )
+	    return -1;
+	bool related = a.dd == to.dd || a.dd->name == to.dd->name;
+	if ( !related && dynamic_cast<DataDefCLASS *>(to.dd)
+	  && dynamic_cast<DataDefCLASS *>(a.dd) )
+	    related = trait_is_base_of(to.dd, a.dd);
+	if ( related )
+	{
+	    if ( to.is_rref )
+		return a.is_lref ? 0 : 1;      // T&& never binds an lvalue
+	    if ( to.referent_const )
+		return 1;                       // const T& binds everything
+	    return a.is_lref ? 1 : 0;           // plain T& needs an lvalue
+	}
+	if ( !dynamic_cast<DataDefCLASS *>(to.dd)
+	  && (to.referent_const || to.is_rref) )
+	    return trait_scalar_convertible_from(to.dd, a);  // temp materializes
+	return 0;
+    }
+    if ( dynamic_cast<DataDefVOID *>(to.dd) )
+	return 0;
+    if ( dynamic_cast<DataDefCArray *>(to.dd) )
+	return args.empty() ? -1 : 0;    // array-of-T constructibility: not modeled
+    if ( DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(to.dd) )
+	return trait_class_constructible(c, args, need_nothrow, depth);
+    if ( dynamic_cast<DataDefSTRUCT *>(to.dd)
+      && !dynamic_cast<DataDefCOMPLEX *>(to.dd) )
+    {
+	// A plain C aggregate: value-init (0 args) and trivial copy from the
+	// same struct are well-formed and non-throwing; paren-init from other
+	// values is not a thing before C++20's P0960 (madc's dialect level).
+	if ( args.empty() )
+	    return 1;
+	if ( args.size() == 1 && args[0].dd
+	  && (args[0].dd == to.dd || args[0].dd->name == to.dd->name) )
+	    return 1;
+	return 0;
+    }
+    // Scalar target (arithmetic / enum / pointer): value-init, or one
+    // converting argument; scalar initialization never throws, so the
+    // nothrow answer equals the constructible one.
+    if ( args.empty() )
+	return 1;
+    if ( args.size() == 1 )
+	return trait_scalar_convertible_from(to.dd, args[0]);
+    return 0;
+}
+
 TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &name)
 {
     int arity = type_trait_arity(name);
@@ -10419,9 +10875,12 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	Throw(sep ? sep : op_tb) << "Expecting ',' or ')' in " << name << "(...)" << flush;
     }
 
-    if ( (int)args.size() != arity )
-	Throw(op_tb) << name << " expects " << arity << " type argument(s), got "
-		     << args.size() << flush;
+    if ( arity == TRAIT_ARITY_VARIADIC ? args.empty()
+				       : (int)args.size() != arity )
+	Throw(op_tb) << name << " expects "
+		     << (arity == TRAIT_ARITY_VARIADIC ? 1 : arity)
+		     << (arity == TRAIT_ARITY_VARIADIC ? " or more" : "")
+		     << " type argument(s), got " << args.size() << flush;
 
     bool result = false;
     if ( name == "__is_same" )
@@ -10450,6 +10909,17 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	if ( s < 0 )
 	    Throw(op_tb) << "cannot faithfully evaluate __is_assignable(...) for "
 			 << "these operand types" << flush;
+	result = s != 0;
+    }
+    else if ( name == "__is_constructible"
+	   || name == "__is_nothrow_constructible" )
+    {
+	std::vector<TraitTypeArg> ctor_args(args.begin() + 1, args.end());
+	int s = trait_is_constructible(args[0], ctor_args,
+				       name == "__is_nothrow_constructible", 0);
+	if ( s < 0 )
+	    Throw(op_tb) << "cannot faithfully evaluate " << name
+			 << "(...) for these operand types" << flush;
 	result = s != 0;
     }
 
@@ -16171,6 +16641,7 @@ class ClassPatternPayloadReader
 	out.declaration_only = boolean();
 	out.defaulted_or_deleted = boolean();
 	out.is_deleted = boolean();
+	out.noexcept_spec = (uint8_t)word();
 	out.pure_virtual = boolean();
 	out.is_const_method = boolean();
 	out.is_member_template = boolean();
@@ -23768,6 +24239,7 @@ class ClassPatternNormalizer
 	out.declaration_only = fd->declaration_only;
 	out.defaulted_or_deleted = fd->defaulted_or_deleted;
 	out.is_deleted = fd->is_deleted;
+	out.noexcept_spec = fd->noexcept_spec;
 	out.pure_virtual = fd->pure_virtual;
 	out.is_const_method = fd->is_const_method;
 	out.is_member_template = fd->is_member_template;
@@ -25187,7 +25659,8 @@ static bool eval_local_type_trait(Program &pgm,
 	{ ++j; break; }
 	return false;
     }
-    if ( (int)targs.size() != arity )
+    if ( arity == TRAIT_ARITY_VARIADIC ? targs.empty()
+				       : (int)targs.size() != arity )
 	return false;
     bool r;
     if ( nm == "__has_trivial_destructor" ) r = trait_has_trivial_destructor(targs[0].dd);
@@ -25203,6 +25676,15 @@ static bool eval_local_type_trait(Program &pgm,
     else if ( nm == "__is_assignable" )
     {
 	int s = trait_is_assignable(targs[0], targs[1]);
+	if ( s < 0 )
+	    return false;   // undetermined -> not a constant-foldable trait here
+	r = s != 0;
+    }
+    else if ( nm == "__is_constructible" || nm == "__is_nothrow_constructible" )
+    {
+	std::vector<TraitTypeArg> ctor_args(targs.begin() + 1, targs.end());
+	int s = trait_is_constructible(targs[0], ctor_args,
+				       nm == "__is_nothrow_constructible", 0);
 	if ( s < 0 )
 	    return false;   // undetermined -> not a constant-foldable trait here
 	r = s != 0;
@@ -34783,6 +35265,36 @@ void Program::complete_class_aggregate(DataDefCLASS *ddc)
 	forest_arena_record_aggregate(ddc);
 }
 
+// A defaulted/deleted special-member CONSTRUCTOR is dropped from the class's
+// ctor overload set at parse (like every `= default`/`= delete` member) —
+// record what was dropped so __is_constructible answers faithfully: a deleted
+// default/copy ctor makes the class not so-constructible; an explicitly
+// defaulted default ctor keeps it default-constructible beside other user
+// ctors ([class.default.ctor]). The has_deleted_copy_assign twin for ctors.
+static void record_dropped_special_ctor(DataDefCLASS *ddc, FuncDef *fd)
+{
+    if ( !ddc || !fd || !fd->defaulted_or_deleted )
+	return;
+    if ( fd->parameters.size() <= 1 )	// param 0 is the hidden __this
+    {
+	if ( fd->is_deleted )
+	    ddc->has_deleted_default_ctor = true;
+	else
+	    ddc->has_defaulted_default_ctor = true;
+	return;
+    }
+    if ( !fd->is_deleted || fd->parameters.size() != 2 )
+	return;
+    DataDef *p = fd->parameters[1];
+    if ( DataDefPTR *pr = dynamic_cast<DataDefPTR *>(p) )
+	if ( pr->is_reference() && pr->base_type )
+	    p = pr->base_type;
+    if ( DataDefCONST *pc = dynamic_cast<DataDefCONST *>(p) )
+	p = pc->base_type ? pc->base_type : p;
+    if ( p == ddc || (p && p->name == ddc->name) )
+	ddc->has_deleted_copy_ctor = true;
+}
+
 // forms:
 // class Name { type member; rettype method() { ... } };
 // class Name variable;
@@ -34976,7 +35488,28 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    bool template_base_syntax =
 		pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT;
 	    DataDefCLASS *bcls = NULL;
-	    if ( TokenDataType *bdt = pgm.resolve_declared_type_token(bn, true, true) )
+	    // A base-specifier of a class DEFINITION is a committed type context:
+	    // a concrete-arg variadic template-id here (`__move_if_noexcept_cond
+	    // : __and_<...>::type`, gcc13 move.h) must really instantiate — an
+	    // opaque member-less shell leaves `::value` unfoldable (the vecbind
+	    // live/bind lane divergence). Scoped to the base-name resolution
+	    // only (never the class body — a class-wide sticky leaked into
+	    // nested member-alias parses and broke the c++20 legs), and OFF
+	    // during a pattern-capture parse, whose dependent-surface bases
+	    // must keep their opaque routing (see the chain note below).
+	    bool base_vri = !pgm.class_pattern_capture_in_progress;
+	    bool saved_vri = pgm.allow_variadic_real_inst;
+	    if ( vri_debug_enabled() )
+		fprintf(stderr, "[vriprobe] base-clause class=%s base=%s arm=%d dep=%d cap=%d\n",
+			tag ? tag->spelling() : "?",
+			source_base_name.c_str(), (int)base_vri,
+			(int)pgm.dependent_parse_in_progress,
+			(int)pgm.class_pattern_capture_in_progress);
+	    if ( base_vri )
+		pgm.allow_variadic_real_inst = true;
+	    TokenDataType *base_bdt = pgm.resolve_declared_type_token(bn, true, true);
+	    pgm.allow_variadic_real_inst = saved_vri;
+	    if ( TokenDataType *bdt = base_bdt )
 	    {
 		bcls = dynamic_cast<DataDefCLASS *>(&bdt->definition);
 		// Adopt the RESOLVED type's name BEFORE promoting. `base_name`
@@ -35016,8 +35549,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( bcls && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS
 	      && class_allows_opaque_member_type(bcls) )
 	    {
-		if ( TokenDataType *chained =
-			pgm.resolve_class_member_type_chain(bcls, bn, true) )
+		if ( base_vri )
+		    pgm.allow_variadic_real_inst = true;
+		TokenDataType *chained_dt =
+		    pgm.resolve_class_member_type_chain(bcls, bn, true);
+		pgm.allow_variadic_real_inst = saved_vri;
+		if ( TokenDataType *chained = chained_dt )
 		    if ( DataDefCLASS *chained_cls =
 			    dynamic_cast<DataDefCLASS *>(&chained->definition) )
 		    {
@@ -35687,6 +36224,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		if ( (mvar=pgm.tkProgram->findVariable(pgm.strpool, mangled)) )
 		{
 		    FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type);
+		    if ( cfd )
+			record_dropped_special_ctor(ddc, cfd);
 		    if ( !cfd || !cfd->defaulted_or_deleted )
 		    {
 			Program::ClassMethodRegistration spec;
@@ -36166,6 +36705,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    if ( mfd->is_deleted && is_operator_method
 		      && mname == "operator=" && mfd->parameters.size() >= 2 )
 			ddc->has_deleted_copy_assign = true;
+		    // Same recording for dropped special-member CONSTRUCTORS,
+		    // consumed by __is_constructible (a wrong "true" from the
+		    // memberwise walk would corrupt SFINAE the same way).
+		    if ( tag && mname == tag->spelling() )
+			record_dropped_special_ctor(ddc, mfd);
 		    // A DEFAULTED member comparison synthesizes its
 		    // namespace-scope definition from the member list at
 		    // class completion ([class.compare.default]); a defaulted
@@ -36546,8 +37090,21 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// class's ctor/dtor (`__stoa`'s _Save_errno) is referenced by the
 	// surrounding body/cleanup machinery, which never triggers the
 	// lazy-on-call path.
+	// The eager-at-depth exception exists for function-LOCAL classes only
+	// (their ctor/dtor is referenced by the surrounding body's cleanup
+	// machinery, which never triggers the lazy-on-call path). A NAMESPACE-
+	// scope system class instantiated at depth>0 (move_iterator<int*> born
+	// inside __make_move_if_noexcept_iterator's candidate attempt) must
+	// still stash LAZILY: its eager bodies land in the speculative frame
+	// and never reach emission (undefined move_iterator__base imports on
+	// the realloc lane), while the lazy stash materializes on real ODR-use.
+	HoistedDeclIdentity _lazy_hid;
+	bool body_owner_fn_local = b.method && b.method->owner_class
+	    && pgm.function_local_class_identity(b.method->owner_class,
+						 _lazy_hid);
 	if ( b.var && b.file && pgm.is_system_header_path(b.file)
-	  && pgm.fn_template_instantiation_depth == 0 )
+	  && (pgm.fn_template_instantiation_depth == 0
+	      || !body_owner_fn_local) )
 	{
 	    // Env-gated probe (MADC_MTI_PROBE=<substr>): deferred-body enqueue.
 	    static const char *_mti_probe = ::getenv("MADC_MTI_PROBE");
@@ -48382,6 +48939,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->decl_file = src->decl_file;
     f->defaulted_or_deleted = src->defaulted_or_deleted;
     f->is_deleted = src->is_deleted;
+    f->noexcept_spec = src->noexcept_spec;
     f->pure_virtual = src->pure_virtual;
     f->is_const_method = src->is_const_method;
     f->vague_linkage = src->vague_linkage;
@@ -48628,6 +49186,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->explicit_alignment = func->explicit_alignment;
 	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
 	    fresh->is_deleted = func->is_deleted;
+	    fresh->noexcept_spec = func->noexcept_spec;
 	    fresh->pure_virtual = func->pure_virtual;
 	    fresh->vague_linkage = func->vague_linkage;
 	    funcdef_map[id] = fresh;
@@ -48654,6 +49213,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->explicit_alignment = func->explicit_alignment;
 	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
 	    fresh->is_deleted = func->is_deleted;
+	    fresh->noexcept_spec = func->noexcept_spec;
 	    fresh->pure_virtual = func->pure_virtual;
 	    fresh->vague_linkage = func->vague_linkage;
 	    funcdef_map[id] = fresh;
@@ -49487,6 +50047,11 @@ paramdecl:
 	    TokenBase *open = nextToken();
 	    if ( !open || open->id() != TokenID::tkOpBrk )
 		Throw(q) << "Expecting '(' after throw in exception specification" << flush;
+	    // An EMPTY dynamic-exception-specification `throw()` is the
+	    // pre-C++11 non-throwing spelling ([except.spec]); a non-empty
+	    // list still permits throwing the listed types.
+	    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+		func->noexcept_spec = FuncDef::NxTrue;
 	    nt = consume_balanced_parenthesized_suffix(open);
 	    continue;
 	}
@@ -49495,7 +50060,38 @@ paramdecl:
 	    if ( qs == "noexcept" ) {
 		nt = nextToken();
 		if ( nt && nt->id() == TokenID::tkOpBrk )
-		    nt = consume_balanced_parenthesized_suffix(nt);
+		{
+		    // `noexcept(expr)`: capture the balanced condition tokens
+		    // and constant-fold them with the same local folder the
+		    // template-argument path uses; an unfoldable condition
+		    // records honestly as Unknown (a trait consumer answers
+		    // "cannot determine" rather than a wrong bool).
+		    std::vector<TokenBase *> cond;
+		    int nd = 1;
+		    for (;;)
+		    {
+			TokenBase *ct = nextToken();
+			if ( !ct )
+			    break;
+			if ( ct->id() == TokenID::tkOpBrk ) ++nd;
+			else if ( ct->id() == TokenID::tkClBrk )
+			{
+			    if ( --nd == 0 )
+				break;
+			}
+			cond.push_back(ct);
+		    }
+		    int64_t cv = 0;
+		    if ( fold_nontype_template_arg(cond,
+			     template_tokens_spelling(cond), cv) )
+			func->noexcept_spec = cv ? FuncDef::NxTrue
+						 : FuncDef::NxNone;
+		    else
+			func->noexcept_spec = FuncDef::NxUnknown;
+		    nt = nextToken();
+		}
+		else
+		    func->noexcept_spec = FuncDef::NxTrue;
 		continue;
 	    }
 	    if ( qs == "override" || qs == "final" ) { nt = nextToken(); continue; }
@@ -50721,6 +51317,28 @@ bool Program::paren_group_is_function_def()
 	    if ( --depth == 0 )
 	    {
 		++ix; // token after the matching ')'
+		// Skip a dynamic-exception-specification `throw ( ... )`
+		// between the parameter list and the body — both the C++98
+		// spelling and the lexer's unconditional-`noexcept`
+		// normalization land here ([except.spec]).
+		if ( ix < tokens.size()
+		  && tokens[ix]->id() == TokenID::tkTHROW
+		  && ix + 1 < tokens.size()
+		  && tokens[ix + 1]->id() == TokenID::tkOpBrk )
+		{
+		    int tdepth = 0;
+		    for ( ix = ix + 1; ix < tokens.size(); ++ix )
+		    {
+			if ( tokens[ix]->id() == TokenID::tkOpBrk )
+			    ++tdepth;
+			else if ( tokens[ix]->id() == TokenID::tkClBrk
+			       && --tdepth == 0 )
+			{
+			    ++ix;
+			    break;
+			}
+		    }
+		}
 		return ix < tokens.size()
 		    && tokens[ix]->id() == TokenID::tkOpBrc;
 	    }

@@ -210,6 +210,11 @@ enum DefFlags : uint32_t {
 						// context so the local-class reuse allowance
 						// (TokenCLASS::parse, `struct _Save_errno`)
 						// applies exactly as live
+	DF_NOEXCEPT_TRUE     = 1u << 29,	// v35: FuncDef::noexcept_spec == NxTrue
+	DF_NOEXCEPT_UNKNOWN  = 1u << 30,	// v35: FuncDef::noexcept_spec == NxUnknown
+						// (neither bit -> NxNone); consumed by the
+						// __is_nothrow_constructible trait so a thawed
+						// class folds it exactly as live (LOADED==PARSED)
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live

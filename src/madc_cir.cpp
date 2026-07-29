@@ -2812,6 +2812,10 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 	if (fd->declaration_only) r.flags |= madc::dis::DF_DECLARATION_ONLY;
 	if (fd->is_const_method)  r.flags |= madc::dis::DF_IS_CONST_METHOD;
 	if (fd->pure_virtual)     r.flags |= madc::dis::DF_PURE_VIRTUAL;
+	if (fd->noexcept_spec == FuncDef::NxTrue)
+		r.flags |= madc::dis::DF_NOEXCEPT_TRUE;
+	else if (fd->noexcept_spec == FuncDef::NxUnknown)
+		r.flags |= madc::dis::DF_NOEXCEPT_UNKNOWN;
 	if (fd->is_member_template || !fd->template_param_names.empty())
 		r.flags |= madc::dis::DF_IS_MEMBER_TEMPLATE;	// load skips it (the v6 rule)
 	// FuncDef-intrinsic method metadata available at parse time (emit_symbol / display name).
@@ -3354,6 +3358,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		words.push_back(method.declaration_only ? 1u : 0u);
 		words.push_back(method.defaulted_or_deleted ? 1u : 0u);
 		words.push_back(method.is_deleted ? 1u : 0u);
+		words.push_back((uint32_t)method.noexcept_spec);
 		words.push_back(method.pure_virtual ? 1u : 0u);
 		words.push_back(method.is_const_method ? 1u : 0u);
 		words.push_back(method.is_member_template ? 1u : 0u);

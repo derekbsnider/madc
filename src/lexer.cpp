@@ -5164,7 +5164,15 @@ TokenBase *Program::_getToken()
 			    if ( c == '(' ) ++depth;
 			    else if ( c == ')' ) --depth;
 			} while ( source.good() && depth > 0 );
+			return getToken();
 		    }
+		    // An UNCONDITIONAL `noexcept` re-lexes as its token
+		    // equivalent `throw()` ([except.spec]p1: both declare the
+		    // function non-throwing) so the parser's exception-spec arm
+		    // records FuncDef::NxTrue — full erasure left every user
+		    // ctor's nothrow-ness unknowable to
+		    // __is_nothrow_constructible.
+		    source.pushback("throw()");
 		    return getToken();
 		}
 		// Most GCC attributes are no-ops for madc. Preserve the few
