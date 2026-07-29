@@ -435,6 +435,10 @@ class CirBuilder {
 	// (std::move(x), a T&/T&& method) — the pointer representation
 	// unwrapped; NULL when arg is not a ref-returning call.
 	DataDef *ref_returning_call_type(TokenBase *arg);
+	// The operand of an IDENTITY reference-cast call (std::move/forward,
+	// inline_builtin_kind "forward") — transparent for TYPE questions;
+	// NULL when fw is not such a call. See cir_builder.cpp.
+	TokenBase *identity_forward_operand(TokenCallFunc *fw);
 	// The class that, returned by value, must use the __retbuf ABI (a
 	// non-trivial class needing a dtor). NULL for trivial structs (native
 	// struct return). See cir_builder.cpp.

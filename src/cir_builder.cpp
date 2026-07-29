@@ -4408,6 +4408,29 @@ FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
 	return fd;
 }
 
+// An IDENTITY reference-cast call (std::move / std::forward —
+// inline_builtin_kind "forward", detected by body shape at header retention)
+// yields its own argument's object: for TYPE questions the call is
+// transparent. Returns the operand when `arg` is such a call, else NULL.
+// Shared by object_arg_addr's bind-source unwrap and ctor_arg_datadef's
+// argument typing — typing the cast by overload-set ranking instead
+// re-resolved `std::move(int32_t*)` against whichever instantiation happened
+// to exist (move<int32_t>) and the mis-typed ctor argument matched a
+// member-template placeholder's fabricated int64 param over the real ctor.
+// The kind marker may live on the RESOLVED instance or only on the retained
+// parse-bound declaration — accept either.
+TokenBase *CirBuilder::identity_forward_operand(TokenCallFunc *fw)
+{
+	if (!fw || fw->parameters.size() != 1 || !fw->parameters[0])
+		return NULL;
+	FuncDef *ffd = call_target_funcdef(fw);
+	FuncDef *raw = call_target_funcdef_raw(fw);
+	if ((ffd && ffd->inline_builtin_kind == "forward")
+	    || (raw && raw->inline_builtin_kind == "forward"))
+		return fw->parameters[0];
+	return NULL;
+}
+
 std::string CirBuilder::call_target_emit_name(TokenCallFunc *tcf,
 					      FuncDef **fd_out)
 {
@@ -5069,20 +5092,14 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 	    && template_param_under_type_layers(arg->datadef())) {
 		TokenBase *bind_src = arg;
 		// An identity reference-cast call (`std::forward<_Arg>(__arg)`,
-		// `std::move(x)` — inline_builtin_kind "forward", detected by BODY
-		// SHAPE at header retention) yields its own argument's object, so
-		// the bind-vs-convert deferral applies to the INNER variable; the
-		// wrapper contributes nothing (cast-to-reference is a no-op on the
-		// operand object, and the copy re-lowering re-verifies layout with
-		// the substituted type before binding).
-		if (TokenCallFunc *fw = dynamic_cast<TokenCallFunc *>(bind_src)) {
-			FuncDef *ffd = call_target_funcdef(fw);
-			if (!ffd)
-				ffd = call_target_funcdef_raw(fw);
-			if (ffd && ffd->inline_builtin_kind == "forward"
-			    && fw->parameters.size() == 1 && fw->parameters[0])
-				bind_src = fw->parameters[0];
-		}
+		// `std::move(x)`) yields its own argument's object, so the
+		// bind-vs-convert deferral applies to the INNER variable; the
+		// wrapper contributes nothing (cast-to-reference is a no-op on
+		// the operand object, and the copy re-lowering re-verifies
+		// layout with the substituted type before binding).
+		if (TokenCallFunc *fw = dynamic_cast<TokenCallFunc *>(bind_src))
+			if (TokenBase *inner = identity_forward_operand(fw))
+				bind_src = inner;
 		if (bind_src->type() == TokenType::ttVariable
 		    && bind_src->datadef() && bind_src->datadef()->is_reference()
 		    && template_param_under_type_layers(bind_src->datadef())) {
@@ -10584,6 +10601,18 @@ static std::string ctor_call_symbol(DataDefCLASS *cdd, FuncDef *ctor)
 DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
 {
 	if (!arg) return NULL;
+	// An IDENTITY reference-cast call (std::move(x) / std::forward<T>(x))
+	// TYPES as its operand: the cast is a no-op on the object. Ranking
+	// the callee instead re-resolved against whichever instantiation
+	// happened to exist (move<int32_t> for a move(int32_t*) argument in
+	// make_move_iterator's body), and the mis-typed argument matched the
+	// member-template placeholder ctor's FABRICATED int64 param (o3) over
+	// the real move_iterator(iterator_type) — frozen modules then imported
+	// a pattern-only symbol (the forest_selfexe_gate trap). Recursion
+	// handles move(forward(x)).
+	if (TokenCallFunc *fw = dynamic_cast<TokenCallFunc *>(arg))
+		if (TokenBase *inner = identity_forward_operand(fw))
+			return ctor_arg_datadef(inner);
 	// A class-returning CALL argument types by the RESOLVED callee's
 	// return class — the call token's own datadef may still be a
 	// body-less template placeholder's `long` (the overload-set winner
@@ -10597,6 +10626,21 @@ DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
 	// pointer representation, like the vfREFERENCE variable below.
 	if (DataDef *rt = ref_returning_call_type(arg))
 		return rt;
+	// A VALUE-class-returning call TYPES as its return class even when the
+	// retbuf emission gate above declines it (a TRIVIAL class returns
+	// natively) — that gate classifies the call-site ABI, not the
+	// expression's TYPE. Without this a native-return callee's class
+	// result fell through to the token's int64 placeholder and ctor
+	// selection matched garbage (make_move_iterator's returned
+	// move_iterator selecting the fabricated-param placeholder o3, whose
+	// pattern-only symbol then trapped frozen modules).
+	if (TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg)) {
+		FuncDef *fd = call_target_funcdef(tcf);
+		if (fd && !fd->returns_reference())
+			if (DataDefCLASS *rc =
+				    as_class_instance(&fd->return_value_type()))
+				return rc;
+	}
 	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
 		// A reference variable's datadef is the pointer
 		// representation (T&  ->  T*); for overload matching the
@@ -10660,6 +10704,59 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 					is_zero_integer_literal(ctor_args[i]));
 			if (s < 0) { ok = false; break; }
 			total += s;
+		}
+		{
+			static const char *csel = ::getenv("MADC_XTEST_CTORSEL_DEBUG");
+			if (csel && *csel
+			    && cdd->name.find(csel) != std::string::npos)
+				fprintf(stderr, "[CTORSEL] cls=%s cand=%s ok=%d "
+					"total=%d p1=%s nargs=%zu a0=%s a0tok=%s "
+					"at=%s:%d in=%s\n",
+					cdd->name.c_str(), cv->name.c_str(),
+					(int)ok, total,
+					fd->parameters.size() > 1
+					    && fd->parameters[1]
+					    ? fd->parameters[1]->name.c_str()
+					    : "-",
+					ctor_args.size(),
+					ctor_args.empty()
+					    || !ctor_arg_datadef(ctor_args[0])
+					    ? "-"
+					    : ctor_arg_datadef(ctor_args[0])
+						      ->name.c_str(),
+					ctor_args.empty() || !ctor_args[0]
+					    ? "-"
+					    : typeid(*ctor_args[0]).name(),
+					!ctor_args.empty() && ctor_args[0]
+					    && ctor_args[0]->file
+					    ? ctor_args[0]->file : "?",
+					!ctor_args.empty() && ctor_args[0]
+					    ? ctor_args[0]->line : 0,
+					m_cur_method
+					    ? m_cur_method->returns.name.c_str()
+					    : "?");
+			TokenCallFunc *a0cf = csel && *csel && !ctor_args.empty()
+				? dynamic_cast<TokenCallFunc *>(ctor_args[0])
+				: NULL;
+			if (a0cf && cdd->name.find(csel) != std::string::npos) {
+				FuncDef *a0raw = call_target_funcdef_raw(a0cf);
+				FuncDef *a0res = call_target_funcdef(a0cf);
+				fprintf(stderr, "[CTORSEL]   a0call=%s raw=%s(%s)"
+					" res=%s(%s) ovr=%s tokret=%s\n",
+					a0cf->var.name.c_str(),
+					a0raw ? a0raw->name.c_str() : "-",
+					a0raw ? a0raw->return_value_type()
+							.name.c_str() : "-",
+					a0res ? a0res->name.c_str() : "-",
+					a0res ? a0res->return_value_type()
+							.name.c_str() : "-",
+					a0cf->return_override
+					    ? a0cf->return_override->name.c_str()
+					    : "-",
+					a0cf->returns()
+					    ? a0cf->returns()->name.c_str()
+					    : "-");
+			}
 		}
 		if (ok && total > best_score) {
 			best_score = total;
