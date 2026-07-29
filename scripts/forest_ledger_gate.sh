@@ -21,7 +21,10 @@
 #      remain, and the binary's output matches the JIT run
 #   4  the emitted binary runs with an EMPTY library path (no madc anywhere)
 #   5  VLA scope exit (the second ledger module) — baseline + same contract
-#   6  Tier-B refusal: a C++ script-lane program refuses, NAMING symbols
+#   6  Tier-B refusal: a script-lane program (madc `array` + php::, whose
+#      helpers exist only as host C++ objects) refuses, NAMING symbols
+#   6b the other side — a plain <iostream>/<string> program IS fully coverable:
+#      it emits, keeps no libmadc dependency, and matches its JIT output
 #   7  no-ledger carrier: a container packed without --freeze-ledger= refuses
 #      with the build-side message, never the Tier-B one
 #   8  -static-libmadc -c refuses at the CLI (the runtime merges at the link)
@@ -140,6 +143,34 @@ int vlasum(int n)
 }
 EOF
 
+# Leg 6 needs a program that genuinely needs the C++ SCRIPT-LANE runtime — the
+# thing the Tier-B message names. The madc `array` (madc::value) + php:: lane is
+# exactly that: its helpers live only as host-toolchain C++ objects
+# (madarray_construct/destruct, __php_array_*), so no ledger can cover them.
+#
+# This used to be an <iostream>/<string> program, which refused only by
+# accident: madc sized an EMPTY struct 0 bytes, so passing an empty
+# iterator-category tag BY VALUE (input_iterator_tag, the tag-dispatch idiom)
+# became a zero-length block argument, and MIR's x86-64 block-arg path emits
+# `mir.arg_memcpy` for any size that is not 1..16. That MIR internal — not any
+# madc runtime symbol — was the single "uncovered" symbol. Once empty
+# aggregates got their [class]/4 size of 1 the copy became a register move, the
+# program became fully coverable, and the leg failed. Leg 6b now locks that
+# capability in so it cannot silently regress.
+cat > "$D/tierb.mad" <<'EOF'
+#include <iostream>
+#include <string>
+#include <ns_php>
+using namespace std;
+int main()
+{
+	array a;
+	php::array_push(a, "alpha");
+	cout << a[0] << endl;
+	return 0;
+}
+EOF
+
 cat > "$D/cpp.mad" <<'EOF'
 #include <iostream>
 #include <string>
@@ -252,8 +283,17 @@ else
 fi
 
 # --- leg 6: Tier-B refusal names the symbols ------------------------------
-run "$MADC" --forest-bind="$D/madc.forest" -static-libmadc -o "$D/cpp" \
-	"$D/cpp.mad" > "$D/tierb.log" 2>&1
+# The JIT run first: a program that did not actually work would refuse for
+# reasons that have nothing to do with the ledger (the same
+# prove-the-baseline discipline legs 2/5/9 use).
+tierb_jit=$(run "$MADC" "$D/tierb.mad" 2>/dev/null)
+if [ "$tierb_jit" = "alpha" ]; then
+	pass "Tier-B fixture is a working program"
+else
+	fail "Tier-B fixture is a working program (got '$tierb_jit')"
+fi
+run "$MADC" --forest-bind="$D/madc.forest" -static-libmadc -o "$D/tierb" \
+	"$D/tierb.mad" > "$D/tierb.log" 2>&1
 tierb_rc=$?
 tierb=$(tr -d '\0' < "$D/tierb.log")
 if [ $tierb_rc -eq 0 ]; then
@@ -263,8 +303,34 @@ elif ! grep -q 'not on the AOT ledger (Tier B' <<<"$tierb"; then
 	sed -n '1,6p' "$D/tierb.log"
 elif ! grep -qE '^    [A-Za-z_]' <<<"$tierb"; then
 	fail "Tier-B refusal lists the offending symbols"
+elif ! grep -q 'madarray_\|__php_' <<<"$tierb"; then
+	fail "Tier-B refusal names the script-lane runtime symbols"
+	sed -n '1,6p' "$D/tierb.log"
 else
 	pass "Tier-B program refuses loudly, naming symbols"
+fi
+
+# --- leg 6b: a plain C++ program IS coverable ------------------------------
+# The other side of the same contract. Nothing in <iostream>/<string> needs the
+# script-lane runtime, so -static-libmadc must cover it completely: no libmadc
+# dependency, no __madc_* imports, and the same output as the JIT run. This
+# became true when empty aggregates got their C++ size of 1 (see the fixture
+# comment above); asserting it keeps the regression that would undo it visible.
+cpp_jit=$(run "$MADC" "$D/cpp.mad" 2>/dev/null)
+emit_and_inspect "$D/cpp.mad" cpp -static-libmadc
+cpp_aot=$(run "$D/cpp" 2>/dev/null)
+if [ $EMIT_RC -ne 0 ]; then
+	fail "plain C++ program emits under -static-libmadc (rc=$EMIT_RC)"
+	sed -n '1,10p' "$D/cpp.emit"
+elif [ -n "$NEEDED" ]; then
+	fail "plain C++ -static-libmadc image still needs '$NEEDED'"
+elif [ -n "$UND" ]; then
+	fail "plain C++ -static-libmadc image still imports: $(tr '\n' ' ' <<<"$UND")"
+elif [ -z "$cpp_aot" ] || [ "$cpp_jit" != "$cpp_aot" ]; then
+	fail "plain C++ -static-libmadc output matches the JIT run"
+	diff <(echo "$cpp_jit") <(echo "$cpp_aot") | head -6
+else
+	pass "plain C++ program is fully ledger-coverable"
 fi
 
 # --- leg 7: a carrier with no ledger gets the BUILD-side message ----------
