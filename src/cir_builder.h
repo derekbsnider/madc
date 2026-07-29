@@ -376,6 +376,10 @@ class CirBuilder {
 	// and the inline-struct path in typedef_decl).
 	node_t member_node(const memberpair_t &m, DataDefSTRUCT *owner = NULL);
 	node_t anonymous_aggregate_member_node(DataDefSTRUCT *anon);
+	// A `char __pad<index>[bytes]` synthetic member — layout filler shared by
+	// the class emitter (vptr/base gaps, tail pad) and the empty-aggregate
+	// definition (C++ sizeof-1 empty struct must not emit a size-0 body).
+	node_t char_pad_member(int index, size_t bytes);
 
 	// Build the N_LIST of N_MEMBER nodes for an aggregate body, preserving
 	// anonymous nested aggregate groups as unnamed STRUCT/UNION members.

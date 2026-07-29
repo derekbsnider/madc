@@ -33388,7 +33388,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    pgm.Throw(tn ? tn : loc) << "Unexpected end of input in anonymous struct definition" << flush;
 		pgm.nextToken(); // consume '}'
 		inner->is_complete = true; // a `{ ... }` body was parsed
-		inner->finalize();
+		inner->finalize(pgm.presents_as_cpp());
 		// B3 arena write-through: a nested DATA-ONLY aggregate (named
 		// `struct T {...} t;` or anonymous-typed `struct {...} m;`) completes
 		// HERE and never reaches the TokenSTRUCT/TokenCLASS registration hooks
@@ -33772,7 +33772,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( explicit_align > dds->tag_explicit_align )
 	dds->tag_explicit_align = explicit_align;	// __attribute__((aligned(N))) on the tag
     dds->is_complete = true; // a `{ ... }` body was parsed (even if it had no members)
-    dds->finalize(); // round up size to struct alignment
+    dds->finalize(pgm.presents_as_cpp()); // round up size; C++ empty aggregate => 1
 
     // A struct that contains an OBJECT member by value is — per C++ — a
     // NON-TRIVIAL class: those members must be
@@ -34225,7 +34225,7 @@ DataDefSTRUCT *Program::parse_class_anonymous_aggregate(TokenBase *kw)
     if ( !close || close->id() != TokenID::tkClBrc )
 	Throw(close ? close : kw) << "Expected '}' after anonymous class aggregate" << flush;
     agg->is_complete = true;
-    agg->finalize();
+    agg->finalize(presents_as_cpp());
     return agg;
 }
 

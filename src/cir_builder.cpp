@@ -7134,6 +7134,19 @@ int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias
 	return stars;
 }
 
+node_t CirBuilder::char_pad_member(int index, size_t bytes)
+{
+	std::string pn = "__pad" + std::to_string(index);
+	node_t pspec = list(); append(pspec, simple(N_CHAR));
+	node_t pdl = list();
+	append(pdl, node3(N_ARR, ignore(), list(), integer((long)bytes)));
+	node_t pm = simple(N_MEMBER);
+	append(pm, node1(N_SHARE, pspec));
+	append(pm, node2(N_DECL, id(pn.c_str()), pdl));
+	append(pm, ignore()); append(pm, ignore());
+	return pm;
+}
+
 node_t CirBuilder::anon_members_list(DataDefSTRUCT *anon)
 {
 	node_t ml = list();
@@ -7162,6 +7175,12 @@ node_t CirBuilder::anon_members_list(DataDefSTRUCT *anon)
 			continue;
 		append(ml, member_node(anon->members[i], anon));
 	}
+	// An EMPTY aggregate whose parsed layout carries a nonzero size (the
+	// C++ sizeof-1 empty struct, datadef.h finalize()) must not emit a
+	// bodyless definition — c2mir would lay it out at the GNU-C size 0,
+	// diverging from every madc-side sizeof fold and member offset.
+	if (anon->members.empty() && anon->size > 0)
+		append(ml, char_pad_member(0, anon->size));
 	return ml;
 }
 
@@ -8061,15 +8080,8 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 		std::set<std::string> emitted_member_names;
 		for (const Field &f : fields) {
 			if (f.off > cursor) { // fill the gap with a char pad so the next field lands at f.off
-				std::string pn = "__pad" + std::to_string(synth++);
-				node_t pspec = list(); append(pspec, simple(N_CHAR));
-				node_t pdl = list();
-				append(pdl, node3(N_ARR, ignore(), list(), integer((long)(f.off - cursor))));
-				node_t pm = simple(N_MEMBER);
-				append(pm, node1(N_SHARE, pspec));
-				append(pm, node2(N_DECL, id(pn.c_str()), pdl));
-				append(pm, ignore()); append(pm, ignore());
-				append(member_list, pm);
+				append(member_list,
+				       char_pad_member(synth++, f.off - cursor));
 				cursor = f.off;
 			}
 			if (f.kind == 0) { // vptr (primary keeps __vptr; secondaries __vptr_<offset>)
@@ -8108,17 +8120,9 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 				cursor += f.sz;
 			}
 		}
-		if (cdd->size > cursor) { // tail pad to the full computed size
-			std::string pn = "__pad" + std::to_string(synth++);
-			node_t pspec = list(); append(pspec, simple(N_CHAR));
-			node_t pdl = list();
-			append(pdl, node3(N_ARR, ignore(), list(), integer((long)(cdd->size - cursor))));
-			node_t pm = simple(N_MEMBER);
-			append(pm, node1(N_SHARE, pspec));
-			append(pm, node2(N_DECL, id(pn.c_str()), pdl));
-			append(pm, ignore()); append(pm, ignore());
-			append(member_list, pm);
-		}
+		if (cdd->size > cursor) // tail pad to the full computed size
+			append(member_list,
+			       char_pad_member(synth++, cdd->size - cursor));
 	}
 
 	return member_list;

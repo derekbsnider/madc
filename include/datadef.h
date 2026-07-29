@@ -777,10 +777,18 @@ public:
 	    anonymous_aggregates.push_back(AnonymousAggregateInfo(
 		first_member, agg.members.size(), &agg, base_offset));
     }
-    // round struct size up to its overall alignment (for arrays of structs)
-    void finalize()
+    // Round struct size up to its overall alignment (for arrays of structs).
+    // cpp_min_object_size: under C++ semantics ([class]/4, presents_as_cpp())
+    // a completed aggregate with NO members still has sizeof 1 — distinct
+    // objects need distinct addresses. Gated on members.empty() so a GNU
+    // zero-length-array struct (`char x[0];`) keeps size 0 exactly like
+    // g++/clang++ in C++ mode; pure-C callers keep the GNU empty-struct-0
+    // extension by default.
+    void finalize(bool cpp_min_object_size = false)
     {
 	endBitFieldRun();
+	if ( cpp_min_object_size && size == 0 && members.empty() )
+	    size = 1;
 	size = align_up(size, max_align);
     }
     // Apply __attribute__((aligned(N))) to the most recently added member.

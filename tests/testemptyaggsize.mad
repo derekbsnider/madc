@@ -1,0 +1,16 @@
+// C++ empty-aggregate sizing ([class]/4): a completed EMPTY struct/class has
+// sizeof 1 (distinct objects need distinct addresses), and an array of them
+// sizes accordingly. madc folded sizeof(empty plain struct) to the GNU-C 0 —
+// silently wrong under C++ semantics (libc++'s __default_init_tag shape).
+// Oracle: g++ and clang++ print "1 1 3".
+#include <cstdio>
+
+struct tag {};
+class ctag {};
+
+int main()
+{
+	tag arr[3];
+	printf("%zu %zu %zu\n", sizeof(tag), sizeof(ctag), sizeof(arr));
+	return 0;
+}
