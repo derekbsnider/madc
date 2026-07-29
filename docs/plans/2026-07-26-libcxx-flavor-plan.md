@@ -22,13 +22,39 @@ This doc is the "own plan doc when the phase starts" that
 [`2026-07-25-madc-on-macos-plan.md`](2026-07-25-madc-on-macos-plan.md)
 §"Phase 2" promised, generalized per that correction.
 
-## Goal
+## Goal (owner-set 2026-07-29: behavior-parity)
 
-`std::string`, `std::vector`, `iostream` and the rest of the script-lane
-C++ surface work against **libc++**, resolved mangled-direct exactly as
-the current lane resolves against the real libstdc++. No wrapper shims,
-no madc-authored twins: same architecture, second ABI flavor
-([[project_cpp_mangled_direct]], `string-as-class`).
+**Drive libc++ to behavior-parity with the default libstdc++ flavor.**
+
+FINISH LINE: every in-scope integration test passes under `-stdlib=libc++`
+in all four lanes (JIT / exe / obj / packed), measured by a **flavored
+suite lane** in the battery — libstdc++-specific tests carry a
+`.libcxx_skip` fixture with a one-line reason, the same classification
+discipline as `docs/parity/failset-classification.md`. Until that lane
+exists, gate-pair twins (`testX_libcxx`) carry the burn-down.
+
+**Parity is behavior, never mechanism** — this revises the original
+"mangled-direct exactly like libstdc++" goal, because the two libraries'
+export policies differ structurally: libc++ marks nearly its whole
+surface `_LIBCPP_HIDE_FROM_ABI` with ABI tags (`size()` mangles as
+`...4sizeB8ne180100Ev`), deliberately NOT exported from `libc++.so.1`.
+So: resolve **mangled-direct only what `libc++.so.1`/`libc++abi.so.1`
+actually export** (`nm -D` is ground truth — the cout/cin/cerr data
+symbols, the abi runtime, the few extern-template exports); everything
+hidden-from-ABI **compiles from the parsed headers** through the existing
+CIR monomorphization spine (the same machinery as vector/map/set — no
+wrapper shims, no madc-authored twins, either way). Oracle for libc++
+lanes is `clang++-18 -stdlib=libc++`. All flavor differences stay
+data-driven (the flavor table / the parsed config) — never
+platform-keyed, never name-keyed.
+
+Ladder: P2.4 `<string>` runtime (task #17, active) → P2.5 `<iostream>`
+(verifies the `std::__1` chain symbol round-trip) → P2.6 containers →
+P2.7 the flavored suite lane + burn-down (the parity ratchet) → P2.8
+per-flavor forest/PCH (performance parity — a separate rung, never a
+correctness gate).
+
+Non-goals: cross-flavor ABI interop; identical skip sets between flavors.
 
 Two orthogonal dimensions, never conflated:
 
