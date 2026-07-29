@@ -2191,8 +2191,15 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 }
 
 int madc_cir_run_objects(const std::vector<std::string> &paths,
-			 int argc, char **argv)
+			 int argc, char **argv,
+			 const madc_stdlib_flavor *flavor)
 {
+    // The loader resolves through cir_import_resolver, the same dlsym(RTLD_DEFAULT)
+    // chain the JIT uses, so it needs the same link environment: a .o compiled
+    // -stdlib=libc++ carries mangled-direct imports only libc++/libc++abi export.
+    // Without this, `madc -stdlib=libc++ prog.o` failed with "unresolved symbol:
+    // _ZNSt20bad_array_new_lengthC1Ev" while the JIT lane on the same source ran.
+    cir_open_stdlib_runtime(flavor);
     if (paths.size() == 1)	// the R4b single-cache lane, load-direct
 	return madc_cir_run_object(paths[0].c_str(), argc, argv);
     MIR_object_t obj = cir_read_objects(paths);

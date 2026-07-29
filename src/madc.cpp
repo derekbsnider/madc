@@ -1244,7 +1244,8 @@ int main(int argc, char **argv)
         for ( int i = filearg; i < argc; ++i )
             oargv.push_back(argv[i]);
         return madc_cir_run_objects(run_object_paths,
-                                    (int)oargv.size(), oargv.data());
+                                    (int)oargv.size(), oargv.data(),
+                                    prog->active_stdlib_flavor());
     }
 
     // --run-frozen: thaw + compile + run a frozen forest container — no

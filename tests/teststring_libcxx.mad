@@ -1,0 +1,19 @@
+// libc++ <string> end-to-end (ladder step P2.4): a std::string built from a
+// literal, queried, and printed — compiled against the REAL libc++ headers via
+// -stdlib=libc++ (tests/teststring_libcxx.flags).
+//
+// Getting here needed the whole mechanism policy to hold at once: everything
+// _LIBCPP_HIDE_FROM_ABI compiles from the parsed headers, only real exports bind
+// mangled-direct, and the JIT must have the selected flavor's runtime loaded so
+// those exports resolve.
+//
+// Oracle: clang++-18 -std=c++11 -stdlib=libc++ prints "5 hello".
+#include <string>
+#include <cstdio>
+
+int main()
+{
+	std::string s = "hello";
+	printf("%zu %s\n", s.size(), s.c_str());
+	return 0;
+}

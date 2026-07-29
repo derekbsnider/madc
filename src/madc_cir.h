@@ -24,6 +24,7 @@
 // the parser keys on it too (asm-label symbol space), not just the CIR layer.
 
 // Forward declarations (c2mir types)
+struct madc_stdlib_flavor;	// include/madc_sys_includes.h
 struct c2m_ctx;
 typedef struct c2m_ctx *c2m_ctx_t;
 struct node;
@@ -226,13 +227,18 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
 // pass NULL — with -static-libmadc that reads as "no carrier", the same
 // build-side refusal an unpacked madc gets.
 // madc_cir_run_objects: merge in memory, load, run main (argv[0] = the
-// first object path); a single path takes the R4b direct-load lane.
+// first object path); a single path takes the R4b direct-load lane. `flavor`
+// is the stdlib flavor the objects were COMPILED against: its runtime is
+// loaded before resolution, exactly as the JIT lane does, because the loader
+// resolves the same mangled-direct imports out of the same process. NULL =
+// the build default.
 int madc_cir_link_objects(const std::vector<std::string> &paths,
 			  MadcNativeKind kind, const char *out_path,
 			  const std::vector<std::string> &user_libs,
 			  Program *prog);
 int madc_cir_run_objects(const std::vector<std::string> &paths,
-			 int argc, char **argv);
+			 int argc, char **argv,
+			 const madc_stdlib_flavor *flavor = NULL);
 
 // R4b, the .o-as-precompiled-cache lane (`madc foo.o [args...]`): load a
 // madc-emitted relocatable object back into this process via the fork
