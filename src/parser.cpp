@@ -46485,6 +46485,23 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	ft.typeparam_is_pack = fd->template_param_is_pack;
     else
 	ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
+    // Per-param template-argument DEFAULTS ([temp.deduct]/8): a parameter the
+    // call's arguments cannot deduce is bound from its own default, and without
+    // one instantiate_fn_template_binding rejects the whole instantiation. The
+    // shape that needs this is libc++'s allocator_traits<A>::max_size —
+    // `template <class _Ap = _Alloc> static size_type max_size(const
+    // allocator_type&)`, where _Ap appears ONLY in the default and the
+    // enable_if, never in a function parameter, so it is undeducible BY DESIGN
+    // (that is what makes the enable_if a deduced context). Deduction left it
+    // unbound, instantiation bailed, and the call stayed on its declaration-only
+    // placeholder — an undefined MIR import for a body the header defines.
+    // Purely additive: the fill runs only for parameters `binding` does not
+    // already hold, so a deducible default-carrying param is unaffected.
+    // Tokens are SHARED, not cloned — the same convention the registration path
+    // uses (madc_register_fn_template's plain assignment); the resolver clones
+    // into its own isolated stream.
+    if ( fd->member_template_param_defaults.size() == ft.typeparams.size() )
+	ft.typeparam_defaults = fd->member_template_param_defaults;
     ft.ns = std::string();
     // The instantiated definition gets a DISTINCT name (so it keeps its real
     // parameters instead of colliding with the varargs declaration-only
@@ -46707,6 +46724,32 @@ void Program::instantiate_member_ctor_template_for_construction(
 #ifdef MADC_DEBUG_CTORTMPL
     if ( dbg_ct ) fprintf(stderr, "[ctortmpl] placeholder=%p fd=%p\n", (void*)placeholder, (void*)fd);
 #endif
+    // Env-gated probe (MADC_MCT_PROBE=<class-name substr>): the candidate set.
+    // "No member-template ctor found" and "found but not instantiable" produce
+    // the SAME symptom — an undefined import for the placeholder — so the
+    // ctor-by-ctor flags are what separate a REGISTRATION failure from an
+    // instantiation failure.
+    {
+	static const char *mcp = ::getenv("MADC_MCT_PROBE");
+	if ( mcp && *mcp && cdd->name.find(mcp) != std::string::npos )
+	{
+	    fprintf(stderr, "MCTPROBE %s cand args=%zu ctors=%zu chose=%p\n",
+		    cdd->name.c_str(), ctor_args.size(), cdd->ctors.size(),
+		    (void *)fd);
+	    for ( Variable *cv : cdd->ctors )
+	    {
+		FuncDef *cfd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+		fprintf(stderr, "MCTPROBE   ctor %s mt=%d decl=%zu"
+			" owner_ok=%d tparams=%zu declonly=%d\n",
+			cv ? cv->name.c_str() : "(null)",
+			cfd ? (int)cfd->is_member_template : -1,
+			cfd ? cfd->member_template_decl.size() : (size_t)0,
+			cfd ? (int)(cfd->member_template_owner == cdd) : -1,
+			cfd ? cfd->template_param_names.size() : (size_t)0,
+			cfd ? (int)cfd->declaration_only : -1);
+	    }
+	}
+    }
     if ( !fd || !placeholder )
 	return;
     if ( !fd->dependent_pattern )
@@ -46742,9 +46785,30 @@ void Program::instantiate_member_ctor_template_for_construction(
 	ft.typeparam_is_pack = fd->template_param_is_pack;
     else
 	ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
+    // Per-param defaults — same [temp.deduct]/8 carriage as the call twin
+    // (instantiate_member_fn_template_for_call); a ctor template parameter the
+    // construction's arguments cannot deduce is bound from its default.
+    if ( fd->member_template_param_defaults.size() == ft.typeparams.size() )
+	ft.typeparam_defaults = fd->member_template_param_defaults;
     ft.ns = std::string();
     ft.owner_class = cdd;
     ft.instance_method = true;
+    // Env-gated probe (MADC_MCT_PROBE=<class-name substr>): the ctor twin of
+    // MADC_MTI_PROBE. The parallel-vector carriage into FnTemplateDef is where
+    // this lane keeps losing template-head facts — pack-ness, then type-ness,
+    // then defaults — and each loss shows up only as an undefined MIR import
+    // for the placeholder ctor. Print the sizes that must match.
+    {
+	static const char *mcp = ::getenv("MADC_MCT_PROBE");
+	if ( mcp && *mcp && cdd->name.find(mcp) != std::string::npos )
+	    fprintf(stderr, "MCTPROBE %s ctor args=%zu tparams=%zu"
+		    " is_type=%zu is_pack=%zu defaults=%zu carried=%d\n",
+		    cdd->name.c_str(), ctor_args.size(), ft.typeparams.size(),
+		    fd->template_param_is_type.size(),
+		    fd->template_param_is_pack.size(),
+		    fd->member_template_param_defaults.size(),
+		    (int)!ft.typeparam_defaults.empty());
+    }
 
     std::string ctor_decl_name =
 	skipped_template_function_declarator_name(fd->member_template_decl);
@@ -46811,6 +46875,12 @@ void Program::instantiate_member_ctor_template_for_construction(
 #ifdef MADC_DEBUG_CTORTMPL
     if ( dbg_ct ) fprintf(stderr, "[ctortmpl] try_instantiate ok=%d inst_name=%s\n", (int)ok, inst_name.c_str());
 #endif
+    {
+	static const char *mcp = ::getenv("MADC_MCT_PROBE");
+	if ( mcp && *mcp && cdd->name.find(mcp) != std::string::npos )
+	    fprintf(stderr, "MCTPROBE %s try ok=%d inst=%s\n",
+		    cdd->name.c_str(), (int)ok, inst_name.c_str());
+    }
     if ( !ok )
 	return;
 

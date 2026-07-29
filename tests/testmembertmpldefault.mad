@@ -1,0 +1,55 @@
+// [temp.deduct]/8 — a member-template parameter the call's arguments cannot
+// deduce is bound from its own DEFAULT template argument.
+//
+// The shape comes from libc++'s <__memory/allocator_traits.h>:
+//	template <class _Ap = _Alloc, class = __enable_if_t<__has_max_size<const _Ap>::value> >
+//	static size_type max_size(const allocator_type& __a) _NOEXCEPT;
+// `_Ap` appears ONLY in its own default and in the enable_if — never in a
+// function parameter — so it is undeducible by design; that is precisely what
+// makes the enable_if a deduced context so SFINAE applies per-instantiation.
+//
+// madc deduced nothing for it, found no default to fall back on (the two
+// member-template instantiation lanes carried typeparams, type-ness and
+// pack-ness into FnTemplateDef but not the captured defaults), and bailed. The
+// call stayed bound to its declaration-only placeholder and the program died
+// with "import of undefined item traits_box__msize" — a body the header
+// defines, reported as missing.
+//
+// Covers the call lane twice: the static member template called through a
+// class-template instantiation, and the same call made from inside ANOTHER
+// template's body — the tsubst context libc++ actually uses.
+//
+// The CONSTRUCTOR twin of this shape (`template <class U = T> holder(const T&)`)
+// is a SEPARATE defect and is deliberately not in this fixture: the construction
+// never reaches instantiate_member_ctor_template_for_construction at all, so it
+// fails upstream of the carriage this test gates. Reducer: tmp/s21a.mad, with
+// tmp/s21c.mad (`holder(const U&)` — deducible) as the passing control.
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	42 42
+#include <cstdio>
+
+struct box { unsigned long cap() const { return 42; } };
+
+template <class T>
+struct traits
+{
+	template <class U = T>
+	static unsigned long msize(const T &u) { return u.cap(); }
+};
+
+template <class T>
+struct user
+{
+	T val;
+	unsigned long get() const { return traits<T>::msize(val); }
+};
+
+int main()
+{
+	box b;
+	user<box> u;
+
+	printf("%lu %lu\n", traits<box>::msize(b), u.get());
+	return 0;
+}
