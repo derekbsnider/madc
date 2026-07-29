@@ -511,6 +511,10 @@ class CirBuilder {
 	// Coerce an object with a c_str() method to const char* for a char*-expecting
 	// call.
 	node_t object_cstr_arg(TokenBase *arg);
+	// True when object_cstr_arg would really produce a char* for this operand
+	// (the class has a resolvable c_str()) rather than falling back to the raw
+	// object — the one test, for callers that cannot use that fallback.
+	bool thrown_object_has_cstr(TokenBase *arg);
 	// Coerce an argument to an object pointer for a call whose parameter is a
 	// class object (value or reference). A genuine object is passed by address;
 	// any value accepted by a converting ctor is materialized into a temp.

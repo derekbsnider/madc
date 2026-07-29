@@ -4859,6 +4859,22 @@ static DataDef *capture_param_type(const Variable *cv)
 }
 
 // Coerce an object argument with a c_str() method to const char*.
+// Does this object expression have a real `c_str()` to lower through — i.e.
+// would object_cstr_arg produce a char* rather than falling back to the raw
+// object? The ONE test, so a caller that cannot use the raw-object fallback
+// (translate_throw_call: a struct passed to `const char *`) can branch before
+// committing to the cstr shape.
+bool CirBuilder::thrown_object_has_cstr(TokenBase *arg)
+{
+	DataDefCLASS *cdd = as_class_instance(arg ? arg->datadef() : NULL);
+	if (!cdd)
+		cdd = class_behind(arg ? arg->datadef() : NULL);
+	if (!cdd)
+		return false;
+	std::string sym = class_method_symbol(cdd, "c_str");
+	return !sym.empty() && sym != "c_str";
+}
+
 node_t CirBuilder::object_cstr_arg(TokenBase *arg)
 {
 	DataDefCLASS *cdd = as_class_instance(arg ? arg->datadef() : NULL);
@@ -6280,6 +6296,10 @@ bool CirBuilder::ensure_runtime_extern_for(const std::string &sym)
 	}
 	if (sym == "__madc_throw_cstr") {
 		need_output_extern("__madc_throw_cstr", false, { { {N_CHAR}, true } });
+		return true;
+	}
+	if (sym == "__madc_throw_object") {
+		need_output_extern("__madc_throw_object", false, { { {N_VOID}, true } });
 		return true;
 	}
 	if (sym == "__madc_vla_free") {
@@ -16223,6 +16243,33 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						v, tb);
 				}
 			}
+			// A plain (non-class) struct/union cast target only exists
+			// as madc's value-init idiom (`T()` parses to
+			// TokenCast(T, 0) — parse_functional_type_expression) or
+			// the identity functional cast `T(x)`; C itself has no
+			// struct cast. Lower value-init to the C11 zero compound
+			// literal `(struct T){0}` (assignable, passable) and
+			// identity to the operand unchanged, instead of the
+			// invalid `(struct T)0` (libc++'s `__default_init_tag()`
+			// temporaries and `__rep()` assignment).
+			if (const DataDefSTRUCT *cst = as_plain_struct(cast_dd)) {
+				if (as_plain_struct(tc->expr ? tc->expr->datadef()
+							     : NULL) == cst)
+					return translate_expr(tc->expr);
+				if (is_zero_integer_literal(tc->expr)) {
+					node_t spec = list();
+					append_lit_type_spec(spec,
+						const_cast<DataDefSTRUCT *>(cst),
+						std::string());
+					node_t type_node = node2(N_TYPE, spec,
+						node2(N_DECL, ignore(), list()));
+					node_t inits = list();
+					append(inits, node2(N_INIT, list(),
+							    integer(0L, tb)));
+					return node2(N_COMPOUND_LITERAL,
+						     type_node, inits, tb);
+				}
+			}
 			if (DataDefCLASS *cast_class = as_class_instance(cast_dd))
 				return object_arg_value(tc->expr, cast_class);
 			// Function-pointer cast `(RET (*)(params)) expr` (qsort comparator,
@@ -17839,6 +17886,16 @@ node_t CirBuilder::translate_throw_call(TokenTHROW *th)
 	    || dt == DataType::dtLDOUBLE) {
 		sym = "__madc_throw_double";
 		ep = { {N_DOUBLE}, false };
+	} else if (throw_object_cstr && !thrown_object_has_cstr(th->throw_expr)) {
+		// A thrown class object with NO string form: pass its ADDRESS to the
+		// object entry. The cstr lowering below would hand the raw STRUCT to a
+		// `const char *` parameter — c2mir rejects it ("incompatible argument
+		// type for pointer type parameter", libc++ __throw_length_error's
+		// `throw length_error(__msg)`), and there is no meaningful char* to
+		// synthesize. Per-type class dispatch still needs RTTI (the catch side
+		// keeps class clauses unmatchable), so this only fixes the payload.
+		sym = "__madc_throw_object";
+		ep = { {N_VOID}, true };
 	} else if ((edd && edd->is_pointer()) || throw_object_cstr) {
 		sym = "__madc_throw_cstr";
 		ep = { {N_CHAR}, true };
@@ -17848,8 +17905,11 @@ node_t CirBuilder::translate_throw_call(TokenTHROW *th)
 	}
 	need_output_extern(sym, false, { ep });
 	node_t args = list();
-	append(args, throw_object_cstr ? object_cstr_arg(th->throw_expr)
-				       : translate_expr(th->throw_expr));
+	if (!strcmp(sym, "__madc_throw_object"))
+		append(args, object_arg_addr(th->throw_expr, NULL));
+	else
+		append(args, throw_object_cstr ? object_cstr_arg(th->throw_expr)
+					       : translate_expr(th->throw_expr));
 	node_t call = node2(N_CALL, id(sym, th), args, th);
 	CIR_NODE(call)->synth_from_origin = true;
 	return call;

@@ -31,6 +31,13 @@
 #define MADC_EXCEPT_INT     1
 #define MADC_EXCEPT_DOUBLE  2
 #define MADC_EXCEPT_CSTR    3
+// A thrown CLASS OBJECT with no string form. The payload is the object's
+// address; no catch clause matches it by tag (the parser assigns class clauses
+// this same value precisely so they stay unmatchable — real per-type class
+// dispatch needs RTTI, a separate track), so it reaches catch(...) or the
+// unhandled path. Deliberately NOT matchable by catch(SomeClass&): one tag
+// cannot tell two class types apart, and a wrong match is worse than none.
+#define MADC_EXCEPT_CLASS   4
 #define MADC_EXCEPT_ANY     99  // catch(...)
 
 // Per-object cleanup entry — linked list, pushed at construction time
@@ -57,6 +64,7 @@ struct MadcException {
     int64_t int_val;        // for throw int
     double double_val;      // for throw double
     const char *str_val;    // for throw "string"
+    const void *obj_val;    // for throw <class object> (MADC_EXCEPT_CLASS)
 };
 
 // Thread-local exception state
@@ -232,6 +240,25 @@ void __madc_throw_cstr(const char *val)
     {
 	__madc_cleanup_unwind_to(NULL);
 	fprintf(stderr, "Unhandled exception: %s\n", val ? val : "(null)");
+	abort();
+    }
+    ctx = madc_try_stack;
+    madc_try_stack = ctx->prev;
+    __madc_cleanup_unwind_to(ctx->cleanup_mark);
+    longjmp(ctx->jbuf, 1);
+}
+
+// Throw a class object with no string form: the payload is the object's
+// address. Unwinds like any other throw; the tag never matches a typed clause.
+void __madc_throw_object(const void *obj)
+{
+    struct MadcTryContext *ctx;
+    madc_current_exception.type = MADC_EXCEPT_CLASS;
+    madc_current_exception.obj_val = obj;
+    if ( !madc_try_stack )
+    {
+	__madc_cleanup_unwind_to(NULL);
+	fprintf(stderr, "Unhandled exception: class object at %p\n", obj);
 	abort();
     }
     ctx = madc_try_stack;
