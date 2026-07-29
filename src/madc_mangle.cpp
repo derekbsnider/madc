@@ -994,9 +994,57 @@ std::string itanium_mangle_nested_var(const std::vector<std::string> &qualifiers
 	return m.mangle_nested_variable(qualifiers, name);
 }
 
+// ---- stdlib flavor / std ABI inline namespace --------------------------------
+// See madc_mangle.h. The "__cxx11" spelling lives HERE and only here — the
+// mangler is the one permitted home for std:: symbol knowledge. The LLVM
+// namespace is never a literal: it arrives from the parsed
+// _LIBCPP_ABI_NAMESPACE via madc_mangle_set_stdlib_llvm().
+
+static MangleStdlib g_std_stdlib = mstdlibGnu;
+static std::string g_std_abi_ns = "__cxx11";	// build default: GNU cxx11 ABI
+static unsigned g_std_abi_gen = 0;		// bumped on change; caches key on it
+
+void madc_mangle_set_stdlib_gnu(bool cxx11_abi)
+{
+	const std::string ns = cxx11_abi ? "__cxx11" : "";
+	if (g_std_stdlib == mstdlibGnu && g_std_abi_ns == ns)
+		return;
+	g_std_stdlib = mstdlibGnu;
+	g_std_abi_ns = ns;
+	++g_std_abi_gen;
+}
+
+void madc_mangle_set_stdlib_llvm(const std::string &abi_ns)
+{
+	if (g_std_stdlib == mstdlibLlvm && g_std_abi_ns == abi_ns)
+		return;
+	g_std_stdlib = mstdlibLlvm;
+	g_std_abi_ns = abi_ns;
+	++g_std_abi_gen;
+}
+
+// "std::" prefix for components INSIDE the versioned inline namespace (GNU:
+// only the cxx11-tagged components; LLVM: everything).
+static std::string std_prefix_tagged()
+{
+	return g_std_abi_ns.empty() ? "std::" : "std::" + g_std_abi_ns + "::";
+}
+
+// "std::" prefix for the supporting templates (allocator, char_traits, less,
+// pair, and the containers): directly in std under GNU, inside the ABI
+// namespace under LLVM.
+static std::string std_prefix_untagged()
+{
+	return g_std_stdlib == mstdlibLlvm ? std_prefix_tagged() : "std::";
+}
+
 std::string itanium_mangle_std_var(const std::string &name)
 {
-	// A namespace-scope variable under std: _ZSt <length-prefixed-name>.
+	// GNU: namespace-scope std vars (cout, cin, ...) live directly in std
+	// (never in __cxx11): _ZSt <length-prefixed-name>. LLVM: everything
+	// lives in the ABI namespace: _ZN St <ns> <name> E.
+	if (g_std_stdlib == mstdlibLlvm && !g_std_abi_ns.empty())
+		return "_ZNSt" + source_name(g_std_abi_ns) + source_name(name) + "E";
 	return "_ZSt" + source_name(name);
 }
 
@@ -1004,8 +1052,9 @@ std::string itanium_mangle_std_var(const std::string &name)
 
 std::string std_string_type()
 {
-	return "std::__cxx11::basic_string<char,std::char_traits<char>,"
-	       "std::allocator<char>>";
+	return std_prefix_tagged() + "basic_string<char,"
+	       + std_prefix_untagged() + "char_traits<char>,"
+	       + std_prefix_untagged() + "allocator<char>>";
 }
 
 // Marshalling-boundary predicate (declared on DataDef in datadef.h, defined
@@ -1050,30 +1099,41 @@ bool DataDef::marshals_value_text() const
 		canonical_cpp_spelling().empty() ? name : canonical_cpp_spelling();
 	if (spelling.empty())
 		return false;
-	static const std::string text_carrier =
-		itanium_encode_type_sub(std_string_type());
+	// Cache keyed on the stdlib-flavor generation, not computed once: the
+	// carrier spelling follows the parsed ABI config, which can land AFTER
+	// the first call (and --project TUs may re-sync it per TU).
+	static unsigned carrier_gen = ~0u;
+	static std::string text_carrier;
+	if (carrier_gen != g_std_abi_gen) {
+		text_carrier = itanium_encode_type_sub(std_string_type());
+		carrier_gen = g_std_abi_gen;
+	}
 	return itanium_encode_type_sub(spelling) == text_carrier;
 }
 
 std::string std_vector_type(const std::string &elem)
 {
-	return "std::vector<" + elem + ",std::allocator<" + elem + ">>";
+	const std::string ns = std_prefix_untagged();
+	return ns + "vector<" + elem + "," + ns + "allocator<" + elem + ">>";
 }
 
 std::string std_map_type(const std::string &key, const std::string &val)
 {
-	return "std::map<" + key + "," + val + ",std::less<" + key + ">,"
-	       "std::allocator<std::pair<const " + key + "," + val + ">>>";
+	const std::string ns = std_prefix_untagged();
+	return ns + "map<" + key + "," + val + "," + ns + "less<" + key + ">,"
+	       + ns + "allocator<" + ns + "pair<const " + key + "," + val + ">>>";
 }
 
 std::string std_set_type(const std::string &elem)
 {
-	return "std::set<" + elem + ",std::less<" + elem + ">,"
-	       "std::allocator<" + elem + ">>";
+	const std::string ns = std_prefix_untagged();
+	return ns + "set<" + elem + "," + ns + "less<" + elem + ">,"
+	       + ns + "allocator<" + elem + ">>";
 }
 
 std::string std_stringstream_type()
 {
-	return "std::__cxx11::basic_stringstream<char,std::char_traits<char>,"
-	       "std::allocator<char>>";
+	return std_prefix_tagged() + "basic_stringstream<char,"
+	       + std_prefix_untagged() + "char_traits<char>,"
+	       + std_prefix_untagged() + "allocator<char>>";
 }

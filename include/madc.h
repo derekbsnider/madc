@@ -4303,6 +4303,12 @@ public:
     // property, so the diagnostic has to name what this binary actually has).
     bool set_stdlib_flavor_option(const std::string &arg);
     std::string stdlib_flavor_names() const;	// ", "-joined, for that diagnostic
+    // The selected flavor, defaulted: table entry 0 when no -stdlib= was given.
+    const madc_stdlib_flavor *active_stdlib_flavor() const;
+    // Push the std ABI inline namespace into the mangler when `name` is one of
+    // the stdlib config macros (_LIBCPP_ABI_NAMESPACE / _GLIBCXX_USE_CXX11_ABI).
+    // Called at every define_map write site: directive, forest replay, CLI -D.
+    void note_std_abi_define(const std::string &name, const std::string &value);
     std::string expandIfMacros(const std::string &raw);
     bool should_tokenize_include(const std::string &path);
     bool auto_include_standard_identifier(const std::string &word);

@@ -130,7 +130,9 @@ std::string itanium_mangle_nested_sub(const std::vector<std::string> &qualifiers
 std::string itanium_mangle_nested_var(const std::vector<std::string> &qualifiers,
                                       const std::string &name);
 
-// Mangle a namespace-scope std:: variable, e.g. std::cout → "_ZSt4cout".
+// Mangle a namespace-scope std:: variable, e.g. std::cout → "_ZSt4cout"
+// (GNU: cout lives directly in std, never in __cxx11). Under the LLVM
+// flavor everything lives in the ABI namespace: → "_ZNSt3__14coutE".
 std::string itanium_mangle_std_var(const std::string &name);
 
 // Function-pointer types are supported in the _sub encoders via the spelling
@@ -138,9 +140,31 @@ std::string itanium_mangle_std_var(const std::string &name);
 // (Used for the ostream manipulator operator<< — itanium_mangle_operator_sub
 // with a function-pointer parameter.)
 
+// ---------------------------------------------------------------------------
+// Standard-library flavor / std ABI inline namespace.
+//
+// The canonical std:: spellings below follow the ACTIVE C++ standard library,
+// recorded from the PARSED stdlib configuration — never a host #ifdef, never
+// keyed on a flavor name. Each stdlib declares its ABI through the macro that
+// exists for exactly this purpose:
+//   libstdc++: _GLIBCXX_USE_CXX11_ABI gates the __cxx11 inline namespace on
+//              the cxx11-tagged components only (basic_string,
+//              basic_stringstream); the supporting templates (allocator,
+//              char_traits, less, pair, vector, map, set) stay directly in std.
+//   libc++:    _LIBCPP_ABI_NAMESPACE names the inline namespace EVERY
+//              component lives in (e.g. "__1").
+// Until a parsed config says otherwise, the state is the build default:
+// the GNU cxx11 ABI. Program::note_std_abi_define() pushes the parsed fact
+// here from every define_map write site (directive, forest replay, CLI -D).
+// ---------------------------------------------------------------------------
+enum MangleStdlib { mstdlibGnu = 0, mstdlibLlvm = 1 };
+void madc_mangle_set_stdlib_gnu(bool cxx11_abi);             // _GLIBCXX_USE_CXX11_ABI
+void madc_mangle_set_stdlib_llvm(const std::string &abi_ns); // _LIBCPP_ABI_NAMESPACE
+
 // Canonical std:: type spellings (full default template args), so callers
 // don't hand-write them. Each returns the C++ type string accepted by the
-// _sub helpers above.
+// _sub helpers above, spelled for the ACTIVE stdlib flavor (the __cxx11
+// forms shown are the GNU-default shapes).
 std::string std_string_type();                              // std::__cxx11::basic_string<char,...>
 std::string std_vector_type(const std::string &elem);       // std::vector<elem, std::allocator<elem>>
 std::string std_map_type(const std::string &key,

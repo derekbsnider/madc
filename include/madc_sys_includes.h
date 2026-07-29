@@ -1,6 +1,8 @@
 #ifndef __MADC_SYS_INCLUDES_H
 #define __MADC_SYS_INCLUDES_H 1
 
+#include <string>
+
 // The generated host include-search tables — src/sys_include_paths.cpp, written
 // by scripts/gen_sys_includes.sh from the configured compiler at build time.
 //
@@ -21,6 +23,11 @@ struct madc_stdlib_flavor
 	const char *name;			// "libstdc++" / "libc++" — the -stdlib= spelling
 	const char *const *paths;		// NULL-terminated <...> search list
 	const char *compiler_owned_dir;		// this flavor's compiler resource dir ("" if unknown)
+	// This flavor's C++ runtime DT_NEEDED set (NULL-terminated; may be
+	// empty). Probed from the toolchain's OWN link of an empty C++
+	// program, minus the platform base (libc/libm/ld-*) the emitter adds
+	// unconditionally — never a hardcoded flavor→SONAME table.
+	const char *const *link_libs;
 };
 
 // NULL-name terminated. Entry 0 is always the default flavor, even when its path
@@ -30,5 +37,9 @@ extern const madc_stdlib_flavor madc_stdlib_flavors[];
 // Name of the flavor $(CXX) uses — the one selected when -stdlib= is absent.
 // Empty when detection failed.
 extern const char *madc_default_stdlib_flavor;
+
+// Table lookup by -stdlib= spelling; NULL when unknown/unbuilt (or empty name).
+// Defined beside the Program accessors in src/lexer.cpp.
+const madc_stdlib_flavor *madc_stdlib_flavor_lookup(const std::string &name);
 
 #endif
