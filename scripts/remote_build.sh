@@ -125,9 +125,23 @@ for stage in $stages; do
 		# bin/ obj/ lib/ tmp/ are excluded from the transfer, so the
 		# directories themselves never arrive — make sure they exist.
 		$SSH "mkdir -p /workspace/madc/bin /workspace/madc/obj /workspace/madc/lib /workspace/madc/tmp"
+		# HOST-PROBED generated sources must NEVER cross the tunnel.
+		# They are written by probing the LOCAL compiler ($CXX -E -v for
+		# the include search list and stdlib flavor table, $CXX -dM -E
+		# for the predefined macros), so the NAS's copies describe the
+		# NAS — which never builds anything. Syncing them sent a stale
+		# pre-flavor-table sys_include_paths.cpp (543 bytes, Jul 22) over
+		# the container's freshly generated one (1507 bytes) right after
+		# every build. Nothing broke only because the copy also carried
+		# the older mtime, so make saw the .o as current and skipped it;
+		# delete that .o and the next build compiles the stale format and
+		# fails to link madc_stdlib_flavors. rsync does not delete
+		# excluded files on the receiver, so the container keeps its own.
 		rsync -az --delete \
 			--exclude=tmp/ --exclude=bin/ --exclude=obj/ --exclude=lib/ \
 			--exclude=MadSMAUG --exclude=autom4te.cache \
+			--exclude=src/sys_include_paths.cpp \
+			--exclude=src/predefined_macros.cpp \
 			-e "ssh -p $PORT" "$LOCAL_MADC/" "$REMOTE:/workspace/madc/"
 		rc=$?
 		echo "sync madc rc=$rc"
