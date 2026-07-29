@@ -34,6 +34,26 @@ high-level" — the answer is both.**
 
 ## Current State
 
+- **v0.59.0 (2026-07-29): the trait-engine release.** gcc13's
+  `__and_/__or_/__not_` SFINAE machine + the constructible/assignable trait
+  family fold correctly in every lane: [temp.deduct]/8 unused-alias-arg
+  validation with baked-ref (`DataDefREF`) trait args;
+  `__is_constructible`/`__is_nothrow_constructible` builtins (tri-state,
+  honest declines); lexer-erased `noexcept` re-lexed as `throw()` into
+  `FuncDef::noexcept_spec` (patterns + forest); variadic bases
+  real-instantiate at the base-clause resolution — vector reallocation takes
+  g++'s move_iterator lane, and the class-wide sticky arming that broke the
+  c++20 legs was bisected out and replaced with base-specifier-scoped
+  arming; instantiation keys split pointer from reference args
+  (`X<int*>` ≠ `X<int&>`, forest v35); trait folds REFUSE dependent args —
+  the freeze's capture parse had frozen `__bool_constant<0>` as
+  is_assignable's pattern base (packed-battery catch, bind-gate
+  `[traitfold]`). Gates: `testtraitassign`, `testconstructible`,
+  `testtplargkey`, `testvariadicstatic`. fulltest 796/0/0/9, `--exe` 779/0,
+  `--obj` 779/0, packed 796/0/0/9. Fork unchanged. KG: DupFamily
+  `trait_builtin_dispatch_twins` recorded open (the live/local trait
+  dispatch pair took three lockstep double-edits this branch).
+
 - **v0.55.0 (2026-07-28): class statics bind to their real Itanium symbols,
   and the emitter gets ONE name owner.** Static data members of library
   classes carry their ABI symbol (`std::numpunct<char>::id` ==

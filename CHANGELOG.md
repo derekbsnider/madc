@@ -2,6 +2,80 @@
 
 ## [Unreleased]
 
+## [v0.59.0] — 2026-07-29
+
+The trait-engine release: gcc13's `__and_/__or_/__not_` SFINAE machine and
+the constructible/assignable trait family now fold correctly in EVERY lane —
+live parse, dependent-parse materialization (vector reallocation picks the
+same move/copy lane g++ does), and freeze/bind (a capture parse can no longer
+bake a wrong trait constant into a frozen pattern). Forest format v35. Suite
+792 → 796, green in all lanes (JIT / exe / obj / packed).
+
+- **fix: `__or_fn`/`__and_fn` SFINAE — pack-aware by-key returns,
+  [temp.deduct]/8 unused-arg validation, baked-ref trait args.** gcc13
+  implements `__and_`/`__or_` as overload selection on `__first_t<...,
+  __enable_if_t<bool(_Bn::value)>...>`: every template argument must be
+  valid in the immediate context INCLUDING args the alias target never
+  names. madc now validates those unused args (a failing concrete arg is a
+  substitution failure; a dependent arg keeps the opaque placeholder), and
+  a SUBSTITUTED trait arg that arrives as one type token with the reference
+  already baked into the DataDef (`DataDefREF`) unwraps into the trait
+  evaluator's reference flags instead of reading as a non-class prvalue.
+  Gates: `testtraitassign` ("1 1 1 0" == g++ == clang++),
+  `testvariadicstatic`.
+- **fix(cir): identity `std::move`/`std::forward` + native-class-return
+  typing for constructor arguments.**
+- **feat: constructible-trait builtins, noexcept capture, variadic-base
+  real-instantiation routing.** `__is_constructible` /
+  `__is_nothrow_constructible` implemented tri-state (honest declines Throw
+  in the expression path; the fold path falls back to the old escape) —
+  gcc13 type_traits uses them unconditionally and the registry's silence
+  made the whole is_constructible family answer silently wrong. The LEXER
+  erased `noexcept` before the parser ever saw it: an unconditional
+  `noexcept` now re-lexes as `throw()` and lands in
+  `FuncDef::noexcept_spec`, plumbed through clones, class-method patterns,
+  and the forest (DK_FUNC noexcept flags). Absent trailing packs elide in
+  both body-substitution lanes (`is_constructible<int>` with zero Args).
+  Dropped defaulted/deleted special ctors are recorded on the class.
+  Variadic bases real-instantiate at the base-clause resolution —
+  `__move_if_noexcept_cond : __and_<...>::type` folds instead of going
+  opaque, so vector reallocation takes the move_iterator lane g++ takes —
+  scoped to the base-specifier only (the earlier class-wide sticky arming
+  leaked into nested member-alias parses and broke the c++20 legs; bisect-
+  confirmed, replaced). The [temp.deduct]/8 validation now runs for
+  non-dependent alias uses inside dependent parses, with the dependence
+  classifier taught two scope facts: a member name after `::` is looked up
+  in its owner, and a bare name resolves through the enclosing-namespace
+  chain (`namespace_chain_datatype`, extracted as the walk's single owner).
+  System-header method bodies stash lazily at instantiation depth unless
+  the owner class is function-local (eager parses into speculative frames
+  left `move_iterator<int*>` bodies in a discarded frame — undefined MIR
+  imports). Env-gated `MADC_XTEST_VRI_DEBUG` probes. Gate:
+  `testconstructible` (g++13 == clang++18 == madc, exact).
+- **fix: template-instantiation keys distinguish pointer from reference
+  args.** `canonical_arg_key_fragment` sanitized every non-identifier char
+  to `_`, so `X<int*>` and `X<int&>` collided into ONE registered
+  instantiation — whichever instantiated first served the other's lookups
+  (std::move<int*>'s return referent read int32_t, one pointer level short;
+  the emitted C declared `int *` over an `int **` body). Now `*` → `P`,
+  `&` → `R` (the overload-suffix letters). Instantiated-class names feed
+  serialized symbols: forest format v35. Gate: `testtplargkey`, decisive in
+  either registration order.
+- **fix: trait folds refuse dependent type arguments.** The freeze's
+  pattern-capture parse folded `__is_assignable(_Tp, _Up)` with UNBOUND
+  params to 0 and froze `__bool_constant<0>` (false_type) as
+  is_assignable's pattern base — every forest-bound
+  `is_assignable<To, From>` read `::value == 0` regardless of its args
+  (the packed battery caught it on `testtraitassign`). Both trait-argument
+  readers now refuse a dependent argument
+  (`datadef_has_unresolved_dependent_surface`), deferring the fold to
+  instantiation where the args are real. New bind-gate case `[traitfold]`
+  (a self-contained trait-call-NTTP-base mimic; freeze+bind == live == g++).
+
+Suites: fulltest **796/0/0/9**, `--exe` **779/0**, `--obj` **779/0**, packed
+arbiter **796/0/0/9**, forest bind + selfexe gates green. Fork unchanged
+(**1.0-madc.0.52.0**).
+
 ## [v0.58.0] — 2026-07-28
 
 Milestone: libc++ `<string_view>` compiles AND RUNS end-to-end (the canonical
