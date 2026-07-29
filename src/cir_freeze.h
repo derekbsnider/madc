@@ -193,6 +193,17 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // container whose version differs from the reader's is rejected wholesale
 // (live parse takes over) — never partially read. History, newest first:
 //
+// v35: TEMPLATE-INSTANTIATION KEY P/R SPLIT — canonical_arg_key_fragment maps
+// '*' -> 'P' and '&' -> 'R' (was both '_'), so X<int*> and X<int&> stop
+// colliding into one registered instantiation (remove_reference<int*> served
+// remove_reference<int&>'s cached class: std::move<int*>'s return referent
+// read int32_t, one pointer level short). Instantiated-class registered names
+// feed serialized symbols, so a v34 container's names mismatch a v35 reader's
+// re-derivation — the version pin rejects it (live parse takes over).
+// Also under v35 (landed one commit earlier in the same series): the
+// ClassMethodPattern payload gains a noexcept_spec word after is_deleted,
+// and DK_FUNC records carry DF_NOEXCEPT_TRUE / DF_NOEXCEPT_UNKNOWN flags.
+//
 // v34: DECL-ONLY MEMBER TEMPLATES — CIR_TMPLK_MEMBER records are also emitted
 // for body-less member function templates (the __do_common_type_impl::_S_test
 // SFINAE shape), carrying the dependent return-type token range
@@ -477,7 +488,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // v6: complete type-table serialization (typeid->full DataDef, swizzle on
 // load) replaces the typeid->name closure + the decl_record/struct_member
 // parallel streams
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 34 };
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 35 };
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;

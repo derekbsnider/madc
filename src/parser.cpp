@@ -3425,6 +3425,32 @@ static std::string sanitize_template_fragment(const std::string &s)
     return out.empty() ? std::string("_") : out;
 }
 
+// Template-ARGUMENT fragment sanitizer: like sanitize_template_fragment, but
+// '*' -> 'P' and '&' -> 'R' instead of '_'. Declarator suffixes are
+// type-identity-bearing in a template argument — `X<int*>` and `X<int&>` are
+// distinct instantiations — and the blanket '_' collapsed both fragments to
+// one key, so whichever registered first served the other's lookups
+// (std::move<int*>'s `remove_reference<int*>::type` read the earlier
+// `remove_reference<int&>`'s int32_t: one pointer level lost in the return).
+// Same letters as overload_spelling_symbol_suffix's readable head.
+static std::string sanitize_template_arg_fragment(const std::string &s)
+{
+    std::string out;
+    for ( size_t i = 0; i < s.size(); ++i )
+    {
+	unsigned char c = (unsigned char)s[i];
+	if ( isalnum(c) || c == '_' )
+	    out += (char)c;
+	else if ( c == '*' )
+	    out += 'P';
+	else if ( c == '&' )
+	    out += 'R';
+	else
+	    out += '_';
+    }
+    return out.empty() ? std::string("_") : out;
+}
+
 // The datatype_map / struct_map key HEAD for a template instantiation: the
 // bare name unless the same name is declared in 2+ namespaces (std::char_traits
 // vs __gnu_cxx::char_traits), where the defining namespace must disambiguate.
@@ -26108,9 +26134,9 @@ std::string Program::canonical_arg_key_fragment(
 	if ( DataDef *dd = resolve_builtin_type_spelling(spelling) )
 	{
 	    const std::string &cs = dd->canonical_cpp_spelling();
-	    return sanitize_template_fragment(cs.empty() ? dd->name : cs);
+	    return sanitize_template_arg_fragment(cs.empty() ? dd->name : cs);
 	}
-    return sanitize_template_fragment(spelling);
+    return sanitize_template_arg_fragment(spelling);
 }
 
 Program::TemplateDef *Program::match_partial_specialization(
