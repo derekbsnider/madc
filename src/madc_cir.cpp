@@ -3396,6 +3396,10 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		token_run(method.ctor_init_tokens);
 		token_run(method.member_template_decl);
 		token_run(method.member_template_return_tokens);
+		// v36: per-param default token runs ([temp.deduct]/8 SFINAE).
+		words.push_back((uint32_t)method.template_param_defaults.size());
+		for ( size_t p = 0; p < method.template_param_defaults.size(); ++p )
+		    token_run(method.template_param_defaults[p]);
 	    }
 	    words.push_back((uint32_t)node.using_members.size());
 	    for ( size_t u = 0; u < node.using_members.size(); ++u )
@@ -3724,11 +3728,15 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	DataDefPTR *p0 = fd->parameters.empty()
 		       ? NULL : dynamic_cast<DataDefPTR *>(fd->parameters[0]);
 	bool instance = p0 && p0->base_type == owner;
+	// v36 semantics on the UNCHANGED record layout: the per-param default
+	// runs (always in the layout, previously written empty here) now carry
+	// the member template's [temp.deduct]/8 SFINAE defaults
+	// (`typename = decltype(declval<_Tp1&>().~_Tp1())`).
 	emit(CIR_TMPLK_MEMBER, fi->first.c_str(), fd->method_display_name,
 	     std::string(), std::string(), owner,
 	     instance ? CIR_TMPLF_INSTANCE_METHOD : 0,
 	     fd->template_param_names, fd->template_param_is_type,
-	     fd->template_param_is_pack, no_multi,
+	     fd->template_param_is_pack, fd->member_template_param_defaults,
 	     fd->member_template_decl,
 	     body_bearing ? no_toks : fd->member_template_return_tokens,
 	     no_multi, NULL,

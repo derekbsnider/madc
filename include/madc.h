@@ -260,6 +260,12 @@ public:
     // WITHOUT instantiating a body (the clang SubstDecl model — see
     // resolve_member_template_call_return_type). Empty == not a member tmpl.
     std::vector<TokenBase *> member_template_return_tokens;
+    // Per-param DEFAULT token runs (parallel to template_param_names; an empty
+    // run = no default). [temp.deduct]/8: an unbound defaulted param must
+    // substitute-and-resolve at the call, or the candidate is not viable —
+    // gcc13's __is_destructible_impl::__test carries its ENTIRE SFINAE in
+    // `typename = decltype(declval<_Tp1&>().~_Tp1())` (plain true_type return).
+    std::vector<std::vector<TokenBase *> > member_template_param_defaults;
     // Two-tree Phase 2: the DEPENDENT parse-tree pattern for this template's body
     // — a TokenFunc parsed ONCE with the template params bound to
     // DataDefTemplateParam placeholders (via build_dependent_pattern), with eager
@@ -2388,6 +2394,10 @@ public:
 	std::vector<TokenBase *> ctor_init_tokens;
 	std::vector<TokenBase *> member_template_decl;
 	std::vector<TokenBase *> member_template_return_tokens;
+	// Per-param DEFAULT token runs (parallel to template_param_names;
+	// empty run = no default) — the [temp.deduct]/8 SFINAE payload of a
+	// member template (`typename = decltype(declval<_Tp1&>().~_Tp1())`).
+	std::vector<std::vector<TokenBase *> > template_param_defaults;
 	ClassMethodPattern()
 	    : kind(ClassMethodKind::Method), return_type(0), flags(0),
 	      is_varargs(false), is_void_params(false), declaration_only(false),
@@ -2853,6 +2863,12 @@ public:
     // skipped member template's variadic typeparam (`typename... _Args`) is
     // preserved through register_skipped_class_template_function.
     std::vector<bool> last_skipped_template_typeparam_is_pack;
+    // Per-param DEFAULT token runs (parallel vector; empty run = no default).
+    // A member template can carry its whole SFINAE in a defaulted param
+    // (`template<typename _Tp1, typename = decltype(declval<_Tp1&>().~_Tp1())>
+    // static true_type __test(int);`, gcc13 __is_destructible_impl) — the
+    // resolver must substitute-and-resolve the default per [temp.deduct]/8.
+    std::vector<std::vector<TokenBase *> > last_skipped_template_typeparam_defaults;
     // W2 (retire-std-hardcoding-design): non-member operator overload candidates
     // declared at namespace scope (e.g. std::operator<<). Member-operator
     // resolution already exists (class_operator_call); these let `obj << x`
@@ -4192,6 +4208,10 @@ public:
 	std::vector<TokenBase *> ret_tokens;	// v34 decl-only: the dependent return-type range (no decl tokens exist)
 	std::vector<std::string> typeparams;
 	std::vector<bool> is_pack;
+	// v36: per-param DEFAULT token runs (parallel to typeparams; empty
+	// run = no default) — a member template's [temp.deduct]/8 SFINAE
+	// payload (`typename = decltype(declval<_Tp1&>().~_Tp1())`).
+	std::vector<std::vector<TokenBase *> > typeparam_defaults;
 	PendingForestMemberTmpl() : owner(NULL) {}
     };
     std::vector<PendingForestMemberTmpl> forest_pending_member_tmpls;

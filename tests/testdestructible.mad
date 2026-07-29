@@ -1,0 +1,34 @@
+// std::is_destructible / is_trivially_destructible through the real headers
+// ([meta.unary.prop]): scalars and classes with an accessible non-deleted
+// destructor are destructible; a deleted (`= delete`) destructor — its own,
+// or implicitly via a deleted-destructor member ([class.dtor]p7) — is not;
+// void is not. This default-flavor leg goes through libstdc++'s
+// SFINAE/declval chain, where the explicit-destructor call site's
+// deleted-destructor rejection IS the substitution failure. The libc++ twin
+// (testdestructible_libcxx) drives the same battery through madc's
+// __is_destructible builtin via libc++'s `#if __has_builtin` path, and adds
+// the PRIVATE-destructor probe (access discrimination inside a SFINAE
+// context is a filed gap for the declval chain; the builtin models it).
+// An ARRAY type as a template argument (is_destructible<int[3]>) is a
+// separate filed template-argument-grammar gap; probe omitted.
+// Oracle: g++ 13 == clang++-18 (-stdlib=libc++) print "1 1 1 0 0 0\n1 0".
+#include <type_traits>
+#include <cstdio>
+struct triv { int x; };
+struct userd { int x; ~userd() {} };
+struct deld { int x; ~deld() = delete; };
+struct holds_deld { deld d; };
+int main()
+{
+    printf("%d %d %d %d %d %d\n",
+	   (int)std::is_destructible<int>::value,
+	   (int)std::is_destructible<triv>::value,
+	   (int)std::is_destructible<userd>::value,
+	   (int)std::is_destructible<deld>::value,
+	   (int)std::is_destructible<holds_deld>::value,
+	   (int)std::is_destructible<void>::value);
+    printf("%d %d\n",
+	   (int)std::is_trivially_destructible<triv>::value,
+	   (int)std::is_trivially_destructible<userd>::value);
+    return 0;
+}

@@ -3320,6 +3320,9 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	    add_tokens(method.ctor_init_tokens);
 	    add_tokens(method.member_template_decl);
 	    add_tokens(method.member_template_return_tokens);
+	    hash.add_u64(method.template_param_defaults.size());
+	    for ( size_t p = 0; p < method.template_param_defaults.size(); ++p )
+		add_tokens(method.template_param_defaults[p]);
 	}
 	hash.add_u64(node.using_members.size());
 	for ( size_t u = 0; u < node.using_members.size(); ++u )
@@ -5721,6 +5724,10 @@ static void basic_class_pattern_canonicalize_type_tokens(
 	    }
 }
 
+static std::vector<std::vector<TokenBase *> >
+basic_class_pattern_substitute_token_runs(
+	Program &pgm, const BasicClassPatternBinding &binding,
+	const std::vector<std::vector<TokenBase *> > &runs);
 static std::vector<TokenBase *> basic_class_pattern_substitute_tokens(
 	Program &pgm, const BasicClassPatternBinding &binding,
 	const std::vector<TokenBase *> &tokens)
@@ -5892,6 +5899,15 @@ static void register_basic_class_pattern_method(
 	    pgm.last_skipped_template_typeparam_is_pack;
 	pgm.last_skipped_template_typeparam_is_pack =
 	    pattern.template_param_is_pack;
+	// Per-param DEFAULT runs ride the same global (the [temp.deduct]/8
+	// SFINAE payload) — substituted for the owner binding like the decl
+	// tokens themselves (`declval<_Tp1&>().~_Tp1()` may name the OWNER's
+	// params too; the member's own params substitute at the call).
+	std::vector<std::vector<TokenBase *> > saved_defaults_state =
+	    pgm.last_skipped_template_typeparam_defaults;
+	pgm.last_skipped_template_typeparam_defaults =
+	    basic_class_pattern_substitute_token_runs(pgm, binding,
+		pattern.template_param_defaults);
 	// The registration return-type scan re-parses the declaration tokens
 	// (`pair<iterator, bool> emplace(...)`); member aliases like
 	// `iterator` resolve through class_scope_stack. The parse lane runs
@@ -5912,12 +5928,14 @@ static void register_basic_class_pattern_method(
 	      && pgm.class_scope_stack.back() == owner )
 		pgm.class_scope_stack.pop_back();
 	    pgm.last_skipped_template_typeparam_is_pack = saved_pack_state;
+	    pgm.last_skipped_template_typeparam_defaults = saved_defaults_state;
 	    throw;
 	}
 	if ( owner && !pgm.class_scope_stack.empty()
 	  && pgm.class_scope_stack.back() == owner )
 	    pgm.class_scope_stack.pop_back();
 	pgm.last_skipped_template_typeparam_is_pack = saved_pack_state;
+	pgm.last_skipped_template_typeparam_defaults = saved_defaults_state;
 	return;
     }
 
@@ -10194,7 +10212,7 @@ static int type_trait_arity(const std::string &name)
     if ( name == "__is_class" || name == "__is_union" || name == "__is_enum"
       || name == "__has_trivial_destructor" || name == "__is_trivial"
       || name == "__is_empty" || name == "__is_standard_layout"
-      || name == "__is_pod" )
+      || name == "__is_pod" || name == "__is_destructible" )
 	return 1;
     if ( name == "__is_constructible" || name == "__is_nothrow_constructible" )
 	return TRAIT_ARITY_VARIADIC;
@@ -10515,6 +10533,102 @@ static int trait_scalar_assignable_from(DataDef *to, DataDef *from)
 
 // __is_assignable(To, From): is `declval<To>() = declval<From>()` well-formed?
 // (The gcc/clang intrinsic; libstdc++'s std::is_assignable wraps it.)
+// A class is destructible iff it has an accessible, non-deleted destructor.
+// A USER-DECLARED destructor decides directly: method_map's '~' entries (own
+// or inherited from a base — a deleted/inaccessible base destructor deletes
+// the derived implicit one, and a derived user destructor over a deleted base
+// destructor would be ill-formed, so any bad '~' entry means 0 and any good
+// set means 1). With no user destructor anywhere, the IMPLICIT destructor
+// walks bases and members ([class.dtor]p7). -1 = cannot answer faithfully.
+static int trait_class_destructible(DataDefCLASS *c, int depth,
+				    bool check_access)
+{
+    if ( !c )
+	return -1;
+    if ( depth > 32 )
+	return -1;                   // pathological nesting — refuse, don't hang
+    if ( c->has_deleted_dtor )
+	return 0;                    // dropped `~X() = delete` (recorded)
+    bool saw_user_dtor = false;
+    for ( std::map<std::string, Variable *>::const_iterator it =
+	    c->method_map.begin(); it != c->method_map.end(); ++it )
+    {
+	if ( it->first.empty() || it->first[0] != '~' || !it->second )
+	    continue;
+	saw_user_dtor = true;
+	FuncDef *fd = dynamic_cast<FuncDef *>(it->second->type);
+	if ( fd && fd->is_deleted )
+	    return 0;
+	// Access matters only for the TRAIT's external-context answer; an
+	// explicit destructor CALL is checked per its own context by the
+	// caller (a private destructor is callable from the class's members).
+	if ( check_access
+	  && (it->second->flags & (vfPRIVATE | vfPROTECTED)) )
+	    return 0;
+    }
+    if ( saw_user_dtor )
+	return 1;
+    std::vector<DataDefCLASS *> parents;
+    if ( c->base_class )
+	parents.push_back(c->base_class);
+    for ( size_t i = 0; i < c->bases.size(); ++i )
+	if ( c->bases[i].base && c->bases[i].base != c->base_class )
+	    parents.push_back(c->bases[i].base);
+    for ( size_t i = 0; i < parents.size(); ++i )
+    {
+	int s = trait_class_destructible(parents[i], depth + 1, check_access);
+	if ( s != 1 )
+	    return s;
+    }
+    for ( size_t i = 0; i < c->members.size(); ++i )
+    {
+	DataDef *m = c->members[i].second;
+	if ( !m )
+	    continue;
+	while ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(m) )
+	{
+	    if ( !arr->element_type )
+		return -1;
+	    m = arr->element_type;   // element-wise: the element type decides
+	}
+	if ( DataDefCLASS *mc = dynamic_cast<DataDefCLASS *>(m) )
+	{
+	    int s = trait_class_destructible(mc, depth + 1, check_access);
+	    if ( s != 1 )
+		return s;
+	}
+    }
+    return 1;
+}
+
+// __is_destructible(T) ([meta.unary.prop]): reference types are destructible;
+// void / function / unbounded-array types are not; an array is destructible
+// iff its element type is; a class needs an accessible non-deleted destructor
+// (trait_class_destructible above); scalars/enums/pointers are. -1 = refuse.
+static int trait_is_destructible(const TraitTypeArg &t)
+{
+    if ( t.is_lref || t.is_rref )
+	return 1;
+    DataDef *dd = t.dd;
+    if ( !dd )
+	return -1;
+    if ( dynamic_cast<DataDefVOID *>(dd) )
+	return 0;
+    if ( dynamic_cast<FuncDef *>(dd) )
+	return 0;
+    while ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(dd) )
+    {
+	if ( !arr->element_type )
+	    return -1;
+	if ( arr->count == 0 )
+	    return 0;                // array of unknown bound
+	dd = arr->element_type;
+    }
+    if ( DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd) )
+	return trait_class_destructible(c, 0, true);
+    return 1;
+}
+
 static int trait_is_assignable(const TraitTypeArg &to, const TraitTypeArg &from)
 {
     DataDefCLASS *to_class = dynamic_cast<DataDefCLASS *>(to.dd);
@@ -10937,6 +11051,14 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	result = trait_is_standard_layout(args[0].dd);
     else if ( name == "__is_pod" )
 	result = trait_is_pod(args[0].dd);
+    else if ( name == "__is_destructible" )
+    {
+	int s = trait_is_destructible(args[0]);
+	if ( s < 0 )
+	    Throw(op_tb) << "cannot faithfully evaluate __is_destructible(...) "
+			 << "for this operand type" << flush;
+	result = s != 0;
+    }
     else if ( name == "__is_assignable" )
     {
 	int s = trait_is_assignable(args[0], args[1]);
@@ -14559,6 +14681,72 @@ DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
     }
     if ( binding.empty() && pack_elems.empty() )
 	return NULL;
+    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
+    // [temp.deduct]/8 for DEFAULTED type params: an unbound parameter with a
+    // captured default must substitute-and-resolve under the binding, or the
+    // candidate is NOT viable — gcc13's __is_destructible_impl::__test
+    // carries its whole SFINAE in `typename = decltype(declval<_Tp1&>().
+    // ~_Tp1())` (plain true_type return). resolve_template_param_default_type
+    // is the SFINAE-clean resolver (isolated stream, muted cerr, NULL on
+    // failure); a resolved default JOINS the binding so a return naming the
+    // defaulted param still substitutes.
+    // Enforce only under a CONCRETE binding: during a capture/dependent parse
+    // the bound args still name unresolved surfaces and every default would
+    // "fail" — rejecting the candidate the capture itself needs (the header's
+    // is_destructible chain then never registered). A dependent use keeps the
+    // old permissive resolution; the concrete instantiation re-runs here.
+    bool binding_concrete = !class_pattern_capture_in_progress
+			 && !::getenv("MADC_XTEST_NODEFFILL");
+    for ( std::map<std::string, DataDef *>::const_iterator bi = binding.begin();
+	  binding_concrete && bi != binding.end(); ++bi )
+	if ( !bi->second || datadef_has_unresolved_dependent_surface(bi->second) )
+	    binding_concrete = false;
+    // [temp.names]: the default's unqualified names (`declval`) bind in the
+    // member template's DEFINITION context. The owner's canonical spelling
+    // carries that namespace (`std::__do_is_destructible_impl` -> `std`);
+    // split before any template args so a nested `::` in an argument list
+    // cannot fool the scan. Empty -> global scope, no push.
+    std::string def_ns;
+    if ( owner )
+    {
+	std::string ocs = owner->canonical_cpp_spelling().empty()
+			? owner->name : owner->canonical_cpp_spelling();
+	size_t lt = ocs.find('<');
+	if ( lt != std::string::npos )
+	    ocs = ocs.substr(0, lt);
+	size_t sep = ocs.rfind("::");
+	if ( sep != std::string::npos )
+	    def_ns = ocs.substr(0, sep);
+    }
+    Program::NamespaceScope dns_scope(*this, def_ns);
+    if ( vri_debug_enabled() && binding_concrete
+      && !fd->member_template_param_defaults.empty() )
+	fprintf(stderr, "[vriprobe] MT deffill ctx owner=%s canon=%s ns=%s\n",
+		owner ? owner->name.c_str() : "(null)",
+		owner ? owner->canonical_cpp_spelling().c_str() : "-",
+		def_ns.c_str());
+    if ( binding_concrete )
+	for ( size_t i = 0; i < fd->template_param_names.size()
+		    && i < fd->member_template_param_defaults.size(); ++i )
+	{
+	    if ( binding.count(fd->template_param_names[i])
+	      || fd->member_template_param_defaults[i].empty() )
+		continue;
+	    if ( !pack_name.empty() && fd->template_param_names[i] == pack_name )
+		continue;
+	    DataDef *rd = resolve_template_param_default_type(
+		fd->member_template_param_defaults[i], binding, owner);
+	    if ( !rd )
+	    {
+		if ( vri_debug_enabled() )
+		    fprintf(stderr, "[vriprobe] MT deffill REJECT %s param=%s b0=%s\n",
+			    fd->method_display_name.c_str(),
+			    fd->template_param_names[i].c_str(),
+			    binding.empty() ? "-" : binding.begin()->second->name.c_str());
+		return NULL;         // substitution failure — not viable
+	    }
+	    binding[fd->template_param_names[i]] = rd;
+	}
     // Substitute — the ONE shared implementation (see
     // substitute_return_range_tokens).
     std::vector<TokenBase *> sub = substitute_return_range_tokens(
@@ -14567,7 +14755,6 @@ DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
     // type in the return resolves). resolve_type_token_range carries its own
     // SFINAE trap (returns NULL on substitution failure — a non-viable
     // candidate, not a hard error).
-    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
     bool pushed_owner = false;
     if ( owner ) { class_scope_stack.push_back(owner); pushed_owner = true; }
     DataDef *rt = resolve_type_token_range(sub, 0, sub.size());
@@ -14663,8 +14850,61 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 	// emission. NULL (substitution failure / no targs) leaves the placeholder.
 	if ( DataDef *rt = resolve_member_template_call_return_type(sfd,
 		sel->explicit_template_args) )
+	{
 	    if ( rt != &ddAUTO )
 		sel->return_override = rt;
+	}
+	else
+	{
+	    // [temp.deduct]/8: the SELECTED candidate's substitution failed
+	    // (a defaulted-param SFINAE probe — gcc13's `__test(int)` with
+	    // `typename = decltype(declval<_Tp1&>().~_Tp1())`). Overload
+	    // resolution falls to the NEXT viable same-name member template —
+	    // the ellipsis catch-all `__test(...)` whose return (false_type)
+	    // resolves unconditionally. Registration order preserves the
+	    // header's declaration order, so the catch-all is tried last.
+	    // The overload set lives on the class that REGISTERED the member
+	    // templates (`__do_is_destructible_impl` — a BASE of the class
+	    // this call resolved through, whose own `methods` is empty for
+	    // inherited members). sfd carries it.
+	    DataDefCLASS *reg_owner =
+		dynamic_cast<DataDefCLASS *>(sfd->member_template_owner);
+	    if ( !reg_owner )
+		reg_owner = owner;
+	    if ( vri_debug_enabled() )
+		fprintf(stderr, "[vriprobe] MT fallback member=%s methods=%zu\n",
+			member.c_str(), reg_owner->methods.size());
+	    for ( Variable *mv : reg_owner->methods )
+	    {
+		if ( !mv )
+		    continue;
+		FuncDef *fd2 = dynamic_cast<FuncDef *>(mv->type);
+		if ( vri_debug_enabled() && fd2 && fd2->is_member_template )
+		    fprintf(stderr, "[vriprobe] MT cand disp=%s same=%d\n",
+			    fd2->method_display_name.c_str(),
+			    (int)(fd2 == sfd));
+		if ( !fd2 || fd2 == sfd || !fd2->is_member_template
+		  || fd2->method_display_name != member )
+		    continue;
+		if ( DataDef *rt2 = resolve_member_template_call_return_type(
+			fd2, sel->explicit_template_args) )
+		{
+		    if ( rt2 != &ddAUTO )
+		    {
+			TokenCallFunc *tc4 = new TokenCallFunc(*mv);
+			tc4->parameters = sel->parameters;
+			tc4->explicit_template_args = sel->explicit_template_args;
+			tc4->auto_scope_context = sel->auto_scope_context;
+			tc4->file = sel->file;
+			tc4->line = sel->line;
+			tc4->column = sel->column;
+			tc4->return_override = rt2;
+			return tc4;
+		    }
+		    break;
+		}
+	    }
+	}
     }
     return sel;
 }
@@ -16711,6 +16951,13 @@ class ClassPatternPayloadReader
 	tokens(out.ctor_init_tokens);
 	tokens(out.member_template_decl);
 	tokens(out.member_template_return_tokens);
+	// v36: per-param default token runs ([temp.deduct]/8 SFINAE).
+	uint32_t ndefaults = count();
+	for ( uint32_t i = 0; valid && i < ndefaults; ++i )
+	{
+	    out.template_param_defaults.push_back(std::vector<TokenBase *>());
+	    tokens(out.template_param_defaults.back());
+	}
 	return out;
     }
 
@@ -17808,6 +18055,12 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    {
 		pm.typeparams.push_back(rt.params[p].first);
 		pm.is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+		// v36 semantics: the per-param default runs (always in the
+		// record layout, empty until now) carry the member template's
+		// [temp.deduct]/8 SFINAE defaults.
+		pm.typeparam_defaults.push_back(std::vector<TokenBase *>());
+		if ( p < rt.defaults.size() )
+		    restore_run(rt.defaults[p], pm.typeparam_defaults.back());
 	    }
 	    forest_pending_member_tmpls.push_back(pm);
 	    break;
@@ -17828,7 +18081,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 static void stamp_member_template_pattern(
 	DataDefCLASS *owner, FuncDef *fd, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
-	const std::vector<bool> &typeparam_is_pack, const std::string &name);
+	const std::vector<bool> &typeparam_is_pack, const std::string &name,
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults);
 static void stamp_member_template_pattern_decl_only(
 	DataDefCLASS *owner, FuncDef *fd,
 	const std::vector<TokenBase *> &ret_tokens,
@@ -18003,7 +18257,8 @@ void Program::flush_forest_pending_globals()
 	{
 	    if ( !pm.tokens.empty() )
 		stamp_member_template_pattern(pm.owner, fit->second, pm.tokens,
-					      pm.typeparams, pm.is_pack, pm.disp);
+					      pm.typeparams, pm.is_pack, pm.disp,
+					      pm.typeparam_defaults);
 	    else
 		// v34 decl-only record: no decl tokens to derive from — stamp
 		// the restored return-type range + params directly.
@@ -18027,6 +18282,9 @@ void Program::flush_forest_pending_globals()
 	    continue;
 	std::vector<bool> saved_pack = last_skipped_template_typeparam_is_pack;
 	last_skipped_template_typeparam_is_pack = pm.is_pack;
+	std::vector<std::vector<TokenBase *> > saved_defaults =
+	    last_skipped_template_typeparam_defaults;
+	last_skipped_template_typeparam_defaults = pm.typeparam_defaults;
 	// Live ran this registration INSIDE the owner's class body — the
 	// return-type resolution reads class-scope names (`iterator`,
 	// `pair<iterator,bool>`) through class_scope_stack + the owner's
@@ -18036,6 +18294,7 @@ void Program::flush_forest_pending_globals()
 						 pm.typeparams, 0, std::string());
 	class_scope_stack.pop_back();
 	last_skipped_template_typeparam_is_pack = saved_pack;
+	last_skipped_template_typeparam_defaults = saved_defaults;
 	DBG(std::cout << "flush_forest_pending_globals: member template of "
 	    << pm.owner->name << " (" << pm.typeparams.size()
 	    << " param(s), " << pm.tokens.size() << " tokens)" << std::endl);
@@ -24294,6 +24553,9 @@ class ClassPatternNormalizer
 	out.member_template_decl = class_pattern_clone_tokens(fd->member_template_decl);
 	out.member_template_return_tokens =
 	    class_pattern_clone_tokens(fd->member_template_return_tokens);
+	for ( size_t i = 0; i < fd->member_template_param_defaults.size(); ++i )
+	    out.template_param_defaults.push_back(
+		class_pattern_clone_tokens(fd->member_template_param_defaults[i]));
 	out.parameters.reserve(fd->parameters.size());
 
 	for ( size_t i = 0; i < owner->ctors.size(); ++i )
@@ -24745,6 +25007,8 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	last_skipped_template_typeparams;
     std::vector<bool> saved_skipped_template_packs =
 	last_skipped_template_typeparam_is_pack;
+    std::vector<std::vector<TokenBase *> > saved_skipped_template_defaults =
+	last_skipped_template_typeparam_defaults;
     std::string saved_stmt_callee_namespace = stmt_callee_namespace;
     std::map<DataDefCLASS *, std::vector<ClassDeclKind> > *saved_decl_capture =
 	class_pattern_decl_capture;
@@ -24794,6 +25058,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     last_skipped_template_decl.clear();
     last_skipped_template_typeparams.clear();
     last_skipped_template_typeparam_is_pack.clear();
+    last_skipped_template_typeparam_defaults.clear();
     stmt_callee_namespace.clear();
 
     bool parsed = false;
@@ -24884,6 +25149,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     last_skipped_template_decl.swap(saved_skipped_template_decl);
     last_skipped_template_typeparams.swap(saved_skipped_template_typeparams);
     last_skipped_template_typeparam_is_pack.swap(saved_skipped_template_packs);
+    last_skipped_template_typeparam_defaults.swap(saved_skipped_template_defaults);
     stmt_callee_namespace = saved_stmt_callee_namespace;
     tokens = saved_tokens;
     _prv_token = saved_prv;
@@ -25724,6 +25990,13 @@ static bool eval_local_type_trait(Program &pgm,
     else if ( nm == "__is_enum" )           r = trait_is_enum(targs[0].dd);
     else if ( nm == "__is_same" )           r = targs[0].same_as(targs[1]);
     else if ( nm == "__is_base_of" )        r = trait_is_base_of(targs[0].dd, targs[1].dd);
+    else if ( nm == "__is_destructible" )
+    {
+	int s = trait_is_destructible(targs[0]);
+	if ( s < 0 )
+	    return false;   // undetermined -> not a constant-foldable trait here
+	r = s != 0;
+    }
     else if ( nm == "__is_assignable" )
     {
 	int s = trait_is_assignable(targs[0], targs[1]);
@@ -28590,6 +28863,17 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		// member can never be named `~...`, so this never shadows ordinary
 		// member access). The lhs object/pointer is already on exStack; consume
 		// `~ type-name ( )` and synthesize a void-valued TokenExplicitDtor.
+		// A CALL-RESULT receiver (`declval<T&>().~T()` — libstdc++'s
+		// whole is_destructible SFINAE) rides opStack, not exStack
+		// (calls are staged there, see the identifier arm's
+		// `opStack.push(tc)`): flush it down so the recognition below
+		// sees one receiver shape.
+		if ( (tb->id() == TokenID::tkDot || tb->id() == TokenID::tkDeRef)
+		  && exStack.empty() && !opStack.empty()
+		  && (opStack.top()->type() == TokenType::ttCallFunc
+		   || opStack.top()->type() == TokenType::ttCallMethod)
+		  && peekToken() && peekToken()->id() == TokenID::tkBnot )
+		    popOperator(opStack, exStack);
 		if ( (tb->id() == TokenID::tkDot || tb->id() == TokenID::tkDeRef)
 		  && !exStack.empty()
 		  && peekToken() && peekToken()->id() == TokenID::tkBnot )
@@ -28643,6 +28927,28 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    ? named->name : named->canonical_cpp_spelling())
 				<< "'" << flush;
 		    }
+		    // A DELETED destructor — its own `= delete`, or implicitly
+		    // deleted through a base/member — makes the call ill-formed
+		    // in EVERY context ([dcl.fct.def.delete]); inside a SFINAE
+		    // decltype this Throw IS the substitution failure that
+		    // makes is_destructible<X> false through libstdc++'s
+		    // declval chain. Access is deliberately NOT checked here
+		    // (a private destructor is callable from the class's own
+		    // members; the trait models the external answer itself).
+		    if ( vri_debug_enabled() )
+			fprintf(stderr, "[vriprobe] expl-dtor dcls=%s dep=%d surf=%d walk=%d\n",
+				dcls ? dcls->name.c_str() : "(null)",
+				dcls ? (int)dcls->is_dependent_placeholder : -1,
+				dcls ? (int)dcls->has_dependent_surface : -1,
+				dcls ? trait_class_destructible(dcls, 0, false) : -9);
+		    if ( dcls && !dcls->is_dependent_placeholder
+		      && !dcls->has_dependent_surface
+		      && trait_class_destructible(dcls, 0, false) == 0 )
+			Throw(tyt ? tyt : tb)
+			    << "use of deleted destructor '~"
+			    << (dcls->canonical_cpp_spelling().empty()
+				? dcls->name : dcls->canonical_cpp_spelling())
+			    << "()'" << flush;
 		    TokenBase *opbrk = nextToken();
 		    if ( !opbrk || opbrk->id() != TokenID::tkOpBrk )
 			Throw(opbrk ? opbrk : tb) << "Expected '(' in explicit destructor call" << flush;
@@ -36070,6 +36376,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			constructor_source_name);
 		pgm.last_skipped_template_decl.clear();
 		pgm.last_skipped_template_typeparams.clear();
+		pgm.last_skipped_template_typeparam_defaults.clear();
 	    }
 	    pgm.note_class_decl(Program::ClassDeclKind::MemberTemplate);
 	    continue;
@@ -36237,6 +36544,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    pgm.register_class_method_signature(ddc, mvar, spec);
 		    registered_dtor = true;
 		}
+		else if ( dfd->is_deleted )
+		    // A dropped `~X() = delete` still decides destructibility
+		    // (the same recording rule as the dropped special ctors).
+		    ddc->has_deleted_dtor = true;
 	    }
 	    // Virtual destructor: register the Itanium D1/D0 slot pair at the
 	    // destructor's declaration position. Markers are class-name-INDEPENDENT
@@ -43321,6 +43632,18 @@ DataDef *Program::resolve_template_param_default_type(
     tokens = saved_tokens;
     if ( !resolved )
     {
+	if ( vri_debug_enabled() )
+	{
+	    fprintf(stderr, "[vriprobe] deftype MISS: %s (%s:%d) toks[%zu]:",
+		    last_error.message.c_str(), last_error.file.c_str(),
+		    last_error.line, default_tokens.size());
+	    for ( size_t di = 0; di < default_tokens.size() && di < 16; ++di )
+		fprintf(stderr, " %s",
+			default_tokens[di]
+			? template_token_fragment(default_tokens[di]).c_str()
+			: "(null)");
+	    fprintf(stderr, "\n");
+	}
 	diagnostics.resize(saved_diag_count);
 	last_error = saved_error;
 	return NULL;
@@ -46732,6 +47055,14 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	    }
 	if ( kind_mismatch || (binding.empty() && pack_elems.empty()) )
 	    continue;
+	// NOTE ([temp.deduct]/8, defaulted params): this lane does NOT resolve
+	// an unbound defaulted param's default. Its callers pass EXPLICIT args
+	// only, and a defaulted param here may still be DEDUCED from the call
+	// arguments at full instantiation — resolving the default early served
+	// the wrong type to c++20's iterator_traits chains (stl_iterator.h:141).
+	// The member-template twin (resolve_member_template_call_return_type)
+	// DOES enforce defaults: its __test-style callers are all-explicit by
+	// construction. A deduction-aware version for this lane is filed.
 	// A return type that references a template parameter NOT bound by the
 	// explicit arguments cannot be resolved from explicit args alone — it
 	// depends on a parameter that must be DEDUCED from the call arguments.
@@ -46934,7 +47265,8 @@ DataDef *Program::resolve_decltype_call_return(
 static void stamp_member_template_pattern(
 	DataDefCLASS *owner, FuncDef *fd, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
-	const std::vector<bool> &typeparam_is_pack, const std::string &name)
+	const std::vector<bool> &typeparam_is_pack, const std::string &name,
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults)
 {
     if ( !fd )
 	return;
@@ -46945,6 +47277,21 @@ static void stamp_member_template_pattern(
     // skipped-template parse's global, the flush the record's pack bits).
     if ( typeparam_is_pack.size() == typeparams.size() )
 	fd->template_param_is_pack = typeparam_is_pack;
+    // Preserve per-param DEFAULT token runs (same parallel-vector contract):
+    // [temp.deduct]/8 — an unbound defaulted param must substitute-and-resolve
+    // at the call (resolve_member_template_call_return_type), or the candidate
+    // is not viable. Cloned: the source runs belong to the skipped-parse
+    // globals / the pattern record, whose lifetimes are not the FuncDef's.
+    fd->member_template_param_defaults.clear();
+    if ( typeparam_defaults.size() == typeparams.size() )
+	for ( size_t i = 0; i < typeparam_defaults.size(); ++i )
+	{
+	    fd->member_template_param_defaults.push_back(
+		std::vector<TokenBase *>());
+	    for ( TokenBase *t : typeparam_defaults[i] )
+		fd->member_template_param_defaults.back().push_back(
+		    t ? t->clone() : NULL);
+	}
     std::string ret_spelling;
     std::vector<std::string> param_spellings;
     size_t name_idx = skipped_template_function_declarator_name_index(tokens,
@@ -47078,7 +47425,8 @@ static void register_skipped_class_template_function(
 	fd->declaration_only = true;
 	stamp_member_template_pattern(owner, fd, tokens, typeparams,
 				      pgm.last_skipped_template_typeparam_is_pack,
-				      name);
+				      name,
+				      pgm.last_skipped_template_typeparam_defaults);
     }
 #if MADC_DEBUG_FNTPL
     {
@@ -47663,6 +48011,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		  << ":" << TokenBase::_parse_line << std::endl);
     pgm.last_skipped_template_decl.clear();
     pgm.last_skipped_template_typeparams.clear();
+    pgm.last_skipped_template_typeparam_defaults.clear();
 
     TokenBase *tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkLT )
@@ -48008,6 +48357,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.last_skipped_template_decl = skipped_decl;
 	pgm.last_skipped_template_typeparams = typeparams;
 	pgm.last_skipped_template_typeparam_is_pack = typeparam_is_pack;
+	pgm.last_skipped_template_typeparam_defaults = typeparam_defaults;
 	// Out-of-line NESTED-CLASS definition: capture keyed by the owner
 	// template; instantiate with each monomorphization of the owner
 	// (including any already recorded — the replay mirrors the member-def
