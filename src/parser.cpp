@@ -37457,20 +37457,20 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			  && cmember_dd->is_integer() && !cmember_dd->is_pointer() )
 			    fprintf(stderr, "[statconst] %s::%s CAPTURE-FAIL\n",
 				    ddc->name.c_str(), mname.c_str());
-			    // Explicit paren/square/brace, NOT d.top(): this scan
-			    // never tracked angle brackets, and top() also demands
-			    // angle == 0 — `a < b;` would open one and swallow the ';'.
-			    DelimDepth d;
-			    while ( (tn = pgm.nextToken()) )
-			    {
-				if ( tn->id() == TokenID::tkSemi
-				  && d.paren == 0 && d.square == 0
-				  && d.brace == 0 )
-				    break;
-				d.update(tn);
-			    }
-		    if ( !tn )
-			pgm.Throw(this) << "Unexpected end of input in static member initializer" << flush;
+			// Explicit paren/square/brace, NOT d.top(): this scan
+			// never tracked angle brackets, and top() also demands
+			// angle == 0 — `a < b;` would open one and swallow the ';'.
+			DelimDepth d;
+			while ( (tn = pgm.nextToken()) )
+			{
+			    if ( tn->id() == TokenID::tkSemi
+			      && d.paren == 0 && d.square == 0
+			      && d.brace == 0 )
+				break;
+			    d.update(tn);
+			}
+			if ( !tn )
+			    pgm.Throw(this) << "Unexpected end of input in static member initializer" << flush;
 		    }
 		}
 		else
@@ -37801,6 +37801,47 @@ TokenBase *TokenRETURN::parse(Program &pgm)
     // return with no value
     if ( tn->id() == TokenID::tkSemi )
 	return this;
+
+    // A BRACED-INIT-LIST return ([stmt.return]/2: the return object is
+    // copy-list-initialized from the list) — `return {a, b};`, libc++'s
+    // __allocate_at_least returning `{__alloc.allocate(__n), __n}`. Without
+    // this the `{` fell straight into parseExpression, which read `a`, and the
+    // [expr.comma] loop below then chained `a , b` — a COMMA expression whose
+    // value is `b`, silently discarding the aggregate (c2mir: "incompatible
+    // return-expr type in function returning a struct/union").
+    //
+    // Reuse, do not re-implement: the brace reader that builds a TokenStructLit
+    // against a target type already exists on the compound-literal path
+    // (`(T){...}` in parseExpression). Re-spell the stream as that form —
+    // `( T ) { ... }` — so the ONE reader runs. pushToken is push_front, so the
+    // pieces go on in reverse. Plain aggregates only: for a class type the list
+    // selects a CONSTRUCTOR, which the compound-literal reader does not model,
+    // so that shape keeps its current handling.
+    if ( tn->id() == TokenID::tkOpBrc )
+    {
+	TokenCpnd *rcode = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+	FuncDef *rfd = rcode && rcode->method
+		     ? dynamic_cast<FuncDef *>(rcode->method->returns.type) : NULL;
+	DataDef *rdd = rfd ? &rfd->return_value_type() : NULL;
+	DataDefSTRUCT *ragg = dynamic_cast<DataDefSTRUCT *>(rdd);
+	// `return {};` (an EMPTY list — value-initialization) is spelled with an
+	// explicit zero: C11 has no `(T){}`, and `(T){0}` is the C idiom that
+	// zero-initializes the whole object, which is what value-init means here.
+	bool empty_list = pgm.peekToken()
+		       && pgm.peekToken()->id() == TokenID::tkClBrc;
+	if ( ragg && !dynamic_cast<DataDefCLASS *>(rdd) && !rdd->is_complex() )
+	{
+	    // push_front, so these go on in REVERSE reading order: the
+	    // synthesized `0` must precede the `{` push to land after it.
+	    if ( empty_list )
+		pgm.pushToken(new TokenInt(0));
+	    pgm.pushToken(tn);				// '{' back on the stream
+	    pgm.pushToken(new TokenClBrk());
+	    pgm.pushToken(new TokenDataType(ragg->name.c_str(), *ragg));
+	    pgm.pushToken(new TokenOpBrk());
+	    tn = pgm.nextToken();			// now the synthetic '('
+	}
+    }
 
     // parse first return expression
     returns = pgm.parseExpression(tn);
