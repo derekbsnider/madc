@@ -125,6 +125,49 @@ static thread_local const std::vector<Program::HostCallbackReg> *cir_active_host
 // these madc-synthesized names.
 static thread_local const std::map<std::string, void *> *cir_active_dl_syms = NULL;
 
+// The ACTIVE stdlib flavor's C++ runtime, in the process's global symbol scope.
+//
+// A mangled-direct import names a symbol the selected stdlib really exports
+// (policy: mangled-direct only for real exports, HIDE_FROM_ABI compiles from
+// parsed headers). For the AOT lanes cir_native_link_env() turns the flavor's
+// link_libs into DT_NEEDED and the system loader supplies them. The JIT had no
+// equivalent: cir_import_resolver's dlsym(RTLD_DEFAULT) can only see what is
+// ALREADY loaded, which is whatever bin/madc itself was linked against. So a
+// -stdlib=libc++ compile resolved against libstdc++ and died on the first
+// symbol only libc++abi has — `std::bad_array_new_length::bad_array_new_length()`
+// (libstdc++ exports the dtors and what(), not the ctor), reached from libc++'s
+// inline __throw_bad_array_new_length() on <string>'s overflow path.
+//
+// dlopen with RTLD_GLOBAL is the JIT's DT_NEEDED. Purely ADDITIVE: the global
+// scope only gains libraries, so every symbol that resolved before still
+// resolves to the same address and the resolver itself is unchanged. When both
+// runtimes export a name (the std:: exception vocabulary, which is NOT inside
+// libc++'s __1 ABI namespace) the already-loaded one still wins — those are the
+// Itanium-ABI-shared types both implement identically, so either is correct. If
+// that ever stops being true the fix is to prefer the flavor's handle here, not
+// to special-case a symbol.
+//
+// Idempotent and unconditional — the default flavor's libs are already loaded,
+// so those dlopens are refcount bumps. A flavor whose runtime cannot be opened
+// is a warning, not a fatal: the imports that need it fail by exact name at
+// link, which is a better diagnostic than a load error naming a whole library.
+static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
+{
+    static std::set<std::string> opened;
+    if (!flavor)
+	flavor = &madc_stdlib_flavors[0];
+    if (!flavor->link_libs)
+	return;
+    for (int i = 0; flavor->link_libs[i]; i++) {
+	const char *lib = flavor->link_libs[i];
+	if (!opened.insert(lib).second)
+	    continue;
+	if (!dlopen(lib, RTLD_LAZY | RTLD_GLOBAL))
+	    fprintf(stderr, "madc: warning: stdlib flavor %s runtime %s: %s\n",
+		    flavor->name ? flavor->name : "?", lib, dlerror());
+    }
+}
+
 static void *cir_import_resolver(const char *name)
 {
     if (cir_active_host_regs)
@@ -1007,6 +1050,13 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
     mc_lap("ledger pull");
     cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
     cir_active_dl_syms = prog ? &prog->dl_symbol_map : NULL;
+    // Object mode never reads import addresses (cir_object_import_resolver),
+    // so it needs no runtime loaded — its DT_NEEDED comes from
+    // cir_native_link_env. prog == NULL is the frozen lane, which recreates
+    // its recorded link environment in build_frozen and falls back to the
+    // default flavor here.
+    if (!madc_object_mode)
+	cir_open_stdlib_runtime(prog ? prog->active_stdlib_flavor() : NULL);
     if (cache_mod) {
 	// MIR_set_gen_interface is EAGER — it MIR_gen()s every loaded func at
 	// link, which for the 4290-func cache module costs ~0.8s per compile.
@@ -5381,6 +5431,12 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 
 	for (MIR_module_t m : modules)
 		MIR_load_module(ctx, m);
+	// Same link environment the single-TU JIT builds: the active flavor's
+	// C++ runtime must be loaded before imports are resolved. A project's
+	// TUs share one flavor (the manifest's stdlib_option), so any TU's
+	// Program answers for all of them.
+	if (!parsed.empty() && parsed[0].prog)
+		cir_open_stdlib_runtime(parsed[0].prog->active_stdlib_flavor());
 	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
 	if (madc_debug_info)
 		cir_register_source_debug(ctx);
