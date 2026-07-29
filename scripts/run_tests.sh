@@ -294,3 +294,12 @@ if [ $RUN_OBJ -eq 1 ]; then
 fi
 [ $FAIL -eq 0 ] || exit 1
 [ $TIMEOUTS -eq 0 ] || exit 1
+# The EXE and OBJ lanes gate the exit status too. They were PRINTED and then
+# ignored: `--obj` reported "OBJ: 3 passed, 1 failed" and exited 0, so
+# remote_build's stage summary said `tests obj rc=0` and a battery could be red
+# in either native lane while reporting `total rc=0`. Same false-green shape as
+# piping a suite through `tail` — the verdict came from a line nobody read
+# instead of the exit code. A lane that did not run has a 0 counter, so these
+# are unconditional.
+[ $EXE_FAIL -eq 0 ] || exit 1
+[ $OBJ_FAIL -eq 0 ] || exit 1
