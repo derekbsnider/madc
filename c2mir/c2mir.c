@@ -8403,7 +8403,20 @@ static void check_type (c2m_ctx_t c2m_ctx, struct type *type, int level, int fun
       } else if (signed_integer_type_p (cexpr->type) && cexpr->c.i_val < 0) {
         error (c2m_ctx, POS (size_node), "array size should be not negative");
       } else if (cexpr->c.i_val == 0) {
-        (c2m_options->pedantic_p ? error : warning) (c2m_ctx, POS (size_node), "zero array size");
+        /* A zero-length array is a documented GNU extension (the flexible-array
+           idiom predating C99's `[]`), and real system headers use it: libc++'s
+           <string> declares `char __padding_[sizeof(value_type) - 1]`, which is
+           `[0]` for char. Both reference compilers accept it SILENTLY by default
+           and warn only under -pedantic:
+             gcc -std=gnu11 -Wall -Wextra    : nothing
+             gcc -std=c11 -pedantic          : warning, ISO C forbids zero-size array
+             clang -std=gnu11 -Wall -Wextra  : nothing
+             clang -std=c11 -pedantic        : warning, zero size arrays are an extension
+           This was one notch stricter on BOTH arms (warning by default, error
+           under -pedantic), so every translation unit reaching such a header
+           printed a diagnostic neither canon does. */
+        if (c2m_options->pedantic_p)
+          warning (c2m_ctx, POS (size_node), "zero array size");
       }
     }
     check_type (c2m_ctx, el_type, level + 1, FALSE);
