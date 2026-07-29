@@ -31471,6 +31471,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	}
 	if ( done ) { break; /* prevent eating next token */ }
 	tb = peekToken();
+	// A sub-scan that mis-consumed to end-of-stream must be a LOUD error
+	// here, never a nil-deref (the pre-fix __recommend SIGSEGV shape).
+	if ( !tb )
+	    Throw(curToken()) << "unexpected end of input in expression" << flush;
 	// A pack-expansion ellipsis `...` (three consecutive dots) following a
 	// complete operand is the expansion marker, NOT a member access (a single
 	// `.`): `_Inherited(std::forward<_UElements>(__elements)...)`, `f(args...)`.
@@ -40509,25 +40513,15 @@ std::vector<DataDef *> Program::capture_call_template_args()
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
 	return out;
     nextToken(); // consume '<'
-    // Opaque-bail: consume the remainder of the list (depth already 1, as in
-    // skip_template_id_suffix after its '<') and report no captured args.
+    // Opaque-bail: rewind the list to a fresh '<' and let the ONE owner walk
+    // it (skip_template_id_suffix / DelimDepth). The hand-rolled ++depth this
+    // replaces counted `sizeof(value_type) < __alignment` as a nested open —
+    // a `<` after `)` is the less-than OPERATOR — and ran the token stream
+    // dry across the rest of the file (libc++ basic_string::__recommend).
+    // Reports no captured args.
     auto bail = [&]() -> std::vector<DataDef *> {
-	int depth = 1;
-	while ( depth > 0 && peekToken() )
-	{
-	    TokenBase *t = nextToken();
-	    if ( isOperatorIdStart(t) )
-	    {
-		parseOperatorId(t);
-		continue;
-	    }
-	    if ( t->id() == TokenID::tkLT )
-		++depth;
-	    else if ( t->id() == TokenID::tkGT )
-		--depth;
-	    else if ( t->id() == TokenID::tkBSR )
-		depth = depth > 1 ? depth - 2 : 0;
-	}
+	pushToken(new TokenLT());
+	skip_template_id_suffix();
 	return std::vector<DataDef *>();
     };
     for (;;)
@@ -40549,14 +40543,32 @@ std::vector<DataDef *> Program::capture_call_template_args()
 	    dd = &adt->definition;
 	else
 	{
-	    // NON-TYPE template argument (`addN<5>`, `get<0>`): not a type, so fold
-	    // it to an integer constant and carry the value as a DataDef whose NAME
-	    // is the decimal spelling. The fn-template binding/substitution path
-	    // detects non-type-ness via the template's typeparam_is_type and emits a
-	    // TokenInt for it. Single-token literal/foldable arg only (a multi-token
-	    // non-type expression remains an opaque bail — future extension).
+	    // NON-TYPE template argument (`addN<5>`, `get<0>`, or a constant
+	    // EXPRESSION — libc++ basic_string::__recommend's
+	    // `__align_it < sizeof(value_type) < __alignment ? ... : 1 >`):
+	    // collect the argument's balanced token run up to the top-level
+	    // `,` / list close (DelimDepth owns the "`<` after `)` is
+	    // less-than" rule), fold it to an integer constant, and carry the
+	    // value as a DataDef whose NAME is the decimal spelling. The
+	    // fn-template binding/substitution path detects non-type-ness via
+	    // the template's typeparam_is_type and emits a TokenInt for it.
+	    std::vector<TokenBase *> ntoks;
+	    ntoks.push_back(at);
+	    DelimDepth d;
+	    d.update(at);
+	    while ( peekToken() )
+	    {
+		TokenBase *pk = peekToken();
+		if ( d.top()
+		  && (pk->id() == TokenID::tkComma
+		   || pk->id() == TokenID::tkGT
+		   || pk->id() == TokenID::tkBSR) )
+		    break;
+		TokenBase *t2 = nextToken();
+		ntoks.push_back(t2);
+		delimStepStream(t2, d, &ntoks);
+	    }
 	    int64_t ntv = 0;
-	    std::vector<TokenBase *> ntoks; ntoks.push_back(at);
 	    if ( !fold_nontype_arg_constant(ntoks, ntv) )
 		return bail();
 	    dd = new DataDef(std::to_string(ntv), 8, DataType::dtINT64);
