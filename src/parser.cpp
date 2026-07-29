@@ -33053,10 +33053,25 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			std::string tname = ((TokenIdent *)tn)->spelling();
 			flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
-			if ( tdmi == pgm.datatype_map.end() )
-			    pgm.Throw(tn) << "Expecting type in anonymous struct definition, got '" << tname << "'" << flush;
-			pgm.nextToken();
-			inner_type = (*tdmi);
+			if ( tdmi != pgm.datatype_map.end() )
+			{
+			    pgm.nextToken();
+			    inner_type = (*tdmi);
+			}
+			else
+			{
+			    // Same fall-through as the named-member arm above:
+			    // the one shared resolver handles ENCLOSING-class
+			    // aliases ([basic.scope.class] — libc++
+			    // basic_string's __rep wraps `__long`/`__short` in
+			    // an anonymous union whose members spell the
+			    // enclosing template's `size_type`), qualified
+			    // types, and template-ids. NULL still errors here.
+			    pgm.nextToken();
+			    inner_type = pgm.resolve_declared_type_token(tn, true, true);
+			    if ( !inner_type )
+				pgm.Throw(tn) << "Expecting type in anonymous struct definition, got '" << tname << "'" << flush;
+			}
 		    }
 		    else if ( tn->id() == TokenID::tkSTRUCT || tn->id() == TokenID::tkUNION )
 		    {

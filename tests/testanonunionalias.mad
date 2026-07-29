@@ -1,0 +1,28 @@
+// An anonymous union/struct member inside a class template may spell its
+// type via the ENCLOSING class's member typedef ([basic.scope.class]) —
+// including a dependent one (typename A::size_type). This is libc++
+// basic_string's layout shape: struct __rep { union { __long __l; ... }; }
+// where __long's and the union's members use the enclosing template's
+// size_type. The named-nested-struct arm already resolved through the one
+// shared resolver; the anonymous-aggregate arm only consulted the flat
+// datatype_map and rejected the spelling ("Expecting type in anonymous
+// struct definition, got 'size_type'").
+// Oracle: g++ 13 == clang++-18 print "8".
+#include <cstdio>
+struct Alloc { typedef unsigned long size_type; };
+template <class A>
+class W {
+public:
+  typedef typename A::size_type size_type;
+private:
+  struct L { size_type sz; };
+  struct R {
+    union {
+      L l;
+      size_type raw;
+    };
+  };
+public:
+  int probe() { return (int)sizeof(R); }
+};
+int main() { W<Alloc> w; printf("%d\n", w.probe()); return 0; }
