@@ -1,0 +1,29 @@
+// A member-template CONSTRUCTOR taking an empty-tag argument must bind the
+// instantiated concrete ctor, not the declaration-only placeholder. The
+// placeholder's fabricated int64 param TIED the real instance's exact struct
+// param at score 0 (plain structs fell out of the conversion-domain model),
+// and the placeholder, registered first, won the strict-greater tie-break —
+// an undefined ClassName__ClassName MIR import (libc++ __compressed_pair /
+// __default_init_tag shape). Oracle: g++ and clang++ print "10 400".
+#include <cstdio>
+
+struct tag {};
+
+template <class T> struct box {
+	long v;
+	template <class U> explicit box(U&& u) : v(sizeof(U) * 10) {}
+};
+
+struct pbox {
+	long v;
+	template <class U> explicit pbox(U u) : v(sizeof(U) * 100) {}
+};
+
+int main()
+{
+	tag t;
+	box<int> b(t);
+	pbox p(7);
+	printf("%ld %ld\n", b.v, p.v);
+	return 0;
+}

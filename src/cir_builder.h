@@ -1115,6 +1115,13 @@ public:
 	// generic overload scoring. NULL when no overload set is recorded.
 	class FuncDef *select_ctor_overload(DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args);
+	// select_ctor_overload + copy-time member-template ctor recovery: when
+	// selection misses (or lands on the declaration-only placeholder),
+	// instantiate the class's member-template ctor for THESE argument types
+	// (idempotent, memoized) and re-select. The placement-new lambda's dance,
+	// shared by every construction-emission site.
+	class FuncDef *select_or_instantiate_ctor(DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &ctor_args);
 	// Select the operator overload (operator= / operator+=) matching the RHS by
 	// generic argument scoring. Falls back to the first by-name match. NULL when
 	// the class has no such operator.

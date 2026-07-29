@@ -2554,28 +2554,10 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 	};
 	auto selected_placement_ctor = [&]() -> FuncDef * {
 		if (!placement_ctor_checked) {
-			placement_ctor = select_ctor_overload(
+			// select + copy-time member-template ctor recovery
+			// (see select_or_instantiate_ctor).
+			placement_ctor = select_or_instantiate_ctor(
 				concrete_class, placement_ctor_args());
-			// Copy-time ctor instantiation (slice-4b): under the
-			// body-parse skip, the eager parse that used to create the
-			// concrete ctor instance never ran, so the class's ctor list
-			// holds only the variadic member-template PLACEHOLDER — whose
-			// FuncDef has no pack formals, so every pack position scores
-			// pt=(null). Instantiate the ctor template for THESE
-			// substituted args (idempotent, memoized per class+arg types)
-			// and re-select, exactly as resolve_copied_dependent_call
-			// instantiates member-call callees at copy time.
-			if ((!placement_ctor
-			     || (placement_ctor->is_member_template
-				 && placement_ctor->declaration_only))
-			    && m_prog) {
-				m_prog->instantiate_member_ctor_template_for_construction(
-					concrete_class, placement_ctor_args());
-				FuncDef *inst = select_ctor_overload(
-					concrete_class, placement_ctor_args());
-				if (inst)
-					placement_ctor = inst;
-			}
 			if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG")) {
 				fprintf(stderr, "[RELOWER-SELECT] class=%s nctors=%zu nargs=%zu -> %s(%p)",
 					concrete_class->name.c_str(),
@@ -3925,6 +3907,21 @@ static const DataDefCLASS *as_user_class(const DataDef *dd)
 	if (dd->is_reference()) return NULL;
 	if (dd->rawtype() != DataType::dtRESERVED) return NULL;
 	return dynamic_cast<const DataDefCLASS *>(dd);
+}
+
+// A plain (non-class-promoted) struct/union VALUE type — its own conversion
+// domain like a class ([conv]: C has no implicit aggregate<->scalar
+// conversion, nor one between distinct aggregate types). Excludes _Complex
+// (DataDefCOMPLEX is layout-struct but converts like a scalar per GNU C) and
+// pointer/reference shapes (DataDefCONST forwards is_struct through them).
+static const DataDefSTRUCT *as_plain_struct(const DataDef *dd)
+{
+	dd = unqualified_type(dd);
+	if (!dd || dd->is_pointer() || dd->is_reference() || dd->is_complex())
+		return NULL;
+	if (dd->basetype() != BaseType::btStruct)
+		return NULL;
+	return dynamic_cast<const DataDefSTRUCT *>(dd);
 }
 
 static const DataDefENUM *as_enum_type(const DataDef *dd)
@@ -10491,6 +10488,23 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	// above); there is no implicit object->scalar/pointer conversion here.
 	if (adc->is_object())
 		return -1;
+	// A plain (non-class-promoted) struct is its own conversion domain the
+	// same way: identity binds exactly, nothing else does. Both sides
+	// falling through to the trailing neutral 0 let an empty-tag argument
+	// (libc++'s __default_init_tag shape) TIE a member-template placeholder
+	// ctor's fabricated int64 param against the real instantiated ctor's
+	// exact struct param — and the placeholder, registered first, won the
+	// strict-greater tie-break (undefined ClassName__ClassName import at
+	// MIR link).
+	{
+		const DataDefSTRUCT *a_st = as_plain_struct(adc);
+		const DataDefSTRUCT *p_st = as_plain_struct(pdc);
+		if (a_st || p_st) {
+			if (a_st && p_st)
+				return a_st == p_st ? 5 : -1;
+			return -1;
+		}
+	}
 	// Enums lower to integer storage in MC11-IR, but C++ overload
 	// resolution still treats a named enum as its own domain. Without this,
 	// `std::size_t` expressions can score as an exact match for
@@ -10787,6 +10801,28 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 	return best;
 }
 
+FuncDef *CirBuilder::select_or_instantiate_ctor(DataDefCLASS *cdd,
+					const std::vector<TokenBase *> &ctor_args)
+{
+	FuncDef *ctor = select_ctor_overload(cdd, ctor_args);
+	// Copy-time ctor instantiation (slice-4b): under the body-parse skip
+	// the eager parse that used to create the concrete ctor instance never
+	// ran, so the class's ctor list holds only the member-template
+	// PLACEHOLDER — fabricated params that arity-gate out (or score on
+	// garbage). Instantiate the ctor template for THESE substituted args
+	// (idempotent, memoized per class+arg types) and re-select, exactly as
+	// resolve_copied_dependent_call instantiates member-call callees at
+	// copy time.
+	if ((!ctor || (ctor->is_member_template && ctor->declaration_only))
+	    && m_prog) {
+		m_prog->instantiate_member_ctor_template_for_construction(
+			cdd, ctor_args);
+		if (FuncDef *inst = select_ctor_overload(cdd, ctor_args))
+			ctor = inst;
+	}
+	return ctor;
+}
+
 // A class with user constructors whose initializer matched none of them.
 // Previously this case returned NULL and every caller's `if (cc)` guard
 // silently dropped the construction — the object was left unconstructed and
@@ -11074,7 +11110,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		return node2(N_BLOCK, list(), blk, origin);
 	}
 
-	FuncDef *ctor = select_ctor_overload(cdd, ctor_args);
+	FuncDef *ctor = select_or_instantiate_ctor(cdd, ctor_args);
 	if (!ctor) {
 		node_t dst = node1(N_DEREF,
 			node2(N_CAST, class_ptr_type(cdd), this_addr, origin),
@@ -11365,7 +11401,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// Resolve the ctor: prefer the overload matching the initializer (the
 	// general path; a user class has one ctor so this is a no-op). Fall back
 	// to the single ctor keyed under the class name.
-	FuncDef *ctor = select_ctor_overload(cdd, ctor_args);
+	FuncDef *ctor = select_or_instantiate_ctor(cdd, ctor_args);
 	if (!ctor) {
 		// IMPLICIT COPY CONSTRUCTOR: `T c = <T value>` with no matching
 		// ctor (see try_implicit_copy_construct).
