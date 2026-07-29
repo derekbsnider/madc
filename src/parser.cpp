@@ -1727,6 +1727,10 @@ DataDef *Program::effective_pointer_type_for_member_access(TokenBase *tb)
     return NULL;
 }
 
+// The dot-path sibling of the pointer normalizer above: a reference-typed
+// head denotes its referent for member access. Defined later in this file.
+static DataDef *referent_if_reference(DataDef *dd);
+
 TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
 {
     // type()-gated, not dynamic_cast alone: TokenMember/TokenCallMethod
@@ -21373,6 +21377,12 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 				   || rp->base_type->is_object()) )
 				    obj_type = rp->base_type;
 			    }
+			// A head EXPRESSION of reference type — a cast to
+			// reference (`static_cast<_Base1&>(*this).__get()`,
+			// libc++ __compressed_pair's accessor shape) — denotes
+			// its referent ([expr.static.cast]p3): same owner the
+			// main dot arm uses for call/operator/subscript heads.
+			obj_type = referent_if_reference(obj_type);
 		    }
 		    if ( is_arrow )
 		    {
