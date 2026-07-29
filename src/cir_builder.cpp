@@ -16133,8 +16133,32 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// OBJECT ([expr.static.cast]p3 — static_cast<T&&>(x) IS
 			// x): emit the operand lvalue unchanged so `&` /
 			// ref-return lowerings still see an addressable object.
-			if (cast_dd && cast_dd->is_reference())
+			// EXCEPT a DERIVED-to-BASE reference cast
+			// (static_cast<_Base1&>(*this) — libc++
+			// __compressed_pair's accessors): that is a real
+			// base-subobject selection, the same conversion as a
+			// ref RETURN — address the operand, adjust through the
+			// one owner (static offset or vbase slot), deref back
+			// to the properly-typed base lvalue. Unadjusted, a
+			// secondary base read the wrong storage and the
+			// receiver `this` carried the derived type (the c2mir
+			// pointer-parameter warning).
+			if (cast_dd && cast_dd->is_reference()) {
+				DataDefCLASS *target = pointee_user_class(cast_dd);
+				DataDef *edd = tc->expr ? tc->expr->datadef() : NULL;
+				DataDefCLASS *source = as_user_class(edd);
+				if (!source && edd && edd->is_reference())
+					source = pointee_user_class(edd);
+				if (target && source && target != source
+				    && source->is_or_derives_from(target)) {
+					node_t addr = node1(N_ADDR,
+						translate_expr(tc->expr), tb);
+					node_t adj = upcast_class_ref_addr(
+						addr, target, tc->expr, tb);
+					return node1(N_DEREF, adj, tb);
+				}
 				return translate_expr(tc->expr);
+			}
 			// Integer-_Complex casts (struct spine): to a lowered
 			// target — componentwise conversion; from a lowered
 			// operand — real part (scalar) / promotion (native),
