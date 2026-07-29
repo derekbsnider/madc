@@ -1,0 +1,18 @@
+// A concrete-arg VARIADIC class template's static member read in a runtime
+// expression ([temp.inst]/2 — the read is a completeness demand, so the
+// template must really instantiate, not stay an opaque dependent shell):
+//   depF<int,char>::value  — plain concrete base
+//   depE<int>::value       — decltype base over a fn-template call
+// Both fell to "undeclared identifier" pre-fix (the postfix-chain arms
+// instantiated without allow_variadic_real_inst; the opaque shell is
+// memberless). Oracle: g++ 13 and clang++-18 print "1 2".
+#include <cstdio>
+struct tt { static const int value = 1; };
+struct t2 { static const int value = 2; };
+template<typename T> t2 fB(int);
+template<typename... Bn> struct depF : public tt { };
+template<typename... Bn> struct depE : decltype(fB<int>(0)) { };
+int main() {
+    printf("%d %d\n", (int)depF<int, char>::value, (int)depE<int>::value);
+    return 0;
+}

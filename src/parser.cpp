@@ -20119,7 +20119,17 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
     if ( peekToken() && peekToken()->id() == TokenID::tkLT
       && find_template(name) )
     {
-	if ( TokenDataType *inst = instantiate_template_id(name, head) )
+	// An expression reading `Tmpl<args>::member` is a COMPLETENESS demand
+	// (the member must exist to be read), so a concrete-arg VARIADIC
+	// template must really instantiate here — the opaque dependent shell
+	// is memberless and the read fell through to "undeclared identifier"
+	// (`orr<A,B>::value`, the __or_ trait shape). Same per-demand-site
+	// scoping as the statement-declaration site.
+	bool saved_vri = allow_variadic_real_inst;
+	allow_variadic_real_inst = true;
+	TokenDataType *inst = instantiate_template_id(name, head);
+	allow_variadic_real_inst = saved_vri;
+	if ( inst )
 	    if ( TokenBase *sval = resolve_template_id_static_member(*this, inst) )
 		return parsePostfixChainFrom(sval, postfix_expr_variable(sval));
     }
@@ -20163,8 +20173,16 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    if ( peekToken() && peekToken()->id() == TokenID::tkLT
 	      && template_declared_in_namespace(member, ns_name) )
 	    {
-		if ( TokenDataType *inst =
-			instantiate_template_id(member, member_tb, ns_name) )
+		// Same completeness demand as the unqualified arm above:
+		// `ns::Tmpl<args>::member` must really instantiate a
+		// concrete-arg variadic template (opaque shells are
+		// memberless).
+		bool saved_vri = allow_variadic_real_inst;
+		allow_variadic_real_inst = true;
+		TokenDataType *inst =
+			instantiate_template_id(member, member_tb, ns_name);
+		allow_variadic_real_inst = saved_vri;
+		if ( inst )
 		    if ( TokenBase *sval =
 			    resolve_template_id_static_member(*this, inst) )
 			return parsePostfixChainFrom(sval,
