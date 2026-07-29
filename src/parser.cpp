@@ -10875,7 +10875,18 @@ static int trait_class_constructible(DataDefCLASS *c,
 	// constructible even beside other user ctors ([class.default.ctor]:
 	// the suppression rule counts user-DECLARED ctors, and this one is
 	// the default ctor itself).
-	if ( fd->defaulted_or_deleted && !fd->is_deleted )
+	//
+	// It arrives here WITHOUT defaulted_or_deleted: madc parses `= default`
+	// on the default ctor as an empty body, so it is an ordinary nullary
+	// FuncDef by the time the trait sees it, carrying no noexcept spec.
+	// Reading that absent spec as "unknown" refused the whole trait
+	// (-1) for every such class — which is what `std::mutex` is. The class
+	// flag is the only thing distinguishing it from `X() {}`, whose
+	// noexcept madc genuinely cannot know.
+	bool is_defaulted_default = fd->defaulted_or_deleted
+	    ? !fd->is_deleted
+	    : (c->has_defaulted_default_ctor && fd->parameters.size() <= 1);
+	if ( is_defaulted_default )
 	{
 	    if ( args.empty() && fd->parameters.size() <= 1 )
 		defaulted_default = true;
@@ -51236,6 +51247,19 @@ paramdecl:
 	if ( explicitly_defaulted
 	  && defaulted_member_parses_empty(owner_class, id, func) )
 	{
+	    // Record that `= default` was WRITTEN, because rewriting it to `{}`
+	    // is exactly what makes it unrecoverable afterwards: from here on
+	    // nothing can tell this ctor from a user-written `X() {}`, and the
+	    // difference is load-bearing. [except.spec]p7 gives the defaulted
+	    // one the memberwise noexcept CONJUNCTION, while a user-written
+	    // ctor's spec is unknown to madc (the lexer erases conditional
+	    // `noexcept(expr)`), so __is_nothrow_constructible must refuse.
+	    // record_dropped_special_ctor owns this flag for every OTHER
+	    // defaulted member, but it keys on defaulted_or_deleted — which
+	    // this path deliberately leaves clear — so it never sees the one
+	    // ctor the flag is named after.
+	    if ( owner_class )
+		owner_class->has_defaulted_default_ctor = true;
 	    pushToken(new TokenClBrc());
 	    pushToken(new TokenOpBrc());
 	    nt = nextToken();
