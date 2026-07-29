@@ -2369,6 +2369,25 @@ static DataDef *resolve_class_type_alias(DataDefCLASS *cls, const std::string &n
     return NULL;
 }
 
+// Resolve an UNQUALIFIED type name through the enclosing class scopes, innermost
+// first. [basic.scope.class]/1 + [basic.lookup.unqual]: inside a member — its
+// return type, its body, AND its PARAMETER LIST, whether declared in-class or
+// defined out of line — a nested type of the class is nameable without
+// qualification. class_scope_stack exists for precisely this ("active C++ class
+// scopes for nested type lookup", madc.h). Class scopes WIN over the global
+// tables, which is why callers consult this before resolve_named_datadef.
+static DataDef *resolve_type_in_class_scopes(Program &pgm,
+					    const std::string &name)
+{
+    for ( std::vector<DataDefCLASS *>::reverse_iterator it =
+		pgm.class_scope_stack.rbegin();
+	  it != pgm.class_scope_stack.rend(); ++it )
+	if ( *it )
+	    if ( DataDef *dd = resolve_class_type_alias(*it, name) )
+		return dd;
+    return NULL;
+}
+
 // Public wrapper over the file-static class-scope member-type lookup —
 // consumed by the tsubst re-derivation of Owner__member dependent
 // placeholders (cir_builder rebuild_dependent_derived).
@@ -22398,6 +22417,41 @@ static std::string method_access_violation(DataDef *owner_type,
 				 display_name, cur_class, cur_function);
 }
 
+// A nested TYPE of `scope` named in EXPRESSION position and followed by a braced
+// or parenthesized initializer is a temporary CONSTRUCTION, not a member access:
+// `nullopt_t::__secret_tag{}` (libc++ <optional>:280) and
+// `ios_base::failure(__msg)` (libc++ <ios>:441, a nested class declared inside
+// ios_base and defined out of line).
+//
+// ONE owner, consulted from the two places the two spellings arrive:
+//   `(` looks like a call, so it enters the method arm first and reaches this
+//       only when the class has no method of that name;
+//   `{` never enters the method arm at all, so it reaches the call below it.
+// Both must defer to a real method of the same name, which is why neither call
+// site runs before the method lookup.
+//
+// Resolution uses the same alias walker the DECLARATION path uses and the same
+// functional-cast machinery the namespace-qualified arm uses — this is their
+// expression twin, not a third implementation. parse_functional_type_expression
+// is itself gated on `{`/`(`, so a bare type-id still falls through.
+static bool try_nested_type_construction(Program &pgm, DataDefCLASS *scope,
+					 const std::string &member_name,
+					 TokenBase *member_tb,
+					 std::stack<TokenBase *> &exStack,
+					 TokenBase **tb_out)
+{
+    DataDef *nested_dd = resolve_class_type_alias(scope, member_name);
+    if ( !nested_dd )
+	return false;
+    TokenBase *ctor_expr = pgm.parse_functional_type_expression(member_tb,
+								nested_dd);
+    if ( !ctor_expr )
+	return false;
+    exStack.push(ctor_expr);
+    *tb_out = member_tb;
+    return true;
+}
+
 static QualifiedClassExprAction resolve_class_qualified_expression(
 	Program &pgm, DataDefCLASS *scope, const std::string &scope_name,
 	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
@@ -22495,6 +22549,17 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 		    *tb_out = end;
 		    return QualifiedClassExprAction::PushedExpression;
 		}
+		// No method by that name, but the name may be a nested TYPE, in
+		// which case `Scope::Name(args)` is a temporary CONSTRUCTION and
+		// not a call at all. The arm that owns that (just below) is
+		// deliberately placed AFTER this one so a real method wins the
+		// name — but this arm THREW, so it never got the chance.
+		// libc++ <ios>:441 is exactly this: `throw ios_base::failure(__msg)`
+		// where `failure` is a nested class of ios_base, declared inside it
+		// and defined out of line.
+		if ( try_nested_type_construction(pgm, scope, member_name,
+						 member_tb, exStack, tb_out) )
+		    return QualifiedClassExprAction::PushedExpression;
 		pgm.Throw(member_tb) << "'" << member_name
 				     << "' is not a member function of '"
 				     << scope->name << "'" << flush;
@@ -22535,24 +22600,15 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	}
 
 	// Nested TYPE of the class in EXPRESSION position followed by a braced
-	// or parenthesized initializer — a temporary construction
-	// (`nullopt_t::__secret_tag{}`, libc++ <optional>:280). The declaration
-	// path already resolves the nested type through the same alias walker;
-	// this is its expression twin, served by the same functional-cast
-	// machinery the namespace-qualified arm uses. Placed AFTER the method
-	// arm (`Class::method(args)` stays a call) and gated inside
-	// parse_functional_type_expression on `{`/`(`, so a bare type-id still
-	// falls through to the member arms below.
-	if ( DataDef *nested_dd = resolve_class_type_alias(scope, member_name) )
-	{
-	    if ( TokenBase *ctor_expr =
-		    pgm.parse_functional_type_expression(member_tb, nested_dd) )
-	    {
-		exStack.push(ctor_expr);
-		*tb_out = member_tb;
-		return QualifiedClassExprAction::PushedExpression;
-	    }
-	}
+	// or parenthesized initializer — a temporary construction. Reached for
+	// the BRACED spelling (`nullopt_t::__secret_tag{}`, libc++
+	// <optional>:280), which never enters the method arm above at all; the
+	// PARENTHESIZED spelling reaches the same owner from that arm's
+	// no-such-method path. Placed AFTER the method arm so
+	// `Class::method(args)` keeps the name.
+	if ( try_nested_type_construction(pgm, scope, member_name, member_tb,
+					 exStack, tb_out) )
+	    return QualifiedClassExprAction::PushedExpression;
 
 	// Static data member: the shared resolver owns the constant-vs-storage
 	// choice. That choice used to be made here and only for CLASS-typed
@@ -48251,6 +48307,15 @@ DataDef *Program::resolve_param_type_from_tokens(const std::vector<TokenBase *> 
 	}
     }
 
+    // An UNQUALIFIED name here may be a nested type of the enclosing class —
+    // this probe reads a member's parameter list, and resolve_named_datadef
+    // consults only the global tables (struct_map / datatype_map / builtins /
+    // lazy). The main declaration path already resolves member aliases through
+    // class_scope_stack; this thinner probe did not, so `B::B(flags x)` with a
+    // nested `flags` produced NO signature at all.
+    if ( parts.size() == 1 )
+	if ( DataDef *scoped = resolve_type_in_class_scopes(*this, parts.back()) )
+	    return scoped;
     return resolve_named_datadef(parts.back());
 }
 
@@ -48356,8 +48421,22 @@ Variable *Program::find_constructor_for_upcoming_params(DataDefCLASS *owner)
 {
     if ( !owner )
 	return NULL;
+    // [basic.scope.class]/1: the parameter list of an OUT-OF-LINE member
+    // definition is in the class's scope, so a parameter may name a nested
+    // type of the class — `B::B(flags x)` where `flags` is `B::flags`.
+    // Without the scope pushed, resolve_param_type_from_tokens cannot resolve
+    // `flags`, upcoming_param_signatures bails, and `sigs` comes back EMPTY —
+    // so the arity test below (parameters.size() != sigs.size() + 1) rejects
+    // the real ctor, no arity_match is recorded, and the definition registers
+    // under a FRESH symbol. The declared ctor then stays an undefined import:
+    // `undefined MIR import: B__B`, no diagnostic, only a link failure.
+    // The out-of-line METHOD path already resolves its parameters in class
+    // scope, which is why only constructors were affected.
+    class_scope_stack.push_back(owner);
     std::vector<ParsedParamSig> sigs;
     bool have_sigs = upcoming_param_signatures(sigs);
+    if ( !class_scope_stack.empty() && class_scope_stack.back() == owner )
+	class_scope_stack.pop_back();
     Variable *arity_match = NULL;
     for ( size_t i = 0; i < owner->ctors.size(); ++i )
     {
@@ -54596,6 +54675,37 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 						return parseDeclaration(member);
 				    resetPrevToken();
 				    return parseExprStmt(tb);
+				}
+				// FILE SCOPE: `Class::NestedType Class::member(...)`
+				// — the LEADING qualified-id is the RETURN TYPE,
+				// not the declarator. Probe it as a member type
+				// with the same owner the in-body branch above
+				// uses; without this the special-member parser
+				// below, which knows only ctor/dtor names,
+				// diagnoses it as a missing return type. libc++
+				// <ios>:455 is exactly this shape:
+				//   inline ios_base::fmtflags ios_base::flags() const
+				// An unqualified return type (`int Class::m()`)
+				// already worked — this is the qualified twin.
+				{
+				    TokenStream::Pos qsaved = tokens.savepos();
+				    DataDefCLASS *qowner =
+					dynamic_cast<DataDefCLASS *>(
+					    &(*dmi)->definition);
+				    TokenDataType *qmember = qowner
+					? resolve_class_member_type_chain(qowner, tb)
+					: NULL;
+				    // A CTOR/DTOR spelling resolves as a type too
+				    // (`X::X` names X — the injected class name),
+				    // so it must not be captured here. A return
+				    // type is followed by a DECLARATOR; a ctor
+				    // name is followed by '('. The probe consumes
+				    // on success, hence the rewind.
+				    if ( qmember && peekToken()
+				      && peekToken()->id() != TokenID::tkOpBrk )
+					return parseDeclaration(qmember);
+				    if ( qmember )
+					tokens = qsaved;
 				}
 				if ( parse_qualified_special_member_definition(tb) )
 				    return NULL;

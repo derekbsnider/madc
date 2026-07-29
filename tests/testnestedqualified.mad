@@ -1,0 +1,69 @@
+// Two ways a QUALIFIED nested name is read wrong, both from libc++'s <ios>, plus
+// the controls that must not break.
+//
+// 1. `outer::nested(7)` — a nested TYPE named in expression position followed by
+//    `(` is a temporary CONSTRUCTION, not a member call. madc's qualified-member
+//    resolver saw `(`, looked for a method, and threw "'nested' is not a member
+//    function of 'outer'". The arm that owns nested-type construction sits just
+//    below the method arm (so a real method keeps the name) and never got the
+//    chance. libc++ <ios>:441: `throw ios_base::failure(__msg)`.
+//    The BRACED spelling already worked — it never enters the method arm — so
+//    both spellings are asserted here against the one shared owner.
+//
+// 2. `outer::flags outer::get() const` — an out-of-line member definition whose
+//    RETURN TYPE is a nested type qualified by the same class. At file scope the
+//    leading qualified-id was handed to the special-member parser, which knows
+//    only ctor/dtor names, so it reported "Qualified member definition requires a
+//    return type". libc++ <ios>:455:
+//    `inline ios_base::fmtflags ios_base::flags() const`.
+//
+// CONTROLS, both load-bearing:
+//  * `int outer::plain() const` — an UNQUALIFIED return type with a qualified
+//    declarator already worked; it must still.
+//  * `outer::outer(flags)` — an out-of-line CTOR definition. `outer::outer` also
+//    names a type (the injected class name), so the fix for (2) must not capture
+//    it. A return type is followed by a declarator; a ctor name by `(`.
+//
+// 3. That ctor's parameter is the NESTED TYPEDEF on purpose. [basic.scope.class]/1
+//    puts an out-of-line member definition's parameter list in the class's scope,
+//    but the constructor path probed the upcoming parameter types WITHOUT it, so
+//    `flags` did not resolve, the signature probe bailed, the arity test rejected
+//    the declared ctor, and the definition registered under a fresh symbol —
+//    leaving `undefined MIR import: B__B`, a link failure with no diagnostic.
+//    The out-of-line METHOD path already resolved parameters in class scope
+//    (`outer::flags outer::twice(flags n)` worked), which is why only ctors were
+//    hit.
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	7 9 5 10 3
+#include <cstdio>
+
+struct outer
+{
+	typedef int flags;
+	struct nested { int v; explicit nested(int x) : v(x) { } };
+
+	flags v;
+	outer(flags x);			// defined out of line, below
+	flags get() const;		// qualified return type, out of line
+	int plain() const;		// unqualified return type, out of line
+};
+
+outer::outer(flags x) : v(x) { }
+inline outer::flags outer::get() const { return v; }
+inline int outer::plain() const { return v * 2; }
+
+static int take(const outer::nested &n) { return n.v; }
+
+int main()
+{
+	outer o(5);
+
+	printf("%d %d %d %d %d\n",
+	       take(outer::nested(7)),		// paren construction
+	       take(outer::nested{9}),		// braced construction (was OK)
+	       o.get(),				// qualified return type
+	       o.plain(),			// unqualified control
+	       outer::nested(3).v);		// construction, then member read
+	return 0;
+}
