@@ -15,6 +15,8 @@
 #   fulltest  make -C src fulltest
 #   exe       bash scripts/run_tests.sh --exe
 #   obj       bash scripts/run_tests.sh --obj  (single-object loader lane)
+#   libcxx    the whole suite under -stdlib=libc++, JIT + exe + obj (the
+#             stdlib-flavor PARITY lane; .libcxx_skip marks out-of-scope tests)
 #   release   make -C src release
 #   packed    MADC_BIN=bin/madc-release bash scripts/run_tests.sh
 #   pull      rsync container-built bin/madc (+ madc-release) back to
@@ -194,6 +196,16 @@ for stage in $stages; do
 		;;
 	obj)
 		run_remote "obj" "cd /workspace/madc; bash scripts/run_tests.sh --obj"
+		;;
+	libcxx)
+		# The PARITY lane: the whole suite under the alternate stdlib
+		# flavor, in all three execution lanes. This is how "libc++
+		# behaves like the default flavor" is MEASURED — a flavor-specific
+		# fixture proves only that one fixture works. Out-of-scope tests
+		# carry tests/<base>.libcxx_skip with a reason.
+		run_remote "libcxx jit" "cd /workspace/madc; bash scripts/run_tests.sh --stdlib=libc++"
+		run_remote "libcxx exe" "cd /workspace/madc; bash scripts/run_tests.sh --stdlib=libc++ --exe"
+		run_remote "libcxx obj" "cd /workspace/madc; bash scripts/run_tests.sh --stdlib=libc++ --obj"
 		;;
 	release)
 		run_remote "release" "make -C /workspace/madc/src -j20 release"

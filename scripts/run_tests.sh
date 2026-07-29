@@ -29,27 +29,54 @@
 #           the in-process loader (`madc foo.o` — the precompiled-cache
 #           lane). Failures are reported as "FAIL(obj): ..." separately.
 #
+#   --stdlib=NAME
+#           Run the whole suite against a NON-DEFAULT C++ standard library
+#           flavor (`--stdlib=libc++`). This is the parity lane: the measure of
+#           whether a flavor behaves like the default one is the same suite
+#           passing under it, not a handful of flavor-specific fixtures. A test
+#           that is structurally out of scope for the flavor carries
+#           tests/<base>.<flavor>_skip (`+` written as `x`, so libc++ ->
+#           .libcxx_skip) with one line saying why. The summary is labelled so a
+#           flavored run can never be quoted as the default-lane baseline.
+#
 # MADC_BIN (env): the madc binary to test (default bin/madc). Generic
 # runner capability — lets the suite run against e.g. a forest-packed
 # copy (tmp/madc_packed) without touching the tree's binary.
 RUN_EXE=0
 RUN_OBJ=0
 BACKEND_FLAG=""
-# Hermeticity (forest-carriers S6): the suite must not be perturbed by an
-# ambient madc.ini — one in the repo root, in the developer's config dir, or
-# installed in the system config dir would silently change every test's dialect
-# or include path. Passed to EVERY madc invocation below, including the AOT
-# compile legs (which deliberately do not take $BACKEND_FLAG).
+# Flags passed to EVERY madc invocation below, including the AOT compile legs
+# (which deliberately do not take $BACKEND_FLAG).
+#
+# --no-config is hermeticity (forest-carriers S6): the suite must not be
+# perturbed by an ambient madc.ini — one in the repo root, in the developer's
+# config dir, or installed in the system config dir would silently change every
+# test's dialect or include path.
+#
+# --stdlib=NAME appends the FLAVORED-LANE flag here, which is why every leg of
+# every pass picks it up without touching a single invocation line.
 HERMETIC_FLAGS="--no-config"
+STDLIB_NAME=""
+STDLIB_SKIP_EXT=""
 MADC="${MADC_BIN:-bin/madc}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --exe) RUN_EXE=1; shift ;;
         --obj) RUN_OBJ=1; shift ;;
         --backend=*) BACKEND_FLAG="$1"; shift ;;
+        --stdlib=*) STDLIB_NAME="${1#--stdlib=}"; shift ;;
         *) break ;;
     esac
 done
+if [ -n "$STDLIB_NAME" ]; then
+    HERMETIC_FLAGS="$HERMETIC_FLAGS -stdlib=$STDLIB_NAME"
+    # Per-flavor skip fixture, discovered by CONVENTION like every other
+    # fixture: the flavor's own spelling with `+` written as `x`, matching how
+    # this tree already names its flavored tests (tests/testcommontype_libcxx.mad
+    # for -stdlib=libc++). So `libc++` -> tests/<base>.libcxx_skip. A mechanical
+    # transform, not a per-flavor table — a third flavor needs no runner change.
+    STDLIB_SKIP_EXT=$(printf '%s' "$STDLIB_NAME" | tr '+' 'x')
+fi
 
 # Remaining positional arguments are basename GLOBS selecting a SUBSET of the
 # suite: `run_tests.sh 'testmadceval*' testevalexterncapture`. No test name is
@@ -71,6 +98,7 @@ EXE_FAIL=0
 OBJ_PASS=0
 OBJ_FAIL=0
 SELECTED=0
+STDLIB_SKIPPED=0
 for t in tests/*.mad; do
     base=$(basename "$t" .mad)
     [ "$base" = "include_helper" ] && continue
@@ -95,6 +123,15 @@ for t in tests/*.mad; do
     # Skip tests marked as not transpilable (MIR is the default backend)
     if [ -f "$mir_skip_file" ]; then
         SKIP=$((SKIP+1))
+        continue
+    fi
+
+    # Flavored lane: a test structurally out of scope for THIS stdlib flavor
+    # (content = one line saying why). Only consulted when --stdlib= selected a
+    # flavor, so the default lane is untouched.
+    if [ -n "$STDLIB_SKIP_EXT" ] && [ -f "tests/$base.$STDLIB_SKIP_EXT""_skip" ]; then
+        SKIP=$((SKIP+1))
+        STDLIB_SKIPPED=$((STDLIB_SKIPPED+1))
         continue
     fi
 
@@ -284,6 +321,11 @@ if [ -n "$TEST_GLOBS" ]; then
     # only "N passed" is indistinguishable from the suite at a glance,
     # and that is exactly how a partial run gets quoted as a baseline.
     echo "SUBSET RUN — filter: $TEST_GLOBS ($SELECTED of $(ls tests/*.mad | wc -l) tests; NOT a suite baseline)"
+fi
+if [ -n "$STDLIB_NAME" ]; then
+    # Never let a FLAVORED run read as the default-lane baseline. The two lanes
+    # measure different libraries and legitimately have different skip sets.
+    echo "FLAVORED RUN — -stdlib=$STDLIB_NAME ($STDLIB_SKIPPED test(s) carry a .${STDLIB_SKIP_EXT}_skip); NOT the default-lane baseline"
 fi
 echo "$PASS passed, $FAIL failed, $TIMEOUTS timed out, $SKIP skipped"
 if [ $RUN_EXE -eq 1 ]; then
