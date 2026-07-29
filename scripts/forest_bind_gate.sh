@@ -895,6 +895,41 @@ fi
 rm -f "$io_snap" "$io_src" "$io_gcc" "$io_vlog"
 echo "forest_bind_gate: [iobind] OK — <iostream> bound (polymorphic classes + extern-ref cout + mangled-direct endl), output == live == g++"
 
+# --- case: traitfold — a trait-call NTTP base must NOT constant-fold at
+#     CAPTURE time. The freeze's pattern-capture parse of gcc13's
+#     `is_assignable : __bool_constant<__is_assignable(_Tp,_Up)>` folded the
+#     trait with UNBOUND params to 0 and froze false_type as the pattern's
+#     base — every bound is_assignable<To,From> then read ::value == 0
+#     regardless of its args (testtraitassign, packed leg). The local trait
+#     fold now REFUSES dependent args (read_local_type_arg), deferring to
+#     instantiation. Negative control: the packed battery failed exactly this
+#     shape before the refusal guard landed.
+cat > tmp/fbgate_traitfold.h <<'EOF'
+#ifndef FBGATE_TRAITFOLD_H
+#define FBGATE_TRAITFOLD_H
+template<bool __v> struct fbg_bool_constant { static const bool value = __v; };
+template<typename _Tp, typename _Up>
+struct fbg_is_assignable
+    : public fbg_bool_constant<__is_assignable(_Tp, _Up)> { };
+#endif
+EOF
+cat > tmp/fbgate_traitfold_producer.cpp <<'EOF'
+#include <fbgate_traitfold.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_traitfold_consumer.cpp <<'EOF'
+#include <fbgate_traitfold.h>
+#include <cstdio>
+int main() {
+    printf("%d %d %d\n",
+	   (int)fbg_is_assignable<int&, int&&>::value,
+	   (int)fbg_is_assignable<int, int>::value,
+	   (int)fbg_is_assignable<int&, int&>::value);
+    return 0;
+}
+EOF
+run_case traitfold "1 0 1"
+
 # --- case: subbind (THE OWNER'S BAR: a REAL integration test on the forest) ---
 # tests/testsubscript.mad (string/array subscripting, <string> + <map> whole)
 # freeze+bind == live == its .expect fixture. The last family that flipped it:
@@ -929,5 +964,5 @@ fi
 rm -f "$sub_snap" "$sub_vlog"
 echo "forest_bind_gate: [subbind] OK — OWNER'S BAR: tests/testsubscript.mad freeze+bind == live == .expect (default arguments restored)"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + subbind grove headers bound (no re-parse), output == live == g++"
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind grove headers bound (no re-parse), output == live == g++"
 exit 0

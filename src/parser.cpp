@@ -10892,6 +10892,14 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	else if ( peekToken() && peekToken()->id() == TokenID::tkLand )
 	{ nextToken(); a.is_rref = true; }
 	unwrap_baked_trait_arg(a);
+	// A DEPENDENT argument (an unbound template param `_Tp`, a dependent
+	// member-type placeholder) is unanswerable: any 0/1 answered here
+	// bakes a wrong constant into whatever context asked. Refuse — a
+	// speculative/SFINAE caller catches this like any other decline.
+	if ( datadef_has_unresolved_dependent_surface(a.dd) )
+	    Throw(op_tb) << name << "(...) on a dependent type argument ("
+			 << (a.dd ? a.dd->name : std::string("?"))
+			 << ") cannot fold" << flush;
 	args.push_back(a);
 	TokenBase *sep = nextToken();
 	if ( sep && sep->id() == TokenID::tkComma )
@@ -10932,6 +10940,15 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
     else if ( name == "__is_assignable" )
     {
 	int s = trait_is_assignable(args[0], args[1]);
+	if ( vri_debug_enabled() )
+	    fprintf(stderr, "[vriprobe] LIVE __is_assignable to=%s l%d r%d c%d "
+		    "from=%s l%d r%d c%d -> %d\n",
+		    args[0].dd ? args[0].dd->name.c_str() : "?",
+		    (int)args[0].is_lref, (int)args[0].is_rref,
+		    (int)args[0].referent_const,
+		    args[1].dd ? args[1].dd->name.c_str() : "?",
+		    (int)args[1].is_lref, (int)args[1].is_rref,
+		    (int)args[1].referent_const, s);
 	if ( s < 0 )
 	    Throw(op_tb) << "cannot faithfully evaluate __is_assignable(...) for "
 			 << "these operand types" << flush;
@@ -25653,6 +25670,14 @@ static bool read_local_type_arg(Program &pgm,
     else if ( i < toks.size() && toks[i] && toks[i]->id() == TokenID::tkLand )
     { out.is_rref = true; ++i; }
     unwrap_baked_trait_arg(out);
+    // A DEPENDENT argument is unanswerable here: the CAPTURE parse of
+    // gcc13's is_assignable folded `__is_assignable(_Tp, _Up)` with UNBOUND
+    // params to 0 and froze `__bool_constant<0>` (false_type) as the
+    // pattern's base — every packed-lane is_assignable<To,From> then read
+    // ::value == 0 regardless of its args (testtraitassign, packed leg).
+    // Refusing keeps the fold deferred to instantiation, where args are real.
+    if ( datadef_has_unresolved_dependent_surface(out.dd) )
+	return false;
     return true;
 }
 
@@ -25702,6 +25727,15 @@ static bool eval_local_type_trait(Program &pgm,
     else if ( nm == "__is_assignable" )
     {
 	int s = trait_is_assignable(targs[0], targs[1]);
+	if ( vri_debug_enabled() )
+	    fprintf(stderr, "[vriprobe] LOCAL __is_assignable to=%s l%d r%d c%d "
+		    "from=%s l%d r%d c%d -> %d\n",
+		    targs[0].dd ? targs[0].dd->name.c_str() : "?",
+		    (int)targs[0].is_lref, (int)targs[0].is_rref,
+		    (int)targs[0].referent_const,
+		    targs[1].dd ? targs[1].dd->name.c_str() : "?",
+		    (int)targs[1].is_lref, (int)targs[1].is_rref,
+		    (int)targs[1].referent_const, s);
 	if ( s < 0 )
 	    return false;   // undetermined -> not a constant-foldable trait here
 	r = s != 0;
