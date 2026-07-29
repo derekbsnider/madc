@@ -1015,6 +1015,41 @@ Consequence to state plainly in the docs: an **unpacked** madc on a
 no-CLT Mac cannot compile C++ and must say so loudly (name CLT/Xcode or
 `-isysroot`), never degrade silently.
 
+### P2.7 — the flavored parity lane, and the number it produced
+
+**Shipped 2026-07-29 (`45f64a6f`).** `scripts/run_tests.sh
+--stdlib=libc++` runs the whole corpus under the alternate flavor in any
+execution lane; `remote_build.sh libcxx` drives JIT + exe + obj.
+Mechanics worth keeping straight:
+
+- `--stdlib=NAME` is appended to `HERMETIC_FLAGS`, so all eight
+  invocation sites inherit it without a per-site edit.
+- Out-of-scope tests carry `tests/<base>.libcxx_skip` (the extension is
+  the flavor name with `+` → `x`, derived mechanically — no per-flavor
+  branch in the runner).
+- The lane prints `FLAVORED RUN — -stdlib=... ; NOT the default-lane
+  baseline` so its numbers can never be mistaken for the arbiter's.
+
+**Baseline at `45f64a6f` (JIT leg): 534 passed / 282 failed / 10
+skipped.** The decomposition is the actionable part: **257 of the 282
+include a stream header**, so `<iostream>` is ~91% of the entire gap and
+the other 25 are a mixed tail. This is the number the parity goal is
+measured against — a later run that moves it is progress, and a later
+run that does not has not advanced the goal no matter what else landed.
+
+The lane is deliberately **not** wired into `fulltest` yet. A gate whose
+baseline is 282 failures ratchets nothing; it goes in when the failures
+are classified — genuine gaps fixed, out-of-scope ones carrying a
+`.libcxx_skip` reason — so that the wired-in number is 0. That is the
+P2.7 finish line, not the lane's existence.
+
+Sampled causes in the 25-test non-stream tail, each still to be
+attributed: a HYBRID mangling (`_ZStplI…NSt3__1…` — a libstdc++ outer
+template name with libc++ inner ABI segments), an unresolved
+`__ns_std____1____math_isinf`, and two tests that fail on **output
+mismatch with no compile error** — that last class outranks the rest,
+being a silent wrong answer.
+
 ## Decided defaults (no owner question needed)
 
 - Header search is **target-derived and generated**, never a hardcoded
