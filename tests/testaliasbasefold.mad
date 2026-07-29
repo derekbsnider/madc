@@ -1,0 +1,18 @@
+// A static-const member initializer reading through a class-scope TYPEDEF
+// ALIAS to another class (`typedef impl<int> __base; static const bool v =
+// __base::ok;`) must fold to the aliased class's captured constant — the
+// constant-expression qualifier resolution consults the class-scope alias
+// owner, not only the flat/namespace maps. Pre-fix this silently folded 0
+// (libc++ numeric_limits' entire value surface reads through this shape).
+// Oracle: g++ 13 == clang++-18 print "1 1".
+#include <cstdio>
+template <class T> struct impl { static const bool ok = true; };
+struct plain {
+    typedef impl<int> __base;
+    static const bool viaalias = __base::ok;
+};
+template <class T> struct tmplcls {
+    typedef impl<T> __base;
+    static const bool viaalias = __base::ok;
+};
+int main(){ printf("%d %d\n", (int)plain::viaalias, (int)tmplcls<int>::viaalias); return 0; }

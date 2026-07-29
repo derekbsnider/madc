@@ -1,0 +1,17 @@
+// A non-type template argument that is a full constant EXPRESSION — with a
+// less-than operator and a ternary INSIDE the argument list — must fold and
+// bind: `align_it < sizeof(int) < alignment ? alignment/sizeof(int) : 1 >`
+// (libc++ basic_string::__recommend's exact shape, [temp.names]: the `<`
+// after `)` is the less-than operator, the `>` after the ternary closes the
+// list). The pre-fix scanner counted that `<` as a nested open and consumed
+// the token stream to EOF (SIGSEGV).
+// Oracle: g++ 13 == clang++-18 print "11".
+#include <cstdio>
+template <unsigned long A>
+unsigned long align_it(unsigned long s) { return (s + (A - 1)) & ~(A - 1); }
+enum { alignment = 8 };
+int main() {
+    unsigned long g = align_it < sizeof(int) < alignment ? alignment / sizeof(int) : 1 > (10 + 1) - 1;
+    printf("%lu\n", g);
+    return 0;
+}

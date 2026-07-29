@@ -34,6 +34,16 @@
 #include "madc_pch.h"
 #include "madc_sys_includes.h"	// generated per-stdlib-flavor include search tables
 #include "madc_mangle.h"	// std ABI namespace push (note_std_abi_define)
+
+// Out-of-line anchor for intern_keyed_map's env-gated write trap
+// (MADC_MAPWRITE_TRAP=<key>): break on madcdis_mapwrite_trap_hit in gdb to
+// catch every string-keyed insertion of a poisoned key, whoever the caller.
+namespace madc { namespace dis {
+void madcdis_mapwrite_trap_hit(const char *key)
+{
+    fprintf(stderr, "[maptrap] write key=%s\n", key);
+}
+} }
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest — parse-time grove binding
 
 // --show-stats: RAII accumulator for time spent loading source into the lex
@@ -6835,7 +6845,15 @@ void show_error_source_line(const std::string &ln, int col)
 
     if ( ln.length()+5 > term_columns )
     {
-	std::string trunc = "  ..." + ln.substr(col);
+	// The column can exceed the fetched line (a token inside a macro
+	// expansion carries post-expansion provenance). A diagnostic must
+	// never throw — clamp the tail slice to the line's end instead of
+	// letting substr raise out_of_range mid-print (which surfaced as
+	// "tree build failed (basic_string::substr...)" and MASKED the
+	// real error).
+	size_t start = (col > 0 && (size_t)col <= ln.length())
+		     ? (size_t)col : ln.length();
+	std::string trunc = "  ..." + ln.substr(start);
 	std::cerr << trunc << std::endl;
 	std::cerr << std::setw(4) << ' ' << "\e[1;32m^\e[m" << std::endl;
 	return;

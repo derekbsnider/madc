@@ -34,6 +34,24 @@ high-level" — the answer is both.**
 
 ## Current State
 
+- **v0.62.0 (2026-07-29): the `<string>` frontier burn-down (task #17 in
+  progress).** libc++ `<string>` PARSES CLEAN (anonymous-aggregate
+  enclosing-alias resolution — the last parse blocker);
+  `__compressed_pair` compiles+runs (ref-cast member access, receiver
+  addressing, REAL derived-to-base conversion via `upcast_class_ref_addr`
+  — silent wrong storage at nonzero offsets before); constant-expression
+  NTTP args fold (bail() adopted `skip_template_id_suffix`; the plain-
+  `depth` counter the gate could not see is deleted); numeric_limits
+  values EXACT both flavors (five stacked constant-fold defects; the
+  [basic.scope.class] member-alias shadow fix un-hijacks `__base` from
+  libc++'s real `__function::__base`). 8 new gates; fulltest 807/0/0/9,
+  `--exe` 791/0, `--obj` 791/0, packed 807/0/0/9. Fork unchanged.
+  NEXT (banked in task #17): the `__compressed_pair` template-ctor
+  selection ("no matching constructor (__default_init_tag,
+  __default_init_tag)"), member-template explicit-NTTP body emission,
+  is_modulo's NTTP-expression instantiation key — then `<iostream>`
+  (P2.5), containers (P2.6), the flavored parity lane (P2.7).
+
 - **v0.61.0 (2026-07-29): the stdlib-flavor switch (task #16, P2.3).**
   The std ABI inline namespace follows the PARSED stdlib config —
   `_GLIBCXX_USE_CXX11_ABI` (1 ⇒ `__cxx11` on the cxx11-tagged components)

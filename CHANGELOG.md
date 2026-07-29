@@ -2,6 +2,64 @@
 
 ## [Unreleased]
 
+## [v0.62.0] — 2026-07-29
+
+The `<string>` frontier burn-down (task #17, P2.4 in progress): libc++'s
+`<string>` PARSES CLEAN for the first time, its `__compressed_pair` storage
+core compiles and runs, and `std::numeric_limits` values are exact under
+BOTH flavors — six behavioral fix groups, every one oracle-verified and
+gated. Suite 802 → 807; `--exe`/`--obj` 782 → 791.
+
+- **feat: `#include <string>` under `-stdlib=libc++` parses to completion.**
+  Anonymous unions inside a class template now resolve members spelled via
+  the ENCLOSING class's (dependent) member typedefs ([basic.scope.class]) —
+  the anonymous-aggregate arm adopts the same shared resolver its
+  named-nested-struct twin already used (basic_string's `__rep` shape).
+  Gate: `testanonunionalias`.
+- **fix: the `__compressed_pair` accessor chain, three layers.** Member
+  access on a `static_cast<_Base1&>(*this)` head resolves (postfix arm
+  adopts `referent_if_reference`); the method receiver addresses the
+  preserved operand lvalue (narrowly gated to the cast-to-reference head —
+  every other `DataDefREF` head carries a pointer value); and a
+  derived-to-base reference cast performs the REAL base-subobject
+  conversion (offset + type, vbase-aware, via `upcast_class_ref_addr`) —
+  a secondary base read the wrong storage at any nonzero offset before.
+  Gates: `testrefcastbase`, `testrefcastebo`.
+- **fix: constant-expression NTTP arguments fold.**
+  `__align_it < sizeof(value_type) < __alignment ? ... : 1 >` — the
+  template-argument capture's opaque-bail was a hand-rolled angle counter
+  (named plain `depth`, invisible to the delimiter gate exactly as the KG
+  family predicted) that ate the token stream to EOF (SIGSEGV in
+  basic_string::__recommend). The bail adopts `skip_template_id_suffix`;
+  the non-type arm collects the full balanced run and folds it; a NULL
+  post-operand fetch is now a loud error. Gate: `testnttpexprarg`.
+- **fix: `std::numeric_limits` value surface — five stacked defects.**
+  Static-const initializers reading through a class-scope alias
+  (`__base::digits`) fold; the 8-byte constant cast zero-extends unsigned
+  (`(unsigned long)(-1) < 0` folded TRUE before — libstdc++'s own
+  `digits` was 63); the runtime-access pre-scan classifies `type(-1)` as
+  a cast, not a call; a functional cast under a template-param
+  placeholder declines to fold ([traitfold]'s twin); and a class's own
+  member aliases now shadow namespace/flat names in declared-type
+  resolution — libc++'s real `__function::__base` class hijacked every
+  local `typedef ... __base;` (the limits:439 "Expecting type after
+  'typedef'" error). Gates: `testaliasbasefold`, `testunsignedfold`,
+  `testmemberaliasshadow`, `testlimitsvals` + `testlimitsvals_libcxx`.
+- **feat: diagnostics.** `MADC_MAPWRITE_TRAP` (an env-gated write trap in
+  the intern-keyed map's string path — one breakpoint catches every
+  insertion of a poisoned key), `MADC_STATCONST_PROBE` (static-const
+  capture tracing), and the caret renderer clamps a column past the
+  fetched line instead of throwing mid-diagnostic.
+- The owner-set parity goal (behavior-parity with libstdc++, flavored
+  suite lane as the finish line) is codified in the track plan.
+
+Suites: fulltest 807/0/0/9; `--exe` 791/0; `--obj` 791/0; packed arbiter
+807/0/0/9. MIR fork unchanged (1.0-madc.0.52.0). Known next frontiers
+(banked in task #17): the `__compressed_pair` template-ctor selection
+("no matching constructor (__default_init_tag, __default_init_tag)"),
+member-template explicit-NTTP body emission, and the is_modulo
+NTTP-expression instantiation key.
+
 ## [v0.61.0] — 2026-07-29
 
 The stdlib-flavor switch (task #16, P2.3): the std:: inline ABI namespace
