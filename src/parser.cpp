@@ -14649,6 +14649,11 @@ static std::vector<TokenBase *> substitute_return_range_tokens(
 DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
 		const std::vector<DataDef *> &explicit_targs)
 {
+    if ( vri_debug_enabled() && fd )
+	fprintf(stderr, "[vriprobe] MTRT enter %s ret=%zu defs=%zu\n",
+		fd->method_display_name.c_str(),
+		fd->member_template_return_tokens.size(),
+		fd->member_template_param_defaults.size());
     if ( !fd || fd->member_template_return_tokens.empty()
       || fd->template_param_names.empty() )
 	return NULL;
@@ -14763,6 +14768,29 @@ DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
 	class_scope_stack.pop_back();
     for ( TokenBase *t : sub )
 	delete t;
+    // A CAPTURE parse resolving through an UNENFORCEABLE defaulted-param
+    // SFINAE — the binding still names placeholders, so the default can
+    // neither pass nor fail — must not BAKE a CONSTANT return into the
+    // pattern: `decltype(__test<_Tp>(0))` would freeze true_type and every
+    // bound is_destructible<X> would answer 1 (the alias-node twin of the
+    // [traitfold] baked false_type). A DEPENDENT result stays a
+    // re-derivable pattern node (the common_type `_S_test` shape) and
+    // captures fine; a concrete one poisons the capture, and the class
+    // stays on the legacy re-parse lane, which re-resolves per
+    // instantiation in BOTH the live and the forest-bound consumers.
+    if ( rt && !binding_concrete && class_pattern_capture_in_progress
+      && !datadef_has_unresolved_dependent_surface(rt) )
+	for ( size_t i = 0; i < fd->template_param_names.size()
+		    && i < fd->member_template_param_defaults.size(); ++i )
+	    if ( !fd->member_template_param_defaults[i].empty()
+	      && !binding.count(fd->template_param_names[i]) )
+	    {
+		dependent_parse_poisoned = true;
+		Throw << "class-pattern capture cannot bake the constant "
+		      << "return of '" << fd->method_display_name
+		      << "' past its unenforceable defaulted-param SFINAE"
+		      << flush;
+	    }
     return rt;
 }
 
@@ -18061,6 +18089,9 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		pm.typeparam_defaults.push_back(std::vector<TokenBase *>());
 		if ( p < rt.defaults.size() )
 		    restore_run(rt.defaults[p], pm.typeparam_defaults.back());
+		if ( vri_debug_enabled() )
+		    fprintf(stderr, "[vriprobe] THAW member %s p=%zu run=%zu\n",
+			    pm.disp.c_str(), p, pm.typeparam_defaults.back().size());
 	    }
 	    forest_pending_member_tmpls.push_back(pm);
 	    break;
@@ -18087,7 +18118,8 @@ static void stamp_member_template_pattern_decl_only(
 	DataDefCLASS *owner, FuncDef *fd,
 	const std::vector<TokenBase *> &ret_tokens,
 	const std::vector<std::string> &typeparams,
-	const std::vector<bool> &typeparam_is_pack, const std::string &name);
+	const std::vector<bool> &typeparam_is_pack, const std::string &name,
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults);
 static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
@@ -18263,7 +18295,8 @@ void Program::flush_forest_pending_globals()
 		// v34 decl-only record: no decl tokens to derive from — stamp
 		// the restored return-type range + params directly.
 		stamp_member_template_pattern_decl_only(pm.owner, fit->second,
-		    pm.ret_tokens, pm.typeparams, pm.is_pack, pm.disp);
+		    pm.ret_tokens, pm.typeparams, pm.is_pack, pm.disp,
+		    pm.typeparam_defaults);
 	    DBG(std::cout << "flush_forest_pending_globals: member template of "
 		<< pm.owner->name << " hydrated placeholder " << pm.key
 		<< " (" << pm.typeparams.size() << " param(s), "
@@ -47376,7 +47409,8 @@ static void stamp_member_template_pattern_decl_only(
 	DataDefCLASS *owner, FuncDef *fd,
 	const std::vector<TokenBase *> &ret_tokens,
 	const std::vector<std::string> &typeparams,
-	const std::vector<bool> &typeparam_is_pack, const std::string &name)
+	const std::vector<bool> &typeparam_is_pack, const std::string &name,
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults)
 {
     if ( !fd )
 	return;
@@ -47390,6 +47424,21 @@ static void stamp_member_template_pattern_decl_only(
     for ( size_t i = 0; i < ret_tokens.size(); ++i )
 	fd->member_template_return_tokens.push_back(
 	    ret_tokens[i] ? ret_tokens[i]->clone() : NULL);
+    // v36: the per-param DEFAULT runs carry a decl-only member template's
+    // whole [temp.deduct]/8 SFINAE (`typename = decltype(declval<_Tp1&>().
+    // ~_Tp1())`, __is_destructible_impl::__test) — without them a thawed
+    // candidate never fails substitution (the packed-lane testdestructible
+    // failure this stamp arm caused when it dropped them).
+    fd->member_template_param_defaults.clear();
+    if ( typeparam_defaults.size() == typeparams.size() )
+	for ( size_t i = 0; i < typeparam_defaults.size(); ++i )
+	{
+	    fd->member_template_param_defaults.push_back(
+		std::vector<TokenBase *>());
+	    for ( TokenBase *t : typeparam_defaults[i] )
+		fd->member_template_param_defaults.back().push_back(
+		    t ? t->clone() : NULL);
+	}
 }
 
 static void register_skipped_class_template_function(

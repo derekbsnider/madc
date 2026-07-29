@@ -3732,6 +3732,14 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	// runs (always in the layout, previously written empty here) now carry
 	// the member template's [temp.deduct]/8 SFINAE defaults
 	// (`typename = decltype(declval<_Tp1&>().~_Tp1())`).
+	if (::getenv("MADC_XTEST_VRI_DEBUG")) {
+		size_t nd = 0;
+		for (size_t di = 0; di < fd->member_template_param_defaults.size(); ++di)
+			nd += fd->member_template_param_defaults[di].size();
+		fprintf(stderr, "[vriprobe] FREEZE member %s defaults=%zu toks=%zu\n",
+			fd->method_display_name.c_str(),
+			fd->member_template_param_defaults.size(), nd);
+	}
 	emit(CIR_TMPLK_MEMBER, fi->first.c_str(), fd->method_display_name,
 	     std::string(), std::string(), owner,
 	     instance ? CIR_TMPLF_INSTANCE_METHOD : 0,
