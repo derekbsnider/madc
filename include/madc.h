@@ -2863,6 +2863,12 @@ public:
     // skipped member template's variadic typeparam (`typename... _Args`) is
     // preserved through register_skipped_class_template_function.
     std::vector<bool> last_skipped_template_typeparam_is_pack;
+    // TYPE-ness of last_skipped_template_typeparams (parallel vector; true =
+    // `typename T`, false = a NON-TYPE param such as `unsigned long __a`), so a
+    // skipped member template's non-type params survive
+    // register_skipped_class_template_function. Without it every param looked
+    // like a type and instantiation failed against its explicit VALUE argument.
+    std::vector<bool> last_skipped_template_typeparam_is_type;
     // Per-param DEFAULT token runs (parallel vector; empty run = no default).
     // A member template can carry its whole SFINAE in a defaulted param
     // (`template<typename _Tp1, typename = decltype(declval<_Tp1&>().~_Tp1())>
@@ -4208,6 +4214,11 @@ public:
 	std::vector<TokenBase *> ret_tokens;	// v34 decl-only: the dependent return-type range (no decl tokens exist)
 	std::vector<std::string> typeparams;
 	std::vector<bool> is_pack;
+	// Per-param TYPE-ness (parallel to typeparams) — the record's
+	// CIR_TMPLP_IS_TYPE bit. A non-type member-template param
+	// (`template <unsigned long __a>`) must thaw as non-type or the
+	// restored pattern instantiates as if it took a type.
+	std::vector<bool> is_type;
 	// v36: per-param DEFAULT token runs (parallel to typeparams; empty
 	// run = no default) — a member template's [temp.deduct]/8 SFINAE
 	// payload (`typename = decltype(declval<_Tp1&>().~_Tp1())`).

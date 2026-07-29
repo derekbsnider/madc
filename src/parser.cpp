@@ -5903,6 +5903,12 @@ static void register_basic_class_pattern_method(
 	    pgm.last_skipped_template_typeparam_is_pack;
 	pgm.last_skipped_template_typeparam_is_pack =
 	    pattern.template_param_is_pack;
+	// TYPE-ness rides the same global (the pattern's non-type params must
+	// re-register as non-type for each owner binding).
+	std::vector<bool> saved_is_type_state =
+	    pgm.last_skipped_template_typeparam_is_type;
+	pgm.last_skipped_template_typeparam_is_type =
+	    pattern.template_param_is_type;
 	// Per-param DEFAULT runs ride the same global (the [temp.deduct]/8
 	// SFINAE payload) — substituted for the owner binding like the decl
 	// tokens themselves (`declval<_Tp1&>().~_Tp1()` may name the OWNER's
@@ -5932,6 +5938,7 @@ static void register_basic_class_pattern_method(
 	      && pgm.class_scope_stack.back() == owner )
 		pgm.class_scope_stack.pop_back();
 	    pgm.last_skipped_template_typeparam_is_pack = saved_pack_state;
+	    pgm.last_skipped_template_typeparam_is_type = saved_is_type_state;
 	    pgm.last_skipped_template_typeparam_defaults = saved_defaults_state;
 	    throw;
 	}
@@ -5939,6 +5946,7 @@ static void register_basic_class_pattern_method(
 	  && pgm.class_scope_stack.back() == owner )
 	    pgm.class_scope_stack.pop_back();
 	pgm.last_skipped_template_typeparam_is_pack = saved_pack_state;
+	pgm.last_skipped_template_typeparam_is_type = saved_is_type_state;
 	pgm.last_skipped_template_typeparam_defaults = saved_defaults_state;
 	return;
     }
@@ -18147,6 +18155,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    {
 		pm.typeparams.push_back(rt.params[p].first);
 		pm.is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+		pm.is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
 		// v36 semantics: the per-param default runs (always in the
 		// record layout, empty until now) carry the member template's
 		// [temp.deduct]/8 SFINAE defaults.
@@ -18176,13 +18185,15 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 static void stamp_member_template_pattern(
 	DataDefCLASS *owner, FuncDef *fd, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
-	const std::vector<bool> &typeparam_is_pack, const std::string &name,
+	const std::vector<bool> &typeparam_is_pack,
+	const std::vector<bool> &typeparam_is_type, const std::string &name,
 	const std::vector<std::vector<TokenBase *> > &typeparam_defaults);
 static void stamp_member_template_pattern_decl_only(
 	DataDefCLASS *owner, FuncDef *fd,
 	const std::vector<TokenBase *> &ret_tokens,
 	const std::vector<std::string> &typeparams,
-	const std::vector<bool> &typeparam_is_pack, const std::string &name,
+	const std::vector<bool> &typeparam_is_pack,
+	const std::vector<bool> &typeparam_is_type, const std::string &name,
 	const std::vector<std::vector<TokenBase *> > &typeparam_defaults);
 static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
@@ -18353,14 +18364,15 @@ void Program::flush_forest_pending_globals()
 	{
 	    if ( !pm.tokens.empty() )
 		stamp_member_template_pattern(pm.owner, fit->second, pm.tokens,
-					      pm.typeparams, pm.is_pack, pm.disp,
+					      pm.typeparams, pm.is_pack,
+					      pm.is_type, pm.disp,
 					      pm.typeparam_defaults);
 	    else
 		// v34 decl-only record: no decl tokens to derive from — stamp
 		// the restored return-type range + params directly.
 		stamp_member_template_pattern_decl_only(pm.owner, fit->second,
-		    pm.ret_tokens, pm.typeparams, pm.is_pack, pm.disp,
-		    pm.typeparam_defaults);
+		    pm.ret_tokens, pm.typeparams, pm.is_pack, pm.is_type,
+		    pm.disp, pm.typeparam_defaults);
 	    DBG(std::cout << "flush_forest_pending_globals: member template of "
 		<< pm.owner->name << " hydrated placeholder " << pm.key
 		<< " (" << pm.typeparams.size() << " param(s), "
@@ -18379,6 +18391,8 @@ void Program::flush_forest_pending_globals()
 	    continue;
 	std::vector<bool> saved_pack = last_skipped_template_typeparam_is_pack;
 	last_skipped_template_typeparam_is_pack = pm.is_pack;
+	std::vector<bool> saved_is_type = last_skipped_template_typeparam_is_type;
+	last_skipped_template_typeparam_is_type = pm.is_type;
 	std::vector<std::vector<TokenBase *> > saved_defaults =
 	    last_skipped_template_typeparam_defaults;
 	last_skipped_template_typeparam_defaults = pm.typeparam_defaults;
@@ -18391,6 +18405,7 @@ void Program::flush_forest_pending_globals()
 						 pm.typeparams, 0, std::string());
 	class_scope_stack.pop_back();
 	last_skipped_template_typeparam_is_pack = saved_pack;
+	last_skipped_template_typeparam_is_type = saved_is_type;
 	last_skipped_template_typeparam_defaults = saved_defaults;
 	DBG(std::cout << "flush_forest_pending_globals: member template of "
 	    << pm.owner->name << " (" << pm.typeparams.size()
@@ -25110,6 +25125,8 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	last_skipped_template_typeparams;
     std::vector<bool> saved_skipped_template_packs =
 	last_skipped_template_typeparam_is_pack;
+    std::vector<bool> saved_skipped_template_is_type =
+	last_skipped_template_typeparam_is_type;
     std::vector<std::vector<TokenBase *> > saved_skipped_template_defaults =
 	last_skipped_template_typeparam_defaults;
     std::string saved_stmt_callee_namespace = stmt_callee_namespace;
@@ -25161,6 +25178,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     last_skipped_template_decl.clear();
     last_skipped_template_typeparams.clear();
     last_skipped_template_typeparam_is_pack.clear();
+    last_skipped_template_typeparam_is_type.clear();
     last_skipped_template_typeparam_defaults.clear();
     stmt_callee_namespace.clear();
 
@@ -25252,6 +25270,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     last_skipped_template_decl.swap(saved_skipped_template_decl);
     last_skipped_template_typeparams.swap(saved_skipped_template_typeparams);
     last_skipped_template_typeparam_is_pack.swap(saved_skipped_template_packs);
+    last_skipped_template_typeparam_is_type.swap(saved_skipped_template_is_type);
     last_skipped_template_typeparam_defaults.swap(saved_skipped_template_defaults);
     stmt_callee_namespace = saved_stmt_callee_namespace;
     tokens = saved_tokens;
@@ -46409,7 +46428,15 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // symbol below.
     FnTemplateDef ft;
     ft.typeparams = fd->template_param_names;
-    ft.typeparam_is_type.assign(ft.typeparams.size(), true);
+    // Per-param type-ness from the captured template head — a NON-TYPE param
+    // (`template <unsigned long __a> static ... __align_it(...)`) must not be
+    // marked a type or instantiation fails against its explicit value arg.
+    // The ctor twin (instantiate_member_ctor_template_for_construction)
+    // already does this; fall back to all-type for older registrations.
+    if ( fd->template_param_is_type.size() == ft.typeparams.size() )
+	ft.typeparam_is_type = fd->template_param_is_type;
+    else
+	ft.typeparam_is_type.assign(ft.typeparams.size(), true);
     // Honor a variadic typeparam (`typename... _Args`) — a member template like
     // allocator_traits::construct must instantiate its pack from the call's
     // trailing args. Fall back to none-are-packs when pack-ness wasn't recorded.
@@ -47408,7 +47435,8 @@ DataDef *Program::resolve_decltype_call_return(
 static void stamp_member_template_pattern(
 	DataDefCLASS *owner, FuncDef *fd, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
-	const std::vector<bool> &typeparam_is_pack, const std::string &name,
+	const std::vector<bool> &typeparam_is_pack,
+	const std::vector<bool> &typeparam_is_type, const std::string &name,
 	const std::vector<std::vector<TokenBase *> > &typeparam_defaults)
 {
     if ( !fd )
@@ -47420,6 +47448,11 @@ static void stamp_member_template_pattern(
     // skipped-template parse's global, the flush the record's pack bits).
     if ( typeparam_is_pack.size() == typeparams.size() )
 	fd->template_param_is_pack = typeparam_is_pack;
+    // Preserve TYPE-ness the same way — a NON-TYPE param
+    // (`template <unsigned long __a>`) must not instantiate as a type param, or
+    // deduction binds its explicit VALUE argument as a type and fails.
+    if ( typeparam_is_type.size() == typeparams.size() )
+	fd->template_param_is_type = typeparam_is_type;
     // Preserve per-param DEFAULT token runs (same parallel-vector contract):
     // [temp.deduct]/8 — an unbound defaulted param must substitute-and-resolve
     // at the call (resolve_member_template_call_return_type), or the candidate
@@ -47519,7 +47552,8 @@ static void stamp_member_template_pattern_decl_only(
 	DataDefCLASS *owner, FuncDef *fd,
 	const std::vector<TokenBase *> &ret_tokens,
 	const std::vector<std::string> &typeparams,
-	const std::vector<bool> &typeparam_is_pack, const std::string &name,
+	const std::vector<bool> &typeparam_is_pack,
+	const std::vector<bool> &typeparam_is_type, const std::string &name,
 	const std::vector<std::vector<TokenBase *> > &typeparam_defaults)
 {
     if ( !fd )
@@ -47529,6 +47563,8 @@ static void stamp_member_template_pattern_decl_only(
     fd->template_param_names = typeparams;
     if ( typeparam_is_pack.size() == typeparams.size() )
 	fd->template_param_is_pack = typeparam_is_pack;
+    if ( typeparam_is_type.size() == typeparams.size() )
+	fd->template_param_is_type = typeparam_is_type;
     fd->member_template_owner = owner;
     fd->member_template_return_tokens.clear();
     for ( size_t i = 0; i < ret_tokens.size(); ++i )
@@ -47584,6 +47620,7 @@ static void register_skipped_class_template_function(
 	fd->declaration_only = true;
 	stamp_member_template_pattern(owner, fd, tokens, typeparams,
 				      pgm.last_skipped_template_typeparam_is_pack,
+				      pgm.last_skipped_template_typeparam_is_type,
 				      name,
 				      pgm.last_skipped_template_typeparam_defaults);
     }
@@ -48516,6 +48553,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.last_skipped_template_decl = skipped_decl;
 	pgm.last_skipped_template_typeparams = typeparams;
 	pgm.last_skipped_template_typeparam_is_pack = typeparam_is_pack;
+	pgm.last_skipped_template_typeparam_is_type = typeparam_is_type;
 	pgm.last_skipped_template_typeparam_defaults = typeparam_defaults;
 	// Out-of-line NESTED-CLASS definition: capture keyed by the owner
 	// template; instantiate with each monomorphization of the owner
