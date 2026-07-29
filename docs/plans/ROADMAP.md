@@ -34,6 +34,24 @@ high-level" — the answer is both.**
 
 ## Current State
 
+- **v0.60.0 (2026-07-29): is_destructible, both flavors, every lane.**
+  `__is_destructible` joins the trait-builtin registry (libc++'s
+  `__has_builtin` branch serves directly, incl. deleted/member-deleted/
+  private destructors); libstdc++'s SFINAE/declval chain fixed at four
+  layers (deleted-dtor recording; deleted-dtor CALL rejection = the SFINAE
+  substitution failure; call-result pseudo-dtor receivers reach the
+  explicit-dtor arm — calls are staged on the operator stack; member
+  templates capture per-param DEFAULT token runs enforced per
+  [temp.deduct]/8, failing candidates fall to the ellipsis catch-all on the
+  REGISTRATION owner). The forest capture POISONS instead of baking a
+  constant past an unenforceable SFINAE (the [traitfold] lesson's
+  alias-node twin); format v36 carries the default runs. Gates:
+  `testdestructible` + `testdestructible_libcxx`, exact on g++13 ==
+  clang++-18. fulltest 798/0/0/9, `--exe` 780/0, `--obj` 780/0, packed
+  798/0/0/9. Fork unchanged. Filed: FT-lane deduction-aware defaults,
+  array-type template args, SFINAE access control, deleted-member-flag
+  freeze carriage.
+
 - **v0.59.0 (2026-07-29): the trait-engine release.** gcc13's
   `__and_/__or_/__not_` SFINAE machine + the constructible/assignable trait
   family fold correctly in every lane: [temp.deduct]/8 unused-alias-arg

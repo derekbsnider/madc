@@ -2,6 +2,54 @@
 
 ## [Unreleased]
 
+## [v0.60.0] — 2026-07-29
+
+std::is_destructible / is_trivially_destructible answer correctly under BOTH
+stdlib flavors and in EVERY lane (live, forest-bound, packed) — task #15's
+title objective complete. Forest format v36. Suite 796 → 798, green in all
+lanes (JIT / exe / obj / packed).
+
+- **feat: `__is_destructible` builtin + the full is_destructible SFINAE
+  chain.** libc++ takes the builtin path (`__has_builtin` now answers yes):
+  `trait_is_destructible` per [meta.unary.prop] — references yes; void /
+  functions / unbounded arrays no; bounded arrays take the element's answer;
+  a class needs an accessible, non-deleted destructor (deleted directly, or
+  implicitly via a base/member). libstdc++ takes the SFINAE/declval path,
+  fixed at four layers: dropped `~X() = delete` destructors are recorded
+  (`DataDefCLASS::has_deleted_dtor`); an explicit/pseudo destructor call on
+  a deleted destructor is rejected in every context ([dcl.fct.def.delete]) —
+  inside a SFINAE decltype that Throw IS the substitution failure; a
+  CALL-RESULT receiver (`declval<_Tp1&>().~_Tp1()`) now reaches the
+  explicit-destructor arm (calls are staged on the operator stack — the arm
+  flushes a pending call receiver down first); and member templates now
+  capture per-param DEFAULT token runs, with
+  `resolve_member_template_call_return_type` enforcing [temp.deduct]/8 under
+  a concrete binding in the definition context — a failing default rejects
+  the candidate and overload resolution falls to the next same-name member
+  template on the registration owner (the ellipsis catch-all serves
+  false_type). The free-function return-by-key lane deliberately does NOT
+  enforce defaults (its params may still be deduced from call arguments; a
+  deduction-aware version is filed). Gates: `testdestructible` (libstdc++
+  lane) and `testdestructible_libcxx` (builtin lane, plus the
+  private-destructor probe the declval chain cannot honestly answer —
+  SFINAE access-control filed). Both exact against g++ 13 == clang++-18.
+- **fix: the forest lane cannot bake a constant past an unenforceable
+  SFINAE.** The class-pattern CAPTURE parse resolves
+  `typedef decltype(__test<_Tp>(0)) type;` under a placeholder binding,
+  where the defaulted-param SFINAE can neither pass nor fail — and baked
+  the first candidate's constant true_type into the pattern's alias node
+  (the alias-node twin of v0.59.0's [traitfold] baked false_type). Such a
+  resolution now POISONS the capture and the class stays on the legacy
+  re-parse lane, which re-resolves per instantiation in both the live and
+  forest-bound consumers; a DEPENDENT result (common_type's `_S_test`
+  shape) still captures as a re-derivable pattern node. The v34 decl-only
+  hydration arm also carries the new default runs. Forest format v36
+  (ClassMethodPattern payload gains the per-param default-run section;
+  CIR_TMPLK_MEMBER records fill their always-present default runs).
+
+Suites: fulltest **798/0/0/9**, `--exe` **780/0**, `--obj` **780/0**, packed
+arbiter **798/0/0/9**. Fork unchanged (**1.0-madc.0.52.0**).
+
 ## [v0.59.0] — 2026-07-29
 
 The trait-engine release: gcc13's `__and_/__or_/__not_` SFINAE machine and
