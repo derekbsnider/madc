@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  c5c62082 (2026-07-30) on feature/libcxx-string2-claude
-# Result:       747 passed / 108 failed / 0 timed out / 10 skipped
+# Measured at:  66d3a4c5 (2026-07-30) on feature/libcxx-parity2-claude
+# Result:       749 passed / 108 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -137,6 +137,19 @@
 #                         map:629 — mem-init naming a private template-param
 #                         base (`__map_value_compare : private _Compare`,
 #                         #72's next link). No lane test crosses fully yet.
+#   66d3a4c5  749 / 108   the failing set is SET-IDENTICAL (comm-diffed both
+#                         ways); +2 passed = the two NEW suite tests. Two
+#                         flavor-independent fixes (v0.63.0 released, then
+#                         branch feature/libcxx-parity2-claude): @8112636c a
+#                         mem-initializer names a base that IS a template
+#                         parameter (map:629 THROUGH), and @66d3a4c5
+#                         `T(a, b)` at statement head is an EXPRESSION per
+#                         [dcl.ambig.res] (__node_handle THROUGH). The map
+#                         chain now blocks at __tree:680 — the node-allocator
+#                         rebind yields the VALUE type's pointer, so
+#                         __tree_node_types instantiates the declared-only
+#                         primary ('__get_ptr' is not a member function,
+#                         #72's next link).
 test.mad
 test5.mad
 testalignas.mad
