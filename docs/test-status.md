@@ -1,6 +1,19 @@
 # Test Status
 
-> **Current (2026-07-28, `develop` — v0.57.0, the libc++ burn-down: eight
+> **Current (2026-07-30, v0.63.0 — the libc++ parity-lane burn-down,
+> pre-merge battery on `feature/libcxx-string2-claude` @c4a98c9c):**
+> fulltest **856 passed, 0 failed, 0 timed out, 9 skipped**, `--exe`
+> **840/0**, `--obj` **840/0**, and the packed release arbiter
+> **856/0/0/9**. All gates green (libcxx_gate incl. the operator+ leg,
+> delimiter ratchet 0, rule-trailer gate clean, tsubst ratchet 0).
+> The flavored parity lane stands at **747 passed / 108 failed**
+> (`run_tests.sh --stdlib=libc++`; the failing set is banked and
+> set-diffed in `docs/parity/libcxx-failset.txt` — zero regressions at
+> every measured step from the 534/282 baseline). Fork at
+> **1.0-madc.0.63.0** @8f3934ac (zero-length-array diagnostic parity).
+> Battery log: `tmp/logs/rb-20260730-192345.log`.
+
+> **Previous (2026-07-28, `develop` — v0.57.0, the libc++ burn-down: eight
 > core-C++ defects in one chain):** fulltest **784 passed, 0 failed,
 > 0 timed out, 9 skipped**, `--exe` **768/0**, `--obj` **768/0**, and the
 > packed release arbiter **784/0/0/9**. All gates green: `libcxx_gate` OK

@@ -2,6 +2,71 @@
 
 ## [Unreleased]
 
+## [v0.63.0] — 2026-07-30
+
+The libc++ parity-lane burn-down: the flavored suite went 534/282 →
+747/108 across ~50 oracle-verified fixes with ZERO regressions at every
+measured step — THE STRING WALL FELL (`std::string c = a + b` computes
+"hello 5" under libc++), the cout smoke RUNS ('hello 42'), and four
+flavor-INDEPENDENT silent-wrong-answer bugs found by the lane are fixed
+for every dialect. Suite 807 → 856; the parity lane and its failing-set
+ledger (`docs/parity/libcxx-failset.txt`) are now first-class.
+
+- **feat: the stdlib-flavor PARITY lane.** `run_tests.sh --stdlib=libc++`
+  runs the WHOLE suite under the second flavor; the failing set is banked
+  in-repo and every measure is set-diffed, never compared by bare totals.
+  EXE and OBJ lane failures gate the exit status.
+- **fix: four flavor-independent silent wrong answers.** An alias
+  template whose target carries a declarator suffix kept it (`using up =
+  U*` yielded U before — every pointer-target alias in every header
+  de-pointered); a ctor-less class copy-constructs from its argument (the
+  by-value call-receiver spill temp was silently uninitialized); an empty
+  non-primary base lays out at offset 0 (Itanium EBO — libc++'s
+  `__compressed_pair` allocator read one-past-the-object before); and
+  `--emit=c11` renders bit-field widths (the flattened rendering had
+  falsified the gcc layout oracle).
+- **feat: `std::string` operator+ under libc++ end-to-end.** A by-value
+  class operator result materializes like a call's (retbuf routing;
+  stream SHIFTS excluded by convention), friend-specialization operator
+  declarators parse (`operator+ <>`), and the JIT/object loader load the
+  ACTIVE flavor's C++ runtime.
+- **feat: `<map>`/`<optional>` frontier stack.** Ref-qualified member
+  functions parse ([dcl.fct]p6); east-cv template arguments
+  (`addp_t<T const>`); the operator-> rewrite accepts member and
+  call-result receivers; NSDMI capture balances `<>`; mem-initializer
+  template-ids bind their own base and only the selected ctor
+  instantiates; member-template defaults fill in their DEFINING
+  namespace.
+- **fix: out-of-line definitions bind by SIGNATURE.** A member definition
+  binds the overload whose signature it repeats (not first-available), an
+  explicit specialization's out-of-line ctor/dtor parses
+  ([temp.expl.spec]/5), a plain out-of-line template ctor attaches, and a
+  deferred def re-parses with the member's real static-ness.
+- **fix: the name-resolution batch.** A name after `.`/`->` is a MEMBER,
+  never a type ([basic.lookup.classref]); an elaborated-type-specifier
+  argument first-declares its class ([basic.scope.pdecl]/7); a scoped
+  enum's body sees its prior enumerators ([dcl.enum]/5); `decltype(expr)`
+  heads declarations and sizeof; function-pointer types as template
+  arguments; cv-qualified fn-ptr members; `mutable` on struct/union
+  members; `extern` accepts attributes + namespace-scoped typedefs.
+- **fix: mangled-direct hygiene.** A std:: symbol binds only when the
+  loaded runtime can LINK it; mangled-direct declines symbols that
+  provably cannot link; a std:: FUNCTION's scope follows the stdlib
+  flavor; `__is_final` implemented (libc++ basic_string is 24 bytes,
+  byte-for-byte with clang).
+- **feat: diagnostics.** `MADC_ARROW_PROBE`, `MADC_CLASS_PATTERN_PROBE`,
+  `MADC_OVL_PROBE`; the extended internal error names its owning
+  template.
+- MIR fork: pinned at the zero-length-array diagnostic parity fix
+  (silent by default, warns under `-pedantic`, matching gcc/clang) —
+  fork release `1.0-madc.0.63.0`.
+
+Suites: fulltest 856/0/0/9; `--exe` 840/0; `--obj` 840/0; packed arbiter
+856/0/0/9; parity lane 747 passed / 108 failed (ledger:
+`docs/parity/libcxx-failset.txt` @c5c62082). Known next frontiers: the
+map/set family at map:629 (mem-init naming a template-param private
+base, task #72), the vector family's emission layer, stream residuals.
+
 ## [v0.62.0] — 2026-07-29
 
 The `<string>` frontier burn-down (task #17, P2.4 in progress): libc++'s

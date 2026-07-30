@@ -1,14 +1,13 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-07-28 (v0.58.0: the
-`<string_view>` milestone — libc++ `<string_view>` COMPILES AND RUNS
-end-to-end under `-stdlib=libc++` (P2.2 burn-down complete): NTTP defaults +
-SFINAE overload selection, merged-`>>` template-id flush, comma-operator
-returns gated from the dialect multi-return, aggregate init on
-class-promoted structs, plus forest v34 (decl-only member templates freeze
-their pattern state; the stdlib flavor is producer-config identity). Suites
-792/775/775 green incl. the packed lane; next: P2.3 stdlib-ABI switch, then
-`<string>` P2.4).
+Master plan linking all workstreams. Updated 2026-07-30 (v0.63.0: the
+libc++ parity-lane burn-down — the flavored suite went 534/282 → 747/108
+with zero regressions at every set-diffed step; the string wall fell
+(`std::string c = a + b` under libc++); four flavor-independent
+silent-wrong-answer fixes (alias-star de-pointering, uninitialized
+ctor-less copy spill, empty-base Itanium offset-0, bit-field width
+rendering). Suite 807 → 856; next: the map/set family at map:629, the
+vector family's emission layer, stream residuals — P2.7 continues).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -33,6 +32,25 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **v0.63.0 (2026-07-30): the libc++ parity-lane burn-down (task #34, P2.7
+  in progress).** The flavored suite lane (`run_tests.sh --stdlib=libc++`)
+  is first-class with its failing set banked in
+  `docs/parity/libcxx-failset.txt`; the lane went 534/282 → **747/108**
+  across ~50 oracle-verified fixes, every step set-diffed with ZERO
+  regressions. THE STRING WALL FELL (`std::string c = a + b` correct under
+  libc++; cout smoke runs). Four flavor-INDEPENDENT silent wrong answers
+  fixed: pointer-target alias templates de-pointered (`using up = U*` gave
+  U — every rebind in every header), ctor-less classes dropped their copy
+  argument (uninitialized spill temp), empty non-primary bases laid out
+  past the object (Itanium EBO offset 0), `--emit=c11` flattened bit-field
+  widths. Out-of-line defs bind by SIGNATURE; ref-qualified methods
+  ([dcl.fct]p6); east-cv template args; operator-> rewrites on
+  member/call-result receivers; mangled-direct declines unlinkable
+  symbols; `__is_final`. Suite 807 → 856. Fork release 1.0-madc.0.63.0
+  (zero-length-array diagnostic parity). NEXT: the map/set family at
+  map:629 (mem-init naming a template-param private base, task #72), the
+  vector family's emission layer, stream residuals.
 
 - **v0.62.0 (2026-07-29): the `<string>` frontier burn-down (task #17 in
   progress).** libc++ `<string>` PARSES CLEAN (anonymous-aggregate
