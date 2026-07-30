@@ -20269,6 +20269,35 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 	}
 	adt = next;
     }
+    // The ABSTRACT function-pointer declarator as a template argument:
+    // `unique_ptr<char_type, void (*)(void*)>` — libc++ <locale>'s buffer
+    // deleters, used pervasively (first at locale:286). Same parseFnPtrParams
+    // owner as typedef Form 2 and the using-alias arm; gated on the exact
+    // `( * )` prefix so a non-type argument expression never loses its '('.
+    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
+      && tokens.size() >= 3 && tokens[1] && tokens[2]
+      && tokens[1]->id() == TokenID::tkMul
+      && tokens[2]->id() == TokenID::tkClBrk )
+    {
+	nextToken();	// consume '('
+	nextToken();	// consume '*'
+	nextToken();	// consume ')'
+	TokenBase *open = nextToken();
+	if ( !open || open->id() != TokenID::tkOpBrk )
+	    Throw(open ? open : origin)
+		<< "Expecting '(' for function pointer parameter list" << flush;
+	FuncDef *func = parseFnPtrParams(adt->definition);
+	DataDefFPTR *fptr = new DataDefFPTR(func);
+	fptr->ptr_syntax = true;	// explicit `(*)` — pointer argument
+	TokenDataType *next = new TokenDataType(fptr->name.c_str(), *fptr);
+	if ( origin )
+	{
+	    next->file = origin->file;
+	    next->line = origin->line;
+	    next->column = origin->column;
+	}
+	adt = next;
+    }
     return adt;
 }
 
