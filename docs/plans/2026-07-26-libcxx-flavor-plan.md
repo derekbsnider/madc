@@ -1193,6 +1193,45 @@ as a declaration's RETURN TYPE at statement head (task #51, hermetic reducer
 tmp/dtret.mad confirmed; the statement dispatch has a typeof recognizer but
 no decltype twin).
 
+### Re-measured 2026-07-30 @adb0a578: 545 / 281 — and the full error HISTOGRAM
+
+`545 passed / 281 failed / 10 skipped`, set byte-identical again (the +1 is
+#51's test). #51 (@adb0a578): decltype(expr) heads a declaration and measures
+under sizeof — three thin routes into resolve_declared_type_token's one
+decltype arm. ⚠️ Method note: the first attempt placed the route in the
+ttIdentifier statement arm and changed NOTHING — `decltype` is a RESERVED
+tkCPPKEYWORD (lexer cpp_reserved table), so the ttKeyword arm owns statement
+heads. Before adding a spelling route, check the lexer's reserved table for
+which arm owns the token.
+
+**The distribution question ("is this a long tail or one wall?") is now
+MEASURED, not asserted** — every one of the 281 failing tests compiled under
+the flavor, bucketed by FIRST error:
+
+    263  Expecting ',' or '>' in unique_ptr<...>     <- the live frontier (#52)
+      4  istreambuf_iterator<> expects 2 argument(s), got 1
+      3  use of undeclared identifier 'strong_ordering'
+      3  NO-COMPILE-ERROR (output mismatch — the silent class, triage first
+         when reached: silent wrong answers outrank parse errors)
+      2  no matching ctor: __compressed_pair_elem(allocator<char>*)
+         (piecewise_construct.h:21 — likely task #33's undeducible-default
+         ctor-template twin)
+      1  use of undeclared identifier 'string'
+      1  Expecting type in class definition
+      1  typedef of std::__cxx11::basic_string (GNU-ABI spelling in a test?)
+      1  '__and_' is not a member of 'std'
+      1  MIR import __ns_std____1____math_isinf (known residual)
+      1  MIR import _ZNSt3__1plI...basic_string...ERKS9_SB_ (task #44 —
+         HIDE_FROM_ABI operator+ must compile from headers)
+
+**94% of the gap is behind exactly ONE defect**, and the tail is ~10 distinct
+families, several already tasked. The "count barely moves" shape is the
+tunnel-dig structure predicted when the lane was built — not a wide field of
+unrelated breakage, and not libc++ needing a libstdc++-scale rebuild: every
+fix in this stretch has been a GENERIC C++ gap (first-declaration, out-of-line
+ctor attach, explicit-spec members, decltype positions) that libstdc++ simply
+never exercised. Zero libc++-special-cased lines remain the rule.
+
 ## Decided defaults (no owner question needed)
 
 - Header search is **target-derived and generated**, never a hardcoded

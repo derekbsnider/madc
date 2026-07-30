@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  7e8c4e6d (2026-07-30) on feature/libcxx-string2-claude
-# Result:       544 passed / 281 failed / 0 timed out / 10 skipped
+# Measured at:  adb0a578 (2026-07-30) on feature/libcxx-string2-claude
+# Result:       545 passed / 281 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -34,6 +34,10 @@
 #                         bitset is THROUGH; the frontier is
 #                         bsd_locale_fallbacks.h:31 — decltype(expr) as a
 #                         declaration's return type (task #51).
+#   adb0a578  545 / 281   +1 was a NEW TEST; failing set byte-identical again.
+#                         decltype heads a declaration / sizeof operand (#51);
+#                         bsd_locale_fallbacks.h is THROUGH. Frontier:
+#                         locale:2373 money_get (task #52).
 #
 # FOUR consecutive fixes advanced the frontier without moving the count. That is
 # the rung's shape, not a stall: the ~256 stream tests are blocked behind a CHAIN
@@ -42,7 +46,7 @@
 # prove no regressions — which is what it has done at every step.
 #
 # 256 of these 281 include a C++ stream header, so <iostream> remains ~91% of
-# the gap; the live blocker is bsd_locale_fallbacks.h:31 (task #51).
+# the gap; the live blocker is locale:2373 (task #52).
 #
 # This is NOT a ratchet yet: a 281-entry baseline gates nothing. It becomes the
 # P2.7 gate when the count reaches 0 — every genuine gap fixed, every
