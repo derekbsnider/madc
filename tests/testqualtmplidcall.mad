@@ -1,0 +1,33 @@
+// A namespace-QUALIFIED call to a fn-template whose parameter is a
+// TEMPLATE-ID of a same-namespace class (`lib::peek(b)` with
+// `template<class T> int peek(const box<T>&)`): deduction must unify the
+// pattern's UNQUALIFIED outer spelling ("box") with the argument's
+// namespace-qualified canonical one ("lib::box<long>") — a bare != in
+// the nested unifier silently bailed and the call died as an undefined
+// MIR import. libc++'s std::__pad_and_output / std::reverse chain.
+// Oracle: g++ 13 and clang++-18 print "7"
+#include <cstdio>
+
+namespace lib {
+
+template <class T> class box;
+template <class T> int peek(const box<T> &b);
+
+template <class T> class box {
+public:
+	T v;
+	box(T x) : v(x) {}
+};
+
+template <class T> int peek(const box<T> &b) {
+	return (int)b.v;
+}
+
+}
+
+int main()
+{
+	lib::box<long> b(7);
+	printf("%d\n", lib::peek(b));
+	return 0;
+}

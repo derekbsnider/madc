@@ -22502,15 +22502,34 @@ static bool class_or_enclosing_is_friend_of(DataDefCLASS *cls,
     return false;
 }
 
+// Defined with the method-definition matcher (fe50bc3c); the friend grant
+// below strips instantiation/overload suffixes with it.
+static std::string strip_overload_suffix(const std::string &tail);
+
 // A FREE function granted friendship by name (friend_function_names — the
 // hidden-friend operator grant; same name-based model as friend_class_names).
+// The body being checked may be an INSTANTIATION of the befriended template:
+// its display name is namespace-qualified ("std::__1::__pad_and_output") and
+// its registered symbol carries __mti/__oN suffixes, while the grant recorded
+// the SOURCE name ("__pad_and_output" — ostreambuf_iterator.h:66's friend).
+// Compare the bare last scope part with suffixes stripped too, or the friend's
+// own instantiated body cannot read the member it was befriended for.
 static bool function_is_friend_of(const std::string &fname,
 				  DataDefCLASS *owner_cls)
 {
     if ( fname.empty() || !owner_cls )
 	return false;
+    std::string bare = fname;
+    size_t sc = bare.rfind("::");
+    if ( sc != std::string::npos )
+	bare = bare.substr(sc + 2);
+    size_t mti = bare.find("__mti");
+    if ( mti != std::string::npos )
+	bare = bare.substr(0, mti);
+    bare = strip_overload_suffix(bare);
     for ( size_t i = 0; i < owner_cls->friend_function_names.size(); ++i )
-	if ( owner_cls->friend_function_names[i] == fname )
+	if ( owner_cls->friend_function_names[i] == fname
+	  || owner_cls->friend_function_names[i] == bare )
 	    return true;
     return false;
 }
@@ -25844,6 +25863,38 @@ static std::string base_spelling_for_template(DataDefCLASS *cls,
 // `allocator_traits<allocator<_Tp>>` partial spec be selected for
 // `allocator_traits<allocator<char>>` instead of falling to the primary template (the
 // `__detected_or_t<…>` machinery), which madc cannot reduce.
+// Outer-name equality for template-id unification. The pattern spells the
+// name as WRITTEN at its definition site — usually unqualified (`box<T>` in
+// lib, `ostreambuf_iterator<_CharT,_Traits>` in std::__1) — while the
+// concrete side is the argument's CANONICAL spelling, namespace-qualified
+// (`lib::box<long>`). A bare != therefore declined every cross-namespace
+// unify and fn-template deduction silently bailed ("undefined MIR import
+// __ns_lib_peek" with no FAILED line). An unqualified name matches a
+// qualified one whose LAST scope part is the same name — the
+// class_matches_friend_name suffix rule, applied symmetrically; leading cv
+// on the pattern's core is spelling, not name.
+static bool template_outer_names_match(std::string pouter,
+				       const std::string &couter)
+{
+    if ( pouter.compare(0, 6, "const ") == 0 )
+	pouter.erase(0, 6);
+    if ( pouter.compare(0, 9, "volatile ") == 0 )
+	pouter.erase(0, 9);
+    if ( pouter == couter )
+	return true;
+    if ( couter.size() > pouter.size()
+      && couter.compare(couter.size() - pouter.size(), pouter.size(),
+			pouter) == 0
+      && couter[couter.size() - pouter.size() - 1] == ':' )
+	return true;
+    if ( pouter.size() > couter.size()
+      && pouter.compare(pouter.size() - couter.size(), couter.size(),
+			couter) == 0
+      && pouter[pouter.size() - couter.size() - 1] == ':' )
+	return true;
+    return false;
+}
+
 bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	const std::vector<std::string> &spec_params,
 	const std::string &concrete_spelling,
@@ -25857,6 +25908,7 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	return false;
     if ( !split_template_id_spelling(concrete_spelling, couter, cargs) )
 	return false;
+    bool outer_match = template_outer_names_match(pouter, couter);
     // [temp.deduct.call]/4 derived-to-base: the pattern names a concrete template
     // (`_Tuple_impl`) the argument's class (`tuple<int*>`) doesn't directly
     // specialize, but DERIVES from a specialization of (tuple inherits
@@ -25864,8 +25916,8 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
     // derived template and its base have different arity (tuple<T> has 1 arg, its
     // base _Tuple_impl<0,T> has 2). The template-template-PARAMETER case (pouter is
     // a spec param, out_tmpl set — the allocator-rebind keystone) keeps same-arity
-    // matching and is handled in the `pouter != couter` block further down.
-    if ( pouter != couter )
+    // matching and is handled in the outer-mismatch block further down.
+    if ( !outer_match )
     {
 	bool pouter_is_param = false;
 	for ( size_t k = 0; k < spec_params.size(); ++k )
@@ -25897,7 +25949,7 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
     }
     else if ( pargs.size() != cargs.size() )
 	return false;
-    if ( pouter != couter )
+    if ( !outer_match )
     {
 	// The pattern's outer name may be a TEMPLATE-TEMPLATE PARAMETER of the
 	// spec (`__replace_first_arg<_Template<_Up>, _Tp>` matching the concrete
