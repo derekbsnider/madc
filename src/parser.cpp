@@ -37476,18 +37476,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    TokenBase *inner = pgm.nextToken();
 	    if ( inner && inner->id() == TokenID::tkStar )
 	    {
-		tn = pgm.nextToken();
-		if ( !is_contextual_identifier_token(tn) )
-		    pgm.Throw(tn) << "Expecting member name in function pointer class declarator" << flush;
-		std::string mname = contextual_identifier_name(tn);
-		tn = pgm.nextToken();
-		if ( !tn || tn->id() != TokenID::tkClBrk )
-		    pgm.Throw(tn ? tn : inner) << "Expected ')' after function pointer member name" << flush;
-		tn = pgm.nextToken();
-		if ( !tn || tn->id() != TokenID::tkOpBrk )
-		    pgm.Throw(tn ? tn : inner) << "Expected '(' after function pointer member name" << flush;
-		FuncDef *func = pgm.parseFnPtrParams(*cmember_dd);
-		cmember_dd = new DataDefFPTR(func);
+		// Same tail as the struct lanes — the ONE owner
+		// (parse_fnptr_member_tail) also consumes the pointer's own
+		// cv-qualifiers (`(*const __clone)`, function.h:500).
+		std::string mname;
+		cmember_dd = pgm.parse_fnptr_member_tail(*cmember_dd, mname,
+							 inner);
 
 		ddc->addMember(mname, *cmember_dd, 1);
 		if ( access_flags && !ddc->member_access.empty() )
@@ -39570,6 +39564,13 @@ DataDefFPTR *Program::parse_fnptr_member_tail(DataDef &returns,
 					      std::string &mname,
 					      TokenBase *open_tok)
 {
+    // `(*const name)` / `(*volatile name)` — cv-qualifiers on the POINTER
+    // itself ([dcl.ptr]/1) sit between the '*' and the declarator name.
+    // madc does not model member-pointer constness; consume them. libc++
+    // __functional/function.h:500: `void* (*const __clone)(const void*);`
+    while ( peekToken() && (peekToken()->id() == TokenID::tkCONST
+			 || peekToken()->id() == TokenID::tkVOLATILE) )
+	nextToken();
     TokenBase *tn = nextToken();
     if ( !is_contextual_identifier_token(tn) )
 	Throw(tn ? tn : open_tok) << "Expecting member name in function pointer struct declarator" << flush;

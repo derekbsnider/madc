@@ -1,0 +1,33 @@
+// A cv-qualifier on the POINTER of a function-pointer member sits between
+// the '*' and the declarator name ([dcl.ptr]/1): `RET (*const name)(params)`.
+// madc's fn-ptr member tail read the name immediately after '*', so the
+// const threw "Expecting member name in function pointer class declarator".
+// libc++ hits it at __functional/function.h:500:
+//	void* (*const __clone)(const void*);
+// — the <iostream> frontier under -stdlib=libc++ after the mutable fix.
+// The same tail is now ONE owner (parse_fnptr_member_tail) for the class
+// lane and both struct lanes; madc does not model member-pointer constness,
+// so the qualifier is consumed, not enforced.
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	7 1 1
+#include <cstdio>
+
+static void *idfn(const void *p) { return (void *)p; }
+
+struct P {
+	void *(*const clone)(const void *);	// the libc++ shape
+	void *(*plain)(const void *);		// control
+	int tag;
+};
+
+int main()
+{
+	P p = { idfn, idfn, 7 };
+	int v = 42;
+	void *a = p.clone(&v);
+	void *b = p.plain(&v);
+	printf("%d %d %d\n", p.tag,
+	       (int)(a == (void *)&v), (int)(b == (void *)&v));	// 7 1 1
+	return 0;
+}
