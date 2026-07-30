@@ -2177,6 +2177,16 @@ public:
 	block_typedef_shadows;
     void register_scoped_typedef(const std::string &alias, TokenDataType *tdt);
     void unwind_block_typedef_shadows(size_t depth, const char *site = "?");
+    // Struct-tag first declaration — the ONE mint recipe (incomplete
+    // DataDefSTRUCT + pack tap + struct_map + C++ bare-name registration).
+    // Consumers: TokenSTRUCT::parse's two forward-declaration arms and
+    // resolve_declared_type_token's elaborated-type-specifier miss
+    // ([basic.scope.pdecl]/7 — `wp<struct nat>` first-declares `nat`).
+    std::string scoped_struct_tag(const std::string &name);
+    TokenDataType *register_cpp_aggregate_name(const std::string &name,
+					       DataDefSTRUCT *sdd);
+    DataDefSTRUCT *mint_incomplete_struct_tag(const std::string &name,
+					      bool is_union);
     // Dedicated dense pool for the template-name domain (template/partial-spec/
     // alias/var-template/fn-template map keys). Separate from strpool so each
     // intern_keyed_map's _slot array stays sized to the small template-name set,

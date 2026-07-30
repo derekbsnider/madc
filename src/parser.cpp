@@ -8885,9 +8885,39 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    Throw(name_tb ? name_tb : tb)
 		<< "Expecting type name after elaborated type specifier" << flush;
 	}
+	// Bareness must be judged BEFORE the recursion: a qualified
+	// (`struct A::B`) or template-id (`struct V<T>`) form consumes
+	// stream tokens on its way to failing, so a post-failure peek
+	// would be looking at the wrong token.
+	bool bare_name = !(peekToken()
+			&& (peekToken()->id() == TokenID::tkNS
+			 || peekToken()->id() == TokenID::tkLT));
 	if ( TokenDataType *tdt = resolve_declared_type_token(name_tb,
 		consume_ns_tokens, allow_lazy_types) )
 	    return tdt;
+	// [basic.scope.pdecl]/7: an elaborated-type-specifier whose bare
+	// unqualified name finds no prior declaration FIRST-DECLARES the
+	// class in the smallest enclosing scope — libc++ relies on it with
+	// `operator=(const _If<_IsConst, struct __private_nat, ...>&)`
+	// (__bit_reference:883), where __private_nat is declared nowhere
+	// else. A qualified or template-id form that failed stays NULL.
+	if ( bare_name )
+	{
+	    std::string ename = contextual_identifier_name(name_tb);
+	    DataDefSTRUCT *sdd = mint_incomplete_struct_tag(ename,
+		    tb->id() == TokenID::tkUNION);
+	    flat_datatype_map_iter mi = datatype_map.find(ename);
+	    if ( mi != datatype_map.end()
+	      && &(*mi)->definition == static_cast<DataDef *>(sdd) )
+		return *mi;
+	    // C mode: the bare name is deliberately NOT a type name — hand
+	    // back a detached type token carrying the minted incomplete tag.
+	    TokenDataType *tdt = new TokenDataType(ename.c_str(), *sdd);
+	    tdt->file = name_tb->file;
+	    tdt->line = name_tb->line;
+	    tdt->column = name_tb->column;
+	    return tdt;
+	}
 	return NULL;
     }
     // Leading `::` — the global-scope qualifier ([namespace.qual]):
@@ -32847,6 +32877,63 @@ TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dd
     return tn;
 }
 
+// A struct tag declared inside a function body is keyed function-scoped so it
+// cannot collide with (or shadow) a file-scope tag of the same name.
+std::string Program::scoped_struct_tag(const std::string &name)
+{
+    TokenCpnd *scope = compounds.empty() ? NULL : compounds.top();
+    if ( scope && scope != tkProgram && !cur_func_name.empty() )
+	return cur_func_name + "::" + name;
+    return name;
+}
+
+// C++ only: an aggregate's tag IS a type name — register it in the flat
+// datatype map (and the namespace-qualified map) so the bare name resolves.
+TokenDataType *Program::register_cpp_aggregate_name(const std::string &name,
+						    DataDefSTRUCT *sdd)
+{
+    if ( !sdd || is_c_mode() )
+	return NULL;
+    if ( sdd->canonical_cpp_spelling().empty() )
+    {
+	// An instantiated STRUCT template (`myalloc<int>`) must carry its
+	// bracketed canonical spelling just like an instantiated class
+	// (mirrors the TokenCLASS path), so partial-spec matching can later
+	// decompose it (e.g. template-template-param deduction of
+	// `__replace_first_arg<_Template<_Up>, _Tp>`). Falls back to
+	// namespace::name for an ordinary (non-instantiated) C++ struct.
+	if ( instantiating_spelling_applies_here() )
+	    sdd->set_canonical_spelling(instantiating_canonical_spelling);
+	else if ( !current_namespace().empty() )
+	    sdd->set_canonical_spelling(current_namespace() + "::" + name);
+    }
+    pack_tap_type(name);	// B4a: decl-index tap (C++ aggregate name)
+    TokenDataType *tdt_ = NULL;
+    flat_datatype_map_iter existing = datatype_map.find(name);
+    if ( existing != datatype_map.end()
+      && &(*existing)->definition == sdd )
+	tdt_ = (*existing);
+    else
+    {
+	tdt_ = new TokenDataType(name.c_str(), *sdd);
+	datatype_map[name] = tdt_;
+    }
+    if ( !current_namespace().empty() )
+	namespace_datatype_map[current_namespace()][name] = tdt_;
+    return tdt_;
+}
+
+DataDefSTRUCT *Program::mint_incomplete_struct_tag(const std::string &name,
+						   bool is_union)
+{
+    DataDefSTRUCT *fwd = new DataDefSTRUCT(name, 0);
+    fwd->union_layout = is_union;
+    pack_tap_struct(scoped_struct_tag(name));	// B4a tap
+    struct_map.set(scoped_struct_tag(name), fwd);
+    register_cpp_aggregate_name(name, fwd);
+    return fwd;
+}
+
 TokenBase *TokenSTRUCT::parse(Program &pgm)
 {
     TokenIdent *tag = NULL;
@@ -32863,16 +32950,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( !(tn=pgm.peekToken()) )
 	pgm.Throw << "Unexpected end of input" << flush;
 
-    auto scoped_struct_tag = [&](const std::string &name) -> std::string
-    {
-	TokenCpnd *scope = pgm.compounds.empty() ? NULL : pgm.compounds.top();
-	if ( scope && scope != pgm.tkProgram && !pgm.cur_func_name.empty() )
-	    return pgm.cur_func_name + "::" + name;
-	return name;
-    };
     auto find_visible_struct_tag = [&](const std::string &name) -> datadef_map_citer
     {
-	std::string scoped = scoped_struct_tag(name);
+	std::string scoped = pgm.scoped_struct_tag(name);
 	if ( scoped != name )
 	{
 	    datadef_map_citer scoped_it = pgm.struct_map.find(scoped);
@@ -32925,35 +33005,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     auto register_cpp_aggregate_name = [&](const std::string &name,
 					   DataDefSTRUCT *sdd) -> TokenDataType *
     {
-	if ( !sdd || pgm.is_c_mode() )
-	    return NULL;
-	if ( sdd->canonical_cpp_spelling().empty() )
-	{
-	    // An instantiated STRUCT template (`myalloc<int>`) must carry its
-	    // bracketed canonical spelling just like an instantiated class
-	    // (mirrors the TokenCLASS path), so partial-spec matching can later
-	    // decompose it (e.g. template-template-param deduction of
-	    // `__replace_first_arg<_Template<_Up>, _Tp>`). Falls back to
-	    // namespace::name for an ordinary (non-instantiated) C++ struct.
-	    if ( pgm.instantiating_spelling_applies_here() )
-		sdd->set_canonical_spelling(pgm.instantiating_canonical_spelling);
-	    else if ( !pgm.current_namespace().empty() )
-		sdd->set_canonical_spelling(pgm.current_namespace() + "::" + name);
-	}
-	pgm.pack_tap_type(name);	// B4a: decl-index tap (C++ aggregate name)
-	TokenDataType *tdt_ = NULL;
-	flat_datatype_map_iter existing = pgm.datatype_map.find(name);
-	if ( existing != pgm.datatype_map.end()
-	  && &(*existing)->definition == sdd )
-	    tdt_ = (*existing);
-	else
-	{
-	    tdt_ = new TokenDataType(name.c_str(), *sdd);
-	    pgm.datatype_map[name] = tdt_;
-	}
-	if ( !pgm.current_namespace().empty() )
-	    pgm.namespace_datatype_map[pgm.current_namespace()][name] = tdt_;
-	return tdt_;
+	return pgm.register_cpp_aggregate_name(name, sdd);
     };
 
     // check for __attribute__((packed)) before or after tag
@@ -33127,15 +33179,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	{
 	    DataDefSTRUCT *fwd;
 	    if ( dmi == pgm.struct_map.end() )
-	    {
-		fwd = new DataDefSTRUCT(tag->spelling(), 0);
-		fwd->union_layout = is_union;
-		pgm.pack_tap_struct(scoped_struct_tag(tag->spelling()));	// B4a tap
-		pgm.struct_map.set(scoped_struct_tag(tag->spelling()), fwd);
-	    }
+		fwd = pgm.mint_incomplete_struct_tag(tag->spelling(), is_union);
 	    else
+	    {
 		fwd = static_cast<DataDefSTRUCT *>(dmi->second);
-	    register_cpp_aggregate_name(tag->spelling(), fwd);
+		register_cpp_aggregate_name(tag->spelling(), fwd);
+	    }
 	    pgm.nextToken(); // consume ';'
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->spelling() << endl);
 	    // Do NOT record a pure forward declaration into top_decls: an
@@ -33154,11 +33203,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	if ( dmi == pgm.struct_map.end() )
 	{
 	    // create placeholder struct (size 0, no members) for forward declaration
-	    DataDefSTRUCT *fwd = new DataDefSTRUCT(tag->spelling(), 0);
-	    fwd->union_layout = is_union;
-	    pgm.pack_tap_struct(scoped_struct_tag(tag->spelling()));	// B4a tap
-	    pgm.struct_map.set(scoped_struct_tag(tag->spelling()), fwd);
-	    register_cpp_aggregate_name(tag->spelling(), fwd);
+	    pgm.mint_incomplete_struct_tag(tag->spelling(), is_union);
 	    dmi = find_visible_struct_tag(tag->spelling());
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->spelling() << endl);
 	}
@@ -33227,7 +33272,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     std::string tag_store_key = tag ? tag->spelling() : "";
     if ( tag )
     {
-	std::string scoped = scoped_struct_tag(tag->spelling());
+	std::string scoped = pgm.scoped_struct_tag(tag->spelling());
 	if ( scoped != tag->spelling() && pgm.struct_map.find(tag->spelling()) != pgm.struct_map.end() )
 	    tag_store_key = scoped;
 	// A nested struct defined inside a CLASS body whose bare tag already
