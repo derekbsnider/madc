@@ -4094,6 +4094,86 @@ static bool self_template_id_keep_distinct(
     return true;
 }
 
+static bool member_template_param_intro(TokenBase *t);   // defined with the class parser
+
+// A member `template <...>` head inside an instantiated class's body: collect
+// the member template's own type-param names and return the index one past its
+// declaration extent (the top-level `;` that ends it), or 0 when the head is
+// not one this rule covers. Only member CLASS templates arm the rule — a
+// nested TemplateDef's body is captured RAW at the re-parse and resolved no
+// earlier than its own instantiation, so keeping a self-name spelled inside
+// its extent is resolution-safe. A member ALIAS template's TARGET is examined
+// during the class re-parse itself (libstdc++ allocator_traits' partial spec
+// carries `using rebind_traits = allocator_traits<rebind_alloc<_Up>>;` — kept
+// spelled, the unresolvable _Up detonated the <string> freeze and ate every
+// member after it), and a member FUNCTION template's param-list SFINAE
+// defaults are eagerly re-parsed at registration (`_UseOtherCtor<_Tuple,
+// tuple<_Up>>` — see self_template_id_keep_distinct's collapse guard), so
+// both stay on the collapse arm.
+static size_t member_class_template_extent(
+	const std::vector<TokenBase *> &tokens, size_t template_index,
+	std::set<std::string> &param_names)
+{
+    size_t i = template_index + 1;
+    if ( i >= tokens.size() || !tokens[i] || tokens[i]->id() != TokenID::tkLT )
+	return 0;
+    DelimDepth d;
+    i += delim_scan_step(tokens, i, d);   // the opening `<` (NULL prev: opens)
+    bool name_position = false;           // depth-1 token right after class/typename
+    // Collect LOCALLY; publish only on success — a rejected head (a friend /
+    // function template) must not leave stale params armed with no extent, or
+    // the next self template-id in an eagerly-parsed friend DECLARATION keeps
+    // spelled and detonates the re-parse (__new_allocator's operator== ate
+    // max_size and everything after it in the <string> freeze).
+    std::set<std::string> collected;
+    while ( i < tokens.size() && d.angle > 0 )
+    {
+	TokenBase *t = tokens[i];
+	if ( d.angle == 1 && name_position && t
+	  && is_contextual_identifier_token(t) )
+	    collected.insert(contextual_identifier_name(t));
+	name_position = d.angle == 1 && member_template_param_intro(t);
+	i += delim_scan_step(tokens, i, d);
+    }
+    if ( d.angle > 0 || i >= tokens.size() || !tokens[i] )
+	return 0;   // unbalanced head: leave the collapse arm untouched
+    if ( tokens[i]->id() != TokenID::tkSTRUCT
+      && tokens[i]->id() != TokenID::tkCLASS
+      && tokens[i]->id() != TokenID::tkUNION )
+	return 0;   // member function/alias template (or friend): collapse as before
+    while ( i < tokens.size() )
+    {
+	if ( tokens[i] && tokens[i]->id() == TokenID::tkSemi && d.top() )
+	{
+	    param_names.swap(collected);
+	    return i + 1;
+	}
+	i += delim_scan_step(tokens, i, d);
+    }
+    return 0;
+}
+
+// Do the arguments of the template-id opening at tokens[lt_index] (a tkLT)
+// reference any of `names`?
+static bool template_id_args_reference_names(
+	const std::vector<TokenBase *> &tokens, size_t lt_index,
+	const std::set<std::string> &names)
+{
+    if ( names.empty() || lt_index >= tokens.size()
+      || !tokens[lt_index] || tokens[lt_index]->id() != TokenID::tkLT )
+	return false;
+    DelimDepth d;
+    size_t i = lt_index + delim_scan_step(tokens, lt_index, d);
+    while ( i < tokens.size() && d.angle > 0 )
+    {
+	if ( tokens[i] && is_contextual_identifier_token(tokens[i])
+	  && names.count(contextual_identifier_name(tokens[i])) )
+	    return true;
+	i += delim_scan_step(tokens, i, d);
+    }
+    return false;
+}
+
 TokenBase *Program::consume_template_type_arg_qualifiers(TokenBase *tb,
 						       std::string &spelling)
 {
@@ -7372,11 +7452,25 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // ctor body / mem-init (`_Inherited(__tail...)`) must also vanish, else the
     // elided name is "undeclared". Recorded by the empty-param-pack elision.
     std::set<std::string> empty_value_pack_names;
+    // Member CLASS/ALIAS template extent (member_class_template_extent): while
+    // bi is inside one, a self template-id whose args reference the MEMBER's
+    // own params keeps its spelled form instead of collapsing.
+    std::set<std::string> member_tpl_params;
+    size_t member_tpl_extent_end = 0;
     for ( size_t bi = 0; bi < td.body.size(); ++bi )
     {
 	if ( pack_pattern_skip_dots.count(bi) )
 	    continue;
 	TokenBase *bt = td.body[bi];
+	if ( member_tpl_extent_end && bi >= member_tpl_extent_end )
+	{
+	    member_tpl_params.clear();
+	    member_tpl_extent_end = 0;
+	}
+	if ( !member_tpl_extent_end && bi > body_brace_index
+	  && bt && bt->id() == TokenID::tkTEMPLATE )
+	    member_tpl_extent_end =
+		member_class_template_extent(td.body, bi, member_tpl_params);
 	if ( bt->type() == TokenType::ttIdentifier )
 	{
 	    const std::string &s = ((TokenIdent *)bt)->spelling();
@@ -7600,7 +7694,37 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    bool self_template_body_distinct =
 			!self_template_base && self_as_template
 			&& self_template_id_keep_distinct(td, td.body, bi + 1);
-		    if ( self_template_base || self_template_body_distinct )
+		    // A self template-id whose args reference the enclosing
+		    // member CLASS/ALIAS template's OWN params (`alloc9<U>` in
+		    // `template<class U> struct rebind`) names a specialization
+		    // that exists only once the MEMBER instantiates — keep the
+		    // name and its `<...>` spelled so the member's own
+		    // substitution resolves it then. Collapsing it bound
+		    // libc++'s `allocator<T>::rebind<U>::other` to the CURRENT
+		    // instantiation: the __tree node allocator silently became
+		    // the VALUE allocator (tests/testmemtplrebind.mad).
+		    bool self_template_member_distinct =
+			!self_template_base && self_as_template
+			&& template_id_args_reference_names(td.body, bi + 1,
+							    member_tpl_params);
+		    if ( self_template_member_distinct )
+		    {
+			static const char *mdp = ::getenv("MADC_MEMDIST_PROBE");
+			if ( mdp )
+			{
+			    std::cerr << "[memdist] " << td.class_name
+				<< " keeps self template-id at bi=" << bi
+				<< " params={";
+			    for ( std::set<std::string>::const_iterator pi =
+				    member_tpl_params.begin();
+				  pi != member_tpl_params.end(); ++pi )
+				std::cerr << (pi == member_tpl_params.begin()
+					      ? "" : ",") << *pi;
+			    std::cerr << "}" << std::endl;
+			}
+		    }
+		    if ( self_template_base || self_template_body_distinct
+		      || self_template_member_distinct )
 		    {
 			inj.push_back(bt->clone());   // keep class_name; args substitute below
 			continue;

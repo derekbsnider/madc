@@ -1,0 +1,27 @@
+#!../bin/madc
+// A self-name template-id inside a member CLASS template's extent whose
+// args reference the MEMBER's own params keeps its spelled form:
+// rebind<ND>::other names alloc9<ND>, NOT the current instantiation.
+// poke()'s eager body (user-file) makes alloc9 pattern-INELIGIBLE, forcing
+// the legacy token-injection lane where the collapse lived — the libc++
+// allocator<T>::rebind<U>::other shape that turned the __tree node
+// allocator into the VALUE allocator. (Member ALIAS templates stay on the
+// collapse arm: their targets are examined during the class re-parse.)
+// g++ and clang++ print "node".
+#include <cstdio>
+template <class K, class T> struct vt2 { };
+template <class T, class V> struct node2 { T v; };
+typedef vt2<const int, int> VT;
+typedef node2<VT, void *> ND;
+template <class T> struct alloc9 {
+    template <class U> struct rebind { typedef alloc9<U> other; };
+    int poke() { return 1; }
+};
+template <class X> struct name_of { static const char *n() { return "other"; } };
+template <> struct name_of<alloc9<ND> > { static const char *n() { return "node"; } };
+template <> struct name_of<alloc9<VT> > { static const char *n() { return "value"; } };
+int main() {
+    typedef alloc9<VT>::rebind<ND>::other NA;
+    printf("%s\n", name_of<NA>::n());
+    return 0;
+}
