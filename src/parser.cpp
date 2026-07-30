@@ -41845,53 +41845,83 @@ static bool skipped_template_outofline_member(
     return true;
 }
 
-// User-parameter ARITY of an out-of-line member def's declarator: the number
-// of top-level parameters inside the declarator's `(...)`. `()` and `(void)`
-// are both zero. Returns (size_t)-1 when no declarator parameter list is
-// found. The plain-ctor attach arm uses it to pick the right ctor overload —
-// the same depth of disambiguation the member-template arm gets from its
-// template-param count; same-arity overloads differing only by type are not
-// separated here.
-static size_t outofline_declarator_param_arity(
-	const std::vector<TokenBase *> &decl)
+// Top-level parameter token REGIONS of an out-of-line member def's declarator
+// `(...)`. `()` and `(void)` both yield zero regions. Returns false when no
+// declarator parameter list is found. One walk owns the declarator param
+// list: the arity wrapper below (the plain-ctor attach arm) and the
+// overload-signature gate in register_outofline_member_instantiations both
+// read it.
+static bool outofline_declarator_param_regions(
+	const std::vector<TokenBase *> &decl,
+	std::vector<std::vector<TokenBase *> > &params)
 {
     size_t ni = skipped_template_function_declarator_name_index(decl, NULL);
     if ( ni >= decl.size() )
-	return (size_t)-1;
+	return false;
     size_t op = ni + 1;
     while ( op < decl.size()
 	 && !(decl[op] && decl[op]->id() == TokenID::tkOpBrk) )
 	++op;
     if ( op >= decl.size() )
-	return (size_t)-1;
+	return false;
+    // Scan INSIDE the '(' with the declarator's own paren NOT counted,
+    // exactly like the stream twin (split_upcoming_function_params).
+    // DelimDepth deliberately does not track angles inside parens (see
+    // angle_open_context), so a walk that counted the declarator's '('
+    // would read the comma in `buf<char_type, traits_type>` as a parameter
+    // separator and truncate the first region to `buf < char_type`.
     DelimDepth d;
-    size_t i = op + delim_scan_step(decl, op, d);	// consume '(' — d.paren == 1
-    size_t commas = 0, content = 0;
-    TokenBase *first_content = NULL;
-    while ( i < decl.size() && d.paren > 0 )
+    size_t i = op + 1;
+    std::vector<TokenBase *> cur;
+    while ( i < decl.size() )
     {
 	TokenBase *t = decl[i];
-	bool at_top = d.paren == 1 && d.square == 0 && d.brace == 0
-		   && d.angle == 0;
-	if ( t && at_top && t->id() == TokenID::tkComma )
-	    ++commas;
-	else if ( t && !(at_top && t->id() == TokenID::tkClBrk) )
+	if ( t && d.top() )
 	{
-	    if ( !content )
-		first_content = t;
-	    ++content;
+	    if ( t->id() == TokenID::tkClBrk )
+		break;					// the declarator's own ')'
+	    if ( t->id() == TokenID::tkComma )
+	    {
+		params.push_back(cur);
+		cur.clear();
+		++i;
+		continue;
+	    }
 	}
-	i += delim_scan_step(decl, i, d);
+	size_t n = delim_scan_step(decl, i, d);
+	for ( size_t k = 0; k < n && i + k < decl.size(); ++k )
+	    if ( decl[i + k] )
+		cur.push_back(decl[i + k]);
+	i += n;
     }
-    if ( !content )
-	return 0;
-    if ( commas == 0 && content == 1 && first_content
-      && first_content->type() == TokenType::ttDataType
-      && ((TokenDataType *)first_content)->definition.rawtype()
+    if ( !cur.empty() )
+	params.push_back(cur);
+    if ( params.size() == 1 && params[0].size() == 1 && params[0][0]
+      && params[0][0]->type() == TokenType::ttDataType
+      && ((TokenDataType *)params[0][0])->definition.rawtype()
 	 == DataType::dtVOID )
-	return 0;
-    return commas + 1;
+	params.clear();
+    return true;
 }
+
+// User-parameter ARITY of an out-of-line member def's declarator. Returns
+// (size_t)-1 when no declarator parameter list is found. The plain-ctor
+// attach arm uses it to pick the right ctor overload — the same depth of
+// disambiguation the member-template arm gets from its template-param count;
+// same-arity ctor overloads differing only by type are not separated here.
+static size_t outofline_declarator_param_arity(
+	const std::vector<TokenBase *> &decl)
+{
+    std::vector<std::vector<TokenBase *> > params;
+    if ( !outofline_declarator_param_regions(decl, params) )
+	return (size_t)-1;
+    return params.size();
+}
+
+// Defined with the parse-time method-definition matcher (fe50bc3c); the
+// instantiation-side attach below adopts the same comparator.
+static bool function_explicit_params_match(FuncDef *fd,
+					   const std::vector<ParsedParamSig> &sigs);
 
 // `template<...> class Owner<T>::Nested { ... };` — an out-of-line NESTED-CLASS
 // definition ([class.nest] + [temp]), shaped [class|struct, Owner, <...>, ::,
@@ -42121,6 +42151,114 @@ void Program::register_outofline_member_instantiations(
 	// user-parameter arity; compute it once per def.
 	size_t def_arity = (def_is_ctor && !def.is_member_template)
 	    ? outofline_declarator_param_arity(def.decl) : (size_t)-1;
+
+	std::map<std::string, TokenDataType *> tsubst;
+	std::map<std::string, std::vector<TokenBase *> > toksubst;
+	for ( size_t i = 0; i < def.typeparams.size()
+			 && i < arg_types_by_slot.size(); ++i )
+	{
+	    if ( arg_types_by_slot[i] )
+		tsubst[def.typeparams[i]] = arg_types_by_slot[i];
+	    else if ( i < arg_tokens_by_slot.size() )
+		toksubst[def.typeparams[i]] = arg_tokens_by_slot[i];
+	}
+
+	std::vector<TokenBase *> sub;
+	for ( size_t bi = 0; bi < def.decl.size(); ++bi )
+	{
+	    TokenBase *bt = def.decl[bi];
+	    if ( !bt ) { sub.push_back(NULL); continue; }
+	    if ( bt->type() == TokenType::ttIdentifier )
+	    {
+		const std::string &s = ((TokenIdent *)bt)->spelling();
+		std::map<std::string, TokenDataType *>::iterator si =
+		    tsubst.find(s);
+		if ( si != tsubst.end() )
+		    { sub.push_back(si->second->clone()); continue; }
+		std::map<std::string, std::vector<TokenBase *> >::iterator ti =
+		    toksubst.find(s);
+		if ( ti != toksubst.end() )
+		{
+		    for ( size_t ni2 = 0; ni2 < ti->second.size(); ++ni2 )
+			sub.push_back(ti->second[ni2]
+				      ? ti->second[ni2]->clone() : NULL);
+		    continue;
+		}
+		if ( s == class_name )
+		{
+		    TokenIdent *ren = (TokenIdent *)bt->clone();
+		    set_token_spelling(ren, registered_mangled);
+		    sub.push_back(ren);
+		    if ( bi + 1 < def.decl.size() && def.decl[bi + 1]
+		      && def.decl[bi + 1]->id() == TokenID::tkLT )
+			bi = template_id_suffix_end(def.decl, bi + 1);
+		    continue;
+		}
+	    }
+	    sub.push_back(bt->clone());
+	}
+
+	// Signature gate for OVERLOADED non-ctor members: the name+constness
+	// match below cannot separate same-name overloads, and defs are NOT
+	// guaranteed to appear in declaration order (libc++ <ostream> declares
+	// operator<< seventeen times and DEFINES the streambuf* overload
+	// FIRST), so first-available binding attaches every body one overload
+	// over — `cout << 42` then materializes the streambuf* body with an
+	// int32_t parameter. Resolve THIS def's declarator signature from the
+	// SUBSTITUTED tokens, in the instantiated class's scope
+	// ([basic.scope.class]/1 — a parameter may name a nested typedef), and
+	// bind the overload whose signature the def repeats — the same rule
+	// the parse-time matcher (find_method_definition_target) applies. An
+	// unresolved signature keeps the established first-available order.
+	std::vector<ParsedParamSig> def_sigs;
+	bool def_sigs_ok = false;
+	if ( !def_is_ctor && !def.is_member_template )
+	{
+	    size_t same_name = 0;
+	    for ( Variable *cand : ddc->methods )
+	    {
+		FuncDef *cfd = cand && cand->data
+		    ? dynamic_cast<FuncDef *>(cand->type) : NULL;
+		if ( cfd && cfd->method_display_name == def.member_name )
+		    ++same_name;
+	    }
+	    std::vector<std::vector<TokenBase *> > pregions;
+	    if ( same_name > 1
+	      && outofline_declarator_param_regions(sub, pregions) )
+	    {
+		static const char *oolsig = ::getenv("MADC_XTEST_OOLSIG");
+		class_scope_stack.push_back(ddc);
+		def_sigs_ok = true;
+		for ( size_t pi = 0; pi < pregions.size() && def_sigs_ok; ++pi )
+		{
+		    if ( oolsig && *oolsig )
+		    {
+			std::string sp;
+			for ( size_t xi = 0; xi < pregions[pi].size(); ++xi )
+			    { sp += overload_token_spelling(pregions[pi][xi]); sp += ' '; }
+			fprintf(stderr, "[OOLSIG] cls=%s member=%s region[%zu]= %s\n",
+				ddc->name.c_str(), def.member_name.c_str(), pi, sp.c_str());
+		    }
+		    ParsedParamSig sig;
+		    if ( parse_param_sig_from_tokens(pregions[pi], sig) )
+			def_sigs.push_back(sig);
+		    else
+			def_sigs_ok = false;
+		    if ( oolsig && *oolsig )
+			fprintf(stderr, "[OOLSIG]   -> ok=%d base=%s ptr=%d ref=%d const=%d\n",
+				(int)def_sigs_ok,
+				def_sigs_ok && def_sigs.back().base
+				    ? def_sigs.back().base->name.c_str() : "-",
+				def_sigs_ok ? def_sigs.back().pointer_depth : 0,
+				def_sigs_ok ? (int)def_sigs.back().is_ref : -1,
+				def_sigs_ok ? (int)def_sigs.back().is_const : -1);
+		}
+		if ( !class_scope_stack.empty()
+		  && class_scope_stack.back() == ddc )
+		    class_scope_stack.pop_back();
+	    }
+	}
+
 	Variable *mvar = NULL;
 	for ( Variable *cand : ddc->methods )
 	{
@@ -42171,11 +42309,17 @@ void Program::register_outofline_member_instantiations(
 		if ( cfd->is_const_method != def_const ) continue;
 		if ( def.is_member_template && !cfd->member_template_decl.empty() )
 		    continue;
+		if ( def_sigs_ok && !function_explicit_params_match(cfd, def_sigs) )
+		    continue;
 	    }
 	    if ( deferred_lazy_bodies.count(cand->name) ) continue;
 	    mvar = cand; break;
 	}
-	if ( !mvar && !def_is_ctor )
+	// When the def's signature RESOLVED and matched no overload, DECLINE:
+	// findMethod would hand back an arbitrary same-name overload this loop
+	// just rejected, and binding the body to it is a silent wrong answer —
+	// strictly worse than the attributable undefined-import this leaves.
+	if ( !mvar && !def_is_ctor && !def_sigs_ok )
 	    mvar = ddc->findMethod(def.member_name);
 #if MADC_DEBUG_FNTPL
 	if ( dbg_def )
@@ -42194,52 +42338,6 @@ void Program::register_outofline_member_instantiations(
 	// Already materialized (a re-instantiation, or an overload already bound)?
 	if ( deferred_lazy_bodies.count(mvar->name) )
 	    continue;
-
-	std::map<std::string, TokenDataType *> tsubst;
-	std::map<std::string, std::vector<TokenBase *> > toksubst;
-	for ( size_t i = 0; i < def.typeparams.size()
-			 && i < arg_types_by_slot.size(); ++i )
-	{
-	    if ( arg_types_by_slot[i] )
-		tsubst[def.typeparams[i]] = arg_types_by_slot[i];
-	    else if ( i < arg_tokens_by_slot.size() )
-		toksubst[def.typeparams[i]] = arg_tokens_by_slot[i];
-	}
-
-	std::vector<TokenBase *> sub;
-	for ( size_t bi = 0; bi < def.decl.size(); ++bi )
-	{
-	    TokenBase *bt = def.decl[bi];
-	    if ( !bt ) { sub.push_back(NULL); continue; }
-	    if ( bt->type() == TokenType::ttIdentifier )
-	    {
-		const std::string &s = ((TokenIdent *)bt)->spelling();
-		std::map<std::string, TokenDataType *>::iterator si =
-		    tsubst.find(s);
-		if ( si != tsubst.end() )
-		    { sub.push_back(si->second->clone()); continue; }
-		std::map<std::string, std::vector<TokenBase *> >::iterator ti =
-		    toksubst.find(s);
-		if ( ti != toksubst.end() )
-		{
-		    for ( size_t ni2 = 0; ni2 < ti->second.size(); ++ni2 )
-			sub.push_back(ti->second[ni2]
-				      ? ti->second[ni2]->clone() : NULL);
-		    continue;
-		}
-		if ( s == class_name )
-		{
-		    TokenIdent *ren = (TokenIdent *)bt->clone();
-		    set_token_spelling(ren, registered_mangled);
-		    sub.push_back(ren);
-		    if ( bi + 1 < def.decl.size() && def.decl[bi + 1]
-		      && def.decl[bi + 1]->id() == TokenID::tkLT )
-			bi = template_id_suffix_end(def.decl, bi + 1);
-		    continue;
-		}
-	    }
-	    sub.push_back(bt->clone());
-	}
 
 	// An out-of-line member TEMPLATE (two-level head): attach its body to the
 	// monomorphized member's member_template_decl so the sub-gap-5 per-call path
