@@ -4976,6 +4976,7 @@ public:
     std::vector<TokenBase *> collect_template_class_prefix();
     TokenBase *consume_template_type_arg_qualifiers(TokenBase *tb,
 						    std::string &spelling);
+    void consume_trailing_type_arg_qualifiers(std::string &spelling);
     TokenDataType *instantiate_template_use(const std::string &tname,
 					    TokenBase *tb,
 					    const std::string &ns_hint = std::string(),

@@ -1,0 +1,20 @@
+#!../bin/madc
+// EAST-cv in a template-argument list: `addp_t<T const>` — libc++
+// optional:790's `add_pointer_t<value_type const>` operator-> return.
+// The typed argument lane consumed only LEADING cv; the trailing `const`
+// reached the separator check and threw "Expecting ',' or '>'".
+#include <cstdio>
+template <class T> struct addp { typedef T *type; };
+template <class T> using addp_t = typename addp<T>::type;
+template <class T> struct opt2 {
+    T v;
+    addp_t<T const> getc() const { return &v; }
+    addp_t<T> get() { return &v; }
+};
+int main()
+{
+    opt2<int> o;
+    o.v = 3;
+    printf("%d %d\n", *o.get(), *o.getc());
+    return 0;
+}

@@ -4067,6 +4067,25 @@ TokenBase *Program::consume_template_type_arg_qualifiers(TokenBase *tb,
     return tb;
 }
 
+// EAST-cv twin of the owner above: qualifiers written AFTER the base type
+// (`T const` — libc++ optional's `add_pointer_t<value_type const>`), consumed
+// from the stream between the resolved type and any `*`/`&` declarator
+// suffixes, folded into the SAME leading spelling so east and west args spell
+// (and key) identically.
+void Program::consume_trailing_type_arg_qualifiers(std::string &spelling)
+{
+    while ( peekToken() && is_type_qualifier_token(peekToken()) )
+    {
+	TokenBase *q = nextToken();
+	if ( q->id() == TokenID::tkCONST )
+	    spelling += "const ";
+	else if ( q->id() == TokenID::tkVOLATILE )
+	    spelling += "volatile ";
+	else if ( q->id() == TokenID::tkRESTRICT )
+	    spelling += "restrict ";
+    }
+}
+
 // GCC's __integer_pack(N) builtin — the libstdc++-13 GCC-path index-sequence
 // primitive (bits/utility.h: make_integer_sequence / _Build_index_tuple). It is
 // valid ONLY as the entire pattern of a template-argument pack expansion
@@ -8265,6 +8284,10 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    TokenDataType *adt = resolve_declared_type_token(at, true, true);
 	    if ( !adt )
 		Throw(at) << "Expecting a type argument to " << tname << "<>" << flush;
+	// East-cv between the base type and any declarator suffix
+	// (`value_type const`, optional:790) — same owner-pair as the leading
+	// consume above; without it the separator read the `const` and threw.
+	consume_trailing_type_arg_qualifiers(cv_spelling);
 	adt = fold_template_arg_declarator(adt, at);
 	args.push_back(adt);
 	arg_spellings.push_back(template_type_arg_spelling(adt, cv_spelling));
