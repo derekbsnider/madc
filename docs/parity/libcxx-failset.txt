@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  b53f34ab (2026-07-30) on feature/libcxx-string2-claude
-# Result:       727 passed / 118 failed / 0 timed out / 10 skipped
+# Measured at:  1f00fc64 (2026-07-30) on feature/libcxx-string2-claude
+# Result:       731 passed / 117 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -84,6 +84,19 @@
 #                         sites), multi-word builtin spellings in the canonical
 #                         resolver. Remaining 118: string operator+ body route
 #                         (leg-14 red, task #64) + the residual set below.
+#   1f00fc64  731 / 117   testcstdio FIXED, ZERO regressed (comm-diffed both
+#                         ways); +3 were NEW TESTS. The string operator+ chain
+#                         landed and libcxx_gate leg-14 is GREEN (fulltest
+#                         FULLY green, 846/0): friend-specialization operator
+#                         declarator grant (@feb44ed0), by-value class
+#                         operator-result materialization (@6d377d4d),
+#                         --emit=c11 bit-field widths (@848df89b), and the
+#                         ROOT: an empty non-primary base lays out at Itanium
+#                         offset 0 (@1f00fc64). __compressed_pair's allocator
+#                         elem sat ONE PAST the 24-byte string; every
+#                         __second()/__alloc() access was OOB (ASan-proven) —
+#                         std::string c = a + b returned c.size()==3 SILENTLY.
+#                         Now: plusrun 'hello 5', smoke 'hello 42' intact.
 test.mad
 test4.mad
 test5.mad
@@ -103,7 +116,6 @@ testclassstaticitanium.mad
 testcompare_realhdr.mad
 testconstructible.mad
 testcontainerdtor.mad
-testcstdio.mad
 testctorstring.mad
 testdefaultedcmp_realhdr.mad
 testdefer.mad
