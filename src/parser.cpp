@@ -44117,6 +44117,9 @@ static bool call_involves_placeholder(TokenCallFunc *tc)
 	return is_type_dependent(tc);
 }
 
+static bool free_operator_concrete_param_matches(Program &pgm,
+		const std::string &sp, DataDef *arg_core);
+
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc,
 	std::vector<DataDef *> *type_args_out = NULL,
@@ -44542,7 +44545,18 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	if ( r < 0 )
 	    return false;
 	if ( r == 0 )
+	{
+	    // Concrete parameter (names no template param): the candidate is
+	    // viable only when the argument can actually BE that type — the
+	    // same rule the free-operator walker applies (one owner:
+	    // free_operator_concrete_param_matches). Without it libc++'s
+	    // operator<<(basic_ostream<char,_Traits>&, char) — registered
+	    // before the const char* sibling — claimed `cout << "hello "`
+	    // through this lane and truncated the pointer to one char.
+	    if ( !free_operator_concrete_param_matches(pgm, sp, deduce_dd) )
+		return false;
 	    continue;
+	}
 	if ( binding.find(tp) == binding.end() )
 	    binding[tp] = dd;
     }
@@ -45854,6 +45868,26 @@ static std::string spelling_strip_spaces(const std::string &s)
 static TokenDataType *resolve_canonical_type_spelling(Program &pgm,
 						      const std::string &spelling)
 {
+    // Builtin scalars FIRST, against a space-NORMALIZED (not stripped) form:
+    // the one builtin table (resolve_builtin_type_spelling) keys multi-word
+    // spellings ("signed char", "unsigned long long") that the full strip
+    // below destroys ("signedchar" resolves nowhere, and the miss read as
+    // "cannot disprove" in free_operator_concrete_param_matches — libc++'s
+    // operator<<(..., signed char) claimed a const char* argument).
+    {
+	std::string norm;
+	for ( size_t i = 0; i < spelling.size(); ++i )
+	{
+	    char c = spelling[i];
+	    if ( c == ' ' && (norm.empty() || norm.back() == ' ') )
+		continue;
+	    norm += c;
+	}
+	while ( !norm.empty() && norm.back() == ' ' )
+	    norm.pop_back();
+	if ( DataDef *bd = pgm.resolve_builtin_type_spelling(norm) )
+	    return new TokenDataType(spelling.c_str(), *bd);
+    }
     std::string s = spelling_strip_spaces(spelling);
     if ( s.empty() || s.find('&') != std::string::npos )
 	return NULL;	// references are not representable as a bound type arg
@@ -45867,13 +45901,25 @@ static TokenDataType *resolve_canonical_type_spelling(Program &pgm,
     {
 	size_t stars = 0;
 	while ( !s.empty() && s.back() == '*' ) { s.pop_back(); ++stars; }
-	// Drop a leading cv-qualifier on the pointee: madc tracks const/volatile
-	// only in a type's IDENTITY/name (instantiate_template_id folds the bare
-	// base into the DataDefPTR and records cv separately), so the DataDef for
-	// `const int*` is DataDefPTR(int) — the same base resolution as `int*`.
-	while ( s.compare(0, 5, "const") == 0 || s.compare(0, 8, "volatile") == 0 )
-	    s.erase(0, s[0] == 'c' ? 5 : 8);
-	TokenDataType *base = resolve_canonical_type_spelling(pgm, s);
+	// The pointee recursion gets the ORIGINAL spelling minus the stars —
+	// spaces intact, so a multi-word builtin pointee ("signed char*")
+	// reaches the builtin table above. Leading cv drops here (word form),
+	// as before: madc tracks const/volatile only in a type's IDENTITY.
+	std::string pointee = spelling;
+	while ( !pointee.empty()
+	     && (pointee.back() == '*' || pointee.back() == ' ') )
+	    pointee.pop_back();
+	for (;;)
+	{
+	    while ( !pointee.empty() && pointee[0] == ' ' )
+		pointee.erase(0, 1);
+	    if ( pointee.compare(0, 6, "const ") == 0 )
+	    { pointee.erase(0, 6); continue; }
+	    if ( pointee.compare(0, 9, "volatile ") == 0 )
+	    { pointee.erase(0, 9); continue; }
+	    break;
+	}
+	TokenDataType *base = resolve_canonical_type_spelling(pgm, pointee);
 	if ( !base )
 	    return NULL;
 	DataDef *dd = &base->definition;
@@ -45973,7 +46019,20 @@ static bool free_operator_concrete_param_matches(Program &pgm,
     DataDef *pdd = &tdt->definition;
     DataDefCLASS *pcls = dynamic_cast<DataDefCLASS *>(pdd);
     if ( !pcls && !dynamic_cast<DataDefENUM *>(pdd) )
+    {
+	// Arithmetic concrete param: a POINTER argument has no standard
+	// conversion to it ([conv] — pointer->bool notwithstanding: this
+	// walker is first-deduced-wins, so a conversion-needing candidate
+	// must never claim a call an exact sibling matches). The incident:
+	// libc++'s operator<<(basic_ostream<char,_Traits>&, char) registered
+	// before the const char* overload and claimed `cout << "hello "` —
+	// the pointer truncated to one char and the padding path printed
+	// garbage. Non-pointer args stay permissive (implicit conversions).
+	if ( arg_core && !dynamic_cast<DataDefCLASS *>(arg_core)
+	  && arg_core->is_pointer() )
+	    return false;
 	return true;	// scalar / builtin param: permissive
+    }
     if ( pdd == arg_core || (arg_core && pdd->name == arg_core->name) )
 	return true;
     if ( pcls )
