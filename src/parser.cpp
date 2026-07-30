@@ -23171,33 +23171,29 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
 
     size_t i = 0;
     int cv = 0;
-    std::string required_leading_cv;
+    std::string required_cv;
     while ( i < pat.size() && is_type_qualifier_token(pat[i]) )
     {
 	bool counted_cv = false;
 	if ( pat[i]->id() == TokenID::tkCONST )
 	{
-	    required_leading_cv += "const ";
+	    required_cv += "const ";
 	    counted_cv = true;
 	}
 	else if ( pat[i]->id() == TokenID::tkVOLATILE )
 	{
-	    required_leading_cv += "volatile ";
+	    required_cv += "volatile ";
 	    counted_cv = true;
 	}
 	else if ( pat[i]->id() == TokenID::tkRESTRICT )
 	{
-	    required_leading_cv += "restrict ";
+	    required_cv += "restrict ";
 	    counted_cv = true;
 	}
 	if ( counted_cv )
 	    ++cv;
 	++i;
     }
-    if ( !required_leading_cv.empty()
-      && concrete_spelling.compare(0, required_leading_cv.size(),
-				   required_leading_cv) != 0 )
-	return false;
     bool simple = ( i < pat.size() && is_contextual_identifier_token(pat[i]) );
     std::string core;
     int ptr = 0;
@@ -23214,10 +23210,33 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
 	    // count just records that the slot is a reference pattern (`_Tp&`).
 	    else if ( pat[i]->id() == TokenID::tkBand
 		   || pat[i]->id() == TokenID::tkLand ) { ref = 1; ++i; }
-	    else if ( is_type_qualifier_token(pat[i]) ) { ++i; }
+	    else if ( is_type_qualifier_token(pat[i]) )
+	    {
+		// EAST cv on the CORE (`_Tp const` — libc++'s is_const/is_volatile/
+		// remove_const spelling) is the SAME requirement as leading cv
+		// ([dcl.type.cv]: order is immaterial): the concrete arg must carry
+		// the qualifier. Skipping it silently made `is_const<_Tp const>`
+		// match PLAIN long — a silent wrong `true` that poisoned every
+		// make_unsigned<_Integral> in libc++'s num_put. A qualifier after a
+		// declarator token (`_Tp* const`) qualifies the POINTER level, which
+		// the flat model does not track — skipped as before.
+		if ( ptr == 0 && ref == 0 )
+		{
+		    if ( pat[i]->id() == TokenID::tkCONST )
+		    { required_cv += "const "; ++cv; }
+		    else if ( pat[i]->id() == TokenID::tkVOLATILE )
+		    { required_cv += "volatile "; ++cv; }
+		    else if ( pat[i]->id() == TokenID::tkRESTRICT )
+		    { required_cv += "restrict "; ++cv; }
+		}
+		++i;
+	    }
 	    else { simple = false; break; }   // leftover token => not the simple shape
 	}
     }
+    if ( !required_cv.empty()
+      && concrete_spelling.compare(0, required_cv.size(), required_cv) != 0 )
+	return false;
     bool is_param = false;
     if ( simple )
 	for ( size_t k = 0; k < spec_params.size(); ++k )
