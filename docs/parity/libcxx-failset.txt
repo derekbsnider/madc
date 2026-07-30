@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  1f00fc64 (2026-07-30) on feature/libcxx-string2-claude
-# Result:       731 passed / 117 failed / 0 timed out / 10 skipped
+# Measured at:  8aed92cc (2026-07-30) on feature/libcxx-string2-claude
+# Result:       744 passed / 108 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -97,8 +97,22 @@
 #                         __second()/__alloc() access was OOB (ASan-proven) —
 #                         std::string c = a + b returned c.size()==3 SILENTLY.
 #                         Now: plusrun 'hello 5', smoke 'hello 42' intact.
+#   8aed92cc  744 / 108   9 FIXED, ZERO regressed (comm-diffed both ways); +4
+#                         were NEW TESTS. Four fixes: @cee0bb6b header-served
+#                         c_str/size resolve by the Class__method scheme (the
+#                         char*-param string coercion — all 9 flips are its
+#                         family: testif/testprint/test4/testdlcall/...);
+#                         @b12bce83 NSDMI capture balances <> via DelimDepth
+#                         (libc++ vector's __end_cap_ shape — vector's 13 tests
+#                         moved to a DEEPER emission layer, not yet flipped);
+#                         @02b890f1 ref-qualified methods parse ([dcl.fct]p6)
+#                         and @8aed92cc east-cv template args (`value_type
+#                         const`) — <optional> is THROUGH; the map/set family
+#                         (7 tests) now blocks at map:967 operator-> on a
+#                         dependent call result (task #72). Also filed: #69
+#                         flavor-ABI ns-string boundary (testrust SIGSEGV
+#                         stack), #70 object-NSDMI ctor-args application.
 test.mad
-test4.mad
 test5.mad
 testalignas.mad
 testarraymember.mad
@@ -120,7 +134,6 @@ testctorstring.mad
 testdefaultedcmp_realhdr.mad
 testdefer.mad
 testderefpreinc.mad
-testdlcall.mad
 testenumclass.mad
 testevalexterncapture.mad
 testexterncstringptr.mad
@@ -136,17 +149,14 @@ testfriendkeyword.mad
 testfstream.mad
 testglobalrefret.mad
 testheaderstringops.mad
-testif.mad
 testifconstexpr.mad
 testimplcopy.mad
-testinclude.mad
 testincludenext.mad
 testinvocable.mad
 testlambda.mad
 testlambdastrret.mad
 testlang.mad
 testlateinstproto.mad
-testlocal.mad
 testloop.mad
 testmacrocharlit.mad
 testmacrosubst.mad
@@ -170,11 +180,9 @@ testopinherit.mad
 testperl.mad
 testphp.mad
 testprefer.mad
-testprint.mad
 testpseudodtor.mad
 testregex.mad
 testrewritten_realhdr.mad
-testrubycharsshadow.mad
 testrust.mad
 testset.mad
 testsizeoftpl.mad
@@ -187,7 +195,6 @@ teststringclass.mad
 teststringglobal.mad
 teststringmethods.mad
 teststringobj.mad
-teststringparam.mad
 teststringplus.mad
 teststringplus_realhdr.mad
 teststringref.mad
@@ -198,7 +205,6 @@ teststrlitplus_realhdr.mad
 teststrplusbody_realhdr.mad
 teststrrefparam_realhdr.mad
 teststruct2.mad
-teststructinit.mad
 teststructinitnested.mad
 testsubscript.mad
 testsubscriptarrow.mad
