@@ -13280,6 +13280,22 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 		m_free_fn_inst_by_call[tcf] = sit->second;
 		return sit->second;
 	}
+	// A symbol that neither the loaded native libraries provide (dlsym) nor
+	// madc itself emits can NEVER link — decline mangled-direct so the
+	// overload-set ranking below binds the instantiated instance instead
+	// (P2.4: real exports bind direct, everything else compiles from
+	// headers; libc++ does not export use_facet<num_put<char,...>>, and the
+	// unconditional bind left undefined imports for bodies that EXISTED).
+	// The local-knowledge check errs BROAD — any madc-known definition
+	// keeps the extern: a plain dlsym gate declined the madceval family's
+	// inter-module symbols and an instance-first reorder mis-bound the same
+	// twelve tests; "provably unlinkable" is the only safe decline.
+	if (!external_symbol_available(sym)
+	    && !(m_user_func_names && m_user_func_names->count(sym) > 0)
+	    && !m_materialized_lib_syms.count(sym)
+	    && !(m_prog && (m_prog->deferred_lazy_bodies.count(sym)
+			    || m_prog->findVariable(sym) != NULL)))
+		return NULL;
 
 	// Return type: void, or a reference to a class deducible from the matched
 	// param classes (a stream fn returns one of its ref params' classes). A
