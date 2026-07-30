@@ -834,6 +834,17 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     // by the time this TU builds, another Program's pools are active.
     prog->activate_token_pools();
 
+    // Open the flavor's runtime BEFORE the tree build, not only at MIR link:
+    // the builder's mangled-direct link tests (extern_symbol_can_link, the
+    // facet-id extern recording) probe dlsym at CIR time, and under
+    // -stdlib=libc++ the flavor library is not among bin/madc's own
+    // DT_NEEDED — probing before the dlopen answered "unlinkable" for
+    // symbols the link would in fact resolve (the facet ids came back
+    // undeclared the moment the availability gate landed). Idempotent; the
+    // MIR-link call site keeps its open for lanes that skip this one.
+    if (!madc_object_mode)
+	cir_open_stdlib_runtime(prog->active_stdlib_flavor());
+
     // CirBuilder (cir_node) is the sole backend. The builder owns its node
     // arena and must outlive cir_compile()/MIR_gen() — hence it is returned to
     // the caller. (The legacy static cir_translate() path was removed; it had

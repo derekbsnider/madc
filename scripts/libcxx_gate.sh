@@ -363,7 +363,19 @@ _ZNSt3__1plI*NS_*)
 	pass "libc++ std::operator+ is a nested-name with S_ inner refs ($llvm_sym)" ;;
 _ZStplI*NSt3__1*)
 	fail "libc++ std::operator+ regressed to the HYBRID form: $llvm_sym" ;;
-"")	fail "no std::operator+ symbol emitted in the libc++ lane" ;;
+"")
+	# libc++ exports no operator+ (HIDE_FROM_ABI): no mangled-direct import
+	# is CORRECT — the retained header body is instantiated and emitted
+	# locally instead. Correct only if the program actually RUNS on the
+	# served body: main returns (int)c.size(), so the JIT exit code is the
+	# concatenated length — a functional oracle, not just an exit-0.
+	run "$MADC" -stdlib=libc++ "$D/plusop.cpp" >/dev/null 2>"$D/l14.err"
+	rc14=$?
+	if [ $rc14 -eq 5 ]; then
+		pass "libc++ std::operator+ body-served (no export; run rc=$rc14 == c.size())"
+	else
+		fail "libc++ std::operator+ neither mangled-direct nor body-served (run rc=$rc14): $(head -c 200 "$D/l14.err")"
+	fi ;;
 *)	fail "libc++ std::operator+ has an unexpected scope: $llvm_sym" ;;
 esac
 

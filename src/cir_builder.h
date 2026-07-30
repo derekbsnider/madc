@@ -727,6 +727,11 @@ public:
 	// THE one owner: every path that reads a global BY NAME must call it,
 	// or the emitted C references an identifier c2mir never saw.
 	void note_global_reference(const class Variable &v);
+	// The mangled-direct link test (one owner, three bind sites): a symbol
+	// that neither the loaded native libraries provide nor madc itself
+	// emits can never link — binding it is always wrong; declining lets a
+	// body/instance lane serve ([temp.inst]).
+	bool extern_symbol_can_link(const std::string &sym);
 	std::string func_emit_name(const class Variable &v, class FuncDef *fd) const;
 	// THE single source of truth for the C symbol a CALL references. Precedence:
 	// an external ABI bind (emit_symbol, madc emits no body) wins; then a

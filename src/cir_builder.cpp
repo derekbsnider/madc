@@ -357,6 +357,23 @@ static bool external_symbol_available(const std::string &sym)
 	return !sym.empty() && dlsym(RTLD_DEFAULT, sym.c_str()) != NULL;
 }
 
+// The mangled-direct link test, ONE owner for every bind site (std free fn,
+// free operator, manipulator, stream-op emitter): a symbol that neither the
+// loaded native libraries provide (the same dlsym the MIR import resolver
+// uses; the flavor runtime is opened before CIR build) nor madc itself EMITS
+// can never link — binding it is always wrong; declining lets a body/instance
+// lane serve. Emission surfaces only: a findVariable hit proves REGISTRATION,
+// not emission — the W2 capture registers declaration-only placeholders under
+// Itanium names (std::endl, the stream operator<<), and counting those as
+// "madc provides it" defeats the gate for exactly the symbols it exists for.
+bool CirBuilder::extern_symbol_can_link(const std::string &sym)
+{
+	return external_symbol_available(sym)
+	    || (m_user_func_names && m_user_func_names->count(sym) > 0)
+	    || m_materialized_lib_syms.count(sym)
+	    || (m_prog && m_prog->deferred_lazy_bodies.count(sym));
+}
+
 node_t CirBuilder::integer(long val, TokenBase *origin)
 {
 	// c2m types N_I as `int` (32-bit) and N_L as `long` (64-bit). A value
@@ -12715,6 +12732,23 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 		m_free_op_inst_by_call[top] = sit->second;
 		return sit->second;
 	}
+	// The @f659b672 decline, free-operator edition: libc++ does not export
+	// operator<<(ostream&, const char*) or the string operator+ — the
+	// retained template body serves instead of an undefined import
+	// ([temp.inst]: the instance IS the entity). Without the body route the
+	// caller silently fell to the member conversion — the smoke printed the
+	// const char* as a POINTER via operator<<(const void*).
+	if (!extern_symbol_can_link(sym)) {
+		Variable *bv = NULL;
+		if (m_prog->instantiate_free_operator_template(
+			    mname, top->left, top->right, &bv) && bv)
+			if (FuncDef *bfd = dynamic_cast<FuncDef *>(bv->type)) {
+				m_free_op_body_by_call[top] = bv;
+				m_free_op_inst_by_call[top] = bfd;
+				return bfd;
+			}
+		return NULL;
+	}
 
 	FuncDef *inst = new FuncDef(best_ret_ref ? *as_reference_type(best_retc)
 						 : *(DataDef *)best_retc);
@@ -12844,6 +12878,14 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 		ret_ptr = false;
 		ret_specs.clear();   // void sret call; the slot carries the result
 	}
+	// The callee arrived with a pre-set Itanium emit_symbol (a W2 binding
+	// minted before the link test existed for this lane). Under a flavor
+	// that does not export it (libc++ has no operator<<(ostream&, const
+	// char*) export), the bind is an undefined import for a template whose
+	// retained body could serve — decline, and the caller falls through to
+	// the body-instantiation route.
+	if (!extern_symbol_can_link(callee->emit_symbol))
+		return NULL;
 	need_output_extern(callee->emit_symbol.c_str(), ret_ptr, eparams, ret_specs);
 	node_t ocall = node2(N_CALL, id(callee->emit_symbol.c_str(), origin),
 			     args, origin);
@@ -12910,6 +12952,12 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 				std::string msym = itanium_mangle_std_free_template(
 					ov.opname, targs, stype, { stype });
 				if (msym.empty() || msym[0] != '_') continue;
+				// The @f659b672 decline, manipulator edition:
+				// libc++ exports no endl<char> — skip the
+				// mangled-direct bind; the fallback below then
+				// routes to the placeholder name whose body
+				// materializes.
+				if (!extern_symbol_can_link(msym)) continue;
 				FuncDef *minst = NULL;
 				auto msit = m_free_fn_inst_by_sym.find(msym);
 				if (msit != m_free_fn_inst_by_sym.end())
@@ -12952,26 +13000,73 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 			if (manp && rfd
 			    && rc->var.name.find(manp) != std::string::npos)
 				fprintf(stderr, "[manip] %s: mtmpl=%d varargs=%d "
-					"rcp=%zu np=%zu refp0=%d retref=%d\n",
+					"rcp=%zu np=%zu refp0=%d retref=%d "
+					"disp='%s' ns='%s' emit='%s'\n",
 					rc->var.name.c_str(),
 					(int)rfd->is_member_template,
 					(int)rfd->is_varargs, rc->parameters.size(),
 					rfd->parameters.size(),
 					(int)rfd->is_ref_param(0),
-					(int)rfd->returns_reference());
+					(int)rfd->returns_reference(),
+					rfd->function_display_name.c_str(),
+					rfd->namespace_name.c_str(),
+					rfd->emit_symbol.c_str());
+			FuncDef *mfd = rfd;
+			Variable *mvar = &rc->var;
 			if (rfd && !rfd->is_member_template && !rfd->is_varargs
+			    && rc->parameters.empty()) {
+				// A bodyless ns-template PLACEHOLDER (np==0
+				// declaration stub — endl's registration shape)
+				// or an Itanium emit the flavor cannot link:
+				// instantiate the manipulator template for THIS
+				// stream type and run the shape checks on the
+				// INSTANCE. A resolved fd (np==1) skips the
+				// synth — the default flavour's path unchanged.
+				std::string csym0 = func_emit_name(rc->var, rfd);
+				bool unlinkable = csym0.size() > 2
+				    && csym0[0] == '_' && csym0[1] == 'Z'
+				    && !extern_symbol_can_link(csym0);
+				if (rfd->parameters.empty() || unlinkable) {
+					TokenCallFunc synth(rc->var);
+					synth.file = rc->file;
+					synth.line = rc->line;
+					synth.column = rc->column;
+					synth.parameters.push_back(top->left);
+					m_prog->instantiate_namespace_fn_template_for_call(&synth);
+					Variable *w = synth.mti_instance;
+					if (!w) {
+						std::vector<const DataDef *> at;
+						at.push_back(lcls);
+						std::vector<bool> z;
+						z.push_back(false);
+						w = m_prog->find_namespace_function_overload(
+							rfd->namespace_name,
+							rfd->function_display_name,
+							at, &z, NULL);
+					}
+					synth.parameters.clear();
+					FuncDef *wfd = w ? dynamic_cast<FuncDef *>(w->type)
+							 : NULL;
+					if (w && wfd) {
+						mvar = w;
+						mfd = wfd;
+					}
+				}
+			}
+			if (mfd && !mfd->is_member_template && !mfd->is_varargs
 			    && rc->parameters.empty()
-			    && rfd->parameters.size() == 1
-			    && rfd->is_ref_param(0)
-			    && rfd->returns_reference()) {
-				DataDefCLASS *pcls = class_behind(rfd->parameters[0]);
+			    && mfd->parameters.size() >= 1
+			    && mfd->is_ref_param(mfd->parameters.size() > 1 ? 1 : 0)
+			    && mfd->returns_reference()) {
+				size_t p0 = mfd->parameters.size() > 1 ? 1 : 0;
+				DataDefCLASS *pcls = class_behind(mfd->parameters[p0]);
 				DataDefCLASS *rcls =
-					class_behind(&rfd->return_value_type());
+					class_behind(&mfd->return_value_type());
 				size_t boff = (pcls && (lcls == pcls
 						|| lcls->is_or_derives_from(pcls)))
 					    ? lcls->base_offset_of(pcls)
 					    : (size_t)-1;
-				std::string csym = func_emit_name(rc->var, rfd);
+				std::string csym = call_emit_symbol(*mvar, mfd);
 				if (pcls && pcls == rcls && boff != (size_t)-1
 				    && !csym.empty()) {
 					// The manipulator returns its ARGUMENT, so
@@ -13319,6 +13414,11 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 		m_free_fn_inst_by_call[tcf] = sit->second;
 		return sit->second;
 	}
+	// Mangled-direct is for symbols that can actually link (P2.4) — see
+	// extern_symbol_can_link; declining falls through to the overload-set
+	// ranking, which binds the instantiated instance.
+	if (!extern_symbol_can_link(sym))
+		return NULL;
 	// A symbol that neither the loaded native libraries provide (dlsym) nor
 	// madc itself emits can NEVER link — decline mangled-direct so the
 	// overload-set ranking below binds the instantiated instance instead
