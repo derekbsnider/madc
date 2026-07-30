@@ -42014,6 +42014,9 @@ static size_t outofline_declarator_param_arity(
 // instantiation-side attach below adopts the same comparator.
 static bool function_explicit_params_match(FuncDef *fd,
 					   const std::vector<ParsedParamSig> &sigs);
+// Defined with the method-definition matcher; the member-template call lane's
+// overload fall-through uses it to gather same-name sibling candidates.
+static std::string strip_overload_suffix(const std::string &tail);
 
 // `template<...> class Owner<T>::Nested { ... };` — an out-of-line NESTED-CLASS
 // definition ([class.nest] + [temp]), shaped [class|struct, Owner, <...>, ::,
@@ -47227,6 +47230,42 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	~MfiGuard() { s.erase(k); }
     } mfi_guard{ member_fn_inst_in_progress, mfi_key };
 
+    // [temp.deduct]/8 overload fall-through: the call token binds ONE
+    // placeholder, but the member may be an OVERLOAD SET of member templates
+    // whose constraints select mutually exclusively — allocator_traits::
+    // select_on_container_copy_construction is an __enable_if_t<HAS>-gated
+    // overload plus its __enable_if_t<!HAS> sibling. A substitution failure
+    // removes the candidate and the NEXT same-name sibling must be tried, or
+    // the call silently stays on the varargs placeholder (an implicit
+    // int-returning call in the emitted C — string:709's struct-from-int).
+    std::vector<FuncDef *> mti_cands;
+    mti_cands.push_back(fd);
+    {
+	DataDefCLASS *ocls = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
+	const std::string mti_base_sym = strip_overload_suffix(tc->var.name);
+	if ( ocls )
+	    for ( Variable *mv : ocls->methods )
+	    {
+		FuncDef *cfd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+		if ( cfd && cfd != fd && cfd->is_member_template
+		  && cfd->member_template_owner == fd->member_template_owner
+		  && !cfd->member_template_decl.empty()
+		  && !cfd->template_param_names.empty()
+		  && strip_overload_suffix(mv->name) == mti_base_sym )
+		    mti_cands.push_back(cfd);
+	    }
+    }
+    bool ok = false;
+    Variable *inst_var = NULL;
+    std::string inst_name;
+    std::vector<DataDef *> concrete_type_args;
+    std::vector<std::vector<DataDef *> > concrete_type_arg_packs;
+    for ( size_t mci = 0; mci < mti_cands.size() && !ok; ++mci )
+    {
+    fd = mti_cands[mci];
+    inst_var = NULL;
+    if ( !fd->dependent_pattern )
+	build_dependent_pattern(fd);
     // A one-shot free-function template from the retained body: rename the
     // declarator to a unique instantiation symbol (so the parsed function
     // neither collides with the declaration-only placeholder member nor with
@@ -47305,7 +47344,7 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // (unique_overload_symbol: the first shape keeps `__mti`, later shapes get
     // `__mti__oN`), and each call binds its own shape's instance via the
     // shape_key memo above + tc->mti_instance below.
-    std::string inst_name = unique_overload_symbol(tc->var.name + "__mti");
+    inst_name = unique_overload_symbol(tc->var.name + "__mti");
     for ( size_t i = 0; i < fd->member_template_decl.size(); ++i )
     {
 	TokenBase *t = fd->member_template_decl[i];
@@ -47317,7 +47356,7 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     }
     size_t name_idx = skipped_template_function_declarator_name_index(ft.decl, NULL);
     if ( name_idx >= ft.decl.size() || !ft.decl[name_idx] )
-	return NULL;
+	continue;	// malformed candidate decl: try the next sibling
     {
 	TokenBase *old = ft.decl[name_idx];
 	TokenBase *ren = new TokenIdent(inst_name.c_str());
@@ -47354,8 +47393,6 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // `static` specifier was dropped above, so re-derive from the retained decl.
     ft.instance_method =
 	!skipped_template_function_is_static(fd->member_template_decl);
-    std::vector<DataDef *> concrete_type_args;
-    std::vector<std::vector<DataDef *> > concrete_type_arg_packs;
     // Phase-5 slice 2 (4b flip): the source has a Tree-1 recipe — the
     // instantiated body comes from tsubst at lowering, so arm the name-keyed
     // body-parse skip for this instantiation (parseFunction captures the span
@@ -47372,12 +47409,15 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // resolves to an already-instantiated binding reuses that instance —
     // one instantiation per (template, binding), the g++ model. The memo
     // hands the existing instance back via inst_var; adopt its name below.
-    ft.inst_identity = tc->var.name + "__mti";
-    Variable *inst_var = NULL;
-    bool ok = try_instantiate_namespace_fn_template(*this, ft, key, tc,
-						    &concrete_type_args,
-						    &concrete_type_arg_packs,
-						    &inst_var);
+    // Distinct memo identity per CANDIDATE: two same-name siblings can reach
+    // the same binding, and one shared identity would hand candidate B
+    // candidate A's instance.
+    ft.inst_identity = tc->var.name + "__mti"
+	+ (mci ? "__c" + std::to_string(mci) : std::string());
+    ok = try_instantiate_namespace_fn_template(*this, ft, key, tc,
+					       &concrete_type_args,
+					       &concrete_type_arg_packs,
+					       &inst_var);
     tsubst_skip_body_name = saved_skip_body;
     if ( ok && inst_var && inst_var->name != inst_name )
 	inst_name = inst_var->name;	// binding-memo dedupe: reuse the instance
@@ -47387,6 +47427,7 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 		  << " inst=" << inst_name
 		  << " ok=" << (int)ok << std::endl;
 #endif
+    }
     if ( !ok )
 	return NULL;
     // Bind the CALL to the instantiated definition: the call references the
