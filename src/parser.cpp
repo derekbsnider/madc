@@ -1785,7 +1785,18 @@ TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
     opcall->column = loc_tb->column;
     DataDef *ret = opcall->datadef();
     if ( !ret || !ret->is_pointer() )
+    {
+	// Env-gated probe (MADC_ARROW_PROBE): the receiver class and the
+	// unresolved return DataDef at the failing rewrite.
+	static const char *ap = ::getenv("MADC_ARROW_PROBE");
+	if ( ap )
+	    fprintf(stderr, "[arrow] recv=%s ret=%s obj=%d ref=%d\n",
+		    ocls ? ocls->name.c_str() : "?",
+		    ret ? ret->name.c_str() : "(null)",
+		    ret ? (int)ret->is_object() : -1,
+		    ret ? (int)ret->is_reference() : -1);
 	Throw(loc_tb) << "operator-> must return a pointer" << flush;
+    }
     return opcall;
 }
 
