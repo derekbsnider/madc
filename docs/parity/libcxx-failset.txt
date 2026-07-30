@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  66d3a4c5 (2026-07-30) on feature/libcxx-parity2-claude
-# Result:       749 passed / 108 failed / 0 timed out / 10 skipped
+# Measured at:  439e0ab5 (2026-07-30) on feature/libcxx-parity2-claude
+# Result:       751 passed / 108 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -150,6 +150,25 @@
 #                         __tree_node_types instantiates the declared-only
 #                         primary ('__get_ptr' is not a member function,
 #                         #72's next link).
+#   439e0ab5  751 / 108   the failing set is SET-IDENTICAL (comm-diffed both
+#                         ways); +2 passed = the two NEW suite tests. Two
+#                         flavor-independent SILENT-WRONG roots fixed:
+#                         @6fe97a44 a full specialization keyed on a
+#                         TEMPLATE-ID argument registered under its raw
+#                         source spelling and went invisible to uses (the
+#                         primary instantiated silently), and @439e0ab5 THE
+#                         __tree:680 ROOT — the legacy lane collapsed a
+#                         member class template's self-name template-id
+#                         (`allocator<T>::rebind<U>::other` == allocator<T>,
+#                         the node allocator silently became the VALUE
+#                         allocator). __tree:680 is THROUGH; the map chain
+#                         now blocks at __tree:890 ('member reference type
+#                         is not a structure or union', #72's next link).
+#                         Bring-up caught three draft flaws via the freeze +
+#                         container suites (context-dependent ns keys, a
+#                         param leak on rejected friend heads, a namespace-
+#                         blind despaced-index verification) — all fixed in
+#                         the landed shape; fulltest 860/0.
 test.mad
 test5.mad
 testalignas.mad
