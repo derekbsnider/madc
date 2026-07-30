@@ -1,0 +1,35 @@
+// #51 reducer: decltype(expr) as a declaration's RETURN TYPE at statement
+// head — libc++ bsd_locale_fallbacks.h:31:
+//	inline decltype(MB_CUR_MAX) __libcpp_mb_cur_max_l(locale_t __l) {...}
+// Arms:
+//   A — file-scope function with decltype return type
+//   B — same with `inline` storage prefix (the libc++ spelling)
+//   C — in-class method with decltype return type
+//   D — sizeof(decltype(expr)) (recorded sibling: "undeclared identifier")
+//   E — control: decltype in a using-alias then used (has always worked)
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	5 6 7 8 8
+#include <cstdio>
+
+long base = 4;
+
+decltype(0L) fa(int x) { return base + x; }		// A
+inline decltype(0L) fb(int x) { return base + x + 1; }	// B
+
+struct S {
+	decltype(0L) fc(int x) { return base + x + 2; }	// C
+};
+
+using LT = decltype(0L);				// E
+
+int main()
+{
+	S s;
+	printf("%d %d %d %d %d\n",
+	       (int)fa(1),			// 5
+	       (int)fb(1),			// 6
+	       (int)s.fc(1),			// 7
+	       (int)sizeof(decltype(0L)),	// D: 8
+	       (int)sizeof(LT));		// E: 8
+	return 0;
+}

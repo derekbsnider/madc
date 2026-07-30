@@ -10044,6 +10044,21 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	    return dd;
     }
 
+    if ( !is_c_mode() && is_contextual_identifier_token(type_tb)
+      && is_decltype_identifier(contextual_identifier_name(type_tb))
+      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+    {
+	// sizeof(decltype(expr)) / alignof(decltype(expr)) — `decltype` is a
+	// reserved tkCPPKEYWORD in C++ modes, so it reaches neither the
+	// identifier nor the datatype arm below. Route through the one
+	// declared-type resolver, which owns the decltype arm (libc++
+	// bsd_locale_fallbacks.h family; the statement-head route is the
+	// sibling in parseStatement's keyword arm).
+	if ( TokenDataType *tdt =
+		resolve_declared_type_token(type_tb, true, true) )
+	    return &tdt->definition;
+    }
+
     if ( type_tb->type() == TokenType::ttDataType )
     {
 	// Template-id operand whose template name lexed as a datatype
@@ -54907,6 +54922,21 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		return parse_static_assert_statement(tb);
 	    if ( is_typeof_identifier(((TokenIdent *)tb)->spelling()) )
 		return parseDeclaration(parse_typeof_datatype(tb));
+	    // `decltype(expr)` heading a STATEMENT is a declaration's type
+	    // ([dcl.type.simple]) — the decltype twin of the typeof line above;
+	    // libc++ bsd_locale_fallbacks.h:31 is the motivating shape:
+	    //   inline decltype(MB_CUR_MAX) __libcpp_mb_cur_max_l(locale_t)
+	    // resolve_declared_type_token owns the decltype arm (including the
+	    // qualified member-chain continuation). Gated out of strict C, where
+	    // `decltype` stays an ordinary identifier.
+	    if ( !is_c_mode()
+	      && is_decltype_identifier(((TokenIdent *)tb)->spelling())
+	      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	    {
+		if ( TokenDataType *dt =
+			resolve_declared_type_token(tb, true, true, false) )
+		    return parseDeclaration(dt);
+	    }
 	    if ( ((TokenIdent *)tb)->spelling_is("__label__") )
 	    {
 		TokenBase *tn = nextToken();
@@ -55372,6 +55402,19 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    return parse_static_assert_statement(tb);
 		if ( kw == "asm" || kw == "__asm__" || kw == "__asm" )
 		    return skip_gnu_asm_statement(tb);
+		// `decltype(expr)` heading a statement is a declaration's type
+		// ([dcl.type.simple]) — the identifier arm's route, mirrored
+		// for the reserved spelling (libc++ bsd_locale_fallbacks.h:31:
+		// `inline decltype(MB_CUR_MAX) __libcpp_mb_cur_max_l(...)`).
+		// resolve_declared_type_token owns the decltype arm; falls
+		// through unchanged when the resolver declines.
+		if ( is_decltype_identifier(kw)
+		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    if ( TokenDataType *dt =
+			    resolve_declared_type_token(tb, true, true, false) )
+			return parseDeclaration(dt);
+		}
 		// Ignored declaration-specifiers (constexpr/consteval/constinit)
 		// qualify a declaration: fall through to parseKeyword
 		// (TokenCppKeyword::parse), which consumes the specifier and
