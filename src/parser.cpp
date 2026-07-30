@@ -21977,7 +21977,10 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		}
 		    }
 		    if ( !obj_type || (!obj_type->is_struct() && !obj_type->is_object()) )
-			Throw(mtb) << "member reference type is not a structure or union" << flush;
+			Throw(mtb) << "member reference type "
+			    << (obj_type ? "'" + obj_type->name + "' " : "")
+			    << "is not a structure or union (member '"
+			    << mname << "')" << flush;
 		    if ( obj_type->is_object()
 		      && peekToken()
 		      && (peekToken()->id() == TokenID::tkOpBrk
@@ -28834,7 +28837,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			base = ptr_type->base_type;
 		    }
 		    if ( !base->is_struct() && !base->is_object() )
-			Throw(tb) << "member reference type is not a structure or union" << flush;
+			Throw(tb) << "member reference type '" << base->name
+			    << "' is not a structure or union (member '"
+			    << ident_tb->spelling() << "')" << flush;
 
 		    string id = ident_tb->spelling();
 
