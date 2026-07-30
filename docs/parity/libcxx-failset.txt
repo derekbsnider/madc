@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  674beaa3 (2026-07-30) on feature/libcxx-string2-claude
-# Result:       596 passed / 237 failed / 0 timed out / 10 skipped
+# Measured at:  a80ba0b0 (2026-07-30) on feature/libcxx-string2-claude
+# Result:       600 passed / 237 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -51,6 +51,17 @@
 #                         the stream chain). Frontier: locale:1155 c2mir check,
 #                         incompatible return-expr in a struct-returning
 #                         function (num_put materialization, task #59).
+#   a80ba0b0  600 / 237   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways); +4 passed = the four NEW suite tests. FIVE
+#                         fixes landed between the measures — #59's east-const
+#                         partial-spec + static-def phantom-__this, #33's
+#                         mem-init template-id binding + lazy-only ctor
+#                         instantiation + defining-namespace defaults fill —
+#                         all shared parser paths, ZERO flavored regressions.
+#                         The smoke's chain advanced locale:1155 -> locale:1044
+#                         -> string:709 -> the current frontier: streambuf:128
+#                         lvalue-required + string:709:18 struct-assign (task
+#                         #62). The 237 stay blocked behind that chain.
 #
 # The chain-of-blockers reading was validated at 674beaa3: the count sat at
 # 545/281 through four frontier fixes, then one binding fix flipped 44 at once.
@@ -58,7 +69,7 @@
 # to prove no regressions — which is what it has done at every step.
 #
 # 214 of these 237 include a C++ stream header, so the stream chain remains ~90%
-# of the gap; the live blocker is locale:1155 (task #59).
+# of the gap; the live blocker is streambuf:128 + string:709:18 (task #62).
 #
 # This is NOT a ratchet yet: a 281-entry baseline gates nothing. It becomes the
 # P2.7 gate when the count reaches 0 — every genuine gap fixed, every
