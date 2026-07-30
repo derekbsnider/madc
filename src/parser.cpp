@@ -1734,20 +1734,52 @@ static DataDef *referent_if_reference(DataDef *dd);
 TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
 {
     // type()-gated, not dynamic_cast alone: TokenMember/TokenCallMethod
-    // IS-A TokenVar, and their .var is the member/method Variable — the
-    // rewrite only applies to a BARE object variable receiver.
-    if ( !lhs || lhs->type() != TokenType::ttVariable )
+    // IS-A TokenVar, and their .var is the member/method Variable. A BARE
+    // object variable is the receiver identity itself; a MEMBER or
+    // CALL-RESULT receiver (`r.first->m`, `t.emplace().first->m` — libc++
+    // map::operator[]'s tree-iterator shape) rides parent_expr so the CIR
+    // side (class_this_arg's parent lane) addresses the full expression —
+    // the chained-receiver precedent of the arrow method-call arm.
+    if ( !lhs )
 	return NULL;
     TokenVar *otv = dynamic_cast<TokenVar *>(lhs);
-    if ( !otv || !otv->var.type || !otv->var.type->is_object()
-      || otv->var.type->is_pointer() )
+    if ( !otv )
 	return NULL;
-    DataDefCLASS *ocls = dynamic_cast<DataDefCLASS *>(otv->var.type);
+    DataDef *rdd = NULL;
+    bool parent_backed = false;
+    // A FIXED-ARRAY receiver decays to a pointer ([expr.ref] applies the
+    // built-in arrow to arr[0]) — never an operator-> rewrite, even when
+    // the ELEMENT class declares one (var.type names the element type, so
+    // the object test alone would mis-fire).
+    if ( otv->var.is_fixed_array() )
+	return NULL;
+    if ( lhs->type() == TokenType::ttVariable )
+	rdd = otv->var.type;
+    else if ( lhs->type() == TokenType::ttMember
+	   || lhs->type() == TokenType::ttCallMethod
+	   || lhs->type() == TokenType::ttCallFunc )
+    {
+	if ( TokenMember *mtm = dynamic_cast<TokenMember *>(lhs) )
+	    if ( mtm->is_fixed_array_member() )
+		return NULL;
+	rdd = lhs->datadef();
+	parent_backed = true;
+    }
+    else
+	return NULL;
+    // A reference-returning receiver (a call yielding `it&`) denotes its
+    // referent ([expr.ref]) — same normalizer the dot arm uses.
+    rdd = referent_if_reference(rdd);
+    if ( !rdd || !rdd->is_object() || rdd->is_pointer() )
+	return NULL;
+    DataDefCLASS *ocls = dynamic_cast<DataDefCLASS *>(rdd);
     std::string arrow_name("operator->");
     Variable *arrow_m = ocls ? ocls->findMethod(arrow_name) : NULL;
     if ( !arrow_m )
 	return NULL;
     TokenCallMethod *opcall = new TokenCallMethod(otv->var, *arrow_m);
+    if ( parent_backed )
+	opcall->parent_expr = lhs;
     opcall->file = loc_tb->file;
     opcall->line = loc_tb->line;
     opcall->column = loc_tb->column;
@@ -28397,18 +28429,18 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // `obj->m` as `(obj.operator->())->m`: call operator-> (which
 		    // returns a pointer), then apply the real `->` to that result.
 		    // Reuses the class-method dispatch — no parallel codegen (I6).
-		    if ( lhs->type() == TokenType::ttVariable )
+		    // arrow_operator_call self-gates by shape: bare object
+		    // variables AND member/call-result receivers (`r.first->m`,
+		    // `t.emplace().first->m` — the map tree-iterator shape).
+		    if ( TokenCallMethod *opcall = arrow_operator_call(lhs, tb) )
 		    {
-			if ( TokenCallMethod *opcall = arrow_operator_call(lhs, tb) )
-			{
-			    exStack.pop();
-			    exStack.push(opcall);
-			    lhs = opcall;
-			    obj_type = opcall->datadef();
-			    obj_var = new Variable("__arrow_op", *obj_type, 1, NULL, false);
-			    expr_backed_lhs = true;
-			    arrow_via_op = true;
-			}
+			exStack.pop();
+			exStack.push(opcall);
+			lhs = opcall;
+			obj_type = opcall->datadef();
+			obj_var = new Variable("__arrow_op", *obj_type, 1, NULL, false);
+			expr_backed_lhs = true;
+			arrow_via_op = true;
 		    }
 		    if ( arrow_via_op )
 			; // LHS already resolved to operator-> call result above

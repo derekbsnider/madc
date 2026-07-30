@@ -1,0 +1,34 @@
+#!../bin/madc
+// Overloaded operator-> applied through a MEMBER or CALL-RESULT receiver
+// ([expr.ref] rewrite): `r.first->m`, `t.emplace().first->m` — libc++
+// map::operator[]'s tree-iterator shape. The rewrite was gated to bare
+// object variables; every other receiver fell to the raw-pointer check
+// ("expression before '->' must be a pointer").
+#include <cstdio>
+struct val { int second; };
+struct it {
+    val *p;
+    val *operator->() const { return p; }
+};
+struct pairib { it first; bool flag; };
+template <class T> struct tree {
+    val storage;
+    pairib emplace() { it i; i.p = &storage; pairib r; r.first = i; r.flag = true; return r; }
+};
+template <class K> struct mymap {
+    tree<K> t;
+    int &sub(const K &k) { return t.emplace().first->second; }
+};
+int main()
+{
+    val storage; storage.second = 0;
+    it i; i.p = &storage;
+    i->second = 7;
+    pairib r; r.first = i;
+    r.first->second = 41;
+    printf("%d\n", storage.second);
+    mymap<int> m;
+    m.sub(1) = 42;
+    printf("%d\n", m.t.storage.second);
+    return 0;
+}
