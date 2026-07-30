@@ -1077,6 +1077,43 @@ later runs DIFF instead of inferring. This re-measurement had to deduce
 "nothing changed" from the totals plus a stream-header tally, which
 cannot distinguish that from an equal number fixed and newly broken.
 
+### Re-measured 2026-07-30 @3f86333c: 539 / **281** — the number moved
+
+`539 passed / 281 failed / 10 skipped`, and this time the diff against the
+recorded failset attributes it exactly: **`testaddpointer` fixed, nothing
+newly broken.** Two of the +3 passes are the reducers the fix shipped;
+the third is a genuine flip, and **failed decreased for the first time**.
+
+The defect behind it is the most valuable kind found in this track so far
+— a *silent wrong answer*: `std::add_pointer<int>::type` resolved to
+`int` instead of `int*`, exit 0. Its root cause was two layers below
+where it showed:
+
+1. `resolve_type_token_range` required its token range to be fully
+   consumed (the rule that closed the `enable_if<false,void>::type`
+   leak) but the resolver it calls stops at the type NAME, leaving a
+   trailing `&` — so a REFERENCE type spelling never resolved at all.
+   `resolve_member_template_call_return_type` read that as substitution
+   failure and silently answered with a *sibling overload's* return
+   type. libc++ writes `__libcpp_is_referenceable` as the detection
+   idiom `static _Tp& __test(int)` vs `static false_type __test(...)`,
+   so `_Tp&` lost to `false_type` and `add_pointer` picked its `false`
+   specialization.
+2. `sizeof`/`alignof` of a reference returned the reference's own 8
+   bytes rather than the referent's ([expr.sizeof]/2) — invisible until
+   (1) let any of these paths name a reference type.
+
+Worth recording as method, because six successive hypotheses about this
+were wrong: the breakthrough came from *instrumenting rather than
+reasoning*. A new gated `MADC_OVL_PROBE` proved overload SELECTION was
+correct all along (the `int` candidate wins, the variadic sibling is
+properly rejected), which killed the whole family of theories; then the
+pre-existing `[vriprobe]` printed `MTRT enter test ret=2` followed by
+`MT fallback member=test methods=2`, naming the real mechanism in two
+lines. Twice in that stretch a truncated harness (`head -8`, a probe
+placed after a `continue`) produced a confidently wrong conclusion —
+the standing lesson that a probe's SILENCE is not evidence of absence.
+
 ## Decided defaults (no owner question needed)
 
 - Header search is **target-derived and generated**, never a hardcoded

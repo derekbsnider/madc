@@ -1,22 +1,20 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  640c0244 (2026-07-29) on feature/libcxx-string2-claude
-# Result:       536 passed / 282 failed / 0 timed out / 10 skipped
+# Measured at:  3f86333c (2026-07-30) on feature/libcxx-string2-claude
+# Result:       539 passed / 281 failed / 0 timed out / 10 skipped
 #
-# WHY THIS FILE EXISTS. The parity goal is measured by a COUNT, and a count alone
-# cannot tell "12 fixed, 12 newly broken" from "nothing changed". The previous
-# re-measurement had to infer that from the totals plus a stream-header tally,
-# because the baseline list had never been written down. Diff against this file
-# instead.
+# HISTORY (diff this file, never compare bare totals — a total cannot tell
+# "N fixed, N newly broken" from "nothing changed"):
+#   45f64a6f  534 / 282   first baseline
+#   640c0244  536 / 282   +2 were NEW TESTS; zero flips (three frontier fixes,
+#                         none of which completed a blocked include)
+#   3f86333c  539 / 281   testaddpointer FIXED, nothing newly broken (diffed)
 #
-# 257 of these 282 include a C++ stream header, so <iostream> is ~91% of the gap.
-# The live blocker is libc++ __condition_variable/condition_variable.h:211
-# (task #43); it moved here from __mutex/mutex.h:47, ios:455 and ios:441, each of
-# which was fixed in turn — note that walking the frontier three headers deeper
-# flipped ZERO tests, because a blocked include is blocked wherever it stops.
+# 256 of these 281 include a C++ stream header, so <iostream> remains ~91% of
+# the gap; the live blocker is condition_variable.h:211 (task #43).
 #
-# This is NOT a ratchet yet: a 282-entry baseline gates nothing. It becomes the
+# This is NOT a ratchet yet: a 281-entry baseline gates nothing. It becomes the
 # P2.7 gate when the count reaches 0 — every genuine gap fixed, every
 # out-of-scope test carrying a tests/<base>.libcxx_skip with a reason.
 test.mad
@@ -36,7 +34,6 @@ test_vdtor_delete.mad
 test_vdtor_mi.mad
 test_vdtor_rtti.mad
 testaccessctrl.mad
-testaddpointer.mad
 testaddrclass.mad
 testaddrparenchain.mad
 testaddrtakenptrmember.mad
