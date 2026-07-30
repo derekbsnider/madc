@@ -1,0 +1,42 @@
+// #33 reducer: member-template ctor whose SECOND type param is
+// undeducible and defaulted to its own constraint
+// (class = en_if<!same<self, decay<U>>::value>::type), constructed
+// through a forwarding two-arg wrapper — libc++ __compressed_pair_elem's
+// template ctor via __compressed_pair's piecewise ctor (string:709).
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 print "7 1"
+#include <cstdio>
+
+template <class T> struct decay_ish { typedef T type; };
+template <class T> struct decay_ish<T&> { typedef T type; };
+template <bool, class R = void> struct en_if {};
+template <class R> struct en_if<true, R> { typedef R type; };
+template <class A, class B> struct same { enum { value = 0 }; };
+template <class A> struct same<A, A> { enum { value = 1 }; };
+
+struct tagd {};
+
+template <class T, int I> struct elem {
+	T val;
+	explicit elem(tagd) : val() {}
+	template <class U, class = typename en_if<!same<elem, typename decay_ish<U>::type>::value>::type>
+	explicit elem(U&& u) : val(u) {}
+};
+
+struct alloc { int a; };
+
+template <class T1, class T2> struct cpair : elem<T1, 0>, elem<T2, 1> {
+	template <class U1, class U2>
+	cpair(U1&& t1, U2&& t2)
+	    : elem<T1, 0>(t1), elem<T2, 1>(t2) {}
+};
+
+int main()
+{
+	alloc a;
+	a.a = 7;
+	cpair<int, alloc> p(tagd(), a);
+	elem<alloc, 1> &e = p;
+	elem<int, 0> &f = p;
+	printf("%d %d\n", e.val.a, f.val == 0 ? 1 : 0);
+	return 0;
+}

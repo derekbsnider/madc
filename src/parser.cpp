@@ -34875,17 +34875,38 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
 	    Throw(name_tb) << "Expecting member or base name in constructor initializer list" << flush;
 	FuncDef::CtorInitializer init;
 	init.name = contextual_identifier_name(name_tb);
+	std::vector<TokenBase *> id_toks;
+	id_toks.push_back(name_tb->clone());
 	while ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	{
-	    nextToken();
+	    id_toks.push_back(nextToken()->clone());
 	    TokenBase *part = nextToken();
 	    if ( !part || !is_contextual_identifier_token(part) )
 		Throw(part ? part : name_tb)
 		    << "Expecting qualified initializer name after '::'" << flush;
 	    init.name += "::" + contextual_identifier_name(part);
+	    id_toks.push_back(part->clone());
 	}
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
-	    skip_template_id_suffix();
+	{
+	    // A TEMPLATE-ID initializer name: `elem<T1, 0>(t1)`. Discarding the
+	    // suffix stored the same BARE name for every same-template base, so
+	    // find_base_initializer handed the FIRST entry's args to EVERY such
+	    // base — libc++'s __compressed_pair ctor mem-inits BOTH its
+	    // __compressed_pair_elem bases, and the second was constructed from
+	    // __t1 (silently, or "no matching constructor" when the types
+	    // disagree). Resolve the full template-id to its concrete class and
+	    // store THAT name (ctor_initializer_names_class matches it exactly,
+	    // and only against the right base). A DEPENDENT parse keeps the bare
+	    // name — the pattern's initializers are re-derived per
+	    // instantiation, where the substituted spelling resolves.
+	    skip_template_id_suffix(&id_toks);
+	    if ( !dependent_parse_in_progress && !class_pattern_capture_in_progress )
+		if ( DataDef *dd = resolve_type_token_range(id_toks, 0,
+							    id_toks.size()) )
+		    if ( dynamic_cast<DataDefCLASS *>(dd) )
+			init.name = dd->name;
+	}
 	TokenBase *open = nextToken();
 	if ( !open || (open->id() != TokenID::tkOpBrk
 		    && open->id() != TokenID::tkOpBrc) )
@@ -34953,20 +34974,18 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
 	    break;
 	Throw(nt) << "Expecting ',' or function body after constructor initializer" << flush;
     }
-    // A delegating / base-class initializer `Name(args)` constructs an object of
-    // type Name. If Name is a class with a member-template constructor — e.g.
-    // std::pair's piecewise ctor delegating to its private INDEXED ctor
-    // `: pair(__first, __second, _Build_index_tuple<...>::__type(), ...)` — that
-    // ctor must be INSTANTIATED now, at parse time, exactly like the placement-new
-    // construction path (TokenNEW). Without it the delegating call resolves to no
-    // ctor at CIR time ("no matching constructor"). A member initializer's name is
-    // not a class, so resolve_named_datadef yields a non-class and it is skipped;
-    // instantiate_member_ctor_template_for_construction is idempotent and a fast
-    // no-op for a class with no member-template ctor (map<int,int> W2).
-    for ( const FuncDef::CtorInitializer &ci : func->ctor_initializers )
-	if ( DataDef *dd = resolve_named_datadef(ci.name) )
-	    if ( DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd) )
-		instantiate_member_ctor_template_for_construction(cls, ci.args);
+    // A delegating / base-class initializer `Name(args)` may need Name's
+    // member-template ctor instantiated — but NOT eagerly here: overload
+    // resolution runs FIRST ([over.match.best] — a matching non-template
+    // ctor beats the template on tie-break), and only the SELECTED ctor's
+    // body instantiates ([temp.inst]). Eager instantiation materialized the
+    // LOSING candidate's body for args the template was never chosen for
+    // (elem<int,0> from a tag type: `val = *u` int <- struct, a c2mir check
+    // error in a body g++ never creates). select_or_instantiate_ctor (the
+    // CIR-side owner, slice-4b) already instantiates lazily when NO concrete
+    // ctor matches — the delegating pair-piecewise case this loop was added
+    // for is covered there; keeping both was a parallel implementation with
+    // the wrong semantics in this one.
     return nt;
 }
 
@@ -41131,7 +41150,7 @@ std::vector<TokenBase *> Program::collect_template_default_argument()
     return out;
 }
 
-void Program::skip_template_id_suffix()
+void Program::skip_template_id_suffix(std::vector<TokenBase *> *out)
 {
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
 	return;
@@ -41139,6 +41158,8 @@ void Program::skip_template_id_suffix()
     // context, a `>` inside parens opened within the list is greater-than, and
     // an operator-function-id (`operator<`, `operator>>`) is consumed opaquely
     // as part of a NAME — so `__void_t<decltype(operator<(a,b))>` balances.
+    // With `out`, the consumed suffix is also CAPTURED (clones) — the
+    // mem-initializer name resolver reads it; a NULL out skips as before.
     DelimDepth d;
     do
     {
@@ -41153,7 +41174,24 @@ void Program::skip_template_id_suffix()
 	// within the list the BSR closed nothing (d.angle unchanged) and
 	// stays a shift — no pushback.
 	if ( t->id() == TokenID::tkBSR && before == 1 && d.angle == 0 )
+	{
+	    if ( out )
+		out->push_back(new TokenGT());
 	    pushToken(new TokenGT());
+	}
+	else if ( out )
+	{
+	    // Capture what the CONSUMED token contributed: a BSR that closed
+	    // two of our levels reads back as two `>`s; one that closed none
+	    // (inside parens within the list) stays a shift, verbatim.
+	    if ( t->id() == TokenID::tkBSR && before - d.angle == 2 )
+	    {
+		out->push_back(new TokenGT());
+		out->push_back(new TokenGT());
+	    }
+	    else
+		out->push_back(t->clone());
+	}
     }
     while ( d.angle > 0 && peekToken() );
 }

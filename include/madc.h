@@ -4931,7 +4931,7 @@ public:
     // Template-machinery core: <…> argument scanning, template-id / alias /
     // opaque instantiation, dependent/opaque member-type materialization,
     // deferred-instantiation completion, and the template-decl skippers.
-    void skip_template_id_suffix();
+    void skip_template_id_suffix(std::vector<TokenBase *> *out = NULL);
     // Consume a C++20 requires-clause at the current token (constraints are
     // not evaluated — madc has no concepts; the constrained declaration
     // parses as if unconstrained). Returns true if a clause was consumed.
