@@ -1,0 +1,80 @@
+// An out-of-line member definition must bind to the DECLARED overload whose
+// signature it repeats. findMethod() answers with one arbitrary overload per
+// name and compares no signatures, so a definition of an overloaded member
+// bound to whichever that was — and a member TEMPLATE registers as a VARARGS
+// placeholder stub whose parameters are (this, int64 marker) rather than the
+// declared ones, so findMethod could hand back THAT. The definition then took
+// its parameter types from the stub: the body saw `int64_t` where the source
+// wrote a class reference, and any member access on that parameter failed with
+// "member reference is not a structure or union".
+//
+// That is libc++ __condition_variable/condition_variable.h:211 — `__lk.owns_lock()`
+// inside `condition_variable::__do_timed_wait`, which is declared THREE times
+// (system_clock, steady_clock, and a `template <class _Clock>` sibling). The
+// varargs stub is arity-agnostic by construction, which is why the template's
+// own arity made no difference.
+//
+// find_method_definition_target now matches on the upcoming parameter signature,
+// the way find_constructor_for_upcoming_params already did for constructors; it
+// declines (falling back to the old behaviour) unless exactly ONE non-template
+// overload matches, because binding to the wrong overload would compile the body
+// under a sibling's symbol — a silent wrong answer, worse than a loud error.
+//
+// Arms, each a distinct reason the naive lookup failed:
+//   A — two overloads differing only in a TEMPLATE-ID argument, plus a
+//       member-template sibling (libc++'s exact shape)
+//   B — the member template has a DIFFERENT ARITY, proving the stub matched
+//       regardless of arity
+//   C — overloads differing by a plain scalar parameter, with a member-template
+//       sibling present
+//   D — control: overloads with NO member template, which always worked
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	A yes
+//	B yes
+//	C yes
+//	D yes
+#include <cstdio>
+
+struct ca { };
+struct cb { };
+template <class C, class D> struct tp { int v; };
+struct lk_t { bool b; bool owns() const { return b; } };
+
+struct cvA {
+	void dw(lk_t &lk, tp<ca, int>);
+	void dw(lk_t &lk, tp<cb, int>);
+	template <class C> void dw(lk_t &lk, tp<C, int>);
+};
+inline void cvA::dw(lk_t &lk, tp<cb, int>) { printf("A %s\n", lk.owns() ? "yes" : "no"); }
+
+struct cvB {
+	void dw(lk_t &lk, tp<ca, int>);
+	void dw(lk_t &lk, tp<cb, int>);
+	template <class C> void dw(tp<C, int>);		// arity 1, cannot be this def
+};
+inline void cvB::dw(lk_t &lk, tp<cb, int>) { printf("B %s\n", lk.owns() ? "yes" : "no"); }
+
+struct cvC {
+	void dw(lk_t &lk, int);
+	void dw(lk_t &lk, char);
+	template <class C> void dw(lk_t &lk, tp<C, int>);
+};
+inline void cvC::dw(lk_t &lk, char) { printf("C %s\n", lk.owns() ? "yes" : "no"); }
+
+struct cvD {						// control: no member template
+	void dw(lk_t &lk, int);
+	void dw(lk_t &lk, char);
+};
+inline void cvD::dw(lk_t &lk, char) { printf("D %s\n", lk.owns() ? "yes" : "no"); }
+
+int main()
+{
+	lk_t l;
+	l.b = true;
+	cvA a; a.dw(l, tp<cb, int>());
+	cvB b; b.dw(l, tp<cb, int>());
+	cvC c; c.dw(l, 'x');
+	cvD d; d.dw(l, 'x');
+	return 0;
+}

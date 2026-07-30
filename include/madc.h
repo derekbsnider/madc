@@ -5170,6 +5170,12 @@ public:
 				     ParsedParamSig &sig);
     bool upcoming_param_signatures(std::vector<ParsedParamSig> &sigs);
     Variable *find_constructor_for_upcoming_params(DataDefCLASS *owner);
+    // The METHOD twin: which declared overload an out-of-line member definition
+    // defines, matched on the upcoming parameter signature. NULL unless exactly
+    // one non-template overload matches (see parser.cpp for why an ambiguous
+    // probe must decline rather than guess).
+    Variable *find_method_definition_target(DataDefCLASS *owner,
+					    const std::string &member);
     bool parse_qualified_special_member_definition(TokenBase *first_tb);
     // Assorted parse helpers (expression/declaration/statement support).
     DataDef *effective_pointer_type_for_member_access(TokenBase *tb);

@@ -48408,6 +48408,7 @@ DataDef *Program::resolve_param_type_from_tokens(const std::vector<TokenBase *> 
     if ( !is_contextual_identifier_token(t) )
 	return NULL;
 
+    size_t type_start = idx;
     std::vector<std::string> parts;
     parts.push_back(contextual_identifier_name(t));
     ++idx;
@@ -48420,6 +48421,25 @@ DataDef *Program::resolve_param_type_from_tokens(const std::vector<TokenBase *> 
 	++idx;
     }
     skip_template_suffix_tokens(param, idx);
+    // A TEMPLATE-ID parameter (`tp<cb,int>`, libc++'s
+    // `chrono::time_point<chrono::steady_clock, chrono::nanoseconds>`) is only
+    // distinguishable from its sibling overloads by its ARGUMENTS, and the
+    // name-based lookup below deliberately steps over the `<...>` suffix — so
+    // every specialization of one template collapsed to the same answer (the
+    // pattern), leaving same-arity overloads indistinguishable. Resolve the
+    // whole type region through resolve_type_token_range, the owner that reads
+    // a token range with the REAL resolver (isolated stream, instantiates the
+    // template-id, memoized) — the same helper the member-template return path
+    // uses. Only when a template-id is actually present, and only as a
+    // preference: a NULL keeps the established name lookup below, so a type
+    // this cannot resolve behaves exactly as before.
+    bool has_template_id = false;
+    for ( size_t i = type_start; i < idx && i < param.size(); ++i )
+	if ( param[i] && param[i]->id() == TokenID::tkLT )
+	{ has_template_id = true; break; }
+    if ( has_template_id && idx > type_start )
+	if ( DataDef *ranged = resolve_type_token_range(param, type_start, idx) )
+	    return ranged;
 
     if ( parts.size() > 1 )
     {
@@ -48541,6 +48561,98 @@ static bool function_explicit_params_match(FuncDef *fd,
 	    return false;
     }
     return true;
+}
+
+// Strip a trailing NUMERIC overload suffix (`__o2`, `__o17`) from an internal
+// member-symbol tail, leaving the source member name. unique_overload_symbol
+// mints those suffixes, so every consumer that maps a symbol back to the name
+// the SOURCE wrote needs this — it was hand-rolled at two sites before, and the
+// method-definition matcher below would have made three.
+static std::string strip_overload_suffix(const std::string &tail)
+{
+    size_t osfx = tail.rfind("__o");
+    if ( osfx == std::string::npos || osfx + 3 >= tail.size() )
+	return tail;
+    for ( size_t si = osfx + 3; si < tail.size(); ++si )
+	if ( !isdigit((unsigned char)tail[si]) )
+	    return tail;
+    return tail.substr(0, osfx);
+}
+
+// Which DECLARED overload does an out-of-line member definition define?
+//
+// findMethod() answers with ONE overload per name and compares no signatures at
+// all, so a definition of an OVERLOADED member bound to whatever that one
+// happened to be. Worse: register_skipped_class_template_function registers a
+// member TEMPLATE as a VARARGS placeholder stub whose parameters are
+// (this, int64 marker) rather than the declared ones, and findMethod can hand
+// back THAT — the definition then took its parameter types from the stub, so
+// the body saw `int64_t` where the source wrote `unique_lock<mutex>&`. That is
+// libc++ __condition_variable/condition_variable.h:211's
+// "member reference is not a structure or union": __do_timed_wait is declared
+// three times (system_clock, steady_clock, and a `template <class _Clock>`),
+// and the varargs stub is arity-agnostic, so it matched regardless.
+//
+// Match on the upcoming parameter SIGNATURE instead, exactly as
+// find_constructor_for_upcoming_params already does for constructors — the
+// method path simply never had an equivalent.
+//
+// Returns NULL unless EXACTLY ONE non-template overload matches. An ambiguous
+// or unresolved probe keeps the existing findMethod behaviour rather than
+// guessing: binding a definition to the wrong overload would compile the body
+// under a sibling's symbol, which is a silent wrong answer and strictly worse
+// than the loud error this replaces.
+Variable *Program::find_method_definition_target(DataDefCLASS *owner,
+						const std::string &member)
+{
+    if ( !owner || member.empty() )
+	return NULL;
+    // split_upcoming_function_params scans from the CURRENT token and returns at
+    // the first top-level `)`, so it must start INSIDE the parameter list. At the
+    // declarator site the `(` is still unconsumed (the function path below
+    // consumes it), so step over it for the probe and rewind — otherwise the
+    // `(` is collected as a parameter token, its `)` never reads as top-level,
+    // and the probe silently fails for EVERY definition.
+    TokenStream::Pos saved = tokens.savepos();
+    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	nextToken();
+    // [basic.scope.class]/1: an out-of-line member definition's parameter list
+    // is in the class's scope, so a parameter may name a nested type (the #39
+    // lesson — without the scope pushed the probe bails and `sigs` is empty).
+    class_scope_stack.push_back(owner);
+    std::vector<ParsedParamSig> sigs;
+    bool have_sigs = upcoming_param_signatures(sigs);
+    if ( !class_scope_stack.empty() && class_scope_stack.back() == owner )
+	class_scope_stack.pop_back();
+    tokens = saved;
+    if ( !have_sigs )
+	return NULL;
+    const std::string prefix = owner->name + "__";
+    Variable *match = NULL;
+    size_t matches = 0;
+    for ( size_t i = 0; i < owner->methods.size(); ++i )
+    {
+	Variable *mv = owner->methods[i];
+	FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+	if ( !fd )
+	    continue;
+	// A definition with no `template<...>` head cannot define a member
+	// template, and the template's stub carries placeholder parameters.
+	if ( fd->is_member_template )
+	    continue;
+	// Methods are keyed by MANGLED name; the unmangled display name is
+	// recorded when there is one, else derive it from the symbol.
+	std::string disp = fd->method_display_name;
+	if ( disp.empty() && mv->name.compare(0, prefix.size(), prefix) == 0 )
+	    disp = strip_overload_suffix(mv->name.substr(prefix.size()));
+	if ( disp != member )
+	    continue;
+	if ( !function_explicit_params_match(fd, sigs) )
+	    continue;
+	match = mv;
+	++matches;
+    }
+    return matches == 1 ? match : NULL;
 }
 
 Variable *Program::find_constructor_for_upcoming_params(DataDefCLASS *owner)
@@ -49941,17 +50053,7 @@ static bool defaulted_member_parses_empty(DataDefCLASS *owner,
     std::string prefix = owner->name + "__";
     if ( id.compare(0, prefix.size(), prefix) != 0 )
 	return false;
-    std::string ctor_tail = id.substr(prefix.size());
-    size_t osfx = ctor_tail.rfind("__o");
-    if ( osfx != std::string::npos )
-    {
-	bool numeric = osfx + 3 < ctor_tail.size();
-	for ( size_t si = osfx + 3; numeric && si < ctor_tail.size(); ++si )
-	    if ( !isdigit((unsigned char)ctor_tail[si]) )
-		numeric = false;
-	if ( numeric )
-	    ctor_tail = ctor_tail.substr(0, osfx);
-    }
+    std::string ctor_tail = strip_overload_suffix(id.substr(prefix.size()));
     return resolve_class_type_alias(owner, ctor_tail) == owner;
 }
 
@@ -51411,18 +51513,8 @@ paramdecl:
 	    std::string prefix = owner_class->name + "__";
 	    if ( id.compare(0, prefix.size(), prefix) == 0 )
 	    {
-		std::string ctor_tail = id.substr(prefix.size());
-		size_t overload_suffix = ctor_tail.rfind("__o");
-		if ( overload_suffix != std::string::npos )
-		{
-		    bool numeric_suffix = overload_suffix + 3 < ctor_tail.size();
-		    for ( size_t si = overload_suffix + 3;
-			  numeric_suffix && si < ctor_tail.size(); ++si )
-			if ( !isdigit((unsigned char)ctor_tail[si]) )
-			    numeric_suffix = false;
-		    if ( numeric_suffix )
-			ctor_tail = ctor_tail.substr(0, overload_suffix);
-		}
+		std::string ctor_tail =
+		    strip_overload_suffix(id.substr(prefix.size()));
 		DataDef *ctor_alias = resolve_class_type_alias(owner_class,
 							       ctor_tail);
 		parse_ctor_initializers = (ctor_alias == owner_class);
@@ -52892,7 +52984,15 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		Throw(nt) << "Unknown C++ declarator scope '"
 			  << join_scope_parts(scope_parts, scope_parts.size())
 			  << "'" << flush;
-	    Variable *mvar = qualified_owner_class->findMethod(qualified_member_name);
+	    // Prefer the overload whose SIGNATURE this definition declares.
+	    // findMethod answers with one arbitrary overload and compares
+	    // nothing, which bound a definition to a member-template varargs
+	    // stub and mistyped its parameters (libc++ condition_variable.h:211).
+	    // A declining probe falls back to the historical behaviour.
+	    Variable *mvar = find_method_definition_target(qualified_owner_class,
+							  qualified_member_name);
+	    if ( !mvar )
+		mvar = qualified_owner_class->findMethod(qualified_member_name);
 	    id = mvar ? mvar->name
 		      : qualified_owner_class->name + "__" + qualified_member_name;
 	}
