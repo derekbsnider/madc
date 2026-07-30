@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  a80ba0b0 (2026-07-30) on feature/libcxx-string2-claude
-# Result:       600 passed / 237 failed / 0 timed out / 10 skipped
+# Measured at:  b53f34ab (2026-07-30) on feature/libcxx-string2-claude
+# Result:       727 passed / 118 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -74,82 +74,46 @@
 # This is NOT a ratchet yet: a 281-entry baseline gates nothing. It becomes the
 # P2.7 gate when the count reaches 0 — every genuine gap fixed, every
 # out-of-scope test carrying a tests/<base>.libcxx_skip with a reason.
+#   b53f34ab  727 / 118   🏁 THE STREAM WALL FELL: 119 FIXED, ZERO regressed
+#                         (comm-diffed both ways). The cout smoke RUNS and
+#                         prints 'hello 42' under -stdlib=libc++. Four parser
+#                         roots + the link-viability CIR batch (five gated bind
+#                         seams + retained-body serving): deduced-call return
+#                         pin (+ inst re-entry guard), template-head friend
+#                         grant, concrete-param pointer viability (both deduce
+#                         sites), multi-word builtin spellings in the canonical
+#                         resolver. Remaining 118: string operator+ body route
+#                         (leg-14 red, task #64) + the residual set below.
 test.mad
 test4.mad
 test5.mad
-test_cpp_addr_ref.mad
-test_cpp_const_member.mad
-test_cpp_const_method.mad
-test_rtti_dyncast.mad
-test_rtti_dyncast_mi.mad
-test_rtti_name.mad
-test_rtti_typeinfo.mad
-test_rtti_vdispatch.mad
-test_vdtor_chain.mad
-test_vdtor_delete.mad
-test_vdtor_mi.mad
-test_vdtor_rtti.mad
-testaccessctrl.mad
-testaddrclass.mad
-testaddrparenchain.mad
-testaddrtakenptrmember.mad
-testaliasnontypebool.mad
 testalignas.mad
-testargv.mad
 testarraymember.mad
 testarraymethods.mad
 testarraysubscript.mad
-testatomics.mad
-testautodeduce.mad
-testbinlit.mad
 testcapture.mad
 testcastarrow.mad
 testcastparenexpr.mad
 testcastsubscript.mad
-testchain.mad
 testcin.mad
 testclass.mad
 testclassassign.mad
-testclassdefaultaccess.mad
-testclassoperator.mad
-testclassrefparam.mad
 testclassreturn.mad
 testclassstaticitanium.mad
-testcolon.mad
 testcompare_realhdr.mad
-testcompoundassign.mad
-testconstenforce.mad
-testconstexprshift.mad
-testconstmid.mad
 testconstructible.mad
 testcontainerdtor.mad
-testcout.mad
-testcout_realhdr.mad
-testcoutcstr.mad
 testcstdio.mad
-testctor.mad
 testctorstring.mad
 testdefaultedcmp_realhdr.mad
 testdefer.mad
-testdefine.mad
-testderefcasttypedef.mad
 testderefpreinc.mad
-testderefptrexpr.mad
 testdlcall.mad
-testdlopen.mad
-testeastconst.mad
 testenumclass.mad
-testescape.mad
 testevalexterncapture.mad
 testexterncstringptr.mad
-testexterndlsym.mad
-testfnptrcompare.mad
-testfnptrmember_binop.mad
-testfnptrparenscall.mad
-testfnptrtypedef.mad
 testforeach.mad
 testforeach2.mad
-testforeacharray.mad
 testforeachheaderbody.mad
 testforeachref.mad
 testforeachscope.mad
@@ -158,30 +122,21 @@ testfortypedcomma.mad
 testfreezerun.mad
 testfriendkeyword.mad
 testfstream.mad
-testfuncptr.mad
 testglobalrefret.mad
 testheaderstringops.mad
-testhex.mad
 testif.mad
 testifconstexpr.mad
 testimplcopy.mad
 testinclude.mad
 testincludenext.mad
 testinvocable.mad
-testisempty.mad
-testispod.mad
-testkeywordsasidents.mad
 testlambda.mad
-testlambdareturn.mad
 testlambdastrret.mad
 testlang.mad
 testlateinstproto.mad
-testlibc.mad
 testlocal.mad
-testlocalclassraii.mad
 testloop.mad
 testmacrocharlit.mad
-testmacrodefhead.mad
 testmacrosubst.mad
 testmadc_ns.mad
 testmadceval.mad
@@ -193,70 +148,30 @@ testmanip.mad
 testmanipview.mad
 testmap.mad
 testmapiter.mad
-testmathh.mad
 testmathheader.mad
 testmemberaliastmpl.mad
-testmemberaliastmplmember.mad
 testmemberarrowcall.mad
 testmembernamestd.mad
-testmemtmplfwdrefpack.mad
-testmemtmplinstance.mad
-testmemtmplorder.mad
-testmemtmplpackexpand.mad
-testmemtmplrefparam.mad
-testmemtmpltypedefparam.mad
-testmethod.mad
-testmethodaccess.mad
-testmultiret.mad
-testnestedtidbase.mad
 testns.mad
 testnsdmi.mad
-testoolnested.mad
-testoperatorarrow.mad
-testoperatorcall.mad
-testoperatoroverload.mad
-testoperatorsamename.mad
 testopinherit.mad
-testparenexprsub.mad
 testperl.mad
 testphp.mad
-testplacementnewglobal.mad
-testplacementnewvoidp.mad
-testpostfix.mad
 testprefer.mad
 testprint.mad
 testpseudodtor.mad
-testptmtype.mad
-testrealcmp.mad
-testrefstream.mad
 testregex.mad
-testretbufmethodinit.mad
-testreturnfndecay.mad
 testrewritten_realhdr.mad
 testrubycharsshadow.mad
 testrust.mad
-testrustmatch.mad
-testscopedenum.mad
-testscriptstream.mad
 testset.mad
-testsfinaealiasoverload.mad
-testsizeof.mad
-testsizeofderef.mad
-testsizeofderefchain.mad
-testsizeofnoparens.mad
 testsizeoftpl.mad
 testspaceship_realhdr.mad
 testsstream.mad
-teststaticmembertmplsibling.mad
 teststdmapint.mad
 teststdstringconv.mad
-teststod.mad
-teststod_realhdr.mad
-teststrchrtyped.mad
 teststreambool.mad
-teststrextra.mad
 teststringclass.mad
-teststringeq.mad
 teststringglobal.mad
 teststringmethods.mad
 teststringobj.mad
@@ -270,44 +185,20 @@ teststringsubscript.mad
 teststrlitplus_realhdr.mad
 teststrplusbody_realhdr.mad
 teststrrefparam_realhdr.mad
-teststruct.mad
 teststruct2.mad
-teststruct3.mad
-teststructarrayofptr.mad
-teststructfwdtypedefarr.mad
 teststructinit.mad
 teststructinitnested.mad
-teststructptrdecl.mad
 testsubscript.mad
 testsubscriptarrow.mad
 testsubscriptmember.mad
-testswitch.mad
-testswitchpredecl.mad
 testsysobject.mad
 testsysscript.mad
 testtemplatestring.mad
-testternary.mad
-testternarystrcharptr.mad
-testthis.mad
-testthisdirectinit.mad
-testthrowexpr.mad
-testtmpldefaultcond.mad
-testtmpldefaultparam.mad
-testtmpltmplparam.mad
-testtmpltmplparamnested.mad
-testtmpltmplparamvariadic.mad
 testtraitassign.mad
-testtransform.mad
 testtuple.mad
-testupcast.mad
 testusefacet_realhdr.mad
 testusing.mad
-testusingbasemember.mad
-testvariadicmembertmpl.mad
-testvariadicobj.mad
 testvbasedyn.mad
-testvbasemanip.mad
 testvector.mad
 testvectorptr.mad
-testvirtualnew.mad
 testvptrmember.mad
