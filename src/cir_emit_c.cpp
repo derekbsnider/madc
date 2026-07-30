@@ -313,14 +313,25 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		}
 		break;
 	}
-	case N_MEMBER:
-		// [0]=N_SHARE(specs) [1]=declarator. Like a SPEC_DECL with no
-		// initializer; bit-field width (op(2)) is left unhandled for now.
+	case N_MEMBER: {
+		// [0]=N_SHARE(specs) [1]=declarator [2]=attrs [3]=bit-field width
+		// (member_node appends the width const-expr, or N_IGNORE). Dropping
+		// the width rendered every bit-field member FULL-WIDTH: the text's
+		// layout silently diverged from the tree c2mir lays out (libc++'s
+		// basic_string rep measured 32 bytes under gcc against the real 24),
+		// which sent a whole debugging arc chasing a layout bug that only
+		// existed in the rendering.
 		emit(f, op(n, 0), lang);
 		fputc(' ', f);
 		emit_declarator(f, op(n, 1), lang);
+		node_t w = op(n, 3);
+		if (w && w->code != N_IGNORE) {
+			fputs(" : ", f);
+			emit(f, w, lang);
+		}
 		fputc(';', f);
 		break;
+	}
 	case N_FIELD:
 		// [0]=object expression, [1]=member id (N_ID leaf — emit directly)
 		emit(f, op(n, 0), lang);
