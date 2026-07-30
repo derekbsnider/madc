@@ -4839,10 +4839,23 @@ static FuncDef *class_method_def(DataDefCLASS *cdd, const char *name)
 	return mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
 }
 
+static std::string class_method_call_symbol(DataDefCLASS *cdd, FuncDef *fd,
+					    const std::string &name)
+{
+	return CirBuilder::call_emit_symbol(fd, cdd ? cdd->name + "__" + name : name);
+}
+
 static std::string class_method_symbol(DataDefCLASS *cdd, const char *name)
 {
 	FuncDef *fd = class_method_def(cdd, name);
-	return CirBuilder::call_emit_symbol(fd, std::string(name ? name : ""));
+	if (!fd)
+		return std::string(name ? name : "");
+	// Found method with no bound emit_symbol: the Class__method scheme the
+	// method-call lane uses. A header-served body (libc++'s hidden-from-ABI
+	// c_str/size — no dylib export, unlike libstdc++'s) is emitted under
+	// that name; the old bare-name default made every such method read as
+	// "not found" and the callers fell back to the raw object.
+	return class_method_call_symbol(cdd, fd, std::string(name));
 }
 
 // `(void*)&<name>` — an object instance address as void*. Used for synthetic
@@ -4912,6 +4925,11 @@ node_t CirBuilder::object_cstr_arg(TokenBase *arg)
 	std::string sym = class_method_symbol(cdd, "c_str");
 	if (sym.empty() || sym == "c_str")
 		return translate_expr(arg);
+	// A header-served (non-exported) c_str body materializes on use — the
+	// same fixpoint the synthetic-call sites feed (R_TEXTOBJ, manipulator).
+	// An externally-bound symbol is unaffected: no local def lands, the
+	// extern below stays.
+	referenced_funcs.insert(sym);
 	need_output_extern(sym.c_str(), true, { { {N_VOID}, true } });
 	node_t a = list();
 	append(a, object_arg_addr(arg, cdd));
@@ -8655,6 +8673,7 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 		std::string size_sym = class_method_symbol(owner, "size");
 		if (size_sym.empty() || size_sym == "size")
 			return NULL;
+		referenced_funcs.insert(size_sym);
 		need_output_extern(size_sym.c_str(), false,
 				   { { {N_VOID}, true } }, { N_UNSIGNED, N_LONG });
 		node_t a = list();
@@ -9275,12 +9294,6 @@ static FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
 			return fd;
 	}
 	return NULL;
-}
-
-static std::string class_method_call_symbol(DataDefCLASS *cdd, FuncDef *fd,
-					    const std::string &name)
-{
-	return CirBuilder::call_emit_symbol(fd, cdd ? cdd->name + "__" + name : name);
 }
 
 void CirBuilder::flush_pending_stmts(std::vector<node_t> &out)
