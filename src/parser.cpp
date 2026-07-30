@@ -33064,27 +33064,46 @@ TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dd
     // follow-up noted in the NSDMI handoff.
     if ( tn->id() != TokenID::tkAssign )
 	return tn;
-    // `= expr` up to the top-level ',' or ';' (nested (), [], {} are balanced so a
-    // braced/parenthesized initializer with commas is captured whole).
+    // `= expr` up to the top-level ',' or ';'. Balanced (), [], {} AND <> via
+    // the shared DelimDepth scanner (delimiter-tracking.md) — the old
+    // paren/square/brace-only counter split `pair2<ptr, alloc>(...)` at the
+    // template-argument comma, truncating the capture to `pair2<ptr` (libc++
+    // vector's __end_cap_ NSDMI shape). Two-rule terminator:
+    //  - ',' breaks only at FULL top() — a template-argument comma never splits;
+    //  - ';' breaks at ()/[]/{}-top even with an angle still open, because a
+    //    ';' cannot appear inside a template-argument-list ([temp.names]) — an
+    //    open angle there is a PHANTOM from the less-than ambiguity
+    //    (`int x = a < b;` — '<' after an identifier reads as a template-id
+    //    head; braces protect lambda-body semicolons either way).
+    // If a phantom-angle capture also swallowed a ()/[]/{}-top comma, the
+    // comma-shared-declarator split is genuinely ambiguous: throw rather than
+    // silently consuming the next declarator.
     std::vector<TokenBase *> init_toks;
-    int pd = 0, sd = 0, bd = 0;
+    DelimDepth d;
+    bool angle_comma = false;
     for (;;)
     {
 	tn = nextToken();
 	if ( !tn )
 	    Throw << "Unexpected end in member initializer" << flush;
 	TokenID id = tn->id();
-	if ( id == TokenID::tkOpBrk ) ++pd;
-	else if ( id == TokenID::tkClBrk ) --pd;
-	else if ( id == TokenID::tkOpSqr ) ++sd;
-	else if ( id == TokenID::tkClSqr ) --sd;
-	else if ( id == TokenID::tkOpBrc ) ++bd;
-	else if ( id == TokenID::tkClBrc ) --bd;
-	else if ( pd == 0 && sd == 0 && bd == 0
-	       && ( id == TokenID::tkComma || id == TokenID::tkSemi ) )
+	bool shallow = !d.paren && !d.square && !d.brace;
+	if ( shallow && id == TokenID::tkSemi )
 	    break;
+	if ( d.top() && id == TokenID::tkComma )
+	    break;
+	if ( shallow && id == TokenID::tkComma )
+	    angle_comma = true;
+	std::vector<TokenBase *> optail;
+	delimStepStream(tn, d, &optail);
 	init_toks.push_back(tn->clone());
+	for ( TokenBase *ot : optail )
+	    if ( ot )
+		init_toks.push_back(ot->clone());
     }
+    if ( d.angle > 0 && angle_comma )
+	Throw(tn) << "Ambiguous '<' in member default initializer with"
+		     " comma-shared declarators" << flush;
     if ( !init_toks.empty() )
     {
 	// Parse the captured tokens into an expression in an ISOLATED stream so the

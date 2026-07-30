@@ -1,0 +1,29 @@
+#!../bin/madc
+// NSDMI whose initializer is a TEMPLATE-ID constructor call — libc++
+// vector's __end_cap_ shape. The member-initializer capture must balance
+// <> (DelimDepth), or the template-argument comma truncates the capture
+// and the member parser desyncs into "Expecting ',' or '>'" +
+// "Expecting ';' after class member".
+#include <cstdio>
+struct tag {};
+template <class A, class B> struct pair2 {
+    A a; B b;
+    pair2(A x, B y) : a(x), b(y) {}
+};
+template <class T> struct vec {
+    typedef T *pointer;
+    typedef tag allocator_type;
+    pointer begin_ = nullptr;
+    pair2<pointer, allocator_type> end_cap_ = pair2<pointer, allocator_type>(nullptr, tag());
+    long size() const { return (long)(end_cap_.a - begin_); }
+};
+int main()
+{
+    vec<int> v;
+    // Deterministic without relying on OBJECT-member NSDMI application
+    // (task #70): end_cap_ is assigned explicitly; begin_'s SCALAR NSDMI
+    // applies. Before the capture fix this file did not even compile.
+    v.end_cap_ = pair2<int *, tag>(nullptr, tag());
+    printf("%ld\n", v.size());
+    return 0;
+}
