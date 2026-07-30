@@ -4958,6 +4958,8 @@ DataDef *CirBuilder::ref_returning_call_type(TokenBase *arg)
 	return r;
 }
 
+static bool class_operator_value_result(TokenBase *arg);
+
 node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 {
 	if (!target) target = as_class_instance(arg ? arg->datadef() : NULL);
@@ -5105,7 +5107,12 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 	bool rvalue_call = (arg && (arg->type() == TokenType::ttCallFunc
 				    || arg->type() == TokenType::ttCallMethod)
 			    && !ref_returning_call_type(arg)
-			    && class_trivially_copyable(target));
+			    && class_trivially_copyable(target))
+	    // A by-value class OPERATOR result (free operator+ via the body
+	    // route — a struct-value-returning call) is the same prvalue;
+	    // spill it into the addressable temp identically.
+	    || (class_operator_value_result(arg)
+		&& class_trivially_copyable(target));
 	if (!rvalue_call
 	    && as_class_instance(arg ? arg->datadef() : NULL) == target)
 		return node2(N_CAST, void_ptr_type(),
@@ -5288,6 +5295,36 @@ bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
 			}
 	}
 	return false;
+}
+
+// A CLASS-valued binary operator expression whose overloaded operator
+// returns BY VALUE — the arithmetic/bitwise family (`a + b` on strings,
+// `m | n` on bitsets): its emission is a prvalue call, so a receiver or
+// reference binding must materialize a temp ([class.temporary]), exactly
+// like the by-value CALL shapes expr_is_nonaddressable_rvalue lists. The
+// SHIFT pair is deliberately EXCLUDED: class `<<`/`>>` follow the stream
+// convention (return the lhs by REFERENCE), and their expression datadef
+// does not record the reference-ness this test would need — spilling a
+// stream would copy a non-copyable class. (The classifier's own tkBSL/
+// tkBSR entries remain correct for BUILTIN scalar shifts.)
+static bool class_operator_value_result(TokenBase *arg)
+{
+	TokenOperator *op = dynamic_cast<TokenOperator *>(arg);
+	if (!op || op->argc() != 2 || !op->left || !op->right)
+		return false;
+	DataDef *dd = op->datadef();
+	if (!dd || dd->is_reference() || dd->is_pointer())
+		return false;
+	if (!as_class_instance(dd))
+		return false;
+	switch (op->id()) {
+	case TokenID::tkAdd: case TokenID::tkSub:
+	case TokenID::tkMul: case TokenID::tkDiv: case TokenID::tkMod:
+	case TokenID::tkBand: case TokenID::tkBor: case TokenID::tkXor:
+		return true;
+	default:
+		return false;
+	}
 }
 
 static bool class_pointer_reference_conversion(DataDef *arg_type,
@@ -8512,6 +8549,14 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 		    && (tm->parent_expr->type() == TokenType::ttCallFunc
 			|| tm->parent_expr->type() == TokenType::ttCallMethod)
 		    && !ref_returning_call_type(tm->parent_expr))
+			return object_arg_addr(tm->parent_expr, recv_class);
+		// A class-valued OPERATOR receiver (`(a + b).get()` — the free
+		// operator+ emits as a by-value call through the body route /
+		// sret) is the same prvalue as the by-value CALL above; the raw
+		// path would emit `&(call)`. object_arg_addr materializes it
+		// ([class.temporary]); shifts are excluded by the helper (stream
+		// convention returns the lhs by reference).
+		if (!recv_is_ptr && class_operator_value_result(tm->parent_expr))
 			return object_arg_addr(tm->parent_expr, recv_class);
 		recv_node = translate_expr(tm->parent_expr);
 		// A REFERENCE-returning CALL receiver: translate_expr yields the
@@ -13176,6 +13221,28 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 		tc->column = top->column;
 		tc->parameters.push_back(top->left);
 		tc->parameters.push_back(top->right);
+		// A RETBUF-returning instance (string operator+ — a non-trivial
+		// class by value) needs the hidden slot argument; a raw
+		// translate emits the call one arg short ("too few arguments")
+		// and hands consumers a prvalue ("lvalue required" at &).
+		// Route through the slot owner (object_call_temp_addr) and
+		// yield the temp's struct LVALUE — the same value convention
+		// as the external sret path. Reference returns (operator<<)
+		// keep the raw call: their value is the referent pointer.
+		FuncDef *bfd = dynamic_cast<FuncDef *>(bit->second->type);
+		DataDefCLASS *rcls = (bfd && !bfd->returns_reference())
+			? class_return_via_retbuf(&bfd->return_value_type())
+			: NULL;
+		if (rcls) {
+			node_t addr = object_call_temp_addr(tc, rcls, top);
+			node_t cast = node2(N_CAST,
+				node2(N_TYPE,
+				      node1(N_LIST, class_tag_ref(rcls)),
+				      node2(N_DECL, ignore(),
+					    node1(N_LIST, pointer()))),
+				addr, top);
+			return node1(N_DEREF, cast, top);
+		}
 		return translate_expr(tc);
 	}
 	return class_operator_external_call(top, lcls, inst, origin);
