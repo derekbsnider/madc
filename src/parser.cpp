@@ -33430,7 +33430,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    tn = pgm.peekToken();
 	}
 	while ( tn && (tn->id() == TokenID::tkCONST
-	            || tn->id() == TokenID::tkVOLATILE) )
+	            || tn->id() == TokenID::tkVOLATILE
+	            // `mutable` storage-class-specifier on a member
+	            // ([dcl.stc]/9) — a reserved tkCPPKEYWORD in C++ modes
+	            // (never matches a C identifier spelled "mutable"). The
+	            // class-body member loop already consumes it; this is the
+	            // struct/union twin (libc++ __functional/function.h:484:
+	            // `mutable char __small[sizeof(void*) * 2];`).
+	            || (tn->id() == TokenID::tkCPPKEYWORD
+	             && contextual_identifier_name(tn) == "mutable")) )
 	{
 	    pgm.nextToken(); // consume qualifier
 	    tn = pgm.peekToken();
