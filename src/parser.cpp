@@ -48831,7 +48831,8 @@ static bool vector_contains_variable(const std::vector<Variable *> &vars,
     return false;
 }
 
-bool Program::parse_qualified_special_member_definition(TokenBase *first_tb)
+bool Program::parse_qualified_special_member_definition(TokenBase *first_tb,
+	DataDefCLASS *pre_owner, const std::string *src_class_name)
 {
     if ( is_c_mode() || !first_tb || !is_contextual_identifier_token(first_tb) )
 	return false;
@@ -48852,20 +48853,32 @@ bool Program::parse_qualified_special_member_definition(TokenBase *first_tb)
 	    skip_template_id_suffix();
 	if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	{
+	    // A nested chain under a pre-resolved template-id owner
+	    // (`bs<0,0>::Inner::Inner`) has no spelling-based resolution —
+	    // fail loud rather than resolve the wrong scope.
+	    if ( pre_owner )
+		Throw(first_tb) << "Nested qualified member definition under a"
+				" template-id scope is not supported" << flush;
 	    scope_parts.push_back(member_name);
 	    continue;
 	}
 	break;
     }
 
-    DataDefCLASS *owner = resolve_qualified_class_owner(scope_parts);
+    DataDefCLASS *owner = pre_owner ? pre_owner
+			: resolve_qualified_class_owner(scope_parts);
     if ( !owner )
 	Throw(first_tb) << "Unknown C++ declarator scope '"
 			    << join_scope_parts(scope_parts, scope_parts.size())
 			    << "'" << flush;
 
-    bool is_ctor = member_name == owner->name;
-    bool is_dtor = member_name == "~" + owner->name;
+    // The ctor/dtor spelling in source: the owner's own name for a plain
+    // class; for a pre-resolved template-id owner the registered name is the
+    // mangled instantiation key, so compare against the SOURCE class name.
+    const std::string &ctor_name = (pre_owner && src_class_name)
+	? *src_class_name : owner->name;
+    bool is_ctor = member_name == ctor_name;
+    bool is_dtor = member_name == "~" + ctor_name;
     if ( !is_ctor && !is_dtor )
 	Throw(first_tb) << "Qualified member definition requires a return type" << flush;
 
@@ -54994,9 +55007,48 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 				    if ( DataDefCLASS *owner =
 					    dynamic_cast<DataDefCLASS *>(
 						&resolved->definition) )
+				    {
+					TokenStream::Pos qsaved = tokens.savepos();
 					if ( TokenDataType *member =
 						resolve_class_member_type_chain(owner, tb) )
-					    return parseDeclaration(member);
+					{
+					    // A CTOR/DTOR spelling resolves as a type
+					    // too (`X::X` names X — the injected class
+					    // name), so it must not be captured here:
+					    // a return type is followed by a
+					    // DECLARATOR, a ctor name by '('. Mirror
+					    // of the plain-name branch's guard below.
+					    if ( peekToken()
+					      && peekToken()->id() != TokenID::tkOpBrk )
+						return parseDeclaration(member);
+					    tokens = qsaved;
+					}
+					// `bs<0,0>::bs(...) {...}` — an out-of-line
+					// special member of an explicit specialization,
+					// defined WITHOUT a template<> prefix
+					// ([temp.expl.spec]/5; libc++ bitset:598's
+					// `inline __bitset<0,0>::__bitset() {}`).
+					// Gate on the exact `:: name (` / `:: ~name (`
+					// shape so qualified statics/expressions keep
+					// their existing routes.
+					bool sm_shape = false;
+					if ( tokens.size() >= 3 && tokens[1] && tokens[2]
+					  && is_contextual_identifier_token(tokens[1])
+					  && contextual_identifier_name(tokens[1]) == tname
+					  && tokens[2]->id() == TokenID::tkOpBrk )
+					    sm_shape = true;
+					else if ( tokens.size() >= 4 && tokens[1]
+					  && tokens[2] && tokens[3]
+					  && tokens[1]->id() == TokenID::tkBnot
+					  && is_contextual_identifier_token(tokens[2])
+					  && contextual_identifier_name(tokens[2]) == tname
+					  && tokens[3]->id() == TokenID::tkOpBrk )
+					    sm_shape = true;
+					if ( sm_shape
+					  && parse_qualified_special_member_definition(
+						tb, owner, &tname) )
+					    return NULL;
+				    }
 				}
 				DBG(std::cout << "parseStatement() identifier resolves as declared type, calling parseDeclaration" << std::endl);
 				return parseDeclaration(resolved);

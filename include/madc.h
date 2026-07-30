@@ -5198,7 +5198,16 @@ public:
     // probe must decline rather than guess).
     Variable *find_method_definition_target(DataDefCLASS *owner,
 					    const std::string &member);
-    bool parse_qualified_special_member_definition(TokenBase *first_tb);
+    // pre_owner + src_class_name: the TEMPLATE-ID-qualified form
+    // (`bs<0,0>::bs(...) {}` — an explicit specialization's out-of-line
+    // special member, defined WITHOUT a template<> prefix per
+    // [temp.expl.spec]/5). The caller already resolved the template-id to
+    // the instantiated class; src_class_name is the SOURCE spelling the
+    // ctor/dtor name is compared against (the owner's registered name is
+    // the mangled instantiation key and can never match the source text).
+    bool parse_qualified_special_member_definition(TokenBase *first_tb,
+	    DataDefCLASS *pre_owner = NULL,
+	    const std::string *src_class_name = NULL);
     // Assorted parse helpers (expression/declaration/statement support).
     DataDef *effective_pointer_type_for_member_access(TokenBase *tb);
     // C++ canon operator-> rewrite: when lhs is a class OBJECT (not a
