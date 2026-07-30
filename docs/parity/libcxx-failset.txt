@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  bd053e25 (2026-07-30) on feature/libcxx-string2-claude
-# Result:       746 passed / 108 failed / 0 timed out / 10 skipped
+# Measured at:  c5c62082 (2026-07-30) on feature/libcxx-string2-claude
+# Result:       747 passed / 108 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -126,6 +126,17 @@
 #                         iterator operator->'s UNRESOLVED pointer_traits
 #                         alias return (#72 tail); vector (13) at its
 #                         emission layer.
+#   c5c62082  747 / 108   the failing set is SET-IDENTICAL (comm-diffed both
+#                         ways vs bd053e25 AND this file); +1 passed = the
+#                         new suite test (testaliasptrtarget). The fix was
+#                         THE ALIAS-STAR ROOT: every `using X = U*` alias
+#                         target silently DE-POINTERED (the resolve lanes
+#                         drained the declarator suffix) — a flavor-
+#                         independent silent-wrong. With it, the map chain
+#                         advances past the ENTIRE operator-> wall to
+#                         map:629 — mem-init naming a private template-param
+#                         base (`__map_value_compare : private _Compare`,
+#                         #72's next link). No lane test crosses fully yet.
 test.mad
 test5.mad
 testalignas.mad
