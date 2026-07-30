@@ -1152,6 +1152,47 @@ plain-template file scope, the libc++ `::template` alias shape including
 injected-class-name, pre-declared control, union spelling). Battery:
 fulltest 824/0/0/9, EXE 808/0, OBJ 808/0, flavored lanes 542/281×3.
 
+### Re-measured 2026-07-30 @7e8c4e6d: 544 / 281 — bitset through, two ctor-definition defects down
+
+`544 passed / 281 failed / 10 skipped`; the failing set is byte-identical to
+the recorded 281 again (comm-diffed both directions, all three flavored
+lanes; the +2 are the fixes' own tests). Battery: fulltest 826/0/0/9, EXE and
+OBJ green, all structural gates green.
+
+Two stacked defects under the bitset:598 frontier, each with its own commit
+and gate:
+
+1. **@e6ee7a05 — a plain out-of-line template ctor definition never
+   attached.** The out-of-line attach loop matched ctors only through the
+   member-template arm (pair's piecewise ctor templates); a plain
+   `template <class T> box<T>::box() {}` matched no candidate, the
+   instantiated ctor stayed declaration-only, and it was bound to an external
+   Itanium import nothing defines. New plain-ctor arm: ctor-ness + user-param
+   arity (overload pick), via a DelimDepth-based declarator arity counter.
+   Gate `testooltemplatector.mad`. Method note: THREE reducer confounds were
+   burned down to reach it — the explicit spec, spec selection, and the
+   type-arg/NTTP split were all red herrings; the un-confounded twin pair
+   (primary only, ctor out-of-line) failed identically. The `-v` trace line
+   `bind_declared_cpp_symbol(): bs<1,1>::bs_1_1 -> _ZN2bsI11S0_EC1Ev` named
+   the truth: the import was the PRIMARY's instantiation. Residual filed as
+   task #50: value-arg mangling in that lane emits garbage (`I11S0_E` where
+   `ILi1ELi1EE` belongs); type-arg mangling is correct.
+
+2. **@7e8c4e6d — an explicit specialization's out-of-line ctor/dtor parses.**
+   [temp.expl.spec]/5 defines these WITHOUT a template<> prefix, so the
+   statement head is a bare template-id-qualified name; the template-id
+   branch let the member chain answer `bs<0,0>::bs` with the
+   injected-class-name and handed parseDeclaration a type followed by `(`.
+   Mirrored the plain-name branch's two pieces (the '('-guard and the
+   special-member routing, with a pre-resolved owner + source-name variant).
+   Gate `testoolspecctor.mad` (ctor + dtor + method + primary controls).
+
+Frontier: `bitset` is THROUGH; `<iostream>` now stops at
+`__locale_dir/locale_base_api/bsd_locale_fallbacks.h:31` — `decltype(expr)`
+as a declaration's RETURN TYPE at statement head (task #51, hermetic reducer
+tmp/dtret.mad confirmed; the statement dispatch has a typeof recognizer but
+no decltype twin).
+
 ## Decided defaults (no owner question needed)
 
 - Header search is **target-derived and generated**, never a hardcoded
