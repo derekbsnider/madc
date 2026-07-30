@@ -35291,8 +35291,18 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	    // FuncDef), so a non-void out-of-line member (`iterator insert(...)`)
 	    // would have its return silently rewritten to void. A ctor's funcdef
 	    // returns ddVOID, so the defaulted-ctor caller is unchanged.
+	    // And with the member's REAL static-ness ([class.static.mfct] — the
+	    // out-of-line def cannot repeat `static`, so it must come from the
+	    // in-class declaration's vfSTATIC): defaulting to instance prepends a
+	    // hidden `__this`, shifting every parameter one slot and dropping the
+	    // LAST one — libc++'s __num_put<char>::__widen_and_group_int lost
+	    // `const locale& __loc` ("use of undeclared identifier '__loc'").
+	    // The member-template lane already derives this (45458's
+	    // static_member_method); this is the plain-deferred twin.
 	    FuncDef *mfd = dynamic_cast<FuncDef *>(body.var->type);
-	    parseFunction(mfd ? mfd->return_value_type() : (DataDef &)ddVOID, parse_id, owner);
+	    parseFunction(mfd ? mfd->return_value_type() : (DataDef &)ddVOID, parse_id, owner,
+			  NULL, false, std::string(),
+			  (body.var->flags & vfSTATIC) != 0);
 	}
 	catch(...)
 	{
