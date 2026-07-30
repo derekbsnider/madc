@@ -304,6 +304,16 @@ void CirBuilder::note_global_reference(const Variable &v)
 	if (v.flags & (vfLOCAL | vfPARAM))
 		return;
 	std::string en = var_emit_name(v);
+	// Env-gated probe (MADC_XTEST_NGR=<substr>): the record decision per
+	// matching emitted name — separates "arm never called" from "flags
+	// declined" when an alias-to-external reference goes undeclared.
+	{
+		static const char *ngr = ::getenv("MADC_XTEST_NGR");
+		if (ngr && *ngr && en.find(ngr) != std::string::npos)
+			fprintf(stderr, "[NGR] name=%s emit=%s flags=%x rec=%d\n",
+				v.name.c_str(), en.c_str(), v.flags,
+				(int)(en == v.name || (v.flags & vfEXTERN) != 0));
+	}
 	if (en == v.name)
 		referenced_globals[v.name] = const_cast<Variable *>(&v);
 	else if (v.flags & vfEXTERN)
@@ -8147,6 +8157,35 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 
 node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 {
+	// A class-scope STATIC data member declared in a system header binds
+	// its storage to the library's Itanium symbol at member registration
+	// (vfEXTERN + storage_alias_name — the [locale.id] facet statics).
+	// A reference that reaches the tree through the tsubst COPY lane never
+	// passes translate_expr's recording arms (the NGR probe showed zero
+	// note_global_reference calls for the facet ids), so the extern decl
+	// was missing exactly for materialized bodies: "undeclared identifier
+	// _ZNSt3__15ctypeIcE2idE" under -stdlib=libc++, where use_facet
+	// compiles from headers. Record every alias-bound extern static member
+	// of an EMITTED class — pass 0.78 emits `extern <type> sym;`, harmless
+	// when unreferenced.
+	// Only aliases the loaded native libraries actually PROVIDE: a
+	// forest-RESTORED class can carry a malformed alias minted from the
+	// flat tag (_ZNSt7__cxx1117numpunct_char__idE — "numpunct_char__id"
+	// as one component), harmless while undeclared; declaring it made the
+	// forest iobind gate fail on "incompatible types of ... declarations".
+	// dlsym is the same probe the MIR import resolver uses, so a recorded
+	// extern here always resolves at link.
+	if (m_prog)
+		for (std::map<std::string, DataDef *>::const_iterator smi =
+			     cdd->static_member_types.begin();
+		     smi != cdd->static_member_types.end(); ++smi) {
+			Variable *sv = m_prog->findVariable(
+				cdd->name + "__" + smi->first);  // allowed-exception: lookup key, not symbol build
+			if (sv && (sv->flags & vfEXTERN)
+			    && !sv->storage_alias_name.empty()
+			    && external_symbol_available(sv->storage_alias_name))
+				note_global_reference(*sv);
+		}
 	node_t struct_id = id(cdd->name.c_str());
 	node_t member_list = class_member_list(cdd);
 	// A class-parsed union ([class.union]: union with ctors/methods
