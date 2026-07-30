@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  8aed92cc (2026-07-30) on feature/libcxx-string2-claude
-# Result:       744 passed / 108 failed / 0 timed out / 10 skipped
+# Measured at:  bd053e25 (2026-07-30) on feature/libcxx-string2-claude
+# Result:       746 passed / 108 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -112,6 +112,20 @@
 #                         dependent call result (task #72). Also filed: #69
 #                         flavor-ABI ns-string boundary (testrust SIGSEGV
 #                         stack), #70 object-NSDMI ctor-args application.
+#   bd053e25  746 / 108   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways); +2 passed = the two NEW suite tests. Two
+#                         fixes landed: @e94b1274 operator-> rewrite accepts
+#                         member/call-result receivers (map's tree-iterator
+#                         arrow shapes now REWRITE), and @bd053e25 a ctor-less
+#                         class copy-constructs from its argument — the
+#                         by-value call-receiver spill temp was SILENTLY
+#                         uninitialized (a general-correctness silent-wrong,
+#                         task #73) + the derived/slicing copy arm
+#                         (input_iterator_tag from forward_iterator_tag).
+#                         Chain-of-blockers holds: map/set (7) now at the
+#                         iterator operator->'s UNRESOLVED pointer_traits
+#                         alias return (#72 tail); vector (13) at its
+#                         emission layer.
 test.mad
 test5.mad
 testalignas.mad
