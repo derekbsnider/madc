@@ -5518,6 +5518,35 @@ class BasicClassPatternResolver
 		replay.push_back(new TokenDataType(
 		    carg->base_type->name.c_str(), *carg->base_type));
 	    }
+	    else if ( memo_arguments[i]->is_pointer()
+		   && !memo_arguments[i]->is_reference() )
+	    {
+		// A POINTER argument re-enters the parse lane the way source
+		// spells it too: pointee type + `*` tokens
+		// (fold_template_arg_declarator owns it from there), so
+		// PARTIAL-SPEC selection can deduce against the pointee.
+		// One opaque DataDefPTR token matched only the primary:
+		// libc++'s pointer_traits<node_pointer>::element_type
+		// resolved on the EMPTY primary and map<K,V>'s tree-iterator
+		// chain minted placeholder args (task #72).
+		DataDef *core = memo_arguments[i];
+		int stars = 0;
+		while ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(core) )
+		{
+		    if ( !p->base_type || p->is_reference() )
+			break;
+		    core = p->base_type;
+		    ++stars;
+		}
+		if ( DataDefCONST *pc = dynamic_cast<DataDefCONST *>(core) )
+		{
+		    replay.push_back(new TokenCONST());
+		    core = pc->base_type ? pc->base_type : core;
+		}
+		replay.push_back(new TokenDataType(core->name.c_str(), *core));
+		for ( int s = 0; s < stars; ++s )
+		    replay.push_back(new TokenMul());
+	    }
 	    else
 		replay.push_back(new TokenDataType(
 		    memo_arguments[i]->name.c_str(), *memo_arguments[i]));
@@ -5680,7 +5709,8 @@ public:
 		<< "internal: basic ClassPattern could not resolve type "
 		<< id << " kind=" << (unsigned)type.kind
 		<< " name='" << type.name << "' operand=" << type.operand
-		<< " in '" << binding.pattern.class_name << "'"
+		<< " owner='" << (memo_owner ? memo_owner->name : "(null)")
+		<< "' in '" << binding.pattern.class_name << "'"
 		<< flush;
 	    return NULL;
 	}
@@ -8127,6 +8157,11 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    {
 		TokenBase *head = nextToken();
 		resolved = resolve_declared_type_token(head, true, true);
+		// Declarator suffix (`= U *`) folds BEFORE the
+		// leftover-strictness check, so a pointer-target alias
+		// passes it legitimately (same owner as the arg loop).
+		if ( resolved )
+		    resolved = fold_template_arg_declarator(resolved, head);
 		// The substituted body IS the type spelling: tokens left
 		// before the `;` sentinel mean the resolution did not cover
 		// it — a FAILURE, not a success (#27's require_full_parse
@@ -8381,6 +8416,8 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    Throw(dtok ? dtok : tb) << "Could not resolve default template argument for "
 					<< td.typeparams[ai] << " in "
 					<< tname << "<>" << flush;
+	// A defaulted param's declarator suffix (`class V = U*`) folds too.
+	adt = fold_template_arg_declarator(adt, dtok);
 	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	    nextToken();
 	args.push_back(adt);
@@ -8418,6 +8455,14 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 
     TokenBase *head = nextToken();
     TokenDataType *resolved = resolve_declared_type_token(head, true, true);
+    // Alias-target DECLARATOR suffix (`using rebind = U *;` — libc++
+    // pointer_traits): fold `*`/`&`/fn-ptr onto the resolved base via the
+    // one owner. The sentinel drain below silently DISCARDED the suffix,
+    // so every pointer-target alias yielded its POINTEE (`up<int>` == int
+    // — map's tree-iterator chain instantiated with de-pointered args and
+    // its operator-> return degraded to a placeholder, task #72).
+    if ( resolved )
+	resolved = fold_template_arg_declarator(resolved, head);
     bool have_sentinel = false;
     for ( size_t si = 0; si < tokens.size(); ++si )
 	if ( tokens[si] == alias_sentinel )
@@ -8480,7 +8525,12 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	namespace_stack.push_back(td.defining_namespace);
 
 	TokenBase *head2 = nextToken();
-	try { resolved = resolve_declared_type_token(head2, true, true); }
+	try
+	{
+	    resolved = resolve_declared_type_token(head2, true, true);
+	    if ( resolved )   // same declarator-suffix fold as the main lane
+		resolved = fold_template_arg_declarator(resolved, head2);
+	}
 	catch ( ... ) { resolved = NULL; }
 
 	if ( !namespace_stack.empty()

@@ -1,0 +1,34 @@
+#!../bin/madc
+// An alias template whose TARGET carries a declarator suffix:
+// `using up = U *;` — libc++ pointer_traits' rebind shape. The alias
+// resolution drained the substituted body to the sentinel AFTER
+// resolving only the base type, silently discarding the `*`: up<int>
+// yielded int (every pointer-target alias de-pointered — map<K,V>'s
+// whole tree-iterator chain instantiated with wrong args).
+#include <cstdio>
+template <class U> using up = U *;
+template <class P> struct ptraits {};
+template <class T> struct ptraits<T *> {
+    typedef T element_type;
+    template <class U> using rebind = U *;
+};
+template <class VP, class N> struct nodet {
+    typedef typename ptraits<VP>::template rebind<N> node_pointer;
+    typedef typename ptraits<node_pointer>::element_type node_elem;
+    typedef node_elem *value_pointer;
+};
+template <class NT> struct titer {
+    typedef typename NT::value_pointer pointer;
+    typename NT::node_elem *p;
+    pointer operator->() const { return (pointer)p; }
+};
+struct nd { int v; };
+int main()
+{
+    nd n; n.v = 9;
+    up<int> ip = &n.v;
+    ptraits<nd *>::rebind<int> rp = &n.v;
+    titer<nodet<void *, nd> > it; it.p = &n;
+    printf("%d %d %d\n", *ip, *rp, it->v);
+    return 0;
+}
