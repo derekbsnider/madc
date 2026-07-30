@@ -2807,6 +2807,14 @@ public:
     // canonicalizing at only SOME sites shatters identity (the 202-regression).
     std::string canonical_arg_key_fragment(const std::vector<TokenBase *> &argtoks,
 					   const std::string &spelling);
+    // Canonicalize ONE template-argument SPELLING to the form a use site
+    // produces for the RESOLVED type (template_type_arg_spelling reads
+    // canonical_cpp_spelling()); template-ids canonicalize their inner args
+    // recursively (`alloc9<int>` -> `alloc9<int32_t>`). The template-id arm
+    // of canonical_arg_key_fragment's one-key rule. Returns EMPTY unless
+    // every part resolves concretely — a dependent spelling must keep its
+    // raw fragment, never a context-dependent rewrite.
+    std::string canonical_template_arg_spelling(const std::string &spelling);
     struct TemplateAliasDef {
 	    std::vector<std::string> typeparams;
 	    std::vector<std::vector<TokenBase *>> typeparam_defaults;

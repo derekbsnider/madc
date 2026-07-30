@@ -27116,6 +27116,138 @@ int64_t Program::evaluate_requires_expression_constant()
     return satisfied ? 1 : 0;
 }
 
+// One-key rule, template-id arm (see canonical_arg_key_fragment): canonicalize
+// a template-argument SPELLING to the form a USE site produces for the RESOLVED
+// type — template_type_arg_spelling reads the type's canonical_cpp_spelling(),
+// so builtins take their canonical DataDef name (`int` -> `int32_t`), a single
+// user name takes its class's canonical spelling, and a template-id
+// canonicalizes its inner args RECURSIVELY, preferring the instantiated class's
+// own canonical spelling when one already exists (it carries the defining
+// namespace) and qualifying the outer name from the template registry when it
+// does not. cv-qualifiers and declarator suffixes peel off and re-apply
+// textually — a reference suffix must stay `&` (a DataDefREF's own spelling is
+// the ref-as-pointer `*` form, which loses the reference identity; see
+// template_type_arg_spelling).
+//
+// STRICT on failure: returns EMPTY unless the outer is a registered class
+// template and EVERY inner arg resolves concretely (builtin / registered type /
+// integer literal / nested success). A key must be a pure function of the
+// spelling — a DEPENDENT name (`char_traits<_CharT>`) must never rewrite from
+// whatever the parse context happens to resolve (char_traits is multi-namespace;
+// keying it off current_namespace() shattered the <string> freeze identities),
+// so anything unresolvable or ambiguous keeps the raw fragment via the caller's
+// fallback, exactly as before.
+std::string Program::canonical_template_arg_spelling(const std::string &spelling)
+{
+    std::string core = trim_spelling(spelling), sfx;
+    for (;;)
+    {
+	while ( !core.empty() && core[core.size()-1] == ' ' )
+	    core.erase(core.size() - 1);
+	if ( !core.empty()
+	  && (core[core.size()-1] == '*' || core[core.size()-1] == '&') )
+	{
+	    sfx = std::string(1, core[core.size()-1]) + sfx;
+	    core.erase(core.size() - 1);
+	    continue;
+	}
+	break;
+    }
+    std::string cv;
+    for ( bool peeled = true; peeled; )
+    {
+	peeled = false;
+	if ( core.compare(0, 6, "const ") == 0 )
+	{ cv += "const "; core = trim_spelling(core.substr(6)); peeled = true; }
+	else if ( core.compare(0, 9, "volatile ") == 0 )
+	{ cv += "volatile "; core = trim_spelling(core.substr(9)); peeled = true; }
+    }
+    if ( core.empty() )
+	return std::string();
+    // Distinct C++ argument spellings that share integer storage keep their
+    // source spelling — the template_type_arg_spelling carve-out.
+    if ( core == "wchar_t" || core == "char16_t" || core == "char32_t" )
+	return spelling;
+    if ( core.find('<') == std::string::npos )
+    {
+	if ( DataDef *dd = resolve_builtin_type_spelling(core) )
+	{
+	    const std::string &cs = dd->canonical_cpp_spelling();
+	    return cv + (cs.empty() ? dd->name : cs) + sfx;
+	}
+	// A pure integer literal (a non-type arg) is already canonical.
+	{
+	    size_t d0 = core[0] == '-' ? 1 : 0;
+	    bool all_digits = d0 < core.size();
+	    for ( size_t i = d0; all_digits && i < core.size(); ++i )
+		all_digits = isdigit((unsigned char)core[i]) != 0;
+	    if ( all_digits )
+		return cv + core + sfx;
+	}
+	if ( DataDef *cdd = resolve_named_datadef(core) )
+	{
+	    const std::string &cs = cdd->canonical_cpp_spelling();
+	    return cv + (cs.empty() ? cdd->name : cs) + sfx;
+	}
+	return std::string();   // unresolvable (dependent) name
+    }
+    std::string outer;
+    std::vector<std::string> inner;
+    if ( !split_template_id_spelling(core, outer, inner) )
+	return std::string();
+    // Rebuild with the original outer TEXT — qualifier preserved.
+    // split_template_id_spelling strips the namespace, and re-resolving a
+    // multi-namespace name without its qualifier matched the WRONG instance
+    // (std::char_traits<char> verified against __gnu_cxx::char_traits<char>
+    // through the namespace-blind despaced index, corrupting the pair
+    // fragment and splitting _Rb_tree_node's identity in two).
+    std::string outer_text = trim_spelling(core.substr(0, core.find('<')));
+    bool outer_qualified = outer_text.find("::") != std::string::npos;
+    std::string qual = outer_qualified
+	? outer_text.substr(0, outer_text.rfind("::") + 2) : std::string();
+    std::string rebuilt = outer_text + "<";
+    for ( size_t i = 0; i < inner.size(); ++i )
+    {
+	std::string ic = canonical_template_arg_spelling(inner[i]);
+	if ( ic.empty() )
+	    return std::string();
+	if ( i )
+	    rebuilt += ",";
+	rebuilt += ic;
+    }
+    rebuilt += ">";
+    // Is the outer name registered in exactly ONE namespace?
+    const template_registry_entry_t *entry =
+	template_map.find_readonly(template_name_pool.intern(outer));
+    const std::vector<TemplateDef> *g = entry ? entry->find(NULL) : NULL;
+    bool single_ns = g && !g->empty();
+    std::string reg_ns = single_ns ? (*g)[0].defining_namespace : std::string();
+    for ( size_t i = 1; single_ns && i < g->size(); ++i )
+	if ( (*g)[i].defining_namespace != reg_ns )
+	    single_ns = false;
+    if ( DataDef *idd = resolve_arg_spelling_datadef(*this, rebuilt) )
+    {
+	const std::string &cs = idd->canonical_cpp_spelling();
+	// The despaced index is namespace-BLIND: accept the instance only
+	// when the original qualifier prefixes its canonical spelling
+	// (inline namespaces like std::__cxx11 absorb into the prefix), or
+	// the name is unambiguous registry-wide.
+	if ( !cs.empty()
+	  && (outer_qualified
+	      ? despace_spelling(cs).compare(0, despace_spelling(qual).size(),
+					     despace_spelling(qual)) == 0
+	      : single_ns) )
+	    return cv + cs + sfx;
+    }
+    if ( outer_qualified )
+	return cv + rebuilt + sfx;   // qualifier kept; inners canonicalized
+    if ( !single_ns || !g )
+	return std::string();   // ambiguous or unregistered: keep the raw fragment
+    if ( !reg_ns.empty() )
+	rebuilt = reg_ns + "::" + rebuilt;
+    return cv + rebuilt + sfx;
+}
+
 std::string Program::canonical_arg_key_fragment(
 		const std::vector<TokenBase *> &argtoks, const std::string &spelling)
 {
@@ -27168,6 +27300,26 @@ std::string Program::canonical_arg_key_fragment(
 		if ( !cs.empty() && cs != core )
 		    return sanitize_template_arg_fragment(cs + sfx);
 	    }
+	// A TEMPLATE-ID core (`alloc9<int>`) follows the same one-key rule:
+	// a use site spells the RESOLVED type canonically
+	// (`alloc9<int32_t>`, namespace-qualified), so an explicit
+	// specialization registered from the raw source spelling forms a
+	// DIFFERENT key, goes invisible to its uses, and the primary
+	// instantiates silently in its place (tests/testspectemplid.mad).
+	// Canonicalize recursively; an unresolvable spelling keeps the raw
+	// fragment exactly as before.
+	if ( !core.empty() && core.find('<') != std::string::npos )
+	{
+	    std::string cs = canonical_template_arg_spelling(spelling);
+	    if ( !cs.empty() && cs != spelling )
+	    {
+		static const char *cfp = ::getenv("MADC_ARGFRAG_PROBE");
+		if ( cfp )
+		    std::cerr << "[argfrag] '" << spelling << "' -> '" << cs
+			<< "'" << std::endl;
+		return sanitize_template_arg_fragment(cs);
+	    }
+	}
     }
     return sanitize_template_arg_fragment(spelling);
 }
