@@ -41817,18 +41817,31 @@ static size_t skipped_template_function_declarator_name_index(
 	if ( d.top() && token_is_operator_id_start(t) )
 	{
 	    size_t span = operator_id_token_span(tokens, i);
-	    if ( span && i + span < tokens.size() && tokens[i + span]
-	      && tokens[i + span]->id() == TokenID::tkOpBrk )
+	    if ( span )
 	    {
-		if ( name_out )
+		size_t after = i + span;
+		// A friend TEMPLATE-SPECIALIZATION declarator carries a
+		// template-id suffix between the operator-id and the parameter
+		// list ([temp.friend]): libc++ basic_string's
+		// `friend basic_string operator+ <>(const basic_string&, ...)`.
+		// Skip the balanced <...> run; the declarator NAME is still the
+		// operator-id (the suffix only pins the specialization).
+		if ( after < tokens.size() && tokens[after]
+		  && tokens[after]->id() == TokenID::tkLT )
+		    after = template_id_suffix_end(tokens, after) + 1;
+		if ( after < tokens.size() && tokens[after]
+		  && tokens[after]->id() == TokenID::tkOpBrk )
 		{
-		    std::string nm("operator");
-		    for ( size_t k = i + 1; k < i + span; ++k )
-			if ( tokens[k] )
-			    nm += template_token_fragment(tokens[k]);
-		    *name_out = nm;
+		    if ( name_out )
+		    {
+			std::string nm("operator");
+			for ( size_t k = i + 1; k < i + span; ++k )
+			    if ( tokens[k] )
+				nm += template_token_fragment(tokens[k]);
+			*name_out = nm;
+		    }
+		    return i;
 		}
-		return i;
 	    }
 	}
 	// function declarator: a top-level '(' preceded by a name token marks
