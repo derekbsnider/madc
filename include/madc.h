@@ -3020,6 +3020,12 @@ public:
     // inst_key -> the overload Variable that instantiation registered, so an
     // operator USE site can call the instantiated definition directly.
     madc::dis::intern_keyed_map<Variable *> fn_template_instantiated_vars; // keyed via template_name_pool
+    // inst_keys whose body parse is LIVE on the stack right now. The var memo
+    // is written only at completion, so a memo hit during the same key's own
+    // body parse must NOT treat the missing var as a stale memo and erase the
+    // guard — that re-enters the instantiation unboundedly (same-set siblings:
+    // variadic_inst_in_progress, member_fn_inst_in_progress).
+    std::set<std::string> fn_template_inst_in_progress;
     // > 0 while re-parsing an instantiated function-template body (nesting =
     // instantiation triggering instantiation). static_asserts inside such a
     // body are consumed unevaluated, exactly like instantiated class-template

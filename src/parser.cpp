@@ -44939,9 +44939,17 @@ static bool instantiate_fn_template_binding(Program &pgm,
     {
 	Variable **vi =
 	    pgm.fn_template_instantiated_vars.find(inst_key);
-	bool missing_var_memo = var_out
+	// A memo hit while THIS key's own body parse is live on the stack (a
+	// self-referencing body, e.g. a loop-shaped math template) has no var
+	// recorded YET — that is not a stale memo. Erasing it here re-enters
+	// the instantiation from inside itself, unboundedly (SIGSEGV at the
+	// guard page). Treat it as memoized-done; the placeholder call
+	// aliases to the instance at CIR time like any recursive call.
+	bool inst_live = pgm.fn_template_inst_in_progress.count(inst_key) != 0;
+	bool missing_var_memo = var_out && !inst_live
 	    && vi == pgm.fn_template_instantiated_vars.end();
-	bool stale_body_memo = vi != pgm.fn_template_instantiated_vars.end()
+	bool stale_body_memo = !inst_live
+	    && vi != pgm.fn_template_instantiated_vars.end()
 	    && !instantiated_template_var_has_pending_body(pgm, *vi);
 	if ( missing_var_memo || stale_body_memo )
 	{
@@ -44971,6 +44979,16 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	}
     }
     pgm.fn_template_instantiated.insert(inst_key);
+    // Mark the body parse LIVE for this key (RAII — Throw-safe) so a nested
+    // memo hit on the same key never mistakes the not-yet-recorded var for a
+    // stale memo (see the memo check above).
+    struct InstLiveGuard {
+	Program &p;
+	const std::string &k;
+	InstLiveGuard(Program &p_, const std::string &k_) : p(p_), k(k_)
+	{ p.fn_template_inst_in_progress.insert(k); }
+	~InstLiveGuard() { p.fn_template_inst_in_progress.erase(k); }
+    } _inst_live_guard(pgm, inst_key);
     size_t pre_ovset = 0;
     size_t pre_pending = pgm.pending_funcs.size();
     {
@@ -46339,9 +46357,27 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 	    { pos = j; break; }
 	order.insert(order.begin() + pos, cand);
     }
+    Variable *inst = NULL;
     for ( Program::FnTemplateDef *cand : order )
-	if ( try_instantiate_namespace_fn_template(*this, *cand, fn_key, tc) )
+	if ( try_instantiate_namespace_fn_template(*this, *cand, fn_key, tc,
+						   NULL, NULL, &inst) )
+	{
+	    // Pin the CALL's return type to the INSTANCE's ([temp.deduct] — the
+	    // deduced specialization's type IS the call's type). The placeholder
+	    // FuncDef returns int64, which is indistinguishable from a scalar
+	    // return but wrong for a template-id return (`pack<T> peek(...)`):
+	    // parse-time consumption of the result (`peek(b).get()`) needs the
+	    // real class type NOW, not at CIR ranking time.
+	    FuncDef *ifd = inst ? dynamic_cast<FuncDef *>(inst->type) : NULL;
+	    if ( ifd && !tc->return_override )
+	    {
+		DataDef *rt = &ifd->return_value_type();
+		tc->return_override = rt;
+		tc->returns_ref_override = ifd->returns_reference();
+		tc->setDataType(rt);
+	    }
 	    return;
+	}
 }
 
 static bool tsubst_three_dots_at(const std::vector<TokenBase *> &v, size_t i)
