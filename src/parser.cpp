@@ -9829,6 +9829,18 @@ bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
 	}
 	return false;
     }
+    // Unqualified PRIOR ENUMERATOR inside the scoped-enum body being defined
+    // ([dcl.enum]/5): enumerators are usable in the enum's own body right
+    // after their own definition — `general = fixed | scientific` (libc++
+    // __charconv/chars_format.h:24). They live only in the tag's
+    // pseudo-namespace; TokenENUM::parse points here for the body's duration.
+    if ( active_scoped_enum_ns )
+    {
+	variable_map_iter ei = active_scoped_enum_ns->find(name);
+	if ( ei != active_scoped_enum_ns->end()
+	  && read_constant_integer(ei->second, out) )
+	    return true;
+    }
     Variable *var = findVariable(name);
     return read_constant_integer(var, out);
 }
@@ -39938,6 +39950,20 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	scoped_ns_key = pgm.current_namespace() + "::" + enum_tag;
     variable_map_t *scope_ns = scoped
 	? &pgm.namespace_variables_for_write(scoped_ns_key) : NULL;
+
+    // [dcl.enum]/5: enumerators already registered are usable in the REST of
+    // this enum's own body (`general = fixed | scientific`). Scoped
+    // enumerators live only in the pseudo-namespace, so point the constant
+    // folder at it for the duration of the body parse. RAII-restored so a
+    // Throw mid-body cannot leave the pointer dangling.
+    struct ScopedEnumNsGuard {
+	Program &p;
+	variable_map_t *saved;
+	ScopedEnumNsGuard(Program &pgm_, variable_map_t *ns)
+	    : p(pgm_), saved(pgm_.active_scoped_enum_ns)
+	{ if ( ns ) p.active_scoped_enum_ns = ns; }
+	~ScopedEnumNsGuard() { p.active_scoped_enum_ns = saved; }
+    } scoped_enum_ns_guard(pgm, scope_ns);
 
     int64_t val = 0;
     int64_t enum_min_val = 0, enum_max_val = 0;

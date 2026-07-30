@@ -3735,6 +3735,13 @@ public:
     // handoff as parsing_cpp_union_class above — set before the delegation, read
     // and cleared on entry, so nested members do not inherit it.
     bool parsing_cpp_final_class = false;
+    // The pseudo-namespace of the SCOPED enum whose body is currently being
+    // parsed ([dcl.enum]/5: an enumerator is usable in the enum's own body
+    // immediately after its definition — `general = fixed | scientific`,
+    // libc++ __charconv/chars_format.h). Set by TokenENUM::parse around the
+    // body loop (save/restore, nesting-safe); consulted by
+    // resolve_integer_constant's unqualified-identifier arm. NULL elsewhere.
+    variable_map_t *active_scoped_enum_ns = NULL;
     // Statement-level qualified-call (`php::foo(args);`): the CALLEE namespace
     // override for HEAD resolution only ([basic.lookup] — the qualification
     // applies to the called name, not the arguments). Deliberately NOT part of
