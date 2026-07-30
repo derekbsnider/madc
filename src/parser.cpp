@@ -9152,6 +9152,32 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
     try
     {
 	TokenDataType *rt = resolve_declared_type_token(nextToken(), true, true);
+	// A trailing DECLARATOR (`T&`, `T&&`, `T*`, `T const&`) is part of the
+	// type spelling, but resolve_declared_type_token stops at the type NAME
+	// and leaves it on the stream — so the completeness check below read a
+	// perfectly good reference type as a substitution failure. Every
+	// reference-returning member template therefore failed to resolve its
+	// return, and the caller
+	// (resolve_member_template_call_return_type) fell back to enumerating
+	// same-named candidates and SILENTLY answered with a sibling overload's
+	// return type: libc++'s __libcpp_is_referenceable, whose `_Tp& __test(int)`
+	// lost to its own `false_type __test(...)`, so add_pointer<int>::type
+	// came out as `int`.
+	// Same folding rule as skipped_template_function_return_type's
+	// ref_wraps/star_wraps: stars innermost, one reference outermost
+	// (references never nest).
+	size_t star_wraps = 0, ref_wraps = 0;
+	while ( rt && peekToken() )
+	{
+	    TokenID did = peekToken()->id();
+	    if ( did == TokenID::tkBand || did == TokenID::tkLand )
+	    { ++ref_wraps; nextToken(); continue; }
+	    if ( did == TokenID::tkMul )
+	    { ++star_wraps; nextToken(); continue; }
+	    if ( did == TokenID::tkCONST || did == TokenID::tkVOLATILE )
+	    { nextToken(); continue; }
+	    break;
+	}
 	// The range IS the type spelling: anything left before the sentinel
 	// means the resolution did not cover it — a SUBSTITUTION FAILURE, not
 	// a success (the #27 require_full_parse rule). The motivating leak:
@@ -9165,7 +9191,13 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
 	if ( rt && (dependent_parse_in_progress
 		 || class_pattern_capture_in_progress
 		 || (peekToken() && peekToken()->id() == TokenID::tkSemi)) )
+	{
 	    result = &rt->definition;
+	    for ( size_t s = 0; result && s < star_wraps; ++s )
+		result = getPointerType(result);
+	    if ( result && ref_wraps )
+		result = getReferenceType(result);
+	}
     }
     catch ( ... )
     {
@@ -9365,6 +9397,14 @@ static size_t query_datadef_measure(const DataDef *dd, bool want_alignof)
 {
     if ( !dd )
 	return 0;
+    // [expr.sizeof]/2 and [expr.alignof]: applied to a REFERENCE type, both
+    // yield the REFERENT's measure — `sizeof(int&)` is 4, not the 8 bytes madc
+    // stores a reference in. referent_if_reference is the one owner of that
+    // unwrap; this is the single measurement point both sizeof and alignof
+    // reach, so it belongs here rather than at either call site.
+    if ( DataDef *ref = referent_if_reference(const_cast<DataDef *>(dd)) )
+	if ( ref != dd )
+	    dd = ref;
     return want_alignof ? dd->alignment() : dd->size;
 }
 
@@ -13450,6 +13490,28 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 		  ? fd->parameters.size() - hidden : 0;
 	bool varargs = fd->is_varargs && pn > 0;
 	size_t fixed = varargs ? pn - 1 : pn;
+	// Env-gated probe (MADC_OVL_PROBE=<name substring>). Placed BEFORE the
+	// arity gate and before the viability `continue`s below, because a probe
+	// downstream of them prints nothing for a REJECTED candidate — and that
+	// silence reads as "the candidate does not exist", which is exactly the
+	// wrong conclusion to draw about a selection that picked a sibling.
+	{
+	    static const char *_ovl = ::getenv("MADC_OVL_PROBE");
+	    if ( _ovl && *_ovl && name.find(_ovl) != std::string::npos )
+		fprintf(stderr, "OVLCAND %s cand=%s disp=%s ret=%s parms=%zu "
+			"hidden=%zu pn=%zu varargs=%d fixed=%zu mt=%d "
+			"spellings=%zu sp0=%s argc=%zu arity_ok=%d\n",
+			name.c_str(), mv->name.c_str(),
+			fd->method_display_name.c_str(), fd->returns.name.c_str(),
+			fd->parameters.size(), hidden, pn, (int)varargs, fixed,
+			(int)fd->is_member_template,
+			fd->template_param_spellings.size(),
+			fd->template_param_spellings.empty()
+			    ? "-" : fd->template_param_spellings[0].c_str(),
+			argtypes.size(),
+			(int)!((!varargs && pn != argtypes.size())
+			    || (varargs && argtypes.size() < fixed)));
+	}
 	if ( (!varargs && pn != argtypes.size())
 	  || (varargs && argtypes.size() < fixed) )
 	    continue;
@@ -36721,6 +36783,22 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    size_t method_count_before = ddc->methods.size();
 	    std::vector<TokenBase *> skipped_decl;
 	    pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+	    // Env-gated probe (MADC_REG_PROBE=<class substring>): why an in-class
+	    // member-template declaration did or did not reach registration. Both
+	    // gate inputs are printed, because a silent skip here leaves the
+	    // overload simply absent — with no diagnostic anywhere downstream.
+	    {
+		static const char *_rp = ::getenv("MADC_REG_PROBE");
+		if ( _rp && *_rp && ddc->name.find(_rp) != std::string::npos )
+		    fprintf(stderr, "REGPROBE %s line=%d before=%zu after=%zu "
+			    "skipped_decl=%zu -> %s\n",
+			    ddc->name.c_str(), tn ? (int)tn->line : -1,
+			    method_count_before, ddc->methods.size(),
+			    pgm.last_skipped_template_decl.size(),
+			    (ddc->methods.size() == method_count_before
+			     && !pgm.last_skipped_template_decl.empty())
+				? "REGISTER" : "SKIP");
+	    }
 	    if ( ddc->methods.size() == method_count_before
 	      && !pgm.last_skipped_template_decl.empty() )
 	    {
@@ -47954,6 +48032,23 @@ static void register_skipped_class_template_function(
     if ( !owner )
 	return;
     std::string name = skipped_template_function_declarator_name(tokens);
+    // Env-gated probe (MADC_REG_PROBE=<class substring>): the declarator name
+    // this stub registers under. An empty name returns SILENTLY, so a member
+    // template whose declarator the scanner cannot read simply never exists —
+    // no stub, no diagnostic, and the call site later picks a sibling overload.
+    {
+	static const char *_rp = ::getenv("MADC_REG_PROBE");
+	if ( _rp && *_rp && owner->name.find(_rp) != std::string::npos )
+	{
+	    std::string spell;
+	    for ( size_t i = 0; i < tokens.size() && i < 12; ++i )
+		if ( tokens[i] )
+		    spell += template_token_fragment(tokens[i]) + " ";
+	    fprintf(stderr, "REGFN %s name='%s' toks=%zu [%s]\n",
+		    owner->name.c_str(), name.c_str(), tokens.size(),
+		    spell.c_str());
+	}
+    }
     if ( name.empty() )
 	return;
 
