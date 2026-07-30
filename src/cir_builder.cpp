@@ -11082,7 +11082,25 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 	// uses (ref-returning calls like std::move(x), reference variables,
 	// resolved callees) — the raw token datadef may be a stale overload-set
 	// binding (move_iterator's `: _M_current(std::move(__i))`).
-	if (as_class_instance(ctor_arg_datadef(ctor_args[0])) != cdd) return NULL;
+	DataDefCLASS *acls = as_class_instance(ctor_arg_datadef(ctor_args[0]));
+	if (acls != cdd) {
+		// A DERIVED argument binds the implicit copy ctor's base
+		// reference ([class.copy.ctor]) — the SLICING copy: copy cdd's
+		// base subobject out of the derived object (libstdc++
+		// basic_string.h:87 constructs input_iterator_tag from a
+		// forward_iterator_tag). Trivially-copyable base only;
+		// object_arg_addr's base walk supplies the adjusted subobject
+		// address.
+		if (!acls || !acls->is_or_derives_from(cdd)
+		    || !class_trivially_copyable(cdd))
+			return NULL;
+		node_t src = node1(N_DEREF,
+			node2(N_CAST, class_ptr_type(cdd),
+			      object_arg_addr(ctor_args[0], cdd), origin),
+			origin);
+		node_t asgn = node2(N_ASSIGN, dst_lvalue, src, origin);
+		return node2(N_EXPR, list(), asgn, origin);
+	}
 	if (class_trivially_copyable(cdd)) {
 		node_t src = translate_expr(ctor_args[0]);
 		node_t asgn = node2(N_ASSIGN, dst_lvalue, src, origin);
@@ -11195,6 +11213,21 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 	if (!this_addr || !cdd) return NULL;
 
 	if (!cdd->has_user_ctor) {
+		// IMPLICIT COPY first ([class.copy.ctor]) — same rule as the
+		// named-variable variant: a single same-class or DERIVED
+		// (slicing) argument copy-constructs; this arm previously
+		// ignored ctor_args (a heap `new T(v)` / spill copy of a
+		// ctor-less class silently dropped its source). Non-copy shapes
+		// (aggregate init) fall through to the default construction, as
+		// before.
+		if (!ctor_args.empty()) {
+			node_t dst = node1(N_DEREF,
+				node2(N_CAST, class_ptr_type(cdd), this_addr, origin),
+				origin);
+			if (node_t cc = try_implicit_copy_construct(dst, cdd,
+								    ctor_args, origin))
+				return cc;
+		}
 		bool members = class_needs_member_construction(cdd);
 		bool bases = class_needs_base_construction(cdd);
 		if (!cdd->has_any_vptr() && !members && !bases) return NULL;
@@ -11521,6 +11554,19 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// a complete-object site). Returns NULL when the class truly needs
 	// nothing.
 	if (!cdd->has_user_ctor) {
+		// IMPLICIT COPY first ([class.copy.ctor]): a single same-class or
+		// DERIVED (slicing) argument copy-constructs. This arm previously
+		// DROPPED ctor_args entirely — the by-value call-receiver spill
+		// declared its temp and never filled it (a SILENT wrong answer:
+		// b.get().raw() read an uninitialized iter<T>). Non-copy argument
+		// shapes (aggregate init `SV s = {"hi"}` — served by the
+		// aggregate-init lane) fall through to the default construction
+		// below, as before.
+		if (!ctor_args.empty())
+			if (node_t cc = try_implicit_copy_construct(
+					id(vname.c_str(), origin), cdd, ctor_args,
+					origin))
+				return cc;
 		std::vector<node_t> stmts;
 		complete_object_construct_stmts([&]() -> node_t {
 			return node1(N_ADDR, id(vname.c_str(), origin), origin);

@@ -1,0 +1,25 @@
+#!../bin/madc
+// A BY-VALUE call receiver of a ctor-less instantiated template class:
+// `b.get().raw()` / `b.get()->x`. The spill temp materialized for the
+// receiver was declared but NEVER INITIALIZED — class_ctor_call's
+// no-user-ctor arm dropped the copy-source argument entirely and the
+// tail proceeded silently (garbage reads). The implicit copy
+// ([class.copy.ctor]) now runs first, and an unservable copy-source
+// fails loud.
+#include <cstdio>
+template <class T> struct ptr_tr { typedef T *type; };
+struct val2 { int x; };
+template <class T> struct iter {
+    T *p;
+    typedef typename ptr_tr<T>::type pointer;
+    pointer operator->() const { return p; }
+    T *raw() const { return p; }
+};
+template <class T> struct box { iter<T> it_; iter<T> get() { return it_; } };
+int main()
+{
+    val2 v; v.x = 9;
+    box<val2> b; b.it_.p = &v;
+    printf("%d %d\n", b.get().raw()->x, b.get()->x);
+    return 0;
+}
