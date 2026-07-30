@@ -44753,9 +44753,22 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    // `enable_if_t<...>`): substitute the bound params and resolve the full
 	    // type in an isolated stream. This is the layer-(b) case behind
 	    // __make_move_if_noexcept_iterator's conditional_t-defaulted iterator
-	    // return type in the std::vector chain.
-	    if ( DataDef *rd = pgm.resolve_template_param_default_type(
-		    ft.typeparam_defaults[i], binding, ft.owner_class) )
+	    // return type in the std::vector chain. Resolution runs in the
+	    // template's DEFINING namespace when one is known — the same rule the
+	    // constraints block below applies: the default names its neighbors
+	    // unqualified (`__enable_if_t` in std::__1). Empty-ns callers keep the
+	    // ambient context they always had.
+	    DataDef *rd = NULL;
+	    if ( !ft.ns.empty() )
+	    {
+		Program::NamespaceScope ns_scope(pgm, ft.ns);
+		rd = pgm.resolve_template_param_default_type(
+			ft.typeparam_defaults[i], binding, ft.owner_class);
+	    }
+	    else
+		rd = pgm.resolve_template_param_default_type(
+			ft.typeparam_defaults[i], binding, ft.owner_class);
+	    if ( rd )
 	    { binding[ft.typeparams[i]] = rd; continue; }
 	}
 	return false;
@@ -47255,7 +47268,12 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	    if ( i >= ft.typeparam_is_type.size() || !ft.typeparam_is_type[i] )
 		ft.typeparam_defaults[i].clear();   // MY copy; tokens stay the FuncDef's
     }
-    ft.ns = std::string();
+    // The member template's DEFINING namespace is its owner class's ([temp.point]
+    // / [basic.lookup.unqual]): a defaulted parameter names its neighbors
+    // unqualified (`__enable_if_t<...>` in std::__1), and the defaults fill
+    // resolves in ft.ns — an empty ns left those names unresolvable, so the
+    // whole instantiation silently bailed (deftype MISS with no error).
+    ft.ns = namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling());
     // The instantiated definition gets a DISTINCT name (so it keeps its real
     // parameters instead of colliding with the varargs declaration-only
     // placeholder, which would drop them) — unique PER TYPE-SHAPE
@@ -47550,7 +47568,12 @@ void Program::instantiate_member_ctor_template_for_construction(
 	    if ( i >= ft.typeparam_is_type.size() || !ft.typeparam_is_type[i] )
 		ft.typeparam_defaults[i].clear();
     }
-    ft.ns = std::string();
+    // The ctor template's DEFINING namespace is its owner class's — the
+    // defaults fill resolves unqualified neighbors there (see the call twin):
+    // __compressed_pair_elem's `class = __enable_if_t<!is_same<...>>` names
+    // std::__1 residents, and an empty ns silently bailed the instantiation
+    // (the cout smoke's string:709 "no matching constructor").
+    ft.ns = namespace_scope_from_cpp_spelling(cdd->canonical_cpp_spelling());
     ft.owner_class = cdd;
     ft.instance_method = true;
     // Env-gated probe (MADC_MCT_PROBE=<class-name substr>): the ctor twin of

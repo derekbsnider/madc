@@ -1,0 +1,48 @@
+// #33 final reducer: the compressed-pair shape with the trait chain and
+// classes declared inside a NAMESPACE — the member-template ctor's
+// defaulted param (`class = typename en_if<...>::type`) names its
+// neighbors UNQUALIFIED from inside lib, so the defaults fill must
+// resolve in the template's DEFINING namespace ([temp.point]). With an
+// empty ft.ns the fill silently bailed and the whole ctor instantiation
+// failed — libc++'s __compressed_pair_elem chain (string:709).
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 print "7 1"
+#include <cstdio>
+
+namespace lib {
+
+template <class T> struct decay_ish { typedef T type; };
+template <class T> struct decay_ish<T&> { typedef T type; };
+template <bool, class R = void> struct en_if {};
+template <class R> struct en_if<true, R> { typedef R type; };
+template <class A, class B> struct same { enum { value = 0 }; };
+template <class A> struct same<A, A> { enum { value = 1 }; };
+template <bool B, class R = void> using en_if_t = typename en_if<B, R>::type;
+
+struct tagd {};
+
+template <class T, int I> struct elem {
+	T val;
+	explicit elem(tagd) : val() {}
+	template <class U, class = en_if_t<!same<elem, typename decay_ish<U>::type>::value> >
+	explicit elem(U&& u) : val(u) {}
+};
+
+template <class T1, class T2> struct cpair : elem<T1, 0>, elem<T2, 1> {
+	template <class U1, class U2>
+	cpair(U1&& t1, U2&& t2) : elem<T1, 0>(t1), elem<T2, 1>(t2) {}
+};
+
+}
+
+struct alloc { int a; };
+
+int main()
+{
+	alloc a;
+	a.a = 7;
+	lib::cpair<int, alloc> p(lib::tagd(), a);
+	lib::elem<alloc, 1> &e = p;
+	lib::elem<int, 0> &f = p;
+	printf("%d %d\n", e.val.a, f.val == 0 ? 1 : 0);
+	return 0;
+}
