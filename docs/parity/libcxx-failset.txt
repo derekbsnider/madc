@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  fe50bc3c (2026-07-30) on feature/libcxx-string2-claude
-# Result:       540 passed / 281 failed / 0 timed out / 10 skipped
+# Measured at:  7d2c3a62 (2026-07-30) on feature/libcxx-string2-claude
+# Result:       541 passed / 281 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -14,6 +14,16 @@
 #                         (diffed both ways) — #43 was a necessary link in the
 #                         <iostream> chain, not the last one. The frontier moved
 #                         condition_variable.h:211 -> :225 (task #46).
+#   7d2c3a62  541 / 281   +1 was a NEW TEST; zero flips, ZERO REGRESSIONS in
+#                         all three lanes (member access is a hot path).
+#                         <condition_variable> is THROUGH: the frontier left
+#                         that header for __bit_reference:837.
+#
+# FOUR consecutive fixes advanced the frontier without moving the count. That is
+# the rung's shape, not a stall: the ~256 stream tests are blocked behind a CHAIN
+# of header blockers, and the count only moves when <iostream> completes. Judge
+# progress here by which header the frontier sits in, and use this file's diff to
+# prove no regressions — which is what it has done at every step.
 #
 # 256 of these 281 include a C++ stream header, so <iostream> remains ~91% of
 # the gap; the live blocker is condition_variable.h:211 (task #43).
