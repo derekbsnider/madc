@@ -26944,11 +26944,39 @@ std::string Program::canonical_arg_key_fragment(
     // (they share integer storage but are distinct template-argument types).
     if ( spelling != "wchar_t" && spelling != "char16_t"
       && spelling != "char32_t" )
+    {
 	if ( DataDef *dd = resolve_builtin_type_spelling(spelling) )
 	{
 	    const std::string &cs = dd->canonical_cpp_spelling();
 	    return sanitize_template_arg_fragment(cs.empty() ? dd->name : cs);
 	}
+	// A USER-type argument follows the same one-key rule: the fragment
+	// comes from the RESOLVED type's canonical spelling, not the source
+	// text. A specialization written inside its own namespace spells the
+	// arg UNQUALIFIED (`_IterOps<_ClassicAlgPolicy>` in std::__1; the
+	// reducer's `ops<pol>` in lib), while a use site's binding spells it
+	// qualified ("lib::pol") — raw spellings form DIFFERENT keys, the
+	// spec goes invisible, and the declared-only PRIMARY instantiates
+	// empty ("'f' is not a member function"). A trailing declarator
+	// suffix survives into the fragment; only a clean single-name core
+	// resolves — anything else keeps the raw spelling exactly as before.
+	std::string core = spelling, sfx;
+	while ( !core.empty()
+	     && (core[core.size()-1] == '*' || core[core.size()-1] == '&'
+	      || core[core.size()-1] == ' ') )
+	{
+	    if ( core[core.size()-1] != ' ' )
+		sfx = std::string(1, core[core.size()-1]) + sfx;
+	    core.erase(core.size() - 1);
+	}
+	if ( !core.empty() && core.find('<') == std::string::npos )
+	    if ( DataDef *cdd = resolve_named_datadef(core) )
+	    {
+		const std::string &cs = cdd->canonical_cpp_spelling();
+		if ( !cs.empty() && cs != core )
+		    return sanitize_template_arg_fragment(cs + sfx);
+	    }
+    }
     return sanitize_template_arg_fragment(spelling);
 }
 
