@@ -31196,6 +31196,31 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 						    { debug_deref_fail(*this, 15808, deref_tb, NULL);
 						    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 						    }
+						// Postfix ++/-- binds tighter than the
+						// unary `*` ([expr.post]): `*p++ = c`
+						// post-steps the MEMBER pointer, then
+						// dereferences — the member twin of the
+						// variable arm's TokenDerefStep and the
+						// parenthesized arm's step-wrap. Without
+						// it the `++` stayed on the stream and
+						// applied to the DEREF result
+						// ((*p)++ = c, "lvalue required" —
+						// basic_streambuf::sputc's *__nout_++).
+						if ( peekToken()
+						  && (peekToken()->id() == TokenID::tkInc
+						   || peekToken()->id() == TokenID::tkDec) )
+						{
+						    TokenBase *step_tb = nextToken();
+						    TokenOperator *step;
+						    if ( step_tb->id() == TokenID::tkInc )
+							step = new TokenInc();
+						    else
+							step = new TokenDec();
+						    step->left = tm;
+						    step->right = NULL;
+						    exStack.push(new TokenDerefExpr(step, base));
+						    return done ? ExprStep::Done : ExprStep::Break;
+						}
 						exStack.push(new TokenDerefExpr(tm, base));
 						return done ? ExprStep::Done : ExprStep::Break;
 					    }

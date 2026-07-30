@@ -1,0 +1,25 @@
+// #62 root 1: `*p++ = c` where p is a MEMBER pointer — postfix ++ binds
+// to the pointer ([expr.post] before [expr.unary]): *(p++) = c. madc
+// emitted ((*p)++) = c inside basic_streambuf<char>::sputc (streambuf:128
+// "lvalue required as left operand of assignment").
+// Oracle: g++/clang++ print "1 2 xy"
+#include <cstdio>
+
+struct B {
+	char buf[4];
+	char *p;
+	B() { p = buf; }
+	int put(char c) {
+		*p++ = c;
+		return (int)(p - buf);
+	}
+};
+
+int main()
+{
+	B b;
+	int n1 = b.put('x');
+	int n2 = b.put('y');
+	printf("%d %d %c%c\n", n1, n2, b.buf[0], b.buf[1]);
+	return 0;
+}
