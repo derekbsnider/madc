@@ -1,0 +1,36 @@
+// A TEMPLATE-HEAD friend function declaration ([temp.friend]) —
+// `template<class U> friend box<U> bump(const box<U>&);` — must grant
+// friendship by NAME like a friend-first declaration does: the befriended
+// template's INSTANTIATED body reads the private member. libc++'s
+// ostreambuf_iterator.h:66 declares __pad_and_output exactly this way
+// (template head first, template-id return), and its body reads the
+// private __sbuf_ — without the grant the instantiation dies muted and
+// cout's padding path collapses.
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 print "9"
+#include <cstdio>
+
+namespace lib {
+
+template <class T> class box;
+template <class T> box<T> bump(const box<T> &b);
+
+template <class T> class box {
+	T v;
+	template <class U> friend box<U> bump(const box<U> &b);
+public:
+	box(T x) : v(x) {}
+	T get() const { return v; }
+};
+
+template <class T> box<T> bump(const box<T> &b) {
+	return box<T>(b.v + 2);
+}
+
+}
+
+int main()
+{
+	lib::box<long> b(7);
+	printf("%d\n", (int)lib::bump(b).get());
+	return 0;
+}

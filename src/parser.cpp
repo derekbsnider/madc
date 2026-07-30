@@ -37104,10 +37104,39 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		if ( skipped_template_decl_is_friend_type(skipped_decl) )
 		    register_skipped_friend_type(ddc, skipped_decl);
 		else
+		{
+		    // A TEMPLATE-HEAD FRIEND function declaration ([temp.friend])
+		    // — `template<class U> friend box<U> peek(const box<U>&);` —
+		    // grants friendship by NAME exactly like the friend-first arm
+		    // below (the template head was consumed by parseKeyword, so
+		    // `friend` leads this decl). libc++'s __pad_and_output is
+		    // this shape (ostreambuf_iterator.h:66); without the grant
+		    // its instantiated body cannot read the private member it
+		    // was befriended for. The `friend` specifier precedes the
+		    // declarator, so the scan stops at the parameter list.
+		    for ( size_t fi = 0; fi < skipped_decl.size(); ++fi )
+		    {
+			if ( !skipped_decl[fi] )
+			    continue;
+			if ( skipped_decl[fi]->id() == TokenID::tkOpBrk )
+			    break;
+			if ( skipped_decl[fi]->id() != TokenID::tkFRIEND )
+			    continue;
+			std::string friend_fname =
+			    skipped_template_function_declarator_name(skipped_decl);
+			if ( !friend_fname.empty() )
+			{
+			    ddc->friend_function_names.push_back(friend_fname);
+			    pgm.note_class_decl(
+				Program::ClassDeclKind::FriendFunction);
+			}
+			break;
+		    }
 		    register_skipped_class_template_function(
 			pgm, ddc, skipped_decl,
 			pgm.last_skipped_template_typeparams, access_flags,
 			constructor_source_name);
+		}
 		pgm.last_skipped_template_decl.clear();
 		pgm.last_skipped_template_typeparams.clear();
 		pgm.last_skipped_template_typeparam_defaults.clear();
