@@ -1,0 +1,22 @@
+// A GNU attribute between `extern` and the type ([dcl.attr.grammar] /
+// gcc attribute syntax): libc++ <iostream>:54 spells its stream objects
+//	extern _LIBCPP_EXPORTED_FROM_ABI istream cin;
+// where the macro expands to __attribute__((__visibility__("default"))).
+// madc's extern dispatch saw the attribute identifier, matched no arm, and
+// threw "Expecting type after 'extern'".
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	9 12
+#include <cstdio>
+
+extern __attribute__((__visibility__("default"))) int evar;
+int evar = 9;
+
+extern __attribute__((__visibility__("default"))) int efn(int x);
+int efn(int x) { return x + 3; }
+
+int main()
+{
+	printf("%d %d\n", evar, efn(evar));
+	return 0;
+}

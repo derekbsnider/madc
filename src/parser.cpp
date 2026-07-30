@@ -40182,6 +40182,19 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
     bool handled = false;
     try
     {
+	// `extern __attribute__((visibility("default"))) istream cin;` —
+	// libc++ spells _LIBCPP_EXPORTED_FROM_ABI as a GNU attribute between
+	// `extern` and the type (<iostream>:54). Attributes appertain to the
+	// declaration; consume them with the shared helper.
+	while ( is_attribute_identifier_token(tn) )
+	{
+	    TokenBase *next = pgm.consume_gnu_attributes(pgm.nextToken());
+	    if ( next )
+		pgm.pushToken(next);
+	    tn = pgm.peekToken();
+	    if ( !tn )
+		pgm.Throw << "Unexpected end of input after 'extern'" << flush;
+	}
 	if ( tn->type() == TokenType::ttString )
 	{
 	    TokenStr *linkage = static_cast<TokenStr *>(pgm.nextToken());
@@ -40268,6 +40281,27 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 		TokenBase *type_tb = pgm.nextToken();
 		TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
 		result = pgm.parseDeclaration(dt ? dt : (*tdmi));
+	    }
+	    else
+	    {
+		// Not in the flat map: a NAMESPACE-SCOPED typedef used
+		// unqualified inside its still-open namespace block — libc++
+		// <iostream>:54 `extern ... istream cin;` parses inside
+		// `namespace std { inline namespace __1 {`, and its istream
+		// typedef registers under the namespace key. The one
+		// declared-type resolver searches the namespace chains;
+		// restore the stream when it declines so the throw below
+		// still points at the extern's head.
+		TokenStream::Pos esaved = pgm.tokens.savepos();
+		TokenBase *type_tb = pgm.nextToken();
+		if ( TokenDataType *dt =
+			pgm.resolve_declared_type_token(type_tb, true, true) )
+		{
+		    handled = true;
+		    result = pgm.parseDeclaration(dt);
+		}
+		else
+		    pgm.tokens = esaved;
 	    }
 	    }
 	}
