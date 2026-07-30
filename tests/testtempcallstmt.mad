@@ -1,0 +1,36 @@
+#!../bin/madc
+// [dcl.ambig.res]: a type-headed statement whose paren group carries a
+// TOP-LEVEL COMMA cannot be a declaration (a parenthesized declarator
+// holds exactly one declarator-id) — it is a functional-cast /
+// temporary-construction EXPRESSION. libc++ __node_handle:110's
+// `__generic_container_node_destructor<...>(__alloc, true)(__ptr_);`
+// is the construct-a-temporary-and-CALL-it shape; madc threw
+// "Expecting ')' after parenthesized declarator" on all three shapes
+// below. g++ and clang++ print "ctor 7", "ctor 1", "42 15".
+#include <cstdio>
+struct dtor1 {
+    int mul;
+    dtor1(int a, bool b) : mul(b ? a : 1) { printf("ctor %d\n", mul); }
+    void operator()(int *p) const { *p *= mul; }
+};
+template <class T, class A> struct dtor2 {
+    int mul;
+    dtor2(A a, bool b) : mul(b ? a : 1) {}
+    void operator()(T *p) const { *p *= mul; }
+};
+template <class T> struct wrap5 {
+    void go(T *p, int a) {
+        dtor2<T, int>(a, true)(p);
+    }
+};
+int main()
+{
+    int x = 6;
+    dtor1(7, true)(&x);   // non-template temporary, called
+    dtor1(2, false);      // bare temporary statement (side effects only)
+    wrap5<int> w;
+    int y = 3;
+    w.go(&y, 5);          // template-id temporary in a template member body
+    printf("%d %d\n", x, y);
+    return 0;
+}

@@ -55488,27 +55488,47 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
     return expr;
 }
 
+// A type-headed statement `T ( ... ) ...` / `T < ... > ( ... ) ...` is a
+// functional-cast / temporary-construction EXPRESSION, not a declaration,
+// when either
+// (a) the balanced paren group is followed by `.` / `->` — member access
+//     on the temporary, or
+// (b) C++ only: the group carries a COMMA at its top level — a
+//     parenthesized declarator holds exactly ONE declarator-id
+//     ([dcl.ambig.res]), so `T(a, b);` and
+//     `Dtor<T, A>(alloc, true)(ptr);` (libc++ __node_handle's
+//     __generic_container_node_destructor call) can only be expressions.
+//     A lone `T(a);` stays a DECLARATION of `a`, exactly as the standard
+//     resolves the ambiguity.
+// The head type token is already consumed by the caller; an optional
+// balanced `<...>` template-id suffix may precede the paren group (C++).
 bool Program::datatype_statement_starts_functional_expr()
 {
-    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+    TokenBase *head = peekToken();
+    if ( !head )
 	return false;
-    int depth = 0;
-    for ( size_t i = 0; i < tokens.size(); ++i )
+    bool angle_first = !is_c_mode() && head->id() == TokenID::tkLT;
+    if ( head->id() != TokenID::tkOpBrk && !angle_first )
+	return false;
+    DelimDepth d;
+    bool in_group = false;	// inside the `(...)` group
+    size_t i = 0;
+    while ( i < tokens.size() )
     {
 	TokenBase *t = tokens[i];
-	if ( !t )
-	    continue;
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++depth;
-	else if ( t->id() == TokenID::tkClBrk )
+	if ( t && !in_group && !d.angle && t->id() == TokenID::tkOpBrk )
+	    in_group = true;	// the group opens (directly, or after `<...>`)
+	else if ( t && !in_group && i > 0 && d.top() )
+	    return false;	// the token after `<...>` is not `(`
+	if ( t && in_group && !is_c_mode() && t->id() == TokenID::tkComma
+	  && d.paren == 1 && !d.square && !d.brace && !d.angle )
+	    return true;
+	i += delim_scan_step(tokens, i, d);
+	if ( in_group && d.top() )
 	{
-	    --depth;
-	    if ( depth == 0 )
-	    {
-		TokenBase *next = (i + 1 < tokens.size()) ? tokens[i + 1] : NULL;
-		return next && (next->id() == TokenID::tkDot
-			     || next->id() == TokenID::tkDeRef);
-	    }
+	    TokenBase *next = (i < tokens.size()) ? tokens[i] : NULL;
+	    return next && (next->id() == TokenID::tkDot
+			 || next->id() == TokenID::tkDeRef);
 	}
     }
     return false;
@@ -55856,6 +55876,21 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 					    return NULL;
 				    }
 				}
+				// The resolved template-id heads a functional-cast /
+				// temporary-construction EXPRESSION, not a declaration
+				// (`Dtor<T, A>(alloc, true)(ptr);` —
+				// __node_handle's destructor call; [dcl.ambig.res]).
+				// Same consult the ttDataType statement arm makes;
+				// the template-id is already consumed, so the
+				// classifier's plain-paren path applies.
+				if ( peekToken()
+				  && peekToken()->id() == TokenID::tkOpBrk
+				  && !compounds.empty()
+				  && datatype_statement_starts_functional_expr() )
+				{
+				    resetPrevToken();
+				    return parseExprStmt(resolved);
+				}
 				DBG(std::cout << "parseStatement() identifier resolves as declared type, calling parseDeclaration" << std::endl);
 				return parseDeclaration(resolved);
 			    }
@@ -55863,6 +55898,13 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    // instantiate the concrete class and declare a variable of it.
 		    if ( TokenDataType *inst = instantiate_template_use(tname, tb) )
 		    {
+			if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
+			  && !compounds.empty()
+			  && datatype_statement_starts_functional_expr() )
+			{
+			    resetPrevToken();
+			    return parseExprStmt(inst);
+			}
 			DBG(std::cout << "parseStatement() template instantiation, calling parseDeclaration" << std::endl);
 			return parseDeclaration(inst);
 		    }
