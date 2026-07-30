@@ -1114,6 +1114,44 @@ lines. Twice in that stretch a truncated harness (`head -8`, a probe
 placed after a `continue`) produced a confidently wrong conclusion —
 the standing lesson that a probe's SILENCE is not evidence of absence.
 
+### Re-measured 2026-07-30 @8445b59c: 542 / 281 — __bit_reference through
+
+`542 passed / 281 failed / 10 skipped`; the failing set is **byte-identical**
+to the recorded 281 in all three flavored lanes (comm-diffed both ways —
+the +1 is the fix's own new test). Frontier: `__bit_reference:837` →
+**`bitset:598`** (out-of-line ctor of a full specialization, task #48).
+
+The "`Expecting a type argument to _Select<>`" error was **neither** of the
+things its line suggested. The reducer ladder killed both theories before
+any edit: the unnamed dependent NTTP passes; the dependent member alias
+template via `::template` passes — file-scope concrete args, dependent
+condition+args inside a class template, and injected-class-name as an alias
+argument all print oracle-equal. Argument bisection then isolated it:
+**an elaborated-type-specifier as a template argument whose lookup misses**
+(`wp<struct natD>`, natD undeclared) — [basic.scope.pdecl]/7 requires the
+miss to FIRST-DECLARE the incomplete class, and madc returned NULL and
+threw. libc++ leans on the form through `_If`/`_Select`:
+`operator=(const _If<_IsConst, struct __private_nat, __bit_iterator>&)`
+(__bit_reference:883, `__private_nat` declared nowhere else). The reported
+position — the ENCLOSING class-name token at :837 — was `Throw(at)`
+printing the class DataDef's declaration token, which is what made the
+error name a puzzle. In the alias lane the throw was printed twice and
+then swallowed: **exit 0 with wrong output** ("0 1" vs oracle "4 1"), the
+silent-wrong-answer variant of the same defect.
+
+Fix at the owner: `resolve_declared_type_token`'s elaborated arm mints an
+incomplete `DataDefSTRUCT` on a BARE unqualified miss (bareness judged
+BEFORE the recursion — a qualified or template-id form eats stream tokens
+on its way to failing, so a post-failure peek lies). The mint recipe was
+already written twice in `TokenSTRUCT::parse`'s forward-declaration arms;
+consolidated to one owner (`mint_incomplete_struct_tag`, with
+`scoped_struct_tag` / `register_cpp_aggregate_name` promoted from lambdas
+to Program methods) and adopted at all three sites. Gate:
+`tests/testelabargdecl.mad` ("8 4 1 4 8" == g++ 13 == clang++-18; arms:
+plain-template file scope, the libc++ `::template` alias shape including
+injected-class-name, pre-declared control, union spelling). Battery:
+fulltest 824/0/0/9, EXE 808/0, OBJ 808/0, flavored lanes 542/281×3.
+
 ## Decided defaults (no owner question needed)
 
 - Header search is **target-derived and generated**, never a hardcoded
