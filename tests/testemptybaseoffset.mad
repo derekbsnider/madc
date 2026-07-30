@@ -1,0 +1,27 @@
+// Itanium empty-base allocation: an EMPTY non-primary base sits at
+// offset 0 (occupying no storage), not at the end of the previous
+// bases. libc++'s __compressed_pair<rep, allocator<char>> derives from
+// elem<rep,0> (24 bytes) and elem<allocator,1> (EMPTY): the allocator
+// element's accessors must resolve to offset 0 — the old layout put it
+// at 24, ONE PAST the object, and every get_allocator() read (and the
+// element ctor's write) went out of bounds; under the JIT the writes
+// clobbered adjacent locals (the string-concat size corruption).
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 print "24 0 0"
+#include <cstdio>
+
+struct R { unsigned long w[3]; };
+struct E {};
+
+template <class A, class B> struct pair2 : A, B {
+	A &first() { return *static_cast<A *>(this); }
+	B &second() { return *static_cast<B *>(this); }
+};
+
+int main(void)
+{
+	pair2<R, E> p;
+	printf("%d %d %d\n", (int)sizeof(p),
+	       (int)((char *)&p.second() - (char *)&p),
+	       (int)((char *)&p.first() - (char *)&p));
+	return 0;
+}

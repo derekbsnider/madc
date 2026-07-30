@@ -1,0 +1,16 @@
+// String concatenation under -stdlib=libc++: operator+ is
+// _LIBCPP_HIDE_FROM_ABI (never exported), so the retained header body
+// must instantiate and serve the call ([temp.inst]) — the friend
+// template-specialization grant (`friend basic_string operator+ <>`),
+// the by-value retbuf slot at the emitted call, and the temporary
+// materialization at the consumption site are all on this one line.
+// Oracle: clang++ -stdlib=libc++ prints "hello 5"
+#include <string>
+#include <cstdio>
+
+int main(void)
+{
+	std::string a = "he", b = "llo", c = a + b;
+	printf("%s %d\n", c.c_str(), (int)c.size());
+	return 0;
+}

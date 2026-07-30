@@ -15261,6 +15261,30 @@ void DataDefCLASS::compute_layout()
 	// its strongest member, matching gcc/clang.
 	size_t balign = bs.base->alignment();
 	if ( !balign ) balign = 1;
+	// Itanium empty-base allocation: an EMPTY non-primary base occupies no
+	// storage and is PLACED AT OFFSET 0 (dsize contributes nothing), bumped
+	// only past a SAME-TYPE empty sibling ([intro.object] distinct-address
+	// rule). The old code parked it at the running offset — for libc++'s
+	// __compressed_pair<rep, allocator> that put the allocator elem at 24
+	// == ONE PAST the 24-byte object, so every __second()/__alloc()
+	// accessor read/wrote out of bounds (ASan: get_allocator overflows the
+	// string local; under the JIT the writes clobbered ADJACENT locals —
+	// the string-concat size corruption).
+	if ( empty_base && !bs.is_primary )
+	{
+	    size_t eoff = 0;
+	    for ( auto &prev : bases )
+	    {
+		if ( &prev == &bs ) break;
+		if ( !prev.is_virtual && prev.base == bs.base
+		  && prev.offset == eoff )
+		    ++eoff;
+	    }
+	    bs.offset = eoff;
+	    if ( bs.base->has_vptr_slot ) secondary_vptr_owners.push_back(bs.base);
+	    if ( balign > maxalign ) maxalign = balign;
+	    continue;
+	}
 	cur = mi_align_up(cur, balign);
 	bs.offset = bs.is_primary ? 0 : cur;
 	if ( bs.is_primary )
