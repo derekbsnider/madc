@@ -35135,10 +35135,21 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
 	TokenBase *name_tb = nextToken();
 	if ( !name_tb )
 	    Throw << "Unexpected end of input in constructor initializer list" << flush;
-	if ( !is_contextual_identifier_token(name_tb) )
-	    Throw(name_tb) << "Expecting member or base name in constructor initializer list" << flush;
 	FuncDef::CtorInitializer init;
-	init.name = contextual_identifier_name(name_tb);
+	if ( name_tb->type() == TokenType::ttDataType )
+	    // A mem-initializer-id may designate a BASE CLASS
+	    // ([class.base.init]), and a base named by a template parameter
+	    // arrives from the instantiation replay as a TYPE token — the
+	    // substitution replaced the param-name identifier
+	    // (`vcomp : private C { vcomp(C c) : C(c) {} }`, libc++'s
+	    // __map_value_compare : private _Compare). Store the type's name;
+	    // member-or-base validation stays downstream, exactly as it is
+	    // for the identifier arm.
+	    init.name = ((TokenDataType *)name_tb)->definition.name;
+	else if ( !is_contextual_identifier_token(name_tb) )
+	    Throw(name_tb) << "Expecting member or base name in constructor initializer list" << flush;
+	else
+	    init.name = contextual_identifier_name(name_tb);
 	std::vector<TokenBase *> id_toks;
 	id_toks.push_back(name_tb->clone());
 	while ( peekToken() && peekToken()->id() == TokenID::tkNS )

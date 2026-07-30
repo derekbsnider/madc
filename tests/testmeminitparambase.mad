@@ -1,0 +1,23 @@
+#!../bin/madc
+// A mem-initializer naming a base that IS a template parameter
+// ([class.base.init]): `template <class C> struct vcomp : private C
+// { vcomp(C c) : C(c) {} }` — libc++'s __map_value_compare shape
+// (map:629). The instantiation replay substitutes the param-name
+// identifier with a TYPE token, and the mem-init parse rejected any
+// type token ("Expecting member or base name in constructor
+// initializer list"). g++ and clang++ print "7 9".
+#include <cstdio>
+struct less2 { int base; less2() : base(7) {} less2(int v) : base(v) {} };
+template <class C> struct vcomp : private C {
+    vcomp() : C() {}
+    vcomp(C c) : C(c) {}
+    int get() const { return this->base; }
+};
+int main()
+{
+    less2 l(9);
+    vcomp<less2> v(l);
+    vcomp<less2> w;
+    printf("%d %d\n", w.get(), v.get());
+    return 0;
+}
