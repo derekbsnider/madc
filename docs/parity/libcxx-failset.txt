@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  adb0a578 (2026-07-30) on feature/libcxx-string2-claude
-# Result:       545 passed / 281 failed / 0 timed out / 10 skipped
+# Measured at:  674beaa3 (2026-07-30) on feature/libcxx-string2-claude
+# Result:       596 passed / 237 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -38,21 +38,32 @@
 #                         decltype heads a declaration / sizeof operand (#51);
 #                         bsd_locale_fallbacks.h is THROUGH. Frontier:
 #                         locale:2373 money_get (task #52).
+#   674beaa3  596 / 237   44 FIXED, ZERO regressions (comm-diffed both ways).
+#                         Six fixes landed between the measures: #52 fn-ptr
+#                         template arg, #53 mutable, #54 cv fn-ptr member, #55
+#                         scoped-enum prior enumerators, #56 extern attribute
+#                         (-> #include <iostream> COMPILES), #57 base-qualified
+#                         overload-by-arity (-> cout PARSES), #58 out-of-line
+#                         overload defs bind by SIGNATURE (the big one: libc++
+#                         defines ostream's streambuf* operator<< first though
+#                         declared last, so every body attached one overload
+#                         over; the 44 were failing on mis-bound bodies, not on
+#                         the stream chain). Frontier: locale:1155 c2mir check,
+#                         incompatible return-expr in a struct-returning
+#                         function (num_put materialization, task #59).
 #
-# FOUR consecutive fixes advanced the frontier without moving the count. That is
-# the rung's shape, not a stall: the ~256 stream tests are blocked behind a CHAIN
-# of header blockers, and the count only moves when <iostream> completes. Judge
-# progress here by which header the frontier sits in, and use this file's diff to
-# prove no regressions — which is what it has done at every step.
+# The chain-of-blockers reading was validated at 674beaa3: the count sat at
+# 545/281 through four frontier fixes, then one binding fix flipped 44 at once.
+# Judge progress by which header the frontier sits in, and use this file's diff
+# to prove no regressions — which is what it has done at every step.
 #
-# 256 of these 281 include a C++ stream header, so <iostream> remains ~91% of
-# the gap; the live blocker is locale:2373 (task #52).
+# 214 of these 237 include a C++ stream header, so the stream chain remains ~90%
+# of the gap; the live blocker is locale:1155 (task #59).
 #
 # This is NOT a ratchet yet: a 281-entry baseline gates nothing. It becomes the
 # P2.7 gate when the count reaches 0 — every genuine gap fixed, every
 # out-of-scope test carrying a tests/<base>.libcxx_skip with a reason.
 test.mad
-test3.mad
 test4.mad
 test5.mad
 test_cpp_addr_ref.mad
@@ -74,22 +85,17 @@ testaddrtakenptrmember.mad
 testaliasnontypebool.mad
 testalignas.mad
 testargv.mad
-testarrayc.mad
 testarraymember.mad
 testarraymethods.mad
 testarraysubscript.mad
 testatomics.mad
 testautodeduce.mad
 testbinlit.mad
-testbugbufbranch.mad
 testcapture.mad
-testcast.mad
-testcastargcomma.mad
 testcastarrow.mad
 testcastparenexpr.mad
 testcastsubscript.mad
 testchain.mad
-testcharnoterm.mad
 testcin.mad
 testclass.mad
 testclassassign.mad
@@ -99,7 +105,6 @@ testclassrefparam.mad
 testclassreturn.mad
 testclassstaticitanium.mad
 testcolon.mad
-testcommastmt.mad
 testcompare_realhdr.mad
 testcompoundassign.mad
 testconstenforce.mad
@@ -116,25 +121,18 @@ testctorstring.mad
 testdefaultedcmp_realhdr.mad
 testdefer.mad
 testdefine.mad
-testderef.mad
 testderefcasttypedef.mad
-testderefpostincread.mad
 testderefpreinc.mad
 testderefptrexpr.mad
 testdlcall.mad
 testdlopen.mad
-testdupliteral.mad
 testeastconst.mad
 testenumclass.mad
 testescape.mad
 testevalexterncapture.mad
 testexterncstringptr.mad
 testexterndlsym.mad
-testexternsprintfternary.mad
-testfileline.mad
-testfixedarr.mad
 testfnptrcompare.mad
-testfnptrglobal.mad
 testfnptrmember_binop.mad
 testfnptrparenscall.mad
 testfnptrtypedef.mad
@@ -158,7 +156,6 @@ testifconstexpr.mad
 testimplcopy.mad
 testinclude.mad
 testincludenext.mad
-testincludeonce.mad
 testinvocable.mad
 testisempty.mad
 testispod.mad
@@ -171,7 +168,6 @@ testlateinstproto.mad
 testlibc.mad
 testlocal.mad
 testlocalclassraii.mad
-testlocalfixedarrayrepeat.mad
 testloop.mad
 testmacrocharlit.mad
 testmacrodefhead.mad
@@ -192,10 +188,6 @@ testmemberaliastmpl.mad
 testmemberaliastmplmember.mad
 testmemberarrowcall.mad
 testmembernamestd.mad
-testmemchr2darray.mad
-testmemchr2darraysingle.mad
-testmemchr2dcount.mad
-testmemchrs5_3.mad
 testmemtmplfwdrefpack.mad
 testmemtmplinstance.mad
 testmemtmplorder.mad
@@ -208,7 +200,6 @@ testmultiret.mad
 testnestedtidbase.mad
 testns.mad
 testnsdmi.mad
-testoctalescape.mad
 testoolnested.mad
 testoperatorarrow.mad
 testoperatorcall.mad
@@ -218,20 +209,14 @@ testopinherit.mad
 testparenexprsub.mad
 testperl.mad
 testphp.mad
-testplacementnew.mad
 testplacementnewglobal.mad
 testplacementnewvoidp.mad
-testpostdeclstr.mad
 testpostfix.mad
 testprefer.mad
 testprint.mad
-testprintfmember.mad
 testpseudodtor.mad
 testptmtype.mad
-testptr.mad
-testptrarith.mad
 testrealcmp.mad
-testrefreturn.mad
 testrefstream.mad
 testregex.mad
 testretbufmethodinit.mad
@@ -249,25 +234,17 @@ testsizeofderef.mad
 testsizeofderefchain.mad
 testsizeofnoparens.mad
 testsizeoftpl.mad
-testsmaug.mad
 testspaceship_realhdr.mad
-testsscanfwide.mad
 testsstream.mad
-teststaticlocalinit.mad
 teststaticmembertmplsibling.mad
 teststdmapint.mad
 teststdstringconv.mad
 teststod.mad
 teststod_realhdr.mad
-teststrarrinit.mad
-teststrcharptrarr.mad
 teststrchrtyped.mad
-teststrcmpret.mad
 teststreambool.mad
 teststrextra.mad
-teststringcast.mad
 teststringclass.mad
-teststringconcat.mad
 teststringeq.mad
 teststringglobal.mad
 teststringmethods.mad
@@ -286,7 +263,6 @@ teststruct.mad
 teststruct2.mad
 teststruct3.mad
 teststructarrayofptr.mad
-teststructcopy.mad
 teststructfwdtypedefarr.mad
 teststructinit.mad
 teststructinitnested.mad
@@ -298,13 +274,9 @@ testswitch.mad
 testswitchpredecl.mad
 testsysobject.mad
 testsysscript.mad
-testsystemcharbuf.mad
-testtemplate.mad
-testtemplatecontainer.mad
 testtemplatestring.mad
 testternary.mad
 testternarystrcharptr.mad
-testterstrarg.mad
 testthis.mad
 testthisdirectinit.mad
 testthrowexpr.mad
@@ -320,15 +292,11 @@ testupcast.mad
 testusefacet_realhdr.mad
 testusing.mad
 testusingbasemember.mad
-testvarargs.mad
 testvariadicmembertmpl.mad
 testvariadicobj.mad
-testvariadicterstrtwice.mad
 testvbasedyn.mad
 testvbasemanip.mad
 testvector.mad
 testvectorptr.mad
 testvirtualnew.mad
-testvoidcastcallstmt.mad
-testvoidptrcast.mad
 testvptrmember.mad

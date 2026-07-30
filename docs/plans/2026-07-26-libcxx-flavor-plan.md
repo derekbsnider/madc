@@ -1232,6 +1232,42 @@ fix in this stretch has been a GENERIC C++ gap (first-declaration, out-of-line
 ctor attach, explicit-spec members, decltype positions) that libstdc++ simply
 never exercised. Zero libc++-special-cased lines remain the rule.
 
+### Re-measured 2026-07-30 @674beaa3: 596 / 237 — 44 flipped at once, zero regressions
+
+Six fixes landed between the measures (#52 fn-ptr template arg, #53 mutable,
+#54 cv-qualified fn-ptr member, #55 scoped-enum prior enumerators, #56 extern
+attribute — after which **`#include <iostream>` COMPILES under the flavor** —
+#57 base-qualified overload-by-arity — after which cout PARSES). The flip came
+from **#58 (@674beaa3): an instantiated out-of-line overload def now binds the
+overload whose SIGNATURE it repeats**, not first-available-by-name. libc++
+`<ostream>` declares operator<< seventeen times but DEFINES the streambuf*
+overload first, so every body attached one overload over — `cout << 42`
+materialized the streambuf* body with an int32_t param ("no matching
+constructor for istreambuf_iterator(int32_t)", the histogram's 263-bucket).
+The 44 newly-passing tests were failing on mis-bound bodies elsewhere, not on
+the stream chain itself.
+
+Comm-diffed both ways against the 281 baseline: **zero new failures**; EXE and
+OBJ flavored legs 583/0 of 596; default-flavor fulltest 834/0. 214 of the 237
+remaining failures include a stream header (~90% — the wall shrank but its
+shape is unchanged). The live blocker is now **locale:1155 (c2mir CHECK:
+"incompatible return-expr type in function returning a struct/union"), the
+num_put<char> materialization — task #59**, the position being a class-head
+artifact (fourth of its kind).
+
+⚠️ Method notes banked from #58: (1) `MADC_XTEST_CTORSEL_DEBUG=<cls-substr>`
+prints ctor candidates AND the enclosing method (`in=`) at CIR ctor-selection —
+it is what named the mis-bound overload. (2) `MADC_XTEST_OOLSIG=1` dumps the
+out-of-line signature probe's param regions + resolution. (3) DelimDepth does
+NOT track angles inside parens BY DESIGN — a declarator-param walk must start
+INSIDE the `(` (the stream twin split_upcoming_function_params does; the old
+arity walk counted the paren and truncated `buf<char_type, traits_type>` at
+its comma). (4) A probe's throw can PRINT then be swallowed by
+resolve_type_token_range's trap — an error on stderr with rc=0/later-failure
+is not necessarily the live frontier. (5) comm-diff normalization: the
+failset file keeps `.mad` suffixes — strip consistently or the diff reports a
+full set-replacement (negative-control caught it).
+
 ## Decided defaults (no owner question needed)
 
 - Header search is **target-derived and generated**, never a hardcoded
