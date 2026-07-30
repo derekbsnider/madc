@@ -41706,6 +41706,54 @@ static bool skipped_template_outofline_member(
     return true;
 }
 
+// User-parameter ARITY of an out-of-line member def's declarator: the number
+// of top-level parameters inside the declarator's `(...)`. `()` and `(void)`
+// are both zero. Returns (size_t)-1 when no declarator parameter list is
+// found. The plain-ctor attach arm uses it to pick the right ctor overload —
+// the same depth of disambiguation the member-template arm gets from its
+// template-param count; same-arity overloads differing only by type are not
+// separated here.
+static size_t outofline_declarator_param_arity(
+	const std::vector<TokenBase *> &decl)
+{
+    size_t ni = skipped_template_function_declarator_name_index(decl, NULL);
+    if ( ni >= decl.size() )
+	return (size_t)-1;
+    size_t op = ni + 1;
+    while ( op < decl.size()
+	 && !(decl[op] && decl[op]->id() == TokenID::tkOpBrk) )
+	++op;
+    if ( op >= decl.size() )
+	return (size_t)-1;
+    DelimDepth d;
+    size_t i = op + delim_scan_step(decl, op, d);	// consume '(' — d.paren == 1
+    size_t commas = 0, content = 0;
+    TokenBase *first_content = NULL;
+    while ( i < decl.size() && d.paren > 0 )
+    {
+	TokenBase *t = decl[i];
+	bool at_top = d.paren == 1 && d.square == 0 && d.brace == 0
+		   && d.angle == 0;
+	if ( t && at_top && t->id() == TokenID::tkComma )
+	    ++commas;
+	else if ( t && !(at_top && t->id() == TokenID::tkClBrk) )
+	{
+	    if ( !content )
+		first_content = t;
+	    ++content;
+	}
+	i += delim_scan_step(decl, i, d);
+    }
+    if ( !content )
+	return 0;
+    if ( commas == 0 && content == 1 && first_content
+      && first_content->type() == TokenType::ttDataType
+      && ((TokenDataType *)first_content)->definition.rawtype()
+	 == DataType::dtVOID )
+	return 0;
+    return commas + 1;
+}
+
 // `template<...> class Owner<T>::Nested { ... };` — an out-of-line NESTED-CLASS
 // definition ([class.nest] + [temp]), shaped [class|struct, Owner, <...>, ::,
 // Nested, body]. v1 recognizes the plain single-level form (basic_istream's
@@ -41793,6 +41841,9 @@ static bool template_class_head_is_qualified(Program &pgm)
 // body materializes only on ODR-use (parse_deferred_lazy_body), so unused
 // out-of-line members never instantiate ([temp.inst]p2) — the same lazy model
 // in-class member bodies use.
+static bool vector_contains_variable(const std::vector<Variable *> &vars,
+				     Variable *needle);
+
 void Program::attach_outofline_member_instantiations(
 	const std::string &class_name, const std::string &defining_namespace,
 	const std::string &registered_mangled, DataDefCLASS *ddc,
@@ -41927,6 +41978,10 @@ void Program::register_outofline_member_instantiations(
 	// by ctor-ness instead, and disambiguate sibling ctor overloads (pair's
 	// piecewise 2-pack vs the private indexed 4-param ctor) by template-param count.
 	bool def_is_ctor = (def.member_name == class_name);
+	// The plain-ctor arm below disambiguates sibling ctor overloads by
+	// user-parameter arity; compute it once per def.
+	size_t def_arity = (def_is_ctor && !def.is_member_template)
+	    ? outofline_declarator_param_arity(def.decl) : (size_t)-1;
 	Variable *mvar = NULL;
 	for ( Variable *cand : ddc->methods )
 	{
@@ -41943,7 +41998,27 @@ void Program::register_outofline_member_instantiations(
 			  << " tparams=" << cfd->template_param_names.size()
 			  << std::endl;
 #endif
-	    if ( def_is_ctor )
+	    if ( def_is_ctor && !def.is_member_template )
+	    {
+		// A PLAIN out-of-line ctor definition (`template<...>
+		// bs<N,M>::bs(...) {...}` — libc++ bitset's __bitset chain):
+		// the member-template arm below can never match it, so the
+		// instantiated ctor stayed declaration-only and bound to an
+		// external Itanium import nothing defines. Match a plain
+		// in-class-declared ctor by ctor-ness plus user-parameter
+		// arity; same-arity overloads differing only by type keep
+		// first-candidate-wins (the member-template arm has the same
+		// depth limit via its template-param count).
+		if ( cfd->is_member_template )
+		    continue;
+		if ( !vector_contains_variable(ddc->ctors, cand) )
+		    continue;
+		size_t cand_params = cfd->parameters.empty()
+		    ? 0 : cfd->parameters.size() - 1;
+		if ( def_arity != (size_t)-1 && cand_params != def_arity )
+		    continue;
+	    }
+	    else if ( def_is_ctor )
 	    {
 		if ( !cfd->is_member_template
 		  || cfd->method_display_name != ddc->name

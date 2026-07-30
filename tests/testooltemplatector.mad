@@ -1,0 +1,49 @@
+// A PLAIN out-of-line constructor definition of a class template pattern
+// ([temp.mem.func]): `template <...> Owner<Args>::Owner(...) { ... }` must
+// attach to the in-class-declared ctor when Owner<ConcreteArgs> instantiates.
+//
+// madc's out-of-line attach loop matched methods by display name and ctors
+// ONLY through the member-template arm (built for pair's piecewise ctor
+// templates) — a plain ctor def matched no candidate, the instantiated ctor
+// stayed declaration-only, and bind_declared_cpp_symbol bound it to an
+// external Itanium import nothing defines:
+//	MIR error: import of undefined item _ZN2bsIiEC1Ev
+// (For an NTTP pattern the import's arg encoding was additionally garbage —
+// _ZN2bsI11S0_EC1Ev — but the import itself was the defect.)
+//
+// libc++ hits the shape at bitset:598's __bitset chain (task #48/#49 stack).
+//
+// Arms:
+//   - type-arg pattern: default ctor AND a 1-arg overload, both out-of-line
+//     (the attach must pick overloads by user-parameter ARITY)
+//   - NTTP pattern: default ctor out-of-line
+//   - out-of-line METHOD (always worked — the control)
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	10 6 23 110
+#include <cstdio>
+
+template <class T> struct box {
+	T v;
+	box();
+	box(T x);
+	int get() const;
+};
+template <class T> box<T>::box() { v = 10; }
+template <class T> box<T>::box(T x) { v = x + 1; }
+template <class T> int box<T>::get() const { return (int)v + 100; }
+
+template <int N, int M> struct grid {
+	int v;
+	grid();
+};
+template <int N, int M> grid<N, M>::grid() { v = N * 10 + M; }
+
+int main()
+{
+	box<int> a;
+	box<int> b(5);
+	grid<2, 3> g;
+	printf("%d %d %d %d\n", a.v, b.v, g.v, a.get());	// 10 6 23 110
+	return 0;
+}
