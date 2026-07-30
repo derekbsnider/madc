@@ -52003,6 +52003,17 @@ paramdecl:
 	if ( !q ) break;
 	if ( q->id() == TokenID::tkCONST ) { func->is_const_method = true; nt = nextToken(); continue; }
 	if ( q->id() == TokenID::tkVOLATILE || q->id() == TokenID::tkRESTRICT ) { nt = nextToken(); continue; }
+	// C++11 ref-qualifier ([dcl.fct]p6): `T f() &`, `T f() const &&`.
+	// libc++ __optional_storage_base::__get declares all four cv/ref
+	// combinations; without this arm the loop broke on the '&' and the
+	// body parse threw "Expecting brace after function declaration" at
+	// lazy pattern instantiation (map<K,V> via node-handle optional).
+	if ( q->id() == TokenID::tkBand || q->id() == TokenID::tkLand )
+	{
+	    func->ref_qualifier = (q->id() == TokenID::tkLand) ? 2 : 1;
+	    nt = nextToken();
+	    continue;
+	}
 	if ( q->id() == TokenID::tkDeRef )	// `->` trailing return type
 	{
 	    nt = nextToken();
