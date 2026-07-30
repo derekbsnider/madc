@@ -1,0 +1,35 @@
+// #57 reducer: a BASE-QUALIFIED member call must pick the overload by
+// ARITY. libc++ ios_base has `void* rdbuf() const` + `void rdbuf(void*)`,
+// and basic_ios wraps them with base-qualified calls (`ios_base::rdbuf()`),
+// which madc bound to the SETTER overload (__o2): "Incorrect number of
+// parameters for 'ios_base__rdbuf__o2': expected 2 got 1" at basic_ios
+// instantiation (ios:520, position = the class head artifact).
+// Arms: qualified getter call, qualified setter call, direct (unqualified)
+// calls as controls.
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	1 1
+#include <cstdio>
+
+struct B {
+	void *buf;
+	void *rdbuf() const { return buf; }
+	void rdbuf(void *p) { buf = p; }
+};
+
+struct D : B {
+	void *rdbuf() const { return B::rdbuf(); }	// qualified 0-arg
+	void rdbuf(void *p) { B::rdbuf(p); }		// qualified 1-arg
+};
+
+int main()
+{
+	D d;
+	int x = 0;
+	d.rdbuf(&x);					// unqualified setter
+	void *a = d.rdbuf();				// unqualified getter
+	B b;
+	b.rdbuf(&x);
+	void *c = b.rdbuf();
+	printf("%d %d\n", (int)(a == (void *)&x), (int)(c == (void *)&x));
+	return 0;
+}

@@ -21342,7 +21342,12 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	  : (tc->argc()+1 != fd->parameters.size())) )
     {
 	DBG(std::cout << "parseCallMethod: argument count: " << tc->argc() << " expected: " << fd->parameters.size() << std::endl);
-	Throw(tc) << "Incorrect number of parameters: expected " << fd->parameters.size() << " got " << tc->argc()+1 << flush;
+	// Name the callee like the sibling arity diagnostics do — an anonymous
+	// "expected N got M" from a lazily-materialized member body is
+	// unattributable (the position points at the class head, not the call).
+	Throw(tc) << "Incorrect number of parameters for '" << tc->var.name
+		  << "': expected " << fd->parameters.size()
+		  << " got " << tc->argc()+1 << flush;
     }
 
     return tb;
@@ -22702,10 +22707,31 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	  && ( pgm.peekToken()->id() == TokenID::tkOpBrk
 	    || ( pgm.peekToken()->id() == TokenID::tkLT && member_is_static_fn ) ) )
 	{
+	    // A base-qualified call INSIDE a member function of `scope` (or of
+	    // a class derived from it) is an implicit-this INSTANCE call
+	    // ([class.mfct.non-static]) — libc++ basic_ios::rdbuf() wraps
+	    // ios_base::rdbuf() exactly so, and requiring static here made the
+	    // arity picker decline both overloads and fall back to
+	    // findMethod's arbitrary one (the setter, "expected 2 got 1").
+	    // Walk the compound chain to the enclosing method; only a call
+	    // from OUTSIDE such a context must be static.
+	    bool qualified_instance_ok = false;
+	    for ( TokenCpnd *cur = pgm.compounds.empty()
+			? NULL : pgm.compounds.top();
+		  cur; cur = cur->parent )
+	    {
+		if ( !cur->method )
+		    continue;
+		DataDefCLASS *cur_cls = cur->method->owner_class;
+		qualified_instance_ok =
+		    cur_cls && cur_cls->is_or_derives_from(scope);
+		break;
+	    }
 	    Variable *mvar = scope->findMethod(member_name);
 	    if ( Variable *arity_mvar =
 		    find_method_by_callable_arity(scope, member_name,
-			pgm.count_queued_call_arguments(), true) )
+			pgm.count_queued_call_arguments(),
+			!qualified_instance_ok) )
 		mvar = arity_mvar;
 	    if ( !mvar )
 	    {
