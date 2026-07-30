@@ -13512,6 +13512,26 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	    }
 	    total += 1;
 	}
+	// Env-gated probe (MADC_OVL_PROBE=<name substring>): every candidate's
+	// viability inputs and score, for diagnosing a selection that picks the
+	// wrong overload. Prints even for rejected candidates (ok=0), which is
+	// the case a score-only dump cannot explain.
+	{
+	    static const char *_ovl = ::getenv("MADC_OVL_PROBE");
+	    if ( _ovl && *_ovl && name.find(_ovl) != std::string::npos )
+		fprintf(stderr, "OVLPROBE %s cand=%s disp=%s ret=%s ok=%d "
+			"total=%d parms=%zu hidden=%zu pn=%zu varargs=%d "
+			"fixed=%zu mt=%d spellings=%zu sp0=%s argc=%zu\n",
+			name.c_str(), mv->name.c_str(),
+			fd->method_display_name.c_str(),
+			fd->returns.name.c_str(), (int)ok, total,
+			fd->parameters.size(), hidden, pn, (int)varargs, fixed,
+			(int)fd->is_member_template,
+			fd->template_param_spellings.size(),
+			fd->template_param_spellings.empty()
+			    ? "-" : fd->template_param_spellings[0].c_str(),
+			argtypes.size());
+	}
 	if ( ok && total > best_score )
 	{
 	    best_score = total;
