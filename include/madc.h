@@ -4453,6 +4453,18 @@ public:
 	    return keywordStartsUnaryOperandContext(id);
 	return false;
     }
+    // helper: is the CURRENT name in class-member-access position — directly
+    // after `.` or `->`? [basic.lookup.classref]/1 looks such a name up in the
+    // CLASS's scope first, so a member named like a TYPE is the member, never
+    // the type. Without this, `lk.mutex()` (libc++ unique_lock's accessor,
+    // named for class `mutex`) was read as a functional cast and produced an
+    // object where a pointer was required.
+    inline bool isMemberAccessPosition()
+    {
+	if ( !_prv_token ) return false;
+	TokenID id = _prv_token->id();
+	return id == TokenID::tkDot || id == TokenID::tkDeRef;
+    }
     // helper: is prevToken in a position where the next operator would be postfix?
     // true when prevToken is ), ], or a non-operator value token
     inline bool isPostfixPosition()

@@ -27389,8 +27389,18 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		  && is_dynamic_symbol_allowed(ident_tb->spelling())
 		  && dlsym(RTLD_DEFAULT, ident_tb->spelling()) )
 		    ordinary_call_name = true;
+		// A name in MEMBER-ACCESS position is a member, never a type
+		// ([basic.lookup.classref]/1: the class's scope is searched
+		// first) — so `recv.name(...)` must not be read as functional
+		// construction even when `name` also names a class. libc++'s
+		// unique_lock accessor is literally `mutex_type *mutex() const`,
+		// i.e. a method named for class `mutex`, and taking it as a type
+		// yielded an object where `->` needed a pointer
+		// (condition_variable.h:225). A member VARIABLE of a type's name
+		// already resolved correctly; only the `name (` form was caught,
+		// because that is exactly what this arm keys on.
 		if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
-		  && !ordinary_call_name )
+		  && !ordinary_call_name && !isMemberAccessPosition() )
 		{
 		    if ( TokenDataType *resolved_type =
 			    resolve_declared_type_token(tb, false, true) )
