@@ -47717,12 +47717,28 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
 {
     const std::string suffix = "::" + opname;
     DataDef *result = NULL;
+    // Env-gated probe (MADC_FREEOP_PROBE=<opname substring>) — the BODY half.
+    // The W2 caller matched its candidate in free_operator_overloads (the
+    // captured SIGNATURES); the body served here comes from fn_template_map
+    // (the RETAINED TEMPLATES). Those are two different containers filled at
+    // two different times, so "the candidate exists but no body instantiates"
+    // is a real state and this is the only place it is visible.
+    static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
+    const bool _fop_on = _fop && *_fop && opname.find(_fop) != std::string::npos;
+    size_t _fop_keys = 0, _fop_cands = 0;
     fn_template_map.for_each(
 	[&]( const char *key_c, std::vector<FnTemplateDef> &vec ) -> bool {
 	    std::string key(key_c);
 	    if ( key.size() <= suffix.size()
 	      || key.compare(key.size() - suffix.size(), suffix.size(), suffix) )
 		return false;
+	    if ( _fop_on )
+	    {
+		++_fop_keys;
+		_fop_cands += vec.size();
+		fprintf(stderr, "FOPBODY key=%s candidates=%zu\n",
+			key.c_str(), vec.size());
+	    }
 #ifdef MADC_DBG_QCALL
 	    fprintf(stderr, "[FREEOP] key %s candidates=%zu\n", key.c_str(),
 		    vec.size());
@@ -47733,6 +47749,10 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
 		{ result = ret; return true; }
 	    return false;
 	});
+    if ( _fop_on )
+	fprintf(stderr, "FOPBODY %s -> %s (keys=%zu candidates=%zu)\n",
+		opname.c_str(), result ? "INSTANTIATED" : "NO BODY",
+		_fop_keys, _fop_cands);
     return result;
 }
 
