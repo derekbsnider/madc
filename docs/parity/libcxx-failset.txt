@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  6980ba1a (2026-07-31) on feature/libcxx-parity4-claude
-# Result:       815 passed / 76 failed / 0 timed out / 10 skipped
+# Measured at:  67079c61 (2026-07-31) on feature/libcxx-parity4-claude
+# Result:       816 passed / 76 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -263,6 +263,44 @@
 #                         "tsubst: skipped body with no tsubst coverage"
 #                         @string:709 (map1) / char_traits.h:269 (testmap) —
 #                         the skipped-body KIND is the next link.
+#   67079c61  816 /  76   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways, prefix-normalised); +1 = the NEW GATE
+#                         testnondeductx. [temp.deduct.type]/5: a template
+#                         parameter appearing only in a qualified-id's
+#                         nested-name-specifier is a NON-DEDUCED CONTEXT —
+#                         madc fed it to its structural deducers, which
+#                         cannot match a dependent qualified name, so the
+#                         whole candidate was refused and the call stayed on
+#                         its declaration-only placeholder. This is libc++'s
+#                         unique_ptr(pointer, deleter) family
+#                         (`_LValRefType<_Dummy>`). A mid-chain link: it
+#                         flips no lane test alone, because the same chain
+#                         also needs the member-template non-type default
+#                         carriage (task #89) and the tsubst-body
+#                         emittability of a dependent-qualified-param member
+#                         (task #88).
+#
+#                         RECON, this measurement: all 76 bucketed by first
+#                         stderr line. The LARGEST root is 28 of 76 —
+#                         22 "incompatible argument type for arithmetic type
+#                         parameter" + 6 the pointer twin — and it reduces to
+#                         SIX LINES (task #90):
+#                             #include <iostream>
+#                             using namespace std;
+#                             int main(){ string h="H";
+#                                 std::cout << h << std::endl; return 0; }
+#                         which FAILS under -stdlib=libc++ and passes under
+#                         libstdc++ and both canons. It is ORDERING-DEPENDENT:
+#                         inserting `std::cout << "lit" << std::endl;` BEFORE
+#                         it makes it resolve. MADC_FREEOP_PROBE (added here)
+#                         shows the parser takes the identical branch in both
+#                         orders — enter, then bail-refret on the reference-
+#                         returning free operator — so the divergence is
+#                         DOWNSTREAM in the cir-builder W2 mangled-direct
+#                         binding, where libc++'s _LIBCPP_HIDE_FROM_ABI free
+#                         operator<< has no exported symbol to bind (task #44
+#                         territory). That bucket, not the map chain, is the
+#                         highest-yield next move.
 #                         single move of the campaign. Rung 13 of #78: the testclass
 #                         SIGSEGV was FOUR compiler roots — (1) reference-typed arg
 #                         bound to a VIRTUAL-base reference param passed unadjusted
