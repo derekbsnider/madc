@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  c956ff04 (2026-07-31) on feature/libcxx-parity2-claude
-# Result:       758 passed / 108 failed / 0 timed out / 10 skipped
+# Measured at:  dff0da16 (2026-07-31) on feature/libcxx-parity2-claude
+# Result:       766 passed / 108 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -209,6 +209,11 @@
 #                         reference-typed MEMBER reads miss the deref
 #                         (uninitialized_algorithms.h:523, task #77).
 #                         fulltest 867/0.
+#   dff0da16  766 / 108   SET-IDENTICAL, zero flips; +8 passes are NEW GATE
+#                         tests (six #78 detect-idiom links: decltype-qual-expr,
+#                         static-const fold, [temp.deduct]/8 param-type reject,
+#                         __is_convertible builtin, [dcl.spec]/1 east-specifiers
+#                         — trait live suite-wide, zero lane regressions)
 test.mad
 test5.mad
 testalignas.mad
