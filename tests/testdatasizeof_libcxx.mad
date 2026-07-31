@@ -1,0 +1,11 @@
+// dsz1.cpp — __libcpp_datasizeof<char>::value must be 1.
+// Oracle (clang++-18 -std=c++11 -stdlib=libc++): 1 4
+#include <string>
+#include <cstdio>
+
+int main()
+{
+	printf("%d %d\n", (int)std::__libcpp_datasizeof<char>::value,
+	       (int)std::__libcpp_datasizeof<int>::value);
+	return 0;
+}

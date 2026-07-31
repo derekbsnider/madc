@@ -12716,6 +12716,19 @@ bool Program::try_parse_constant_offsetof_address(int64_t &out)
 	    return fail();
 	base_dd = resolve_named_datadef(contextual_identifier_name(tag_tb));
     }
+    else if ( peekToken() && peekToken()->id() == TokenID::tkLT
+	   && (is_contextual_identifier_token(type_tb)
+	    || type_tb->type() == TokenType::ttDataType) )
+    {
+	// A TEMPLATE-ID type argument — `offsetof(_FirstPaddingByte<>,
+	// __first_padding_byte_)`, libc++ __libcpp_datasizeof's value, with
+	// EMPTY angles filling from the default (`bool = __libcpp_is_final<
+	// _Tp>::value || !is_class<_Tp>::value`). The one declared-type
+	// resolver instantiates it and consumes the `<...>`; the bare-name
+	// lookup below cannot (a template is not a type).
+	if ( TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true) )
+	    base_dd = &tdt->definition;
+    }
     else if ( type_tb->type() == TokenType::ttDataType )
 	base_dd = &static_cast<TokenDataType *>(type_tb)->definition;
     else if ( is_contextual_identifier_token(type_tb) )
@@ -13523,7 +13536,20 @@ static bool constant_initializer_has_runtime_access(Program &pgm)
 	    break;
 	d.update(t);
 	if ( t->id() == TokenID::tkDot || t->id() == TokenID::tkDeRef )
-	    return true;
+	{
+	    // The offsetof idiom `((T*)0)->member` (madc's own stddef.h
+	    // spelling; libc++ __libcpp_datasizeof::value is exactly this) is
+	    // an ADDRESS COMPUTATION, not runtime access — recognize the
+	    // null-pointer-deref shape and let the fold's dedicated parser
+	    // (try_parse_constant_offsetof_address) decide.
+	    bool nullptr_deref = t->id() == TokenID::tkDeRef && i >= 2
+		&& pgm.tokens[i-1] && pgm.tokens[i-1]->id() == TokenID::tkClBrk
+		&& pgm.tokens[i-2]
+		&& pgm.tokens[i-2]->type() == TokenType::ttInteger
+		&& pgm.tokens[i-2]->ival() == 0;
+	    if ( !nullptr_deref )
+		return true;
+	}
 	if ( !is_contextual_identifier_token(t) )
 	    continue;
 	TokenBase *next = (i + 1 < pgm.tokens.size()) ? pgm.tokens[i + 1] : NULL;
@@ -51567,9 +51593,50 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    if ( si != pgm.struct_map.end() )
 		pgm.struct_map.set(alias_key, si->second);
 	}
+	// A NESTED explicit specialization (`template <> struct
+	// _FirstPaddingByte<true>` inside __libcpp_datasizeof<char>'s instance
+	// re-parse) registers under its BARE key — the spec-registration path
+	// forms the name without the enclosing class — while every consumer
+	// (and the check below) looks up the OWNER-PREFIXED spelling. Alias
+	// the prefixed key to the one parsed class, exactly as the alias_key
+	// block above does for qualified/legacy spellings.
+	if ( td.owner_class
+	  && pgm.datatype_map.find(registered_mangled) == pgm.datatype_map.end() )
+	{
+	    flat_datatype_map_iter bi = pgm.datatype_map.find(mangled);
+	    if ( bi != pgm.datatype_map.end() )
+	    {
+		pgm.datatype_map[registered_mangled] = (*bi);
+		datadef_map_citer bsi = pgm.struct_map.find(mangled);
+		if ( bsi != pgm.struct_map.end() )
+		    pgm.struct_map.set(registered_mangled, bsi->second);
+	    }
+	}
 	if ( pgm.datatype_map.find(registered_mangled) == pgm.datatype_map.end() )
+	{
+	    // Env-gated probe (MADC_SPECREG_PROBE=1): the expected key + every
+	    // datatype_map key sharing its MEMBER tail — the wrong-owner-prefix
+	    // diagnostic (chain A: __libcpp_datasizeof's nested
+	    // _FirstPaddingByte<true>).
+	    if ( ::getenv("MADC_SPECREG_PROBE") )
+	    {
+		fprintf(stderr, "[specreg] MISS expected='%s' owner='%s'"
+			" canon='%s' mangled='%s'\n",
+			registered_mangled.c_str(),
+			td.owner_class ? td.owner_class->name.c_str() : "-",
+			td.owner_class
+			    ? td.owner_class->canonical_cpp_spelling().c_str()
+			    : "-",
+			mangled.c_str());
+		const char *cands[2] = { mangled.c_str(), NULL };
+		for ( int ci = 0; ci < 1; ++ci )
+		    fprintf(stderr, "[specreg]   probe '%s' -> %d\n", cands[ci],
+			    pgm.datatype_map.find(cands[ci])
+				!= pgm.datatype_map.end());
+	    }
 	    pgm.Throw(name_tb) << "internal: explicit specialization "
 			       << registered_mangled << " did not register" << flush;
+	}
 	return NULL;
     }
     if ( !specialized_template_id )
