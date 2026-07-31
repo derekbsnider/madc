@@ -1687,12 +1687,27 @@ static bool is_bool_literal_identifier(const std::string &name, bool &value)
     return false;
 }
 
+// The dot-path reference normalizer (a reference head denotes its referent
+// for member access). Defined later in this file.
+static DataDef *referent_if_reference(DataDef *dd);
+
 DataDef *Program::effective_pointer_type_for_member_access(TokenBase *tb)
 {
     if ( !tb )
 	return NULL;
 
     DataDef *dd = tb->datadef();
+    // A REFERENCE head denotes its referent ([expr.ref]) — collapse it
+    // BEFORE the pointer test when the referent is itself a pointer: a
+    // reference-to-pointer receiver (`node*& begin_node();
+    // begin_node()->v`) must expose the REFERENT pointer, or the single
+    // arrow deref lands on the pointer type itself and the member check
+    // rejects it (libc++ __tree:890, '__left_' on the __iter_pointer&
+    // returned by __begin_node()). A reference-to-CLASS head keeps
+    // today's ref-as-pointer behavior.
+    if ( DataDef *ref = referent_if_reference(dd) )
+	if ( ref->is_pointer() )
+	    dd = ref;
     if ( dd && dd->is_pointer() )
 	return dd;
     if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
@@ -1726,10 +1741,6 @@ DataDef *Program::effective_pointer_type_for_member_access(TokenBase *tb)
 
     return NULL;
 }
-
-// The dot-path sibling of the pointer normalizer above: a reference-typed
-// head denotes its referent for member access. Defined later in this file.
-static DataDef *referent_if_reference(DataDef *dd);
 
 TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
 {
@@ -21980,7 +21991,8 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 			Throw(mtb) << "member reference type "
 			    << (obj_type ? "'" + obj_type->name + "' " : "")
 			    << "is not a structure or union (member '"
-			    << mname << "')" << flush;
+			    << mname << "' via '" << (is_arrow ? "->" : ".")
+			    << "')" << flush;
 		    if ( obj_type->is_object()
 		      && peekToken()
 		      && (peekToken()->id() == TokenID::tkOpBrk
@@ -28764,6 +28776,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    bool expr_backed_lhs = false;
 		    bool fixed_array_arrow = false;
 		    bool arrow_via_op = false;
+		    // A reference-to-pointer receiver was collapsed to its
+		    // referent: the access needs the parent_expr TokenMember
+		    // form so codegen loads the reference (yielding the
+		    // pointer) before the arrow deref.
+		    bool ref_collapsed_lhs = false;
 		    // P2.1b gap 2 — operator->: when the LHS is a class OBJECT (not a
 		    // pointer) whose class declares operator->, C++ canon rewrites
 		    // `obj->m` as `(obj.operator->())->m`: call operator-> (which
@@ -28790,6 +28807,18 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			obj_var = &tv_lhs->var;
 			obj_type = obj_var->type;
 			fixed_array_arrow = obj_var->is_fixed_array();
+			// A reference-to-POINTER receiver (`node*& rr; rr->v`)
+			// denotes its referent ([expr.ref]) — collapse so the
+			// arrow deref below lands on the pointee class, not
+			// the pointer type (effective_pointer_type_for_
+			// member_access applies the same rule to expression
+			// heads).
+			if ( DataDef *ref = referent_if_reference(obj_type) )
+			    if ( ref->is_pointer() )
+			    {
+				obj_type = ref;
+				ref_collapsed_lhs = true;
+			    }
 		    }
 		    else if ( lhs->type() == TokenType::ttMember )
 		    {
@@ -28803,6 +28832,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			{
 			    obj_var = &tm->var;
 			    obj_type = tm->var.type;
+			    // Same reference-to-pointer collapse as the
+			    // variable arm above ([expr.ref]).
+			    if ( DataDef *ref = referent_if_reference(obj_type) )
+				if ( ref->is_pointer() )
+				{
+				    obj_type = ref;
+				    ref_collapsed_lhs = true;
+				}
 			}
 			else if ( lhs->datadef() && lhs->datadef()->is_pointer() )
 			{
@@ -28987,7 +29024,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    exStack.pop();
 		    // for chained -> (lhs was a TokenMember), pass it as parent_expr so
 		    // operand() can compile the intermediate pointer at codegen time
-		    if ( lhs->type() == TokenType::ttMember || expr_backed_lhs )
+		    // (a collapsed reference-to-pointer receiver rides the same lane:
+		    // compiling the ref expression yields the referent pointer)
+		    if ( lhs->type() == TokenType::ttMember || expr_backed_lhs
+		      || ref_collapsed_lhs )
 			exStack.push(new TokenMember(*obj_var, *var, ofs, lhs));
 		    else
 			exStack.push(new TokenMember(*obj_var, *var, ofs));

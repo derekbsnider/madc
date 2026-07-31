@@ -1,0 +1,21 @@
+#!../bin/madc
+// '->' on a REFERENCE-TO-POINTER receiver: the reference collapses to
+// its referent ([expr.ref]) and THEN the pointer derefs — three shapes:
+// call-result (`begin_node()->v`, libc++ __tree:890's
+// `__begin_node()->...` / `__end_node()->__left_` family), a local
+// reference variable, and a plain pointer member control.
+// g++ and clang++ print "42 42 42".
+#include <cstdio>
+struct node { int v; };
+struct tree {
+    node *begin_;
+    node *&begin_node() { return begin_; }
+    int probe() { return begin_node()->v; }
+};
+int main() {
+    node n; n.v = 42;
+    tree t; t.begin_ = &n;
+    node *&rr = t.begin_;
+    printf("%d %d %d\n", t.probe(), rr->v, t.begin_->v);
+    return 0;
+}
