@@ -1,0 +1,32 @@
+// Gate: reference-typed arguments to the class-family trait builtins.
+// A reference type is never a class/union/enum, never empty/final/trivial/
+// standard-layout/POD, and never relates via __is_base_of; but
+// __has_trivial_destructor(T&) is TRUE regardless of the referent's dtor
+// (destroying a reference is a no-op). The dispatch consulted only the
+// REFERENT DataDef, answering for T instead of T& — all seven below read 1.
+// Unmasked by the in-flight-shell fix: is_empty<allocator<int>&> folding 1
+// selected libc++'s EBO __compressed_pair_elem spec, whose ': private _Tp'
+// base became a reference. Oracle: g++-13 == clang++-18.
+#include <cstdio>
+
+struct E {};
+struct F final {};
+struct NT { ~NT() {} };
+struct B {};
+struct D : B {};
+
+int main() {
+  printf("%d %d %d %d %d %d %d\n",
+    (int)__is_empty(E&),
+    (int)__is_class(E&),
+    (int)__is_trivial(int&),
+    (int)__has_trivial_destructor(int&),
+    (int)__is_final(F&),
+    (int)__is_standard_layout(int&),
+    (int)__is_pod(int&));
+  printf("%d %d %d\n",
+    (int)__has_trivial_destructor(NT&),
+    (int)__is_base_of(B&, D&),
+    (int)__is_base_of(B, D));
+  return 0;
+}

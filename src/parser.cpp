@@ -11132,6 +11132,23 @@ static void unwrap_baked_trait_arg(TraitTypeArg &a)
     }
 }
 
+// A REFERENCE type is never a class/union/enum, never empty, final, trivial,
+// standard-layout or POD, and never relates via __is_base_of — the class-family
+// trait predicates only see the REFERENT DataDef and would answer for T instead
+// of T&. The one family member that flips the other way:
+// __has_trivial_destructor(T&) is TRUE regardless of the referent's dtor
+// (destroying a reference is a no-op). Oracle (g++-13 == clang++-18,
+// tmp/reftrait1.cpp + tmp/reftrait2.cpp): __is_empty(E&)=0 __is_class(E&)=0
+// __is_trivial(int&)=0 __has_trivial_destructor(int&)=1 __is_final(F&)=0
+// __is_standard_layout(int&)=0 __is_pod(int&)=0 __has_trivial_destructor(NT&)=1
+// __is_base_of(B&,D&)=0. Both dispatch sites (evaluate_type_trait and
+// eval_local_type_trait — the recorded trait_builtin_dispatch_twins family)
+// gate through this ONE helper.
+static bool trait_arg_is_reference(const TraitTypeArg &a)
+{
+    return a.is_lref || a.is_rref;
+}
+
 // Tri-state: 1 = yes, 0 = no, -1 = madc cannot determine faithfully (the caller
 // raises a clear error rather than emit a WRONG bool — a wrong trait result would
 // silently corrupt SFINAE; see the correctness-first note on type_trait_arity).
@@ -11807,25 +11824,29 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
     if ( name == "__is_same" )
 	result = args[0].same_as(args[1]);
     else if ( name == "__is_enum" )
-	result = trait_is_enum(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_enum(args[0].dd);
     else if ( name == "__is_class" )
-	result = trait_is_class(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_class(args[0].dd);
     else if ( name == "__is_union" )
-	result = trait_is_union(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_union(args[0].dd);
     else if ( name == "__is_empty" )
-	result = trait_is_empty(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_empty(args[0].dd);
     else if ( name == "__is_final" )
-	result = trait_is_final(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_final(args[0].dd);
     else if ( name == "__is_base_of" )
-	result = trait_is_base_of(args[0].dd, args[1].dd);
+	result = !trait_arg_is_reference(args[0])
+	      && !trait_arg_is_reference(args[1])
+	      && trait_is_base_of(args[0].dd, args[1].dd);
     else if ( name == "__has_trivial_destructor" )
-	result = trait_has_trivial_destructor(args[0].dd);
+	result = trait_arg_is_reference(args[0])
+	      || trait_has_trivial_destructor(args[0].dd);
     else if ( name == "__is_trivial" )
-	result = trait_is_trivial(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_trivial(args[0].dd);
     else if ( name == "__is_standard_layout" )
-	result = trait_is_standard_layout(args[0].dd);
+	result = !trait_arg_is_reference(args[0])
+	      && trait_is_standard_layout(args[0].dd);
     else if ( name == "__is_pod" )
-	result = trait_is_pod(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_pod(args[0].dd);
     else if ( name == "__is_destructible" )
     {
 	int s = trait_is_destructible(args[0]);
@@ -27350,17 +27371,28 @@ static bool eval_local_type_trait(Program &pgm,
 				       : (int)targs.size() != arity )
 	return false;
     bool r;
-    if ( nm == "__has_trivial_destructor" ) r = trait_has_trivial_destructor(targs[0].dd);
-    else if ( nm == "__is_trivial" )        r = trait_is_trivial(targs[0].dd);
-    else if ( nm == "__is_standard_layout" ) r = trait_is_standard_layout(targs[0].dd);
-    else if ( nm == "__is_pod" )            r = trait_is_pod(targs[0].dd);
-    else if ( nm == "__is_class" )          r = trait_is_class(targs[0].dd);
-    else if ( nm == "__is_union" )          r = trait_is_union(targs[0].dd);
-    else if ( nm == "__is_empty" )          r = trait_is_empty(targs[0].dd);
-    else if ( nm == "__is_final" )          r = trait_is_final(targs[0].dd);
-    else if ( nm == "__is_enum" )           r = trait_is_enum(targs[0].dd);
+    if ( nm == "__has_trivial_destructor" ) r = trait_arg_is_reference(targs[0])
+					     || trait_has_trivial_destructor(targs[0].dd);
+    else if ( nm == "__is_trivial" )        r = !trait_arg_is_reference(targs[0])
+					     && trait_is_trivial(targs[0].dd);
+    else if ( nm == "__is_standard_layout" ) r = !trait_arg_is_reference(targs[0])
+					      && trait_is_standard_layout(targs[0].dd);
+    else if ( nm == "__is_pod" )            r = !trait_arg_is_reference(targs[0])
+					     && trait_is_pod(targs[0].dd);
+    else if ( nm == "__is_class" )          r = !trait_arg_is_reference(targs[0])
+					     && trait_is_class(targs[0].dd);
+    else if ( nm == "__is_union" )          r = !trait_arg_is_reference(targs[0])
+					     && trait_is_union(targs[0].dd);
+    else if ( nm == "__is_empty" )          r = !trait_arg_is_reference(targs[0])
+					     && trait_is_empty(targs[0].dd);
+    else if ( nm == "__is_final" )          r = !trait_arg_is_reference(targs[0])
+					     && trait_is_final(targs[0].dd);
+    else if ( nm == "__is_enum" )           r = !trait_arg_is_reference(targs[0])
+					     && trait_is_enum(targs[0].dd);
     else if ( nm == "__is_same" )           r = targs[0].same_as(targs[1]);
-    else if ( nm == "__is_base_of" )        r = trait_is_base_of(targs[0].dd, targs[1].dd);
+    else if ( nm == "__is_base_of" )        r = !trait_arg_is_reference(targs[0])
+					     && !trait_arg_is_reference(targs[1])
+					     && trait_is_base_of(targs[0].dd, targs[1].dd);
     else if ( nm == "__is_destructible" )
     {
 	int s = trait_is_destructible(targs[0]);
