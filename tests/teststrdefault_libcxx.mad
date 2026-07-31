@@ -1,0 +1,9 @@
+// teststrdefault_libcxx — a default-constructed libc++ string's rep is
+// VALUE-INITIALIZED (all zero): __compressed_pair_elem(__value_init_tag)
+// : __value_() {} must zero the __rep struct member ([dcl.init]p8).
+// Pre-fix the rep held frame garbage — size() was nonzero and the first
+// assignment did a wild memmove (the testclass SIGSEGV @0x5).
+// Oracle (clang++-18 -stdlib=libc++): 0 0 / hi
+#include <string>
+#include <cstdio>
+int main(){ std::string s; printf("%zu %d\n", s.size(), (int)(s.c_str()[0])); s = "hi"; printf("%s\n", s.c_str()); return 0; }

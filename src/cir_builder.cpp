@@ -5060,6 +5060,19 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 		}
 	}
 
+	// A cast-to-REFERENCE argument (`static_cast<_U1&&>(__t1)` — the
+	// spelled-out std::forward) denotes its OPERAND's object
+	// ([expr.static.cast]p3): bind the operand. ctor_arg_datadef types
+	// the cast as its referent so the copy/tag ctor MATCHES; without
+	// this binding-side twin the arg fell to the materializing tail,
+	// whose copy-ctor argument coercion re-entered object_arg_addr with
+	// the same cast token forever (the class_ctor_call recursion —
+	// forest_selfexe_gate stack overflow).
+	if (TokenCast *tcr = dynamic_cast<TokenCast *>(arg))
+		if (tcr->cast_type && tcr->cast_type->is_reference()
+		    && tcr->expr)
+			return object_arg_addr(tcr->expr, target);
+
 	// A REFERENCE-returning call (std::move(x), a T&/T&& method): the call
 	// VALUE already is the referenced object's address. Bind it directly
 	// (with the base-subobject offset for a derived->base upcast) — the
@@ -5120,6 +5133,17 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 	// the vtable slot — the arg's static class may be a less-derived view
 	// (task #36); static fallback matches upcast_class_ptr.
 	DataDefCLASS *own = as_class_instance(arg ? arg->datadef() : NULL);
+	// A REFERENCE-typed arg denotes its referent object ([dcl.init.ref]
+	// binds the base subobject of the SAME object): the derived class is
+	// the REFERENT's — `__put_character_sequence`'s `__os` (basic_ostream&)
+	// bound to __pad_and_output's `ios_base& __iob` selects the VIRTUAL
+	// base at +8. Without the referent view the arg fell to the
+	// named-variable arm below, whose stored address passes UNADJUSTED —
+	// width() then reads __precision_ (phantom padding on every literal)
+	// and the width(0) reset clobbers the real precision. The argument-
+	// position twin of upcast_class_ref_addr's reference arm (task #47).
+	if (!own && arg && arg->datadef() && arg->datadef()->is_reference())
+		own = pointee_user_class(arg->datadef());
 	if (own && own != target && own->is_or_derives_from(target)) {
 		node_t addr = object_arg_addr(arg, own);
 		node_t dyn = vbase_dynamic_adjust(addr, own, target, arg);
@@ -9678,6 +9702,23 @@ bool CirBuilder::class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 						 integer(0L, origin), origin);
 				out.push_back(node2(N_EXPR, list(), z, origin));
 				any = true;
+				continue;
+			}
+			// A plain-STRUCT member zero-initializes the same way
+			// ([dcl.init]p8 — no user ctor, so the ctor-call arm
+			// above never applies): assign the C11 zero compound
+			// literal, the TokenCast lane's `(struct T){0}` shape.
+			// libc++'s `__compressed_pair_elem(__value_init_tag)
+			// : __value_() {}` is this arm — its empty body left
+			// every default-constructed string's rep uninitialized
+			// (SSO flag/pointer garbage -> wild memmove on the
+			// first assignment).
+			if (const DataDefSTRUCT *cst = as_plain_struct(m.second)) {
+				node_t z = node2(N_ASSIGN, fld,
+					zero_struct_compound(cst, origin),
+					origin);
+				out.push_back(node2(N_EXPR, list(), z, origin));
+				any = true;
 			}
 			continue;
 		}
@@ -10852,6 +10893,20 @@ DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
 	if (TokenCallFunc *fw = dynamic_cast<TokenCallFunc *>(arg))
 		if (TokenBase *inner = identity_forward_operand(fw))
 			return ctor_arg_datadef(inner);
+	// A cast-to-REFERENCE expression (`static_cast<_U1&&>(__t1)` — the
+	// spelled-out std::forward) is an lvalue/xvalue of its operand's
+	// object ([expr.static.cast]/1); for overload matching it names the
+	// referent, exactly like the identity forward call above and the
+	// reference VARIABLE below. Unwrap exactly ONE reference level —
+	// without this the arg scored as `Tag*` and the tag-dispatch ctor
+	// (`Elem(__value_init_tag)`) never matched, so libc++'s
+	// __compressed_pair value-init arm was lost and every default-
+	// constructed string's rep stayed uninitialized.
+	if (TokenCast *tc = dynamic_cast<TokenCast *>(arg))
+		if (tc->cast_type && tc->cast_type->is_reference())
+			if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(tc->cast_type))
+				if (rp->base_type)
+					return rp->base_type;
 	// A class-returning CALL argument types by the RESOLVED callee's
 	// return class — the call token's own datadef may still be a
 	// body-less template placeholder's `long` (the overload-set winner
@@ -13983,6 +14038,19 @@ node_t CirBuilder::int_complex_compound(node_t re, node_t im,
 	return node2(N_COMPOUND_LITERAL, type, inits, origin);
 }
 
+node_t CirBuilder::zero_struct_compound(const DataDefSTRUCT *cst,
+					TokenBase *origin)
+{
+	node_t spec = list();
+	append_lit_type_spec(spec, const_cast<DataDefSTRUCT *>(cst),
+			     std::string());
+	node_t type_node = node2(N_TYPE, spec,
+				 node2(N_DECL, ignore(), list()));
+	node_t inits = list();
+	append(inits, node2(N_INIT, list(), integer(0L, origin)));
+	return node2(N_COMPOUND_LITERAL, type_node, inits, origin);
+}
+
 std::string CirBuilder::int_complex_temp(node_t items, DataDef *dd,
 					 TokenBase *origin)
 {
@@ -16574,6 +16642,36 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						addr, target, tc->expr, tb);
 					return node1(N_DEREF, adj, tb);
 				}
+				// The INVERSE selection — a BASE-to-DERIVED
+				// reference DOWNCAST (libc++ use_facet's
+				// `static_cast<const _Facet&>(__l.use_facet(id))`):
+				// subtract the derived class's STATIC offset of
+				// that base and retype. A virtual-base downcast
+				// is ill-formed ([expr.static.cast]p11), so the
+				// static offset is the whole story. Untyped, the
+				// facet return carried the BASE struct type
+				// (c2mir "incompatible return-expr type in
+				// function returning a pointer") and a non-zero
+				// base offset would read the wrong storage.
+				if (target && source && target != source
+				    && target->is_or_derives_from(source)) {
+					node_t addr = node1(N_ADDR,
+						translate_expr(tc->expr), tb);
+					size_t off = target->base_offset_of(source);
+					if (off != 0 && off != (size_t)-1) {
+						node_t charp = node2(N_CAST,
+							node2(N_TYPE,
+							      node1(N_LIST, simple(N_CHAR)),
+							      node2(N_DECL, ignore(),
+								    node1(N_LIST, pointer()))),
+							addr, tb);
+						addr = node2(N_SUB, charp,
+							integer((long)off, tb), tb);
+					}
+					return node1(N_DEREF,
+						node2(N_CAST, class_ptr_type(target),
+						      addr, tb), tb);
+				}
 				return translate_expr(tc->expr);
 			}
 			// Integer-_Complex casts (struct spine): to a lowered
@@ -16613,19 +16711,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				if (as_plain_struct(tc->expr ? tc->expr->datadef()
 							     : NULL) == cst)
 					return translate_expr(tc->expr);
-				if (is_zero_integer_literal(tc->expr)) {
-					node_t spec = list();
-					append_lit_type_spec(spec,
-						const_cast<DataDefSTRUCT *>(cst),
-						std::string());
-					node_t type_node = node2(N_TYPE, spec,
-						node2(N_DECL, ignore(), list()));
-					node_t inits = list();
-					append(inits, node2(N_INIT, list(),
-							    integer(0L, tb)));
-					return node2(N_COMPOUND_LITERAL,
-						     type_node, inits, tb);
-				}
+				if (is_zero_integer_literal(tc->expr))
+					return zero_struct_compound(cst, tb);
 			}
 			if (DataDefCLASS *cast_class = as_class_instance(cast_dd))
 				return object_arg_value(tc->expr, cast_class);

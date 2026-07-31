@@ -810,6 +810,10 @@ public:
 	// (struct C){re, im} compound literal — re/im nodes are adopted.
 	node_t int_complex_compound(node_t re, node_t im, DataDefCOMPLEX *cdd,
 				    TokenBase *origin);
+	// (struct T){0} — the C11 zero compound literal for value-initializing
+	// a plain struct ([dcl.init]p8 zero-init: `T()` casts and empty-args
+	// mem-inits on struct members share this one shape).
+	node_t zero_struct_compound(const DataDefSTRUCT *cst, TokenBase *origin);
 	// Declare a block-local temp of dd into `items`; returns its name.
 	std::string int_complex_temp(node_t items, DataDef *dd, TokenBase *origin);
 	// Convert an already-translated value of src_dd to the lowered type
