@@ -3,10 +3,10 @@
 // detection idiom) folds at INSTANTIATION with the substituted operand:
 //  - the runtime-access pre-gate must not veto the unevaluated decltype operand
 //  - fold_constant_qualified_member resolves the decltype-specifier as the scope
-// KNOWN-OPEN sibling (tmp/hascat1.cpp): the SFINAE FALSE branch — a candidate
-// whose param type fails substitution ([temp.deduct]/8, has_cat<int>) is not
-// yet rejected; this gate covers the TRUE branch fold only.
-// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 print "1".
+//  - [temp.deduct]/8: a candidate whose FUNCTION-param type fails substitution
+//    (`typename int::cat*`) is NOT viable — overload resolution falls to the
+//    variadic catch-all, so the FALSE branch reads 0, not the arity-preferred 1
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 print "1 0".
 #include <cstdio>
 
 struct TT { static const bool value = true; };
@@ -26,6 +26,6 @@ public:
 
 int main()
 {
-	printf("%d\n", (int)has_cat<traits>::value);
+	printf("%d %d\n", (int)has_cat<traits>::value, (int)has_cat<int>::value);
 	return 0;
 }

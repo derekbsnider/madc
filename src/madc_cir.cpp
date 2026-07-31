@@ -3485,6 +3485,12 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		words.push_back((uint32_t)method.template_param_defaults.size());
 		for ( size_t p = 0; p < method.template_param_defaults.size(); ++p )
 		    token_run(method.template_param_defaults[p]);
+		// v37: per FUNCTION-parameter TYPE token runs (the OTHER
+		// [temp.deduct]/8 half — SFINAE in a param type,
+		// `typename _Up::iterator_category* = nullptr`).
+		words.push_back((uint32_t)method.param_type_token_runs.size());
+		for ( size_t p = 0; p < method.param_type_token_runs.size(); ++p )
+		    token_run(method.param_type_token_runs[p]);
 	    }
 	    words.push_back((uint32_t)node.using_members.size());
 	    for ( size_t u = 0; u < node.using_members.size(); ++u )

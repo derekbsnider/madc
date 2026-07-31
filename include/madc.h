@@ -266,6 +266,15 @@ public:
     // gcc13's __is_destructible_impl::__test carries its ENTIRE SFINAE in
     // `typename = decltype(declval<_Tp1&>().~_Tp1())` (plain true_type return).
     std::vector<std::vector<TokenBase *> > member_template_param_defaults;
+    // Per FUNCTION-parameter TYPE token runs (declaration order, default
+    // value stripped past a top-level `=`). [temp.deduct]/8's OTHER half:
+    // the SFINAE may live in the parameter type itself — libc++'s
+    // __has_iterator_category pair puts it in
+    // `typename _Up::iterator_category* = nullptr`. A run naming a bound
+    // template param must substitute-and-resolve at the call
+    // (resolve_member_template_call_return_type), or the candidate is not
+    // viable and overload resolution falls to the next same-name member.
+    std::vector<std::vector<TokenBase *> > member_template_param_type_tokens;
     // Two-tree Phase 2: the DEPENDENT parse-tree pattern for this template's body
     // — a TokenFunc parsed ONCE with the template params bound to
     // DataDefTemplateParam placeholders (via build_dependent_pattern), with eager
@@ -313,7 +322,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false) {}
     DataDef *findParameter(const std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -2414,6 +2423,11 @@ public:
 	// empty run = no default) — the [temp.deduct]/8 SFINAE payload of a
 	// member template (`typename = decltype(declval<_Tp1&>().~_Tp1())`).
 	std::vector<std::vector<TokenBase *> > template_param_defaults;
+	// Per FUNCTION-parameter TYPE token runs — the [temp.deduct]/8 SFINAE
+	// carried in a parameter type (`typename _Up::iterator_category* =
+	// nullptr`, default value stripped). Mirrors
+	// FuncDef::member_template_param_type_tokens through the pattern lane.
+	std::vector<std::vector<TokenBase *> > param_type_token_runs;
 	ClassMethodPattern()
 	    : kind(ClassMethodKind::Method), return_type(0), flags(0),
 	      is_varargs(false), is_void_params(false), declaration_only(false),

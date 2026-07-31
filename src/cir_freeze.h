@@ -497,7 +497,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // v6: complete type-table serialization (typeid->full DataDef, swizzle on
 // load) replaces the typeid->name closure + the decl_record/struct_member
 // parallel streams
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 36 };
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 37 };
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;

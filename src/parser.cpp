@@ -3400,6 +3400,9 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	    hash.add_u64(method.template_param_defaults.size());
 	    for ( size_t p = 0; p < method.template_param_defaults.size(); ++p )
 		add_tokens(method.template_param_defaults[p]);
+	    hash.add_u64(method.param_type_token_runs.size());
+	    for ( size_t p = 0; p < method.param_type_token_runs.size(); ++p )
+		add_tokens(method.param_type_token_runs[p]);
 	}
 	hash.add_u64(node.using_members.size());
 	for ( size_t u = 0; u < node.using_members.size(); ++u )
@@ -6239,6 +6242,9 @@ static void register_basic_class_pattern_method(
 	binding, pattern.member_template_decl);
     fd->member_template_return_tokens = basic_class_pattern_substitute_tokens(pgm,
 	binding, pattern.member_template_return_tokens);
+    fd->member_template_param_type_tokens =
+	basic_class_pattern_substitute_token_runs(pgm, binding,
+	    pattern.param_type_token_runs);
     if ( pattern.is_member_template )
 	fd->member_template_owner = owner;
     for ( size_t i = 0; i < pattern.parameters.size(); ++i )
@@ -15417,6 +15423,39 @@ DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
 	    }
 	    binding[fd->template_param_names[i]] = rd;
 	}
+    // [temp.deduct]/8 for the FUNCTION parameters: a parameter TYPE that
+    // names a bound template param must substitute-and-resolve under the
+    // binding, or the candidate is not viable — libc++'s
+    // __has_iterator_category __test pair carries its SFINAE in
+    // `typename _Up::iterator_category* = nullptr` (a param TYPE, not a
+    // defaulted type-param), and without this check the arity-preferred
+    // candidate wrongly survived at _Up=int and every false-branch detect
+    // read 1. Only runs MENTIONING a bound name are checked (others need no
+    // substitution and cannot fail under this binding); the same SFINAE-clean
+    // resolver as the deffill above (isolated stream, NULL on failure, a
+    // trailing param NAME is a tolerated leftover).
+    if ( binding_concrete )
+	for ( size_t i = 0; i < fd->member_template_param_type_tokens.size(); ++i )
+	{
+	    const std::vector<TokenBase *> &run =
+		fd->member_template_param_type_tokens[i];
+	    if ( run.empty() )
+		continue;
+	    bool names_bound = false;
+	    for ( TokenBase *t : run )
+		if ( t && is_contextual_identifier_token(t)
+		  && binding.count(contextual_identifier_name(t)) )
+		{ names_bound = true; break; }
+	    if ( !names_bound )
+		continue;
+	    if ( !resolve_template_param_default_type(run, binding, owner) )
+	    {
+		if ( vri_debug_enabled() )
+		    fprintf(stderr, "[vriprobe] MT param-subst REJECT %s param[%zu]\n",
+			    fd->method_display_name.c_str(), i);
+		return NULL;             // substitution failure — not viable
+	    }
+	}
     // Substitute — the ONE shared implementation (see
     // substitute_return_range_tokens).
     std::vector<TokenBase *> sub = substitute_return_range_tokens(
@@ -17674,6 +17713,14 @@ class ClassPatternPayloadReader
 	{
 	    out.template_param_defaults.push_back(std::vector<TokenBase *>());
 	    tokens(out.template_param_defaults.back());
+	}
+	// v37: per FUNCTION-parameter TYPE token runs (the OTHER
+	// [temp.deduct]/8 half — SFINAE in a param type).
+	uint32_t nptypes = count();
+	for ( uint32_t i = 0; valid && i < nptypes; ++i )
+	{
+	    out.param_type_token_runs.push_back(std::vector<TokenBase *>());
+	    tokens(out.param_type_token_runs.back());
 	}
 	return out;
     }
@@ -25484,6 +25531,9 @@ class ClassPatternNormalizer
 	for ( size_t i = 0; i < fd->member_template_param_defaults.size(); ++i )
 	    out.template_param_defaults.push_back(
 		class_pattern_clone_tokens(fd->member_template_param_defaults[i]));
+	for ( size_t i = 0; i < fd->member_template_param_type_tokens.size(); ++i )
+	    out.param_type_token_runs.push_back(
+		class_pattern_clone_tokens(fd->member_template_param_type_tokens[i]));
 	out.parameters.reserve(fd->parameters.size());
 
 	for ( size_t i = 0; i < owner->ctors.size(); ++i )
@@ -49583,6 +49633,52 @@ static void stamp_member_template_pattern(
 	for ( size_t i = rs; i < name_idx; ++i )
 	    fd->member_template_return_tokens.push_back(
 		tokens[i] ? tokens[i]->clone() : NULL);
+	// Retain each FUNCTION parameter's TYPE token run (declaration order,
+	// truncated at a top-level `=` default value): [temp.deduct]/8's other
+	// half — the SFINAE may live in the parameter type itself
+	// (`typename _Up::iterator_category* = nullptr`, libc++'s
+	// __has_iterator_category __test pair) rather than in a defaulted type
+	// param. resolve_member_template_call_return_type substitutes and
+	// resolves a run that names a bound template param; failure removes
+	// the candidate. DelimDepth owns the balanced walk.
+	fd->member_template_param_type_tokens.clear();
+	{
+	    DelimDepth pd;
+	    size_t j = lparen;
+	    j += delim_scan_step(tokens, j, pd);	// the '(' — paren -> 1
+	    std::vector<TokenBase *> run;
+	    bool truncated = false;
+	    bool any = false;
+	    while ( j < tokens.size() && pd.paren > 0 )
+	    {
+		size_t j0 = j;
+		TokenBase *t = tokens[j0];
+		j += delim_scan_step(tokens, j, pd);
+		if ( pd.paren == 0 )
+		    break;				// the matching ')'
+		any = true;
+		bool top = pd.paren == 1 && pd.square == 0 && pd.brace == 0
+			 && pd.angle == 0;
+		if ( t && t->id() == TokenID::tkComma && top )
+		{
+		    fd->member_template_param_type_tokens.push_back(run);
+		    run.clear();
+		    truncated = false;
+		    continue;
+		}
+		if ( t && t->id() == TokenID::tkAssign && top )
+		{
+		    truncated = true;
+		    continue;
+		}
+		if ( truncated )
+		    continue;
+		for ( size_t k = j0; k < j; ++k )
+		    run.push_back(tokens[k] ? tokens[k]->clone() : NULL);
+	    }
+	    if ( any || !run.empty() )
+		fd->member_template_param_type_tokens.push_back(run);
+	}
     }
     // The declaring class, body or not: the return-type resolution pushes it
     // as the lookup scope ([temp.inst] — a member's names resolve in its
