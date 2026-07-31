@@ -1,0 +1,32 @@
+// A virtual base whose class declares a NON-default ctor FIRST: the
+// most-derived ctor's unnamed-vbase construction ([class.base.init]p9)
+// must SELECT the default ctor by overload resolution — not call
+// whichever overload happens to own the unsuffixed ClassName__ClassName
+// symbol (libc++'s basic_ios declares the explicit (basic_streambuf*)
+// ctor first, so every istringstream default-construction emitted a
+// one-param ctor call with no argument — c2mir "too few arguments").
+// Oracle (g++ / clang++): 7 1 2
+#include <cstdio>
+
+struct VB {
+	int v;
+	explicit VB(int a) { v = a; }
+	VB() { v = 7; }
+};
+
+struct Mid : virtual VB {
+	int m;
+	Mid() { m = 1; }
+};
+
+struct Leaf : Mid {
+	int l;
+	Leaf() { l = 2; }
+};
+
+int main()
+{
+	Leaf x;
+	printf("%d %d %d\n", x.v, x.m, x.l);
+	return 0;
+}

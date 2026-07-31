@@ -11873,10 +11873,26 @@ void CirBuilder::vbase_ctor_stmts_addr(const std::function<node_t()> &mint_addr,
 		node_t vt = node2(N_TYPE,
 			node1(N_LIST, class_tag_ref(vb)),
 			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t vb_this = node2(N_CAST, vt, adj, o);
+		// [class.base.init]p9: a virtual base no mem-initializer names
+		// DEFAULT-constructs — select the 0-arg-callable overload and
+		// assemble through the ONE ctor-call assembler (default-arg
+		// fill, extern decl). The bare class-name key called WHICHEVER
+		// overload owned the unsuffixed symbol: libc++'s basic_ios
+		// bound the explicit (basic_streambuf*) ctor with no argument
+		// — c2mir "too few arguments" on every istringstream.
+		std::vector<TokenBase *> no_args;
+		if (FuncDef *vctor = select_ctor_overload(vb, no_args)) {
+			if (node_t call = ctor_call_assemble(vb_this, vb, vctor,
+					std::vector<node_t>(), o)) {
+				out.push_back(call);
+				continue;
+			}
+		}
 		std::string vsym = vb->name + "__" + vb->name;
 		referenced_funcs.insert(vsym);
 		node_t a = list();
-		append(a, node2(N_CAST, vt, adj, o));
+		append(a, vb_this);
 		out.push_back(node2(N_EXPR, list(),
 			node2(N_CALL, id(vsym.c_str(), o), a, o), o));
 	}
