@@ -45033,6 +45033,55 @@ static bool fn_template_param_is_pack(const std::string &spelling,
     return fn_template_param_pack_shape(spelling, pack, NULL);
 }
 
+// [temp.deduct.type]/5: a template parameter appearing ONLY in the
+// nested-name-specifier of a type written as a qualified-id is in a
+// NON-DEDUCED CONTEXT. No deduction is attempted from such a parameter, and
+// leaving it unbound is NOT a deduction failure — it is supplied by an
+// explicit template argument ([temp.arg.explicit]) or by its own DEFAULT
+// ([temp.deduct]/8). libc++'s unique_ptr(pointer, deleter) family is the
+// shape: `template <bool _Dummy = true, ...> unique_ptr(pointer,
+// _LValRefType<_Dummy>)` where the deleter parameter's type is spelled
+// `typename __dependent_type<..., _Dummy>::type`.
+//
+// Answers whether every STILL-UNBOUND parameter this spelling names sits
+// there, so the caller can skip structural deduction for the parameter
+// instead of failing the whole candidate.
+//
+// Splitting the qualified spelling is the shared rule
+// (include/spelling_delim.h's split_scope_spelling) — top-level `::` only, so
+// in `vector<typename X<T>::type>` the NESTED `::` does not split and the
+// OUTER template-id still deduces normally.
+static bool fn_template_param_unbound_only_nondeduced(
+	const std::string &spelling,
+	const std::vector<std::string> &typeparams,
+	const std::map<std::string, DataDef *> &binding)
+{
+    // Every component but the last is the nested-name-specifier.
+    std::vector<std::string> parts = split_scope_spelling(spelling);
+    if ( parts.size() < 2 )
+	return false;			// not a qualified-id: nothing non-deduced
+    std::vector<std::string> qual, rest;
+    for ( size_t p = 0; p + 1 < parts.size(); ++p )
+	fn_template_split_words(parts[p], qual);
+    fn_template_split_words(parts.back(), rest);
+    bool any_unbound_in_qual = false;
+    for ( size_t tj = 0; tj < typeparams.size(); ++tj )
+    {
+	if ( binding.count(typeparams[tj]) )
+	    continue;
+	bool in_qual = false, in_rest = false;
+	for ( size_t w = 0; w < qual.size(); ++w )
+	    if ( qual[w] == typeparams[tj] ) { in_qual = true; break; }
+	for ( size_t w = 0; w < rest.size(); ++w )
+	    if ( rest[w] == typeparams[tj] ) { in_rest = true; break; }
+	if ( in_rest )
+	    return false;	// unbound param OUTSIDE the specifier: still deducible
+	if ( in_qual )
+	    any_unbound_in_qual = true;
+    }
+    return any_unbound_in_qual;
+}
+
 static DataDef *fn_template_pack_arg_element(const std::string &spelling,
 					     const std::string &pack,
 					     DataDef *arg_dd)
@@ -45724,6 +45773,17 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 			    unbound = true;
 		    }
 	    if ( names_tp && !unbound )
+		continue;
+	    // ...and the same for a parameter whose unbound names all sit in a
+	    // NON-DEDUCED CONTEXT ([temp.deduct.type]/5) — a qualified-id's
+	    // nested-name-specifier. Deduction is not attempted there, so
+	    // feeding the spelling to the structural deducers below would fail
+	    // the candidate over a parameter the standard says to leave to an
+	    // explicit argument or its DEFAULT. The default fill in
+	    // instantiate_fn_template_binding then binds it, and a parameter
+	    // with neither is refused there — the correct layer for that.
+	    if ( fn_template_param_unbound_only_nondeduced(sp, ft.typeparams,
+							   binding) )
 		continue;
 	}
 	// Function-pointer parameter shape: structural match against the
