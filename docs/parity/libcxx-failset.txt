@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  fe3b5bf0 (2026-07-31) on feature/libcxx-parity3-claude
-# Result:       811 passed / 77 failed / 0 timed out / 10 skipped
+# Measured at:  fdf80bb5 (2026-07-31) on feature/libcxx-parity4-claude
+# Result:       814 passed / 76 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -229,6 +229,23 @@
 #                         the construction-vtables gap. +5 passes = new gates
 #                         (testvttinit testvbasedefault teststreamdecl_libcxx
 #                         testistream_libcxx +1).
+#   fdf80bb5  814 /  76   testsizeoftpl FIXED, ZERO broken (comm-diffed both
+#                         ways); +2 were NEW GATES (testtraitalloc_libcxx,
+#                         testreftrait). THE optional:354 WALL FELL — two trait
+#                         roots: (1) the in-flight self-referential base-arg
+#                         brand (@510368db: allocator<T>'s __non_trivial_if
+#                         base minted as a dependent placeholder poisoned every
+#                         trait fold on allocator — is_trivially_destructible
+#                         silently 0, wrong __optional_destruct_base selected);
+#                         (2) reference-typed trait args answered as their
+#                         referents (@a0b90de6: 7 silent wrongs vs BOTH canons;
+#                         __has_trivial_destructor(T&) inverted) — unmasked as
+#                         the _CanBeEmptyBase EBO mis-fold on reference elems.
+#                         The map cluster's frontier moved optional:354 ->
+#                         __tree:890 allocator_traits::destroy tsubst bail
+#                         [why: unresolved dependent member call]; optional
+#                         default-ctor runtime (has_value garbage) is the
+#                         other visible next link.
 #                         single move of the campaign. Rung 13 of #78: the testclass
 #                         SIGSEGV was FOUR compiler roots — (1) reference-typed arg
 #                         bound to a VIRTUAL-base reference param passed unadjusted
@@ -298,7 +315,6 @@ testregex.mad
 testrewritten_realhdr.mad
 testrust.mad
 testset.mad
-testsizeoftpl.mad
 testspaceship_realhdr.mad
 testsstream.mad
 teststdmapint.mad
