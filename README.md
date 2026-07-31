@@ -241,7 +241,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.64.1): 887 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary and the packed release binary; the native `--exe` and `--obj` lanes are both at 871/0. A second stdlib flavor is a first-class test lane: `run_tests.sh --stdlib=libc++` runs the whole suite under libc++, with the failing set banked in [`docs/parity/libcxx-failset.txt`](docs/parity/libcxx-failset.txt) (803 passed / 80 failed and burning down — behavior-parity with libstdc++ is the goal). Mach-O targets have a full `.o` lane: `madc -c` writes a real `MH_OBJECT` that `ld64` links and madc reads back. With `-static-libmadc` an emitted binary carries the madc runtime it needs and runs with no madc library installed. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.65.0): 889 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary and the packed release binary; the native `--exe` and `--obj` lanes are both at 873/0. A second stdlib flavor is a first-class test lane: `run_tests.sh --stdlib=libc++` runs the whole suite under libc++, with the failing set banked in [`docs/parity/libcxx-failset.txt`](docs/parity/libcxx-failset.txt) (811 passed / 77 failed and burning down — behavior-parity with libstdc++ is the goal; libc++ `istringstream` runs as of this release). Mach-O targets have a full `.o` lane: `madc -c` writes a real `MH_OBJECT` that `ld64` links and madc reads back. With `-static-libmadc` an emitted binary carries the madc runtime it needs and runs with no madc library installed. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -282,38 +282,37 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.64.1** — **patch: virtual-base ctor selection + completeness-on-demand.**
-An unnamed virtual base whose class declares a non-default ctor FIRST
-was constructed through the wrong overload (flavor-independent,
-present in v0.64.0 — header-free reducer fails on that binary); and
-libc++'s `<iosfwd>` stream typedefs left `istringstream` an empty
-shell (declarations mis-parsed, `sizeof` silently 0). Both fixed at
-the owners (`select_ctor_overload`/`ctor_call_assemble`;
-`complete_class_type_on_demand`), gates `testvbasedefault` +
-`teststreamdecl_libcxx`. Suite 885 → 887 (fulltest **887/0/0/9**,
-`--exe` **871/0**, `--obj` **871/0**, packed arbiter
-**887/0/0/9**). Fork unchanged (**1.0-madc.0.63.0**).
-
-Previous (v0.64.0) — **the four-root string/stream breakthrough.**
-The flavored suite lane (`run_tests.sh --stdlib=libc++`) went 747/108 →
-**803/80** with zero regressions at every set-diffed step — 23 tests
-flipped in ONE commit when the `testclass` SIGSEGV proved to be four
-separate compiler defects stacked on one crash address: unadjusted
-virtual-base REFERENCE arguments (madc-compiled stream code phantom-
-padded every literal), cast-to-reference ctor arguments scoring as
-`Tag*` (libc++'s tag-dispatch ctors never matched), value-init
-mem-initializers on plain-struct members emitting NOTHING (every
-default-constructed libc++ string rep was frame garbage), and an
-untyped base-to-derived facet downcast. **`vector<int>::push_back`
-RUNS** (the 12-link detect-idiom chain), the `__tree`/`<map>` frontier
-stack landed, [temp.param]p10 default accumulation opened the
-input-stream cluster's gateway, and object mode now builds the same
-tree as the JIT (the flavor runtime opens pre-tree-build). Suite
-856 → 885. Suites: fulltest **885/0/0/9**, `--exe` **869/0**, `--obj`
-**869/0**, packed arbiter **885/0/0/9**. Fork unchanged
+**v0.65.0** — **the VTT wall fell: libc++ `istringstream` RUNS.**
+madc's answer to Itanium construction vtables: every madc-emitted
+ctor of a vbase-carrying class takes hidden `struct V *__madc_vb<i>`
+parameters carrying the TRUE virtual-base addresses (ONE predicate
+keys all four signature surfaces, so c2mir arity-checks any
+divergence). On top of it, the three-link stream chain: an in-class
+declaration shell no longer shadows its attached out-of-line
+definition (`basic_ios::init` had emitted EMPTY — locale frame
+garbage); base-subobject destruction uses the D2 flavor (the external
+D1 destroyed virtual bases twice — new `class_base_dtor_symbol`
+resolver); and base-subobject construction demotes the external C1 to
+the madc C2 body (the library C1 built a STANDALONE layout inside the
+most-derived object). The flavored lane went 803/80 → **811/77** — 3
+fixed, zero broken; `teststreambool` prints byte-identical output
+under BOTH flavors. Gates `testvttinit` + `testistream_libcxx`.
+Suite 887 → 889 (fulltest **889/0/0/9**, `--exe` **873/0**, `--obj`
+**873/0**, packed arbiter **889/0/0/9**). Fork unchanged
 (**1.0-madc.0.63.0**).
 
-**Branch state:** `develop` is at v0.64.0; `master` is at v0.48.0
+Previous (v0.64.1) — **patch: virtual-base ctor selection +
+completeness-on-demand.** An unnamed virtual base whose class declares
+a non-default ctor FIRST was constructed through the wrong overload
+(flavor-independent, present in v0.64.0); and libc++'s `<iosfwd>`
+stream typedefs left `istringstream` an empty shell (declarations
+mis-parsed, `sizeof` silently 0). Both fixed at the owners
+(`select_ctor_overload`/`ctor_call_assemble`;
+`complete_class_type_on_demand`), gates `testvbasedefault` +
+`teststreamdecl_libcxx`. Suite 885 → 887. Fork unchanged
+(**1.0-madc.0.63.0**).
+
+**Branch state:** `develop` is at v0.65.0; `master` is at v0.48.0
 (promoted 2026-07-25 — the Mach-O milestone promote, per the owner's
 ride-with-S3 decision). The
 [MIR fork](https://github.com/derekbsnider/mir)'s `master` tracks
@@ -322,8 +321,8 @@ fork releases pair with madc's (see [`MIR_VERSION`](MIR_VERSION)).
 
 ### Recent Releases
 
+- **v0.65.0** — the VTT wall fell: libc++ `istringstream` RUNS — hidden `__madc_vb<i>` ctor params carry the TRUE virtual-base addresses (madc's construction-vtables equivalent; ONE predicate keys all four signature surfaces; gate `testvttinit`); the three-link stream chain (declaration shells no longer shadow attached out-of-line definitions — `basic_ios::init` had emitted EMPTY; base-subobject destruction uses the D2 flavor via the new `class_base_dtor_symbol` resolver — the external D1 double-destroyed vbases; base-subobject construction demotes the external C1 to the madc C2 body — the library C1 built a standalone layout; gate `testistream_libcxx`); dtor synthesis gates per-symbol on library D1 availability; flavored lane 803/80 → 811/77 (3 fixed, zero broken; `teststreambool` byte-identical under both flavors); suite 887 → 889; fork unchanged (1.0-madc.0.63.0)
 - **v0.64.1** — patch: virtual-base default-construction selects its ctor by overload resolution (flavor-independent wrong-codegen in v0.64.0: an unnamed vbase whose class declares a non-default ctor first called the wrong overload with no args; broke every libc++ istringstream default-construction; gate `testvbasedefault`); completeness-on-demand for pending forward instantiations (libc++ `<iosfwd>` stream typedefs: declarations mis-parsed as function decls, `sizeof(istringstream)` silently 0; new `complete_class_type_on_demand` at [basic.def]p5 + [expr.sizeof]p1 consumers; gate `teststreamdecl_libcxx`); suite 885 → 887; fork unchanged (1.0-madc.0.63.0)
 - **v0.64.0** — the four-root string/stream breakthrough: flavored lane 747/108 → 803/80 (23 flips in ONE commit, zero regressions at every set-diffed step); the `testclass` SIGSEGV = four stacked defects (unadjusted vbase reference args poisoning every stream test, cast-to-reference ctor args scored as `Tag*` + the binding twin, value-init mem-init on plain-struct members emitted nothing, untyped facet downcast); the 12-link detect-idiom chain (`iterator_traits<CLASS>` resolves, `__is_convertible`, east-specifiers, `__libcpp_datasizeof`, **`vector<int>::push_back` RUNS**); the `__tree`/`<map>` frontier stack (full-spec instantiation keys, `->` through reference-to-pointer, injected-class-name in struct bodies, templated converting ctors); [temp.param]p10 default accumulation both orders (input-stream gateway open); object mode builds the JIT's tree (flavor runtime pre-tree-build); 15 new gates + the probe battery; suite 856 → 885; fulltest 885/0/0/9, `--exe` 869/0, `--obj` 869/0, packed 885/0/0/9; fork unchanged (1.0-madc.0.63.0)
 - **v0.63.0** — the libc++ parity-lane burn-down: flavored lane 534/282 → 747/108 (~50 fixes, zero regressions at every set-diffed step, ledger in `docs/parity/libcxx-failset.txt`); the string wall fell (`std::string c = a + b` under libc++); four flavor-independent silent wrong answers fixed (alias-star de-pointering, uninitialized ctor-less copy spill, empty-base offset-0 EBO, bit-field width rendering); out-of-line defs bind by signature; ref-qualified methods, east-cv template args, operator-> rewrites on member/call-result receivers; mangled-direct declines unlinkable symbols; `__is_final`; suite 807 → 856; fork 1.0-madc.0.63.0 (zero-length-array diagnostic parity)
 - **v0.62.0** — the `<string>` frontier burn-down: libc++ `<string>` parses clean (anonymous-aggregate enclosing-alias resolution); the `__compressed_pair` accessor chain fixed at three layers incl. the REAL derived-to-base ref-cast conversion (silent wrong storage at nonzero offsets before); constant-expression NTTP args fold (the hand-rolled angle counter invisible to the delimiter gate is gone); numeric_limits values exact both flavors (five stacked constant-fold defects: alias-qualified reads, unsigned 8-byte casts, cast-vs-call pre-scan, placeholder-fold refusal, [basic.scope.class] member-alias shadowing); MADC_MAPWRITE_TRAP/MADC_STATCONST_PROBE diagnostics; fulltest 807/0/0/9, `--exe` 791/0, `--obj` 791/0, packed 807/0/0/9; fork unchanged (1.0-madc.0.52.0)
-- **v0.61.0** — the stdlib-flavor switch (P2.3): the std ABI inline namespace from the PARSED config (`_GLIBCXX_USE_CXX11_ABI` ⇒ `__cxx11` on tagged components; `_LIBCPP_ABI_NAMESPACE` ⇒ e.g. `__1` on everything), pushed into the mangler from all three define-write sites (directive / forest replay / CLI `-D`) — `__cxx11` lives only in the mangler; all canonical std:: spellings, `itanium_mangle_std_var` (`_ZSt4cout` vs `_ZNSt3__14coutE`), and the marshalling carrier follow the flavor (clang++-18 oracle, incl. the pre-cxx11 `Ss` form); `cir_native_link_env` de-conflated — per-flavor C++ runtime DT_NEEDED probed from each toolchain's own empty link, `__APPLE__` purely platform; the libc++ native legs unlock (both `_libcxx` gates pass `--exe`/`--obj`); fulltest 798/0/0/9, `--exe` 782/0, `--obj` 782/0, packed arbiter 798/0/0/9; fork unchanged (1.0-madc.0.52.0)
