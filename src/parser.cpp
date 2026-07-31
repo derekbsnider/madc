@@ -14848,6 +14848,20 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
     if ( !lc && !rc )
 	return NULL;
     std::string opname = std::string("operator") + opsym;
+    // Env-gated probe (MADC_FREEOP_PROBE=<opname substring>): which arm of this
+    // lowering claimed the expression. A bail here hands the pair back to the
+    // member operator, and when every same-name member takes a scalar that
+    // surfaces far away as c2mir's "incompatible argument type for arithmetic
+    // type parameter" — with nothing naming the operator that lost.
+    {
+	static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
+	if ( _fop && *_fop && opname.find(_fop) != std::string::npos )
+	    fprintf(stderr, "FREEOP enter %s lc=%s rc=%s member_ret=%d"
+		    " ovset=%zu\n", opname.c_str(),
+		    lc ? lc->name.c_str() : "-", rc ? rc->name.c_str() : "-",
+		    (int)(lc && lc->binary_operator_return_type(opname) != NULL),
+		    free_operator_overloads.size());
+    }
     if ( lc && lc->binary_operator_return_type(opname) )
     {
 	// A named member operator normally owns the expression. The ONE exception:
@@ -14869,7 +14883,13 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
 	for ( const FreeOperatorOverload &ov : free_operator_overloads )
 	    if ( ov.opname == opname && !ov.return_spelling.empty()
 	      && ov.return_spelling.back() == '&' )
+	    {
+		static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
+		if ( _fop && *_fop && opname.find(_fop) != std::string::npos )
+		    fprintf(stderr, "FREEOP bail-refret %s ov.ret=%s\n",
+			    opname.c_str(), ov.return_spelling.c_str());
 		return NULL;
+	    }
 	Variable *nv_callee = NULL;
 	if ( instantiate_free_operator_template(opname, to->left, to->right,
 						&nv_callee) && nv_callee )
