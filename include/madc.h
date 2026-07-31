@@ -5083,6 +5083,7 @@ public:
     DataDef *dependent_deref_result_type(DataDef *dd);
     void complete_pending_template_instantiations(const std::string &class_name);
     bool request_template_instantiation_completion(const std::string &mangled_name);
+    DataDef *complete_class_type_on_demand(DataDef *dd);
     bool template_declared_in_namespace(const std::string &name,
 					const std::string &ns_name);
     TokenBase *consume_unresolved_dependent_call(TokenBase *open);

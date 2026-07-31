@@ -8929,6 +8929,27 @@ bool Program::request_template_instantiation_completion(const std::string &mangl
     return false;
 }
 
+// Demand-completion for a class type reaching a context that REQUIRES a
+// COMPLETE type ([basic.def]p5 by-value declaration, [expr.sizeof]p1): a
+// bodyless forward instantiation minted before its template's definition
+// (libc++ <iosfwd>'s stream typedefs — the definitions arrive with
+// <sstream>) completes IN PLACE when the definition has since registered.
+// A no-op for anything else: a complete class, a non-class, a genuinely
+// dependent shell (no pending record exists for those). Returns the
+// possibly-refreshed type; in-place completion means the original pointer
+// heals too — the refresh covers a replaced map entry.
+DataDef *Program::complete_class_type_on_demand(DataDef *dd)
+{
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+    if ( !cls || !is_incomplete_class_datadef(cls) )
+	return dd;
+    request_template_instantiation_completion(cls->name);
+    flat_datatype_map_iter refreshed = datatype_map.find(cls->name);
+    if ( refreshed != datatype_map.end() )
+	return &(*refreshed)->definition;
+    return dd;
+}
+
 static std::vector<std::vector<TokenBase *> >
 collect_dependent_member_template_args(Program &pgm)
 {
@@ -10676,6 +10697,12 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
     bool have_value = false;
 
     dd = resolve_type_query_datadef(type_tb, op_name, have_value, value);
+    // [expr.sizeof]p1 / [expr.alignof]: the operand type must be COMPLETE.
+    // A bodyless forward instantiation (libc++ <iosfwd>'s stream typedefs)
+    // measured 0 here silently; complete it on demand now that the
+    // definition may have registered.
+    if ( dd )
+	dd = complete_class_type_on_demand(dd);
     // Fallback: sizeof(expression) — parse as expression, use its type
     bool expr_fallback_consumed_paren = false;
     if ( !have_value && !dd )
@@ -55451,6 +55478,18 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // Preserve pointer semantics for `char *p = "literal";`.
     // Only real array declarators (`char buf[] = "literal";`) should take the
     // char-array string-initializer path below.
+
+    // A by-value CLASS declaration requires a COMPLETE type ([basic.def]p5).
+    // A bodyless forward instantiation minted before the template's
+    // definition (libc++ <iosfwd>'s `typedef basic_istringstream<char>
+    // istringstream;` — the definition arrives with <sstream>) is an empty
+    // shell with no ctors: the ctor-call branch below then declines it and
+    // `istringstream s("3")` mis-routes into the FUNCTION DECLARATION parse
+    // (and default-init built a silent size-0 object). Pointer/reference
+    // declarators folded above do not reach this (their decl_type is no
+    // longer btClass), matching C++'s completeness rules.
+    if ( decl_type->basetype() == BaseType::btClass )
+	decl_type = complete_class_type_on_demand(decl_type);
 
     // Constructor call syntax: ClassName var(arg1, arg2, ...);
     // AND direct-list-initialization: ClassName var{arg1, arg2, ...} —
