@@ -98,8 +98,12 @@ std::string itanium_mangle_member_template_sub(const std::string &qualified_clas
 std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
                                       const std::vector<std::string> &param_types);
 
-// Mangle a destructor (D1) on a (possibly template-id) class.
-std::string itanium_mangle_dtor_sub(const std::string &qualified_class);
+// Mangle a destructor on a (possibly template-id) class. `flavor` picks
+// the Itanium variant: "D1" (complete, the default), "D2" (base-object —
+// the one a derived dtor calls for a base SUBOBJECT; it must not destroy
+// virtual bases), "D0" (deleting).
+std::string itanium_mangle_dtor_sub(const std::string &qualified_class,
+                                    const char *flavor = "D1");
 
 // Mangle an operator (operator=, operator[], operator+=, …) on a
 // (possibly template-id) class.

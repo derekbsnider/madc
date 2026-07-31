@@ -156,6 +156,15 @@ class CirBuilder {
 	// zero of the right type is a conformant lowering c2mir will compile).
 	DataDef *m_cur_func_scalar_ret = NULL;
 	Method *m_cur_method = NULL;
+	// Non-NULL while translating a madc-emitted CONSTRUCTOR of a class with
+	// virtual bases: the ctor carries hidden `struct V *__madc_vb<i>` params
+	// (one per collect_vbases entry — see ctor_hidden_vbase_owner), and a
+	// vbase locate on `__this` must read those params, NOT the vptr's
+	// vbase-offset slot (the prologue stamped the class's STANDALONE vtable,
+	// whose vbase offsets are wrong for a base-subobject `this` — the
+	// construction-vtables gap, task #83 leg 2). Saved/restored in func_def
+	// beside m_cur_method.
+	DataDefCLASS *m_cur_ctor_vbase_owner = NULL;
 	// True while translating the body of a multi-return function (`return a, b;`,
 	// Go-style). Such a function uses the multi-return __retbuf ABI: C return type
 	// `void`, a hidden `long *__retbuf` first parameter, and `return a, b;` becomes
@@ -409,10 +418,43 @@ class CirBuilder {
 	// The shim core, keyed on the function Variable — serves parsed
 	// functions AND host-callback trampolines (which have no TokenFunc).
 	node_t synth_call_shim_var(Program *prog, Variable *fvar);
+	// `vbase_forward` = the receiver is a BASE SUBOBJECT of the object the
+	// current ctor is constructing (base-construction / delegation lanes):
+	// the hidden __madc_vb args forward the caller's own params. Default
+	// (false) = complete-object lane: the vbase addresses are static
+	// offsets in `vbase_complete_cls`'s layout from a fresh
+	// `vbase_complete_mint()` node (NULL mint = bind this_addr once into a
+	// scoped local and mint ids off it).
 	node_t ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 				  FuncDef *ctor,
 				  const std::vector<node_t> &explicit_nodes,
-				  TokenBase *origin);
+				  TokenBase *origin,
+				  bool vbase_forward = false,
+				  const std::function<node_t()> *vbase_complete_mint = NULL,
+				  DataDefCLASS *vbase_complete_cls = NULL);
+	// The class whose hidden `__madc_vb<i>` ctor params `fd` carries:
+	// method->owner_class when fd is a madc-emitted (emit_symbol empty)
+	// ctor of a class with virtual bases; NULL otherwise. The one key for
+	// param injection (func_def / func_proto / Pass 0.75 externs) and the
+	// call-site appends — all four MUST agree or c2mir arity-checks fail.
+	DataDefCLASS *ctor_hidden_vbase_owner(FuncDef *fd, Method *method,
+			       const std::string &fname);
+	// Append the hidden `struct V *__madc_vb<i>` parameter declarations
+	// for `ocls`'s ctor (one per collect_vbases entry, that order).
+	void append_ctor_vbase_params(node_t param_list, DataDefCLASS *ocls,
+			       TokenBase *origin);
+	// Append the hidden __madc_vb ARGUMENTS for a callee ctor of `callee`,
+	// forwarding the current ctor's own params (base-subobject lanes).
+	// False when a slot cannot be mapped — caller falls back to static.
+	bool append_ctor_vbase_forward_args(node_t args, DataDefCLASS *callee,
+			       TokenBase *origin);
+	// Append the hidden __madc_vb ARGUMENTS as static complete-object
+	// addresses: `(struct V *)((char *)mint_base() + off)` with off from
+	// `complete_cls`'s layout (mint_base returns a FRESH node per call —
+	// c2mir single parent link).
+	void append_ctor_vbase_static_args(node_t args, DataDefCLASS *callee,
+			       const std::function<node_t()> &mint_base,
+			       DataDefCLASS *complete_cls, TokenBase *origin);
 	void synth_call_shims(Program *prog, const std::vector<TokenFunc *> &roots,
 			      std::vector<node_t> &func_def_nodes);
 	// Host-callback trampoline synthesis (translate_module): one module
@@ -1046,7 +1088,7 @@ public:
 			       TokenBase *origin);
 	node_t class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
-			       TokenBase *origin);
+			       TokenBase *origin, bool vbase_forward = false);
 	// Complete-object (Itanium C1-flavor) construction at a minted address:
 	// user-ctor virtual bases first (base-most order), then the C2-flavor
 	// construction (class_ctor_call_addr). `mint_addr` returns a FRESH typed
@@ -1085,9 +1127,13 @@ public:
 	// Default-construct the non-virtual base subobjects of ctorless `cdd`
 	// through the named receiver pointer, recursing through ctorless
 	// layers with the accumulated offset.
+	// `complete_cls` = the class whose COMPLETE object `recv_ptr` points at
+	// (vbase addresses for a constructed base's hidden params are offsets
+	// in ITS layout); NULL means cdd is itself the complete class.
 	void append_base_default_constructs(node_t items, const char *recv_ptr,
 			       DataDefCLASS *cdd, size_t off0,
-			       TokenBase *origin);
+			       TokenBase *origin,
+			       DataDefCLASS *complete_cls = NULL);
 	// The loud no-match result shared by both ctor-call builders: an
 	// error_node naming the class and the initializer argument types.
 	node_t no_ctor_match_error(DataDefCLASS *cdd,
@@ -1319,11 +1365,19 @@ public:
 	// synthesis: a class with a non-trivial base but no OWN dtor still needs a
 	// synthesized Cls___dtor chaining to the base.
 	bool class_has_own_user_dtor(DataDefCLASS *cdd);
+	// Does the active stdlib runtime PROVIDE this class's complete-object
+	// (D1) dtor? Per-symbol truth behind the dtor-synthesis gates: libstdc++
+	// exports it for its explicit instantiations, libc++'s header-only
+	// streams do not (madc synthesizes).
+	bool class_external_dtor_available(DataDefCLASS *cdd);
 	// True iff Pass 1.6 synthesizes a base dtor (Cls___dtor) for this class.
 	bool class_gets_synth_dtor(DataDefCLASS *cdd);
 	// The destructor symbol used as the cleanup function for a class
 	// instance (ClassName___dtor) — whether user-written or synthesized.
 	std::string class_dtor_symbol(DataDefCLASS *cdd);
+	// Base-subobject (Itanium D2) destruction symbol — an external D1
+	// would destroy a vbase-carrying base's virtual bases twice.
+	std::string class_base_dtor_symbol(DataDefCLASS *cdd);
 	std::string class_complete_dtor_symbol(DataDefCLASS *cdd);
 	// Per-(class,N) stack-array destructor wrapper `Cls__arr<N>___dtor`: the
 	// cleanup attribute calls ONE function with &arr, so a fixed array of a

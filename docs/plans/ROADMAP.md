@@ -1,16 +1,16 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-07-31 (v0.64.0: the
-four-root string/stream breakthrough — the flavored lane went 747/108 →
-803/80 with zero regressions at every set-diffed step, 23 tests flipped
-in ONE commit (unadjusted virtual-base reference args poisoning stream
-state; cast-to-reference ctor args never matching tag-dispatch ctors;
-plain-struct value-init emitting nothing so every default-constructed
-libc++ string rep was frame garbage; an untyped facet downcast).
-`vector<int>::push_back` RUNS; `iterator_traits<CLASS>` resolves;
-[temp.param]p10 opens the input-stream gateway. Suite 856 → 885; next:
-the cin/input cluster, #71 ref-qualified members, stream runtime
-residuals — P2.7 continues).
+Master plan linking all workstreams. Updated 2026-07-31 (v0.65.0: THE
+VTT WALL FELL — libc++ `istringstream` RUNS. Hidden `__madc_vb<i>` ctor
+params are madc's VTT equivalent (construction-vtables gap, task #83),
+plus the three-link stream construction/destruction chain (shell
+shadowing of a deferred out-of-line body; external D1 as a base dtor
+double-destroying vbases — new `class_base_dtor_symbol` D2 resolver;
+external C1 as a base ctor building a standalone layout — the
+vbase-forward lane demotes to the madc C2 body). The flavored lane went
+803/80 → 811/77, 3 FIXED zero broken; `teststreambool` is byte-identical
+under BOTH flavors. Suite 887 → 889; next: #71 ref-qualified members,
+testcin `operator>>`, the manip/castarrow residuals — P2.7 continues).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -35,6 +35,36 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **v0.65.0 (2026-07-31): the VTT wall fell — libc++ `istringstream`
+  RUNS (tasks #83/#84, P2.7 in progress).** madc's answer to Itanium
+  construction vtables: every madc-emitted ctor of a vbase-carrying
+  class takes hidden `struct V *__madc_vb<i>` parameters carrying the
+  TRUE virtual-base addresses — ONE predicate
+  (`ctor_hidden_vbase_owner`) keys all four signature surfaces
+  (func_def, func_proto, Pass-0.75 externs, call sites) so c2mir
+  arity-checks any divergence loudly; base/delegating construction
+  forwards the caller's params, complete-object sites bind the receiver
+  once; `vbase_dynamic_adjust` gains the construction arm (gate
+  `testvttinit`). On top of it, the three-link stream chain: (1) an
+  in-class decl-only member SHADOWED its attached out-of-line
+  definition in the materialize-and-lower fixpoint (`basic_ios::init`
+  emitted weak-EMPTY — `__loc_` frame garbage); (2) external D1 as a
+  base dtor destroyed vbases TWICE — new `class_base_dtor_symbol` D2
+  resolver adopted at all three base-dtor lanes; (3) external C1 as a
+  base ctor built a STANDALONE layout (`basic_ios` at +16 over
+  `__sb_`) — `ctor_call_assemble` demotes the vbase-forward lane to
+  the madc C2 body (gate `testistream_libcxx`). Also: dtor synthesis
+  gates on whether the library PROVIDES the D1, per-symbol
+  (@37e7069f — libc++'s export split). Lane 803/80 → **811/77** — 3
+  FIXED (`teststreambool` byte-identical under BOTH flavors,
+  `testusefacet_realhdr`, `testvbasedyn`), ZERO broken (set
+  comm-diffed). `/dupaudit`: `dtor_symbol_resolution` CONSOLIDATED;
+  `ctor_call_assembly` open (5 sites → task #86). Suite 887 → 889.
+  Fork unchanged (1.0-madc.0.63.0). NEXT: #71 ref-qualified members
+  (~7 lane tests), testcin `operator>>`, testmanip/testderefpreinc/
+  testcastarrow residuals; banked: #60 (5-line reducer), #85 (JIT vs
+  emit-C extern-bind divergence).
 
 - **v0.64.0 (2026-07-31): the four-root string/stream breakthrough (task
   #78, P2.7 in progress).** The flavored lane went 747/108 → **803/80**,

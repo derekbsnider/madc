@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  7e416edc (2026-07-31) on feature/libcxx-parity2-claude
-# Result:       803 passed / 80 failed / 0 timed out / 10 skipped
+# Measured at:  fe3b5bf0 (2026-07-31) on feature/libcxx-parity3-claude
+# Result:       811 passed / 77 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -221,6 +221,14 @@
 #                         attach): vector<int>::push_back RUNS; +5 more passes are
 #                         new gate tests
 #   7e416edc  803 /  80   ⚡⚡⚡ 23 FIXED, ZERO newly broken (diffed) — the biggest
+#   fe3b5bf0  811 /  77   3 FIXED zero broken (comm-diffed): teststreambool +
+#                         testusefacet_realhdr + testvbasedyn — libc++
+#                         istringstream RUNS. The VTT chain (@53f510ea hidden
+#                         __madc_vb ctor params) + the stream triple (@fe3b5bf0
+#                         shell-shadowing / D2 base-dtor / C2 demotion) closed
+#                         the construction-vtables gap. +5 passes = new gates
+#                         (testvttinit testvbasedefault teststreamdecl_libcxx
+#                         testistream_libcxx +1).
 #                         single move of the campaign. Rung 13 of #78: the testclass
 #                         SIGSEGV was FOUR compiler roots — (1) reference-typed arg
 #                         bound to a VIRTUAL-base reference param passed unadjusted
@@ -295,7 +303,6 @@ testspaceship_realhdr.mad
 testsstream.mad
 teststdmapint.mad
 teststdstringconv.mad
-teststreambool.mad
 teststringclass.mad
 teststringglobal.mad
 teststringobj.mad
@@ -315,6 +322,4 @@ testsysscript.mad
 testtemplatestring.mad
 testtraitassign.mad
 testtuple.mad
-testusefacet_realhdr.mad
 testusing.mad
-testvbasedyn.mad

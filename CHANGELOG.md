@@ -2,6 +2,74 @@
 
 ## [Unreleased]
 
+## [v0.65.0] — 2026-07-31
+
+The VTT wall fell: libc++ `istringstream` RUNS — hidden `__madc_vb`
+ctor params (madc's construction-vtables equivalent) plus the
+three-link stream construction/destruction chain. The flavored lane
+went 803/80 → **811/77** with 3 fixed and zero broken (set comm-diffed);
+`teststreambool` prints byte-identical output under BOTH flavors — the
+first working libc++ input stream.
+
+- **feat: ctor-body vbase access gets the TRUE vbase address via hidden
+  params (task #83 leg 2, @53f510ea).** Itanium solves "where is the
+  virtual base while a BASE subobject's ctor runs?" with construction
+  vtables + a hidden VTT parameter; madc's equivalent: every
+  madc-emitted ctor of a vbase-carrying class takes hidden
+  `struct V *__madc_vb<i>` parameters carrying the true vbase
+  addresses. ONE predicate (`ctor_hidden_vbase_owner`) keys all four
+  signature surfaces — func_def, func_proto, Pass-0.75 externs, call
+  sites — so c2mir arity-checks catch any divergence loudly.
+  Base/delegating construction maps callee vbases to caller params
+  (`vbase_slot_index`); complete-object sites bind the receiver once
+  into a `__madc_cc_N` local (c2mir nodes carry a single parent link —
+  never reuse a node); `vbase_dynamic_adjust` gains the construction
+  arm (reads `__madc_vb<slot>` when the receiver bottoms at `__this`).
+  Gate `testvttinit` (prints 42; the pre-fix binary printed 0).
+- **fix: dtor synthesis gates on whether the library PROVIDES the D1,
+  not on class-level external-definedness (@37e7069f).** libc++'s
+  explicit-instantiation export split (vtable/RTTI/VTT weak + few
+  members) breaks the class-level `is_externally_defined` premise —
+  the D1 probe is now per-symbol (dlsym-verified); libc++ streams link.
+- **fix: the three-link stream construction/destruction chain (tasks
+  #83/#84, @fe3b5bf0).** (1) SHELL SHADOWING — an in-class decl-only
+  member parses as an empty-bodied TokenFunc and lands in `lib_funcs`
+  by origin file; the materialize-and-lower fixpoint skipped any key
+  already present, so the attached out-of-line DEFINITION
+  (`basic_ios::init`, ios:598) sat underived while the shell emitted
+  weak-EMPTY — `ios_base::init` never ran, `__loc_` stayed frame
+  garbage, and the dtor SIGSEGVed. The deferred stage now skips only
+  real-bodied entries; ships `MADC_OOL_PROBE` (the attach tracing that
+  pinned it). (2) DTOR FLAVOR — the external dtor binding mints only
+  the D1 (complete) flavor, so base-subobject lanes destroyed virtual
+  bases TWICE. New `class_base_dtor_symbol` D2 resolver (vbase-less
+  classes unchanged; vbase-carrying prefer the library D2,
+  dlsym-verified + typed extern, else the madc D2 body), adopted by
+  `synth_dtor_def`'s base loop, func_def's dtor epilogue, and
+  `vbase_dtor_stmts`; `itanium_mangle_dtor_sub` gains the flavor
+  param. (3) CTOR FLAVOR — the base-construction lane bound the
+  library C1, which constructs a STANDALONE object (`basic_ios` at
+  +16 over `__sb_`; the real C2's implicit VTT param is unfillable).
+  `ctor_call_assemble` demotes an external ctor on the vbase-forward
+  lane to the madc C2 body under the ctor Variable's own emit name;
+  the Rung-3 reachability mark uses the DECLARED name (the C1-keyed
+  materialized body was silently pruned). Complete-object sites keep
+  the external C1. Gate `testistream_libcxx`
+  (`istringstream("41") >> i` → 42, `-stdlib=libc++`).
+- **Method note:** links 2 and 3 were exposed by the NATIVE ORACLE —
+  clang-compiling the emitted C (missing symbols stubbed) ran clean
+  while the JIT crashed, exonerating the front end; the
+  `MADC_DUMP_MIR=1` diff against the emitted C then showed the C1/D1
+  calls verbatim.
+- `/dupaudit` (pre-merge, ctor/dtor symbol lanes):
+  `dtor_symbol_resolution` CONSOLIDATED (zero blind `+ "___dtor"`
+  builds remain); `ctor_call_assembly` recorded OPEN (5 sites,
+  consolidation = task #86).
+- Lane 803/80 → **811/77**: `teststreambool`, `testusefacet_realhdr`,
+  `testvbasedyn` FIXED; zero broken. Suite 887 → 889 (fulltest
+  **889/0/0/9**, `--exe` **873/0**, `--obj` **873/0**). MIR fork
+  unchanged (`1.0-madc.0.63.0`).
+
 ## [v0.64.1] — 2026-07-31
 
 Patch release: two bugfixes off the input-stream chain, one of them a

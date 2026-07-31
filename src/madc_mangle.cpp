@@ -1023,10 +1023,11 @@ std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
 	                       param_types, false);
 }
 
-std::string itanium_mangle_dtor_sub(const std::string &qualified_class)
+std::string itanium_mangle_dtor_sub(const std::string &qualified_class,
+                                    const char *flavor)
 {
 	ItaniumMangler m;
-	return m.mangle_member(qualified_class, "", "D1",
+	return m.mangle_member(qualified_class, "", flavor,
 	                       {}, false);
 }
 
