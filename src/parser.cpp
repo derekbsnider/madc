@@ -56818,14 +56818,24 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    DBG(std::cout << "parseKeyword(" << ((TokenKeyword *)tb)->spelling() << ") calling parseKeyword" << std::endl);
 	    return parseKeyword((TokenKeyword *)tb);
 
+	// An expression-statement may begin with ANY expression ([stmt.expr]),
+	// including a literal. The shape that actually reaches statement
+	// position is minted by NON-TYPE template substitution: libc++
+	// basic_string::__assign_no_alias's `__is_short ? __set_short_size(__n)
+	// : __set_long_size(__n);` instantiates to `1 ? ... : ...;` — the whole
+	// statement is the side-effecting branch selection.
+	case TokenType::ttInteger:
+	case TokenType::ttReal:
+	case TokenType::ttChar:
+	case TokenType::ttString:
+	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") literal-headed expression statement" << std::endl);
+	    resetPrevToken();
+	    return parseExprStmt(tb);
+
 /* keep this here for tokentype reference
 	case TokenType::ttBase:
 	case TokenType::ttOperator:
 	case TokenType::ttIdentifier:
-	case TokenType::ttString:
-	case TokenType::ttChar:
-	case TokenType::ttInteger:
-	case TokenType::ttReal:
 	case TokenType::ttKeyword:
 	case TokenType::ttDataType:
 */

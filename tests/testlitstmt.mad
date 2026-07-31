@@ -1,0 +1,26 @@
+// An expression-statement may begin with a literal ([stmt.expr]). The shape
+// that reaches statement position is minted by NON-TYPE template
+// substitution: `B ? set1(n) : set2(n);` instantiates to `1 ? ... : ...;`
+// (libc++ basic_string::__assign_no_alias — the whole statement is the
+// side-effecting branch selection).
+#include <cstdio>
+int g;
+void f1(int n) { g = n * 10; }
+void f2(int n) { g = n; }
+struct S {
+    int x, y;
+    void set1(int n) { x = n; }
+    void set2(int n) { y = n; }
+    template <bool B> void put(int n) { B ? set1(n) : set2(n); }
+    int run() { put<true>(7); put<false>(9); return x * 10 + y; }
+};
+int main()
+{
+    1 ? f1(4) : f2(4);
+    printf("%d\n", g);
+    S s;
+    s.x = 0;
+    s.y = 0;
+    printf("%d\n", s.run());
+    return 0;
+}
