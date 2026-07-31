@@ -3979,8 +3979,9 @@ static std::string template_tokens_spelling(
     return spelling;
 }
 
+template<typename Seq>	// std::vector and the TokenStream queue, like delim_scan_step
 static size_t template_id_suffix_end(
-	const std::vector<TokenBase *> &tokens, size_t lt_index,
+	const Seq &tokens, size_t lt_index,
 	bool *split_gt = NULL)
 {
     // *split_gt (when provided): set true if the closing token was a `>>`
@@ -21119,6 +21120,34 @@ size_t Program::count_queued_call_arguments()
 	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
+	// [temp.names]: a `<` after a name that REFERS TO A TEMPLATE begins a
+	// template-argument list, and its commas separate TEMPLATE arguments.
+	// DelimDepth deliberately leaves angles untracked inside parens (a
+	// paren-nested `<` is usually less-than), so libc++'s inline tag
+	// temporaries — `__copy_assign_alloc(__str, integral_constant<bool,
+	// X>())` — counted one call argument per template-argument comma; the
+	// miscounted arity then failed find_method_by_callable_arity and the
+	// call reported its own name "undeclared". Gate on an ACTUAL
+	// template-name lookup and delegate the span to the one template-id
+	// extent owner.
+	if ( i + 1 < tokens.size() && tokens[i+1]
+	  && tokens[i+1]->id() == TokenID::tkLT
+	  && (t->type() == TokenType::ttIdentifier
+	   || t->type() == TokenType::ttDataType) )
+	{
+	    std::string tmpl_name = t->type() == TokenType::ttIdentifier
+		? static_cast<TokenIdent *>(t)->spelling()
+		: static_cast<TokenDataType *>(t)->spelling();
+	    if ( find_template(tmpl_name) )
+	    {
+		size_t close = template_id_suffix_end(tokens, i + 1);
+		if ( close > i + 1 )
+		{
+		    i = close;	// the loop's ++i resumes past the `>`/`>>`
+		    continue;
+		}
+	    }
+	}
 	// top-level comma at the call's argument level → next argument
 	if ( t->id() == TokenID::tkComma
 	  && d.paren == 1 && d.square == 0 && d.brace == 0 && d.angle == 0 )
@@ -28987,11 +29016,20 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    {
 			// Check if it's a method call on a class pointer
 			DataDefCLASS *method_cls = (DataDefCLASS *)base;
+			// `p->f<targs>(args)` ([temp.names]): the dot arm's
+			// explicit-template-argument handling, mirrored. The arity
+			// counter cannot see past the `<...>`, so the targs form
+			// selects by name and reselects after the arguments parse.
+			bool explicit_targs_follow = peekToken()
+			    && peekToken()->id() == TokenID::tkLT;
 			bool call_follows = peekToken()
-			    && peekToken()->id() == TokenID::tkOpBrk;
+			    && (peekToken()->id() == TokenID::tkOpBrk
+			     || explicit_targs_follow);
 			var = call_follows
-			    ? find_method_by_callable_arity(method_cls, id,
+			    ? (explicit_targs_follow ? NULL
+			       : find_method_by_callable_arity(method_cls, id,
 				count_queued_call_arguments(), false)
+			      )
 			    : method_cls->findMethod(id);
 			if ( !var && call_follows )
 			    var = method_cls->findMethod(id);
@@ -29011,11 +29049,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    if ( var->flags & vfSTATIC )
 			    {
 				TokenCallFunc *tc = new TokenCallFunc(*var);
+				if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+				    tc->explicit_template_args = capture_call_template_args();
 				tb = nextToken();
 				tc->line = tb->line;
 				tc->column = tb->column;
 				if ( tb->id() == TokenID::tkOpBrk )
 				    tb = parseCallFunc(tc);
+				else if ( !tc->explicit_template_args.empty() )
+				    Throw(tb) << "expected '(' after explicit template arguments" << flush;
 				std::vector<const DataDef *> at;
 				for ( TokenBase *p : tc->parameters )
 				    at.push_back(p ? p->datadef() : NULL);
@@ -29024,6 +29066,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    {
 					TokenCallFunc *tc2 = new TokenCallFunc(*ov);
 					tc2->parameters = tc->parameters;
+					tc2->explicit_template_args = tc->explicit_template_args;
 					tc2->file = tc->file;
 					tc2->line = tc->line;
 					tc2->column = tc->column;
@@ -29074,11 +29117,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    TokenCallMethod *tc = new TokenCallMethod(*obj_var, *var);
 			    if ( recv_parent )
 				tc->parent_expr = recv_parent;
+			    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+				tc->explicit_template_args = capture_call_template_args();
 			    tb = nextToken();
 			    tc->line = tb->line;
 			    tc->column = tb->column;
 			    if ( tb->id() == TokenID::tkOpBrk )
 				tb = parseCallMethod(tc);
+			    else if ( !tc->explicit_template_args.empty() )
+				Throw(tb) << "expected '(' after explicit template arguments" << flush;
 			    // Re-bind to the overload the argument types select.
 			    tc = reselect_method_overload(tc, *obj_var,
 				    method_cls, id);
@@ -29508,22 +29555,39 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 		    }
-		    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		    // `f<targs>(args)` unqualified in a member body is
+		    // `(*this).f<targs>(args)` ([class.mfct.non.static],
+		    // [temp.names]) — the dot arm's explicit-template-argument
+		    // handling, mirrored. Only a name that IS a method of the
+		    // enclosing class takes this arm (everything else already
+		    // failed lookup and falls through to the usual diagnostic),
+		    // so a genuine less-than never reaches the capture.
 		    {
-			Variable *mvar =
-			    find_method_by_callable_arity(cls, mname,
+		    bool explicit_targs_follow = peekToken()
+			&& peekToken()->id() == TokenID::tkLT;
+		    if ( peekToken()
+		      && (peekToken()->id() == TokenID::tkOpBrk
+		       || explicit_targs_follow) )
+		    {
+			Variable *mvar = explicit_targs_follow
+			    ? cls->findMethod(mname)
+			    : find_method_by_callable_arity(cls, mname,
 				count_queued_call_arguments(), false);
 			if ( mvar )
 			{
 			    if ( mvar->flags & vfSTATIC )
 			    {
-				tb = nextToken();
 				TokenCallFunc *tc = new TokenCallFunc(*mvar);
+				if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+				    tc->explicit_template_args = capture_call_template_args();
+				tb = nextToken();
 				tc->line = tb->line;
 				tc->column = tb->column;
 				opStack.push(tc);
 				if ( tb->id() == TokenID::tkOpBrk )
 				    tb = parseCallFunc(tc);
+				else if ( !tc->explicit_template_args.empty() )
+				    Throw(tb) << "expected '(' after explicit template arguments" << flush;
 				if ( tb->id() == TokenID::tkSemi )
 				    done = true;
 				return done ? ExprStep::Done : ExprStep::Break;
@@ -29533,9 +29597,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    if ( thisvar )
 			    {
 				TokenCallMethod *tc = new TokenCallMethod(*thisvar, *mvar);
+				if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+				    tc->explicit_template_args = capture_call_template_args();
 				tb = nextToken();
 				tc->line = tb->line;
 				tc->column = tb->column;
+				if ( tb->id() != TokenID::tkOpBrk
+				  && !tc->explicit_template_args.empty() )
+				    Throw(tb) << "expected '(' after explicit template arguments" << flush;
 				tb = parseCallMethod(tc);
 				tc = reselect_method_overload(tc, *thisvar, cls, mname);
 				opStack.push(tc);
@@ -29544,6 +29613,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				return done ? ExprStep::Done : ExprStep::Break;
 			    }
 			}
+		    }
 		    }
 		}
 		if ( parsed_operator_name )
