@@ -5015,11 +5015,28 @@ DataDef *CirBuilder::ref_returning_call_type(TokenBase *arg)
 
 static bool class_operator_value_result(TokenBase *arg);
 
+// Defined below with the member-read deref family; the argument helpers here
+// consult it for the aggregate-reference-member binding arms.
+static bool reference_member_value_is_stored_address(TokenBase *tb);
+
 node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 {
 	if (!target) target = as_class_instance(arg ? arg->datadef() : NULL);
 	if (!target) target = class_behind(arg ? arg->datadef() : NULL);
 	if (!target)
+		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
+
+	// An AGGREGATE REFERENCE MEMBER (`_Alloc& __alloc_`, stored as a pointer
+	// slot) denotes its referent ([expr.ref]): the member's stored VALUE
+	// already is the referent object's address — bind it directly. Every arm
+	// below sees only the pointer-typed slot, so the arg fell to the
+	// materializing tail, which COPIED into a temp (breaking reference
+	// identity) via an implicit-copy assign whose rhs is the raw slot value
+	// (struct = struct*, the uninitialized_algorithms.h:523 c2mir check).
+	// Same-class binds only; a derived-referent-to-base bind keeps the old
+	// path rather than silently skipping the base-offset adjustment.
+	if (reference_member_value_is_stored_address(arg)
+	    && class_behind(dynamic_cast<TokenMember *>(arg)->var.type) == target)
 		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
 
 	if (m_tsubst_pattern_mode) {
@@ -5277,7 +5294,14 @@ node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
 			return translate_expr(arg);
 	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
 		if ((tv->var.is_reference()) && class_behind(tv->var.type) == target)
-			return translate_expr(arg);
+			// An AGGREGATE REFERENCE MEMBER's read yields the stored
+			// pointer (the deliberate aggregate exclusion in the member
+			// read); the by-value parameter takes the OBJECT, so read
+			// through it ([expr.ref] — the member denotes the referent).
+			// A reference VARIABLE's read already yields the referent.
+			return reference_member_value_is_stored_address(arg)
+			       ? node1(N_DEREF, translate_expr(arg), arg)
+			       : translate_expr(arg);
 
 	// Pattern-mode construction deferral (see object_arg_addr): a dependent-typed
 	// arg cannot be materialized into a concrete `target` temp in the recipe —
@@ -5401,6 +5425,12 @@ static bool const_ref_param(FuncDef *fd, size_t i)
 node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent,
 				      bool allow_converted_temp)
 {
+	// An AGGREGATE REFERENCE MEMBER's stored value already IS the referent
+	// object's address ([expr.ref]) — the reference parameter binds to the
+	// same object, so pass the pointer through. `&translate_expr` below
+	// would take the address of the SLOT (a T** where the callee reads T*).
+	if (reference_member_value_is_stored_address(arg))
+		return translate_expr(arg);
 	DataDef *vt = arg ? arg->datadef() : NULL;
 	bool needs_converted_temp = allow_converted_temp
 	    && class_pointer_reference_conversion(vt, expected_referent);
@@ -5589,6 +5619,15 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 					  node2(N_DECL, ignore(), dl));
 			append(args, node2(N_CAST, ct, translate_expr(arg), arg));
 		}
+		else if (pt && pt->is_struct()
+			 && reference_member_value_is_stored_address(arg))
+			// A plain-struct BY-VALUE formal taking an aggregate
+			// REFERENCE MEMBER (`Pt& a;` passed to `f(Pt p)`): the
+			// member denotes its referent ([expr.ref]) and its read
+			// yields the stored pointer — read through it. (Object-CLASS
+			// formals take the object_arg_value arm above; this is the
+			// plain-DataDefSTRUCT twin.)
+			append(args, node1(N_DEREF, translate_expr(arg), arg));
 		else
 			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
 			// make the implicit upcast explicit so c2mir does not warn.
