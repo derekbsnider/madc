@@ -10746,6 +10746,17 @@ static int type_trait_arity(const std::string &name)
     if ( name == "__is_same" || name == "__is_base_of"
       || name == "__is_assignable" )
 	return 2;
+#ifdef MADC_TRAIT_ISCONVERTIBLE
+    // GUARDED OFF pending the std::copy fancy-path rung: the trait folds are
+    // canon-correct (tmp/ittraits2/3 oracle-match with it ON), but folding
+    // __has_*_iterator_category flips libc++'s copy dispatch onto
+    // __copy<_ClassicAlgPolicy,...>, whose body parse throws ("unexpected
+    // token type 13") — 3 string-lane regressions. Flip this guard when that
+    // body instantiates; the gate tests live in tmp/testisconvertible.* and
+    // tmp/testittraits_libcxx.* until then (task #78 tracks it).
+    if ( name == "__is_convertible_to" || name == "__is_convertible" )
+	return 2;
+#endif
     if ( name == "__is_class" || name == "__is_union" || name == "__is_enum"
       || name == "__has_trivial_destructor" || name == "__is_trivial"
       || name == "__is_empty" || name == "__is_standard_layout"
@@ -11219,6 +11230,86 @@ static int trait_scalar_convertible_from(DataDef *to, const TraitTypeArg &from)
     return trait_scalar_assignable_from(to, from.dd);
 }
 
+// A user CONVERSION FUNCTION on the class ([class.conv.fct]) — registered with
+// the `operator <type>` display-name prefix (the same marker the pattern
+// normalizer's Conversion kind keys on).
+static bool trait_class_has_conversion_op(DataDefCLASS *c)
+{
+    if ( !c )
+	return false;
+    for ( variable_vec_iter vvi = c->methods.begin(); vvi != c->methods.end();
+	  ++vvi )
+    {
+	FuncDef *fd = *vvi ? dynamic_cast<FuncDef *>((*vvi)->type) : NULL;
+	if ( fd && fd->method_display_name.compare(0, 9, "operator ") == 0 )
+	    return true;
+    }
+    if ( c->base_class && trait_class_has_conversion_op(c->base_class) )
+	return true;
+    for ( size_t i = 0; i < c->bases.size(); ++i )
+	if ( trait_class_has_conversion_op(c->bases[i].base) )
+	    return true;
+    return false;
+}
+
+// __is_convertible_to(From, To) ([meta.rel] is_convertible — libc++ spells
+// its entire is_convertible through this builtin). Conservative tri-state:
+// the shapes the iterator-category detection chain folds exactly (same
+// class, derived tag -> base tag, ctor-less unrelated tags -> 0, scalar
+// pairs); anything needing user conversion machinery stays undetermined
+// (-1 = not constant-foldable) rather than guessing a canon answer.
+static int trait_is_convertible_uninstrumented(const TraitTypeArg &from,
+					       const TraitTypeArg &to);
+
+// Env-gated probe (MADC_ISCONV_PROBE=1): every __is_convertible fold with its
+// verdict — the overload-flip diagnostic when a newly-foldable trait changes
+// a library SFINAE selection.
+static int trait_is_convertible(const TraitTypeArg &from, const TraitTypeArg &to)
+{
+    int r = trait_is_convertible_uninstrumented(from, to);
+    static const char *icp = ::getenv("MADC_ISCONV_PROBE");
+    if ( icp )
+	fprintf(stderr, "[isconv] from=%s%s to=%s%s -> %d\n",
+		from.dd ? from.dd->name.c_str() : "?",
+		from.is_lref ? "&" : (from.is_rref ? "&&" : ""),
+		to.dd ? to.dd->name.c_str() : "?",
+		to.is_lref ? "&" : (to.is_rref ? "&&" : ""), r);
+    return r;
+}
+
+static int trait_is_convertible_uninstrumented(const TraitTypeArg &from,
+					       const TraitTypeArg &to)
+{
+    if ( !from.dd || !to.dd )
+	return -1;
+    // Class-NESS by struct-hood (trait_is_class's own test): a plain
+    // `struct B {}` stays DataDefSTRUCT — class-only state (ctors,
+    // conversion ops) is read through the CLASS cast when present.
+    bool to_cls = trait_is_class(to.dd) || trait_is_union(to.dd);
+    bool from_cls = trait_is_class(from.dd) || trait_is_union(from.dd);
+    if ( to_cls && from_cls )
+    {
+	if ( to.dd == from.dd || to.dd->name == from.dd->name )
+	    return 1;			// copy-initialization from the same type
+	if ( trait_is_base_of(to.dd, from.dd) )
+	    return 1;			// derived -> base ([conv.ptr]/[dcl.init])
+	// Unrelated classes with NO user constructors on the target and NO
+	// conversion functions on the source (the iterator TAG shape): there
+	// is no conversion path at all — a definite 0, which is what the
+	// negative branches of __has_iterator_category_convertible_to need.
+	// A never-promoted plain struct has neither.
+	DataDefCLASS *toc = dynamic_cast<DataDefCLASS *>(to.dd);
+	DataDefCLASS *fromc = dynamic_cast<DataDefCLASS *>(from.dd);
+	if ( (!toc || toc->ctors.empty())
+	  && (!fromc || !trait_class_has_conversion_op(fromc)) )
+	    return 0;
+	return -1;			// user machinery — undetermined
+    }
+    if ( to_cls || from_cls )
+	return -1;			// class <-> scalar: user machinery
+    return trait_scalar_convertible_from(to.dd, from);
+}
+
 static int trait_is_constructible(const TraitTypeArg &to,
 				  const std::vector<TraitTypeArg> &args,
 				  bool need_nothrow, int depth);
@@ -11653,6 +11744,14 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	std::vector<TraitTypeArg> ctor_args(args.begin() + 1, args.end());
 	int s = trait_is_constructible(args[0], ctor_args,
 				       name == "__is_nothrow_constructible", 0);
+	if ( s < 0 )
+	    Throw(op_tb) << "cannot faithfully evaluate " << name
+			 << "(...) for these operand types" << flush;
+	result = s != 0;
+    }
+    else if ( name == "__is_convertible_to" || name == "__is_convertible" )
+    {
+	int s = trait_is_convertible(args[0], args[1]);
 	if ( s < 0 )
 	    Throw(op_tb) << "cannot faithfully evaluate " << name
 			 << "(...) for these operand types" << flush;
@@ -27114,6 +27213,13 @@ static bool eval_local_type_trait(Program &pgm,
 	std::vector<TraitTypeArg> ctor_args(targs.begin() + 1, targs.end());
 	int s = trait_is_constructible(targs[0], ctor_args,
 				       nm == "__is_nothrow_constructible", 0);
+	if ( s < 0 )
+	    return false;   // undetermined -> not a constant-foldable trait here
+	r = s != 0;
+    }
+    else if ( nm == "__is_convertible_to" || nm == "__is_convertible" )
+    {
+	int s = trait_is_convertible(targs[0], targs[1]);
 	if ( s < 0 )
 	    return false;   // undetermined -> not a constant-foldable trait here
 	r = s != 0;
