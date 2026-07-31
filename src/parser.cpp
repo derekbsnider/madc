@@ -4106,24 +4106,36 @@ static bool self_template_id_keep_distinct(
 }
 
 static bool member_template_param_intro(TokenBase *t);   // defined with the class parser
+// Defined with the tsubst machinery; include_dependent_class=false narrows the
+// test to raw template-PARAMETER placeholders (const/ptr walked), excluding
+// dependent-placeholder CLASSES (laundered opaques keep their existing routes).
+static bool datadef_involves_placeholder(DataDef *dd,
+					 bool include_dependent_class = true);
 
 // A member `template <...>` head inside an instantiated class's body: collect
-// the member template's own type-param names and return the index one past its
-// declaration extent (the top-level `;` that ends it), or 0 when the head is
-// not one this rule covers. Only member CLASS templates arm the rule — a
-// nested TemplateDef's body is captured RAW at the re-parse and resolved no
-// earlier than its own instantiation, so keeping a self-name spelled inside
-// its extent is resolution-safe. A member ALIAS template's TARGET is examined
-// during the class re-parse itself (libstdc++ allocator_traits' partial spec
-// carries `using rebind_traits = allocator_traits<rebind_alloc<_Up>>;` — kept
-// spelled, the unresolvable _Up detonated the <string> freeze and ate every
-// member after it), and a member FUNCTION template's param-list SFINAE
-// defaults are eagerly re-parsed at registration (`_UseOtherCtor<_Tuple,
-// tuple<_Up>>` — see self_template_id_keep_distinct's collapse guard), so
-// both stay on the collapse arm.
+// the member template's own type-param names, return the index one past its
+// declaration extent, and set `keep_from` to the first index where a kept
+// self template-id is resolution-safe — or return 0 when the head is not one
+// this rule covers. Member CLASS templates arm the whole extent (to the
+// top-level `;`): a nested TemplateDef's body is captured RAW at the re-parse
+// and resolved no earlier than its own instantiation. Member FUNCTION
+// templates (a converting ctor `template<class U> alloc9(const alloc9<U>&)`
+// is the libc++ __node_handle:84 shape) arm only AFTER the head's closing
+// `>`: the head's SFINAE defaults are eagerly re-parsed at registration
+// (`_UseOtherCtor<_Tuple, tuple<_Up>>` — see self_template_id_keep_distinct's
+// collapse guard), while the declarator and body are registration-inert
+// (declarator-name scan + fabricated placeholder params only) and resolve at
+// the member's own instantiation with its params bound. A member ALIAS
+// template's TARGET is examined during the class re-parse itself (libstdc++
+// allocator_traits' partial spec carries `using rebind_traits =
+// allocator_traits<rebind_alloc<_Up>>;` — kept spelled, the unresolvable _Up
+// detonated the <string> freeze and ate every member after it), a FRIEND
+// declaration is eagerly hoisted, and a member VARIABLE template (no
+// declarator `(`) has its initializer examined eagerly — those stay on the
+// collapse arm.
 static size_t member_class_template_extent(
 	const std::vector<TokenBase *> &tokens, size_t template_index,
-	std::set<std::string> &param_names)
+	std::set<std::string> &param_names, size_t &keep_from)
 {
     size_t i = template_index + 1;
     if ( i >= tokens.size() || !tokens[i] || tokens[i]->id() != TokenID::tkLT )
@@ -4132,7 +4144,7 @@ static size_t member_class_template_extent(
     i += delim_scan_step(tokens, i, d);   // the opening `<` (NULL prev: opens)
     bool name_position = false;           // depth-1 token right after class/typename
     // Collect LOCALLY; publish only on success — a rejected head (a friend /
-    // function template) must not leave stale params armed with no extent, or
+    // variable template) must not leave stale params armed with no extent, or
     // the next self template-id in an eagerly-parsed friend DECLARATION keeps
     // spelled and detonates the re-parse (__new_allocator's operator== ate
     // max_size and everything after it in the <string> freeze).
@@ -4148,18 +4160,59 @@ static size_t member_class_template_extent(
     }
     if ( d.angle > 0 || i >= tokens.size() || !tokens[i] )
 	return 0;   // unbalanced head: leave the collapse arm untouched
-    if ( tokens[i]->id() != TokenID::tkSTRUCT
-      && tokens[i]->id() != TokenID::tkCLASS
-      && tokens[i]->id() != TokenID::tkUNION )
-	return 0;   // member function/alias template (or friend): collapse as before
+    size_t head_end = i;   // first token after the head's closing `>`
+    if ( tokens[i]->id() == TokenID::tkSTRUCT
+      || tokens[i]->id() == TokenID::tkCLASS
+      || tokens[i]->id() == TokenID::tkUNION )
+    {
+	while ( i < tokens.size() )
+	{
+	    if ( tokens[i] && tokens[i]->id() == TokenID::tkSemi && d.top() )
+	    {
+		param_names.swap(collected);
+		keep_from = template_index;
+		return i + 1;
+	    }
+	    i += delim_scan_step(tokens, i, d);
+	}
+	return 0;
+    }
+    // Member FUNCTION template arm: require a top-level declarator `(` before
+    // any top-level `=`/`;`/`{` (rejects alias, variable templates), and no
+    // `using`/`friend` specifier before it. Extent ends at the top-level `;`
+    // (declaration / `= default;`) or one past the matched body `}`.
+    bool seen_lparen = false;
     while ( i < tokens.size() )
     {
-	if ( tokens[i] && tokens[i]->id() == TokenID::tkSemi && d.top() )
+	TokenBase *t = tokens[i];
+	if ( t && d.top() )
+	{
+	    TokenID id = t->id();
+	    if ( !seen_lparen )
+	    {
+		if ( id == TokenID::tkUSING || id == TokenID::tkFRIEND
+		  || id == TokenID::tkAssign || id == TokenID::tkSemi
+		  || id == TokenID::tkOpBrc )
+		    return 0;   // alias / friend / variable template: collapse
+		if ( id == TokenID::tkOpBrk )
+		    seen_lparen = true;
+	    }
+	    else if ( id == TokenID::tkSemi )
+	    {
+		param_names.swap(collected);
+		keep_from = head_end;
+		return i + 1;
+	    }
+	}
+	bool was_body_close = seen_lparen && t
+	    && t->id() == TokenID::tkClBrc;
+	i += delim_scan_step(tokens, i, d);
+	if ( was_body_close && d.top() )
 	{
 	    param_names.swap(collected);
-	    return i + 1;
+	    keep_from = head_end;
+	    return i;   // one past the definition's closing `}`
 	}
-	i += delim_scan_step(tokens, i, d);
     }
     return 0;
 }
@@ -7119,9 +7172,25 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     canon += ">";
 
     bool dependent_surface = false;
+    // [temp.dep.type]: an argument that IS (or const/ptr-wraps) a raw
+    // template-parameter placeholder makes the template-id a DEPENDENT type in
+    // any context — a pattern parse resolving `allocator<_Tp1>` (a member fn
+    // template's kept self-name param) must yield a dependent shell
+    // re-resolved at tsubst, never inject a class body substituted with the
+    // placeholder. Injection minted allocator__Tp1 / __new_allocator__Tp1
+    // garbage classes — silent at parse, loud when the freeze drain translated
+    // them ("unsubstituted template parameter '_Tp1' reached type lowering").
+    // Dependent-placeholder CLASS args (laundered opaques) keep their existing
+    // real-instantiation route — only the raw-param test gates here.
+    bool placeholder_arg = false;
     for ( size_t i = 0; i < type_args.size(); ++i )
+    {
 	if ( datadef_has_unresolved_dependent_surface(&type_args[i]->definition) )
 	    dependent_surface = true;
+	if ( datadef_involves_placeholder(&type_args[i]->definition,
+					  /*include_dependent_class=*/false) )
+	    placeholder_arg = true;
+    }
 
     std::string registered_mangled = td.owner_class
 	? td.owner_class->name + "__" + mangled : mangled;
@@ -7262,13 +7331,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	&& variadic_inst_in_progress.count(registered_mangled))
 	|| class_inst_in_progress.count(registered_mangled);
     if ( td.body.empty() || (pack_real_inst && dependent_surface)
-      || recursive_opaque )
+      || placeholder_arg || recursive_opaque )
     {
 	++_class_inst_opaque;
 	DataDefCLASS *fwd = new DataDefCLASS(registered_mangled, 0, DataType::dtRESERVED);
 	// A bodyless declaration with concrete arguments is incomplete, not
 	// dependent; pending completion still recognizes it by its empty shell.
-	bool unresolved_surface = dependent_surface || recursive_opaque;
+	bool unresolved_surface = dependent_surface || placeholder_arg
+				|| recursive_opaque;
 	fwd->set_canonical_spelling(canon);
 	fwd->is_dependent_placeholder = unresolved_surface;
 	stamp_opaque_mint_context(fwd);
@@ -7463,11 +7533,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // ctor body / mem-init (`_Inherited(__tail...)`) must also vanish, else the
     // elided name is "undeclared". Recorded by the empty-param-pack elision.
     std::set<std::string> empty_value_pack_names;
-    // Member CLASS/ALIAS template extent (member_class_template_extent): while
-    // bi is inside one, a self template-id whose args reference the MEMBER's
-    // own params keeps its spelled form instead of collapsing.
+    // Member CLASS/FUNCTION template extent (member_class_template_extent):
+    // while bi is inside one (past member_tpl_keep_begin — a function
+    // template's head defaults stay on the collapse arm), a self template-id
+    // whose args reference the MEMBER's own params keeps its spelled form
+    // instead of collapsing.
     std::set<std::string> member_tpl_params;
     size_t member_tpl_extent_end = 0;
+    size_t member_tpl_keep_begin = 0;
     for ( size_t bi = 0; bi < td.body.size(); ++bi )
     {
 	if ( pack_pattern_skip_dots.count(bi) )
@@ -7477,11 +7550,13 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	{
 	    member_tpl_params.clear();
 	    member_tpl_extent_end = 0;
+	    member_tpl_keep_begin = 0;
 	}
 	if ( !member_tpl_extent_end && bi > body_brace_index
 	  && bt && bt->id() == TokenID::tkTEMPLATE )
 	    member_tpl_extent_end =
-		member_class_template_extent(td.body, bi, member_tpl_params);
+		member_class_template_extent(td.body, bi, member_tpl_params,
+					     member_tpl_keep_begin);
 	if ( bt->type() == TokenType::ttIdentifier )
 	{
 	    const std::string &s = ((TokenIdent *)bt)->spelling();
@@ -7706,16 +7781,23 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 			!self_template_base && self_as_template
 			&& self_template_id_keep_distinct(td, td.body, bi + 1);
 		    // A self template-id whose args reference the enclosing
-		    // member CLASS/ALIAS template's OWN params (`alloc9<U>` in
-		    // `template<class U> struct rebind`) names a specialization
-		    // that exists only once the MEMBER instantiates — keep the
-		    // name and its `<...>` spelled so the member's own
-		    // substitution resolves it then. Collapsing it bound
-		    // libc++'s `allocator<T>::rebind<U>::other` to the CURRENT
-		    // instantiation: the __tree node allocator silently became
-		    // the VALUE allocator (tests/testmemtplrebind.mad).
+		    // member CLASS/FUNCTION template's OWN params (`alloc9<U>`
+		    // in `template<class U> struct rebind`, or in a converting
+		    // ctor `template<class U> alloc9(const alloc9<U>&)`) names
+		    // a specialization that exists only once the MEMBER
+		    // instantiates — keep the name and its `<...>` spelled so
+		    // the member's own substitution resolves it then.
+		    // Collapsing it bound libc++'s
+		    // `allocator<T>::rebind<U>::other` to the CURRENT
+		    // instantiation (tests/testmemtplrebind.mad), and turned
+		    // the converting ctor into a copy-ctor signature the
+		    // construction KIND could never deduce against
+		    // (tests/testconvctor.mad). keep_begin excludes a function
+		    // template's HEAD (its SFINAE defaults re-parse eagerly at
+		    // registration — the tuple<_Up> collapse guard).
 		    bool self_template_member_distinct =
 			!self_template_base && self_as_template
+			&& bi >= member_tpl_keep_begin
 			&& template_id_args_reference_names(td.body, bi + 1,
 							    member_tpl_params);
 		    if ( self_template_member_distinct )
@@ -10097,7 +10179,7 @@ bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
 }
 
 static bool is_named_cpp_cast(const std::string &name);
-static bool datadef_involves_placeholder(DataDef *dd);
+static bool datadef_involves_placeholder(DataDef *dd, bool include_dependent_class);
 
 static madc_wide_int apply_integer_cast_value(DataDef *cast_dd, madc_wide_int val,
 					      bool force_unsigned = false)
@@ -44579,12 +44661,13 @@ fail:
 // body instantiates fn templates keyed on the opaque type (a bogus
 // `_Construct<_ForwardIterator__deref>` product that pollutes the overload set
 // and the inst memo).
-static bool datadef_involves_placeholder(DataDef *dd)
+static bool datadef_involves_placeholder(DataDef *dd, bool include_dependent_class)
 {
     for ( int guard = 0; dd && guard < 8; ++guard )
     {
 	if ( dd->is_template_param() )
 	    return true;
+	if ( include_dependent_class )
 	{
 	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
 	    if ( cls && cls->is_dependent_placeholder )
@@ -48210,6 +48293,25 @@ void Program::instantiate_member_ctor_template_for_construction(
     // monomorphized class needs its retained ctor body instantiated here.
     if ( cdd->is_externally_defined() || cdd->is_extern_template_instantiated )
 	return;
+    // [over.match.best] + [class.copy.ctor]: for a SAME-TYPE (or sliced
+    // derived-to-base) single-argument construction, the IMPLICIT copy
+    // constructor — a non-template — outranks any member-template instance
+    // (`template<class U> X(const X<U>&)` deduces U=T to a copy signature,
+    // but a template never beats the implicit copy). madc does not list the
+    // implicit copy in cdd->ctors; the ctor-less copy path (spill-copy)
+    // IS that ctor. Instantiating here instead hijacked every by-value copy
+    // through a reference-param call — `&(temporary)` failed c2mir's lvalue
+    // check (testtplargkey, after the member-fn-template self-name keep made
+    // the converting-ctor deduction actually succeed).
+    if ( ctor_args.size() == 1 && ctor_args[0] )
+    {
+	DataDef *avd = operand_value_datadef(ctor_args[0]);
+	while ( DataDefCONST *ac = dynamic_cast<DataDefCONST *>(avd) )
+	    avd = ac->base_type;
+	DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(avd);
+	if ( acls && acls->is_or_derives_from(cdd) )
+	    return;
+    }
     // Dependent deferral — the CTOR mirror of the call path's rule (see
     // instantiate_member_fn_template_for_call): inside a dependent pattern
     // parse, a construction whose args involve a template-parameter
