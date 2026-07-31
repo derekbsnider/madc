@@ -15437,6 +15437,25 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
 	at.push_back(p ? operand_value_datadef(p) : NULL);
     Variable *ov = cls->findMethodOverload(id, at);
     TokenCallMethod *selected = tc;
+    if ( !ov && unevaluated_operand_depth > 0 )
+    {
+	// In an unevaluated operand (a decltype/SFINAE probe) a scored MISS —
+	// same-name candidates exist (tc->var is the arity pick) but none is
+	// viable for these argument types — is [over.match.viable] failure:
+	// the call is ill-formed and the probe must SFINAE-reject. Keeping
+	// the arity pick typed `declval<Alloc>().destroy(declval<B*>())` as
+	// well-formed, so __has_destroy folded TRUE for an argument the
+	// member cannot take, and allocator_traits::destroy bound the
+	// __a.destroy arm — the __tree:890 tsubst bail (gate testptrviab).
+	// An unknown argument shape (a NULL DataDef) keeps the lenient
+	// fall-through — reject only what scored as PROVEN non-viable.
+	bool all_args_known = true;
+	for ( const DataDef *a : at )
+	    if ( !a ) { all_args_known = false; break; }
+	if ( all_args_known )
+	    Throw(tc) << "no viable overload of '" << id << "' in "
+		      << cls->name << " for these argument types" << flush;
+    }
     if ( ov && ov != &tc->var )
     {
 	selected = new TokenCallMethod(recv, *ov);

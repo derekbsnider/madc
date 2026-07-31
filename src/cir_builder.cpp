@@ -11141,6 +11141,49 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 					return -1;
 				return 3;   // void* standard conversion
 			}
+			// BOTH pointees non-class: [conv.ptr] admits only the
+			// SAME pointee (cv-widening included) and to/from void*
+			// (C's malloc direction kept); an unrelated pointee pair
+			// has NO conversion. The old `rawtype ? 5 : 4`
+			// fallthrough made EVERY such pointer viable against
+			// every pointer parameter, so SFINAE detectors folded
+			// TRUE on members that cannot take the argument
+			// (__has_destroy<allocator<Node>, pair*> selected
+			// allocator_traits::destroy's __a.destroy arm — the
+			// __tree:890 tsubst bail; gate testptrviab). A pointee
+			// this cast cannot see keeps the rawtype comparison —
+			// reject only what is PROVEN unrelated.
+			const DataDefPTR *apt =
+				dynamic_cast<const DataDefPTR *>(adc);
+			const DataDefPTR *ppt =
+				dynamic_cast<const DataDefPTR *>(pdc);
+			const DataDef *ab = apt ? apt->base_type : NULL;
+			const DataDef *pb = ppt ? ppt->base_type : NULL;
+			if (const DataDefCONST *cw =
+			    dynamic_cast<const DataDefCONST *>(ab))
+				ab = cw->base_type;
+			if (const DataDefCONST *cw =
+			    dynamic_cast<const DataDefCONST *>(pb))
+				pb = cw->base_type;
+			if (ab && pb) {
+				if (ab->type() == DataType::dtVOID
+				    || pb->type() == DataType::dtVOID)
+					return 3;   // void* standard conversion
+				if (ab == pb || ab->name == pb->name)
+					return 5;
+				// Integer typedefs collapse to sized canonicals
+				// UNEVENLY (size_t may sit behind an alias
+				// DataDef while the argument resolved straight
+				// to uint64_t — libstdc++'s __stoa takes
+				// std::size_t* against a size_t* argument), so
+				// NUMERIC pointees compare by representation:
+				// the same rawtype test the numeric value lane
+				// below uses for its exact match.
+				if (ab->is_numeric() && pb->is_numeric())
+					return ab->rawtype() == pb->rawtype()
+						? 5 : -1;
+				return -1;
+			}
 			return adc->rawtype() == pdc->rawtype() ? 5 : 4;
 		}
 		// A null-pointer constant (integer literal 0) binds any pointer
