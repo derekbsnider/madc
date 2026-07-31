@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+## [v0.64.1] — 2026-07-31
+
+Patch release: two bugfixes off the input-stream chain, one of them a
+flavor-INDEPENDENT wrong-codegen defect present in v0.64.0.
+
+- **fix: an unnamed virtual base default-constructs through overload
+  selection** — `vbase_ctor_stmts_addr` called whichever ctor overload
+  owned the unsuffixed `ClassName__ClassName` symbol with no arguments.
+  Flavor-independent: any virtual base whose class declares a
+  non-default ctor before its default ctor mis-constructed (header-free
+  reducer fails on the v0.64.0 binary with c2mir "too few arguments";
+  under libc++ it broke every `istringstream` default-construction —
+  `basic_ios` declares the explicit `(basic_streambuf*)` ctor first).
+  The vbase arm now selects the 0-arg-callable overload
+  (`select_ctor_overload`) and assembles through the ONE ctor-call
+  assembler (`ctor_call_assemble`). Gate `testvbasedefault`
+  ('7 1 2' == g++ == clang++).
+- **fix: a context requiring a COMPLETE class type completes the
+  pending forward instantiation on demand** — libc++'s `<iosfwd>`
+  stream typedefs minted bodyless shells whose pending completion no
+  lane ever requested: `istringstream s("3")` mis-routed into the
+  function-declaration parse and `sizeof(istringstream)` silently
+  measured 0 (clang: 272). New `Program::complete_class_type_on_demand`
+  (the request+refresh idiom the member-type-chain and pattern-resolver
+  consumers already inline) adopted at by-value class declarations
+  ([basic.def]p5) and `sizeof`/`alignof` type operands ([expr.sizeof]p1).
+  Gate `teststreamdecl_libcxx` (the sizeof-equality invariant).
+- Suite 885 → 887. MIR fork unchanged (`1.0-madc.0.63.0`).
+
 ## [v0.64.0] — 2026-07-31
 
 The four-root string/stream breakthrough: the libc++ parity lane went
