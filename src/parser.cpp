@@ -22037,6 +22037,12 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		Throw(mtb ? mtb : op_tb) << "expected member name after '"
 		    << (is_arrow ? "->" : ".") << "'" << flush;
 	    std::string mname = contextual_identifier_name(mtb);
+	    // An `operator` member name is an operator-function-id
+	    // ([expr.ref]/2 — `*it.operator->()` routes here via the unary-`*`
+	    // operand path): consume the full id, same as the identifier-arm
+	    // head. C++-gated so a C struct field named `operator` still works.
+	    if ( mname == "operator" && presents_as_cpp() )
+		mname = parseOperatorId(mtb);
 	    TokenIdent member_ident(mname);
 	    copy_token_location(&member_ident, mtb);
 
@@ -28111,9 +28117,26 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		bool expression_head = exStack.empty() && opStack.empty();
 		bool parsed_operator_name = false;
 		std::string member_lookup_name = ident_tb->spelling();
+		// An `operator` head names an operator-function-id when the
+		// unqualified lookup can land on the enclosing class, OR in
+		// member-access position (`__p.operator->()`, [expr.ref]/2 —
+		// the id-expression after `.`/`->` may be an
+		// operator-function-id; C++ reserves the keyword so no member
+		// can be NAMED `operator`, hence the presents_as_cpp() gate
+		// keeps a C struct field of that name working).
+		// parseOperatorId consumes the symbol tokens, advancing
+		// prevToken() past the `.`/`->` — so the access operator must
+		// be remembered HERE for the dot/arrow arms' entry tests.
+		bool operator_id_after_dot = false;
+		bool operator_id_after_arrow = false;
 		if ( ident_tb->spelling_is("operator")
-		  && code && code->method && code->method->owner_class )
+		  && ((code && code->method && code->method->owner_class)
+		   || (presents_as_cpp() && isMemberAccessPosition())) )
 		{
+		    operator_id_after_dot = prevToken()
+			&& prevToken()->id() == TokenID::tkDot;
+		    operator_id_after_arrow = prevToken()
+			&& prevToken()->id() == TokenID::tkDeRef;
 		    member_lookup_name = parseOperatorId(tb);
 		    parsed_operator_name = true;
 		}
@@ -28465,7 +28488,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    exStack.push(new TokenVaArg(ap_var, ap_expr, target_dd));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
-		if ( prevToken() && prevToken()->id() == TokenID::tkDot )
+		if ( operator_id_after_dot
+		  || (prevToken() && prevToken()->id() == TokenID::tkDot) )
 		{
 #if 0
 		    DBG(cout << "parseExpression() prevToken is tkDot, pushing TokenIdent " << ((TokenIdent *)tb)->spelling() << endl);
@@ -28673,7 +28697,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( !struct_type->is_struct() && !struct_type->is_object() )
 			Throw(tb) << "member reference is not a structure or union" << flush;
 		    var = NULL;
-		    string id = ident_tb->spelling();
+		    // member_lookup_name, not the raw spelling: an
+		    // operator-function-id member (`__p.operator->()`) was
+		    // already consumed into it by the arm head.
+		    string id = member_lookup_name;
 		    DataDefCLASS *method_cls =
 			struct_type->is_object() ? (DataDefCLASS *)struct_type : NULL;
 		    if ( method_cls )
@@ -28893,7 +28920,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// -> pointer member access: ptr->member
-		if ( prevToken() && prevToken()->id() == TokenID::tkDeRef )
+		if ( operator_id_after_arrow
+		  || (prevToken() && prevToken()->id() == TokenID::tkDeRef) )
 		{
 		    if ( exStack.empty() )
 			Throw(tb) << "expected expression before '->'" << flush;
@@ -29008,7 +29036,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    << "' is not a structure or union (member '"
 			    << ident_tb->spelling() << "')" << flush;
 
-		    string id = ident_tb->spelling();
+		    // member_lookup_name, not the raw spelling: an
+		    // operator-function-id member (`p->operator*()`) was
+		    // already consumed into it by the arm head.
+		    string id = member_lookup_name;
 
 		    // get member offset and type — or method
 		    ssize_t ofs = ((DataDefSTRUCT *)base)->m_offset(id);
