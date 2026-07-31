@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  439e0ab5 (2026-07-30) on feature/libcxx-parity2-claude
-# Result:       751 passed / 108 failed / 0 timed out / 10 skipped
+# Measured at:  9ff3ffed (2026-07-31) on feature/libcxx-parity2-claude
+# Result:       753 passed / 108 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -169,6 +169,19 @@
 #                         param leak on rejected friend heads, a namespace-
 #                         blind despaced-index verification) — all fixed in
 #                         the landed shape; fulltest 860/0.
+#   9ff3ffed  753 / 108   the failing set is SET-IDENTICAL (comm-diffed both
+#                         ways); +2 passed = the two NEW gate tests. Covers
+#                         two more flavor-independent silent-wrong roots:
+#                         @d21a9e07 '->' on a reference-to-pointer receiver
+#                         derefs the REFERENT pointer (__tree:890 THROUGH —
+#                         tests/testrefptrarrow.mad) and @46fde843 the
+#                         injected-class-name is a type inside a plain
+#                         struct body (tests/testselfrefstruct.mad).
+#                         Ref-arrow touches many headers; zero flips anyway.
+#                         The map<int,int> chain is THROUGH THE PARSER into
+#                         the CIR/tsubst layer: next link = #74 (templated
+#                         converting ctor never joins the ctor candidate
+#                         set, __node_handle:84). fulltest 862/0.
 test.mad
 test5.mad
 testalignas.mad
