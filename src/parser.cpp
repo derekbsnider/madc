@@ -27249,6 +27249,30 @@ bool Program::fold_nontype_template_arg(const std::vector<TokenBase *> &argtoks,
     size_t i = 0;
     if ( eval_local_type_trait(*this, argtoks, i, out) && i == argtoks.size() )
 	return true;
+    // A qualified VALUE read (`__has_random_access_iterator_category<T>::value`
+    // — libc++'s _If/_IfImpl conditions are spelled exactly so) folds through
+    // the FULL isolated-stream constant parser (fold_nontype_arg_constant —
+    // safe mid-collection by design; fold_constant_qualified_member walks the
+    // trait's base chain). Without this the key kept the raw spelling and the
+    // instantiation minted an opaque _IfImpl<...> whose _Select poisoned
+    // reverse_iterator's iterator_category (sizeof(_If<...>) read 0). Gated
+    // to the `...::name` shape so plain TYPE arguments — the common case on
+    // this key-formation hot path — never pay the speculative parse.
+    TokenBase *last = NULL;
+    bool saw_ns = false;
+    for ( TokenBase *t : argtoks )
+    {
+	if ( !t )
+	    continue;
+	last = t;
+	if ( t->id() == TokenID::tkNS )
+	    saw_ns = true;
+    }
+    if ( saw_ns && last
+      && (last->type() == TokenType::ttIdentifier
+       || is_contextual_identifier_token(last))
+      && fold_nontype_arg_constant(argtoks, out) )
+	return true;
     return false;
 }
 
