@@ -10178,10 +10178,36 @@ void CirBuilder::class_copy_assign_from_addr(DataDefCLASS *cdd, TokenBase *lhs,
 // (externally-defined) class. The single source of truth shared by the Pass-1.6
 // emission loop and the tsubst completeness check, so "this dtor symbol is
 // emittable" and "Pass 1.6 will emit it" can never drift apart.
+// Does the ACTIVE stdlib runtime actually PROVIDE this class's
+// complete-object (D1) destructor? Class-level is_externally_defined is a
+// libstdc++ premise — its explicit instantiations export EVERY member, so
+// "library owns the vtable" implied "library owns the dtor". libc++ splits
+// the ownership: the stringstream vtable/RTTI are exported (weak V) but the
+// dtor/ctor BODIES are not — user TUs emit them, so madc must synthesize the
+// implicit dtor after all. Per-symbol truth, same convention as
+// bind_external_class_symbols (which runs before Pass 1.6): a bound
+// emit_symbol, or a dlsym-resolvable D1 for the implicit-dtor case. dlsym is
+// the import resolver's probe; the flavor runtime opens pre-tree-build.
+bool CirBuilder::class_external_dtor_available(DataDefCLASS *cdd)
+{
+	if (!cdd || !cdd->is_externally_defined())
+		return false;
+	if (Variable *dv = class_own_dtor(cdd)) {
+		FuncDef *dt = dynamic_cast<FuncDef *>(dv->type);
+		if (dt && !dt->emit_symbol.empty())
+			return true;
+	}
+	const std::string &cls = cdd->canonical_cpp_spelling();
+	if (cls.empty())
+		return false;
+	return external_symbol_available(itanium_mangle_dtor_sub(cls));
+}
+
 bool CirBuilder::class_gets_synth_dtor(DataDefCLASS *cdd)
 {
 	return cdd && !class_has_own_user_dtor(cdd) && class_needs_dtor(cdd)
-	    && !cdd->is_externally_defined();
+	    && (!cdd->is_externally_defined()
+	     || !class_external_dtor_available(cdd));
 }
 
 std::string CirBuilder::class_dtor_symbol(DataDefCLASS *cdd)
@@ -10216,7 +10242,7 @@ std::string CirBuilder::class_complete_dtor_symbol(DataDefCLASS *cdd)
 	// directly instead of a synthesized `Cls___dtor_complete` wrapper — which is
 	// never emitted for such a class (Pass 1.7 skips it), causing an undefined
 	// symbol at link if referenced by a cleanup attribute.
-	if (cdd->is_externally_defined())
+	if (class_external_dtor_available(cdd))
 		return class_dtor_symbol(cdd);
 	std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> seen;
 	cdd->collect_vbases(vbs, seen);
@@ -24267,7 +24293,10 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (auto &kv : prog->struct_map) {
 		DataDefCLASS *cdd = as_user_class(kv.second);
 		if (!cdd || !class_needs_dtor(cdd)) continue;
-		if (cdd->is_externally_defined()) continue;   // libstdc++ owns it
+		// The library owns the complete-object destruction ONLY when it
+		// actually exports the D1 (libstdc++'s explicit instantiations do;
+		// libc++'s header-only streams do not — madc synthesizes).
+		if (class_external_dtor_available(cdd)) continue;
 		std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> seen;
 		cdd->collect_vbases(vbs, seen);
 		if (vbs.empty()) continue;

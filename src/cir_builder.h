@@ -1319,6 +1319,11 @@ public:
 	// synthesis: a class with a non-trivial base but no OWN dtor still needs a
 	// synthesized Cls___dtor chaining to the base.
 	bool class_has_own_user_dtor(DataDefCLASS *cdd);
+	// Does the active stdlib runtime PROVIDE this class's complete-object
+	// (D1) dtor? Per-symbol truth behind the dtor-synthesis gates: libstdc++
+	// exports it for its explicit instantiations, libc++'s header-only
+	// streams do not (madc synthesizes).
+	bool class_external_dtor_available(DataDefCLASS *cdd);
 	// True iff Pass 1.6 synthesizes a base dtor (Cls___dtor) for this class.
 	bool class_gets_synth_dtor(DataDefCLASS *cdd);
 	// The destructor symbol used as the cleanup function for a class
