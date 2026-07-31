@@ -1,7 +1,7 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  67079c61 (2026-07-31) on feature/libcxx-parity4-claude
+# Measured at:  63101743 (2026-07-31) on feature/libcxx-parity4-claude
 # Result:       816 passed / 76 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
@@ -221,6 +221,23 @@
 #                         attach): vector<int>::push_back RUNS; +5 more passes are
 #                         new gate tests
 #   7e416edc  803 /  80   ⚡⚡⚡ 23 FIXED, ZERO newly broken (diffed) — the biggest
+#                         single move of the campaign. Rung 13 of #78: the testclass
+#                         SIGSEGV was FOUR compiler roots — (1) reference-typed arg
+#                         bound to a VIRTUAL-base reference param passed unadjusted
+#                         (width() read __precision_: phantom pad + precision clobber
+#                         in EVERY stream test); (2) cast-to-reference ctor args
+#                         (spelled-out std::forward) scored as Tag* so libc++ tag-
+#                         dispatch ctors never matched (+ binding twin); (3) value-init
+#                         mem-init on a plain-struct member emitted NOTHING — every
+#                         default-constructed string rep was frame garbage; (4)
+#                         base-to-derived reference downcast untyped (use_facet).
+#                         FIXED: test test5 testalignas testarraymethods
+#                         testcastparenexpr testclass testclassassign testclassreturn
+#                         testctorstring testenumclass testfriendkeyword
+#                         testglobalrefret testimplcopy testmacrosubst
+#                         testmemberaliastmpl testmemberarrowcall testmembernamestd
+#                         testnsdmi testpseudodtor teststringmethods teststruct2
+#                         testvector testvptrmember (+3 more passes are new gates)
 #   fe3b5bf0  811 /  77   3 FIXED zero broken (comm-diffed): teststreambool +
 #                         testusefacet_realhdr + testvbasedyn — libc++
 #                         istringstream RUNS. The VTT chain (@53f510ea hidden
@@ -301,23 +318,32 @@
 #                         operator<< has no exported symbol to bind (task #44
 #                         territory). That bucket, not the map chain, is the
 #                         highest-yield next move.
-#                         single move of the campaign. Rung 13 of #78: the testclass
-#                         SIGSEGV was FOUR compiler roots — (1) reference-typed arg
-#                         bound to a VIRTUAL-base reference param passed unadjusted
-#                         (width() read __precision_: phantom pad + precision clobber
-#                         in EVERY stream test); (2) cast-to-reference ctor args
-#                         (spelled-out std::forward) scored as Tag* so libc++ tag-
-#                         dispatch ctors never matched (+ binding twin); (3) value-init
-#                         mem-init on a plain-struct member emitted NOTHING — every
-#                         default-constructed string rep was frame garbage; (4)
-#                         base-to-derived reference downcast untyped (use_facet).
-#                         FIXED: test test5 testalignas testarraymethods
-#                         testcastparenexpr testclass testclassassign testclassreturn
-#                         testctorstring testenumclass testfriendkeyword
-#                         testglobalrefret testimplcopy testmacrosubst
-#                         testmemberaliastmpl testmemberarrowcall testmembernamestd
-#                         testnsdmi testpseudodtor teststringmethods teststruct2
-#                         testvector testvptrmember (+3 more passes are new gates)
+#   63101743  816 /  76   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways, prefix-normalised); zero flips, zero new
+#                         tests. The 28-test bucket's root FELL: a CLASS
+#                         argument cannot claim an arithmetic free-operator
+#                         parameter ([over.ics.user] — a class type reaches
+#                         an arithmetic parameter only through a user-defined
+#                         conversion, never a standard one).
+#                         free_operator_concrete_param_matches's arithmetic
+#                         arm rejected pointers but let classes through, so
+#                         `cout << string` bound the CHAR overload with the
+#                         whole basic_string struct passed by value — the
+#                         verbatim c2mir error heading the bucket. (The probe
+#                         chain first CLEARED the suspects: MADC_FREEOP_PROBE
+#                         proved parser lowering identical in both orders,
+#                         FOPBODY proved the body route instantiates in both;
+#                         the --emit=c11 diff exposed the binding.) With the
+#                         bogus binding gone the two big roots UNIFIED: os4
+#                         now fails on unique_ptr_char_funcptr(int, <unknown>)
+#                         — the SAME unique_ptr ctor chain as tasks #88/#89.
+#                         Finishing #89 (member-template non-type default
+#                         carriage via constraint runs) + #88 (tsubst-body
+#                         emittability of a dependent-qualified-param member)
+#                         is now the single highest-yield move: it feeds BOTH
+#                         the 28-test bucket and the map cluster. Gate for
+#                         the bucket (task #90) must assert the EMITTED C
+#                         names the basic_string overload. fulltest 893/0.
 testarraymember.mad
 testarraysubscript.mad
 testcapture.mad
