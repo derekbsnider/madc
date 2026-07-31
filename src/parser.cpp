@@ -47496,9 +47496,20 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 	// libc++'s operator<<(basic_ostream<char,_Traits>&, char) registered
 	// before the const char* overload and claimed `cout << "hello "` —
 	// the pointer truncated to one char and the padding path printed
-	// garbage. Non-pointer args stay permissive (implicit conversions).
-	if ( arg_core && !dynamic_cast<DataDefCLASS *>(arg_core)
-	  && arg_core->is_pointer() )
+	// garbage.
+	//
+	// A CLASS argument is the same rule and was missed: a class type
+	// reaches an arithmetic parameter ONLY through a user-defined
+	// conversion ([over.ics.user]), never a standard one, so by this
+	// walker's own first-deduced-wins constraint it must not claim the
+	// call either. The same libc++ overload claimed `cout << s` for a
+	// std::string and the whole basic_string struct was passed BY VALUE
+	// as the `char`, which c2mir reported a phase later as "incompatible
+	// argument type for arithmetic type parameter" — naming no operator.
+	// ENUM arguments stay permissive: integral promotion IS a standard
+	// conversion.
+	if ( arg_core && (arg_core->is_pointer()
+			  || dynamic_cast<DataDefCLASS *>(arg_core)) )
 	    return false;
 	return true;	// scalar / builtin param: permissive
     }
