@@ -22533,6 +22533,16 @@ static bool is_addressable_expression(TokenBase *expr)
 	if ( tcf->call_returns_reference() )
 	    return true;
     }
+    // [expr.cond]/4: a C++ conditional is an LVALUE when both arms are
+    // lvalues (a plain variable arm counts). The CIR lowering distributes
+    // the address into the arms (CirBuilder::node1's N_ADDR-over-N_COND
+    // rewrite), so accepting it here yields valid emitted C.
+    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(expr) )
+	return tq->true_expr && tq->false_expr
+	    && (is_addressable_expression(tq->true_expr)
+		|| dynamic_cast<TokenVar *>(tq->true_expr))
+	    && (is_addressable_expression(tq->false_expr)
+		|| dynamic_cast<TokenVar *>(tq->false_expr));
     return dynamic_cast<TokenMember *>(expr)
 	|| dynamic_cast<TokenDeref *>(expr)
 	|| dynamic_cast<TokenSubscript *>(expr)
@@ -22567,6 +22577,15 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	addr_expr = parseExpression(addr_tb, true, false, true, 1);
 	if ( is_addressable_expression(addr_expr) )
 	{
+	    // Lvalue-conditional arms that are plain variables escape their
+	    // address through the select — mark them like the direct &var arm.
+	    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(addr_expr) )
+	    {
+		if ( TokenVar *tv = dynamic_cast<TokenVar *>(tq->true_expr) )
+		    tv->var.flags |= vfADDRTAKEN;
+		if ( TokenVar *fv = dynamic_cast<TokenVar *>(tq->false_expr) )
+		    fv->var.flags |= vfADDRTAKEN;
+	    }
 	    DataDefPTR *aptr = getPointerType(addr_expr->datadef());
 	    return new TokenAddrExpr(addr_expr, aptr);
 	}

@@ -543,6 +543,43 @@ node_t CirBuilder::append(node_t parent, node_t child)
 
 node_t CirBuilder::node1(c2mir_node_code_t code, node_t op1, TokenBase *origin)
 {
+	// A C conditional / comma is NEVER an lvalue (C11 6.5.15, 6.5.17 —
+	// unlike C++'s lvalue conditional, [expr.cond]/4), so N_ADDR over
+	// N_COND / N_COMMA is a constraint violation in ANY emitted program.
+	// The C++ lvalue-conditional under address-of / reference
+	// materialization (std::max's `return __comp(__a,__b) ? __b : __a;`
+	// with a `const T&` return emitted `&(c ? *b : *a)` — c2mir: "lvalue
+	// required as unary & operand") lowers by DISTRIBUTING the address
+	// into the value position at the node's birth — the one place every
+	// N_ADDR is created: &(c ? a : b) -> c ? &a : &b, and &(a, b) ->
+	// (a, &b) — the shape gcc's gimplifier produces. Every prior
+	// N_ADDR-over-N_COND was a check reject, so the rewrite can only turn
+	// rejects into the correct lowering. The recursive node1 calls handle
+	// nested conditional/comma arms (the throw-branch comma wrap).
+	if (code == N_ADDR && op1) {
+		cir_node *on = CIR_NODE(op1);
+		if (on && (on->base.code == N_COND || on->base.code == N_COMMA)) {
+			node_t first = c2mir_node_first_op(op1);
+			node_t second = first ? c2mir_node_next_op(first) : NULL;
+			node_t third = second ? c2mir_node_next_op(second) : NULL;
+			if (on->base.code == N_COND && first && second && third
+			    && !c2mir_node_next_op(third)) {
+				c2mir_op_remove(op1, second);
+				c2mir_op_remove(op1, third);
+				c2mir_op_append(c2m, op1,
+						node1(N_ADDR, second, origin));
+				c2mir_op_append(c2m, op1,
+						node1(N_ADDR, third, origin));
+				return op1;
+			}
+			if (on->base.code == N_COMMA && first && second && !third) {
+				c2mir_op_remove(op1, second);
+				c2mir_op_append(c2m, op1,
+						node1(N_ADDR, second, origin));
+				return op1;
+			}
+		}
+	}
 	cir_node *cn = make(code, origin);
 	node_t n = cn->as_node();
 	c2mir_op_append(c2m, n, op1);

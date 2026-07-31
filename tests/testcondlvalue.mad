@@ -1,0 +1,21 @@
+#!../bin/madc
+// [expr.cond]/4: the C++ LVALUE CONDITIONAL under reference binding and
+// address-of. A C conditional is never an lvalue (C11 6.5.15), so the
+// lowering must distribute the address into the arms (`c ? &a : &b`), never
+// emit `&(c ? a : b)` — that shape is what killed every libc++ test whose
+// header chain instantiates std::max/std::min (`return __comp(a,b) ? b : a;`
+// with a `const T&` return): c2mir "lvalue required as unary & operand".
+// Assignment through the address proves the select yields the true object.
+#include <cstdio>
+const int &pick(const int &a, const int &b, bool takeb) {
+    return takeb ? b : a;
+}
+int main() {
+    int x = 3, y = 9;
+    const int &r1 = pick(x, y, true);
+    const int &r2 = pick(x, y, false);
+    int *p = &(x < y ? x : y);
+    *p = 5;
+    printf("%d %d %d %d\n", (int)r1, (int)r2, x, y);
+    return 0;
+}
