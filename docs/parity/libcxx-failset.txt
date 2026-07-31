@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  9ff3ffed (2026-07-31) on feature/libcxx-parity2-claude
-# Result:       753 passed / 108 failed / 0 timed out / 10 skipped
+# Measured at:  c956ff04 (2026-07-31) on feature/libcxx-parity2-claude
+# Result:       758 passed / 108 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -182,6 +182,33 @@
 #                         the CIR/tsubst layer: next link = #74 (templated
 #                         converting ctor never joins the ctor candidate
 #                         set, __node_handle:84). fulltest 862/0.
+#   c956ff04  758 / 108   the failing set is SET-IDENTICAL (comm-diffed both
+#                         ways); +5 passed = the five NEW gate tests
+#                         (testconvctor testcondlvalue testmemtplid
+#                         testtagdispatch testlitstmt). FIVE roots landed:
+#                         @7655400d #74 templated converting ctor joins the
+#                         ctor candidate set (3-edit chain); @a778b3de the
+#                         C++ lvalue conditional distributes address-of into
+#                         its arms (the 22-test 'lvalue required' root —
+#                         libc++ std::max/min under const T& return);
+#                         @4ff153b5 member-call heads honor [temp.names]
+#                         (explicit-targs arms on the arrow + unqualified
+#                         twins: __assign_no_alias<true>; PLUS the call-arity
+#                         pre-count no longer reads template-argument commas
+#                         as argument separators: __copy_assign_alloc(__str,
+#                         integral_constant<bool,X>())); @c956ff04 a literal
+#                         may head an expression-statement ([stmt.expr] —
+#                         `1 ? f() : g();` from NTTP substitution). libc++
+#                         std::string COPY ASSIGNMENT now runs end-to-end
+#                         (a = b prints the clang++ oracle). Zero flips:
+#                         the roots moved the string/vector chains 2-4 links
+#                         each without clearing a whole test (series
+#                         circuits). Frontiers now PER-TEST: teststringclass
+#                         = its own line-21 'incompatible argument type for
+#                         arithmetic type parameter'; testvector/vecpb1 =
+#                         reference-typed MEMBER reads miss the deref
+#                         (uninitialized_algorithms.h:523, task #77).
+#                         fulltest 867/0.
 test.mad
 test5.mad
 testalignas.mad
