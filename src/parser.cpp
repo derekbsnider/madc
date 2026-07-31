@@ -43471,6 +43471,17 @@ void Program::register_outofline_member_instantiations(
 	return;
     std::map<std::string, std::vector<OutOfLineMemberDef> >::iterator it =
 	out_of_line_member_defs.find(defining_namespace + "::" + class_name);
+    // Env-gated probe (MADC_OOL_PROBE=<substr>): every out-of-line attach
+    // request whose class matches — registry key, hit/miss, def count.
+    {
+	static const char *olp = ::getenv("MADC_OOL_PROBE");
+	if ( olp && *olp && class_name.find(olp) != std::string::npos )
+	    fprintf(stderr, "OOLPROBE attach cls=%s::%s reg=%s defs=%d\n",
+		    defining_namespace.c_str(), class_name.c_str(),
+		    registered_mangled.c_str(),
+		    it == out_of_line_member_defs.end()
+			? -1 : (int)it->second.size());
+    }
 #if MADC_DEBUG_FNTPL
     bool dbg_mconstruct_ool = false;
     {
@@ -43772,6 +43783,16 @@ void Program::register_outofline_member_instantiations(
 		    def.member_name.c_str(), (int)(mvar != NULL),
 		    (int)(mvar && mvar->data), (int)(mvar && deferred_lazy_bodies.count(mvar->name)));
 #endif
+	// Env-gated probe (MADC_OOL_PROBE): the overload this def bound to.
+	{
+	    static const char *olp = ::getenv("MADC_OOL_PROBE");
+	    if ( olp && *olp && class_name.find(olp) != std::string::npos )
+		fprintf(stderr, "OOLPROBE   def=%s mvar=%s%s\n",
+			def.member_name.c_str(),
+			mvar ? mvar->name.c_str() : "(none)",
+			(mvar && deferred_lazy_bodies.count(mvar->name))
+			    ? " (already-deferred)" : "");
+	}
 	if ( !mvar || !mvar->data )
 	    continue;	// no in-class declaration to attach the body to
 	// Already materialized (a re-instantiation, or an overload already bound)?
@@ -43842,6 +43863,14 @@ void Program::register_outofline_member_instantiations(
 	    body.definition_tokens.push_back(sub[i]);
 	if ( body.definition_tokens.empty() )
 	    continue;
+	// Env-gated probe (MADC_OOL_PROBE): a deferred body was created.
+	{
+	    static const char *olp = ::getenv("MADC_OOL_PROBE");
+	    if ( olp && *olp && class_name.find(olp) != std::string::npos )
+		fprintf(stderr, "OOLPROBE   def=%s -> deferred body %s (%zu toks)\n",
+			def.member_name.c_str(), mvar->name.c_str(),
+			body.definition_tokens.size());
+	}
 	body.full_definition = true;
 	body.file = def.decl.empty() || !def.decl[0] ? NULL : def.decl[0]->file;
 	body.line = def.decl.empty() || !def.decl[0] ? 0 : def.decl[0]->line;

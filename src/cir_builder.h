@@ -1375,6 +1375,9 @@ public:
 	// The destructor symbol used as the cleanup function for a class
 	// instance (ClassName___dtor) — whether user-written or synthesized.
 	std::string class_dtor_symbol(DataDefCLASS *cdd);
+	// Base-subobject (Itanium D2) destruction symbol — an external D1
+	// would destroy a vbase-carrying base's virtual bases twice.
+	std::string class_base_dtor_symbol(DataDefCLASS *cdd);
 	std::string class_complete_dtor_symbol(DataDefCLASS *cdd);
 	// Per-(class,N) stack-array destructor wrapper `Cls__arr<N>___dtor`: the
 	// cleanup attribute calls ONE function with &arr, so a fixed array of a

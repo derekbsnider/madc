@@ -9045,7 +9045,15 @@ DataDefCLASS *CirBuilder::ctor_hidden_vbase_owner(FuncDef *fd, Method *method,
 	if (!fd || !method) return NULL;
 	DataDefCLASS *ocls = method->owner_class;
 	if (!ocls) return NULL;
-	if (!fd->emit_symbol.empty()) return NULL;
+	// NOTE: a ctor whose emit_symbol names the library C1 still qualifies —
+	// the madc-emitted DEFINITION surfaces (func_def / func_proto / the
+	// late flush) are keyed on the INTERNAL name by construction
+	// (var_emit_name never renames a madc body), and the base-subobject
+	// call lane demotes to that internal C2 body (ctor_call_assemble: the
+	// external C1 re-constructs the vbases at the STANDALONE layout, and
+	// the real C2's implicit VTT parameter is unfillable). Only the Pass
+	// 0.75 extern — whose symbol IS emit_symbol — keeps the library
+	// signature (guarded at that site).
 	// Same ctor test as func_def's is_ctor — kept in lock-step.
 	bool is_ctor = (fname == ocls->name + "__" + ocls->name);
 	if (!is_ctor)
@@ -10444,10 +10452,47 @@ std::string CirBuilder::class_dtor_symbol(DataDefCLASS *cdd)
 	return cdd->name + "___dtor";
 }
 
+// The BASE-SUBOBJECT (Itanium D2) destruction symbol. An externally-bound
+// dtor's emit_symbol / dlsym probe is the D1 (complete) flavor — correct at
+// complete-object sites, WRONG as the base-subobject dtor of a vbase-CARRYING
+// base: the D1 destroys the virtual bases too, and the enclosing complete
+// dtor then destroys them AGAIN (libc++ istringstream's synth D2 called
+// basic_istream D1, which destroyed basic_ios; _dtor_complete destroyed it
+// once more — ios_base D1 on a dead locale, SIGSEGV). Prefer the library's
+// real D2 when it resolves; otherwise the madc D2 body. A vbase-LESS class
+// keeps class_dtor_symbol unchanged (its D1 and D2 are semantically the
+// same code — zero churn on every existing lane).
+std::string CirBuilder::class_base_dtor_symbol(DataDefCLASS *cdd)
+{
+	if (!cdd) return std::string();
+	std::vector<DataDefCLASS *> vbs;
+	std::set<DataDefCLASS *> seen;
+	cdd->collect_vbases(vbs, seen);
+	if (vbs.empty())
+		return class_dtor_symbol(cdd);
+	if (class_external_dtor_available(cdd)) {
+		const std::string &cls = cdd->canonical_cpp_spelling();
+		if (!cls.empty()) {
+			std::string d2 = itanium_mangle_dtor_sub(cls, "D2");
+			if (external_symbol_available(d2)) {
+				// Typed extern (void return, this*) — an
+				// implicit declaration would K&R-int it.
+				need_output_extern(d2.c_str(), false,
+						   { { {N_VOID}, true } });
+				return d2;
+			}
+		}
+		// D1 exported but D2 not (no known runtime does this for an
+		// explicit instantiation): fall through to the madc D2 body —
+		// calling the D1 here would double-destroy the vbases.
+	}
+	return cdd->name + "___dtor";
+}
+
 // The COMPLETE-object dtor symbol: a class with virtual bases gets a synthesized
 // `Cls___dtor_complete` (base dtor + vbase dtors, once); otherwise the plain dtor IS
 // the complete dtor. Complete-object destruction sites (stack-var cleanup, delete,
-// exception unwind) use this; base-subobject dtor calls use class_dtor_symbol.
+// exception unwind) use this; base-subobject dtor calls use class_base_dtor_symbol.
 std::string CirBuilder::class_complete_dtor_symbol(DataDefCLASS *cdd)
 {
 	if (!cdd) return std::string();
@@ -10490,7 +10535,10 @@ void CirBuilder::vbase_dtor_stmts(const std::string &objname, bool addr_of,
 		node_t vt = node2(N_TYPE,
 			node1(N_LIST, class_tag_ref(vb)),
 			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-		std::string dsym = class_dtor_symbol(vb);
+		// Itanium: the complete-object dtor destroys each vbase via
+		// its BASE (D2) dtor — a D1 would recurse into the vbase's
+		// own vbases a second time.
+		std::string dsym = class_base_dtor_symbol(vb);
 		referenced_funcs.insert(dsym);
 		node_t a = list();
 		append(a, node2(N_CAST, vt, adj, o));
@@ -10884,7 +10932,9 @@ node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
 		if (cdd->bases[bi].is_virtual) continue; // vbases: complete-object dtor
 		DataDefCLASS *b = cdd->bases[bi].base;
 		if (!class_needs_dtor(b)) continue;
-		std::string bsym = class_dtor_symbol(b);
+		// Base SUBOBJECT destruction — D2 flavor (an external D1 would
+		// destroy b's virtual bases here AND in the complete dtor).
+		std::string bsym = class_base_dtor_symbol(b);
 		referenced_funcs.insert(bsym);
 		size_t off = cdd->base_offset_of(b);
 		node_t self = id("__this");
@@ -11747,10 +11797,39 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 	// so bind it ONCE into a scoped local and mint fresh ids off it (the
 	// class_ctor_call_addr ctorless arm's __mdc pattern).
 	std::vector<DataDefCLASS *> callee_vbs;
-	if (!external_ctor) {
+	{
 		std::set<DataDefCLASS *> cvseen;
 		cdd->collect_vbases(callee_vbs, cvseen);
 	}
+	// A vbase-carrying BASE SUBOBJECT cannot construct through the
+	// library's C1: the complete ctor re-constructs the virtual bases at
+	// the class's STANDALONE layout (libc++ basic_istream C1 inside
+	// istringstream wrote a basic_ios over __sb_ and left the real vbase
+	// at +120 uninitialized — garbage locale, dtor SIGSEGV), and the real
+	// C2's implicit VTT parameter is unfillable (madc emits no VTTs; the
+	// hidden __madc_vb params are its equivalent). Demote to the madc
+	// C2 body under the INTERNAL name — the deferred in-class body
+	// materializes on this reference, with the hidden params injected
+	// (ctor_hidden_vbase_owner no longer bails on emit_symbol).
+	// Complete-object sites keep the external C1 (it correctly owns the
+	// ENTIRE construction there).
+	if (external_ctor && vbase_forward && !callee_vbs.empty()) {
+		external_ctor = false;
+		// The INTERNAL name is the ctor Variable's own emit name (the
+		// deferred-body key and the definition's var_emit_name — an
+		// overload carries its __oN suffix there, which the blind
+		// Cls__Cls composition would drop).
+		sym = !ctor->local_emit_name.empty()
+			? ctor->local_emit_name
+			: cdd->name + "__" + cdd->name;
+		for (Variable *cv : cdd->ctors)
+			if (cv && cv->type == ctor) {
+				sym = var_emit_name(*cv);
+				break;
+			}
+	}
+	if (external_ctor)
+		callee_vbs.clear();	// the external C1 owns the vbases
 	bool can_forward = false;
 	if (!callee_vbs.empty() && vbase_forward && m_cur_ctor_vbase_owner) {
 		can_forward = true;
@@ -21983,8 +22062,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				if (ocls->bases[bi].is_virtual) continue;
 				DataDefCLASS *b = ocls->bases[bi].base;
 				if (b->has_user_dtor)
+					// Base SUBOBJECT destruction — D2 flavor
+					// (see class_base_dtor_symbol).
 					epilogue.push_back(base_call_at(b, ocls->base_offset_of(b),
-						b->name + "___dtor"));
+						class_base_dtor_symbol(b)));
 			}
 
 		if (!prologue.empty() || !epilogue.empty()) {
@@ -23894,7 +23975,23 @@ node_t CirBuilder::translate_module(Program *prog)
 			if (!prog->deferred_lazy_bodies.empty()) {
 				std::vector<std::pair<std::string, bool> > ready;
 				for (auto &db : prog->deferred_lazy_bodies) {
-					if (lib_funcs.count(db.first))
+					// A lib_funcs entry blocks the derive ONLY when it
+					// carries a real body. A DECLARATION SHELL (an
+					// in-class `ret name(args);` member decl parses as
+					// an empty-bodied TokenFunc and lands in lib_funcs
+					// by origin file) must not shadow the deferred
+					// DEFINITION under the same key: the shell emitted
+					// as a weak EMPTY definition while the attached
+					// out-of-line body (ios:598's basic_ios::init) sat
+					// underived — ios_base::__loc_ stayed garbage and
+					// every libc++ stream died in ios_base's dtor
+					// (task #84, a SILENT wrong answer). The derive
+					// below overwrites the shell with the real
+					// TokenFunc, so the definition emitted is the body.
+					std::map<std::string, TokenFunc *>::iterator
+						lfe = lib_funcs.find(db.first);
+					if (lfe != lib_funcs.end() && lfe->second
+					    && !lfe->second->statements.empty())
 						continue;
 					// A pack-time failure is final for the whole freeze
 					// (referenced or drain-only) — retrying a re-inserted
@@ -24174,6 +24271,15 @@ node_t CirBuilder::translate_module(Program *prog)
 			}
 			for (auto &kv : lib_funcs) {
 				if (lib_emitted.count(kv.first)) continue;
+				// A bodyless shell whose key a deferred definition still
+				// owns derives first (the shell-vs-deferred rule in the
+				// stage above) — emitting the shell here would mark the
+				// key lib_emitted and silently shadow the real body when
+				// the reference lands mid-round after this loop passed
+				// the caller (map-order dependent).
+				if (kv.second && kv.second->statements.empty()
+				    && prog->deferred_lazy_bodies.count(kv.first))
+					continue;
 				TokenFunc *tf = kv.second;
 				// Pack-time: EVERY evaluated body emits (that is the
 				// drain's point — consumers restore translated defs).
@@ -24223,7 +24329,18 @@ node_t CirBuilder::translate_module(Program *prog)
 						// Rung 3: lib_funcs holds ONLY
 						// system-header bodies (the roots/
 						// lib split above) — conditional.
-						cond_mark_sym(fd, kv.first);
+						// Mark by the DECLARED name, not
+						// the map key: an emit_symbol-
+						// keyed entry (the C1-keyed vbase
+						// ctor) is keyed under the library
+						// symbol while the definition —
+						// and its references — carry the
+						// internal name; marking by kv.first
+						// silently pruned the body the
+						// demoted base-construction call
+						// imports.
+						cond_mark_sym(fd,
+							var_emit_name(tf->var));
 					}
 				}
 				grew = true;
@@ -24353,11 +24470,14 @@ node_t CirBuilder::translate_module(Program *prog)
 		// Hidden __madc_vb params for a madc-emitted vbase-carrying
 		// ctor — this extern must mirror func_def/func_proto or c2mir
 		// rejects the later definition ("incompatible types of ...
-		// declarations") and arity-checks every call.
-		if (DataDefCLASS *vbown = ctor_hidden_vbase_owner(
-				fd, fvar ? (Method *)fvar->data : NULL,
-				fvar ? fvar->name : fname))
-			append_ctor_vbase_params(param_list, vbown, NULL);
+		// declarations") and arity-checks every call. Only for an
+		// INTERNAL-name proto: with emit_symbol set, `symbol` IS the
+		// library C1, whose signature must stay the library's.
+		if (fd->emit_symbol.empty())
+			if (DataDefCLASS *vbown = ctor_hidden_vbase_owner(
+					fd, fvar ? (Method *)fvar->data : NULL,
+					fvar ? fvar->name : fname))
+				append_ctor_vbase_params(param_list, vbown, NULL);
 		if (fd->is_varargs)
 			append(param_list, simple(N_DOTS));
 
