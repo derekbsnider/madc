@@ -1,0 +1,17 @@
+// ittraits1.cpp — iterator_traits of a CLASS iterator resolves its member
+// typedefs (libc++ routes them through __iterator_traits<_Iter,
+// __has_iterator_typedefs<_Iter>::value> SFINAE — vecta1/vecpb1 root layer 6).
+// Oracle (clang++-18 -std=c++11 -stdlib=libc++): 4 1 1
+#include <iterator>
+#include <type_traits>
+#include <cstdio>
+
+int main()
+{
+	typedef std::iterator_traits<std::reverse_iterator<int *> >::value_type VT;
+	typedef std::iterator_traits<std::reverse_iterator<int *> >::iterator_category IC;
+	printf("%d %d %d\n", (int)sizeof(VT),
+	       (int)std::is_same<VT, int>::value,
+	       (int)std::is_same<IC, std::random_access_iterator_tag>::value);
+	return 0;
+}

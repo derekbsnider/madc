@@ -13284,11 +13284,18 @@ madc_wide_int Program::parse_constant_eq()
 // its `;` sentinel and the whole fold failed.)
 void Program::skip_const_logical_operand(bool stop_at_and)
 {
-    int depth = 0;
+    // DelimDepth (the one balanced-delimiter owner): the skipped operand can
+    // carry a TEMPLATE-ID (`1 || is_convertible<int, char>::value` — libc++'s
+    // __iterator_traits_impl bool argument), whose commas are template-argument
+    // separators, not expression boundaries. The old paren/square/brace-only
+    // counter returned at that comma, left the operand's tail unconsumed, and
+    // the caller's sentinel check aborted the WHOLE fold (the _If alias then
+    // instantiated an opaque zero-sized placeholder).
+    DelimDepth d;
     while ( TokenBase *t = peekToken() )
     {
 	TokenID id = (TokenID)t->id();
-	if ( depth == 0 )
+	if ( d.top() )
 	{
 	    if ( id == TokenID::tkSemi || id == TokenID::tkComma
 	      || id == TokenID::tkClBrk || id == TokenID::tkClSqr
@@ -13298,13 +13305,7 @@ void Program::skip_const_logical_operand(bool stop_at_and)
 	    if ( stop_at_and && id == TokenID::tkLand )
 		return;
 	}
-	if ( id == TokenID::tkOpBrk || id == TokenID::tkOpSqr
-	  || id == TokenID::tkOpBrc )
-	    ++depth;
-	else if ( id == TokenID::tkClBrk || id == TokenID::tkClSqr
-	       || id == TokenID::tkClBrc )
-	{ if ( depth > 0 ) --depth; }
-	nextToken();
+	delimStepStream(nextToken(), d);
     }
 }
 

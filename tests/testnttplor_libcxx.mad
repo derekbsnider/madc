@@ -1,0 +1,20 @@
+// ittraits7.cpp — the EXACT __iterator_traits_impl bool-arg shape as a
+// top-level NTTP: an ||-expression of trait reads whose inner template-args
+// are `typename X::member` reads.
+// Oracle (clang++-18 -std=c++11 -stdlib=libc++): 4
+#include <iterator>
+#include <cstdio>
+
+int main()
+{
+	typedef std::_If<
+	    std::is_convertible<
+		typename std::reverse_iterator<int *>::iterator_category,
+		std::input_iterator_tag>::value
+	 || std::is_convertible<
+		typename std::reverse_iterator<int *>::iterator_category,
+		std::output_iterator_tag>::value,
+	    int, char> P;
+	printf("%d\n", (int)sizeof(P));
+	return 0;
+}
