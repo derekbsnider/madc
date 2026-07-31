@@ -46601,8 +46601,20 @@ static bool instantiate_fn_template_binding(Program &pgm,
     {
 	size_t head = 0;
 	auto is_word = [&](TokenBase *t, const char *w) {
-	    return t && t->type() == TokenType::ttIdentifier
-		&& ((TokenIdent *)t)->spelling_is(w);
+	    // BOTH lexings: a raw ttIdentifier clone AND the reserved
+	    // tkCPPKEYWORD form — `inline`/`constexpr` lex as KEYWORDS
+	    // (TokenKeyword::type() is ttKeyword), so the old
+	    // ttIdentifier-only test never advanced the head past a
+	    // specifiers-first `inline constexpr typename X<_Tp>::type
+	    // f(...)` and the SFINAE pre-check missed the typename return
+	    // entirely (__convert_to_integral's non-enum overload then died
+	    // in the body parse instead of being discarded).
+	    if ( !t )
+		return false;
+	    if ( t->type() != TokenType::ttIdentifier
+	      && !is_contextual_identifier_token(t) )
+		return false;
+	    return contextual_identifier_name(t) == w;
 	};
 	while ( head < inj.size()
 	     && (is_word(inj[head], "constexpr") || is_word(inj[head], "inline")
