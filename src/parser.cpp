@@ -12710,6 +12710,24 @@ bool Program::fold_constant_qualified_member(TokenBase *first, madc_wide_int &ou
 	// bare identifier (not yet resolved to ttDataType).
 	std::string nm = contextual_identifier_name(first);
 	const uint32_t nm_id = template_name_pool.intern(nm);
+	// A decltype-specifier as the qualifier ([expr.prim.id.qual]) — the
+	// libc++ detection idiom's `static const bool value =
+	// decltype(__test<_Tp>(0))::value;`. The one declared-type resolver
+	// owns the decltype arm (it consumes `decltype( expr )` and any
+	// member-TYPE chain, leaving a non-type `::value` unconsumed); its
+	// resolved class is the scope for the member walk below. At PATTERN
+	// parse the operand is dependent and resolves to a placeholder (not a
+	// class) -> return false; the capture's savepos discipline restores the
+	// stream and falls to the structural skip. The INSTANTIATION re-runs
+	// this capture with concrete tokens and folds the real value.
+	if ( !is_c_mode() && is_decltype_identifier(nm)
+	  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    if ( TokenDataType *dt = resolve_declared_type_token(first, true, true) )
+		scope = dynamic_cast<DataDefCLASS *>(&dt->definition);
+	    if ( !scope )
+		return false;
+	}
 	// Template-id leading segment `Name<...>::...`: instantiate to a scope.
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT
 	  && (find_template(nm_id, std::string(), NULL)
@@ -13411,6 +13429,26 @@ static bool constant_initializer_has_runtime_access(Program &pgm)
 	if ( next && (next->id() == TokenID::tkDot || next->id() == TokenID::tkDeRef) )
 	    return true;
 	std::string name = contextual_identifier_name(t);
+	// A decltype-specifier's operand is UNEVALUATED ([dcl.type.decltype]):
+	// nothing inside it is runtime access, and member/call shapes there
+	// (`decltype(__test<_Tp>(0))::value` — the libc++ detection idiom)
+	// must not veto the fold. Skip the balanced operand extent (DelimDepth
+	// owns balanced-delimiter scanning); the group nets zero on `d`.
+	if ( is_decltype_identifier(name)
+	  && i + 1 < pgm.tokens.size() && pgm.tokens[i + 1]
+	  && pgm.tokens[i + 1]->id() == TokenID::tkOpBrk )
+	{
+	    DelimDepth skipd;
+	    size_t j = i + 1;
+	    while ( j < pgm.tokens.size() )
+	    {
+		j += delim_scan_step(pgm.tokens, j, skipd);
+		if ( skipd.paren == 0 )
+		    break;
+	    }
+	    i = j - 1;		// the loop's ++i resumes past the ')'
+	    continue;
+	}
 	bool bool_value = false;
 	bool constant_callable = name == "sizeof"
 			      || is_alignof_identifier(name)
