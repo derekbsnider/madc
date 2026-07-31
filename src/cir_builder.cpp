@@ -13426,6 +13426,20 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 				best_body_var = callee;
 		}
 	}
+	// Env-gated probe (MADC_FREEOP_PROBE=<opname substring>) — the cir half of
+	// the parser's knob. A decline here silently returns the pair to the member
+	// operator, which for a stream means the scalar overload and c2mir's
+	// "incompatible argument type for arithmetic type parameter" a phase later.
+	{
+		static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
+		if (_fop && *_fop && mname.find(_fop) != std::string::npos)
+			fprintf(stderr, "W2FREEOP %s rhs=%s member_exact=%d best=%s"
+				" retc=%s body=%s\n", mname.c_str(),
+				rhs_norm.c_str(), (int)member_exact,
+				best ? best->param_spellings[1].c_str() : "(none)",
+				best_retc ? best_retc->name.c_str() : "-",
+				best_body_var ? best_body_var->name.c_str() : "-");
+	}
 	if (best && best_body_var)
 	{
 		FuncDef *inst = dynamic_cast<FuncDef *>(best_body_var->type);
@@ -13457,6 +13471,13 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	// const char* as a POINTER via operator<<(const void*).
 	if (!extern_symbol_can_link(sym)) {
 		Variable *bv = NULL;
+		{
+			static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
+			if (_fop && *_fop && mname.find(_fop) != std::string::npos)
+				fprintf(stderr, "W2FREEOP %s no-export sym=%s"
+					" -> body route\n", mname.c_str(),
+					sym.c_str());
+		}
 		if (m_prog->instantiate_free_operator_template(
 			    mname, top->left, top->right, &bv) && bv)
 			if (FuncDef *bfd = dynamic_cast<FuncDef *>(bv->type)) {
