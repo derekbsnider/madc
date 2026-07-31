@@ -1,13 +1,16 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-07-30 (v0.63.0: the
-libc++ parity-lane burn-down — the flavored suite went 534/282 → 747/108
-with zero regressions at every set-diffed step; the string wall fell
-(`std::string c = a + b` under libc++); four flavor-independent
-silent-wrong-answer fixes (alias-star de-pointering, uninitialized
-ctor-less copy spill, empty-base Itanium offset-0, bit-field width
-rendering). Suite 807 → 856; next: the map/set family at map:629, the
-vector family's emission layer, stream residuals — P2.7 continues).
+Master plan linking all workstreams. Updated 2026-07-31 (v0.64.0: the
+four-root string/stream breakthrough — the flavored lane went 747/108 →
+803/80 with zero regressions at every set-diffed step, 23 tests flipped
+in ONE commit (unadjusted virtual-base reference args poisoning stream
+state; cast-to-reference ctor args never matching tag-dispatch ctors;
+plain-struct value-init emitting nothing so every default-constructed
+libc++ string rep was frame garbage; an untyped facet downcast).
+`vector<int>::push_back` RUNS; `iterator_traits<CLASS>` resolves;
+[temp.param]p10 opens the input-stream gateway. Suite 856 → 885; next:
+the cin/input cluster, #71 ref-qualified members, stream runtime
+residuals — P2.7 continues).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -32,6 +35,27 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **v0.64.0 (2026-07-31): the four-root string/stream breakthrough (task
+  #78, P2.7 in progress).** The flavored lane went 747/108 → **803/80**,
+  zero regressions at every set-diffed step — 23 tests flipped in ONE
+  commit: the `testclass` SIGSEGV was FOUR compiler defects (a
+  REFERENCE-typed argument bound to a VIRTUAL-base reference parameter
+  passed unadjusted — stream `width()` read `__precision_`, phantom
+  padding + precision clobber in every stream test; cast-to-reference
+  ctor arguments scored as `Tag*` so libc++ tag-dispatch ctors never
+  matched, + the binding twin; the value-init mem-initializer on a
+  plain-struct member emitted NOTHING — every default-constructed libc++
+  string rep was frame garbage; an untyped base-to-derived facet
+  downcast). The detect-idiom chain closed 12 links
+  (`vector<int>::push_back` RUNS, `iterator_traits<CLASS>` resolves,
+  `__is_convertible`, east-specifiers, `__libcpp_datasizeof`);
+  [temp.param]p10 default accumulation opens the input-stream gateway
+  (`num_get<char>`). 15 new negative-controlled gates; six new probes;
+  `/dupaudit` recorded 3 families (live one = task #80). Suite 856 →
+  885. Fork unchanged (1.0-madc.0.63.0). NEXT: the cin/input cluster
+  (istringstream ctor parse is the frontier), #71 ref-qualified members
+  (map/optional), stream runtime residuals re-verified at HEAD.
 
 - **v0.63.0 (2026-07-30): the libc++ parity-lane burn-down (task #34, P2.7
   in progress).** The flavored suite lane (`run_tests.sh --stdlib=libc++`)

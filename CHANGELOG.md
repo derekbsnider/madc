@@ -2,6 +2,80 @@
 
 ## [Unreleased]
 
+## [v0.64.0] — 2026-07-31
+
+The four-root string/stream breakthrough: the libc++ parity lane went
+747/108 → **803/80** with zero regressions at every set-diffed step —
+23 tests flipped in ONE commit when the `testclass` SIGSEGV proved to be
+four separate compiler defects, `vector<int>::push_back` RUNS, and the
+input-stream cluster's gateway opened. Suite 856 → 885.
+
+- **fix: object mode (`-o`/`-c`) built a different tree than the JIT
+  for the same source+flags.** The pre-tree-build flavor-runtime open
+  was object-mode-skipped, so the CIR builder's dlsym probes (facet-id
+  extern recording, `extern_symbol_can_link`) answered differently and
+  the flavored exe/obj builds died at c2mir check on undeclared
+  `_ZNSt3__15ctypeIcE2idE`-family externs. Caught by the release
+  battery itself — `testiosbase_libcxx`, the first stream-facet libc++
+  test to enter the native lanes, failed 868/1 in BOTH. One tree per
+  source+flags regardless of output mode.
+- **fix: four roots under one crash (the biggest single lane move).**
+  (1) a REFERENCE-typed argument bound to a VIRTUAL-base reference
+  parameter passed its pointer unadjusted — madc-compiled stream code
+  read `width()` out of the real `__precision_` slot (phantom padding on
+  every literal) and the `width(0)` reset clobbered cout's precision,
+  poisoning every libc++ stream test; (2) a cast-to-reference ctor
+  argument (`static_cast<_U1&&>` — the spelled-out `std::forward`)
+  scored as `Tag*` so libc++'s tag-dispatch ctors never matched, plus
+  the binding-side twin (matching-without-binding recursed infinitely,
+  caught by the freeze gate); (3) the value-init mem-initializer
+  `: __value_() {}` on a plain-struct member emitted NOTHING — every
+  default-constructed libc++ string rep was frame garbage, green only on
+  lucky zero stacks; (4) a base-to-derived reference downcast emitted
+  untyped (`use_facet`'s facet returns — caught by the warning ratchet).
+- **feat: the detect-idiom chain (12 links).** `decltype(...)::member`
+  in expression position; detection-idiom static-const folds;
+  [temp.deduct]/8 param-TYPE rejection (member-template param-type
+  token runs ride the forest, v37); the `__is_convertible` trait
+  builtin; [dcl.spec]/1 east-specifiers (`pair<...> inline constexpr
+  __copy` parses); NTTP folds of trait-class `::value`; the
+  `||`-short-circuit skip rebuilt on `DelimDepth`
+  (`iterator_traits<CLASS>` member typedefs RESOLVE); unary-operator
+  REFERENCE-return transparency; out-of-line DTOR definitions attach to
+  template instances (**`vector<int>::push_back` RUNS** — task #44's
+  dtor half); the SFINAE pre-check accepts keyword lexings;
+  `__libcpp_datasizeof` folds (nested-spec key alias + template-id
+  offsetof args + the null-deref pre-gate exemption).
+- **feat: the `__tree`/`<map>` frontier stack.** `__tree:680` (full-spec
+  TEMPLATE-ID instantiation keys + member-rebind self-name collapse);
+  `__tree:890` (`->` on a reference-to-pointer receiver derefs the
+  REFERENT pointer); the injected-class-name is a type inside a plain
+  struct body; `__node_handle:84`; a templated converting ctor joins
+  the ctor candidate set.
+- **fix: batch-2 expression roots.** A C++ lvalue conditional
+  distributes address-of into its arms (a 22-test root); member-call
+  heads honor [temp.names] explicit template arguments; a literal may
+  head an expression-statement (libc++ string copy-assign RUNS);
+  aggregate reference-member arguments bind/copy their referent
+  (4 argument-lane arms).
+- **fix: template-default arguments accumulate across redeclarations in
+  BOTH orders ([temp.param]p10).** libc++ declares
+  `istreambuf_iterator`'s traits default only in `<iosfwd>`; when the
+  definition registered first the default was dropped — the gateway
+  error of the libc++ input-stream cluster (`num_get<char>`'s default
+  fill) is gone.
+- **feat: probe battery.** `MADC_ARITY_PROBE` (site-tagged template
+  arity/default-fill rejections), `MADC_BIND_PROBE` (Itanium binds with
+  out-of-line map state), `MADC_SPECREG_PROBE` (explicit-spec
+  registration keys), `MADC_ISCONV_PROBE`, `MADC_POPOP_PROBE` (token
+  identity at 'unexpected token type' sites), `MADC_FNTPL_LOUD`
+  (unmutes SFINAE-quiet body-parse throws).
+- 15 new gate tests, each negative-controlled against a pre-fix binary.
+  `/dupaudit` (pre-merge, scoped to the touched lanes) recorded three
+  families in the KG; the live one — `overload_arg_datadef` missing the
+  cast-to-reference/forward arms — is filed as task #80.
+- Fork unchanged (`1.0-madc.0.63.0`).
+
 ## [v0.63.0] — 2026-07-30
 
 The libc++ parity-lane burn-down: the flavored suite went 534/282 →

@@ -241,7 +241,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.63.0): 856 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary and the packed release binary; the native `--exe` and `--obj` lanes are both at 840/0. A second stdlib flavor is a first-class test lane: `run_tests.sh --stdlib=libc++` runs the whole suite under libc++, with the failing set banked in [`docs/parity/libcxx-failset.txt`](docs/parity/libcxx-failset.txt) (747 passed / 108 failed and burning down — behavior-parity with libstdc++ is the goal). Mach-O targets have a full `.o` lane: `madc -c` writes a real `MH_OBJECT` that `ld64` links and madc reads back. With `-static-libmadc` an emitted binary carries the madc runtime it needs and runs with no madc library installed. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.64.0): 885 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary and the packed release binary; the native `--exe` and `--obj` lanes are both at 869/0. A second stdlib flavor is a first-class test lane: `run_tests.sh --stdlib=libc++` runs the whole suite under libc++, with the failing set banked in [`docs/parity/libcxx-failset.txt`](docs/parity/libcxx-failset.txt) (803 passed / 80 failed and burning down — behavior-parity with libstdc++ is the goal). Mach-O targets have a full `.o` lane: `madc -c` writes a real `MH_OBJECT` that `ld64` links and madc reads back. With `-static-libmadc` an emitted binary carries the madc runtime it needs and runs with no madc library installed. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -282,21 +282,26 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.63.0** — **the libc++ parity-lane burn-down.**
-The flavored suite lane (`run_tests.sh --stdlib=libc++`) went 534/282 →
-**747/108** across ~50 oracle-verified fixes with ZERO regressions at
-every set-diffed step. THE STRING WALL FELL: `std::string c = a + b`
-computes correctly under libc++, and the cout smoke runs. Four
-flavor-INDEPENDENT silent-wrong-answer bugs are fixed for every dialect:
-pointer-target alias templates kept de-pointering (`using up = U*` gave
-U), ctor-less classes silently dropped their copy argument, empty
-non-primary bases laid out past the object instead of at Itanium
-offset 0, and `--emit=c11` flattened bit-field widths. Suite 807 → 856.
-Suites: fulltest **856/0/0/9**, `--exe` **840/0**, `--obj` **840/0**,
-packed arbiter **856/0/0/9**. Fork release **1.0-madc.0.63.0**
-(zero-length-array diagnostic parity with gcc/clang).
+**v0.64.0** — **the four-root string/stream breakthrough.**
+The flavored suite lane (`run_tests.sh --stdlib=libc++`) went 747/108 →
+**803/80** with zero regressions at every set-diffed step — 23 tests
+flipped in ONE commit when the `testclass` SIGSEGV proved to be four
+separate compiler defects stacked on one crash address: unadjusted
+virtual-base REFERENCE arguments (madc-compiled stream code phantom-
+padded every literal), cast-to-reference ctor arguments scoring as
+`Tag*` (libc++'s tag-dispatch ctors never matched), value-init
+mem-initializers on plain-struct members emitting NOTHING (every
+default-constructed libc++ string rep was frame garbage), and an
+untyped base-to-derived facet downcast. **`vector<int>::push_back`
+RUNS** (the 12-link detect-idiom chain), the `__tree`/`<map>` frontier
+stack landed, [temp.param]p10 default accumulation opened the
+input-stream cluster's gateway, and object mode now builds the same
+tree as the JIT (the flavor runtime opens pre-tree-build). Suite
+856 → 885. Suites: fulltest **885/0/0/9**, `--exe` **869/0**, `--obj`
+**869/0**, packed arbiter **885/0/0/9**. Fork unchanged
+(**1.0-madc.0.63.0**).
 
-**Branch state:** `develop` is at v0.63.0; `master` is at v0.48.0
+**Branch state:** `develop` is at v0.64.0; `master` is at v0.48.0
 (promoted 2026-07-25 — the Mach-O milestone promote, per the owner's
 ride-with-S3 decision). The
 [MIR fork](https://github.com/derekbsnider/mir)'s `master` tracks
@@ -305,8 +310,8 @@ fork releases pair with madc's (see [`MIR_VERSION`](MIR_VERSION)).
 
 ### Recent Releases
 
+- **v0.64.0** — the four-root string/stream breakthrough: flavored lane 747/108 → 803/80 (23 flips in ONE commit, zero regressions at every set-diffed step); the `testclass` SIGSEGV = four stacked defects (unadjusted vbase reference args poisoning every stream test, cast-to-reference ctor args scored as `Tag*` + the binding twin, value-init mem-init on plain-struct members emitted nothing, untyped facet downcast); the 12-link detect-idiom chain (`iterator_traits<CLASS>` resolves, `__is_convertible`, east-specifiers, `__libcpp_datasizeof`, **`vector<int>::push_back` RUNS**); the `__tree`/`<map>` frontier stack (full-spec instantiation keys, `->` through reference-to-pointer, injected-class-name in struct bodies, templated converting ctors); [temp.param]p10 default accumulation both orders (input-stream gateway open); object mode builds the JIT's tree (flavor runtime pre-tree-build); 15 new gates + the probe battery; suite 856 → 885; fulltest 885/0/0/9, `--exe` 869/0, `--obj` 869/0, packed 885/0/0/9; fork unchanged (1.0-madc.0.63.0)
 - **v0.63.0** — the libc++ parity-lane burn-down: flavored lane 534/282 → 747/108 (~50 fixes, zero regressions at every set-diffed step, ledger in `docs/parity/libcxx-failset.txt`); the string wall fell (`std::string c = a + b` under libc++); four flavor-independent silent wrong answers fixed (alias-star de-pointering, uninitialized ctor-less copy spill, empty-base offset-0 EBO, bit-field width rendering); out-of-line defs bind by signature; ref-qualified methods, east-cv template args, operator-> rewrites on member/call-result receivers; mangled-direct declines unlinkable symbols; `__is_final`; suite 807 → 856; fork 1.0-madc.0.63.0 (zero-length-array diagnostic parity)
 - **v0.62.0** — the `<string>` frontier burn-down: libc++ `<string>` parses clean (anonymous-aggregate enclosing-alias resolution); the `__compressed_pair` accessor chain fixed at three layers incl. the REAL derived-to-base ref-cast conversion (silent wrong storage at nonzero offsets before); constant-expression NTTP args fold (the hand-rolled angle counter invisible to the delimiter gate is gone); numeric_limits values exact both flavors (five stacked constant-fold defects: alias-qualified reads, unsigned 8-byte casts, cast-vs-call pre-scan, placeholder-fold refusal, [basic.scope.class] member-alias shadowing); MADC_MAPWRITE_TRAP/MADC_STATCONST_PROBE diagnostics; fulltest 807/0/0/9, `--exe` 791/0, `--obj` 791/0, packed 807/0/0/9; fork unchanged (1.0-madc.0.52.0)
 - **v0.61.0** — the stdlib-flavor switch (P2.3): the std ABI inline namespace from the PARSED config (`_GLIBCXX_USE_CXX11_ABI` ⇒ `__cxx11` on tagged components; `_LIBCPP_ABI_NAMESPACE` ⇒ e.g. `__1` on everything), pushed into the mangler from all three define-write sites (directive / forest replay / CLI `-D`) — `__cxx11` lives only in the mangler; all canonical std:: spellings, `itanium_mangle_std_var` (`_ZSt4cout` vs `_ZNSt3__14coutE`), and the marshalling carrier follow the flavor (clang++-18 oracle, incl. the pre-cxx11 `Ss` form); `cir_native_link_env` de-conflated — per-flavor C++ runtime DT_NEEDED probed from each toolchain's own empty link, `__APPLE__` purely platform; the libc++ native legs unlock (both `_libcxx` gates pass `--exe`/`--obj`); fulltest 798/0/0/9, `--exe` 782/0, `--obj` 782/0, packed arbiter 798/0/0/9; fork unchanged (1.0-madc.0.52.0)
 - **v0.60.0** — is_destructible both flavors, every lane: `__is_destructible` trait builtin ([meta.unary.prop] incl. deleted/member-deleted/private dtors) serving libc++'s `__has_builtin` branch; the libstdc++ SFINAE/declval chain fixed at four layers (deleted-dtor recording, deleted-dtor call rejection = the SFINAE substitution failure, call-result pseudo-dtor receivers, member-template per-param DEFAULT runs enforced per [temp.deduct]/8 with candidate fallback to the ellipsis catch-all); the forest capture poisons instead of baking a constant past an unenforceable SFINAE (v36 carries the default runs; the [traitfold] lesson's alias-node twin); gates testdestructible + testdestructible_libcxx; fulltest 798/0/0/9, `--exe` 780/0, `--obj` 780/0, packed arbiter 798/0/0/9; fork unchanged (1.0-madc.0.52.0)
-- **v0.59.0** — the trait-engine release: gcc13's `__and_/__or_/__not_` SFINAE machine + the constructible/assignable trait family fold correctly in every lane — [temp.deduct]/8 unused-alias-arg validation (a failing concrete arg is a substitution failure even for args the alias target never names) with baked-ref (`DataDefREF`) trait args; `__is_constructible`/`__is_nothrow_constructible` builtins tri-state with honest declines; lexer-erased `noexcept` re-lexed as `throw()` into `FuncDef::noexcept_spec` (patterns + forest DK_FUNC flags); variadic bases real-instantiate at the base-clause resolution (vector reallocation takes g++'s move_iterator lane; the class-wide sticky arming that broke the c++20 legs bisected out and replaced); absent-trailing-pack elisions in both substitution lanes; instantiation keys split pointer from reference args (`X<int*>` ≠ `X<int&>`, `*`→P/`&`→R, forest v35); trait folds refuse dependent args (the freeze's capture parse froze `__bool_constant<0>` as is_assignable's base — packed-lane catch, bind-gate `[traitfold]`); gates `testtraitassign`/`testconstructible`/`testtplargkey`/`testvariadicstatic`; fulltest 796/0/0/9, `--exe` 779/0, `--obj` 779/0, packed arbiter 796/0/0/9; fork unchanged (1.0-madc.0.52.0)
