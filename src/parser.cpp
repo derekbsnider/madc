@@ -21391,6 +21391,14 @@ static TokenCallMethod *make_unary_object_operator_call(Variable *recv,
     if ( !recv && !parent_expr )
 	return NULL;
     DataDef *recv_dd = parent_expr ? parent_expr->datadef() : recv->type;
+    // C++ reference transparency (free_operator_arg_datadef's rule): an
+    // operator's REFERENCE return denotes its referent object — `*--__tmp`
+    // (reverse_iterator::operator*'s body) chains operator* onto
+    // operator--'s `_Iter&` return, which models as a DataDefPTR and
+    // otherwise fails the class cast below.
+    if ( recv_dd && recv_dd->is_reference() )
+	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(recv_dd) )
+	    recv_dd = rp->base_type;
     DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(recv_dd);
     if ( !cls )
 	return NULL;
