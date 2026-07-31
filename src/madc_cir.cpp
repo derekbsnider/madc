@@ -842,8 +842,15 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     // symbols the link would in fact resolve (the facet ids came back
     // undeclared the moment the availability gate landed). Idempotent; the
     // MIR-link call site keeps its open for lanes that skip this one.
-    if (!madc_object_mode)
-	cir_open_stdlib_runtime(prog->active_stdlib_flavor());
+    //
+    // Unconditional — object mode included. The MIR-link open IS rightly
+    // object-mode-skipped (imports become undefined ELF symbols; addresses
+    // are never read), but the CIR-time probes above run in EVERY output
+    // mode and SHAPE THE TREE. Skipping the open here made -o/-c build a
+    // different tree than the JIT for the same source+flags: the flavored
+    // exe lane died at c2mir check on the unrecorded facet-id externs
+    // (undeclared _ZNSt3__15ctypeIcE2idE family) that the JIT lane declared.
+    cir_open_stdlib_runtime(prog->active_stdlib_flavor());
 
     // CirBuilder (cir_node) is the sole backend. The builder owns its node
     // arena and must outlive cir_compile()/MIR_gen() — hence it is returned to
