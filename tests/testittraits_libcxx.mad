@@ -1,0 +1,13 @@
+// ittraits2.cpp — the _If condition of reverse_iterator's iterator_category:
+// __has_random_access_iterator_category<int*>::value must fold to 1.
+// Oracle (clang++-18 -std=c++11 -stdlib=libc++): 1 1
+#include <iterator>
+#include <cstdio>
+
+int main()
+{
+	printf("%d %d\n",
+	       (int)std::__has_random_access_iterator_category<int *>::value,
+	       (int)std::__has_iterator_category<std::iterator_traits<int *> >::value);
+	return 0;
+}

@@ -1,0 +1,21 @@
+// __is_convertible(From, To) (+ clang alias __is_convertible_to) — the builtin
+// through ([meta.rel]). The tri-state helper folds: same class, derived tag ->
+// base tag (1), ctor-less unrelated tags (0), scalar pairs (1).
+// Oracle: g++ -std=c++11 prints "1 1 0 1 0" (clang++-18 likewise; both accept
+// the builtin spelling __is_convertible_to).
+#include <cstdio>
+
+struct B {};
+struct D : B {};
+struct X {};
+
+int main()
+{
+	printf("%d %d %d %d %d\n",
+	       (int)__is_convertible(D, D),
+	       (int)__is_convertible(D, B),
+	       (int)__is_convertible(B, D),
+	       (int)__is_convertible(int, long),
+	       (int)__is_convertible(X, B));
+	return 0;
+}

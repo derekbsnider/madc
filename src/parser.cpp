@@ -10746,17 +10746,12 @@ static int type_trait_arity(const std::string &name)
     if ( name == "__is_same" || name == "__is_base_of"
       || name == "__is_assignable" )
 	return 2;
-#ifdef MADC_TRAIT_ISCONVERTIBLE
-    // GUARDED OFF pending the std::copy fancy-path rung: the trait folds are
-    // canon-correct (tmp/ittraits2/3 oracle-match with it ON), but folding
+    // Ungated with the [dcl.spec]/1 east-specifier fix: folding
     // __has_*_iterator_category flips libc++'s copy dispatch onto
-    // __copy<_ClassicAlgPolicy,...>, whose body parse throws ("unexpected
-    // token type 13") — 3 string-lane regressions. Flip this guard when that
-    // body instantiates; the gate tests live in tmp/testisconvertible.* and
-    // tmp/testittraits_libcxx.* until then (task #78 tracks it).
+    // __copy<_ClassicAlgPolicy,...>, whose `pair<...> inline constexpr`
+    // declaration head now parses (the guard's motivating regression).
     if ( name == "__is_convertible_to" || name == "__is_convertible" )
 	return 2;
-#endif
     if ( name == "__is_class" || name == "__is_union" || name == "__is_enum"
       || name == "__has_trivial_destructor" || name == "__is_trivial"
       || name == "__is_empty" || name == "__is_standard_layout"
@@ -21193,6 +21188,18 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 	    break;
 	default:
 	    DBG(cerr << "popOperator() throwing opStack.top()" << endl);
+	    // Env-gated probe (MADC_POPOP_PROBE=1): the offending token's
+	    // identity — "unexpected token type N" alone names neither the
+	    // token nor the source position when the throw is swallowed by a
+	    // SFINAE-quiet instantiation (the __copy body-parse diagnosis).
+	    if ( ::getenv("MADC_POPOP_PROBE") )
+	    {
+		TokenBase *bad = opStack.top();
+		fprintf(stderr, "[popop] type=%d id=%d spelling='%s' at %s:%d:%d\n",
+			(int)bad->type(), (int)bad->id(),
+			overload_token_spelling(bad).c_str(),
+			bad->file ? bad->file : "?", bad->line, bad->column);
+	    }
 	    Throw(opStack.top()) << "unexpected token type " << (int)opStack.top()->type() << flush;
     } // end switch
     DBG(cout << "popOperator() size: " << opStack.size() << " END" << endl);
@@ -32990,6 +32997,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		break;
 	    default:
 		DBG(std::cerr << "parseExpression() primary switch throwing token" << std::endl);
+		// Env-gated probe (MADC_POPOP_PROBE=1): the offending token —
+		// the thrown message reports opStack.top()'s TYPE (historical),
+		// not the token the switch actually rejected.
+		if ( ::getenv("MADC_POPOP_PROBE") )
+		    fprintf(stderr, "[popop] primary-switch tb type=%d id=%d "
+			    "spelling='%s' at %s:%d:%d (stack-top type=%d)\n",
+			    (int)tb->type(), (int)tb->id(),
+			    overload_token_spelling(tb).c_str(),
+			    tb->file ? tb->file : "?", tb->line, tb->column,
+			    opStack.empty() ? -1 : (int)opStack.top()->type());
 		Throw(tb) << "unexpected token type " << (int)opStack.top()->type() << flush;
 	}
 	if ( done ) { break; /* prevent eating next token */ }
@@ -40154,6 +40171,11 @@ TokenBase *TokenOPEROVER::parse(Program &pgm)
 	    delete tn;
 	    return this;
 	default:
+	    if ( ::getenv("MADC_POPOP_PROBE") )
+		fprintf(stderr, "[popop] site=multiop-scan tok type=%d id=%d "
+			"at %s:%d:%d\n",
+			(int)tn->type(), (int)tn->id(),
+			tn->file ? tn->file : "?", tn->line, tn->column);
 	    pgm.Throw(tn) << "unexpected token type " << (int)tn->type() << flush;
     }
     return this;
@@ -46688,7 +46710,13 @@ static bool instantiate_fn_template_binding(Program &pgm,
     Program::ErrorInfo saved_last_error = pgm.last_error;
     std::streambuf *saved_cerr = std::cerr.rdbuf();
     std::ios::iostate saved_cerr_state = std::cerr.rdstate();
-    std::cerr.rdbuf(&g_madc_null_streambuf);
+    // Env-gated diagnosis (MADC_FNTPL_LOUD=1): skip the SFINAE mute so the
+    // REAL error prints with its location via the normal throwbuf::sync path
+    // — Throw.str() at catch time can hold a STALE message from an earlier
+    // recovered candidate (the __copy 'unexpected token type 13' hunt).
+    static const char *fntpl_loud = ::getenv("MADC_FNTPL_LOUD");
+    if ( !fntpl_loud )
+	std::cerr.rdbuf(&g_madc_null_streambuf);
     std::string saved_inst_identity = pgm.pending_fn_instantiation_identity;
     pgm.pending_fn_instantiation_identity = inst_key;
     ++pgm.fn_template_instantiation_depth;
@@ -46720,8 +46748,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	// fprintf(stderr) + Throw.str() bypass the std::cerr mute that a nesting
 	// fold_nontype_arg_constant sets — surfacing the REAL parse error that
 	// aborted this instantiation (otherwise lost -> silent undefined import).
-	fprintf(stderr, "[FNTPLTHROW] %s body THREW: %s\n",
-		inst_key.c_str(), pgm.Throw.str().c_str());
+	fprintf(stderr, "[FNTPLTHROW] %s body THREW: %s | last_error: %s (%s:%d)\n",
+		inst_key.c_str(), pgm.Throw.str().c_str(),
+		pgm.last_error.message.c_str(), pgm.last_error.file.c_str(),
+		pgm.last_error.line);
 #endif
     }
     --pgm.fn_template_instantiation_depth;
@@ -54557,15 +54587,55 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
     DBG(std::cout << "parseDeclaration(" << tb->spelling() << ") START" << std::endl);
 
-    // A GNU attribute can sit between the declaration specifiers and the
-    // declarator (`static void __attribute__((optimize(...))) f()`).
-    // consume_gnu_attributes records anything madc acts on (e.g. the pending
-    // no-strict-aliasing flag the function parse picks up).
-    if ( is_attribute_identifier_token(peekToken()) )
+    // Between the type-specifier and the declarator, [dcl.spec]/1 allows
+    // decl-specifiers in ANY order — llvm-18's <__algorithm/copy.h> spells
+    // `pair<_InIter, _OutIter> inline constexpr __copy(...)` with the
+    // function-specifiers AFTER the type — and GNU attributes can interleave
+    // (`static void __attribute__((optimize(...))) f()`). Consume the run:
+    // `inline` and the constexpr family fold into the same flags the
+    // specifiers-first path set; `static` is legal here in C too
+    // (`int static x;`). Both lexings match — the reserved tkCPPKEYWORD form
+    // and a retained-clone ttIdentifier (an instantiation-injected body);
+    // the bare-identifier spellings are gated to C++ mode, where they are
+    // reserved words no user identifier can shadow.
+    for (;;)
     {
-	TokenBase *after = consume_gnu_attributes(nextToken());
-	if ( after )
-	    pushToken(after);
+	TokenBase *pk = peekToken();
+	if ( !pk )
+	    break;
+	if ( pk->id() == TokenID::tkSTATIC )
+	{
+	    gotstatic = true;
+	    nextToken();
+	    continue;
+	}
+	bool spec = is_ignored_cpp_specifier_token(pk);
+	bool is_inline_word = false;
+	if ( !spec && presents_as_cpp()
+	  && pk->type() == TokenType::ttIdentifier )
+	{
+	    const std::string &s = ((TokenIdent *)pk)->spelling();
+	    spec = s == "inline" || s == "constexpr" || s == "consteval"
+		|| s == "constinit";
+	    is_inline_word = s == "inline";
+	}
+	else if ( spec )
+	    is_inline_word = ((TokenIdent *)pk)->spelling_is("inline");
+	if ( spec )
+	{
+	    if ( is_inline_word )
+		gotinline = true;
+	    nextToken();
+	    continue;
+	}
+	if ( is_attribute_identifier_token(pk) )
+	{
+	    TokenBase *after = consume_gnu_attributes(nextToken());
+	    if ( after )
+		pushToken(after);
+	    continue;
+	}
+	break;
     }
 
     // check for pointer declarator(s): type * [*...] identifier.
@@ -56193,6 +56263,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( nt->id() != TokenID::tkOpBrk )
     {
 	DBG(std::cerr << "parseDeclaration() throwing token " << (int)nt->id() << std::endl);
+	if ( ::getenv("MADC_POPOP_PROBE") )
+	    fprintf(stderr, "[popop] site=decl-lparen tok type=%d id=%d "
+		    "spelling='%s' at %s:%d:%d\n",
+		    (int)nt->type(), (int)nt->id(),
+		    overload_token_spelling(nt).c_str(),
+		    nt->file ? nt->file : "?", nt->line, nt->column);
 	Throw(nt) << "unexpected token type " << (int)nt->type() << flush;
     }
 
@@ -56626,6 +56702,12 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		return tb;
 
 	    DBG(std::cerr << "parseStatement() throwing token " << (char)tb->get() << std::endl);
+	    if ( ::getenv("MADC_POPOP_PROBE") )
+		fprintf(stderr, "[popop] site=stmt-symbol tok type=%d id=%d "
+			"spelling='%s' at %s:%d:%d\n",
+			(int)tb->type(), (int)tb->id(),
+			overload_token_spelling(tb).c_str(),
+			tb->file ? tb->file : "?", tb->line, tb->column);
 	    Throw(tb) << "unexpected token type " << (int)tb->type() << flush;
 
 	// if we start with an operator or an identifier, then this could be an
@@ -57265,6 +57347,12 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	case TokenType::ttDataType:
 */
 	default:
+	    if ( ::getenv("MADC_POPOP_PROBE") )
+		fprintf(stderr, "[popop] site=stmt-default tok type=%d id=%d "
+			"spelling='%s' at %s:%d:%d\n",
+			(int)tb->type(), (int)tb->id(),
+			overload_token_spelling(tb).c_str(),
+			tb->file ? tb->file : "?", tb->line, tb->column);
 	    Throw(tb) << "unexpected token type " << (int)tb->type() << flush;
     } // end switch
     DBG(cout << "parseStatement() returns NULL" << endl);
