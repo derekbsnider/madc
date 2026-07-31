@@ -8138,6 +8138,15 @@ bool Program::alias_arg_tokens_dependent(const std::vector<TokenBase *> &toks)
 	// The OWNER name before the `::` still classifies normally.
 	bool after_scope_op = prev && prev->id() == TokenID::tkNS;
 	prev = t;
+	// The `typename` DISAMBIGUATOR ([temp.res]) marks the following
+	// qualified-id as a type — it is not a name to look up, and its
+	// presence says nothing about dependence once the surrounding tokens
+	// are substituted concrete (`_If<..., typename iterator_traits<_Iter>::
+	// iterator_category>` at _Iter=int*). Classifying it "unresolvable"
+	// poisoned every alias arg spelled with it (libc++ iterator_traits web).
+	if ( is_contextual_identifier_token(t)
+	  && contextual_identifier_name(t) == "typename" )
+	    continue;
 	if ( !after_scope_op && is_contextual_identifier_token(t) )
 	{
 	    const std::string nm = contextual_identifier_name(t);
@@ -28232,6 +28241,58 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			{
 			    exStack.push(type_expr);
 			    return done ? ExprStep::Done : ExprStep::Break;
+			}
+			// [expr.prim.id.qual]: the resolver consumed a COMPOUND
+			// type-specifier (`decltype(__test<_Tp>(0))` — the parens
+			// ARE the specifier — or a member-TYPE chain) and the next
+			// token is `::`: this is a QUALIFIED-ID on that type in
+			// expression position (the libc++ detection idiom's
+			// `... = decltype(__test<_Tp>(0))::value`). Route into the
+			// one class-qualified-expression owner and continue exactly
+			// as the datatype arm's tkNS continuation does — falling
+			// through here DISCARDED the resolved type and left the
+			// consumed-parens stream to misparse as "Unknown namespace
+			// or class 'decltype'".
+			if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+			{
+			    if ( DataDefCLASS *dcls = dynamic_cast<DataDefCLASS *>(
+					&resolved_type->definition) )
+			    {
+				DataDefCLASS *resolved_owner = NULL;
+				std::string resolved_member;
+				QualifiedClassExprAction action =
+				    resolve_class_qualified_expression(*this, dcls,
+					resolved_type->spelling(), tb, exStack,
+					&var, &tb, &resolved_owner,
+					&resolved_member);
+				if ( action == QualifiedClassExprAction::ResolvedFunction )
+				{
+				    if ( var && var->type && var->type->is_function()
+				      && peekToken()
+				      && peekToken()->id() == TokenID::tkLT )
+					skip_template_id_suffix();
+				    if ( var && var->type && var->type->is_function()
+				      && peekToken()
+				      && peekToken()->id() == TokenID::tkOpBrk )
+				    {
+					TokenCallFunc *tc = new TokenCallFunc(*var);
+					tb = nextToken();
+					tc->line = tb->line;
+					tc->column = tb->column;
+					tb = parseCallFunc(tc);
+					tc = reselect_static_member_overload(tc,
+						resolved_owner, resolved_member);
+					var = &tc->var;
+					opStack.push(tc);
+					if ( tb->id() == TokenID::tkSemi )
+					    return ExprStep::Done;
+				    }
+				    else if ( var )
+					exStack.push(new TokenVar(*var));
+				    return ExprStep::Break;
+				}
+				return done ? ExprStep::Done : ExprStep::Break;
+			    }
 			}
 		    }
 		    if ( TokenObjTemp *ot = try_parse_functional_ctor(tb) )
