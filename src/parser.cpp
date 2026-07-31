@@ -4458,6 +4458,29 @@ static bool opaque_template_args_select_concrete_partial_spec(
     return spec && !spec->body.empty();
 }
 
+// Env-gated probe (MADC_ARITY_PROBE=<substr>|*): which arity/default-fill
+// site is about to reject a template-id, with the TemplateDef's defaults
+// state — the throw message alone cannot distinguish the six sites, and the
+// dev build carries no -g for a line breakpoint.
+template <typename TD>
+static void arity_probe(const char *site, const std::string &tname,
+			const TD &td, size_t got)
+{
+	static const char *ap = ::getenv("MADC_ARITY_PROBE");
+	if ( !ap || !*ap )
+		return;
+	if ( strcmp(ap, "*") && tname.find(ap) == std::string::npos )
+		return;
+	std::string dstate;
+	for ( size_t k = 0; k < td.typeparam_defaults.size(); ++k )
+		dstate += td.typeparam_defaults[k].empty() ? '0' : '1';
+	fprintf(stderr, "[ARITY] site=%s tname=%s params=%zu defaults=%s "
+		"got=%zu ns=%s owner=%s\n",
+		site, tname.c_str(), td.typeparams.size(), dstate.c_str(),
+		got, td.defining_namespace.c_str(),
+		td.owner_class ? td.owner_class->name.c_str() : "-");
+}
+
 TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td,
 						      const std::string &tname,
 						      TokenBase *tb)
@@ -4495,16 +4518,22 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
     size_t pack_index = first_template_pack_index(td.typeparam_is_pack);
     bool has_pack = pack_index < td.typeparams.size();
     if ( !has_pack && args.size() > td.typeparams.size() )
+    {
+	arity_probe("opq-over", tname, td, args.size());
 	Throw(tb) << tname << "<> expects " << td.typeparams.size()
 		      << " argument(s), got " << args.size() << flush;
+    }
     size_t required_args = has_pack ? pack_index : td.typeparams.size();
     while ( args.size() < required_args )
     {
 	size_t ai = args.size();
 	if ( ai >= td.typeparam_defaults.size()
 	  || td.typeparam_defaults[ai].empty() )
+	{
+	    arity_probe("opq-fill", tname, td, args.size());
 	    Throw(tb) << tname << "<> expects " << td.typeparams.size()
 			  << " argument(s), got " << args.size() << flush;
+	}
 	std::string spelling;
 	std::vector<TokenBase *> arg_tokens;
 	for ( TokenBase *dt : td.typeparam_defaults[ai] )
@@ -7073,8 +7102,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    break;
 	if ( pi >= td.typeparam_defaults.size()
 	  || td.typeparam_defaults[pi].empty() )
+	{
+	    arity_probe("pat-fill", tname, td, pi);
 	    Throw(tb) << tname << "<> expects " << td.typeparams.size()
 			  << " argument(s), got " << pi << flush;
+	}
 	std::vector<TokenBase *> default_tokens =
 	    clone_template_tokens_with_type_subst(td.typeparam_defaults[pi],
 						 subst);
@@ -8625,8 +8657,11 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	Throw(sep) << "Expecting ',' or '>' in " << tname << "<...>" << flush;
     }
     if ( args.size() > td.typeparams.size() )
+    {
+	arity_probe("nest-over", tname, td, args.size());
 	Throw(tb) << tname << "<> expects " << td.typeparams.size()
 		      << " type argument(s), got " << args.size() << flush;
+    }
     for ( size_t i = 0; i < args.size(); ++i )
 	subst[td.typeparams[i]] = args[i];
     while ( args.size() < td.typeparams.size() )
@@ -8634,8 +8669,11 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	size_t ai = args.size();
 	if ( ai >= td.typeparam_defaults.size()
 	  || td.typeparam_defaults[ai].empty() )
+	{
+	    arity_probe("nest-fill", tname, td, args.size());
 	    Throw(tb) << tname << "<> expects " << td.typeparams.size()
 			  << " type argument(s), got " << args.size() << flush;
+	}
 	std::vector<TokenBase *> inj;
 	for ( TokenBase *bt : td.typeparam_defaults[ai] )
 	{
@@ -23764,7 +23802,23 @@ void Program::register_template(const Program::TemplateDef &td, bool only_if_abs
 	  || variants[i].owner_class != td.owner_class )
 	    continue;
 	if ( only_if_absent )
-	    return;                       // first declaration in this ns wins
+	{
+	    // First declaration in this ns wins the BODY/pattern — but
+	    // template-default arguments ACCUMULATE across redeclarations
+	    // regardless of order ([temp.param]p10): a forward declaration
+	    // carrying defaults may FOLLOW the definition that omitted them
+	    // (libc++ declares istreambuf_iterator's traits default ONLY in
+	    // <iosfwd>; the definition header omits it — dropping it here
+	    // left num_get<char>'s default fill with no traits argument).
+	    Program::TemplateDef &prev = variants[i];
+	    if ( prev.typeparam_defaults.size() < td.typeparam_defaults.size() )
+		prev.typeparam_defaults.resize(td.typeparam_defaults.size());
+	    for ( size_t k = 0; k < td.typeparam_defaults.size(); ++k )
+		if ( prev.typeparam_defaults[k].empty()
+		  && !td.typeparam_defaults[k].empty() )
+		    prev.typeparam_defaults[k] = td.typeparam_defaults[k];
+	    return;
+	}
 	// Carry forward template-default arguments the prior declaration of this
 	// same template (same namespace) supplied but this one omitted.
 	Program::TemplateDef merged = td;
