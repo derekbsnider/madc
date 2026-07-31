@@ -7944,6 +7944,21 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	}
     } sticky_guard(*this, registered_mangled, want_sticky);
 
+    // [temp.inst]: the instantiation itself is never an unevaluated operand —
+    // member bodies re-parsed here are real program code, so calls inside them
+    // must instantiate normally even when this class was first NAMED inside a
+    // decltype/sizeof operand (`typedef decltype(H<It>::call(...))` left
+    // H<It>'s body calls uninstantiated: raw MIR imports + placeholder-typed
+    // returns). The fn-template binding twin zeroes the depth the same way
+    // around its body parse. RAII — restores on the catch path too.
+    struct UnevalZeroGuard {
+	Program &p; int saved;
+	UnevalZeroGuard(Program &pp)
+	    : p(pp), saved(pp.unevaluated_operand_depth)
+	{ p.unevaluated_operand_depth = 0; }
+	~UnevalZeroGuard() { p.unevaluated_operand_depth = saved; }
+    } uneval_zero_guard(*this);
+
     // The re-parse below is an instantiation in flight exactly like a pattern
     // serve: mark it so a self-referential re-entry (base clause naming this
     // very specialization as a template argument) is served the incomplete
@@ -9308,6 +9323,11 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	if ( !close || close->id() != TokenID::tkClBrk )
 	    Throw(close ? close : tb) << "Expecting ')' after decltype(...)" << flush;
 	DataDef *dd = expr ? expr->datadef() : NULL;
+	if ( getenv("MADC_DT_PROBE") )
+	    fprintf(stderr, "[dtprobe] decltype operand -> '%s' (expr id=%d type=%d)\n",
+		    dd ? dd->name.c_str() : "(null)",
+		    expr ? (int)expr->id() : -1,
+		    expr ? (int)expr->type() : -1);
 	if ( !dd )
 	    Throw(tb) << "Could not resolve decltype(...) operand type" << flush;
 	TokenDataType *tdt = new TokenDataType(dd->name.c_str(), *dd);
@@ -21365,7 +21385,13 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     // return (clang's deduction-forms-the-function-TYPE-without-a-body model),
     // so `decltype(f<T>())` is correct in an unevaluated context instead of the
     // ddINT64 placeholder. Only when nothing already pinned the return.
-    if ( !tc->return_override && !tc->explicit_template_args.empty() )
+    // A DEDUCED call in an UNEVALUATED operand takes the same lane with the
+    // binding deduced from its argument types (`decltype(std::__to_address(p))`
+    // — instantiation is suppressed above, so nothing else forms the type);
+    // the resolver gates that case on unevaluated_operand_depth itself.
+    if ( !tc->return_override
+      && (!tc->explicit_template_args.empty()
+       || (unevaluated_operand_depth > 0 && !tc->parameters.empty())) )
     {
 	bool tr_ref = false;
 	if ( DataDef *rt = resolve_namespace_fn_template_call_return_type(tc, &tr_ref) )
@@ -48913,8 +48939,20 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
 {
     if ( ret_ref )
 	*ret_ref = false;
-    if ( !tc || tc->explicit_template_args.empty() )
+    // No explicit args: an UNEVALUATED deduced call ([dcl.type.decltype] —
+    // `decltype(addr(x))`, libc++'s `decltype(std::__to_address(...))`) still
+    // forms its function type; deduce the binding from the argument value
+    // types instead (evaluated calls keep full instantiation as their source
+    // of truth — this lane serves only where instantiation is suppressed).
+    bool deduce_from_args = false;
+    if ( !tc )
 	return NULL;
+    if ( tc->explicit_template_args.empty() )
+    {
+	if ( unevaluated_operand_depth == 0 || tc->parameters.empty() )
+	    return NULL;
+	deduce_from_args = true;
+    }
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
     // The GLOBAL namespace is a namespace: registration keys a global fn
     // template as "::name" (current_namespace() is empty), and this key
@@ -48924,6 +48962,15 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
     if ( !fd || fd->function_display_name.empty() )
 	return NULL;
     std::string key = fd->namespace_name + "::" + fd->function_display_name;
+    if ( deduce_from_args )
+    {
+	std::vector<DataDef *> arg_types;
+	arg_types.reserve(tc->parameters.size());
+	for ( TokenBase *p : tc->parameters )
+	    arg_types.push_back(p ? operand_value_datadef(p) : NULL);
+	return resolve_fn_template_return_by_key(key, std::vector<DataDef *>(),
+						 ret_ref, 0, &arg_types);
+    }
     return resolve_fn_template_return_by_key(key, tc->explicit_template_args,
 					     ret_ref, 0);
 }
@@ -48935,11 +48982,13 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
 DataDef *Program::resolve_fn_template_return_by_key(
 		const std::string &key,
 		const std::vector<DataDef *> &explicit_args,
-		bool *ret_ref, int depth)
+		bool *ret_ref, int depth,
+		const std::vector<DataDef *> *call_arg_types)
 {
     if ( ret_ref )
 	*ret_ref = false;
-    if ( depth > 8 || explicit_args.empty() )
+    bool have_arg_types = call_arg_types && !call_arg_types->empty();
+    if ( depth > 8 || (explicit_args.empty() && !have_arg_types) )
 	return NULL;
     // Candidates: body-bearing (fn_template_map) AND body-less (fn_template_decl_map)
     // free templates of this name — declval and friends are body-less.
@@ -49123,6 +49172,29 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		    { kind_mismatch = true; break; }
 		binding[ft.typeparams[i]] = explicit_args[i];
 	    }
+	// Deduced binding ([temp.deduct.call], return-only): pair the call's
+	// argument value types with this candidate's parameter spellings and
+	// bind via the ONE per-param deducer (`T*`/`const P&` cores — the
+	// libc++ __to_address / __to_address_helper::__call shapes). Explicit
+	// bindings win; a spelling the deducer cannot handle is skipped (the
+	// unbound-return check below rejects the candidate if that parameter
+	// was load-bearing).
+	if ( have_arg_types )
+	{
+	    std::vector<std::string> spellings;
+	    if ( po_param_spellings(*this, ft, spellings) )
+		for ( size_t i = 0; i < spellings.size()
+				 && i < call_arg_types->size(); ++i )
+		{
+		    std::string tp;
+		    DataDef *dd = NULL;
+		    if ( fn_template_deduce_param(spellings[i], ft.typeparams,
+						  (*call_arg_types)[i], tp,
+						  dd) == 1
+		      && !binding.count(tp) )
+			binding[tp] = dd;
+		}
+	}
 	if ( kind_mismatch || (binding.empty() && pack_elems.empty()) )
 	    continue;
 	// NOTE ([temp.deduct]/8, defaulted params): this lane does NOT resolve

@@ -1,0 +1,47 @@
+// A DEDUCED template call in an unevaluated decltype operand still forms its
+// function type ([temp.deduct.call] return-only; [dcl.type.decltype]) — and a
+// class template first NAMED inside a decltype instantiates its member bodies
+// as real code ([temp.inst]), not under the unevaluated guard. libc++'s
+// fancy-pointer __to_address is the shape:
+//   __decay_t<decltype(__to_address_helper<_Pointer>::__call(...))>
+#include <utility>
+#include <cstdio>
+
+struct It {
+    int v;
+    int *operator->() const { return const_cast<int *>(&v); }
+};
+
+// inner namespace fn template (the raw-pointer __to_address)
+template <class T> T *addr(T *p) { return p; }
+
+// helper class template with the SFINAE void param (__to_address_helper)
+template <class P, class = void>
+struct H {
+    static decltype(addr(std::declval<const P &>().operator->()))
+    call(const P &p) { return addr(p.operator->()); }
+};
+
+// file-scope typedef of the dependent decltype (the dret4 shape)
+typedef decltype(H<It>::call(std::declval<const It &>())) RT;
+
+// fn template whose return is decltype of the helper's static call (fancy)
+template <class P>
+decltype(H<P>::call(std::declval<const P &>()))
+fancy(const P &p) { return H<P>::call(p); }
+
+// discriminator: a placeholder (integer) result would pick f(long) -> 2
+struct W {
+    int f(int *) { return 1; }
+    int f(long)  { return 2; }
+};
+
+int main()
+{
+    It it;
+    it.v = 7;
+    W w;
+    RT r = H<It>::call(it);
+    printf("%d %d %d %d\n", *r, w.f(r), *fancy(it), w.f(fancy(it)));
+    return 0;
+}

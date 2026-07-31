@@ -4971,9 +4971,14 @@ public:
     // by the TokenCallFunc entry AND recursively for a `decltype(inner_call)`
     // return (declval's `decltype(__declval<_Tp>(0))`). `depth` bounds the
     // recursion. No emission — resolves purely from the retained decl tokens.
+    // `call_arg_types` (optional) enables DEDUCED binding ([temp.deduct.call],
+    // return-only): the call's argument value types, paired positionally with
+    // the candidate's parameter spellings — serves an unevaluated deduced call
+    // (`decltype(addr(x))`) whose explicit-args list is empty.
     DataDef *resolve_fn_template_return_by_key(const std::string &key,
 				const std::vector<DataDef *> &explicit_args,
-				bool *ret_ref, int depth);
+				bool *ret_ref, int depth,
+				const std::vector<DataDef *> *call_arg_types = NULL);
     // Resolve `decltype ( IDENT < targs > ( args ) )` (substituted tokens) by
     // recursing into IDENT's template return type in namespace `ns`. No emit.
     DataDef *resolve_decltype_call_return(const std::vector<TokenBase *> &sub,
