@@ -1,0 +1,15 @@
+// Construction-time virtual-base access (task #83 leg 2 — the
+// construction-vtables gap). Mid's C2 ctor BODY calls a virtual-base
+// member while `this` is a BASE SUBOBJECT of Leaf: the prologue stamped
+// Mid's STANDALONE vtable, whose vbase-offset slot holds the standalone
+// layout's +8, not the complete object's — the write landed in
+// Leaf::pad and x.v stayed 0. The hidden __madc_vb ctor params carry
+// the true vbase address down the base-construction chain.
+// Oracle (g++/clang): 42
+#include <cstdio>
+struct VB { int v; VB() { v = 0; } void setv(int x) { v = x; } };
+struct Mid : virtual VB {
+	Mid() { this->setv(42); }
+};
+struct Leaf : Mid { int pad[13]; Leaf() {} };
+int main() { Leaf x; printf("%d\n", x.v); return 0; }

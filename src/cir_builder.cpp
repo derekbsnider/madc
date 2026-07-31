@@ -8904,6 +8904,43 @@ static int vbase_slot_index(DataDefCLASS *view, DataDefCLASS *owner,
 	return -1;
 }
 
+// True when a receiver node IS the object under construction: it bottoms
+// out at the hidden `__this` parameter through casts, constant byte
+// adjustments, or a folded `&*`. Field selections (N_DEREF_FIELD/N_FIELD)
+// do NOT unwrap — `&this->m` is a member, not the object — and a bare
+// `&__this` (address OF the pointer) is refused by the same rule. Only
+// side-effect-free shapes qualify, so a caller may discard the node
+// unconsumed (single parent link, no lost evaluations).
+static bool node_bottoms_at_this(node_t n)
+{
+	while (n) {
+		switch (n->code) {
+		case N_ID:
+			return n->u.s.s && strcmp(n->u.s.s, "__this") == 0;
+		case N_CAST:
+			n = c2mir_node_op(n, 1);	// (type, expr)
+			break;
+		case N_ADD: {
+			node_t off = c2mir_node_op(n, 1);
+			if (!off || (off->code != N_I && off->code != N_L))
+				return false;
+			n = c2mir_node_op(n, 0);
+			break;
+		}
+		case N_ADDR: {
+			node_t sub = c2mir_node_op(n, 0);
+			if (!sub || sub->code != N_DEREF)
+				return false;
+			n = c2mir_node_op(sub, 0);	// &* folds
+			break;
+		}
+		default:
+			return false;
+		}
+	}
+	return false;
+}
+
 // Owner-subobject adjust through a VIRTUAL base, read from the vtable's
 // vbase-offset slot at runtime. A receiver whose STATIC class is not the
 // object's most-derived type (a basic_istream& returned by `s >> a` over
@@ -8925,6 +8962,36 @@ node_t CirBuilder::vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
 					DataDefCLASS *owner, TokenBase *origin)
 {
 	if (!this_arg || !view || !owner || view == owner) return NULL;
+	// CONSTRUCTION lane (task #83 leg 2, the construction-vtables gap):
+	// inside a madc-emitted ctor of a vbase-carrying class, `__this` may
+	// be a BASE SUBOBJECT of a more-derived object, but the prologue
+	// stamped this class's STANDALONE vtable — its vbase-offset slots
+	// hold the standalone layout's values, so the vptr read below returns
+	// the WRONG offset (basic_istream's C2 inside istringstream located
+	// basic_ios at +16 = &__sb_ instead of +120; header-free reducer
+	// tmp/vtt1.cpp printed 0 where g++/clang print 42). The ctor's hidden
+	// __madc_vb params carry the TRUE vbase addresses — use them for a
+	// receiver that IS the object under construction. Any other receiver
+	// of the same static type is a fully-constructed object whose vptr
+	// path stays correct.
+	if (view == m_cur_ctor_vbase_owner && node_bottoms_at_this(this_arg)) {
+		size_t pnv = 0;
+		int pslot = vbase_slot_index(view, owner, pnv);
+		if (pslot >= 0) {
+			char pn[32];
+			snprintf(pn, sizeof(pn), "__madc_vb%d", pslot);
+			node_t sum = id(pn, origin);
+			if (pnv) {
+				node_t charp = node2(N_CAST,
+					node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+					      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+					sum, origin);
+				sum = node2(N_ADD, charp,
+					    integer((long)pnv, origin), origin);
+			}
+			return node2(N_CAST, void_ptr_type(), sum, origin);
+		}
+	}
 	if (!view->has_any_vptr()) return NULL;
 	size_t nv_extra = 0;
 	int slot = vbase_slot_index(view, owner, nv_extra);
@@ -8962,6 +9029,131 @@ node_t CirBuilder::vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
 	append(items, node2(N_EXPR, list(),
 			    node2(N_CAST, void_ptr_type(), sum, origin), origin));
 	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
+}
+
+// The class whose hidden `__madc_vb<i>` ctor params `fd` carries (task #83
+// leg 2): a madc-emitted (emit_symbol empty) ctor of a class with virtual
+// bases receives one `struct V *` per collect_vbases entry, appended after
+// its declared parameters. The params serve the ctor-body vbase locates
+// (vbase_dynamic_adjust's construction lane) and forward down the
+// base-construction chain. External ctors keep the library ABI — never.
+// madc-internal ABI only; the four emission surfaces (func_def, func_proto,
+// Pass 0.75 externs, the call-site appends) key on THIS one predicate.
+DataDefCLASS *CirBuilder::ctor_hidden_vbase_owner(FuncDef *fd, Method *method,
+						  const std::string &fname)
+{
+	if (!fd || !method) return NULL;
+	DataDefCLASS *ocls = method->owner_class;
+	if (!ocls) return NULL;
+	if (!fd->emit_symbol.empty()) return NULL;
+	// Same ctor test as func_def's is_ctor — kept in lock-step.
+	bool is_ctor = (fname == ocls->name + "__" + ocls->name);
+	if (!is_ctor)
+		for (Variable *cv : ocls->ctors)
+			if (cv && (cv->name == fname || cv->type == fd)) {
+				is_ctor = true;
+				break;
+			}
+	if (!is_ctor) return NULL;
+	std::vector<DataDefCLASS *> vbs;
+	std::set<DataDefCLASS *> seen;
+	ocls->collect_vbases(vbs, seen);
+	return vbs.empty() ? NULL : ocls;
+}
+
+// Hidden `struct V *__madc_vb<i>` parameter declarations for `ocls`'s ctor
+// (one per collect_vbases entry, that order — the same indexing the vtable
+// prologue slots and vbase_slot_index use).
+void CirBuilder::append_ctor_vbase_params(node_t param_list, DataDefCLASS *ocls,
+					  TokenBase *origin)
+{
+	std::vector<DataDefCLASS *> vbs;
+	std::set<DataDefCLASS *> seen;
+	ocls->collect_vbases(vbs, seen);
+	for (size_t i = 0; i < vbs.size(); i++) {
+		char pn[32];
+		snprintf(pn, sizeof(pn), "__madc_vb%zu", i);
+		node_t param = simple(N_SPEC_DECL, origin);
+		append(param, node1(N_LIST, class_tag_ref(vbs[i])));
+		append(param, node2(N_DECL, id(pn, origin),
+				    node1(N_LIST, pointer())));
+		append(param, ignore());
+		append(param, ignore());
+		append(param, ignore());
+		append(param_list, param);
+	}
+}
+
+// Forward the current ctor's own __madc_vb params to a base-subobject
+// construction of `callee` (a base of — or delegation within —
+// m_cur_ctor_vbase_owner; transitivity makes every callee vbase a caller
+// vbase). Two-pass: map EVERY callee vbase to a caller slot before
+// appending, so a failure leaves the arg list untouched (caller then takes
+// the static lane). False when no mapping exists.
+bool CirBuilder::append_ctor_vbase_forward_args(node_t args, DataDefCLASS *callee,
+						TokenBase *origin)
+{
+	DataDefCLASS *ownr = m_cur_ctor_vbase_owner;
+	if (!ownr || !callee) return false;
+	std::vector<DataDefCLASS *> vbs;
+	std::set<DataDefCLASS *> seen;
+	callee->collect_vbases(vbs, seen);
+	std::vector<std::pair<int, size_t> > slots;
+	for (DataDefCLASS *V : vbs) {
+		size_t nv = 0;
+		int slot = vbase_slot_index(ownr, V, nv);
+		if (slot < 0) return false;
+		slots.push_back(std::make_pair(slot, nv));
+	}
+	for (size_t i = 0; i < vbs.size(); i++) {
+		char pn[32];
+		snprintf(pn, sizeof(pn), "__madc_vb%d", slots[i].first);
+		node_t sum = id(pn, origin);
+		if (slots[i].second) {
+			node_t charp = node2(N_CAST,
+				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				sum, origin);
+			sum = node2(N_ADD, charp,
+				    integer((long)slots[i].second, origin), origin);
+		}
+		node_t vt = node2(N_TYPE, node1(N_LIST, class_tag_ref(vbs[i])),
+				  node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		append(args, node2(N_CAST, vt, sum, origin));
+	}
+	return true;
+}
+
+// Static complete-object __madc_vb arguments: the receiver IS (or sits
+// inside) a complete object of `complete_cls`, so each vbase lives at its
+// layout offset — `(struct V *)((char *)mint_base() + vbase_offset[V])`.
+// mint_base returns a FRESH node per call (c2mir single parent link).
+// No-op for a vbase-less callee.
+void CirBuilder::append_ctor_vbase_static_args(node_t args, DataDefCLASS *callee,
+					       const std::function<node_t()> &mint_base,
+					       DataDefCLASS *complete_cls,
+					       TokenBase *origin)
+{
+	if (!callee || !complete_cls) return;
+	std::vector<DataDefCLASS *> vbs;
+	std::set<DataDefCLASS *> seen;
+	callee->collect_vbases(vbs, seen);
+	for (DataDefCLASS *V : vbs) {
+		size_t off = complete_cls->vbase_offset.count(V)
+			     ? complete_cls->vbase_offset[V] : 0;
+		node_t adj = mint_base();
+		if (off != 0) {
+			node_t charp = node2(N_CAST,
+				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				adj, origin);
+			adj = node2(N_ADD, charp, integer((long)off, origin),
+				    origin);
+		}
+		node_t vt = node2(N_TYPE, node1(N_LIST, class_tag_ref(V)),
+				  node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		append(args, node2(N_CAST, vt, adj, origin));
+	}
 }
 
 node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
@@ -9997,6 +10189,15 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 			append_ctor_arg(copy_ctor->param_defaults[pi], pi);
 		if (copy_ctor->ctor_trailing_self)
 			append(args, id(RETBUF_NAME, origin));
+		// Hidden __madc_vb args — __retbuf is a complete object of
+		// cdd (no-op for a vbase-less class).
+		if (copy_ctor->emit_symbol.empty()) {
+			std::function<node_t()> vb_mint = [&]() -> node_t {
+				return id(RETBUF_NAME, origin);
+			};
+			append_ctor_vbase_static_args(args, cdd, vb_mint, cdd,
+						      origin);
+		}
 		if (!copy_ctor->emit_symbol.empty()) {
 			std::vector<ExternParam> eparams;
 			eparams.push_back({ {N_VOID}, true });   // this
@@ -10053,6 +10254,19 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		node_t a = list();
 		append(a, dst);
 		append(a, srcp);
+		// Hidden __madc_vb args — the member is a complete object of
+		// mc (no-op for a vbase-less member class).
+		if (!external) {
+			std::function<node_t()> vb_mint = [&]() -> node_t {
+				return node1(N_ADDR,
+					node2(N_DEREF_FIELD,
+					      id(RETBUF_NAME, origin),
+					      id(m.first.c_str(), origin)),
+					origin);
+			};
+			append_ctor_vbase_static_args(a, mc, vb_mint, mc,
+						      origin);
+		}
 		node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
 		CIR_NODE(call)->synth_from_origin = true;
 		out.push_back(node2(N_EXPR, list(), call, origin));
@@ -10560,9 +10774,11 @@ bool CirBuilder::class_needs_base_construction(DataDefCLASS *cdd)
 void CirBuilder::append_base_default_constructs(node_t items,
 						const char *recv_ptr,
 						DataDefCLASS *cdd, size_t off0,
-						TokenBase *origin)
+						TokenBase *origin,
+						DataDefCLASS *complete_cls)
 {
 	if (!cdd) return;
+	if (!complete_cls) complete_cls = cdd;
 	for (const auto &bs : cdd->bases) {
 		if (bs.is_virtual) continue;
 		DataDefCLASS *b = bs.base;
@@ -10570,7 +10786,8 @@ void CirBuilder::append_base_default_constructs(node_t items,
 		size_t off = off0 + cdd->base_offset_of(b);
 		if (!b->has_user_ctor) {
 			append_base_default_constructs(items, recv_ptr, b,
-						       off, origin);
+						       off, origin,
+						       complete_cls);
 			continue;
 		}
 		FuncDef *bctor = class_default_ctor_def(b);
@@ -10587,8 +10804,16 @@ void CirBuilder::append_base_default_constructs(node_t items,
 		node_t bt = node2(N_TYPE, node1(N_LIST, class_tag_ref(b)),
 				  node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 		node_t baddr = node2(N_CAST, bt, adj, origin);
+		// The receiver is a COMPLETE object of complete_cls, so a
+		// vbase-carrying base's hidden __madc_vb args are static
+		// offsets in complete_cls's layout off recv_ptr — never b's
+		// standalone layout off baddr.
+		std::function<node_t()> vb_mint = [&]() -> node_t {
+			return id(recv_ptr, origin);
+		};
 		node_t stmt = ctor_call_assemble(baddr, b, bctor,
-						 std::vector<node_t>(), origin);
+						 std::vector<node_t>(), origin,
+						 false, &vb_mint, complete_cls);
 		if (stmt) append(items, stmt);
 	}
 }
@@ -11351,6 +11576,16 @@ void CirBuilder::implicit_copy_member_reconstructs(DataDefCLASS *cdd,
 			node_t a = list();
 			append(a, dst);
 			append(a, srcp);
+			// Hidden __madc_vb args — the member is a complete
+			// object of mc (no-op for a vbase-less member class).
+			if (!external) {
+				std::function<node_t()> vb_mint = [&]() -> node_t {
+					return node1(N_ADDR, field_chain(lname),
+						     origin);
+				};
+				append_ctor_vbase_static_args(a, mc, vb_mint,
+							      mc, origin);
+			}
 			node_t call = node2(N_CALL, id(sym.c_str(), origin), a,
 					    origin);
 			CIR_NODE(call)->synth_from_origin = true;
@@ -11365,7 +11600,7 @@ void CirBuilder::implicit_copy_member_reconstructs(DataDefCLASS *cdd,
 
 node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 				   const std::vector<TokenBase *> &ctor_args,
-				   TokenBase *origin)
+				   TokenBase *origin, bool vbase_forward)
 {
 	if (!this_addr || !cdd) return NULL;
 
@@ -11478,7 +11713,8 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 			// (mirrors the general call path's argument coercion).
 			explicit_nodes.push_back(upcast_class_ptr(translate_expr(arg), pt, arg, arg));
 	}
-	return ctor_call_assemble(this_addr, cdd, ctor, explicit_nodes, origin);
+	return ctor_call_assemble(this_addr, cdd, ctor, explicit_nodes, origin,
+				  vbase_forward);
 }
 
 // The ONE constructor-call assembler: completes trailing default arguments
@@ -11490,7 +11726,10 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 				      FuncDef *ctor,
 				      const std::vector<node_t> &explicit_nodes,
-				      TokenBase *origin)
+				      TokenBase *origin,
+				      bool vbase_forward,
+				      const std::function<node_t()> *vbase_complete_mint,
+				      DataDefCLASS *vbase_complete_cls)
 {
 	if (!this_addr || !cdd || !ctor) return NULL;
 	std::string sym = ctor_call_symbol(cdd, ctor);
@@ -11501,10 +11740,52 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 	// struct* arg against the void* extern decl trips c2mir's pointer
 	// check (the iostream:80 __ioinit warning).
 	bool external_ctor = !ctor->emit_symbol.empty();
+	// Hidden __madc_vb args (see ctor_hidden_vbase_owner). Forward lane:
+	// map every callee vbase to a caller param up front — an unmappable
+	// slot drops the whole call to the static lane. Static lane without a
+	// caller-supplied mint: the receiver node holds a single parent link,
+	// so bind it ONCE into a scoped local and mint fresh ids off it (the
+	// class_ctor_call_addr ctorless arm's __mdc pattern).
+	std::vector<DataDefCLASS *> callee_vbs;
+	if (!external_ctor) {
+		std::set<DataDefCLASS *> cvseen;
+		cdd->collect_vbases(callee_vbs, cvseen);
+	}
+	bool can_forward = false;
+	if (!callee_vbs.empty() && vbase_forward && m_cur_ctor_vbase_owner) {
+		can_forward = true;
+		for (DataDefCLASS *V : callee_vbs) {
+			size_t nv = 0;
+			if (vbase_slot_index(m_cur_ctor_vbase_owner, V, nv) < 0) {
+				can_forward = false;
+				break;
+			}
+		}
+	}
+	bool bind_local = !callee_vbs.empty() && !can_forward
+			  && !vbase_complete_mint;
+	char ccname[40];
+	node_t bind_decl = NULL;
+	node_t self_use = this_addr;
+	if (bind_local) {
+		snprintf(ccname, sizeof(ccname), "__madc_cc_%d",
+			 m_strtmp_counter++);
+		bind_decl = simple(N_SPEC_DECL, origin);
+		append(bind_decl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
+		append(bind_decl, node2(N_DECL, id(ccname, origin),
+					node1(N_LIST, pointer())));
+		append(bind_decl, ignore());
+		append(bind_decl, ignore());
+		append(bind_decl, node2(N_CAST,
+			node2(N_TYPE, node1(N_LIST, class_tag_ref(cdd)),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			this_addr, origin));
+		self_use = id(ccname, origin);
+	}
 	node_t args = list();
 	append(args, external_ctor
-		     ? node2(N_CAST, void_ptr_type(), this_addr, origin)
-		     : this_addr);
+		     ? node2(N_CAST, void_ptr_type(), self_use, origin)
+		     : self_use);
 	for (node_t en : explicit_nodes)
 		append(args, en);
 	for (size_t pi = explicit_nodes.size() + 1;
@@ -11524,9 +11805,29 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 			append(args, translate_expr(darg));
 	}
 	if (ctor->ctor_trailing_self)
-		append(args, external_ctor
-			     ? node2(N_CAST, void_ptr_type(), this_addr, origin)
-			     : this_addr);
+		append(args, bind_local
+			     ? (node_t)id(ccname, origin)
+			     : (external_ctor
+				? node2(N_CAST, void_ptr_type(), this_addr, origin)
+				: this_addr));
+	// Hidden __madc_vb args, after every declared parameter (lock-step
+	// with append_ctor_vbase_params' position in the definition).
+	if (!callee_vbs.empty()) {
+		if (can_forward) {
+			append_ctor_vbase_forward_args(args, cdd, origin);
+		} else if (vbase_complete_mint) {
+			append_ctor_vbase_static_args(args, cdd,
+				*vbase_complete_mint,
+				vbase_complete_cls ? vbase_complete_cls : cdd,
+				origin);
+		} else {
+			std::function<node_t()> mint = [&]() -> node_t {
+				return id(ccname, origin);
+			};
+			append_ctor_vbase_static_args(args, cdd, mint, cdd,
+						      origin);
+		}
+	}
 	if (external_ctor) {
 		std::vector<ExternParam> eparams;
 		eparams.push_back({ {N_VOID}, true });
@@ -11546,7 +11847,13 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 	}
 	referenced_funcs.insert(sym);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
-	return node2(N_EXPR, list(), call, origin);
+	node_t stmt = node2(N_EXPR, list(), call, origin);
+	if (!bind_decl)
+		return stmt;
+	node_t blk = list();
+	append(blk, bind_decl);
+	append(blk, stmt);
+	return node2(N_BLOCK, list(), blk, origin);
 }
 
 // The pure-virtual slot (if any) that makes `cdd` ABSTRACT: a vtable slot
@@ -11813,6 +12120,16 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		append(args, external_ctor
 			     ? node2(N_CAST, void_ptr_type(), self2, origin)
 			     : self2);
+	}
+	// Hidden __madc_vb args — named-variable complete-object lane: the
+	// vbase addresses are static offsets in cdd's own layout off a fresh
+	// `&v` per arg (see ctor_call_assemble / append_ctor_vbase_static_args;
+	// no-op for a vbase-less class).
+	if (!external_ctor) {
+		std::function<node_t()> vb_mint = [&]() -> node_t {
+			return node1(N_ADDR, id(vname.c_str(), origin), origin);
+		};
+		append_ctor_vbase_static_args(args, cdd, vb_mint, cdd, origin);
 	}
 		// A ctor bound to an EXTERNAL symbol MUST be declared with a typed
 		// prototype, exactly like emit_symbol_method_call does for methods. Without
@@ -15189,6 +15506,11 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 			append(param_list, param_decl(capt_ptr, cv->name.c_str(),
 						      std::string()));
 		}
+	// Hidden __madc_vb params for a madc-emitted vbase-carrying ctor —
+	// the prototype must mirror func_def's signature (lock-step).
+	if (DataDefCLASS *vbown =
+		ctor_hidden_vbase_owner(fd, tf->method, tf->var.name))
+		append_ctor_vbase_params(param_list, vbown, tf);
 	if (fd->is_varargs)
 		append(param_list, simple(N_DOTS));
 
@@ -21145,6 +21467,14 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 #endif
 	Method *saved_cur_method = m_cur_method;
 	m_cur_method = tf->method;
+	// Hidden-vbase-param context (task #83 leg 2): set BEFORE body
+	// translation so a ctor-body vbase locate on `__this` reads the
+	// hidden __madc_vb params (vbase_dynamic_adjust's construction lane).
+	// NULL for every non-ctor — a lambda/nested fn hoisted from a ctor
+	// body must NOT reference params it does not have.
+	DataDefCLASS *saved_ctor_vbase_owner = m_cur_ctor_vbase_owner;
+	m_cur_ctor_vbase_owner =
+		ctor_hidden_vbase_owner(fd, tf->method, tf->var.name);
 	// Fresh defer-scope context per function body (a nested/hoisted function
 	// must not see the enclosing function's pending defers).
 	std::vector<TokenCpnd *> saved_defer_scopes;
@@ -21324,6 +21654,11 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			append(param_list, param_decl(fd->parameters[i], pname, ptypedef));
 		}
 	}
+	// Hidden `struct V *__madc_vb<i>` params for a madc-emitted ctor of a
+	// vbase-carrying class — kept in lock-step with func_proto and the
+	// Pass 0.75 externs (see ctor_hidden_vbase_owner).
+	if (m_cur_ctor_vbase_owner)
+		append_ctor_vbase_params(param_list, m_cur_ctor_vbase_owner, tf);
 	if (fd->is_varargs)
 		append(param_list, simple(N_DOTS));
 
@@ -21523,7 +21858,8 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				fd->ctor_initializers.size());
 #endif
 			node_t stmt = class_ctor_call_addr(id("__this", tf), ocls,
-							   delegating_ci->args, tf);
+							   delegating_ci->args, tf,
+							   /*vbase_forward=*/true);
 			flush_pending_stmts(prologue);
 			if (stmt) prologue.push_back(stmt);
 		}
@@ -21550,7 +21886,8 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 					find_base_initializer(ocls, b, fd)) {
 					node_t stmt = class_ctor_call_addr(
 						base_addr_at(b, ocls->base_offset_of(b)),
-						b, ci->args, tf);
+						b, ci->args, tf,
+						/*vbase_forward=*/true);
 					flush_pending_stmts(prologue);
 					if (stmt) {
 						prologue.push_back(stmt);
@@ -21563,13 +21900,27 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 					// ctor list — a RENAMED nested class registers
 					// its ctor as Class__SourceName, so the blind
 					// Class__Class composition is an undefined
-					// import there.
+					// import there. A resolved ctor routes through
+					// the ONE assembler (default-arg fill + hidden
+					// __madc_vb forwarding — this receiver is a
+					// base SUBOBJECT of the object under
+					// construction); the composed-name fallback
+					// covers a ctor the overload scorer cannot
+					// resolve.
 					FuncDef *bctor = select_ctor_overload(
 						b, std::vector<TokenBase *>());
-					prologue.push_back(base_call_at(b,
-						ocls->base_offset_of(b),
-						bctor ? ctor_call_symbol(b, bctor)
-						      : b->name + "__" + b->name));
+					node_t bstmt = bctor
+						? ctor_call_assemble(
+							base_addr_at(b, ocls->base_offset_of(b)),
+							b, bctor,
+							std::vector<node_t>(), tf,
+							/*vbase_forward=*/true)
+						: NULL;
+					if (!bstmt)
+						bstmt = base_call_at(b,
+							ocls->base_offset_of(b),
+							b->name + "__" + b->name);
+					prologue.push_back(bstmt);
 					done_bases.insert((int)bi);
 				}
 			}
@@ -21764,12 +22115,14 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		// Re-emit with the wrapped body; the prologue runs once at main entry.
 		node_t out = node4(N_FUNC_DEF, ret_type, decl, list(), body, tf);
 		m_cur_method = saved_cur_method;
+		m_cur_ctor_vbase_owner = saved_ctor_vbase_owner;
 		m_defer_scopes.swap(saved_defer_scopes);
 		return out;
 	}
 
 	node_t out = node4(N_FUNC_DEF, ret_type, decl, list(), body, tf);
 	m_cur_method = saved_cur_method;
+	m_cur_ctor_vbase_owner = saved_ctor_vbase_owner;
 	m_defer_scopes.swap(saved_defer_scopes);
 	return out;
 }
@@ -23997,6 +24350,14 @@ node_t CirBuilder::translate_module(Program *prog)
 							      ptypedef));
 			}
 		}
+		// Hidden __madc_vb params for a madc-emitted vbase-carrying
+		// ctor — this extern must mirror func_def/func_proto or c2mir
+		// rejects the later definition ("incompatible types of ...
+		// declarations") and arity-checks every call.
+		if (DataDefCLASS *vbown = ctor_hidden_vbase_owner(
+				fd, fvar ? (Method *)fvar->data : NULL,
+				fvar ? fvar->name : fname))
+			append_ctor_vbase_params(param_list, vbown, NULL);
 		if (fd->is_varargs)
 			append(param_list, simple(N_DOTS));
 
