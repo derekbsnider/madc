@@ -54037,6 +54037,27 @@ bool Program::paren_group_is_nonclass_direct_init()
 	    return true;
 	if ( findVariable(nm) )
 	    return true;
+	// A QUALIFIED name: a parameter-declaration may begin with a qualified
+	// TYPE (`f(std::size_t)` is a nested function DECLARATION), so shape
+	// alone cannot decide — [dcl.ambig.res] reads the group as a
+	// declaration ONLY when the content can be a parameter-declaration.
+	// Trial-resolve the qualified head as a declared type on a rewound
+	// cursor: a name that does NOT resolve to a type — `std::move(__x)`
+	// (a function), `Cls::val` (a static member), `Color::red` (an
+	// enumerator) — cannot begin a parameter-declaration, so the group is
+	// direct-initialization (libc++'s std::swap body:
+	// `_Tp __t(std::move(__x));` instantiated at a concrete _Tp).
+	if ( tokens.size() > 2 && tokens[2]
+	  && tokens[2]->id() == TokenID::tkNS )
+	{
+	    TokenStream::Pos saved = tokens.savepos();
+	    nextToken();			// the '('
+	    TokenBase *head = nextToken();	// the qualified head identifier
+	    TokenDataType *resolved =
+		resolve_declared_type_token(head, true, true);
+	    tokens.restore(saved);
+	    return resolved == NULL;
+	}
     }
     return false;
 }

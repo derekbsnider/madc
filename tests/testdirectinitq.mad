@@ -1,0 +1,21 @@
+// [dcl.ambig.res]: `T name(std::move(x));` is DIRECT-INITIALIZATION, not a
+// nested function declaration — a QUALIFIED name that does not resolve to a
+// type cannot begin a parameter-declaration. libc++'s std::swap body
+// (`_Tp __t(std::move(__x));`) instantiated at a concrete _Tp is the shape.
+#include <utility>
+#include <cstdio>
+template <class T>
+struct Box {
+    T a, b;
+    void flip() { T t(std::move(a)); a = std::move(b); b = std::move(t); }
+};
+int main()
+{
+    Box<int*> w;
+    int x = 1, y = 2;
+    w.a = &x;
+    w.b = &y;
+    w.flip();
+    printf("%d %d\n", *w.a, *w.b);
+    return 0;
+}
