@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  fdf80bb5 (2026-07-31) on feature/libcxx-parity4-claude
-# Result:       814 passed / 76 failed / 0 timed out / 10 skipped
+# Measured at:  6980ba1a (2026-07-31) on feature/libcxx-parity4-claude
+# Result:       815 passed / 76 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -246,6 +246,23 @@
 #                         [why: unresolved dependent member call]; optional
 #                         default-ctor runtime (has_value garbage) is the
 #                         other visible next link.
+#   6980ba1a  815 /  76   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways); +1 = the NEW GATE testptrviab. TWO-LAYER
+#                         SFINAE viability fix: score_arg_to_param's both-
+#                         non-class-pointee arm dropped [conv.ptr] (ANY
+#                         pointer scored viable against ANY pointer — now
+#                         identity/cv-widening=5, numeric pointees by rawtype
+#                         representation (size_t* binds std::size_t*, the
+#                         stod/fstream adjudication), void*=3, else NO
+#                         conversion); reselect_method_overload kept the
+#                         arity pick on a scored miss — inside an unevaluated
+#                         operand that typed ill-formed calls well-formed, so
+#                         __has_destroy<allocator<Node>, pair*> folded TRUE
+#                         and allocator_traits::destroy bound __a.destroy.
+#                         The map cluster's frontier moved __tree:890 ->
+#                         "tsubst: skipped body with no tsubst coverage"
+#                         @string:709 (map1) / char_traits.h:269 (testmap) —
+#                         the skipped-body KIND is the next link.
 #                         single move of the campaign. Rung 13 of #78: the testclass
 #                         SIGSEGV was FOUR compiler roots — (1) reference-typed arg
 #                         bound to a VIRTUAL-base reference param passed unadjusted
