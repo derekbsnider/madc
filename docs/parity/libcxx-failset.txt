@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  a8ab53a6 (2026-07-31) on feature/libcxx-parity2-claude
-# Result:       776 passed / 103 failed / 0 timed out / 10 skipped
+# Measured at:  7e416edc (2026-07-31) on feature/libcxx-parity2-claude
+# Result:       803 passed / 80 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -220,29 +220,37 @@
 #                         DelimDepth, ref-return operator chains, out-of-line DTOR
 #                         attach): vector<int>::push_back RUNS; +5 more passes are
 #                         new gate tests
-test.mad
-test5.mad
-testalignas.mad
+#   7e416edc  803 /  80   ⚡⚡⚡ 23 FIXED, ZERO newly broken (diffed) — the biggest
+#                         single move of the campaign. Rung 13 of #78: the testclass
+#                         SIGSEGV was FOUR compiler roots — (1) reference-typed arg
+#                         bound to a VIRTUAL-base reference param passed unadjusted
+#                         (width() read __precision_: phantom pad + precision clobber
+#                         in EVERY stream test); (2) cast-to-reference ctor args
+#                         (spelled-out std::forward) scored as Tag* so libc++ tag-
+#                         dispatch ctors never matched (+ binding twin); (3) value-init
+#                         mem-init on a plain-struct member emitted NOTHING — every
+#                         default-constructed string rep was frame garbage; (4)
+#                         base-to-derived reference downcast untyped (use_facet).
+#                         FIXED: test test5 testalignas testarraymethods
+#                         testcastparenexpr testclass testclassassign testclassreturn
+#                         testctorstring testenumclass testfriendkeyword
+#                         testglobalrefret testimplcopy testmacrosubst
+#                         testmemberaliastmpl testmemberarrowcall testmembernamestd
+#                         testnsdmi testpseudodtor teststringmethods teststruct2
+#                         testvector testvptrmember (+3 more passes are new gates)
 testarraymember.mad
-testarraymethods.mad
 testarraysubscript.mad
 testcapture.mad
 testcastarrow.mad
-testcastparenexpr.mad
 testcastsubscript.mad
 testcin.mad
-testclass.mad
-testclassassign.mad
-testclassreturn.mad
 testclassstaticitanium.mad
 testcompare_realhdr.mad
 testconstructible.mad
 testcontainerdtor.mad
-testctorstring.mad
 testdefaultedcmp_realhdr.mad
 testdefer.mad
 testderefpreinc.mad
-testenumclass.mad
 testevalexterncapture.mad
 testexterncstringptr.mad
 testforeach.mad
@@ -251,12 +259,9 @@ testforeachheaderbody.mad
 testforinitscope.mad
 testfortypedcomma.mad
 testfreezerun.mad
-testfriendkeyword.mad
 testfstream.mad
-testglobalrefret.mad
 testheaderstringops.mad
 testifconstexpr.mad
-testimplcopy.mad
 testincludenext.mad
 testinvocable.mad
 testlambda.mad
@@ -265,7 +270,6 @@ testlang.mad
 testlateinstproto.mad
 testloop.mad
 testmacrocharlit.mad
-testmacrosubst.mad
 testmadc_ns.mad
 testmadceval.mad
 testmadcevalexpr.mad
@@ -277,16 +281,11 @@ testmanipview.mad
 testmap.mad
 testmapiter.mad
 testmathheader.mad
-testmemberaliastmpl.mad
-testmemberarrowcall.mad
-testmembernamestd.mad
 testns.mad
-testnsdmi.mad
 testopinherit.mad
 testperl.mad
 testphp.mad
 testprefer.mad
-testpseudodtor.mad
 testregex.mad
 testrewritten_realhdr.mad
 testrust.mad
@@ -299,7 +298,6 @@ teststdstringconv.mad
 teststreambool.mad
 teststringclass.mad
 teststringglobal.mad
-teststringmethods.mad
 teststringobj.mad
 teststringplus.mad
 teststringplus_realhdr.mad
@@ -310,7 +308,6 @@ teststringsubscript.mad
 teststrlitplus_realhdr.mad
 teststrplusbody_realhdr.mad
 teststrrefparam_realhdr.mad
-teststruct2.mad
 teststructinitnested.mad
 testsubscript.mad
 testsysobject.mad
@@ -321,5 +318,3 @@ testtuple.mad
 testusefacet_realhdr.mad
 testusing.mad
 testvbasedyn.mad
-testvector.mad
-testvptrmember.mad
