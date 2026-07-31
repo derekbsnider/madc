@@ -11818,10 +11818,11 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 		// The INTERNAL name is the ctor Variable's own emit name (the
 		// deferred-body key and the definition's var_emit_name — an
 		// overload carries its __oN suffix there, which the blind
-		// Cls__Cls composition would drop).
-		sym = !ctor->local_emit_name.empty()
-			? ctor->local_emit_name
-			: cdd->name + "__" + cdd->name;
+		// Cls__Cls composition would drop). Deliberately NOT
+		// call_emit_symbol: the demotion exists to bypass its
+		// emit_symbol arm, and its local_emit_name arm is empty here
+		// by the mutual-exclusivity invariant (this ctor IS external).
+		sym = cdd->name + "__" + cdd->name;
 		for (Variable *cv : cdd->ctors)
 			if (cv && cv->type == ctor) {
 				sym = var_emit_name(*cv);
