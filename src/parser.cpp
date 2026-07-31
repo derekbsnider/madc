@@ -34110,6 +34110,16 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			// resolver searches all of these; NULL still errors here.
 			pgm.nextToken(); // consume the leading identifier
 			mtype = pgm.resolve_declared_type_token(tn, true, true);
+			// [class]p2 injected-class-name: inside `struct node
+			// { ... }` the struct's OWN name is a type in C++
+			// without the `struct` keyword — the same in-progress
+			// type the pre-registered tag serves for the
+			// elaborated `struct node *next;` spelling below. C
+			// has no injected name and keeps requiring the
+			// keyword.
+			if ( !mtype && !pgm.is_c_mode() && tag
+			  && tname == tag->spelling() )
+			    mtype = new TokenDataType(dds->name.c_str(), *dds);
 			if ( !mtype )
 			    pgm.Throw(tn) << "Expecting type in struct definition, got '" << tname << "'" << flush;
 		    }
