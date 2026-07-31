@@ -35862,9 +35862,28 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 	std::map<std::string, std::vector<OutOfLineMemberDef> >::iterator oit =
 	    out_of_line_member_defs.find(tmpl_key);
 	if ( oit != out_of_line_member_defs.end() )
+	{
+	    // A ctor/dtor's registration name carries the INSTANCE's flat
+	    // name (`__split_buffer_int32_t_..._R`, `~__split_buffer_...`),
+	    // while the captured out-of-line definition records the
+	    // TEMPLATE's own name (`__split_buffer`, `~__split_buffer`) —
+	    // methods matched, ctors/dtors never did, so every template
+	    // instance's ctor/dtor bound the external Itanium symbol that
+	    // nothing exports (vecpb1's undefined
+	    // _ZNSt3__114__split_bufferIiRNS_9allocatorIiEEED1Ev). Compare
+	    // in the template's spelling for those kinds.
+	    std::string want = mname;
+	    if ( kind == CppSymKind::Ctor || kind == CppSymKind::Dtor )
+	    {
+		size_t sep = tmpl_key.rfind("::");
+		std::string src = sep == std::string::npos
+		    ? tmpl_key : tmpl_key.substr(sep + 2);
+		want = (kind == CppSymKind::Dtor ? "~" + src : src);
+	    }
 	    for ( size_t oi = 0; oi < oit->second.size(); ++oi )
-		if ( oit->second[oi].member_name == mname )
+		if ( oit->second[oi].member_name == want )
 		    return;   // madc-instantiated out-of-line; leave emit_symbol unset
+	}
     }
     // A signature whose spelling array is absent or misaligned (a restore or
     // serve gap) must not mangle: the fabricated name drops parameters and can
@@ -35897,6 +35916,33 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
     }
     DBG(std::cout << "bind_declared_cpp_symbol(): " << cls << "::" << mname
 	<< " -> " << fd->emit_symbol << std::endl);
+    // Env-gated probe (MADC_BIND_PROBE=<substr>): every Itanium bind whose
+    // class matches — the mangled-direct vs compile-from-headers diagnostic
+    // (task #44's __split_buffer dtor hunt).
+    {
+	static const char *bp = ::getenv("MADC_BIND_PROBE");
+	if ( bp && *bp && ddc->name.find(bp) != std::string::npos )
+	{
+	    fprintf(stderr, "[bind] %s::%s -> %s (kind=%d declonly=%d"
+		    " extern_tmpl=%d ext_def=%d)\n",
+		    ddc->name.c_str(), mname.c_str(), fd->emit_symbol.c_str(),
+		    (int)kind, (int)fd->declaration_only,
+		    (int)ddc->is_extern_template_instantiated,
+		    (int)ddc->is_externally_defined());
+	    size_t lt2 = ddc->canonical_cpp_spelling().find('<');
+	    std::string k2 = lt2 == std::string::npos
+		? ddc->canonical_cpp_spelling()
+		: ddc->canonical_cpp_spelling().substr(0, lt2);
+	    std::map<std::string, std::vector<OutOfLineMemberDef> >::iterator
+		o2 = out_of_line_member_defs.find(k2);
+	    fprintf(stderr, "[bind]   ool key='%s' found=%d", k2.c_str(),
+		    o2 != out_of_line_member_defs.end());
+	    if ( o2 != out_of_line_member_defs.end() )
+		for ( size_t oi = 0; oi < o2->second.size() && oi < 8; ++oi )
+		    fprintf(stderr, " '%s'", o2->second[oi].member_name.c_str());
+	    fprintf(stderr, "\n");
+	}
+    }
 }
 
 // Make an overload-unique internal symbol for a member/ctor: the canonical
@@ -43055,6 +43101,20 @@ static bool skipped_template_outofline_member(
     size_t ni = skipped_template_function_declarator_name_index(tokens, &member);
     if ( ni == tokens.size() || ni < 2 || member.empty() )
 	return false;
+    // An out-of-line DTOR definition (`Class<_Tp,_A>::~Class() {...}` —
+    // __split_buffer's is exactly so): the `~` sits between the `::` and the
+    // declarator name. Record the member as `~Class` so the attach matcher
+    // and the Itanium-bind skip both see the dtor's own name; without this
+    // the recognizer declined and the instance's dtor bound an external
+    // Itanium symbol nothing exports.
+    if ( tokens[ni - 1] && tokens[ni - 1]->id() == TokenID::tkBnot )
+    {
+	if ( ni < 3 || !tokens[ni - 2]
+	  || tokens[ni - 2]->id() != TokenID::tkNS )
+	    return false;
+	member = "~" + member;
+	--ni;			// the walk below starts left of the `::`
+    }
     if ( !tokens[ni - 1] || tokens[ni - 1]->id() != TokenID::tkNS )
 	return false;   // member name not preceded by `::` -> not qualified
     size_t j = ni - 2;
@@ -43403,6 +43463,11 @@ void Program::register_outofline_member_instantiations(
 	// by ctor-ness instead, and disambiguate sibling ctor overloads (pair's
 	// piecewise 2-pack vs the private indexed 4-param ctor) by template-param count.
 	bool def_is_ctor = (def.member_name == class_name);
+	// A DESTRUCTOR out-of-line def (`__split_buffer<_Tp,_A>::~__split_buffer()`)
+	// records `~` + the SOURCE class spelling; the instance's registered dtor
+	// display-name carries the FLAT instance name — match by dtor-ness (a
+	// class has exactly one destructor).
+	bool def_is_dtor = (def.member_name == "~" + class_name);
 	// The plain-ctor arm below disambiguates sibling ctor overloads by
 	// user-parameter arity; compute it once per def.
 	size_t def_arity = (def_is_ctor && !def.is_member_template)
@@ -43531,7 +43596,18 @@ void Program::register_outofline_member_instantiations(
 			  << " tparams=" << cfd->template_param_names.size()
 			  << std::endl;
 #endif
-	    if ( def_is_ctor && !def.is_member_template )
+	    if ( def_is_dtor )
+	    {
+		// The dtor twin of the plain-ctor arm below: match by
+		// dtor-ness (one dtor per class) — the display names cannot
+		// match by string (source spelling vs flat instance name).
+		if ( cfd->is_member_template )
+		    continue;
+		if ( cfd->method_display_name.empty()
+		  || cfd->method_display_name[0] != '~' )
+		    continue;
+	    }
+	    else if ( def_is_ctor && !def.is_member_template )
 	    {
 		// A PLAIN out-of-line ctor definition (`template<...>
 		// bs<N,M>::bs(...) {...}` — libc++ bitset's __bitset chain):
