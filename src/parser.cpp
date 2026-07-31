@@ -4782,6 +4782,46 @@ static bool datadef_has_unresolved_dependent_surface(DataDef *dd)
     return false;
 }
 
+// Names WHICH node makes datadef_has_unresolved_dependent_surface() true, so
+// a refusal on a spelled-concrete type (a base shell minted opaque mid-flight
+// and never re-derived) is diagnosable from the error alone. Walks the same
+// chain as the predicate; returns "" when the type has no dependent surface.
+static std::string dependent_surface_reason(DataDef *dd,
+					    std::set<DataDefCLASS *> *seen = NULL)
+{
+    if ( !dd )
+	return std::string();
+    if ( dd->is_template_param() )
+	return dd->name + " is a template parameter";
+    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+	return dependent_surface_reason(ptr->base_type, seen);
+    if ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(dd) )
+	return dependent_surface_reason(arr->element_type, seen);
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+    if ( !cls )
+	return std::string();
+    if ( cls->is_dependent_placeholder )
+	return cls->name + " is a dependent placeholder";
+    if ( cls->has_dependent_surface )
+	return cls->name + " carries a dependent surface";
+    std::set<DataDefCLASS *> local_seen;
+    if ( !seen )
+	seen = &local_seen;
+    if ( seen->count(cls) )
+	return std::string();
+    seen->insert(cls);
+    for ( size_t i = 0; i < cls->bases.size(); ++i )
+    {
+	std::string r = dependent_surface_reason(cls->bases[i].base, seen);
+	if ( !r.empty() )
+	    return cls->name + ": base " + r;
+    }
+    std::string r = dependent_surface_reason(cls->base_class, seen);
+    if ( !r.empty() )
+	return cls->name + ": base " + r;
+    return std::string();
+}
+
 DataDefCLASS *Program::materialize_dependent_member_type(DataDef *owner,
 						       const std::string &member_name)
 {
@@ -7366,9 +7406,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // as a template ARGUMENT, resolved BEFORE TokenCLASS::parse registers the
     // name): the cache-hit branch above cannot serve it, so bound it here with
     // the same opaque placeholder — pending completion recognizes the shell.
-    bool recursive_opaque = (want_sticky
-	&& variadic_inst_in_progress.count(registered_mangled))
-	|| class_inst_in_progress.count(registered_mangled);
+    bool recursive_sticky = want_sticky
+	&& variadic_inst_in_progress.count(registered_mangled) != 0;
+    bool recursive_inflight = class_inst_in_progress.count(registered_mangled) != 0;
+    bool recursive_opaque = recursive_sticky || recursive_inflight;
     if ( td.body.empty() || (pack_real_inst && dependent_surface)
       || placeholder_arg || recursive_opaque )
     {
@@ -7376,8 +7417,19 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	DataDefCLASS *fwd = new DataDefCLASS(registered_mangled, 0, DataType::dtRESERVED);
 	// A bodyless declaration with concrete arguments is incomplete, not
 	// dependent; pending completion still recognizes it by its empty shell.
+	// The same holds for a pre-registration re-entry of an instantiation in
+	// flight up-stack (a base clause naming the enclosing specialization as
+	// a template ARGUMENT): its key is fully concrete and the enclosing
+	// parse completes this very object (register_class_shell reuses it), so
+	// it is incomplete, NOT dependent — the cache-hit twin branch above
+	// already serves the post-registration ordering with a clean shell.
+	// Branding it outlives the transient: the completed class re-stamps its
+	// own flags, but anything instantiated AGAINST the branded shell keeps
+	// has_dependent_surface forever (libc++ allocator<int>'s
+	// __non_trivial_if base — every trait fold on allocator then refused,
+	// and is_trivially_destructible silently answered 0).
 	bool unresolved_surface = dependent_surface || placeholder_arg
-				|| recursive_opaque;
+				|| recursive_sticky;
 	fwd->set_canonical_spelling(canon);
 	fwd->is_dependent_placeholder = unresolved_surface;
 	stamp_opaque_mint_context(fwd);
@@ -11733,7 +11785,8 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	if ( datadef_has_unresolved_dependent_surface(a.dd) )
 	    Throw(op_tb) << name << "(...) on a dependent type argument ("
 			 << (a.dd ? a.dd->name : std::string("?"))
-			 << ") cannot fold" << flush;
+			 << ") cannot fold ["
+			 << dependent_surface_reason(a.dd) << "]" << flush;
 	args.push_back(a);
 	TokenBase *sep = nextToken();
 	if ( sep && sep->id() == TokenID::tkComma )
