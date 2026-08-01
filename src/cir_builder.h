@@ -819,9 +819,15 @@ public:
 	node_t flavor_marshal_thunk_def(const char *thunk_sym,
 					const std::string &host_sym,
 					class FuncDef *fd);
+	bool flavor_marshal_string_syms(class DataDefCLASS *scr,
+					std::string &cstr_sym,
+					std::string &size_sym,
+					std::string &ctor_sym,
+					std::string &dtor_sym);
 	std::map<std::string, std::string> m_flvmar_thunks;	// callee sym -> thunk ("" = miss)
 	std::vector<node_t> m_flvmar_defs;
 	int m_flvmar_counter = 0;
+	bool m_flvmar_generating = false;	// reentrancy: no thunks for a thunk's own callees
 	// std:: free-function template instantiations: one FuncDef per mangled
 	// symbol, plus a per-call memo (NULL = checked, not such a call).
 	std::map<class TokenCallFunc *, class FuncDef *> m_free_fn_inst_by_call;

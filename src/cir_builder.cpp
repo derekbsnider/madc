@@ -344,7 +344,14 @@ std::string CirBuilder::call_emit_symbol(FuncDef *fd, const std::string &default
 
 std::string CirBuilder::call_emit_symbol(const Variable &v, FuncDef *fd) const
 {
-	return call_emit_symbol(fd, var_emit_name(v));
+	std::string sym = call_emit_symbol(fd, var_emit_name(v));
+	// task #69: the flavor-marshalling swap lives HERE — the one owner every
+	// call lane's symbol flows through (hooking only call_target_emit_name
+	// missed the W2 free-function lane's deref-call emitter). The thunk
+	// memoizes, so const-ness is logically preserved.
+	std::string thunk = const_cast<CirBuilder *>(this)
+				->flavor_marshal_thunk(sym, fd);
+	return thunk.empty() ? sym : thunk;
 }
 
 std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
@@ -355,6 +362,26 @@ std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
 static bool external_symbol_available(const std::string &sym)
 {
 	return !sym.empty() && dlsym(RTLD_DEFAULT, sym.c_str()) != NULL;
+}
+
+// task #69: a symbol qualifies for flavor marshalling ONLY when it is
+// implemented by the HOST object itself (bin/madc or libmadc.so — where the
+// ns_* implementations live). A dlsym hit from a stdlib .so (libc++'s own
+// NSt3__1 method exports!) is a script-flavor library entry the script must
+// call RAW — marshalling it would feed a host-flavor temp to a script-flavor
+// callee. The anchor is any function compiled into this translation unit:
+// it links into the same object as the host namespaces in both the exe and
+// the .so build, so comparing module bases needs no path knowledge.
+static bool symbol_is_host_implemented(const std::string &sym)
+{
+	void *addr = sym.empty() ? NULL : dlsym(RTLD_DEFAULT, sym.c_str());
+	if (!addr)
+		return false;
+	Dl_info di, anchor;
+	if (!dladdr(addr, &di)
+	    || !dladdr((void *)&external_symbol_available, &anchor))
+		return false;
+	return di.dli_fbase == anchor.dli_fbase;
 }
 
 // The mangled-direct link test, ONE owner for every bind site (std free fn,
@@ -4500,9 +4527,6 @@ std::string CirBuilder::call_target_emit_name(TokenCallFunc *tcf,
 	if (fd_out)
 		*fd_out = fd;
 	std::string sym = v ? func_emit_name(*v, fd) : std::string();
-	std::string thunk = flavor_marshal_thunk(sym, fd);
-	if (!thunk.empty())
-		return thunk;
 	flavor_marshal_probe(sym, fd);
 	return sym;
 }
@@ -4568,32 +4592,90 @@ std::string CirBuilder::flavor_marshal_thunk(const std::string &sym,
 					     FuncDef *fd)
 {
 	static const char *arm = getenv("MADC_FLVMAR");
-	if (!arm || *arm != '1')
+	static const char *fmt_probe = getenv("MADC_FLVMAR_PROBE");
+	if (arm && *arm == '0')
+		return std::string();	// escape hatch (default: ON)
+	if (sym.empty() || !flavor_marshal_candidate(fd)) {
+		if (fmt_probe && fd && !sym.empty()
+		    && madc_mangle_active_stdlib() == mstdlibLlvm)
+			fprintf(stderr, "[flvmar-t] %s DECLINE: not a candidate "
+				"(params=%zu)\n", sym.c_str(),
+				fd->parameters.size());
 		return std::string();
-	if (sym.empty() || !flavor_marshal_candidate(fd))
-		return std::string();
+	}
+	if (m_flvmar_generating)
+		return std::string();	// symbols resolved INSIDE a thunk body
 	std::map<std::string, std::string>::iterator mi =
 		m_flvmar_thunks.find(sym);
 	if (mi != m_flvmar_thunks.end())
 		return mi->second;
 	m_flvmar_thunks[sym] = std::string();	// memo the miss until proven
 	std::string host = sym;
-	if (!dlsym(RTLD_DEFAULT, host.c_str())) {
+	if (!symbol_is_host_implemented(host)) {
 		host = m_prog
 			? m_prog->host_flavor_fn_symbol(fd->namespace_name,
 					fd->function_display_name, fd)
 			: std::string();
-		if (host.empty() || !dlsym(RTLD_DEFAULT, host.c_str()))
+		if (!symbol_is_host_implemented(host)) {
+			if (fmt_probe)
+				fprintf(stderr, "[flvmar-t] %s DECLINE: twin "
+					"not host-implemented (%s)\n",
+					sym.c_str(), host.c_str());
 			return std::string();
+		}
 	}
+	m_flvmar_generating = true;
 	char tn[48];
 	snprintf(tn, sizeof(tn), "__madc_flvmar_%d", m_flvmar_counter++);
 	node_t def = flavor_marshal_thunk_def(tn, host, fd);
+	m_flvmar_generating = false;
 	if (!def)
 		return std::string();
 	m_flvmar_defs.push_back(def);
 	m_flvmar_thunks[sym] = tn;
 	return tn;
+}
+
+// The shared carrier-symbol set for a marshalling site: the SCRIPT flavor's
+// c_str/size member symbols on the carrier class, and the HOST flavor's
+// string ctor (const char*, size_type, const allocator&) + D1 dtor, minted
+// through the mangler under host state and dlsym-verified. Registers protos
+// and referenced_funcs for the script members. False = this site cannot
+// marshal (the loud original behavior stays).
+bool CirBuilder::flavor_marshal_string_syms(DataDefCLASS *scr,
+					    std::string &cstr_sym,
+					    std::string &size_sym,
+					    std::string &ctor_sym,
+					    std::string &dtor_sym)
+{
+	if (!scr)
+		return false;
+	cstr_sym = class_method_symbol(scr, "c_str");
+	size_sym = class_method_symbol(scr, "size");
+	if (cstr_sym == "c_str" || size_sym == "size")
+		return false;
+	{
+		MangleHostFlavorScope host_state;
+		std::string hs = std_string_type();
+		std::vector<std::string> cps;
+		cps.push_back("const char*");
+		cps.push_back("unsigned long");
+		cps.push_back("const std::allocator<char>&");
+		ctor_sym = itanium_mangle_ctor_sub(hs, cps);
+		dtor_sym = itanium_mangle_dtor_sub(hs, "D1");
+	}
+	if (!dlsym(RTLD_DEFAULT, ctor_sym.c_str())
+	    || !dlsym(RTLD_DEFAULT, dtor_sym.c_str()))
+		return false;
+	referenced_funcs.insert(cstr_sym);
+	referenced_funcs.insert(size_sym);
+	need_output_extern(cstr_sym.c_str(), true, { { {N_VOID}, true } });
+	need_output_extern(size_sym.c_str(), false, { { {N_VOID}, true } },
+			   { N_LONG });
+	need_output_extern(ctor_sym.c_str(), false,
+			   { { {N_VOID}, true }, { {N_CHAR}, true },
+			     { {N_LONG}, false }, { {N_VOID}, true } });
+	return true;
 }
 
 // The thunk body: per text-carrier param, a HOST-flavor string temp
@@ -4610,6 +4692,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 					    const std::string &host_sym,
 					    FuncDef *fd)
 {
+	static const char *fmd_probe = getenv("MADC_FLVMAR_PROBE");
 	if (!fd)
 		return NULL;
 	// Per-param classification. kind: 0 = pass-through pointer/ref,
@@ -4621,31 +4704,52 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 		if (!p)
 			return NULL;
 		DataDef *u = p;
-		if (DataDefPTR *pp = dynamic_cast<DataDefPTR *>(u))
+		if (u->is_reference()) {
+			if (DataDef *r = ref_param_referent(u))
+				u = r;
+		} else if (DataDefPTR *pp = dynamic_cast<DataDefPTR *>(u))
 			u = pp->base_type ? pp->base_type : u;
 		if (u->marshals_value_text()) {
-			if (u == p)
-				return NULL;	// by-value carrier: unsupported (loud import stays)
+			if (u == p) {
+				if (fmd_probe)
+					fprintf(stderr, "[flvmar-def] %s REFUSED:"
+						" by-value carrier param %zu\n",
+						host_sym.c_str(), i);
+				return NULL;	// by-value carrier: unsupported
+			}
 			kind[i] = 3;
 			if (!scr)
 				scr = dynamic_cast<DataDefCLASS *>(u);
-		} else if (fd->is_ref_param(i) || p->is_pointer())
+		} else if (fd->is_ref_param(i) || p->is_pointer()
+			   || p->is_reference())
 			kind[i] = 0;
 		else if (p->is_real())
 			kind[i] = 2;
 		else
 			kind[i] = 1;
 	}
-	if (!scr)
+	if (!scr) {
+		if (fmd_probe)
+			fprintf(stderr, "[flvmar-def] %s REFUSED: no carrier "
+				"CLASS param (return-only or non-class)\n",
+				host_sym.c_str());
 		return NULL;	// carrier only in the return: nothing to alias-map
+	}
 	// Return classification mirrors the params.
 	DataDef *rv = &fd->return_value_type();
 	DataDef *ru = rv;
-	if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(ru))
+	if (ru->is_reference()) {
+		if (DataDef *r = ref_param_referent(ru))
+			ru = r;
+	} else if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(ru))
 		ru = rp->base_type ? rp->base_type : ru;
 	bool ret_carrier = ru && ru->marshals_value_text();
-	if (ret_carrier && ru == rv)
+	if (ret_carrier && ru == rv && !fd->returns_reference()) {
+		if (fmd_probe)
+			fprintf(stderr, "[flvmar-def] %s REFUSED: by-value "
+				"carrier return\n", host_sym.c_str());
 		return NULL;	// by-value carrier return: unsupported
+	}
 	bool ret_void = !ret_carrier && rv->rawtype() == DataType::dtVOID
 		     && !rv->is_pointer();
 	bool ret_real = !ret_carrier && !ret_void && rv->is_real();
@@ -4656,56 +4760,59 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 	// Script-flavor members: c_str/size (unique names) + the
 	// assign(const char*, size_type) overload, selected by shape —
 	// findMethod returns an arbitrary overload, so walk the set.
-	std::string cstr_sym = class_method_symbol(scr, "c_str");
-	std::string size_sym = class_method_symbol(scr, "size");
-	if (cstr_sym == "c_str" || size_sym == "size")
+	static const char *fm_probe = getenv("MADC_FLVMAR_PROBE");
+	std::string cstr_sym, size_sym, ctor_sym, dtor_sym;
+	if (!flavor_marshal_string_syms(scr, cstr_sym, size_sym,
+					ctor_sym, dtor_sym)) {
+		if (fm_probe)
+			fprintf(stderr, "[flvmar-def] %s REFUSED: carrier "
+				"member/host-symbol set unavailable on %s\n",
+				host_sym.c_str(), scr->name.c_str());
 		return NULL;
+	}
+	// The (const char*, size_type) overload — as a METHOD FuncDef its
+	// parameter list carries the hidden `__this` receiver first, so the
+	// shape is (class*, char*, integer). A 2-param iterator-template
+	// shell (assign(_It, _It)) or assign(size_type, char) must not match.
 	FuncDef *afd = NULL;
+	Variable *afd_var = NULL;
 	for (Variable *mv : scr->methods) {
 		FuncDef *cand = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
-		if (!cand || cand->parameters.size() != 2)
+		if (!cand || cand->parameters.size() != 3)
 			continue;
 		if (cand->method_display_name != "assign"
 		    && cand->function_display_name != "assign")
 			continue;
-		DataDef *p0 = cand->parameters[0];
 		DataDef *p1 = cand->parameters[1];
-		if (!p0 || !p1 || !p0->is_pointer() || !p1->is_integer())
+		DataDef *p2 = cand->parameters[2];
+		if (!p1 || !p2 || !p1->is_pointer() || !p2->is_integer())
+			continue;
+		DataDefPTR *p1p = dynamic_cast<DataDefPTR *>(p1);
+		DataDef *p1b = p1p ? p1p->base_type : NULL;
+		if (!p1b || (p1b->rawtype() != DataType::dtCHAR
+			     && p1b->rawtype() != DataType::dtINT8
+			     && p1b->rawtype() != DataType::dtUINT8))
 			continue;
 		afd = cand;
+		afd_var = mv;
 		break;
 	}
-	if (!afd)
+	if (!afd) {
+		if (fm_probe)
+			fprintf(stderr, "[flvmar-def] %s REFUSED: no "
+				"assign(ptr,len) overload on %s\n",
+				host_sym.c_str(), scr->name.c_str());
 		return NULL;
-	std::string assign_sym = class_method_call_symbol(scr, afd, "assign");
-	// Host ctor/dtor: minted through the mangler under host state,
-	// dlsym-verified (a wrong mint refuses the thunk — fails loud).
-	std::string ctor_sym, dtor_sym;
-	{
-		MangleHostFlavorScope host_state;
-		std::string hs = std_string_type();
-		std::vector<std::string> cps;
-		cps.push_back("const char*");
-		cps.push_back("unsigned long");
-		cps.push_back("const std::allocator<char>&");
-		ctor_sym = itanium_mangle_ctor_sub(hs, cps);
-		dtor_sym = itanium_mangle_dtor_sub(hs, "D1");
 	}
-	if (!dlsym(RTLD_DEFAULT, ctor_sym.c_str())
-	    || !dlsym(RTLD_DEFAULT, dtor_sym.c_str()))
-		return NULL;
-	referenced_funcs.insert(cstr_sym);
-	referenced_funcs.insert(size_sym);
+	// The method Variable's NAME is already the full decorated symbol
+	// (local_emit_name invariant; overloads carry their __oN identity) —
+	// a composed "Class__assign" fallback would name the FIRST overload's
+	// slot, and re-composing over the full name doubles the class prefix.
+	std::string assign_sym = call_emit_symbol(afd, afd_var->name);
 	referenced_funcs.insert(assign_sym);
-	need_output_extern(cstr_sym.c_str(), true, { { {N_VOID}, true } });
-	need_output_extern(size_sym.c_str(), false, { { {N_VOID}, true } },
-			   { N_LONG });
 	need_output_extern(assign_sym.c_str(), true,
 			   { { {N_VOID}, true }, { {N_CHAR}, true },
 			     { {N_LONG}, false } });
-	need_output_extern(ctor_sym.c_str(), false,
-			   { { {N_VOID}, true }, { {N_CHAR}, true },
-			     { {N_LONG}, false }, { {N_VOID}, true } });
 	std::vector<ExternParam> sig_params;
 	for (size_t i = 0; i < kind.size(); ++i) {
 		if (kind[i] == 1)
@@ -18356,6 +18463,29 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// own translation path above.)
 				if (!is_c2mir_builtin_call_name(tcf->var.name))
 					referenced_funcs.insert(callee_name);
+				// #92 family: a tracked GLOBAL allocation operator
+				// binds its Itanium export (_Znwm/_ZdlPv/...) but no
+				// pass emits its typed proto — c2mir's implicit decl
+				// then types the call integer ("returning integer
+				// without cast for pointer result" inside
+				// materialized <new> bodies). Register the typed
+				// extern from the resolved FuncDef, exactly like the
+				// class-member emit_symbol binds do. Keyed on the
+				// OPERATOR-ID — a language entity, not a user name.
+				if (cdf && cdf->declaration_only
+				    && (cdf->function_display_name == "operator new"
+					|| cdf->function_display_name == "operator new[]"
+					|| cdf->function_display_name == "operator delete"
+					|| cdf->function_display_name == "operator delete[]")) {
+					bool op_ret_ptr = false;
+					std::vector<c2mir_node_code_t> op_ret_specs;
+					std::vector<ExternParam> op_params;
+					native_func_shape(cdf, op_ret_ptr,
+							  op_ret_specs, op_params);
+					need_output_extern(callee_name.c_str(),
+							   op_ret_ptr, op_params,
+							   op_ret_specs);
+				}
 				func_id = id(callee_name.c_str(), tb);
 			}
 			// A by-value NON-TRIVIAL class-returning call uses the same __retbuf
@@ -18474,10 +18604,61 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				val = id(var_emit_name(*sv).c_str(), tb);
 				val_shape = { {N_DOUBLE}, false };
 			} else if (sv->type->marshals_value_text()) {
-				// the host reads the text object by pointer
+				// the host reads the text object by pointer — WITH
+				// ITS OWN flavor's layout. Under a flavor mismatch
+				// (task #69) pass a HOST-flavor temp built from the
+				// script string's bytes; raw passing fed a libc++
+				// object to madc::value(const __cxx11::string&)
+				// (SIGSEGV in madc_value_set_string_n / silently
+				// empty captures).
 				setter = "__madc_scope_set_string_runtime";
 				val = node1(N_ADDR, id(var_emit_name(*sv).c_str(), tb), tb);
 				val_shape = { {N_VOID}, true };
+				static const char *fm_arm = getenv("MADC_FLVMAR");
+				DataDefCLASS *scls =
+					dynamic_cast<DataDefCLASS *>(sv->type);
+				std::string cs, ss, hctor, hdtor;
+				if (!(fm_arm && *fm_arm == '0')
+				    && madc_mangle_active_stdlib() == mstdlibLlvm
+				    && scls
+				    && flavor_marshal_string_syms(scls, cs, ss,
+								  hctor, hdtor)) {
+					char tnm[32];
+					snprintf(tnm, sizeof(tnm), "__fmsc%d",
+						 m_flvmar_counter++);
+					m_pending_stmts.push_back(
+						obj_storage_decl(tnm, 4,
+							hdtor.c_str(), tb,
+							alignof(long)));
+					auto taddr = [&]() {
+						return node1(N_ADDR,
+							node2(N_IND, id(tnm, tb),
+							      integer(0, tb), tb),
+							tb);
+					};
+					auto svaddr = [&]() {
+						return node1(N_ADDR,
+							id(var_emit_name(*sv).c_str(),
+							   tb), tb);
+					};
+					node_t ca = list();
+					append(ca, taddr());
+					node_t a1 = list();
+					append(a1, svaddr());
+					append(ca, node2(N_CALL,
+						id(cs.c_str(), tb), a1, tb));
+					node_t a2 = list();
+					append(a2, svaddr());
+					append(ca, node2(N_CALL,
+						id(ss.c_str(), tb), a2, tb));
+					append(ca, taddr());
+					m_pending_stmts.push_back(node2(N_EXPR,
+						list(),
+						node2(N_CALL,
+						      id(hctor.c_str(), tb),
+						      ca, tb), tb));
+					val = taddr();
+				}
 			} else if (raw == DataType::dtARRAY) {
 				setter = "__madc_scope_set_array_runtime";
 				val = node1(N_ADDR, id(var_emit_name(*sv).c_str(), tb), tb);
