@@ -1,0 +1,18 @@
+// `cin >> string` under -stdlib=libc++ (bucket-A Root B of the 59-set
+// re-bucket, task #90's input twin). libc++ declares
+// operator>>(basic_istream&, unsigned char*) BEFORE the basic_string
+// extractor; free_operator_concrete_param_matches's pointer arm was
+// unconditionally permissive, so first-deduced-wins handed the whole
+// basic_string object to the unsigned char* overload (c2mir: incompatible
+// argument type for pointer type parameter). A concrete pointer parameter
+// is viable only for a pointer/array argument ([conv.ptr], [conv.array]).
+// Oracle: clang++ -stdlib=libc++ and g++ both echo the word.
+#include <iostream>
+using namespace std;
+int main()
+{
+    string name;
+    cin >> name;
+    cout << name << endl;
+    return 0;
+}
