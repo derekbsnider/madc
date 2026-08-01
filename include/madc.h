@@ -4747,6 +4747,12 @@ public:
     // bound to the winning overload (same parameters / parent_expr / position).
     class TokenCallMethod *reselect_method_overload(class TokenCallMethod *tc,
 		Variable &recv, class DataDefCLASS *cls, const std::string &id);
+    // [over.match.funcs]/4 — cv of the implicit object ARGUMENT a member call
+    // on `recv` supplies. The hidden __this receiver takes the ENCLOSING
+    // method's cv (a const member's this points at const T); a named receiver
+    // takes its declared constness (vfCONSTANT-family flags or a DataDefCONST
+    // identity, reference-transparent). 1 = const, 0 = non-const, -1 = unknown.
+    int implicit_object_constness(Variable &recv);
     // Static-member-call analogue of reselect_method_overload: a qualified
     // static call (`Owner::m(args)`) resolves its callee by name+arity BEFORE
     // the args are parsed, so once the arg types are known reselect the overload

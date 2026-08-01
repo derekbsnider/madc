@@ -14232,7 +14232,8 @@ static bool template_pattern_mentions_param(const std::string &pattern,
 static bool member_tmpl_more_specialized(FuncDef *A, FuncDef *B);
 
 Variable *DataDefCLASS::findMethodOverload(const std::string &name,
-					  const std::vector<const DataDef *> &argtypes)
+					  const std::vector<const DataDef *> &argtypes,
+					  int obj_cv)
 {
     Variable *best = NULL;
     int best_score = -1;
@@ -14285,6 +14286,12 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	}
 	if ( (!varargs && pn != argtypes.size())
 	  || (varargs && argtypes.size() < fixed) )
+	    continue;
+	// [over.match.funcs]/4: a non-static member's implicit object param
+	// carries the member's cv, and a CONST object argument cannot
+	// initialize a non-const implicit object param ([over.match.viable]).
+	// Dtors stay callable on const objects.
+	if ( obj_cv == 1 && hidden && !fd->is_const_method && name[0] != '~' )
 	    continue;
 	int total = 0;
 	bool ok = true;
@@ -14372,11 +14379,20 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	}
 	else if ( ok && total == best_score && best )
 	{
+	    FuncDef *best_fd = dynamic_cast<FuncDef *>(best->type);
+	    // Score tie between const/non-const siblings: the implicit object
+	    // parameter is the discriminator ([over.match.best] — a non-const
+	    // object's exact cv-match beats the qualification conversion).
+	    if ( obj_cv >= 0 && best_fd
+	      && best_fd->is_const_method != fd->is_const_method )
+	    {
+		if ( fd->is_const_method == (obj_cv == 1) )
+		    best = mv;
+	    }
 	    // Viability tie: prefer the more-specialized member template
 	    // ([temp.func.order]). Without this the first-registered candidate
 	    // wins arbitrarily — `take(P)` could shadow the exact `take(U*)`.
-	    FuncDef *best_fd = dynamic_cast<FuncDef *>(best->type);
-	    if ( best_fd && best_fd->is_member_template && fd->is_member_template
+	    else if ( best_fd && best_fd->is_member_template && fd->is_member_template
 	      && member_tmpl_more_specialized(fd, best_fd) )
 		best = mv;
 	}
@@ -14390,7 +14406,7 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	return NULL;
     }
     if ( base_class )
-	return base_class->findMethodOverload(name, argtypes);
+	return base_class->findMethodOverload(name, argtypes, obj_cv);
     return NULL;
 }
 
@@ -15488,6 +15504,29 @@ DataDef *Program::free_operator_arg_datadef(TokenBase *operand)
     return operand->datadef();
 }
 
+int Program::implicit_object_constness(Variable &recv)
+{
+    if ( recv.name == "__this" )
+    {
+	TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+	if ( code && code->method )
+	    if ( FuncDef *efd = dynamic_cast<FuncDef *>(
+			 code->method->returns.type) )
+		return efd->is_const_method ? 1 : 0;
+	return -1;
+    }
+    if ( recv.flags & (vfCONSTANT | vfCONSTDECL | vfCONSTBAKED) )
+	return 1;
+    DataDef *dd = recv.type;
+    // Reference transparency: a reference receiver denotes its referent.
+    if ( dd && dd->is_reference() )
+	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+	    dd = rp->base_type;
+    if ( dd && dd->is_const() )
+	return 1;
+    return 0;
+}
+
 TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
 		Variable &recv, DataDefCLASS *cls, const std::string &id)
 {
@@ -15502,7 +15541,8 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     // a pointer overload instead of the class-object overload.
     for ( TokenBase *p : tc->parameters )
 	at.push_back(p ? operand_value_datadef(p) : NULL);
-    Variable *ov = cls->findMethodOverload(id, at);
+    Variable *ov = cls->findMethodOverload(id, at,
+					   implicit_object_constness(recv));
     TokenCallMethod *selected = tc;
     if ( !ov && unevaluated_operand_depth > 0 )
     {
@@ -21679,7 +21719,8 @@ size_t Program::count_queued_call_arguments()
     return argc;
 }
 
-static TokenCallMethod *make_unary_object_operator_call(Variable *recv,
+static TokenCallMethod *make_unary_object_operator_call(Program &pgm,
+							Variable *recv,
 							TokenBase *parent_expr,
 							const std::string &opname)
 {
@@ -21698,7 +21739,12 @@ static TokenCallMethod *make_unary_object_operator_call(Variable *recv,
     if ( !cls )
 	return NULL;
     std::vector<const DataDef *> no_args;
-    Variable *mvar = cls->findMethodOverload(opname, no_args);
+    // Implicit object cv ([over.match.funcs]/4): derivable only from a named
+    // receiver — a parent EXPRESSION's cv is not modeled here (and a const-
+    // typed recv_dd cannot reach this line: the class cast above rejects it).
+    int obj_cv = (!parent_expr && recv)
+	       ? pgm.implicit_object_constness(*recv) : -1;
+    Variable *mvar = cls->findMethodOverload(opname, no_args, obj_cv);
     if ( !mvar )
 	return NULL;
     if ( !recv )
@@ -32499,7 +32545,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				return done ? ExprStep::Done : ExprStep::Break;
 			    }
 			    if ( TokenCallMethod *opcall =
-				    make_unary_object_operator_call(NULL,
+				    make_unary_object_operator_call(*this, NULL,
 					deref_expr, "operator*") )
 			    {
 				exStack.push(opcall);
@@ -32586,7 +32632,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 						// `*_M_current` on __normal_iterator).
 						if ( TokenCallMethod *opcall =
 							make_unary_object_operator_call(
-							    NULL, tm, "operator*") )
+							    *this, NULL, tm, "operator*") )
 						{
 						    exStack.push(opcall);
 						    return done ? ExprStep::Done
@@ -32659,8 +32705,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					return done ? ExprStep::Done : ExprStep::Break;
 				    }
 				    if ( TokenCallMethod *opcall =
-					    make_unary_object_operator_call(dvar, NULL,
-						"operator*") )
+					    make_unary_object_operator_call(*this, dvar,
+						NULL, "operator*") )
 				    {
 					exStack.push(opcall);
 					return done ? ExprStep::Done : ExprStep::Break;
@@ -32945,9 +32991,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					std::string step_op = deref_tb->id() == TokenID::tkInc
 							    ? "operator++" : "operator--";
 					TokenCallMethod *step_call =
-					    make_unary_object_operator_call(id_var, NULL, step_op);
+					    make_unary_object_operator_call(*this, id_var, NULL, step_op);
 					TokenCallMethod *deref_call = step_call
-					    ? make_unary_object_operator_call(id_var, step_call,
+					    ? make_unary_object_operator_call(*this, id_var, step_call,
 						"operator*") : NULL;
 					if ( deref_call )
 					{
@@ -32998,7 +33044,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    if ( !inner_dtype || !inner_dtype->is_pointer() )
 				    {
 					if ( TokenCallMethod *opcall =
-						make_unary_object_operator_call(NULL,
+						make_unary_object_operator_call(*this, NULL,
 						    inner_expr, "operator*") )
 					{
 					    exStack.push(opcall);
@@ -33081,7 +33127,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					}
 				    }
 				    if ( TokenCallMethod *opcall =
-					    make_unary_object_operator_call(NULL,
+					    make_unary_object_operator_call(*this, NULL,
 						deref_expr, "operator*") )
 				    {
 					exStack.push(opcall);

@@ -1129,8 +1129,13 @@ public:
     // argument type). Returns NULL when no same-name method exists; falls back
     // to the first by-name match when none scores strictly better (e.g. a
     // single, non-overloaded method — same result as findMethod).
+    // obj_cv is the cv-qualification of the implicit object argument
+    // ([over.match.funcs]/4): 1 = const (a non-const member is NOT viable),
+    // 0 = non-const (cv-match breaks score ties), -1 = unknown (the implicit
+    // object parameter does not discriminate — legacy behavior).
     Variable *findMethodOverload(const std::string &name,
-				 const std::vector<const DataDef *> &argtypes);
+				 const std::vector<const DataDef *> &argtypes,
+				 int obj_cv = -1);
     // Return type of the BINARY operator method `opname` (e.g. "operator+") this
     // class declares; used to type a class-object operator expression with the
     // operator's declared result type.
