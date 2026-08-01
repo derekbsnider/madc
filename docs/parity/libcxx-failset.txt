@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  92917cc5 (2026-08-01) on feature/libcxx-parity5-claude
-# Result:       869 passed / 38 failed / 0 timed out / 12 skipped
+# Measured at:  e09c5381 (2026-08-02) on feature/libcxx-parity5-claude
+# Result:       880 passed / 26 failed / 2 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -502,6 +502,29 @@
 #                         __unwrap_and_dispatch) and #102 non-type-pack
 #                         real-instantiation (map+set piecewise pair).
 #                         EXE 854/0, fulltest 910/0.
+#   e09c5381  880 /  26+2TO  🏁 THE FLAVOR-ABI DAM FELL: ELEVEN FIXED, ZERO
+#                         regressions (comm-diffed both ways) — the whole
+#                         #69 cluster (madceval×5, php, perl, prefer, lang,
+#                         rust) plus testevalexterncapture (transiently
+#                         re-red mid-chain via the #92 warnings its working
+#                         capture surfaced; fixed same chain). The chain:
+#                         @4dc3f2e0 a deduction guide declares NO name
+#                         ([temp.deduct.guide] — the phantom `array` value,
+#                         ns_madc:56); @873fd4d4 marshalling slice 1
+#                         (host-twin remint under MangleHostFlavorScope +
+#                         carrier mask); @1aec54f0 marshalling LIVE — thunk
+#                         at call_emit_symbol (the ONE owner), dladdr
+#                         origin gate, hidden-__this assign(ptr,len) walk,
+#                         scope-capture host-temp arm (was the
+#                         madc_value_set_string_n SIGSEGV); @e09c5381 a
+#                         declaration-only _Z* callee gets its typed proto
+#                         (#92 family — the <new> implicit-int warnings).
+#                         The 2 TIMEOUTS (testcontainerdtor, testmadc_ns)
+#                         do NOT reproduce standalone (graceful #102 cir
+#                         errors in seconds) — battery-load suspects, both
+#                         already members of the failing set. Default
+#                         fulltest GREEN throughout (the marshalling path
+#                         is unreachable when script flavor == host).
 testcastarrow.mad
 testconstructible.mad
 testcontainerdtor.mad
@@ -514,24 +537,14 @@ testfstream.mad
 testifconstexpr.mad
 testincludenext.mad
 testinvocable.mad
-testlang.mad
 testlateinstproto.mad
 testloop.mad
 testmadc_ns.mad
-testmadceval.mad
-testmadcevalexpr.mad
-testmadcevalexprctx.mad
-testmadcevalexprtyped.mad
-testmadcevalscope.mad
 testmanipview.mad
 testmap.mad
 testmapiter.mad
 testmathheader.mad
 testopinherit.mad
-testperl.mad
-testphp.mad
-testprefer.mad
-testrust.mad
 testset.mad
 testsstream.mad
 teststdmapint.mad
