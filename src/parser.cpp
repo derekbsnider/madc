@@ -47652,8 +47652,26 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 	core.pop_back();
     while ( core.compare(0, 6, "const ") == 0 )    core.erase(0, 6);
     while ( core.compare(0, 9, "volatile ") == 0 ) core.erase(0, 9);
-    if ( core.empty() || core.back() == '*' )
-	return true;	// pointer / empty: permissive (conversions)
+    if ( core.empty() )
+	return true;	// unparsed: cannot disprove; stay permissive
+    if ( core.back() == '*' )
+    {
+	// Concrete POINTER param: only a pointer or array argument reaches
+	// it by a STANDARD conversion ([conv.ptr], [conv.array] — the null
+	// pointer constant is a VALUE property this type walker cannot
+	// see). Same first-deduced-wins constraint as the arithmetic arm
+	// below, and the missed half of its incident: libc++ declares
+	// operator>>(basic_istream&, unsigned char*) BEFORE the
+	// basic_string extractor, and the permissive pointer arm let it
+	// claim `cin >> name` — the whole basic_string object passed as
+	// the char* (c2mir "incompatible argument type for pointer type
+	// parameter"); `cout << s` likewise bound const char* over the
+	// basic_string inserter (task #90's wrong overload identity).
+	if ( !arg_core || arg_core->is_pointer()
+	  || dynamic_cast<DataDefCArray *>(arg_core) )
+	    return true;
+	return false;
+    }
     TokenDataType *tdt = resolve_canonical_type_spelling(pgm, core);
     if ( !tdt )
 	return true;	// unresolvable -> cannot disprove; stay permissive
