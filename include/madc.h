@@ -2798,6 +2798,16 @@ public:
     bool eval_decltype_probe_tokens(const std::vector<TokenBase *> &slot_tokens,
 	    size_t nth, const std::map<std::string, DataDef *> &ded,
 	    DataDef **out_type = NULL);
+    // General non-deduced pattern slot ([temp.class.spec.match]/2): substitute
+    // the deduced params into the WHOLE slot token run, resolve it as a type
+    // under the SFINAE trap, and require identity with the concrete slot's
+    // type. Covers the [meta.logical] `__enable_if_t<bool(_B1::value)>`
+    // idiom, which is neither __void_t nor decltype. False when the slot
+    // mentions no deduced name (the literal matchers own that case), when
+    // resolution fails (SFINAE reject), or when it resolves to another type.
+    bool eval_substituted_slot_type(const std::vector<TokenBase *> *slot_tokens,
+	    const std::map<std::string, DataDef *> &ded,
+	    DataDef *concrete_dd, int &score);
     // Confirm that a dependent member chain `BASE::seg1::seg2::...` (where some
     // seg names a TEMPLATE member, e.g. `rebind<_Up>`) resolves to a real type —
     // the part of the __void_t SFINAE probe the plain type-alias walk cannot do.

@@ -1,0 +1,11 @@
+#include <cstdio>
+struct FalseT { static const bool value = false; };
+struct TrueT { static const bool value = true; };
+template<typename T, typename B1, typename... Bn> struct P { typedef B1 type; };
+int main()
+{
+	typedef P<char, TrueT, FalseT>::type R1;	// pack absorbs FalseT
+	typedef P<char, TrueT>::type R2;		// empty pack
+	printf("%d %d\n", (int)R1::value, (int)R2::value);
+	return 0;
+}

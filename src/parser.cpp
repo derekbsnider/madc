@@ -9555,9 +9555,53 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 		  << odd->name << "'" << flush;
     }
 
+    // Statement-scope completeness demand: a declared-type use reading a
+    // MEMBER of a concrete-arg template-id (`typedef Tmpl<...>::type A;`)
+    // requires the instance's members to exist, and the opaque variadic
+    // shell is memberless (the conjunction<...,false_type> mis-fold, task
+    // #94). Outside a class body and outside a dependent pattern parse the
+    // args cannot name an enclosing template's parameters, so a variadic
+    // primary may really instantiate — the same per-demand-site arming as
+    // the expression twin (`Tmpl<args>::member` read) and spec_may_serve.
+    // The `::` follow is REQUIRED: a bare declared use (`map<K,V> m;`)
+    // keeps the lazy opaque route (arming it real-instantiated container
+    // internals eagerly and broke their lowering — the new_allocator
+    // address() regression).
+    bool stmt_scope_demand = !dependent_parse_in_progress
+			  && class_scope_stack.empty()
+			  && !class_pattern_capture_in_progress;
+    if ( stmt_scope_demand )
+    {
+	bool member_follows = false;
+	if ( !tokens.empty() && tokens[0]
+	  && tokens[0]->id() == TokenID::tkLT )
+	{
+	    DelimDepth d;
+	    // The deque starts AT the '<'; seed the tracker's context with
+	    // the template-name token so the opener is recognized.
+	    d.prev = tb;
+	    size_t qi = 0;
+	    size_t guard = 0;
+	    while ( qi < tokens.size() && ++guard < 4096 )
+	    {
+		size_t n = delim_scan_step(tokens, qi, d);
+		qi += n ? n : 1;
+		if ( qi > 0 && !d.angle )
+		    break;
+	    }
+	    member_follows = qi < tokens.size() && tokens[qi]
+			  && tokens[qi]->id() == TokenID::tkNS;
+	}
+	stmt_scope_demand = member_follows;
+    }
     if ( peekToken() && peekToken()->id() == TokenID::tkLT )
     {
-	if ( TokenDataType *inst = instantiate_template_id(tname, tb) )
+	bool saved_vri = allow_variadic_real_inst;
+	if ( stmt_scope_demand )
+	    allow_variadic_real_inst = true;
+	TokenDataType *inst = instantiate_template_id(tname, tb);
+	allow_variadic_real_inst = saved_vri;
+	if ( inst )
 	    return resolve_member_chain_or_type(inst, tb,
 						consume_class_member_chain);
 	// Nested class template OR member ALIAS template used UNQUALIFIED inside
@@ -9630,8 +9674,16 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
     // `Name<ConcreteType>` where Name is a captured (alias or class) template:
     // instantiate (or reuse) the concrete type and return it. Guarded on a
     // following '<', so non-template identifiers are unaffected.
-    if ( TokenDataType *inst = instantiate_template_id(tname, tb) )
-	return resolve_member_chain_or_type(inst, tb, consume_class_member_chain);
+    {
+	bool saved_vri2 = allow_variadic_real_inst;
+	if ( stmt_scope_demand )
+	    allow_variadic_real_inst = true;
+	TokenDataType *inst = instantiate_template_id(tname, tb);
+	allow_variadic_real_inst = saved_vri2;
+	if ( inst )
+	    return resolve_member_chain_or_type(inst, tb,
+						consume_class_member_chain);
+    }
 
     // `Q1::Q2::...::Name<Args>` where Name is a captured template. The maps are
     // keyed by bare name but declarations are namespace-qualified variants, so
@@ -27199,13 +27251,26 @@ bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
 	    }
 	}
     }
-    // Otherwise the pattern slot must itself be a `__void_t<...>`.
+    // Otherwise the pattern slot must itself be a `__void_t<...>` — anything
+    // else falls to the general substituted-slot resolution arm
+    // ([temp.class.spec.match]/2, the [meta.logical] __enable_if_t idiom).
+    // DARK until the consequences are absorbable: the arm's CORRECT match of
+    // libc++'s `__enable_if_t<is_copy_constructible<_InIter>::value && ...>`
+    // copy-dispatch spec routes string copies into __unwrap_and_dispatch,
+    // whose fn-template body madc does not yet materialize (undefined MIR
+    // imports in 8 _libcxx twins). Enable via MADC_XSLOT_ARM=1 to reproduce;
+    // task #94 tracks the flip-on once __unwrap_and_dispatch materializes.
     std::string pouter;
     std::vector<std::string> pargs;
-    if ( !split_template_id_spelling(slot_spelling, pouter, pargs) )
+    if ( !split_template_id_spelling(slot_spelling, pouter, pargs)
+      || (pouter != "__void_t" && pouter != "void_t") )
+    {
+	static const char *xarm = ::getenv("MADC_XSLOT_ARM");
+	if ( xarm && *xarm )
+	    return eval_substituted_slot_type(slot_tokens, ded, concrete_dd,
+					      score);
 	return false;
-    if ( pouter != "__void_t" && pouter != "void_t" )
-	return false;
+    }
     // The concrete slot must reduce to void: literally `void`, or another
     // `__void_t<...>` (the materialized primary default `__void_t<>` is void).
     std::string cbare = strip_type_namespace(trim_spelling(concrete_spelling));
@@ -27304,6 +27369,88 @@ bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
 	}
     }
     score += 30;                                   // detection succeeded -> select this spec
+    return true;
+}
+
+bool Program::eval_substituted_slot_type(
+	const std::vector<TokenBase *> *slot_tokens,
+	const std::map<std::string, DataDef *> &ded,
+	DataDef *concrete_dd, int &score)
+{
+    if ( !slot_tokens || slot_tokens->empty() || !concrete_dd )
+	return false;
+    // Only slots that MENTION a deduced param take this arm — a concrete
+    // literal slot keeps the literal matchers' verdict.
+    bool mentions_ded = false;
+    for ( TokenBase *t : *slot_tokens )
+	if ( t && t->type() == TokenType::ttIdentifier
+	  && ded.count(((TokenIdent *)t)->spelling()) )
+	{ mentions_ded = true; break; }
+    if ( !mentions_ded )
+	return false;
+    // Clone the run substituting deduced params; skip a leading `typename`
+    // disambiguator.
+    size_t b0 = 0;
+    if ( (*slot_tokens)[0] && is_contextual_identifier_token((*slot_tokens)[0])
+      && contextual_identifier_name((*slot_tokens)[0]) == "typename" )
+	b0 = 1;
+    std::vector<TokenBase *> body;
+    for ( size_t k = b0; k < slot_tokens->size(); ++k )
+    {
+	TokenBase *t = (*slot_tokens)[k];
+	if ( t && t->type() == TokenType::ttIdentifier )
+	{
+	    const std::string &nm = ((TokenIdent *)t)->spelling();
+	    std::map<std::string, DataDef *>::const_iterator di = ded.find(nm);
+	    if ( di != ded.end() && di->second )
+	    {
+		body.push_back(new TokenDataType(di->second->name.c_str(),
+						 *di->second));
+		continue;
+	    }
+	}
+	body.push_back(t ? t->clone() : NULL);
+    }
+    // Resolve under the same muted SFINAE trap as the decltype probe: a
+    // resolution failure IS the answer (the spec is rejected), never a
+    // narrated error.
+    size_t saved_diag_count = diagnostics.size();
+    ErrorInfo saved_error = last_error;
+    std::streambuf *saved_cerr = std::cerr.rdbuf();
+    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    std::cerr.rdbuf(&g_madc_null_streambuf);
+    DataDef *rt = NULL;
+    try
+    {
+	rt = resolve_type_token_range(body, 0, body.size());
+    }
+    catch ( ... ) { rt = NULL; }
+    std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
+    for ( TokenBase *t : body )
+	delete t;
+    if ( !rt )
+    {
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
+	return false;
+    }
+    if ( rt->name != concrete_dd->name )
+	return false;
+    // Env-gated probe (MADC_SLOTARM_PROBE=1): every spec selected through
+    // the general substituted-slot arm — the newly-matching-spec diagnostic.
+    {
+	static const char *sap = ::getenv("MADC_SLOTARM_PROBE");
+	if ( sap && *sap )
+	{
+	    std::string sp;
+	    for ( TokenBase *t : *slot_tokens )
+		if ( t ) sp += overload_token_spelling(t);
+	    fprintf(stderr, "SLOTARM match slot=%s -> %s\n",
+		    sp.c_str(), rt->name.c_str());
+	}
+    }
+    score += 30;
     return true;
 }
 
@@ -28311,6 +28458,7 @@ Program::TemplateDef *Program::match_partial_specialization(
 	std::map<std::string, std::string> tmpl_ded;   // template-template-param deductions
 	std::map<std::string, std::vector<std::string> > pack_ded; // trailing-pack deductions
 	std::map<std::string, std::vector<TokenBase *> > nontype_ded; // non-type-param deductions
+	std::vector<size_t> detect_slots;   // non-deduced slots, evaluated after the loop
 	int score = 0;
 	bool ok = true;
 	for ( size_t i = 0; i < fixed_slots; ++i )
@@ -28369,12 +28517,26 @@ Program::TemplateDef *Program::match_partial_specialization(
 	      && !unify_nested_spec_pattern_arg(
 					 pattern_spelling,
 					 spec.typeparams, nested_concrete, ded, score,
-					 &tmpl_ded, &pack_ded)
-	      && !eval_void_t_detection_slot(
-					 pattern_spelling,
-					 arg_spellings[i], ded, score,
-					 &spec.spec_pattern[i],
-					 &arg_types_by_slot[i]->definition) )
+					 &tmpl_ded, &pack_ded) )
+		// A non-deducing DETECTION slot (__void_t / decltype /
+		// substituted-slot resolution) READS deductions, but a
+		// SFINAE'd slot may PRECEDE the slots that deduce its params
+		// — [meta.logical] __conjunction_impl's
+		// `__enable_if_t<bool(_B1::value)>` is slot 0, _B1 deduces
+		// from slot 1. Defer until `ded` is complete.
+		detect_slots.push_back(i);
+	}
+	if ( !ok )
+	    continue;
+	for ( size_t di = 0; di < detect_slots.size(); ++di )
+	{
+	    size_t i = detect_slots[di];
+	    if ( !eval_void_t_detection_slot(
+			template_tokens_spelling(spec.spec_pattern[i]),
+			arg_spellings[i], ded, score,
+			&spec.spec_pattern[i],
+			arg_types_by_slot[i]
+			    ? &arg_types_by_slot[i]->definition : NULL) )
 	    { ok = false; break; }
 	}
 	if ( !ok )
