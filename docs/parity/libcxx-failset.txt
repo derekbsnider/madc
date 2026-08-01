@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  f4e7b946 (2026-08-01) on feature/libcxx-parity4-claude
-# Result:       818 passed / 76 failed / 0 timed out / 10 skipped
+# Measured at:  ba70192e (2026-08-01) on feature/libcxx-parity4-claude
+# Result:       819 passed / 76 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -372,6 +372,25 @@
 #                         now releases the ambient token pools it owns —
 #                         ASAN-verified; every multi-Program host was
 #                         affected). fulltest 895/0.
+#   ba70192e  819 /  76   the failing set is BYTE-IDENTICAL (comm-diffed);
+#                         +1 = the NEW GATE testpatcollateral. Task #88's
+#                         FIRST HALF fell: build_dependent_pattern's blanket
+#                         pending_funcs resize discarded the COLLATERAL
+#                         definitions of concrete classes the pattern-body
+#                         parse eagerly instantiated (the classes survive;
+#                         their bodies vanished) — only the recipe pops now.
+#                         Reducers uptrC/uptrI print 42 (both canons agree).
+#                         The OPEN half is the journal-context sibling: os4's
+#                         __compressed_pair_elem __o3 import — a member-
+#                         template ctor instantiated inside a taps-muted
+#                         class-pattern serve; the rollback kills the body,
+#                         the tsubst-baked call still names __o3, and a
+#                         re-instantiation mints __o5 (probe: `try ok=1
+#                         inst=...__o5`). An escrow attempt regressed the
+#                         freeze lane (pattern-shell bodies leaked into the
+#                         pack) and was WITHDRAWN — the fix needs a
+#                         speculative-class filter or a tsubst-time rebind
+#                         of the baked ctor call. fulltest 896/0.
 testarraymember.mad
 testarraysubscript.mad
 testcapture.mad
