@@ -1,0 +1,32 @@
+#!/usr/bin/env madc
+// Gate for [temp.deduct.guide]: a CTAD deduction guide declares NO name.
+// Pre-fix, register_skipped_namespace_template_function minted a phantom
+// namespace VALUE named after the class template; libc++'s std::array guide
+// then shadowed the builtin `array` TYPE inside namespace prototypes —
+// `void f(array &ctx, ...)` read `array & ctx` as an expression and died
+// with "use of undeclared identifier 'ctx'" (ns_madc:56, the eval family).
+// Canon: g++/clang accept both shapes (tmp/dg1.cpp).
+#include <iostream>
+using namespace std;
+
+// An in-source guide exercises the skip on BOTH stdlib flavors.
+template <class T> struct Crate { T v; };
+template <class T> Crate(T, T) -> Crate<T>;
+
+namespace ctxns {
+	void ctx_note(array &ctx, long value);
+	void ctx_note(array &ctx, long value)
+	{
+		cout << "in ctx_note " << value << endl;
+	}
+}
+
+int main()
+{
+	Crate<long> c;
+	c.v = 41;
+	array a;
+	ctxns::ctx_note(a, c.v);
+	cout << "done" << endl;
+	return 0;
+}

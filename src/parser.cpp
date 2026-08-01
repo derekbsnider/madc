@@ -45264,6 +45264,51 @@ static bool retain_namespace_fn_template_body(
     return true;
 }
 
+// [temp.deduct.guide]: `explicit(opt) template-name ( params ) -> template-name<...>;`
+// A deduction guide is NOT a function and declares NO name — it only feeds
+// class-template argument deduction, which madc does not implement yet.
+// Registering it as a skipped function template minted a phantom namespace
+// VALUE named after the class template (libc++ ships guides for array /
+// vector / pair / basic_string); under `using namespace std` that value
+// shadowed the TYPE reading of the same name in every value-lookup lane —
+// `void f(array &ctx, ...)` in a namespace prototype read `array & ctx` as
+// an expression (the ns_madc:56 eval family). The shape is unambiguous:
+// with no decl-specifier a `name(...)` declaration cannot be a function,
+// and the trailing simple-template-id must name the SAME template
+// ([temp.deduct.guide]/3).
+static bool skipped_template_decl_is_deduction_guide(
+	const std::vector<TokenBase *> &tokens)
+{
+    size_t i = 0;
+    // optional explicit-specifier (`explicit` lexes as a plain identifier)
+    if ( i < tokens.size() && tokens[i]
+      && skipped_template_function_name(tokens[i]) == "explicit" )
+	++i;
+    if ( i + 1 >= tokens.size() || !tokens[i] || !tokens[i + 1] )
+	return false;
+    if ( !is_skipped_template_function_name(tokens[i]) )
+	return false;
+    if ( tokens[i + 1]->id() != TokenID::tkOpBrk )
+	return false;
+    std::string head = skipped_template_function_name(tokens[i]);
+    if ( head.empty() )
+	return false;
+    DelimDepth d;
+    size_t j = i + 1;
+    j += delim_scan_step(tokens, j, d);	// the parameter-list '('
+    while ( j < tokens.size() && !d.top() )
+	j += delim_scan_step(tokens, j, d);
+    if ( j >= tokens.size() || !tokens[j]
+      || tokens[j]->id() != TokenID::tkDeRef )
+	return false;
+    TokenBase *trail = j + 1 < tokens.size() ? tokens[j + 1] : NULL;
+    if ( !is_skipped_template_function_name(trail)
+      || skipped_template_function_name(trail) != head )
+	return false;
+    TokenBase *lt = j + 2 < tokens.size() ? tokens[j + 2] : NULL;
+    return lt && lt->id() == TokenID::tkLT;
+}
+
 static void register_skipped_namespace_template_function(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
@@ -45276,6 +45321,16 @@ static void register_skipped_namespace_template_function(
     // ordinary function template — [temp] does not require a namespace — and
     // skipping registration made `ident(7)` report "use of undeclared
     // identifier" while the IDENTICAL template inside `namespace nn` worked.
+    // A CTAD deduction guide arrives here shaped like a bodyless
+    // function-template declaration; it declares NOTHING resolvable
+    // ([temp.deduct.guide]) — skip before any surface records a phantom.
+    if ( skipped_template_decl_is_deduction_guide(tokens) )
+    {
+	DBG(std::cout << "register_skipped_namespace_template_function: "
+		      << "deduction guide skipped in ns '"
+		      << pgm.current_namespace() << "'" << std::endl);
+	return;
+    }
 #ifdef MADC_DEBUG_GETREG
     if ( getenv("MADC_DEBUG_GETREG") )
     {
@@ -45388,6 +45443,10 @@ static void recapture_free_overload_surfaces(Program &pgm,
 	const std::vector<std::string> &typeparams, const std::string &ns)
 {
     if ( ns.empty() || tokens.empty() )
+	return;
+    // Lockstep with register_skipped_namespace_template_function: a restored
+    // deduction-guide pattern records no overload surface either.
+    if ( skipped_template_decl_is_deduction_guide(tokens) )
 	return;
     Program::NamespaceScope guard(pgm, ns);
     if ( capture_free_operator_overload(pgm, tokens, typeparams) )
