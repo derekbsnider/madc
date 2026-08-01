@@ -418,7 +418,6 @@
 #                         embedded NULs). fulltest 896/0.
 testarraymember.mad
 testarraysubscript.mad
-testcapture.mad
 testcastarrow.mad
 testcastsubscript.mad
 testcin.mad
@@ -431,8 +430,6 @@ testdefer.mad
 testderefpreinc.mad
 testevalexterncapture.mad
 testexterncstringptr.mad
-testforeach.mad
-testforeach2.mad
 testforeachheaderbody.mad
 testforinitscope.mad
 testfortypedcomma.mad
@@ -442,7 +439,6 @@ testheaderstringops.mad
 testifconstexpr.mad
 testincludenext.mad
 testinvocable.mad
-testlambda.mad
 testlambdastrret.mad
 testlang.mad
 testlateinstproto.mad
@@ -459,12 +455,10 @@ testmanipview.mad
 testmap.mad
 testmapiter.mad
 testmathheader.mad
-testns.mad
 testopinherit.mad
 testperl.mad
 testphp.mad
 testprefer.mad
-testregex.mad
 testrewritten_realhdr.mad
 testrust.mad
 testset.mad
@@ -472,23 +466,12 @@ testspaceship_realhdr.mad
 testsstream.mad
 teststdmapint.mad
 teststdstringconv.mad
-teststringclass.mad
-teststringglobal.mad
-teststringobj.mad
 teststringplus.mad
-teststringplus_realhdr.mad
-teststringref.mad
 teststringrel.mad
-teststringreturn.mad
 teststringsubscript.mad
-teststrlitplus_realhdr.mad
-teststrplusbody_realhdr.mad
-teststrrefparam_realhdr.mad
 teststructinitnested.mad
 testsubscript.mad
 testsysobject.mad
 testsysscript.mad
-testtemplatestring.mad
 testtraitassign.mad
 testtuple.mad
-testusing.mad
