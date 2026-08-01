@@ -1,0 +1,1 @@
+partial_ordering::unordered's stored byte is a library-internal sentinel the test deliberately probes raw: libstdc++ 2, libc++ -127 (clang++ -stdlib=libc++ prints -127 too — madc byte-matches both oracles). The -1 0 1 half stays covered by the default lane.

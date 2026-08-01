@@ -1,0 +1,38 @@
+// Member-template NON-TYPE parameter defaults + the alias-template-id
+// non-deduced parameter — libc++'s unique_ptr(pointer, deleter) family in
+// miniature (task #89).
+//
+// Leg 1 (call twin): pick()'s `bool B = true` must fill from its default —
+//   B appears in no function parameter, so it is undeducible BY DESIGN; the
+//   trailing `class = void` type default is the (trivial) SFINAE slot.
+// Leg 2 (ctor twin): the same shape on a constructor.
+// Leg 3 (alias-template-id param): sel<B> names a member alias template
+//   whose target is a qualified-id — a NON-DEDUCED context
+//   ([temp.deduct.type]/5 via [temp.alias]); deduction must SKIP it (not
+//   refuse the candidate) and bind B from its default.
+// Oracle: g++ and clang++ both print "21 34 55".
+#include <cstdio>
+
+template <typename T, bool B> struct choose { typedef T type; };
+
+struct W
+{
+    int seed;
+    template <bool B = true, class = void>
+    W(int v) { seed = B ? v : -v; }
+
+    template <bool B = true, class = void>
+    int pick(int v) { return B ? v : -v; }
+
+    template <bool B> using sel = typename choose<int, B>::type;
+
+    template <bool B = true, class = void>
+    int give(int v, sel<B> w) { return B ? v + w : -v; }
+};
+
+int main()
+{
+    W w(34);
+    printf("%d %d %d\n", w.pick(21), w.seed, w.give(21, 34));
+    return 0;
+}

@@ -116,6 +116,14 @@ MIRDIR	= /workspace/mir
 # single source of truth, no hardcoded copy in the lexer.
 DEFINES	= -I$(INCDIR) -I$(MIRDIR) -I$(MIRDIR)/c2mir $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS) -DMADC_VERSION_STR='"$(MADC_VERSION)"'
 LIBS	= -rdynamic -ldl -lz -lm -lpthread $(OPTIONAL_LIBS)
+# MADC_VERSION_STR rides in DEFINES, which make does not track as a
+# dependency: bumping ../VERSION left the version-consuming objects stale, so
+# the host-baked sys.version and the lexer's MADC_VERSION macro disagreed
+# until a clean build (testsysobject "version_matches: 0" after the v0.65.0
+# bump). Make those objects depend on ../VERSION; the list is derived from
+# the sources so a new consumer joins automatically.
+VERSION_DEP_SRCS := $(shell grep -l 'MADC_VERSION_STR' *.cpp 2>/dev/null)
+$(VERSION_DEP_SRCS:%.cpp=$(OBJDIR)/%.o) $(VERSION_DEP_SRCS:%.cpp=$(PICOBJDIR)/%.o): ../VERSION
 MIRLIB	= $(MIRDIR)/libmir.a
 ifeq ($(MODE),cross-aarch64-linux)
 # One MIR variant lib per target (mir-target.h knobs; zero mir makefile

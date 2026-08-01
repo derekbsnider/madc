@@ -672,6 +672,9 @@ TEST_CASE("B3: the directory round-trips libs and the typeid->name closure") {
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 	REQUIRE(forest.type_name_for(tid) != nullptr);
 	CHECK(std::string(forest.type_name_for(tid)) == "frozen_custom_t");
@@ -730,6 +733,9 @@ TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edg
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 	REQUIRE(forest.unit_count() >= 2);
 
@@ -871,6 +877,9 @@ TEST_CASE("Phase 6 slice 1: a file-scope typedef serializes as a decl record; "
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	// The serialized type table carries the typedef; materialize_from_arena swizzles
@@ -929,6 +938,9 @@ TEST_CASE("Phase 6 slice 1b: forest_restore_decls makes a fresh parser resolve a
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	// The aliased primitive the typedef record points at (materialize swizzles
@@ -1001,6 +1013,9 @@ TEST_CASE("Phase 6 slice 3a: forest_restore_decls reconstructs a header struct "
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	// The serialized type table carries Point as a STRUCT record; materialize_from_arena
@@ -1086,6 +1101,9 @@ TEST_CASE("Phase 6 v9: a struct's pointer members reconstruct via derived-type r
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	DataDefSTRUCT *node = NULL;
@@ -1148,6 +1166,9 @@ TEST_CASE("Phase 6 v10: a namespaced struct restores into the namespace maps") {
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	// materialize_from_arena reports P's defining namespace as "N".
@@ -1223,6 +1244,9 @@ TEST_CASE("Phase 6: named + unnamed-gap bitfield structs reconstruct verbatim") 
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	// Both structs serialize now: verbatim member offsets carry the unnamed-gap
@@ -1320,6 +1344,9 @@ TEST_CASE("Phase 6 slice 3c: forest_restore_decls reconstructs a header class "
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	// C serializes as a CLASS record; materialize_from_arena swizzles it to a complete
@@ -1418,6 +1445,9 @@ TEST_CASE("Phase 6 slice 3d: a class's non-virtual methods reconstruct into meth
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	DataDefCLASS *cd = NULL;
@@ -1496,6 +1526,9 @@ TEST_CASE("Phase 6 A2: std::string's scalar-alias size_type members no longer ba
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	// The real std::string product (char + std::allocator<char>, NOT the pmr or
@@ -1565,6 +1598,9 @@ TEST_CASE("Phase 6 A1: std::string materializes as a namespaced typedef -> the b
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
@@ -1623,6 +1659,9 @@ TEST_CASE("Phase 6 v12: std::string's ctors + dtor + operator= reconstruct into 
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	DataDefCLASS *str = NULL;
@@ -1704,6 +1743,9 @@ TEST_CASE("Phase 6 v13: std::string's header file-scope globals restore with the
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	forest.materialize_from_arena();		// builds the restored-globals view
@@ -1760,6 +1802,9 @@ TEST_CASE("Phase 6 v14: std::string's scalar-const file-scope globals restore wi
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	forest.materialize_from_arena();
@@ -1819,6 +1864,9 @@ TEST_CASE("Phase 6 v16: class-typed file-scope globals restore their init form +
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	forest.materialize_from_arena();
@@ -1899,6 +1947,9 @@ TEST_CASE("B3 flip chunk 1: the dumped arena carries typedefs, namespace ids, an
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	const madc::dis::FrozenDefArena &a = forest.arena();
@@ -2040,6 +2091,9 @@ TEST_CASE("RC2: free-function prototypes freeze into the arena and restore") {
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 	forest.materialize_from_arena();
 
@@ -2141,6 +2195,9 @@ TEST_CASE("#23: restored class methods register as funcdef_map[method-id] + prog
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	// A FRESH Program initialized by a trivial tokenize (strpool + tkProgram),
@@ -2366,6 +2423,9 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 	forest.materialize_from_arena();
 
@@ -2565,6 +2625,9 @@ TEST_CASE("v21: skipped-ns-fn-template placeholder restores with its namespace b
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 	forest.materialize_from_arena();
 
@@ -2676,6 +2739,9 @@ TEST_CASE("v23: method param DEFAULT ARGUMENTS freeze as token runs and restore 
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	std::shared_ptr<Program> progB = std::make_shared<Program>();
@@ -2759,6 +2825,9 @@ TEST_CASE("v25: an array-typed typedef (va_list shape) freezes as DK_CARRAY and 
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	// A FRESH Program that never parses the header.
@@ -2858,6 +2927,9 @@ TEST_CASE("v25: a ctor-syntax header global restores its ctor ARGUMENTS as parse
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	std::shared_ptr<Program> progB = std::make_shared<Program>();
@@ -2968,6 +3040,9 @@ TEST_CASE("tagless-typedef struct: the alias restores as a struct_map tag too") 
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	// A FRESH Program that never parses the header.
@@ -3051,6 +3126,9 @@ TEST_CASE("NULL-init pointer + uninitialized file-scope globals restore") {
 	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
 	std::remove(snap_path.c_str());
 	CirFrozenForest forest;
+	freeze_test_bind_substrate();	// thaw needs a LIVE pool — the freeze
+					// Program died with its own (~Program
+					// releases the ambient pools it owns)
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	forest.materialize_from_arena();

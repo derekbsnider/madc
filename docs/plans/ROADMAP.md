@@ -1,16 +1,19 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-07-31 (v0.65.0: THE
-VTT WALL FELL — libc++ `istringstream` RUNS. Hidden `__madc_vb<i>` ctor
-params are madc's VTT equivalent (construction-vtables gap, task #83),
-plus the three-link stream construction/destruction chain (shell
-shadowing of a deferred out-of-line body; external D1 as a base dtor
-double-destroying vbases — new `class_base_dtor_symbol` D2 resolver;
-external C1 as a base ctor building a standalone layout — the
-vbase-forward lane demotes to the madc C2 body). The flavored lane went
-803/80 → 811/77, 3 FIXED zero broken; `teststreambool` is byte-identical
-under BOTH flavors. Suite 887 → 889; next: #71 ref-qualified members,
-testcin `operator>>`, the manip/castarrow residuals — P2.7 continues).
+Master plan linking all workstreams. Updated 2026-08-01 (v0.66.0: the
+RECON-THEN-STRIKE release — the libc++ parity lane went 811/77 →
+**859/40**. The 28-test `cout << std::string` bucket fell to one
+two-commit root (a fn-template instantiation outranks ITS OWN
+placeholder, task #88); two-layer SFINAE viability ([conv.ptr] +
+unevaluated-miss-is-SFINAE) felled the `allocator_traits::destroy`
+wall; then EIGHT parallel recon agents bucketed all 59 remaining
+failures three-way (madc/g++/clang++ reducers) and a five-fix strike
+batch ([dcl.enum]p11, `<=>` payload discovery, per-OVERLOAD memo keys,
+pointer-param viability #90, [expr.ref]p4 obj.static-dot) took 19 more
+out — zero broken at every comm-diffed step. All 40 remaining failures
+carry named roots (task #34); #93 (typedef template-arg identity, the
+`cin >> string` blocker) is fixed and parked on a WIP branch behind a
+freeze-gate interaction — P2.7 continues).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -35,6 +38,45 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **v0.66.0 (2026-08-01): the recon-then-strike release (tasks
+  #88/#90/#34, P2.7 in progress).** The flavored lane went 811/77 →
+  **859/40** across three windows, zero broken at every comm-diffed
+  step. First the 28-test `cout << std::string` bucket fell to ONE
+  root in two commits (task #88): a pattern-recipe pop kept the
+  dependent body parse's COLLATERAL definitions, and a fn-template
+  instantiation now outranks ITS OWN varargs placeholder (pairwise via
+  `tsubst_source`; gates `testpatcollateral` + `testcoutstr_libcxx`).
+  Under it, two-layer SFINAE viability (@6980ba1a): an unrelated
+  pointer argument is NOT viable ([conv.ptr] arm incl. numeric-pointee
+  rawtype identity) and a scored overload miss inside an unevaluated
+  operand is a SFINAE failure — the `allocator_traits::destroy` wall
+  fell (gate `testptrviab`). Then the recon-then-strike method: EIGHT
+  parallel recon subagents bucketed ALL 59 remaining failures with
+  three-way madc/g++/clang++ reducers, and the strike batch took 19
+  out (17 fixed + 2 reasoned skips): [dcl.enum]p11 unscoped-enum
+  qualification (`testenumqual`), `<=>` comparison-category payload
+  discovered from the flavor's own `<compare>` statics — no
+  `_M_value`/sentinel hardcode (`testspaceship_libcxx`), fn-template
+  memo keyed per-OVERLOAD (`testosmixed_libcxx`), concrete-pointer
+  parameter viability closing the `cout << string` wrong-overload
+  identity, task #90 (`teststrret_libcxx`), and [expr.ref]p4
+  obj.static-member resolution (`testdotstatic`). Trait-fold silent
+  wrong answers fixed both flavors (re-entry shell INCOMPLETE not
+  dependent; reference args never classes — 7 inversions vs both
+  canons). The release battery caught + fixed its own regression
+  (@569de94d): the per-overload memo FNV hashed the already-renamed
+  declarator, so freeze producers froze duplicate instantiation
+  products under shifted names — [vecbind] went red; the hash now
+  skips the declarator name ([over.load]); filed #96 (single-element
+  pack key fold, needs content-deterministic naming — the #93 arc).
+  Suite 889 → 902 (fulltest 902/0/0/9, `--exe` 886/0, `--obj` 886/0,
+  packed arbiter 902/0/0/9). Fork unchanged (1.0-madc.0.63.0). NEXT: land
+  parked #93 (typedef template-arg identity — `cin >> string` works
+  under it, WIP branch @cf39afef; blocker = the freeze self-exe gate's
+  `__oN` journal-rollback interaction, plan in task #93), then
+  const-overload selection [over.match.funcs]/4 (the map/set family),
+  #94 `conjunction` fold, the #69 flavor-ABI wall (11 tests).
 
 - **v0.65.0 (2026-07-31): the VTT wall fell — libc++ `istringstream`
   RUNS (tasks #83/#84, P2.7 in progress).** madc's answer to Itanium

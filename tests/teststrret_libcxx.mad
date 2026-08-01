@@ -1,0 +1,23 @@
+// String RVALUE streamed under -stdlib=libc++ (bucket-A Root B/B2 of the
+// 59-set re-bucket). free_operator_concrete_param_matches's pointer arm was
+// unconditionally permissive, so operator<<(ostream&, const char*) claimed
+// a basic_string argument (first-deduced-wins) and the c_str() compensating
+// bridge only covered LVALUES — a returned string temp passed the whole
+// struct as the char*. A concrete pointer parameter is now viable only for
+// a pointer/array argument ([conv.ptr], [conv.array]); the basic_string
+// inserter wins and the bridge is not needed (also closes task #90's wrong
+// overload identity for lvalues).
+// Oracle: clang++ -stdlib=libc++ and g++ print x then hi.
+#include <iostream>
+#include <string>
+using namespace std;
+
+string mk() { string s = "hi"; return s; }
+
+int main()
+{
+    string a = "x";
+    cout << a << endl;
+    cout << mk() << endl;
+    return 0;
+}

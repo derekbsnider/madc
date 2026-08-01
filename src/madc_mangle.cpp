@@ -654,18 +654,25 @@ public:
 					out += encode_type(parse_param_type(p));
 			return out;
 		}
-		// A function directly in namespace std. Under libstdc++ that is an
-		// Itanium <unscoped-name> using the St abbreviation (_ZSt9terminatev),
-		// with NO nested-name wrapper; under libc++ the entity really lives in
-		// std::__1, so it is a <nested-name> (_ZNSt3__19terminateEv).
-		// std_entity_scope owns that split — the St-direct form is only correct
-		// for the flavor whose entities are directly in std.
+		// A function whose DECLARED scope is exactly `std`. The qualifier
+		// list here is PARSE-FAITHFUL (current_namespace() / FuncDef::
+		// namespace_name carry the inline-namespace model), so a plain
+		// {"std"} means the UNVERSIONED namespace in BOTH flavors — an
+		// Itanium <unscoped-name> with the St abbreviation and NO
+		// nested-name wrapper (_ZSt9terminatev). libc++ deliberately
+		// declares its ABI-stable entry points there (<new>'s
+		// __throw_bad_alloc, in a `namespace std // purposefully not
+		// using versioning namespace` block, exports as
+		// _ZSt17__throw_bad_allocv); widening it to std::__1 via
+		// std_entity_scope minted an import libc++.so does not export.
+		// An entity that really lives in the versioning namespace
+		// arrives as {"std","__1"} and takes the chain path below.
+		// std_entity_scope remains the rule ONLY for the flavor-agnostic
+		// W2 spellings (mangle_std_var / mangle_std_free_template),
+		// whose callers never tracked the inline namespace.
 		if (qualifiers.size() == 1 && qualifiers[0] == "std") {
-			bool nested = false;
-			std::string scope = std_entity_scope(nested);
-			std::string out = (nested ? "_ZN" : "_Z") + scope
+			std::string out = "_ZSt"
 			                + (opcode.empty() ? source_name(name) : opcode);
-			if (nested) out += "E";
 			if (params.empty())
 				out += "v";
 			else

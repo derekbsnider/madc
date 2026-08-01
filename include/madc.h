@@ -266,6 +266,16 @@ public:
     // gcc13's __is_destructible_impl::__test carries its ENTIRE SFINAE in
     // `typename = decltype(declval<_Tp1&>().~_Tp1())` (plain true_type return).
     std::vector<std::vector<TokenBase *> > member_template_param_defaults;
+    // Per-param CONSTRAINT-type token runs (parallel to template_param_names;
+    // empty run = unconstrained). A NON-TYPE param's SFINAE lives in its
+    // declared TYPE (`typename enable_if<C, bool>::type = true`) — the
+    // template-head parse captures that compound type spelling here (the same
+    // capture the namespace-fn lane stores in FnTemplateDef::
+    // typeparam_constraints). The instantiation twins fill a non-type
+    // param's default ONLY when this run is empty (`bool _Dummy = true` —
+    // nothing to evaluate, nothing asserted); a captured run still clears
+    // the default until the run is evaluated at instantiation.
+    std::vector<std::vector<TokenBase *> > member_template_param_constraints;
     // Per FUNCTION-parameter TYPE token runs (declaration order, default
     // value stripped past a top-level `=`). [temp.deduct]/8's OTHER half:
     // the SFINAE may live in the parameter type itself — libc++'s
@@ -2423,6 +2433,10 @@ public:
 	// empty run = no default) — the [temp.deduct]/8 SFINAE payload of a
 	// member template (`typename = decltype(declval<_Tp1&>().~_Tp1())`).
 	std::vector<std::vector<TokenBase *> > template_param_defaults;
+	// Per-param CONSTRAINT-type runs (parallel; empty = unconstrained) —
+	// mirrors FuncDef::member_template_param_constraints through the
+	// pattern lane (gates which non-type defaults are fillable).
+	std::vector<std::vector<TokenBase *> > template_param_constraints;
 	// Per FUNCTION-parameter TYPE token runs — the [temp.deduct]/8 SFINAE
 	// carried in a parameter type (`typename _Up::iterator_category* =
 	// nullptr`, default value stripped). Mirrors
@@ -2921,6 +2935,13 @@ public:
     // static true_type __test(int);`, gcc13 __is_destructible_impl) — the
     // resolver must substitute-and-resolve the default per [temp.deduct]/8.
     std::vector<std::vector<TokenBase *> > last_skipped_template_typeparam_defaults;
+    // Per-param CONSTRAINT-type runs (parallel vector; empty run =
+    // unconstrained) — the compound declared TYPE of a non-type param
+    // (`typename enable_if<C, bool>::type`), captured by the template-head
+    // parse. Rides beside the defaults so the member-template stamp can tell
+    // a plain `bool _Dummy = true` (fillable) from a constrained default
+    // (cleared until the run is evaluated).
+    std::vector<std::vector<TokenBase *> > last_skipped_template_typeparam_constraints;
     // W2 (retire-std-hardcoding-design): non-member operator overload candidates
     // declared at namespace scope (e.g. std::operator<<). Member-operator
     // resolution already exists (class_operator_call); these let `obj << x`
@@ -3191,6 +3212,12 @@ public:
     // The std comparison-category class a builtin <=> yields
     // ([expr.spaceship]); NULL when <compare> has not been parsed.
     DataDef *comparison_category_class(class TokenOperator *to);
+    // Public seam for the CIR lowering: `Class::member` static data member
+    // as a value token (storage-backed TokenVar for object-typed statics,
+    // folded constant for scalars). NULL when no such static member.
+    TokenBase *class_static_member_value_token(DataDefCLASS *scope,
+						const std::string &member,
+						TokenBase *at);
     // Namespaces named by `using namespace X;` directives (C++
     // [namespace.udir]). The single-Variable import model skips a member
     // whose name a global already claimed; unqualified CALL resolution
@@ -4105,6 +4132,11 @@ public:
 
     Program();
     explicit Program(MadcEngine *eng);
+    // Releases the process-ambient token pools (TokenBase::_active_strpool /
+    // _active_valpool, madc_active_project_types) when they point at THIS
+    // Program's members — a token constructed after its owning Program dies
+    // must take the guarded no-pool path, never intern into freed memory.
+    ~Program();
     void attach_engine(MadcEngine *eng);
     bool lookup_aot_data_offset(uintptr_t address, size_t &out_offset) const;
     size_t aot_variable_storage_size(const Variable *var) const;
@@ -4288,6 +4320,10 @@ public:
 	// run = no default) — a member template's [temp.deduct]/8 SFINAE
 	// payload (`typename = decltype(declval<_Tp1&>().~_Tp1())`).
 	std::vector<std::vector<TokenBase *> > typeparam_defaults;
+	// v38: per-param CONSTRAINT-type runs (parallel; empty =
+	// unconstrained) — ride the record's spec slot like the FN lane's
+	// typeparam_constraints (v33 precedent).
+	std::vector<std::vector<TokenBase *> > typeparam_constraints;
 	PendingForestMemberTmpl() : owner(NULL) {}
     };
     std::vector<PendingForestMemberTmpl> forest_pending_member_tmpls;

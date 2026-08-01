@@ -1,7 +1,10 @@
 #include <stdio.h>
 #include <string>
 
-typedef std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > mystr;
+// The portable spelling — std::__cxx11 is libstdc++'s ABI inline namespace
+// and does not exist under libc++ (clang++ -stdlib=libc++ rejects it too);
+// std::basic_string<...> names the same type in both flavors.
+typedef std::basic_string<char, std::char_traits<char>, std::allocator<char> > mystr;
 
 int main() {
 	mystr a("hello");

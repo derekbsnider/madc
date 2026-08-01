@@ -1,0 +1,25 @@
+// Builtin <=> under -stdlib=libc++ (bucket G of the 59-set re-bucket).
+// three_way_builtin_lowering used to spell libstdc++'s internals — the
+// _M_value member name and the _Ncmp::_Unordered == 2 payload — so under
+// libc++ (member __value_, unordered == -127) the lowering died "struct
+// has no member _M_value"; and a NAME-only fix would write 2 into
+// __value_, which libc++'s __is_ordered() reads as ordered-and-greater:
+// `NaN <=> x` would silently report GREATER. Both are now DISCOVERED from
+// the flavor's own <compare>: the select arms read the public statics
+// (less/greater/equivalent/unordered, [cmp.categories]) through the
+// category's sole data member. The NaN line is the silent-wrong-answer
+// regression control.
+// Oracle: clang++ -std=c++20 -stdlib=libc++ and g++ -std=c++20 print
+// "0 0 0" then "1 0 0".
+#include <compare>
+#include <cstdio>
+int main()
+{
+	double n = 0.0 / 0.0, x = 1.5;
+	auto r = n <=> x;
+	printf("%d %d %d\n", (int)(r < 0), (int)(r > 0), (int)(r == 0));
+	int a = 3, b = 7;
+	auto s = a <=> b;
+	printf("%d %d %d\n", (int)(s < 0), (int)(s > 0), (int)(s == 0));
+	return 0;
+}

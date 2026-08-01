@@ -2,6 +2,101 @@
 
 ## [Unreleased]
 
+## [v0.66.0] — 2026-08-01
+
+The recon-then-strike release: the libc++ parity lane went 811/77 →
+**859/40** across three windows — the 28-test `cout << std::string`
+bucket fell to one two-commit root, then EIGHT parallel recon agents
+bucketed every remaining failure (three-way madc/g++/clang++ reducers)
+and a five-fix strike batch took 19 more tests out with ZERO broken at
+every comm-diffed step. Several were flavor-independent silent wrong
+answers.
+
+- **fix: the 28-test bucket — a fn-template instantiation outranks ITS
+  OWN placeholder (task #88, @ba70192e + @dad582e6).** Half 1: popping
+  a pattern recipe kept the dependent body parse's COLLATERAL
+  definitions (gate `testpatcollateral`). Half 2: overload ranking let
+  a registered varargs placeholder beat the concrete instantiation it
+  stood for — now the instantiation wins pairwise via `tsubst_source`
+  (gate `testcoutstr_libcxx`). Lane 76 → 59 in one step.
+- **fix: two-layer SFINAE viability (@6980ba1a).** An unrelated
+  pointer argument is NOT viable for a concrete pointer parameter
+  ([conv.ptr] arm in `score_arg_to_param`, incl. numeric-pointee
+  rawtype identity so `size_t*` binds `std::size_t*`), and a scored
+  overload miss inside an unevaluated operand is a SFINAE failure,
+  not a hard error. The `allocator_traits::destroy` wall fell; gate
+  `testptrviab` ("1 0" == both canons).
+- **The session-#42 strike batch (five fixes, 19 tests out):**
+  [dcl.enum]p11 — `Tag::enumerator` resolves for UNSCOPED enums too,
+  and tagged nested enumerators carry the enum type (@b3c6f2f1, gate
+  `testenumqual`); `<=>` lowering discovers the comparison-category
+  member + payload values from the flavor's own `<compare>` statics —
+  no more `_M_value`/sentinel-2 hardcode (@f25702d1, gate
+  `testspaceship_libcxx` with a NaN silent-wrong control); the
+  fn-template instantiation memo keys the OVERLOAD (decl-spelling
+  FNV), not just name+binding — the libc++ char/char* stream SIGSEGV
+  family (@a72560a5, gate `testosmixed_libcxx`); a concrete POINTER
+  parameter is viable only for a pointer/array argument — closes the
+  `cout << string` wrong-overload identity, task #90 (@91830063, gate
+  `teststrret_libcxx`); `obj.member` naming a static data member
+  resolves through the shared resolver, [expr.ref]p4 (@3015bb41, gate
+  `testdotstatic`).
+- **fix: the per-request `__mti` rename no longer poisons the
+  instantiation memo key (@569de94d — caught by the release battery's
+  `forest_bind_gate [vecbind]` leg).** The @a72560a5 FNV hashed the
+  ALREADY-RENAMED declarator token, embedding the per-request
+  `__mti`/`__oN` identity in the memo key: no request could memo-hit a
+  prior instantiation of the same overload+binding, and freeze
+  producers froze DUPLICATE instances of one binding under shifted
+  names — bind-vs-live item-set identity broke. The hash now skips the
+  declarator name span ([over.load]: an overload is discriminated by
+  its parameter-type-list, never its name); same-overload requests
+  adopt again, the char/char* family stays split on its param
+  spellings. The tsubst-flagon "PROGRESS" (+1..+4 hits) was these same
+  duplicates masquerading as improvement — the fixed binary returns
+  EXACTLY to baseline. Filed #96: single-element pack types are still
+  absent from the memo key (`<int&&>` vs `<const int&>` share one
+  instance — pre-existing; needs content-deterministic `__mti` naming
+  first, the task #93 arc).
+- **fix: trait-fold silent wrong answers (@510368db + @a0b90de6).** A
+  pre-registration re-entry shell is INCOMPLETE, not dependent — the
+  stale brand made every trait on `allocator<int>` fold 0 (gate
+  `testtraitalloc_libcxx`; ships `dependent_surface_reason()` so a
+  trait refusal names the culprit node). And a REFERENCE type is never
+  a class: trait builtins gate on the argument's refness before
+  consulting the referent — 7 silent wrongs vs BOTH canons,
+  `__has_trivial_destructor(T&)` was inverted (gate `testreftrait`).
+- **fix: overload/deduction correctness set.** A qualified-id's
+  nested-name-specifier is a NON-DEDUCED CONTEXT, not a deduction
+  failure (@67079c61); a CLASS argument cannot claim an arithmetic
+  free-operator parameter (@63101743); a declared scope of exactly
+  `std` mangles as the UNVERSIONED namespace in both flavors
+  (@f4e7b946); member-template non-type defaults fill via captured
+  constraint runs (forest v38) and an alias-template-id param is
+  non-deduced (@06cd2d12, gate `testmtpldefault`).
+- **Housekeeping:** the dead `local_emit_name` arm is off the
+  C2-demotion fallback — the call-emit-symbol drift gate is green
+  again (@6192d811); version-consuming objects depend on `../VERSION`
+  (@fdf80bb5); the tsubst-unemittable dump names WHERE the definition
+  is hiding (@64819048); `MADC_FREEOP_PROBE` covers both the parser
+  and W2/CIR free-operator halves.
+- **Method note:** the strike batch was aimed by EIGHT parallel recon
+  subagents, each reducing its bucket three-way (madc vs g++ vs
+  clang++-18); every one of the 59 failures entered the ledger with a
+  named root and a container reducer before any fix was written. The
+  remaining 40 all carry named roots (map in task #34). Task #93
+  (template-arg identity through namespace typedefs — the `cin >>
+  string` blocker) is FIXED and validated on
+  `feature/libcxx-typedef-identity-wip-claude`, parked behind a
+  freeze-gate interaction; it lands next.
+- Lane 811/77 → **859/40** (ledger `docs/parity/libcxx-failset.txt`):
+  windows 814/76 (`testsizeoftpl`; the optional:354 wall) → 836/59
+  (the 28-test bucket) → 859/40 (19 out: 17 fixed + 2 reasoned
+  skips). Zero broken at every step, comm-diffed both ways. Suite
+  889 → 902 (fulltest **902/0/0/9**, `--exe` **886/0**, `--obj`
+  **886/0**, packed arbiter **902/0/0/9**). MIR fork unchanged
+  (`1.0-madc.0.63.0`).
+
 ## [v0.65.0] — 2026-07-31
 
 The VTT wall fell: libc++ `istringstream` RUNS — hidden `__madc_vb`

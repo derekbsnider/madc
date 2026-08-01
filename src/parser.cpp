@@ -2725,6 +2725,16 @@ static TokenBase *resolve_class_static_member_value(Program &pgm,
     return ti;
 }
 
+// Public seam for the CIR lowering (declared on Program): the resolution
+// itself is the file-static above — storage-backed TokenVar for object-typed
+// statics, folded in-class constant for scalars.
+TokenBase *Program::class_static_member_value_token(DataDefCLASS *scope,
+						    const std::string &member,
+						    TokenBase *at)
+{
+    return resolve_class_static_member_value(*this, scope, member, at);
+}
+
 // `Tmpl<args>::member` once the template-id has already been instantiated to a
 // concrete type: resolve the trailing `::member` static data member to a value.
 //
@@ -3400,6 +3410,9 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	    hash.add_u64(method.template_param_defaults.size());
 	    for ( size_t p = 0; p < method.template_param_defaults.size(); ++p )
 		add_tokens(method.template_param_defaults[p]);
+	    hash.add_u64(method.template_param_constraints.size());
+	    for ( size_t p = 0; p < method.template_param_constraints.size(); ++p )
+		add_tokens(method.template_param_constraints[p]);
 	    hash.add_u64(method.param_type_token_runs.size());
 	    for ( size_t p = 0; p < method.param_type_token_runs.size(); ++p )
 		add_tokens(method.param_type_token_runs[p]);
@@ -4780,6 +4793,46 @@ static bool datadef_has_unresolved_dependent_surface(DataDef *dd)
     if ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(dd) )
 	return datadef_has_unresolved_dependent_surface(arr->element_type);
     return false;
+}
+
+// Names WHICH node makes datadef_has_unresolved_dependent_surface() true, so
+// a refusal on a spelled-concrete type (a base shell minted opaque mid-flight
+// and never re-derived) is diagnosable from the error alone. Walks the same
+// chain as the predicate; returns "" when the type has no dependent surface.
+static std::string dependent_surface_reason(DataDef *dd,
+					    std::set<DataDefCLASS *> *seen = NULL)
+{
+    if ( !dd )
+	return std::string();
+    if ( dd->is_template_param() )
+	return dd->name + " is a template parameter";
+    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+	return dependent_surface_reason(ptr->base_type, seen);
+    if ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(dd) )
+	return dependent_surface_reason(arr->element_type, seen);
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+    if ( !cls )
+	return std::string();
+    if ( cls->is_dependent_placeholder )
+	return cls->name + " is a dependent placeholder";
+    if ( cls->has_dependent_surface )
+	return cls->name + " carries a dependent surface";
+    std::set<DataDefCLASS *> local_seen;
+    if ( !seen )
+	seen = &local_seen;
+    if ( seen->count(cls) )
+	return std::string();
+    seen->insert(cls);
+    for ( size_t i = 0; i < cls->bases.size(); ++i )
+    {
+	std::string r = dependent_surface_reason(cls->bases[i].base, seen);
+	if ( !r.empty() )
+	    return cls->name + ": base " + r;
+    }
+    std::string r = dependent_surface_reason(cls->base_class, seen);
+    if ( !r.empty() )
+	return cls->name + ": base " + r;
+    return std::string();
 }
 
 DataDefCLASS *Program::materialize_dependent_member_type(DataDef *owner,
@@ -6206,6 +6259,13 @@ static void register_basic_class_pattern_method(
 	pgm.last_skipped_template_typeparam_defaults =
 	    basic_class_pattern_substitute_token_runs(pgm, binding,
 		pattern.template_param_defaults);
+	// The CONSTRAINT runs ride identically (they may name the OWNER's
+	// params too — `enable_if<is_same<_Tp, ...>::value, bool>::type`).
+	std::vector<std::vector<TokenBase *> > saved_constraints_state =
+	    pgm.last_skipped_template_typeparam_constraints;
+	pgm.last_skipped_template_typeparam_constraints =
+	    basic_class_pattern_substitute_token_runs(pgm, binding,
+		pattern.template_param_constraints);
 	// The registration return-type scan re-parses the declaration tokens
 	// (`pair<iterator, bool> emplace(...)`); member aliases like
 	// `iterator` resolve through class_scope_stack. The parse lane runs
@@ -6228,6 +6288,7 @@ static void register_basic_class_pattern_method(
 	    pgm.last_skipped_template_typeparam_is_pack = saved_pack_state;
 	    pgm.last_skipped_template_typeparam_is_type = saved_is_type_state;
 	    pgm.last_skipped_template_typeparam_defaults = saved_defaults_state;
+	    pgm.last_skipped_template_typeparam_constraints = saved_constraints_state;
 	    throw;
 	}
 	if ( owner && !pgm.class_scope_stack.empty()
@@ -6236,6 +6297,7 @@ static void register_basic_class_pattern_method(
 	pgm.last_skipped_template_typeparam_is_pack = saved_pack_state;
 	pgm.last_skipped_template_typeparam_is_type = saved_is_type_state;
 	pgm.last_skipped_template_typeparam_defaults = saved_defaults_state;
+	pgm.last_skipped_template_typeparam_constraints = saved_constraints_state;
 	return;
     }
 
@@ -7366,9 +7428,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // as a template ARGUMENT, resolved BEFORE TokenCLASS::parse registers the
     // name): the cache-hit branch above cannot serve it, so bound it here with
     // the same opaque placeholder — pending completion recognizes the shell.
-    bool recursive_opaque = (want_sticky
-	&& variadic_inst_in_progress.count(registered_mangled))
-	|| class_inst_in_progress.count(registered_mangled);
+    bool recursive_sticky = want_sticky
+	&& variadic_inst_in_progress.count(registered_mangled) != 0;
+    bool recursive_inflight = class_inst_in_progress.count(registered_mangled) != 0;
+    bool recursive_opaque = recursive_sticky || recursive_inflight;
     if ( td.body.empty() || (pack_real_inst && dependent_surface)
       || placeholder_arg || recursive_opaque )
     {
@@ -7376,8 +7439,19 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	DataDefCLASS *fwd = new DataDefCLASS(registered_mangled, 0, DataType::dtRESERVED);
 	// A bodyless declaration with concrete arguments is incomplete, not
 	// dependent; pending completion still recognizes it by its empty shell.
+	// The same holds for a pre-registration re-entry of an instantiation in
+	// flight up-stack (a base clause naming the enclosing specialization as
+	// a template ARGUMENT): its key is fully concrete and the enclosing
+	// parse completes this very object (register_class_shell reuses it), so
+	// it is incomplete, NOT dependent — the cache-hit twin branch above
+	// already serves the post-registration ordering with a clean shell.
+	// Branding it outlives the transient: the completed class re-stamps its
+	// own flags, but anything instantiated AGAINST the branded shell keeps
+	// has_dependent_surface forever (libc++ allocator<int>'s
+	// __non_trivial_if base — every trait fold on allocator then refused,
+	// and is_trivially_destructible silently answered 0).
 	bool unresolved_surface = dependent_surface || placeholder_arg
-				|| recursive_opaque;
+				|| recursive_sticky;
 	fwd->set_canonical_spelling(canon);
 	fwd->is_dependent_placeholder = unresolved_surface;
 	stamp_opaque_mint_context(fwd);
@@ -11080,6 +11154,23 @@ static void unwrap_baked_trait_arg(TraitTypeArg &a)
     }
 }
 
+// A REFERENCE type is never a class/union/enum, never empty, final, trivial,
+// standard-layout or POD, and never relates via __is_base_of — the class-family
+// trait predicates only see the REFERENT DataDef and would answer for T instead
+// of T&. The one family member that flips the other way:
+// __has_trivial_destructor(T&) is TRUE regardless of the referent's dtor
+// (destroying a reference is a no-op). Oracle (g++-13 == clang++-18,
+// tmp/reftrait1.cpp + tmp/reftrait2.cpp): __is_empty(E&)=0 __is_class(E&)=0
+// __is_trivial(int&)=0 __has_trivial_destructor(int&)=1 __is_final(F&)=0
+// __is_standard_layout(int&)=0 __is_pod(int&)=0 __has_trivial_destructor(NT&)=1
+// __is_base_of(B&,D&)=0. Both dispatch sites (evaluate_type_trait and
+// eval_local_type_trait — the recorded trait_builtin_dispatch_twins family)
+// gate through this ONE helper.
+static bool trait_arg_is_reference(const TraitTypeArg &a)
+{
+    return a.is_lref || a.is_rref;
+}
+
 // Tri-state: 1 = yes, 0 = no, -1 = madc cannot determine faithfully (the caller
 // raises a clear error rather than emit a WRONG bool — a wrong trait result would
 // silently corrupt SFINAE; see the correctness-first note on type_trait_arity).
@@ -11733,7 +11824,8 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	if ( datadef_has_unresolved_dependent_surface(a.dd) )
 	    Throw(op_tb) << name << "(...) on a dependent type argument ("
 			 << (a.dd ? a.dd->name : std::string("?"))
-			 << ") cannot fold" << flush;
+			 << ") cannot fold ["
+			 << dependent_surface_reason(a.dd) << "]" << flush;
 	args.push_back(a);
 	TokenBase *sep = nextToken();
 	if ( sep && sep->id() == TokenID::tkComma )
@@ -11754,25 +11846,29 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
     if ( name == "__is_same" )
 	result = args[0].same_as(args[1]);
     else if ( name == "__is_enum" )
-	result = trait_is_enum(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_enum(args[0].dd);
     else if ( name == "__is_class" )
-	result = trait_is_class(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_class(args[0].dd);
     else if ( name == "__is_union" )
-	result = trait_is_union(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_union(args[0].dd);
     else if ( name == "__is_empty" )
-	result = trait_is_empty(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_empty(args[0].dd);
     else if ( name == "__is_final" )
-	result = trait_is_final(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_final(args[0].dd);
     else if ( name == "__is_base_of" )
-	result = trait_is_base_of(args[0].dd, args[1].dd);
+	result = !trait_arg_is_reference(args[0])
+	      && !trait_arg_is_reference(args[1])
+	      && trait_is_base_of(args[0].dd, args[1].dd);
     else if ( name == "__has_trivial_destructor" )
-	result = trait_has_trivial_destructor(args[0].dd);
+	result = trait_arg_is_reference(args[0])
+	      || trait_has_trivial_destructor(args[0].dd);
     else if ( name == "__is_trivial" )
-	result = trait_is_trivial(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_trivial(args[0].dd);
     else if ( name == "__is_standard_layout" )
-	result = trait_is_standard_layout(args[0].dd);
+	result = !trait_arg_is_reference(args[0])
+	      && trait_is_standard_layout(args[0].dd);
     else if ( name == "__is_pod" )
-	result = trait_is_pod(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_pod(args[0].dd);
     else if ( name == "__is_destructible" )
     {
 	int s = trait_is_destructible(args[0]);
@@ -14774,6 +14870,20 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
     if ( !lc && !rc )
 	return NULL;
     std::string opname = std::string("operator") + opsym;
+    // Env-gated probe (MADC_FREEOP_PROBE=<opname substring>): which arm of this
+    // lowering claimed the expression. A bail here hands the pair back to the
+    // member operator, and when every same-name member takes a scalar that
+    // surfaces far away as c2mir's "incompatible argument type for arithmetic
+    // type parameter" — with nothing naming the operator that lost.
+    {
+	static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
+	if ( _fop && *_fop && opname.find(_fop) != std::string::npos )
+	    fprintf(stderr, "FREEOP enter %s lc=%s rc=%s member_ret=%d"
+		    " ovset=%zu\n", opname.c_str(),
+		    lc ? lc->name.c_str() : "-", rc ? rc->name.c_str() : "-",
+		    (int)(lc && lc->binary_operator_return_type(opname) != NULL),
+		    free_operator_overloads.size());
+    }
     if ( lc && lc->binary_operator_return_type(opname) )
     {
 	// A named member operator normally owns the expression. The ONE exception:
@@ -14795,7 +14905,13 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
 	for ( const FreeOperatorOverload &ov : free_operator_overloads )
 	    if ( ov.opname == opname && !ov.return_spelling.empty()
 	      && ov.return_spelling.back() == '&' )
+	    {
+		static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
+		if ( _fop && *_fop && opname.find(_fop) != std::string::npos )
+		    fprintf(stderr, "FREEOP bail-refret %s ov.ret=%s\n",
+			    opname.c_str(), ov.return_spelling.c_str());
 		return NULL;
+	    }
 	Variable *nv_callee = NULL;
 	if ( instantiate_free_operator_template(opname, to->left, to->right,
 						&nv_callee) && nv_callee )
@@ -15363,6 +15479,25 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
 	at.push_back(p ? operand_value_datadef(p) : NULL);
     Variable *ov = cls->findMethodOverload(id, at);
     TokenCallMethod *selected = tc;
+    if ( !ov && unevaluated_operand_depth > 0 )
+    {
+	// In an unevaluated operand (a decltype/SFINAE probe) a scored MISS —
+	// same-name candidates exist (tc->var is the arity pick) but none is
+	// viable for these argument types — is [over.match.viable] failure:
+	// the call is ill-formed and the probe must SFINAE-reject. Keeping
+	// the arity pick typed `declval<Alloc>().destroy(declval<B*>())` as
+	// well-formed, so __has_destroy folded TRUE for an argument the
+	// member cannot take, and allocator_traits::destroy bound the
+	// __a.destroy arm — the __tree:890 tsubst bail (gate testptrviab).
+	// An unknown argument shape (a NULL DataDef) keeps the lenient
+	// fall-through — reject only what scored as PROVEN non-viable.
+	bool all_args_known = true;
+	for ( const DataDef *a : at )
+	    if ( !a ) { all_args_known = false; break; }
+	if ( all_args_known )
+	    Throw(tc) << "no viable overload of '" << id << "' in "
+		      << cls->name << " for these argument types" << flush;
+    }
     if ( ov && ov != &tc->var )
     {
 	selected = new TokenCallMethod(recv, *ov);
@@ -17900,6 +18035,14 @@ class ClassPatternPayloadReader
 	    out.template_param_defaults.push_back(std::vector<TokenBase *>());
 	    tokens(out.template_param_defaults.back());
 	}
+	// v38: per-param CONSTRAINT-type runs (a non-type param's declared
+	// compound type — gates which non-type defaults are fillable).
+	uint32_t nconstraints = count();
+	for ( uint32_t i = 0; valid && i < nconstraints; ++i )
+	{
+	    out.template_param_constraints.push_back(std::vector<TokenBase *>());
+	    tokens(out.template_param_constraints.back());
+	}
 	// v37: per FUNCTION-parameter TYPE token runs (the OTHER
 	// [temp.deduct]/8 half — SFINAE in a param type).
 	uint32_t nptypes = count();
@@ -19012,10 +19155,20 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		pm.typeparam_defaults.push_back(std::vector<TokenBase *>());
 		if ( p < rt.defaults.size() )
 		    restore_run(rt.defaults[p], pm.typeparam_defaults.back());
+		// v38: the per-param CONSTRAINT runs ride the record's spec
+		// slot (the FN lane's v33 convention). An older record has
+		// rt.spec empty — cleared below so the size mismatch
+		// downstream degrades to clearing every non-type default,
+		// the pre-v38 behavior (no info ≠ all-unconstrained).
+		pm.typeparam_constraints.push_back(std::vector<TokenBase *>());
+		if ( p < rt.spec.size() )
+		    restore_run(rt.spec[p], pm.typeparam_constraints.back());
 		if ( vri_debug_enabled() )
 		    fprintf(stderr, "[vriprobe] THAW member %s p=%zu run=%zu\n",
 			    pm.disp.c_str(), p, pm.typeparam_defaults.back().size());
 	    }
+	    if ( rt.spec.empty() )
+		pm.typeparam_constraints.clear();
 	    forest_pending_member_tmpls.push_back(pm);
 	    break;
 	}
@@ -19037,14 +19190,16 @@ static void stamp_member_template_pattern(
 	const std::vector<std::string> &typeparams,
 	const std::vector<bool> &typeparam_is_pack,
 	const std::vector<bool> &typeparam_is_type, const std::string &name,
-	const std::vector<std::vector<TokenBase *> > &typeparam_defaults);
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults,
+	const std::vector<std::vector<TokenBase *> > &typeparam_constraints);
 static void stamp_member_template_pattern_decl_only(
 	DataDefCLASS *owner, FuncDef *fd,
 	const std::vector<TokenBase *> &ret_tokens,
 	const std::vector<std::string> &typeparams,
 	const std::vector<bool> &typeparam_is_pack,
 	const std::vector<bool> &typeparam_is_type, const std::string &name,
-	const std::vector<std::vector<TokenBase *> > &typeparam_defaults);
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults,
+	const std::vector<std::vector<TokenBase *> > &typeparam_constraints);
 static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
@@ -19216,13 +19371,14 @@ void Program::flush_forest_pending_globals()
 		stamp_member_template_pattern(pm.owner, fit->second, pm.tokens,
 					      pm.typeparams, pm.is_pack,
 					      pm.is_type, pm.disp,
-					      pm.typeparam_defaults);
+					      pm.typeparam_defaults,
+					      pm.typeparam_constraints);
 	    else
 		// v34 decl-only record: no decl tokens to derive from — stamp
 		// the restored return-type range + params directly.
 		stamp_member_template_pattern_decl_only(pm.owner, fit->second,
 		    pm.ret_tokens, pm.typeparams, pm.is_pack, pm.is_type,
-		    pm.disp, pm.typeparam_defaults);
+		    pm.disp, pm.typeparam_defaults, pm.typeparam_constraints);
 	    DBG(std::cout << "flush_forest_pending_globals: member template of "
 		<< pm.owner->name << " hydrated placeholder " << pm.key
 		<< " (" << pm.typeparams.size() << " param(s), "
@@ -19246,6 +19402,9 @@ void Program::flush_forest_pending_globals()
 	std::vector<std::vector<TokenBase *> > saved_defaults =
 	    last_skipped_template_typeparam_defaults;
 	last_skipped_template_typeparam_defaults = pm.typeparam_defaults;
+	std::vector<std::vector<TokenBase *> > saved_constraints =
+	    last_skipped_template_typeparam_constraints;
+	last_skipped_template_typeparam_constraints = pm.typeparam_constraints;
 	// Live ran this registration INSIDE the owner's class body — the
 	// return-type resolution reads class-scope names (`iterator`,
 	// `pair<iterator,bool>`) through class_scope_stack + the owner's
@@ -19257,6 +19416,7 @@ void Program::flush_forest_pending_globals()
 	last_skipped_template_typeparam_is_pack = saved_pack;
 	last_skipped_template_typeparam_is_type = saved_is_type;
 	last_skipped_template_typeparam_defaults = saved_defaults;
+	last_skipped_template_typeparam_constraints = saved_constraints;
 	DBG(std::cout << "flush_forest_pending_globals: member template of "
 	    << pm.owner->name << " (" << pm.typeparams.size()
 	    << " param(s), " << pm.tokens.size() << " tokens)" << std::endl);
@@ -19772,6 +19932,25 @@ void Program::activate_token_pools()
     TokenBase::_active_strpool = &strpool;	// interning Step 4: this Program owns spelling()
     TokenBase::_active_valpool = &valpool;	// P0 slice 3: wide constants resolve via wival()
     madc_active_project_types = &project_types;	// B1: cir_node datadef_id resolves via typeids
+}
+
+// The ambient pools activate_token_pools() binds must NOT outlive their
+// owning Program: a TokenIdent constructed after this Program dies would
+// intern into the FREED strpool (heap-use-after-free — ASAN caught it in
+// test_datadef's journal case, where a token minted after an earlier case's
+// Program died read that Program's pool; latent for every multi-Program
+// host, libmadc embeddings included — the single-Program CLI never sees it).
+// Release only what THIS Program owns: a second live Program that has since
+// activated its own pools stays bound; the token ctor/spelling() guards
+// already handle the no-pool state (spelling_id 0 / "").
+Program::~Program()
+{
+    if ( TokenBase::_active_strpool == &strpool )
+	TokenBase::_active_strpool = NULL;
+    if ( TokenBase::_active_valpool == &valpool )
+	TokenBase::_active_valpool = NULL;
+    if ( madc_active_project_types == &project_types )
+	madc_active_project_types = NULL;
 }
 
 void Program::_parser_init()
@@ -25753,6 +25932,9 @@ class ClassPatternNormalizer
 	for ( size_t i = 0; i < fd->member_template_param_defaults.size(); ++i )
 	    out.template_param_defaults.push_back(
 		class_pattern_clone_tokens(fd->member_template_param_defaults[i]));
+	for ( size_t i = 0; i < fd->member_template_param_constraints.size(); ++i )
+	    out.template_param_constraints.push_back(
+		class_pattern_clone_tokens(fd->member_template_param_constraints[i]));
 	for ( size_t i = 0; i < fd->member_template_param_type_tokens.size(); ++i )
 	    out.param_type_token_runs.push_back(
 		class_pattern_clone_tokens(fd->member_template_param_type_tokens[i]));
@@ -26211,6 +26393,8 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	last_skipped_template_typeparam_is_type;
     std::vector<std::vector<TokenBase *> > saved_skipped_template_defaults =
 	last_skipped_template_typeparam_defaults;
+    std::vector<std::vector<TokenBase *> > saved_skipped_template_constraints =
+	last_skipped_template_typeparam_constraints;
     std::string saved_stmt_callee_namespace = stmt_callee_namespace;
     std::map<DataDefCLASS *, std::vector<ClassDeclKind> > *saved_decl_capture =
 	class_pattern_decl_capture;
@@ -26262,6 +26446,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     last_skipped_template_typeparam_is_pack.clear();
     last_skipped_template_typeparam_is_type.clear();
     last_skipped_template_typeparam_defaults.clear();
+    last_skipped_template_typeparam_constraints.clear();
     stmt_callee_namespace.clear();
 
     bool parsed = false;
@@ -26354,6 +26539,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     last_skipped_template_typeparam_is_pack.swap(saved_skipped_template_packs);
     last_skipped_template_typeparam_is_type.swap(saved_skipped_template_is_type);
     last_skipped_template_typeparam_defaults.swap(saved_skipped_template_defaults);
+    last_skipped_template_typeparam_constraints.swap(saved_skipped_template_constraints);
     stmt_callee_namespace = saved_stmt_callee_namespace;
     tokens = saved_tokens;
     _prv_token = saved_prv;
@@ -27297,17 +27483,28 @@ static bool eval_local_type_trait(Program &pgm,
 				       : (int)targs.size() != arity )
 	return false;
     bool r;
-    if ( nm == "__has_trivial_destructor" ) r = trait_has_trivial_destructor(targs[0].dd);
-    else if ( nm == "__is_trivial" )        r = trait_is_trivial(targs[0].dd);
-    else if ( nm == "__is_standard_layout" ) r = trait_is_standard_layout(targs[0].dd);
-    else if ( nm == "__is_pod" )            r = trait_is_pod(targs[0].dd);
-    else if ( nm == "__is_class" )          r = trait_is_class(targs[0].dd);
-    else if ( nm == "__is_union" )          r = trait_is_union(targs[0].dd);
-    else if ( nm == "__is_empty" )          r = trait_is_empty(targs[0].dd);
-    else if ( nm == "__is_final" )          r = trait_is_final(targs[0].dd);
-    else if ( nm == "__is_enum" )           r = trait_is_enum(targs[0].dd);
+    if ( nm == "__has_trivial_destructor" ) r = trait_arg_is_reference(targs[0])
+					     || trait_has_trivial_destructor(targs[0].dd);
+    else if ( nm == "__is_trivial" )        r = !trait_arg_is_reference(targs[0])
+					     && trait_is_trivial(targs[0].dd);
+    else if ( nm == "__is_standard_layout" ) r = !trait_arg_is_reference(targs[0])
+					      && trait_is_standard_layout(targs[0].dd);
+    else if ( nm == "__is_pod" )            r = !trait_arg_is_reference(targs[0])
+					     && trait_is_pod(targs[0].dd);
+    else if ( nm == "__is_class" )          r = !trait_arg_is_reference(targs[0])
+					     && trait_is_class(targs[0].dd);
+    else if ( nm == "__is_union" )          r = !trait_arg_is_reference(targs[0])
+					     && trait_is_union(targs[0].dd);
+    else if ( nm == "__is_empty" )          r = !trait_arg_is_reference(targs[0])
+					     && trait_is_empty(targs[0].dd);
+    else if ( nm == "__is_final" )          r = !trait_arg_is_reference(targs[0])
+					     && trait_is_final(targs[0].dd);
+    else if ( nm == "__is_enum" )           r = !trait_arg_is_reference(targs[0])
+					     && trait_is_enum(targs[0].dd);
     else if ( nm == "__is_same" )           r = targs[0].same_as(targs[1]);
-    else if ( nm == "__is_base_of" )        r = trait_is_base_of(targs[0].dd, targs[1].dd);
+    else if ( nm == "__is_base_of" )        r = !trait_arg_is_reference(targs[0])
+					     && !trait_arg_is_reference(targs[1])
+					     && trait_is_base_of(targs[0].dd, targs[1].dd);
     else if ( nm == "__is_destructible" )
     {
 	int s = trait_is_destructible(targs[0]);
@@ -29278,6 +29475,28 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    ssize_t ofs = ((DataDefSTRUCT *)struct_type)->m_offset(id);
 		    if ( ofs == -1 )
 		    {
+			// [expr.ref]p4: `obj.member` naming a STATIC data member /
+			// in-class constant (possibly inherited) designates the
+			// static member; the object expression is discarded. This
+			// object-dot lane was the one consumer NOT routed to the
+			// shared resolver (the qualified, postfix-chain, and
+			// unqualified-in-method lanes already are) — libc++'s
+			// string extractor does `__ct.is(__ct.space, __ch)`:
+			// ctype_base::space through the facet reference.
+			if ( DataDefCLASS *scls =
+				dynamic_cast<DataDefCLASS *>(struct_type) )
+			    if ( TokenBase *sval = resolve_class_static_member_value(
+					*this, scls, id, tb) )
+			    {
+				exStack.pop();	// object expression discarded
+				if ( !opStack.empty()
+				  && opStack.top()->id() == TokenID::tkDot )
+				    opStack.pop();
+				exStack.push(sval);
+				if ( tb && tb->id() == TokenID::tkSemi )
+				    done = true;
+				return done ? ExprStep::Done : ExprStep::Break;
+			    }
 			Throw(tb) << "Unidentified member '" << id << "' in '"
 				  << struct_type->name << '\'' << flush;
 		    }
@@ -38327,6 +38546,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.last_skipped_template_decl.clear();
 		pgm.last_skipped_template_typeparams.clear();
 		pgm.last_skipped_template_typeparam_defaults.clear();
+		pgm.last_skipped_template_typeparam_constraints.clear();
 	    }
 	    pgm.note_class_decl(Program::ClassDeclKind::MemberTemplate);
 	    continue;
@@ -41345,10 +41565,15 @@ TokenBase *TokenENUM::parse(Program &pgm)
     // (`ns::Tag::Value`) finds the chain, and scope-relative `Tag::Value`
     // resolves via resolve_namespace_name_in_scope.
     std::string scoped_ns_key = enum_tag;
-    if ( scoped && !pgm.current_namespace().empty()
+    if ( !pgm.current_namespace().empty()
       && pgm.class_scope_stack.empty() )
 	scoped_ns_key = pgm.current_namespace() + "::" + enum_tag;
-    variable_map_t *scope_ns = scoped
+    // [dcl.enum]p11: `Tag::enumerator` names an enumerator of an UNSCOPED
+    // enum too (C++11), so every TAGGED C++ enum gets the pseudo-namespace.
+    // Scoped enumerators live ONLY here (no bare-name leak); unscoped ones
+    // ALSO keep their bare registrations below. C mode has no `::`.
+    variable_map_t *scope_ns = !enum_tag.empty()
+			     && (scoped || !pgm.is_c_mode())
 	? &pgm.namespace_variables_for_write(scoped_ns_key) : NULL;
 
     // [dcl.enum]/5: enumerators already registered are usable in the REST of
@@ -41404,8 +41629,23 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    // `enum { __value = N };`. Not a global leak — the correct C++
 	    // semantic (the bare name does not resolve outside the class).
 	    DataDefCLASS *owner = pgm.class_scope_stack.back();
-	    owner->static_member_types[name] = &ddINT;
+	    // A TAGGED enum's enumerator carries the enum type (so it can
+	    // bind an enum-typed parameter); anonymous stays int — the
+	    // libstdc++ `enum { __value = N };` trait idiom depends on it.
+	    owner->static_member_types[name] = enum_dd ? enum_dd : &ddINT;
 	    owner->static_member_const_values[name] = val;
+	    if ( scope_ns )
+	    {
+		// [dcl.enum]p11 qualified spelling (`format::auto_format`) —
+		// the pseudo-namespace twin of the class-member registration.
+		Variable *evar = new Variable(name, enum_dd ? *enum_dd : ddINT,
+					      1, NULL, true);
+		evar->set(val);
+		evar->makeconstant();
+		pgm.pack_tap_name(scoped_ns_key + "::" + name,
+				  Program::pdkVariable);	// B4a tap
+		(*scope_ns)[name] = evar;
+	    }
 	    DBG(std::cout << "TokenENUM::parse() " << owner->name << "::"
 		<< name << " = " << val << std::endl);
 	}
@@ -41425,6 +41665,14 @@ TokenBase *TokenENUM::parse(Program &pgm)
 		DBG(std::cout << "TokenENUM::parse() stamped origin for "
 		    << name << " (" << (ntok && ntok->file ? ntok->file : "?")
 		    << ")" << std::endl);
+	    }
+	    if ( scope_ns )
+	    {
+		// [dcl.enum]p11 qualified spelling — the SAME Variable,
+		// indexed a second time under the tag's pseudo-namespace.
+		pgm.pack_tap_name(scoped_ns_key + "::" + name,
+				  Program::pdkVariable);	// B4a tap
+		(*scope_ns)[name] = evar;
 	    }
 	    DBG(std::cout << "TokenENUM::parse() " << name << " = " << val << std::endl);
 	}
@@ -44929,6 +45177,55 @@ static bool fn_template_param_is_pack(const std::string &spelling,
     return fn_template_param_pack_shape(spelling, pack, NULL);
 }
 
+// [temp.deduct.type]/5: a template parameter appearing ONLY in the
+// nested-name-specifier of a type written as a qualified-id is in a
+// NON-DEDUCED CONTEXT. No deduction is attempted from such a parameter, and
+// leaving it unbound is NOT a deduction failure — it is supplied by an
+// explicit template argument ([temp.arg.explicit]) or by its own DEFAULT
+// ([temp.deduct]/8). libc++'s unique_ptr(pointer, deleter) family is the
+// shape: `template <bool _Dummy = true, ...> unique_ptr(pointer,
+// _LValRefType<_Dummy>)` where the deleter parameter's type is spelled
+// `typename __dependent_type<..., _Dummy>::type`.
+//
+// Answers whether every STILL-UNBOUND parameter this spelling names sits
+// there, so the caller can skip structural deduction for the parameter
+// instead of failing the whole candidate.
+//
+// Splitting the qualified spelling is the shared rule
+// (include/spelling_delim.h's split_scope_spelling) — top-level `::` only, so
+// in `vector<typename X<T>::type>` the NESTED `::` does not split and the
+// OUTER template-id still deduces normally.
+static bool fn_template_param_unbound_only_nondeduced(
+	const std::string &spelling,
+	const std::vector<std::string> &typeparams,
+	const std::map<std::string, DataDef *> &binding)
+{
+    // Every component but the last is the nested-name-specifier.
+    std::vector<std::string> parts = split_scope_spelling(spelling);
+    if ( parts.size() < 2 )
+	return false;			// not a qualified-id: nothing non-deduced
+    std::vector<std::string> qual, rest;
+    for ( size_t p = 0; p + 1 < parts.size(); ++p )
+	fn_template_split_words(parts[p], qual);
+    fn_template_split_words(parts.back(), rest);
+    bool any_unbound_in_qual = false;
+    for ( size_t tj = 0; tj < typeparams.size(); ++tj )
+    {
+	if ( binding.count(typeparams[tj]) )
+	    continue;
+	bool in_qual = false, in_rest = false;
+	for ( size_t w = 0; w < qual.size(); ++w )
+	    if ( qual[w] == typeparams[tj] ) { in_qual = true; break; }
+	for ( size_t w = 0; w < rest.size(); ++w )
+	    if ( rest[w] == typeparams[tj] ) { in_rest = true; break; }
+	if ( in_rest )
+	    return false;	// unbound param OUTSIDE the specifier: still deducible
+	if ( in_qual )
+	    any_unbound_in_qual = true;
+    }
+    return any_unbound_in_qual;
+}
+
 static DataDef *fn_template_pack_arg_element(const std::string &spelling,
 					     const std::string &pack,
 					     DataDef *arg_dd)
@@ -45621,6 +45918,17 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		    }
 	    if ( names_tp && !unbound )
 		continue;
+	    // ...and the same for a parameter whose unbound names all sit in a
+	    // NON-DEDUCED CONTEXT ([temp.deduct.type]/5) — a qualified-id's
+	    // nested-name-specifier. Deduction is not attempted there, so
+	    // feeding the spelling to the structural deducers below would fail
+	    // the candidate over a parameter the standard says to leave to an
+	    // explicit argument or its DEFAULT. The default fill in
+	    // instantiate_fn_template_binding then binds it, and a parameter
+	    // with neither is refused there — the correct layer for that.
+	    if ( fn_template_param_unbound_only_nondeduced(sp, ft.typeparams,
+							   binding) )
+		continue;
 	}
 	// Function-pointer parameter shape: structural match against the
 	// argument's function type.
@@ -45784,6 +46092,24 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		    }
 		    continue;
 		}
+		// An ALIAS-template-id parameter (`_LValRefType<_Dummy>`,
+		// unique_ptr's member alias for `typename
+		// __dependent_type<...>::type&`) has no structural class
+		// shape for the unifier: alias templates are TRANSPARENT
+		// ([temp.alias] — the param type IS the substituted target,
+		// here a qualified-id and thus a NON-DEDUCED context,
+		// [temp.deduct.type]/5). Hard-failing the candidate refused
+		// the standard's answer (leave the param to its default /
+		// explicit argument). SKIP deduction instead: an unbound
+		// param falls to the defaults fill in
+		// instantiate_fn_template_binding, and a skipped deduction
+		// can only cost a binding the defaults must then supply —
+		// never produce a wrong one. (Full alias transparency —
+		// substitute, THEN deduce — is the precise rule; this is
+		// its conservative half.)
+		if ( pgm.find_template_alias(pouter, ft.ns,
+			dynamic_cast<DataDefCLASS *>(ft.owner_class)) )
+		    continue;
 		return false;	// template-id param the argument can't match
 	    }
 	}
@@ -46041,6 +46367,17 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	std::vector<DataDef *> *type_args_out,
 	std::vector<std::vector<DataDef *> > *type_arg_packs_out)
 {
+    // Env-gated probe (MADC_MTB_PROBE=<key substring>): this function's many
+    // FAIL-CLEANLY bails are invisible — the caller sees only ok=0 and the
+    // call falls to its placeholder. Print the entry state and, in the
+    // defaults-fill / constraint loops below, WHICH parameter refused and why
+    // (the MCT/FREEOP probes' precedent one layer deeper).
+    static const char *_mtb = ::getenv("MADC_MTB_PROBE");
+    const bool mtb_on = _mtb && *_mtb
+			&& key.find(_mtb) != std::string::npos;
+    if ( mtb_on )
+	fprintf(stderr, "MTBPROBE enter %s tparams=%zu bound=%zu\n",
+		key.c_str(), ft.typeparams.size(), binding.size());
     // Template-id parameter packs (deduced from `tuple<_Args1...>` args — std::get's
     // `_Elements`, std::pair's piecewise `_Args1`/`_Args2`). Supported for the 0- and
     // 1-element cases (map uses tuple<const key&> and tuple<>; std::get<0> on a
@@ -46128,10 +46465,18 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		int64_t ntv = 0;
 		if ( pgm.fold_nontype_arg_constant(ft.typeparam_defaults[i], ntv) )
 		{
+		    if ( mtb_on )
+			fprintf(stderr, "MTBPROBE fill %s nontype %s = %lld\n",
+				key.c_str(), ft.typeparams[i].c_str(),
+				(long long)ntv);
 		    binding[ft.typeparams[i]] =
 			new DataDef(std::to_string(ntv), 8, DataType::dtINT64);
 		    continue;
 		}
+		if ( mtb_on )
+		    fprintf(stderr, "MTBPROBE FAIL %s nontype %s: default"
+			    " does not fold\n",
+			    key.c_str(), ft.typeparams[i].c_str());
 		return false;
 	    }
 	    const std::vector<TokenBase *> &dtoks = ft.typeparam_defaults[i];
@@ -46187,6 +46532,12 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    if ( rd )
 	    { binding[ft.typeparams[i]] = rd; continue; }
 	}
+	if ( mtb_on )
+	    fprintf(stderr, "MTBPROBE FAIL %s param %s: unbound, %s\n",
+		    key.c_str(), ft.typeparams[i].c_str(),
+		    (i < ft.typeparam_defaults.size()
+		     && !ft.typeparam_defaults[i].empty())
+			? "default did not resolve" : "no default");
 	return false;
     }
 
@@ -46210,7 +46561,14 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    if ( !pgm.resolve_template_param_default_type(
 		    ft.typeparam_constraints[i], binding, ft.owner_class,
 		    /*require_full_parse=*/true) )
+	    {
+		if ( mtb_on )
+		    fprintf(stderr, "MTBPROBE FAIL %s constraint[%zu] %s:"
+			    " did not resolve\n", key.c_str(), i,
+			    i < ft.typeparams.size()
+				? ft.typeparams[i].c_str() : "?");
 		return false;
+	    }
 	}
     }
 
@@ -46238,6 +46596,46 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    t = nontype_tidpack_empty.begin(); t != nontype_tidpack_empty.end(); ++t )
 	inst_key += "#" + *t + "={}";
     inst_key += ">";
+    // fn_template_map[key] holds EVERY overload sharing the name; two
+    // overloads with the SAME tparam binding (libc++ operator<<(ostream&,
+    // _CharT) vs (ostream&, const _CharT*) — both bind <char,char_traits>)
+    // must not share a memo slot: first-instantiated was claiming every
+    // later call shape (a char argument passed to a char* body SIGSEGVs).
+    // Fold the candidate's own DECLARATION spelling in as the overload
+    // discriminator (FNV-1a; stable across runs — same header text).
+    {
+	uint64_t sig = 1469598103934665603ULL;
+	// Skip the declarator NAME span: an overload is discriminated by its
+	// parameter-type-list ([over.load]), never by its name — and the
+	// member-template path has ALREADY renamed this token to the
+	// per-request unique __mti/__oN symbol, so hashing it poisons the memo
+	// key with the request identity and no request can ever memo-hit a
+	// prior instantiation of the same overload+binding (the vecbind
+	// producer froze DUPLICATE instances of one binding under shifted
+	// names, breaking bind-vs-live item-set identity).
+	size_t name_idx =
+	    skipped_template_function_declarator_name_index(ft.decl, NULL);
+	size_t name_span = 1;
+	if ( name_idx < ft.decl.size()
+	  && token_is_operator_id_start(ft.decl[name_idx]) )
+	{
+	    size_t s = operator_id_token_span(ft.decl, name_idx);
+	    if ( s )
+		name_span = s;
+	}
+	for ( size_t i = 0; i < ft.decl.size(); ++i )
+	{
+	    if ( i >= name_idx && i < name_idx + name_span )
+		continue;
+	    const std::string sp = overload_token_spelling(ft.decl[i]);
+	    for ( size_t c = 0; c < sp.size(); ++c )
+	    { sig ^= (unsigned char)sp[c]; sig *= 1099511628211ULL; }
+	    sig ^= 0x1f; sig *= 1099511628211ULL;
+	}
+	char sigbuf[20];
+	snprintf(sigbuf, sizeof(sigbuf), "|%016llx", (unsigned long long)sig);
+	inst_key += sigbuf;
+    }
     DBG_PACK("inst_key %s memo=%d vars=%d var_out=%d\n", inst_key.c_str(),
 	     (int)pgm.fn_template_instantiated.count(inst_key),
 	     (int)(pgm.fn_template_instantiated_vars.find(inst_key)
@@ -47296,8 +47694,26 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 	core.pop_back();
     while ( core.compare(0, 6, "const ") == 0 )    core.erase(0, 6);
     while ( core.compare(0, 9, "volatile ") == 0 ) core.erase(0, 9);
-    if ( core.empty() || core.back() == '*' )
-	return true;	// pointer / empty: permissive (conversions)
+    if ( core.empty() )
+	return true;	// unparsed: cannot disprove; stay permissive
+    if ( core.back() == '*' )
+    {
+	// Concrete POINTER param: only a pointer or array argument reaches
+	// it by a STANDARD conversion ([conv.ptr], [conv.array] — the null
+	// pointer constant is a VALUE property this type walker cannot
+	// see). Same first-deduced-wins constraint as the arithmetic arm
+	// below, and the missed half of its incident: libc++ declares
+	// operator>>(basic_istream&, unsigned char*) BEFORE the
+	// basic_string extractor, and the permissive pointer arm let it
+	// claim `cin >> name` — the whole basic_string object passed as
+	// the char* (c2mir "incompatible argument type for pointer type
+	// parameter"); `cout << s` likewise bound const char* over the
+	// basic_string inserter (task #90's wrong overload identity).
+	if ( !arg_core || arg_core->is_pointer()
+	  || dynamic_cast<DataDefCArray *>(arg_core) )
+	    return true;
+	return false;
+    }
     TokenDataType *tdt = resolve_canonical_type_spelling(pgm, core);
     if ( !tdt )
 	return true;	// unresolvable -> cannot disprove; stay permissive
@@ -47312,9 +47728,20 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 	// libc++'s operator<<(basic_ostream<char,_Traits>&, char) registered
 	// before the const char* overload and claimed `cout << "hello "` —
 	// the pointer truncated to one char and the padding path printed
-	// garbage. Non-pointer args stay permissive (implicit conversions).
-	if ( arg_core && !dynamic_cast<DataDefCLASS *>(arg_core)
-	  && arg_core->is_pointer() )
+	// garbage.
+	//
+	// A CLASS argument is the same rule and was missed: a class type
+	// reaches an arithmetic parameter ONLY through a user-defined
+	// conversion ([over.ics.user]), never a standard one, so by this
+	// walker's own first-deduced-wins constraint it must not claim the
+	// call either. The same libc++ overload claimed `cout << s` for a
+	// std::string and the whole basic_string struct was passed BY VALUE
+	// as the `char`, which c2mir reported a phase later as "incompatible
+	// argument type for arithmetic type parameter" — naming no operator.
+	// ENUM arguments stay permissive: integral promotion IS a standard
+	// conversion.
+	if ( arg_core && (arg_core->is_pointer()
+			  || dynamic_cast<DataDefCLASS *>(arg_core)) )
 	    return false;
 	return true;	// scalar / builtin param: permissive
     }
@@ -47533,12 +47960,28 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
 {
     const std::string suffix = "::" + opname;
     DataDef *result = NULL;
+    // Env-gated probe (MADC_FREEOP_PROBE=<opname substring>) — the BODY half.
+    // The W2 caller matched its candidate in free_operator_overloads (the
+    // captured SIGNATURES); the body served here comes from fn_template_map
+    // (the RETAINED TEMPLATES). Those are two different containers filled at
+    // two different times, so "the candidate exists but no body instantiates"
+    // is a real state and this is the only place it is visible.
+    static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
+    const bool _fop_on = _fop && *_fop && opname.find(_fop) != std::string::npos;
+    size_t _fop_keys = 0, _fop_cands = 0;
     fn_template_map.for_each(
 	[&]( const char *key_c, std::vector<FnTemplateDef> &vec ) -> bool {
 	    std::string key(key_c);
 	    if ( key.size() <= suffix.size()
 	      || key.compare(key.size() - suffix.size(), suffix.size(), suffix) )
 		return false;
+	    if ( _fop_on )
+	    {
+		++_fop_keys;
+		_fop_cands += vec.size();
+		fprintf(stderr, "FOPBODY key=%s candidates=%zu\n",
+			key.c_str(), vec.size());
+	    }
 #ifdef MADC_DBG_QCALL
 	    fprintf(stderr, "[FREEOP] key %s candidates=%zu\n", key.c_str(),
 		    vec.size());
@@ -47549,6 +47992,10 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
 		{ result = ret; return true; }
 	    return false;
 	});
+    if ( _fop_on )
+	fprintf(stderr, "FOPBODY %s -> %s (keys=%zu candidates=%zu)\n",
+		opname.c_str(), result ? "INSTANTIATED" : "NO BODY",
+		_fop_keys, _fop_cands);
     return result;
 }
 
@@ -48427,8 +48874,19 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     TokenFunc *pattern = NULL;
     if ( pending_funcs.size() > before )
     {
+	// The RECIPE is the pattern TokenFunc parseFunction pushed LAST — but
+	// the dependent body parse may have eagerly instantiated CONCRETE
+	// classes along the way (UPtr<Node,Del> inside Tree::construct's
+	// body), whose method definitions ALSO landed in pending_funcs after
+	// `before`. Those classes SURVIVE this function (nothing undoes their
+	// registration, and tsubst bodies resolve calls against them), so the
+	// old blanket resize ORPHANED them: every definition vanished while
+	// the class kept its methods — the "tsubst body calls un-emittable
+	// symbol" bail (task #88; libc++'s __compressed_pair_elem ctor under
+	// `cout << string`). Remove ONLY the recipe.
 	pattern = dynamic_cast<TokenFunc *>(pending_funcs.back());
-	pending_funcs.resize(before);	// a recipe, not a pending function
+	if ( pattern )
+	    pending_funcs.pop_back();	// the recipe, not a pending function
     }
     funcdef_map.erase(parse_id);	// undo parseFunction's registration
     if ( getenv("MADC_XTEST_PAT_MEMINIT_DEBUG") && fd_is_ctor )
@@ -48578,6 +49036,26 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
     dmi = struct_map.find(concrete_name);
     return dmi != struct_map.end()
 	? dynamic_cast<DataDefCLASS *>(dmi->second) : NULL;
+}
+
+// May this member template's i-th NON-TYPE parameter default be filled at
+// instantiation? Only when its captured constraint run is EMPTY — a
+// bare-headed param (`bool _Dummy = true`) carries no SFINAE in its declared
+// type, so filling asserts nothing. A COMPOUND declared type (`typename
+// enable_if<C, bool>::type = true`) IS the SFINAE, and filling its default
+// without evaluating the run caused the pair-ctor incident (see the call
+// twin's comment). A missing/mismatched constraints vector — an old forest
+// record predating v38 — answers NO for every param: no info degrades to
+// the pre-v38 clear-all behavior, never to an unevaluated assertion.
+// The ONE shared rule for both instantiation twins (call + ctor).
+static bool member_template_nontype_default_fillable(const FuncDef *fd,
+	size_t i)
+{
+    return fd
+	&& fd->member_template_param_constraints.size()
+	       == fd->template_param_names.size()
+	&& i < fd->member_template_param_constraints.size()
+	&& fd->member_template_param_constraints[i].empty();
 }
 
 Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
@@ -48796,29 +49274,34 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // (madc_register_fn_template's plain assignment); the resolver clones into
     // its own isolated stream.
     //
-    // TYPE parameters ONLY. A non-type parameter carries its SFINAE in its
-    // declared TYPE — `typename enable_if<COND, bool>::type = true` — and this
-    // lane does not capture those constraint runs: FnTemplateDef::
-    // typeparam_constraints stays empty for member templates (the known widening
-    // step). Filling such a default would ASSERT a viability nothing evaluated.
-    // It did: libstdc++'s pair template ctor
+    // TYPE parameters always; a NON-TYPE parameter's default only when its
+    // captured CONSTRAINT run is empty (member_template_nontype_default_fillable
+    // — the v38 widening the pair-ctor incident comment demanded: the
+    // constraints ARE captured now, and they gate the fill). A non-type
+    // parameter with a COMPOUND declared type carries its SFINAE there —
+    // `typename enable_if<COND, bool>::type = true` — and filling that default
+    // would ASSERT a viability nothing evaluated. It did: libstdc++'s pair
+    // template ctor
     //   template<class _U1, class _U2, typename enable_if<...,bool>::type=true>
     //   pair(_U1&& __x, _U2&& __y)
     // became viable with its condition unchecked and then WON on exact-match
     // scoring over the correct `pair(const _T1&, const _T2&)` — so a
     // pair<const_iterator,bool> was built from an ITERATOR and a
     // pair<node*,node*> from (node**, int), 32 c2mir pointer-fidelity warnings
-    // across the map/set suite from one line.
-    // [temp.deduct]/8: a substitution that cannot be performed makes the
-    // candidate NOT viable. Refusing is the correct answer under incomplete
-    // information — and it is exactly what this lane did before defaults were
-    // carried at all, so a non-type default loses nothing that ever worked.
-    // Widening it means capturing the constraints, not relaxing this.
+    // across the map/set suite from one line. Those constrained defaults STAY
+    // cleared ([temp.deduct]/8: refusing is correct under incomplete
+    // information) until the runs are EVALUATED at instantiation — the next
+    // widening. A BARE-headed non-type param (`bool _Dummy = true`,
+    // libc++'s unique_ptr(pointer, deleter) family) has no SFINAE in its
+    // type: filling it asserts nothing, and the fill is what lets the
+    // candidate's OTHER (type-param) defaults — where that family's real
+    // enable_if lives — resolve and decide viability.
     if ( fd->member_template_param_defaults.size() == ft.typeparams.size() )
     {
 	ft.typeparam_defaults = fd->member_template_param_defaults;
 	for ( size_t i = 0; i < ft.typeparam_defaults.size(); ++i )
-	    if ( i >= ft.typeparam_is_type.size() || !ft.typeparam_is_type[i] )
+	    if ( (i >= ft.typeparam_is_type.size() || !ft.typeparam_is_type[i])
+	      && !member_template_nontype_default_fillable(fd, i) )
 		ft.typeparam_defaults[i].clear();   // MY copy; tokens stay the FuncDef's
     }
     // The member template's DEFINING namespace is its owner class's ([temp.point]
@@ -49131,15 +49614,18 @@ void Program::instantiate_member_ctor_template_for_construction(
     else
 	ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
     // Per-param defaults — same [temp.deduct]/8 carriage as the call twin
-    // (instantiate_member_fn_template_for_call), TYPE parameters only, for the
-    // same reason: a non-type parameter's SFINAE lives in its declared type and
-    // this lane captures no constraint runs, so defaulting it would assert an
-    // unevaluated viability. See the call twin for the pair-ctor incident.
+    // (instantiate_member_fn_template_for_call): TYPE parameters always, a
+    // NON-TYPE parameter's default only when its captured constraint run is
+    // EMPTY (`bool _Dummy = true` — the unique_ptr(pointer, deleter) family;
+    // shared rule member_template_nontype_default_fillable). A CONSTRAINED
+    // non-type default still clears — see the call twin for the pair-ctor
+    // incident.
     if ( fd->member_template_param_defaults.size() == ft.typeparams.size() )
     {
 	ft.typeparam_defaults = fd->member_template_param_defaults;
 	for ( size_t i = 0; i < ft.typeparam_defaults.size(); ++i )
-	    if ( i >= ft.typeparam_is_type.size() || !ft.typeparam_is_type[i] )
+	    if ( (i >= ft.typeparam_is_type.size() || !ft.typeparam_is_type[i])
+	      && !member_template_nontype_default_fillable(fd, i) )
 		ft.typeparam_defaults[i].clear();
     }
     // The ctor template's DEFINING namespace is its owner class's — the
@@ -49158,13 +49644,21 @@ void Program::instantiate_member_ctor_template_for_construction(
     {
 	static const char *mcp = ::getenv("MADC_MCT_PROBE");
 	if ( mcp && *mcp && cdd->name.find(mcp) != std::string::npos )
+	{
+	    std::string fill;
+	    for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+		fill += member_template_nontype_default_fillable(fd, i)
+			? 'F' : '-';
 	    fprintf(stderr, "MCTPROBE %s ctor args=%zu tparams=%zu"
-		    " is_type=%zu is_pack=%zu defaults=%zu carried=%d\n",
+		    " is_type=%zu is_pack=%zu defaults=%zu carried=%d"
+		    " constraints=%zu fill=%s\n",
 		    cdd->name.c_str(), ctor_args.size(), ft.typeparams.size(),
 		    fd->template_param_is_type.size(),
 		    fd->template_param_is_pack.size(),
 		    fd->member_template_param_defaults.size(),
-		    (int)!ft.typeparam_defaults.empty());
+		    (int)!ft.typeparam_defaults.empty(),
+		    fd->member_template_param_constraints.size(), fill.c_str());
+	}
     }
 
     std::string ctor_decl_name =
@@ -49951,7 +50445,8 @@ static void stamp_member_template_pattern(
 	const std::vector<std::string> &typeparams,
 	const std::vector<bool> &typeparam_is_pack,
 	const std::vector<bool> &typeparam_is_type, const std::string &name,
-	const std::vector<std::vector<TokenBase *> > &typeparam_defaults)
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults,
+	const std::vector<std::vector<TokenBase *> > &typeparam_constraints)
 {
     if ( !fd )
 	return;
@@ -49980,6 +50475,20 @@ static void stamp_member_template_pattern(
 		std::vector<TokenBase *>());
 	    for ( TokenBase *t : typeparam_defaults[i] )
 		fd->member_template_param_defaults.back().push_back(
+		    t ? t->clone() : NULL);
+	}
+    // Per-param CONSTRAINT runs (same parallel-vector contract, cloned for
+    // the same lifetime reason): a non-type param's compound declared type —
+    // the run that decides whether its default is fillable
+    // (member_template_nontype_default_fillable).
+    fd->member_template_param_constraints.clear();
+    if ( typeparam_constraints.size() == typeparams.size() )
+	for ( size_t i = 0; i < typeparam_constraints.size(); ++i )
+	{
+	    fd->member_template_param_constraints.push_back(
+		std::vector<TokenBase *>());
+	    for ( TokenBase *t : typeparam_constraints[i] )
+		fd->member_template_param_constraints.back().push_back(
 		    t ? t->clone() : NULL);
 	}
     std::string ret_spelling;
@@ -50114,7 +50623,8 @@ static void stamp_member_template_pattern_decl_only(
 	const std::vector<std::string> &typeparams,
 	const std::vector<bool> &typeparam_is_pack,
 	const std::vector<bool> &typeparam_is_type, const std::string &name,
-	const std::vector<std::vector<TokenBase *> > &typeparam_defaults)
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults,
+	const std::vector<std::vector<TokenBase *> > &typeparam_constraints)
 {
     if ( !fd )
 	return;
@@ -50143,6 +50653,18 @@ static void stamp_member_template_pattern_decl_only(
 		std::vector<TokenBase *>());
 	    for ( TokenBase *t : typeparam_defaults[i] )
 		fd->member_template_param_defaults.back().push_back(
+		    t ? t->clone() : NULL);
+	}
+    // v38: the CONSTRAINT runs gate the non-type default fill exactly like
+    // the body-bearing stamp (one shared rule).
+    fd->member_template_param_constraints.clear();
+    if ( typeparam_constraints.size() == typeparams.size() )
+	for ( size_t i = 0; i < typeparam_constraints.size(); ++i )
+	{
+	    fd->member_template_param_constraints.push_back(
+		std::vector<TokenBase *>());
+	    for ( TokenBase *t : typeparam_constraints[i] )
+		fd->member_template_param_constraints.back().push_back(
 		    t ? t->clone() : NULL);
 	}
 }
@@ -50199,7 +50721,8 @@ static void register_skipped_class_template_function(
 				      pgm.last_skipped_template_typeparam_is_pack,
 				      pgm.last_skipped_template_typeparam_is_type,
 				      name,
-				      pgm.last_skipped_template_typeparam_defaults);
+				      pgm.last_skipped_template_typeparam_defaults,
+				      pgm.last_skipped_template_typeparam_constraints);
     }
 #if MADC_DEBUG_FNTPL
     {
@@ -50933,6 +51456,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     pgm.last_skipped_template_decl.clear();
     pgm.last_skipped_template_typeparams.clear();
     pgm.last_skipped_template_typeparam_defaults.clear();
+    pgm.last_skipped_template_typeparam_constraints.clear();
 
     TokenBase *tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkLT )
@@ -51280,6 +51804,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.last_skipped_template_typeparam_is_pack = typeparam_is_pack;
 	pgm.last_skipped_template_typeparam_is_type = typeparam_is_type;
 	pgm.last_skipped_template_typeparam_defaults = typeparam_defaults;
+	pgm.last_skipped_template_typeparam_constraints = typeparam_constraints;
 	// Out-of-line NESTED-CLASS definition: capture keyed by the owner
 	// template; instantiate with each monomorphization of the owner
 	// (including any already recorded — the replay mirrors the member-def

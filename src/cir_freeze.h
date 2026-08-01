@@ -193,6 +193,26 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // container whose version differs from the reader's is rejected wholesale
 // (live parse takes over) — never partially read. History, newest first:
 //
+// v38: MEMBER-TEMPLATE PARAM CONSTRAINT RUNS — the ClassMethodPattern payload
+// gains a per-param constraint-run section between the v36 defaults and the
+// v37 function-param type runs, and CIR_TMPLK_MEMBER records carry the runs
+// in the record's spec slot (the FN lane's v33 convention). The runs are a
+// non-type param's compound declared TYPE (`typename enable_if<C,bool>::type`)
+// and gate which non-type defaults the instantiation twins may fill: an EMPTY
+// run (`bool _Dummy = true`, libc++'s unique_ptr(pointer, deleter) family)
+// fills; a captured run still clears its default (the pair-ctor incident)
+// until runs are evaluated at instantiation. Without the carriage a thawed
+// member template would fill nothing (pre-v38 behavior) while the live parse
+// fills — LOADED != parsed on the packed lane.
+//
+// v37: MEMBER-TEMPLATE FUNCTION-PARAM TYPE RUNS — the ClassMethodPattern
+// payload gains a per-FUNCTION-parameter type-token-run section
+// (FuncDef::member_template_param_type_tokens): the OTHER [temp.deduct]/8
+// half, SFINAE carried in a parameter type (`typename
+// _Up::iterator_category* = nullptr`, libc++'s __has_iterator_category
+// __test pair). (This entry documents the bump retroactively — it landed
+// without a history line.)
+//
 // v36: MEMBER-TEMPLATE PARAM DEFAULTS — the ClassMethodPattern payload gains
 // a per-param default-token-run section after member_template_return_tokens,
 // and CIR_TMPLK_MEMBER records now fill their (always-present, previously
@@ -497,7 +517,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // v6: complete type-table serialization (typeid->full DataDef, swizzle on
 // load) replaces the typeid->name closure + the decl_record/struct_member
 // parallel streams
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 37 };
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 38 };
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;

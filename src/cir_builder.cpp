@@ -11141,6 +11141,49 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 					return -1;
 				return 3;   // void* standard conversion
 			}
+			// BOTH pointees non-class: [conv.ptr] admits only the
+			// SAME pointee (cv-widening included) and to/from void*
+			// (C's malloc direction kept); an unrelated pointee pair
+			// has NO conversion. The old `rawtype ? 5 : 4`
+			// fallthrough made EVERY such pointer viable against
+			// every pointer parameter, so SFINAE detectors folded
+			// TRUE on members that cannot take the argument
+			// (__has_destroy<allocator<Node>, pair*> selected
+			// allocator_traits::destroy's __a.destroy arm — the
+			// __tree:890 tsubst bail; gate testptrviab). A pointee
+			// this cast cannot see keeps the rawtype comparison —
+			// reject only what is PROVEN unrelated.
+			const DataDefPTR *apt =
+				dynamic_cast<const DataDefPTR *>(adc);
+			const DataDefPTR *ppt =
+				dynamic_cast<const DataDefPTR *>(pdc);
+			const DataDef *ab = apt ? apt->base_type : NULL;
+			const DataDef *pb = ppt ? ppt->base_type : NULL;
+			if (const DataDefCONST *cw =
+			    dynamic_cast<const DataDefCONST *>(ab))
+				ab = cw->base_type;
+			if (const DataDefCONST *cw =
+			    dynamic_cast<const DataDefCONST *>(pb))
+				pb = cw->base_type;
+			if (ab && pb) {
+				if (ab->type() == DataType::dtVOID
+				    || pb->type() == DataType::dtVOID)
+					return 3;   // void* standard conversion
+				if (ab == pb || ab->name == pb->name)
+					return 5;
+				// Integer typedefs collapse to sized canonicals
+				// UNEVENLY (size_t may sit behind an alias
+				// DataDef while the argument resolved straight
+				// to uint64_t — libstdc++'s __stoa takes
+				// std::size_t* against a size_t* argument), so
+				// NUMERIC pointees compare by representation:
+				// the same rawtype test the numeric value lane
+				// below uses for its exact match.
+				if (ab->is_numeric() && pb->is_numeric())
+					return ab->rawtype() == pb->rawtype()
+						? 5 : -1;
+				return -1;
+			}
 			return adc->rawtype() == pdc->rawtype() ? 5 : 4;
 		}
 		// A null-pointer constant (integer literal 0) binds any pointer
@@ -11353,10 +11396,39 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 					    : "-");
 			}
 		}
-		if (ok && total > best_score) {
-			best_score = total;
-			best = fd;
-			best_var = cv;
+		if (ok) {
+			// A member-template ctor INSTANTIATION must beat ITS
+			// OWN declaration-only placeholder (the varargs
+			// stand-in the instantiate-and-reselect arm exists to
+			// replace). The placeholder's fabricated params can TIE
+			// the concrete instantiation's score, and the strict
+			// `>` then kept the placeholder (first in cdd->ctors)
+			// — the twin minted the real ctor and the emitted call
+			// STILL named the declaration-only symbol, dying as an
+			// undefined MIR import (task #88's second half:
+			// libc++'s __compressed_pair_elem forward ctor under
+			// `cout << string`). The link is exact — the twin
+			// stamps inst_fd->tsubst_source with the placeholder's
+			// own FuncDef — so ONLY that pair reorders. A blanket
+			// "placeholder loses to any real ctor" is WRONG:
+			// libc++'s basic_string(const char*) is ITSELF a
+			// member template (its placeholder must keep winning
+			// this selection), and demoting it handed
+			// `string h = "H"` to the copy ctor, whose ref-param
+			// materialization re-entered this selection forever
+			// (a 13k-frame stack overflow).
+			bool better;
+			if (best && fd->tsubst_source == best)
+				better = true;	// best's own instantiation
+			else if (best && best->tsubst_source == fd)
+				better = false;	// cand is best's placeholder
+			else
+				better = total > best_score;
+			if (better) {
+				best_score = total;
+				best = fd;
+				best_var = cv;
+			}
 		}
 	}
 	if (best && best_var && best->local_emit_name.empty()) {
@@ -11818,10 +11890,11 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 		// The INTERNAL name is the ctor Variable's own emit name (the
 		// deferred-body key and the definition's var_emit_name — an
 		// overload carries its __oN suffix there, which the blind
-		// Cls__Cls composition would drop).
-		sym = !ctor->local_emit_name.empty()
-			? ctor->local_emit_name
-			: cdd->name + "__" + cdd->name;
+		// Cls__Cls composition would drop). Deliberately NOT
+		// call_emit_symbol: the demotion exists to bypass its
+		// emit_symbol arm, and its local_emit_name arm is empty here
+		// by the mutual-exclusivity invariant (this ctor IS external).
+		sym = cdd->name + "__" + cdd->name;
 		for (Variable *cv : cdd->ctors)
 			if (cv && cv->type == ctor) {
 				sym = var_emit_name(*cv);
@@ -13382,6 +13455,20 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 				best_body_var = callee;
 		}
 	}
+	// Env-gated probe (MADC_FREEOP_PROBE=<opname substring>) — the cir half of
+	// the parser's knob. A decline here silently returns the pair to the member
+	// operator, which for a stream means the scalar overload and c2mir's
+	// "incompatible argument type for arithmetic type parameter" a phase later.
+	{
+		static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
+		if (_fop && *_fop && mname.find(_fop) != std::string::npos)
+			fprintf(stderr, "W2FREEOP %s rhs=%s member_exact=%d best=%s"
+				" retc=%s body=%s\n", mname.c_str(),
+				rhs_norm.c_str(), (int)member_exact,
+				best ? best->param_spellings[1].c_str() : "(none)",
+				best_retc ? best_retc->name.c_str() : "-",
+				best_body_var ? best_body_var->name.c_str() : "-");
+	}
 	if (best && best_body_var)
 	{
 		FuncDef *inst = dynamic_cast<FuncDef *>(best_body_var->type);
@@ -13413,6 +13500,13 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	// const char* as a POINTER via operator<<(const void*).
 	if (!extern_symbol_can_link(sym)) {
 		Variable *bv = NULL;
+		{
+			static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
+			if (_fop && *_fop && mname.find(_fop) != std::string::npos)
+				fprintf(stderr, "W2FREEOP %s no-export sym=%s"
+					" -> body route\n", mname.c_str(),
+					sym.c_str());
+		}
 		if (m_prog->instantiate_free_operator_template(
 			    mname, top->left, top->right, &bv) && bv)
 			if (FuncDef *bfd = dynamic_cast<FuncDef *>(bv->type)) {
@@ -14392,10 +14486,16 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 
 // C++20 builtin three-way comparison ([expr.spaceship]), per g++ -O0 canon
 // (tmp/spaceship.s): NO call — declare a comparison-category temp and store
-// the inline byte-select into its _M_value (offset 0, __cmp_cat::type):
-//   integral/pointer: (l < r ? -1 : l > r ? 1 : 0)            -> strong_ordering
-//   floating:         (l < r ? -1 : l > r ? 1 : l == r ? 0 : 2) -> partial_ordering
-//                     (2 = __cmp_cat::_Ncmp::_Unordered)
+// the inline select into its sole data member:
+//   integral/pointer: (l < r ? less : l > r ? greater : equivalent)  -> strong_ordering
+//   floating:  (l < r ? less : l > r ? greater : l == r ? equivalent
+//                                                        : unordered) -> partial_ordering
+// The arm VALUES are read from the parsed <compare>'s own public statics
+// ([cmp.categories]) through the category's sole non-static data member —
+// both DISCOVERED, never spelled: the member name and the unordered payload
+// are library internals that differ per stdlib flavor (libstdc++
+// _M_value / _Ncmp::_Unordered == 2, libc++ __value_ / -127; writing 2 into
+// libc++'s __value_ makes NaN <=> x report GREATER, silently).
 // The category class was resolved at parse time from the parsed <compare>
 // (Program::comparison_category_class); class operands with an operator<=>
 // were dispatched through the operator machinery before reaching here. Each
@@ -14430,22 +14530,48 @@ node_t CirBuilder::three_way_builtin_lowering(TokenOperator *top, TokenBase *ori
 		node2(N_ASSIGN, id(rname, origin), translate_expr(top->right),
 		      origin), origin));
 	bool floating = ldd->is_real() || rdd->is_real();
+	if (cat->members.size() != 1)
+		return error_node("'<=>' comparison-category class has an "
+				  "unexpected layout", origin);
+	const char *valm = cat->members[0].first.c_str();
+	node_t lv = cmpcat_static_value(cat, "less", valm, origin);
+	node_t gv = cmpcat_static_value(cat, "greater", valm, origin);
+	node_t ev = cmpcat_static_value(cat, "equivalent", valm, origin);
+	node_t uv = floating
+	    ? cmpcat_static_value(cat, "unordered", valm, origin) : NULL;
+	if (!lv || !gv || !ev || (floating && !uv))
+		return error_node("'<=>' comparison-category statics did not "
+				  "resolve — #include <compare> (C++20)",
+				  origin);
 	node_t tail = floating
 	    ? node3(N_COND,
 		    node2(N_EQ, id(lname, origin), id(rname, origin), origin),
-		    integer(0, origin), integer(2, origin), origin)
-	    : integer(0, origin);
+		    ev, uv, origin)
+	    : ev;
 	node_t sel = node3(N_COND,
 		node2(N_LT, id(lname, origin), id(rname, origin), origin),
-		integer(-1, origin),
+		lv,
 		node3(N_COND,
 		      node2(N_GT, id(lname, origin), id(rname, origin), origin),
-		      integer(1, origin), tail, origin), origin);
-	node_t fld = node2(N_FIELD, id(oname, origin), id("_M_value", origin),
+		      gv, tail, origin), origin);
+	node_t fld = node2(N_FIELD, id(oname, origin), id(valm, origin),
 			   origin);
 	m_pending_stmts.push_back(node2(N_EXPR, list(),
 		node2(N_ASSIGN, fld, sel, origin), origin));
 	return id(oname, origin);   // the category-typed object lvalue
+}
+
+// `cat::stat` read through the category's sole data member: the flavor's own
+// <compare> supplies both the storage and the payload, so neither is spelled
+// here. NULL (caller errors loudly) when the static does not resolve.
+node_t CirBuilder::cmpcat_static_value(DataDefCLASS *cat, const char *stat,
+					const char *valm, TokenBase *origin)
+{
+	TokenBase *st = m_prog->class_static_member_value_token(cat, stat,
+								origin);
+	if (!st)
+		return NULL;
+	return node2(N_FIELD, translate_expr(st), id(valm, origin), origin);
 }
 
 // -----------------------------------------------------------------------
@@ -21452,6 +21578,24 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 					for (const std::string &c : callees)
 						fprintf(stderr, "[TSUBST-CALLEES]   %s\n",
 							c.c_str());
+					// Where could the definition be hiding? Dump the
+					// containers emittable() consults, filtered to the
+					// refused symbol's leading identifier, so a KEY
+					// mismatch (vs a genuinely absent body) is visible.
+					std::string stem = s.substr(0, s.find("__"));
+					for (auto &kv : m_prog->deferred_lazy_bodies)
+						if (kv.first.find(stem) != std::string::npos)
+							fprintf(stderr, "[TSUBST-DEFERRED]  %s\n",
+								kv.first.c_str());
+					for (TokenBase *pb : m_prog->pending_funcs) {
+						TokenFunc *ptf = dynamic_cast<TokenFunc *>(pb);
+						FuncDef *pfd = ptf ? dynamic_cast<FuncDef *>(ptf->var.type) : NULL;
+						if (ptf && ptf->var.name.find(stem) != std::string::npos)
+							fprintf(stderr, "[TSUBST-PENDING]   %s emit=%s declonly=%d\n",
+								ptf->var.name.c_str(),
+								pfd ? func_emit_name(ptf->var, pfd).c_str() : "?",
+								pfd ? (int)pfd->declaration_only : -1);
+					}
 				}
 				return bail_covered("tsubst body calls un-emittable symbol");
 			}
