@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  ef0d9921 (2026-08-01) on feature/libcxx-parity5-claude
-# Result:       862 passed / 39 failed / 0 timed out / 12 skipped
+# Measured at:  81eac496 (2026-08-01) on feature/libcxx-parity5-claude
+# Result:       864 passed / 39 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -469,6 +469,19 @@
 #                         surface (proto skipped, extern skipped, gate
 #                         splices residue). fulltest 904/0,
 #                         forest_selfexe_gate GREEN, EXE 848/0, OBJ 848/0.
+#   81eac496  864 /  39   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways); +2 = the NEW GATES testconstovl
+#                         ([over.match.funcs]/4 implicit object parameter,
+#                         @31c85ed5) and testpacktypedef (#94's typedef-lane
+#                         variadic completeness demand, @81eac496). Zero
+#                         flips — both fixes are correctness infrastructure;
+#                         #94's general [temp.class.spec.match]/2 slot arm
+#                         ships DARK (MADC_XSLOT_ARM=1) because its CORRECT
+#                         libc++ copy-dispatch match reaches
+#                         __unwrap_and_dispatch, which madc never
+#                         materializes (8 _libcxx twins red with the arm on
+#                         — the flip-on blocker, task #94). EXE 850/0,
+#                         OBJ 850/0, fulltest 906/0.
 testcastarrow.mad
 testconstructible.mad
 testcontainerdtor.mad
