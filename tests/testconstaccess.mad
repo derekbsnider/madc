@@ -1,0 +1,38 @@
+#!/usr/bin/env madc
+// Gate for [class.access] x [over.match.funcs]/4 ordering: access control
+// judges the overload the call ACTUALLY selects, never the arity pre-pick.
+// libc++ __tree declares `size_type& size()` PRIVATE before its PUBLIC
+// const twin (__tree:962-966); the cv-blind arity pre-pick chose the
+// private one and set::size() died "'size' is a private member" — the
+// 4-test set/containerdtor/forinitscope/madc_ns libc++ family. Both
+// canons compile this and print "size: 2".
+#include <iostream>
+using namespace std;
+
+class Inner
+{
+	int n;
+private:
+	int &size() { return n; }		// private, non-const
+public:
+	Inner() : n(0) {}
+	void bump() { n++; }
+	const int &size() const { return n; }	// public, const
+};
+
+class Outer
+{
+	Inner inner_;
+public:
+	void bump() { inner_.bump(); }
+	int size() const { return inner_.size(); }
+};
+
+int main()
+{
+	Outer o;
+	o.bump();
+	o.bump();
+	cout << "size: " << o.size() << endl;
+	return 0;
+}

@@ -15569,6 +15569,36 @@ int Program::implicit_object_constness(Variable &recv)
     }
     if ( recv.flags & (vfCONSTANT | vfCONSTDECL | vfCONSTBAKED) )
 	return 1;
+    // A MEMBER receiver read through the implicit `this` joins the implicit
+    // object's cv ([expr.ref]): inside a const method a data member is a
+    // const object — libc++ set::size() const reads __tree_.size() and must
+    // select __tree's PUBLIC const size() overload, never its PRIVATE
+    // non-const twin (the cv tiebreak below in findMethodOverload needs
+    // obj_cv=1 to do that). A LOCAL that shadows a member keeps its own cv:
+    // the compound-chain identity walk exempts block locals.
+    {
+	TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+	Method *m = code ? code->method : NULL;
+	DataDefCLASS *owner = m ? m->owner_class : NULL;
+	FuncDef *mfd = m ? dynamic_cast<FuncDef *>(m->returns.type) : NULL;
+	if ( owner && mfd && mfd->is_const_method )
+	{
+	    std::string nm = recv.name;
+	    if ( owner->m_offset(nm) != -1 )
+	    {
+		bool is_block_local = false;
+		for ( TokenCpnd *c = code; c && !is_block_local; c = c->parent )
+		    for ( size_t i = 0; i < c->variables.size(); ++i )
+			if ( c->variables[i] == &recv )
+			{
+			    is_block_local = true;
+			    break;
+			}
+		if ( !is_block_local )
+		    return 1;
+	    }
+	}
+    }
     DataDef *dd = recv.type;
     // Reference transparency: a reference receiver denotes its referent.
     if ( dd && dd->is_reference() )
@@ -29579,18 +29609,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    }
 		    if ( var )
 		    {
-			// Access control (P2.5c): reject a private/protected METHOD
-			// call from outside the (derived) class. Same context + rule
-			// as the data-member check.
-			{
-			    DataDefCLASS *cur_class =
-				(code && code->method) ? code->method->owner_class : NULL;
-			    std::string av =
-				method_access_violation(struct_type, var, id, cur_class,
-				    current_function_friend_name(code));
-			    if ( !av.empty() )
-				Throw(tb) << av << flush;
-			}
+			// Access control (P2.5c) runs AFTER the overload the call
+			// actually selects is known — see the checks on the
+			// reselect/rebind results below. Checking the arity
+			// pre-pick here rejected legal calls: libc++ __tree
+			// declares `size_type& size()` PRIVATE before its PUBLIC
+			// const twin, both zero-arg, and the cv-blind pre-pick
+			// chose the private one — set::size() died ([class.access]
+			// judges the function selected by overload resolution).
 			if ( var->flags & vfSTATIC )
 			{
 			    TokenCallFunc *tc = new TokenCallFunc(*var);
@@ -29618,6 +29644,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    tc = tc2;
 				}
 			    var = &tc->var;
+			    {
+				DataDefCLASS *cur_class =
+				    (code && code->method) ? code->method->owner_class : NULL;
+				std::string av =
+				    method_access_violation(struct_type, var, id, cur_class,
+					current_function_friend_name(code));
+				if ( !av.empty() )
+				    Throw(tc) << av << flush;
+			    }
 			    exStack.pop();
 			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
 				opStack.pop();
@@ -29675,6 +29710,16 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			// first by-name match).
 			tc = reselect_method_overload(tc, *tv_var, method_cls, id);
 			var = &tc->var;
+			// Access control on the SELECTED overload ([class.access]).
+			{
+			    DataDefCLASS *cur_class =
+				(code && code->method) ? code->method->owner_class : NULL;
+			    std::string av =
+				method_access_violation(struct_type, var, id, cur_class,
+				    current_function_friend_name(code));
+			    if ( !av.empty() )
+				Throw(tc) << av << flush;
+			}
 			// remove object TokenVar from exStack
 			exStack.pop();
 			// remove TokenDot from opStack
@@ -29946,17 +29991,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    var = method_cls->findMethod(id);
 			if ( var )
 			{
-			    // Access control (P2.5c): reject a private/protected
-			    // METHOD call via `->` from outside the (derived) class.
-			    {
-				DataDefCLASS *cur_class =
-				    (code && code->method) ? code->method->owner_class : NULL;
-				std::string av =
-				    method_access_violation(base, var, id, cur_class,
-					current_function_friend_name(code));
-				if ( !av.empty() )
-				    Throw(tb) << av << flush;
-			    }
+			    // Access control (P2.5c) runs AFTER the overload the
+			    // call actually selects is known — see the checks on
+			    // the reselect/rebind results below (the dot arm's
+			    // private-before-public-const rationale, mirrored).
 			    if ( var->flags & vfSTATIC )
 			    {
 				TokenCallFunc *tc = new TokenCallFunc(*var);
@@ -29984,6 +30022,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 					tc = tc2;
 				    }
 				var = &tc->var;
+				{
+				    DataDefCLASS *cur_class =
+					(code && code->method) ? code->method->owner_class : NULL;
+				    std::string av =
+					method_access_violation(base, var, id, cur_class,
+					    current_function_friend_name(code));
+				    if ( !av.empty() )
+					Throw(tc) << av << flush;
+				}
 				exStack.pop();
 				if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
 				    opStack.pop();
@@ -30041,6 +30088,16 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    tc = reselect_method_overload(tc, *obj_var,
 				    method_cls, id);
 			    var = &tc->var;
+			    // Access control on the SELECTED overload ([class.access]).
+			    {
+				DataDefCLASS *cur_class =
+				    (code && code->method) ? code->method->owner_class : NULL;
+				std::string av =
+				    method_access_violation(base, var, id, cur_class,
+					current_function_friend_name(code));
+				if ( !av.empty() )
+				    Throw(tc) << av << flush;
+			    }
 			    exStack.pop();
 			    // remove TokenDeRef from opStack
 			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
