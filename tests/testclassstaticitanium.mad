@@ -9,8 +9,11 @@
 // This test does not merely check that the reference RESOLVES — resolving to
 // the wrong symbol is the failure mode. It compares the address against
 // dlsym() of the real Itanium name, so it can only pass if madc bound to the
-// same object g++ binds to. Both spellings are accepted because the `__cxx11`
-// inline namespace depends on the libstdc++ ABI in use.
+// same object the flavor's compiler binds to. All three spellings are
+// accepted because the ABI inline namespace depends on the stdlib in use:
+// libstdc++ `__cxx11` / pre-cxx11 bare, libc++ `__1` (same rule, second
+// flavor — under -stdlib=libc++ madc must mint _ZNSt3__1... and bind the
+// libc++ object even with both libstdc++ symbols live in the process).
 //
 // Three separate defects had to be fixed before this could pass, each found
 // only after the previous one was cleared:
@@ -32,12 +35,14 @@ int main()
 {
 	const void *via_cpp = (const void *)&std::numpunct<char>::id;
 
-	// The real exported object, under either ABI spelling.
+	// The real exported object, under any ABI spelling.
 	const void *a = dlsym(RTLD_DEFAULT, "_ZNSt7__cxx118numpunctIcE2idE");
 	const void *b = dlsym(RTLD_DEFAULT, "_ZNSt8numpunctIcE2idE");
+	const void *c = dlsym(RTLD_DEFAULT, "_ZNSt3__18numpunctIcE2idE");
 
 	printf("resolved=%d\n", via_cpp != 0);
-	printf("matches_itanium=%d\n", (a && via_cpp == a) || (b && via_cpp == b));
+	printf("matches_itanium=%d\n", (a && via_cpp == a) || (b && via_cpp == b)
+				    || (c && via_cpp == c));
 
 	return 0;
 }

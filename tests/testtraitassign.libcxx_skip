@@ -1,0 +1,1 @@
+libstdc++-internal by construction: exercises std::__and_ / the __and_fn SFINAE chain, which libc++ has no analogue of. The portable twin (std::conjunction, parked at tmp/testtraitconj.mad) joins the suite with the task #94 fix — it exposed conjunction<...,false_type> folding TRUE under libstdc++.
