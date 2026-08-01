@@ -1,0 +1,28 @@
+// [expr.ref]p4: `obj.member` naming a STATIC data member / in-class
+// constant — including one INHERITED from a base — designates the static
+// member; the object expression is evaluated and discarded. The object-dot
+// lane was the one consumer of the shared static-member resolver that never
+// routed to it (it walked data-member offsets and threw "Unidentified
+// member"). libc++'s string extractor does `__ct.is(__ct.space, __ch)` —
+// ctype_base::space through the facet reference — which is how the gap
+// surfaced (flavor-independent; this reducer has no headers).
+// Oracle: g++ -std=c++17 and clang++ -std=c++17 print "25 25 7 32".
+#include <cstdio>
+
+struct B {
+	static const unsigned long space = 25;
+	static const int mode = 7;
+};
+
+struct D : B {
+	int pad;
+};
+
+int main()
+{
+	D d;
+	d.pad = 32;
+	B b;
+	printf("%lu %lu %d %d\n", b.space, d.space, d.mode, d.pad);
+	return 0;
+}

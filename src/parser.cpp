@@ -29475,6 +29475,28 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    ssize_t ofs = ((DataDefSTRUCT *)struct_type)->m_offset(id);
 		    if ( ofs == -1 )
 		    {
+			// [expr.ref]p4: `obj.member` naming a STATIC data member /
+			// in-class constant (possibly inherited) designates the
+			// static member; the object expression is discarded. This
+			// object-dot lane was the one consumer NOT routed to the
+			// shared resolver (the qualified, postfix-chain, and
+			// unqualified-in-method lanes already are) — libc++'s
+			// string extractor does `__ct.is(__ct.space, __ch)`:
+			// ctype_base::space through the facet reference.
+			if ( DataDefCLASS *scls =
+				dynamic_cast<DataDefCLASS *>(struct_type) )
+			    if ( TokenBase *sval = resolve_class_static_member_value(
+					*this, scls, id, tb) )
+			    {
+				exStack.pop();	// object expression discarded
+				if ( !opStack.empty()
+				  && opStack.top()->id() == TokenID::tkDot )
+				    opStack.pop();
+				exStack.push(sval);
+				if ( tb && tb->id() == TokenID::tkSemi )
+				    done = true;
+				return done ? ExprStep::Done : ExprStep::Break;
+			    }
 			Throw(tb) << "Unidentified member '" << id << "' in '"
 				  << struct_type->name << '\'' << flush;
 		    }
