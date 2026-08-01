@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  ba70192e (2026-08-01) on feature/libcxx-parity4-claude
-# Result:       819 passed / 76 failed / 0 timed out / 10 skipped
+# Measured at:  dad582e6 (2026-08-01) on feature/libcxx-parity4-claude
+# Result:       836 passed / 59 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -391,6 +391,31 @@
 #                         pack) and was WITHDRAWN — the fix needs a
 #                         speculative-class filter or a tsubst-time rebind
 #                         of the baked ctor call. fulltest 896/0.
+#   dad582e6  836 /  59   ⚡⚡ 17 FIXED, ZERO newly broken (comm-diffed) —
+#                         THE 28-TEST BUCKET FELL. A member-template ctor
+#                         INSTANTIATION now outranks ITS OWN declaration-only
+#                         placeholder in select_ctor_overload (the pair is
+#                         exact via tsubst_source; a score TIE had kept the
+#                         first-registered placeholder, so the emitted call
+#                         named the declaration-only symbol — the
+#                         __compressed_pair_elem __o3 undefined import).
+#                         ⚠️ The blanket [over.ics.rank] demotion was tried
+#                         first and is WRONG: basic_string(const char*) is
+#                         itself a member template under libc++; demoting its
+#                         placeholder handed `string h = "H"` to the copy
+#                         ctor and recursed class_ctor_call <->
+#                         object_arg_addr to a 13k-frame stack overflow.
+#                         FIXED: testcapture testforeach testforeach2
+#                         testlambda testns testregex teststringclass
+#                         teststringglobal teststringobj
+#                         teststringplus_realhdr teststringref
+#                         teststringreturn teststrlitplus_realhdr
+#                         teststrplusbody_realhdr teststrrefparam_realhdr
+#                         testtemplatestring testusing. Gate
+#                         testcoutstr_libcxx. Residual #90: emission still
+#                         reaches the stream via const char* + c_str() —
+#                         right output, WRONG overload identity (latent for
+#                         embedded NULs). fulltest 896/0.
 testarraymember.mad
 testarraysubscript.mad
 testcapture.mad
