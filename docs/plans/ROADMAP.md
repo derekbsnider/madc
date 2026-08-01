@@ -1,19 +1,21 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-08-01 (v0.66.0: the
-RECON-THEN-STRIKE release — the libc++ parity lane went 811/77 →
-**859/40**. The 28-test `cout << std::string` bucket fell to one
-two-commit root (a fn-template instantiation outranks ITS OWN
-placeholder, task #88); two-layer SFINAE viability ([conv.ptr] +
-unevaluated-miss-is-SFINAE) felled the `allocator_traits::destroy`
-wall; then EIGHT parallel recon agents bucketed all 59 remaining
-failures three-way (madc/g++/clang++ reducers) and a five-fix strike
-batch ([dcl.enum]p11, `<=>` payload discovery, per-OVERLOAD memo keys,
-pointer-param viability #90, [expr.ref]p4 obj.static-dot) took 19 more
-out — zero broken at every comm-diffed step. All 40 remaining failures
-carry named roots (task #34); #93 (typedef template-arg identity, the
-`cin >> string` blocker) is fixed and parked on a WIP branch behind a
-freeze-gate interaction — P2.7 continues).
+Master plan linking all workstreams. Updated 2026-08-01 (v0.67.0: the
+FLAVOR-ABI release — the libc++ parity lane went 859/40 →
+**880/26+2**. The biggest remaining dam fell: a libc++ script now
+passes `std::string` into the host's libstdc++-built namespace
+functions through compiler-generated marshalling thunks (task #69,
+dladdr-origin boundary detection, host-flavor temps + copy-back +
+alias-mapped returns). #93 typedef template-arg identity LANDED
+(`cin >> string` works under libc++); deduction guides declare no name
+(#98); declaration-only Itanium callees get typed protos (#92);
+const-overload selection honors the implicit object parameter
+([over.match.funcs]/4); two [dcl.ambig.res] declaration readings +
+access control judges the SELECTED overload. 21 net flips, zero broken
+at every comm-diffed step. Every remaining failure carries a named
+root (task #34): #102 non-type packs (map/set/tuple family) → #72
+skipped-body → #66 placeholder-vs-template → singles — P2.7
+continues).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -38,6 +40,45 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **v0.67.0 (2026-08-01): the flavor-ABI release (tasks
+  #69/#92/#93/#98, P2.7 in progress).** The flavored lane went 859/40
+  → **880/26+2** — 21 net flips, zero broken at every comm-diffed
+  step. The headline: **flavor-ABI marshalling (task #69)** — host
+  namespace publics (php::, perl::, madc:: eval) export only libstdc++
+  (`NSt7__cxx11`) manglings, so a libc++ script minted `NSt3__1`
+  imports that either failed loud or, for extern-C twins taking
+  `std::string*`, SILENTLY corrupted (raw libc++ bytes read as a
+  libstdc++ string — exit 0, wrong values). The CIR builder now
+  generates a thunk per boundary callee at `call_emit_symbol` (the ONE
+  callee-symbol owner): host-flavor string temps built via the
+  exported `C1(const char*, size_t, const allocator&)` from the script
+  string's `c_str()`/`size()`, copy-back via the script flavor's
+  `assign(const char*, size_type)`, alias-mapped conditional returns.
+  Boundary detection = dladdr `dli_fbase` equality against a this-TU
+  anchor (a symbol implemented by libc++.so itself never marshals);
+  host twins reminted via `host_flavor_fn_symbol` (carrier mask under
+  SCRIPT mangler state, respelled through `std_string_type()` under
+  `MangleHostFlavorScope`); the scope-capture lane gets the same
+  host-temp arm. Ten tests in one flip (design
+  `docs/plans/2026-08-01-flavor-abi-marshalling.md`; `MADC_FLVMAR=0`
+  escape hatch). Around it: #92 typed protos for declaration-only
+  Itanium callees (the `_Znwm` implicit-int family); #98 a deduction
+  guide declares NO name ([temp.deduct.guide] — the phantom
+  `array`/`vector` VALUE shadowing types in prototype params); #93
+  typedef template-arg identity LANDED ([temp.type] — `cin >> string`
+  under libc++, the defless-drop fix greened the forest self-exe
+  gate); const-overload selection joins the implicit object parameter
+  ([over.match.funcs]/4 — silent wrong both flavors); #94 half (slot
+  arm dark behind `MADC_XSLOT_ARM=1`); session #44's two
+  [dcl.ambig.res] readings + access control judging the SELECTED
+  overload. Suite 902 → 911 (nine new gates). Fork unchanged
+  (1.0-madc.0.63.0). NEXT (task #34, 28 remaining): #102 non-type
+  template packs (map/set/tuple family — groundwork stashed, REGRESSES
+  the default lane as written, rework + vri-arming in task #102) →
+  #72 skipped-body tsubst → #66 placeholder-beats-template
+  (mathheader/stringrel) → singles. #104 banks the #69 follow-ups
+  (testflavormarshal gate, exe-mode `-lstdc++`, testphp warnings).
 
 - **v0.66.0 (2026-08-01): the recon-then-strike release (tasks
   #88/#90/#34, P2.7 in progress).** The flavored lane went 811/77 →

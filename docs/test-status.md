@@ -1,6 +1,23 @@
 # Test Status
 
-> **Current (2026-07-30, v0.63.0 — the libc++ parity-lane burn-down,
+> **Current (2026-08-01, v0.67.0 — the flavor-ABI release, pre-merge
+> battery on `feature/libcxx-parity5-claude` @190ff9d2 + release
+> files):** fulltest **911 passed, 0 failed, 0 timed out, 9 skipped**,
+> `--exe` **894/0**, `--obj` **894/0**, and the packed release arbiter
+> **911/0/0/9**. All gates green (delimiter ratchet 0, rule-trailer
+> gate 180/0 since epoch, tsubst ratchet 0, retire-std-hardcoding,
+> forest self-exe). The flavored parity lane stands at
+> **880 passed / 26 failed / 2 timed out** (`run_tests.sh
+> --stdlib=libc++`, measured @e09c5381; the failing set is banked and
+> comm-diffed in `docs/parity/libcxx-failset.txt` — 21 net flips over
+> v0.66.0, zero regressions at every measured step). Nine new gates:
+> `testarrayparam`, `testcinstr_libcxx`, `testclassproto`,
+> `testconstaccess`, `testconstovl`, `testdeductionguide`,
+> `testpacktypedef`, `testprivmethod`, `testtypedefarg`. Fork
+> unchanged (**1.0-madc.0.63.0** @8f3934ac). Battery logs:
+> `tmp/logs/rb-20260801-231615.log` + `rb-20260801-234210.log`.
+
+> **Previous (2026-07-30, v0.63.0 — the libc++ parity-lane burn-down,
 > pre-merge battery on `feature/libcxx-string2-claude` @c4a98c9c):**
 > fulltest **856 passed, 0 failed, 0 timed out, 9 skipped**, `--exe`
 > **840/0**, `--obj` **840/0**, and the packed release arbiter
