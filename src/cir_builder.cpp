@@ -11396,10 +11396,39 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 					    : "-");
 			}
 		}
-		if (ok && total > best_score) {
-			best_score = total;
-			best = fd;
-			best_var = cv;
+		if (ok) {
+			// A member-template ctor INSTANTIATION must beat ITS
+			// OWN declaration-only placeholder (the varargs
+			// stand-in the instantiate-and-reselect arm exists to
+			// replace). The placeholder's fabricated params can TIE
+			// the concrete instantiation's score, and the strict
+			// `>` then kept the placeholder (first in cdd->ctors)
+			// — the twin minted the real ctor and the emitted call
+			// STILL named the declaration-only symbol, dying as an
+			// undefined MIR import (task #88's second half:
+			// libc++'s __compressed_pair_elem forward ctor under
+			// `cout << string`). The link is exact — the twin
+			// stamps inst_fd->tsubst_source with the placeholder's
+			// own FuncDef — so ONLY that pair reorders. A blanket
+			// "placeholder loses to any real ctor" is WRONG:
+			// libc++'s basic_string(const char*) is ITSELF a
+			// member template (its placeholder must keep winning
+			// this selection), and demoting it handed
+			// `string h = "H"` to the copy ctor, whose ref-param
+			// materialization re-entered this selection forever
+			// (a 13k-frame stack overflow).
+			bool better;
+			if (best && fd->tsubst_source == best)
+				better = true;	// best's own instantiation
+			else if (best && best->tsubst_source == fd)
+				better = false;	// cand is best's placeholder
+			else
+				better = total > best_score;
+			if (better) {
+				best_score = total;
+				best = fd;
+				best_var = cv;
+			}
 		}
 	}
 	if (best && best_var && best->local_emit_name.empty()) {
