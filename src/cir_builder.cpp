@@ -18463,20 +18463,18 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// own translation path above.)
 				if (!is_c2mir_builtin_call_name(tcf->var.name))
 					referenced_funcs.insert(callee_name);
-				// #92 family: a tracked GLOBAL allocation operator
-				// binds its Itanium export (_Znwm/_ZdlPv/...) but no
-				// pass emits its typed proto — c2mir's implicit decl
-				// then types the call integer ("returning integer
-				// without cast for pointer result" inside
-				// materialized <new> bodies). Register the typed
-				// extern from the resolved FuncDef, exactly like the
-				// class-member emit_symbol binds do. Keyed on the
-				// OPERATOR-ID — a language entity, not a user name.
+				// #92 family: a DECLARATION-ONLY callee emitting under
+				// its Itanium export (_Znwm and the other tracked
+				// global allocation operators are the shape that
+				// exposed it) gets NO typed proto from any pass —
+				// c2mir's implicit decl then types the call integer
+				// ("returning integer without cast for pointer
+				// result" inside materialized <new> bodies).
+				// Register the typed extern from the resolved
+				// FuncDef, exactly like the class-member emit_symbol
+				// binds do (the flush dedupes against typed_proto_syms).
 				if (cdf && cdf->declaration_only
-				    && (cdf->function_display_name == "operator new"
-					|| cdf->function_display_name == "operator new[]"
-					|| cdf->function_display_name == "operator delete"
-					|| cdf->function_display_name == "operator delete[]")) {
+				    && callee_name.compare(0, 2, "_Z") == 0) {
 					bool op_ret_ptr = false;
 					std::vector<c2mir_node_code_t> op_ret_specs;
 					std::vector<ExternParam> op_params;
