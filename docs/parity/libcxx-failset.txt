@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  b0b7cae8 (2026-08-01) on feature/libcxx-parity4-claude
-# Result:       859 passed / 40 failed / 0 timed out / 12 skipped
+# Measured at:  ef0d9921 (2026-08-01) on feature/libcxx-parity5-claude
+# Result:       862 passed / 39 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -451,8 +451,25 @@
 #                         all-zeros _0 primary). fulltest 900/2 (the 2 =
 #                         parked #93/#94 gates in tmp/), zero
 #                         regressions.
+#   ef0d9921  862 /  39   testcin FIXED — the ONLY flip (comm-diffed both
+#                         ways, ZERO newly broken); +2 were NEW GATES from
+#                         the #93 landing (testtypedefarg, the [temp.type]
+#                         typedef-identity reducer, + testcinstr_libcxx,
+#                         the promoted cin>>string twin — both pass BOTH
+#                         flavors). The chain: template-arg identity
+#                         desugars namespace scalar typedefs (cf39afef) so
+#                         numeric_limits<streamsize> instantiates the real
+#                         specialization and cin>>string extracts; landing
+#                         it was blocked by the freeze-append pack gate —
+#                         a DEFLESS-dropped def (failed pack-time lowering:
+#                         the wchar _M_extract_int wrong-shape early round)
+#                         left its typed proto + output extern in the tree,
+#                         unattributable at the check gate. ef0d9921 = one
+#                         rule, three arms: a defless drop leaves NO decl
+#                         surface (proto skipped, extern skipped, gate
+#                         splices residue). fulltest 904/0,
+#                         forest_selfexe_gate GREEN, EXE 848/0, OBJ 848/0.
 testcastarrow.mad
-testcin.mad
 testconstructible.mad
 testcontainerdtor.mad
 testdefer.mad
