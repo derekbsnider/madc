@@ -46574,6 +46574,26 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    t = nontype_tidpack_empty.begin(); t != nontype_tidpack_empty.end(); ++t )
 	inst_key += "#" + *t + "={}";
     inst_key += ">";
+    // fn_template_map[key] holds EVERY overload sharing the name; two
+    // overloads with the SAME tparam binding (libc++ operator<<(ostream&,
+    // _CharT) vs (ostream&, const _CharT*) — both bind <char,char_traits>)
+    // must not share a memo slot: first-instantiated was claiming every
+    // later call shape (a char argument passed to a char* body SIGSEGVs).
+    // Fold the candidate's own DECLARATION spelling in as the overload
+    // discriminator (FNV-1a; stable across runs — same header text).
+    {
+	uint64_t sig = 1469598103934665603ULL;
+	for ( size_t i = 0; i < ft.decl.size(); ++i )
+	{
+	    const std::string sp = overload_token_spelling(ft.decl[i]);
+	    for ( size_t c = 0; c < sp.size(); ++c )
+	    { sig ^= (unsigned char)sp[c]; sig *= 1099511628211ULL; }
+	    sig ^= 0x1f; sig *= 1099511628211ULL;
+	}
+	char sigbuf[20];
+	snprintf(sigbuf, sizeof(sigbuf), "|%016llx", (unsigned long long)sig);
+	inst_key += sigbuf;
+    }
     DBG_PACK("inst_key %s memo=%d vars=%d var_out=%d\n", inst_key.c_str(),
 	     (int)pgm.fn_template_instantiated.count(inst_key),
 	     (int)(pgm.fn_template_instantiated_vars.find(inst_key)
