@@ -811,6 +811,17 @@ public:
 	// and each one's dlsym resolution — no behavior change.
 	bool flavor_marshal_candidate(class FuncDef *fd) const;
 	void flavor_marshal_probe(const std::string &sym, class FuncDef *fd);
+	// Slice 2 (dark behind MADC_FLVMAR=1): swap the callee to a generated
+	// marshalling thunk when the host really exports the entry (dlsym on the
+	// callee's own symbol — extern-C twins — or on the host-flavor remint).
+	// Returns the thunk symbol, or empty when no marshalling applies.
+	std::string flavor_marshal_thunk(const std::string &sym, class FuncDef *fd);
+	node_t flavor_marshal_thunk_def(const char *thunk_sym,
+					const std::string &host_sym,
+					class FuncDef *fd);
+	std::map<std::string, std::string> m_flvmar_thunks;	// callee sym -> thunk ("" = miss)
+	std::vector<node_t> m_flvmar_defs;
+	int m_flvmar_counter = 0;
 	// std:: free-function template instantiations: one FuncDef per mangled
 	// symbol, plus a per-call memo (NULL = checked, not such a call).
 	std::map<class TokenCallFunc *, class FuncDef *> m_free_fn_inst_by_call;
