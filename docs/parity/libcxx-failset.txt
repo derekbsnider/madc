@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  dad582e6 (2026-08-01) on feature/libcxx-parity4-claude
-# Result:       836 passed / 59 failed / 0 timed out / 10 skipped
+# Measured at:  b0b7cae8 (2026-08-01) on feature/libcxx-parity4-claude
+# Result:       859 passed / 40 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -416,41 +416,64 @@
 #                         reaches the stream via const char* + c_str() —
 #                         right output, WRONG overload identity (latent for
 #                         embedded NULs). fulltest 896/0.
-testarraymember.mad
-testarraysubscript.mad
+#   b0b7cae8  859 /  40   19 OUT, ZERO newly broken (comm-diffed both
+#                         ways): 17 FIXED + 2 reasoned .libcxx_skip
+#                         (testtraitassign std::__and_ by construction;
+#                         testcompare_realhdr raw unordered-byte probe —
+#                         madc byte-matches BOTH oracles). Recon-then-
+#                         strike: 8 subagent buckets over the 59, then
+#                         SIX fix commits: [dcl.enum]p11 unscoped-enum
+#                         pseudo-namespace (b3c6f2f1), <=> lowering reads
+#                         the flavor's own <compare> statics — hardcoded
+#                         _M_value/2 gone (f25702d1), fn-template memo
+#                         keys the OVERLOAD not just name+binding
+#                         (a72560a5, the char/char* stream SIGSEGVs),
+#                         concrete-pointer-param viability [conv.ptr]
+#                         (91830063 — cout<<string now binds the
+#                         basic_string inserter, #90 CLOSED), obj.static
+#                         member dot-lane [expr.ref]p4 (3015bb41), test
+#                         dispositions (b0b7cae8). FIXED: testarraymember
+#                         testarraysubscript testcastsubscript
+#                         testclassstaticitanium testdefaultedcmp_realhdr
+#                         testderefpreinc testfortypedcomma
+#                         testheaderstringops testlambdastrret
+#                         testmacrocharlit testmanip testrewritten_realhdr
+#                         testspaceship_realhdr teststringplus
+#                         teststringsubscript teststructinitnested
+#                         testsysscript. Gates: testenumqual,
+#                         testspaceship_libcxx, testosmixed_libcxx,
+#                         teststrret_libcxx, testdotstatic. Frontiers
+#                         moved: fstream cluster path.h:411 ->
+#                         operations.h:37; cin>>string now instantiates
+#                         and MIR-links but extracts ZERO chars — task
+#                         #93: template-arg identity through namespace
+#                         typedefs (numeric_limits<streamsize> picks the
+#                         all-zeros _0 primary). fulltest 900/2 (the 2 =
+#                         parked #93/#94 gates in tmp/), zero
+#                         regressions.
 testcastarrow.mad
-testcastsubscript.mad
 testcin.mad
-testclassstaticitanium.mad
-testcompare_realhdr.mad
 testconstructible.mad
 testcontainerdtor.mad
-testdefaultedcmp_realhdr.mad
 testdefer.mad
-testderefpreinc.mad
 testevalexterncapture.mad
 testexterncstringptr.mad
 testforeachheaderbody.mad
 testforinitscope.mad
-testfortypedcomma.mad
 testfreezerun.mad
 testfstream.mad
-testheaderstringops.mad
 testifconstexpr.mad
 testincludenext.mad
 testinvocable.mad
-testlambdastrret.mad
 testlang.mad
 testlateinstproto.mad
 testloop.mad
-testmacrocharlit.mad
 testmadc_ns.mad
 testmadceval.mad
 testmadcevalexpr.mad
 testmadcevalexprctx.mad
 testmadcevalexprtyped.mad
 testmadcevalscope.mad
-testmanip.mad
 testmanipview.mad
 testmap.mad
 testmapiter.mad
@@ -459,19 +482,12 @@ testopinherit.mad
 testperl.mad
 testphp.mad
 testprefer.mad
-testrewritten_realhdr.mad
 testrust.mad
 testset.mad
-testspaceship_realhdr.mad
 testsstream.mad
 teststdmapint.mad
 teststdstringconv.mad
-teststringplus.mad
 teststringrel.mad
-teststringsubscript.mad
-teststructinitnested.mad
 testsubscript.mad
 testsysobject.mad
-testsysscript.mad
-testtraitassign.mad
 testtuple.mad
