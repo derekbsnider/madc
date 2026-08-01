@@ -3506,6 +3506,31 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
 		return cv_spelling
 		     + (rs.empty() ? r->base_type->name : rs) + "&";
 	    }
+    // [temp.type]: template-argument identity is the CANONICAL type. A
+    // NAMESPACE-scope scalar typedef mints a distinct alias dd whose
+    // canonical spelling is the ALIAS ("std::streamsize", @0f97958b's
+    // despaced-canonical index) — keying an instantiation on it makes an
+    // explicit specialization keyed on the underlying builtin invisible,
+    // so the PRIMARY instantiates silently (libc++'s
+    // __libcpp_is_integral<long> never matched streamsize;
+    // numeric_limits<streamsize> picked the all-zeros non-arithmetic
+    // primary and `cin >> string` extracted NOTHING). Desugar through the
+    // alias chain the typedef arm records. ONLY through that explicit
+    // link: a DataType-based desugar (mangle_scalar_spelling) also fired
+    // on class-scope aliases minted inside templates, whose DataType is
+    // not a reliable identity — it crossed basic_string<char>'s chain
+    // with vector<int>'s (reverse_iterator_char_typeP / basic_string
+    // <int32_t> in the emitted C).
+    {
+	DataDef *ud = adt->definition.scalar_alias_of;
+	while ( ud && ud->scalar_alias_of )
+	    ud = ud->scalar_alias_of;
+	if ( ud )
+	{
+	    const std::string &us = ud->canonical_cpp_spelling();
+	    return cv_spelling + (us.empty() ? ud->name : us);
+	}
+    }
     const std::string &cs = adt->definition.canonical_cpp_spelling();
     return cv_spelling + (cs.empty() ? adt->definition.name : cs);
 }
@@ -41109,6 +41134,10 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     {
 	DataDef *alias_dd = new DataDef(alias, base_dd->size, base_dd->type());
 	alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias);
+	// [temp.type]: the alias carries its underlying so template-argument
+	// identity can desugar (std::streamsize must select the spec keyed
+	// on long) — see template_type_arg_spelling.
+	alias_dd->scalar_alias_of = base_dd;
 	base_dd = alias_dd;
     }
     if ( base_dd && is_incomplete_class_datadef(base_dd) )

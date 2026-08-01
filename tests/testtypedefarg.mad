@@ -1,0 +1,30 @@
+// [temp.type]: template-argument identity is the CANONICAL type — a
+// namespace-scope typedef'd argument (one- and two-level) must select the
+// explicit specialization keyed on the underlying builtin, directly and
+// through a member typedef. The namespace scalar-typedef lane mints a
+// distinct alias DataDef (canonical spelling "ns::alias", @0f97958b's
+// despaced-canonical index); the template-arg spelling now desugars it
+// through mangle_scalar_spelling — the Itanium owner of the same
+// canonical-types rule. The libc++ casualty was numeric_limits
+// <streamsize> instantiating the all-zeros non-arithmetic primary
+// (__libcpp_is_integral<long> never matched), which made `cin >> string`
+// extract ZERO characters (gate testcinstr_libcxx).
+// Oracle: g++ -std=c++17 and clang++ -std=c++17 -stdlib=libc++ print
+// "1 1 1 1".
+#include <cstdio>
+
+namespace ns { typedef long myint; typedef myint myint2; }
+
+template<class T> struct RC { typedef T type; };
+template<class T> struct isL { static const bool value = false; };
+template<> struct isL<long> { static const bool value = true; };
+
+int main()
+{
+	printf("%d %d %d %d\n",
+	       (int)isL<RC<long>::type>::value,
+	       (int)isL<RC<ns::myint>::type>::value,
+	       (int)isL<RC<ns::myint2>::type>::value,
+	       (int)isL<ns::myint>::value);
+	return 0;
+}
