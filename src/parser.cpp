@@ -55486,6 +55486,124 @@ bool Program::paren_group_is_function_def()
     return false;
 }
 
+// One owner for "does this unqualified name ALSO name a type or a
+// class/alias template" — the [dcl.ambig.res] tie-breaker input shared by
+// the two paren-group disambiguators below. Function templates are
+// deliberately excluded: a function-template name is not a type, so it
+// cannot begin a parameter-declaration and `_Tp __t(move(__x))` keeps its
+// direct-init reading.
+bool Program::unqualified_name_is_type_or_template(const std::string &nm)
+{
+    if ( datatype_map.find(nm) != datatype_map.end() )
+	return true;
+    if ( find_template(nm, std::string(), NULL) )
+	return true;
+    return find_template_alias(nm, std::string(), NULL) != NULL;
+}
+
+// `T name(X);` with a CLASS T: the paren group is a parameter-declaration-
+// clause (hence a function DECLARATION — [dcl.ambig.res] favours any reading
+// that can be a declaration) when it is empty or its head can begin a
+// parameter-declaration: a decl-specifier keyword, a type token, or an
+// (optionally qualified) name that names a type or class/alias template.
+// Everything else (a literal, an operator, a nested '(', a pure value name)
+// can only be an expression-list, so the ctor-call reading stands. A type
+// head followed by '(' keeps the declaration reading only for the
+// redundant-paren declarator `Type(x)` — `Type(5)` / `Type("s")` is a
+// function-style cast, an expression ([dcl.ambig.res]/2's worked examples).
+// This is the CLASS twin of paren_group_is_nonclass_direct_init below: that
+// one diverts an unambiguous EXPRESSION away from a default declaration
+// reading; this one diverts an unambiguous PARAMETER CLAUSE away from a
+// default ctor-call reading. tokens.front() is expected to be the `(`;
+// nothing is consumed.
+bool Program::paren_group_can_be_param_decl_clause()
+{
+    if ( tokens.size() < 2 )
+	return false;
+    TokenBase *open = tokens[0];
+    if ( !open || open->id() != TokenID::tkOpBrk )
+	return false;
+    TokenBase *first = tokens[1];
+    if ( !first )
+	return false;
+    // `T name();` — the empty clause: canon reads a function declaration
+    // (the textbook most-vexing-parse). Previously this misparsed SILENTLY
+    // into a global variable, surfacing only as a MIR-link ctor import.
+    if ( first->id() == TokenID::tkClBrk )
+	return true;
+    switch ( first->id() )
+    {
+    case TokenID::tkCONST:
+    case TokenID::tkVOLATILE:
+    case TokenID::tkSTRUCT:
+    case TokenID::tkCLASS:
+    case TokenID::tkENUM:
+	return true;	// a decl-specifier can only begin a parameter-declaration
+    default:
+	break;
+    }
+    TokenStream::Pos saved = tokens.savepos();
+    nextToken();			// the '('
+    TokenBase *head = nextToken();	// the group's head token
+    bool head_is_type = false;
+    if ( head && (head->type() == TokenType::ttDataType
+	       || head->type() == TokenType::ttIdentifier) )
+    {
+	if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+	{
+	    // An ENUM head cannot introduce a nested type — `Enum::id` names
+	    // an ENUMERATOR (a value), so the group is an expression-list:
+	    // libc++'s <=> category statics are exactly this shape
+	    // (`inline constexpr partial_ordering
+	    //   partial_ordering::less(_OrdResult::__less);`,
+	    // __compare/ordering.h:114).
+	    TokenDataType *head_dt =
+		resolve_declared_type_token(head, false, true);
+	    if ( head_dt && dynamic_cast<DataDefENUM *>(&head_dt->definition) )
+		head_is_type = false;
+	    else
+		// Qualified head — the WHOLE chain must name a type. A member
+		// FUNCTION / static-member tail is a call or value, not a
+		// parameter type: libstdc++ __str_concat's local
+		// `_Str __str(_Alloc_traits::_S_select_on_copy(__a));` heads
+		// with a ttDataType token whose chain names a static member
+		// function — an unconsumed `::` after the trial resolve is
+		// that signature.
+		head_is_type =
+		    resolve_declared_type_token(head, true, true) != NULL
+		    && !(peekToken() && peekToken()->id() == TokenID::tkNS);
+	}
+	else if ( head->type() == TokenType::ttDataType )
+	    head_is_type = true;
+	else
+	    head_is_type = unqualified_name_is_type_or_template(
+				contextual_identifier_name(head));
+    }
+    bool result = false;
+    if ( head_is_type )
+    {
+	TokenBase *after = peekToken();
+	if ( !after || after->id() == TokenID::tkOpBrc )
+	    result = false;		// Type{...} — list-init expression
+	else if ( after->id() == TokenID::tkOpBrk )
+	{
+	    // `Type(x)` = redundant-paren DECLARATOR (declaration reading)
+	    // vs `Type(5)` / `Type("s")` / `Type(a+b)` = function-style
+	    // cast (expression): only a LONE identifier inside the parens
+	    // keeps the declaration reading.
+	    nextToken();		// the inner '('
+	    TokenBase *inner = nextToken();
+	    TokenBase *close = peekToken();
+	    result = inner && is_contextual_identifier_token(inner)
+		  && close && close->id() == TokenID::tkClBrk;
+	}
+	else
+	    result = true;
+    }
+    tokens.restore(saved);
+    return result;
+}
+
 // `T name(X)` is direct-initialization (== `T name = X`) rather than a function
 // DECLARATION when X is an expression, not a parameter-declaration-clause
 // ([dcl.ambig.res], the "most vexing parse"). A class type with constructors is
@@ -55538,13 +55656,8 @@ bool Program::paren_group_is_nonclass_direct_init()
 	// `pair`, so under `using namespace std` the value-name shadowed the
 	// madc builtin type `array` here and every `f(array &ctx, ...)`
 	// param-1 head in <ns_madc> diverted to direct-init, dying on its
-	// parameter name. Function templates are deliberately NOT consulted:
-	// a function-template name is not a type, so `_Tp __t(move(__x))`
-	// must keep its direct-init reading.
-	if ( findVariable(nm)
-	  && datatype_map.find(nm) == datatype_map.end()
-	  && !find_template(nm, std::string(), NULL)
-	  && !find_template_alias(nm, std::string(), NULL) )
+	// parameter name.
+	if ( findVariable(nm) && !unqualified_name_is_type_or_template(nm) )
 	    return true;
 	// A QUALIFIED name: a parameter-declaration may begin with a qualified
 	// TYPE (`f(std::size_t)` is a nested function DECLARATION), so shape
@@ -56306,12 +56419,21 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // the aggregate `= { ... }` machinery below field-filled a ctor-ful
     // class and dropped every argument after the first. Aggregates (no user
     // ctor) still take the brace-list path below. Only the paren form can
-    // be a function declaration (most vexing parse); braces never are.
+    // be a function declaration (most vexing parse); braces never are —
+    // and the paren form is one whenever a body follows OR the group can
+    // be a parameter-declaration-clause ([dcl.ambig.res]): gating on body
+    // presence alone read EVERY bodyless class-returning prototype as a
+    // ctor-call variable — `path __absolute(const path&, error_code*);`
+    // (libc++ __filesystem/operations.h:37, via <fstream>) died on its
+    // parameter names, and the 0-param form (`path foo();`) misparsed
+    // SILENTLY into a global variable that only failed at MIR link.
     if ( !ret_is_ref
       && (nt->id() == TokenID::tkOpBrk || nt->id() == TokenID::tkOpBrc)
       && arr_dims.empty()
       && decl_type->basetype() == BaseType::btClass
-      && !(nt->id() == TokenID::tkOpBrk && paren_group_is_function_def()) )
+      && !(nt->id() == TokenID::tkOpBrk
+	   && (paren_group_is_function_def()
+	       || paren_group_can_be_param_decl_clause())) )
     {
 	DataDefCLASS *ddc = static_cast<DataDefCLASS *>(decl_type);
 	// An EMPTY braced list (`T x{}`) is value-initialization and keeps its

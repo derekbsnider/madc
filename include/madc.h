@@ -5349,6 +5349,8 @@ public:
     bool next_parenthesized_type_is_compound_literal();
     bool paren_group_is_function_def();
     bool paren_group_is_nonclass_direct_init();
+    bool paren_group_can_be_param_decl_clause();
+    bool unqualified_name_is_type_or_template(const std::string &nm);
     bool parse_array_designator_initializer(TokenBase *&next_init,
 					    size_t &first_index, size_t &last_index);
     bool parse_builtin_types_compatible_operand(TokenBase *type_tb,
