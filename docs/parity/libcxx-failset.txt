@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  63101743 (2026-07-31) on feature/libcxx-parity4-claude
-# Result:       816 passed / 76 failed / 0 timed out / 10 skipped
+# Measured at:  f4e7b946 (2026-08-01) on feature/libcxx-parity4-claude
+# Result:       818 passed / 76 failed / 0 timed out / 10 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -344,6 +344,34 @@
 #                         the 28-test bucket and the map cluster. Gate for
 #                         the bucket (task #90) must assert the EMITTED C
 #                         names the basic_string overload. fulltest 893/0.
+#   f4e7b946  818 /  76   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways); +2 = the NEW GATES testmtpldefault +
+#                         teststdunversioned. THREE ROOTS FELL between the
+#                         measures (@06cd2d12 + @f4e7b946): (1) task #89 —
+#                         member-template NON-TYPE defaults fill when their
+#                         captured constraint run is EMPTY (`bool _Dummy =
+#                         true`; the pair-ctor clearing stays for captured
+#                         runs; forest v37->v38, spec-slot carriage); (2) an
+#                         ALIAS-template-id parameter (`_LValRefType<_Dummy>`)
+#                         is a NON-DEDUCED context — deduction skips it
+#                         instead of refusing the candidate; (3) a declared
+#                         scope of exactly `std` mangles UNVERSIONED in both
+#                         flavors (_ZSt17__throw_bad_allocv resolves — the
+#                         blanket std->std::__1 widening minted an import
+#                         libc++.so does not export). Zero flips because the
+#                         chain is a series circuit: os4 now advances from
+#                         "no matching constructor
+#                         unique_ptr_char_funcptr(int,<unknown>)" all the way
+#                         to MIR LINK with ONE undefined import left —
+#                         __compressed_pair_elem_funcptr_1_0__..__o3, an
+#                         instantiated member-template ctor whose BODY never
+#                         emitted: task #88 (uptrC/uptrI still bail "tsubst
+#                         body calls un-emittable symbol"), the LAST link for
+#                         both the 28-test bucket and the map cluster. Also
+#                         fixed en route: a latent use-after-free (~Program
+#                         now releases the ambient token pools it owns —
+#                         ASAN-verified; every multi-Program host was
+#                         affected). fulltest 895/0.
 testarraymember.mad
 testarraysubscript.mad
 testcapture.mad
