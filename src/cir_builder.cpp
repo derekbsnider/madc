@@ -21517,6 +21517,24 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 					for (const std::string &c : callees)
 						fprintf(stderr, "[TSUBST-CALLEES]   %s\n",
 							c.c_str());
+					// Where could the definition be hiding? Dump the
+					// containers emittable() consults, filtered to the
+					// refused symbol's leading identifier, so a KEY
+					// mismatch (vs a genuinely absent body) is visible.
+					std::string stem = s.substr(0, s.find("__"));
+					for (auto &kv : m_prog->deferred_lazy_bodies)
+						if (kv.first.find(stem) != std::string::npos)
+							fprintf(stderr, "[TSUBST-DEFERRED]  %s\n",
+								kv.first.c_str());
+					for (TokenBase *pb : m_prog->pending_funcs) {
+						TokenFunc *ptf = dynamic_cast<TokenFunc *>(pb);
+						FuncDef *pfd = ptf ? dynamic_cast<FuncDef *>(ptf->var.type) : NULL;
+						if (ptf && ptf->var.name.find(stem) != std::string::npos)
+							fprintf(stderr, "[TSUBST-PENDING]   %s emit=%s declonly=%d\n",
+								ptf->var.name.c_str(),
+								pfd ? func_emit_name(ptf->var, pfd).c_str() : "?",
+								pfd ? (int)pfd->declaration_only : -1);
+					}
 				}
 				return bail_covered("tsubst body calls un-emittable symbol");
 			}
