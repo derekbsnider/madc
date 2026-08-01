@@ -2725,6 +2725,16 @@ static TokenBase *resolve_class_static_member_value(Program &pgm,
     return ti;
 }
 
+// Public seam for the CIR lowering (declared on Program): the resolution
+// itself is the file-static above — storage-backed TokenVar for object-typed
+// statics, folded in-class constant for scalars.
+TokenBase *Program::class_static_member_value_token(DataDefCLASS *scope,
+						    const std::string &member,
+						    TokenBase *at)
+{
+    return resolve_class_static_member_value(*this, scope, member, at);
+}
+
 // `Tmpl<args>::member` once the template-id has already been instantiated to a
 // concrete type: resolve the trailing `::member` static data member to a value.
 //

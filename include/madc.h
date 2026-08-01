@@ -3212,6 +3212,12 @@ public:
     // The std comparison-category class a builtin <=> yields
     // ([expr.spaceship]); NULL when <compare> has not been parsed.
     DataDef *comparison_category_class(class TokenOperator *to);
+    // Public seam for the CIR lowering: `Class::member` static data member
+    // as a value token (storage-backed TokenVar for object-typed statics,
+    // folded constant for scalars). NULL when no such static member.
+    TokenBase *class_static_member_value_token(DataDefCLASS *scope,
+						const std::string &member,
+						TokenBase *at);
     // Namespaces named by `using namespace X;` directives (C++
     // [namespace.udir]). The single-Variable import model skips a member
     // whose name a global already claimed; unqualified CALL resolution

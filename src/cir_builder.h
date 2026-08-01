@@ -1197,10 +1197,16 @@ public:
 	node_t class_operator_call(class TokenOperator *top, TokenBase *origin,
 				   const char *opsym_override = NULL);
 	// C++20 builtin `a <=> b` ([expr.spaceship]): comparison-category temp
-	// + inline byte-select into _M_value (g++ -O0 canon, no call). The
-	// category class was resolved at parse time from the parsed <compare>.
+	// + inline select into its sole data member (g++ -O0 canon, no call).
+	// The category class was resolved at parse time from the parsed
+	// <compare>; the arm values read the category's own public statics.
 	node_t three_way_builtin_lowering(class TokenOperator *top,
 					  TokenBase *origin);
+	// `cat::stat`'s payload: the static read through the category's sole
+	// data member (name discovered, never spelled — it differs per stdlib
+	// flavor). NULL when the static does not resolve.
+	node_t cmpcat_static_value(DataDefCLASS *cat, const char *stat,
+				   const char *valm, TokenBase *origin);
 	// madc dialect strict equality `a === b` / `a !== b`: type-domain
 	// identity AND value equality (STD_MADC only; spec
 	// docs/superpowers/specs/2026-06-11-strict-equality-design.md).

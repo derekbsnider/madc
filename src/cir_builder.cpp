@@ -14486,10 +14486,16 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 
 // C++20 builtin three-way comparison ([expr.spaceship]), per g++ -O0 canon
 // (tmp/spaceship.s): NO call — declare a comparison-category temp and store
-// the inline byte-select into its _M_value (offset 0, __cmp_cat::type):
-//   integral/pointer: (l < r ? -1 : l > r ? 1 : 0)            -> strong_ordering
-//   floating:         (l < r ? -1 : l > r ? 1 : l == r ? 0 : 2) -> partial_ordering
-//                     (2 = __cmp_cat::_Ncmp::_Unordered)
+// the inline select into its sole data member:
+//   integral/pointer: (l < r ? less : l > r ? greater : equivalent)  -> strong_ordering
+//   floating:  (l < r ? less : l > r ? greater : l == r ? equivalent
+//                                                        : unordered) -> partial_ordering
+// The arm VALUES are read from the parsed <compare>'s own public statics
+// ([cmp.categories]) through the category's sole non-static data member —
+// both DISCOVERED, never spelled: the member name and the unordered payload
+// are library internals that differ per stdlib flavor (libstdc++
+// _M_value / _Ncmp::_Unordered == 2, libc++ __value_ / -127; writing 2 into
+// libc++'s __value_ makes NaN <=> x report GREATER, silently).
 // The category class was resolved at parse time from the parsed <compare>
 // (Program::comparison_category_class); class operands with an operator<=>
 // were dispatched through the operator machinery before reaching here. Each
@@ -14524,22 +14530,48 @@ node_t CirBuilder::three_way_builtin_lowering(TokenOperator *top, TokenBase *ori
 		node2(N_ASSIGN, id(rname, origin), translate_expr(top->right),
 		      origin), origin));
 	bool floating = ldd->is_real() || rdd->is_real();
+	if (cat->members.size() != 1)
+		return error_node("'<=>' comparison-category class has an "
+				  "unexpected layout", origin);
+	const char *valm = cat->members[0].first.c_str();
+	node_t lv = cmpcat_static_value(cat, "less", valm, origin);
+	node_t gv = cmpcat_static_value(cat, "greater", valm, origin);
+	node_t ev = cmpcat_static_value(cat, "equivalent", valm, origin);
+	node_t uv = floating
+	    ? cmpcat_static_value(cat, "unordered", valm, origin) : NULL;
+	if (!lv || !gv || !ev || (floating && !uv))
+		return error_node("'<=>' comparison-category statics did not "
+				  "resolve — #include <compare> (C++20)",
+				  origin);
 	node_t tail = floating
 	    ? node3(N_COND,
 		    node2(N_EQ, id(lname, origin), id(rname, origin), origin),
-		    integer(0, origin), integer(2, origin), origin)
-	    : integer(0, origin);
+		    ev, uv, origin)
+	    : ev;
 	node_t sel = node3(N_COND,
 		node2(N_LT, id(lname, origin), id(rname, origin), origin),
-		integer(-1, origin),
+		lv,
 		node3(N_COND,
 		      node2(N_GT, id(lname, origin), id(rname, origin), origin),
-		      integer(1, origin), tail, origin), origin);
-	node_t fld = node2(N_FIELD, id(oname, origin), id("_M_value", origin),
+		      gv, tail, origin), origin);
+	node_t fld = node2(N_FIELD, id(oname, origin), id(valm, origin),
 			   origin);
 	m_pending_stmts.push_back(node2(N_EXPR, list(),
 		node2(N_ASSIGN, fld, sel, origin), origin));
 	return id(oname, origin);   // the category-typed object lvalue
+}
+
+// `cat::stat` read through the category's sole data member: the flavor's own
+// <compare> supplies both the storage and the payload, so neither is spelled
+// here. NULL (caller errors loudly) when the static does not resolve.
+node_t CirBuilder::cmpcat_static_value(DataDefCLASS *cat, const char *stat,
+					const char *valm, TokenBase *origin)
+{
+	TokenBase *st = m_prog->class_static_member_value_token(cat, stat,
+								origin);
+	if (!st)
+		return NULL;
+	return node2(N_FIELD, translate_expr(st), id(valm, origin), origin);
 }
 
 // -----------------------------------------------------------------------
