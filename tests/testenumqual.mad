@@ -1,0 +1,40 @@
+// [dcl.enum]p11: `Tag::enumerator` is valid for UNSCOPED enums too (C++11).
+// libc++'s filesystem::path declares `enum format {...}` nested in the class
+// and defaults ctor params with `format::auto_format` — the exact shape that
+// exposed the gap (path.h:411, bucket C of the 59-set re-bucket). The
+// pseudo-namespace registration in TokenENUM::parse() was gated to scoped
+// enums only; every tagged C++ enum gets it now, while unscoped enumerators
+// keep their bare (leaking) registrations per the C++ semantic.
+// Oracle: g++ -std=c++17 and clang++ -std=c++17 -stdlib=libc++ both print
+// "1 6 9 0".
+#include <cstdio>
+
+struct P {
+	enum format : unsigned char { auto_format, native_format, generic_format };
+	int pick(format f = format::native_format) { return (int)f; }
+};
+
+enum color { red, green = 5, blue };
+
+namespace nsx { enum dir { north, south = 9 }; }
+
+// The class-lane twin: a TAGGED nested enum's enumerator reaches a ctor
+// through the class qualifier CARRYING the enum type, so it binds the
+// enum-typed parameter (libc++ path's ctor shape, reducer tmp/rbC_1.mad).
+namespace nsy {
+struct Q {
+	enum format : unsigned char { auto_format, native_format, generic_format };
+	Q(int s, format f = format::auto_format) { v = (int)f + s - s; }
+	int v;
+};
+}
+
+int main()
+{
+	P p;
+	printf("%d %d %d %d\n", p.pick(), (int)color::blue,
+	       (int)nsx::dir::south, (int)red);
+	nsy::Q q(3, nsy::Q::generic_format);
+	printf("%d\n", q.v);
+	return 0;
+}

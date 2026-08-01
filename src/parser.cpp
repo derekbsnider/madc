@@ -41533,10 +41533,15 @@ TokenBase *TokenENUM::parse(Program &pgm)
     // (`ns::Tag::Value`) finds the chain, and scope-relative `Tag::Value`
     // resolves via resolve_namespace_name_in_scope.
     std::string scoped_ns_key = enum_tag;
-    if ( scoped && !pgm.current_namespace().empty()
+    if ( !pgm.current_namespace().empty()
       && pgm.class_scope_stack.empty() )
 	scoped_ns_key = pgm.current_namespace() + "::" + enum_tag;
-    variable_map_t *scope_ns = scoped
+    // [dcl.enum]p11: `Tag::enumerator` names an enumerator of an UNSCOPED
+    // enum too (C++11), so every TAGGED C++ enum gets the pseudo-namespace.
+    // Scoped enumerators live ONLY here (no bare-name leak); unscoped ones
+    // ALSO keep their bare registrations below. C mode has no `::`.
+    variable_map_t *scope_ns = !enum_tag.empty()
+			     && (scoped || !pgm.is_c_mode())
 	? &pgm.namespace_variables_for_write(scoped_ns_key) : NULL;
 
     // [dcl.enum]/5: enumerators already registered are usable in the REST of
@@ -41592,8 +41597,23 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    // `enum { __value = N };`. Not a global leak — the correct C++
 	    // semantic (the bare name does not resolve outside the class).
 	    DataDefCLASS *owner = pgm.class_scope_stack.back();
-	    owner->static_member_types[name] = &ddINT;
+	    // A TAGGED enum's enumerator carries the enum type (so it can
+	    // bind an enum-typed parameter); anonymous stays int — the
+	    // libstdc++ `enum { __value = N };` trait idiom depends on it.
+	    owner->static_member_types[name] = enum_dd ? enum_dd : &ddINT;
 	    owner->static_member_const_values[name] = val;
+	    if ( scope_ns )
+	    {
+		// [dcl.enum]p11 qualified spelling (`format::auto_format`) —
+		// the pseudo-namespace twin of the class-member registration.
+		Variable *evar = new Variable(name, enum_dd ? *enum_dd : ddINT,
+					      1, NULL, true);
+		evar->set(val);
+		evar->makeconstant();
+		pgm.pack_tap_name(scoped_ns_key + "::" + name,
+				  Program::pdkVariable);	// B4a tap
+		(*scope_ns)[name] = evar;
+	    }
 	    DBG(std::cout << "TokenENUM::parse() " << owner->name << "::"
 		<< name << " = " << val << std::endl);
 	}
@@ -41613,6 +41633,14 @@ TokenBase *TokenENUM::parse(Program &pgm)
 		DBG(std::cout << "TokenENUM::parse() stamped origin for "
 		    << name << " (" << (ntok && ntok->file ? ntok->file : "?")
 		    << ")" << std::endl);
+	    }
+	    if ( scope_ns )
+	    {
+		// [dcl.enum]p11 qualified spelling — the SAME Variable,
+		// indexed a second time under the tag's pseudo-namespace.
+		pgm.pack_tap_name(scoped_ns_key + "::" + name,
+				  Program::pdkVariable);	// B4a tap
+		(*scope_ns)[name] = evar;
 	    }
 	    DBG(std::cout << "TokenENUM::parse() " << name << " = " << val << std::endl);
 	}
