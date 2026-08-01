@@ -1,0 +1,25 @@
+#!/usr/bin/env madc
+// Gate for [dcl.ambig.res] in paren_group_is_nonclass_direct_init: a name
+// that is BOTH a value and a type/template keeps the DECLARATION reading.
+// libc++ fwd-declares std::array and ships CTAD deduction guides whose
+// registration surfaces a VALUE named `array`; under `using namespace std`
+// that value-name must not flip `void f(array &ctx, ...)` into
+// direct-initialization (the ns_madc:56 six-test family).
+#include <iostream>
+using namespace std;
+
+void ctx_note(array &ctx, string &key);
+
+void ctx_note(array &ctx, string &key)
+{
+	cout << "in ctx_note " << key << endl;
+}
+
+int main()
+{
+	array ctx;
+	string k = "answer";
+	ctx_note(ctx, k);
+	cout << "done" << endl;
+	return 0;
+}

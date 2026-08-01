@@ -55529,7 +55529,22 @@ bool Program::paren_group_is_nonclass_direct_init()
 	std::string nm = contextual_identifier_name(first);
 	if ( nm == "this" )
 	    return true;
-	if ( findVariable(nm) )
+	// A value hit alone cannot decide: a name that ALSO names a concrete
+	// type or a class/alias template CAN begin a parameter-declaration,
+	// and then the group stays a declaration (both canons keep the
+	// declaration reading of `void f(vector &v)` and diagnose the missing
+	// template arguments — neither ever diverts to direct-init). libc++'s
+	// CTAD deduction guides surface VALUE entries named `array`/`vector`/
+	// `pair`, so under `using namespace std` the value-name shadowed the
+	// madc builtin type `array` here and every `f(array &ctx, ...)`
+	// param-1 head in <ns_madc> diverted to direct-init, dying on its
+	// parameter name. Function templates are deliberately NOT consulted:
+	// a function-template name is not a type, so `_Tp __t(move(__x))`
+	// must keep its direct-init reading.
+	if ( findVariable(nm)
+	  && datatype_map.find(nm) == datatype_map.end()
+	  && !find_template(nm, std::string(), NULL)
+	  && !find_template_alias(nm, std::string(), NULL) )
 	    return true;
 	// A QUALIFIED name: a parameter-declaration may begin with a qualified
 	// TYPE (`f(std::size_t)` is a nested function DECLARATION), so shape
