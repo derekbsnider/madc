@@ -46605,8 +46605,28 @@ static bool instantiate_fn_template_binding(Program &pgm,
     // discriminator (FNV-1a; stable across runs — same header text).
     {
 	uint64_t sig = 1469598103934665603ULL;
+	// Skip the declarator NAME span: an overload is discriminated by its
+	// parameter-type-list ([over.load]), never by its name — and the
+	// member-template path has ALREADY renamed this token to the
+	// per-request unique __mti/__oN symbol, so hashing it poisons the memo
+	// key with the request identity and no request can ever memo-hit a
+	// prior instantiation of the same overload+binding (the vecbind
+	// producer froze DUPLICATE instances of one binding under shifted
+	// names, breaking bind-vs-live item-set identity).
+	size_t name_idx =
+	    skipped_template_function_declarator_name_index(ft.decl, NULL);
+	size_t name_span = 1;
+	if ( name_idx < ft.decl.size()
+	  && token_is_operator_id_start(ft.decl[name_idx]) )
+	{
+	    size_t s = operator_id_token_span(ft.decl, name_idx);
+	    if ( s )
+		name_span = s;
+	}
 	for ( size_t i = 0; i < ft.decl.size(); ++i )
 	{
+	    if ( i >= name_idx && i < name_idx + name_span )
+		continue;
 	    const std::string sp = overload_token_spelling(ft.decl[i]);
 	    for ( size_t c = 0; c < sp.size(); ++c )
 	    { sig ^= (unsigned char)sp[c]; sig *= 1099511628211ULL; }
