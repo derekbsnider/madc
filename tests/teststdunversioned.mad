@@ -1,0 +1,25 @@
+// The UNVERSIONED `namespace std` under libc++: <new> declares its
+// ABI-stable entry points in a `namespace std // purposefully not using
+// versioning namespace` block, so they mangle _ZSt... in BOTH flavors —
+// std::get_new_handler() is _ZSt15get_new_handlerv, never
+// _ZNSt3__115get_new_handlerEv (which libc++.so does not export; the old
+// blanket std->std::__1 widening minted exactly that undefined import and
+// the run died at MIR link). The declared scope decides the mangling; the
+// .flags fixture pins this test to -stdlib=libc++ where the split is
+// observable (under libstdc++ std entities are directly in std either way).
+// The gate asserts the import RESOLVES and the call runs — a wrong scope is
+// an undefined MIR import and "ok" never prints.
+// (new_handler VALUE handling is deliberately not gated here: the typedef'd
+// function-pointer return/param family has its own pre-existing gaps —
+// task #91: the param mangles as a source name, and the returned pointer
+// mis-compares against 0.)
+// Oracle: clang++ -stdlib=libc++ runs it and prints "ok".
+#include <new>
+#include <cstdio>
+
+int main()
+{
+    std::get_new_handler();
+    printf("ok\n");
+    return 0;
+}
