@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  81eac496 (2026-08-01) on feature/libcxx-parity5-claude
-# Result:       864 passed / 39 failed / 0 timed out / 12 skipped
+# Measured at:  92917cc5 (2026-08-01) on feature/libcxx-parity5-claude
+# Result:       869 passed / 38 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -482,11 +482,30 @@
 #                         materializes (8 _libcxx twins red with the arm on
 #                         — the flip-on blocker, task #94). EXE 850/0,
 #                         OBJ 850/0, fulltest 906/0.
+#   92917cc5  869 /  38   ONE flip: testevalexterncapture FIXED, ZERO
+#                         regressions (comm-diffed both ways); +4 = the NEW
+#                         GATES testarrayparam, testclassproto,
+#                         testconstaccess, testprivmethod. Three recon-then-
+#                         strike roots landed between the measures:
+#                         @915b129b a value-name that also names a
+#                         type/template keeps the declaration reading
+#                         ([dcl.ambig.res] — CTAD-guide value `array`
+#                         shadowed the builtin), @f5527cb9 class-returning
+#                         bodyless prototype is a fn declaration
+#                         (paren_group_can_be_param_decl_clause + 3
+#                         counter-arms), @92917cc5 access checks the
+#                         SELECTED overload + const-method member receiver
+#                         is const (set:564 cleared). The other clusters
+#                         each advanced past their fixed blocker to the two
+#                         dams: the materialization family (never-emitted
+#                         basic_string __oN / compare / __math::isinf /
+#                         __unwrap_and_dispatch) and #102 non-type-pack
+#                         real-instantiation (map+set piecewise pair).
+#                         EXE 854/0, fulltest 910/0.
 testcastarrow.mad
 testconstructible.mad
 testcontainerdtor.mad
 testdefer.mad
-testevalexterncapture.mad
 testexterncstringptr.mad
 testforeachheaderbody.mad
 testforinitscope.mad
