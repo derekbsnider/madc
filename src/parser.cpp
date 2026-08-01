@@ -48756,8 +48756,19 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     TokenFunc *pattern = NULL;
     if ( pending_funcs.size() > before )
     {
+	// The RECIPE is the pattern TokenFunc parseFunction pushed LAST — but
+	// the dependent body parse may have eagerly instantiated CONCRETE
+	// classes along the way (UPtr<Node,Del> inside Tree::construct's
+	// body), whose method definitions ALSO landed in pending_funcs after
+	// `before`. Those classes SURVIVE this function (nothing undoes their
+	// registration, and tsubst bodies resolve calls against them), so the
+	// old blanket resize ORPHANED them: every definition vanished while
+	// the class kept its methods — the "tsubst body calls un-emittable
+	// symbol" bail (task #88; libc++'s __compressed_pair_elem ctor under
+	// `cout << string`). Remove ONLY the recipe.
 	pattern = dynamic_cast<TokenFunc *>(pending_funcs.back());
-	pending_funcs.resize(before);	// a recipe, not a pending function
+	if ( pattern )
+	    pending_funcs.pop_back();	// the recipe, not a pending function
     }
     funcdef_map.erase(parse_id);	// undo parseFunction's registration
     if ( getenv("MADC_XTEST_PAT_MEMINIT_DEBUG") && fd_is_ctor )
