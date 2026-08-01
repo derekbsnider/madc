@@ -23427,6 +23427,18 @@ int CirBuilder::pack_gate_drop(node_t tree, const std::vector<int> &bad_items)
 			splice.insert(n);
 			continue;
 		}
+		// A defective decl whose symbol was DEFLESS-dropped (the
+		// drain's policy path — lowering failed, nothing stashed) is
+		// that failure's residue, not a TU defect: splice it. Callers
+		// referencing it are visibility-dropped already; any that are
+		// check-defective land in this same round attributably.
+		if (n->code == N_SPEC_DECL && sym
+		    && pack_defless_syms.count(sym)) {
+			fprintf(stderr, "pack check gate: spliced orphan "
+				"decl of defless-dropped %s\n", sym);
+			splice.insert(n);
+			continue;
+		}
 		fprintf(stderr, "pack check gate: defective top-level "
 			"item %d (%s%s%s) is not a drained def — "
 			"TU defect\n", index,
@@ -23888,6 +23900,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	pack_def_callees.clear();
 	pack_is_dropped.clear();
 	pack_dropped.clear();
+	pack_defless_syms.clear();
 	pack_stamp_excluded.clear();
 	pack_proto_nodes.clear();
 	pack_stash_idx.clear();
@@ -24065,6 +24078,13 @@ node_t CirBuilder::translate_module(Program *prog)
 	// call: pointer returns truncate, struct args mis-wire — the
 	// __madc_shim string-ctor segfault).
 	std::vector<TokenFunc *> materialized_funcs;
+	// Materialized tfs whose pack-time lowering FAILED (the policy drop
+	// below): no def was stashed, so no def ever reaches the tree. The late
+	// proto pass must skip them — a forward proto with no tree-resident def
+	// is an orphan the check gate cannot attribute to a drained def
+	// (pack_stash_idx is built from pack_defs), aborting the freeze as a
+	// TU defect.
+	std::set<TokenFunc *> pack_defless;
 	// Reachability fixpoint: materialize ODR-used deferred member bodies + lower
 	// reachable library fns until referenced_funcs stops growing. Lazy
 	// member-function-body instantiation ([temp.inst]): a system-header body
@@ -24461,6 +24481,16 @@ node_t CirBuilder::translate_module(Program *prog)
 						fd = NULL;
 					if (!fd) {
 						pack_record_drop(tf, "", false);
+						pack_defless.insert(tf);
+						pack_defless_syms.insert(
+							tf->var.name);
+						if (FuncDef *xfd =
+						    dynamic_cast<FuncDef *>(
+							    tf->var.type))
+							pack_defless_syms.insert(
+								func_emit_name(
+									tf->var,
+									xfd));
 						grew = true;
 						continue;
 					}
@@ -25054,6 +25084,15 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (size_t mi = 0; mi < materialized_funcs.size(); ++mi) {
 		flush_forest_lazy_protos(mi);
 		TokenFunc *tf = materialized_funcs[mi];
+		// A proto is emitted only for a def the tree HOLDS. A policy-
+		// dropped lowering (pack_defless) has no def anywhere — its
+		// proto would be an orphan carrying the failed body's broken
+		// ABI shape, unattributable at the check gate (TU-defect
+		// abort). Gate drops keep this invariant later by splicing
+		// def + proto together; cascade drops keep both (visibility-
+		// only exclusion).
+		if (pack_defless.count(tf))
+			continue;
 		node_t proto = func_proto(tf);
 		if (proto) {
 			append(top_list, proto);
@@ -25082,7 +25121,12 @@ node_t CirBuilder::translate_module(Program *prog)
 	//     conflicting redeclaration c2mir rejects.
 	for (auto &kv : m_output_externs)
 		if (!emitted_extern_syms.count(kv.first)
-		 && !typed_proto_syms.count(kv.first)) {
+		 && !typed_proto_syms.count(kv.first)
+		 // A defless-dropped symbol's extern renders the FAILED
+		 // lowering's signature (the same broken shape its skipped
+		 // proto would carry) — emit nothing; residual calls sit in
+		 // visibility-dropped defs and trap-bind under --run-frozen.
+		 && !pack_defless_syms.count(kv.first)) {
 			append(top_list, kv.second);
 			cond_mark_sym(kv.second, kv.first);
 		}

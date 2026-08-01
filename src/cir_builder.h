@@ -303,6 +303,12 @@ class CirBuilder {
 	std::vector<std::set<std::string> > pack_def_callees;
 	std::vector<char> pack_is_dropped;
 	std::set<std::string> pack_dropped;
+	// Symbols of materialized bodies whose pack-time LOWERING failed (the
+	// drain's policy drop): no def was ever stashed or tree-flushed, so no
+	// decl surface may carry their broken signature — the late proto pass
+	// and the output-extern flush skip them, and the check gate splices
+	// (rather than TU-aborts on) any residual decl bearing one.
+	std::set<std::string> pack_defless_syms;
 	// Symbols whose tree-resident defs must NOT stamp DF_HAS_FOREST_BODY
 	// (consumer-excluded under the emission split): DEFBODY-reverted bodies
 	// and cascade-excluded callers. Consumed by
