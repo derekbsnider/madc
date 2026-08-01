@@ -1,0 +1,18 @@
+#!/usr/bin/env madc
+// NEGATIVE control for the [class.access]-after-reselect ordering
+// (testconstaccess is the positive twin): a private method called from
+// OUTSIDE the class still errors — moving the access check onto the
+// SELECTED overload did not weaken it. Historically testmethodaccess.mad
+// documented this rejection only as a hand-run probe (the runner had no
+// .expect_err fixture mechanism yet).
+class Calc {
+	int twice(int x) { return x * 2; }
+public:
+	int compute(int v) { return this->twice(v) + 1; }
+};
+
+int main()
+{
+	Calc c;
+	return c.twice(21);
+}

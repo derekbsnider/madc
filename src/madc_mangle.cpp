@@ -1099,6 +1099,25 @@ void madc_mangle_set_stdlib_llvm(const std::string &abi_ns)
 	++g_std_abi_gen;
 }
 
+MangleStdlib madc_mangle_active_stdlib()
+{
+	return g_std_stdlib;
+}
+
+MangleHostFlavorScope::MangleHostFlavorScope()
+	: saved_stdlib(g_std_stdlib), saved_abi_ns(g_std_abi_ns)
+{
+	madc_mangle_set_stdlib_gnu(true);	// the host build's ABI (GNU cxx11)
+}
+
+MangleHostFlavorScope::~MangleHostFlavorScope()
+{
+	if (saved_stdlib == mstdlibLlvm)
+		madc_mangle_set_stdlib_llvm(saved_abi_ns);
+	else
+		madc_mangle_set_stdlib_gnu(saved_abi_ns == "__cxx11");
+}
+
 // "std::" prefix for components INSIDE the versioned inline namespace (GNU:
 // only the cxx11-tagged components; LLVM: everything).
 static std::string std_prefix_tagged()

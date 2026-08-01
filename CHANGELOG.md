@@ -2,6 +2,86 @@
 
 ## [Unreleased]
 
+## [v0.67.0] — 2026-08-01
+
+The flavor-ABI release: the libc++ parity lane went 859/40 →
+**880/26+2** (21 net flips, zero broken at every comm-diffed step) and
+the biggest remaining dam fell — a libc++ script now passes
+`std::string` into the host's libstdc++-built namespace functions
+(php::, perl::, madc:: eval) through compiler-generated marshalling
+thunks. `cin >> string` works under libc++, and two SILENT
+wrong-answer classes died (raw libc++ strings corrupting extern-C
+hosts; access control judging an overload that was never selected).
+
+- **feat: flavor-ABI marshalling — the 10-test #69 dam (@873fd4d4 +
+  @5caf3c3c dark + @1aec54f0 live; design
+  `docs/plans/2026-08-01-flavor-abi-marshalling.md`).** Host namespace
+  publics export ONLY libstdc++ (`NSt7__cxx11`) manglings; a libc++
+  script mints `NSt3__1` — loud undefined imports for direct callees,
+  and for extern-C twins taking `std::string*` a SILENT corruption
+  (raw libc++ string bytes read as a libstdc++ string —
+  `lang`/`rust`-style tests exited 0 with wrong values). The CIR
+  builder now generates a thunk per boundary callee at
+  `call_emit_symbol` — the ONE callee-symbol owner: host-flavor string
+  temps constructed via the exported
+  `C1(const char*, size_t, const allocator&)` from the script string's
+  `c_str()`/`size()`, copy-back through the script flavor's
+  `assign(const char*, size_type)` (a method's hidden `__this` is
+  param[0] — the 3-param shape), alias-mapped conditional return for
+  reference-returning callees. Boundary detection is honest: dladdr
+  `dli_fbase` equality against a this-TU anchor — a dlsym hit
+  implemented by libc++.so itself must NEVER marshal. The host twin is
+  reminted via `host_flavor_fn_symbol`: the carrier-position mask is
+  computed under the SCRIPT mangler state (stored spellings are
+  flavor-baked), then respelled through `std_string_type()` under a
+  `MangleHostFlavorScope`. The scope-capture lane
+  (`__madc_scope_set_string_runtime`) gets the same host-temp arm
+  (was a SIGSEGV in `testmadceval`). Default-ON under
+  `--stdlib=libc++` only (unreachable by construction on the default
+  lane); `MADC_FLVMAR=0` escape hatch, `MADC_FLVMAR_PROBE=1`
+  diagnostics. Ten tests out in one flip, eleventh with the proto fix
+  below.
+- **fix: a declaration-only Itanium callee gets its typed proto
+  (task #92 family, @e09c5381).** Any decl-only callee emitting under
+  a `_Z*` symbol now registers a typed extern
+  (`native_func_shape` + `need_output_extern`) instead of falling to
+  c2mir's implicit-int declaration — the `<new>` `_Znwm` family had
+  produced "returning integer without cast for pointer result"
+  warnings that tripped `testevalexterncapture`'s `.expect_quiet`
+  gate.
+- **fix: a deduction guide declares NO name (task #98, @4dc3f2e0,
+  [temp.deduct.guide]).** `template<...> array(...) -> array<...>;`
+  had registered a phantom namespace VALUE named
+  `array`/`vector`/`pair`/`basic_string` that shadowed the TYPE in the
+  ns-prototype parameter lane (`void f(array &ctx, ...)` read as an
+  expression). Gate `testdeductionguide`. Unblocked four eval tests.
+- **fix: #93 typedef template-arg identity lands ([temp.type],
+  @cf39afef via @b935b5ea + @ef0d9921).** A namespace scalar typedef
+  desugars for template-arg identity — `cin >> string` WORKS under
+  libc++ (gates `testtypedefarg`, `testcinstr_libcxx`). The freeze
+  blocker died with it: a defless-dropped definition leaves NO decl
+  surface (proto skipped, extern skipped, gate splices residue) — the
+  forest self-exe gate is green with the fix in.
+- **fix: the implicit object parameter joins member overload selection
+  ([over.match.funcs]/4, @31c85ed5).** `findMethodOverload` never saw
+  the receiver's constness — const-overload selection was silently
+  wrong both flavors. Gate `testconstovl`.
+- **fix: #94 half — variadic typedef-position completeness demand +
+  deferred spec detection slots (@81eac496).** The general
+  substituted-slot arm ships DARK behind `MADC_XSLOT_ARM=1` (flip-on
+  blocked by `__unwrap_and_dispatch` fn-template materialization).
+  Gate `testpacktypedef`.
+- **fix: two [dcl.ambig.res] declaration readings + honest access
+  control (session #44: @915b129b + @f5527cb9 + @92917cc5).** A
+  value-name that also names a type/template keeps the declaration
+  reading (gate `testarrayparam`); a class-returning bodyless
+  prototype is a function declaration (gate `testclassproto`); access
+  control judges the SELECTED overload — and a const method's member
+  access is a const receiver (gates `testconstaccess`,
+  `testprivmethod`).
+- Suite 902 → 911 (nine new gates). Fork unchanged
+  (**1.0-madc.0.63.0**).
+
 ## [v0.66.0] — 2026-08-01
 
 The recon-then-strike release: the libc++ parity lane went 811/77 →

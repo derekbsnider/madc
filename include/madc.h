@@ -2798,6 +2798,16 @@ public:
     bool eval_decltype_probe_tokens(const std::vector<TokenBase *> &slot_tokens,
 	    size_t nth, const std::map<std::string, DataDef *> &ded,
 	    DataDef **out_type = NULL);
+    // General non-deduced pattern slot ([temp.class.spec.match]/2): substitute
+    // the deduced params into the WHOLE slot token run, resolve it as a type
+    // under the SFINAE trap, and require identity with the concrete slot's
+    // type. Covers the [meta.logical] `__enable_if_t<bool(_B1::value)>`
+    // idiom, which is neither __void_t nor decltype. False when the slot
+    // mentions no deduced name (the literal matchers own that case), when
+    // resolution fails (SFINAE reject), or when it resolves to another type.
+    bool eval_substituted_slot_type(const std::vector<TokenBase *> *slot_tokens,
+	    const std::map<std::string, DataDef *> &ded,
+	    DataDef *concrete_dd, int &score);
     // Confirm that a dependent member chain `BASE::seg1::seg2::...` (where some
     // seg names a TEMPLATE member, e.g. `rebind<_Up>`) resolves to a real type —
     // the part of the __void_t SFINAE probe the plain type-alias walk cannot do.
@@ -4747,6 +4757,12 @@ public:
     // bound to the winning overload (same parameters / parent_expr / position).
     class TokenCallMethod *reselect_method_overload(class TokenCallMethod *tc,
 		Variable &recv, class DataDefCLASS *cls, const std::string &id);
+    // [over.match.funcs]/4 — cv of the implicit object ARGUMENT a member call
+    // on `recv` supplies. The hidden __this receiver takes the ENCLOSING
+    // method's cv (a const member's this points at const T); a named receiver
+    // takes its declared constness (vfCONSTANT-family flags or a DataDefCONST
+    // identity, reference-transparent). 1 = const, 0 = non-const, -1 = unknown.
+    int implicit_object_constness(Variable &recv);
     // Static-member-call analogue of reselect_method_overload: a qualified
     // static call (`Owner::m(args)`) resolves its callee by name+arity BEFORE
     // the args are parsed, so once the arg types are known reselect the overload
@@ -5333,6 +5349,13 @@ public:
     bool next_parenthesized_type_is_compound_literal();
     bool paren_group_is_function_def();
     bool paren_group_is_nonclass_direct_init();
+    bool paren_group_can_be_param_decl_clause();
+    bool unqualified_name_is_type_or_template(const std::string &nm);
+    // task #69: the HOST-flavor twin of a namespace public's Itanium symbol
+    // (the marshalling boundary's bind target when script flavor != host).
+    std::string host_flavor_fn_symbol(const std::string &ns_name,
+				      const std::string &member_name,
+				      FuncDef *fd);
     bool parse_array_designator_initializer(TokenBase *&next_init,
 					    size_t &first_index, size_t &last_index);
     bool parse_builtin_types_compatible_operand(TokenBase *type_tb,

@@ -227,21 +227,30 @@ public:
     // lazy-stamped into the active project table by madc_type_id_for()
     // (Program::type_id_for binds its own table and delegates).
     uint32_t	 type_id;
+    // The underlying type this dd is a NAMESPACE-SCOPE SCALAR TYPEDEF alias
+    // of (std::streamsize -> long's dd), set ONLY by that typedef arm.
+    // [temp.type]: template-argument identity is the canonical type, so the
+    // arg-spelling former desugars through this chain. NULL everywhere else
+    // — in particular for class-scope aliases minted inside templates,
+    // whose DataType is not a reliable identity (a DataType-based desugar
+    // crossed basic_string<char>'s chain with vector<int>'s).
+    DataDef	*scalar_alias_of;
     // Intrinsic provenance for temporary semantic objects born while an
     // isolated class-pattern production parse is active.
     bool	 speculative_class_capture;
     DataDef()
 	: _type(0), name(), size(0), canonical_cpp_spelling_(),
-	  canonical_swept(false), type_id(0),
+	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
 	  speculative_class_capture(madc_class_pattern_capture_active) {}
     DataDef(std::string n, size_t s, DataType d)
 	: _type((uint32_t)d), name(n), size(s), canonical_cpp_spelling_(),
-	  canonical_swept(false), type_id(0),
+	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
 	  speculative_class_capture(madc_class_pattern_capture_active) {}
     DataDef(const DataDef &other)
 	: _type(other._type), name(other.name), size(other.size),
 	  canonical_cpp_spelling_(other.canonical_cpp_spelling_),
 	  canonical_swept(other.canonical_swept), type_id(other.type_id),
+	  scalar_alias_of(other.scalar_alias_of),
 	  speculative_class_capture(other.speculative_class_capture
 	      || madc_class_pattern_capture_active) {}
     DataDef &operator=(const DataDef &other)
@@ -254,6 +263,7 @@ public:
 	    canonical_cpp_spelling_ = other.canonical_cpp_spelling_;
 	    canonical_swept = other.canonical_swept;
 	    type_id = other.type_id;
+	    scalar_alias_of = other.scalar_alias_of;
 	}
 	return *this;
     }
@@ -1119,8 +1129,13 @@ public:
     // argument type). Returns NULL when no same-name method exists; falls back
     // to the first by-name match when none scores strictly better (e.g. a
     // single, non-overloaded method — same result as findMethod).
+    // obj_cv is the cv-qualification of the implicit object argument
+    // ([over.match.funcs]/4): 1 = const (a non-const member is NOT viable),
+    // 0 = non-const (cv-match breaks score ties), -1 = unknown (the implicit
+    // object parameter does not discriminate — legacy behavior).
     Variable *findMethodOverload(const std::string &name,
-				 const std::vector<const DataDef *> &argtypes);
+				 const std::vector<const DataDef *> &argtypes,
+				 int obj_cv = -1);
     // Return type of the BINARY operator method `opname` (e.g. "operator+") this
     // class declares; used to type a class-object operator expression with the
     // operator's declared result type.

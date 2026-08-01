@@ -1,0 +1,48 @@
+#!/usr/bin/env madc
+// Gate for [dcl.ambig.res] in parseDeclaration's class-typed ctor-call
+// branch: a bodyless class-returning prototype is a FUNCTION DECLARATION
+// (the empty clause is the textbook most-vexing-parse, previously a SILENT
+// variable misparse surfacing only at MIR link), while unambiguous
+// expression heads keep the ctor-call reading. Mirrors libc++
+// __filesystem/operations.h:37 (`path __absolute(const path&, ...);`
+// reached via <fstream> — the 4-test fstream/defer/loop/manipview family).
+#include <iostream>
+using namespace std;
+
+class path {
+public:
+	int n;
+	path() { n = 7; }
+	path(int v) { n = v; }
+};
+
+path foo();				// empty clause -> function declaration
+path bar(const path &p);		// decl-specifier head -> function declaration
+path baz(path &p);			// type head -> function declaration
+
+path foo()
+{
+	return path(40);
+}
+
+path bar(const path &p)
+{
+	return path(p.n + 1);
+}
+
+path baz(path &p)
+{
+	return path(p.n + 2);
+}
+
+int main()
+{
+	path a;				// default ctor
+	path b(3);			// literal head stays a ctor-call
+	path c(foo());			// value/call head stays direct-init
+	cout << a.n << " " << b.n << " " << c.n << endl;
+	path d = bar(c);
+	path e = baz(d);
+	cout << d.n << " " << e.n << endl;
+	return 0;
+}

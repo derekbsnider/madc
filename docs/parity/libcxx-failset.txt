@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  b0b7cae8 (2026-08-01) on feature/libcxx-parity4-claude
-# Result:       859 passed / 40 failed / 0 timed out / 12 skipped
+# Measured at:  e09c5381 (2026-08-02) on feature/libcxx-parity5-claude
+# Result:       880 passed / 26 failed / 2 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -451,12 +451,84 @@
 #                         all-zeros _0 primary). fulltest 900/2 (the 2 =
 #                         parked #93/#94 gates in tmp/), zero
 #                         regressions.
+#   ef0d9921  862 /  39   testcin FIXED — the ONLY flip (comm-diffed both
+#                         ways, ZERO newly broken); +2 were NEW GATES from
+#                         the #93 landing (testtypedefarg, the [temp.type]
+#                         typedef-identity reducer, + testcinstr_libcxx,
+#                         the promoted cin>>string twin — both pass BOTH
+#                         flavors). The chain: template-arg identity
+#                         desugars namespace scalar typedefs (cf39afef) so
+#                         numeric_limits<streamsize> instantiates the real
+#                         specialization and cin>>string extracts; landing
+#                         it was blocked by the freeze-append pack gate —
+#                         a DEFLESS-dropped def (failed pack-time lowering:
+#                         the wchar _M_extract_int wrong-shape early round)
+#                         left its typed proto + output extern in the tree,
+#                         unattributable at the check gate. ef0d9921 = one
+#                         rule, three arms: a defless drop leaves NO decl
+#                         surface (proto skipped, extern skipped, gate
+#                         splices residue). fulltest 904/0,
+#                         forest_selfexe_gate GREEN, EXE 848/0, OBJ 848/0.
+#   81eac496  864 /  39   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways); +2 = the NEW GATES testconstovl
+#                         ([over.match.funcs]/4 implicit object parameter,
+#                         @31c85ed5) and testpacktypedef (#94's typedef-lane
+#                         variadic completeness demand, @81eac496). Zero
+#                         flips — both fixes are correctness infrastructure;
+#                         #94's general [temp.class.spec.match]/2 slot arm
+#                         ships DARK (MADC_XSLOT_ARM=1) because its CORRECT
+#                         libc++ copy-dispatch match reaches
+#                         __unwrap_and_dispatch, which madc never
+#                         materializes (8 _libcxx twins red with the arm on
+#                         — the flip-on blocker, task #94). EXE 850/0,
+#                         OBJ 850/0, fulltest 906/0.
+#   92917cc5  869 /  38   ONE flip: testevalexterncapture FIXED, ZERO
+#                         regressions (comm-diffed both ways); +4 = the NEW
+#                         GATES testarrayparam, testclassproto,
+#                         testconstaccess, testprivmethod. Three recon-then-
+#                         strike roots landed between the measures:
+#                         @915b129b a value-name that also names a
+#                         type/template keeps the declaration reading
+#                         ([dcl.ambig.res] — CTAD-guide value `array`
+#                         shadowed the builtin), @f5527cb9 class-returning
+#                         bodyless prototype is a fn declaration
+#                         (paren_group_can_be_param_decl_clause + 3
+#                         counter-arms), @92917cc5 access checks the
+#                         SELECTED overload + const-method member receiver
+#                         is const (set:564 cleared). The other clusters
+#                         each advanced past their fixed blocker to the two
+#                         dams: the materialization family (never-emitted
+#                         basic_string __oN / compare / __math::isinf /
+#                         __unwrap_and_dispatch) and #102 non-type-pack
+#                         real-instantiation (map+set piecewise pair).
+#                         EXE 854/0, fulltest 910/0.
+#   e09c5381  880 /  26+2TO  🏁 THE FLAVOR-ABI DAM FELL: ELEVEN FIXED, ZERO
+#                         regressions (comm-diffed both ways) — the whole
+#                         #69 cluster (madceval×5, php, perl, prefer, lang,
+#                         rust) plus testevalexterncapture (transiently
+#                         re-red mid-chain via the #92 warnings its working
+#                         capture surfaced; fixed same chain). The chain:
+#                         @4dc3f2e0 a deduction guide declares NO name
+#                         ([temp.deduct.guide] — the phantom `array` value,
+#                         ns_madc:56); @873fd4d4 marshalling slice 1
+#                         (host-twin remint under MangleHostFlavorScope +
+#                         carrier mask); @1aec54f0 marshalling LIVE — thunk
+#                         at call_emit_symbol (the ONE owner), dladdr
+#                         origin gate, hidden-__this assign(ptr,len) walk,
+#                         scope-capture host-temp arm (was the
+#                         madc_value_set_string_n SIGSEGV); @e09c5381 a
+#                         declaration-only _Z* callee gets its typed proto
+#                         (#92 family — the <new> implicit-int warnings).
+#                         The 2 TIMEOUTS (testcontainerdtor, testmadc_ns)
+#                         do NOT reproduce standalone (graceful #102 cir
+#                         errors in seconds) — battery-load suspects, both
+#                         already members of the failing set. Default
+#                         fulltest GREEN throughout (the marshalling path
+#                         is unreachable when script flavor == host).
 testcastarrow.mad
-testcin.mad
 testconstructible.mad
 testcontainerdtor.mad
 testdefer.mad
-testevalexterncapture.mad
 testexterncstringptr.mad
 testforeachheaderbody.mad
 testforinitscope.mad
@@ -465,24 +537,14 @@ testfstream.mad
 testifconstexpr.mad
 testincludenext.mad
 testinvocable.mad
-testlang.mad
 testlateinstproto.mad
 testloop.mad
 testmadc_ns.mad
-testmadceval.mad
-testmadcevalexpr.mad
-testmadcevalexprctx.mad
-testmadcevalexprtyped.mad
-testmadcevalscope.mad
 testmanipview.mad
 testmap.mad
 testmapiter.mad
 testmathheader.mad
 testopinherit.mad
-testperl.mad
-testphp.mad
-testprefer.mad
-testrust.mad
 testset.mad
 testsstream.mad
 teststdmapint.mad

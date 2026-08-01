@@ -303,6 +303,12 @@ class CirBuilder {
 	std::vector<std::set<std::string> > pack_def_callees;
 	std::vector<char> pack_is_dropped;
 	std::set<std::string> pack_dropped;
+	// Symbols of materialized bodies whose pack-time LOWERING failed (the
+	// drain's policy drop): no def was ever stashed or tree-flushed, so no
+	// decl surface may carry their broken signature — the late proto pass
+	// and the output-extern flush skip them, and the check gate splices
+	// (rather than TU-aborts on) any residual decl bearing one.
+	std::set<std::string> pack_defless_syms;
 	// Symbols whose tree-resident defs must NOT stamp DF_HAS_FOREST_BODY
 	// (consumer-excluded under the emission split): DEFBODY-reverted bodies
 	// and cascade-excluded callers. Consumed by
@@ -797,6 +803,31 @@ public:
 	class FuncDef *call_target_funcdef(class TokenCallFunc *tcf);
 	std::string call_target_emit_name(class TokenCallFunc *tcf,
 					  class FuncDef **fd_out = NULL);
+	// task #69 flavor-ABI marshalling boundary. Detection: the callee is a
+	// host-implemented namespace public whose signature carries the flavor
+	// string (marshals_value_text) while the script flavor differs from the
+	// host build's. Slice 1 ships the detector as a probe
+	// (MADC_FLVMAR_PROBE=1): logs the script symbol, the host-flavor twin,
+	// and each one's dlsym resolution — no behavior change.
+	bool flavor_marshal_candidate(class FuncDef *fd) const;
+	void flavor_marshal_probe(const std::string &sym, class FuncDef *fd);
+	// Slice 2 (dark behind MADC_FLVMAR=1): swap the callee to a generated
+	// marshalling thunk when the host really exports the entry (dlsym on the
+	// callee's own symbol — extern-C twins — or on the host-flavor remint).
+	// Returns the thunk symbol, or empty when no marshalling applies.
+	std::string flavor_marshal_thunk(const std::string &sym, class FuncDef *fd);
+	node_t flavor_marshal_thunk_def(const char *thunk_sym,
+					const std::string &host_sym,
+					class FuncDef *fd);
+	bool flavor_marshal_string_syms(class DataDefCLASS *scr,
+					std::string &cstr_sym,
+					std::string &size_sym,
+					std::string &ctor_sym,
+					std::string &dtor_sym);
+	std::map<std::string, std::string> m_flvmar_thunks;	// callee sym -> thunk ("" = miss)
+	std::vector<node_t> m_flvmar_defs;
+	int m_flvmar_counter = 0;
+	bool m_flvmar_generating = false;	// reentrancy: no thunks for a thunk's own callees
 	// std:: free-function template instantiations: one FuncDef per mangled
 	// symbol, plus a per-call memo (NULL = checked, not such a call).
 	std::map<class TokenCallFunc *, class FuncDef *> m_free_fn_inst_by_call;
