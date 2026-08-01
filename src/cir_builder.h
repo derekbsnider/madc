@@ -803,6 +803,14 @@ public:
 	class FuncDef *call_target_funcdef(class TokenCallFunc *tcf);
 	std::string call_target_emit_name(class TokenCallFunc *tcf,
 					  class FuncDef **fd_out = NULL);
+	// task #69 flavor-ABI marshalling boundary. Detection: the callee is a
+	// host-implemented namespace public whose signature carries the flavor
+	// string (marshals_value_text) while the script flavor differs from the
+	// host build's. Slice 1 ships the detector as a probe
+	// (MADC_FLVMAR_PROBE=1): logs the script symbol, the host-flavor twin,
+	// and each one's dlsym resolution — no behavior change.
+	bool flavor_marshal_candidate(class FuncDef *fd) const;
+	void flavor_marshal_probe(const std::string &sym, class FuncDef *fd);
 	// std:: free-function template instantiations: one FuncDef per mangled
 	// symbol, plus a per-call memo (NULL = checked, not such a call).
 	std::map<class TokenCallFunc *, class FuncDef *> m_free_fn_inst_by_call;

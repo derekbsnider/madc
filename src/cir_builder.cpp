@@ -4499,7 +4499,55 @@ std::string CirBuilder::call_target_emit_name(TokenCallFunc *tcf,
 	Variable *v = call_target_variable(tcf, &fd);
 	if (fd_out)
 		*fd_out = fd;
-	return v ? func_emit_name(*v, fd) : std::string();
+	std::string sym = v ? func_emit_name(*v, fd) : std::string();
+	flavor_marshal_probe(sym, fd);
+	return sym;
+}
+
+// task #69 detection half: does this callee's signature carry the flavor
+// string (params by ref/ptr, or the return) while the SCRIPT flavor differs
+// from the HOST build's? Only such callees can need the marshalling boundary;
+// everything else passes through untouched. The flavor test reads the
+// mangler's active state — the one owner of the parsed stdlib ABI fact —
+// against the build constant (madc links libstdc++; MangleHostFlavorScope
+// states the same fact on the mint side).
+bool CirBuilder::flavor_marshal_candidate(FuncDef *fd) const
+{
+	if (!fd)
+		return false;
+	if (madc_mangle_active_stdlib() != mstdlibLlvm)
+		return false;	// script flavor == host build flavor
+	for (size_t i = 0; i < fd->parameters.size(); ++i) {
+		DataDef *p = fd->parameters[i];
+		if (!p)
+			continue;
+		if (DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p))
+			p = pp->base_type ? pp->base_type : p;
+		if (p->marshals_value_text())
+			return true;
+	}
+	DataDef *r = &fd->return_value_type();
+	if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(r))
+		r = rp->base_type ? rp->base_type : r;
+	return r && r->marshals_value_text();
+}
+
+void CirBuilder::flavor_marshal_probe(const std::string &sym, FuncDef *fd)
+{
+	static const char *probe = getenv("MADC_FLVMAR_PROBE");
+	if (!probe || sym.empty() || !flavor_marshal_candidate(fd))
+		return;
+	bool script_hit = dlsym(RTLD_DEFAULT, sym.c_str()) != NULL;
+	std::string twin = m_prog
+		? m_prog->host_flavor_fn_symbol(fd->namespace_name,
+						fd->function_display_name, fd)
+		: std::string();
+	bool twin_hit = !twin.empty()
+		     && dlsym(RTLD_DEFAULT, twin.c_str()) != NULL;
+	fprintf(stderr,
+		"[flvmar] ns=%s fn=%s sym=%s hit=%d twin=%s twinhit=%d\n",
+		fd->namespace_name.c_str(), fd->function_display_name.c_str(),
+		sym.c_str(), (int)script_hit, twin.c_str(), (int)twin_hit);
 }
 
 // A CALL to a madc-COMPILED function returning a non-trivial class by value.

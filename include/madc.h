@@ -5351,6 +5351,11 @@ public:
     bool paren_group_is_nonclass_direct_init();
     bool paren_group_can_be_param_decl_clause();
     bool unqualified_name_is_type_or_template(const std::string &nm);
+    // task #69: the HOST-flavor twin of a namespace public's Itanium symbol
+    // (the marshalling boundary's bind target when script flavor != host).
+    std::string host_flavor_fn_symbol(const std::string &ns_name,
+				      const std::string &member_name,
+				      FuncDef *fd);
     bool parse_array_designator_initializer(TokenBase *&next_init,
 					    size_t &first_index, size_t &last_index);
     bool parse_builtin_types_compatible_operand(TokenBase *type_tb,

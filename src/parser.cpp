@@ -2155,9 +2155,16 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
     return dd->canonical_cpp_spelling().empty() ? dd->name : dd->canonical_cpp_spelling();
 }
 
+// `carrier_param_mask` (task #69): positions whose spelling must be
+// re-derived as the ACTIVE flavor's text carrier (std_string_type()) instead
+// of the stored spelling. The stored spellings are flavor-baked at parse
+// time, so a host-flavor remint has to swap them — the mask is computed by
+// the caller BEFORE switching mangler state, because marshals_value_text()
+// itself reads the active state.
 static std::string namespace_cpp_function_symbol(const std::string &ns_name,
 						 const std::string &member_name,
-						 FuncDef *fd)
+						 FuncDef *fd,
+						 const std::vector<char> *carrier_param_mask = NULL)
 {
     std::vector<std::string> params;
     if ( fd )
@@ -2176,6 +2183,15 @@ static std::string namespace_cpp_function_symbol(const std::string &ns_name,
 		bool refp = fd->is_ref_param(i);
 		spelling = cpp_spelling_for_mangle(fd->parameters[i], refp);
 	    }
+	    if ( carrier_param_mask && i < carrier_param_mask->size()
+	      && (*carrier_param_mask)[i] )
+	    {
+		bool refp = fd->is_ref_param(i);
+		bool ptrp = !refp
+		    && dynamic_cast<DataDefPTR *>(fd->parameters[i]) != NULL;
+		spelling = std_string_type()
+			 + (refp ? "&" : ptrp ? "*" : "");
+	    }
 	    params.push_back(spelling);
 	}
     }
@@ -2188,6 +2204,34 @@ static std::string namespace_cpp_variable_symbol(const std::string &ns_name,
 {
     return itanium_mangle_nested_var(namespace_qualifiers(ns_name),
 				    member_name);
+}
+
+// task #69 (flavor-ABI marshalling): the HOST-flavor twin of a namespace
+// public's Itanium symbol. A host-implemented public (php::trim,
+// madc::eval_int_ctx) exports only the symbol mangled under the stdlib madc
+// itself was built against; when the SCRIPT flavor differs, the marshalling
+// boundary needs that twin to bind (and dlsym-verify) the real host entry.
+// The remint reuses the one mint (namespace_cpp_function_symbol) under a
+// scoped host-flavor mangler state — never string surgery on the script
+// symbol (Itanium substitution compression makes fragment swaps wrong).
+std::string Program::host_flavor_fn_symbol(const std::string &ns_name,
+					   const std::string &member_name,
+					   FuncDef *fd)
+{
+    // Which params are the flavor string — decided under the SCRIPT state
+    // (marshals_value_text reads the active mangler state; inside the host
+    // scope below it would compare against the HOST carrier and never fire).
+    std::vector<char> mask;
+    if ( fd )
+	for ( size_t i = 0; i < fd->parameters.size(); ++i )
+	{
+	    DataDef *p = fd->parameters[i];
+	    if ( DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p) )
+		p = pp->base_type ? pp->base_type : p;
+	    mask.push_back(p && p->marshals_value_text() ? 1 : 0);
+	}
+    MangleHostFlavorScope host_state;
+    return namespace_cpp_function_symbol(ns_name, member_name, fd, &mask);
 }
 
 static DataDef *unwrap_subscript_element_type(DataDef *base_type)

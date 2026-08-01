@@ -165,6 +165,22 @@ enum MangleStdlib { mstdlibGnu = 0, mstdlibLlvm = 1 };
 void madc_mangle_set_stdlib_gnu(bool cxx11_abi);             // _GLIBCXX_USE_CXX11_ABI
 void madc_mangle_set_stdlib_llvm(const std::string &abi_ns); // _LIBCPP_ABI_NAMESPACE
 
+// The ACTIVE mangling flavor (follows the parsed stdlib config = the SCRIPT's
+// flavor). The HOST's flavor is the stdlib madc itself was built against —
+// GNU cxx11 — a build fact, not a parse fact.
+MangleStdlib madc_mangle_active_stdlib();
+
+// Scoped remint under the HOST flavor (task #69 flavor-ABI marshalling):
+// host-implemented namespace publics export host-flavor symbols only, so the
+// marshalling boundary mints their twin symbol with the mangler temporarily
+// in the host state, then restores the script state.
+struct MangleHostFlavorScope {
+    MangleStdlib saved_stdlib;
+    std::string saved_abi_ns;
+    MangleHostFlavorScope();
+    ~MangleHostFlavorScope();
+};
+
 // Canonical std:: type spellings (full default template args), so callers
 // don't hand-write them. Each returns the C++ type string accepted by the
 // _sub helpers above, spelled for the ACTIVE stdlib flavor (the __cxx11
