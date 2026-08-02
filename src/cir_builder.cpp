@@ -10466,14 +10466,41 @@ bool CirBuilder::class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 			static const char *cip = ::getenv("MADC_CTORINIT_PROBE");
 			if (cip && *cip
 			    && cdd->name.find(cip) != std::string::npos) {
-				fprintf(stderr, "CTORINIT owner=%s member=%s"
+				// fd identity is REQUIRED, not decoration: a class
+				// has many ctors and the owner name alone made two
+				// different ones look like one (pair's delegating
+				// o23 read as the piecewise o24).
+				fprintf(stderr, "CTORINIT owner=%s fd=%p disp=%s"
+					" nci=%zu member=%s"
 					" nargs=%zu arg0_is_expansion=%d"
 					" packs=%zu\n",
-					cdd->name.c_str(), m.first.c_str(),
+					cdd->name.c_str(), (void *)fd,
+					fd->function_display_name.empty()
+					  ? fd->method_display_name.c_str()
+					  : fd->function_display_name.c_str(),
+					fd->ctor_initializers.size(),
+					m.first.c_str(),
 					ci->args.size(),
 					(!ci->args.empty() && dynamic_cast<
 					 TokenPackExpansion *>(ci->args[0]))
 						? 1 : 0,
+					(size_t)0);
+			}
+			if (cip && *cip && !ci->args.empty()
+			    && cdd->name.find(cip) != std::string::npos) {
+				TokenCallFunc *atc =
+					dynamic_cast<TokenCallFunc *>(ci->args[0]);
+				fprintf(stderr, "CTORINIT   arg0 member=%s call=%s"
+					" nexpl=%zu",
+					m.first.c_str(),
+					atc ? atc->var.name.c_str() : "(not-a-call)",
+					atc ? atc->explicit_template_args.size()
+					    : (size_t)0);
+				if (atc)
+					for (DataDef *ea : atc->explicit_template_args)
+						fprintf(stderr, " expl='%s'",
+							ea ? ea->name.c_str() : "?");
+				fprintf(stderr, " packs=%zu\n",
 					m_tsubst_active_type_arg_packs
 					  ? m_tsubst_active_type_arg_packs->size()
 					  : (size_t)0);

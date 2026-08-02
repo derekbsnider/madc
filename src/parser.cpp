@@ -31729,6 +31729,19 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( peekToken() && peekToken()->id() == TokenID::tkDot
 		      && consume_ellipsis() )
 		    {
+			// Env-gated probe (MADC_ELLIPSIS_PROBE=<substr of the
+			// callee>) — see the twin at the operand-position arm,
+			// which is where a template-argument pack is lost.
+			static const char *ep = ::getenv("MADC_ELLIPSIS_PROBE");
+			if ( ep && *ep
+			  && tc->var.name.find(ep) != std::string::npos )
+			    fprintf(stderr, "ELLIPSIS call-arm call=%s dep=%d"
+				    " nexpl=%zu -> %s\n",
+				    tc->var.name.c_str(),
+				    (int)dependent_parse_in_progress,
+				    tc->explicit_template_args.size(),
+				    dependent_parse_in_progress
+					? "EXPANSION" : "BARE(dropped)");
 			if ( dependent_parse_in_progress )
 			    exStack.push(make_pack_expansion_pattern(tc, tb));
 			else
@@ -34449,6 +34462,37 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	// dots and end the expression.
 	if ( tb->id() == TokenID::tkDot && consume_ellipsis() )
 	{
+	    // Env-gated probe (MADC_ELLIPSIS_PROBE=<substr of the operand's
+	    // callee>): the NON-DEPENDENT arm below keeps the operand verbatim on
+	    // the strength of the comment above — "the deduced pack is already
+	    // materialized as concrete parameter(s)". That holds for a pack in
+	    // VALUE position (`f(args...)`); it does NOT hold for a pack named in
+	    // an explicit TEMPLATE-ARGUMENT list (`std::forward<_Args1>(...)...`),
+	    // where the parameter name is still literally in the token stream and
+	    // nothing substitutes it. `expl_tparam=1` below is that leak.
+	    {
+		static const char *ep = ::getenv("MADC_ELLIPSIS_PROBE");
+		TokenCallFunc *otc = exStack.empty()
+		    ? NULL : dynamic_cast<TokenCallFunc *>(exStack.top());
+		if ( ep && *ep && otc
+		  && otc->var.name.find(ep) != std::string::npos )
+		{
+		    bool expl_tparam = false;
+		    for ( size_t ei = 0;
+			  ei < otc->explicit_template_args.size(); ++ei )
+			if ( datadef_involves_placeholder(
+				 otc->explicit_template_args[ei], false) )
+			    expl_tparam = true;
+		    fprintf(stderr, "ELLIPSIS operand-arm call=%s dep=%d"
+			    " nexpl=%zu expl_tparam=%d -> %s\n",
+			    otc->var.name.c_str(),
+			    (int)dependent_parse_in_progress,
+			    otc->explicit_template_args.size(),
+			    (int)expl_tparam,
+			    dependent_parse_in_progress
+				? "EXPANSION" : "VERBATIM(dots dropped)");
+		}
+	    }
 	    if ( dependent_parse_in_progress && !exStack.empty() )
 	    {
 		TokenBase *pat = exStack.top();
