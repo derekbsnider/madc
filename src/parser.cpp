@@ -3936,7 +3936,8 @@ static bool template_base_clause_has_template_id(const Program::TemplateDef &td)
 // member must evaluate. Other variadic shapes (non-type packs, body-less) stay on the
 // opaque path. The actual concreteness of the args is decided AFTER parsing them (a
 // dependent arg falls back to the opaque shell), so this predicate only gates SHAPE.
-static bool template_pack_real_instantiable(const Program::TemplateDef &td)
+static bool template_pack_real_instantiable(const Program::TemplateDef &td,
+					    bool allow_valuepack)
 {
     if ( td.body.empty() )
 	return false;
@@ -3946,15 +3947,21 @@ static bool template_pack_real_instantiable(const Program::TemplateDef &td)
     size_t pack_index = first_template_pack_index(td.typeparam_is_pack);
     if ( pack_index != n - 1 )
 	return false;	// no pack, or pack is not the LAST parameter
-    // EVERY parameter must be a TYPE parameter — the arg loop only absorbs type args
-    // into pack_subst, and a genuine non-type / template-template param needs the
-    // opaque path. (td.has_non_type_params is a misnomer — it is set true even for a
-    // pure TYPE pack — so test typeparam_is_type directly.)
+    // Every FIXED parameter must be a TYPE parameter — the arg loop binds them
+    // into subst. The trailing pack itself may be a TYPE pack (the SFINAE
+    // helper shape) OR — only under the value-pack demand flag (task #102) —
+    // a NON-TYPE pack (libc++ __integer_sequence's `_IdxType... _Values`):
+    // value elements accumulate into token_pack_subst and the legacy body
+    // clone splices / replicates them. (td.has_non_type_params is a misnomer —
+    // it is set true even for a pure TYPE pack — so test typeparam_is_type
+    // directly.)
     if ( n > td.typeparam_is_type.size() )
 	return false;
-    for ( size_t i = 0; i < n; ++i )
+    for ( size_t i = 0; i + 1 < n; ++i )
 	if ( !td.typeparam_is_type[i] )
 	    return false;
+    if ( !td.typeparam_is_type[n - 1] )
+	return allow_valuepack;	// NON-TYPE pack: demand-keyed (see madc.h)
     return true;
 }
 
@@ -7056,7 +7063,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // through a dependent-member-base forwarding chain (`__invoke_result` ->
     // `__result_of_impl`), bounded by variadic_inst_in_progress (set below).
     bool pack_real_inst = (allow_variadic_real_inst || variadic_real_inst_sticky)
-		       && template_pack_real_instantiable(td);
+		       && template_pack_real_instantiable(td,
+						allow_valuepack_real_inst);
+    if ( vri_debug_enabled() && pack_real_inst
+      && !td.typeparam_is_type[td.typeparams.size() - 1] )
+	fprintf(stderr, "[vriprobe] ntpack-real %s\n", tname.c_str());
     // While resolving a member-TYPE chain (allow/sticky), a PRIMARY with non-type
     // params (`__result_of_impl<bool,bool,typename,typename...>`) is itself opaque
     // (template_pack_real_instantiable rejects non-type params), but a PARTIAL SPEC
@@ -7076,6 +7087,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		(int)dependent_parse_in_progress,
 		(int)class_pattern_capture_in_progress);
     allow_variadic_real_inst = false;
+    allow_valuepack_real_inst = false;
     // When this real-instantiation forwards through a dependent-member base
     // (`: Base<...>::type`), keep real-instantiation on for the nested base/arg
     // resolution during its re-parse so the whole forwarding trait chain folds.
@@ -7133,6 +7145,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // in __replace_first_arg): name -> the pack's element type tokens (empty for an
     // empty pack). Expanded in the body loop where `_Types...` appears.
     std::map<std::string, std::vector<TokenDataType *> > pack_subst;
+    // A trailing NON-TYPE pack's elements (task #102): pack name -> one token
+    // run per element (each typically a single folded TokenInt). The legacy
+    // body clone splices `_Values...` and replicates `( _Values + X )...`
+    // patterns from this map.
+    std::map<std::string, std::vector<std::vector<TokenBase *> > > token_pack_subst;
     // A trailing TYPE pack absorbs every arg from its position onward (see
     // template_pack_real_instantiable): once `pi` reaches `pack_index`, extra args
     // keep binding to it via this clamp, accumulating into pack_subst rather than
@@ -7208,7 +7225,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    arg_tokens.push_back(new TokenInt(folded_nt));
 		    spelling = std::to_string(folded_nt);
 		}
-		token_subst[td.typeparams[pi]] = arg_tokens;
+		if ( bind_is_pack )
+		    token_pack_subst[td.typeparams[bind_pi]].push_back(arg_tokens);
+		else
+		    token_subst[td.typeparams[bind_pi]] = arg_tokens;
 		arg_types_by_slot.push_back(NULL);
 		arg_tokens_by_slot.push_back(arg_tokens);
 		arg_spellings.push_back(spelling);
@@ -7643,7 +7663,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	};
 	legacy_reason = basic_class_pattern_eligibility(
 	    *this, binding, token_subst, pack_subst);
-	if ( legacy_reason == ClassParseReason::None && !force_legacy )
+	// A VALUE-pack instantiation (task #102) takes the legacy body clone:
+	// the pattern lane has no value-pack support, and these templates were
+	// opaque until now so no pattern was ever captured for them.
+	if ( legacy_reason == ClassParseReason::None && !force_legacy
+	  && token_pack_subst.empty() )
 	{
 	    ++_class_inst_pattern;
 	    {
@@ -7733,6 +7757,98 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    member_tpl_params.clear();
 	    member_tpl_extent_end = 0;
 	    member_tpl_keep_begin = 0;
+	}
+	// VALUE-pack expansions (task #102, libc++ __integer_sequence):
+	// (a) a parenthesized PATTERN `( ... _Values ... )...` replicates the
+	//     whole group once per element, the pack identifier swapped for
+	//     that element's tokens ([temp.variadic] — `(_Values + _Sp)...`);
+	// (b) a bare `_Values...` splices the element runs comma-separated.
+	// An EMPTY pack drops the construct and balances one separating comma,
+	// mirroring the empty TYPE-pack elision above.
+	if ( !token_pack_subst.empty() && bt )
+	{
+	    if ( bt->id() == TokenID::tkOpBrk )
+	    {
+		DelimDepth vdd;
+		size_t after = bi;
+		after += delim_scan_step(td.body, after, vdd);
+		while ( after < td.body.size() && !vdd.top() )
+		    after += delim_scan_step(td.body, after, vdd);
+		bool has_dots = after + 2 < td.body.size()
+		    && td.body[after] && td.body[after]->id() == TokenID::tkDot
+		    && td.body[after+1] && td.body[after+1]->id() == TokenID::tkDot
+		    && td.body[after+2] && td.body[after+2]->id() == TokenID::tkDot;
+		const std::string *vpname = NULL;
+		if ( has_dots )
+		    for ( size_t k = bi + 1; k + 1 < after && !vpname; ++k )
+			if ( td.body[k]
+			  && td.body[k]->type() == TokenType::ttIdentifier )
+			{
+			    std::map<std::string,
+				     std::vector<std::vector<TokenBase *> > >
+				::const_iterator pit = token_pack_subst.find(
+				    ((TokenIdent *)td.body[k])->spelling());
+			    if ( pit != token_pack_subst.end() )
+				vpname = &pit->first;
+			}
+		if ( vpname )
+		{
+		    const std::vector<std::vector<TokenBase *> > &elems =
+			token_pack_subst[*vpname];
+		    for ( size_t e = 0; e < elems.size(); ++e )
+		    {
+			if ( e )
+			    inj.push_back(new TokenComma());
+			for ( size_t k = bi; k < after; ++k )
+			{
+			    TokenBase *pt2 = td.body[k];
+			    if ( !pt2 )
+				continue;
+			    if ( pt2->type() == TokenType::ttIdentifier
+			      && ((TokenIdent *)pt2)->spelling() == *vpname )
+			    {
+				for ( TokenBase *et : elems[e] )
+				    if ( et )
+					inj.push_back(et->clone());
+			    }
+			    else
+				inj.push_back(pt2->clone());
+			}
+		    }
+		    if ( elems.empty() && !inj.empty()
+		      && inj.back()->id() == TokenID::tkComma )
+		    { delete inj.back(); inj.pop_back(); }
+		    bi = after + 2;	// consume through the three dots
+		    continue;
+		}
+	    }
+	    if ( bt->type() == TokenType::ttIdentifier )
+	    {
+		std::map<std::string,
+			 std::vector<std::vector<TokenBase *> > >
+		    ::const_iterator vit = token_pack_subst.find(
+			((TokenIdent *)bt)->spelling());
+		if ( vit != token_pack_subst.end()
+		  && bi + 3 < td.body.size()
+		  && td.body[bi+1] && td.body[bi+1]->id() == TokenID::tkDot
+		  && td.body[bi+2] && td.body[bi+2]->id() == TokenID::tkDot
+		  && td.body[bi+3] && td.body[bi+3]->id() == TokenID::tkDot )
+		{
+		    for ( size_t e = 0; e < vit->second.size(); ++e )
+		    {
+			if ( e )
+			    inj.push_back(new TokenComma());
+			for ( TokenBase *et : vit->second[e] )
+			    if ( et )
+				inj.push_back(et->clone());
+		    }
+		    if ( vit->second.empty() && !inj.empty()
+		      && inj.back()->id() == TokenID::tkComma )
+		    { delete inj.back(); inj.pop_back(); }
+		    bi += 3;
+		    continue;
+		}
+	    }
 	}
 	if ( !member_tpl_extent_end && bi > body_brace_index
 	  && bt && bt->id() == TokenID::tkTEMPLATE )

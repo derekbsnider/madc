@@ -3098,6 +3098,17 @@ public:
     // recursive variadic body (`__and_`, `tuple`) would otherwise re-instantiate
     // unboundedly. Scoped-set around the member-type instantiate_template_id calls.
     bool allow_variadic_real_inst = false;
+    // VALUE-pack (trailing NON-TYPE pack) real instantiation is gated by its OWN
+    // demand flag (task #102). The expansion machinery (token_pack_subst splice /
+    // replicate in the legacy body clone) is live, but the caller-side spellings
+    // are not yet folded (`sizeof...(_Args)` in template-arg position, the
+    // `__integer_pack` / `__make_integer_seq` index-pack builtins) — so admitting
+    // the shape under the GENERAL vri arming types one entity through two routes
+    // (params via the real instance, caller temps via a raw-spelling flatten:
+    // the _Index_tuple by-value incompatibility that broke 8 default-lane tests).
+    // Armed only by a demand site that also folds those spellings; consumed and
+    // cleared alongside allow_variadic_real_inst at each instantiate entry.
+    bool allow_valuepack_real_inst = false;
     // STICKY variant of the above: stays on through a real-instantiation SUBTREE
     // whose root template forwards its meaning through a dependent-member base
     // (`__invoke_result : __result_of_impl<...>::type`). Unlike allow_variadic_real_inst
