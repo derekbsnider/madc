@@ -47509,13 +47509,25 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    nontype_names.insert(ft.typeparams[i]);
     std::map<std::string, int64_t> nontype_subst;
     std::map<std::string, TokenDataType *> subst;
+    // A bound type enters C++ SPELLING space here. A REFERENCE binding
+    // ([temp.deduct.call]/3) must spell `T&`, never its C-lowered pointer
+    // NAME (`T*` by DataDefREF construction): the name fed the opaque-lane
+    // spelling collector / __i symbol suffix / key fragments a POINTER
+    // spelling, splitting one entity into two struct identities
+    // (tuple_int32_tP shell vs the signature route's tuple_int32_tR —
+    // map:967). basic_class_datadef_spelling is the reference-aware owner.
+    auto bind_spelling = [](DataDef *dd) {
+	return dd && dd->is_reference() ? basic_class_datadef_spelling(dd)
+					: std::string(dd ? dd->name : "");
+    };
     for ( std::map<std::string, DataDef *>::iterator b = binding.begin();
 	  b != binding.end(); ++b )
     {
 	if ( nontype_names.count(b->first) )
 	    nontype_subst[b->first] = b->second ? strtoll(b->second->name.c_str(), NULL, 10) : 0;
 	else
-	    subst[b->first] = new TokenDataType(b->second->name.c_str(), *b->second);
+	    subst[b->first] = new TokenDataType(bind_spelling(b->second).c_str(),
+						*b->second);
     }
     std::vector<TokenBase *> inj;
     std::string pack_value_name;	// the pack's VALUE name (`__base`)
@@ -47564,7 +47576,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		{
 		    const std::string &pn = ((TokenIdent *)pt)->spelling();
 		    if ( pn == pack_param )
-		    { inj.push_back(new TokenDataType(pack_elems[e]->name.c_str(), *pack_elems[e])); continue; }
+		    { inj.push_back(new TokenDataType(
+			bind_spelling(pack_elems[e]).c_str(), *pack_elems[e])); continue; }
 		    if ( !value_pack_name.empty() && pn == value_pack_name )
 		    { inj.push_back(new TokenIdent(elem_value_name(e).c_str())); continue; }
 		}
@@ -47596,7 +47609,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		    for ( size_t e = 0; e < N; ++e )
 		    {
 			if ( e ) inj.push_back(new TokenComma());
-			inj.push_back(new TokenDataType(pack_elems[e]->name.c_str(), *pack_elems[e]));
+			inj.push_back(new TokenDataType(
+			    bind_spelling(pack_elems[e]).c_str(), *pack_elems[e]));
 			for ( TokenBase *sfx : decl_suffix ) inj.push_back(sfx->clone());
 			inj.push_back(new TokenIdent(elem_value_name(e).c_str()));
 		    }
