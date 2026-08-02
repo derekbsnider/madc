@@ -7919,6 +7919,42 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    member_tpl_extent_end = 0;
 	    member_tpl_keep_begin = 0;
 	}
+	// [temp.variadic] sizeof...(PACK) folds to the pack's ARITY at
+	// substitution. Without this arm the dots copy through and the bare
+	// pack name inside the parens hits the 1:1 fallback, manufacturing
+	// `sizeof...(int32_t&)` (invalid C++) in replayed member-template
+	// heads — libc++ tuple's ctor constraints, which the constraint
+	// resolver then rejects (task #103). A MEMBER template's own pack
+	// (`sizeof...(_Up)`) is not in the owner's subst maps and stays raw.
+	if ( bt && is_contextual_identifier_token(bt)
+	  && contextual_identifier_name(bt) == "sizeof"
+	  && bi + 6 < td.body.size()
+	  && td.body[bi+1] && td.body[bi+1]->id() == TokenID::tkDot
+	  && td.body[bi+2] && td.body[bi+2]->id() == TokenID::tkDot
+	  && td.body[bi+3] && td.body[bi+3]->id() == TokenID::tkDot
+	  && td.body[bi+4] && td.body[bi+4]->id() == TokenID::tkOpBrk
+	  && td.body[bi+5]
+	  && td.body[bi+5]->type() == TokenType::ttIdentifier
+	  && td.body[bi+6] && td.body[bi+6]->id() == TokenID::tkClBrk )
+	{
+	    const std::string pn = ((TokenIdent *)td.body[bi+5])->spelling();
+	    std::map<std::string, std::vector<TokenDataType *> >
+		::const_iterator tpi = pack_subst.find(pn);
+	    std::map<std::string, std::vector<std::vector<TokenBase *> > >
+		::const_iterator vpi = token_pack_subst.find(pn);
+	    if ( tpi != pack_subst.end() || vpi != token_pack_subst.end() )
+	    {
+		size_t arity = tpi != pack_subst.end() ? tpi->second.size()
+						       : vpi->second.size();
+		TokenInt *ti = new TokenInt((int64_t)arity);
+		ti->file = bt->file;
+		ti->line = bt->line;
+		ti->column = bt->column;
+		inj.push_back(ti);
+		bi += 6;
+		continue;
+	    }
+	}
 	// VALUE-pack expansions (task #102, libc++ __integer_sequence):
 	// (a) a parenthesized PATTERN `( ... _Values ... )...` replicates the
 	//     whole group once per element, the pack identifier swapped for
