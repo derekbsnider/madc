@@ -4201,13 +4201,31 @@ static bool self_template_id_keep_distinct(
     }
     if ( is_current )
 	return false;   // current instantiation -> collapse to injected-class-name
-    // (b) Every identifier among the args must be a class template parameter, so
-    // substitution yields a concrete, instantiable type.
+    // (b) Every BARE identifier among the args must be a class template
+    // parameter, so substitution yields a concrete, instantiable type. An
+    // identifier that HEADS a template-id (`__tuple_types<_Tp...>` in
+    // tuple_element's pack-spec body, libc++ sfinae_helpers.h:99) is a
+    // TEMPLATE-NAME reference resolved at injection, not a dependent bare
+    // name — this loop still walks its own arguments. Requiring param-hood
+    // of the template NAME collapsed `tuple_element<_Ip,
+    // __tuple_types<_Tp...>>` to the injected-class-name — a
+    // SELF-REFERENTIAL typedef, where [temp.dep.type] makes it a DISTINCT
+    // specialization (task #103's map:967 wall). A kept id that turns out
+    // to denote the current instantiation anyway is unified by its concrete
+    // key (the in-flight re-entry arm serves it) — collapse is an identity
+    // shortcut, never the authority.
     for ( const std::vector<TokenBase *> &slot : slots )
-	for ( TokenBase *t : slot )
-	    if ( is_contextual_identifier_token(t)
-	      && !params.count(contextual_identifier_name(t)) )
-		return false;   // references an outer/dependent name -> collapse
+	for ( size_t ti = 0; ti < slot.size(); ++ti )
+	{
+	    TokenBase *t = slot[ti];
+	    if ( !is_contextual_identifier_token(t)
+	      || params.count(contextual_identifier_name(t)) )
+		continue;
+	    if ( ti + 1 < slot.size() && slot[ti + 1]
+	      && slot[ti + 1]->id() == TokenID::tkLT )
+		continue;   // heads a template-id -> resolvable template name
+	    return false;   // a bare outer/dependent name -> collapse
+	}
     return true;
 }
 

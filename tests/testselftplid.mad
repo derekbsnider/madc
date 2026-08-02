@@ -1,0 +1,28 @@
+// A class template's body may name ITSELF with a template-id ARGUMENT
+// ([temp.dep.type]): `elem<I, raw2<T...>>` inside `elem<I, tup2<T...>>` is a
+// DISTINCT specialization, not the injected-class-name. Collapsing it to the
+// current instantiation makes the typedef self-referential — the libc++
+// tuple_element shape (__tuple/sfinae_helpers.h:99).
+#include <cstdio>
+
+template <class... T> struct tup2 { };
+template <class... T> struct raw2 { };
+
+template <int I, class T> struct elem;
+
+template <int I, class... T> struct elem<I, raw2<T...> >
+{
+	typedef int type;
+};
+
+template <int I, class... T> struct elem<I, tup2<T...> >
+{
+	typedef typename elem<I, raw2<T...> >::type type;
+};
+
+int main()
+{
+	elem<0, tup2<char> >::type v = 42;
+	printf("v=%d\n", v);
+	return 0;
+}
