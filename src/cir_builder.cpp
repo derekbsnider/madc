@@ -11994,6 +11994,17 @@ FuncDef *CirBuilder::select_or_instantiate_ctor(DataDefCLASS *cdd,
 					const std::vector<TokenBase *> &ctor_args)
 {
 	FuncDef *ctor = select_ctor_overload(cdd, ctor_args);
+	static const char *soi = ::getenv("MADC_SOI_PROBE");
+	if (soi && *soi && cdd && strstr(cdd->name.c_str(), soi))
+		fprintf(stderr, "[soi] cls=%s nargs=%zu chose=%s mt=%d declonly=%d"
+			" localemit=%s emitsym=%s tsubstsrc=%d\n",
+			cdd->name.c_str(), ctor_args.size(),
+			ctor ? ctor->name.c_str() : "(none)",
+			ctor ? (int)ctor->is_member_template : -1,
+			ctor ? (int)ctor->declaration_only : -1,
+			ctor ? ctor->local_emit_name.c_str() : "-",
+			ctor ? ctor->emit_symbol.c_str() : "-",
+			ctor ? (int)(ctor->tsubst_source != NULL) : -1);
 	// Copy-time ctor instantiation (slice-4b): under the body-parse skip
 	// the eager parse that used to create the concrete ctor instance never
 	// ran, so the class's ctor list holds only the member-template
