@@ -45876,7 +45876,9 @@ static bool fn_template_word_is_cv(const std::string &w)
 // (`_Base...`, `_Base&...`, `_Base*...`, optionally cv-qualified).
 static bool fn_template_param_pack_shape(const std::string &spelling,
 					 const std::string &pack,
-					 size_t *stars_out)
+					 size_t *stars_out,
+					 size_t *amps_out = NULL,
+					 bool *cv_out = NULL)
 {
     if ( pack.empty() )
 	return false;
@@ -45885,18 +45887,25 @@ static bool fn_template_param_pack_shape(const std::string &spelling,
     std::string core;
     size_t dots = 0;
     size_t stars = 0;
+    size_t amps = 0;
+    bool cv = false;
     for ( size_t i = 0; i < words.size(); ++i )
     {
 	const std::string &w = words[i];
 	if ( fn_template_word_is_cv(w) )
+	{
+	    cv = true;
 	    continue;
+	}
 	if ( w == "." ) { ++dots; continue; }
 	if ( w == "*" ) { ++stars; continue; }
 	// A reference-qualified pack (`_Args&... __a`, forwarding-ref
 	// `_Args&&... __a`) is still a pack of `_Args`; the bound element type
-	// strips the reference at the binding site (pd->is_reference()).
-	if ( w == "&" )
-	    continue;
+	// strips the reference at the binding site (pd->is_reference()) —
+	// EXCEPT the [temp.deduct.call]/3 forwarding case, which the caller
+	// detects via amps_out/cv_out (a cv-less, star-less `_Tp&&` pack with
+	// an lvalue argument binds the element as A&).
+	if ( w == "&" ) { ++amps; continue; }
 	if ( !core.empty() )
 	    return false;
 	core = w;
@@ -45905,6 +45914,10 @@ static bool fn_template_param_pack_shape(const std::string &spelling,
 	return false;
     if ( stars_out )
 	*stars_out = stars;
+    if ( amps_out )
+	*amps_out = amps;
+    if ( cv_out )
+	*cv_out = cv;
     return true;
 }
 
@@ -46641,6 +46654,39 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		adp = fn_template_pack_arg_element(sp, pack_param, adp);
 		if ( !adp )
 		    return false;
+		// [temp.deduct.call]/3 for a FORWARDING-reference pack
+		// (`_Tp&&... __t`, cv-less, star-less): an LVALUE argument
+		// binds its element as A&, so `tuple<_Tp&&...>` keys the
+		// COLLAPSED tuple<A&> (forward_as_tuple's identity — the
+		// map:967 return-type mismatch) and `forward<_Tp>` takes its
+		// lvalue branch. Lvalueness is the ARGUMENT TOKEN's value
+		// category (a named variable, or is_addressable_expression's
+		// members/derefs/reference-returning calls) — the dd alone
+		// cannot carry it: operand_value_datadef deliberately strips
+		// the reference view for deduction.
+		// DARK behind MADC_FWDREF_ARM=1 (the #94 slot-arm precedent):
+		// flipping this on binds A& elements whose DOWNSTREAM
+		// consumers are not ready — the deferred-construction relower
+		// (cir_builder ~2700) bails on reference-typed elements and
+		// the DEFAULT lane's testmap regressed to the tsubst
+		// deferred-construction bail. Flip-on = teach the relower's
+		// element walk (tsubst_is_class_object_arg + the param-match
+		// arms) to unwrap A& first; the co-requisite list is task
+		// #103.
+		{
+		    static const char *fw_arm = ::getenv("MADC_FWDREF_ARM");
+		    size_t fw_stars = 0, fw_amps = 0;
+		    bool fw_cv = false;
+		    if ( fw_arm && *fw_arm == '1'
+		      && fn_template_param_pack_shape(sp, pack_param,
+						      &fw_stars, &fw_amps,
+						      &fw_cv)
+		      && fw_amps == 2 && fw_stars == 0 && !fw_cv
+		      && !adp->is_reference()
+		      && (dynamic_cast<TokenVar *>(tc->parameters[a])
+			  || is_addressable_expression(tc->parameters[a])) )
+			adp = pgm.getReferenceType(adp);
+		}
 		pack_elems.push_back(adp);
 	    }
 	    if ( pack_elems.size() == 1 && binding.find(pack_param) == binding.end() )
