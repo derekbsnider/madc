@@ -2601,12 +2601,21 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					const std::vector<DataDef *> &elems =
 						(*m_tsubst_active_type_arg_packs)
 							[tp->param_index];
-					for (DataDef *elem : elems)
+					for (DataDef *elem : elems) {
+						// A forwarding-bound REFERENCE
+						// element ([temp.deduct.call]/3,
+						// the MADC_FWDREF_ARM lane)
+						// scores by its REFERENT — the
+						// ctor selection is value-shaped.
+						if (elem && elem->is_reference())
+							elem = static_cast<DataDefPTR *>(
+								elem)->base_type;
 						expanded_ctor_args.push_back(
 							tsubst_concrete_arg_token(
 								elem,
 								expanded_ctor_args.size(),
 								pe->pattern));
+					}
 					continue;
 				}
 			}
@@ -2701,6 +2710,14 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					[tp->param_index];
 			for (size_t e = 0; e < elems.size(); ++e) {
 				DataDef *elem = elems[e];
+				// The forwarding-bound REFERENCE element's
+				// classification and param matching are by
+				// REFERENT ([temp.deduct.call]/3, the
+				// MADC_FWDREF_ARM lane) — the relower's
+				// object/param logic is value-shaped.
+				if (elem && elem->is_reference())
+					elem = static_cast<DataDefPTR *>(
+						elem)->base_type;
 				size_t pi = concrete_arg_pos + 1;
 				++concrete_arg_pos;
 				if (!tsubst_is_class_object_arg(elem))
