@@ -1900,15 +1900,22 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 }
 
 static bool pending_function_body_available(CirBuilder *cb, Program *prog,
-					    const std::string &sym)
+					    const std::string &sym,
+					    FuncDef *want_fd = NULL)
 {
 	if (!cb || !prog || sym.empty())
 		return false;
 	for (TokenBase *pb : prog->pending_funcs) {
 		TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
 		FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+		// Pointer-identity arm: a member-template instantiation product
+		// is REGISTERED under its per-request __mti symbol while a call
+		// site can still resolve the PLAIN member name (the rename is
+		// per-request, the classification runs before it) — one entity,
+		// two names. The FuncDef object is the name-independent identity.
 		if (tf && fd && !fd->declaration_only
-		    && (tf->var.name == sym || cb->func_emit_name(tf->var, fd) == sym))
+		    && (tf->var.name == sym || (want_fd && fd == want_fd)
+			|| cb->func_emit_name(tf->var, fd) == sym))
 			return true;
 	}
 	return false;
@@ -4981,9 +4988,29 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 	if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(arg))
 		return ot->obj_class;
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg);
+	static const char *orcc = ::getenv("MADC_ORCC_PROBE");
+	if (orcc && *orcc && !tcf && arg
+	    && (arg->type() == TokenType::ttCallFunc
+		|| arg->type() == TokenType::ttCallMethod)
+	    && arg->datadef() && strstr(arg->datadef()->name.c_str(), orcc))
+		fprintf(stderr, "[orcc] NOT-TCF cls=%s dd=%s\n",
+			typeid(*arg).name(), arg->datadef()->name.c_str());
 	if (!tcf) return NULL;
 	FuncDef *fd = NULL;
 	std::string sym = call_target_emit_name(tcf, &fd);
+	if (orcc && *orcc && sym.find(orcc) != std::string::npos)
+		fprintf(stderr, "[orcc] sym=%s fd=%d retref=%d ret=%s viaretbuf=%d"
+			" ufn=%d mat=%d dlz=%d forest=%d pend=%d pendfd=%d\n",
+			sym.c_str(), (int)(fd != NULL),
+			fd ? (int)fd->returns_reference() : -1,
+			fd ? fd->return_value_type().name.c_str() : "-",
+			fd ? (int)(class_return_via_retbuf(&fd->return_value_type()) != NULL) : -1,
+			(int)(m_user_func_names && m_user_func_names->count(sym) > 0),
+			(int)(m_materialized_lib_syms.count(sym) > 0),
+			(int)(m_prog && m_prog->has_deferred_lazy_body(sym)),
+			fd ? (int)fd->has_forest_body : -1,
+			(int)pending_function_body_available(this, m_prog, sym),
+			(int)pending_function_body_available(this, m_prog, sym, fd));
 	if (!fd) return NULL;
 	if (fd->returns_reference()) return NULL;
 	DataDefCLASS *cdd = class_return_via_retbuf(&fd->return_value_type());
@@ -5004,10 +5031,17 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 	// equivalent of a deferred lazy body — same madc-emitted retbuf ABI
 	// (a bound to_string(42) was emitted 1-arg, no retbuf: "too few
 	// arguments" + "lvalue required" at the copy-init).
+	// A PENDING template-instantiation product (an __mti/tsubst body
+	// instantiated mid-translation) is the same madc-emitted retbuf ABI:
+	// user_func_names snapshots the module's functions ONCE, and the
+	// pending drain records the symbol only in the LATER reachability
+	// loop — so a caller translated in between emitted the call one arg
+	// short + took &(call) (__tree::__construct_node at map:967).
 	if (!(m_user_func_names && m_user_func_names->count(sym) > 0)
 	    && !m_materialized_lib_syms.count(sym)
 	    && !(m_prog && m_prog->has_deferred_lazy_body(sym))
-	    && !fd->has_forest_body)
+	    && !fd->has_forest_body
+	    && !pending_function_body_available(this, m_prog, sym, fd))
 		return NULL;
 	return cdd;
 }
@@ -9144,6 +9178,35 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 		// convention returns the lhs by reference).
 		if (!recv_is_ptr && class_operator_value_result(tm->parent_expr))
 			return object_arg_addr(tm->parent_expr, recv_class);
+		// A MEMBER of a by-value-CALL receiver (`emplace(...).first->f()`
+		// at map:967): the member's BASE is the prvalue — materialize the
+		// base ([class.temporary], object_arg_addr's trivially-copyable
+		// tail spills it) and select the member off the temp. The raw
+		// path emitted `&(call).first`, which is not an lvalue.
+		if (!recv_is_ptr
+		    && tm->parent_expr->type() == TokenType::ttMember) {
+			TokenMember *pm = dynamic_cast<TokenMember *>(tm->parent_expr);
+			TokenBase *pb = pm ? pm->parent_expr : NULL;
+			DataDefCLASS *bcls = (pb
+					      && (pb->type() == TokenType::ttCallFunc
+						  || pb->type() == TokenType::ttCallMethod)
+					      && !ref_returning_call_type(pb)
+					      && pb->datadef()
+					      && !pb->datadef()->is_pointer())
+					     ? class_behind(pb->datadef()) : NULL;
+			if (bcls) {
+				node_t bptr = node2(N_CAST,
+					node2(N_TYPE,
+					      node1(N_LIST, class_tag_ref(bcls)),
+					      node2(N_DECL, ignore(),
+						    node1(N_LIST, pointer()))),
+					object_arg_addr(pb, bcls), origin);
+				node_t fld = node2(N_DEREF_FIELD, bptr,
+					id(var_emit_name(pm->var).c_str(),
+					   origin));
+				return node1(N_ADDR, fld, origin);
+			}
+		}
 		recv_node = translate_expr(tm->parent_expr);
 		// A REFERENCE-returning CALL receiver: translate_expr yields the
 		// DEREF'd lvalue (`*call` — the reference's referent, see the
@@ -9809,7 +9872,22 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	    && callee->declaration_only
 	    && tsubst_call_can_rewrite_after_subst(tm)
 	    && tsubst_call_has_pack_expansion_arg(tm)) {
+		// The instantiated callee's __retbuf ABI is knowable HERE: the
+		// return type is class-concrete (only the pack is deferred), and
+		// the recipe bakes the call SHAPE — emitting the bare value call
+		// left the relowered __mti call one arg short and non-addressable
+		// (__tree::__construct_node -> __node_holder at map:967), the
+		// pattern-mode twin of the general lane's materialization below.
+		DataDefCLASS *pret = (!callee->returns_reference()
+				      && !callee->is_multi_return())
+				     ? class_return_via_retbuf(&callee->return_value_type())
+				     : NULL;
+		char ptmp[40] = { 0 };
+		if (pret)
+			object_temp_decl(pret, ptmp, sizeof(ptmp), origin);
 		node_t args = list();
+		if (pret)
+			append(args, node1(N_ADDR, id(ptmp, origin), origin));
 		append(args, this_arg);
 		for (TokenBase *arg : tm->parameters) {
 			node_t n = NULL;
@@ -9835,6 +9913,11 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 			append(args, n ? n : translate_expr(arg));
 		}
 		node_t mcall = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+		if (pret) {
+			m_pending_stmts.push_back(node2(N_EXPR, list(), mcall,
+							origin));
+			return id(ptmp, origin);   // materialized object lvalue
+		}
 		if (callee->returns_reference())
 			return node1(N_DEREF, mcall, origin);
 		return mcall;
