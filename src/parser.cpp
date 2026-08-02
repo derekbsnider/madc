@@ -4496,8 +4496,7 @@ void Program::expand_integer_pack_template_args()
 // returns NULL — the ordinary lookup path then handles the use (dependent
 // shell), exactly like any other template-id.
 TokenDataType *Program::instantiate_make_integer_seq(TokenBase *tb,
-						     const std::string &ns_hint,
-						     DataDefCLASS *owner_hint)
+						     const std::string &ns_hint)
 {
     if ( tokens.empty() || !tokens[0] || tokens[0]->id() != TokenID::tkLT )
 	return NULL;
@@ -4580,8 +4579,9 @@ TokenDataType *Program::instantiate_make_integer_seq(TokenBase *tb,
     bool saved_vpk = allow_valuepack_real_inst;
     allow_variadic_real_inst = true;
     allow_valuepack_real_inst = true;
-    TokenDataType *inst = instantiate_template_id(sname, tb, ns_hint,
-						  owner_hint);
+    // S is a namespace-level template (`__integer_sequence`,
+    // `integer_sequence`) — no owner hint: the builtin never names a member.
+    TokenDataType *inst = instantiate_template_id(sname, tb, ns_hint, NULL);
     allow_variadic_real_inst = saved_vri;
     allow_valuepack_real_inst = saved_vpk;
     return inst;
@@ -4684,6 +4684,7 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
     expand_integer_pack_template_args();
     std::vector<std::string> args;
     std::vector<std::vector<TokenBase *> > raw_arg_tokens;
+    size_t pack_index = first_template_pack_index(td.typeparam_is_pack);
     if ( peekToken() && (peekToken()->id() == TokenID::tkGT
       || peekToken()->id() == TokenID::tkBSR) )
     {
@@ -4700,6 +4701,31 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 	    std::vector<TokenBase *> arg_tokens;
 	    TokenBase *sep = collect_template_argument_spelling(at, spelling,
 								&arg_tokens);
+	    // Substitution-time non-type fold, PARENTHESIZED-EXPRESSION form
+	    // only: a substituted value-pack alias target arrives spelled
+	    // `(0 + 0)` (the replicate arm's `(_Values + _Sp)...` with both
+	    // sides now literal) and must key as `0` — `__tuple_indices<(0 +
+	    // 0)>` and `__tuple_indices<0>` are ONE type ([temp.type]). The
+	    // fold is deliberately NARROWER than the real lane's: a bare
+	    // spelling (`true`, `__v`, `sizeof(_Tp)`) keeps its raw form
+	    // because the opaque lane's partial-spec selection compares
+	    // SPELLINGS — folding `true` to `1` broke every
+	    // `selector<_Tp, true>`-shaped match (libstdc++
+	    // __make_unsigned_selector, the rb102 default-lane regression).
+	    if ( !spelling.empty() && spelling[0] == '('
+	      && pack_index < td.typeparams.size()
+	      && args.size() >= pack_index
+	      && pack_index < td.typeparam_is_type.size()
+	      && !td.typeparam_is_type[pack_index] )
+	    {
+		int64_t folded_nt = 0;
+		if ( fold_nontype_arg_constant(arg_tokens, folded_nt) )
+		{
+		    arg_tokens.clear();
+		    arg_tokens.push_back(new TokenInt(folded_nt));
+		    spelling = std::to_string(folded_nt);
+		}
+	    }
 	    args.push_back(spelling);
 	    raw_arg_tokens.push_back(arg_tokens);
 	    if ( sep->id() == TokenID::tkComma )
@@ -4709,7 +4735,6 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 	    Throw(sep) << "Expecting ',' or '>' in " << tname << "<...>" << flush;
 	}
     }
-    size_t pack_index = first_template_pack_index(td.typeparam_is_pack);
     bool has_pack = pack_index < td.typeparams.size();
     if ( !has_pack && args.size() > td.typeparams.size() )
     {
@@ -7137,11 +7162,15 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     InstTimer _it(*this, _inst_class_count);	// --show-stats
     // Builtin templates are compiler vocabulary, not user names (the
     // __integer_pack precedent): resolved natively ahead of the registry,
-    // which has no definition to offer for them.
-    if ( tname.compare("__make_integer_seq") == 0 && peekToken()
-      && peekToken()->id() == TokenID::tkLT )
+    // which has no definition to offer for them. NEVER under an owner-scoped
+    // lookup: a builtin is a namespace-level entity, and the member-chain
+    // walkers probe every enclosing class SPECULATIVELY (expecting a miss to
+    // be non-destructive) — the native arm rewrites the live stream, so it
+    // must fire only for the one lookup that can actually consume the use.
+    if ( !owner_hint && tname.compare("__make_integer_seq") == 0
+      && peekToken() && peekToken()->id() == TokenID::tkLT )
 	if ( TokenDataType *bi =
-		instantiate_make_integer_seq(tb, ns_hint, owner_hint) )
+		instantiate_make_integer_seq(tb, ns_hint) )
 	    return bi;
     const uint32_t tname_id = template_name_pool.intern(tname);
     const Program::TemplateDef *tdp = find_template(
@@ -7768,6 +7797,17 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     if ( !selected_pattern )
 	legacy_reason = legacy_reason == ClassParseReason::None
 	    ? ClassParseReason::PatternNotCaptured : legacy_reason;
+    // An ABSENT trailing NON-TYPE pack (`__integer_sequence<uint64_t>`, the
+    // __make_integer_seq N=0 delegation) is an EMPTY pack, not an unbound
+    // name: seed the empty entry so the body clone's value-pack arms ELIDE
+    // `(_Values + _Sp)...` instead of cloning it raw into the member alias
+    // (the absent-TYPE-pack rule's twin — see absent_pack_elems below).
+    // Real path only: token_pack_subst drives nothing elsewhere.
+    if ( pack_real_inst && pack_index < td.typeparams.size()
+      && pack_index < td.typeparam_is_type.size()
+      && !td.typeparam_is_type[pack_index]
+      && !token_pack_subst.count(td.typeparams[pack_index]) )
+	token_pack_subst[td.typeparams[pack_index]];
     if ( selected_pattern && legacy_reason == ClassParseReason::None )
     {
 	BasicClassPatternBinding binding = {
@@ -8793,6 +8833,32 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    }
 	    body.push_back(new TokenSemi());
 
+	    // Env-gated probe (MADC_ANU_PROBE=<alias-name substr>): the isolated
+	    // resolve below reports only resolved/(fail) — print the substituted
+	    // body it attempts and, on failure, the token the resolve stopped at
+	    // (the MTB/MCT probe precedent one lane over).
+	    static const char *anu_probe = ::getenv("MADC_ANU_PROBE");
+	    const bool anu_on = anu_probe && *anu_probe
+			     && tname.find(anu_probe) != std::string::npos;
+	    if ( anu_on )
+	    {
+		fprintf(stderr, "ANUPROBE %s body:", tname.c_str());
+		for ( TokenBase *pt : body )
+		{
+		    if ( !pt )
+			continue;
+		    std::string nm = contextual_identifier_name(pt);
+		    if ( !nm.empty() )
+			fprintf(stderr, " %s", nm.c_str());
+		    else if ( pt->type() == TokenType::ttDataType )
+			fprintf(stderr, " [T]%s",
+				((TokenDataType *)pt)->definition.name.c_str());
+		    else
+			fprintf(stderr, " #%d", (int)pt->id());
+		}
+		fprintf(stderr, "\n");
+	    }
+
 	    size_t saved_diag_count = diagnostics.size();
 	    Program::ErrorInfo saved_error = last_error;
 	    TokenStream::State saved_tokens = tokens.swap_in(std::move(body));
@@ -8830,6 +8896,16 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		    resolved = NULL;
 	    }
 	    catch ( ... ) { resolved = NULL; }
+	    if ( anu_on && !resolved )
+	    {
+		TokenBase *stop = peekToken();
+		std::string nm = stop ? contextual_identifier_name(stop)
+				      : std::string();
+		fprintf(stderr, "ANUPROBE %s FAIL stopped-at %s(#%d)\n",
+			tname.c_str(),
+			nm.empty() ? "?" : nm.c_str(),
+			stop ? (int)stop->id() : -1);
+	    }
 
 	    if ( pushed_owner_scope
 	      && !class_scope_stack.empty()

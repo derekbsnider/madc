@@ -5127,10 +5127,11 @@ public:
     // primitive): `__make_integer_seq<S, T, N>` (N a concrete non-negative
     // constant) IS `S<T, 0, 1, ..., N-1>`. Rewrites the live stream's
     // `< S , T , N >` region in place and delegates instantiation to S;
-    // returns NULL (ordinary path) when N is dependent/non-constant.
+    // returns NULL (ordinary path) when N is dependent/non-constant. Only
+    // called for a namespace-level lookup (never owner-scoped — the stream
+    // rewrite must not fire on a speculative member probe).
     TokenDataType *instantiate_make_integer_seq(TokenBase *tb,
-						const std::string &ns_hint,
-						DataDefCLASS *owner_hint);
+						const std::string &ns_hint);
     TemplateAliasDef *find_template_alias(const std::string &name,
 					  const std::string &ns_hint = std::string(),
 					  DataDefCLASS *owner_hint = NULL);
