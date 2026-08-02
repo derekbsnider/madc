@@ -48013,6 +48013,106 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	inj.push_back(bt->clone());
     }
 
+    // EMPTY-pack elision over the injected decl ([temp.variadic]: an
+    // expansion whose pack is empty contributes NOTHING). The loop above
+    // only drops a BARE `pack...`'s dots; a pattern unit that still names
+    // the pack — the param decl `_Tp&&... __t`, the template-arg
+    // `tuple<_Tp&&...>`, the value use `std::forward<_Tp>(__t)...` — kept
+    // its substituted-less pattern, so the zero-arg instance (libc++
+    // forward_as_tuple()) was malformed and its call fell to the plain
+    // extern. Walk each `...`'s pattern unit back (call / template-id /
+    // identifier, over declarator punctuation) and elide units naming the
+    // pack or its recorded VALUE name; a value name directly after an
+    // elided param unit is elided and recorded too.
+    if ( pack_empty && !pack_param.empty() )
+    {
+	std::set<std::string> dead_names;
+	dead_names.insert(pack_param);
+	std::vector<TokenBase *> ej;
+	ej.reserve(inj.size());
+	for ( size_t i = 0; i < inj.size(); ++i )
+	{
+	    TokenBase *t = inj[i];
+	    bool dots = t && t->id() == TokenID::tkDot
+		     && i + 2 < inj.size()
+		     && inj[i+1] && inj[i+1]->id() == TokenID::tkDot
+		     && inj[i+2] && inj[i+2]->id() == TokenID::tkDot;
+	    if ( !dots )
+	    { ej.push_back(t); continue; }
+	    // Pattern unit in ej: skip declarator punct, then one of
+	    // `)`-balanced call (+ its callee id/template-id chain),
+	    // `>`-balanced template-id (+ name), or one identifier.
+	    size_t k = ej.size();
+	    while ( k > 0 && ej[k-1]
+		 && (ej[k-1]->id() == TokenID::tkBand
+		     || ej[k-1]->id() == TokenID::tkLand
+		     || ej[k-1]->id() == TokenID::tkMul) )
+		--k;
+	    size_t unit = ej.size();	// empty unit = keep the dots
+	    if ( k > 0 && ej[k-1] && ej[k-1]->id() == TokenID::tkClBrk )
+	    {
+		int d = 0; size_t j = k;
+		while ( j > 0 )
+		{
+		    TokenBase *u = ej[--j];
+		    if ( !u ) continue;
+		    if ( u->id() == TokenID::tkClBrk ) ++d;
+		    else if ( u->id() == TokenID::tkOpBrk && --d == 0 )
+			break;
+		}
+		// callee chain: name / template-id / :: qualifiers
+		while ( j > 0 && ej[j-1]
+		     && (ej[j-1]->type() == TokenType::ttIdentifier
+			 || ej[j-1]->type() == TokenType::ttDataType
+			 || ej[j-1]->id() == TokenID::tkNS
+			 || ej[j-1]->id() == TokenID::tkGT
+			 || ej[j-1]->id() == TokenID::tkLT) )
+		    --j;
+		unit = j;
+	    }
+	    else if ( k > 0 && ej[k-1] && ej[k-1]->id() == TokenID::tkGT )
+	    {
+		int d = 0; size_t j = k;
+		while ( j > 0 )
+		{
+		    TokenBase *u = ej[--j];
+		    if ( !u ) continue;
+		    if ( u->id() == TokenID::tkGT ) ++d;
+		    else if ( u->id() == TokenID::tkBSR ) d += 2;
+		    else if ( u->id() == TokenID::tkLT && --d == 0 )
+		    { unit = j > 0 ? j - 1 : 0; break; }
+		}
+	    }
+	    else if ( k > 0 && ej[k-1]
+		   && (ej[k-1]->type() == TokenType::ttIdentifier
+		       || ej[k-1]->type() == TokenType::ttDataType) )
+		unit = k - 1;
+	    bool hit = false;
+	    for ( size_t j = unit; j < ej.size() && !hit; ++j )
+		if ( ej[j] && is_contextual_identifier_token(ej[j])
+		  && dead_names.count(contextual_identifier_name(ej[j])) )
+		    hit = true;
+	    if ( !hit )
+	    { ej.push_back(t); continue; }
+	    ej.resize(unit);		// elide the unit
+	    if ( !ej.empty() && ej.back()
+	      && ej.back()->id() == TokenID::tkComma )
+		ej.pop_back();		// balance a separating comma
+	    i += 2;			// consume the three dots
+	    // A VALUE name directly after an elided PARAM unit
+	    // (`_Tp&&... __t`): elide and record it — later value
+	    // expansions (`std::forward<_Tp>(__t)...`) die with it.
+	    if ( i + 1 < inj.size() && inj[i+1]
+	      && inj[i+1]->type() == TokenType::ttIdentifier )
+	    {
+		dead_names.insert(
+		    ((TokenIdent *)inj[i+1])->spelling());
+		++i;
+	    }
+	}
+	inj.swap(ej);
+    }
+
 #ifdef MADC_DBG_PACK
     if ( pack_empty )
     {
