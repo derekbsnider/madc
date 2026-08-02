@@ -1439,6 +1439,21 @@ void Program::_tokenizer_init()
 	m.body = "((void)(__addr))";
 	macro_map["__builtin_prefetch"] = m;
     }
+    // __builtin_launder(p) IS p ([ptr.launder]/2 — same address, same type).
+    // It exists only to stop the optimizer assuming a pointer still refers to
+    // the object it was formed from; madc's IR makes no such provenance
+    // assumption, so the identity is the whole implementation. The macro keeps
+    // the operand's TYPE (a function would need the template), and evaluates it
+    // once. has_builtin() reads macro_map, so this also answers libc++'s
+    // __has_builtin query truthfully. Without it std::__launder's body called
+    // an undefined __builtin_launder, its instantiation never registered, and
+    // every std::launder<T> left an undefined __launder import (task #103).
+    {
+	MacroDef m;
+	m.params = {"__p"};
+	m.body = "(__p)";
+	macro_map["__builtin_launder"] = m;
+    }
     // FP classification builtins (type-generic compiler magic; real <math.h>
     // C++ regions call them directly). Lowered Tier-1 onto the REAL glibc
     // classification exports (__fpclassify*/__isnan*/__isinf*/__signbit*/
