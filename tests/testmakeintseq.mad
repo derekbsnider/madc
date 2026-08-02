@@ -1,0 +1,18 @@
+extern "C" int printf(const char *, ...);
+
+template <class T, T... V> struct IS {
+    static long sum()
+    {
+        long a[] = { V... };
+        long s = 0;
+        for ( unsigned long i = 0; i < sizeof(a) / sizeof(a[0]); ++i )
+            s += a[i];
+        return s;
+    }
+};
+
+int main()
+{
+    printf("s=%ld\n", __make_integer_seq<IS, long, 4>::sum());
+    return 0;
+}

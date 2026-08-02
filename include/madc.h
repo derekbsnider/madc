@@ -5123,6 +5123,14 @@ public:
     // splicing each occurrence into literal integer args so the ordinary
     // template-argument loops then collect plain non-type args.
     void expand_integer_pack_template_args();
+    // clang's __make_integer_seq builtin template (the libc++ index-sequence
+    // primitive): `__make_integer_seq<S, T, N>` (N a concrete non-negative
+    // constant) IS `S<T, 0, 1, ..., N-1>`. Rewrites the live stream's
+    // `< S , T , N >` region in place and delegates instantiation to S;
+    // returns NULL (ordinary path) when N is dependent/non-constant.
+    TokenDataType *instantiate_make_integer_seq(TokenBase *tb,
+						const std::string &ns_hint,
+						DataDefCLASS *owner_hint);
     TemplateAliasDef *find_template_alias(const std::string &name,
 					  const std::string &ns_hint = std::string(),
 					  DataDefCLASS *owner_hint = NULL);

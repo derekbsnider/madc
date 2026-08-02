@@ -5789,6 +5789,11 @@ bool Program::has_builtin(const std::string &name)
     // what made libc++ #error on a trait madc had all along.
     if ( is_type_trait_builtin(name) )
 	return true;
+    // Builtin TEMPLATES madc implements natively — same "answer from madc's
+    // own state" contract (instantiate_make_integer_seq is the state). libc++
+    // takes its integer_sequence BUILTIN branch on this answer.
+    if ( name.compare("__make_integer_seq") == 0 )
+	return true;
     if ( name.compare(0, 10, "__builtin_") != 0 )
 	return false;	// trait intrinsics madc does NOT implement
 			// (__remove_reference_t and the rest of libc++'s 41)

@@ -4482,6 +4482,111 @@ void Program::expand_integer_pack_template_args()
     }
 }
 
+// clang's __make_integer_seq builtin template (BuiltinTemplateDecl
+// BTK__make_integer_seq) — the libc++ index-sequence primitive:
+// __utility/integer_sequence.h's __make_indices_imp / <utility>'s
+// make_integer_sequence take this branch when __has_builtin says yes (the
+// fallback branch is the __repeat/__parity log-time recursion whose
+// `K * sizeof...(_Np) + _Np...` patterns are outside the value-pack splice
+// arms). `__make_integer_seq<S, T, N>` (N a concrete non-negative constant)
+// IS `S<T, 0, 1, ..., N-1>`. The head identifier is already consumed by the
+// caller; the live stream holds `< S , T , N >`. This rewrites the stream IN
+// PLACE to `< T , 0 , 1 , ..., N-1 >` (the expand_integer_pack_template_args
+// model) and delegates instantiation to S. A dependent or non-constant N
+// returns NULL — the ordinary lookup path then handles the use (dependent
+// shell), exactly like any other template-id.
+TokenDataType *Program::instantiate_make_integer_seq(TokenBase *tb,
+						     const std::string &ns_hint,
+						     DataDefCLASS *owner_hint)
+{
+    if ( tokens.empty() || !tokens[0] || tokens[0]->id() != TokenID::tkLT )
+	return NULL;
+    // Bound the argument region with the shared tracker: three top-level args
+    // separated by depth-1 commas, closed by the depth-1 `>`. A BSR (`>>`)
+    // close would mean N ends in a nested template-id sharing the outer
+    // close — not the libc++ shape; leave that to the ordinary path.
+    DelimDepth d;
+    size_t i = delim_scan_step(tokens, 0, d);	// the `<` (NULL prev: opens)
+    size_t arg_start = i;
+    size_t close_idx = 0;
+    std::vector<std::pair<size_t, size_t> > argr;	// [start, end) per arg
+    while ( i < tokens.size() )
+    {
+	TokenBase *t = tokens[i];
+	if ( t && d.angle == 1 && !d.paren && !d.square && !d.brace )
+	{
+	    if ( t->id() == TokenID::tkComma )
+	    {
+		argr.push_back(std::make_pair(arg_start, i));
+		arg_start = i + 1;
+	    }
+	    else if ( t->id() == TokenID::tkGT )
+	    {
+		close_idx = i;
+		break;
+	    }
+	    else if ( t->id() == TokenID::tkBSR )
+		return NULL;
+	}
+	i += delim_scan_step(tokens, i, d);
+    }
+    if ( !close_idx || argr.size() != 2 )
+	return NULL;
+    argr.push_back(std::make_pair(arg_start, close_idx));
+    for ( size_t a = 0; a < 3; ++a )
+	if ( argr[a].first >= argr[a].second )
+	    return NULL;
+    // S: the target template's bare name — the LAST identifier in the arg
+    // (`__integer_sequence`, `integer_sequence`, possibly ns-qualified).
+    std::string sname;
+    for ( size_t k = argr[0].first; k < argr[0].second; ++k )
+	if ( tokens[k] && tokens[k]->type() == TokenType::ttIdentifier )
+	    sname = ((TokenIdent *)tokens[k])->spelling();
+    if ( sname.empty() )
+	return NULL;
+    // N must fold to a concrete non-negative constant NOW. The cap bounds the
+    // minted argument tokens; a genuine sequence this long is user error.
+    std::vector<TokenBase *> nexpr;
+    for ( size_t k = argr[2].first; k < argr[2].second; ++k )
+	if ( tokens[k] )
+	    nexpr.push_back(tokens[k]);
+    int64_t n = -1;
+    if ( !fold_nontype_arg_constant(nexpr, n) || n < 0 || n > (1 << 20) )
+	return NULL;
+    // Rebuild the front as `< T , 0 , 1 , ..., N-1 >`. Carried originals move
+    // into `out`; everything else in the region is freed here (splice_front
+    // only removes the deque slots).
+    std::vector<TokenBase *> out;
+    out.push_back(tokens[0]);				// `<`
+    for ( size_t k = argr[1].first; k < argr[1].second; ++k )
+	if ( tokens[k] )
+	    out.push_back(tokens[k]);
+    for ( int64_t v = 0; v < n; ++v )
+    {
+	out.push_back(new TokenComma());
+	out.push_back(new TokenInt(v));
+    }
+    out.push_back(tokens[close_idx]);			// `>`
+    for ( size_t k = 1; k < close_idx; ++k )
+	if ( tokens[k] && (k < argr[1].first || k >= argr[1].second) )
+	    delete tokens[k];
+    tokens.splice_front(close_idx + 1, out);
+    // The builtin minted every pack element as a literal, so the delegated
+    // instantiation IS the value-pack real-inst demand site: the two-route
+    // identity hazard (see allow_valuepack_real_inst in madc.h) cannot arise
+    // when the demanded spelling is itself the folded form. Save/set/restore —
+    // instantiate entry consumes and clears both flags.
+    bool saved_vri = allow_variadic_real_inst;
+    bool saved_vpk = allow_valuepack_real_inst;
+    allow_variadic_real_inst = true;
+    allow_valuepack_real_inst = true;
+    TokenDataType *inst = instantiate_template_id(sname, tb, ns_hint,
+						  owner_hint);
+    allow_variadic_real_inst = saved_vri;
+    allow_valuepack_real_inst = saved_vpk;
+    return inst;
+}
+
 // Defined below (near the partial-spec unifiers); used here to resolve a
 // deduced pack element's spelling to its instantiated type token.
 static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &spelling);
@@ -7030,6 +7135,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 					       DataDefCLASS *owner_hint)
 {
     InstTimer _it(*this, _inst_class_count);	// --show-stats
+    // Builtin templates are compiler vocabulary, not user names (the
+    // __integer_pack precedent): resolved natively ahead of the registry,
+    // which has no definition to offer for them.
+    if ( tname.compare("__make_integer_seq") == 0 && peekToken()
+      && peekToken()->id() == TokenID::tkLT )
+	if ( TokenDataType *bi =
+		instantiate_make_integer_seq(tb, ns_hint, owner_hint) )
+	    return bi;
     const uint32_t tname_id = template_name_pool.intern(tname);
     const Program::TemplateDef *tdp = find_template(
 	tname_id, ns_hint, owner_hint);
@@ -20272,6 +20385,33 @@ void Program::_parser_init()
     if ( _include_iostream ) add_iostream();
     if ( _include_stdio )   add_stdio();
     register_namespace_specs();
+    // clang's __make_integer_seq builtin template: a marker registration so
+    // every template-id head lookup (type AND expression lanes) recognizes
+    // the name and funnels to instantiate_template_use, whose native arm
+    // (instantiate_make_integer_seq) resolves it ahead of the registry.
+    // Empty body + non-type params = the opaque dependent shell serves any
+    // use the native arm declines (a dependent N), like any other template.
+    {
+	const uint32_t nid = template_name_pool.intern("__make_integer_seq");
+	std::vector<TemplateDef> &vars =
+	    class_template_variants_for_write(nid, NULL, false);
+	if ( vars.empty() )
+	{
+	    TemplateDef td;
+	    td.class_name = "__make_integer_seq";
+	    td.registry_name_id = nid;
+	    td.typeparams.push_back("_Sq");
+	    td.typeparams.push_back("_Tp");
+	    td.typeparams.push_back("_Np");
+	    td.typeparam_defaults.resize(3);
+	    td.typeparam_is_type.push_back(false);
+	    td.typeparam_is_type.push_back(true);
+	    td.typeparam_is_type.push_back(false);
+	    td.typeparam_is_pack.assign(3, false);
+	    td.has_non_type_params = true;
+	    vars.push_back(td);
+	}
+    }
     _braces = 0;
 }
 
