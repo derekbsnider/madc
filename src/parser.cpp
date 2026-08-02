@@ -29220,10 +29220,24 @@ Program::TemplateDef *Program::match_partial_specialization(
 		{ diagnostics.resize(sd); last_error = se; }
 	    }
 	    if ( !satisfied )
+	    {
+		if ( smp_on )
+		    fprintf(stderr, "[specmatch]   spec[%zu] FAIL constraint\n", s);
 		continue;   // constraint unsatisfied -> this spec does not apply
+	    }
 	}
 	if ( score > best_score )
 	{
+	    if ( smp_on )
+	    {
+		fprintf(stderr, "[specmatch]   spec[%zu] WIN score=%d body=%zu"
+			" defer=%d pat:", s, score, spec.body.size(),
+			(int)spec.class_pattern_capture_deferred);
+		for ( size_t pi = 0; pi < spec.spec_pattern.size(); ++pi )
+		    fprintf(stderr, " '%s'",
+			    template_tokens_spelling(spec.spec_pattern[pi]).c_str());
+		fprintf(stderr, "\n");
+	    }
 	    best = &spec;
 	    best_score = score;
 	    best_ded = ded;
