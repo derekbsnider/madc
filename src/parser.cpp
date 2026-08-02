@@ -28980,6 +28980,12 @@ Program::TemplateDef *Program::match_partial_specialization(
     const std::vector<TemplateDef> *found =
 	entry ? entry->find(owner_hint) : NULL;
     std::vector<TemplateDef> *it = const_cast<std::vector<TemplateDef> *>(found);
+    static const char *smp = ::getenv("MADC_SPECMATCH_PROBE");
+    const bool smp_on = smp && *smp && name.find(smp) != std::string::npos;
+    if ( smp_on )
+	fprintf(stderr, "[specmatch] %s nspecs=%zu nargs=%zu ns='%s'\n",
+		name.c_str(), it ? it->size() : (size_t)0,
+		arg_spellings.size(), ns_hint.c_str());
     if ( !it )
 	return NULL;
     if ( arg_types_by_slot.size() != arg_spellings.size()
@@ -28996,7 +29002,12 @@ Program::TemplateDef *Program::match_partial_specialization(
     {
 	TemplateDef &spec = (*it)[s];
 	if ( spec.defining_namespace != ns_hint )
+	{
+	    if ( smp_on )
+		fprintf(stderr, "[specmatch]   spec[%zu] SKIP ns '%s'\n",
+			s, spec.defining_namespace.c_str());
 	    continue;
+	}
 	// A trailing parameter-pack slot (`_Types...` as the LAST pattern arg, naming a
 	// declared pack typeparam) absorbs 0+ trailing concrete args into one slot, so
 	// the fixed (non-pack) slot count is one less and the arg arity need only be >=
@@ -29024,7 +29035,13 @@ Program::TemplateDef *Program::match_partial_specialization(
 	if ( trailing_pack_name.empty()
 		 ? spec.spec_pattern.size() != arg_spellings.size()
 		 : arg_spellings.size() < fixed_slots )
+	{
+	    if ( smp_on )
+		fprintf(stderr, "[specmatch]   spec[%zu] SKIP arity pat=%zu"
+			" fixed=%zu pack='%s'\n", s, spec.spec_pattern.size(),
+			fixed_slots, trailing_pack_name.c_str());
 	    continue;                                  // arity (pack absorbs the tail)
+	}
 	std::map<std::string, DataDef *> ded;
 	std::map<std::string, std::string> tmpl_ded;   // template-template-param deductions
 	std::map<std::string, std::vector<std::string> > pack_ded; // trailing-pack deductions
@@ -29064,10 +29081,23 @@ Program::TemplateDef *Program::match_partial_specialization(
 		if ( !non_type_partial_spec_arg_matches(*this,
 			    spec.spec_pattern[i], arg_tokens_by_slot[i],
 			    pattern_spelling, arg_spellings[i], score) )
-		{ ok = false; break; }
+		{
+		    if ( smp_on )
+			fprintf(stderr, "[specmatch]   spec[%zu] slot[%zu] NONTYPE"
+				" pat='%s' arg='%s'\n", s, i,
+				pattern_spelling.c_str(), arg_spellings[i].c_str());
+		    ok = false; break;
+		}
 		continue;
 	    }
-	    if ( !arg_types_by_slot[i] ) { ok = false; break; }
+	    if ( !arg_types_by_slot[i] )
+	    {
+		if ( smp_on )
+		    fprintf(stderr, "[specmatch]   spec[%zu] slot[%zu]"
+			    " NULL-ARGTYPE pat='%s'\n", s, i,
+			    template_tokens_spelling(spec.spec_pattern[i]).c_str());
+		ok = false; break;
+	    }
 	    // Flat shapes (`[cv] PARAM [*]*`, concrete literal) first; on rejection,
 	    // try nested-template-id unification (`allocator<_Tp>` vs the concrete
 	    // `std::allocator<char>`); finally the `__void_t<...>` detection idiom
@@ -29098,7 +29128,12 @@ Program::TemplateDef *Program::match_partial_specialization(
 		detect_slots.push_back(i);
 	}
 	if ( !ok )
+	{
+	    if ( smp_on )
+		fprintf(stderr, "[specmatch]   spec[%zu] FAIL slot (fixed=%zu)\n",
+			s, fixed_slots);
 	    continue;
+	}
 	for ( size_t di = 0; di < detect_slots.size(); ++di )
 	{
 	    size_t i = detect_slots[di];
@@ -29108,7 +29143,13 @@ Program::TemplateDef *Program::match_partial_specialization(
 			&spec.spec_pattern[i],
 			arg_types_by_slot[i]
 			    ? &arg_types_by_slot[i]->definition : NULL) )
-	    { ok = false; break; }
+	    {
+		if ( smp_on )
+		    fprintf(stderr, "[specmatch]   spec[%zu] FAIL detect slot[%zu]"
+			    " pat='%s'\n", s, i,
+			    template_tokens_spelling(spec.spec_pattern[i]).c_str());
+		ok = false; break;
+	    }
 	}
 	if ( !ok )
 	    continue;
@@ -29132,7 +29173,11 @@ Program::TemplateDef *Program::match_partial_specialization(
 	      && !pack_ded.count(spec.typeparams[k])
 	      && !nontype_ded.count(spec.typeparams[k]) ) { all = false; break; }
 	if ( !all )
+	{
+	    if ( smp_on )
+		fprintf(stderr, "[specmatch]   spec[%zu] FAIL undeduced param\n", s);
 	    continue;
+	}
 	// C++20: a CONSTRAINED partial spec applies only if its requires-clause is
 	// SATISFIED for the deduced args. Substitute the deductions into the clause
 	// and fold it as a constant (concept-ids resolve via the concept evaluator,
