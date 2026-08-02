@@ -42,7 +42,14 @@ CHECK_ONLY=0
 # is visible in three backtrace frames (how the libc++ <string> allocator
 # CRTP loop was found, 2026-07-28); the built-in handler prints raw
 # addresses only.
-PKGS_base="build-essential g++-13 autoconf ccache make git rsync python3 pkg-config gdb"
+# valgrind: front-end PERFORMANCE attribution (callgrind). gcc is the
+# performance baseline too, and scripts/perf_vs_gcc.sh callgrinds any file
+# where madc is slower — with valgrind absent that script degrades to a bare
+# timing number. Found needed 2026-08-02: testsubscript's front end takes
+# ~20 s under -stdlib=libc++ vs ~1.3 s default, and --show-stats accounts
+# for only 2.3 s of it, so the remaining ~17 s is invisible without a
+# profiler.
+PKGS_base="build-essential g++-13 autoconf ccache make git rsync python3 pkg-config gdb valgrind"
 # libc++-18-dev / libc++abi-18-dev are NOT darwin-only tooling: libc++ is a
 # standard library (Apple, Android NDK, FreeBSD, and clang on Linux all use
 # it), so madc's libc++ ABI flavor is developed and gated HERE, on Linux,
@@ -65,7 +72,7 @@ ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross"
 # The binaries that actually have to exist afterwards — the check the build and
 # the gates really depend on (a package can install and still not provide the
 # versioned name we invoke).
-BINS="g++ gcc make autoconf ccache python3 rsync nm gdb
+BINS="g++ gcc make autoconf ccache python3 rsync nm gdb valgrind
       clang clang++ clang-18 clang++-18 ld64.lld-18 llvm-ar-18 llvm-nm-18 llvm-objdump-18 llvm-otool-18
       qemu-aarch64-static"
 
