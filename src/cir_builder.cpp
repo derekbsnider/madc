@@ -10458,6 +10458,27 @@ bool CirBuilder::class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 	for (const auto &m : cdd->members) {
 		const FuncDef::CtorInitializer *ci = find_member_initializer(fd, m.first);
 		if (!ci) continue;
+		// Env-gated probe (MADC_CTORINIT_PROBE=<substr of the owner class>):
+		// the SHAPE of a member initializer's argument list. A single
+		// argument that is a TokenPackExpansion means the list was never
+		// expanded — `m(pattern...)` is N initializers, not one.
+		{
+			static const char *cip = ::getenv("MADC_CTORINIT_PROBE");
+			if (cip && *cip
+			    && cdd->name.find(cip) != std::string::npos) {
+				fprintf(stderr, "CTORINIT owner=%s member=%s"
+					" nargs=%zu arg0_is_expansion=%d"
+					" packs=%zu\n",
+					cdd->name.c_str(), m.first.c_str(),
+					ci->args.size(),
+					(!ci->args.empty() && dynamic_cast<
+					 TokenPackExpansion *>(ci->args[0]))
+						? 1 : 0,
+					m_tsubst_active_type_arg_packs
+					  ? m_tsubst_active_type_arg_packs->size()
+					  : (size_t)0);
+			}
+		}
 #ifdef MADC_DEBUG_CTORINIT
 		fprintf(stderr, "[ctorinit] member-init owner=%s member=%s ci=%s nargs=%zu mclass=%s\n",
 			cdd->name.c_str(), m.first.c_str(), ci->name.c_str(),
