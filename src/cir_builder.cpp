@@ -2143,6 +2143,40 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 	bool changed = false;
 	for (DataDef *arg : tcf->explicit_template_args) {
 		DataDef *sarg = subst_datadef_active(arg, *subst);
+		// Env-gated probe (MADC_TSUBST_EXPL_PROBE=<substr of the callee>):
+		// what the copy lane made of a call's EXPLICIT template arguments,
+		// beside the pack state that should have driven it. An arg that
+		// comes out unchanged while its window already holds the element
+		// (window=N w0=… with copyidx=-1) is the diagnostic: the element
+		// binding exists, the per-element copy context does not.
+		static const char *xp = ::getenv("MADC_TSUBST_EXPL_PROBE");
+		if (xp && *xp && tcf->var.name.find(xp) != std::string::npos) {
+			DataDefTemplateParam *atp =
+				template_param_under_type_layers(arg);
+			size_t wsz = 0;
+			std::string w0;
+			if (atp && m_tsubst_active_type_arg_packs
+			    && atp->param_index
+			       < m_tsubst_active_type_arg_packs->size()) {
+				const std::vector<DataDef *> &w =
+					(*m_tsubst_active_type_arg_packs)
+						[atp->param_index];
+				wsz = w.size();
+				if (wsz && w[0])
+					w0 = w[0]->name;
+			}
+			fprintf(stderr, "EXPLPROBE call=%s arg=%s -> %s tpidx=%d"
+				" copyidx=%d copyelem=%zu window=%zu w0=%s"
+				" packparam=%d\n",
+				tcf->var.name.c_str(),
+				arg ? arg->name.c_str() : "(null)",
+				sarg ? sarg->name.c_str() : "(null)",
+				atp ? (int)atp->param_index : -1,
+				m_tsubst_copy_pack_index,
+				m_tsubst_copy_pack_elem, wsz, w0.c_str(),
+				atp && m_tsubst_active_pack_params.count(
+					atp->param_index) ? 1 : 0);
+		}
 		explicit_args.push_back(sarg);
 		if (sarg != arg)
 			changed = true;

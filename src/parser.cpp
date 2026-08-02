@@ -46814,6 +46814,24 @@ static bool datadef_involves_placeholder(DataDef *dd, bool include_dependent_cla
 // is dependent iff ANY argument is (recursively) or its own result type is. This
 // is the spine both the parse-time defer decision and (later, step 3) the tsubst
 // resolver re-entry consult, so the per-construct token scans retire onto it.
+// [temp.arg]/1 + [temp.dep.expr]/3: an EXPLICIT template-argument list that
+// still names a template parameter is dependent. A parameter is never a valid
+// ARGUMENT — `std::forward<_Args1>(x)` with `_Args1` unsubstituted has nothing
+// to instantiate to, however concrete `x` is. Split out because the argument
+// list is a dependence axis of its own: pt.cc:30357 reaches it through
+// any_dependent_template_arguments_p, and both the parse-time defer decision
+// and the tsubst re-entry consult it here.
+static bool call_template_args_dependent(TokenCallFunc *tc)
+{
+	if ( !tc )
+		return false;
+	for ( size_t i = 0; i < tc->explicit_template_args.size(); ++i )
+		if ( datadef_involves_placeholder(tc->explicit_template_args[i],
+						  false) )
+			return true;
+	return false;
+}
+
 static bool is_type_dependent(TokenBase *expr)
 {
 	if ( !expr )
@@ -46821,9 +46839,13 @@ static bool is_type_dependent(TokenBase *expr)
 	if ( TokenPackExpansion *pe = dynamic_cast<TokenPackExpansion *>(expr) )
 		return pe->pattern ? is_type_dependent(pe->pattern) : true;
 	if ( TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(expr) )
+	{
+		if ( call_template_args_dependent(tc) )
+			return true;
 		for ( size_t i = 0; i < tc->parameters.size(); ++i )
 			if ( is_type_dependent(tc->parameters[i]) )
 				return true;
+	}
 	// General fall-through (pt.cc:30357): the node's own type is dependent.
 	return datadef_involves_placeholder(expr->datadef());
 }
@@ -46877,13 +46899,50 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 #endif
     if ( pgm.dependent_parse_in_progress && call_involves_placeholder(tc) )
 	return false;
+    // …and UNCONDITIONALLY when the explicit template-argument list is itself
+    // still dependent. The gate above is scoped to a dependent parse because a
+    // concrete-argument call inside a template body instantiates eagerly; a
+    // template PARAMETER standing in an argument list is different in kind —
+    // there is no type to instantiate to, in any context. tsubst's body-copy
+    // lane (cir_builder resolve_copied_dependent_call) re-resolves a
+    // pack-expansion pattern with no per-element binding in scope, so
+    // `std::forward<_Args1>(std::get<_I1>(x))` arrives here with _Args1 still a
+    // DataDefTemplateParam and dependent_parse_in_progress already false.
+    // Binding it produced a placeholder instance on the SHARED parse-once node
+    // and overwrote the good one the expanding lane had already made.
+    if ( call_template_args_dependent(tc) )
+	return false;
     DBG_PACK("try_inst %s args=%zu\n", key.c_str(), tc->parameters.size());
-#ifdef MADC_DEBUG_CTORTMPL
-    if ( getenv("MADC_DEBUG_CTORTMPL") && key.find("::get") != std::string::npos )
-	fprintf(stderr, "[getinst] try_inst key=%s nargs=%zu nexpl=%zu ntparams=%zu\n",
-	    key.c_str(), tc->parameters.size(), tc->explicit_template_args.size(),
-	    ft.typeparams.size());
-#endif
+    // Env-gated probe (MADC_FNTPL_PROBE=<substr of the template key>): entry
+    // state for a namespace fn-template instantiation request — arity plus the
+    // SPELLING of every explicit template argument. A still-placeholder
+    // explicit arg here is the diagnostic: the call was substituted without its
+    // template-argument list being substituted with it.
+    {
+	static const char *ftp = ::getenv("MADC_FNTPL_PROBE");
+	if ( ftp && *ftp && key.find(ftp) != std::string::npos )
+	{
+	    fprintf(stderr, "FNTPLPROBE try_inst key=%s nargs=%zu nexpl=%zu"
+		    " ntparams=%zu dep_parse=%d dep_call=%d in=%s\n",
+		    key.c_str(), tc->parameters.size(),
+		    tc->explicit_template_args.size(), ft.typeparams.size(),
+		    (int)pgm.dependent_parse_in_progress,
+		    (int)call_involves_placeholder(tc),
+		    pgm.cur_func_name.c_str());
+	    for ( size_t i = 0; i < tc->explicit_template_args.size(); ++i )
+	    {
+		DataDef *ea = tc->explicit_template_args[i];
+		DataDefCLASS *ec = dynamic_cast<DataDefCLASS *>(ea);
+		fprintf(stderr, "FNTPLPROBE   expl[%zu]='%s' placeholder=%d"
+			" ref=%d ptr=%d tparam=%d\n", i,
+			ea ? ea->name.c_str() : "(null)",
+			ec ? (int)ec->is_dependent_placeholder : -1,
+			ea ? (int)ea->is_reference() : -1,
+			ea ? (int)ea->is_pointer() : -1,
+			dynamic_cast<DataDefTemplateParam *>(ea) ? 1 : 0);
+	    }
+	}
+    }
     // Type parameters only; one parameter pack allowed in the LAST position
     // (bound to exactly one element — `__stoa`'s `_Base...` shape).
     std::string pack_param;
@@ -47402,6 +47461,12 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	}
 	if ( concrete )
 	    tc->explicit_template_args = full;
+    }
+    {
+	static const char *ftp = ::getenv("MADC_FNTPL_PROBE");
+	if ( ftp && *ftp && key.find(ftp) != std::string::npos )
+	    fprintf(stderr, "FNTPLPROBE  end key=%s ok=%d bound=%s\n",
+		    key.c_str(), (int)inst_ok, tc->var.name.c_str());
     }
     return inst_ok;
 }
