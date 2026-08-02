@@ -5132,6 +5132,14 @@ public:
     // rewrite must not fire on a speculative member probe).
     TokenDataType *instantiate_make_integer_seq(TokenBase *tb,
 						const std::string &ns_hint);
+    // clang's __type_pack_element builtin template:
+    // `__type_pack_element<I, T0, ..., Tn>` (I a concrete constant) IS the
+    // I-th type argument. Consumes the live stream's `< I , T... >` region
+    // and returns the selected type directly (no instantiation — the result
+    // is one of the given args); NULL (ordinary path) when I is dependent /
+    // non-constant / out of range. Same owner gating as the sibling above.
+    TokenDataType *instantiate_type_pack_element(TokenBase *tb,
+						 const std::string &ns_hint);
     TemplateAliasDef *find_template_alias(const std::string &name,
 					  const std::string &ns_hint = std::string(),
 					  DataDefCLASS *owner_hint = NULL);

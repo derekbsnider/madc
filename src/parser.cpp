@@ -4600,6 +4600,7 @@ TokenDataType *Program::instantiate_make_integer_seq(TokenBase *tb,
 static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &spelling);
 static bool datadef_has_unresolved_dependent_surface(DataDef *dd);
 
+
 static bool opaque_template_args_select_concrete_partial_spec(
 	Program &pgm, const Program::TemplateDef &td, const std::string &tname,
 	const std::vector<std::string> &args,
@@ -5454,6 +5455,7 @@ static bool class_body_friend_needs_parse(
     }
     return true;	// unterminated — needs the parse lane
 }
+
 
 static Program::ClassParseReason basic_class_pattern_eligibility(
 	Program &pgm, const BasicClassPatternBinding &binding,
@@ -7162,6 +7164,94 @@ static bool vri_debug_enabled()
     return e != NULL;
 }
 
+// clang's __type_pack_element builtin template (BuiltinTemplateDecl
+// BTK__type_pack_element): `__type_pack_element<I, T0, ..., Tn>` IS the I-th
+// type argument. libc++'s tuple_element takes this branch when __has_builtin
+// says yes; the fallback branch is a decltype-indexer whose resolution minted
+// an opaque dependent shell (tuple_element<0,tuple<int&>>::type — get<0>'s
+// return, the mem-init instantiation-demand deferral; task #103). The head
+// identifier is already consumed by the caller; the live stream holds
+// `< I , T0 , ... >`. A CONCRETE I selects its type argument directly — the
+// region is consumed and the resolved type returned (nothing instantiates:
+// the result is one of the given args). A dependent / non-constant /
+// out-of-range I returns NULL with the stream untouched — the ordinary
+// lookup path then serves the use (dependent shell), like any template-id.
+TokenDataType *Program::instantiate_type_pack_element(TokenBase *tb,
+						      const std::string &ns_hint)
+{
+    (void)ns_hint;
+    if ( tokens.empty() || !tokens[0] || tokens[0]->id() != TokenID::tkLT )
+	return NULL;
+    DelimDepth d;
+    size_t i = delim_scan_step(tokens, 0, d);	// the `<` (NULL prev: opens)
+    size_t arg_start = i;
+    size_t close_idx = 0;
+    std::vector<std::pair<size_t, size_t> > argr;	// [start, end) per arg
+    while ( i < tokens.size() )
+    {
+	TokenBase *t = tokens[i];
+	if ( t && d.angle == 1 && !d.paren && !d.square && !d.brace )
+	{
+	    if ( t->id() == TokenID::tkComma )
+	    {
+		argr.push_back(std::make_pair(arg_start, i));
+		arg_start = i + 1;
+	    }
+	    else if ( t->id() == TokenID::tkGT )
+	    {
+		close_idx = i;
+		break;
+	    }
+	    else if ( t->id() == TokenID::tkBSR )
+		return NULL;	// nested-template shared close: ordinary path
+	}
+	i += delim_scan_step(tokens, i, d);
+    }
+    if ( !close_idx || argr.empty() )
+	return NULL;
+    argr.push_back(std::make_pair(arg_start, close_idx));
+    for ( size_t a = 0; a < argr.size(); ++a )
+	if ( argr[a].first >= argr[a].second )
+	    return NULL;
+    // I must fold to a concrete in-range constant NOW.
+    std::vector<TokenBase *> iexpr;
+    for ( size_t k = argr[0].first; k < argr[0].second; ++k )
+	if ( tokens[k] )
+	    iexpr.push_back(tokens[k]);
+    int64_t sel = -1;
+    if ( !fold_nontype_arg_constant(iexpr, sel )
+      || sel < 0 || (size_t)sel + 1 >= argr.size() )
+	return NULL;
+    // Resolve the selected type run BEFORE consuming anything — a resolution
+    // miss leaves the stream untouched for the ordinary path.
+    const size_t ss = argr[(size_t)sel + 1].first;
+    const size_t se = argr[(size_t)sel + 1].second;
+    std::vector<TokenBase *> sel_toks;
+    for ( size_t k = ss; k < se; ++k )
+	if ( tokens[k] )
+	    sel_toks.push_back(tokens[k]);
+    DataDef *dd = resolve_type_token_range(sel_toks, 0, sel_toks.size());
+    if ( !dd )
+	return NULL;
+    // A REFERENCE result spells `T&` in C++ spelling space (the bind_spelling
+    // rule) — its C-lowered NAME is the pointer.
+    std::string sp = dd->is_reference() ? basic_class_datadef_spelling(dd)
+					: std::string(dd->name);
+    for ( size_t k = 0; k <= close_idx; ++k )
+	if ( tokens[k] )
+	    delete tokens[k];
+    std::vector<TokenBase *> none;
+    tokens.splice_front(close_idx + 1, none);
+    TokenDataType *tdt = new TokenDataType(sp.c_str(), *dd);
+    if ( tb )
+    {
+	tdt->file = tb->file;
+	tdt->line = tb->line;
+	tdt->column = tb->column;
+    }
+    return tdt;
+}
+
 TokenDataType *Program::instantiate_template_use(const std::string &tname,
 					       TokenBase *tb,
 					       const std::string &ns_hint,
@@ -7179,6 +7269,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
       && peekToken() && peekToken()->id() == TokenID::tkLT )
 	if ( TokenDataType *bi =
 		instantiate_make_integer_seq(tb, ns_hint) )
+	    return bi;
+    if ( !owner_hint && tname.compare("__type_pack_element") == 0
+      && peekToken() && peekToken()->id() == TokenID::tkLT )
+	if ( TokenDataType *bi =
+		instantiate_type_pack_element(tb, ns_hint) )
 	    return bi;
     const uint32_t tname_id = template_name_pool.intern(tname);
     const Program::TemplateDef *tdp = find_template(
@@ -20528,6 +20623,32 @@ void Program::_parser_init()
 	    td.typeparam_is_type.push_back(true);
 	    td.typeparam_is_type.push_back(false);
 	    td.typeparam_is_pack.assign(3, false);
+	    td.has_non_type_params = true;
+	    vars.push_back(td);
+	}
+    }
+    // clang's __type_pack_element builtin template — the same marker scheme.
+    // The native arm at instantiate_template_use folds a CONCRETE use to its
+    // I-th type argument (the result IS one of the args — no instantiation);
+    // libc++'s tuple_element takes this branch instead of the
+    // decltype-indexer fallback, whose resolution minted an opaque dependent
+    // shell (get<0>'s return, the mem-init demand deferral — task #103).
+    {
+	const uint32_t nid = template_name_pool.intern("__type_pack_element");
+	std::vector<TemplateDef> &vars =
+	    class_template_variants_for_write(nid, NULL, false);
+	if ( vars.empty() )
+	{
+	    TemplateDef td;
+	    td.class_name = "__type_pack_element";
+	    td.registry_name_id = nid;
+	    td.typeparams.push_back("_Ip");
+	    td.typeparams.push_back("_Types");
+	    td.typeparam_defaults.resize(2);
+	    td.typeparam_is_type.push_back(false);
+	    td.typeparam_is_type.push_back(true);
+	    td.typeparam_is_pack.push_back(false);
+	    td.typeparam_is_pack.push_back(true);
 	    td.has_non_type_params = true;
 	    vars.push_back(td);
 	}

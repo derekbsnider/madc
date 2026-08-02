@@ -5794,6 +5794,13 @@ bool Program::has_builtin(const std::string &name)
     // takes its integer_sequence BUILTIN branch on this answer.
     if ( name.compare("__make_integer_seq") == 0 )
 	return true;
+    // __type_pack_element<I, Types...> — folded natively at
+    // instantiate_template_use (the I-th type IS the result; no
+    // instantiation). libc++'s tuple_element takes its builtin branch on
+    // this answer instead of the decltype-indexer fallback, whose
+    // resolution minted an opaque dependent shell (task #103).
+    if ( name.compare("__type_pack_element") == 0 )
+	return true;
     if ( name.compare(0, 10, "__builtin_") != 0 )
 	return false;	// trait intrinsics madc does NOT implement
 			// (__remove_reference_t and the rest of libc++'s 41)
