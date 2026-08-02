@@ -2159,6 +2159,17 @@ protected:
     // question the parser answers when it sees the call.)
     // (not const: intern_keyed_map::count() is not const-qualified)
     bool has_builtin(const std::string &name);
+    // Is this `__has_*` operator one madc ANSWERS from its own state? The ONE
+    // list: evaluateHasQuery declines everything else, and macro_name_defined
+    // makes exactly these visible to `#ifdef` — so an operator can never be
+    // answerable but invisible, or visible but unanswerable.
+    static bool has_query_operator_implemented(const std::string &op);
+    // Is this name DEFINED for `#ifdef` / `#ifndef` / `defined()`? A macro in
+    // either table, or an implemented `__has_*` operator (gcc and clang both
+    // make those visible to #ifdef, and libstdc++ gates whole feature families
+    // on it).
+    // (not const: intern_keyed_map::count() is not const-qualified)
+    bool macro_name_defined(const std::string &name);
     void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
 //  inline int get(std::istream &is) { ++_column; return is.get(); }
     // initializers / finalizers

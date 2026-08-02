@@ -3963,7 +3963,7 @@ TokenBase *Program::_getToken()
 		    std::string name;
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
-		    bool defined = define_map.count(name) > 0 || macro_map.count(name) > 0;
+		    bool defined = macro_name_defined(name);
 		    pack_record_branch_macro(name);
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    ifdef_stack.push(active);
@@ -4730,7 +4730,7 @@ TokenBase *Program::_getToken()
 				std::string name;
 				while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 				    name += source.get();
-				bool defined = define_map.count(name) > 0 || macro_map.count(name) > 0;
+				bool defined = macro_name_defined(name);
 				bool active = (dir == "ifdef") ? defined : !defined;
 				++macro_ifdef_depth;
 				if ( !active )
@@ -5829,9 +5829,34 @@ bool Program::has_builtin(const std::string &name)
     return define_map.count(name) > 0 || macro_map.count(name) > 0;
 }
 
+// The `__has_*` operators madc ANSWERS from its own state. This is the single
+// list behind two questions that must never disagree: what evaluateHasQuery
+// will answer, and what `#ifdef` can see. madc previously answered
+// __has_builtin correctly while `#ifdef __has_builtin` said NO — and
+// libstdc++ wraps its whole _GLIBCXX_HAS_BUILTIN family in exactly that ifdef
+// (c++config.h:830), so every guard below it silently evaluated to 0 and the
+// default lane quietly lost LAUNDER / IS_SAME / HAS_UNIQ_OBJ_REP and their
+// siblings. The operators madc cannot back (__has_attribute, __has_feature,
+// …) stay OFF this list and thus invisible: claiming them would be the
+// unbacked yes this file refuses.
+bool Program::has_query_operator_implemented(const std::string &op)
+{
+    return op == "__has_builtin"
+	|| op == "__has_include"
+	|| op == "__has_include_next";
+}
+
+bool Program::macro_name_defined(const std::string &name)
+{
+    return define_map.count(name) > 0 || macro_map.count(name) > 0
+	|| has_query_operator_implemented(name);
+}
+
 int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr,
 				  size_t &pos)
 {
+    if ( !has_query_operator_implemented(op) )
+	return 0;	// see has_query_operator_implemented — deliberate 0
     while ( pos < expr.size() && (expr[pos] == ' ' || expr[pos] == '\t') )
 	++pos;
     if ( pos >= expr.size() || expr[pos] != '(' )
@@ -6074,7 +6099,7 @@ bool Program::evaluateIfCondition()
 		skip_ws();
 		if ( has_paren && pos < expr.size() && expr[pos] == ')' )
 		    ++pos;
-		return (define_map.count(name) > 0 || macro_map.count(name) > 0) ? 1 : 0;
+		return macro_name_defined(name) ? 1 : 0;
 	    }
 
 	    // The clang __has_* family. Modern standard libraries gate whole
