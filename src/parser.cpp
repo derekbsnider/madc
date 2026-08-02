@@ -43904,9 +43904,13 @@ static std::string skipped_template_function_name(TokenBase *tb)
 
 static bool ignored_template_declarator_call_name(const std::string &name)
 {
+    // "explicit" covers C++20 conditional explicit ([dcl.fct.spec]p2):
+    // `explicit ( const-expr ) Ctor ( params )` — libc++ ships it under
+    // -std=c++17 (tuple's variadic ctors), and reading `explicit (` as the
+    // declarator name silently dropped those ctors from registration.
     return name == "decltype" || name == "noexcept" || name == "sizeof"
 	|| name == "alignof" || name == "typeid" || name == "__attribute__"
-	|| name == "__attribute";
+	|| name == "__attribute" || name == "explicit";
 }
 
 static DataDef *skipped_template_function_return_type(
@@ -47269,6 +47273,25 @@ static bool instantiate_fn_template_binding(Program &pgm,
 			new DataDef(std::to_string(ntv), 8, DataType::dtINT64);
 		    continue;
 		}
+		// An IDENTITY-defaulted TEMPLATE-TEMPLATE parameter
+		// (`template<class...> class _And = _And` — libc++ tuple's
+		// ctor idiom) captures as a non-type param whose sole default
+		// token is its own name. It needs NO binding: unsubstituted
+		// occurrences (`_And<...>` in the constraint) resolve to the
+		// real template in the defining namespace ([temp.param]p11:
+		// the default IS the template itself). Folding it as a value
+		// can never work.
+		if ( ft.typeparam_defaults[i].size() == 1
+		  && ft.typeparam_defaults[i][0]
+		  && contextual_identifier_name(ft.typeparam_defaults[i][0])
+		     == ft.typeparams[i] )
+		{
+		    if ( mtb_on )
+			fprintf(stderr, "MTBPROBE fill %s tpl-tpl %s = identity"
+				" (unbound)\n",
+				key.c_str(), ft.typeparams[i].c_str());
+		    continue;
+		}
 		if ( mtb_on )
 		    fprintf(stderr, "MTBPROBE FAIL %s nontype %s: default"
 			    " does not fold\n",
@@ -50463,9 +50486,23 @@ void Program::instantiate_member_ctor_template_for_construction(
     if ( fd->member_template_param_defaults.size() == ft.typeparams.size() )
     {
 	ft.typeparam_defaults = fd->member_template_param_defaults;
+	// v38 widening (the "next widening" the clearing comment promised):
+	// carry the captured CONSTRAINT runs so instantiate_fn_template_binding
+	// EVALUATES them under the completed binding ([temp.deduct]/8 — its
+	// constraint loop resolves or refuses the candidate) instead of
+	// refusing up front by clearing the constrained default. The pair-ctor
+	// incident's hazard (a default filled with its condition UNCHECKED)
+	// cannot recur: the constraint either resolves or the candidate drops.
+	// libc++ tuple's variadic ctor (`class... _Up, __enable_if_t<..., int>
+	// = 0`) is the demand case — its cleared default refused every
+	// instantiation and the construction bound the bodyless placeholder.
+	if ( fd->member_template_param_constraints.size() == ft.typeparams.size() )
+	    ft.typeparam_constraints = fd->member_template_param_constraints;
 	for ( size_t i = 0; i < ft.typeparam_defaults.size(); ++i )
 	    if ( (i >= ft.typeparam_is_type.size() || !ft.typeparam_is_type[i])
-	      && !member_template_nontype_default_fillable(fd, i) )
+	      && !member_template_nontype_default_fillable(fd, i)
+	      && (i >= ft.typeparam_constraints.size()
+		  || ft.typeparam_constraints[i].empty()) )
 		ft.typeparam_defaults[i].clear();
     }
     // The ctor template's DEFINING namespace is its owner class's — the
@@ -50498,6 +50535,26 @@ void Program::instantiate_member_ctor_template_for_construction(
 		    fd->member_template_param_defaults.size(),
 		    (int)!ft.typeparam_defaults.empty(),
 		    fd->member_template_param_constraints.size(), fill.c_str());
+	    // Per-param captured state: the mis-SPLIT of a nested constraint
+	    // (`__enable_if_t<_And<...>::value, int> = 0`) shows only here.
+	    for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+	    {
+		std::string ds, cs;
+		if ( i < ft.typeparam_defaults.size() )
+		    for ( TokenBase *t : ft.typeparam_defaults[i] )
+			if ( t ) { ds += template_token_fragment(t); ds += ' '; }
+		if ( i < ft.typeparam_constraints.size() )
+		    for ( TokenBase *t : ft.typeparam_constraints[i] )
+			if ( t ) { cs += template_token_fragment(t); cs += ' '; }
+		fprintf(stderr, "MCTPROBE   param[%zu] '%s' type=%d pack=%d"
+			" default='%s' constraint='%s'\n",
+			i, ft.typeparams[i].c_str(),
+			i < ft.typeparam_is_type.size()
+			    ? (int)ft.typeparam_is_type[i] : -1,
+			i < ft.typeparam_is_pack.size()
+			    ? (int)ft.typeparam_is_pack[i] : -1,
+			ds.c_str(), cs.c_str());
+	    }
 	}
     }
 
@@ -50511,7 +50568,26 @@ void Program::instantiate_member_ctor_template_for_construction(
 		|| (t->type() == TokenType::ttIdentifier
 		    && (static_cast<TokenIdent *>(t)->spelling_is("static")
 		     || static_cast<TokenIdent *>(t)->spelling_is("explicit")))) )
+	{
+	    // C++20 conditional explicit ([dcl.fct.spec]p2): dropping the
+	    // keyword must also drop its `( const-expr )` condition group, or
+	    // the orphaned parens derail the signature extraction (libc++
+	    // tuple's variadic ctors under -std=c++17).
+	    if ( t->type() == TokenType::ttIdentifier
+	      && static_cast<TokenIdent *>(t)->spelling_is("explicit")
+	      && i + 1 < fd->member_template_decl.size()
+	      && fd->member_template_decl[i + 1]
+	      && fd->member_template_decl[i + 1]->id() == TokenID::tkOpBrk )
+	    {
+		DelimDepth d;
+		size_t k = i + 1;
+		k += delim_scan_step(fd->member_template_decl, k, d);
+		while ( k < fd->member_template_decl.size() && !d.top() )
+		    k += delim_scan_step(fd->member_template_decl, k, d);
+		i = k - 1;	// consumed `explicit ( ... )`
+	    }
 	    continue;
+	}
 	ft.decl.push_back(t ? t->clone() : NULL);
     }
     size_t ni = skipped_template_function_declarator_name_index(ft.decl, NULL);
