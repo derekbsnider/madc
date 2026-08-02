@@ -3945,7 +3945,8 @@ static bool template_base_clause_has_template_id(const Program::TemplateDef &td)
 // opaque path. The actual concreteness of the args is decided AFTER parsing them (a
 // dependent arg falls back to the opaque shell), so this predicate only gates SHAPE.
 static bool template_pack_real_instantiable(const Program::TemplateDef &td,
-					    bool allow_valuepack)
+					    bool allow_valuepack,
+					    bool nontype_fixed_ok = false)
 {
     if ( td.body.empty() )
 	return false;
@@ -3963,10 +3964,14 @@ static bool template_pack_real_instantiable(const Program::TemplateDef &td,
     // clone splices / replicates them. (td.has_non_type_params is a misnomer —
     // it is set true even for a pure TYPE pack — so test typeparam_is_type
     // directly.)
+    // EXCEPTION (`nontype_fixed_ok`, the WON-partial-spec path): a spec's
+    // non-type FIXED param (`tuple_element<_Ip, tuple<_Types...>>`'s _Ip)
+    // is already bound via token_subst by the spec-win wiring — the arg
+    // loop's subst limitation does not apply there.
     if ( n > td.typeparam_is_type.size() )
 	return false;
     for ( size_t i = 0; i + 1 < n; ++i )
-	if ( !td.typeparam_is_type[i] )
+	if ( !td.typeparam_is_type[i] && !nontype_fixed_ok )
 	    return false;
     if ( !td.typeparam_is_type[n - 1] )
 	return allow_valuepack;	// NON-TYPE pack: demand-keyed (see madc.h)
@@ -5073,8 +5078,23 @@ DataDefCLASS *Program::materialize_dependent_member_type(DataDef *owner,
     std::string owner_spelling = owner->canonical_cpp_spelling().empty()
 			       ? owner->name : owner->canonical_cpp_spelling();
     dep->set_canonical_spelling(owner_spelling + "::" + member_name);
-    struct_map.set(dep_name, dep);
-    datatype_map[dep_name] = new TokenDataType(dep_name.c_str(), *dep);
+    // An INCOMPLETE owner with a PENDING lazy completion heals later
+    // ([temp.inst] — the pending-record arm): caching this member
+    // placeholder under its flat name would OUTLIVE the healing and serve
+    // the stale shell to every later resolution (rbA's
+    // tuple_element<0,tuple<int&>>::type — the first walk poisoned the
+    // cache, the second walk found the healed owner but this stale member;
+    // task #103). Mint EPHEMERAL: usable by this resolution, re-derived
+    // against the healed owner next time.
+    bool ephemeral = false;
+    if ( DataDefCLASS *ocls = dynamic_cast<DataDefCLASS *>(owner) )
+	ephemeral = is_incomplete_class_datadef(ocls)
+		 && has_pending_template_instantiation(ocls->name);
+    if ( !ephemeral )
+    {
+	struct_map.set(dep_name, dep);
+	datatype_map[dep_name] = new TokenDataType(dep_name.c_str(), *dep);
+    }
     // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every opaque
     // dependent-member synthesis for a matching owner — the laundered-opaque
     // diagnostic (which resolution path lands here, live vs bound).
@@ -7270,7 +7290,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	if ( TokenDataType *bi =
 		instantiate_make_integer_seq(tb, ns_hint) )
 	    return bi;
-    if ( !owner_hint && tname.compare("__type_pack_element") == 0
+    // UNLIKE the sibling above, this arm runs under owner-scoped lookups
+    // too: the fold is ATOMIC (the stream is consumed ONLY on success —
+    // every bail leaves it untouched, so a speculative member probe's miss
+    // stays non-destructive), and a class-body typedef parse
+    // (`typedef __type_pack_element<_Ip, _Tp...> type;` — the tuple_element
+    // spec body) carries owner_hint, which is exactly where libc++ needs
+    // the builtin. The name is compiler vocabulary — never a member.
+    if ( tname.compare("__type_pack_element") == 0
       && peekToken() && peekToken()->id() == TokenID::tkLT )
 	if ( TokenDataType *bi =
 		instantiate_type_pack_element(tb, ns_hint) )
@@ -7708,6 +7735,17 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		}
 		pack_subst[p->first] = elems;
 	    }
+	    // The SPEC's shape replaces the primary's — recompute the pack
+	    // real-instantiation admittance against it. The stale value
+	    // (computed on the pack-less declaration-only primary at entry)
+	    // left the clone loop's pack arms OFF for a pack-pattern spec,
+	    // so its body instantiated EMPTY (tuple_element<0, tuple<int>>
+	    // — the map:967 chain's ::type shell). A WON spec with concrete
+	    // args IS the demand (the match consumed them); its non-type
+	    // FIXED params (_Ip) are bound via token_subst above.
+	    if ( td.is_partial_specialization )
+		pack_real_inst = template_pack_real_instantiable(
+		    td, /*allow_valuepack=*/true, /*nontype_fixed_ok=*/true);
 	}
     }
 
@@ -7770,6 +7808,24 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
       || placeholder_arg || recursive_opaque )
     {
 	++_class_inst_opaque;
+	{
+	    static const char *ojp = ::getenv("MADC_INJ_PROBE");
+	    if ( ojp && *ojp
+	      && registered_mangled.find(ojp) != std::string::npos )
+	    {
+		fprintf(stderr, "[inj-opaque] %s body=%zu pri=%d dep=%d ph=%d"
+			" rec=%d\n", registered_mangled.c_str(),
+			td.body.size(), (int)pack_real_inst,
+			(int)dependent_surface, (int)placeholder_arg,
+			(int)recursive_opaque);
+		for ( size_t ai = 0; ai < type_args.size(); ++ai )
+		    if ( type_args[ai] )
+			fprintf(stderr, "[inj-opaque]   arg[%zu] %s: %s\n", ai,
+				type_args[ai]->definition.name.c_str(),
+				dependent_surface_reason(
+				    &type_args[ai]->definition).c_str());
+	    }
+	}
 	DataDefCLASS *fwd = new DataDefCLASS(registered_mangled, 0, DataType::dtRESERVED);
 	// A bodyless declaration with concrete arguments is incomplete, not
 	// dependent; pending completion still recognizes it by its empty shell.
@@ -8451,6 +8507,20 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 
     DBG(std::cout << "instantiate_template_use(): injecting " << inj.size()
 	<< " tokens for " << mangled << std::endl);
+    // Env-gated probe (MADC_INJ_PROBE=<substr of the mangled key>): the FULL
+    // injected token sequence — the unbalanced-body / over-consumption
+    // diagnostic (a desync here eats the caller's declarator).
+    {
+	static const char *ijp = ::getenv("MADC_INJ_PROBE");
+	if ( ijp && *ijp && mangled.find(ijp) != std::string::npos )
+	{
+	    fprintf(stderr, "[inj] %s n=%zu:", mangled.c_str(), inj.size());
+	    for ( size_t ii = 0; ii < inj.size(); ++ii )
+		fprintf(stderr, " %s",
+			inj[ii] ? template_token_fragment(inj[ii]).c_str() : "?");
+	    fprintf(stderr, "\n");
+	}
+    }
 
     // Inject to the FRONT of the parse deque (push_front in reverse so they
     // dequeue in order), then re-parse the class definition via its keyword token.
@@ -9498,6 +9568,17 @@ void Program::complete_pending_template_instantiations(const std::string &class_
     }
 }
 
+bool Program::has_pending_template_instantiation(const std::string &mangled_name) const
+{
+    for ( std::map<std::string, std::vector<Program::PendingTemplateInstantiation>>::const_iterator pi =
+	      pending_template_instantiations.begin();
+	  pi != pending_template_instantiations.end(); ++pi )
+	for ( size_t i = 0; i < pi->second.size(); ++i )
+	    if ( pi->second[i].mangled_name == mangled_name )
+		return true;
+    return false;
+}
+
 bool Program::request_template_instantiation_completion(const std::string &mangled_name)
 {
     template_completion_requested.insert(mangled_name);
@@ -9713,6 +9794,63 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	    fprintf(stderr, "TNPROBE alias %s::%s -> %s\n",
 		    owner ? owner->name.c_str() : param_owner->name.c_str(),
 		    member_name.c_str(), alias_dd ? alias_dd->name.c_str() : "(null)");
+	// A member-alias MISS on an INCOMPLETE owner that carries a
+	// dependent-shell ORIGIN (the opaque lane's mint, parser ~4854): the
+	// owner was minted DURING a dependent parse and cached; by now its
+	// recorded args may be fully CONCRETE (tuple_element<0, tuple<int&>>
+	// from get<0>'s instantiation — the map:967 chain), so replay the
+	// template-id and retry the alias on the REAL instance. SILENT
+	// SFINAE discipline (the constraint evaluator's pattern): cerr muted
+	// and diagnostics rewound — a failed replay (a still-dependent shell,
+	// a spelling-matched-spec template that cannot re-enter cleanly)
+	// falls through to the opaque materialization exactly as before,
+	// with no stderr noise in the default lane.
+	if ( !alias_dd && owner && is_incomplete_class_datadef(owner) )
+	{
+	    std::map<DataDef *, DependentShellOrigin>::const_iterator oi =
+		dependent_shell_origin.find(owner);
+	    if ( tnp_on )
+		fprintf(stderr, "TNPROBE replay-gate %s org=%d runs=%zu\n",
+			owner->name.c_str(),
+			(int)(oi != dependent_shell_origin.end()),
+			oi != dependent_shell_origin.end()
+			    ? oi->second.raw_arg_tokens.size() : (size_t)0);
+	    if ( oi != dependent_shell_origin.end()
+	      && !oi->second.raw_arg_tokens.empty() )
+	    {
+		struct TnNullBuf : std::streambuf
+		{ int overflow(int c) { return c; } };
+		static TnNullBuf tn_null_buf;
+		size_t sd = diagnostics.size();
+		Program::ErrorInfo se = last_error;
+		std::streambuf *sc = std::cerr.rdbuf(&tn_null_buf);
+		TokenDataType *real = NULL;
+		try
+		{
+		    real = instantiate_shell_origin_replay(
+			oi->second, oi->second.raw_arg_tokens);
+		}
+		catch ( ... ) { real = NULL; }
+		std::cerr.rdbuf(sc);
+		DataDefCLASS *rc = real
+		    ? dynamic_cast<DataDefCLASS *>(&real->definition) : NULL;
+		if ( rc && !is_incomplete_class_datadef(rc) )
+		{
+		    owner = rc;
+		    alias_dd = resolve_class_type_alias(owner, member_name);
+		    if ( tnp_on )
+			fprintf(stderr, "TNPROBE shell-replay %s -> %s"
+				" alias=%s\n", oi->second.tname.c_str(),
+				owner->name.c_str(),
+				alias_dd ? alias_dd->name.c_str() : "(null)");
+		}
+		else
+		{
+		    diagnostics.resize(sd);
+		    last_error = se;
+		}
+	    }
+	}
 	if ( !alias_dd && (owner ? class_allows_opaque_member_type(owner)
 				 : true) )
 	{
