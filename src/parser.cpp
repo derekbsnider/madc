@@ -7648,7 +7648,26 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     for ( size_t i = 0; i < type_args.size(); ++i )
     {
 	if ( datadef_has_unresolved_dependent_surface(&type_args[i]->definition) )
-	    dependent_surface = true;
+	{
+	    // NARROW carve-out ([temp.dep.type]), LOCAL to this gate: a
+	    // dependent-PLACEHOLDER class stamped opaque_concrete_tag was
+	    // minted OUTSIDE any dependent parse — its spelling is fully
+	    // concrete (a pack-class use whose real instantiation simply
+	    // had not been demanded yet: tuple<int&> before
+	    // forward_as_tuple realizes it). Such an arg does not make THIS
+	    // template-id dependent; counting it deferred
+	    // tuple_element<0,tuple<int&>> forever — the first ::type hop
+	    // then baked a stale member shell into get<0>'s return and the
+	    // mem-init forward demand (task #103). The shared predicate
+	    // keeps its meaning — only this gate carves.
+	    DataDefCLASS *acls =
+		dynamic_cast<DataDefCLASS *>(&type_args[i]->definition);
+	    if ( !(acls && acls->is_dependent_placeholder
+		   && acls->opaque_concrete_tag
+		   && !acls->has_dependent_surface
+		   && !class_has_dependent_base(acls)) )
+		dependent_surface = true;
+	}
 	if ( datadef_involves_placeholder(&type_args[i]->definition,
 					  /*include_dependent_class=*/false) )
 	    placeholder_arg = true;
