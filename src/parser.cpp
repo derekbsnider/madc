@@ -3600,6 +3600,14 @@ static std::string sanitize_template_fragment(const std::string &s)
 // Same letters as overload_spelling_symbol_suffix's readable head.
 static std::string sanitize_template_arg_fragment(const std::string &s)
 {
+    // Env-gated trap (MADC_RRTRAP=<exact spelling>): abort at the moment a
+    // specific template-arg spelling is flattened, so a gdb backtrace names
+    // the route that built it (the #103 RR-shell hunt). Diagnostic only.
+    {
+	static const char *rrt = ::getenv("MADC_RRTRAP");
+	if ( rrt && *rrt && s == rrt )
+	    abort();
+    }
     std::string out;
     for ( size_t i = 0; i < s.size(); ++i )
     {
@@ -46094,10 +46102,15 @@ static int fn_template_deduce_param(const std::string &spelling,
 	    return -1;
 	core = w;
     }
-    // amps==1: lvalue reference (`_Tp&`). amps==2: rvalue/forwarding
-    // reference (`_Tp&&` — std::move/forward and the libstdc++ move-ctor
-    // chains); both deduce the parameter from the argument's VALUE type
-    // (reference collapsing leaves _Tp = T for madc's value model).
+    // amps==1: lvalue reference (`_Tp&`) — binds the argument's VALUE type
+    // (the parameter's own `&` re-wraps it). amps==2: rvalue/FORWARDING
+    // reference (`_Tp&&`): [temp.deduct.call]/3 — a reference-typed
+    // (lvalue) argument deduces _Tp = A& so `_Tp&&` collapses back to A&
+    // AND a template-id built from _Tp keys the collapsed type
+    // (`tuple<_Tp&&...>` in forward_as_tuple must be tuple<int&>, never a
+    // `tuple<int32_t&&>` spelling shell — the map:967 return-type
+    // mismatch). A non-reference (rvalue/value) argument still binds the
+    // value type, as before.
     if ( core.empty() || amps > 2 )
 	return -1;
     bool is_tp = false;
@@ -46108,7 +46121,15 @@ static int fn_template_deduce_param(const std::string &spelling,
 	return -1;
     DataDef *dd = arg_dd;
     if ( dd->is_reference() )
+    {
+	if ( amps == 2 && stars == 0 )
+	{
+	    tp_out = core;
+	    dd_out = dd;
+	    return 1;
+	}
 	dd = static_cast<DataDefPTR *>(dd)->base_type;
+    }
     for ( size_t i = 0; i < stars; ++i )
     {
 	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
@@ -47814,15 +47835,46 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    // (`, ...`) follow a comma, never an identifier, and survive.
 	    // Declarator-qualified pack (`_Base*...`/`_Base&&...`/`_Base&...`):
 	    // copy through the suffix then drop the `...` (a plain pack leaves
-	    // k at i+1).
+	    // k at i+1). [dcl.ref]/6 in SPELLING space: a REFERENCE element
+	    // ABSORBS a `&`/`&&` suffix (`_Args&&...` with _Args = int& IS
+	    // int&) — copying it through fed the OPAQUE lane's spelling
+	    // collector `int32_t&&` and minted a shell instance
+	    // (tuple_int32_tRR — forward_as_tuple's return temp, the map:967
+	    // return-type mismatch). A non-reference element keeps the
+	    // copy-through (the type-lane arg fold collapses it and the
+	    // spelling identity matches).
 	    // C varargs (`, ...`) follow a comma, never an identifier, survive.
 	    if ( !pack_param.empty() )
 	    {
+		bool elem_is_ref = si != subst.end() && si->second
+				&& si->second->definition.is_reference();
+		{
+		    static const char *rrt2 = ::getenv("MADC_RRTRAP2");
+		    if ( rrt2 && *rrt2 && idname == pack_param
+		      && i + 1 < ft.decl.size() && ft.decl[i+1]
+		      && (ft.decl[i+1]->id() == TokenID::tkBand
+		       || ft.decl[i+1]->id() == TokenID::tkLand) )
+			fprintf(stderr, "RRTRAP2 %s key=%s subst=%d ref=%d"
+				" elem=%s spell=%s\n",
+				idname.c_str(), key.c_str(),
+				(int)(si != subst.end()), (int)elem_is_ref,
+				(si != subst.end() && si->second)
+				    ? si->second->definition.name.c_str() : "-",
+				(si != subst.end() && si->second)
+				    ? si->second->spelling() : "-");
+		}
 		size_t k = i + 1;
+		size_t copied = 0;
 		while ( k < ft.decl.size() && ft.decl[k]
 		     && tsubst_pack_decl_suffix_token(ft.decl[k]) )
 		{
-		    inj.push_back(ft.decl[k]->clone());
+		    if ( !(elem_is_ref
+			   && (ft.decl[k]->id() == TokenID::tkBand
+			    || ft.decl[k]->id() == TokenID::tkLand)) )
+		    {
+			inj.push_back(ft.decl[k]->clone());
+			++copied;
+		    }
 		    ++k;
 		}
 		if ( k + 2 < ft.decl.size()
@@ -47831,11 +47883,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		  && ft.decl[k+2] && ft.decl[k+2]->id() == TokenID::tkDot )
 		    i = k + 2;	// consumed decl suffix + the three dots
 		else
-		    while ( k > i + 1 )	// no `...`: undo the suffix copy-through
+		    while ( copied-- )	// no `...`: undo the suffix copy-through
 		    {
 			delete inj.back();
 			inj.pop_back();
-			--k;
 		    }
 	    }
 	    continue;
