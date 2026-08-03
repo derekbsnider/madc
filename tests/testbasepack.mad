@@ -1,0 +1,36 @@
+// [temp.variadic]/5: a base-specifier-list is a pack-expansion context, and so is
+// the mem-initializer list that constructs those bases. PRIMARY-TEMPLATE form.
+//
+// madc rejected this outright ("Expecting identifier after type") until the
+// template-id pattern lane landed; tests/testbaserefarg.mad is the non-pack control.
+// Oracle: g++-13 and clang++-18 both print "x=7 get=7".
+#include <cstdio>
+
+template <unsigned I, class H>
+struct leaf
+{
+	H v;
+	H &get() { return v; }
+	leaf(H h) : v(h) {}
+};
+
+template <class... Hs>
+struct impl : leaf<0, Hs>...
+{
+	impl(Hs... hs) : leaf<0, Hs>(hs)... {}
+};
+
+template <class... Ts>
+struct box : impl<Ts...>
+{
+	box(Ts... ts) : impl<Ts...>(ts...) {}
+};
+
+int main()
+{
+	int x = 5;
+	box<int &> b(x);
+	b.get() = 7;
+	printf("x=%d get=%d\n", x, b.get());
+	return 0;
+}

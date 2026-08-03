@@ -8207,6 +8207,125 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    continue;
 		}
 	    }
+	    // TEMPLATE-ID pattern expansion `Base<… Ts …>...` — the same rule as the
+	    // parenthesized case above over a different delimiter. [temp.variadic]/5
+	    // makes a base-specifier-list an expansion context (and a mem-initializer
+	    // list with it), so libc++'s
+	    //   __tuple_impl<__tuple_indices<_Indx...>, _Tp...> : __tuple_leaf<_Indx,_Tp>...
+	    // must replicate the WHOLE template-id per element:
+	    //   `leaf<0,Ts>...` -> `leaf<0,A>, leaf<0,B>`
+	    // and NOT `leaf<0, A, B>`, which is what the bare pack-name splice below
+	    // produces when the pack is nested inside a template-argument list — one
+	    // base of the wrong arity, silently.
+	    // Every pack named anywhere in the pattern binds in LOCKSTEP at the same
+	    // index (rbREF3's `leaf<I, Ts>` walks a non-type index pack and a type
+	    // pack together); a disagreement in their sizes is an arity violation, and
+	    // this lane declines rather than mis-expanding — the pattern then reaches
+	    // the ordinary path and fails loudly there.
+	    if ( bt && bt->type() == TokenType::ttIdentifier
+	      && bi + 1 < td.body.size() && td.body[bi+1]
+	      && td.body[bi+1]->id() == TokenID::tkLT
+	      && (!pack_subst.empty() || !token_pack_subst.empty()) )
+	    {
+		// ONE tracker for the extent (delimiter-tracking.md): step the
+		// template-id HEAD first so DelimDepth sees a template-id context
+		// and reads the `<` as an argument list rather than less-than.
+		DelimDepth tdd;
+		size_t after = bi;
+		after += delim_scan_step(td.body, after, tdd);
+		if ( after < td.body.size() && td.body[after]
+		  && td.body[after]->id() == TokenID::tkLT )
+		{
+		    after += delim_scan_step(td.body, after, tdd);
+		    while ( after < td.body.size() && !tdd.top() )
+			after += delim_scan_step(td.body, after, tdd);
+		}
+		bool has_dots = after + 2 < td.body.size()
+		    && td.body[after] && td.body[after]->id() == TokenID::tkDot
+		    && td.body[after+1] && td.body[after+1]->id() == TokenID::tkDot
+		    && td.body[after+2] && td.body[after+2]->id() == TokenID::tkDot;
+		size_t arity = 0;
+		bool have_arity = false;
+		bool lockstep_ok = true;
+		if ( has_dots )
+		    for ( size_t k = bi; k < after; ++k )
+		    {
+			if ( !td.body[k]
+			  || td.body[k]->type() != TokenType::ttIdentifier )
+			    continue;
+			const std::string sp =
+			    ((TokenIdent *)td.body[k])->spelling();
+			size_t n = 0;
+			bool is_pack = false;
+			std::map<std::string, std::vector<TokenDataType *> >
+			    ::const_iterator tpk = pack_subst.find(sp);
+			if ( tpk != pack_subst.end() )
+			{ n = tpk->second.size(); is_pack = true; }
+			else
+			{
+			    std::map<std::string,
+				     std::vector<std::vector<TokenBase *> > >
+				::const_iterator vpk = token_pack_subst.find(sp);
+			    if ( vpk != token_pack_subst.end() )
+			    { n = vpk->second.size(); is_pack = true; }
+			}
+			if ( !is_pack )
+			    continue;
+			if ( have_arity && n != arity )
+			    lockstep_ok = false;
+			arity = n;
+			have_arity = true;
+		    }
+		if ( has_dots && have_arity && lockstep_ok )
+		{
+		    for ( size_t e = 0; e < arity; ++e )
+		    {
+			if ( e )
+			    inj.push_back(new TokenComma());
+			for ( size_t k = bi; k < after; ++k )
+			{
+			    TokenBase *pt2 = td.body[k];
+			    if ( !pt2 )
+				continue;
+			    const std::string sp =
+				pt2->type() == TokenType::ttIdentifier
+				    ? ((TokenIdent *)pt2)->spelling()
+				    : std::string();
+			    std::map<std::string, std::vector<TokenDataType *> >
+				::const_iterator tpk = sp.empty()
+				    ? pack_subst.end() : pack_subst.find(sp);
+			    if ( tpk != pack_subst.end() )
+			    {
+				if ( e < tpk->second.size() && tpk->second[e] )
+				    inj.push_back(tpk->second[e]->clone());
+				continue;
+			    }
+			    std::map<std::string,
+				     std::vector<std::vector<TokenBase *> > >
+				::const_iterator vpk = sp.empty()
+				    ? token_pack_subst.end()
+				    : token_pack_subst.find(sp);
+			    if ( vpk != token_pack_subst.end() )
+			    {
+				if ( e < vpk->second.size() )
+				    for ( TokenBase *et : vpk->second[e] )
+					if ( et )
+					    inj.push_back(et->clone());
+				continue;
+			    }
+			    inj.push_back(pt2->clone());
+			}
+		    }
+		    // An EMPTY pack drops the construct and balances one separating
+		    // comma, mirroring the elisions above (`: A, B<Ts>...` with an
+		    // empty Ts is `: A`, never `: A,`).
+		    if ( arity == 0 && !inj.empty()
+		      && inj.back()->id() == TokenID::tkComma )
+		    { delete inj.back(); inj.pop_back(); }
+		    bi = after + 2;	// consume through the three dots
+		    continue;
+		}
+	    }
 	    if ( bt->type() == TokenType::ttIdentifier )
 	    {
 		std::map<std::string,
@@ -37585,6 +37704,16 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
 	    Throw(open) << "Unexpected end of constructor initializer arguments" << flush;
 	nextToken();
 	func->ctor_initializers.push_back(init);
+	// [temp.variadic]/5: a mem-initializer may carry a pack-expansion `...`,
+	// the twin of the base-specifier case in TokenCLASS::parse(). The expansion
+	// itself has already happened at the token level
+	// (instantiate_template_use replicates the template-id once per element), so
+	// what arrives here is one real initializer per element with the dots as
+	// residue. Without this the list dies on "Expecting ',' or function body
+	// after constructor initializer" — libc++'s
+	// `__tuple_impl(...) : __tuple_leaf<_Indx,_Tp>(...)...` is this shape.
+	if ( peekToken() && peekToken()->id() == TokenID::tkDot )
+	    consume_ellipsis();
 	nt = nextToken();
 	if ( !nt )
 	    Throw << "Unexpected end of input in constructor initializer list" << flush;
@@ -39216,6 +39345,16 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.Throw(bn) << "Unknown base class '" << base_name << "'" << flush;
 	    base_specs.push_back(BaseSpec{bcls, 0, bvirtual, baccess, false});
 	    pgm.note_class_base_spec();
+	    // [temp.variadic]/5: a base-specifier may carry a pack-expansion `...`.
+	    // By the time a base-clause is PARSED the expansion has already been
+	    // performed at the token level (instantiate_template_use replicates the
+	    // template-id once per pack element), so what reaches here is one real
+	    // base per element and the trailing dots are residue to consume. Without
+	    // this the loop below sees `.` where it wants `,` or `{` and the whole
+	    // class dies on "Expecting identifier after type" — which is how
+	    // libc++'s __tuple_impl was being lost.
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkDot )
+		pgm.consume_ellipsis();
 	    DBG(cout << "TokenCLASS::parse() inherits from " << base_name
 		<< (bvirtual ? " (virtual)" : "") << endl);
 	} while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma

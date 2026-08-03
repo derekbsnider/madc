@@ -1,0 +1,62 @@
+// [temp.variadic]/5 base-clause pack expansion, LOCKSTEP form — libc++'s real
+// __tuple_impl shape, which is what drove this feature:
+//
+//   template <size_t _Ip, class _Hp, bool = is_empty<_Hp>::value> class __tuple_leaf;
+//   template <size_t... _Indx, class... _Tp>
+//   struct __tuple_impl<__tuple_indices<_Indx...>, _Tp...>
+//       : public __tuple_leaf<_Indx, _Tp>...
+//
+// Three things have to hold at once, and each was separately capable of breaking it:
+//
+//  1. The expansion is in a PARTIAL SPECIALIZATION's base-specifier-list, not a
+//     primary template's (tests/testbasepack.mad covers the primary form).
+//  2. TWO packs expand in LOCKSTEP — a non-type index pack `I` and a type pack `Ts`
+//     — so element e must bind BOTH at index e. Binding only the type pack yields
+//     `leaf<I, A>, leaf<I, B>` with `I` unsubstituted; splicing the pack name in
+//     place instead of replicating the pattern yields the single wrong-arity base
+//     `leaf<0, A, B>`.
+//  3. The base carries a DEFAULTED third parameter computed by a trait over the
+//     pack element (`bool = is_empty_t<H>::value`), so the element type is used
+//     again after substitution.
+//
+// The assertion is the write through get(): a reference argument that degrades to a
+// pointer somewhere in this chain still compiles and still prints a plausible
+// `get=7`, but leaves x at 5. Emitted tag must stay `leaf_0_int32_tR_0` — R, not P.
+//
+// Oracle: g++-13 and clang++-18 both print "x=7 get=7".
+#include <cstdio>
+
+template <class T> struct is_empty_t { static const bool value = false; };
+
+template <unsigned... I> struct idx {};
+
+template <unsigned I, class H, bool = is_empty_t<H>::value>
+struct leaf
+{
+	H v;
+	H &get() { return v; }
+	leaf(H h) : v(h) {}
+};
+
+template <class Idx, class... Ts> struct impl;
+
+template <unsigned... I, class... Ts>
+struct impl<idx<I...>, Ts...> : leaf<I, Ts>...
+{
+	impl(Ts... ts) : leaf<I, Ts>(ts)... {}
+};
+
+template <class... Ts>
+struct box : impl<idx<0>, Ts...>
+{
+	box(Ts... ts) : impl<idx<0>, Ts...>(ts...) {}
+};
+
+int main()
+{
+	int x = 5;
+	box<int &> b(x);
+	b.get() = 7;			// must write THROUGH the reference, into x
+	printf("x=%d get=%d\n", x, b.get());
+	return 0;
+}
