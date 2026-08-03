@@ -4744,6 +4744,30 @@ static void arity_probe(const char *site, const std::string &tname,
 		td.owner_class ? td.owner_class->name.c_str() : "-");
 }
 
+// A dependent template-id is replayable only while its STRUCTURAL origin is
+// attached to the shell.  Both template-use lanes mint and can later reuse the
+// same DataDefCLASS, so record at their shared semantic boundary and preserve
+// the first origin on a cache hit.
+static void record_dependent_shell_origin(
+	Program &pgm, DataDefCLASS *shell, const Program::TemplateDef &td,
+	const std::string &tname, const std::vector<std::string> &arg_spellings,
+	const std::vector<std::vector<TokenBase *> > &raw_arg_tokens)
+{
+    if ( !shell || pgm.dependent_shell_origin.find(shell)
+		  != pgm.dependent_shell_origin.end() )
+	return;
+    Program::DependentShellOrigin &org = pgm.dependent_shell_origin[shell];
+    org.tname = tname;
+    org.registry_name_id = td.registry_name_id;
+    org.defining_namespace = td.defining_namespace;
+    org.owner_class = td.owner_class;
+    org.arg_spellings = arg_spellings;
+    org.raw_arg_tokens.resize(raw_arg_tokens.size());
+    for ( size_t ai = 0; ai < raw_arg_tokens.size(); ++ai )
+	for ( TokenBase *t : raw_arg_tokens[ai] )
+	    org.raw_arg_tokens[ai].push_back(t ? t->clone() : NULL);
+}
+
 TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td,
 						      const std::string &tname,
 						      TokenBase *tb)
@@ -4909,7 +4933,15 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 	}
     }
     if ( have != datatype_map.end() )
-	return use_site_type_token((TokenDataType *)(*have), tb);
+    {
+	TokenDataType *cached = (TokenDataType *)(*have);
+	DataDefCLASS *cached_class =
+	    dynamic_cast<DataDefCLASS *>(&cached->definition);
+	if ( cached_class && cached_class->is_dependent_placeholder )
+	    record_dependent_shell_origin(*this, cached_class, td, tname,
+					  args, raw_arg_tokens);
+	return use_site_type_token(cached, tb);
+    }
 
     DataDefCLASS *fwd = new DataDefCLASS(mangled, 0, DataType::dtRESERVED);
     fwd->is_dependent_placeholder = true;
@@ -4919,18 +4951,8 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
     // Keep the template-origin STRUCTURE (name + per-arg token runs) so tsubst
     // can rebuild the concrete instantiation from a binding later — the shell's
     // name/spelling alone is unresolvable (see Program::DependentShellOrigin).
-    {
-	DependentShellOrigin &org = dependent_shell_origin[fwd];
-	org.tname = tname;
-	org.registry_name_id = td.registry_name_id;
-	org.defining_namespace = td.defining_namespace;
-	org.owner_class = td.owner_class;
-	org.arg_spellings = args;
-	org.raw_arg_tokens.resize(raw_arg_tokens.size());
-	for ( size_t ai = 0; ai < raw_arg_tokens.size(); ++ai )
-	    for ( TokenBase *t : raw_arg_tokens[ai] )
-		org.raw_arg_tokens[ai].push_back(t ? t->clone() : NULL);
-    }
+    record_dependent_shell_origin(*this, fwd, td, tname, args,
+				  raw_arg_tokens);
     TokenDataType *tdt = new TokenDataType(mangled.c_str(), *fwd);
     datatype_map[mangled] = tdt;
     if ( !td.defining_namespace.empty() )
@@ -7724,6 +7746,18 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     }
     canon += ">";
 
+    // The real class-template lane resolves TYPE arguments immediately and
+    // intentionally leaves their arg_tokens_by_slot entry empty (non-type
+    // slots keep raw token runs). Provenance needs one STRUCTURAL run per
+    // slot: carry the resolved TokenDataType for an empty type slot so tsubst
+    // can substitute its DataDef graph later.
+    std::vector<std::vector<TokenBase *> > shell_origin_arg_tokens =
+	arg_tokens_by_slot;
+    for ( size_t i = 0; i < shell_origin_arg_tokens.size()
+			 && i < arg_types_by_slot.size(); ++i )
+	if ( shell_origin_arg_tokens[i].empty() && arg_types_by_slot[i] )
+	    shell_origin_arg_tokens[i].push_back(arg_types_by_slot[i]);
+
     bool dependent_surface = false;
     // [temp.dep.type]: an argument that IS (or const/ptr-wraps) a raw
     // template-parameter placeholder makes the template-id a DEPENDENT type in
@@ -7876,6 +7910,12 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     if ( have != datatype_map.end() )
     {
 	TokenDataType *cached = (TokenDataType *)(*have);
+	DataDefCLASS *cached_class =
+	    dynamic_cast<DataDefCLASS *>(&cached->definition);
+	if ( cached_class && cached_class->is_dependent_placeholder )
+	    record_dependent_shell_origin(*this, cached_class, td, tname,
+					  arg_spellings,
+					  shell_origin_arg_tokens);
 	if ( td.body.empty() )
 	{
 	    ++_class_inst_opaque;
@@ -7961,6 +8001,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	datatype_map[registered_mangled] = tdt;
 	if ( !td.defining_namespace.empty() )
 	    namespace_datatype_map[td.defining_namespace][registered_mangled] = tdt;
+	if ( unresolved_surface )
+	    record_dependent_shell_origin(*this, fwd, td, tname,
+					  arg_spellings,
+					  shell_origin_arg_tokens);
 	record_pending_template_instantiation(*this, tname, registered_mangled, canon, type_args);
 	return use_site_type_token(tdt, tb);
     }

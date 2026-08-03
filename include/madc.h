@@ -3276,11 +3276,12 @@ public:
 	pending_template_instantiations;
     // Template-origin structure for a DEPENDENT template-id placeholder shell
     // (`tuple<_Args1...>`, `_Index_tuple<__integer_pack(sizeof...(_Args1))...>`),
-    // recorded at the shell's creation (instantiate_opaque_template_use) so
-    // tsubst can later rebuild the CONCRETE instantiation structurally from the
-    // binding (g++ tsubst on a dependent template-id) instead of being stuck
-    // with an opaque name. Keyed by the shell DataDef; arg token runs are
-    // clones (structural type tokens, not source text).
+    // recorded at every dependent-shell creation/reuse seam (both class-
+    // template instantiation lanes) so tsubst can later rebuild the CONCRETE
+    // instantiation structurally from the binding (g++ tsubst on a dependent
+    // template-id) instead of being stuck with an opaque name. Keyed by the
+    // shell DataDef; arg token runs are clones (structural type tokens, not
+    // source text).
     struct DependentShellOrigin {
 	std::string tname;			// class-template name (template map key)
 	uint32_t registry_name_id = 0;

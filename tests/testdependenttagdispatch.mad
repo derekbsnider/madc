@@ -1,0 +1,43 @@
+// A dependent class-template temporary keeps its template-id provenance until
+// tsubst: each concrete instantiation must rebuild Select<P, key_type>, retain
+// its selected tag base, and resolve the inherited member on that concrete
+// base. libc++'s __tree::__emplace_unique uses the same dependent class shape
+// with __can_extract_key before dispatching on the selected base tag.
+// Oracle: g++ 13 and clang++-18 both print "20 10" at -O0.
+#include <cstdio>
+
+struct SelfTag { static const int value = 20; };
+struct FailTag { static const int value = 10; };
+
+template <class T> struct RemoveRef { using type = T; };
+template <class T> struct RemoveRef<T&> { using type = T; };
+
+template <class A, class B> struct Same { static const bool value = false; };
+template <class A> struct Same<A, A> { static const bool value = true; };
+
+template <bool, class Yes, class No> struct Conditional { using type = No; };
+template <class Yes, class No>
+struct Conditional<true, Yes, No> { using type = Yes; };
+
+template <class T, class U, class Raw = typename RemoveRef<T>::type>
+struct Select
+    : Conditional<Same<Raw, U>::value, SelfTag, FailTag>::type {};
+
+struct Chooser {
+    using key_type = int;
+
+    template <class P>
+    int choose(P value)
+    {
+        return Select<P, key_type>::value;
+    }
+};
+
+int main()
+{
+    Chooser chooser;
+    int same = 7;
+    long different = 9;
+    printf("%d %d\n", chooser.choose(same), chooser.choose(different));
+    return 0;
+}

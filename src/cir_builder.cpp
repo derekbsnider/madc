@@ -1119,6 +1119,11 @@ static bool tsubst_decompose_elem_tokens(DataDef *elem,
 	return true;
 }
 
+static DataDef *subst_datadef(Program *prog, DataDef *dd,
+			      const std::map<DataDef *, DataDef *> &subst,
+			      const std::vector<std::vector<DataDef *> > *packs,
+			      const std::map<unsigned, DataDef *> *pack_params);
+
 // Substitute ONE recorded shell-origin arg-token run under the binding/pack
 // window into concrete replay runs (a pack-name run fans out to one run per
 // element). Appends to `runs_out`; sets `any_subst` when a substitution
@@ -1128,6 +1133,7 @@ static bool tsubst_decompose_elem_tokens(DataDef *elem,
 // cloned keywords are shared prototypes (TokenKeyword::clone returns this) —
 // leak-tolerant like every parser replay.
 static bool tsubst_subst_origin_arg_run(
+	Program *prog,
 	const std::vector<TokenBase *> &raw,
 	const std::map<DataDef *, DataDef *> &subst,
 	const std::vector<std::vector<DataDef *> > *packs,
@@ -1176,6 +1182,32 @@ static bool tsubst_subst_origin_arg_run(
 		TokenBase *t = raw[k];
 		if (!t)
 			continue;
+		// The real class-template lane resolves each type argument before
+		// recording it, so a structural origin can contain TokenDataType
+		// nodes rather than raw identifiers. Substitute their DataDef graph
+		// through the SAME recursive spine used by copied expression types;
+		// this also re-derives a nested `Trait<P>::type` shell.
+		if (TokenDataType *tdt = dynamic_cast<TokenDataType *>(t)) {
+			DataDef *old = &tdt->definition;
+			DataDef *sc = subst_datadef(prog, old, subst, packs,
+						     pack_params);
+			// Restored/frozen recipes can carry an equivalent placeholder
+			// object rather than the binding map's pointer identity. The raw-
+			// identifier arm below already bridges that case by spelling; do
+			// the same for a typed template-parameter token.
+			if (sc == old && old->is_template_param())
+				sc = tsubst_scalar_for_name(subst,
+							 old->name.c_str());
+			if (sc && sc != old) {
+				std::vector<TokenBase *> srun;
+				if (!tsubst_decompose_elem_tokens(sc, srun))
+					srun.assign(1, new TokenDataType(
+						sc->name.c_str(), *sc));
+				out.insert(out.end(), srun.begin(), srun.end());
+				any_subst = true;
+				continue;
+			}
+		}
 		// Idents AND keywords (`sizeof` is a TokenKeyword, type()
 		// ttKeyword — still a TokenIdent by inheritance).
 		TokenIdent *anyid = dynamic_cast<TokenIdent *>(t);
@@ -1254,7 +1286,7 @@ static DataDef *rebuild_dependent_shell(Program *prog, DataDefCLASS *shell,
 	bool any_subst = false;
 	bool ok = true;
 	for (const std::vector<TokenBase *> &raw : org.raw_arg_tokens)
-		if (!tsubst_subst_origin_arg_run(raw, subst, packs, pack_params,
+		if (!tsubst_subst_origin_arg_run(prog, raw, subst, packs, pack_params,
 						 runs, any_subst)) {
 			ok = false;
 			break;
