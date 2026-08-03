@@ -8124,6 +8124,12 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // ctor body / mem-init (`_Inherited(__tail...)`) must also vanish, else the
     // elided name is "undeclared". Recorded by the empty-param-pack elision.
     std::set<std::string> empty_value_pack_names;
+    // A NON-empty function parameter pack (`Hs... hs`) expands to one parameter
+    // PER ELEMENT, and each needs its own name — splicing only the types leaves
+    // `int, long hs`, a single name on the LAST parameter, and every later read
+    // of `hs` takes that one. Maps the source name to the generated per-element
+    // names so the expansions below bind element-for-element.
+    std::map<std::string, std::vector<std::string> > param_pack_element_names;
     // Member CLASS/FUNCTION template extent (member_class_template_extent):
     // while bi is inside one (past member_tpl_keep_begin — a function
     // template's head defaults stay on the collapse arm), a self template-id
@@ -8186,7 +8192,17 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	// (b) a bare `_Values...` splices the element runs comma-separated.
 	// An EMPTY pack drops the construct and balances one separating comma,
 	// mirroring the empty TYPE-pack elision above.
-	if ( !token_pack_subst.empty() && bt )
+	//
+	// The guard admits EITHER pack kind, because the TEMPLATE-ID lane below
+	// serves both and a `class... Ts` pack populates only pack_subst. Gating
+	// this block on token_pack_subst alone made that lane UNREACHABLE for a
+	// pure type pack — `struct impl : leaf<0, Ts>...` fell through to the
+	// bare splice and produced the one wrong-arity base `leaf<0,A,B>` this
+	// file's own comment warns about. It went unnoticed because both gates
+	// were arity 1, where splice and replicate emit the same tokens.
+	// Lanes (a) and (b) filter on token_pack_subst themselves, so widening
+	// the guard leaves them unchanged.
+	if ( bt && (!token_pack_subst.empty() || !pack_subst.empty()) )
 	{
 	    if ( bt->id() == TokenID::tkOpBrk )
 	    {
@@ -8258,6 +8274,17 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    // pack together); a disagreement in their sizes is an arity violation, and
 	    // this lane declines rather than mis-expanding — the pattern then reaches
 	    // the ordinary path and fails loudly there.
+	    {
+		static const char *gate_probe = ::getenv("MADC_TPLPAT_GATE");
+		if ( gate_probe && bt && bi + 1 < td.body.size()
+		  && td.body[bi+1] && td.body[bi+1]->id() == TokenID::tkLT )
+		    fprintf(stderr, "[tplgate] tok=%s type=%d ident=%d"
+			    " packs=%zu/%zu\n",
+			    template_token_fragment(bt).c_str(),
+			    (int)bt->type(),
+			    (int)(bt->type() == TokenType::ttIdentifier),
+			    pack_subst.size(), token_pack_subst.size());
+	    }
 	    if ( bt && bt->type() == TokenType::ttIdentifier
 	      && bi + 1 < td.body.size() && td.body[bi+1]
 	      && td.body[bi+1]->id() == TokenID::tkLT
@@ -8271,6 +8298,24 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		after += delim_scan_step(td.body, after, tdd);
 		if ( after < td.body.size() && td.body[after]
 		  && td.body[after]->id() == TokenID::tkLT )
+		{
+		    after += delim_scan_step(td.body, after, tdd);
+		    while ( after < td.body.size() && !tdd.top() )
+			after += delim_scan_step(td.body, after, tdd);
+		}
+		// A MEM-INITIALIZER's pattern is `Base<…>( args )...` — the
+		// argument list belongs to the pattern, since [temp.variadic]/5
+		// makes the whole mem-initializer the expansion. Stopping at the
+		// `>` finds no dots, declines, and hands the pack to the splice,
+		// which puts it inside the TEMPLATE-ARGUMENT list instead:
+		// `leaf<0,A,B>(hs)`. Same tracker, one more balanced group.
+		// Correct ONLY because the parameter pack now expands to one
+		// NAMED parameter per element (param_pack_element_names) and the
+		// element loop below reads element e's name: without that, both
+		// copies read the last parameter and the object is silently built
+		// from the last argument twice.
+		if ( after < td.body.size() && td.body[after]
+		  && td.body[after]->id() == TokenID::tkOpBrk )
 		{
 		    after += delim_scan_step(td.body, after, tdd);
 		    while ( after < td.body.size() && !tdd.top() )
@@ -8312,6 +8357,17 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 			arity = n;
 			have_arity = true;
 		    }
+		{
+		    static const char *pat_probe = ::getenv("MADC_TPLPAT_PROBE");
+		    if ( pat_probe && bt )
+			fprintf(stderr, "[tplpat] head=%s dots=%d arity=%zu"
+				" have=%d lockstep=%d extent=%zu -> %s\n",
+				template_token_fragment(bt).c_str(),
+				(int)has_dots, arity, (int)have_arity,
+				(int)lockstep_ok, after - bi,
+				(has_dots && have_arity && lockstep_ok)
+				    ? "REPLICATE" : "decline");
+		}
 		if ( has_dots && have_arity && lockstep_ok )
 		{
 		    for ( size_t e = 0; e < arity; ++e )
@@ -8347,6 +8403,24 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 				    for ( TokenBase *et : vpk->second[e] )
 					if ( et )
 					    inj.push_back(et->clone());
+				continue;
+			    }
+			    // The ctor's expanded PARAMETER pack: element e of
+			    // `leaf<0,Hs>(hs)...` must read parameter e, not the
+			    // one source name shared by every copy.
+			    std::map<std::string, std::vector<std::string> >
+				::const_iterator ppk = sp.empty()
+				    ? param_pack_element_names.end()
+				    : param_pack_element_names.find(sp);
+			    if ( ppk != param_pack_element_names.end()
+			      && e < ppk->second.size() )
+			    {
+				TokenIdent *ei2 =
+				    new TokenIdent(ppk->second[e].c_str());
+				ei2->file   = pt2->file;
+				ei2->line   = pt2->line;
+				ei2->column = pt2->column;
+				inj.push_back(ei2);
 				continue;
 			    }
 			    inj.push_back(pt2->clone());
@@ -8418,6 +8492,36 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		  && td.body[bi+1] && td.body[bi+1]->id() == TokenID::tkComma )
 		    ++bi;  // consume a following comma instead
 		continue;
+	    }
+	    // The twin of the elision above for a NON-empty parameter pack: the
+	    // declaration expanded to one NAMED parameter per element, so a bare
+	    // value expansion `ts...` (`_Inherited(__tail...)`,
+	    // `impl<Ts...>(ts...)`) must splice those generated names. Without
+	    // this the use site still says `ts`, which no longer exists —
+	    // "use of undeclared identifier 'ts'".
+	    {
+		std::map<std::string, std::vector<std::string> >::const_iterator
+		    ppn = param_pack_element_names.find(s);
+		if ( ppn != param_pack_element_names.end()
+		  && bi + 3 < td.body.size()
+		  && td.body[bi+1] && td.body[bi+1]->id() == TokenID::tkDot
+		  && td.body[bi+2] && td.body[bi+2]->id() == TokenID::tkDot
+		  && td.body[bi+3] && td.body[bi+3]->id() == TokenID::tkDot )
+		{
+		    for ( size_t gi = 0; gi < ppn->second.size(); ++gi )
+		    {
+			if ( gi )
+			    inj.push_back(new TokenComma());
+			TokenIdent *gn =
+			    new TokenIdent(ppn->second[gi].c_str());
+			gn->file   = bt->file;
+			gn->line   = bt->line;
+			gn->column = bt->column;
+			inj.push_back(gn);
+		    }
+		    bi += 3;   // consume the name (current) + the three dots
+		    continue;
+		}
 	    }
 	    std::map<std::string, TokenDataType *>::iterator si = subst.find(s);
 	    if ( si != subst.end() ) { inj.push_back(si->second->clone()); continue; }
@@ -8521,6 +8625,67 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		{
 		    delete inj.back();
 		    inj.pop_back();
+		}
+		// NON-EMPTY function PARAMETER pack (`Hs... hs`, `const Hs&... hs`):
+		// a pack expansion in a parameter-declaration is N DECLARATIONS, so
+		// each element needs its OWN name. Splicing only the types yields
+		// `int, long hs` — one name, on the LAST parameter — and both
+		// replicated mem-initializers then read that single parameter, so the
+		// object is built from the last argument twice (measured a=9 b=9 where
+		// both oracles say a=7 b=9). The declaration shape is the same one the
+		// EMPTY arm above detects: pack name, optional cv/ref/ptr suffix, the
+		// three dots, then an IDENTIFIER (a template-ARGUMENT list has `>` or
+		// `,` there instead, which is why this cannot fire on `X<Hs...>`).
+		{
+		    size_t sj = bi + 1;
+		    while ( sj < td.body.size() && td.body[sj]
+		      && (td.body[sj]->id() == TokenID::tkBand
+		       || td.body[sj]->id() == TokenID::tkLand
+		       || td.body[sj]->id() == TokenID::tkMul
+		       || td.body[sj]->id() == TokenID::tkCONST
+		       || td.body[sj]->id() == TokenID::tkVOLATILE) )
+			++sj;
+		    if ( !elems.empty() && sj + 3 < td.body.size()
+		      && td.body[sj] && td.body[sj]->id() == TokenID::tkDot
+		      && td.body[sj+1] && td.body[sj+1]->id() == TokenID::tkDot
+		      && td.body[sj+2] && td.body[sj+2]->id() == TokenID::tkDot
+		      && td.body[sj+3]
+		      && is_contextual_identifier_token(td.body[sj+3]) )
+		    {
+			const std::string pname =
+			    contextual_identifier_name(td.body[sj+3]);
+			std::vector<std::string> &gen =
+			    param_pack_element_names[pname];
+			gen.clear();
+			for ( size_t ei = 0; ei < elems.size(); ++ei )
+			{
+			    if ( ei )
+				inj.push_back(new TokenComma());
+			    inj.push_back(elems[ei]->clone());
+			    for ( size_t sk = bi + 1; sk < sj; ++sk )
+				if ( td.body[sk] )
+				    inj.push_back(td.body[sk]->clone());
+			    // A ONE-element pack keeps the SOURCE name, so
+			    // every arity-1 expansion stays byte-identical to
+			    // what it was before per-element naming existed —
+			    // the rename is only needed where there is more
+			    // than one parameter to tell apart, and any use
+			    // site this walker does not rewrite (a declining
+			    // pattern, an unhandled expansion shape) then still
+			    // resolves instead of reading "undeclared 'ts'".
+			    std::string en = elems.size() == 1
+				? pname
+				: pname + "__" + std::to_string(ei);
+			    gen.push_back(en);
+			    TokenIdent *ni = new TokenIdent(en.c_str());
+			    ni->file   = td.body[sj+3]->file;
+			    ni->line   = td.body[sj+3]->line;
+			    ni->column = td.body[sj+3]->column;
+			    inj.push_back(ni);
+			}
+			bi = sj + 3;   // loop ++bi resumes after the param name
+			continue;
+		    }
 		}
 		for ( size_t ei = 0; ei < elems.size(); ++ei )
 		{
