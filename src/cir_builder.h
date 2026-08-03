@@ -281,14 +281,13 @@ class CirBuilder {
 	}
 	// Names of the functions whose bodies madc COMPILES this module (the user's
 	// TokenFuncs). Set in translate_module while bodies are translated; NULL
-	// otherwise. Gates the by-value non-trivial-class return (__retbuf) ABI to
-	// madc-compiled functions only; external/native functions keep their own ABI.
+	// otherwise. Used with the materialized/deferred sets to decide whether a
+	// resolved symbol is emitted by this module and can therefore link.
 	const std::set<std::string> *m_user_func_names = nullptr;
 	// Emit symbols of deferred lazy bodies ([temp.inst]) MATERIALIZED this
-	// module: madc emits their definitions (retbuf ABI for by-value class
-	// returns) but they are not in m_user_func_names; the classification in
-	// object_returning_call_class needs them after deferred_lazy_bodies
-	// erases the materialized entry.
+	// module. They are not in m_user_func_names, and deferred_lazy_bodies erases
+	// each entry as it materializes, so retain the symbols for linkability and
+	// reachability decisions made later in the module pass.
 	std::set<std::string> m_materialized_lib_syms;
 
 	// ---- Pack-time drain / check-gate state (rung 1) ----
@@ -480,8 +479,8 @@ class CirBuilder {
 	// True only for a genuine class OBJECT value (declared class variable,
 	// class member, class-array element, or reference/value parameter).
 	static bool is_class_object_value(TokenBase *arg);
-	// A CALL to a madc-COMPILED function returning a non-trivial class by value
-	// (one routed through the __retbuf ABI). Returns the class, or NULL.
+	// A CALL whose selected function returns a non-trivial class by value through
+	// the __retbuf ABI. Returns the class, or NULL.
 	DataDefCLASS *object_returning_call_class(TokenBase *arg);
 	// The referenced type of a REFERENCE-returning call argument
 	// (std::move(x), a T&/T&& method) — the pointer representation
@@ -495,6 +494,9 @@ class CirBuilder {
 	// non-trivial class needing a dtor). NULL for trivial structs (native
 	// struct return). See cir_builder.cpp.
 	DataDefCLASS *class_return_via_retbuf(DataDef *dd);
+	// The single function-signature owner for the __retbuf decision: reject
+	// pointer/reference/multi returns, then classify the returned value type.
+	DataDefCLASS *function_retbuf_class(class FuncDef *fd);
 	// Member-wise copy-construct `cdd`'s object members from `src` into *__retbuf
 	// (after a bit-copy for scalars), so the return slot owns its own buffers.
 	void class_copy_construct_into_retbuf(DataDefCLASS *cdd, TokenBase *src,
@@ -936,12 +938,6 @@ public:
 	void fnptr_decl_pieces(class FuncDef *fd, bool emit_pointer,
 			       node_t spec_list, node_t decl_list,
 			       const std::vector<carray_dim_t> &lead_dims);
-	// When `fd` returns an object BY VALUE through the __retbuf ABI (void
-	// return + hidden `T* __retbuf` first param), report that returned type so
-	// the fn-ptr type renders the same
-	// ABI (`void (*)(T*, params)`) and indirect calls pass a retbuf temp.
-	// Returns NULL for the ordinary (scalar/pointer/trivial) return shape.
-	DataDef *fnptr_retbuf_type(class FuncDef *fd);
 	// Extra pointer stars an fn-ptr usage carries beyond its typedef alias:
 	// `DO_FUN *m` (alias is a function typedef) -> 1; `UNOP m` (alias already
 	// a pointer-to-function typedef) -> 0. Returns 1 when the alias is unknown.

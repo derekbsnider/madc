@@ -3623,10 +3623,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			bool member_formals_known = !tmm
 				|| (wfd && wfd->parameters.size()
 					   == tmm->parameters.size() + 1);
-			bool winner_sret = wfd && !wfd->returns_reference()
-				&& !wfd->is_multi_return()
-				&& class_return_via_retbuf(&wfd->return_value_type())
-				   != NULL;
+			bool winner_sret = function_retbuf_class(wfd) != NULL;
 			bool member_abi_ok = !tmm
 				|| (member_extras == 2) == winner_sret;
 			node_t args = list();
@@ -4386,14 +4383,10 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 	return false;
 }
 
-// A CALL to a madc-COMPILED function returning a non-trivial class by value
-// (non-pointer). func_def lowers such a function through the __retbuf ABI, so
-// the call site must materialize the result into a temp it owns. External /
-// native class-returning functions keep their own ABI and are NOT rewritten;
-// matching them here would inject a bogus __retbuf arg.
 // The FuncDef behind a CALL token: either the called function directly, or the
 // TARGET signature of a function-pointer variable being called indirectly
-// (`auto f = [...]; f()`). Both use the same __retbuf ABI for object returns.
+// (`auto f = [...]; f()`). Function ABI classification happens after overload
+// resolution, against this exact selected signature.
 static FuncDef *call_target_funcdef_raw(TokenCallFunc *tcf)
 {
 	if (!tcf) return NULL;
@@ -5011,73 +5004,20 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 	return def;
 }
 
-// A CALL to a madc-COMPILED function returning a non-trivial class by value.
-// Such a call is lowered (func_def/func_proto) through the __retbuf ABI, so the
-// call site must materialize the result into a caller temp it owns. Gated on
-// m_user_func_names: an external/native class-returning fn keeps its own ABI and
-// must NOT be rewritten (a bogus __retbuf arg would be "too many arguments").
+// A call whose selected function returns a non-trivial class by value. The
+// selected FuncDef owns the ABI shape for both madc-emitted and external C++
+// functions; linkage/body origin does not change the Itanium sret convention.
+// The call site must therefore materialize the result into a caller-owned temp.
 DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 {
 	// Functional-construction temporary T(args) is a class rvalue too.
 	if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(arg))
 		return ot->obj_class;
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg);
-	static const char *orcc = ::getenv("MADC_ORCC_PROBE");
-	if (orcc && *orcc && !tcf && arg
-	    && (arg->type() == TokenType::ttCallFunc
-		|| arg->type() == TokenType::ttCallMethod)
-	    && arg->datadef() && strstr(arg->datadef()->name.c_str(), orcc))
-		fprintf(stderr, "[orcc] NOT-TCF cls=%s dd=%s\n",
-			typeid(*arg).name(), arg->datadef()->name.c_str());
 	if (!tcf) return NULL;
 	FuncDef *fd = NULL;
-	std::string sym = call_target_emit_name(tcf, &fd);
-	if (orcc && *orcc && sym.find(orcc) != std::string::npos)
-		fprintf(stderr, "[orcc] sym=%s fd=%d retref=%d ret=%s viaretbuf=%d"
-			" ufn=%d mat=%d dlz=%d forest=%d pend=%d pendfd=%d\n",
-			sym.c_str(), (int)(fd != NULL),
-			fd ? (int)fd->returns_reference() : -1,
-			fd ? fd->return_value_type().name.c_str() : "-",
-			fd ? (int)(class_return_via_retbuf(&fd->return_value_type()) != NULL) : -1,
-			(int)(m_user_func_names && m_user_func_names->count(sym) > 0),
-			(int)(m_materialized_lib_syms.count(sym) > 0),
-			(int)(m_prog && m_prog->has_deferred_lazy_body(sym)),
-			fd ? (int)fd->has_forest_body : -1,
-			(int)pending_function_body_available(this, m_prog, sym),
-			(int)pending_function_body_available(this, m_prog, sym, fd));
-	if (!fd) return NULL;
-	if (fd->returns_reference()) return NULL;
-	DataDefCLASS *cdd = class_return_via_retbuf(&fd->return_value_type());
-	if (!cdd) return NULL;
-	// A fn-ptr call inherits the retbuf ABI from its rendered target type; a
-	// direct call is gated on m_user_func_names — by the call's RESOLVED emit
-	// symbol (call_emit_symbol precedence), so an overload-set winner whose
-	// symbol differs from the called Variable's name (local_emit_name) and a
-	// call through a using-imported alias both classify by the function that
-	// is actually emitted.
-	if (dynamic_cast<DataDefFPTR *>(tcf->var.type))
-		return cdd;
-	// A deferred lazy body ([temp.inst]) materializes as a madc-emitted
-	// definition (retbuf ABI) once referenced — classify it that way both
-	// BEFORE materialization (still in deferred_lazy_bodies) and AFTER
-	// (m_materialized_lib_syms; the deferred entry is erased on parse).
-	// v25: a restored FOREST body (has_forest_body) is the LOADED
-	// equivalent of a deferred lazy body — same madc-emitted retbuf ABI
-	// (a bound to_string(42) was emitted 1-arg, no retbuf: "too few
-	// arguments" + "lvalue required" at the copy-init).
-	// A PENDING template-instantiation product (an __mti/tsubst body
-	// instantiated mid-translation) is the same madc-emitted retbuf ABI:
-	// user_func_names snapshots the module's functions ONCE, and the
-	// pending drain records the symbol only in the LATER reachability
-	// loop — so a caller translated in between emitted the call one arg
-	// short + took &(call) (__tree::__construct_node at map:967).
-	if (!(m_user_func_names && m_user_func_names->count(sym) > 0)
-	    && !m_materialized_lib_syms.count(sym)
-	    && !(m_prog && m_prog->has_deferred_lazy_body(sym))
-	    && !fd->has_forest_body
-	    && !pending_function_body_available(this, m_prog, sym, fd))
-		return NULL;
-	return cdd;
+	call_target_emit_name(tcf, &fd);
+	return function_retbuf_class(fd);
 }
 
 // Words of opaque storage for a runtime-object class: one with a concrete ABI
@@ -6245,7 +6185,7 @@ node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 	// receiver, so a method (get_allocator()) was emitted one arg short
 	// ("too few arguments": get_allocator(&sret) vs the (__retbuf, __this) body).
 	// object_call_temp_addr is only reached for retbuf returns
-	// (object_returning_call_class gates on class_return_via_retbuf), so
+	// (object_returning_call_class gates on function_retbuf_class), so
 	// class_method_call takes its materializing sret branch and returns a temp
 	// lvalue.
 	if (call_tok && call_tok->type() == TokenType::ttCallMethod) {
@@ -6378,26 +6318,23 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 	return lst;
 }
 
-// Build the N_FUNC(param-list) declarator suffix for a function-pointer's
-// target signature. Mirrors func_proto's parameter handling: drops the
-// synthetic trailing vararg slot and emits N_DOTS, renders an explicit
-// `(void)` only for is_void_params, leaves a bare `()` for K&R-unspecified,
-// and reuses param_decl per parameter.
-// Mirror func_proto's __retbuf decision for a fn-ptr TARGET signature: a
-// by-value non-trivial class return (not pointer/ref/multi) uses the __retbuf
-// ABI. Returns the returned object type so the fn-ptr renders
-// `void (*)(T*, params)`; NULL otherwise.
-DataDef *CirBuilder::fnptr_retbuf_type(FuncDef *fd)
+// Single function-signature owner for the __retbuf ABI decision. A by-value
+// non-trivial class return (not pointer/reference/multi) uses `void` plus a
+// hidden leading result pointer in definitions, prototypes, and every call lane.
+DataDefCLASS *CirBuilder::function_retbuf_class(FuncDef *fd)
 {
 	if (!fd) return NULL;
 	DataDef *ret_dd = &fd->return_value_type();
 	if (ret_dd->is_pointer() || fd->returns_reference() || fd->is_multi_return())
 		return NULL;
-	if (DataDefCLASS *obj = class_return_via_retbuf(ret_dd))
-		return (DataDef *)obj;
-	return NULL;
+	return class_return_via_retbuf(ret_dd);
 }
 
+// Build the N_FUNC(param-list) declarator suffix for a function-pointer's
+// target signature. Mirrors func_proto's parameter handling: drops the
+// synthetic trailing vararg slot and emits N_DOTS, renders an explicit
+// `(void)` only for is_void_params, leaves a bare `()` for K&R-unspecified,
+// and reuses param_decl per parameter.
 node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 {
 	node_t param_list = list();
@@ -6405,7 +6342,7 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 
 	// A by-value object-returning target uses the __retbuf ABI: a hidden
 	// leading `T* __retbuf` param (abstract/unnamed in a fn-ptr type).
-	DataDef *retbuf_dd = fnptr_retbuf_type(fd);
+	DataDefCLASS *retbuf_dd = function_retbuf_class(fd);
 	if (retbuf_dd) {
 		node_t pspec = type_list(retbuf_dd);
 		node_t pdecl = list();
@@ -6467,7 +6404,7 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 	// type is `void` (the object travels through the hidden `T* __retbuf`
 	// param injected by fnptr_func_node), so render `void` here and skip the
 	// pointer-peel / struct-spec logic.
-	if (fnptr_retbuf_type(fd)) {
+	if (function_retbuf_class(fd)) {
 		append_type_specs(spec_list, &ddVOID);
 		for (size_t d = 0; d < lead_dims.size(); d++)
 			append(decl_list, node3(N_ARR, ignore(), list(), integer(lead_dims[d])));
@@ -9354,8 +9291,7 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	// result-slot FIRST argument (before __this), void call, and the call
 	// expression is the materialized cleanup-tagged temp's lvalue (g++
 	// canon: get_allocator() receives the sret slot in %rdi, this in %rsi).
-	DataDefCLASS *retc = (!callee->returns_reference() && !callee->return_value_type().is_pointer())
-			     ? class_return_via_retbuf(&callee->return_value_type()) : NULL;
+	DataDefCLASS *retc = function_retbuf_class(callee);
 	char sret_tmp[40] = { 0 };
 	if (retc)
 		object_temp_decl(retc, sret_tmp, sizeof(sret_tmp), origin);
@@ -9912,10 +9848,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 		// left the relowered __mti call one arg short and non-addressable
 		// (__tree::__construct_node -> __node_holder at map:967), the
 		// pattern-mode twin of the general lane's materialization below.
-		DataDefCLASS *pret = (!callee->returns_reference()
-				      && !callee->is_multi_return())
-				     ? class_return_via_retbuf(&callee->return_value_type())
-				     : NULL;
+		DataDefCLASS *pret = function_retbuf_class(callee);
 		char ptmp[40] = { 0 };
 		if (pret)
 			object_temp_decl(pret, ptmp, sizeof(ptmp), origin);
@@ -9971,9 +9904,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	// lvalue — the method-call mirror of object_call_temp_addr. Without this
 	// the call was emitted bare: one arg short, and non-addressable as a
 	// value (`__x.get_allocator() == __a` in real _Vector_base).
-	DataDefCLASS *ret_obj = (callee && !callee->returns_reference()
-				 && !callee->is_multi_return())
-				? class_return_via_retbuf(&callee->return_value_type()) : NULL;
+	DataDefCLASS *ret_obj = function_retbuf_class(callee);
 	char ret_tmp[40] = { 0 };
 	if (ret_obj)
 		object_temp_decl(ret_obj, ret_tmp, sizeof(ret_tmp), origin);
@@ -14230,8 +14161,7 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 	// guaranteed copy elision when the caller provides the declared
 	// variable as ret_slot; expression contexts materialize a
 	// cleanup-tagged temp and yield its object lvalue).
-	DataDefCLASS *retc = (!callee->returns_reference() && !callee->return_value_type().is_pointer())
-			     ? class_return_via_retbuf(&callee->return_value_type()) : NULL;
+	DataDefCLASS *retc = function_retbuf_class(callee);
 	char objtmp[40] = { 0 };
 	bool slot_consumed = false;
 	if (retc) {
@@ -14595,9 +14525,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 		// as the external sret path. Reference returns (operator<<)
 		// keep the raw call: their value is the referent pointer.
 		FuncDef *bfd = dynamic_cast<FuncDef *>(bit->second->type);
-		DataDefCLASS *rcls = (bfd && !bfd->returns_reference())
-			? class_return_via_retbuf(&bfd->return_value_type())
-			: NULL;
+		DataDefCLASS *rcls = function_retbuf_class(bfd);
 		if (rcls) {
 			node_t addr = object_call_temp_addr(tc, rcls, top);
 			node_t cast = node2(N_CAST,
@@ -15082,8 +15010,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	DataDefCLASS *retc = as_class_instance(&callee->return_value_type());
 	bool by_value_object = retc && !callee->returns_reference()
 			       && !callee->return_value_type().is_pointer();
-	bool via_retbuf = by_value_object
-			  && class_return_via_retbuf(&callee->return_value_type()) != NULL;
+	bool via_retbuf = function_retbuf_class(callee) != NULL;
 	char objtmp[40] = { 0 };
 	if (by_value_object) {
 		snprintf(objtmp, sizeof(objtmp), "__madc_objtmp_%d", m_strtmp_counter++);
@@ -16266,7 +16193,6 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	if (!fd) return NULL;
 
 	DataDef *ret_dd = main_ret_normalized(tf, &fd->return_value_type());
-	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
 	bool ret_is_ref = fd->returns_reference();   // T& -> returned by address (one more *)
 	int ret_star_depth = dd_peel_pointers(ret_dd);
 
@@ -16274,8 +16200,7 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	// hidden `struct <T> *__retbuf` first param); keep the prototype in
 	// lock-step with func_def's lowering. A trivial struct keeps c2mir's native
 	// struct return.
-	DataDefCLASS *ret_obj = (!ret_is_ptr && !ret_is_ref && !fd->is_multi_return())
-				? class_return_via_retbuf(ret_dd) : NULL;
+	DataDefCLASS *ret_obj = function_retbuf_class(fd);
 	bool ret_via_retbuf = ret_obj != NULL;
 	DataDef *retbuf_dd = (DataDef *)ret_obj;
 	bool ret_is_multi = fd->is_multi_return();   // void ret + `long *__retbuf` first param
@@ -20720,8 +20645,7 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 				select_operator_overload(
 					ilcls, iopname, iop->right));
 		}
-		if (iinst && !iinst->returns_reference()
-		    && class_return_via_retbuf(&iinst->return_value_type()) == cdcl) {
+		if (function_retbuf_class(iinst) == cdcl) {
 			node_t slot = node1(N_ADDR,
 				id(sdcl->var.name.c_str(), sdcl),	// allowed-exception: guarded !file_global
 				sdcl);
@@ -22427,8 +22351,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// the C return type is `void`, a hidden `struct <T> *__retbuf` is the first
 	// parameter, and `return obj;` copy-constructs *__retbuf (see
 	// translate_return). A trivial struct keeps c2mir's native struct return.
-	DataDefCLASS *ret_obj = (!ret_is_ptr && !ret_is_ref && !fd->is_multi_return())
-				? class_return_via_retbuf(ret_dd) : NULL;
+	DataDefCLASS *ret_obj = function_retbuf_class(fd);
 	m_cur_func_returns_object = ret_obj;
 	bool ret_via_retbuf = ret_obj != NULL;
 	// A by-VALUE class return that uses c2mir's NATIVE struct return (trivially
@@ -23365,7 +23288,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		params.push_back(slot);
 	}
 	DataDef *rt = &fd->return_value_type();
-	DataDefCLASS *ret_cdd = class_return_via_retbuf(rt);
+	DataDefCLASS *ret_cdd = function_retbuf_class(fd);
 	enum { R_VOID, R_BOOL, R_INT, R_REAL, R_CSTR, R_TEXTOBJ, R_INST } rkind;
 	FuncDef *ret_cstr_fd = NULL, *ret_len_fd = NULL;
 	if (ret_cdd) {
@@ -24598,11 +24521,9 @@ node_t CirBuilder::translate_module(Program *prog)
 	// emitted before the late definition — map<int,int>'s `_Index_tuple<0>`).
 	node_t late_struct_anchor = c2mir_op_tail(c2m, top_list);
 
-	// Collect user function names. Stored as a member too, so the body
-	// translation (below) can tell a madc-compiled function (whose by-value
-	// non-trivial object return madc lowers via the __retbuf ABI) from an
-	// external / native function with its own ABI. (user_func_names is a
-	// builder member — the pack check gate consults it after translate.)
+	// Collect user function names. Stored as a member because linkability,
+	// reachability, and the pack check gate consult the emitted-symbol set after
+	// the initial body list has been collected.
 	user_func_names.clear();
 	for (TokenFunc *tf : funcs)
 		user_func_names.insert(tf->var.name);
@@ -25288,18 +25209,15 @@ node_t CirBuilder::translate_module(Program *prog)
 			continue;
 
 		DataDef *ret_dd = &fd->return_value_type();
-		bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
 		bool ret_is_ref = fd->returns_reference();
 		int ret_decl_stars = dd_peel_pointers(ret_dd);
 
-		// A madc-emitted by-value non-trivial class return uses the
-		// __retbuf ABI — the extern must mirror func_proto/func_def
+		// A by-value non-trivial class return uses the __retbuf ABI — the
+		// extern must mirror func_proto/func_def and every call lane
 		// (void return + hidden `struct T *__retbuf` first param), or a
 		// lazily-materialized definition conflicts with this declaration
 		// ("incompatible types of ... declarations").
-		DataDefCLASS *ret_obj = (!ret_is_ptr && !ret_is_ref
-					 && !fd->is_multi_return())
-					? class_return_via_retbuf(ret_dd) : NULL;
+		DataDefCLASS *ret_obj = function_retbuf_class(fd);
 
 		// Build: EXTERN + type spec
 		node_t ext_list = list();

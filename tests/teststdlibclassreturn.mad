@@ -1,0 +1,12 @@
+// By-value non-trivial return across standard-library implementation styles:
+// libstdc++ serves std::to_string(int) from a header body, while libc++ exports
+// it from its shared library. Both use the same Itanium hidden-result ABI.
+#include <string>
+#include <cstdio>
+
+int main()
+{
+	std::string s = std::to_string(42);
+	printf("stdlib-class-return: %s\n", s.c_str());
+	return 0;
+}
