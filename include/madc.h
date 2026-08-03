@@ -3382,6 +3382,33 @@ public:
     // no pack, NON-DEPENDENT return, body uses `T` only in scalar positions). False
     // routes to the existing re-parse instantiation (no behavior change).
     bool tsubst_eligible(FuncDef *fd, const char **why = NULL);
+    // [expr.sizeof]/5 — `sizeof ... ( identifier )` yields a parameter pack's
+    // ARITY. The operator is parsed by evaluate_type_query; it needs the arity of
+    // a pack NAME that is only known to whichever instantiation is in flight, so
+    // each instantiation PUBLISHES its pack arities here for the duration of the
+    // body parse and the operator resolves against them. Publishing data beats
+    // every substitution path re-implementing the operator (which is what the
+    // deleted token-level folds did, and one of them was missing, so `sizeof...`
+    // silently mis-parsed at arity >= 2).
+    // A STACK because instantiations nest; lookup runs innermost -> outermost so
+    // an inner template's own pack shadows an enclosing one of the same name.
+    std::vector<std::map<std::string, size_t> > pack_arity_scopes;
+    void push_pack_arity_scope()
+	{ pack_arity_scopes.push_back(std::map<std::string, size_t>()); }
+    void pop_pack_arity_scope()
+	{ if ( !pack_arity_scopes.empty() ) pack_arity_scopes.pop_back(); }
+    void publish_pack_arity(const std::string &n, size_t c)
+	{ if ( !pack_arity_scopes.empty() ) pack_arity_scopes.back()[n] = c; }
+    bool lookup_pack_arity(const std::string &n, size_t &out) const;
+    // RAII: an instantiation body parse can throw (SFINAE probes do it routinely),
+    // and a leaked scope would make a later sizeof...(P) resolve against a dead
+    // binding instead of failing.
+    struct PackArityScope
+    {
+	Program &p;
+	PackArityScope(Program &pp) : p(pp) { p.push_pack_arity_scope(); }
+	~PackArityScope() { p.pop_pack_arity_scope(); }
+    };
     // Two-tree Phase 2: parse a member function template's retained body ONCE with
     // its param bound to a DataDefTemplateParam placeholder (a TemplateParamScope
     // pushed for the parse + eager instantiation suppressed via

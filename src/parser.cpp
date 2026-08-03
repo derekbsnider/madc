@@ -8175,6 +8175,20 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     std::set<std::string> member_tpl_params;
     size_t member_tpl_extent_end = 0;
     size_t member_tpl_keep_begin = 0;
+    // [expr.sizeof]/5 — publish THIS instantiation's pack arities so the parser's
+    // `sizeof...` arm can evaluate the operator in the cloned body (which now
+    // carries it verbatim rather than pre-folded). Class twin of the publication
+    // in instantiate_fn_template_binding; the scope outlives the clone loop and
+    // covers the parse of the tokens it produces.
+    Program::PackArityScope _cls_pack_arity_scope(*this);
+    for ( std::map<std::string, std::vector<TokenDataType *> >::const_iterator
+	    pi = pack_subst.begin(); pi != pack_subst.end(); ++pi )
+	publish_pack_arity(pi->first, pi->second.size());
+    for ( std::map<std::string, std::vector<std::vector<TokenBase *> > >
+	    ::const_iterator vi = token_pack_subst.begin();
+	    vi != token_pack_subst.end(); ++vi )
+	if ( pack_subst.find(vi->first) == pack_subst.end() )
+	    publish_pack_arity(vi->first, vi->second.size());
     for ( size_t bi = 0; bi < td.body.size(); ++bi )
     {
 	if ( pack_pattern_skip_dots.count(bi) )
@@ -8196,23 +8210,15 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	std::string sop_pn_cls;
 	if ( sizeof_pack_operand_name(td.body, bi, sop_pn_cls) )
 	{
-	    const std::string pn = sop_pn_cls;
-	    std::map<std::string, std::vector<TokenDataType *> >
-		::const_iterator tpi = pack_subst.find(pn);
-	    std::map<std::string, std::vector<std::vector<TokenBase *> > >
-		::const_iterator vpi = token_pack_subst.find(pn);
-	    if ( tpi != pack_subst.end() || vpi != token_pack_subst.end() )
-	    {
-		size_t arity = tpi != pack_subst.end() ? tpi->second.size()
-						       : vpi->second.size();
-		TokenInt *ti = new TokenInt((int64_t)arity);
-		ti->file = bt->file;
-		ti->line = bt->line;
-		ti->column = bt->column;
-		inj.push_back(ti);
-		bi += 6;
-		continue;
-	    }
+	    // Verbatim, pack name intact — the parser owns the operator now. This
+	    // arm previously folded to the arity here precisely because the 1:1
+	    // fallback below would otherwise rewrite the bare pack name inside the
+	    // parens to a bound TYPE, manufacturing `sizeof...(int32_t&)`. Skipping
+	    // the whole operand run is what keeps that from happening.
+	    for ( size_t k = 0; k < 7; ++k )
+		inj.push_back(td.body[bi+k]->clone());
+	    bi += 6;
+	    continue;
 	}
 	// VALUE-pack expansions (task #102, libc++ __integer_sequence):
 	// (a) a parenthesized PATTERN `( ... _Values ... )...` replicates the
@@ -11781,9 +11787,58 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
     return dd;
 }
 
+bool Program::lookup_pack_arity(const std::string &n, size_t &out) const
+{
+    for ( size_t i = pack_arity_scopes.size(); i-- > 0; )
+    {
+	std::map<std::string, size_t>::const_iterator it =
+	    pack_arity_scopes[i].find(n);
+	if ( it != pack_arity_scopes[i].end() )
+	    { out = it->second; return true; }
+    }
+    return false;
+}
+
 size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name)
 {
     bool want_alignof = is_alignof_identifier(op_name);
+
+    // [expr.sizeof]/5 — `sizeof ... ( identifier )`. That IS the whole production:
+    // the operand must be an identifier naming a parameter pack, never a type-id or
+    // an expression, so no lookahead beyond the fixed shape is needed. A `.` can
+    // follow `sizeof` in no other construct, which makes the first dot an
+    // unambiguous commit point — everything after it is diagnosed, not backtracked.
+    // `alignof...` does not exist.
+    if ( !want_alignof && peekToken() && peekToken()->id() == TokenID::tkDot )
+    {
+	nextToken();				// first '.'
+	TokenBase *d2 = nextToken();
+	TokenBase *d3 = nextToken();
+	if ( !d2 || d2->id() != TokenID::tkDot
+	  || !d3 || d3->id() != TokenID::tkDot )
+	    Throw(op_tb) << "Expecting '...' after " << op_name << flush;
+	TokenBase *ob = nextToken();
+	if ( !ob || ob->id() != TokenID::tkOpBrk )
+	    Throw(ob ? ob : op_tb) << "Expecting '(' after " << op_name << "..." << flush;
+	TokenBase *id_tb = nextToken();
+	if ( !id_tb || !is_contextual_identifier_token(id_tb) )
+	    Throw(id_tb ? id_tb : op_tb)
+		<< op_name << "...: expecting a parameter-pack name" << flush;
+	const std::string pn = contextual_identifier_name(id_tb);
+	TokenBase *cb = nextToken();
+	if ( !cb || cb->id() != TokenID::tkClBrk )
+	    Throw(cb ? cb : op_tb)
+		<< "Expecting ')' after " << op_name << "...(" << pn << flush;
+	size_t arity = 0;
+	if ( !lookup_pack_arity(pn, arity) )
+	    // LOUD. The predecessor folds left an unresolved sizeof... to decay into
+	    // a variable lookup (`sizeof` is a soft-reserved TokenCppKeyword that
+	    // identifier-position code admits), which surfaced as an undefined MIR
+	    // import naming the enclosing template — three layers from the cause.
+	    Throw(id_tb) << op_name << "...: '" << pn
+			 << "' does not name a parameter pack in scope" << flush;
+	return arity;
+    }
 
     if ( peekToken() && peekToken()->id() != TokenID::tkOpBrk )
     {
@@ -48536,6 +48591,23 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    subst[b->first] = new TokenDataType(bind_spelling(b->second).c_str(),
 						*b->second);
     }
+    // [expr.sizeof]/5 — PUBLISH this instantiation's pack arities for the body
+    // parse; evaluate_type_query's `sizeof...` arm resolves against them. The
+    // substitution loops below deliberately do NOT fold the operator any more:
+    // they copy `sizeof ... ( P )` through verbatim (keeping the pattern's pack
+    // NAME unsubstituted) and the parser evaluates it. One implementation of the
+    // operator instead of one per substitution path.
+    Program::PackArityScope _pack_arity_scope(pgm);
+    if ( !pack_param.empty() )
+	pgm.publish_pack_arity(pack_param,
+		pack_empty ? 0 : (pack_elems.empty() ? 1 : pack_elems.size()));
+    for ( std::map<std::string, std::vector<DataDef *> >::const_iterator
+	    tp = tid_packs.begin(); tp != tid_packs.end(); ++tp )
+	pgm.publish_pack_arity(tp->first, tp->second.size());
+    for ( std::map<std::string, std::vector<int64_t> >::const_iterator
+	    np = tid_packs_nontype.begin(); np != tid_packs_nontype.end(); ++np )
+	pgm.publish_pack_arity(np->first, np->second.size());
+
     std::vector<TokenBase *> inj;
     std::string pack_value_name;	// the pack's VALUE name (`__base`)
     bool multi_done = false;
@@ -48607,29 +48679,15 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		std::string sop_pn;
 		if ( sizeof_pack_operand_name(ft.decl, i, sop_pn) )
 		{
-		    int64_t cnt = -1;
-		    if ( !pack_param.empty() && sop_pn == pack_param )
-			cnt = (int64_t)pack_elems.size();
-		    else
-		    {
-			std::map<std::string, std::vector<DataDef *> >
-			    ::const_iterator tp = tid_packs.find(sop_pn);
-			if ( tp != tid_packs.end() )
-			    cnt = (int64_t)tp->second.size();
-			else
-			{
-			    std::map<std::string, std::vector<int64_t> >
-				::const_iterator np = tid_packs_nontype.find(sop_pn);
-			    if ( np != tid_packs_nontype.end() )
-				cnt = (int64_t)np->second.size();
-			}
-		    }
-		    if ( cnt >= 0 )
-		    {
-			inj.push_back(new TokenInt(cnt));
-			i += 6;	// consumed `sizeof` `...` `(` name `)`
-			continue;
-		    }
+		    // Copy the operator through UNTOUCHED, pack name included, so
+		    // the parser's sizeof... arm sees it. Substituting the name
+		    // here is what forced the old fold to exist: the 1:1 arm would
+		    // rewrite `P` to a bound TYPE and manufacture the un-foldable
+		    // `sizeof...(int32_t&)`.
+		    for ( size_t k = 0; k < 7; ++k )
+			inj.push_back(ft.decl[i+k]->clone());
+		    i += 6;
+		    continue;
 		}
 	    }
 	    // Pack DECLARATION `_Args [decl-suffix] ... __args`: expand to N
@@ -48746,21 +48804,13 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	std::string sop_pn;
 	if ( sizeof_pack_operand_name(ft.decl, i, sop_pn) )
 	{
-	    const std::string &pn = sop_pn;
-	    int64_t cnt = -1;
-	    if ( tidpack_one.count(pn) || nontype_tidpack_one.count(pn) )
-		cnt = 1;
-	    else if ( tidpack_empty_names.count(pn) || nontype_tidpack_empty.count(pn) )
-		cnt = 0;
-	    else if ( !pack_param.empty() && pn == pack_param )
-		cnt = pack_empty ? 0
-		    : (int64_t)(pack_elems.empty() ? 1 : pack_elems.size());
-	    if ( cnt >= 0 )
-	    {
-		inj.push_back(new TokenInt(cnt));
-		i += 6;	// consumed `sizeof` `...` `(` name `)`
-		continue;
-	    }
+	    // Verbatim — see the multi-element twin above. The tidpack_one /
+	    // tidpack_empty_names counts this arm used to consult are published
+	    // as pack arities before the loop, so the parser resolves them.
+	    for ( size_t k = 0; k < 7; ++k )
+		inj.push_back(ft.decl[i+k]->clone());
+	    i += 6;
+	    continue;
 	}
 	// Pattern pack-expansion ellipsis (`std::forward<Args>(args)...`,
 	// `g<Args>(args)...`): the pattern's tokens are substituted inline by
