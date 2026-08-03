@@ -2,9 +2,25 @@
 
 ## [Unreleased]
 
-Variadic-pack correctness, and `sizeof...` becomes a real operator. The
-libc++ parity lane is UNCHANGED at 891/28 — all three changes below are
-default-lane correctness. fulltest 922/0, exe 875/0, obj 875/0.
+Variadic-pack correctness, `sizeof...` becomes a real operator, and the
+external class-return ABI joins the libc++ parity burn-down. The flavored
+lane moved **891/28 → 893/27**: one new cross-flavor gate plus the sole
+flip `teststdstringconv`, with zero newly broken tests in the two-way
+failset diff. Fulltest is **923/0/0TO/9skip**; libc++-eligible EXE and OBJ
+are each **877/0**.
+
+- **fix: external and emitted non-trivial class returns share one selected-
+  `FuncDef` hidden-result ABI decision (task #116, @3d82ca3a).** The direct
+  call classifier found the right return class, then vetoed a bodyless
+  external libc++ callee even though its emitted prototype already had the
+  `void(T* __retbuf, ...)` shape. That made `std::__1::to_string(int)` one
+  argument short and tried to take the address of its void call. The existing
+  function-pointer predicate is now the single `function_retbuf_class` owner
+  reused by definitions, prototypes, externs, function pointers,
+  direct/method/operator calls, and host shims; linkage/body origin no longer
+  changes the ABI. GCC 13/libstdc++ and Clang 18/libc++ both pass the hidden
+  destination in `%rdi` and the integer in `%esi`; Clang IR marks the external
+  call `sret`. New real-header cross-flavor gate `teststdlibclassreturn`.
 
 - **feat: `sizeof...(P)` implemented as a real unary operator; all three
   token-level folds DELETED (@ba7517b4).** It was never an operator —

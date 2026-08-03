@@ -1,6 +1,18 @@
 # Test Status
 
-> **Current (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —
+> **Current (2026-08-03, `feature/libcxx-parity6-codex` @3d82ca3a —
+> external class-return ABI task #116):** fulltest **923 passed, 0 failed,
+> 0 timed out, 9 skipped**. The focused retbuf set passes JIT, EXE, and OBJ
+> at **3/0** in each lane. The whole flavored suite is **893 passed / 27
+> failed / 0 timed out / 12 skipped**; among eligible tests, libc++ EXE and
+> OBJ are each **877/0**. The old/new failing-name comparison is exact in
+> both directions: 28 → 27, only `teststdstringconv.mad` removed, zero
+> additions. New gate `teststdlibclassreturn` uses C++17 real headers and
+> runs under both libstdc++ and libc++. Full logs:
+> `tmp/logs/rb-20260803-151224.log` (fulltest) and
+> `tmp/logs/rb-20260803-152243.log` (whole libc++ battery).
+>
+> **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —
 > pack/variadic correctness, unreleased):** fulltest **922 passed, 0
 > failed, 0 timed out, 9 skipped**, unittest rc=0, `--exe` **875/0** and
 > `--obj` **875/0** (of the 891 JIT-passing). All gates green (delimiter
@@ -11,7 +23,7 @@
 > replicate are indistinguishable and three real defects shipped green
 > behind arity-1 gates.
 >
-> **The flavored parity lane is UNCHANGED at 891 passed / 28 failed / 0
+> The flavored parity lane was unchanged at 891 passed / 28 failed / 0
 > timed out / 12 skipped** (`run_tests.sh --stdlib=libc++`, measured at
 > @ba7517b4; the failing set is comm-diffed BOTH WAYS against
 > `docs/parity/libcxx-failset.txt` — 28 vs 28, no new, no fixed). All

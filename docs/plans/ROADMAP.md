@@ -1,21 +1,14 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-08-01 (v0.67.0: the
-FLAVOR-ABI release — the libc++ parity lane went 859/40 →
-**880/26+2**. The biggest remaining dam fell: a libc++ script now
-passes `std::string` into the host's libstdc++-built namespace
-functions through compiler-generated marshalling thunks (task #69,
-dladdr-origin boundary detection, host-flavor temps + copy-back +
-alias-mapped returns). #93 typedef template-arg identity LANDED
-(`cin >> string` works under libc++); deduction guides declare no name
-(#98); declaration-only Itanium callees get typed protos (#92);
-const-overload selection honors the implicit object parameter
-([over.match.funcs]/4); two [dcl.ambig.res] declaration readings +
-access control judges the SELECTED overload. 21 net flips, zero broken
-at every comm-diffed step. Every remaining failure carries a named
-root (task #34): #102 non-type packs (map/set/tuple family) → #72
-skipped-body → #66 placeholder-vs-template → singles — P2.7
-continues).
+Master plan linking all workstreams. Updated 2026-08-03 (unreleased
+libc++ parity checkpoint @3d82ca3a): the lane is now **893/27** with
+zero timeouts; `teststdstringconv` is the sole failset removal and the
+new cross-flavor gate accounts for the other added pass. Task #116 is
+closed at the shared function-signature ABI layer: external and
+madc-emitted non-trivial class returns use the same selected-`FuncDef`
+hidden-result decision. The next root family is #72 skipped-body tsubst
+(`__tree`, five tests); #114 remains blocked on the owner decision about
+mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -40,6 +33,24 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **Unreleased parity checkpoint (2026-08-03, task #116, P2.7 in
+  progress).** `object_returning_call_class` used to classify the selected
+  non-trivial return as `__retbuf`, then veto external/bodyless callees even
+  though Pass 0.75 had already declared those functions as `void(T*, ...)`.
+  libc++ exports `std::__1::to_string(int)`, so the call became one argument
+  short and its void result was addressed. The existing function-pointer
+  predicate is now the single `function_retbuf_class(FuncDef*)` owner used by
+  definitions, prototypes, externs, function pointers, direct/method/operator
+  calls, and host shims; body origin remains only linkage/reachability data.
+  GCC 13/libstdc++ and Clang 18/libc++ both pass the hidden result address in
+  `%rdi` and the integer argument in `%esi`; Clang IR marks the external call
+  `sret`. Gate `teststdlibclassreturn` runs real headers under both flavors.
+  Fulltest is **923/0/0TO/9skip**; the whole libc++ lane moved **891/28 →
+  893/27** (+1 new gate, `teststdstringconv` fixed, zero additions in the
+  two-way failset diff), with eligible **EXE 877/0** and **OBJ 877/0**.
+  NEXT: #72 skipped-body tsubst (`__tree`, five tests), then the remaining
+  bucketed roots; keep #114 parked until its ABI/API decision is answered.
 
 - **v0.67.0 (2026-08-01): the flavor-ABI release (tasks
   #69/#92/#93/#98, P2.7 in progress).** The flavored lane went 859/40

@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  e09c5381 (2026-08-02) on feature/libcxx-parity5-claude
-# Result:       880 passed / 26 failed / 2 timed out / 12 skipped
+# Measured at:  3d82ca3a (2026-08-03) on feature/libcxx-parity6-codex
+# Result:       893 passed / 27 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -525,6 +525,18 @@
 #                         already members of the failing set. Default
 #                         fulltest GREEN throughout (the marshalling path
 #                         is unreachable when script flavor == host).
+#   ba7517b4  891 /  28   the failing-name set is IDENTICAL to e09c5381
+#                         (the two prior timeouts reproduced as ordinary
+#                         failures); +11 passes are new default-lane gates.
+#   3d82ca3a  893 /  27   ONE FIXED, ZERO newly broken (comm-diffed both
+#                         ways): teststdstringconv. +1 other pass is the new
+#                         real-header cross-flavor gate
+#                         teststdlibclassreturn. Task #116 closed at the
+#                         function-signature ABI owner: external libc++ and
+#                         madc-emitted non-trivial class returns both use the
+#                         selected FuncDef's hidden-result shape; body origin
+#                         is not an ABI discriminator. fulltest 923/0,
+#                         libc++ EXE 877/0, OBJ 877/0.
 testcastarrow.mad
 testconstructible.mad
 testcontainerdtor.mad
@@ -548,7 +560,6 @@ testopinherit.mad
 testset.mad
 testsstream.mad
 teststdmapint.mad
-teststdstringconv.mad
 teststringrel.mad
 testsubscript.mad
 testsysobject.mad
