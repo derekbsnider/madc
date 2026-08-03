@@ -51915,8 +51915,11 @@ static DataDef *skipped_template_function_return_type(
 			    { depends_on_fn_param = true; break; }
 		}
 	if ( rs < type_end && !depends_on_fn_param )
+	{
+	    Program::ClassTypeLookupScope return_definition_scope(pgm, owner);
 	    if ( DataDef *tid = pgm.resolve_type_token_range(tokens, rs, type_end) )
 		return apply_declarators(tid);
+	}
     }
     // Pointer-declarator stars between the base type and the name
     // (`Node * make`, `T ** f`): count them backward and fold getPointerType
