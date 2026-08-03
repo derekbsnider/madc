@@ -4974,6 +4974,42 @@ static bool is_incomplete_template_class_type(TokenDataType *tdt)
     return tdt && is_incomplete_class_datadef(&tdt->definition);
 }
 
+DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
+{
+    if ( !cls || !is_incomplete_class_datadef(cls) )
+	return NULL;
+    std::map<DataDef *, DependentShellOrigin>::const_iterator oi =
+	dependent_shell_origin.find(cls);
+    if ( oi == dependent_shell_origin.end()
+      || oi->second.raw_arg_tokens.empty() )
+	return NULL;
+    // SILENT SFINAE discipline (the constraint evaluator's pattern): a replay
+    // that cannot re-enter cleanly — a still-dependent shell, a
+    // spelling-matched-spec template — must leave no stderr noise and no
+    // diagnostic behind, because the caller's opaque path is still valid.
+    struct ShellNullBuf : std::streambuf
+    { int overflow(int c) { return c; } };
+    static ShellNullBuf shell_null_buf;
+    size_t sd = diagnostics.size();
+    Program::ErrorInfo se = last_error;
+    std::streambuf *sc = std::cerr.rdbuf(&shell_null_buf);
+    TokenDataType *real = NULL;
+    try
+    {
+	real = instantiate_shell_origin_replay(oi->second,
+					       oi->second.raw_arg_tokens);
+    }
+    catch ( ... ) { real = NULL; }
+    std::cerr.rdbuf(sc);
+    DataDefCLASS *rc = real
+	? dynamic_cast<DataDefCLASS *>(&real->definition) : NULL;
+    if ( rc && !is_incomplete_class_datadef(rc) )
+	return rc;
+    diagnostics.resize(sd);
+    last_error = se;
+    return NULL;
+}
+
 static bool datadef_has_unresolved_dependent_surface(DataDef *dd);
 
 static bool class_has_dependent_base(DataDefCLASS *cls,
@@ -9950,61 +9986,32 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	    fprintf(stderr, "TNPROBE alias %s::%s -> %s\n",
 		    owner ? owner->name.c_str() : param_owner->name.c_str(),
 		    member_name.c_str(), alias_dd ? alias_dd->name.c_str() : "(null)");
-	// A member-alias MISS on an INCOMPLETE owner that carries a
-	// dependent-shell ORIGIN (the opaque lane's mint, parser ~4854): the
-	// owner was minted DURING a dependent parse and cached; by now its
-	// recorded args may be fully CONCRETE (tuple_element<0, tuple<int&>>
-	// from get<0>'s instantiation — the map:967 chain), so replay the
-	// template-id and retry the alias on the REAL instance. SILENT
-	// SFINAE discipline (the constraint evaluator's pattern): cerr muted
-	// and diagnostics rewound — a failed replay (a still-dependent shell,
-	// a spelling-matched-spec template that cannot re-enter cleanly)
-	// falls through to the opaque materialization exactly as before,
-	// with no stderr noise in the default lane.
+	// A member-alias MISS on an INCOMPLETE owner: the owner was minted
+	// DURING a dependent parse and cached, but by now its recorded args may
+	// be fully CONCRETE (tuple_element<0, tuple<int&>> from get<0>'s
+	// instantiation — the map:967 chain). complete_shell_class_type() owns
+	// the replay and its silence; a shell that stays opaque returns NULL and
+	// falls through to the opaque materialization exactly as before.
 	if ( !alias_dd && owner && is_incomplete_class_datadef(owner) )
 	{
-	    std::map<DataDef *, DependentShellOrigin>::const_iterator oi =
-		dependent_shell_origin.find(owner);
 	    if ( tnp_on )
+	    {
+		std::map<DataDef *, DependentShellOrigin>::const_iterator oi =
+		    dependent_shell_origin.find(owner);
 		fprintf(stderr, "TNPROBE replay-gate %s org=%d runs=%zu\n",
 			owner->name.c_str(),
 			(int)(oi != dependent_shell_origin.end()),
 			oi != dependent_shell_origin.end()
 			    ? oi->second.raw_arg_tokens.size() : (size_t)0);
-	    if ( oi != dependent_shell_origin.end()
-	      && !oi->second.raw_arg_tokens.empty() )
+	    }
+	    if ( DataDefCLASS *rc = complete_shell_class_type(owner) )
 	    {
-		struct TnNullBuf : std::streambuf
-		{ int overflow(int c) { return c; } };
-		static TnNullBuf tn_null_buf;
-		size_t sd = diagnostics.size();
-		Program::ErrorInfo se = last_error;
-		std::streambuf *sc = std::cerr.rdbuf(&tn_null_buf);
-		TokenDataType *real = NULL;
-		try
-		{
-		    real = instantiate_shell_origin_replay(
-			oi->second, oi->second.raw_arg_tokens);
-		}
-		catch ( ... ) { real = NULL; }
-		std::cerr.rdbuf(sc);
-		DataDefCLASS *rc = real
-		    ? dynamic_cast<DataDefCLASS *>(&real->definition) : NULL;
-		if ( rc && !is_incomplete_class_datadef(rc) )
-		{
-		    owner = rc;
-		    alias_dd = resolve_class_type_alias(owner, member_name);
-		    if ( tnp_on )
-			fprintf(stderr, "TNPROBE shell-replay %s -> %s"
-				" alias=%s\n", oi->second.tname.c_str(),
-				owner->name.c_str(),
-				alias_dd ? alias_dd->name.c_str() : "(null)");
-		}
-		else
-		{
-		    diagnostics.resize(sd);
-		    last_error = se;
-		}
+		owner = rc;
+		alias_dd = resolve_class_type_alias(owner, member_name);
+		if ( tnp_on )
+		    fprintf(stderr, "TNPROBE shell-replay -> %s alias=%s\n",
+			    owner->name.c_str(),
+			    alias_dd ? alias_dd->name.c_str() : "(null)");
 	    }
 	}
 	if ( !alias_dd && (owner ? class_allows_opaque_member_type(owner)
@@ -40284,7 +40291,27 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    continue;
 		}
 		TokenBase *type_head = pgm.nextToken();
+		// A class MEMBER declaration is a STORAGE/object context, the
+		// exact twin of parseStatement's local/global declaration arms:
+		// [class.mem] requires a non-static data member's type to be
+		// COMPLETE, so a concrete-arg variadic template named here
+		// (`impl<tag,int> base_;`, libc++'s `_BaseT __base_;`) must
+		// really instantiate instead of staying an opaque memberless
+		// shell. Without this the member's type is an EMPTY struct: its
+		// bases, members and constructor all vanish, `m.f()` folds to the
+		// literal 0, and nothing diagnoses it. Same per-demand-site
+		// arming as those two sites — resolve_declared_type_token's own
+		// stmt_scope_demand cannot cover this one, it requires
+		// class_scope_stack to be EMPTY.
+		// Not while a dependent pattern is being parsed or captured:
+		// there the arguments still name the enclosing template's
+		// parameters, and the shell is the correct answer.
+		bool saved_member_vri = pgm.allow_variadic_real_inst;
+		if ( !pgm.dependent_parse_in_progress
+		  && !pgm.class_pattern_capture_in_progress )
+		    pgm.allow_variadic_real_inst = true;
 		TokenDataType *mtype = pgm.resolve_declared_type_token(type_head, true, true);
+		pgm.allow_variadic_real_inst = saved_member_vri;
 		if ( !mtype
 		  && (class_allows_opaque_member_type(ddc)
 		   || pgm.is_system_header_path(TokenBase::_parse_file))
@@ -40297,6 +40324,24 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		}
 		if ( !mtype )
 		    pgm.Throw(type_head) << "Expecting type in class definition" << flush;
+		// Second half of the same completeness demand, for the type
+		// that arrived through an ALIAS: `typedef impl<tag,T> B; B m;`
+		// resolved its template-id back when the TYPEDEF was parsed —
+		// where there is no demand, because a typedef of an incomplete
+		// type is legal — so the arming above never saw a template-id
+		// and `m` still names the shell. COMPLETE it from the shell's
+		// recorded origin; this is libc++'s tuple shape (`_BaseT
+		// __base_;` over __tuple_impl<__tuple_indices<...>, _Tp...>).
+		// Silent: a shell that cannot replay stays opaque, exactly as
+		// before.
+		if ( mtype && !pgm.dependent_parse_in_progress
+		  && !pgm.class_pattern_capture_in_progress )
+		    if ( DataDefCLASS *mcls =
+			    dynamic_cast<DataDefCLASS *>(&mtype->definition) )
+			if ( DataDefCLASS *real =
+				pgm.complete_shell_class_type(mcls) )
+			    mtype = make_alias_type_token(real->name, real,
+							  type_head);
 
 	// East-const / -volatile on the base type (`char const *`, `int const x`):
 	// the cv-qualifier trails the type and precedes the declarator. madc tracks

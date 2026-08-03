@@ -1,0 +1,120 @@
+// A class MEMBER whose type is a VARIADIC template-id with concrete arguments
+// must be a COMPLETE type ([class.mem]/6) — the same storage/object demand a
+// local declaration makes.
+//
+// madc real-instantiates a concrete-arg variadic template only on demand, and
+// the class member-declaration lane never raised that demand. The member's type
+// stayed an opaque memberless SHELL: an EMPTY struct with no bases, no members
+// and no constructor. Nothing diagnosed it — `m.get()` folded to the literal 0
+// and the mem-init vanished, so the emitted C read `(0 = 7)` and c2mir reported
+// "lvalue required as left operand of assignment" at the USE, three layers away
+// from the declaration that lost the type.
+//
+// The four failing shapes below are what the bisection separated. The first two
+// need no template on the enclosing side at all:
+//
+//   plain    struct box            { impl<tag,int> m; }
+//   tpl      template<class T> ... { impl<tag,T>   m; }
+//   tdef     template<class T> ... { typedef impl<tag,T> B; B m; }
+//   ref      the same, instantiated on a REFERENCE
+//
+// `tdef` is a SECOND route, not a variation: a typedef of an incomplete type is
+// legal, so the typedef raises no demand and resolves the template-id to a shell
+// long before the member is declared. It is also libc++'s tuple shape
+// (`_BaseT __base_;` over __tuple_impl<__tuple_indices<...>, _Tp...>), and it
+// needs the shell COMPLETED at the member rather than instantiated for real up
+// front.
+//
+// EVERY SHAPE USES A DISTINCT ELEMENT TYPE ON PURPOSE. With int everywhere, the
+// first shape to really instantiate `impl<tag,int>` registers it, and every
+// later shape finds the completed instance in the cache and passes without ever
+// exercising its own path. That false green is not hypothetical — it is what
+// this file did before the element types were split, and it hid a still-broken
+// typedef route behind three passing lines.
+//
+// The reference case is why every check writes THROUGH get() and then reads the
+// referent: a member that silently degrades from `int&` to `int` still compiles
+// and still prints a plausible get=7 while leaving x at 5.
+//
+// NEGATIVE CONTROL: `plainfixed` names a NON-variadic template in the same
+// position. It always worked, and it must keep working — the fix widens a
+// demand, it does not change the non-variadic path.
+//
+// Oracle: g++-13 and clang++-18 both print all five lines below.
+#include <cstdio>
+
+struct tag {};
+
+template <unsigned I, class H>
+struct leaf
+{
+	H v;
+	H &get() { return v; }
+	leaf(H h) : v(h) {}
+};
+
+// variadic: the trailing pack is what madc left opaque
+template <class Idx, class... Ts>
+struct impl : leaf<0, Ts>...
+{
+	impl(Ts... ts) : leaf<0, Ts>(ts)... {}
+};
+
+// non-variadic twin — the negative control
+template <class Idx, class T>
+struct implfixed : leaf<0, T>
+{
+	implfixed(T t) : leaf<0, T>(t) {}
+};
+
+struct plainbox
+{
+	impl<tag, int> m;		// impl<tag,int>
+	plainbox(int t) : m(t) {}
+};
+
+struct plainfixed
+{
+	implfixed<tag, int> m;		// a DIFFERENT template — control
+	plainfixed(int t) : m(t) {}
+};
+
+template <class T>
+struct tplbox
+{
+	impl<tag, T> m;
+	tplbox(T t) : m(t) {}
+};
+
+template <class T>
+struct tdefbox
+{
+	typedef impl<tag, T> BaseT;
+	BaseT m;
+	tdefbox(T t) : m(t) {}
+};
+
+int main()
+{
+	plainbox a(5);			// impl<tag,int>
+	a.m.get() = 7;
+	printf("plain=%d\n", a.m.get());
+
+	plainfixed c(5);		// implfixed<tag,int>
+	c.m.get() = 7;
+	printf("plainfixed=%d\n", c.m.get());
+
+	tplbox<long> b(5);		// impl<tag,long>    — distinct key
+	b.m.get() = 7;
+	printf("tpl=%ld\n", b.m.get());
+
+	tdefbox<double> d(5);		// impl<tag,double>  — distinct key
+	d.m.get() = 7;
+	printf("tdef=%g\n", d.m.get());
+
+	int x = 5;
+	tdefbox<int &> r(x);		// impl<tag,int&>    — distinct key
+	r.m.get() = 7;			// must write THROUGH the reference, into x
+	printf("ref x=%d get=%d\n", x, r.m.get());
+	return 0;
+}

@@ -5126,6 +5126,13 @@ public:
     TokenDataType *instantiate_shell_origin_replay(
 			const struct DependentShellOrigin &org,
 			const std::vector<std::vector<TokenBase *> > &arg_runs);
+    // COMPLETE an opaque template shell in place of a completeness demand:
+    // look up the shell's recorded origin and replay it (above). A shell minted
+    // during a dependent parse may by now hold fully CONCRETE args, in which
+    // case the replay yields the real instantiation. SILENT — cerr muted and
+    // diagnostics rewound, so a replay that cannot re-enter cleanly leaves the
+    // caller exactly as it was. Returns NULL when the shell stays opaque.
+    DataDefCLASS *complete_shell_class_type(DataDefCLASS *cls);
     // GCC's __integer_pack(N) builtin (libstdc++-13 GCC-path index-sequence
     // primitive): valid only as the entire pattern of a template-argument pack
     // expansion `X<... __integer_pack(N)... ...>`; at substitution time (N a
