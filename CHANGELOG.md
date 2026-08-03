@@ -2,12 +2,35 @@
 
 ## [Unreleased]
 
-Variadic-pack correctness, `sizeof...` becomes a real operator, and the
-external class-return ABI joins the libc++ parity burn-down. The flavored
-lane moved **891/28 → 893/27**: one new cross-flavor gate plus the sole
-flip `teststdstringconv`, with zero newly broken tests in the two-way
-failset diff. Fulltest is **923/0/0TO/9skip**; libc++-eligible EXE and OBJ
-are each **877/0**.
+Variadic-pack correctness, `sizeof...` becomes a real operator, and four
+generic class-template/return fixes join the libc++ parity burn-down. The
+flavored lane moved **891/28 → 897/26**: five new gates plus the flips
+`teststdstringconv` and `testlateinstproto`, with zero newly broken tests in
+either two-way failset diff. Fulltest is **926/0/0TO/9skip**;
+libc++-eligible EXE and OBJ are each **881/0**.
+
+- **fix: dependent direct-slot retbuf calls retain semantic provenance
+  through tsubst (@518412e2).** `class_decl_stmts` stamped the synthesized
+  initializer call with its declaration, hiding the dependent
+  `TokenCallFunc`; subtree-copy call rebuilds also dropped the
+  `synth_from_origin` marker. The call token now owns semantic rebinding while
+  declaration provenance remains available for rendering and diagnostics.
+  New `testretbufmtiinit` forces a non-trivial hidden-result ABI through an
+  out-of-line variadic member template; GCC 13, Clang 18, and madc JIT/EXE/OBJ
+  all print `value=73`.
+
+- **fix: class aliases in template defaults resolve in the definition owner,
+  not the ambient caller (@2e70fbbf).** A scoped definition-owner lookup now
+  outranks the caller method owner, so `allocator_traits<node_allocator>` no
+  longer binds the outer `__tree::allocator_type` and selects the wrong SFINAE
+  sibling. New `testsfinaedefscope`; this is the sole change that removes
+  `testlateinstproto` from the libc++ failset.
+
+- **fix: dependent template-id shells retain structural replay provenance
+  and typed argument-slot origins (@c4828adb).** The general class-template
+  lane had minted shells without enough provenance to rebuild
+  `__can_extract_key<P, key_type>` during parse-once tsubst. New
+  `testdependenttagdispatch` matches GCC 13 and Clang 18 at `20 10`.
 
 - **fix: external and emitted non-trivial class returns share one selected-
   `FuncDef` hidden-result ABI decision (task #116, @3d82ca3a).** The direct

@@ -1,16 +1,17 @@
 # Test Status
 
-> **Current (2026-08-03, `feature/libcxx-parity6-codex` @3d82ca3a —
-> external class-return ABI task #116):** fulltest **923 passed, 0 failed,
+> **Current (2026-08-03, `feature/libcxx-parity6-codex` @518412e2 —
+> task #72 generic precursors):** fulltest **926 passed, 0 failed,
 > 0 timed out, 9 skipped**. The focused retbuf set passes JIT, EXE, and OBJ
-> at **3/0** in each lane. The whole flavored suite is **893 passed / 27
+> at **5/0** in each lane. The whole flavored suite is **897 passed / 26
 > failed / 0 timed out / 12 skipped**; among eligible tests, libc++ EXE and
-> OBJ are each **877/0**. The old/new failing-name comparison is exact in
-> both directions: 28 → 27, only `teststdstringconv.mad` removed, zero
-> additions. New gate `teststdlibclassreturn` uses C++17 real headers and
-> runs under both libstdc++ and libc++. Full logs:
-> `tmp/logs/rb-20260803-151224.log` (fulltest) and
-> `tmp/logs/rb-20260803-152243.log` (whole libc++ battery).
+> OBJ are each **881/0**. The old/new failing-name comparison is exact in
+> both directions: 27 → 26, only `testlateinstproto.mad` removed, zero
+> additions. New gates `testdependenttagdispatch`, `testsfinaedefscope`, and
+> `testretbufmtiinit` pin structural template-id replay, definition-owner
+> alias lookup, and dependent retbuf-call provenance. Full logs:
+> `tmp/logs/rb-20260803-213204.log` (fulltest) and
+> `tmp/logs/rb-20260803-214240.log` (whole libc++ battery).
 >
 > **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —
 > pack/variadic correctness, unreleased):** fulltest **922 passed, 0
