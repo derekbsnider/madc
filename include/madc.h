@@ -3314,6 +3314,25 @@ public:
     registration_set<std::string> template_completion_requested; // mangled aliases awaiting completion
     std::set<std::string> template_instantiated;           // mangled names done
     std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup
+    // An isolated definition-context type resolve (member-template defaults /
+    // constraints) must outrank the ambient method owner. Both remain live
+    // while a callee's SFINAE is evaluated from inside a caller method, so a
+    // dedicated stack distinguishes the explicit definition owner from the
+    // ordinary class_scope_stack.
+    std::vector<DataDefCLASS *> class_type_lookup_override_stack;
+    class ClassTypeLookupScope
+    {
+	Program &pgm;
+	bool pushed;
+	ClassTypeLookupScope(const ClassTypeLookupScope &);
+	ClassTypeLookupScope &operator=(const ClassTypeLookupScope &);
+    public:
+	ClassTypeLookupScope(Program &p, DataDefCLASS *owner)
+	    : pgm(p), pushed(owner != NULL)
+	{ if ( pushed ) pgm.class_type_lookup_override_stack.push_back(owner); }
+	~ClassTypeLookupScope()
+	{ if ( pushed ) pgm.class_type_lookup_override_stack.pop_back(); }
+    };
     // Function-local class identities are parse-session metadata. The class's
     // emitted name carries the durable identity; this side table lets tsubst
     // map a Tree-1 pattern local class to the matching concrete instantiation

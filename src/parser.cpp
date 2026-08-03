@@ -2883,6 +2883,15 @@ DataDef *Program::resolve_current_class_type_alias(const std::string &name)
     // until 2a pushes a TemplateParamScope.
     if ( DataDef *tp = resolve_template_param(name) )
 	return tp;
+    // A callee template's DEFAULT/constraint is resolved in its DEFINITION
+    // class, even when that work was triggered from inside another method.
+    // The ambient method owner deliberately wins over ordinary class scopes
+    // below, so an explicit definition-context scope needs its own priority.
+    for ( std::vector<DataDefCLASS *>::reverse_iterator it =
+	      class_type_lookup_override_stack.rbegin();
+	  it != class_type_lookup_override_stack.rend(); ++it )
+	if ( DataDef *dd = resolve_class_type_alias(*it, name) )
+	    return dd;
     // The CURRENT METHOD's owner class is the innermost class scope while its
     // body parses ([class.mfct]: member-function lookup reaches the class
     // scope before any enclosing/ambient one), so it must SHADOW the
@@ -17016,6 +17025,7 @@ DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
     // candidate, not a hard error).
     bool pushed_owner = false;
     if ( owner ) { class_scope_stack.push_back(owner); pushed_owner = true; }
+    ClassTypeLookupScope return_definition_scope(*this, owner);
     DataDef *rt = resolve_type_token_range(sub, 0, sub.size());
     if ( pushed_owner && !class_scope_stack.empty()
       && class_scope_stack.back() == owner )
@@ -48035,6 +48045,7 @@ DataDef *Program::resolve_template_param_default_type(
     bool pushed_owner = false;
     if ( owner )
     { class_scope_stack.push_back(owner); pushed_owner = true; }
+    ClassTypeLookupScope definition_scope(*this, owner);
 
     // Mute std::cerr for the speculative resolve: a Throw inside it prints
     // via throwbuf::sync() BEFORE the exception is caught (the same hazard
