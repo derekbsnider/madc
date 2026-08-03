@@ -2,12 +2,21 @@
 
 ## [Unreleased]
 
-Variadic-pack correctness, `sizeof...` becomes a real operator, and four
+Variadic-pack correctness, `sizeof...` becomes a real operator, and five
 generic class-template/return fixes join the libc++ parity burn-down. The
-flavored lane moved **891/28 → 897/26**: five new gates plus the flips
+flavored lane moved **891/28 → 898/26**: five new gates plus the flips
 `teststdstringconv` and `testlateinstproto`, with zero newly broken tests in
-either two-way failset diff. Fulltest is **926/0/0TO/9skip**;
-libc++-eligible EXE and OBJ are each **881/0**.
+either two-way failset diff. Fulltest is **927/0/0TO/9skip**;
+libc++-eligible EXE and OBJ are each **882/0**.
+
+- **fix: concrete member-template returns resolve in their definition owner
+  (@ef168838).** A concrete instantiation triggered from another class method
+  scanned `pair<owner_alias,bool>` before installing the callee owner; full
+  resolution missed and the backward fallback registered the return as
+  `bool`. The full template-id lookup now uses the existing scoped
+  definition-owner override. New `testmtireturnscope`; GCC 13 and Clang 18
+  return the trivial pair in `%rax` and all madc execution lanes print
+  `value=42`.
 
 - **fix: dependent direct-slot retbuf calls retain semantic provenance
   through tsubst (@518412e2).** `class_decl_stmts` stamped the synthesized

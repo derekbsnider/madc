@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  518412e2 (2026-08-03) on feature/libcxx-parity6-codex
-# Result:       897 passed / 26 failed / 0 timed out / 12 skipped
+# Measured at:  ef168838 (2026-08-03) on feature/libcxx-parity6-codex
+# Result:       898 passed / 26 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -542,6 +542,8 @@
 #                         testsfinaedefscope; EXE 880/0, OBJ 880/0.
 #   518412e2  897 /  26   failing-name set unchanged; +1 is new gate
 #                         testretbufmtiinit; EXE 881/0, OBJ 881/0.
+#   ef168838  898 /  26   failing-name set unchanged; +1 is new gate
+#                         testmtireturnscope; EXE 882/0, OBJ 882/0.
 testcastarrow.mad
 testconstructible.mad
 testcontainerdtor.mad

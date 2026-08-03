@@ -1,13 +1,13 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-03 (unreleased
-libc++ parity checkpoint @518412e2): the lane is now **897/26** with
-zero timeouts; `testlateinstproto` is the sole failset removal and three
-new generic regression gates account for the other passes. Three #72
+libc++ parity checkpoint @ef168838): the lane is now **898/26** with
+zero timeouts; `testlateinstproto` remains the sole failset removal and four
+new generic regression gates account for the other passes. Four #72
 precursors now preserve dependent template-id origins, definition-owner
-alias lookup, and direct-slot retbuf call provenance. The immediate root
-is concrete member-template return lookup outside its definition-owner
-scope, followed by copied member-pack reference adaptation; #114 remains
+alias lookup, direct-slot retbuf call provenance, and concrete return-token
+owner scope. The immediate root is nested plain-aggregate identity, shared
+by three standalone failures and `testset`; #114 remains
 blocked on the owner decision about mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
@@ -39,15 +39,17 @@ high-level" — the answer is both.**
   typed argument-slot provenance (@c4828adb); definition-context class alias
   lookup overrides the ambient caller owner (@2e70fbbf), which fixes
   `testlateinstproto`; and direct-slot non-trivial return initialization keeps
-  its `TokenCallFunc` origin through CIR copying (@518412e2). GCC 13 and Clang
-  18 agree with all three reducers. Fulltest is **926/0/0TO/9skip**; the whole
-  libc++ lane moved **893/27 → 897/26** (three new gates,
+  its `TokenCallFunc` origin through CIR copying (@518412e2); and concrete
+  member-template return tokens resolve under the definition owner
+  (@ef168838). GCC 13 and Clang 18 agree with all four reducers. Fulltest is
+  **927/0/0TO/9skip**; the whole libc++ lane moved **893/27 → 898/26** (four new gates,
   `testlateinstproto` fixed, zero additions in the two-way failset diff), with
-  eligible **EXE 881/0** and **OBJ 881/0**. Three prior `__tree` tests now
+  eligible **EXE 882/0** and **OBJ 882/0**. Three prior `__tree` tests now
   advance to the existing `basic_string_view::__long**` family; `testset`
   reaches concrete `__construct_node__mti` and exposes separate return-owner,
   member-pack adaptation, derived-value slicing, and nested-aggregate identity
-  roots. NEXT: fix the return-owner scope, then member-pack adaptation; keep
+  roots. NEXT: fix nested aggregate identity to flip the three `__long**`
+  failures and advance `testset`, then continue its remaining roots; keep
   #114 parked until its ABI/API decision is answered.
 
 - **v0.67.0 (2026-08-01): the flavor-ABI release (tasks

@@ -1,17 +1,16 @@
 # Test Status
 
-> **Current (2026-08-03, `feature/libcxx-parity6-codex` @518412e2 —
-> task #72 generic precursors):** fulltest **926 passed, 0 failed,
-> 0 timed out, 9 skipped**. The focused retbuf set passes JIT, EXE, and OBJ
-> at **5/0** in each lane. The whole flavored suite is **897 passed / 26
+> **Current (2026-08-03, `feature/libcxx-parity6-codex` @ef168838 —
+> task #72 generic precursors):** fulltest **927 passed, 0 failed,
+> 0 timed out, 9 skipped**. The focused return/template set passes JIT, EXE, and OBJ
+> at **7/0** in each lane. The whole flavored suite is **898 passed / 26
 > failed / 0 timed out / 12 skipped**; among eligible tests, libc++ EXE and
-> OBJ are each **881/0**. The old/new failing-name comparison is exact in
-> both directions: 27 → 26, only `testlateinstproto.mad` removed, zero
-> additions. New gates `testdependenttagdispatch`, `testsfinaedefscope`, and
-> `testretbufmtiinit` pin structural template-id replay, definition-owner
-> alias lookup, and dependent retbuf-call provenance. Full logs:
-> `tmp/logs/rb-20260803-213204.log` (fulltest) and
-> `tmp/logs/rb-20260803-214240.log` (whole libc++ battery).
+> OBJ are each **882/0**. The failing-name comparison against @518412e2 is
+> exact in both directions: 26 → 26, no removals and no additions. New gate
+> `testmtireturnscope` pins concrete member-template return lookup under the
+> definition owner; it removes `testset`'s inner bool-return error but does not
+> yet flip the test. Full logs: `tmp/logs/rb-20260803-223846.log` (fulltest)
+> and `tmp/logs/rb-20260803-224941.log` (whole libc++ battery).
 >
 > **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —
 > pack/variadic correctness, unreleased):** fulltest **922 passed, 0
