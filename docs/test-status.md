@@ -1,6 +1,30 @@
 # Test Status
 
-> **Current (2026-08-01, v0.67.0 — the flavor-ABI release, pre-merge
+> **Current (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —
+> pack/variadic correctness, unreleased):** fulltest **922 passed, 0
+> failed, 0 timed out, 9 skipped**, unittest rc=0, `--exe` **875/0** and
+> `--obj` **875/0** (of the 891 JIT-passing). All gates green (delimiter
+> ratchet 0, rule-trailer gate 207/0 since epoch, tsubst fallback 0,
+> warning ratchet 0). Three new gates: `testvariadicmember`,
+> `testbasepacktwo`, `testsizeofpack` — each carries at least TWO pack
+> elements with DIFFERENT values, because at arity 1 splice and
+> replicate are indistinguishable and three real defects shipped green
+> behind arity-1 gates.
+>
+> **The flavored parity lane is UNCHANGED at 891 passed / 28 failed / 0
+> timed out / 12 skipped** (`run_tests.sh --stdlib=libc++`, measured at
+> @ba7517b4; the failing set is comm-diffed BOTH WAYS against
+> `docs/parity/libcxx-failset.txt` — 28 vs 28, no new, no fixed). All
+> three commits this session are default-lane correctness; none of them
+> moved the lane. The 28 are now bucketed into named roots (see
+> `claude_status.json`): `__tree` tsubst (5), the retbuf-ABI predicate
+> disagreement pinned to `cir_builder.cpp:5074` (best next target),
+> free functions not overloading, C++20 abbreviated templates (2),
+> `basic_string_view(__long**)` (3, untriaged), the
+> `filesystem/operations.h:240` group (4, mechanism unconfirmed), and
+> ~9 singles including a SIGSEGV and a silent wrong answer.
+
+> **Previous (2026-08-01, v0.67.0 — the flavor-ABI release, pre-merge
 > battery on `feature/libcxx-parity5-claude` @190ff9d2 + release
 > files):** fulltest **911 passed, 0 failed, 0 timed out, 9 skipped**,
 > `--exe` **894/0**, `--obj` **894/0**, and the packed release arbiter

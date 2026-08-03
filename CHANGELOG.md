@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+Variadic-pack correctness, and `sizeof...` becomes a real operator. The
+libc++ parity lane is UNCHANGED at 891/28 — all three changes below are
+default-lane correctness. fulltest 922/0, exe 875/0, obj 875/0.
+
+- **feat: `sizeof...(P)` implemented as a real unary operator; all three
+  token-level folds DELETED (@ba7517b4).** It was never an operator —
+  `evaluate_type_query` parses the sizeof/alignof operand and had no `...`
+  arm, so wherever it appeared to work the parser never saw it: three
+  separate substitution paths hand-matched the seven-token shape and
+  rewrote it to an integer first. One of the three was missing, and
+  because `sizeof` is soft-reserved (a `TokenCppKeyword` that
+  identifier-position code deliberately admits) an unfolded operator
+  decayed into a *variable lookup*, surfacing as an undefined MIR import
+  naming the enclosing template. Now the parser owns it
+  ([expr.sizeof]/5 is exactly `sizeof ... ( identifier )` — the whole
+  production), resolving arity from a new pack-arity scope stack that each
+  instantiation publishes into for the duration of the body parse.
+  Substitution now copies the operator through verbatim — which is the
+  mechanism, not merely the absence of folding: the 1:1 arm would
+  otherwise rewrite the pack name to a bound type and manufacture the
+  invalid `sizeof...(int32_t&)`. Gate `testsizeofpack` (two *and* three
+  elements, plus a void-returning case).
+- **fix: pack expansion beyond ONE element — reachable lane, mem-init
+  extent, one named parameter per element (@2b027324).** Base-clause pack
+  expansion shipped with two gates, both at arity 1, where SPLICE and
+  REPLICATE emit identical tokens — so three defects shipped green behind
+  them: the replication lane sat inside the *value*-pack guard and was
+  unreachable for a `class... Ts` pack; a mem-initializer's pattern
+  includes its argument list, so the extent stopped at `>`; and the ctor's
+  function parameter pack spliced to `impl(int, long hs)`, one name on the
+  last parameter. Landed together on purpose — fixing only the first turns
+  a loud exit-1 into `a=9 b=9` at exit 0. A one-element pack keeps its
+  source parameter name, so every pre-existing expansion is byte-identical.
+  Gate `testbasepacktwo`.
+- **fix: a class MEMBER's type must be COMPLETE ([class.mem]/6) —
+  @8ab146fb.** A non-static data member whose type was a concrete-arg
+  variadic template-id stayed an empty opaque shell, so `m.get()` folded to
+  literal `0` and emitted `(0 = 7)`, failing at the *use* three layers from
+  the declaration. Two routes closed at the member-declaration site, with
+  the alias-delivered case going through a new shared
+  `Program::complete_shell_class_type()`. Gate `testvariadicmember` (each
+  shape uses a DISTINCT element type — uniform `int` produced a false
+  green from instantiation order).
+
 ## [v0.67.0] — 2026-08-01
 
 The flavor-ABI release: the libc++ parity lane went 859/40 →
