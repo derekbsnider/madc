@@ -1615,6 +1615,43 @@ static bool reverse_scalar_storage_requested(const std::string &order_name)
 static bool is_contextual_identifier_token(TokenBase *tb);
 static std::string contextual_identifier_name(TokenBase *tb);
 static void copy_token_location(TokenBase *dst, TokenBase *src);
+// [expr.sizeof]/5 — `sizeof...(P)` yields the pack's ARITY, not a type size.
+// Program::evaluate_type_query parses the sizeof/alignof OPERAND and implements
+// no `...` arm, so the operator can only be honoured by FOLDING it during
+// substitution. That makes every substitution path responsible for recognising
+// the same seven-token shape by hand. ONE owner for the shape; each caller
+// resolves the COUNT from its own binding state (the maps differ per path).
+//
+// A path that forgets produces NO diagnostic. `sizeof` is soft-reserved — a
+// TokenCppKeyword (tkCPPKEYWORD, cpp_reserved @lexer.cpp, STD_CPP98) that
+// is_contextual_identifier_token deliberately ADMITS, so identifier-position
+// code keeps working while the staged hard-reservation lands. An unfolded
+// `sizeof` therefore degrades to a VARIABLE lookup rather than a syntax error:
+// the instantiation throws, the placeholder is kept silently, and the program
+// dies much later as an undefined MIR import naming the template.
+//
+// This helper is a WORKAROUND, not the end state. The folds exist only because
+// the operator is unimplemented; teaching evaluate_type_query a `...` arm (which
+// needs the pack binding reachable at parse time) would retire all of them.
+static bool sizeof_pack_operand_name(const std::vector<TokenBase *> &toks,
+				     size_t i, std::string &pack_name)
+{
+    if ( i + 6 >= toks.size() )
+	return false;
+    if ( !toks[i] || !is_contextual_identifier_token(toks[i])
+      || contextual_identifier_name(toks[i]) != "sizeof" )
+	return false;
+    if ( !toks[i+1] || toks[i+1]->id() != TokenID::tkDot
+      || !toks[i+2] || toks[i+2]->id() != TokenID::tkDot
+      || !toks[i+3] || toks[i+3]->id() != TokenID::tkDot
+      || !toks[i+4] || toks[i+4]->id() != TokenID::tkOpBrk
+      || !toks[i+5] || toks[i+5]->type() != TokenType::ttIdentifier
+      || !toks[i+6] || toks[i+6]->id() != TokenID::tkClBrk )
+	return false;
+    pack_name = ((TokenIdent *)toks[i+5])->spelling();
+    return true;
+}
+
 static bool token_origin_allows_c89_implicit_function(TokenBase *tb)
 {
     if ( !tb || !tb->file )
@@ -8156,18 +8193,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	// heads — libc++ tuple's ctor constraints, which the constraint
 	// resolver then rejects (task #103). A MEMBER template's own pack
 	// (`sizeof...(_Up)`) is not in the owner's subst maps and stays raw.
-	if ( bt && is_contextual_identifier_token(bt)
-	  && contextual_identifier_name(bt) == "sizeof"
-	  && bi + 6 < td.body.size()
-	  && td.body[bi+1] && td.body[bi+1]->id() == TokenID::tkDot
-	  && td.body[bi+2] && td.body[bi+2]->id() == TokenID::tkDot
-	  && td.body[bi+3] && td.body[bi+3]->id() == TokenID::tkDot
-	  && td.body[bi+4] && td.body[bi+4]->id() == TokenID::tkOpBrk
-	  && td.body[bi+5]
-	  && td.body[bi+5]->type() == TokenType::ttIdentifier
-	  && td.body[bi+6] && td.body[bi+6]->id() == TokenID::tkClBrk )
+	std::string sop_pn_cls;
+	if ( sizeof_pack_operand_name(td.body, bi, sop_pn_cls) )
 	{
-	    const std::string pn = ((TokenIdent *)td.body[bi+5])->spelling();
+	    const std::string pn = sop_pn_cls;
 	    std::map<std::string, std::vector<TokenDataType *> >
 		::const_iterator tpi = pack_subst.find(pn);
 	    std::map<std::string, std::vector<std::vector<TokenBase *> > >
@@ -48567,6 +48596,42 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    TokenBase *bt = ft.decl[i];
 	    if ( !bt )
 		continue;
+	    // [expr.sizeof]/5 — fold `sizeof...(P)` to the pack's ARITY, exactly
+	    // as the single-element loop below does. This branch (N>=2) is
+	    // reached INSTEAD of that loop (it sets multi_done), so without this
+	    // arm the operator survived substitution unfolded and the whole
+	    // instantiation threw "Expecting '(' or identifier after sizeof" —
+	    // silently, keeping the placeholder. Arity 1 worked and arity 2 did
+	    // not, which is why every existing variadic gate passed over it.
+	    {
+		std::string sop_pn;
+		if ( sizeof_pack_operand_name(ft.decl, i, sop_pn) )
+		{
+		    int64_t cnt = -1;
+		    if ( !pack_param.empty() && sop_pn == pack_param )
+			cnt = (int64_t)pack_elems.size();
+		    else
+		    {
+			std::map<std::string, std::vector<DataDef *> >
+			    ::const_iterator tp = tid_packs.find(sop_pn);
+			if ( tp != tid_packs.end() )
+			    cnt = (int64_t)tp->second.size();
+			else
+			{
+			    std::map<std::string, std::vector<int64_t> >
+				::const_iterator np = tid_packs_nontype.find(sop_pn);
+			    if ( np != tid_packs_nontype.end() )
+				cnt = (int64_t)np->second.size();
+			}
+		    }
+		    if ( cnt >= 0 )
+		    {
+			inj.push_back(new TokenInt(cnt));
+			i += 6;	// consumed `sizeof` `...` `(` name `)`
+			continue;
+		    }
+		}
+	    }
 	    // Pack DECLARATION `_Args [decl-suffix] ... __args`: expand to N
 	    // typed params `T0 [decl-suffix] __args__0, ...`.
 	    if ( bt->type() == TokenType::ttIdentifier
@@ -48678,17 +48743,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	// argument — std::pair's piecewise ctor: count 0/1) or the regular type
 	// pack (pack_elems / pack_empty). This feeds `_Build_index_tuple<
 	// sizeof...(_Args1)>::__type()` in the piecewise->indexed ctor delegation.
-	if ( is_contextual_identifier_token(bt)
-	  && contextual_identifier_name(bt) == "sizeof"
-	  && i + 6 < ft.decl.size()
-	  && ft.decl[i+1] && ft.decl[i+1]->id() == TokenID::tkDot
-	  && ft.decl[i+2] && ft.decl[i+2]->id() == TokenID::tkDot
-	  && ft.decl[i+3] && ft.decl[i+3]->id() == TokenID::tkDot
-	  && ft.decl[i+4] && ft.decl[i+4]->id() == TokenID::tkOpBrk
-	  && ft.decl[i+5] && ft.decl[i+5]->type() == TokenType::ttIdentifier
-	  && ft.decl[i+6] && ft.decl[i+6]->id() == TokenID::tkClBrk )
+	std::string sop_pn;
+	if ( sizeof_pack_operand_name(ft.decl, i, sop_pn) )
 	{
-	    const std::string &pn = ((TokenIdent *)ft.decl[i+5])->spelling();
+	    const std::string &pn = sop_pn;
 	    int64_t cnt = -1;
 	    if ( tidpack_one.count(pn) || nontype_tidpack_one.count(pn) )
 		cnt = 1;
