@@ -3544,6 +3544,8 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				node_t call = node2(N_CALL,
 						    id(ri->second.c_str(), origin),
 						    args, origin);
+				CIR_NODE(call)->synth_from_origin =
+					src->synth_from_origin;
 				CIR_NODE(call)->tree1_origin = src->self;
 				return CIR_NODE(call);
 			}
@@ -3628,6 +3630,8 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 							    ? args_copy->as_node()
 							    : list(),
 							    tcf);
+					CIR_NODE(call)->synth_from_origin =
+						src->synth_from_origin;
 					CIR_NODE(call)->tree1_origin = src->self;
 					return CIR_NODE(call);
 				}
@@ -3766,6 +3770,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				append(args, rewritten);
 			}
 			node_t call = node2(N_CALL, id(sym.c_str(), tcf), args, tcf);
+			CIR_NODE(call)->synth_from_origin = src->synth_from_origin;
 			CIR_NODE(call)->tree1_origin = src->self;
 			if (wfd && wfd->returns_reference()
 			    && !m_tsubst_copy_under_deref) {
@@ -20643,8 +20648,14 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		// A method callee's parameters[0] is the hidden __this
 		// (injected above); explicit args start at parameter 1.
 		build_call_args(itcf, cargs, imeth_call ? 1 : 0);
+		// Preserve the CALL token as the synthesized call's semantic
+		// provenance.  During tsubst, copy_cir_subtree uses that origin to
+		// re-resolve a dependent member-template callee; stamping this with
+		// the surrounding declaration instead leaves the pattern symbol
+		// uninstantiated.  The enclosing expression remains declaration-
+		// originated for source rendering and diagnostics.
 		node_t icall = node2(N_CALL,
-			id(isym.c_str(), sdcl), cargs, sdcl);
+			id(isym.c_str(), itcf), cargs, itcf);
 		CIR_NODE(icall)->synth_from_origin = true;
 		for (node_t p : m_pending_stmts)
 			append(items, p);

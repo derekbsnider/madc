@@ -1,0 +1,41 @@
+// A copy-elided local initialized by an out-of-line member template retains
+// the CALL as its CIR origin. The tsubst copy of emplace() needs that semantic
+// provenance to instantiate construct<int>; a declaration-token origin left
+// the generic construct symbol in the copied body and the emittability gate
+// correctly rejected it. This is libc++ __tree::__emplace_unique_impl's
+// `__node_holder __h = __construct_node(...)` shape.
+// Oracle: g++ 13 and clang++-18 at -O0 both print "value=73".
+#include <cstdio>
+
+struct result_holder {
+	int value;
+	result_holder(int v) : value(v) {}
+	~result_holder() {}
+};
+
+template <class Tag>
+struct factory {
+	template <class... Args>
+	result_holder construct(Args... args);
+
+	template <class... Args>
+	int emplace(Args... args)
+	{
+		result_holder result = construct(args...);
+		return result.value;
+	}
+};
+
+template <class Tag>
+template <class... Args>
+result_holder factory<Tag>::construct(Args... args)
+{
+	return result_holder(args...);
+}
+
+int main()
+{
+	factory<int> values;
+	std::printf("value=%d\n", values.emplace(73));
+	return 0;
+}
