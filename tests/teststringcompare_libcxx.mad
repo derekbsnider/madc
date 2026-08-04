@@ -1,0 +1,11 @@
+#include <stdio.h>
+#include <string>
+
+int main()
+{
+	std::string alpha = "alpha";
+	std::string beta = "beta";
+	printf("%d %d %d\n", alpha.compare(beta) < 0,
+		beta.compare(alpha) > 0, alpha.compare(alpha) == 0);
+	return 0;
+}

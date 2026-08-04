@@ -6720,7 +6720,15 @@ static void register_basic_class_pattern_method(
 	basic_class_pattern_substitute_token_runs(pgm, binding,
 	    pattern.param_type_token_runs);
     if ( pattern.is_member_template )
+	{
+	    fd->member_template_param_defaults =
+		basic_class_pattern_substitute_token_runs(pgm, binding,
+		    pattern.template_param_defaults);
+	    fd->member_template_param_constraints =
+		basic_class_pattern_substitute_token_runs(pgm, binding,
+		    pattern.template_param_constraints);
 	fd->member_template_owner = owner;
+	}
     for ( size_t i = 0; i < pattern.parameters.size(); ++i )
     {
 	const Program::ClassMethodParamPattern &param = pattern.parameters[i];
@@ -15474,6 +15482,46 @@ static bool template_pattern_mentions_param(const std::string &pattern,
     return false;
 }
 
+static int fn_template_deduce_param(const std::string &spelling,
+				    const std::vector<std::string> &typeparams,
+				    DataDef *arg_dd,
+				    std::string &tp_out, DataDef *&dd_out);
+
+// A retained member-template placeholder carries only source parameter
+// spellings; its synthetic varargs signature is not an overload signature.
+// Rank the simple T/cv/ref/pointer shapes through the same deduction owner used
+// for instantiation. Complex dependent shapes stay conservatively viable until
+// substitution, preserving the existing fallback without erasing pointer or
+// reference layers for the shapes the owner understands.
+static int score_retained_member_template_param(
+	FuncDef *fd, const std::string &pattern, const DataDef *arg,
+	std::map<std::string, std::string> &bindings)
+{
+    bool dependent = template_pattern_mentions_param(
+	pattern, fd->template_param_names);
+    std::string tp;
+    DataDef *deduced = NULL;
+    int result = fn_template_deduce_param(pattern,
+	fd->template_param_names, const_cast<DataDef *>(arg), tp, deduced);
+    if ( result == 1 )
+    {
+	std::string spelling = cpp_spelling_for_mangle(
+	    deduced, deduced && deduced->is_reference());
+	std::map<std::string, std::string>::iterator found = bindings.find(tp);
+	if ( found != bindings.end() && found->second != spelling )
+	    return -1;
+	bindings[tp] = spelling;
+	return 5;	// deduction formed an exact parameter type
+    }
+    if ( dependent )
+	return 1;	// unsupported dependent shape: defer to substitution
+
+    std::string actual = cpp_spelling_for_mangle(
+	const_cast<DataDef *>(arg), false);
+    return norm_cpp_type_for_overload(pattern)
+	== norm_cpp_type_for_overload(actual) ? 5 : -1;
+}
+
 // [temp.func.order] tiebreak for member function templates (defined below, after
 // the partial-ordering primitives it reuses).
 static bool member_tmpl_more_specialized(FuncDef *A, FuncDef *B);
@@ -15542,24 +15590,16 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	    continue;
 	int total = 0;
 	bool ok = true;
+	bool retained_member_template = fd->is_member_template
+	    && fd->template_param_spellings.size() == argtypes.size();
+	std::map<std::string, std::string> template_bindings;
 	for ( size_t i = 0; i < fixed; i++ )
 	{
 	    int s = -1;
-	    if ( fd->is_member_template
-	      && fd->template_param_spellings.size() == argtypes.size() )
-	    {
-		const std::string &pat = fd->template_param_spellings[i];
-		if ( template_pattern_mentions_param(pat,
-						     fd->template_param_names) )
-		    s = 1;
-		else
-		{
-		    std::string actual = cpp_spelling_for_mangle(
-			const_cast<DataDef *>(argtypes[i]), false);
-		    s = (norm_cpp_type_for_overload(pat)
-		      == norm_cpp_type_for_overload(actual)) ? 8 : -1;
-		}
-	    }
+	    if ( retained_member_template )
+		s = score_retained_member_template_param(
+		    fd, fd->template_param_spellings[i], argtypes[i],
+		    template_bindings);
 	    else
 	    {
 		size_t pi = i + hidden;
@@ -15572,32 +15612,25 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	}
 	if ( ok && varargs )
 	{
-	    if ( fd->is_member_template
-	      && fd->template_param_spellings.size() == argtypes.size() )
+	    if ( retained_member_template )
 	    {
 		for ( size_t i = fixed; i < argtypes.size(); ++i )
 		{
-		    const std::string &pat = fd->template_param_spellings[i];
-		    if ( template_pattern_mentions_param(
-			     pat, fd->template_param_names) )
-		    {
-			total += 1;
-			continue;
-		    }
-		    std::string actual = cpp_spelling_for_mangle(
-			const_cast<DataDef *>(argtypes[i]), false);
-		    if ( norm_cpp_type_for_overload(pat)
-		      != norm_cpp_type_for_overload(actual) )
+		    int s = score_retained_member_template_param(
+			fd, fd->template_param_spellings[i], argtypes[i],
+			template_bindings);
+		    if ( s < 0 )
 		    {
 			ok = false;
 			break;
 		    }
-		    total += 8;
+		    total += s;
 		}
 		if ( !ok )
 		    continue;
 	    }
-	    total += 1;
+	    else
+		total += 1;
 	}
 	// Env-gated probe (MADC_OVL_PROBE=<name substring>): every candidate's
 	// viability inputs and score, for diagnosing a selection that picks the
@@ -15634,6 +15667,14 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	      && best_fd->is_const_method != fd->is_const_method )
 	    {
 		if ( fd->is_const_method == (obj_cv == 1) )
+		    best = mv;
+	    }
+	    // Equal conversion sequences prefer a non-template function over a
+	    // function-template specialization ([over.match.best.general]).
+	    else if ( best_fd
+	      && best_fd->is_member_template != fd->is_member_template )
+	    {
+		if ( !fd->is_member_template )
 		    best = mv;
 	    }
 	    // Viability tie: prefer the more-specialized member template
@@ -45118,14 +45159,189 @@ static bool skipped_template_variable(
     return true;
 }
 
-// Extract the MEMBER (inner) template-parameter names + pack-ness from the inner
-// `template<...>` head of an out-of-line member-template definition (the leading
-// `template < ... >` of `template<class U> RET S<T>::f(U){body}`). Used to set the
-// monomorphized member's template_param_names/is_pack consistently with the
-// attached member_template_decl. Handles `class U` / `typename U` / `...` packs /
-// `= default`; an unnamed param is skipped (rare in member templates).
+struct ParsedTemplateParameterList {
+    std::vector<std::string> names;
+    std::vector<std::vector<TokenBase *> > defaults;
+    std::vector<std::vector<TokenBase *> > constraints;
+    std::vector<bool> is_type;
+    std::vector<bool> is_pack;
+    bool has_non_type_params;
+
+    ParsedTemplateParameterList() : has_non_type_params(false) {}
+};
+
+// Parse one template-parameter-list after its opening '<'. This is the single
+// owner for ordinary template declarations and the retained inner head of an
+// out-of-line member-template definition.
+static void parse_template_parameter_list(
+	Program &pgm, ParsedTemplateParameterList &out)
+{
+    auto add_parameter = [&](const std::string &name, bool is_type,
+			      bool is_pack = false)
+    {
+	out.names.push_back(name);
+	out.is_type.push_back(is_type);
+	out.is_pack.push_back(is_pack);
+    };
+    auto capture_type_suffix = [&pgm](TokenBase *head,
+				      std::vector<TokenBase *> &run) -> bool
+    {
+	TokenStream::Pos before = pgm.tokens.savepos();
+	size_t before_size = pgm.tokens.size();
+	bool consumed_any = pgm.consume_template_parameter_type_suffix();
+	size_t consumed = before_size > pgm.tokens.size()
+		? before_size - pgm.tokens.size() : 0;
+	std::vector<TokenBase *> popped = pgm.tokens.consumed_since(before);
+	if ( consumed_any && head && popped.size() == consumed )
+	{
+	    run.push_back(head->clone());
+	    for ( TokenBase *p : popped )
+		if ( p )
+		    run.push_back(p->clone());
+	}
+	return consumed_any;
+    };
+
+    size_t anonymous_index = 0;
+    for (;;)
+    {
+	std::vector<TokenBase *> constraint;
+	TokenBase *token = pgm.nextToken();
+	if ( pgm.consume_template_close(token) )
+	    break;
+	if ( token->id() == TokenID::tkTEMPLATE )
+	{
+	    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkLT )
+		pgm.Throw(token) << "Expecting '<' after template parameter template" << flush;
+	    pgm.skip_template_id_suffix();
+	    TokenBase *intro = pgm.nextToken();
+	    if ( !is_template_type_param_intro(intro) )
+		pgm.Throw(intro) << "Expecting class or typename in template template parameter" << flush;
+	    if ( pgm.consume_ellipsis() )
+	    {
+		if ( pgm.peekToken()
+		  && is_template_parameter_decl_name(pgm.peekToken()) )
+		    add_parameter(template_parameter_decl_name(
+			pgm.nextToken()), false, true);
+		else
+		    add_parameter("__anon_ttpack"
+			+ std::to_string(anonymous_index++), false, true);
+	    }
+	    else if ( pgm.peekToken()
+		   && (is_template_param_separator(pgm.peekToken())
+		    || pgm.peekToken()->id() == TokenID::tkAssign) )
+		add_parameter("__anon_ttparam"
+		    + std::to_string(anonymous_index++), false);
+	    else
+	    {
+		token = pgm.nextToken();
+		if ( !is_template_parameter_decl_name(token) )
+		    pgm.Throw(token) << "Expecting template-template parameter name" << flush;
+		add_parameter(template_parameter_decl_name(token), false);
+	    }
+	    out.has_non_type_params = true;
+	}
+	else if ( is_template_type_param_intro(token) )
+	{
+	    if ( pgm.consume_ellipsis() )
+	    {
+		if ( pgm.peekToken()
+		  && is_contextual_identifier_token(pgm.peekToken()) )
+		    add_parameter(contextual_identifier_name(
+			pgm.nextToken()), true, true);
+		else
+		    add_parameter("__anon_tpack"
+			+ std::to_string(anonymous_index++), true, true);
+		out.has_non_type_params = true;
+	    }
+	    else if ( pgm.peekToken()
+		   && is_template_param_separator(pgm.peekToken()) )
+		add_parameter("__anon_tparam"
+		    + std::to_string(anonymous_index++), true);
+	    else if ( pgm.peekToken()
+		   && pgm.peekToken()->id() == TokenID::tkAssign )
+		add_parameter("__anon_tparam"
+		    + std::to_string(anonymous_index++), true);
+	    else
+	    {
+		token = pgm.nextToken();
+		if ( !is_template_parameter_decl_name(token) )
+		    pgm.Throw(token) << "Expecting type-parameter name in template<>" << flush;
+		if ( pgm.peekToken()
+		  && (pgm.peekToken()->id() == TokenID::tkLT
+		   || pgm.peekToken()->id() == TokenID::tkNS) )
+		{
+		    capture_type_suffix(token, constraint);
+		    if ( pgm.peekToken()
+		      && is_template_parameter_decl_name(pgm.peekToken()) )
+			pgm.nextToken();
+		    add_parameter("__anon_ntparam"
+			+ std::to_string(anonymous_index++), false);
+		    out.has_non_type_params = true;
+		}
+		else
+		    add_parameter(template_parameter_decl_name(token), true);
+	    }
+	}
+	else if ( token->type() == TokenType::ttIdentifier
+	       || token->type() == TokenType::ttDataType )
+	{
+	    bool qualified_type = capture_type_suffix(token, constraint);
+	    TokenBase *parameter_name = pgm.peekToken();
+	    if ( pgm.consume_ellipsis() )
+	    {
+		if ( pgm.peekToken()
+		  && is_contextual_identifier_token(pgm.peekToken()) )
+		    add_parameter(contextual_identifier_name(
+			pgm.nextToken()), false, true);
+		else
+		    add_parameter("__anon_ntpack"
+			+ std::to_string(anonymous_index++), false, true);
+		out.has_non_type_params = true;
+	    }
+	    else if ( parameter_name
+		   && is_contextual_identifier_token(parameter_name) )
+	    {
+		pgm.nextToken();
+		add_parameter(contextual_identifier_name(parameter_name), false);
+		out.has_non_type_params = true;
+	    }
+	    else if ( qualified_type )
+	    {
+		add_parameter("__anon_ntparam"
+		    + std::to_string(anonymous_index++), false);
+		out.has_non_type_params = true;
+	    }
+	    else if ( token->type() == TokenType::ttIdentifier )
+		add_parameter(static_cast<TokenIdent *>(token)->spelling(), true);
+	    else
+	    {
+		add_parameter("__anon_ntparam"
+		    + std::to_string(anonymous_index++), false);
+		out.has_non_type_params = true;
+	    }
+	}
+	else
+	    pgm.Throw(token) << "Expecting type-parameter name in template<>" << flush;
+
+	out.defaults.push_back(std::vector<TokenBase *>());
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
+	{
+	    pgm.nextToken();
+	    out.defaults.back() = pgm.collect_template_default_argument();
+	}
+	out.constraints.push_back(constraint);
+	token = pgm.nextToken();
+	if ( token->id() == TokenID::tkComma )
+	    continue;
+	if ( pgm.consume_template_close(token) )
+	    break;
+	pgm.Throw(token) << "Expecting ',' or '>' in template parameter list" << flush;
+    }
+}
+
 static void extract_inner_template_typeparams(
-	const std::vector<TokenBase *> &decl,
+	Program &pgm, const std::vector<TokenBase *> &decl,
 	std::vector<std::string> &names, std::vector<bool> &is_pack,
 	std::vector<bool> &is_type)
 {
@@ -45133,39 +45349,32 @@ static void extract_inner_template_typeparams(
       || !decl[1] || decl[1]->id() != TokenID::tkLT )
 	return;
     size_t close = template_id_suffix_end(decl, 1);
-    int depth = 0;
-    bool before_eq = true, saw_dots = false, saw_typename = false;
-    std::string last;
-    auto flush = [&]() {
-	if ( !last.empty() )
-	{
-	    names.push_back(last);
-	    is_pack.push_back(saw_dots);
-	    // A param introduced by `typename`/`class` is a TYPE param; one
-	    // introduced by a type-name (`size_t`, `int`, …) is a NON-TYPE param.
-	    is_type.push_back(saw_typename);
-	}
-	last.clear(); before_eq = true; saw_dots = false; saw_typename = false;
-    };
-    for ( size_t i = 2; i < close; ++i )
+    if ( close >= decl.size() )
+	return;
+    std::vector<TokenBase *> head;
+    for ( size_t i = 2; i <= close; ++i )
+	head.push_back(decl[i] ? decl[i]->clone() : NULL);
+
+    TokenStream::State saved_tokens = pgm.tokens.swap_in(std::move(head));
+    TokenBase *saved_cur = pgm.curToken();
+    TokenBase *saved_prv = pgm.prevToken();
+    pgm.setTokenContext(NULL, NULL);
+    ParsedTemplateParameterList parsed;
+    try
     {
-	TokenBase *t = decl[i];
-	if ( !t ) continue;
-	if ( t->id() == TokenID::tkLT ) { ++depth; continue; }
-	if ( t->id() == TokenID::tkGT ) { --depth; continue; }
-	if ( depth > 0 ) continue;
-	if ( t->id() == TokenID::tkComma ) { flush(); continue; }
-	if ( t->id() == TokenID::tkAssign ) { before_eq = false; continue; }
-	if ( !before_eq ) continue;
-	if ( t->id() == TokenID::tkDot ) { saw_dots = true; continue; }
-	if ( is_contextual_identifier_token(t) )
-	{
-	    std::string s = contextual_identifier_name(t);
-	    if ( s == "class" || s == "typename" ) { saw_typename = true; continue; }
-	    last = s;
-	}
+	parse_template_parameter_list(pgm, parsed);
     }
-    flush();
+    catch ( ... )
+    {
+	pgm.setTokenContext(saved_cur, saved_prv);
+	pgm.tokens = saved_tokens;
+	throw;
+    }
+    pgm.setTokenContext(saved_cur, saved_prv);
+    pgm.tokens = saved_tokens;
+    names.swap(parsed.names);
+    is_pack.swap(parsed.is_pack);
+    is_type.swap(parsed.is_type);
 }
 
 // An OUT-OF-LINE member DEFINITION of a class template:
@@ -45313,6 +45522,29 @@ static bool outofline_declarator_param_regions(
 	 == DataType::dtVOID )
 	params.clear();
     return true;
+}
+
+// The `const` qualifier belongs to the function declarator, after its own
+// parameter list. Captured declarations use this shared token-range query;
+// later exception specifications and attributes may contain more parentheses.
+static bool function_declarator_is_const_member(
+	const std::vector<TokenBase *> &decl)
+{
+    std::vector<std::vector<TokenBase *> > ignored;
+    size_t param_close = decl.size();
+    if ( !outofline_declarator_param_regions(decl, ignored, &param_close)
+      || param_close == decl.size() )
+	return false;
+    for ( size_t i = param_close + 1; i < decl.size(); ++i )
+    {
+	TokenBase *t = decl[i];
+	if ( !t ) continue;
+	if ( t->id() == TokenID::tkOpBrc || t->id() == TokenID::tkSemi )
+	    break;
+	if ( t->id() == TokenID::tkCONST )
+	    return true;
+    }
+    return false;
 }
 
 // User-parameter ARITY of an out-of-line member def's declarator. Returns
@@ -45508,25 +45740,6 @@ void Program::register_outofline_member_instantiations(
 #endif
     if ( it == out_of_line_member_defs.end() )
 	return;
-    // True if the out-of-line declarator is a `const` member (`...) const {`):
-    // the qualifier follows the declarator parameter list and precedes the body;
-    // a trailing exception specification or attribute may contain more parens.
-    // Disambiguates const vs non-const overloads of the same member
-    // (std::_Rb_tree::_M_lower_bound has both).
-    auto def_is_const_member = [](const std::vector<TokenBase *> &decl) -> bool {
-	std::vector<std::vector<TokenBase *> > ignored;
-	size_t param_close = decl.size();
-	if ( !outofline_declarator_param_regions(decl, ignored, &param_close)
-	  || param_close == decl.size() )
-	    return false;
-	for ( size_t i = param_close + 1; i < decl.size(); ++i )
-	{
-	    TokenBase *t = decl[i]; if ( !t ) continue;
-	    if ( t->id() == TokenID::tkOpBrc ) break;
-	    if ( t->id() == TokenID::tkCONST ) return true;
-	}
-	return false;
-    };
 #ifdef MADC_DEBUG_CTORTMPL
     bool dbg_ool = getenv("MADC_DEBUG_CTORTMPL") && class_name.find("pair") != std::string::npos;
     if ( dbg_ool ) fprintf(stderr, "[ool] class=%s::%s ndefs=%zu\n",
@@ -45559,7 +45772,7 @@ void Program::register_outofline_member_instantiations(
 	// other an undefined import. Pick the overload whose const-ness matches THIS
 	// def (and that has no body yet); fall back to findMethod for the common
 	// non-overloaded member.
-	bool def_const = def_is_const_member(def.decl);
+	bool def_const = function_declarator_is_const_member(def.decl);
 	// A CONSTRUCTOR out-of-line def names the class (`pair<T1,T2>::pair`), so
 	// def.member_name is the SOURCE class spelling (== class_name). The in-class
 	// registered member-template ctor's method_display_name is the FULL mangled
@@ -45746,6 +45959,10 @@ void Program::register_outofline_member_instantiations(
 		if ( cfd->is_const_method != def_const ) continue;
 		if ( cfd->is_member_template != def.is_member_template )
 		    continue;
+		if ( def.is_member_template
+		  && cfd->template_param_names.size()
+		     != def.inner_typeparams.size() )
+		    continue;
 		if ( def.is_member_template && !cfd->member_template_decl.empty() )
 		    continue;
 		if ( def_sigs_ok && !function_explicit_params_match(cfd, def_sigs) )
@@ -45813,15 +46030,38 @@ void Program::register_outofline_member_instantiations(
 	    if ( qni >= 2 && decl2[qni - 1]
 	      && decl2[qni - 1]->id() == TokenID::tkNS )
 		decl2.erase(decl2.begin() + (qni - 2), decl2.begin() + qni);
-	    mfd->is_member_template = true;
-	    mfd->member_template_owner = ddc;
-	    mfd->member_template_decl = decl2;
-	    if ( !def.inner_typeparams.empty() )
+	    // The in-class declaration owns deduction/default/constraint identity.
+	    // An out-of-line definition may rename its parameters (`U` -> `V`), so
+	    // translate the retained body tokens positionally instead of replacing
+	    // that declaration metadata with a second parse's names.
+	    if ( mfd->template_param_names.empty() )
 	    {
 		mfd->template_param_names = def.inner_typeparams;
 		mfd->template_param_is_pack = def.inner_is_pack;
 		mfd->template_param_is_type = def.inner_is_type;
 	    }
+	    else if ( def.inner_typeparams.size()
+		   == mfd->template_param_names.size() )
+	    {
+		std::map<std::string, std::string> renames;
+		for ( size_t i = 0; i < def.inner_typeparams.size(); ++i )
+		    if ( def.inner_typeparams[i] != mfd->template_param_names[i] )
+			renames[def.inner_typeparams[i]] =
+			    mfd->template_param_names[i];
+		for ( size_t i = 0; i < decl2.size() && !renames.empty(); ++i )
+		{
+		    std::string source_name =
+			template_parameter_decl_name(decl2[i]);
+		    std::map<std::string, std::string>::const_iterator ri =
+			renames.find(source_name);
+		    if ( ri != renames.end() )
+			decl2[i] = basic_class_pattern_token_at_source(
+			    new TokenIdent(ri->second.c_str()), decl2[i]);
+		}
+	    }
+	    mfd->is_member_template = true;
+	    mfd->member_template_owner = ddc;
+	    mfd->member_template_decl = decl2;
 #if MADC_DEBUG_FNTPL
 	    if ( dbg_def )
 		std::cerr << "FNTPL ool-attach member=" << def.member_name
@@ -48170,10 +48410,11 @@ DataDef *Program::resolve_template_param_default_type(
 	    i += 6;
 	    continue;
 	}
-	if ( bt && bt->type() == TokenType::ttIdentifier )
+	std::string binding_name = template_parameter_decl_name(bt);
+	if ( !binding_name.empty() )
 	{
 	    std::map<std::string, DataDef *>::const_iterator bi =
-		binding.find(((TokenIdent *)bt)->spelling());
+		binding.find(binding_name);
 	    if ( bi != binding.end() && bi->second )
 	    {
 		body.push_back(new TokenDataType(bi->second->name.c_str(),
@@ -48184,6 +48425,18 @@ DataDef *Program::resolve_template_param_default_type(
 	body.push_back(bt->clone());
     }
     body.push_back(new TokenSemi());
+
+    std::string substituted_debug;
+    if ( vri_debug_enabled() )
+    {
+	for ( size_t i = 0; i + 1 < body.size() && i < 16; ++i )
+	{
+	    if ( !substituted_debug.empty() )
+		substituted_debug += " ";
+	    substituted_debug += body[i]
+		? template_token_fragment(body[i]) : "(null)";
+	}
+    }
 
     TokenStream::State saved_tokens;
     size_t saved_diag_count = diagnostics.size();
@@ -48244,15 +48497,10 @@ DataDef *Program::resolve_template_param_default_type(
     {
 	if ( vri_debug_enabled() )
 	{
-	    fprintf(stderr, "[vriprobe] deftype MISS: %s (%s:%d) toks[%zu]:",
+	    fprintf(stderr, "[vriprobe] deftype MISS: %s (%s:%d) toks[%zu]: %s\n",
 		    last_error.message.c_str(), last_error.file.c_str(),
-		    last_error.line, default_tokens.size());
-	    for ( size_t di = 0; di < default_tokens.size() && di < 16; ++di )
-		fprintf(stderr, " %s",
-			default_tokens[di]
-			? template_token_fragment(default_tokens[di]).c_str()
-			: "(null)");
-	    fprintf(stderr, "\n");
+		    last_error.line, default_tokens.size(),
+		    substituted_debug.c_str());
 	}
 	diagnostics.resize(saved_diag_count);
 	last_error = saved_error;
@@ -51182,6 +51430,37 @@ static bool member_template_nontype_default_fillable(const FuncDef *fd,
 	&& fd->member_template_param_constraints[i].empty();
 }
 
+// Populate the retained template head for both member-function and member-ctor
+// instantiation. The constraint run makes a constrained non-type default safe
+// to retain: instantiate_fn_template_binding resolves it under the completed
+// binding and rejects the candidate on substitution failure. An older forest
+// record with no constraint carriage keeps the conservative clear behavior.
+static void populate_member_template_head(const FuncDef *fd,
+	Program::FnTemplateDef &ft)
+{
+    ft.typeparams = fd->template_param_names;
+    if ( fd->template_param_is_type.size() == ft.typeparams.size() )
+	ft.typeparam_is_type = fd->template_param_is_type;
+    else
+	ft.typeparam_is_type.assign(ft.typeparams.size(), true);
+    if ( fd->template_param_is_pack.size() == ft.typeparams.size() )
+	ft.typeparam_is_pack = fd->template_param_is_pack;
+    else
+	ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
+    if ( fd->member_template_param_defaults.size() != ft.typeparams.size() )
+	return;
+
+    ft.typeparam_defaults = fd->member_template_param_defaults;
+    if ( fd->member_template_param_constraints.size() == ft.typeparams.size() )
+	ft.typeparam_constraints = fd->member_template_param_constraints;
+    for ( size_t i = 0; i < ft.typeparam_defaults.size(); ++i )
+	if ( (i >= ft.typeparam_is_type.size() || !ft.typeparam_is_type[i])
+	  && !member_template_nontype_default_fillable(fd, i)
+	  && (i >= ft.typeparam_constraints.size()
+	      || ft.typeparam_constraints[i].empty()) )
+	    ft.typeparam_defaults[i].clear();
+}
+
 Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 {
     InstTimer _it(*this, _inst_member_fn_count);	// --show-stats
@@ -51365,69 +51644,7 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // instantiated definition is then aliased (local_emit_name) to the call's
     // symbol below.
     FnTemplateDef ft;
-    ft.typeparams = fd->template_param_names;
-    // Per-param type-ness from the captured template head — a NON-TYPE param
-    // (`template <unsigned long __a> static ... __align_it(...)`) must not be
-    // marked a type or instantiation fails against its explicit value arg.
-    // The ctor twin (instantiate_member_ctor_template_for_construction)
-    // already does this; fall back to all-type for older registrations.
-    if ( fd->template_param_is_type.size() == ft.typeparams.size() )
-	ft.typeparam_is_type = fd->template_param_is_type;
-    else
-	ft.typeparam_is_type.assign(ft.typeparams.size(), true);
-    // Honor a variadic typeparam (`typename... _Args`) — a member template like
-    // allocator_traits::construct must instantiate its pack from the call's
-    // trailing args. Fall back to none-are-packs when pack-ness wasn't recorded.
-    if ( fd->template_param_is_pack.size() == ft.typeparams.size() )
-	ft.typeparam_is_pack = fd->template_param_is_pack;
-    else
-	ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
-    // Per-param template-argument DEFAULTS ([temp.deduct]/8): a parameter the
-    // call's arguments cannot deduce is bound from its own default, and without
-    // one instantiate_fn_template_binding rejects the whole instantiation. The
-    // shape that needs this is libc++'s allocator_traits<A>::max_size —
-    // `template <class _Ap = _Alloc> static size_type max_size(const
-    // allocator_type&)`, where _Ap appears ONLY in the default and the
-    // enable_if, never in a function parameter, so it is undeducible BY DESIGN
-    // (that is what makes the enable_if a deduced context). Deduction left it
-    // unbound, instantiation bailed, and the call stayed on its declaration-only
-    // placeholder — an undefined MIR import for a body the header defines.
-    // The fill runs only for parameters `binding` does not already hold, so a
-    // deducible default-carrying param is unaffected. Tokens are SHARED, not
-    // cloned — the same convention the registration path uses
-    // (madc_register_fn_template's plain assignment); the resolver clones into
-    // its own isolated stream.
-    //
-    // TYPE parameters always; a NON-TYPE parameter's default only when its
-    // captured CONSTRAINT run is empty (member_template_nontype_default_fillable
-    // — the v38 widening the pair-ctor incident comment demanded: the
-    // constraints ARE captured now, and they gate the fill). A non-type
-    // parameter with a COMPOUND declared type carries its SFINAE there —
-    // `typename enable_if<COND, bool>::type = true` — and filling that default
-    // would ASSERT a viability nothing evaluated. It did: libstdc++'s pair
-    // template ctor
-    //   template<class _U1, class _U2, typename enable_if<...,bool>::type=true>
-    //   pair(_U1&& __x, _U2&& __y)
-    // became viable with its condition unchecked and then WON on exact-match
-    // scoring over the correct `pair(const _T1&, const _T2&)` — so a
-    // pair<const_iterator,bool> was built from an ITERATOR and a
-    // pair<node*,node*> from (node**, int), 32 c2mir pointer-fidelity warnings
-    // across the map/set suite from one line. Those constrained defaults STAY
-    // cleared ([temp.deduct]/8: refusing is correct under incomplete
-    // information) until the runs are EVALUATED at instantiation — the next
-    // widening. A BARE-headed non-type param (`bool _Dummy = true`,
-    // libc++'s unique_ptr(pointer, deleter) family) has no SFINAE in its
-    // type: filling it asserts nothing, and the fill is what lets the
-    // candidate's OTHER (type-param) defaults — where that family's real
-    // enable_if lives — resolve and decide viability.
-    if ( fd->member_template_param_defaults.size() == ft.typeparams.size() )
-    {
-	ft.typeparam_defaults = fd->member_template_param_defaults;
-	for ( size_t i = 0; i < ft.typeparam_defaults.size(); ++i )
-	    if ( (i >= ft.typeparam_is_type.size() || !ft.typeparam_is_type[i])
-	      && !member_template_nontype_default_fillable(fd, i) )
-		ft.typeparam_defaults[i].clear();   // MY copy; tokens stay the FuncDef's
-    }
+    populate_member_template_head(fd, ft);
     // The member template's DEFINING namespace is its owner class's ([temp.point]
     // / [basic.lookup.unqual]): a defaulted parameter names its neighbors
     // unqualified (`__enable_if_t<...>` in std::__1), and the defaults fill
@@ -51741,47 +51958,7 @@ bool Program::instantiate_member_ctor_template_candidate(
     // mem-initializer list and treat the body as a constructor; instance_method
     // gives it the hidden __this (the object under construction).
     FnTemplateDef ft;
-    ft.typeparams = fd->template_param_names;
-    // Per-param type-ness from the captured template head (a member-template ctor
-    // with non-type packs — std::pair's indexed ctor `size_t... _Indexes` — must
-    // NOT mark every param type); fall back to all-type for older registrations.
-    if ( fd->template_param_is_type.size() == ft.typeparams.size() )
-	ft.typeparam_is_type = fd->template_param_is_type;
-    else
-	ft.typeparam_is_type.assign(ft.typeparams.size(), true);
-    if ( fd->template_param_is_pack.size() == ft.typeparams.size() )
-	ft.typeparam_is_pack = fd->template_param_is_pack;
-    else
-	ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
-    // Per-param defaults — same [temp.deduct]/8 carriage as the call twin
-    // (instantiate_member_fn_template_for_call): TYPE parameters always, a
-    // NON-TYPE parameter's default only when its captured constraint run is
-    // EMPTY (`bool _Dummy = true` — the unique_ptr(pointer, deleter) family;
-    // shared rule member_template_nontype_default_fillable). A CONSTRAINED
-    // non-type default still clears — see the call twin for the pair-ctor
-    // incident.
-    if ( fd->member_template_param_defaults.size() == ft.typeparams.size() )
-    {
-	ft.typeparam_defaults = fd->member_template_param_defaults;
-	// v38 widening (the "next widening" the clearing comment promised):
-	// carry the captured CONSTRAINT runs so instantiate_fn_template_binding
-	// EVALUATES them under the completed binding ([temp.deduct]/8 — its
-	// constraint loop resolves or refuses the candidate) instead of
-	// refusing up front by clearing the constrained default. The pair-ctor
-	// incident's hazard (a default filled with its condition UNCHECKED)
-	// cannot recur: the constraint either resolves or the candidate drops.
-	// libc++ tuple's variadic ctor (`class... _Up, __enable_if_t<..., int>
-	// = 0`) is the demand case — its cleared default refused every
-	// instantiation and the construction bound the bodyless placeholder.
-	if ( fd->member_template_param_constraints.size() == ft.typeparams.size() )
-	    ft.typeparam_constraints = fd->member_template_param_constraints;
-	for ( size_t i = 0; i < ft.typeparam_defaults.size(); ++i )
-	    if ( (i >= ft.typeparam_is_type.size() || !ft.typeparam_is_type[i])
-	      && !member_template_nontype_default_fillable(fd, i)
-	      && (i >= ft.typeparam_constraints.size()
-		  || ft.typeparam_constraints[i].empty()) )
-		ft.typeparam_defaults[i].clear();
-    }
+    populate_member_template_head(fd, ft);
     // The ctor template's DEFINING namespace is its owner class's — the
     // defaults fill resolves unqualified neighbors there (see the call twin):
     // __compressed_pair_elem's `class = __enable_if_t<!is_same<...>>` names
@@ -52693,6 +52870,7 @@ static void stamp_member_template_pattern(
     size_t name_idx = skipped_template_function_declarator_name_index(tokens,
 								      NULL);
     size_t lparen = skipped_template_function_param_lparen(tokens, name_idx);
+    fd->is_const_method = function_declarator_is_const_member(tokens);
     if ( name_idx < tokens.size() && lparen < tokens.size()
       && tokens[lparen]
       && tokens[lparen]->id() == TokenID::tkOpBrk
@@ -53659,175 +53837,16 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     if ( tn->id() != TokenID::tkLT )
 	pgm.Throw(tn) << "Expecting '<' after template" << flush;
 
-    // <typename T [, typename U ...]> — 'typename' lexes as an identifier,
-    // 'class' as the tkCLASS keyword; both are optional before each param name.
-    // Real C++ headers also use unnamed type parameters (`template<typename>`)
-    // and explicit specializations (`template<>`).
-    std::vector<std::string> typeparams;
-    std::vector<std::vector<TokenBase *>> typeparam_defaults;
-    std::vector<std::vector<TokenBase *>> typeparam_constraints;
-    std::vector<bool> typeparam_is_type;
-    std::vector<bool> typeparam_is_pack;
-    auto add_template_parameter = [&](const std::string &name, bool is_type,
-				      bool is_pack = false)
-    {
-	typeparams.push_back(name);
-	typeparam_is_type.push_back(is_type);
-	typeparam_is_pack.push_back(is_pack);
-    };
-    // Capture the tokens a compound parameter-TYPE consumption pops (the
-    // savepos/consumed_since O(1) idiom the requires-clause capture uses)
-    // as [head, ...suffix...] clones: the parameter's constraint-type run,
-    // evaluated for SFINAE overload selection at instantiation
-    // (instantiate_fn_template_binding). Only a COMPOUND type is captured
-    // (suffix consumed); a bare head (`int N`) stays unconstrained. A
-    // pushback during the consumption (split `>>`) fails the prefix guard —
-    // the run stays empty (unconstrained), never mis-captured.
-    auto capture_type_suffix = [&pgm](TokenBase *head,
-				      std::vector<TokenBase *> &run) -> bool
-    {
-	TokenStream::Pos before = pgm.tokens.savepos();
-	size_t before_size = pgm.tokens.size();
-	bool consumed_any = pgm.consume_template_parameter_type_suffix();
-	size_t consumed = before_size > pgm.tokens.size()
-			? before_size - pgm.tokens.size() : 0;
-	std::vector<TokenBase *> popped = pgm.tokens.consumed_since(before);
-	if ( consumed_any && head && popped.size() == consumed )
-	{
-	    run.push_back(head->clone());
-	    for ( TokenBase *p : popped )
-		if ( p )
-		    run.push_back(p->clone());
-	}
-	return consumed_any;
-    };
-    size_t anon_param_index = 0;
-    bool has_non_type_params = false;
-    for (;;)
-    {
-	std::vector<TokenBase *> param_constraint;
-	tn = pgm.nextToken();
-	if ( pgm.consume_template_close(tn) )
-	    break;
-	if ( tn->id() == TokenID::tkTEMPLATE )
-	{
-	    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkLT )
-		pgm.Throw(tn) << "Expecting '<' after template parameter template" << flush;
-	    pgm.skip_template_id_suffix();
-	    TokenBase *intro = pgm.nextToken();
-	    if ( !is_template_type_param_intro(intro) )
-		pgm.Throw(intro) << "Expecting class or typename in template template parameter" << flush;
-	    if ( pgm.consume_ellipsis() )
-	    {
-		if ( pgm.peekToken() && is_template_parameter_decl_name(pgm.peekToken()) )
-		    add_template_parameter(template_parameter_decl_name(pgm.nextToken()), false, true);
-		else
-		    add_template_parameter("__anon_ttpack" + std::to_string(anon_param_index++), false, true);
-	    }
-	    else if ( pgm.peekToken()
-		   && (is_template_param_separator(pgm.peekToken())
-		    || pgm.peekToken()->id() == TokenID::tkAssign) )
-		add_template_parameter("__anon_ttparam" + std::to_string(anon_param_index++), false);
-	    else
-	    {
-		tn = pgm.nextToken();
-		if ( !is_template_parameter_decl_name(tn) )
-		    pgm.Throw(tn) << "Expecting template-template parameter name" << flush;
-		add_template_parameter(template_parameter_decl_name(tn), false);
-	    }
-	    has_non_type_params = true;
-	}
-	else if ( is_template_type_param_intro(tn) )
-	{
-	    if ( pgm.consume_ellipsis() )
-	    {
-		if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken()) )
-		    add_template_parameter(contextual_identifier_name(pgm.nextToken()), true, true);
-		else
-		    add_template_parameter("__anon_tpack" + std::to_string(anon_param_index++), true, true);
-		has_non_type_params = true;
-	    }
-	    else if ( pgm.peekToken() && is_template_param_separator(pgm.peekToken()) )
-		add_template_parameter("__anon_tparam" + std::to_string(anon_param_index++), true);
-	    else if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
-		add_template_parameter("__anon_tparam" + std::to_string(anon_param_index++), true);
-	    else
-	    {
-		tn = pgm.nextToken();
-		if ( !is_template_parameter_decl_name(tn) )
-		    pgm.Throw(tn) << "Expecting type-parameter name in template<>" << flush;
-		// Disambiguate a TYPE parameter (`typename T`) from a NON-TYPE
-		// parameter whose type is a dependent typename-specifier
-		// (`typename enable_if<C, bool>::type = true` — the pervasive
-		// libstdc++ SFINAE idiom). If the name just read is immediately
-		// followed by '<' or '::', it is the head of a qualified/template
-		// type, not the parameter's own name: consume the rest of that
-		// type-specifier, then the optional parameter name, and register an
-		// anonymous non-type parameter. madc does not evaluate the
-		// constraint (no concepts; see below), so the enclosing declaration
-		// parses as if unconstrained — only the parse must succeed.
-		if ( pgm.peekToken()
-		  && (pgm.peekToken()->id() == TokenID::tkLT
-		   || pgm.peekToken()->id() == TokenID::tkNS) )
-		{
-		    capture_type_suffix(tn, param_constraint);
-		    if ( pgm.peekToken()
-		      && is_template_parameter_decl_name(pgm.peekToken()) )
-			pgm.nextToken();   // optional (unused) parameter name
-		    add_template_parameter("__anon_ntparam"
-			+ std::to_string(anon_param_index++), false);
-		    has_non_type_params = true;
-		}
-		else
-		    add_template_parameter(template_parameter_decl_name(tn), true);
-	    }
-	}
-	else if ( tn->type() == TokenType::ttIdentifier
-	       || tn->type() == TokenType::ttDataType )
-	{
-	    bool qualified_type = capture_type_suffix(tn, param_constraint);
-	    TokenBase *param_name = pgm.peekToken();
-	    if ( pgm.consume_ellipsis() )
-	    {
-		if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken()) )
-		    add_template_parameter(contextual_identifier_name(pgm.nextToken()), false, true);
-		else
-		    add_template_parameter("__anon_ntpack" + std::to_string(anon_param_index++), false, true);
-		has_non_type_params = true;
-	    }
-	    else if ( param_name && is_contextual_identifier_token(param_name) )
-	    {
-		pgm.nextToken();
-		add_template_parameter(contextual_identifier_name(param_name), false);
-		has_non_type_params = true;
-	    }
-	    else if ( qualified_type )
-	    {
-		add_template_parameter("__anon_ntparam" + std::to_string(anon_param_index++), false);
-		has_non_type_params = true;
-	    }
-	    else if ( tn->type() == TokenType::ttIdentifier )
-		add_template_parameter(((TokenIdent *)tn)->spelling(), true);
-	    else
-	    {
-		add_template_parameter("__anon_ntparam" + std::to_string(anon_param_index++), false);
-		has_non_type_params = true;
-	    }
-	}
-	else
-	    pgm.Throw(tn) << "Expecting type-parameter name in template<>" << flush;
-	typeparam_defaults.push_back(std::vector<TokenBase *>());
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
-	{
-	    pgm.nextToken();
-	    typeparam_defaults.back() = pgm.collect_template_default_argument();
-	}
-	typeparam_constraints.push_back(param_constraint);
-	tn = pgm.nextToken();
-	if ( tn->id() == TokenID::tkComma ) continue;
-	if ( pgm.consume_template_close(tn) ) break;
-	pgm.Throw(tn) << "Expecting ',' or '>' in template parameter list" << flush;
-    }
+    ParsedTemplateParameterList parameter_list;
+    parse_template_parameter_list(pgm, parameter_list);
+    std::vector<std::string> &typeparams = parameter_list.names;
+    std::vector<std::vector<TokenBase *> > &typeparam_defaults =
+	parameter_list.defaults;
+    std::vector<std::vector<TokenBase *> > &typeparam_constraints =
+	parameter_list.constraints;
+    std::vector<bool> &typeparam_is_type = parameter_list.is_type;
+    std::vector<bool> &typeparam_is_pack = parameter_list.is_pack;
+    bool has_non_type_params = parameter_list.has_non_type_params;
 
     // C++20 requires-clause between the template-parameter-list and the
     // declaration (`template<...> requires C<T> struct X ...`): consume it so
@@ -54083,9 +54102,9 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    d.typeparams = typeparams;
 	    d.is_member_template = ool_is_member_template;
 	    if ( ool_is_member_template )
-		extract_inner_template_typeparams(skipped_decl,
-						  d.inner_typeparams, d.inner_is_pack,
-						  d.inner_is_type);
+		extract_inner_template_typeparams(pgm, skipped_decl,
+					  d.inner_typeparams, d.inner_is_pack,
+					  d.inner_is_type);
 	    for ( size_t i = 0; i < skipped_decl.size(); ++i )
 		d.decl.push_back(skipped_decl[i] ? skipped_decl[i]->clone() : NULL);
 	    const Program::TemplateDef *owner_template =
