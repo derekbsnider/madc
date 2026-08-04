@@ -1,33 +1,28 @@
 # Test Status
 
-> **Current (2026-08-04, `feature/libcxx-parity6-codex` @40cb8766 —
-> pointer/reference ownership audit):** fulltest **942 passed, 0 failed,
+> **Current (2026-08-04, `feature/libcxx-parity6-codex` @fce67bf8 —
+> member-template parameter-chain consolidation):** fulltest **945 passed, 0 failed,
 > 0 timed out, 9 skipped**; `forest_index_oracle` is **5227 indexed names /
-> 3521 registered lookups**. `testeboemptycopy` proves that copying a
-> semantically empty base does not write its synthetic MC11 carrier over an
-> offset-zero value subobject; GCC, Clang, and madc agree at `90` in JIT, EXE,
-> and OBJ. `testrefptrparam` covers declared free and inline method `T*&`
-> parameters; both canons and all madc backends agree at `42 1 43 1`.
-> `testcopiedrefptrparam` covers a copied dependent member call through
-> `std::forward`: GCC and Clang pass the pointer-slot address, madc emits
-> `((int **)(&parent))`, and JIT/EXE/OBJ all print `1`. The new
-> `check-ref-arg-lowering-owner.sh` gate requires copied and deferred calls to
-> delegate to the one reference-address owner and rejects the old raw operator
-> and copied-value implementations.
+> 3521 registered lookups**. `testmembertemplateconstoverload` proves retained
+> templates use reference-aware deduction and preserve trailing member `const`:
+> GCC, Clang, and madc select the `const U&` and `U**` overloads and print
+> `2 3` in JIT, EXE, and OBJ. `testoutoflinememberconstraint` proves an
+> out-of-line definition may rename its template parameter while the in-class
+> declaration retains the default and unnamed non-type constraint; all three
+> compilers print `5`. `teststringcompare_libcxx` exercises the real libc++
+> compare chain and prints `1 1 1` in all madc lanes. The existing
+> `testeboemptycopy`, `testrefptrparam`, `testcopiedrefptrparam`, and
+> `check-ref-arg-lowering-owner.sh` gates remain green.
 >
-> Under `MADC_FWDREF_ARM=1`, real libc++ `testcontainerdtor` now passes
-> `&__parent` to `find_equal`, prints `vec size: 4` and `ints size: 3`, then
-> crashes in `char_traits_char__copy`. The standalone `set<string>` trace now
-> reports size 1 after its first insert and reaches `E beta` before the same
-> second-insert crash. Without the arm, `testcontainerdtor` still stops on the
-> earlier tuple-reference constructor path.
-> The last whole flavored measurement, not rerun because no existing test
-> flipped, remains **898 passed / 26 failed / 0 timed out / 12 skipped**;
-> eligible EXE and OBJ remain **882/0**. Logs:
-> `tmp/logs/rb-20260804-063113.log` (fulltest),
-> `tmp/logs/rb-20260804-063004.log` (focused JIT/EXE/OBJ),
-> `tmp/logs/rb-20260804-062911.log` (build), and
-> `tmp/logs/rb-20260803-224941.log` (last whole libc++ battery).
+> Under `MADC_FWDREF_ARM=1`, real libc++ `testcontainerdtor` now completes:
+> vector size 4, integer vector size 3, set size 2, map size 2, then `done`.
+> Without the arm it still stops at the earlier `__tuple_leaf` forwarding-
+> reference constructor mismatch. The whole flavored measurement is **918
+> passed / 24 failed / 0 timed out / 12 skipped**; `testset` and
+> `teststringrel` cleared, and eligible EXE and OBJ are each **902/0**. Logs:
+> `tmp/logs/rb-20260804-175323.log` (fulltest),
+> `tmp/logs/rb-20260804-170200.log` (whole libc++ battery), and
+> `tmp/logs/rb-20260803-224941.log` (previous whole libc++ battery).
 >
 > **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —
 > pack/variadic correctness, unreleased):** fulltest **922 passed, 0

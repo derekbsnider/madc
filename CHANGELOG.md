@@ -3,12 +3,30 @@
 ## [Unreleased]
 
 Variadic-pack correctness, `sizeof...` becomes a real operator, and generic
-class-template, construction, and reference-binding fixes join the libc++
-parity burn-down. The flavored lane moved **891/28 → 898/26**: six new gates plus the flips
-`teststdstringconv` and `testlateinstproto`, with zero newly broken tests in
-either measured two-way failset diff. Fulltest is **942/0/0TO/9skip**;
-libc++-eligible EXE and OBJ were each **882/0** at the last whole-lane
-measurement.
+class-template, construction, reference-binding, and member-template fixes join
+the libc++ parity burn-down. The flavored lane moved **891/28 → 918/24**:
+nine new gates plus the flips `teststdstringconv`, `testlateinstproto`,
+`testset`, and `teststringrel`, with zero newly broken tests in either measured
+two-way failset diff. Fulltest is **945/0/0TO/9skip**; libc++-eligible EXE and
+OBJ are each **902/0**.
+
+- **fix: retained member templates share their full parameter-chain machinery
+  (@fce67bf8).** The pointer/reference audit found three historical duplicate
+  paths that bypassed stronger code: two retained-template scoring loops used a
+  one-point dependent-type fallback instead of `fn_template_deduce_param`; an
+  isolated template-head scanner treated the last identifier in an unnamed
+  non-type parameter's constraint as its declaration name; and constructor and
+  ordinary member instantiation copied different subsets of the template head.
+  One structural parameter-list parser, one retained-parameter scorer, and one
+  instantiation-head transfer owner now serve every path. Class-pattern
+  hydration retains declaration defaults and constraints, trailing member
+  `const` survives, and out-of-line definitions may rename template parameters
+  without replacing declaration identity. New
+  `testmembertemplateconstoverload`, `testoutoflinememberconstraint`, and
+  `teststringcompare_libcxx` match GCC and Clang and pass JIT/EXE/OBJ.
+  `testset` and `teststringrel` leave the libc++ failset; with
+  `MADC_FWDREF_ARM=1`, `testcontainerdtor` now runs through `done`. Fulltest is
+  945/0 and the whole flavored lane is 918/24, eligible EXE/OBJ 902/0.
 
 - **fix: non-class reference arguments have one lowering owner
   (@40cb8766).** Copied dependent calls no longer cast a pointer lvalue value

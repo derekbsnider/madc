@@ -1,18 +1,16 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-04 (unreleased
-libc++ parity checkpoint @40cb8766): native class source conversions, empty
-base copy semantics, direct pointer-reference parameter parsing, and copied
-reference-formal argument lowering are now banked. The latter has one CIR
-owner and a fulltest duplication gate. Fulltest is **942/0/0TO/9skip**. The
-last whole flavored measurement remains **898/26** with zero timeouts because
-no existing test has flipped yet. With `MADC_FWDREF_ARM=1`,
-`testcontainerdtor` now passes `&__parent` to the libc++ `find_equal`
-reference formal and starts. A standalone `set<string>` trace reaches size 1
-and reads the second key before crashing in `char_traits_char__copy` during
-the second insert. NEXT is to trace the remaining incompatible assignment at
-libc++ `__tree:722` into that copy's source and destination state, comparing
-GCC and Clang before editing. #114 remains blocked on the owner decision about
+libc++ parity checkpoint @fce67bf8): the pointer/reference-chain audit found
+and consolidated weaker historical copies of retained-member-template scoring,
+template-parameter parsing, and instantiation-head transfer. Defaults,
+constraints, out-of-line parameter renaming, and trailing member `const` now
+survive the complete chain. Fulltest is **945/0/0TO/9skip**. The whole flavored
+measurement is **918/24** with zero timeouts and eligible EXE/OBJ **902/0**;
+`testset` and `teststringrel` cleared. With `MADC_FWDREF_ARM=1`,
+`testcontainerdtor` completes. NEXT is the default-path `__tuple_leaf`
+forwarding-reference constructor mismatch, starting at the arm and retained
+tuple-template deduction. #114 remains blocked on the owner decision about
 mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
@@ -40,7 +38,15 @@ high-level" — the answer is both.**
 ## Current State
 
 - **Unreleased parity checkpoint (2026-08-04, task #72 precursors, P2.7 in
-  progress).** Class construction now selects a zero-argument conversion
+  progress).** Retained member-template overload scoring now delegates to the
+  shared structural deducer; template parameter lists and member-template
+  instantiation heads each have one parser/transfer owner (@fce67bf8).
+  Class-pattern hydration preserves declaration defaults and constraints,
+  trailing member `const` survives, and out-of-line definitions rename their
+  parameter tokens positionally without replacing declaration identity. New
+  `testmembertemplateconstoverload`, `testoutoflinememberconstraint`, and
+  `teststringcompare_libcxx` match GCC and Clang and pass JIT/EXE/OBJ. Class
+  construction now selects a zero-argument conversion
   method on the source by semantic target class and object cv, honors hiding
   and ambiguous bases, and shares stack/address destination writeback for
   trivially-copyable native results (@6209e622). New `testconvopclass` matches
@@ -103,18 +109,17 @@ high-level" — the answer is both.**
   its `TokenCallFunc` origin through CIR copying (@518412e2); and concrete
   member-template return tokens resolve under the definition owner
   (@ef168838). GCC 13 and Clang 18 agree with all reducers. Fulltest is
-  **942/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
-  with `testlateinstproto` fixed, zero additions in its two-way failset diff,
-  and eligible **EXE 882/0** and **OBJ 882/0**; that whole lane was not rerun
-  for @40cb8766 because no existing test flipped. Under
-  `MADC_FWDREF_ARM=1`, `testcontainerdtor` now emits the required `T **`
-  callee and passes `&__parent` into libc++ `find_equal`. A standalone
-  `set<string>` trace reaches size 1 after the first insert and reads `beta`
-  before crashing in `char_traits_char__copy` on the second. One incompatible
-  pointer assignment remains at libc++ `__tree:722`. NEXT: trace that
-  assignment into the copy's source and destination pointer/size state, then
-  compare the reduced lowering with GCC and Clang before editing. Keep #114
-  parked until its ABI/API decision is answered.
+  **945/0/0TO/9skip**. The measured whole libc++ lane is **918/24**, with
+  `testlateinstproto`, `testset`, and `teststringrel` fixed, zero additions in
+  its two-way failset diff, and eligible **EXE 902/0** and **OBJ 902/0**. Under
+  `MADC_FWDREF_ARM=1`, `testcontainerdtor` now runs through vector, set, and map
+  destruction and prints `done`; the earlier `__tree:722` warnings do not
+  corrupt runtime state after the member-template consolidation. Default mode
+  still fails first on an `__tuple_leaf_0...R_0(tuple...RR*)` constructor
+  mismatch. NEXT: trace that forwarding-reference path from `MADC_FWDREF_ARM`
+  through retained tuple-template deduction and instantiation, checking for
+  another weaker duplicate before editing. Keep #114 parked until its ABI/API
+  decision is answered.
 
 - **v0.67.0 (2026-08-01): the flavor-ABI release (tasks
   #69/#92/#93/#98, P2.7 in progress).** The flavored lane went 859/40
