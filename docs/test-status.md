@@ -1,28 +1,27 @@
 # Test Status
 
-> **Current (2026-08-04, `feature/libcxx-parity6-codex` @fce67bf8 —
-> member-template parameter-chain consolidation):** fulltest **945 passed, 0 failed,
-> 0 timed out, 9 skipped**; `forest_index_oracle` is **5227 indexed names /
-> 3521 registered lookups**. `testmembertemplateconstoverload` proves retained
-> templates use reference-aware deduction and preserve trailing member `const`:
-> GCC, Clang, and madc select the `const U&` and `U**` overloads and print
-> `2 3` in JIT, EXE, and OBJ. `testoutoflinememberconstraint` proves an
-> out-of-line definition may rename its template parameter while the in-class
-> declaration retains the default and unnamed non-type constraint; all three
-> compilers print `5`. `teststringcompare_libcxx` exercises the real libc++
-> compare chain and prints `1 1 1` in all madc lanes. The existing
-> `testeboemptycopy`, `testrefptrparam`, `testcopiedrefptrparam`, and
-> `check-ref-arg-lowering-owner.sh` gates remain green.
+> **Current (2026-08-04, `feature/libcxx-parity6-codex` @672a0966 —
+> forwarding-reference deduction owners):** fulltest **946 passed, 0 failed,
+> 0 timed out, 9 skipped**, warning census **0**, tsubst fallback **0**;
+> `forest_index_oracle` is **5227 indexed names / 3521 registered lookups**.
+> `testfwdpackvaluecategory` proves a named lvalue and a value-returning call
+> with the same value type deduce `T=int&` and `T=int`: GCC, Clang, and madc
+> print `1 0`. Its focused ten-test blast radius passes **10/0** in JIT, EXE,
+> and OBJ. `testmembertmplctor` remains `10 400`, proving dependent `sizeof(U)`
+> measures the referent when forwarding deduction binds `U=tag&`. The function-
+> template and dependent-type-query ownership gates are green alongside the
+> existing reference-argument gate.
 >
-> Under `MADC_FWDREF_ARM=1`, real libc++ `testcontainerdtor` now completes:
-> vector size 4, integer vector size 3, set size 2, map size 2, then `done`.
-> Without the arm it still stops at the earlier `__tuple_leaf` forwarding-
-> reference constructor mismatch. The whole flavored measurement is **918
-> passed / 24 failed / 0 timed out / 12 skipped**; `testset` and
-> `teststringrel` cleared, and eligible EXE and OBJ are each **902/0**. Logs:
-> `tmp/logs/rb-20260804-175323.log` (fulltest),
-> `tmp/logs/rb-20260804-170200.log` (whole libc++ battery), and
-> `tmp/logs/rb-20260803-224941.log` (previous whole libc++ battery).
+> Real libc++ `testcontainerdtor` now completes in production: vector size 4,
+> integer vector size 3, set size 2, map size 2, then `done`; the experimental
+> `MADC_FWDREF_ARM` is deleted. The whole flavored measurement is **927 passed /
+> 16 failed / 0 timed out / 12 skipped**. Eight prior failures cleared with zero
+> additions: `testcastarrow`, `testcontainerdtor`, `testforinitscope`,
+> `testmadc_ns`, `testmap`, `testmapiter`, `teststdmapint`, and `testsubscript`.
+> Eligible EXE and OBJ are each **911/0**. Logs:
+> `tmp/logs/rb-20260804-193248.log` (fulltest),
+> `tmp/logs/rb-20260804-194241.log` (whole libc++ battery), and
+> `tmp/logs/rb-20260804-193158.log` (focused JIT/EXE/OBJ).
 >
 > **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —
 > pack/variadic correctness, unreleased):** fulltest **922 passed, 0

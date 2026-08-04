@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  ef168838 (2026-08-03) on feature/libcxx-parity6-codex
-# Result:       898 passed / 26 failed / 0 timed out / 12 skipped
+# Measured at:  672a0966 (2026-08-04) on feature/libcxx-parity6-codex
+# Result:       927 passed / 16 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -544,29 +544,32 @@
 #                         testretbufmtiinit; EXE 881/0, OBJ 881/0.
 #   ef168838  898 /  26   failing-name set unchanged; +1 is new gate
 #                         testmtireturnscope; EXE 882/0, OBJ 882/0.
-testcastarrow.mad
+#   fce67bf8  918 /  24   TWO FIXED, ZERO newly broken: testset and
+#                         teststringrel; +18 are new passing gates from the
+#                         pointer/reference and member-template owner audit.
+#                         EXE 902/0, OBJ 902/0.
+#   672a0966  927 /  16   EIGHT FIXED, ZERO newly broken (comm-diffed against
+#                         the 24-name set): testcastarrow, testcontainerdtor,
+#                         testforinitscope, testmadc_ns, testmap, testmapiter,
+#                         teststdmapint, and testsubscript. +1 is the new
+#                         testfwdpackvaluecategory gate. Forwarding-reference
+#                         scalar/pack deduction and both pre-deduction keys now
+#                         share value-category-aware owners; dependent sizeof
+#                         delegates to query_datadef_measure. EXE 911/0,
+#                         OBJ 911/0, fulltest 946/0/0TO/9skip.
 testconstructible.mad
-testcontainerdtor.mad
 testdefer.mad
 testexterncstringptr.mad
 testforeachheaderbody.mad
-testforinitscope.mad
 testfreezerun.mad
 testfstream.mad
 testifconstexpr.mad
 testincludenext.mad
 testinvocable.mad
 testloop.mad
-testmadc_ns.mad
 testmanipview.mad
-testmap.mad
-testmapiter.mad
 testmathheader.mad
 testopinherit.mad
-testset.mad
 testsstream.mad
-teststdmapint.mad
-teststringrel.mad
-testsubscript.mad
 testsysobject.mad
 testtuple.mad

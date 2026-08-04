@@ -4,11 +4,25 @@
 
 Variadic-pack correctness, `sizeof...` becomes a real operator, and generic
 class-template, construction, reference-binding, and member-template fixes join
-the libc++ parity burn-down. The flavored lane moved **891/28 → 918/24**:
-nine new gates plus the flips `teststdstringconv`, `testlateinstproto`,
-`testset`, and `teststringrel`, with zero newly broken tests in either measured
-two-way failset diff. Fulltest is **945/0/0TO/9skip**; libc++-eligible EXE and
-OBJ are each **902/0**.
+the libc++ parity burn-down. The flavored lane moved **891/28 → 927/16**:
+new gates plus twelve old-failure flips, with zero newly broken tests in every
+measured two-way failset diff. Fulltest is **946/0/0TO/9skip**;
+libc++-eligible EXE and OBJ are each **911/0**.
+
+- **fix: forwarding-reference deduction and dependent type queries return to
+  their canonical owners (@672a0966).** Scalar and direct-pack call parameters
+  now share `FnTemplateParamShape` and `fn_template_deduce_param`; the old pack
+  helper and `MADC_FWDREF_ARM` are gone. Member-template recursion and instance
+  lookup consume one call-shape suffix that includes argument value category,
+  then the existing binding memo deduplicates equal specializations. Parse-once
+  dependent `sizeof`/`alignof` folds when Tree-2 receives the concrete type and
+  delegates to `query_datadef_measure`, preserving the established rule that a
+  reference measures its referent. New `testfwdpackvaluecategory` matches GCC
+  and Clang at `1 0`; two static gates prevent the weaker copies from returning.
+  Fulltest is 946/0 with zero warnings and zero tsubst fallbacks. The libc++ lane
+  is 927/16, eligible EXE/OBJ 911/0; `testcastarrow`, `testcontainerdtor`,
+  `testforinitscope`, `testmadc_ns`, `testmap`, `testmapiter`, `teststdmapint`,
+  and `testsubscript` leave the failset with zero additions.
 
 - **fix: retained member templates share their full parameter-chain machinery
   (@fce67bf8).** The pointer/reference audit found three historical duplicate
