@@ -1,0 +1,43 @@
+// A reference to a namespace-qualified alias must survive a type pack deduced
+// inside a nested partial-specialization pattern.  The first specialization
+// forwards the pack through another template-id; the second resolves its first
+// element.  Losing the alias lookup emptied the pack, while spelling a resolved
+// DataDefREF as its lowered `T*` name changed the second hop into a real pointer.
+// Verified against g++ and clang++ at -O0: both print 9.
+#include <stdio.h>
+
+namespace probe {
+	typedef int value_type;
+
+	template<class... Types>
+	struct type_list {};
+
+	template<class... Types>
+	struct tuple {};
+
+	template<class Head, class... Tail>
+	struct first {
+		typedef Head type;
+	};
+
+	template<unsigned long Index, class List>
+	struct element;
+
+	template<unsigned long Index, class... Types>
+	struct element<Index, type_list<Types...>> {
+		typedef typename first<Types...>::type type;
+	};
+
+	template<unsigned long Index, class... Types>
+	struct element<Index, tuple<Types...>>
+		: element<Index, type_list<Types...>> {};
+}
+
+int main()
+{
+	probe::value_type value = 7;
+	probe::element<0, probe::tuple<probe::value_type&>>::type ref = value;
+	ref += 2;
+	printf("%d\n", value);
+	return 0;
+}

@@ -7884,7 +7884,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		{
 		    DataDef *edd = resolve_arg_spelling_datadef(*this, p->second[ei]);
 		    if ( edd )
-			elems.push_back(new TokenDataType(edd->name.c_str(), *edd));
+		    {
+			std::string esp = edd->is_reference()
+			    ? basic_class_datadef_spelling(edd) : edd->name;
+			elems.push_back(new TokenDataType(esp.c_str(), *edd));
+		    }
 		}
 		pack_subst[p->first] = elems;
 	    }
@@ -27995,6 +27999,37 @@ static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &sp
 {
     if ( DataDef *dd = pgm.resolve_named_datadef(spelling) )
 	return dd;
+    // A qualified simple name can be a namespace alias (`std::string`, or a
+    // user `ns::value_type`).  The flat resolver intentionally does not read
+    // namespace_datatype_map, but pack deduction stores canonical/source C++
+    // spellings and must round-trip them before re-applying `&`/`*` below.
+    {
+	std::string qualified = trim_spelling(spelling);
+	bool global_qualified = qualified.compare(0, 2, "::") == 0;
+	if ( global_qualified )
+	    qualified.erase(0, 2);
+	size_t scope = qualified.rfind("::");
+	if ( scope != std::string::npos
+	  && qualified.find('<') == std::string::npos )
+	{
+	    std::string ns_name = qualified.substr(0, scope);
+	    const std::string member_name = qualified.substr(scope + 2);
+	    if ( !global_qualified )
+	    {
+		std::string resolved = pgm.resolve_namespace_name_in_scope(ns_name);
+		if ( !resolved.empty() )
+		    ns_name = resolved;
+	    }
+	    namespace_datatype_map_t::iterator nti =
+		pgm.namespace_datatype_map.find(ns_name);
+	    if ( nti != pgm.namespace_datatype_map.end() )
+	    {
+		datatype_map_iter dti = nti->find(member_name);
+		if ( dti != nti->end() )
+		    return &dti->second->definition;
+	    }
+	}
+    }
     // Peel trailing declarator suffixes (`int32_t*`, `_Tp&`, `_Tp&&`) and leading
     // cv-qualifiers, resolve the CORE type, then re-apply pointer/reference.
     // resolve_named_datadef matches only a bare type name; a pack element absorbed
