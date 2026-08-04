@@ -3214,6 +3214,9 @@ public:
     // types). No-op when `cdd` has no member-template ctor.
     void instantiate_member_ctor_template_for_construction(
 		DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args);
+    bool instantiate_member_ctor_template_candidate(
+		DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args,
+		size_t candidate_skip);
     // Resolve the CONCRETE return type of a member-function-template call by
     // substituting the call's explicit/deduced template args into the retained
     // DEPENDENT return-type tokens (FuncDef::member_template_return_tokens) and

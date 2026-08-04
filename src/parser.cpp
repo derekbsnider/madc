@@ -1652,6 +1652,16 @@ static bool sizeof_pack_operand_name(const std::vector<TokenBase *> &toks,
     return true;
 }
 
+template <class TokenContainer>
+static bool token_is_ellipsis_at(const TokenContainer &toks,
+				 size_t i, size_t end)
+{
+    return i + 2 < end
+	&& toks[i] && toks[i]->id() == TokenID::tkDot
+	&& toks[i + 1] && toks[i + 1]->id() == TokenID::tkDot
+	&& toks[i + 2] && toks[i + 2]->id() == TokenID::tkDot;
+}
+
 static bool token_origin_allows_c89_implicit_function(TokenBase *tb)
 {
     if ( !tb || !tb->file )
@@ -4026,7 +4036,8 @@ static bool template_pack_real_instantiable(const Program::TemplateDef &td,
 
 static std::vector<TokenBase *> clone_template_tokens_with_type_subst(
 	const std::vector<TokenBase *> &src,
-	const std::map<std::string, TokenDataType *> &subst)
+	const std::map<std::string, TokenDataType *> &subst,
+	const std::map<std::string, std::vector<TokenBase *> > *token_subst = NULL)
 {
     std::vector<TokenBase *> out;
     for ( TokenBase *bt : src )
@@ -4040,6 +4051,17 @@ static std::vector<TokenBase *> clone_template_tokens_with_type_subst(
 	    {
 		out.push_back(si->second->clone());
 		continue;
+	    }
+	    if ( token_subst )
+	    {
+		std::map<std::string, std::vector<TokenBase *> >::const_iterator
+		    ti = token_subst->find(s);
+		if ( ti != token_subst->end() )
+		{
+		    for ( TokenBase *st : ti->second )
+			out.push_back(st ? st->clone() : NULL);
+		    continue;
+		}
 	    }
 	}
 	out.push_back(bt ? bt->clone() : NULL);
@@ -4667,6 +4689,9 @@ TokenDataType *Program::instantiate_make_integer_seq(TokenBase *tb,
 // Defined below (near the partial-spec unifiers); used here to resolve a
 // deduced pack element's spelling to its instantiated type token.
 static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &spelling);
+static std::string trim_spelling(const std::string &s);
+static bool parse_simple_template_non_type_value(const std::string &spelling,
+						 int64_t &out);
 static bool datadef_has_unresolved_dependent_surface(DataDef *dd);
 
 
@@ -7654,7 +7679,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	}
 	std::vector<TokenBase *> default_tokens =
 	    clone_template_tokens_with_type_subst(td.typeparam_defaults[pi],
-						 subst);
+						 subst, &token_subst);
 	if ( template_param_expects_type(td.typeparam_is_type, pi) )
 	{
 	    std::vector<TokenBase *> inj = default_tokens;
@@ -7870,15 +7895,41 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 			repl.push_back(t->clone());
 		token_subst[n->first] = repl;
 	    }
-	    // A deduced trailing pack (`_Types...`) binds to the absorbed concrete
-	    // args; resolve each element spelling to its type token for body
-	    // expansion. The real allocator rebind leaves it empty (`allocator<_Tp>`
-	    // has no extra args), so an empty pack — and its `...`/comma elision —
-	    // is the common path.
+	    // A deduced pack binds to absorbed concrete args. Route type elements
+	    // through pack_subst and non-type elements through token_pack_subst;
+	    // the unifier's spelling vector carries both kinds.
 	    pack_subst.clear();
+	    token_pack_subst.clear();
 	    for ( std::map<std::string, std::vector<std::string> >::iterator p =
 		      spec_pack_subst.begin(); p != spec_pack_subst.end(); ++p )
 	    {
+		bool is_type_pack = true;
+		for ( size_t tp = 0; tp < td.typeparams.size(); ++tp )
+		    if ( td.typeparams[tp] == p->first )
+		    {
+			is_type_pack = tp >= td.typeparam_is_type.size()
+				    || td.typeparam_is_type[tp];
+			break;
+		    }
+		if ( !is_type_pack )
+		{
+		    std::vector<std::vector<TokenBase *> > elems;
+		    for ( size_t ei = 0; ei < p->second.size(); ++ei )
+		    {
+			if ( trim_spelling(p->second[ei]).empty() )
+			    continue;
+			int64_t value = 0;
+			if ( !parse_simple_template_non_type_value(p->second[ei],
+							 value) )
+			    Throw(tb) << "Could not materialize non-type pack element '"
+				      << p->second[ei] << "' for " << p->first << flush;
+			std::vector<TokenBase *> run;
+			run.push_back(new TokenInt(value));
+			elems.push_back(run);
+		    }
+		    token_pack_subst[p->first] = elems;
+		    continue;
+		}
 		std::vector<TokenDataType *> elems;
 		for ( size_t ei = 0; ei < p->second.size(); ++ei )
 		{
@@ -8257,23 +8308,45 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    member_tpl_extent_end = 0;
 	    member_tpl_keep_begin = 0;
 	}
-	// [temp.variadic] sizeof...(PACK) folds to the pack's ARITY at
-	// substitution. Without this arm the dots copy through and the bare
-	// pack name inside the parens hits the 1:1 fallback, manufacturing
-	// `sizeof...(int32_t&)` (invalid C++) in replayed member-template
-	// heads — libc++ tuple's ctor constraints, which the constraint
-	// resolver then rejects (task #103). A MEMBER template's own pack
-	// (`sizeof...(_Up)`) is not in the owner's subst maps and stays raw.
+	// [temp.variadic] sizeof...(PACK) folds when THIS class substitution
+	// owns PACK. A nested member template's own pack (`_Up`) is absent from
+	// these maps and stays raw until that member is instantiated. Keeping an
+	// enclosing pack raw past this scope loses its arity when a member-template
+	// constraint is retained for later substitution (libc++ tuple's
+	// `sizeof...(_Tp) == sizeof...(_Up)` constructor constraint).
 	std::string sop_pn_cls;
 	if ( sizeof_pack_operand_name(td.body, bi, sop_pn_cls) )
 	{
-	    // Verbatim, pack name intact — the parser owns the operator now. This
-	    // arm previously folded to the arity here precisely because the 1:1
-	    // fallback below would otherwise rewrite the bare pack name inside the
-	    // parens to a bound TYPE, manufacturing `sizeof...(int32_t&)`. Skipping
-	    // the whole operand run is what keeps that from happening.
-	    for ( size_t k = 0; k < 7; ++k )
-		inj.push_back(td.body[bi+k]->clone());
+	    size_t arity = 0;
+	    bool enclosing_pack = false;
+	    std::map<std::string, std::vector<TokenDataType *> >::const_iterator
+		psi = pack_subst.find(sop_pn_cls);
+	    if ( psi != pack_subst.end() )
+	    {
+		arity = psi->second.size();
+		enclosing_pack = true;
+	    }
+	    else
+	    {
+		std::map<std::string, std::vector<std::vector<TokenBase *> > >
+		    ::const_iterator vsi = token_pack_subst.find(sop_pn_cls);
+		if ( vsi != token_pack_subst.end() )
+		{
+		    arity = vsi->second.size();
+		    enclosing_pack = true;
+		}
+	    }
+	    if ( enclosing_pack )
+	    {
+		TokenInt *folded = new TokenInt((int64_t)arity);
+		folded->file = bt->file;
+		folded->line = bt->line;
+		folded->column = bt->column;
+		inj.push_back(folded);
+	    }
+	    else
+		for ( size_t k = 0; k < 7; ++k )
+		    inj.push_back(td.body[bi+k]->clone());
 	    bi += 6;
 	    continue;
 	}
@@ -8428,6 +8501,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 			    continue;
 			const std::string sp =
 			    ((TokenIdent *)td.body[k])->spelling();
+			if ( token_is_ellipsis_at(td.body, k + 1, after) )
+			    continue;	// consumed by a nested pack expansion
 			size_t n = 0;
 			bool is_pack = false;
 			std::map<std::string, std::vector<TokenDataType *> >
@@ -8480,7 +8555,20 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 				    ? pack_subst.end() : pack_subst.find(sp);
 			    if ( tpk != pack_subst.end() )
 			    {
-				if ( e < tpk->second.size() && tpk->second[e] )
+				if ( token_is_ellipsis_at(td.body, k + 1, after) )
+				{
+				    for ( size_t ne = 0; ne < tpk->second.size(); ++ne )
+				    {
+					if ( ne ) inj.push_back(new TokenComma());
+					if ( tpk->second[ne] )
+					    inj.push_back(tpk->second[ne]->clone());
+				    }
+				    if ( tpk->second.empty() && !inj.empty()
+				      && inj.back()->id() == TokenID::tkComma )
+				    { delete inj.back(); inj.pop_back(); }
+				    k += 3;
+				}
+				else if ( e < tpk->second.size() && tpk->second[e] )
 				    inj.push_back(tpk->second[e]->clone());
 				continue;
 			    }
@@ -8491,10 +8579,22 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 				    : token_pack_subst.find(sp);
 			    if ( vpk != token_pack_subst.end() )
 			    {
-				if ( e < vpk->second.size() )
+				if ( token_is_ellipsis_at(td.body, k + 1, after) )
+				{
+				    for ( size_t ne = 0; ne < vpk->second.size(); ++ne )
+				    {
+					if ( ne ) inj.push_back(new TokenComma());
+					for ( TokenBase *et : vpk->second[ne] )
+					    if ( et ) inj.push_back(et->clone());
+				    }
+				    if ( vpk->second.empty() && !inj.empty()
+				      && inj.back()->id() == TokenID::tkComma )
+				    { delete inj.back(); inj.pop_back(); }
+				    k += 3;
+				}
+				else if ( e < vpk->second.size() )
 				    for ( TokenBase *et : vpk->second[e] )
-					if ( et )
-					    inj.push_back(et->clone());
+					if ( et ) inj.push_back(et->clone());
 				continue;
 			    }
 			    // The ctor's expanded PARAMETER pack: element e of
@@ -28767,7 +28867,7 @@ static bool parse_simple_template_non_type_value(const std::string &spelling,
     char *end = NULL;
     errno = 0;
     long long iv = strtoll(s.c_str(), &end, 0);
-    if ( end && *end == '\0' && errno == 0 )
+    if ( end && end != s.c_str() && *end == '\0' && errno == 0 )
     {
 	out = iv;
 	return true;
@@ -38789,15 +38889,6 @@ static bool member_template_param_intro(TokenBase *t)
     return n == "typename" || n == "class";
 }
 
-static bool token_is_ellipsis_at(const TokenStream &toks,
-				 size_t i, size_t end)
-{
-    return i + 2 < end
-	&& toks[i] && toks[i]->id() == TokenID::tkDot
-	&& toks[i + 1] && toks[i + 1]->id() == TokenID::tkDot
-	&& toks[i + 2] && toks[i + 2]->id() == TokenID::tkDot;
-}
-
 static bool template_list_close_index(const TokenStream &toks,
 				      size_t lt_idx, size_t &close_idx)
 {
@@ -47798,8 +47889,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		std::map<std::string, DataDef *> binding_pre = binding;
 		bool uok = !concrete.empty()
 		  && pgm.unify_nested_spec_pattern_arg(core, ft.typeparams,
-						       concrete, binding, sc,
-						       NULL, &outpk);
+					       concrete, binding, sc,
+					       NULL, &outpk);
 		// [temp.deduct.call]: a template-id parameter P also deduces
 		// from a BASE of the argument's class ("class derived from
 		// P"). `_Alloc_traits::construct(this->_M_impl, ...)` is the
@@ -48061,8 +48152,19 @@ DataDef *Program::resolve_template_param_default_type(
     if ( default_tokens.empty() )
 	return NULL;
     std::vector<TokenBase *> body;
-    for ( TokenBase *bt : default_tokens )
+    for ( size_t i = 0; i < default_tokens.size(); ++i )
     {
+	TokenBase *bt = default_tokens[i];
+	std::string pack_name;
+	if ( sizeof_pack_operand_name(default_tokens, i, pack_name) )
+	{
+	    // The pack name is an operand, not a type occurrence. Keep it
+	    // spelled so evaluate_type_query can find its published arity.
+	    for ( size_t j = i; j <= i + 6; ++j )
+		body.push_back(default_tokens[j]->clone());
+	    i += 6;
+	    continue;
+	}
 	if ( bt && bt->type() == TokenType::ttIdentifier )
 	{
 	    std::map<std::string, DataDef *>::const_iterator bi =
@@ -48356,6 +48458,18 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	else
 	    nontype_tidpack_one[t->first] = t->second[0];
     }
+    // Constraints and defaults may contain sizeof...(PACK), so publish arity
+    // before either is resolved. The scope remains live through the body parse.
+    Program::PackArityScope _pack_arity_scope(pgm);
+    if ( !pack_param.empty() )
+	pgm.publish_pack_arity(pack_param,
+		pack_empty ? 0 : (pack_elems.empty() ? 1 : pack_elems.size()));
+    for ( std::map<std::string, std::vector<DataDef *> >::const_iterator
+	    tp = tid_packs.begin(); tp != tid_packs.end(); ++tp )
+	pgm.publish_pack_arity(tp->first, tp->second.size());
+    for ( std::map<std::string, std::vector<int64_t> >::const_iterator
+	    np = tid_packs_nontype.begin(); np != tid_packs_nontype.end(); ++np )
+	pgm.publish_pack_arity(np->first, np->second.size());
     // Unbound parameters fall back to their template-parameter defaults. The
     // default is a token run: a BASE type (a single token — an already-bound
     // parameter name `_Ret = _TRet`, or a concrete `ttDataType`) optionally
@@ -48687,23 +48801,6 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    subst[b->first] = new TokenDataType(bind_spelling(b->second).c_str(),
 						*b->second);
     }
-    // [expr.sizeof]/5 — PUBLISH this instantiation's pack arities for the body
-    // parse; evaluate_type_query's `sizeof...` arm resolves against them. The
-    // substitution loops below deliberately do NOT fold the operator any more:
-    // they copy `sizeof ... ( P )` through verbatim (keeping the pattern's pack
-    // NAME unsubstituted) and the parser evaluates it. One implementation of the
-    // operator instead of one per substitution path.
-    Program::PackArityScope _pack_arity_scope(pgm);
-    if ( !pack_param.empty() )
-	pgm.publish_pack_arity(pack_param,
-		pack_empty ? 0 : (pack_elems.empty() ? 1 : pack_elems.size()));
-    for ( std::map<std::string, std::vector<DataDef *> >::const_iterator
-	    tp = tid_packs.begin(); tp != tid_packs.end(); ++tp )
-	pgm.publish_pack_arity(tp->first, tp->second.size());
-    for ( std::map<std::string, std::vector<int64_t> >::const_iterator
-	    np = tid_packs_nontype.begin(); np != tid_packs_nontype.end(); ++np )
-	pgm.publish_pack_arity(np->first, np->second.size());
-
     std::vector<TokenBase *> inj;
     std::string pack_value_name;	// the pack's VALUE name (`__base`)
     bool multi_done = false;
@@ -51473,9 +51570,21 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 void Program::instantiate_member_ctor_template_for_construction(
 	DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args)
 {
-    InstTimer _it(*this, _inst_member_ctor_count);	// --show-stats
     if ( !cdd )
 	return;
+    const size_t candidate_limit = cdd->ctors.size();
+    for ( size_t skip = 0; skip < candidate_limit; ++skip )
+	if ( instantiate_member_ctor_template_candidate(cdd, ctor_args, skip) )
+	    return;
+}
+
+bool Program::instantiate_member_ctor_template_candidate(
+	DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args,
+	size_t candidate_skip)
+{
+    InstTimer _it(*this, _inst_member_ctor_count);	// --show-stats
+    if ( !cdd )
+	return false;
 #ifdef MADC_DEBUG_CTORTMPL
     bool dbg_ct = getenv("MADC_DEBUG_CTORTMPL") && cdd->name.find("pair") != std::string::npos;
     if ( dbg_ct ) fprintf(stderr, "[ctortmpl] ENTER cdd=%s nargs=%zu ext=%d extinst=%d ctors=%zu\n",
@@ -51485,7 +51594,7 @@ void Program::instantiate_member_ctor_template_for_construction(
     // A libstdc++-EXPORTED class binds mangled-direct; only a madc-LOCAL
     // monomorphized class needs its retained ctor body instantiated here.
     if ( cdd->is_externally_defined() || cdd->is_extern_template_instantiated )
-	return;
+	return false;
     // [over.match.best] + [class.copy.ctor]: for a SAME-TYPE (or sliced
     // derived-to-base) single-argument construction, the IMPLICIT copy
     // constructor — a non-template — outranks any member-template instance
@@ -51503,7 +51612,7 @@ void Program::instantiate_member_ctor_template_for_construction(
 	    avd = ac->base_type;
 	DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(avd);
 	if ( acls && acls->is_or_derives_from(cdd) )
-	    return;
+	    return false;
     }
     // Dependent deferral — the CTOR mirror of the call path's rule (see
     // instantiate_member_fn_template_for_call): inside a dependent pattern
@@ -51515,7 +51624,7 @@ void Program::instantiate_member_ctor_template_for_construction(
     if ( dependent_parse_in_progress )
 	for ( TokenBase *a : ctor_args )
 	    if ( a && datadef_involves_placeholder(a->datadef()) )
-		return;
+		return false;
     // Count the FUNCTION parameters of a member-template ctor from its retained
     // decl (top-level commas between the declarator '(' and ')', `<...>` nested).
     // std::pair registers TWO member-template ctors — the piecewise (3 params) and
@@ -51552,6 +51661,7 @@ void Program::instantiate_member_ctor_template_for_construction(
     Variable *placeholder = NULL;
     FuncDef *fd_fallback = NULL;
     Variable *ph_fallback = NULL;
+    size_t arity_candidate = 0;
     for ( Variable *cv : cdd->ctors )
     {
 	FuncDef *cfd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
@@ -51564,13 +51674,16 @@ void Program::instantiate_member_ctor_template_for_construction(
 	    if ( member_ctor_param_count(cfd->member_template_decl)
 		 == (int)ctor_args.size() )
 	    {
+		if ( arity_candidate++ < candidate_skip )
+		    continue;
 		fd = cfd;
 		placeholder = cv;
 		break;
 	    }
 	}
     }
-    if ( !fd ) { fd = fd_fallback; placeholder = ph_fallback; }
+    if ( !fd && candidate_skip == 0 )
+	{ fd = fd_fallback; placeholder = ph_fallback; }
 #ifdef MADC_DEBUG_CTORTMPL
     if ( dbg_ct ) fprintf(stderr, "[ctortmpl] placeholder=%p fd=%p\n", (void*)placeholder, (void*)fd);
 #endif
@@ -51601,13 +51714,13 @@ void Program::instantiate_member_ctor_template_for_construction(
 	}
     }
     if ( !fd || !placeholder )
-	return;
+	return false;
     if ( !fd->dependent_pattern )
 	build_dependent_pattern(fd);
 
     // Memoize / break the construct -> forward -> construct recursion: key on the
     // class + each argument's value type.
-    std::string key = cdd->name + "::ctor(";
+    std::string key = placeholder->name + "|" + cdd->name + "::ctor(";
     for ( TokenBase *a : ctor_args )
     {
 	DataDef *adp = a ? operand_value_datadef(a) : NULL;
@@ -51615,7 +51728,7 @@ void Program::instantiate_member_ctor_template_for_construction(
     }
     key += ")";
     if ( !member_ctor_inst_done.insert(key).second )
-	return;	// already instantiated (or instantiating) this construction shape
+	return false;	// already instantiated (or instantiating) this candidate shape
 
     // Build the free-fn-template descriptor from the retained ctor decl, dropping
     // `static`/`explicit`, and rename the declarator to a CONCRETE ctor symbol.
@@ -51751,7 +51864,7 @@ void Program::instantiate_member_ctor_template_for_construction(
     }
     size_t ni = skipped_template_function_declarator_name_index(ft.decl, NULL);
     if ( ni >= ft.decl.size() || !ft.decl[ni] )
-	return;
+	return false;
     {
 	TokenBase *old = ft.decl[ni];
 	TokenBase *ren = new TokenIdent(inst_name.c_str());
@@ -51808,7 +51921,7 @@ void Program::instantiate_member_ctor_template_for_construction(
 		    cdd->name.c_str(), (int)ok, inst_name.c_str());
     }
     if ( !ok )
-	return;
+	return false;
 
     // Register the concrete instantiation as a real ctor of cdd: its parameters
     // are the deduced concrete signature (__this + substituted ctor params), so
@@ -51818,7 +51931,7 @@ void Program::instantiate_member_ctor_template_for_construction(
     if ( !inst_var )
 	inst_var = findVariable(inst_name);
     if ( !inst_var )
-	return;
+	return false;
     FuncDef *inst_fd = dynamic_cast<FuncDef *>(inst_var->type);
     if ( inst_fd )
     {
@@ -51833,6 +51946,7 @@ void Program::instantiate_member_ctor_template_for_construction(
     }
     if ( !vector_contains_variable(cdd->ctors, inst_var) )
 	cdd->ctors.push_back(inst_var);
+    return true;
 }
 
 static bool skipped_template_function_is_static(
