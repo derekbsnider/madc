@@ -10140,6 +10140,56 @@ static FuncDef *class_copy_ctor_def(DataDefCLASS *cdd)
 	return NULL;
 }
 
+// Select a zero-argument conversion function whose semantic return class is
+// `target`. Conversion functions are ordinary method records; match their
+// resolved return type rather than their source spelling (which may be an
+// alias such as libc++ basic_string::__self_view). A declaration in the
+// derived class hides the same conversion inherited from a base.
+static Variable *class_conversion_to_class(DataDefCLASS *source,
+					   DataDefCLASS *target, int obj_cv)
+{
+	if (!source || !target) return NULL;
+	bool declared = false;
+	Variable *best = NULL;
+	for (Variable *mv : source->methods) {
+		FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+		if (!fd || fd->method_display_name.compare(0, 9, "operator ") != 0
+		    || !same_object_class(&fd->return_value_type(), target))
+			continue;
+		declared = true;
+		if (fd->is_deleted || fd->parameters.size() != 1
+		    || (obj_cv == 1 && !fd->is_const_method))
+			continue;
+		if (!best) {
+			best = mv;
+			continue;
+		}
+		FuncDef *bfd = dynamic_cast<FuncDef *>(best->type);
+		if (obj_cv == 0 && bfd && bfd->is_const_method
+		    && !fd->is_const_method)
+			best = mv;
+	}
+	if (best || declared) return best;
+
+	Variable *inherited = NULL;
+	std::set<DataDefCLASS *> seen;
+	std::vector<DataDefCLASS *> bases;
+	if (source->base_class) bases.push_back(source->base_class);
+	for (const BaseSpec &base : source->bases)
+		if (base.base) bases.push_back(base.base);
+	for (DataDefCLASS *base : bases) {
+		if (!base || seen.count(base)) continue;
+		seen.insert(base);
+		Variable *candidate = class_conversion_to_class(base, target,
+							      obj_cv);
+		if (!candidate) continue;
+		if (inherited && inherited != candidate)
+			return NULL; // ambiguous base conversions stay non-viable
+		inherited = candidate;
+	}
+	return inherited;
+}
+
 static FuncDef *class_assign_operator_def(DataDefCLASS *cdd)
 {
 	if (!cdd) return NULL;
@@ -12232,6 +12282,46 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 	// binding (move_iterator's `: _M_current(std::move(__i))`).
 	DataDefCLASS *acls = as_class_instance(ctor_arg_datadef(ctor_args[0]));
 	if (acls != cdd) {
+		// The target's implicit copy constructor may bind through ONE
+		// conversion function on the source (`View(source)`, libc++
+		// `__self_view(__str)`). A trivially-copyable native class result can
+		// write directly into the destination as an MC11 struct assignment.
+		// A non-trivial result needs copy-ctor or hidden-retbuf destination
+		// forwarding, so leave it loud until that distinct path is modeled.
+		int obj_cv = -1;
+		TokenBase *src_arg = ctor_args[0];
+		TokenVar *tv = dynamic_cast<TokenVar *>(src_arg);
+		if (tv && src_arg->type() == TokenType::ttVariable && m_prog)
+			obj_cv = m_prog->implicit_object_constness(tv->var);
+		else if (src_arg->datadef()) {
+			DataDef *src_dd = src_arg->datadef();
+			if (src_dd->is_reference())
+				if (DataDefPTR *ref = dynamic_cast<DataDefPTR *>(src_dd))
+					if (ref->base_type) src_dd = ref->base_type;
+			obj_cv = src_dd->is_const() ? 1 : 0;
+		}
+		Variable *conv = class_conversion_to_class(acls, cdd, obj_cv);
+		FuncDef *conv_fd = conv ? dynamic_cast<FuncDef *>(conv->type) : NULL;
+		if (conv_fd && class_trivially_copyable(cdd)
+		    && !function_retbuf_class(conv_fd)) {
+			TokenCallMethod *call;
+			if (tv && src_arg->type() == TokenType::ttVariable) {
+				call = new TokenCallMethod(tv->var, *conv);
+			} else {
+				Variable *recv = new Variable("__conv_obj", *acls, 1,
+							      NULL, false);
+				call = new TokenCallMethod(*recv, *conv);
+				call->parent_expr = src_arg;
+			}
+			call->file = src_arg->file;
+			call->line = src_arg->line;
+			call->column = src_arg->column;
+			if (node_t value = class_method_call(call, origin)) {
+				node_t asgn = node2(N_ASSIGN, dst_lvalue, value,
+						    origin);
+				return node2(N_EXPR, list(), asgn, origin);
+			}
+		}
 		// A DERIVED argument binds the implicit copy ctor's base
 		// reference ([class.copy.ctor]) — the SLICING copy: copy cdd's
 		// base subobject out of the derived object (libstdc++
