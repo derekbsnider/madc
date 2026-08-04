@@ -1846,14 +1846,26 @@ static const DataDefCLASS *class_pointer_pointee(const DataDef *dd);
 node_t CirBuilder::copied_reference_slot_arg(TokenBase *arg, node_t src_arg,
 					     DataDef *formal, bool refp)
 {
+	if (!refp)
+		return NULL;
+	const char *slot_name = NULL;
 	TokenVar *tv = dynamic_cast<TokenVar *>(arg);
-	if (!tv || !tv->var.is_reference() || !tv->var.type || !refp)
-		return NULL;
-	if (!template_param_under_type_layers(tv->var.type))
-		return NULL;
-	if (!node_is_deref_of_id(src_arg, tv->var.name.c_str()))
-		return NULL;
-	std::string nm = copied_pack_value_name(tv->var.name.c_str());
+	if (tv && tv->var.is_reference() && tv->var.type
+	    && template_param_under_type_layers(tv->var.type)
+	    && node_is_deref_of_id(src_arg, tv->var.name.c_str())) {
+		slot_name = tv->var.name.c_str();
+	} else {
+		cir_node *src = src_arg ? CIR_NODE(src_arg) : NULL;
+		// Pattern capture represents a reference-returning pack argument as
+		// its bare value-slot ID. That slot already stores the referent's
+		// address; copying it as a class lvalue would add a second `&`.
+		if (!src || src->base.code != N_ID || !src->base.u.s.s
+		    || !src->tsubst_pack_expand || !src->tsubst_pack_value_id
+		    || !ref_returning_call_type(arg))
+			return NULL;
+		slot_name = src->base.u.s.s;
+	}
+	std::string nm = copied_pack_value_name(slot_name);
 	node_t slot = id(nm.c_str(), arg);
 	if (formal && formal->is_pointer())
 		return node2(N_CAST, ptr_type_node(formal), slot, arg);
@@ -3580,10 +3592,13 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			node_t callee_id = c2mir_node_op(src->as_node(), 0);
 			cir_node *cid = callee_id ? CIR_NODE(callee_id) : NULL;
 			if (cid && cid->base.code == N_ID
-			    && !tsubst_call_has_pack_expansion_arg(tmm)
 			    && emitted_args > tmm->parameters.size()
 			    && emitted_args <= tmm->parameters.size() + 2) {
 				member_extras = emitted_args - tmm->parameters.size();
+				if (tsubst_call_has_pack_expansion_arg(tmm)) {
+					member_symbol_only = true;
+					member_baked_sym = cid->base.u.s.s;
+				}
 			} else if (cid && cid->base.code == N_ID) {
 				// A pack-expansion (or unexpected-arity) member call
 				// keeps the generic arg emission, but its SYMBOL is
@@ -3605,18 +3620,25 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		std::string err;
 		Variable *winner = resolve_copied_dependent_call(
 			tcf, subst, &changed, &concrete_param_types, &err);
+		bool rebuild_member_pack_args = false;
 		if (member_symbol_only) {
-			// Symbol-only rewrite: the args list copies WHOLESALE through
-			// the generic path (its list-level pack fan-out and deferral
-			// markers behave exactly as today); only op0 is replaced. No
-			// winner / no better symbol falls through to the generic copy
-			// — the same outcome the id-rewrite's silent skip produced,
-			// minus the order-dependence for the found case.
 			FuncDef *wfd = winner
 				? dynamic_cast<FuncDef *>(winner->type) : NULL;
 			std::string sym = winner ? func_emit_name(*winner, wfd)
 						 : std::string();
-			if (!sym.empty() && member_baked_sym
+			bool winner_sret = function_retbuf_class(wfd) != NULL;
+			bool member_abi_ok = member_extras != 0
+				&& (member_extras == 2) == winner_sret;
+			bool member_formals_known = wfd
+				&& wfd->parameters.size()
+				   == concrete_param_types.size() + 1;
+			// A syntactic member-pack slot is one Tree-1 arg but resolves to
+			// one winner formal per concrete element. Rebuild that list below;
+			// unexpected shapes keep the old symbol-only fallback.
+			rebuild_member_pack_args = !sym.empty()
+				&& tsubst_call_has_pack_expansion_arg(tmm)
+				&& member_abi_ok && member_formals_known;
+			if (!rebuild_member_pack_args && !sym.empty() && member_baked_sym
 			    && sym != member_baked_sym) {
 				cir_node *args_copy = src_args
 					? copy_cir_subtree(CIR_NODE(src_args), subst)
@@ -3636,7 +3658,8 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					return CIR_NODE(call);
 				}
 			}
-		} else if (changed) {
+		}
+		if ((!member_symbol_only && changed) || rebuild_member_pack_args) {
 			if (!winner)
 				return CIR_NODE(error_node(
 					err.empty()
@@ -3658,7 +3681,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			// today's id-rewrite result, made order-independent.
 			bool member_formals_known = !tmm
 				|| (wfd && wfd->parameters.size()
-					   == tmm->parameters.size() + 1);
+					   == concrete_param_types.size() + 1);
 			bool winner_sret = function_retbuf_class(wfd) != NULL;
 			bool member_abi_ok = !tmm
 				|| (member_extras == 2) == winner_sret;
@@ -3666,9 +3689,9 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			size_t j = 0;
 			size_t fi = 0;
 			for (node_t a = src_args ? c2mir_node_first_op(src_args) : NULL;
-			     a != NULL; a = c2mir_node_next_op(a), ++j, ++fi) {
+			     a != NULL; a = c2mir_node_next_op(a), ++j) {
 				cir_node *ca = CIR_NODE(a);
-				// Top-level pack argument of a rebuilt free/static
+				// Top-level pack argument of a rebuilt free/static or member
 				// call (`_Alloc_traits::construct(..., forward<_Args>(
 				// __args)...)`): the winner's formals are PER-ELEMENT,
 				// so fan the expansion out HERE — the generic child
@@ -3676,8 +3699,13 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				// formal fi+e. Each element copies under its own
 				// subst + pack window, so the nested forward call and
 				// the identity deferral marker resolve per element.
-				if (!tmm && ca && ca->tsubst_pack_expand
+				if (ca && ca->tsubst_pack_expand
 				    && m_tsubst_copy_pack_index < 0) {
+					if (tmm && (j < member_extras
+					    || !member_formals_known || !member_abi_ok))
+						return CIR_NODE(error_node(
+							"tsubst: member pack call ABI mismatch",
+							tcf));
 					if (!m_tsubst_active_type_arg_packs
 					    || ca->tsubst_pack_index
 					       >= m_tsubst_active_type_arg_packs->size())
@@ -3695,10 +3723,14 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					const std::vector<DataDef *> &elems =
 						(*m_tsubst_active_type_arg_packs)
 							[ca->tsubst_pack_index];
+					size_t syntactic_pi = tmm
+						? j - member_extras : j;
+					size_t formal_base = tmm
+						? syntactic_pi + 1 : fi;
 					TokenPackExpansion *pe =
-						(j < tcf->parameters.size())
+						(syntactic_pi < tcf->parameters.size())
 						? dynamic_cast<TokenPackExpansion *>(
-							tcf->parameters[j])
+							tcf->parameters[syntactic_pi])
 						: NULL;
 					for (size_t e = 0; e < elems.size(); ++e) {
 						if (!elems[e])
@@ -3708,7 +3740,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 						std::map<DataDef *, DataDef *> elem_subst =
 							*subst;
 						elem_subst[pmi->second] = elems[e];
-						size_t pi = fi + e;
+						size_t pi = formal_base + e;
 						DataDef *ept =
 							(wfd && pi < wfd->parameters.size())
 							? wfd->parameters[pi] : NULL;
@@ -3734,7 +3766,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 								tcf));
 						append(args, rewritten);
 					}
-					fi += elems.size() - 1;
+					fi += elems.size();
 					continue;
 				}
 				TokenBase *arg = NULL;
@@ -3768,6 +3800,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 						"tsubst: failed dependent call arg copy",
 						tcf));
 				append(args, rewritten);
+				++fi;
 			}
 			node_t call = node2(N_CALL, id(sym.c_str(), tcf), args, tcf);
 			CIR_NODE(call)->synth_from_origin = src->synth_from_origin;
