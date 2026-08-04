@@ -2218,6 +2218,7 @@ public:
     // Consumers: TokenSTRUCT::parse's two forward-declaration arms and
     // resolve_declared_type_token's elaborated-type-specifier miss
     // ([basic.scope.pdecl]/7 — `wp<struct nat>` first-declares `nat`).
+    DataDefCLASS *nested_aggregate_owner() const;
     std::string scoped_struct_tag(const std::string &name);
     TokenDataType *register_cpp_aggregate_name(const std::string &name,
 					       DataDefSTRUCT *sdd);

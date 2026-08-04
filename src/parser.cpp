@@ -35960,59 +35960,91 @@ TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dd
     return tn;
 }
 
+// A data-only aggregate nested directly in a C++ class owns its tag from the
+// FIRST declaration, just as TokenCLASS does for a nested class.  Function-local
+// aggregates are deliberately excluded: their compound identity wins below.
+DataDefCLASS *Program::nested_aggregate_owner() const
+{
+    if ( is_c_mode() || class_pattern_capture_in_progress
+      || !compounds.empty() || class_scope_stack.empty() )
+	return NULL;
+    return class_scope_stack.back();
+}
+
 // A struct tag declared inside a function body is keyed function-scoped so it
-// cannot collide with (or shadow) a file-scope tag of the same name.
+// cannot collide with (or shadow) a file-scope tag of the same name.  A direct
+// class member is keyed by its owner for the same reason.
 std::string Program::scoped_struct_tag(const std::string &name)
 {
     TokenCpnd *scope = compounds.empty() ? NULL : compounds.top();
     if ( scope && scope != tkProgram && !cur_func_name.empty() )
 	return cur_func_name + "::" + name;
+    if ( DataDefCLASS *owner = nested_aggregate_owner() )
+	return owner->name + "::" + name;
     return name;
 }
 
-// C++ only: an aggregate's tag IS a type name — register it in the flat
-// datatype map (and the namespace-qualified map) so the bare name resolves.
+// C++ only: an aggregate's tag IS a type name.  A nested aggregate registers
+// its emitted identity globally and its source spelling only in the owner;
+// ordinary aggregates retain the flat bare-name registration.
 TokenDataType *Program::register_cpp_aggregate_name(const std::string &name,
 						    DataDefSTRUCT *sdd)
 {
     if ( !sdd || is_c_mode() )
 	return NULL;
+    DataDefCLASS *owner = nested_aggregate_owner();
     if ( sdd->canonical_cpp_spelling().empty() )
     {
+	// An owner-nested aggregate has its own canonical identity.  This must
+	// outrank the ambient instantiation spelling: otherwise basic_string's
+	// first `__long` is stamped as basic_string itself and wins later
+	// canonical lookup in place of its owner.
+	if ( owner )
+	{
+	    std::string owner_spelling = owner->canonical_cpp_spelling().empty()
+		? owner->name : owner->canonical_cpp_spelling();
+	    sdd->set_canonical_spelling(owner_spelling + "::" + name);
+	}
 	// An instantiated STRUCT template (`myalloc<int>`) must carry its
 	// bracketed canonical spelling just like an instantiated class
 	// (mirrors the TokenCLASS path), so partial-spec matching can later
 	// decompose it (e.g. template-template-param deduction of
 	// `__replace_first_arg<_Template<_Up>, _Tp>`). Falls back to
 	// namespace::name for an ordinary (non-instantiated) C++ struct.
-	if ( instantiating_spelling_applies_here() )
+	else if ( instantiating_spelling_applies_here() )
 	    sdd->set_canonical_spelling(instantiating_canonical_spelling);
 	else if ( !current_namespace().empty() )
 	    sdd->set_canonical_spelling(current_namespace() + "::" + name);
     }
-    pack_tap_type(name);	// B4a: decl-index tap (C++ aggregate name)
+    std::string registered_name = owner ? sdd->name : name;
+    pack_tap_type(registered_name);	// B4a: decl-index tap (C++ aggregate name)
     TokenDataType *tdt_ = NULL;
-    flat_datatype_map_iter existing = datatype_map.find(name);
+    flat_datatype_map_iter existing = datatype_map.find(registered_name);
     if ( existing != datatype_map.end()
       && &(*existing)->definition == sdd )
 	tdt_ = (*existing);
     else
     {
-	tdt_ = new TokenDataType(name.c_str(), *sdd);
-	datatype_map[name] = tdt_;
+	tdt_ = new TokenDataType(registered_name.c_str(), *sdd);
+	datatype_map[registered_name] = tdt_;
     }
+    if ( owner )
+	set_class_type_alias(owner, name, sdd);
     if ( !current_namespace().empty() )
-	namespace_datatype_map[current_namespace()][name] = tdt_;
+	namespace_datatype_map[current_namespace()][registered_name] = tdt_;
     return tdt_;
 }
 
 DataDefSTRUCT *Program::mint_incomplete_struct_tag(const std::string &name,
 						   bool is_union)
 {
-    DataDefSTRUCT *fwd = new DataDefSTRUCT(name, 0);
+    DataDefCLASS *owner = nested_aggregate_owner();
+    std::string emitted_name = owner ? owner->name + "__" + name : name;
+    DataDefSTRUCT *fwd = new DataDefSTRUCT(emitted_name, 0);
     fwd->union_layout = is_union;
-    pack_tap_struct(scoped_struct_tag(name));	// B4a tap
-    struct_map.set(scoped_struct_tag(name), fwd);
+    std::string store_key = scoped_struct_tag(name);
+    pack_tap_struct(store_key);	// B4a tap
+    struct_map.set(store_key, fwd);
     register_cpp_aggregate_name(name, fwd);
     return fwd;
 }
@@ -36355,59 +36387,45 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     std::string tag_store_key = tag ? tag->spelling() : "";
     if ( tag )
     {
-	std::string scoped = pgm.scoped_struct_tag(tag->spelling());
-	if ( scoped != tag->spelling() && pgm.struct_map.find(tag->spelling()) != pgm.struct_map.end() )
-	    tag_store_key = scoped;
-	// A nested struct defined inside a CLASS body whose bare tag already
-	// exists: qualify by the ENCLOSING CLASS so two instantiations of the
-	// same class template don't collide on a nested tag. libstdc++'s
-	// __aligned_membuf<_Tp> nests `struct _Tp2 { _Tp _M_t; };` purely for an
-	// `alignas(__alignof__(_Tp2::_M_t))` trick; monomorphizing it for both a
-	// set<string> node and a map<string,string> node re-defined `_Tp2` →
-	// "Struct '_Tp2' already defined". The enclosing class is uniquely
-	// (mangle-)named per instantiation, so this disambiguates. (cur_func_name
-	// scoping above handles the function-local case; this is its class twin.)
-	else if ( tag_store_key == tag->spelling()
-	       && pgm.struct_map.find(tag->spelling()) != pgm.struct_map.end()
-	       && !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() )
+	DataDefCLASS *owner = pgm.nested_aggregate_owner();
+	if ( owner )
 	{
-	    tag_store_key = pgm.class_scope_stack.back()->name + "::" + tag->spelling();
-	    // The EMITTED identity (struct tag + the `<name>___dtor` cleanup
-	    // symbol) derives from dds->name, NOT the store key. Qualifying only
-	    // the store key leaves both instantiations' nested struct named the
-	    // bare tag, so both emit the SAME `_Tp2___dtor` -> "MIR fatal error:
-	    // Repeated item declaration _Tp2___dtor" (set<string> + map<string,
-	    // string> in one TU). Rename the emitted identity too, with a C-valid
-	    // enclosing-qualified name (the store key's `::` is not a legal C
-	    // identifier). Parse-time `_Tp2::_M_t` resolution uses the store key,
-	    // not dds->name, so the rename is transparent to lookups.
-	    dds->name = pgm.class_scope_stack.back()->name + "__" + tag->spelling();
+	    tag_store_key = owner->name + "::" + tag->spelling();
+	    dds->name = owner->name + "__" + tag->spelling();
+	    std::string owner_spelling = owner->canonical_cpp_spelling().empty()
+		? owner->name : owner->canonical_cpp_spelling();
+	    dds->set_canonical_spelling(owner_spelling + "::" + tag->spelling());
 	}
-	// Sibling-NAMESPACE same-tag definitions (namespace A { struct S{}; }
-	// namespace B { struct S{}; }): the bare tag names a COMPLETE struct
-	// from a DIFFERENT scope — qualify the store key by the namespace and
-	// rename the emitted identity, the enclosing-class twin above applied
-	// to namespaces. Qualified lookup is served per-namespace by
-	// register_cpp_aggregate_name (keyed on the SOURCE tag); an
-	// incomplete existing entry is this scope's own forward decl and
-	// completes in place as before.
-	else if ( tag_store_key == tag->spelling()
-	       && !pgm.current_namespace().empty() )
+	else
 	{
-	    datadef_map_citer prior = pgm.struct_map.find(tag->spelling());
-	    DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
-		? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
-	    std::string here_spelling =
-		pgm.current_namespace() + "::" + tag->spelling();
-	    if ( prior_sd && prior_sd->is_complete
-	      && prior_sd->canonical_cpp_spelling() != here_spelling )
+	    std::string scoped = pgm.scoped_struct_tag(tag->spelling());
+	    if ( scoped != tag->spelling()
+	      && pgm.struct_map.find(tag->spelling()) != pgm.struct_map.end() )
+		tag_store_key = scoped;
+	    // Sibling-NAMESPACE same-tag definitions (namespace A { struct S{}; }
+	    // namespace B { struct S{}; }): the bare tag names a COMPLETE struct
+	    // from a DIFFERENT scope — qualify the store key by the namespace and
+	    // rename the emitted identity. Qualified lookup is served per-namespace
+	    // by register_cpp_aggregate_name; an incomplete existing entry is this
+	    // scope's own forward declaration and completes in place as before.
+	    if ( tag_store_key == tag->spelling()
+	      && !pgm.current_namespace().empty() )
 	    {
-		tag_store_key = pgm.current_namespace() + "::" + tag->spelling();
-		std::string ns_flat = pgm.current_namespace();
-		for ( size_t fi = 0; fi < ns_flat.size(); ++fi )
-		    if ( ns_flat[fi] == ':' )
-			ns_flat[fi] = '_';
-		dds->name = ns_flat + "__" + tag->spelling();
+		datadef_map_citer prior = pgm.struct_map.find(tag->spelling());
+		DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
+		    ? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
+		std::string here_spelling =
+		    pgm.current_namespace() + "::" + tag->spelling();
+		if ( prior_sd && prior_sd->is_complete
+		  && prior_sd->canonical_cpp_spelling() != here_spelling )
+		{
+		    tag_store_key = pgm.current_namespace() + "::" + tag->spelling();
+		    std::string ns_flat = pgm.current_namespace();
+		    for ( size_t fi = 0; fi < ns_flat.size(); ++fi )
+			if ( ns_flat[fi] == ':' )
+			    ns_flat[fi] = '_';
+		    dds->name = ns_flat + "__" + tag->spelling();
+		}
 	    }
 	}
     }
@@ -36612,7 +36630,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    if ( !inner_tag || inner_tag->type() != TokenType::ttIdentifier )
 				pgm.Throw(inner_tag ? inner_tag : tn) << "Expecting struct name" << flush;
 			    std::string sname = ((TokenIdent *)inner_tag)->spelling();
-			    datadef_map_citer sdmi = pgm.struct_map.find(sname);
+			    datadef_map_citer sdmi = find_visible_struct_tag(sname);
 			    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
 			    {
 				DataDefSTRUCT *nested = NULL;
@@ -36858,7 +36876,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		if ( stag->type() != TokenType::ttIdentifier )
 		    pgm.Throw(stag) << "Expecting struct name" << flush;
 		std::string sname = ((TokenIdent *)stag)->spelling();
-		datadef_map_citer sdmi = pgm.struct_map.find(sname);
+		datadef_map_citer sdmi = find_visible_struct_tag(sname);
 		// A method-bearing nested struct (C++ `struct Inner { void f(){} } m;`)
 		// must be parsed by the one class-body parser, not the data-only
 		// nested-aggregate parser. Delegate the DEFINITION to TokenCLASS in
@@ -37329,18 +37347,6 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    DBG(cout << "TokenSTRUCT::parse() registered struct " << tag_store_key << " size=" << dds->size << endl);
 	}
 	register_cpp_aggregate_name(tag->spelling(), dds);
-	// A nested STRUCT is a member of its enclosing class's scope, exactly as
-	// a nested CLASS is ([class.nest]) — the nested-class path does this at
-	// its own registration (set_class_type_alias(nested_owner_class, ...)),
-	// and only the struct spelling was missing it. Without the alias,
-	// `class Outer { struct Inner { ... }; };` parsed fine and then
-	// `Outer::Inner i;` failed, because resolve_class_type_alias had nothing
-	// to find. Registered post-promotion so the alias names the object that
-	// persists in struct_map. The bare tag stays registered too, which is the
-	// C spelling and unchanged.
-	if ( !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() )
-	    pgm.set_class_type_alias(pgm.class_scope_stack.back(),
-				     tag->spelling(), dds);
 	// B3 SLICE 1e: dual-populate the arena record for the FINAL registered aggregate
 	// (dds is the self-registered / forward-completed / newly-registered object here,
 	// post-promotion — the object that persists in struct_map). Reads stay on dds.
@@ -60462,8 +60468,7 @@ void Program::dump_registered_names(FILE *out)
     //    by the function-type test above — this is the other half of that same
     //    Class__member rule, for the DATA members.
     auto instantiation_product = [](DataDef *dd) -> bool {
-	DataDefCLASS *dc = dynamic_cast<DataDefCLASS *>(dd);
-	return dc && dc->canonical_cpp_spelling().find('<') != std::string::npos;
+	return dd && dd->canonical_cpp_spelling().find('<') != std::string::npos;
     };
     auto function_local_class = [&](DataDef *dd) -> bool {
 	DataDefCLASS *dc = dynamic_cast<DataDefCLASS *>(dd);
