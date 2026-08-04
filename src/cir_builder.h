@@ -549,7 +549,7 @@ class CirBuilder {
 	// no conversion applies; otherwise emits the same base-subobject adjustment
 	// recorded by class layout.
 	node_t upcast_class_ptr(node_t value, DataDef *lhs_dd, class TokenBase *rhs,
-				class TokenBase *origin);
+				class TokenBase *origin, DataDef *rhs_dd = NULL);
 	node_t upcast_class_ref_addr(node_t value, DataDefCLASS *base,
 				     class TokenBase *rhs, class TokenBase *origin);
 	node_t object_addr(const char *name, TokenBase *origin); // (void*)&name
@@ -574,6 +574,10 @@ class CirBuilder {
 	// materialized into a scope-local temporary first.
 	node_t object_arg_value(TokenBase *arg, DataDefCLASS *target);
 
+	enum class RefArgValueForm {
+		ReferentValue,
+		ReferentAddress
+	};
 	// Address of an argument bound to a NON-class reference parameter
 	// (`const T&`, T scalar/pointer). An lvalue passes by address directly; a
 	// prvalue (a by-value call result, a post-increment, a builtin
@@ -583,6 +587,12 @@ class CirBuilder {
 	node_t ref_param_arg_addr(TokenBase *arg,
 				  DataDef *expected_referent = NULL,
 				  bool allow_converted_temp = false);
+	node_t ref_param_arg_addr_from_value(
+		TokenBase *arg, const std::function<node_t()> &value,
+		DataDef *value_type, DataDef *expected_referent,
+		bool allow_converted_temp, RefArgValueForm value_form,
+		std::vector<node_t> &prefix);
+	RefArgValueForm copied_ref_arg_value_form(TokenBase *arg, node_t value);
 	// True for the argument forms that are unambiguously prvalues and therefore
 	// not addressable: a by-value-returning call, a postfix ++/--, a builtin
 	// binary arithmetic/bitwise result, or a literal. Conservative by design —
@@ -1654,10 +1664,12 @@ public:
 			     const std::map<DataDef *, DataDef *> &subst);
 	std::string copied_pack_value_name(const char *name) const;
 	node_t copied_reference_slot_arg(class TokenBase *arg, node_t src_arg,
-					 DataDef *formal, bool refp);
+					 bool refp);
 	node_t copied_call_arg_for_formal(class TokenBase *arg, node_t src_arg,
 					 DataDef *formal, bool refp,
-					 const std::map<DataDef *, DataDef *> *subst);
+					 bool allow_converted_temp,
+					 const std::map<DataDef *, DataDef *> *subst,
+					 std::vector<node_t> &prefix);
 	class Variable *resolve_copied_dependent_call(
 		class TokenCallFunc *tcf,
 		const std::map<DataDef *, DataDef *> *subst,

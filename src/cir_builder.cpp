@@ -1784,6 +1784,8 @@ static DataDefCLASS *as_class_instance(DataDef *dd);
 static DataDefCLASS *class_behind(DataDef *dd);
 static DataDefCLASS *param_object_class(DataDef *dd, bool refp);
 static DataDef *ref_param_referent(DataDef *pt);
+static bool const_ref_param(FuncDef *fd, size_t i);
+static bool reference_member_value_is_stored_address(TokenBase *tb);
 static bool tsubst_is_class_object_arg(DataDef *dd);
 static bool is_c2mir_builtin_call_name(const std::string &name);
 
@@ -1843,8 +1845,15 @@ static bool tsubst_call_has_pack_expansion_arg(TokenCallFunc *tcf)
 
 static const DataDefCLASS *class_pointer_pointee(const DataDef *dd);
 
+static node_t node_without_value_casts(node_t n)
+{
+	while (n && n->code == N_CAST)
+		n = c2mir_node_op(n, 1); // N_CAST = (type, value)
+	return n;
+}
+
 node_t CirBuilder::copied_reference_slot_arg(TokenBase *arg, node_t src_arg,
-					     DataDef *formal, bool refp)
+					     bool refp)
 {
 	if (!refp)
 		return NULL;
@@ -1867,21 +1876,54 @@ node_t CirBuilder::copied_reference_slot_arg(TokenBase *arg, node_t src_arg,
 	}
 	std::string nm = copied_pack_value_name(slot_name);
 	node_t slot = id(nm.c_str(), arg);
-	if (formal && formal->is_pointer())
-		return node2(N_CAST, ptr_type_node(formal), slot, arg);
 	return slot;
+}
+
+CirBuilder::RefArgValueForm CirBuilder::copied_ref_arg_value_form(
+	TokenBase *arg, node_t value)
+{
+	if (reference_member_value_is_stored_address(arg))
+		return RefArgValueForm::ReferentAddress;
+	cir_node *n = value ? CIR_NODE(value) : NULL;
+	if (!n)
+		return RefArgValueForm::ReferentValue;
+	node_t core = node_without_value_casts(value);
+	cir_node *cn = core ? CIR_NODE(core) : NULL;
+	// Tree 1 may already have adapted a known reference formal. Preserve that
+	// address through tsubst, except when the source expression itself is an
+	// address-valued prvalue (`&x`), which must bind through a temporary.
+	if (cn && cn->base.code == N_ADDR
+	    && !expr_is_nonaddressable_rvalue(arg))
+		return RefArgValueForm::ReferentAddress;
+	// A reference-returning call normally copies as `*call` (a referent lvalue).
+	// Tsubst's forward/identity rewrites can suppress that dereference and leave
+	// any address-shaped replacement (`call`, a stored slot ID, or a cast of the
+	// slot). Every such non-deref result is already the referent address.
+	if (ref_returning_call_type(arg))
+		return cn && cn->base.code == N_DEREF
+			? RefArgValueForm::ReferentValue
+			: RefArgValueForm::ReferentAddress;
+	TokenVar *tv = dynamic_cast<TokenVar *>(arg);
+	if (tv && tv->var.is_reference())
+		return cn && cn->base.code == N_DEREF
+			? RefArgValueForm::ReferentValue
+			: RefArgValueForm::ReferentAddress;
+	return RefArgValueForm::ReferentValue;
 }
 
 node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 					     DataDef *formal, bool refp,
-					     const std::map<DataDef *, DataDef *> *subst)
+					     bool allow_converted_temp,
+					     const std::map<DataDef *, DataDef *> *subst,
+					     std::vector<node_t> &prefix)
 {
-	if (node_t rewritten = copied_reference_slot_arg(arg, src_arg, formal, refp))
-		return rewritten;
-	cir_node *copied = copy_cir_subtree(CIR_NODE(src_arg), subst);
-	if (!copied)
-		return NULL;
-	node_t out = copied->as_node();
+	node_t out = copied_reference_slot_arg(arg, src_arg, refp);
+	if (!out) {
+		cir_node *copied = copy_cir_subtree(CIR_NODE(src_arg), subst);
+		if (!copied)
+			return NULL;
+		out = copied->as_node();
+	}
 	// A Tree-1 member call may have lowered a reference receiver as `&a` while
 	// its type was still dependent. After substitution the copied `a` can be the
 	// stored object pointer itself (`Inner& a` lowers as `Inner *a`), so the
@@ -1903,7 +1945,8 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 			return inner_dd == formal ? inner
 				: node2(N_CAST, ptr_type_node(formal), inner, arg);
 	}
-	if (refp && formal && formal->is_pointer()) {
+	if (refp && formal && formal->is_pointer()
+	    && param_object_class(formal, refp)) {
 		// Symmetric to the &a -> a case above: the Tree-1 arg may have
 		// lowered as the referenced object's VALUE (`*__t1`, the
 		// auto-deref of a reference var) while the callee was still an
@@ -1939,6 +1982,22 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 				out = node1(N_ADDR, out, arg);
 		}
 		return node2(N_CAST, ptr_type_node(formal), out, arg);
+	}
+	if (refp && formal && formal->is_pointer()) {
+		cir_node *on = CIR_NODE(out);
+		DataDef *value_type = on ? on->datadef() : NULL;
+		if (!value_type && arg)
+			value_type = arg->datadef();
+		if (value_type && subst)
+			value_type = subst_datadef_active(value_type, *subst);
+		if (value_type && value_type->is_reference())
+			value_type = ref_param_referent(value_type);
+		RefArgValueForm form = copied_ref_arg_value_form(arg, out);
+		node_t addr = ref_param_arg_addr_from_value(
+			arg, [out]() -> node_t { return out; }, value_type,
+			ref_param_referent(formal), allow_converted_temp,
+			form, prefix);
+		return node2(N_CAST, ptr_type_node(formal), addr, arg);
 	}
 	return out;
 }
@@ -2975,11 +3034,12 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 			return n;
 		};
 		std::function<node_t(
-			TokenBase *, DataDef *, bool,
+			TokenBase *, DataDef *, bool, bool,
 			const std::map<DataDef *, DataDef *> &,
 			int, size_t, const char *)> explicit_arg_node;
 		explicit_arg_node =
 			[&](TokenBase *arg, DataDef *pt, bool refp,
+			    bool allow_converted_temp,
 			    const std::map<DataDef *, DataDef *> &smap,
 			    int pack_index, size_t pack_elem,
 			    const char *pack_name) -> node_t {
@@ -3003,7 +3063,8 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 						DataDef *cpt = conv->parameters[1];
 						bool crefp = conv->is_ref_param(1);
 						cnodes.push_back(explicit_arg_node(
-							arg, cpt, crefp, smap,
+							arg, cpt, crefp,
+							const_ref_param(conv, 1), smap,
 							pack_index, pack_elem, pack_name));
 						node_t cc = ctor_call_assemble(
 							node1(N_ADDR, id(name, arg), arg),
@@ -3081,29 +3142,16 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 							      pack_index,
 							      pack_elem,
 							      pack_name);
-				if (expr_is_nonaddressable_rvalue(arg)) {
-					char name[40];
-					snprintf(name, sizeof(name),
-						 "__madc_objtmp_%d",
-						 m_strtmp_counter++);
-					DataDef *rt = ref_param_referent(pt);
-					DataDef *vt = arg ? subst_datadef(
-						m_prog, arg->datadef(), smap) : NULL;
-					DataDef *tmp_type =
-						(rt && rt != vt) ? rt : vt;
-					if (!tmp_type)
-						tmp_type = &ddINT64;
-					Variable *tmp = new Variable(
-						name, *tmp_type, 1, NULL, false);
-					tmp->flags |= vfLOCAL;
-					prefix_items.push_back(var_decl(tmp, arg));
-					node_t assign = node2(N_ASSIGN,
-						id(name, arg), value, arg);
-					prefix_items.push_back(node2(N_EXPR,
-						list(), assign, arg));
-					return node1(N_ADDR, id(name, arg), arg);
-				}
-				return node1(N_ADDR, value, arg);
+				DataDef *value_type = arg ? subst_datadef(
+					m_prog, arg->datadef(), smap) : NULL;
+				if (value_type && value_type->is_reference())
+					value_type = ref_param_referent(value_type);
+				return ref_param_arg_addr_from_value(
+					arg, [value]() -> node_t { return value; },
+					value_type, ref_param_referent(pt),
+					allow_converted_temp,
+					copied_ref_arg_value_form(arg, value),
+					prefix_items);
 			}
 			return copy_expr_under(arg, smap, pack_index,
 					       pack_elem, pack_name);
@@ -3158,7 +3206,8 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 							? ctor->parameters[pi] : NULL;
 					bool refp = ctor && ctor->is_ref_param(pi);
 					explicit_nodes.push_back(explicit_arg_node(
-						pe->pattern, pt, refp, elem_subst,
+						pe->pattern, pt, refp,
+						const_ref_param(ctor, pi), elem_subst,
 						(int)tp->param_index, e,
 						value_name.empty()
 							? NULL : value_name.c_str()));
@@ -3171,7 +3220,8 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					? ctor->parameters[pi] : NULL;
 			bool refp = ctor && ctor->is_ref_param(pi);
 			explicit_nodes.push_back(explicit_arg_node(
-				arg, pt, refp, *subst, -1, 0, NULL));
+				arg, pt, refp, const_ref_param(ctor, pi),
+				*subst, -1, 0, NULL));
 		}
 		node_t construct = ctor_call_assemble(
 			this_addr(), concrete_class, ctor,
@@ -3686,6 +3736,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			bool member_abi_ok = !tmm
 				|| (member_extras == 2) == winner_sret;
 			node_t args = list();
+			std::vector<node_t> arg_prefix;
 			size_t j = 0;
 			size_t fi = 0;
 			for (node_t a = src_args ? c2mir_node_first_op(src_args) : NULL;
@@ -3756,7 +3807,9 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 							ca->tsubst_pack_value_id;
 						node_t rewritten = copied_call_arg_for_formal(
 							pe ? pe->pattern : NULL, a,
-							ept, erefp, &elem_subst);
+							ept, erefp,
+							const_ref_param(wfd, pi),
+							&elem_subst, arg_prefix);
 						m_tsubst_copy_pack_index = saved_index;
 						m_tsubst_copy_pack_elem = saved_elem;
 						m_tsubst_copy_pack_value_id = saved_name;
@@ -3772,12 +3825,14 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				TokenBase *arg = NULL;
 				DataDef *pt = NULL;
 				bool refp = false;
+				bool allow_converted_temp = false;
 				if (!tmm) {
 					arg = (j < tcf->parameters.size())
 					    ? tcf->parameters[j] : NULL;
 					pt = (wfd && fi < wfd->parameters.size())
 					   ? wfd->parameters[fi] : NULL;
 					refp = wfd && wfd->is_ref_param(fi);
+					allow_converted_temp = const_ref_param(wfd, fi);
 				} else if (member_formals_known && member_abi_ok) {
 					if (j + 1 < member_extras) {
 						// sret temp address: verbatim
@@ -3790,11 +3845,14 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 						pt = pi < wfd->parameters.size()
 						   ? wfd->parameters[pi] : NULL;
 						refp = pt && wfd->is_ref_param(pi);
+						allow_converted_temp = const_ref_param(wfd, pi);
 					}
 				}
 				node_t rewritten =
 					copied_call_arg_for_formal(arg, a, pt,
-								   refp, subst);
+								   refp,
+								   allow_converted_temp,
+								   subst, arg_prefix);
 				if (!rewritten)
 					return CIR_NODE(error_node(
 						"tsubst: failed dependent call arg copy",
@@ -3805,13 +3863,22 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			node_t call = node2(N_CALL, id(sym.c_str(), tcf), args, tcf);
 			CIR_NODE(call)->synth_from_origin = src->synth_from_origin;
 			CIR_NODE(call)->tree1_origin = src->self;
+			node_t result = call;
 			if (wfd && wfd->returns_reference()
 			    && !m_tsubst_copy_under_deref) {
-				node_t deref = node1(N_DEREF, call, tcf);
-				CIR_NODE(deref)->tree1_origin = src->self;
-				return CIR_NODE(deref);
+				result = node1(N_DEREF, call, tcf);
+				CIR_NODE(result)->tree1_origin = src->self;
 			}
-			return CIR_NODE(call);
+			if (arg_prefix.empty())
+				return CIR_NODE(result);
+			node_t items = list();
+			for (node_t p : arg_prefix)
+				append(items, p);
+			append(items, node2(N_EXPR, list(), result, tcf));
+			node_t stmt_expr = node1(N_STMTEXPR,
+				node2(N_BLOCK, list(), items, tcf), tcf);
+			CIR_NODE(stmt_expr)->tree1_origin = src->self;
+			return CIR_NODE(stmt_expr);
 		}
 	}
 
@@ -5264,10 +5331,12 @@ static DataDefCLASS *expr_pointee_class(TokenBase *tb)
 // a pointer". Returns `value` unchanged when no upcast applies. Downcasts and
 // multiple inheritance are out of scope (see P2.6).
 node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rhs,
-				    TokenBase *origin)
+				    TokenBase *origin, DataDef *rhs_dd)
 {
 	DataDefCLASS *base = pointee_user_class(lhs_dd);
-	DataDefCLASS *derived = expr_pointee_class(rhs);
+	DataDefCLASS *derived = pointee_user_class(rhs_dd);
+	if (!derived)
+		derived = expr_pointee_class(rhs);
 	if (!base || !derived || base == derived) return value;
 	if (!derived->is_or_derives_from(base)) return value;
 	// Adjust the pointer to the base subobject. Single inheritance / primary base
@@ -5563,7 +5632,6 @@ static bool class_operator_value_result(TokenBase *arg);
 
 // Defined below with the member-read deref family; the argument helpers here
 // consult it for the aggregate-reference-member binding arms.
-static bool reference_member_value_is_stored_address(TokenBase *tb);
 
 node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 {
@@ -5992,19 +6060,18 @@ static bool const_ref_param(FuncDef *fd, size_t i)
 	    && fd->const_params[i];
 }
 
-node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent,
-				      bool allow_converted_temp)
+node_t CirBuilder::ref_param_arg_addr_from_value(
+	TokenBase *arg, const std::function<node_t()> &value,
+	DataDef *value_type, DataDef *expected_referent,
+	bool allow_converted_temp, RefArgValueForm value_form,
+	std::vector<node_t> &prefix)
 {
-	// An AGGREGATE REFERENCE MEMBER's stored value already IS the referent
-	// object's address ([expr.ref]) — the reference parameter binds to the
-	// same object, so pass the pointer through. `&translate_expr` below
-	// would take the address of the SLOT (a T** where the callee reads T*).
-	if (reference_member_value_is_stored_address(arg))
-		return translate_expr(arg);
-	DataDef *vt = arg ? arg->datadef() : NULL;
+	if (value_form == RefArgValueForm::ReferentAddress)
+		return value();
 	bool needs_converted_temp = allow_converted_temp
-	    && class_pointer_reference_conversion(vt, expected_referent);
-	if (vt && (expr_is_nonaddressable_rvalue(arg) || needs_converted_temp)) {
+	    && class_pointer_reference_conversion(value_type, expected_referent);
+	if (value_type
+	    && (expr_is_nonaddressable_rvalue(arg) || needs_converted_temp)) {
 		// The reference binds to the PARAMETER's referent type, and the rvalue
 		// is converted to it ([dcl.init.ref]). When the referent differs from the
 		// arg's own type — a `0`/null literal bound to a pointer `_Base_ptr&`
@@ -6017,14 +6084,15 @@ node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent
 		// conversion: `&derived_ptr` is `Derived **`, not the `_Base_ptr *` the
 		// callee reads. Use the referent when given and it differs; otherwise the
 		// arg's own type.
-		DataDef *tmp_type = (expected_referent && expected_referent != vt)
-				  ? expected_referent : vt;
+		DataDef *tmp_type = (expected_referent
+				  && expected_referent != value_type)
+				  ? expected_referent : value_type;
 		char name[32];
 		snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
 		Variable *tmp = new Variable(name, *tmp_type, 1, NULL, false);
 		tmp->flags |= vfLOCAL;
-		m_pending_stmts.push_back(var_decl(tmp, arg));
-		node_t rhs = translate_expr(arg);
+		prefix.push_back(var_decl(tmp, arg));
+		node_t rhs = value();
 		// When the temp is a base-class pointer and the value is a derived-class
 		// pointer, make the derived->base conversion explicit (c2mir warns on an
 		// implicit pointer-type change in the assignment). This is unconditional:
@@ -6035,12 +6103,29 @@ node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent
 		// still needs the cast. upcast_class_ptr reads the derived class from the
 		// expression itself (TokenNEW::alloc_class — NOT arg->datadef(), which is
 		// a generic char* for `new`) and is a no-op when no upcast applies.
-		rhs = upcast_class_ptr(rhs, tmp_type, arg, arg);
+		rhs = upcast_class_ptr(rhs, tmp_type, arg, arg, value_type);
 		node_t assign = node2(N_ASSIGN, id(name, arg), rhs, arg);
-		m_pending_stmts.push_back(node2(N_EXPR, list(), assign, arg));
+		prefix.push_back(node2(N_EXPR, list(), assign, arg));
 		return node1(N_ADDR, id(name, arg), arg);
 	}
-	return node1(N_ADDR, translate_expr(arg), arg);
+	return node1(N_ADDR, value(), arg);
+}
+
+node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent,
+				      bool allow_converted_temp)
+{
+	// An AGGREGATE REFERENCE MEMBER's stored value already IS the referent
+	// object's address ([expr.ref]) — the reference parameter binds to the
+	// same object, so pass the pointer through. `&translate_expr` below
+	// would take the address of the SLOT (a T** where the callee reads T*).
+	RefArgValueForm form = reference_member_value_is_stored_address(arg)
+		? RefArgValueForm::ReferentAddress
+		: RefArgValueForm::ReferentValue;
+	DataDef *value_type = arg ? arg->datadef() : NULL;
+	return ref_param_arg_addr_from_value(
+		arg, [this, arg]() -> node_t { return translate_expr(arg); },
+		value_type, expected_referent, allow_converted_temp, form,
+		m_pending_stmts);
 }
 
 // The referent type a reference parameter binds to (for ref_param_arg_addr temp
@@ -14367,7 +14452,8 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 		append(args, object_arg_value(top->right, vc));
 	} else if (refp) {
 		eparams.push_back(native_param_shape(pt, true));
-		append(args, node1(N_ADDR, translate_expr(top->right), top->right));
+		append(args, ref_param_arg_addr(top->right,
+			ref_param_referent(pt), const_ref_param(callee, 1)));
 	} else {
 		eparams.push_back(native_param_shape(pt, false));
 		append(args, translate_expr(top->right));
@@ -15198,7 +15284,8 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(top->right, vc));
 		else if (refp)
-			append(args, node1(N_ADDR, translate_expr(top->right), top->right));
+			append(args, ref_param_arg_addr(top->right,
+				ref_param_referent(pt), const_ref_param(callee, 1)));
 		else
 			append(args, translate_expr(top->right));
 	}
