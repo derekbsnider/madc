@@ -1,19 +1,21 @@
 # Test Status
 
-> **Current (2026-08-04, `feature/libcxx-parity6-codex` @e34a06f6 —
-> task #72 generic precursors):** fulltest **929 passed, 0 failed,
+> **Current (2026-08-04, `feature/libcxx-parity6-codex` @0fc1abf8 —
+> task #72 generic precursors):** fulltest **933 passed, 0 failed,
 > 0 timed out, 9 skipped**; `forest_index_oracle` is **5227 indexed names /
-> 3521 registered lookups**. New gate `testnestedpackref` and its default
-> controls pass JIT, EXE, and OBJ; GCC and Clang agree at `9`, and the exact
-> libc++ `tuple_element` reducer prints `Alice!`. Six targeted existing
-> libc++ tests advance past `basic_string_view(basic_string**)` but remain
-> failing at forwarding/reference-adaptation and converting-return roots.
+> 3521 registered lookups**. New gates `testmemberctorsibling`,
+> `testpartialdefaultnontype`, `testmemberaliasnestedpack`, and
+> `testmemberctorpackconstraint` pass JIT, EXE, and OBJ; their exact GCC and
+> Clang runtime/verbose-assembly oracles agree at `7`, `1 1 1`, `0 1 0 1`,
+> and `1`. The exact libc++ `tuple<string&>` reducer prints `Alice`.
+> `testcontainerdtor` now reaches c2mir but remains blocked by copied
+> member-pack reference argument adaptation and later converting-return roots.
 > The last whole flavored measurement, not rerun because no existing test
 > flipped, remains **898 passed / 26 failed / 0 timed out / 12 skipped**;
 > eligible EXE and OBJ remain **882/0**. Logs:
-> `tmp/logs/rb-20260804-014032.log` (fulltest),
-> `tmp/logs/rb-20260804-013922.log` (focused default JIT/EXE/OBJ),
-> `tmp/logs/rb-20260804-013537.log` (six targeted libc++ tests), and
+> `tmp/logs/rb-20260804-025122.log` (fulltest),
+> `tmp/logs/rb-20260804-025111.log` (four new gates JIT/EXE/OBJ),
+> `tmp/logs/rb-20260804-024212.log` (parser build), and
 > `tmp/logs/rb-20260803-224941.log` (last whole libc++ battery).
 >
 > **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —

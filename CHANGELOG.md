@@ -6,9 +6,24 @@ Variadic-pack correctness, `sizeof...` becomes a real operator, and seven
 generic class-template/return fixes join the libc++ parity burn-down. The
 flavored lane moved **891/28 → 898/26**: six new gates plus the flips
 `teststdstringconv` and `testlateinstproto`, with zero newly broken tests in
-either measured two-way failset diff. Fulltest is **929/0/0TO/9skip**;
+either measured two-way failset diff. Fulltest is **933/0/0TO/9skip**;
 libc++-eligible EXE and OBJ were each **882/0** at the last whole-lane
 measurement.
+
+- **fix: nested pack constructors instantiate the viable candidate
+  (@0fc1abf8).** Retained constructor-template lookup now continues past a
+  failed same-arity sibling. Omitted non-type defaults substitute earlier
+  values before partial-specialization matching; winning specializations
+  preserve non-type packs; nested expansions distinguish inner packs from
+  their outer expansion; and member-template constraints see enclosing and
+  deduced pack arities at the correct substitution points. New gates
+  `testmemberctorsibling`, `testpartialdefaultnontype`,
+  `testmemberaliasnestedpack`, and `testmemberctorpackconstraint` match GCC
+  and Clang and pass madc JIT/EXE/OBJ. The exact libc++ `tuple<string&>`
+  reducer prints `Alice`; `testcontainerdtor` now reaches c2mir and exposes
+  copied member-pack reference argument adaptation. Fulltest is 933/0 with
+  every post-suite gate green; the whole flavored lane was not rerun because
+  no existing test has flipped yet.
 
 - **fix: qualified reference elements survive nested partial-specialization
   pack substitution (@e34a06f6).** String-spelled deduced elements now resolve
