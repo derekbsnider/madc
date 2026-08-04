@@ -2,12 +2,37 @@
 
 ## [Unreleased]
 
-Variadic-pack correctness, `sizeof...` becomes a real operator, and generic
-class-template, construction, reference-binding, and member-template fixes join
-the libc++ parity burn-down. The flavored lane moved **891/28 → 927/16**:
-new gates plus twelve old-failure flips, with zero newly broken tests in every
-measured two-way failset diff. Fulltest is **946/0/0TO/9skip**;
-libc++-eligible EXE and OBJ are each **911/0**.
+Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
+and generic class-template, construction, reference-binding, and
+member-template fixes join the libc++ parity burn-down. The flavored lane
+moved **891/28 → 930/15**: new gates plus thirteen old-failure flips, with
+zero newly broken tests in every measured two-way failset diff. Fulltest is
+**948/0/0TO/9skip**; libc++-eligible EXE and OBJ are each **914/0**.
+
+- **feat: the noexcept operator is implemented (@7b63f8c6).** madc's lexer
+  erased `noexcept(...)` context-free — sound for ignoring exception
+  specifiers, but it destroyed the `[expr.unary.noexcept]` OPERATOR: an
+  expression-context `noexcept(e)` crashed, and a template-argument
+  `BC<noexcept(e)>` lost the argument. Under `-stdlib=libc++` that was the
+  whole nothrow trait family — madc presents as GCC, so libc++ compiles its
+  non-builtin `is_nothrow_constructible` arm, whose base is exactly
+  `noexcept(_Tp(std::declval<_Args>()...))`; every value escaped as a silent
+  0. `noexcept` is now a reserved C++11 keyword (non-C++ modes keep the
+  erasure); `evaluate_noexcept_operator` parses the operand unevaluated and
+  folds the noexcept-spec conjunction over the parsed tree, delegating class
+  temporaries to `trait_is_constructible` and instantiating a
+  conditional-spec callee's declaration on demand ([temp.inst]/14 — the
+  libstdc++ `__relocate_a` family, which the frozen-forest lane caught).
+  Fn-template registration placeholders capture declaration exception specs;
+  `NxNone` is now a decisive "may throw". A QUALIFIED template-id pack
+  expansion (`std::declval<_Args>()...`) is now one expansion unit — the
+  elision lane fired at the chain tail and orphaned the qualifier for empty
+  packs (and dropped it from later elements at arity ≥ 2). New
+  `testnoexceptop` and `testqualpackelide` match GCC and Clang;
+  `testconstructible` leaves the libc++ failset with zero additions
+  (930/15, EXE/OBJ 914/0; fulltest 948/0). The recorded rvalue-reference
+  result-identity gap was NOT this test's cause and remains open only for
+  the ungated `is_nothrow_move_constructible<std::string>` case.
 
 - **fix: forwarding-reference deduction and dependent type queries return to
   their canonical owners (@672a0966).** Scalar and direct-pack call parameters

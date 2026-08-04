@@ -1,17 +1,18 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-04 (unreleased
-libc++ parity checkpoint @672a0966): the deeper pointer/reference-chain audit
-consolidated direct-pack and scalar forwarding-reference deduction, the two
-member-template pre-deduction identity keys, and eager/dependent type-query
-measurement. Fulltest is **946/0/0TO/9skip** with zero warnings and zero tsubst
-fallbacks. The whole flavored measurement is **927/16** with zero timeouts and
-eligible EXE/OBJ **911/0**. Eight prior failures cleared: `testcastarrow`,
-`testcontainerdtor`, `testforinitscope`, `testmadc_ns`, `testmap`, `testmapiter`,
-`teststdmapint`, and `testsubscript`. NEXT is a hypothesis-first diagnostic of
-`testconstructible`; the `T&` versus `T&&` result-identity gap is recorded but
-not yet proven causal. #114 remains blocked on the owner decision about
-mangling overloaded user free functions.
+libc++ parity checkpoint @7b63f8c6 on feature/libcxx-parity7-claude): the
+`noexcept` OPERATOR is implemented — madc presents as GCC, so libc++ compiles
+its noexcept-fallback nothrow-trait arm, which the lexer's context-free
+erasure destroyed (silent 0s plus a latent expression-context crash). With
+fn-template placeholder exception-spec capture, [temp.inst]/14 on-demand spec
+instantiation, and qualified-template-id pack expansion units, `testconstructible`
+leaves the failset with zero additions. Fulltest is **948/0/0TO/9skip**; the
+whole flavored measurement is **930/15** with zero timeouts and eligible
+EXE/OBJ **914/0**. The `T&` versus `T&&` result-identity gap was NOT this
+test's cause; it remains recorded for the ungated
+`is_nothrow_move_constructible<std::string>`. #114 remains blocked on the
+owner decision about mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The

@@ -1,6 +1,29 @@
 # Test Status
 
-> **Current (2026-08-04, `feature/libcxx-parity6-codex` @672a0966 —
+> **Current (2026-08-04, `feature/libcxx-parity7-claude` @7b63f8c6 — the
+> noexcept operator):** fulltest **948 passed, 0 failed, 0 timed out,
+> 9 skipped** (rc=0, all forest gates green). The `[expr.unary.noexcept]`
+> operator is implemented: `noexcept` is a reserved C++11 keyword (the lexer
+> erasure destroyed the operator — an expression-context `noexcept(e)`
+> SIGSEGV'd and a template-argument `BC<noexcept(e)>` lost the argument);
+> `evaluate_noexcept_operator` folds the noexcept-spec conjunction over the
+> unevaluated operand's parsed tree, instantiating conditional-spec callees on
+> demand ([temp.inst]/14 — caught by `forest_selfexe_gate` when the refusal
+> dropped `_S_nothrow_relocate`'s body). Registration placeholders capture
+> declaration exception specs; a qualified template-id pack expansion
+> (`std::declval<_Args>()...`) is one unit including its qualifier chain.
+> New gates: `testnoexceptop`, `testqualpackelide`.
+>
+> The whole flavored measurement is **930 passed / 15 failed / 0 timed out /
+> 12 skipped**: `testconstructible` FIXED with zero additions (two-way
+> comm-diff), eligible EXE and OBJ each **914/0**. madc-as-GCC compiles
+> libc++'s non-builtin nothrow-trait arm (`_LIBCPP_COMPILER_GCC` at
+> `__config:38`), whose `integral_constant` base is exactly the noexcept
+> operator over a ctor call — the whole family escaped as silent 0s before.
+> The recorded DataDefREF `T&`/`T&&` gap was NOT this test's cause and stays
+> open only for the ungated `is_nothrow_move_constructible<std::string>`.
+>
+> **Previous (2026-08-04, `feature/libcxx-parity6-codex` @672a0966 —
 > forwarding-reference deduction owners):** fulltest **946 passed, 0 failed,
 > 0 timed out, 9 skipped**, warning census **0**, tsubst fallback **0**;
 > `forest_index_oracle` is **5227 indexed names / 3521 registered lookups**.

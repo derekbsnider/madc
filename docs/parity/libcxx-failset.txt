@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  672a0966 (2026-08-04) on feature/libcxx-parity6-codex
-# Result:       927 passed / 16 failed / 0 timed out / 12 skipped
+# Measured at:  7b63f8c6 (2026-08-04) on feature/libcxx-parity7-claude
+# Result:       930 passed / 15 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -557,7 +557,16 @@
 #                         share value-category-aware owners; dependent sizeof
 #                         delegates to query_datadef_measure. EXE 911/0,
 #                         OBJ 911/0, fulltest 946/0/0TO/9skip.
-testconstructible.mad
+#   7b63f8c6  930 /  15   testconstructible FIXED, ZERO newly broken (the 15 ==
+#                         the prior 16 minus it). +2 are the new testnoexceptop
+#                         and testqualpackelide gates. Root: the noexcept
+#                         OPERATOR was lexer-erased; madc presents as GCC so
+#                         libc++ compiles its noexcept-fallback nothrow-trait
+#                         arm (_LIBCPP_COMPILER_GCC). Chained: fn-template
+#                         placeholder spec capture, [temp.inst]/14 spec
+#                         instantiation, qualified-template-id pack units.
+#                         EXE 914/0, OBJ 914/0, fulltest 947/0/0TO/9skip
+#                         (pre-testqualpackelide count).
 testdefer.mad
 testexterncstringptr.mad
 testforeachheaderbody.mad
