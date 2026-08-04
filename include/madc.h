@@ -46,6 +46,11 @@ class TokenFunc;
 class TokenCpnd;
 class DataDefTemplateParam;	// typed template-parameter placeholder (datadef.h)
 
+// The semantic measure of a C/C++ type query. References measure their
+// referent, not madc's pointer-sized reference storage. Both eager parsing and
+// parse-once tsubst use this owner so dependent and concrete queries agree.
+size_t query_datadef_measure(const DataDef *dd, bool want_alignof);
+
 class MadcTeeBuf : public std::streambuf
 {
 public:
@@ -3182,21 +3187,20 @@ public:
     // (register_skipped_class_template_function). When such a callee is called,
     // deduce its template params from the call's args, instantiate the retained
     // body via the shared free-fn-template machinery, and bind the call to the
-    // instantiated definition. Instantiations are PER TYPE-SHAPE (arg types +
-    // explicit template args, memoized in member_fn_inst_names): each distinct
-    // shape gets its own unique instance symbol (unique_overload_symbol over
-    // `<placeholder>__mti`, mirroring the ctor lane), so a member template used
-    // at two types yields two definitions — not a colliding single `__mti` item.
+    // instantiated definition. Instantiations are PER CALL SHAPE (arg types +
+    // value categories + explicit template args, memoized in
+    // member_fn_inst_names): each distinct shape reaches deduction independently;
+    // the binding memo then gives equal deductions one shared specialization.
     // Returns the concrete instance Variable for THIS call's shape (NULL when
     // not a member-template call / instantiation failed) and records it on
     // tc->mti_instance; the placeholder's local_emit_name alias stays FIRST-wins
     // for consumers without a call token. libstdc++-EXPORTED member templates
     // keep the mangled-direct path (member_template_method_call).
     Variable *instantiate_member_fn_template_for_call(TokenCallFunc *tc);
-    // Per type-shape member-template instantiation memo: shape key (the
-    // placeholder's unique var.name + arg-type + explicit-arg spellings —
-    // placeholder IDENTITY, unlike the display-name cycle key, which
-    // deliberately blurs sibling placeholders) -> instance symbol. The
+    // Per-call-shape member-template instantiation memo: shape key (the
+    // placeholder's unique var.name + arg type/value-category + explicit-arg
+    // spellings — placeholder IDENTITY, unlike the display-name cycle key,
+    // which deliberately blurs sibling placeholders) -> instance symbol. The
     // call-lane twin of member_ctor_inst_done (which memoizes but needs no
     // symbol map — ctor instances register into cdd->ctors and re-select per
     // construction).

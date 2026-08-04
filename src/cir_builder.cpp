@@ -2748,7 +2748,7 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					for (DataDef *elem : elems) {
 						// A forwarding-bound REFERENCE
 						// element ([temp.deduct.call]/3,
-						// the MADC_FWDREF_ARM lane)
+						// produced by call deduction)
 						// scores by its REFERENT — the
 						// ctor selection is value-shaped.
 						if (elem && elem->is_reference())
@@ -2856,8 +2856,7 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 				DataDef *elem = elems[e];
 				// The forwarding-bound REFERENCE element's
 				// classification and param matching are by
-				// REFERENT ([temp.deduct.call]/3, the
-				// MADC_FWDREF_ARM lane) — the relower's
+				// REFERENT ([temp.deduct.call]/3) — the relower's
 				// object/param logic is value-shaped.
 				if (elem && elem->is_reference())
 					elem = static_cast<DataDefPTR *>(
@@ -3356,6 +3355,33 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 {
 	if (!src)
 		return NULL;
+	// A dependent sizeof/alignof becomes concrete HERE, during Tree-1 ->
+	// Tree-2 substitution. Fold it through the same semantic owner as an eager
+	// parse instead of rebuilding only its C specifier list: a reference-bound
+	// template argument (`U = tag&`) measures the referent, while type_list(U)
+	// alone cannot carry that rule and used to render a class reference as the
+	// fallback `int`. The fresh integer replaces only this Tree-2 subtree; the
+	// saved pattern remains immutable.
+	if (subst && (src->base.code == N_SIZEOF || src->base.code == N_ALIGNOF)
+	    && src->origin_id) {
+		TokenTypeQuery *query = dynamic_cast<TokenTypeQuery *>(
+			madc_token_for_slot(src->origin_id));
+		if (query && query->query_type
+		    && query->query_type->is_template_param()) {
+			DataDef *concrete_query_type = subst_datadef_active(
+				query->query_type, *subst);
+			if (!concrete_query_type
+			    || concrete_query_type == query->query_type
+			    || concrete_query_type->is_template_param())
+				return CIR_NODE(error_node(
+					"tsubst: unbound template parameter in type query",
+					query));
+			return CIR_NODE(integer_typed(
+				(madc_wide_int)query_datadef_measure(
+					concrete_query_type, query->want_alignof),
+				&ddUINT64, query));
+		}
+	}
 	if (subst && src->base.code == N_IGNORE && src->datadef()
 	    && src->origin_id) {
 		TokenNEW *tn =

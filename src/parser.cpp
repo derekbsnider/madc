@@ -11156,7 +11156,7 @@ static TokenDataType *use_site_type_token(TokenDataType *proto, TokenBase *at)
     return t;
 }
 
-static size_t query_datadef_measure(const DataDef *dd, bool want_alignof)
+size_t query_datadef_measure(const DataDef *dd, bool want_alignof)
 {
     if ( !dd )
 	return 0;
@@ -15485,7 +15485,9 @@ static bool template_pattern_mentions_param(const std::string &pattern,
 static int fn_template_deduce_param(const std::string &spelling,
 				    const std::vector<std::string> &typeparams,
 				    DataDef *arg_dd,
-				    std::string &tp_out, DataDef *&dd_out);
+				    std::string &tp_out, DataDef *&dd_out,
+				    Program *pgm = NULL,
+				    TokenBase *arg_expr = NULL);
 
 // A retained member-template placeholder carries only source parameter
 // spellings; its synthetic varargs signature is not an overload signature.
@@ -47146,12 +47148,12 @@ static void recapture_free_overload_surfaces(Program &pgm,
 
 // Deduce which template parameter a parameter SPELLING names, and what the
 // argument's DataDef binds it to. Supported shapes: bare `Tp` with optional
-// cv-qualifiers, one trailing '&', and trailing '*'s (each '*' unwraps one
-// pointer level of the argument's type). Returns 0 when the param involves no
-// template parameter (a concrete slot — callers ignore it), 1 when bound
-// (tp_out / dd_out set), -1 when a template parameter appears in a shape this
-// deducer can't handle (template-id, function pointer, '&&', defaulted expr) —
-// the variant is then not instantiable from this call.
+// cv-qualifiers, trailing pointer/reference layers, and an optional direct-pack
+// ellipsis. Returns 0 when the param involves no template parameter (a concrete
+// slot — callers ignore it), 1 when bound (tp_out / dd_out set), -1 when a
+// template parameter appears in a shape this deducer can't handle (template-id,
+// function pointer, defaulted expr) — the variant is then not instantiable from
+// this call.
 static void fn_template_split_words(const std::string &spelling,
 				    std::vector<std::string> &words)
 {
@@ -47175,59 +47177,53 @@ static bool fn_template_word_is_cv(const std::string &w)
 	|| w == "typename" || w == "struct" || w == "class";
 }
 
-// True when a parameter SPELLING is a direct parameter-pack expansion of `pack`
-// (`_Base...`, `_Base&...`, `_Base*...`, optionally cv-qualified).
-static bool fn_template_param_pack_shape(const std::string &spelling,
-					 const std::string &pack,
-					 size_t *stars_out,
-					 size_t *amps_out = NULL,
-					 bool *cv_out = NULL)
+struct FnTemplateParamShape
 {
-    if ( pack.empty() )
-	return false;
+    std::string core;
+    size_t stars;
+    size_t amps;
+    size_t dots;
+    bool cv;
+
+    FnTemplateParamShape() : stars(0), amps(0), dots(0), cv(false) {}
+};
+
+// Parse the simple type-parameter shapes handled by the call deducer. This is
+// the one structural owner for scalar (`T`, `T*`, `T&&`) and direct-pack
+// (`T...`, `T*...`, `T&&...`) parameters; callers decide whether an ellipsis
+// is required for their context.
+static bool fn_template_param_shape(const std::string &spelling,
+				    FnTemplateParamShape &shape)
+{
     std::vector<std::string> words;
     fn_template_split_words(spelling, words);
-    std::string core;
-    size_t dots = 0;
-    size_t stars = 0;
-    size_t amps = 0;
-    bool cv = false;
     for ( size_t i = 0; i < words.size(); ++i )
     {
 	const std::string &w = words[i];
 	if ( fn_template_word_is_cv(w) )
 	{
-	    cv = true;
+	    shape.cv = true;
 	    continue;
 	}
-	if ( w == "." ) { ++dots; continue; }
-	if ( w == "*" ) { ++stars; continue; }
-	// A reference-qualified pack (`_Args&... __a`, forwarding-ref
-	// `_Args&&... __a`) is still a pack of `_Args`; the bound element type
-	// strips the reference at the binding site (pd->is_reference()) —
-	// EXCEPT the [temp.deduct.call]/3 forwarding case, which the caller
-	// detects via amps_out/cv_out (a cv-less, star-less `_Tp&&` pack with
-	// an lvalue argument binds the element as A&).
-	if ( w == "&" ) { ++amps; continue; }
-	if ( !core.empty() )
+	if ( w == "." ) { ++shape.dots; continue; }
+	if ( w == "*" ) { ++shape.stars; continue; }
+	if ( w == "&" ) { ++shape.amps; continue; }
+	if ( !shape.core.empty() )
 	    return false;
-	core = w;
+	shape.core = w;
     }
-    if ( dots != 3 || core != pack )
-	return false;
-    if ( stars_out )
-	*stars_out = stars;
-    if ( amps_out )
-	*amps_out = amps;
-    if ( cv_out )
-	*cv_out = cv;
-    return true;
+    return !shape.core.empty() && shape.amps <= 2
+	&& (shape.dots == 0 || shape.dots == 3);
 }
 
 static bool fn_template_param_is_pack(const std::string &spelling,
 				      const std::string &pack)
 {
-    return fn_template_param_pack_shape(spelling, pack, NULL);
+    if ( pack.empty() )
+	return false;
+    FnTemplateParamShape shape;
+    return fn_template_param_shape(spelling, shape)
+	&& shape.dots == 3 && shape.core == pack;
 }
 
 // [temp.deduct.type]/5: a template parameter appearing ONLY in the
@@ -47277,28 +47273,6 @@ static bool fn_template_param_unbound_only_nondeduced(
 	    any_unbound_in_qual = true;
     }
     return any_unbound_in_qual;
-}
-
-static DataDef *fn_template_pack_arg_element(const std::string &spelling,
-					     const std::string &pack,
-					     DataDef *arg_dd)
-{
-    if ( !arg_dd )
-	return NULL;
-    size_t stars = 0;
-    if ( !fn_template_param_pack_shape(spelling, pack, &stars) )
-	return NULL;
-    DataDef *dd = arg_dd;
-    if ( dd->is_reference() )
-	dd = static_cast<DataDefPTR *>(dd)->base_type;
-    for ( size_t i = 0; i < stars; ++i )
-    {
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
-	if ( !p || !p->base_type )
-	    return NULL;
-	dd = p->base_type;
-    }
-    return dd;
 }
 
 // The VALUE view of a call operand's type for template-argument deduction
@@ -47391,10 +47365,59 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
     return dd;
 }
 
+// [temp.deduct.call]/3 needs the argument expression's value category for a
+// forwarding reference. TokenCallFunc and TokenCallMethod inherit TokenVar, so
+// test real calls before the named-variable arm: a value-returning call is a
+// prvalue, while a reference-returning call denotes its referent. The type
+// model does not yet distinguish T& from T&& returns; that broader rvalue-ref
+// identity remains the documented value-category follow-up.
+static bool fn_template_call_arg_is_lvalue(TokenBase *expr)
+{
+    if ( !expr )
+	return false;
+    if ( expr->type() == TokenType::ttCallFunc
+      || expr->type() == TokenType::ttCallMethod )
+    {
+	TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(expr);
+	return call && call->call_returns_reference();
+    }
+    if ( dynamic_cast<TokenVar *>(expr) )
+	return true;
+    return is_addressable_expression(expr);
+}
+
+// The pre-deduction call shape used by member-template recursion and instance
+// lookup. Type alone is insufficient for a forwarding reference: `f(x)` and
+// `f(make_x())` can share the same value type but deduce T as `A&` and `A`.
+// Keep this an over-discriminating dispatch key; instantiate_fn_template_binding
+// remains the canonical (template, deduced-binding) identity and deduplicates
+// call shapes that ultimately name the same specialization.
+static std::string fn_template_call_shape_suffix(TokenCallFunc *tc)
+{
+    std::string shape = "(";
+    if ( tc )
+    {
+	for ( size_t i = 0; i < tc->parameters.size(); ++i )
+	{
+	    TokenBase *arg = tc->parameters[i];
+	    DataDef *dd = arg ? arg->datadef() : NULL;
+	    shape += dd ? dd->name : std::string("?");
+	    shape += fn_template_call_arg_is_lvalue(arg) ? "@L," : "@R,";
+	}
+	shape += ")";
+	for ( DataDef *ea : tc->explicit_template_args )
+	    shape += "<" + (ea ? ea->name : std::string("?")) + ">";
+    }
+    else
+	shape += ")";
+    return shape;
+}
+
 static int fn_template_deduce_param(const std::string &spelling,
 				    const std::vector<std::string> &typeparams,
 				    DataDef *arg_dd,
-				    std::string &tp_out, DataDef *&dd_out)
+				    std::string &tp_out, DataDef *&dd_out,
+				    Program *pgm, TokenBase *arg_expr)
 {
     std::vector<std::string> words;
     fn_template_split_words(spelling, words);
@@ -47405,19 +47428,9 @@ static int fn_template_deduce_param(const std::string &spelling,
 		involves_tp = true;
     if ( !involves_tp )
 	return 0;
-    size_t stars = 0, amps = 0;
-    std::string core;
-    for ( size_t i = 0; i < words.size(); ++i )
-    {
-	const std::string &w = words[i];
-	if ( fn_template_word_is_cv(w) )
-	    continue;
-	if ( w == "*" ) { ++stars; continue; }
-	if ( w == "&" ) { ++amps; continue; }
-	if ( !core.empty() )
-	    return -1;
-	core = w;
-    }
+    FnTemplateParamShape shape;
+    if ( !fn_template_param_shape(spelling, shape) )
+	return -1;
     // amps==1: lvalue reference (`_Tp&`) — binds the argument's VALUE type
     // (the parameter's own `&` re-wraps it). amps==2: rvalue/FORWARDING
     // reference (`_Tp&&`): [temp.deduct.call]/3 — a reference-typed
@@ -47427,33 +47440,35 @@ static int fn_template_deduce_param(const std::string &spelling,
     // `tuple<int32_t&&>` spelling shell — the map:967 return-type
     // mismatch). A non-reference (rvalue/value) argument still binds the
     // value type, as before.
-    if ( core.empty() || amps > 2 )
-	return -1;
     bool is_tp = false;
     for ( size_t j = 0; j < typeparams.size(); ++j )
-	if ( core == typeparams[j] )
+	if ( shape.core == typeparams[j] )
 	    is_tp = true;
     if ( !is_tp || !arg_dd )
 	return -1;
     DataDef *dd = arg_dd;
+    if ( pgm && arg_expr && shape.amps == 2 && shape.stars == 0
+      && !shape.cv && !dd->is_reference()
+      && fn_template_call_arg_is_lvalue(arg_expr) )
+	dd = pgm->getReferenceType(dd);
     if ( dd->is_reference() )
     {
-	if ( amps == 2 && stars == 0 )
+	if ( shape.amps == 2 && shape.stars == 0 )
 	{
-	    tp_out = core;
+	    tp_out = shape.core;
 	    dd_out = dd;
 	    return 1;
 	}
 	dd = static_cast<DataDefPTR *>(dd)->base_type;
     }
-    for ( size_t i = 0; i < stars; ++i )
+    for ( size_t i = 0; i < shape.stars; ++i )
     {
 	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
 	if ( !p || !p->base_type )
 	    return -1;
 	dd = p->base_type;
     }
-    tp_out = core;
+    tp_out = shape.core;
     dd_out = dd;
     return 1;
 }
@@ -48013,43 +48028,13 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 			     adp ? adp->name.c_str() : "(null)");
 		}
 #endif
-		adp = fn_template_pack_arg_element(sp, pack_param, adp);
-		if ( !adp )
+		std::string elem_tp;
+		DataDef *elem_dd = NULL;
+		if ( fn_template_deduce_param(sp, ft.typeparams, adp,
+			elem_tp, elem_dd, &pgm, tc->parameters[a]) != 1
+		  || elem_tp != pack_param || !elem_dd )
 		    return false;
-		// [temp.deduct.call]/3 for a FORWARDING-reference pack
-		// (`_Tp&&... __t`, cv-less, star-less): an LVALUE argument
-		// binds its element as A&, so `tuple<_Tp&&...>` keys the
-		// COLLAPSED tuple<A&> (forward_as_tuple's identity — the
-		// map:967 return-type mismatch) and `forward<_Tp>` takes its
-		// lvalue branch. Lvalueness is the ARGUMENT TOKEN's value
-		// category (a named variable, or is_addressable_expression's
-		// members/derefs/reference-returning calls) — the dd alone
-		// cannot carry it: operand_value_datadef deliberately strips
-		// the reference view for deduction.
-		// DARK behind MADC_FWDREF_ARM=1 (the #94 slot-arm precedent):
-		// flipping this on binds A& elements whose DOWNSTREAM
-		// consumers are not ready — the deferred-construction relower
-		// (cir_builder ~2700) bails on reference-typed elements and
-		// the DEFAULT lane's testmap regressed to the tsubst
-		// deferred-construction bail. Flip-on = teach the relower's
-		// element walk (tsubst_is_class_object_arg + the param-match
-		// arms) to unwrap A& first; the co-requisite list is task
-		// #103.
-		{
-		    static const char *fw_arm = ::getenv("MADC_FWDREF_ARM");
-		    size_t fw_stars = 0, fw_amps = 0;
-		    bool fw_cv = false;
-		    if ( fw_arm && *fw_arm == '1'
-		      && fn_template_param_pack_shape(sp, pack_param,
-						      &fw_stars, &fw_amps,
-						      &fw_cv)
-		      && fw_amps == 2 && fw_stars == 0 && !fw_cv
-		      && !adp->is_reference()
-		      && (dynamic_cast<TokenVar *>(tc->parameters[a])
-			  || is_addressable_expression(tc->parameters[a])) )
-			adp = pgm.getReferenceType(adp);
-		}
-		pack_elems.push_back(adp);
+		pack_elems.push_back(elem_dd);
 	    }
 	    if ( pack_elems.size() == 1 && binding.find(pack_param) == binding.end() )
 		binding[pack_param] = pack_elems[0];
@@ -48290,7 +48275,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	}
 	std::string tp;
 	DataDef *dd = NULL;
-	int r = fn_template_deduce_param(sp, ft.typeparams, deduce_dd, tp, dd);
+	int r = fn_template_deduce_param(sp, ft.typeparams, deduce_dd, tp, dd,
+					 &pgm, tc->parameters[i]);
 	if ( r < 0 )
 	    return false;
 	if ( r == 0 )
@@ -51537,31 +51523,19 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // Cycle break (logical-identity keyed): the allocator trait chain
     // construct -> _S_construct -> __has_construct -> __test -> construct re-requests
     // the SAME logical instantiation from a DIFFERENT call site, so call-site keying
-    // (inst_name below) can't stop it. Key on owner + fn + arg-type spellings; a
+    // (inst_name below) can't stop it. Key on owner + fn + the shared call shape; a
     // re-entrant request returns early (its body finishes in the outer frame).
-    std::string mfi_key = owner->name + "::" + fd->function_display_name + "(";
-    for ( size_t i = 0; i < tc->parameters.size(); ++i )
-    {
-	DataDef *pdd = tc->parameters[i] ? tc->parameters[i]->datadef() : NULL;
-	mfi_key += (pdd ? pdd->name : std::string("?")) + ",";
-    }
-    mfi_key += ")";
-    // Per type-shape instance memo — keyed on the PLACEHOLDER identity
+    const std::string call_shape = fn_template_call_shape_suffix(tc);
+    std::string mfi_key = owner->name + "::" + fd->function_display_name
+			  + call_shape;
+    // Per-call-shape instance memo — keyed on the PLACEHOLDER identity
     // (tc->var.name is the unique registered symbol), NOT the cycle key above:
     // function_display_name can be empty, and the cycle key deliberately blurs
     // sibling placeholders (its job is catching logical re-requests), which
-    // would bind one member template's call to ANOTHER's instance. Explicit
-    // template args are a distinct instantiation axis (`h.f<int>(0)` vs
-    // `h.f<long>(0)` differ ONLY here) — fold them in.
-    std::string shape_key = tc->var.name + "(";
-    for ( size_t i = 0; i < tc->parameters.size(); ++i )
-    {
-	DataDef *pdd = tc->parameters[i] ? tc->parameters[i]->datadef() : NULL;
-	shape_key += (pdd ? pdd->name : std::string("?")) + ",";
-    }
-    shape_key += ")";
-    for ( DataDef *ea : tc->explicit_template_args )
-	shape_key += "<" + (ea ? ea->name : std::string("?"));
+    // would bind one member template's call to ANOTHER's instance. The shared
+    // suffix includes argument value categories (a forwarding-reference axis)
+    // and explicit template args (`h.f<int>(0)` vs `h.f<long>(0)`).
+    std::string shape_key = tc->var.name + call_shape;
     // Memo hit: this shape was already instantiated — bind the call to ITS
     // instance (a member template used at two types has two instances; the
     // placeholder's local_emit_name alias is first-wins and cannot answer for
