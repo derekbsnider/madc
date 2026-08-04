@@ -45257,8 +45257,11 @@ static bool skipped_template_outofline_member(
 // read it.
 static bool outofline_declarator_param_regions(
 	const std::vector<TokenBase *> &decl,
-	std::vector<std::vector<TokenBase *> > &params)
+	std::vector<std::vector<TokenBase *> > &params,
+	size_t *close_out = NULL)
 {
+    if ( close_out )
+	*close_out = decl.size();
     size_t ni = skipped_template_function_declarator_name_index(decl, NULL);
     if ( ni >= decl.size() )
 	return false;
@@ -45283,7 +45286,11 @@ static bool outofline_declarator_param_regions(
 	if ( t && d.top() )
 	{
 	    if ( t->id() == TokenID::tkClBrk )
+	    {
+		if ( close_out )
+		    *close_out = i;
 		break;					// the declarator's own ')'
+	    }
 	    if ( t->id() == TokenID::tkComma )
 	    {
 		params.push_back(cur);
@@ -45502,21 +45509,17 @@ void Program::register_outofline_member_instantiations(
     if ( it == out_of_line_member_defs.end() )
 	return;
     // True if the out-of-line declarator is a `const` member (`...) const {`):
-    // the `const` qualifier sits at paren-depth 0 after the LAST param-list `)`
-    // and before the body `{`. Disambiguates const vs non-const overloads of the
-    // same member (std::_Rb_tree::_M_lower_bound has both).
+    // the qualifier follows the declarator parameter list and precedes the body;
+    // a trailing exception specification or attribute may contain more parens.
+    // Disambiguates const vs non-const overloads of the same member
+    // (std::_Rb_tree::_M_lower_bound has both).
     auto def_is_const_member = [](const std::vector<TokenBase *> &decl) -> bool {
-	int depth = 0; size_t last_close = decl.size();
-	for ( size_t i = 0; i < decl.size(); ++i )
-	{
-	    TokenBase *t = decl[i]; if ( !t ) continue;
-	    TokenID id = t->id();
-	    if ( id == TokenID::tkOpBrk ) ++depth;
-	    else if ( id == TokenID::tkClBrk ) { if ( depth > 0 ) { --depth; if ( depth == 0 ) last_close = i; } }
-	    else if ( depth == 0 && id == TokenID::tkOpBrc ) break;
-	}
-	if ( last_close == decl.size() ) return false;
-	for ( size_t i = last_close + 1; i < decl.size(); ++i )
+	std::vector<std::vector<TokenBase *> > ignored;
+	size_t param_close = decl.size();
+	if ( !outofline_declarator_param_regions(decl, ignored, &param_close)
+	  || param_close == decl.size() )
+	    return false;
+	for ( size_t i = param_close + 1; i < decl.size(); ++i )
 	{
 	    TokenBase *t = decl[i]; if ( !t ) continue;
 	    if ( t->id() == TokenID::tkOpBrc ) break;
@@ -45741,6 +45744,8 @@ void Program::register_outofline_member_instantiations(
 	    {
 		if ( cfd->method_display_name != def.member_name ) continue;
 		if ( cfd->is_const_method != def_const ) continue;
+		if ( cfd->is_member_template != def.is_member_template )
+		    continue;
 		if ( def.is_member_template && !cfd->member_template_decl.empty() )
 		    continue;
 		if ( def_sigs_ok && !function_explicit_params_match(cfd, def_sigs) )
