@@ -1,14 +1,16 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-08-03 (unreleased
-libc++ parity checkpoint @ef168838): the lane is now **898/26** with
-zero timeouts; `testlateinstproto` remains the sole failset removal and four
-new generic regression gates account for the other passes. Four #72
-precursors now preserve dependent template-id origins, definition-owner
-alias lookup, direct-slot retbuf call provenance, and concrete return-token
-owner scope. The immediate root is nested plain-aggregate identity, shared
-by three standalone failures and `testset`; #114 remains
-blocked on the owner decision about mangling overloaded user free functions.
+Master plan linking all workstreams. Updated 2026-08-04 (unreleased
+libc++ parity checkpoint @9debe778): nested plain aggregates now receive
+owner-derived identities from their first class-template-instantiation
+declaration. Fulltest is **928/0/0TO/9skip**. The last whole flavored
+measurement remains **898/26** with zero timeouts; the prerequisite was
+validated against its reducer and affected controls in JIT/EXE/OBJ, but did
+not yet flip an existing test. The immediate root is the shared
+`basic_string_view(basic_string**)` constructor shape in three standalone
+failures; `testset` retains its independent member-pack, derived-value, and
+converting-return roots. #114 remains blocked on the owner decision about
+mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -34,22 +36,29 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Unreleased parity checkpoint (2026-08-03, task #72 precursors, P2.7 in
-  progress).** Dependent template-id shells now retain structural origin and
-  typed argument-slot provenance (@c4828adb); definition-context class alias
+- **Unreleased parity checkpoint (2026-08-04, task #72 precursors, P2.7 in
+  progress).** Plain aggregates nested in class-template instantiations now
+  receive owner-derived store keys, emitted names, and canonical spellings
+  from their first declaration (@9debe778); isolated class-pattern capture
+  remains pattern-owned and the forest lookup oracle filters every canonical
+  instantiation product. New real-header gate `testnestedaggregateidentity`
+  agrees with GCC and Clang and passes madc JIT/EXE/OBJ. Dependent template-id
+  shells retain structural origin and typed argument-slot provenance
+  (@c4828adb); definition-context class alias
   lookup overrides the ambient caller owner (@2e70fbbf), which fixes
   `testlateinstproto`; and direct-slot non-trivial return initialization keeps
   its `TokenCallFunc` origin through CIR copying (@518412e2); and concrete
   member-template return tokens resolve under the definition owner
-  (@ef168838). GCC 13 and Clang 18 agree with all four reducers. Fulltest is
-  **927/0/0TO/9skip**; the whole libc++ lane moved **893/27 → 898/26** (four new gates,
-  `testlateinstproto` fixed, zero additions in the two-way failset diff), with
-  eligible **EXE 882/0** and **OBJ 882/0**. Three prior `__tree` tests now
-  advance to the existing `basic_string_view::__long**` family; `testset`
-  reaches concrete `__construct_node__mti` and exposes separate return-owner,
-  member-pack adaptation, derived-value slicing, and nested-aggregate identity
-  roots. NEXT: fix nested aggregate identity to flip the three `__long**`
-  failures and advance `testset`, then continue its remaining roots; keep
+  (@ef168838). GCC 13 and Clang 18 agree with all five reducers. Fulltest is
+  **928/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
+  with `testlateinstproto` fixed, zero additions in its two-way failset diff,
+  and eligible **EXE 882/0** and **OBJ 882/0**; that whole lane was not rerun
+  for @9debe778. Three prior `__tree` tests now
+  advance to a shared `basic_string_view(basic_string**)` constructor-shape
+  failure; `testset` reaches concrete `__construct_node__mti` and exposes
+  separate member-pack adaptation, derived-value slicing, and converting-return
+  roots. NEXT: reduce and fix the three-test pointer-shape producer, then
+  continue `testset`'s remaining roots; keep
   #114 parked until its ABI/API decision is answered.
 
 - **v0.67.0 (2026-08-01): the flavor-ABI release (tasks

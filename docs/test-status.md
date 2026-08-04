@@ -1,16 +1,20 @@
 # Test Status
 
-> **Current (2026-08-03, `feature/libcxx-parity6-codex` @ef168838 —
-> task #72 generic precursors):** fulltest **927 passed, 0 failed,
-> 0 timed out, 9 skipped**. The focused return/template set passes JIT, EXE, and OBJ
-> at **7/0** in each lane. The whole flavored suite is **898 passed / 26
-> failed / 0 timed out / 12 skipped**; among eligible tests, libc++ EXE and
-> OBJ are each **882/0**. The failing-name comparison against @518412e2 is
-> exact in both directions: 26 → 26, no removals and no additions. New gate
-> `testmtireturnscope` pins concrete member-template return lookup under the
-> definition owner; it removes `testset`'s inner bool-return error but does not
-> yet flip the test. Full logs: `tmp/logs/rb-20260803-223846.log` (fulltest)
-> and `tmp/logs/rb-20260803-224941.log` (whole libc++ battery).
+> **Current (2026-08-04, `feature/libcxx-parity6-codex` @9debe778 —
+> task #72 generic precursors):** fulltest **928 passed, 0 failed,
+> 0 timed out, 9 skipped**; `forest_index_oracle` is **5227 indexed names /
+> 3521 registered lookups**. New real-header gate
+> `testnestedaggregateidentity` and its default controls pass JIT, EXE, and
+> OBJ. GCC and Clang agree at `value=forty-two`. The four targeted existing
+> libc++ tests remain failing at downstream roots: three share a
+> `basic_string_view(basic_string**)` constructor-shape error and `testset`
+> retains independent member-pack, derived-value, and converting-return
+> blockers. The last whole flavored measurement, not rerun for this
+> prerequisite, remains **898 passed / 26 failed / 0 timed out / 12 skipped**;
+> eligible EXE and OBJ remain **882/0**. Logs:
+> `tmp/logs/rb-20260804-003611.log` (fulltest),
+> `tmp/logs/rb-20260803-235727.log` (targeted libc++ JIT/EXE/OBJ), and
+> `tmp/logs/rb-20260803-224941.log` (last whole libc++ battery).
 >
 > **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —
 > pack/variadic correctness, unreleased):** fulltest **922 passed, 0

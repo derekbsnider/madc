@@ -2,12 +2,26 @@
 
 ## [Unreleased]
 
-Variadic-pack correctness, `sizeof...` becomes a real operator, and five
+Variadic-pack correctness, `sizeof...` becomes a real operator, and six
 generic class-template/return fixes join the libc++ parity burn-down. The
 flavored lane moved **891/28 → 898/26**: five new gates plus the flips
 `teststdstringconv` and `testlateinstproto`, with zero newly broken tests in
-either two-way failset diff. Fulltest is **927/0/0TO/9skip**;
-libc++-eligible EXE and OBJ are each **882/0**.
+either measured two-way failset diff. Fulltest is **928/0/0TO/9skip**;
+libc++-eligible EXE and OBJ were each **882/0** at the last whole-lane
+measurement.
+
+- **fix: nested plain aggregates preserve their class-template-instantiation
+  identity (@9debe778).** Their first declaration now derives the struct-map
+  key, C emitted name, and canonical C++ spelling from the enclosing concrete
+  owner instead of inheriting that owner's spelling and later displacing it
+  during canonical lookup. Owner-local type aliases serve source spelling;
+  isolated class-pattern capture remains pattern-owned. The forest lookup
+  oracle now excludes all canonical instantiation products rather than only
+  `DataDefCLASS` products. New real-header gate
+  `testnestedaggregateidentity` matches GCC and Clang at `value=forty-two`
+  and passes madc JIT/EXE/OBJ. Fulltest is 928/0 with the forest index oracle
+  at 5227/3521; the three affected existing libc++ tests advance to their
+  shared `basic_string_view(basic_string**)` constructor-shape blocker.
 
 - **fix: concrete member-template returns resolve in their definition owner
   (@ef168838).** A concrete instantiation triggered from another class method
