@@ -1,0 +1,32 @@
+// A directly-spelled T*& parameter retains both derived layers in fresh and
+// previously-declared function definitions. Calls pass the pointer slot's
+// address, and writes through the parameter update the caller's pointer.
+#include <stdio.h>
+
+void bind_declared(int *&parent, int& value);
+
+void bind_declared(int *&parent, int& value)
+{
+	parent = &value;
+}
+
+struct Box {
+	void bind_inline(int *&parent, int& value)
+	{
+		parent = &value;
+	}
+};
+
+int main()
+{
+	int first = 42;
+	int *first_parent;
+	bind_declared(first_parent, first);
+	int second = 43;
+	int *second_parent;
+	Box box;
+	box.bind_inline(second_parent, second);
+	printf("%d %d %d %d\n", *first_parent, first_parent == &first,
+	       *second_parent, second_parent == &second);
+	return 0;
+}

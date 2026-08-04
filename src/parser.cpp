@@ -55914,6 +55914,11 @@ paramdecl:
 	// parameter declaration
 	if ( nt->id() == TokenID::tkComma || nt->id() == TokenID::tkClBrk )
 	{
+	    // `param_dd` is the complete declarator built while consuming this
+	    // parameter. Wrap it once so both declaration/definition writeback
+	    // paths preserve every inner pointer layer (`T*&` -> REF(PTR(T))).
+	    DataDef *reference_param_type = (rtype == RefType::rtReference)
+		? static_cast<DataDef *>(getReferenceType(param_dd)) : NULL;
 	    // If this is a definition following a forward declaration, the
 	    // function already has its parameter DataDefs — don't re-push.
 	    DataDef *scope_param_type = NULL;
@@ -55921,18 +55926,15 @@ paramdecl:
 	    {
 		ids.push_back(pid);
 		param_aliases.push_back(param_alias);
-		// A reference parameter lowers to a pointer (vfREFERENCE auto-deref);
-		// the already-declared FuncDef stored the POINTER type. param_dd here
-		// is only the base — the `&` set rtype but, unlike `*`, did not
-		// pointer-ify param_dd. Pointer-ify it (mirroring the non-declared
-		// branch's `getPointerType(&pb->definition)`) so the in-scope param's
-		// type MATCHES its vfREFERENCE flag. Otherwise the CIR deref gate
+		// A reference parameter lowers to a pointer (vfREFERENCE auto-deref).
+		// The in-scope param's type must match its vfREFERENCE flag. Otherwise
+		// the CIR deref gate
 		// (vfREFERENCE && type->is_pointer()) misses, and a re-parsed body /
 		// ctor mem-init read of the ref param reads the address, not the
 		// referent (e.g. a member-template ctor's `: first(__a)` stored the
 		// pointer value into the int member → garbage).
-		scope_param_type = (rtype == RefType::rtReference)
-		    ? (DataDef *)getReferenceType(&pb->definition) : param_dd;
+		scope_param_type = reference_param_type
+		    ? reference_param_type : param_dd;
 	    }
 	    else if ( !func->findParameter(pid) )
 	    {
@@ -55961,10 +55963,9 @@ paramdecl:
 		    param_template_param_spelled_directly);
 		if ( rtype == RefType::rtReference )
 		{
-		    DataDef *ref_ptr = getReferenceType(&pb->definition);
-		    func->parameters.push_back(ref_ptr);
+		    func->parameters.push_back(reference_param_type);
 		    func->const_params.push_back(param_has_const);
-		    scope_param_type = ref_ptr;
+		    scope_param_type = reference_param_type;
 		}
 		else if ( rtype == RefType::rtPointer )
 		{
