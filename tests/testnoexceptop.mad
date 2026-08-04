@@ -1,0 +1,35 @@
+// noexcept operator [expr.unary.noexcept]: expression context, non-type
+// template-argument context (the integral_constant base shape libc++'s
+// __libcpp_is_nothrow_constructible fallback uses when the compiler presents
+// as GCC), fn-template placeholder exception-spec capture (declval never
+// instantiates — the registration placeholder carries the spec), and the
+// QUALIFIED-template-id pack expansion unit (`foo::declval<Args>()...` with
+// an empty pack must elide the qualifier too, never leave `Quiet(foo::)`).
+// Reducers: tmp/nx1 nx4 nx6 (2026-08-04, testconstructible libc++ root cause).
+// Oracle: g++ 13 == clang++-18 print "1 0" / "1 1 1 1" / "1 1".
+#include <cstdio>
+
+namespace foo { template<class T> T&& declval() noexcept; }
+template<class T> T&& declval() noexcept;
+int&& dv() noexcept;
+template<bool B> struct BC { static const bool value = B; };
+
+struct Quiet { Quiet() noexcept {} };
+struct Loud  { Loud() {} };
+
+template<bool, bool, class T, class... Args> struct NTI;
+template<class T, class... Args>
+struct NTI<true, false, T, Args...> : BC<noexcept(T(foo::declval<Args>()...))> {};
+
+int main()
+{
+    printf("%d %d\n", (int)noexcept(Quiet()), (int)noexcept(Loud()));
+    printf("%d %d %d %d\n",
+	   (int)noexcept(dv()), (int)noexcept(int(dv())),
+	   (int)noexcept(declval<int&&>()),
+	   (int)noexcept(int(declval<int&&>())));
+    printf("%d %d\n",
+	   (int)NTI<true, false, Quiet>::value,
+	   (int)NTI<true, false, int, int&&>::value);
+    return 0;
+}

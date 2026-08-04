@@ -8458,16 +8458,34 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 			    (int)(bt->type() == TokenType::ttIdentifier),
 			    pack_subst.size(), token_pack_subst.size());
 	    }
+	    // The expansion unit may be a QUALIFIED template-id
+	    // (`std::declval<_Args>()...` — libc++'s
+	    // __libcpp_is_nothrow_constructible base spells exactly this): the
+	    // unit INCLUDES the leading `ns::` chain, keyed on the chain TAIL
+	    // being a template-id head. Firing at the tail identifier instead
+	    // orphans the qualifier — an EMPTY pack elides `declval<_Args>()...`
+	    // but leaves the already-emitted `std ::` behind (`Quiet(std::)`, a
+	    // malformed base argument that escaped as a silent 0), and a pack
+	    // of two would drop `std::` from every element after the first.
+	    size_t tid_qtail = bi;
 	    if ( bt && bt->type() == TokenType::ttIdentifier
-	      && bi + 1 < td.body.size() && td.body[bi+1]
-	      && td.body[bi+1]->id() == TokenID::tkLT
+	      && (!pack_subst.empty() || !token_pack_subst.empty()) )
+		while ( tid_qtail + 2 < td.body.size()
+		  && td.body[tid_qtail+1]
+		  && td.body[tid_qtail+1]->id() == TokenID::tkNS
+		  && td.body[tid_qtail+2]
+		  && td.body[tid_qtail+2]->type() == TokenType::ttIdentifier )
+		    tid_qtail += 2;
+	    if ( bt && bt->type() == TokenType::ttIdentifier
+	      && tid_qtail + 1 < td.body.size() && td.body[tid_qtail+1]
+	      && td.body[tid_qtail+1]->id() == TokenID::tkLT
 	      && (!pack_subst.empty() || !token_pack_subst.empty()) )
 	    {
 		// ONE tracker for the extent (delimiter-tracking.md): step the
 		// template-id HEAD first so DelimDepth sees a template-id context
 		// and reads the `<` as an argument list rather than less-than.
 		DelimDepth tdd;
-		size_t after = bi;
+		size_t after = tid_qtail;
 		after += delim_scan_step(td.body, after, tdd);
 		if ( after < td.body.size() && td.body[after]
 		  && td.body[after]->id() == TokenID::tkLT )
@@ -12931,11 +12949,13 @@ static int trait_class_constructible(DataDefCLASS *c,
 	    continue;
 	if ( fd->is_deleted )
 	{ matched_deleted = true; continue; }
-	// NxNone cannot answer "may throw": the LEXER erases conditional
-	// `noexcept(expr)` specifiers, so an unspecified FuncDef is
-	// indistinguishable from an erased one — only a captured
-	// unconditional spec (NxTrue) is decisive. Refuse rather than guess.
-	int nx = fd->noexcept_spec == FuncDef::NxTrue ? 1 : -1;
+	// NxNone IS decisive since the lexer stopped erasing `noexcept` in C++
+	// modes ([except.spec]: a constructor declared with no specifier — or
+	// with a false condition — is potentially throwing). A conditional
+	// spec whose condition did not fold records NxUnknown, which stays an
+	// honest refusal rather than a guess.
+	int nx = fd->noexcept_spec == FuncDef::NxTrue ? 1
+	       : fd->noexcept_spec == FuncDef::NxNone ? 0 : -1;
 	if ( matched && matched_nothrow != nx )
 	    matched_nothrow = -1;     // ambiguous selection — refuse the nothrow claim
 	else
@@ -13200,6 +13220,155 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
     ti->line = op_tb->line;
     ti->column = op_tb->column;
     return ti;
+}
+
+// --- noexcept operator ([expr.unary.noexcept]) --------------------------------
+// `noexcept ( expression )` folds to a bool constant: 1 when madc can prove the
+// operand cannot throw, 0 when a reached callee is potentially throwing, and a
+// REFUSAL (never a guessed bool) when a node's throwing-ness is not modeled.
+// Tri-state conjunction: a definite may-throw (0) dominates an unknown (-1).
+static int noexcept_conjoin(int a, int b)
+{
+    if ( a == 0 || b == 0 )
+	return 0;
+    if ( a < 0 || b < 0 )
+	return -1;
+    return 1;
+}
+
+// Walk the PARSED operand tree (the operand was parsed unevaluated, so no call
+// body was instantiated and nothing was ODR-used):
+// - TokenObjTemp (class temporary `T(args)`): constructor selection is not
+//   recorded on the parse node (it happens at construction assembly), and
+//   trait_is_constructible's class arm IS the owner of "which constructor
+//   would be selected and is it nothrow" — delegate, then conjoin the
+//   arguments' own walk.
+// - TokenCallFunc / TokenCallMethod: the resolved callee's noexcept spec
+//   (resolved_call_funcdef is the one parse-side callee resolver), plus the
+//   arguments. A fn-pointer callee has no tracked exception spec: canon
+//   (g++/clang) answers `noexcept(p())` false, so 0.
+// - Builtin operators recurse; an operator RESOLVED onto a class overload
+//   types by resolved_type but does not name its method here — refuse.
+// - TokenCast recurses (scalar conversions do not throw; a throwing
+//   dynamic_cast<T&> is not distinguishable post-parse and is accepted — no
+//   real-header noexcept condition spells one).
+// - Leaves (variables, literals, nullptr, string literals) cannot throw.
+// - Any other node kind: refuse — never a silently wrong bool.
+static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
+{
+    if ( !tb )
+	return 1;
+    if ( depth > 64 )
+	return -1;
+    if ( TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(tb) )
+    {
+	TraitTypeArg to;
+	to.dd = ot->obj_class;
+	std::vector<TraitTypeArg> cargs;
+	int r = 1;
+	for ( TokenBase *a : ot->ctor_args )
+	{
+	    r = noexcept_conjoin(r, noexcept_eval_expr(pgm, a, depth + 1));
+	    TraitTypeArg ta;
+	    ta.dd = a ? a->datadef() : NULL;
+	    if ( !ta.dd )
+		return -1;
+	    unwrap_baked_trait_arg(ta);
+	    cargs.push_back(ta);
+	}
+	if ( r == 0 )
+	    return 0;
+	return noexcept_conjoin(r, trait_is_constructible(to, cargs, true,
+							  depth + 1));
+    }
+    if ( TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb) )
+    {
+	int r = 1;
+	for ( TokenBase *a : tc->parameters )
+	    r = noexcept_conjoin(r, noexcept_eval_expr(pgm, a, depth + 1));
+	if ( tc->src_node )
+	    r = noexcept_conjoin(r,
+				 noexcept_eval_expr(pgm, tc->src_node, depth + 1));
+	// TokenMember also models plain data access; only a function-typed
+	// callee is a call.
+	if ( !tc->var.type || !tc->var.type->is_function() )
+	    return r;
+	if ( dynamic_cast<DataDefFPTR *>(tc->var.type) )
+	    return 0;
+	FuncDef *fd = pgm.resolved_call_funcdef(tc);
+	if ( fd && fd->noexcept_spec == FuncDef::NxUnknown )
+	{
+	    // [temp.inst]/14: an exception specification is instantiated when
+	    // NEEDED — this operator needs it. The unevaluated operand parse
+	    // deliberately skipped call-site instantiation (declval's body
+	    // must never instantiate), but declval's spec is unconditional
+	    // (NxTrue at registration) and never reaches here; a callee whose
+	    // spec stayed CONDITIONAL (NxUnknown — libstdc++'s __relocate_a
+	    // family) can only answer through its instantiated declarator,
+	    // where the substituted condition folds. Instantiate this call's
+	    // binding and re-read.
+	    pgm.instantiate_namespace_fn_template_for_call(tc);
+	    fd = pgm.resolved_call_funcdef(tc);
+	}
+	if ( !fd )
+	    return -1;
+	int nx = fd->noexcept_spec == FuncDef::NxTrue ? 1
+	       : fd->noexcept_spec == FuncDef::NxNone ? 0 : -1;
+	return noexcept_conjoin(r, nx);
+    }
+    if ( TokenCast *tcst = dynamic_cast<TokenCast *>(tb) )
+	return noexcept_eval_expr(pgm, tcst->expr, depth + 1);
+    if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(tb) )
+    {
+	int r = noexcept_eval_expr(pgm, ts->index, depth + 1);
+	for ( TokenBase *e : ts->extra_indices )
+	    r = noexcept_conjoin(r, noexcept_eval_expr(pgm, e, depth + 1));
+	return r;
+    }
+    if ( tb->is_operator() )
+    {
+	TokenOperator *to = static_cast<TokenOperator *>(tb);
+	if ( to->resolved_type )
+	    return -1;
+	return noexcept_conjoin(noexcept_eval_expr(pgm, to->left, depth + 1),
+				noexcept_eval_expr(pgm, to->right, depth + 1));
+    }
+    if ( dynamic_cast<TokenInt *>(tb)		// TokenNullptr included
+      || dynamic_cast<TokenReal *>(tb)
+      || dynamic_cast<TokenStr *>(tb) )
+	return 1;
+    if ( tb->type() == TokenType::ttVariable
+      || tb->type() == TokenType::ttIdentifier )
+	return 1;
+    return -1;
+}
+
+size_t Program::evaluate_noexcept_operator(TokenBase *op_tb)
+{
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	Throw(op_tb) << "Expecting '(' after noexcept" << flush;
+    nextToken();	// consume '('
+    TokenBase *expr_head = nextToken();
+    if ( !expr_head )
+	Throw(op_tb) << "Expecting expression in noexcept(...)" << flush;
+    // The operand is UNEVALUATED (decltype's twin at the type-token resolver):
+    // entities it names are not ODR-used, so template-call bodies must not be
+    // instantiated (declval's "must not be used!" body). RAII-restore so an
+    // exception mid-parse cannot leave the depth raised.
+    ++unevaluated_operand_depth;
+    TokenBase *expr = NULL;
+    try { expr = parseExpression(expr_head, true); }
+    catch ( ... ) { --unevaluated_operand_depth; throw; }
+    --unevaluated_operand_depth;
+    TokenBase *close = nextToken();
+    if ( !close || close->id() != TokenID::tkClBrk )
+	Throw(close ? close : op_tb)
+	    << "Expecting ')' after noexcept(...)" << flush;
+    int s = noexcept_eval_expr(*this, expr, 0);
+    if ( s < 0 )
+	Throw(op_tb) << "cannot faithfully evaluate noexcept(...) for this "
+		     << "operand" << flush;
+    return s == 1 ? 1 : 0;
 }
 
 static bool is_runtime_sized_type(DataDef *dd)
@@ -14440,6 +14609,12 @@ madc_wide_int Program::parse_constant_primary()
 	    return bool_value ? 1 : 0;
 	if ( name == "sizeof" || is_alignof_identifier(name) )
 	    return (madc_wide_int)evaluate_type_query(tb, name);
+	// noexcept(expr) — [expr.unary.noexcept] in constant context: the
+	// integral_constant base of libc++'s __libcpp_is_nothrow_constructible
+	// fallback (madc presents as GCC, so libc++ compiles its non-builtin
+	// arm) and any user noexcept(expr) non-type template argument.
+	if ( name == "noexcept" )
+	    return (madc_wide_int)evaluate_noexcept_operator(tb);
 	// Type-trait builtins in constant context — the std::integral_constant
 	// initializer shape `static const bool value = __is_class(T);` and non-type
 	// template args. Args are concrete (madc monomorphizes); fold to 0/1.
@@ -29152,9 +29327,17 @@ bool Program::fold_nontype_template_arg(const std::vector<TokenBase *> &argtoks,
 	if ( t->id() == TokenID::tkNS )
 	    saw_ns = true;
     }
-    if ( saw_ns && last
-      && (last->type() == TokenType::ttIdentifier
-       || is_contextual_identifier_token(last))
+    // A leading noexcept OPERATOR (`BC<noexcept(T())>` — libc++'s
+    // __libcpp_is_nothrow_constructible integral_constant base) is a foldable
+    // constant expression that carries no `::` and ends in `)`, so it needs
+    // its own admission beside the `...::name` shape.
+    bool leading_noexcept = !argtoks.empty() && argtoks[0]
+	&& argtoks[0]->id() == TokenID::tkCPPKEYWORD
+	&& contextual_identifier_name(argtoks[0]) == "noexcept";
+    if ( ((saw_ns && last
+	   && (last->type() == TokenType::ttIdentifier
+	    || is_contextual_identifier_token(last)))
+	  || leading_noexcept)
       && fold_nontype_arg_constant(argtoks, out) )
 	return true;
     return false;
@@ -30496,6 +30679,19 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		if ( is_type_trait_builtin(ident_tb->spelling()) )
 		{
 		    exStack.push(evaluate_type_trait(tb, ident_tb->spelling()));
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		// noexcept(expr) ([expr.unary.noexcept]) — folds to a bool
+		// constant at parse time, like sizeof/alignof below.
+		if ( ident_tb->spelling_is("noexcept") )
+		{
+		    TokenInt *ti = new TokenInt(
+			(int64_t)evaluate_noexcept_operator(tb));
+		    ti->setDataType(&ddBOOL);
+		    ti->file = tb->file;
+		    ti->line = tb->line;
+		    ti->column = tb->column;
+		    exStack.push(ti);
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// sizeof / alignof — resolve to integer constant at parse time.
@@ -46998,6 +47194,98 @@ static bool skipped_template_decl_is_deduction_guide(
     return lt && lt->id() == TokenID::tkLT;
 }
 
+// The trailing exception specification at tokens[ix] inside a captured
+// declaration run ([except.spec], [dcl.fct] order: cv-quals, ref-qual, then
+// the spec): classify `throw ( ... )` / `noexcept` / `noexcept ( cond )` into
+// FuncDef::NoexceptSpec. A manifest true/false condition classifies
+// NxTrue/NxNone; a dependent condition records NxUnknown — honest, it folds
+// at instantiation when the substituted declarator re-parses. `end_out`
+// (when non-NULL) receives the index just past the specification, for
+// callers that skip rather than record.
+template<typename Seq>	// std::vector and the TokenStream queue, like delim_scan_step
+static uint8_t declarator_exception_spec_at(Program &pgm,
+	const Seq &tokens, size_t ix, size_t *end_out)
+{
+    while ( ix < tokens.size() && tokens[ix]
+	 && (tokens[ix]->id() == TokenID::tkCONST
+	  || tokens[ix]->id() == TokenID::tkVOLATILE
+	  || tokens[ix]->id() == TokenID::tkBand
+	  || tokens[ix]->id() == TokenID::tkLand) )
+	++ix;
+    if ( end_out )
+	*end_out = ix;
+    if ( ix >= tokens.size() || !tokens[ix] )
+	return FuncDef::NxNone;
+    bool is_throw_spec = tokens[ix]->id() == TokenID::tkTHROW
+	&& ix + 1 < tokens.size() && tokens[ix + 1]
+	&& tokens[ix + 1]->id() == TokenID::tkOpBrk;
+    bool is_noexcept = tokens[ix]->id() == TokenID::tkCPPKEYWORD
+	&& contextual_identifier_name(tokens[ix]) == "noexcept";
+    if ( !is_throw_spec && !is_noexcept )
+	return FuncDef::NxNone;
+    if ( is_noexcept
+      && (ix + 1 >= tokens.size() || !tokens[ix + 1]
+	  || tokens[ix + 1]->id() != TokenID::tkOpBrk) )
+    {
+	if ( end_out )
+	    *end_out = ix + 1;
+	return FuncDef::NxTrue;	// bare `noexcept`
+    }
+    // Collect the balanced ( ... ) group with the shared tracker.
+    std::vector<TokenBase *> cond;
+    DelimDepth d;
+    size_t i = ix + 1;
+    i += delim_scan_step(tokens, i, d);		// the opening '('
+    while ( i < tokens.size() && !d.top() )
+    {
+	size_t n = delim_scan_step(tokens, i, d);
+	if ( d.top() )
+	{
+	    i += n;
+	    break;				// the matching ')'
+	}
+	for ( size_t k = 0; k < n && i + k < tokens.size(); ++k )
+	    cond.push_back(tokens[i + k]);
+	i += n;
+    }
+    if ( end_out )
+	*end_out = i;
+    if ( is_throw_spec )
+	// `throw()` is the pre-C++11 non-throwing spelling; a non-empty list
+	// still permits throwing the listed types.
+	return cond.empty() ? FuncDef::NxTrue : FuncDef::NxNone;
+    int64_t cv = 0;
+    if ( pgm.fold_nontype_template_arg(cond, template_tokens_spelling(cond), cv) )
+	return cv ? FuncDef::NxTrue : FuncDef::NxNone;
+    return FuncDef::NxUnknown;
+}
+
+// The exception spec of a skipped-template FUNCTION declaration's declarator:
+// locate `name` immediately before its parameter list (the
+// capture_free_function_overload shape), skip the balanced parameter list,
+// classify what follows. NxNone when the declarator is not found.
+static uint8_t skipped_template_function_noexcept_spec(Program &pgm,
+	const std::vector<TokenBase *> &tokens, const std::string &name)
+{
+    size_t lparen = tokens.size();
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	if ( tokens[i] && is_skipped_template_function_name(tokens[i])
+	  && skipped_template_function_name(tokens[i]) == name
+	  && i + 1 < tokens.size() && tokens[i + 1]
+	  && tokens[i + 1]->id() == TokenID::tkOpBrk )
+	{ lparen = i + 1; break; }
+    }
+    if ( lparen >= tokens.size() )
+	return FuncDef::NxNone;
+    DelimDepth d;
+    size_t i = lparen;
+    i += delim_scan_step(tokens, i, d);		// the opening '('
+    while ( i < tokens.size() && !d.top() )
+	i += delim_scan_step(tokens, i, d);
+    return declarator_exception_spec_at(pgm, tokens, i, NULL);
+}
+
 static void register_skipped_namespace_template_function(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
@@ -47085,7 +47373,13 @@ static void register_skipped_namespace_template_function(
 	    fd->declaration_only = true;
 	    fd->function_display_name = name;
 	    fd->namespace_name = pgm.current_namespace();
-	    record_skipped_template_return_pattern(fd, tokens, typeparams, name);
+	    // The declaration's exception spec ([except.spec]) — what the
+	    // noexcept operator reads for an UNEVALUATED call that binds this
+	    // placeholder (declval's `T&& declval() noexcept;` never
+	    // instantiates). First declaration wins: later overloads skip this
+	    // mint, so a mixed-spec overload set keeps the first spec.
+	    fd->noexcept_spec =
+		skipped_template_function_noexcept_spec(pgm, tokens, name);
 	    if ( skipped_template_body_returns_inline_addressof(pgm, tokens) )
 		fd->inline_builtin_kind = "addressof";
 	    else if ( skipped_template_body_is_inline_destroy(tokens, typeparams) )
@@ -56145,8 +56439,12 @@ paramdecl:
 	    nt = consume_balanced_parenthesized_suffix(open);
 	    continue;
 	}
-	if ( q->type() == TokenType::ttIdentifier ) {
-	    const std::string &qs = ((TokenIdent *)q)->spelling();
+	// `noexcept` arrives as a reserved TokenCppKeyword in C++ modes and as a
+	// plain identifier when replayed from captured token runs; both carry
+	// their spelling through contextual_identifier_name.
+	if ( q->type() == TokenType::ttIdentifier
+	  || q->id() == TokenID::tkCPPKEYWORD ) {
+	    const std::string qs = contextual_identifier_name(q);
 	    if ( qs == "noexcept" ) {
 		nt = nextToken();
 		if ( nt && nt->id() == TokenID::tkOpBrk )
@@ -57410,28 +57708,13 @@ bool Program::paren_group_is_function_def()
 	    if ( --depth == 0 )
 	    {
 		++ix; // token after the matching ')'
-		// Skip a dynamic-exception-specification `throw ( ... )`
-		// between the parameter list and the body — both the C++98
-		// spelling and the lexer's unconditional-`noexcept`
-		// normalization land here ([except.spec]).
-		if ( ix < tokens.size()
-		  && tokens[ix]->id() == TokenID::tkTHROW
-		  && ix + 1 < tokens.size()
-		  && tokens[ix + 1]->id() == TokenID::tkOpBrk )
-		{
-		    int tdepth = 0;
-		    for ( ix = ix + 1; ix < tokens.size(); ++ix )
-		    {
-			if ( tokens[ix]->id() == TokenID::tkOpBrk )
-			    ++tdepth;
-			else if ( tokens[ix]->id() == TokenID::tkClBrk
-			       && --tdepth == 0 )
-			{
-			    ++ix;
-			    break;
-			}
-		    }
-		}
+		// Skip an exception specification between the parameter list
+		// and the body ([except.spec]) — throw(...) / noexcept /
+		// noexcept(cond); declarator_exception_spec_at is the one
+		// classify/skip owner.
+		size_t after_spec = ix;
+		declarator_exception_spec_at(*this, tokens, ix, &after_spec);
+		ix = after_spec;
 		return ix < tokens.size()
 		    && tokens[ix]->id() == TokenID::tkOpBrc;
 	    }

@@ -3017,10 +3017,11 @@ void Program::add_keywords()
     // ONLY genuine reserved keywords appear here. Contextual identifiers
     // (`override`, `final`, `module`, `import`, `audit`) are deliberately NOT
     // reserved (a hard reservation broke 49 tests — see the KG lesson). The
-    // pervasive ignored specifiers `inline` (erased), `noexcept` and `alignas`
-    // (special lexer handling) keep their existing treatment. The erased
-    // specifiers `constexpr`/`consteval`/`constinit` are registered below AFTER
-    // being removed from the erase map, and need decl-specifier consume handling.
+    // pervasive ignored specifier `alignas` (special lexer handling) keeps its
+    // existing treatment. The erased specifiers `constexpr`/`consteval`/
+    // `constinit` are registered below AFTER being removed from the erase map,
+    // and need decl-specifier consume handling; `inline` and `noexcept` keep
+    // their erasure in NON-C++ modes only.
     struct CppReservedKw { const char *kw; LanguageStd min_std; };
     static const CppReservedKw cpp_reserved[] = {
 	// STAGED — see DESIGN NOTE / the plan. The complete reserved set (below,
@@ -3108,6 +3109,13 @@ void Program::add_keywords()
 	{ "typeid",           STD_CPP98 },
 	{ "decltype",         STD_CPP11 },
 	{ "alignof",          STD_CPP11 },
+	// noexcept — BOTH surfaces ([expr.unary.noexcept] operator and the
+	// [except.spec] specifier — un-erased 2026-08-04): the operator folds by
+	// spelling in parse_constant_primary and the expression parser (like
+	// sizeof/alignof); the specifier is captured by parseFunction's
+	// trailing-qualifier walk (NxTrue/NxNone/NxUnknown). Non-C++ modes keep
+	// the getToken() balanced-paren erasure (mirror of inline's C-mode split).
+	{ "noexcept",         STD_CPP11 },
 	// Slice 4b: boolean / pointer literals.
 	{ "true",             STD_CPP98 },
 	{ "false",            STD_CPP98 },
@@ -5212,13 +5220,16 @@ TokenBase *Program::_getToken()
 		if ( word == "__FUNCTION__" || word == "__func__"
 		  || word == "__PRETTY_FUNCTION__" )
 		    return make_ident(word);
-		// noexcept / noexcept(expr): madc ignores exception
-		// specifications. Strip the optional (...) by BALANCED parens
-		// — NOT via a function-like macro, whose comma-splitting breaks
-		// on a template-id condition such as
+		// noexcept in NON-C++ modes only: strip the optional (...) by
+		// BALANCED parens — NOT via a function-like macro, whose
+		// comma-splitting breaks on a template-id condition such as
 		// noexcept(is_nothrow_constructible<T, Args...>::value) (the
-		// preprocessor does not treat <...> as grouping).
-		if ( word == "noexcept" )
+		// preprocessor does not treat <...> as grouping). In C++ modes /
+		// the madc dialect, noexcept is a reserved TokenCppKeyword
+		// (cpp_reserved) serving both the [except.spec] specifier and the
+		// [expr.unary.noexcept] operator, so it falls through to the
+		// keyword_map lookup below.
+		if ( word == "noexcept" && !cpp_keyword_active(STD_CPP11) )
 		{
 		    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t' || source.peek() == '\n' || source.peek() == '\r') )
 			source.get();
