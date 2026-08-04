@@ -12340,6 +12340,11 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 		return node2(N_EXPR, list(), asgn, origin);
 	}
 	if (class_trivially_copyable(cdd)) {
+		// An empty class has no value-bearing subobject to copy. Its C11
+		// carrier is one byte only because C forbids a zero-sized struct;
+		// assigning that synthetic pad corrupts an offset-zero EBO sibling.
+		if (trait_is_empty(cdd))
+			return node2(N_BLOCK, list(), list(), origin);
 		node_t src = translate_expr(ctor_args[0]);
 		node_t asgn = node2(N_ASSIGN, dst_lvalue, src, origin);
 		return node2(N_EXPR, list(), asgn, origin);

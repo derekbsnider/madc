@@ -1160,6 +1160,11 @@ public:
 
 typedef DataDefCLASS DDClass;
 
+// Canonical [meta.unary.prop] empty-class predicate. The parser uses it for
+// __is_empty and EBO layout; CIR uses the same semantic answer when lowering
+// implicit copies so the C carrier's synthetic one-byte pad is never copied.
+bool trait_is_empty(DataDef *dd);
+
 // data definitions of default base types
 class DataDefVOID:      public DataDef { public: DataDefVOID() :   DataDef("void", 0,     DataType::dtVOID) {} };
 class DataDefBOOL:      public DataDef { public: DataDefBOOL() :   DataDef("bool", 1,     DataType::dtBOOL) {} };

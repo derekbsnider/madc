@@ -12224,7 +12224,7 @@ static bool trait_is_final(DataDef *dd)
 // itself empty. A non-class type is not empty (is_empty<int> = false). libstdc++
 // instantiates is_empty<allocator<T>> for its allocator EBO compression, which
 // <memory>'s allocator_traits chain drags into the vector reallocation path.
-static bool trait_is_empty(DataDef *dd)
+bool trait_is_empty(DataDef *dd)
 {
     // A non-class/union type is not empty (is_empty<int> = false). `members`
     // lives on the DataDefSTRUCT base, so a bare empty struct (DataDefSTRUCT not
