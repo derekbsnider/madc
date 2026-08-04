@@ -1,16 +1,14 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-04 (unreleased
-libc++ parity checkpoint @0fc1abf8): viable constructor-template siblings,
-omitted non-type defaults, partial-specialization value packs, nested pack
-expansions, and member-template pack arities now survive substitution through
-libc++ reference tuple construction. Fulltest is **933/0/0TO/9skip**. The last
-whole flavored measurement remains **898/26** with zero timeouts; four generic
-gates were validated against GCC, Clang, and madc JIT/EXE/OBJ, but did not yet
-flip an existing test. `testcontainerdtor` now reaches c2mir and exposes copied
-member-pack reference argument adaptation before a later converting-return
-root. #114 remains blocked on the owner decision about mangling overloaded
-user free functions.
+libc++ parity checkpoint @2dd53e47): copied member-call reference packs now
+map hidden sret/receiver slots and each expanded element to the concrete
+winner's formals. Fulltest is **935/0/0TO/9skip**. The last whole flavored
+measurement remains **898/26** with zero timeouts because no existing test has
+flipped yet. `testcontainerdtor` advances from six c2mir errors to two by
+default and from five to one with `MADC_FWDREF_ARM=1`; NEXT is the converting
+pair return at `set:564`. #114 remains blocked on the owner decision about
+mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -37,7 +35,13 @@ high-level" — the answer is both.**
 ## Current State
 
 - **Unreleased parity checkpoint (2026-08-04, task #72 precursors, P2.7 in
-  progress).** Retained constructor-template lookup continues past failed
+  progress).** Copied member pack calls now rebuild their arguments against
+  concrete winner formals, including hidden sret/receiver accounting and
+  per-element reference adaptation (@2dd53e47). Reference-returning pack IDs
+  already store referent addresses and are no longer addressed twice. New
+  `testmemberpackrefcall` and `testmemberpackrefsret` match GCC and Clang at
+  `34`, pass madc JIT/EXE/OBJ, and cover receiver-only and non-trivial-return
+  shapes. Retained constructor-template lookup continues past failed
   same-arity siblings; omitted non-type defaults substitute earlier values
   before partial-specialization matching; winning specializations preserve
   non-type packs; nested expansions distinguish inner and outer packs; and
@@ -66,17 +70,14 @@ high-level" — the answer is both.**
   `testlateinstproto`; and direct-slot non-trivial return initialization keeps
   its `TokenCallFunc` origin through CIR copying (@518412e2); and concrete
   member-template return tokens resolve under the definition owner
-  (@ef168838). GCC 13 and Clang 18 agree with all six reducers. Fulltest is
-  **933/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
+  (@ef168838). GCC 13 and Clang 18 agree with all reducers. Fulltest is
+  **935/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
   with `testlateinstproto` fixed, zero additions in its two-way failset diff,
   and eligible **EXE 882/0** and **OBJ 882/0**; that whole lane was not rerun
-  for @0fc1abf8 because no existing test flipped. `testcontainerdtor` now
-  reaches c2mir; its first remaining root is KG Gap
-  `copied_member_pack_reference_argument_adaptation`, where a rebuilt member
-  pack call copies values wholesale instead of adapting them to the concrete
-  winner's reference/pointer formals. NEXT: map hidden receiver/sret and
-  expanded pack slots, reuse `copied_call_arg_for_formal`, and flip the
-  existing test; keep
+  for @2dd53e47 because no existing test flipped. `testcontainerdtor` now has
+  two converting-return errors by default; `MADC_FWDREF_ARM=1` removes the map
+  mismatch and leaves only `set:564`. NEXT: trace that converting pair return,
+  fix its deepest shared materialization root, and flip the existing test; keep
   #114 parked until its ABI/API decision is answered.
 
 - **v0.67.0 (2026-08-01): the flavor-ABI release (tasks

@@ -6,9 +6,21 @@ Variadic-pack correctness, `sizeof...` becomes a real operator, and seven
 generic class-template/return fixes join the libc++ parity burn-down. The
 flavored lane moved **891/28 → 898/26**: six new gates plus the flips
 `teststdstringconv` and `testlateinstproto`, with zero newly broken tests in
-either measured two-way failset diff. Fulltest is **933/0/0TO/9skip**;
+either measured two-way failset diff. Fulltest is **935/0/0TO/9skip**;
 libc++-eligible EXE and OBJ were each **882/0** at the last whole-lane
 measurement.
+
+- **fix: copied member reference packs adapt against concrete winner formals
+  (@2dd53e47).** The member-symbol-only tsubst path replaced the callee but
+  copied its arguments wholesale, bypassing the formal-aware adapter used by
+  ordinary dependent calls. CALL-level replay now accounts for hidden sret
+  and receiver arguments, fans out each pack element, and adapts it against
+  the corresponding concrete formal. Reference-returning bare-ID markers are
+  preserved as already-lowered addresses instead of being addressed twice.
+  New `testmemberpackrefcall` and `testmemberpackrefsret` match GCC and Clang
+  at `34` and pass madc JIT/EXE/OBJ; the focused CIR unit and nine default
+  regression controls pass. `testcontainerdtor` falls from six c2mir errors
+  to two by default and to one with `MADC_FWDREF_ARM=1`. Fulltest is 935/0.
 
 - **fix: nested pack constructors instantiate the viable candidate
   (@0fc1abf8).** Retained constructor-template lookup now continues past a
