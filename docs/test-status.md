@@ -1,9 +1,13 @@
 # Test Status
 
-> **Current (2026-08-04, `feature/libcxx-parity6-codex` @5c3a8510 —
-> task #72 generic precursors):** fulltest **938 passed, 0 failed,
+> **Current (2026-08-04, `feature/libcxx-parity6-codex` @6209e622 —
+> task #72 generic precursors):** fulltest **939 passed, 0 failed,
 > 0 timed out, 9 skipped**; `forest_index_oracle` is **5227 indexed names /
-> 3521 registered lookups**. `testoutoflinemembertemplateoverload` covers
+> 3521 registered lookups**. `testconvopclass` covers cv-aware source
+> conversion-function selection into a trivially-copyable class through both
+> stack and address-based construction; it passes JIT, EXE, and OBJ and agrees
+> with GCC/Clang verbose assembly and runtime at `41 42 42`.
+> `testoutoflinemembertemplateoverload` covers
 > plain/member-template overload identity and a const member followed by
 > `throw()`; it passes JIT, EXE, and OBJ and agrees with GCC/Clang at `1 2`.
 > `testreturnconvctortemplate` and
@@ -11,16 +15,16 @@
 > retbuf copy-initialization through retained converting constructor templates.
 > Both pass JIT, EXE, and OBJ and agree with GCC/Clang verbose-assembly/runtime
 > at `73 1` and `91 1`. Under `MADC_FWDREF_ARM=1`, real libc++
-> `testcontainerdtor` now materializes inline `basic_string::compare` and
-> reaches the recorded source conversion-function gap at
-> `basic_string_view(__str)`; default mode still stops on the earlier
+> `testcontainerdtor` now compiles and starts. After its first `set<string>`
+> insert the traced size is 33 instead of 1, and the second insert crashes in
+> `char_traits_char__copy`; default mode still stops on the earlier
 > tuple-reference constructor path.
 > The last whole flavored measurement, not rerun because no existing test
 > flipped, remains **898 passed / 26 failed / 0 timed out / 12 skipped**;
 > eligible EXE and OBJ remain **882/0**. Logs:
-> `tmp/logs/rb-20260804-043019.log` (fulltest),
-> `tmp/logs/rb-20260804-042914.log` (new gate and controls JIT/EXE/OBJ),
-> `tmp/logs/rb-20260804-042832.log` (build), and
+> `tmp/logs/rb-20260804-045402.log` (fulltest),
+> `tmp/logs/rb-20260804-045340.log` (new gate and controls JIT/EXE/OBJ),
+> `tmp/logs/rb-20260804-045309.log` (build), and
 > `tmp/logs/rb-20260803-224941.log` (last whole libc++ battery).
 >
 > **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —

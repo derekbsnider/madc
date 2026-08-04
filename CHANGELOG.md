@@ -2,13 +2,25 @@
 
 ## [Unreleased]
 
-Variadic-pack correctness, `sizeof...` becomes a real operator, and eight
+Variadic-pack correctness, `sizeof...` becomes a real operator, and nine
 generic class-template/return fixes join the libc++ parity burn-down. The
 flavored lane moved **891/28 → 898/26**: six new gates plus the flips
 `teststdstringconv` and `testlateinstproto`, with zero newly broken tests in
-either measured two-way failset diff. Fulltest is **938/0/0TO/9skip**;
+either measured two-way failset diff. Fulltest is **939/0/0TO/9skip**;
 libc++-eligible EXE and OBJ were each **882/0** at the last whole-lane
 measurement.
+
+- **fix: class construction consumes native source conversion functions
+  (@6209e622).** When target constructor selection reaches the implicit-copy
+  fallback, it now finds a zero-argument conversion method on the source by
+  semantic return class, source-object cv, class hiding, and base ambiguity.
+  Trivially-copyable native results share the existing stack/address
+  destination writeback; non-trivial and hidden-retbuf results remain loud
+  until their destination-forwarding semantics are modeled. New
+  `testconvopclass` matches GCC and Clang at `41 42 42` and passes madc
+  JIT/EXE/OBJ. Under `MADC_FWDREF_ARM=1`, real libc++ `testcontainerdtor`
+  now compiles and starts; its next blocker is runtime `set<string>` state
+  corruption before the second insert. Fulltest is 939/0.
 
 - **fix: out-of-line class-template member bodies attach to the exact overload
   (@5c3a8510).** Definition attachment now requires plain/member-template

@@ -1,16 +1,16 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-04 (unreleased
-libc++ parity checkpoint @5c3a8510): out-of-line class-template member bodies
-now attach by exact overload kind, and declarator-level const detection ignores
-later parenthesized exception specifications. Fulltest is
-**938/0/0TO/9skip**. The last whole flavored
+libc++ parity checkpoint @6209e622): class construction now consumes
+zero-argument source conversion functions returning a trivially-copyable
+native target, with cv-aware selection and shared stack/address writeback.
+Fulltest is **939/0/0TO/9skip**. The last whole flavored
 measurement remains **898/26** with zero timeouts because no existing test has
 flipped yet. With `MADC_FWDREF_ARM=1`, `testcontainerdtor` now clears c2mir
-through inline libc++ `basic_string::compare` and reaches the recorded generic
-source conversion-function gap while constructing `basic_string_view`; NEXT is
-that CIR conversion root. #114 remains blocked on the owner decision about
-mangling overloaded user free functions.
+and starts, then reports corrupt `set<string>` state before crashing during its
+second insert. NEXT is a generic reduction of that runtime root, beginning
+with the emitted `__tree` iterator pointer conversions. #114 remains blocked
+on the owner decision about mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -37,7 +37,12 @@ high-level" — the answer is both.**
 ## Current State
 
 - **Unreleased parity checkpoint (2026-08-04, task #72 precursors, P2.7 in
-  progress).** Out-of-line class-template member definition attachment now
+  progress).** Class construction now selects a zero-argument conversion
+  method on the source by semantic target class and object cv, honors hiding
+  and ambiguous bases, and shares stack/address destination writeback for
+  trivially-copyable native results (@6209e622). New `testconvopclass` matches
+  GCC and Clang at `41 42 42` and passes madc JIT/EXE/OBJ. Out-of-line
+  class-template member definition attachment now
   distinguishes plain declarations from member templates and finds trailing
   cv qualifiers from the declarator parameter-list boundary even when
   `throw()` follows (@5c3a8510). New
@@ -84,15 +89,15 @@ high-level" — the answer is both.**
   its `TokenCallFunc` origin through CIR copying (@518412e2); and concrete
   member-template return tokens resolve under the definition owner
   (@ef168838). GCC 13 and Clang 18 agree with all reducers. Fulltest is
-  **938/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
+  **939/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
   with `testlateinstproto` fixed, zero additions in its two-way failset diff,
   and eligible **EXE 882/0** and **OBJ 882/0**; that whole lane was not rerun
-  for @5c3a8510 because no existing test flipped. Under
-  `MADC_FWDREF_ARM=1`, `testcontainerdtor` now materializes inline libc++
-  `basic_string::compare` and reaches the generic conversion-function gap at
-  `basic_string_view(__str)`; default mode still stops on the earlier
-  tuple-reference constructor path. NEXT: apply registered source conversion
-  functions in the generic CIR construction path and flip the existing test; keep
+  for @6209e622 because no existing test flipped. Under
+  `MADC_FWDREF_ARM=1`, `testcontainerdtor` now compiles and starts, but after
+  one `set<string>` insert it reports size 33 instead of 1 and crashes in
+  `char_traits_char__copy` on the second insert. NEXT: reduce the two emitted
+  incompatible pointer assignments around libc++ `__tree` iterator conversion
+  and determine whether pointer upcast or class-layout identity is wrong. Keep
   #114 parked until its ABI/API decision is answered.
 
 - **v0.67.0 (2026-08-01): the flavor-ABI release (tasks
