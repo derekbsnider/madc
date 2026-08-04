@@ -1,30 +1,32 @@
 # Test Status
 
-> **Current (2026-08-04, `feature/libcxx-parity6-codex` @6209e622 —
-> task #72 generic precursors):** fulltest **939 passed, 0 failed,
+> **Current (2026-08-04, `feature/libcxx-parity6-codex` @40cb8766 —
+> pointer/reference ownership audit):** fulltest **942 passed, 0 failed,
 > 0 timed out, 9 skipped**; `forest_index_oracle` is **5227 indexed names /
-> 3521 registered lookups**. `testconvopclass` covers cv-aware source
-> conversion-function selection into a trivially-copyable class through both
-> stack and address-based construction; it passes JIT, EXE, and OBJ and agrees
-> with GCC/Clang verbose assembly and runtime at `41 42 42`.
-> `testoutoflinemembertemplateoverload` covers
-> plain/member-template overload identity and a const member followed by
-> `throw()`; it passes JIT, EXE, and OBJ and agrees with GCC/Clang at `1 2`.
-> `testreturnconvctortemplate` and
-> `testreturnconvctortemplateretbuf` cover native aggregate-return and hidden
-> retbuf copy-initialization through retained converting constructor templates.
-> Both pass JIT, EXE, and OBJ and agree with GCC/Clang verbose-assembly/runtime
-> at `73 1` and `91 1`. Under `MADC_FWDREF_ARM=1`, real libc++
-> `testcontainerdtor` now compiles and starts. After its first `set<string>`
-> insert the traced size is 33 instead of 1, and the second insert crashes in
-> `char_traits_char__copy`; default mode still stops on the earlier
-> tuple-reference constructor path.
+> 3521 registered lookups**. `testeboemptycopy` proves that copying a
+> semantically empty base does not write its synthetic MC11 carrier over an
+> offset-zero value subobject; GCC, Clang, and madc agree at `90` in JIT, EXE,
+> and OBJ. `testrefptrparam` covers declared free and inline method `T*&`
+> parameters; both canons and all madc backends agree at `42 1 43 1`.
+> `testcopiedrefptrparam` covers a copied dependent member call through
+> `std::forward`: GCC and Clang pass the pointer-slot address, madc emits
+> `((int **)(&parent))`, and JIT/EXE/OBJ all print `1`. The new
+> `check-ref-arg-lowering-owner.sh` gate requires copied and deferred calls to
+> delegate to the one reference-address owner and rejects the old raw operator
+> and copied-value implementations.
+>
+> Under `MADC_FWDREF_ARM=1`, real libc++ `testcontainerdtor` now passes
+> `&__parent` to `find_equal`, prints `vec size: 4` and `ints size: 3`, then
+> crashes in `char_traits_char__copy`. The standalone `set<string>` trace now
+> reports size 1 after its first insert and reaches `E beta` before the same
+> second-insert crash. Without the arm, `testcontainerdtor` still stops on the
+> earlier tuple-reference constructor path.
 > The last whole flavored measurement, not rerun because no existing test
 > flipped, remains **898 passed / 26 failed / 0 timed out / 12 skipped**;
 > eligible EXE and OBJ remain **882/0**. Logs:
-> `tmp/logs/rb-20260804-045402.log` (fulltest),
-> `tmp/logs/rb-20260804-045340.log` (new gate and controls JIT/EXE/OBJ),
-> `tmp/logs/rb-20260804-045309.log` (build), and
+> `tmp/logs/rb-20260804-063113.log` (fulltest),
+> `tmp/logs/rb-20260804-063004.log` (focused JIT/EXE/OBJ),
+> `tmp/logs/rb-20260804-062911.log` (build), and
 > `tmp/logs/rb-20260803-224941.log` (last whole libc++ battery).
 >
 > **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —

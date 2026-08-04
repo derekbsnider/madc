@@ -1,16 +1,19 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-04 (unreleased
-libc++ parity checkpoint @6209e622): class construction now consumes
-zero-argument source conversion functions returning a trivially-copyable
-native target, with cv-aware selection and shared stack/address writeback.
-Fulltest is **939/0/0TO/9skip**. The last whole flavored
-measurement remains **898/26** with zero timeouts because no existing test has
-flipped yet. With `MADC_FWDREF_ARM=1`, `testcontainerdtor` now clears c2mir
-and starts, then reports corrupt `set<string>` state before crashing during its
-second insert. NEXT is a generic reduction of that runtime root, beginning
-with the emitted `__tree` iterator pointer conversions. #114 remains blocked
-on the owner decision about mangling overloaded user free functions.
+libc++ parity checkpoint @40cb8766): native class source conversions, empty
+base copy semantics, direct pointer-reference parameter parsing, and copied
+reference-formal argument lowering are now banked. The latter has one CIR
+owner and a fulltest duplication gate. Fulltest is **942/0/0TO/9skip**. The
+last whole flavored measurement remains **898/26** with zero timeouts because
+no existing test has flipped yet. With `MADC_FWDREF_ARM=1`,
+`testcontainerdtor` now passes `&__parent` to the libc++ `find_equal`
+reference formal and starts. A standalone `set<string>` trace reaches size 1
+and reads the second key before crashing in `char_traits_char__copy` during
+the second insert. NEXT is to trace the remaining incompatible assignment at
+libc++ `__tree:722` into that copy's source and destination state, comparing
+GCC and Clang before editing. #114 remains blocked on the owner decision about
+mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -41,7 +44,18 @@ high-level" — the answer is both.**
   method on the source by semantic target class and object cv, honors hiding
   and ambiguous bases, and shares stack/address destination writeback for
   trivially-copyable native results (@6209e622). New `testconvopclass` matches
-  GCC and Clang at `41 42 42` and passes madc JIT/EXE/OBJ. Out-of-line
+  GCC and Clang at `41 42 42` and passes madc JIT/EXE/OBJ. Implicit copies of
+  empty classes now preserve the object address without manufacturing a
+  one-byte write (@fda0e15d), and `testeboemptycopy` passes all three lanes.
+  Direct reference parameters preserve every referent pointer layer, so
+  `T *&` lowers to the required `T **` ABI (@9013b492); `testrefptrparam`
+  matches GCC and Clang at `42 1 43 1` and passes all three lanes. Copied
+  dependent calls, deferred construction, and operator lowering now delegate
+  reference-formal adaptation to `ref_param_arg_addr_from_value`, the same
+  policy owner used by ordinary calls (@40cb8766). The
+  `testcopiedrefptrparam` reducer catches the former `T *`-to-`T **` cast and
+  the executable `check-ref-arg-lowering-owner.sh` gate prevents another
+  partial owner. Both pass JIT/EXE/OBJ and fulltest. Out-of-line
   class-template member definition attachment now
   distinguishes plain declarations from member templates and finds trailing
   cv qualifiers from the declarator parameter-list boundary even when
@@ -89,16 +103,18 @@ high-level" — the answer is both.**
   its `TokenCallFunc` origin through CIR copying (@518412e2); and concrete
   member-template return tokens resolve under the definition owner
   (@ef168838). GCC 13 and Clang 18 agree with all reducers. Fulltest is
-  **939/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
+  **942/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
   with `testlateinstproto` fixed, zero additions in its two-way failset diff,
   and eligible **EXE 882/0** and **OBJ 882/0**; that whole lane was not rerun
-  for @6209e622 because no existing test flipped. Under
-  `MADC_FWDREF_ARM=1`, `testcontainerdtor` now compiles and starts, but after
-  one `set<string>` insert it reports size 33 instead of 1 and crashes in
-  `char_traits_char__copy` on the second insert. NEXT: reduce the two emitted
-  incompatible pointer assignments around libc++ `__tree` iterator conversion
-  and determine whether pointer upcast or class-layout identity is wrong. Keep
-  #114 parked until its ABI/API decision is answered.
+  for @40cb8766 because no existing test flipped. Under
+  `MADC_FWDREF_ARM=1`, `testcontainerdtor` now emits the required `T **`
+  callee and passes `&__parent` into libc++ `find_equal`. A standalone
+  `set<string>` trace reaches size 1 after the first insert and reads `beta`
+  before crashing in `char_traits_char__copy` on the second. One incompatible
+  pointer assignment remains at libc++ `__tree:722`. NEXT: trace that
+  assignment into the copy's source and destination pointer/size state, then
+  compare the reduced lowering with GCC and Clang before editing. Keep #114
+  parked until its ABI/API decision is answered.
 
 - **v0.67.0 (2026-08-01): the flavor-ABI release (tasks
   #69/#92/#93/#98, P2.7 in progress).** The flavored lane went 859/40

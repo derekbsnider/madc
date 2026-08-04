@@ -2,13 +2,39 @@
 
 ## [Unreleased]
 
-Variadic-pack correctness, `sizeof...` becomes a real operator, and nine
-generic class-template/return fixes join the libc++ parity burn-down. The
-flavored lane moved **891/28 → 898/26**: six new gates plus the flips
+Variadic-pack correctness, `sizeof...` becomes a real operator, and generic
+class-template, construction, and reference-binding fixes join the libc++
+parity burn-down. The flavored lane moved **891/28 → 898/26**: six new gates plus the flips
 `teststdstringconv` and `testlateinstproto`, with zero newly broken tests in
-either measured two-way failset diff. Fulltest is **939/0/0TO/9skip**;
+either measured two-way failset diff. Fulltest is **942/0/0TO/9skip**;
 libc++-eligible EXE and OBJ were each **882/0** at the last whole-lane
 measurement.
+
+- **fix: non-class reference arguments have one lowering owner
+  (@40cb8766).** Copied dependent calls no longer cast a pointer lvalue value
+  directly to a `T**` formal when binding `T*&`; copied reference slots,
+  deferred construction, and operator calls now share the ordinary
+  lvalue-address/prvalue-temporary/conversion policy. Cast-wrapped forwarding
+  slots retain their stored-address representation. New
+  `testcopiedrefptrparam` matches GCC and Clang, passes JIT/EXE/OBJ, and emits
+  `&parent`. `check-ref-arg-lowering-owner.sh` prevents the four partial
+  implementations from returning. Real libc++ `find_equal` now receives
+  `&__parent` and advances to the downstream `char_traits::copy` crash.
+  Fulltest is 942/0.
+
+- **fix: direct pointer-reference parameters preserve every derived layer
+  (@9013b492).** Normal function registration now wraps the fully decorated
+  parameter type instead of rebuilding a reference from its undecorated base,
+  so both declared free functions and inline methods retain `T*&` as the
+  `T**` C ABI. New `testrefptrparam` agrees with GCC and Clang at
+  `42 1 43 1` and passes madc JIT/EXE/OBJ. Fulltest is 941/0.
+
+- **fix: implicit copies of semantically empty classes are non-writing
+  (@fda0e15d).** The synthetic one-byte C carrier is an MC11 representation,
+  not C++ state; assigning it during an implicit copy overwrote a value-bearing
+  empty-base-optimized subobject at the same offset. New `testeboemptycopy`
+  matches GCC and Clang at `90` and passes JIT/EXE/OBJ. The libc++ set trace's
+  first insert now changes size from 0 to 1. Fulltest is 940/0.
 
 - **fix: class construction consumes native source conversion functions
   (@6209e622).** When target constructor selection reaches the implicit-copy
