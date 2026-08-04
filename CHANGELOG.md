@@ -2,13 +2,26 @@
 
 ## [Unreleased]
 
-Variadic-pack correctness, `sizeof...` becomes a real operator, and six
+Variadic-pack correctness, `sizeof...` becomes a real operator, and seven
 generic class-template/return fixes join the libc++ parity burn-down. The
-flavored lane moved **891/28 → 898/26**: five new gates plus the flips
+flavored lane moved **891/28 → 898/26**: six new gates plus the flips
 `teststdstringconv` and `testlateinstproto`, with zero newly broken tests in
-either measured two-way failset diff. Fulltest is **928/0/0TO/9skip**;
+either measured two-way failset diff. Fulltest is **929/0/0TO/9skip**;
 libc++-eligible EXE and OBJ were each **882/0** at the last whole-lane
 measurement.
+
+- **fix: qualified reference elements survive nested partial-specialization
+  pack substitution (@e34a06f6).** String-spelled deduced elements now resolve
+  namespace-qualified aliases through the namespace type map, and resolved
+  references are materialized with source-level `T&` spelling rather than
+  their lowered `T*` representation when cloned template bodies are parsed.
+  New `testnestedpackref` follows two specialization hops; GCC 13, Clang 18,
+  and madc agree at `9`, and the exact libc++ `tuple_element` reducer now
+  prints `Alice!`. Focused default controls pass JIT/EXE/OBJ and fulltest is
+  929/0 with every post-suite gate green. Six existing libc++ failures move
+  beyond `basic_string_view(basic_string**)` to forwarding/reference
+  adaptation and converting-return diagnostics; the whole flavored lane was
+  not rerun because none has flipped yet.
 
 - **fix: nested plain aggregates preserve their class-template-instantiation
   identity (@9debe778).** Their first declaration now derives the struct-map

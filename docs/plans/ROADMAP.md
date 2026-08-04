@@ -1,16 +1,16 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-04 (unreleased
-libc++ parity checkpoint @9debe778): nested plain aggregates now receive
-owner-derived identities from their first class-template-instantiation
-declaration. Fulltest is **928/0/0TO/9skip**. The last whole flavored
+libc++ parity checkpoint @e34a06f6): namespace-qualified references now
+survive nested partial-specialization pack substitution through cloned
+template bodies. Fulltest is **929/0/0TO/9skip**. The last whole flavored
 measurement remains **898/26** with zero timeouts; the prerequisite was
-validated against its reducer and affected controls in JIT/EXE/OBJ, but did
-not yet flip an existing test. The immediate root is the shared
-`basic_string_view(basic_string**)` constructor shape in three standalone
-failures; `testset` retains its independent member-pack, derived-value, and
-converting-return roots. #114 remains blocked on the owner decision about
-mangling overloaded user free functions.
+validated against GCC, Clang, the exact libc++ reducer, and default controls
+in JIT/EXE/OBJ, but did not yet flip an existing test. Six existing tests now
+advance beyond `basic_string_view(basic_string**)` to reference collapse,
+copied member-pack argument adaptation, and converting-return roots. #114
+remains blocked on the owner decision about mangling overloaded user free
+functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -37,9 +37,16 @@ high-level" — the answer is both.**
 ## Current State
 
 - **Unreleased parity checkpoint (2026-08-04, task #72 precursors, P2.7 in
-  progress).** Plain aggregates nested in class-template instantiations now
-  receive owner-derived store keys, emitted names, and canonical spellings
-  from their first declaration (@9debe778); isolated class-pattern capture
+  progress).** Nested partial-specialization packs now resolve
+  namespace-qualified aliases through the namespace type map and serialize
+  resolved references with source-level reference spelling across cloned
+  template bodies (@e34a06f6). New `testnestedpackref` follows two nested
+  specialization hops; GCC 13, Clang 18, and madc agree at `9`, the exact
+  libc++ `tuple_element` reducer prints `Alice!`, and focused default
+  JIT/EXE/OBJ controls pass 6/6 in each lane. Plain aggregates nested in
+  class-template instantiations receive owner-derived store keys, emitted
+  names, and canonical spellings from their first declaration (@9debe778);
+  isolated class-pattern capture
   remains pattern-owned and the forest lookup oracle filters every canonical
   instantiation product. New real-header gate `testnestedaggregateidentity`
   agrees with GCC and Clang and passes madc JIT/EXE/OBJ. Dependent template-id
@@ -49,16 +56,17 @@ high-level" — the answer is both.**
   `testlateinstproto`; and direct-slot non-trivial return initialization keeps
   its `TokenCallFunc` origin through CIR copying (@518412e2); and concrete
   member-template return tokens resolve under the definition owner
-  (@ef168838). GCC 13 and Clang 18 agree with all five reducers. Fulltest is
-  **928/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
+  (@ef168838). GCC 13 and Clang 18 agree with all six reducers. Fulltest is
+  **929/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
   with `testlateinstproto` fixed, zero additions in its two-way failset diff,
   and eligible **EXE 882/0** and **OBJ 882/0**; that whole lane was not rerun
-  for @9debe778. Three prior `__tree` tests now
-  advance to a shared `basic_string_view(basic_string**)` constructor-shape
-  failure; `testset` reaches concrete `__construct_node__mti` and exposes
-  separate member-pack adaptation, derived-value slicing, and converting-return
-  roots. NEXT: reduce and fix the three-test pointer-shape producer, then
-  continue `testset`'s remaining roots; keep
+  for @e34a06f6 because no existing test flipped. Six targeted tests now
+  advance beyond `basic_string_view(basic_string**)`; generated C exposes
+  `forward_as_tuple` reference collapse, copied member-pack arguments passed
+  as values to reference formals, and converting pair-return roots. NEXT:
+  distinguish the shared reference-collapse producer from KG Gap
+  `copied_member_pack_reference_argument_adaptation`, then fix the deepest
+  shared root and flip an existing test; keep
   #114 parked until its ABI/API decision is answered.
 
 - **v0.67.0 (2026-08-01): the flavor-ABI release (tasks

@@ -1,19 +1,19 @@
 # Test Status
 
-> **Current (2026-08-04, `feature/libcxx-parity6-codex` @9debe778 —
-> task #72 generic precursors):** fulltest **928 passed, 0 failed,
+> **Current (2026-08-04, `feature/libcxx-parity6-codex` @e34a06f6 —
+> task #72 generic precursors):** fulltest **929 passed, 0 failed,
 > 0 timed out, 9 skipped**; `forest_index_oracle` is **5227 indexed names /
-> 3521 registered lookups**. New real-header gate
-> `testnestedaggregateidentity` and its default controls pass JIT, EXE, and
-> OBJ. GCC and Clang agree at `value=forty-two`. The four targeted existing
-> libc++ tests remain failing at downstream roots: three share a
-> `basic_string_view(basic_string**)` constructor-shape error and `testset`
-> retains independent member-pack, derived-value, and converting-return
-> blockers. The last whole flavored measurement, not rerun for this
-> prerequisite, remains **898 passed / 26 failed / 0 timed out / 12 skipped**;
+> 3521 registered lookups**. New gate `testnestedpackref` and its default
+> controls pass JIT, EXE, and OBJ; GCC and Clang agree at `9`, and the exact
+> libc++ `tuple_element` reducer prints `Alice!`. Six targeted existing
+> libc++ tests advance past `basic_string_view(basic_string**)` but remain
+> failing at forwarding/reference-adaptation and converting-return roots.
+> The last whole flavored measurement, not rerun because no existing test
+> flipped, remains **898 passed / 26 failed / 0 timed out / 12 skipped**;
 > eligible EXE and OBJ remain **882/0**. Logs:
-> `tmp/logs/rb-20260804-003611.log` (fulltest),
-> `tmp/logs/rb-20260803-235727.log` (targeted libc++ JIT/EXE/OBJ), and
+> `tmp/logs/rb-20260804-014032.log` (fulltest),
+> `tmp/logs/rb-20260804-013922.log` (focused default JIT/EXE/OBJ),
+> `tmp/logs/rb-20260804-013537.log` (six targeted libc++ tests), and
 > `tmp/logs/rb-20260803-224941.log` (last whole libc++ battery).
 >
 > **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —
