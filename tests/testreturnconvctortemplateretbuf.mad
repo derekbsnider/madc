@@ -1,0 +1,50 @@
+// The same converting constructor-template rule applies when a non-trivial
+// target uses madc's hidden result buffer instead of c2mir's native aggregate
+// return. GCC and Clang print 91 1.
+#include <stdio.h>
+
+struct Iter {
+	int *ptr;
+	Iter() { ptr = 0; }
+};
+
+struct ConstIter {
+	int *ptr;
+	ConstIter() { ptr = 0; }
+	ConstIter(const Iter& iter) { ptr = iter.ptr; }
+};
+
+template<class First, class Second>
+struct Pair {
+	First first;
+	Second second;
+	Pair() {}
+	~Pair() {}
+
+	template<class OtherFirst, class OtherSecond>
+	Pair(const Pair<OtherFirst, OtherSecond>& other)
+		: first(other.first), second(other.second)
+	{
+	}
+};
+
+Pair<Iter, bool> make_pair_value(int *ptr)
+{
+	Pair<Iter, bool> result;
+	result.first.ptr = ptr;
+	result.second = true;
+	return result;
+}
+
+Pair<ConstIter, bool> make_const_pair(int *ptr)
+{
+	return make_pair_value(ptr);
+}
+
+int main()
+{
+	int value = 91;
+	Pair<ConstIter, bool> result = make_const_pair(&value);
+	printf("%d %d\n", *result.first.ptr, result.second);
+	return 0;
+}

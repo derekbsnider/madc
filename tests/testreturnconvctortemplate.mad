@@ -1,0 +1,50 @@
+// Return-value copy-initialization must instantiate a retained converting
+// constructor template before returning the target aggregate. This is the
+// native struct-return shape used by libc++ pair<iterator,bool> converting to
+// pair<const_iterator,bool>. GCC and Clang print 73 1.
+#include <stdio.h>
+
+struct Iter {
+	int *ptr;
+	Iter() { ptr = 0; }
+};
+
+struct ConstIter {
+	int *ptr;
+	ConstIter() { ptr = 0; }
+	ConstIter(const Iter& iter) { ptr = iter.ptr; }
+};
+
+template<class First, class Second>
+struct Pair {
+	First first;
+	Second second;
+	Pair() {}
+
+	template<class OtherFirst, class OtherSecond>
+	Pair(const Pair<OtherFirst, OtherSecond>& other)
+		: first(other.first), second(other.second)
+	{
+	}
+};
+
+Pair<Iter, bool> make_pair_value(int *ptr)
+{
+	Pair<Iter, bool> result;
+	result.first.ptr = ptr;
+	result.second = true;
+	return result;
+}
+
+Pair<ConstIter, bool> make_const_pair(int *ptr)
+{
+	return make_pair_value(ptr);
+}
+
+int main()
+{
+	int value = 73;
+	Pair<ConstIter, bool> result = make_const_pair(&value);
+	printf("%d %d\n", *result.first.ptr, result.second);
+	return 0;
+}

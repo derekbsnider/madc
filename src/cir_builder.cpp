@@ -10803,7 +10803,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 {
 	std::vector<TokenBase *> copy_args;
 	if (src) copy_args.push_back(src);
-	FuncDef *copy_ctor = select_ctor_overload(cdd, copy_args);
+	FuncDef *copy_ctor = select_or_instantiate_ctor(cdd, copy_args);
 	if (copy_ctor && src) {
 		std::string sym = ctor_call_symbol(cdd, copy_ctor);
 		node_t args = list();
@@ -18987,7 +18987,7 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		if (ec != rc) {
 			std::vector<TokenBase *> ctor_args;
 			ctor_args.push_back(tr->returns);
-			if (select_ctor_overload(rc, ctor_args)) {
+			if (select_or_instantiate_ctor(rc, ctor_args)) {
 				char name[32];
 				snprintf(name, sizeof(name), "__madc_retconv_%d",
 					 m_strtmp_counter++);
