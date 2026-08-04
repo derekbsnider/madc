@@ -6,9 +6,19 @@ Variadic-pack correctness, `sizeof...` becomes a real operator, and eight
 generic class-template/return fixes join the libc++ parity burn-down. The
 flavored lane moved **891/28 → 898/26**: six new gates plus the flips
 `teststdstringconv` and `testlateinstproto`, with zero newly broken tests in
-either measured two-way failset diff. Fulltest is **937/0/0TO/9skip**;
+either measured two-way failset diff. Fulltest is **938/0/0TO/9skip**;
 libc++-eligible EXE and OBJ were each **882/0** at the last whole-lane
 measurement.
+
+- **fix: out-of-line class-template member bodies attach to the exact overload
+  (@5c3a8510).** Definition attachment now requires plain/member-template
+  identity, and const-method classification starts after the declarator's own
+  parameter list instead of after a later `throw()` suffix. New
+  `testoutoflinemembertemplateoverload` matches GCC and Clang at `1 2` and
+  passes madc JIT/EXE/OBJ. Under `MADC_FWDREF_ARM=1`, real libc++
+  `testcontainerdtor` now materializes inline `basic_string::compare` and
+  advances to the recorded source conversion-function gap while constructing
+  `basic_string_view`. Fulltest is 938/0.
 
 - **fix: converting constructor templates instantiate during return
   copy-initialization (@84713d03).** The native aggregate-return and hidden

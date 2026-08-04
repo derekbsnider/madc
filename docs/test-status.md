@@ -1,22 +1,26 @@
 # Test Status
 
-> **Current (2026-08-04, `feature/libcxx-parity6-codex` @84713d03 —
-> task #72 generic precursors):** fulltest **937 passed, 0 failed,
+> **Current (2026-08-04, `feature/libcxx-parity6-codex` @5c3a8510 —
+> task #72 generic precursors):** fulltest **938 passed, 0 failed,
 > 0 timed out, 9 skipped**; `forest_index_oracle` is **5227 indexed names /
-> 3521 registered lookups**. `testreturnconvctortemplate` and
+> 3521 registered lookups**. `testoutoflinemembertemplateoverload` covers
+> plain/member-template overload identity and a const member followed by
+> `throw()`; it passes JIT, EXE, and OBJ and agrees with GCC/Clang at `1 2`.
+> `testreturnconvctortemplate` and
 > `testreturnconvctortemplateretbuf` cover native aggregate-return and hidden
 > retbuf copy-initialization through retained converting constructor templates.
 > Both pass JIT, EXE, and OBJ and agree with GCC/Clang verbose-assembly/runtime
 > at `73 1` and `91 1`. Under `MADC_FWDREF_ARM=1`, real libc++
-> `testcontainerdtor` clears c2mir and reaches an undefined inline
-> `basic_string::compare` import at MIR link; default mode still stops on the
-> earlier tuple-reference constructor path.
+> `testcontainerdtor` now materializes inline `basic_string::compare` and
+> reaches the recorded source conversion-function gap at
+> `basic_string_view(__str)`; default mode still stops on the earlier
+> tuple-reference constructor path.
 > The last whole flavored measurement, not rerun because no existing test
 > flipped, remains **898 passed / 26 failed / 0 timed out / 12 skipped**;
 > eligible EXE and OBJ remain **882/0**. Logs:
-> `tmp/logs/rb-20260804-035338.log` (fulltest),
-> `tmp/logs/rb-20260804-035315.log` (two new gates JIT/EXE/OBJ),
-> `tmp/logs/rb-20260804-035108.log` (build), and
+> `tmp/logs/rb-20260804-043019.log` (fulltest),
+> `tmp/logs/rb-20260804-042914.log` (new gate and controls JIT/EXE/OBJ),
+> `tmp/logs/rb-20260804-042832.log` (build), and
 > `tmp/logs/rb-20260803-224941.log` (last whole libc++ battery).
 >
 > **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —

@@ -1,14 +1,16 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-04 (unreleased
-libc++ parity checkpoint @84713d03): templated converting constructors now
-instantiate during both native and hidden-retbuf return copy-initialization.
-Fulltest is **937/0/0TO/9skip**. The last whole flavored
+libc++ parity checkpoint @5c3a8510): out-of-line class-template member bodies
+now attach by exact overload kind, and declarator-level const detection ignores
+later parenthesized exception specifications. Fulltest is
+**938/0/0TO/9skip**. The last whole flavored
 measurement remains **898/26** with zero timeouts because no existing test has
 flipped yet. With `MADC_FWDREF_ARM=1`, `testcontainerdtor` now clears c2mir
-and reaches an undefined inline libc++ `basic_string::compare` import at MIR
-link; NEXT is the generic member-body resolution root. #114 remains blocked on
-the owner decision about mangling overloaded user free functions.
+through inline libc++ `basic_string::compare` and reaches the recorded generic
+source conversion-function gap while constructing `basic_string_view`; NEXT is
+that CIR conversion root. #114 remains blocked on the owner decision about
+mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -35,7 +37,13 @@ high-level" — the answer is both.**
 ## Current State
 
 - **Unreleased parity checkpoint (2026-08-04, task #72 precursors, P2.7 in
-  progress).** Native aggregate-return and hidden-retbuf copy-initialization
+  progress).** Out-of-line class-template member definition attachment now
+  distinguishes plain declarations from member templates and finds trailing
+  cv qualifiers from the declarator parameter-list boundary even when
+  `throw()` follows (@5c3a8510). New
+  `testoutoflinemembertemplateoverload` matches GCC and Clang at `1 2` and
+  passes madc JIT/EXE/OBJ. Native aggregate-return and hidden-retbuf
+  copy-initialization
   now use the existing instantiating constructor selector (@84713d03), so
   retained converting constructor templates materialize the target class
   before c2mir. New `testreturnconvctortemplate` and
@@ -76,15 +84,15 @@ high-level" — the answer is both.**
   its `TokenCallFunc` origin through CIR copying (@518412e2); and concrete
   member-template return tokens resolve under the definition owner
   (@ef168838). GCC 13 and Clang 18 agree with all reducers. Fulltest is
-  **937/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
+  **938/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
   with `testlateinstproto` fixed, zero additions in its two-way failset diff,
   and eligible **EXE 882/0** and **OBJ 882/0**; that whole lane was not rerun
-  for @84713d03 because no existing test flipped. Under
-  `MADC_FWDREF_ARM=1`, `testcontainerdtor` clears c2mir and reaches an
-  undefined inline libc++ `basic_string::compare` import at MIR link; default
-  mode still stops on the earlier tuple-reference constructor path. NEXT:
-  trace why that inline member is imported rather than body-served, fix its
-  deepest generic member-body resolution root, and flip the existing test; keep
+  for @5c3a8510 because no existing test flipped. Under
+  `MADC_FWDREF_ARM=1`, `testcontainerdtor` now materializes inline libc++
+  `basic_string::compare` and reaches the generic conversion-function gap at
+  `basic_string_view(__str)`; default mode still stops on the earlier
+  tuple-reference constructor path. NEXT: apply registered source conversion
+  functions in the generic CIR construction path and flip the existing test; keep
   #114 parked until its ABI/API decision is answered.
 
 - **v0.67.0 (2026-08-01): the flavor-ABI release (tasks
