@@ -2,13 +2,25 @@
 
 ## [Unreleased]
 
-Variadic-pack correctness, `sizeof...` becomes a real operator, and seven
+Variadic-pack correctness, `sizeof...` becomes a real operator, and eight
 generic class-template/return fixes join the libc++ parity burn-down. The
 flavored lane moved **891/28 → 898/26**: six new gates plus the flips
 `teststdstringconv` and `testlateinstproto`, with zero newly broken tests in
-either measured two-way failset diff. Fulltest is **935/0/0TO/9skip**;
+either measured two-way failset diff. Fulltest is **937/0/0TO/9skip**;
 libc++-eligible EXE and OBJ were each **882/0** at the last whole-lane
 measurement.
+
+- **fix: converting constructor templates instantiate during return
+  copy-initialization (@84713d03).** The native aggregate-return and hidden
+  retbuf paths called the non-instantiating constructor scorer, so a retained
+  converting constructor template remained declaration-only and the source
+  aggregate reached c2mir unchanged. Both paths now reuse the existing
+  construction-time selector and instantiate the concrete winner before
+  writeback. New `testreturnconvctortemplate` and
+  `testreturnconvctortemplateretbuf` match GCC and Clang at `73 1` and `91 1`
+  and pass madc JIT/EXE/OBJ. Under `MADC_FWDREF_ARM=1`, real libc++
+  `testcontainerdtor` clears c2mir and reaches its next blocker, an undefined
+  inline `basic_string::compare` import at MIR link. Fulltest is 937/0.
 
 - **fix: copied member reference packs adapt against concrete winner formals
   (@2dd53e47).** The member-symbol-only tsubst path replaced the callee but

@@ -1,14 +1,14 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-04 (unreleased
-libc++ parity checkpoint @2dd53e47): copied member-call reference packs now
-map hidden sret/receiver slots and each expanded element to the concrete
-winner's formals. Fulltest is **935/0/0TO/9skip**. The last whole flavored
+libc++ parity checkpoint @84713d03): templated converting constructors now
+instantiate during both native and hidden-retbuf return copy-initialization.
+Fulltest is **937/0/0TO/9skip**. The last whole flavored
 measurement remains **898/26** with zero timeouts because no existing test has
-flipped yet. `testcontainerdtor` advances from six c2mir errors to two by
-default and from five to one with `MADC_FWDREF_ARM=1`; NEXT is the converting
-pair return at `set:564`. #114 remains blocked on the owner decision about
-mangling overloaded user free functions.
+flipped yet. With `MADC_FWDREF_ARM=1`, `testcontainerdtor` now clears c2mir
+and reaches an undefined inline libc++ `basic_string::compare` import at MIR
+link; NEXT is the generic member-body resolution root. #114 remains blocked on
+the owner decision about mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -35,9 +35,14 @@ high-level" — the answer is both.**
 ## Current State
 
 - **Unreleased parity checkpoint (2026-08-04, task #72 precursors, P2.7 in
-  progress).** Copied member pack calls now rebuild their arguments against
-  concrete winner formals, including hidden sret/receiver accounting and
-  per-element reference adaptation (@2dd53e47). Reference-returning pack IDs
+  progress).** Native aggregate-return and hidden-retbuf copy-initialization
+  now use the existing instantiating constructor selector (@84713d03), so
+  retained converting constructor templates materialize the target class
+  before c2mir. New `testreturnconvctortemplate` and
+  `testreturnconvctortemplateretbuf` match GCC and Clang at `73 1` and `91 1`
+  and pass madc JIT/EXE/OBJ. Copied member pack calls rebuild their arguments
+  against concrete winner formals, including hidden sret/receiver accounting
+  and per-element reference adaptation (@2dd53e47). Reference-returning pack IDs
   already store referent addresses and are no longer addressed twice. New
   `testmemberpackrefcall` and `testmemberpackrefsret` match GCC and Clang at
   `34`, pass madc JIT/EXE/OBJ, and cover receiver-only and non-trivial-return
@@ -71,13 +76,15 @@ high-level" — the answer is both.**
   its `TokenCallFunc` origin through CIR copying (@518412e2); and concrete
   member-template return tokens resolve under the definition owner
   (@ef168838). GCC 13 and Clang 18 agree with all reducers. Fulltest is
-  **935/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
+  **937/0/0TO/9skip**. The last measured whole libc++ lane is **898/26**,
   with `testlateinstproto` fixed, zero additions in its two-way failset diff,
   and eligible **EXE 882/0** and **OBJ 882/0**; that whole lane was not rerun
-  for @2dd53e47 because no existing test flipped. `testcontainerdtor` now has
-  two converting-return errors by default; `MADC_FWDREF_ARM=1` removes the map
-  mismatch and leaves only `set:564`. NEXT: trace that converting pair return,
-  fix its deepest shared materialization root, and flip the existing test; keep
+  for @84713d03 because no existing test flipped. Under
+  `MADC_FWDREF_ARM=1`, `testcontainerdtor` clears c2mir and reaches an
+  undefined inline libc++ `basic_string::compare` import at MIR link; default
+  mode still stops on the earlier tuple-reference constructor path. NEXT:
+  trace why that inline member is imported rather than body-served, fix its
+  deepest generic member-body resolution root, and flip the existing test; keep
   #114 parked until its ABI/API decision is answered.
 
 - **v0.67.0 (2026-08-01): the flavor-ABI release (tasks

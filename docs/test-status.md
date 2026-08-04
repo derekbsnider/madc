@@ -1,22 +1,22 @@
 # Test Status
 
-> **Current (2026-08-04, `feature/libcxx-parity6-codex` @2dd53e47 —
-> task #72 generic precursors):** fulltest **935 passed, 0 failed,
+> **Current (2026-08-04, `feature/libcxx-parity6-codex` @84713d03 —
+> task #72 generic precursors):** fulltest **937 passed, 0 failed,
 > 0 timed out, 9 skipped**; `forest_index_oracle` is **5227 indexed names /
-> 3521 registered lookups**. `testmemberpackrefcall` and
-> `testmemberpackrefsret` cover receiver-only and hidden-sret member calls
-> whose reference packs fan out against concrete winner formals. Both pass
-> JIT, EXE, and OBJ and agree with GCC/Clang verbose-assembly/runtime at `34`;
-> the focused CIR unit is 11/11. The nine default-stdlib regression controls
-> pass. On real libc++, `testcontainerdtor` drops from six c2mir errors to two
-> by default and from five to one with `MADC_FWDREF_ARM=1`; the remaining
-> experimental-arm error is the converting pair return at `set:564`.
+> 3521 registered lookups**. `testreturnconvctortemplate` and
+> `testreturnconvctortemplateretbuf` cover native aggregate-return and hidden
+> retbuf copy-initialization through retained converting constructor templates.
+> Both pass JIT, EXE, and OBJ and agree with GCC/Clang verbose-assembly/runtime
+> at `73 1` and `91 1`. Under `MADC_FWDREF_ARM=1`, real libc++
+> `testcontainerdtor` clears c2mir and reaches an undefined inline
+> `basic_string::compare` import at MIR link; default mode still stops on the
+> earlier tuple-reference constructor path.
 > The last whole flavored measurement, not rerun because no existing test
 > flipped, remains **898 passed / 26 failed / 0 timed out / 12 skipped**;
 > eligible EXE and OBJ remain **882/0**. Logs:
-> `tmp/logs/rb-20260804-033247.log` (fulltest),
-> `tmp/logs/rb-20260804-033203.log` (two new gates JIT/EXE/OBJ),
-> `tmp/logs/rb-20260804-033213.log` (nine regression controls), and
+> `tmp/logs/rb-20260804-035338.log` (fulltest),
+> `tmp/logs/rb-20260804-035315.log` (two new gates JIT/EXE/OBJ),
+> `tmp/logs/rb-20260804-035108.log` (build), and
 > `tmp/logs/rb-20260803-224941.log` (last whole libc++ battery).
 >
 > **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —
