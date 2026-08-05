@@ -40369,6 +40369,57 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	}
     };
 
+    // The ONE friend-declaration owner ([class.friend]): record the
+    // befriended type / function name, queue hidden-friend operator
+    // DEFINITIONS for hoisting at class completion and DEFAULTED friend
+    // comparisons for member-list synthesis. `friend_tok` is the
+    // already-consumed tkFRIEND token. Reached from the friend-first arm AND
+    // from the member-specifier loop — [dcl.spec] leaves specifier order
+    // free, and libc++ spells `inline _LIBCPP_HIDE_FROM_ABI friend bool
+    // operator==(...)` (directory_iterator.h:103).
+    auto parse_friend_member_decl = [&](TokenBase *friend_tok)
+    {
+	TokenBase *first = pgm.nextToken();
+	if ( !first )
+	    pgm.Throw(friend_tok) << "Unexpected end of input after friend" << flush;
+	std::vector<TokenBase *> skipped_decl;
+	skipped_decl.push_back(friend_tok);
+	pgm.skip_template_nonclass_declaration(first, &skipped_decl);
+	register_skipped_friend_type(ddc, skipped_decl);
+	std::string friend_opname;
+	if ( skipped_friend_operator_definition(skipped_decl,
+					&friend_opname) )
+	{
+	    hoisted_friend_operator_defs.push_back(skipped_decl);
+	    ddc->friend_function_names.push_back(friend_opname);
+	    pgm.note_class_decl(Program::ClassDeclKind::FriendFunction);
+	}
+	else if ( skipped_friend_defaulted_comparison(skipped_decl,
+						      &friend_opname) )
+	{
+	    defaulted_comparison_ops.push_back(friend_opname);
+	    ddc->friend_function_names.push_back(friend_opname);
+	    pgm.note_class_decl(Program::ClassDeclKind::DefaultedComparison);
+	}
+	else
+	{
+	    // An ordinary friend function DECLARATION
+	    // (`friend int peek(const C&);`) grants friendship by name. A
+	    // friend class/struct/union declaration has no function
+	    // declarator, so the extractor yields nothing and only the
+	    // befriended TYPE (register_skipped_friend_type, above) is recorded.
+	    std::string friend_fname =
+		skipped_template_function_declarator_name(skipped_decl);
+	    if ( !friend_fname.empty() )
+	    {
+		ddc->friend_function_names.push_back(friend_fname);
+		pgm.note_class_decl(Program::ClassDeclKind::FriendFunction);
+	    }
+	    else
+		pgm.note_class_decl(Program::ClassDeclKind::FriendType);
+	}
+    };
+
     // Exception hygiene: deferred_function_body_sink points at the STACK-LOCAL
     // deferred_method_bodies above, and class_scope_stack holds ddc until the
     // '}' — a Throw anywhere in the body parse must unwind BOTH, or the next
@@ -40509,58 +40560,27 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	if ( tn->id() == TokenID::tkFRIEND )
 	{
 	    pgm.nextToken();
-	    TokenBase *first = pgm.nextToken();
-	    if ( !first )
-		pgm.Throw(tn) << "Unexpected end of input after friend" << flush;
-	    std::vector<TokenBase *> skipped_decl;
-	    skipped_decl.push_back(tn);
-	    pgm.skip_template_nonclass_declaration(first, &skipped_decl);
-	    register_skipped_friend_type(ddc, skipped_decl);
-	    // A hidden-friend operator DEFINITION is a namespace-scope
-	    // function ([class.friend]) — queue it for hoisting once the
-	    // class completes (parse_hoisted_friend_operator), and grant it
-	    // friendship by function name. A DEFAULTED friend comparison is
-	    // queued for member-list synthesis instead.
-	    std::string friend_opname;
-	    if ( skipped_friend_operator_definition(skipped_decl,
-					    &friend_opname) )
-	    {
-		hoisted_friend_operator_defs.push_back(skipped_decl);
-		ddc->friend_function_names.push_back(friend_opname);
-		pgm.note_class_decl(Program::ClassDeclKind::FriendFunction);
-	    }
-	    else if ( skipped_friend_defaulted_comparison(skipped_decl,
-							  &friend_opname) )
-	    {
-		defaulted_comparison_ops.push_back(friend_opname);
-		ddc->friend_function_names.push_back(friend_opname);
-		pgm.note_class_decl(Program::ClassDeclKind::DefaultedComparison);
-	    }
-	    else
-	    {
-		// An ordinary friend function DECLARATION
-		// (`friend int peek(const C&);`) grants friendship by name. A
-		// friend class/struct/union declaration has no function
-		// declarator, so the extractor yields nothing and only the
-		// befriended TYPE (register_skipped_friend_type, above) is recorded.
-		std::string friend_fname =
-		    skipped_template_function_declarator_name(skipped_decl);
-		if ( !friend_fname.empty() )
-		{
-		    ddc->friend_function_names.push_back(friend_fname);
-		    pgm.note_class_decl(Program::ClassDeclKind::FriendFunction);
-		}
-		else
-		    pgm.note_class_decl(Program::ClassDeclKind::FriendType);
-	    }
+	    parse_friend_member_decl(tn);
 	    continue;
 	}
 
 	// --- C++ member declaration specifiers ---
 	bool is_virtual = false;
 	bool is_static_member = false;
+	bool member_is_friend = false;
 	for (;;)
 	{
+	    // [dcl.spec] leaves specifier order free: `inline friend bool
+	    // operator==(...)` reaches here with `friend` AFTER the consumed
+	    // specifiers. Friend decides the declaration kind — route to the
+	    // one owner (the leading specifiers add nothing madc records).
+	    if ( tn->id() == TokenID::tkFRIEND )
+	    {
+		pgm.nextToken();
+		parse_friend_member_decl(tn);
+		member_is_friend = true;
+		break;
+	    }
 	    if ( tn->id() == TokenID::tkSTATIC )
 	    {
 		pgm.nextToken();
@@ -40613,6 +40633,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( !tn )
 		pgm.Throw(this) << "Unexpected end of input after member specifier" << flush;
 	}
+	if ( member_is_friend )
+	    continue;
 
 	// --- destructor: ~ClassName() { ... } ---
 	if ( tn->id() == TokenID::tkBnot )
