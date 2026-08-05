@@ -1,7 +1,7 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-05 (unreleased
-libc++ parity checkpoint @bb435bfd on feature/libcxx-parity7-claude):
+libc++ parity checkpoint @179d1ab0 on feature/libcxx-parity7-claude):
 session #59 cleared two roots, three lane flips (938/9 → **942/6**, zero
 newly broken at both measures). (1) @075c7f81 the testincludenext SILENT
 WRONG: libc++ stdlib.h's five global inline C++ `abs` overloads spliced
@@ -13,10 +13,14 @@ the dialect's unqualified visibility for namespace-scope type names was
 typedef-lane-only; libc++ spells `std::string` as a using-alias, so bare
 `string` was unresolvable only under `-stdlib=libc++` — the alias arm now
 flat-registers when the name is free (pmr no-clobber preserved; gate
-`testbarestring`). Eligible EXE/OBJ **926/0**, fulltest
-**950/0/0TO/9skip**. Next: bucket B (testifconstexpr + testinvocable,
-`dangling(auto&&...)` abbreviated-pack ctor) or testmathheader
-(re-reduce: both fixes shifted registration surfaces). #114 remains
+`testbarestring`). (3) @179d1ab0 C++20 ABBREVIATED FUNCTION
+TEMPLATES (member form): [dcl.fct]/18 token-level desugar to invented
+template parameters — dangling.h THROUGH, testifconstexpr's chain moved
+to ranges_construct_at.h:94 (gate `testabbrevtpl`). Lane **944/6**,
+eligible EXE/OBJ **928/0**, fulltest green. Next: the
+ranges_construct_at.h:94 link (qualified-type braced init in an auto
+variable), testinvocable's static_assert constant-fold, or
+testmathheader (re-reduce first). #114 remains
 blocked on the owner decision about mangling overloaded user free
 functions.
 

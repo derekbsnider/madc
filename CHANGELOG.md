@@ -9,6 +9,21 @@ moved **891/28 → 942/6**: new gates plus twenty-two old-failure flips, with
 zero newly broken tests in every measured two-way failset diff. Fulltest is
 **950/0/0TO/9skip**; libc++-eligible EXE/OBJ are **926/0**.
 
+- **feat: C++20 abbreviated function templates, member form (@179d1ab0).**
+  [dcl.fct]/18: an `auto` parameter placeholder makes the declaration a
+  function TEMPLATE with one invented type parameter per placeholder —
+  g++'s synthesized-parameter model, desugared at the token level
+  (`desugar_abbreviated_fn_template`): placeholders rewrite to invented
+  identifiers under a synthesized `template<...>` head, so the existing
+  member-template capture and tsubst instantiation own everything
+  downstream. Pack-ness (`auto&&...`) rides the ellipsis;
+  `decltype(auto)` operands are guarded; gated on `--std=c++20`+. libc++'s
+  `dangling(auto&&...)` (`__ranges/dangling.h:29`, testifconstexpr's first
+  blocker) is THROUGH — the chain moved to `ranges_construct_at.h:94`
+  (zero flips, series circuit; lane 944/6, byte-identical set). New gate
+  `testabbrevtpl`. Follow-ups: free/namespace statement surface,
+  default-argument-lambda `auto` edge.
+
 - **fix: namespace-scope using-aliases flat-register when free
   (@bb435bfd).** madc's dialect grants namespace-scope type names
   unqualified visibility via a flat `datatype_map` write — but only the

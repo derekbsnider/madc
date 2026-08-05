@@ -1,6 +1,20 @@
 # Test Status
 
-> **Current (2026-08-05, `feature/libcxx-parity7-claude` @bb435bfd —
+> **Current (2026-08-05, `feature/libcxx-parity7-claude` @179d1ab0 —
+> C++20 abbreviated function templates, member form):** fulltest green
+> (rc=0) and default EXE leg green. [dcl.fct]/18 lands as a token-level
+> desugar: `auto` parameter placeholders become invented identifiers
+> under a synthesized `template<...>` head, so the member-template
+> capture + tsubst own the rest. libc++'s `dangling(auto&&...)`
+> (testifconstexpr's first blocker) is THROUGH; the chain moved to
+> ranges_construct_at.h:94, so zero flips: the whole flavored
+> measurement is **944 passed / 6 failed / 0 timed out / 12 skipped**
+> (byte-identical failing set; +2 = gates testbarestring +
+> testabbrevtpl), eligible EXE **928/0**, OBJ **928/0**. New gate
+> `testabbrevtpl` (pack ctor + bodied auto ctor, both oracles, both
+> flavors).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @bb435bfd —
 > namespace-scope using-aliases flat-register when free):** fulltest
 > **950 passed, 0 failed, 0 timed out, 9 skipped** (rc=0) and default EXE
 > leg green (freeze/forest gates included). The dialect's unqualified

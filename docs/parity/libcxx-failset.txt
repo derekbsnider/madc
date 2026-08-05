@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  bb435bfd (2026-08-05) on feature/libcxx-parity7-claude
-# Result:       942 passed / 6 failed / 0 timed out / 12 skipped
+# Measured at:  179d1ab0 (2026-08-05) on feature/libcxx-parity7-claude
+# Result:       944 passed / 6 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -651,6 +651,21 @@
 #                         primary wins, pmr stays namespace-only (the old
 #                         regression stays fixed). Gate: testbarestring.
 #                         EXE 926/0, OBJ 926/0, fulltest + default EXE green.
+#   179d1ab0  944 /   6   failing set BYTE-IDENTICAL, zero flips; +2 are the
+#                         new gates (testbarestring, testabbrevtpl). C++20
+#                         ABBREVIATED FUNCTION TEMPLATES land (member form):
+#                         [dcl.fct]/18 desugar — `auto` placeholders become
+#                         invented identifiers under a synthesized
+#                         template<...> head, so the member-template capture
+#                         + tsubst own the rest. dangling.h:29
+#                         `dangling(auto&&...)` (testifconstexpr's first
+#                         blocker) is THROUGH; the chain moved to
+#                         ranges_construct_at.h:94 `inline constexpr auto
+#                         destroy = __destroy::__fn{};` (qualified-type
+#                         braced init in an auto variable — next link).
+#                         Follow-ups documented in the gate: free/namespace
+#                         statement surface not wired; default-arg-lambda
+#                         auto mis-trigger edge. EXE 928/0, OBJ 928/0.
 testfreezerun.mad
 testifconstexpr.mad
 testinvocable.mad
