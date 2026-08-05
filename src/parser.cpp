@@ -30290,6 +30290,8 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 {
     TokenDataType *bt = (TokenDataType *)tb;
     Variable *var = NULL;
+    DBG(cout << "parseExpr_dataTypeArm(" << bt->spelling() << ") peek id="
+	     << (peekToken() ? (int)peekToken()->id() : -1) << endl);
     // If the previous token is '.' or '->', the type name is a
     // struct member name (e.g. `a.array[1]` where `array` is
     // both a madc keyword and a union member).  Re-inject as
@@ -33294,6 +33296,40 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    cast_typedef_name = tname;
 			    }
 			}
+		    }
+		    // C++ functional construction inside grouping parens —
+		    // `(C(41)).m()`, `(C{...})` — shares its head with the
+		    // speculative `(TYPE)expr` cast: TYPE followed by '(' or
+		    // '{'. The template-id shape already declines above
+		    // (template_ctor_grouping); the PLAIN type name slipped
+		    // into the cast route, which consumed the type and then
+		    // fell through to grouping WITHOUT restoring it ("not a
+		    // cast after all"), leaving the member access a bare
+		    // scalar (libc++ parser_std_format_spec.h:58
+		    // `(string(...) + ...).c_str()`). Decline the cast BEFORE
+		    // consuming — the type re-dispatches to the dataTypeArm,
+		    // whose parse_functional_type_expression owns
+		    // construction. The function-pointer cast head
+		    // `(RET (*)(...))expr` keeps the cast route: its inner
+		    // group is exactly `(*)`. peek1 pointer-equality gates to
+		    // the NON-consuming detection branches only.
+		    if ( cast_dd && peekToken() == peek1
+		      && cpp_keyword_active(Program::STD_CPP98) )
+		    {
+			size_t after = 1 + cast_qualified_extra_tokens;
+			TokenBase *t1 = tokens.size() > after
+			    ? tokens[after] : NULL;
+			TokenBase *t2 = tokens.size() > after + 1
+			    ? tokens[after + 1] : NULL;
+			TokenBase *t3 = tokens.size() > after + 2
+			    ? tokens[after + 2] : NULL;
+			bool fnptr_cast_head = t1 && t1->id() == TokenID::tkOpBrk
+			    && t2 && t2->id() == TokenID::tkMul
+			    && t3 && t3->id() == TokenID::tkClBrk;
+			if ( !fnptr_cast_head && t1
+			  && (t1->id() == TokenID::tkOpBrk
+			   || t1->id() == TokenID::tkOpBrc) )
+			    cast_dd = NULL;
 		    }
 		    if ( !cast_dd && cast_qualifier )
 			pushToken(cast_qualifier);

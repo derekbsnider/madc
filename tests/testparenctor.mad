@@ -1,0 +1,31 @@
+// Regression: member access on a PARENTHESIZED functional-construction
+// temporary — `(C(41)).m()`, `(string("a") + p + "c").c_str()` (libc++
+// parser_std_format_spec.h:58's __throw_invalid_option_format_error shape).
+// The speculative `(TYPE)expr` cast detection consumed the type token, failed
+// to find the closing ')', and fell through to grouping WITHOUT restoring it
+// ("not a cast after all" — true for C, wrong for C++ functional
+// construction), so the paren group degraded to its argument and `.m()`
+// landed on a bare scalar ("member reference is not a structure or union").
+// A plain TYPE followed by '(' or '{' inside grouping parens now declines the
+// cast BEFORE consuming (the template-id shape already did via
+// template_ctor_grouping); the fn-ptr cast head `(RET (*)(...))expr` keeps
+// the cast route.
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "41 a X b Y c".
+#include <cstdio>
+#include <string>
+using namespace std;
+
+struct C {
+	int v;
+	C(int x) { v = x; }
+	int m() const { return v; }
+};
+
+int main()
+{
+	const char *id = "X";
+	const char *opt = "Y";
+	printf("%d %s\n", (C(41)).m(),
+	       (string("a ") + id + " b " + opt + " c").c_str());
+	return 0;
+}
