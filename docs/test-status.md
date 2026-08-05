@@ -4,8 +4,8 @@
 > fixes 8-11; parser_std_format_spec.h open to :339):** fulltest **963/0**;
 > lane **954/6** byte-identical failset (+4 gates: testparenctor,
 > testanonbitfield, testenumsize, testtraitcopyable); enum fixed bases now
-> drive layout ([dcl.enum]p8, freeze-carried); EXE/OBJ re-measure running
-> (last 934/0 @4b47da8d).
+> drive layout ([dcl.enum]p8, freeze-carried); EXE **938/0**, OBJ **938/0**
+> (session-end legs, of 954 JIT-passing).
 >
 > **Previous (2026-08-05, `feature/libcxx-parity7-claude` @aaee9009 —
 > seven front-end fixes; unicode.h through):** fulltest **959/0** (rc=0,

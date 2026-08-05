@@ -711,8 +711,8 @@
 #                         bisect next). Scouted: libstdc++ DEFAULT-lane
 #                         is_trivial_v/_copyable_v VAR-TEMPLATE fold gap
 #                         (tmp/r49d) — likely testinvocable's root.
-#                         fulltest 963/0. EXE/OBJ session-end legs running
-#                         at write time (last 934/0 @4b47da8d).
+#                         fulltest 963/0. Session-end legs: EXE 938/0,
+#                         OBJ 938/0 (of 954 JIT-passing).
 testfreezerun.mad
 testifconstexpr.mad
 testinvocable.mad

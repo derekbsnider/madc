@@ -7,8 +7,7 @@ and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
 moved **891/28 → 954/6**: new gates plus the old-failure flips, with zero
 newly broken tests in every measured two-way failset diff. Fulltest is
-**963/0/0TO/9skip**; libc++-eligible EXE/OBJ are **934/0** (re-measure
-running at session end).
+**963/0/0TO/9skip**; libc++-eligible EXE/OBJ are **938/0**.
 
 - **fix: seven front-end gaps walling libc++'s `<format>` machinery
   (@b48ce4b2, @3e69ea2e, @303e0f86, @937b3c12, @7e1868d1, @da26118e,
