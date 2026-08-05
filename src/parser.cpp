@@ -43095,6 +43095,14 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	{
 	    TokenENUM tenum;
 	    tenum.parse(pgm);
+	    // TokenENUM::parse re-feeds the enum's type token when the body
+	    // is followed by a declarator; THIS arm reads the ALIAS name
+	    // itself (the branches below even accept an alias spelled like
+	    // an existing type) — drop the re-fed type so the alias read
+	    // sees the real name, not "int".
+	    if ( pgm.peekToken()
+	      && pgm.peekToken()->type() == TokenType::ttDataType )
+		pgm.nextToken();
 	}
 
 	tn = pgm.nextToken();
@@ -43995,6 +44003,40 @@ TokenBase *TokenENUM::parse(Program &pgm)
     // consume optional semicolon
     if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	pgm.nextToken();
+    else if ( pgm.peekToken() )
+    {
+	// Trailing declarator on the definition (`enum [Tag] {...} e;`, the
+	// bit-field member `enum : char32_t {...} __status : 1 {__ok};` —
+	// libc++ __format/unicode.h): re-feed the just-defined enum as a bare
+	// type token so the CALLER parses `EnumType declarator...` — the same
+	// model the forward-reference path above and the class walk's
+	// nested-aggregate arm use. An ANONYMOUS enum has no DataDefENUM;
+	// its variable's type is the fixed underlying when declared, int
+	// otherwise (the C model madc's enums lower to). Re-feed ONLY when
+	// the next token can actually START a declarator — a '}' (enum as
+	// the last construct of an enclosing body) or other closer must not
+	// receive a dangling type token. The typedef-enum arm reads its
+	// ALIAS name itself and drops the re-fed type token.
+	TokenBase *after_body = pgm.peekToken();
+	bool declarator_follows =
+	       after_body->type() == TokenType::ttIdentifier
+	    || after_body->type() == TokenType::ttDataType
+	    || after_body->id() == TokenID::tkMul
+	    || after_body->id() == TokenID::tkBand
+	    || after_body->id() == TokenID::tkOpBrk;
+	if ( declarator_follows )
+	{
+	    DataDef *refeed_dd = enum_dd;
+	    if ( !refeed_dd )
+		refeed_dd = fixed_base ? fixed_base : &ddINT;
+	    TokenDataType *refeed =
+		new TokenDataType(refeed_dd->name.c_str(), *refeed_dd);
+	    refeed->file = tn->file;
+	    refeed->line = tn->line;
+	    refeed->column = tn->column;
+	    pgm.pushToken(refeed);
+	}
+    }
 
     return NULL;
 }
