@@ -1,27 +1,28 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-05 (unreleased
-libc++ parity checkpoint @179d1ab0 on feature/libcxx-parity7-claude):
-session #59 cleared two roots, three lane flips (938/9 → **942/6**, zero
-newly broken at both measures). (1) @075c7f81 the testincludenext SILENT
-WRONG: libc++ stdlib.h's five global inline C++ `abs` overloads spliced
-into glibc's extern-C `abs` FuncDef and the last body emitted as a
-plain-named linkonce `abs` clobbering the libc import — system-header
-plain globals whose name is already taken now join the per-overload
-tracked model (gate `testglobaloverload`). (2) @bb435bfd bucket C:
-the dialect's unqualified visibility for namespace-scope type names was
-typedef-lane-only; libc++ spells `std::string` as a using-alias, so bare
-`string` was unresolvable only under `-stdlib=libc++` — the alias arm now
-flat-registers when the name is free (pmr no-clobber preserved; gate
-`testbarestring`). (3) @179d1ab0 C++20 ABBREVIATED FUNCTION
-TEMPLATES (member form): [dcl.fct]/18 token-level desugar to invented
-template parameters — dangling.h THROUGH, testifconstexpr's chain moved
-to ranges_construct_at.h:94 (gate `testabbrevtpl`). Lane **944/6**,
-eligible EXE/OBJ **928/0**, fulltest green. Next: the
-ranges_construct_at.h:94 link (qualified-type braced init in an auto
-variable), testinvocable's static_assert constant-fold, or
-testmathheader (re-reduce first). #114 remains
-blocked on the owner decision about mangling overloaded user free
+libc++ parity checkpoint @aaee9009 on feature/libcxx-parity7-claude):
+session #60 landed SEVEN oracle-verified front-end fixes; testifconstexpr's
+include chain advanced five links (ranges_construct_at.h:94 → buffer.h:62 →
+unicode.h:51/:70/:302 → parser_std_format_spec.h:58): @b48ce4b2 the auto
+fn-ptr shortcut no longer hijacks a nested-name-specifier head
+([basic.lookup.qual], `ranges::__destroy` vs the `__destroy` intrinsic;
+gate `testnsfncollide`); @3e69ea2e `template <Concept Name>` classifies as
+a constrained TYPE parameter (gate `testconceptparam`); @303e0f86 braced
+NSDMI capture/application (gate `testbracensdmi`); @7e1868d1 enum
+definitions take trailing declarators at every scope (gate `testenumdecl`);
+@937b3c12 bit-field brace-or-equal init skips (DelimDepth-migrated; gate
+`testbitfieldinit`); @da26118e u/U/u8 literal prefixes + \u/\U UCNs in
+the lexer (gate `testcharlit`); @4b47da8d using-declarations of scoped
+enums bridge the enumerator pseudo-namespace (gate `testusingenum`). Lane
+**950/6** (byte-identical failing set), eligible EXE/OBJ **934/0**,
+fulltest **959/0**. NEW TEST PROTOCOL (@aaee9009, owner directive): per
+fix targeted globs + one frontier test; per batch of ~3-5 fulltest +
+`libcxxjit` gate the push; lane EXE/OBJ at session end. Next: the
+parser_std_format_spec.h:58 link (`.c_str()` on a parenthesized
+string-concat temporary, reducer tmp/r45.mad), testinvocable's
+static_assert constant-fold, or testmathheader (re-reduce first). #114
+remains blocked on the owner decision about mangling overloaded user free
 functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is

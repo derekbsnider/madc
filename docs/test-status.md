@@ -1,6 +1,23 @@
 # Test Status
 
-> **Current (2026-08-05, `feature/libcxx-parity7-claude` @179d1ab0 —
+> **Current (2026-08-05, `feature/libcxx-parity7-claude` @aaee9009 —
+> seven front-end fixes; unicode.h through):** fulltest **959/0** (rc=0,
+> forest oracles green). Seven oracle-verified fixes advanced
+> testifconstexpr's chain five links (ranges_construct_at.h:94 →
+> buffer.h:62 → unicode.h:51/:70/:302 → parser_std_format_spec.h:58):
+> nested-name-specifier head vs the auto fn-ptr shortcut, concept-headed
+> template params, braced NSDMI, enum trailing declarator, bit-field
+> brace-init skip, u/U/u8 literal prefixes + UCNs, and the scoped-enum
+> pseudo-namespace bridge for using-declarations. The flavored
+> measurement is **950 passed / 6 failed / 0 timed out / 12 skipped**
+> (byte-identical failing set at every batch checkpoint; +6 = the new
+> gates testnsfncollide, testconceptparam, testbracensdmi, testenumdecl,
+> testbitfieldinit, testcharlit, testusingenum), eligible EXE **934/0**,
+> OBJ **934/0**. NEW TEST PROTOCOL (owner): per fix targeted globs + one
+> frontier test; per batch fulltest + `libcxxjit`; EXE/OBJ legs at
+> session end.
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @179d1ab0 —
 > C++20 abbreviated function templates, member form):** fulltest green
 > (rc=0) and default EXE leg green. [dcl.fct]/18 lands as a token-level
 > desugar: `auto` parameter placeholders become invented identifiers

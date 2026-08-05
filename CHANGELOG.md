@@ -5,9 +5,43 @@
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 942/6**: new gates plus twenty-two old-failure flips, with
-zero newly broken tests in every measured two-way failset diff. Fulltest is
-**950/0/0TO/9skip**; libc++-eligible EXE/OBJ are **926/0**.
+moved **891/28 → 950/6**: new gates plus the old-failure flips, with zero
+newly broken tests in every measured two-way failset diff. Fulltest is
+**959/0/0TO/9skip**; libc++-eligible EXE/OBJ are **934/0**.
+
+- **fix: seven front-end gaps walling libc++'s `<format>` machinery
+  (@b48ce4b2, @3e69ea2e, @303e0f86, @937b3c12, @7e1868d1, @da26118e,
+  @4b47da8d).** testifconstexpr's include chain advanced five links in one
+  session (each fix oracle-verified against g++ AND clang++, own gate,
+  zero flips at every batch checkpoint): the `auto x = <fn-name>` fn-ptr
+  shortcut no longer fires on a nested-name-specifier head
+  ([basic.lookup.qual] — madc's `__destroy` intrinsic vs libc++'s
+  `namespace ranges::__destroy`; gate `testnsfncollide`); `template
+  <Concept Name>` classifies as a constrained TYPE parameter instead of a
+  non-type parameter (gate `testconceptparam`); braced NSDMI `T m{expr};`
+  / `T m{};` capture and apply through the shared `=`-form machinery
+  (multi-element lists stay a loud error; gate `testbracensdmi`); an enum
+  definition's trailing declarator (`enum [Tag] {...} e;`) parses at every
+  scope via a type-token re-feed (the typedef-enum arm drops the re-feed —
+  the first attempt's alias-read regression was caught by fulltest; gate
+  `testenumdecl`); C++20 bit-field brace-or-equal initializers skip
+  cleanly (hand-rolled counter migrated to `DelimDepth`; gate
+  `testbitfieldinit`); the lexer gains the `u`/`U`/`u8` literal prefixes
+  with [lex.ccon] types plus `\u`/`\U` universal-character-names (UTF-16
+  `u"..."` strings stay a loud unsupported error; gate `testcharlit`); and
+  a using-declaration of a scoped enum bridges its enumerator
+  pseudo-namespace into the importing scope with per-name decl-index taps
+  (`forest_index_oracle` caught the untapped first attempt on libstdc++'s
+  `using __gnu_cxx::_Lock_policy;`; gate `testusingenum`).
+  `ranges_construct_at.h`, `__format/buffer.h`, and `__format/unicode.h`
+  are THROUGH; the frontier is `parser_std_format_spec.h:58`. Lane 944/6 →
+  **950/6** (byte-identical failing set), EXE/OBJ 934/0.
+
+- **build: `libcxxjit` remote-build stage (@aaee9009).** The lane-burndown
+  test protocol per the owner's directive: per fix, targeted `TESTS=`
+  globs plus the one frontier test; per batch of ~3–5 fixes, `fulltest` +
+  the lane's JIT leg gate the push; the EXE/OBJ legs run at session end /
+  pre-merge only.
 
 - **feat: C++20 abbreviated function templates, member form (@179d1ab0).**
   [dcl.fct]/18: an `auto` parameter placeholder makes the declaration a

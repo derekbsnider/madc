@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  179d1ab0 (2026-08-05) on feature/libcxx-parity7-claude
-# Result:       944 passed / 6 failed / 0 timed out / 12 skipped
+# Measured at:  4b47da8d (2026-08-05) on feature/libcxx-parity7-claude
+# Result:       950 passed / 6 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -666,6 +666,32 @@
 #                         Follow-ups documented in the gate: free/namespace
 #                         statement surface not wired; default-arg-lambda
 #                         auto mis-trigger edge. EXE 928/0, OBJ 928/0.
+#   4b47da8d  950 /   6   failing set BYTE-IDENTICAL, zero flips; +6 are the
+#                         new gates (testnsfncollide, testconceptparam,
+#                         testbracensdmi, testenumdecl+testbitfieldinit,
+#                         testcharlit, testusingenum). SEVEN fixes, one
+#                         session — testifconstexpr's include chain advanced
+#                         FIVE links: (1) auto fn-ptr shortcut ignored a
+#                         nested-name-specifier head ([basic.lookup.qual] —
+#                         madc's __destroy intrinsic vs ranges::__destroy,
+#                         ranges_construct_at.h:94); (2) `template <Concept
+#                         Name>` classified as NON-type param (buffer.h:62);
+#                         (3) braced NSDMI `m{0}` unconsumed (same line);
+#                         (4) enum definition trailing declarator
+#                         unparseable ANYWHERE (unicode.h:51; first attempt
+#                         regressed 4 enum tests via the typedef-enum alias
+#                         read — fulltest caught it); (5) bit-field {v}
+#                         init (same line); (6) u/U/u8 literal prefixes +
+#                         \u/\U UCNs unknown to the lexer (unicode.h:70);
+#                         (7) using-declaration of a scoped enum didn't
+#                         bridge its enumerator pseudo-namespace
+#                         (unicode.h:302; forest_index_oracle caught the
+#                         missing decl-index taps on std::_Lock_policy).
+#                         unicode.h is THROUGH; the frontier is
+#                         parser_std_format_spec.h:58 — .c_str() on a
+#                         PARENTHESIZED string-concat temporary ("member
+#                         reference is not a structure or union"; reducer
+#                         tmp/r45.mad). EXE 934/0, OBJ 934/0, fulltest 959/0.
 testfreezerun.mad
 testifconstexpr.mad
 testinvocable.mad
