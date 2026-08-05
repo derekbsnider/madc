@@ -45626,6 +45626,27 @@ struct ParsedTemplateParameterList {
     ParsedTemplateParameterList() : has_non_type_params(false) {}
 };
 
+// `template <Concept Name>` — a type-constraint head ([temp.param]/4): the
+// parameter is a constrained TYPE parameter, though the token shape matches a
+// non-type parameter (`size_t _Np`). The head naming a registered concept is
+// the discriminator. madc does not evaluate the constraint — the param
+// classifies exactly like `class Name` (the same inert-placeholder model as
+// the concept-definition arm in TokenTEMPLATE::parse).
+static bool template_param_head_is_concept(Program &pgm, TokenBase *token)
+{
+    std::string head;
+    if ( token->type() == TokenType::ttDataType )
+	head = ((TokenDataType *)token)->definition.name;
+    else
+	head = contextual_identifier_name(token);
+    if ( head.empty() )
+	return false;
+    if ( pgm.concept_map.count(head) )
+	return true;
+    return !pgm.current_namespace().empty()
+	&& pgm.concept_map.count(pgm.current_namespace() + "::" + head);
+}
+
 // Parse one template-parameter-list after its opening '<'. This is the single
 // owner for ordinary template declarations and the retained inner head of an
 // out-of-line member-template definition.
@@ -45742,26 +45763,42 @@ static void parse_template_parameter_list(
 	else if ( token->type() == TokenType::ttIdentifier
 	       || token->type() == TokenType::ttDataType )
 	{
+	    // A concept head declares a constrained TYPE parameter — classify
+	    // like `class Name`, with an EMPTY constraint run (runs carry a
+	    // NON-type param's declared-type SFINAE; consumers must not read a
+	    // concept head as a declared type). libc++'s
+	    // `template <__fmt_char_type _CharT> class __output_buffer` broke
+	    // here: _CharT classified non-type wrecked the member parse.
+	    bool head_is_concept = template_param_head_is_concept(pgm, token);
 	    bool qualified_type = capture_type_suffix(token, constraint);
+	    if ( head_is_concept )
+		constraint.clear();
 	    TokenBase *parameter_name = pgm.peekToken();
 	    if ( pgm.consume_ellipsis() )
 	    {
 		if ( pgm.peekToken()
 		  && is_contextual_identifier_token(pgm.peekToken()) )
 		    add_parameter(contextual_identifier_name(
-			pgm.nextToken()), false, true);
+			pgm.nextToken()), head_is_concept, true);
 		else
-		    add_parameter("__anon_ntpack"
-			+ std::to_string(anonymous_index++), false, true);
+		    add_parameter((head_is_concept ? "__anon_tpack"
+						   : "__anon_ntpack")
+			+ std::to_string(anonymous_index++),
+			head_is_concept, true);
 		out.has_non_type_params = true;
 	    }
 	    else if ( parameter_name
 		   && is_contextual_identifier_token(parameter_name) )
 	    {
 		pgm.nextToken();
-		add_parameter(contextual_identifier_name(parameter_name), false);
-		out.has_non_type_params = true;
+		add_parameter(contextual_identifier_name(parameter_name),
+			      head_is_concept);
+		if ( !head_is_concept )
+		    out.has_non_type_params = true;
 	    }
+	    else if ( head_is_concept )
+		add_parameter("__anon_tparam"
+		    + std::to_string(anonymous_index++), true);
 	    else if ( qualified_type )
 	    {
 		add_parameter("__anon_ntparam"

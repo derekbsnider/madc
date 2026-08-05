@@ -1,0 +1,30 @@
+// Regression: `template <Concept Name>` — a type-constraint head
+// ([temp.param]/4) declares a constrained TYPE parameter; the identifier-headed
+// arm of parse_template_parameter_list classified it as a NON-TYPE parameter
+// (the token shape matches `size_t _Np`), so the instantiation-time member
+// parse treated the param as a value ("Expecting ';' after class member" —
+// libc++'s `template <__fmt_char_type _CharT> class __output_buffer`,
+// __format/buffer.h:62). A head naming a registered concept classifies like
+// `class Name`. Class-template and function-template forms.
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "41 42 ok".
+#include <cstdio>
+
+template <class T> concept always_true = true;
+
+template <always_true CharT>
+class outbuf {
+public:
+	using value_type = CharT;
+	CharT store(CharT c) { last_ = c; return last_; }
+private:
+	CharT last_;
+};
+
+template <always_true T> T twice(T x) { return x + x; }
+
+int main()
+{
+	outbuf<int> b;
+	printf("%d %d ok\n", b.store(41), twice(21));
+	return 0;
+}
