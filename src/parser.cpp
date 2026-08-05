@@ -36038,6 +36038,40 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    if ( have_type )
 		import_namespace_type(name, dti->second);
 	}
+	// A scoped/tagged enum's enumerators live in its PSEUDO-namespace
+	// (`ns::Tag::Value` — TokenENUM::parse's [dcl.enum]p11 model).
+	// Importing the TYPE must also make `Tag::Value` resolvable from the
+	// importing scope: bridge the pseudo-namespace under this scope's
+	// key. libc++ unicode.h: a function-body
+	// `using __extended_grapheme_custer_property_boundary::__property;`
+	// followed by `__property::__Extended_Pictographic`. The Variable
+	// POINTERS are shared and an enum's member set is complete at its
+	// definition, so the copied map cannot go stale.
+	if ( have_type )
+	{
+	    namespace_map_t::iterator pni =
+		pgm.namespace_map.find(ns_name + "::" + member_name);
+	    if ( pni != pgm.namespace_map.end() )
+	    {
+		std::string dst_pseudo = pgm.current_namespace().empty()
+		    ? member_name
+		    : pgm.current_namespace() + "::" + member_name;
+		if ( pgm.namespace_map.find(dst_pseudo)
+			== pgm.namespace_map.end() )
+		{
+		    // B4a: every bridged registration needs its decl-index
+		    // tap, same as the enumerator registrations it mirrors
+		    // (forest_index_oracle gates this — libstdc++'s
+		    // `using __gnu_cxx::_Lock_policy;` inside std).
+		    for ( variable_map_t::const_iterator mi =
+				pni->second.begin();
+			  mi != pni->second.end(); ++mi )
+			pgm.pack_tap_name(dst_pseudo + "::" + mi->first,
+					  Program::pdkVariable);
+		    pgm.namespace_map[dst_pseudo] = pni->second;
+		}
+	    }
+	}
 	// expect semicolon
 	tn = pgm.nextToken();
 	if ( !tn || tn->id() != TokenID::tkSemi )
