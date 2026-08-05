@@ -12212,7 +12212,7 @@ static int type_trait_arity(const std::string &name)
       || name == "__has_trivial_destructor" || name == "__is_trivial"
       || name == "__is_empty" || name == "__is_standard_layout"
       || name == "__is_pod" || name == "__is_destructible"
-      || name == "__is_final" )
+      || name == "__is_final" || name == "__is_trivially_copyable" )
 	return 1;
     if ( name == "__is_constructible" || name == "__is_nothrow_constructible" )
 	return TRAIT_ARITY_VARIADIC;
@@ -12340,6 +12340,35 @@ static bool trait_is_trivial(DataDef *dd)
 	    return false;
     for ( size_t i = 0; i < c->members.size(); ++i )
 	if ( c->members[i].second && !trait_is_trivial(c->members[i].second) )
+	    return false;
+    return true;
+}
+// __is_trivially_copyable(T) ([class.prop]/1, [basic.types.general]/9 — libc++
+// asserts it on __parsed_specifications, parser_std_format_spec.h:324): a
+// scalar/pointer/enum is trivially copyable; a class is iff it has no virtual
+// functions, a trivial destructor, no deleted/non-trivial copy machinery, and
+// every base and class-type member is itself trivially copyable. Conservative
+// on ANY user-declared constructor (canon: a user DEFAULT ctor does not
+// disturb copyability, but madc does not yet distinguish ctor kinds here) —
+// the same documented conservatism as trait_is_trivial: a false negative
+// fails an assert LOUDLY or disables an optimization, never miscompiles.
+static bool trait_is_trivially_copyable(DataDef *dd)
+{
+    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    if ( !c )
+	return true;
+    if ( c->has_user_ctor || c->has_user_dtor || c->is_polymorphic()
+      || c->has_deleted_copy_assign )
+	return false;
+    if ( c->base_class && !trait_is_trivially_copyable(c->base_class) )
+	return false;
+    for ( size_t i = 0; i < c->bases.size(); ++i )
+	if ( c->bases[i].base
+	  && !trait_is_trivially_copyable(c->bases[i].base) )
+	    return false;
+    for ( size_t i = 0; i < c->members.size(); ++i )
+	if ( c->members[i].second
+	  && !trait_is_trivially_copyable(c->members[i].second) )
 	    return false;
     return true;
 }
@@ -13183,6 +13212,9 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	      || trait_has_trivial_destructor(args[0].dd);
     else if ( name == "__is_trivial" )
 	result = !trait_arg_is_reference(args[0]) && trait_is_trivial(args[0].dd);
+    else if ( name == "__is_trivially_copyable" )
+	result = !trait_arg_is_reference(args[0])
+	      && trait_is_trivially_copyable(args[0].dd);
     else if ( name == "__is_standard_layout" )
 	result = !trait_arg_is_reference(args[0])
 	      && trait_is_standard_layout(args[0].dd);
@@ -29290,6 +29322,9 @@ static bool eval_local_type_trait(Program &pgm,
 					     || trait_has_trivial_destructor(targs[0].dd);
     else if ( nm == "__is_trivial" )        r = !trait_arg_is_reference(targs[0])
 					     && trait_is_trivial(targs[0].dd);
+    else if ( nm == "__is_trivially_copyable" )
+					    r = !trait_arg_is_reference(targs[0])
+					     && trait_is_trivially_copyable(targs[0].dd);
     else if ( nm == "__is_standard_layout" ) r = !trait_arg_is_reference(targs[0])
 					      && trait_is_standard_layout(targs[0].dd);
     else if ( nm == "__is_pod" )            r = !trait_arg_is_reference(targs[0])
