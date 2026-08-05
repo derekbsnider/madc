@@ -36434,9 +36434,17 @@ static void store_member_default_init(Program &pgm, DataDefSTRUCT *dds,
 	seq.push_back(t->clone());
     seq.push_back(new TokenSemi());
     TokenStream::State saved_stream = pgm.tokens.swap_in(std::move(seq));
+    // Fresh expression-position context: the live parse's last consumed token
+    // (the captured group's '}' / ';') is NOT this expression's previous
+    // token — without the reset a leading '-'/'&' judged postfix-binary
+    // (`int32_t __precision_{-1};` → TokenNeg→TokenSub → "Missing operand").
+    TokenBase *saved_cur = pgm.curToken();
+    TokenBase *saved_prv = pgm.prevToken();
+    pgm.setTokenContext(NULL, NULL);
     TokenBase *parsed = NULL;
     try { parsed = pgm.parseExpression(pgm.nextToken(), true); }
     catch ( ... ) { parsed = NULL; }
+    pgm.setTokenContext(saved_cur, saved_prv);
     pgm.tokens.swap_back(std::move(saved_stream));
     if ( parsed )
 	dds->member_default_inits[mname] = parsed;

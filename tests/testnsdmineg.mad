@@ -1,0 +1,34 @@
+// Regression: store_member_default_init parsed captured NSDMI tokens in an
+// isolated sub-stream (tokens.swap_in) WITHOUT resetting the expression-
+// position context. The live parse's last consumed token — the captured
+// group's '}' — leaked in as prevToken, isPostfixPosition() judged the head
+// '-' of `{-1}` binary (TokenNeg -> TokenSub), and popOperator threw
+// "Missing operand" (libc++ parser_std_format_spec.h:339
+// `int32_t __precision_{-1};`). Same class covers a head '&' (address-of
+// judged bitwise-AND). Fix: setTokenContext(NULL, NULL) around the isolated
+// parse, restored after — the precedent the forest default-arg re-feed
+// already set.
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "-1 -7 5 ok".
+#include <cstdio>
+
+int g = 5;
+
+struct S {
+	int a{-1};
+	int b = -7;
+	int *p{&g};
+};
+
+template <class T> struct box {
+	T v{-1};
+};
+
+int main()
+{
+	S s;
+	box<int> bx;
+	if ( bx.v != -1 )
+		return 1;
+	printf("%d %d %d ok\n", s.a, s.b, *s.p);
+	return 0;
+}
