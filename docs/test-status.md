@@ -1,6 +1,24 @@
 # Test Status
 
-> **Current (2026-08-05, `feature/libcxx-parity7-claude` @075c7f81 —
+> **Current (2026-08-05, `feature/libcxx-parity7-claude` @bb435bfd —
+> namespace-scope using-aliases flat-register when free):** fulltest
+> **950 passed, 0 failed, 0 timed out, 9 skipped** (rc=0) and default EXE
+> leg green (freeze/forest gates included). The dialect's unqualified
+> visibility for namespace-scope type names is a flat `datatype_map`
+> write that only the TYPEDEF lane performed; the USING-ALIAS lane was
+> cut from the flat map after `std::pmr::string`'s alias clobbered the
+> real `string`. libc++ spells `std::string` as a using-alias
+> (`__fwd/string.h`) where libstdc++ uses a typedef, so bare `string`
+> was unresolvable in every declaration context only under
+> `-stdlib=libc++`. The alias arm now flat-registers only when the name
+> is FREE (primary wins; pmr stays namespace-only). testexterncstringptr
+> and testforeachheaderbody flip: the whole flavored measurement is
+> **942 passed / 6 failed / 0 timed out / 12 skipped**, eligible EXE
+> **926/0**, OBJ **926/0**, zero newly broken (two-way name diff). New
+> gate `testbarestring` (file-scope var + fn decl/def + block local,
+> both flavors).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @075c7f81 —
 > system-header global C++ overloads register distinctly):** fulltest
 > **950 passed, 0 failed, 0 timed out, 9 skipped** (rc=0) and default EXE
 > leg green. libc++'s `stdlib.h` declares five inline C++ `abs` overloads

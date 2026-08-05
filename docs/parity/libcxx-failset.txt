@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  075c7f81 (2026-08-05) on feature/libcxx-parity7-claude
-# Result:       939 passed / 8 failed / 0 timed out / 12 skipped
+# Measured at:  bb435bfd (2026-08-05) on feature/libcxx-parity7-claude
+# Result:       942 passed / 6 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -632,8 +632,25 @@
 #                         hits it (libstdc++ puts abs overloads in std::).
 #                         Gate: testglobaloverload. EXE 923/0, OBJ 923/0,
 #                         fulltest 950/0.
-testexterncstringptr.mad
-testforeachheaderbody.mad
+#   bb435bfd  942 /   6   ⚡ BUCKET C FELL — testexterncstringptr +
+#                         testforeachheaderbody FIXED, ZERO newly broken (the
+#                         6 == the prior 8 minus the pair; +1 more pass is
+#                         testglobaloverload joining the count). ONE root:
+#                         madc's dialect grants namespace-scope type names
+#                         unqualified visibility via a flat datatype_map
+#                         write, but only the TYPEDEF lane did it — the
+#                         USING-ALIAS lane was cut from the flat map after
+#                         std::pmr::string's alias clobbered the real string.
+#                         libstdc++ spells std::string as a typedef; libc++
+#                         spells it `using string = basic_string<char>;`
+#                         (__fwd/string.h) — bare `string` was unresolvable
+#                         in EVERY decl context only under -stdlib=libc++
+#                         (probe: MADC_TYPEDEF_SHADOW_PROBE showed zero flat
+#                         `string` registrations). Fix: the alias arm
+#                         flat-registers ONLY when the name is FREE — the
+#                         primary wins, pmr stays namespace-only (the old
+#                         regression stays fixed). Gate: testbarestring.
+#                         EXE 926/0, OBJ 926/0, fulltest + default EXE green.
 testfreezerun.mad
 testifconstexpr.mad
 testinvocable.mad

@@ -5,9 +5,24 @@
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 939/8**: new gates plus twenty old-failure flips, with
+moved **891/28 → 942/6**: new gates plus twenty-two old-failure flips, with
 zero newly broken tests in every measured two-way failset diff. Fulltest is
-**950/0/0TO/9skip**; libc++-eligible EXE/OBJ are **923/0**.
+**950/0/0TO/9skip**; libc++-eligible EXE/OBJ are **926/0**.
+
+- **fix: namespace-scope using-aliases flat-register when free
+  (@bb435bfd).** madc's dialect grants namespace-scope type names
+  unqualified visibility via a flat `datatype_map` write — but only the
+  TYPEDEF lane performed it; the USING-ALIAS lane was cut from the flat
+  map entirely after `std::pmr::string`'s alias once clobbered the real
+  `string`. libstdc++ spells `std::string` as a typedef, libc++ as
+  `using string = basic_string<char>;` (`__fwd/string.h`), so bare
+  `string` was unresolvable in EVERY declaration context only under
+  `-stdlib=libc++` — the string-in-C-decl-context pair. The alias arm now
+  flat-registers only when the name is FREE: the primary registers first,
+  pmr's later same-name alias stays namespace-only (the historical clobber
+  stays fixed). testexterncstringptr and testforeachheaderbody flip (lane
+  939/8 → **942/6**, two-way diffed, zero newly broken); new gate
+  `testbarestring`.
 
 - **fix: system-header global C++ overloads register distinctly
   (@075c7f81).** Under `-stdlib=libc++`, libc++'s `stdlib.h` declares five
