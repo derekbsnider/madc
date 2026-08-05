@@ -3065,15 +3065,17 @@ TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consum
     // Extend through nested qualifiers (`a::b::member`): tokens[0] is the '::'
     // after tb; each ident+'::' pair deepens the namespace while the deeper
     // path names a known namespace. tokens[j] ends as the member candidate.
+    // canonical_nested_namespace owns the descent — the literal dual-map
+    // probe this loop used could not hop an inline namespace
+    // (`outer::inner::ty` registered as `outer::v1::inner`).
     size_t j = 1;
     while ( j + 1 < tokens.size()
 	 && tokens[j] && is_contextual_identifier_token(tokens[j])
 	 && tokens[j + 1] && tokens[j + 1]->id() == TokenID::tkNS )
     {
-	std::string deeper = ns_name + "::"
-			   + contextual_identifier_name(tokens[j]);
-	if ( namespace_datatype_map.find(deeper) == namespace_datatype_map.end()
-	  && namespace_map.find(deeper) == namespace_map.end() )
+	std::string deeper = canonical_nested_namespace(ns_name,
+			contextual_identifier_name(tokens[j]));
+	if ( deeper.empty() )
 	    break;
 	ns_name = deeper;
 	j += 2;
@@ -10911,7 +10913,15 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    }
 	    if ( tokens[j+1]->id() == TokenID::tkNS )
 	    {
-		ns_name += "::" + member_name;
+		// canonical_nested_namespace first (inline-namespace hop:
+		// `outer::inner` registered as `outer::v1::inner`); keep the
+		// literal append as the fallback — this walk builds a HINT and
+		// also steps over qualifiers that are not registered
+		// namespaces.
+		std::string deeper =
+		    canonical_nested_namespace(ns_name, member_name);
+		ns_name = deeper.empty() ? ns_name + "::" + member_name
+					 : deeper;
 		j += 2;                            // skip a namespace qualifier
 	    }
 	    else

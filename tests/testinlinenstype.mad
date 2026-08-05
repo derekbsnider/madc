@@ -1,0 +1,25 @@
+// Regression: two qualified-name descent loops probed `parent::comp`
+// LITERALLY against the namespace maps, so a path that hops an inline
+// namespace (`outer::inner::ty` registered as `outer::v1::inner::ty`,
+// [namespace.qual]) resolved as neither a declared type
+// ("Unknown namespace or class 'inner'") nor a static_cast target
+// ("static_cast target is not a type"). Both loops now delegate to
+// canonical_nested_namespace — the owner whose comment records it was
+// consolidated FROM these descent loops (two sites had adopted it, these
+// two had not).
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "1 2 ok".
+#include <cstdio>
+
+namespace outer { inline namespace v1 { namespace inner {
+enum class ty : unsigned char { a, b, c };
+struct box { int v; };
+} } }
+
+int main()
+{
+	outer::inner::ty t = static_cast<outer::inner::ty>(1);
+	outer::inner::box bx;
+	bx.v = 2;
+	printf("%d %d ok\n", t == outer::inner::ty::b ? 1 : 0, bx.v);
+	return 0;
+}
