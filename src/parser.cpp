@@ -50444,6 +50444,30 @@ static bool free_operator_concrete_param_matches(Program &pgm,
     return false;	// a concrete named type the argument is not -> reject
 }
 
+// [temp.deduct.call]/[over.ics.ref] derived-to-base: the class itself or the
+// first base (transitive; non-virtual bases + the primary base_class chain)
+// whose canonical template head matches `want_head`, else NULL. The cir W2
+// signature lane walks the same set via collect_self_and_base_spellings;
+// this is the body-instantiation lane's walk of the same rule.
+static DataDefCLASS *class_or_base_with_template_head(DataDefCLASS *cls,
+						      const std::string &want_head)
+{
+    if ( !cls )
+	return NULL;
+    const std::string canon = cls->canonical_cpp_spelling().empty()
+			    ? cls->name : cls->canonical_cpp_spelling();
+    if ( template_head_component(canon) == want_head )
+	return cls;
+    for ( size_t i = 0; i < cls->bases.size(); ++i )
+	if ( cls->bases[i].base && !cls->bases[i].is_virtual )
+	    if ( DataDefCLASS *hit = class_or_base_with_template_head(
+			cls->bases[i].base, want_head) )
+		return hit;
+    if ( cls->base_class )
+	return class_or_base_with_template_head(cls->base_class, want_head);
+    return NULL;
+}
+
 static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	const std::string &opname, TokenBase *lhs, TokenBase *rhs,
@@ -50507,6 +50531,14 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(arg_core);
 	    if ( !cls )
 		return NULL;
+	    // Derived-to-base ref binding for deduction: an ofstream argument
+	    // binds `basic_ostream<_CharT,_Traits>&` through its BASE. Without
+	    // the walk this candidate was refused and try_free_operator_call
+	    // fell SILENTLY back to the member operator<<(const void*) —
+	    // `outf << "hello"` wrote the pointer VALUE into the file.
+	    if ( DataDefCLASS *bc = class_or_base_with_template_head(
+			cls, template_head_component(sp)) )
+		cls = bc;
 	    const std::string canon = cls->canonical_cpp_spelling().empty()
 				    ? cls->name : cls->canonical_cpp_spelling();
 	    if ( template_head_component(sp) != template_head_component(canon) )

@@ -1,0 +1,38 @@
+#!/../bin/madc
+// [temp.deduct.call] / [over.ics.ref]: a DERIVED stream (ofstream) binds the
+// free inserter templates (const char*, char, basic_string) through its
+// basic_ostream BASE. The body-instantiation lane refused that deduction
+// (template-head mismatch, no derived-to-base walk) and try_free_operator_call
+// fell SILENTLY back to the member operator<<(const void*):
+// `outf << "cwrite"` wrote the POINTER VALUE into the file — exit 0, file
+// garbage. Surfaced as testfstream/testloop reading their own files back
+// under -stdlib=libc++ and printing hex.
+//
+// Oracle: g++ and clang++ (both stdlibs) print:
+//	cwrite swrite 42
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <cstdlib>
+using namespace std;
+
+int main()
+{
+	string fname = "/tmp/madc_ofswrite_test.txt";
+	ofstream outf;
+	outf.open(fname);
+	string s = "swrite";
+	outf << "cwrite" << ' ' << s << ' ' << 42 << endl;
+	outf.close();
+
+	ifstream inf;
+	inf.open(fname);
+	string line;
+	getline(inf, line);
+	cout << line << endl;
+	inf.close();
+
+	string rm = "rm -f /tmp/madc_ofswrite_test.txt";
+	system(rm.c_str());
+	return 0;
+}
