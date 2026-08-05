@@ -4476,6 +4476,7 @@ public:
     void set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb = NULL);
     Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name);
     std::string canonical_nested_namespace(const std::string &parent, const std::string &comp);
+    std::vector<std::string> inline_namespace_descendants(const std::string &ns) const;
     std::string canonical_namespace_path(const std::string &base, const std::string &dotted);
     Variable *resolve_preferred_identifier(class TokenIdent *ident_tb, bool expression_head);
     void set_expression_context_root(const madc::value *root);
@@ -5303,6 +5304,8 @@ public:
     DataDef *resolve_current_class_type_alias(const std::string &name);
     bool resolve_current_class_static_member_const_value(const std::string &name, int64_t &out);
     bool fold_constant_qualified_member(TokenBase *first, madc_wide_int &out);
+    bool fold_constant_qualified_member_walk(TokenBase *first,
+					     madc_wide_int &out);
     Variable *find_variable_for_contextual_type_name(const std::string &name);
     DataDefCLASS *resolve_expression_class_scope(const std::string &name);
     // What a qualifier names before `::` in an expression — THE one classify

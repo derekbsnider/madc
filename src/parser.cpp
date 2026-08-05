@@ -14503,10 +14503,32 @@ bool Program::try_parse_constant_offsetof_address(int64_t &out)
 // `ns::Tmpl<...>::member`. Reuses instantiate_template_id (for template-id
 // segments) and resolve_class_static_member_const_value (for the final member).
 // `first` is the already-consumed leading token (a type or a namespace name).
-// Consumes the `::`-chain on success; returns false (without guaranteeing the
-// stream position) only when the leading token can't begin such a chain — the
-// callers below gate on that so non-qualified atoms are untouched.
+// Consumes the `::`-chain on success. TRANSACTIONAL on failure: the wrapper
+// below restores the stream, so every later constant arm sees the intact
+// qualifier chain — a namespace-headed chain whose member is NOT a class
+// member (`std::is_trivially_copyable_v<T>`, a variable template) used to be
+// half-consumed here and could never reach the qualified var-template peel.
 bool Program::fold_constant_qualified_member(TokenBase *first, madc_wide_int &out)
+{
+    TokenStream::Pos saved_tokens = tokens.savepos();
+    TokenBase *saved_cur = _cur_token;
+    TokenBase *saved_prv = _prv_token;
+    if ( fold_constant_qualified_member_walk(first, out) )
+	return true;
+    tokens = saved_tokens;
+    _cur_token = saved_cur;
+    _prv_token = saved_prv;
+    if ( _cur_token )
+    {
+	TokenBase::_parse_file = _cur_token->file;
+	TokenBase::_parse_line = _cur_token->line;
+	TokenBase::_parse_column = _cur_token->column;
+    }
+    return false;
+}
+
+bool Program::fold_constant_qualified_member_walk(TokenBase *first,
+						  madc_wide_int &out)
 {
     if ( !first )
 	return false;
@@ -14727,6 +14749,92 @@ madc_wide_int Program::parse_constant_primary()
 	// consumed (it is `tb`); evaluate the requirement-seq's well-formedness.
 	if ( name == "requires" )
 	    return evaluate_requires_expression_constant();
+	// Namespace-QUALIFIED variable template / concept:
+	// `std::is_trivially_copyable_v<T>` in a static_assert. Peel the
+	// qualifier chain (classify_qualifier_before_scope +
+	// canonical_nested_namespace — the same owners the enum arm uses) and
+	// rebind `name` to the qualified registry key, so the var-template and
+	// concept arms below fold it exactly like the unqualified spelling.
+	// Transactional: an unknown qualified name restores the stream for the
+	// throw below.
+	if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+	{
+	    QualifierScope qscope = classify_qualifier_before_scope(name, tb);
+	    if ( qscope.is_namespace() )
+	    {
+		TokenStream::Pos saved_tokens = tokens.savepos();
+		TokenBase *saved_cur = _cur_token;
+		TokenBase *saved_prv = _prv_token;
+		std::string ns_name = qscope.ns_name;
+		nextToken(); // consume '::'
+		TokenBase *member_tb = nextToken();
+		std::string member;
+		if ( member_tb && is_contextual_identifier_token(member_tb) )
+		{
+		    member = contextual_identifier_name(member_tb);
+		    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
+		    {
+			std::string deeper =
+			    canonical_nested_namespace(ns_name, member);
+			if ( deeper.empty() )
+			    break;
+			nextToken(); // consume '::'
+			member_tb = nextToken();
+			if ( !member_tb
+			  || !is_contextual_identifier_token(member_tb) )
+			{
+			    member_tb = NULL;
+			    break;
+			}
+			ns_name = deeper;
+			member = contextual_identifier_name(member_tb);
+		    }
+		}
+		// [namespace.qual] member lookup: the registry key may live in
+		// an inline descendant (`std::is_trivially_copyable_v` is
+		// registered as std::__1::... under libc++) —
+		// inline_namespace_descendants owns that walk.
+		std::string qkey = ns_name + "::" + member;
+		bool qhit = var_template_map.find(qkey) != var_template_map.end()
+			 || concept_map.find(qkey) != concept_map.end();
+		if ( !qhit )
+		{
+		    std::vector<std::string> descendants =
+			inline_namespace_descendants(ns_name);
+		    for ( size_t di = 0; di < descendants.size(); ++di )
+		    {
+			std::string cand = descendants[di] + "::" + member;
+			if ( var_template_map.find(cand)
+				!= var_template_map.end()
+			  || concept_map.find(cand) != concept_map.end() )
+			{
+			    qkey = cand;
+			    qhit = true;
+			    break;
+			}
+		    }
+		}
+		DBG(std::cout << "constant qualified peel: qkey " << qkey
+		    << " lt=" << (peekToken()
+				  && peekToken()->id() == TokenID::tkLT)
+		    << " hit=" << qhit << std::endl);
+		if ( member_tb && qhit && peekToken()
+		  && peekToken()->id() == TokenID::tkLT )
+		    name = qkey;   // fall through to the arms below
+		else
+		{
+		    tokens = saved_tokens;
+		    _cur_token = saved_cur;
+		    _prv_token = saved_prv;
+		    if ( _cur_token )
+		    {
+			TokenBase::_parse_file = _cur_token->file;
+			TokenBase::_parse_line = _cur_token->line;
+			TokenBase::_parse_column = _cur_token->column;
+		    }
+		}
+	    }
+	}
 	// C++14 VARIABLE TEMPLATE in a constant expression: `is_floating_point_v
 	// <double>` (a non-type bool arg — e.g. enable_if's condition in
 	// std::numbers). Substitute the type args into the initializer tokens and
@@ -22177,6 +22285,29 @@ void Program::set_namespace_preference(const std::vector<std::string> &order, To
     namespace_preference = order;
 }
 
+// [namespace.qual]: NS's transitive inline-namespace descendants
+// (std -> std::__1 -> ...), in BFS order; empty when NS has no inline
+// children. The ONE owner of the inline-set walk — callers probe NS itself
+// first (their miss-free hot path), then each descendant.
+std::vector<std::string> Program::inline_namespace_descendants(
+					const std::string &ns) const
+{
+    std::vector<std::string> pending;
+    std::map<std::string, std::vector<std::string>>::const_iterator ci =
+	inline_namespace_children.find(ns);
+    if ( ci == inline_namespace_children.end() )
+	return pending;
+    pending = ci->second;
+    for ( size_t pi = 0; pi < pending.size(); ++pi )
+    {
+	ci = inline_namespace_children.find(pending[pi]);
+	if ( ci != inline_namespace_children.end() )
+	    for ( size_t i = 0; i < ci->second.size(); ++i )
+		pending.push_back(ci->second[i]);
+    }
+    return pending;
+}
+
 Variable *Program::find_namespace_member(const std::string &ns_name, const std::string &member_name)
 {
     // [namespace.qual]: the members of N include the members of N's inline
@@ -22193,26 +22324,18 @@ Variable *Program::find_namespace_member(const std::string &ns_name, const std::
 	if ( vmi != nsi->second.end() )
 	    return vmi->second;
     }
-    std::map<std::string, std::vector<std::string>>::const_iterator ci =
-	inline_namespace_children.find(ns_name);
-    if ( ci == inline_namespace_children.end() )
-	return NULL;
     // Children only exist for a handful of namespaces (std, std::ranges, …);
-    // the pending vector is not on the miss-free hot path above.
-    std::vector<std::string> pending = ci->second;
-    for ( size_t pi = 0; pi < pending.size(); ++pi )
+    // the descendant vector is not on the miss-free hot path above.
+    std::vector<std::string> descendants = inline_namespace_descendants(ns_name);
+    for ( size_t pi = 0; pi < descendants.size(); ++pi )
     {
-	nsi = namespace_map.find(pending[pi]);
+	nsi = namespace_map.find(descendants[pi]);
 	if ( nsi != namespace_map.end() )
 	{
 	    variable_map_t::const_iterator vmi = nsi->second.find(member_name);
 	    if ( vmi != nsi->second.end() )
 		return vmi->second;
 	}
-	ci = inline_namespace_children.find(pending[pi]);
-	if ( ci != inline_namespace_children.end() )
-	    for ( size_t i = 0; i < ci->second.size(); ++i )
-		pending.push_back(ci->second[i]);
     }
     return NULL;
 }
@@ -22230,21 +22353,13 @@ std::string Program::canonical_nested_namespace(const std::string &parent,
     if ( namespace_map.find(cand) != namespace_map.end()
       || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
 	return cand;
-    std::map<std::string, std::vector<std::string>>::const_iterator ci =
-	inline_namespace_children.find(parent);
-    if ( ci == inline_namespace_children.end() )
-	return std::string();
-    std::vector<std::string> pending = ci->second;
-    for ( size_t pi = 0; pi < pending.size(); ++pi )
+    std::vector<std::string> descendants = inline_namespace_descendants(parent);
+    for ( size_t pi = 0; pi < descendants.size(); ++pi )
     {
-	cand = pending[pi] + "::" + comp;
+	cand = descendants[pi] + "::" + comp;
 	if ( namespace_map.find(cand) != namespace_map.end()
 	  || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
 	    return cand;
-	ci = inline_namespace_children.find(pending[pi]);
-	if ( ci != inline_namespace_children.end() )
-	    for ( size_t i = 0; i < ci->second.size(); ++i )
-		pending.push_back(ci->second[i]);
     }
     return std::string();
 }
@@ -41947,8 +42062,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    // the brace form's '{' stays in the stream — the capture
 		    // owns it transactionally, and a failed capture leaves the
 		    // intact group for the structural skip below (libc++
-		    // formatter_integral.h `static constexpr string_view
-		    // __true{"true"};`).
+		    // formatter_integral.h __bool_strings' brace-initialized
+		    // statics).
 		    if ( !static_brace_init )
 			pgm.nextToken(); // consume '='
 		    // Capture an integral constant initializer (std::integral_constant's
