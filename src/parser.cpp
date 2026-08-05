@@ -11568,27 +11568,53 @@ bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
     else
 	return false;
     // Scoped-enum constant in a constant expression: `Tag::Value` (e.g. a
-    // `case Color::Green:` label). The enumerators live in the tag's
-    // pseudo-namespace (see TokenENUM::parse), so resolve through it. Keep this
-    // probe transactional: `ns::Tmpl<...>::member` also starts with a namespace
-    // name, and the qualified-member constant folder below must see the intact
-    // token chain when this narrow enum lookup does not resolve.
+    // `case Color::Green:` label) or its namespace-qualified spelling
+    // `ns::Tag::Value` — a case label referenced from inside the declaring
+    // namespace spells the qualifier to bypass a shadowing parameter (libc++
+    // parser_std_format_spec.h `case __format_spec::__type::__default:`).
+    // classify_qualifier_before_scope owns alias resolution (scope-relative,
+    // inline-namespace canonical) and canonical_nested_namespace owns the
+    // qualifier descent — the same owners the cast-operand arm adopted. Keep
+    // this probe transactional: `ns::Tmpl<...>::member` also starts with a
+    // namespace name, and the qualified-member constant folder below must see
+    // the intact token chain when this narrow enum lookup does not resolve.
     if ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
-	TokenStream::Pos saved_tokens = tokens.savepos();
-	TokenBase *saved_cur = _cur_token;
-	TokenBase *saved_prv = _prv_token;
-	namespace_map_t::iterator nsi = namespace_map.find(name);
-	if ( nsi != namespace_map.end() )
+	QualifierScope qscope = classify_qualifier_before_scope(name, tb);
+	if ( qscope.is_namespace() )
 	{
+	    TokenStream::Pos saved_tokens = tokens.savepos();
+	    TokenBase *saved_cur = _cur_token;
+	    TokenBase *saved_prv = _prv_token;
+	    std::string ns_name = qscope.ns_name;
 	    nextToken(); // consume '::'
 	    TokenBase *member_tb = nextToken();
 	    if ( member_tb && is_contextual_identifier_token(member_tb) )
 	    {
 		std::string member = contextual_identifier_name(member_tb);
-		Variable *nsv = find_namespace_member(name, member);
-		if ( nsv && read_constant_integer(nsv, out) )
-		    return true;
+		while ( peekToken() && peekToken()->id() == TokenID::tkNS )
+		{
+		    std::string deeper =
+			canonical_nested_namespace(ns_name, member);
+		    if ( deeper.empty() )
+			break;
+		    nextToken(); // consume '::'
+		    member_tb = nextToken();
+		    if ( !member_tb
+		      || !is_contextual_identifier_token(member_tb) )
+		    {
+			member_tb = NULL; // malformed — restore below
+			break;
+		    }
+		    ns_name = deeper;
+		    member = contextual_identifier_name(member_tb);
+		}
+		if ( member_tb )
+		{
+		    Variable *nsv = find_namespace_member(ns_name, member);
+		    if ( nsv && read_constant_integer(nsv, out) )
+			return true;
+		}
 	    }
 	    tokens = saved_tokens;
 	    _cur_token = saved_cur;
