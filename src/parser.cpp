@@ -35809,11 +35809,11 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    if ( !target )
 		pgm.Throw(type_tb ? type_tb : tn) << "Expecting type in using alias" << flush;
 	    DataDef *alias_dd = &target->definition;
-	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
-	    {
-		pgm.nextToken();
-		alias_dd = pgm.getPointerType(alias_dd);
-	    }
+	    // Stars + interstitial/east cv (`directory_entry const*`, libc++
+	    // recursive_directory_iterator.h:44): the shared declarator
+	    // consumer owns both. A bare `while (tkMul)` loop never saw the
+	    // east `const` and the arm threw "Expecting ';' after using alias".
+	    pgm.consume_declarator_stars(alias_dd);
 	    // Function-pointer alias: using NAME = RET (*)(params);
 	    // The ABSTRACT twin of typedef Form 2 (typedef RET (*NAME)(params);)
 	    // — same parseFnPtrParams owner, the alias name came before '='.
