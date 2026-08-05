@@ -4804,7 +4804,8 @@ public:
     // Speculatively fold a static-member initializer ('=' already consumed) to a
     // constant int, expecting ';'. Consumes the initializer on success, restores
     // and returns false otherwise. See parser.cpp.
-    bool capture_constant_initializer_value(int64_t &out);
+    bool capture_constant_initializer_value(int64_t &out,
+					    bool brace_form = false);
     // Parse a bit-field width `: N` (the ':' already consumed) for a member of
     // integer type `member_dd`; `named` rejects a zero width; `target` supplies
     // the storage-size rule. Shared by the struct and class body parsers.

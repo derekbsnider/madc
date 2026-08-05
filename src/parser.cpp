@@ -15302,19 +15302,44 @@ static bool constant_initializer_has_runtime_access(Program &pgm)
     return false;
 }
 
-// Speculatively fold a static-data-member initializer (caller has already consumed
-// the '=') to a constant integer, expecting a terminating ';'. On success the
-// initializer is CONSUMED (stream left at ';') and the value returned via `out`; on
-// any failure the stream/diagnostics are restored and false returned, so the caller
-// falls back to skipping a non-constant initializer. Same save/try/restore idiom as
-// bracket_dim_constant_expression_parses.
-bool Program::capture_constant_initializer_value(int64_t &out)
+// Speculatively fold a static-data-member initializer to a constant integer,
+// expecting a terminating ';'. '=' form: the caller has already consumed the
+// '='. Brace form (brace_form=true): the '{' is still in the stream — this
+// function consumes the whole `{...}` group so a failed capture restores the
+// INTACT group for the caller's structural skip. On success the initializer is
+// CONSUMED (stream left at ';') and the value returned via `out`; on any
+// failure the stream/diagnostics are restored and false returned, so the
+// caller falls back to skipping a non-constant initializer. Same
+// save/try/restore idiom as bracket_dim_constant_expression_parses.
+bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
 {
     if ( constant_initializer_has_runtime_access(*this) )
 	return false;
     auto saved_tokens = tokens.savepos();
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
+    // Brace-or-equal-init, brace spelling (`static constexpr int n{7};`):
+    // this function owns the '{' so a failed capture restores the INTACT
+    // group for the caller's structural skip. `{}` is value-init — 0 for an
+    // integral ([dcl.init]/8). Success leaves the stream at the ';' exactly
+    // like the '=' form.
+    if ( brace_form )
+    {
+	if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrc )
+	    return false;
+	nextToken();                 // consume '{'
+	if ( peekToken() && peekToken()->id() == TokenID::tkClBrc )
+	{
+	    nextToken();             // consume '}'
+	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	    {
+		out = 0;
+		return true;
+	    }
+	    tokens = saved_tokens;
+	    return false;
+	}
+    }
     // A non-constant / still-dependent initializer (a dependent `static constexpr`
     // member like libstdc++'s `value = static_cast<...>(...)`) makes
     // parse_constant_integer_expression Throw, and throwbuf::sync() prints to stderr
@@ -15330,7 +15355,18 @@ bool Program::capture_constant_initializer_value(int64_t &out)
     try
     {
 	v = parse_constant_integer_expression();
-	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	if ( brace_form )
+	{
+	    // The expression must stop at the group's '}'; consume it and
+	    // land on the ';' the '=' form's contract promises.
+	    if ( peekToken() && peekToken()->id() == TokenID::tkClBrc )
+	    {
+		nextToken();
+		if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+		    ok = true;
+	    }
+	}
+	else if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	    ok = true;
     }
     catch ( ... ) { ok = false; }
@@ -41901,9 +41937,20 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			}
 		    }
 		}
-		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
+		bool static_brace_init = pgm.peekToken()
+		    && pgm.peekToken()->id() == TokenID::tkOpBrc;
+		if ( static_brace_init
+		  || (pgm.peekToken()
+		      && pgm.peekToken()->id() == TokenID::tkAssign) )
 		{
-		    pgm.nextToken(); // consume '='
+		    // Brace-or-equal-init ([class.mem]): '=' is consumed here;
+		    // the brace form's '{' stays in the stream — the capture
+		    // owns it transactionally, and a failed capture leaves the
+		    // intact group for the structural skip below (libc++
+		    // formatter_integral.h `static constexpr string_view
+		    // __true{"true"};`).
+		    if ( !static_brace_init )
+			pgm.nextToken(); // consume '='
 		    // Capture an integral constant initializer (std::integral_constant's
 		    // "static const T value = c;") so X::value reads the real value, not
 		    // a 0 placeholder. Non-integral / non-constant initializers fall
@@ -41911,7 +41958,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    int64_t const_val = 0;
 		    if ( cmember_dd && cmember_dd->is_integer()
 		      && !cmember_dd->is_pointer()
-		      && pgm.capture_constant_initializer_value(const_val) )
+		      && pgm.capture_constant_initializer_value(const_val,
+							static_brace_init) )
 		    {
 			ddc->static_member_const_values[mname] = const_val;
 			pgm.nextToken(); // consume the ';' the capture stopped at

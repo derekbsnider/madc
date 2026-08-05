@@ -1,0 +1,27 @@
+// Regression: the static-data-member arm of TokenCLASS::parse accepted only
+// the '=' spelling of a brace-or-equal-initializer — the brace spelling
+// (`static constexpr string_view __true{"true"};`, libc++
+// formatter_integral.h's __bool_strings<char> specialization) threw
+// "Expecting ';' after static class member". The brace form now routes
+// through capture_constant_initializer_value (which owns the '{'
+// transactionally: integral values fold so X::n reads the real value, `{}`
+// is value-init 0, non-integral groups restore intact for the structural
+// skip).
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "7 0 3 ok".
+#include <cstdio>
+
+struct sv { const char *p; };
+
+template <class T> struct bs;
+template <> struct bs<char> {
+	static constexpr sv t{"true"};
+	static constexpr int n{7};
+	static constexpr int z{};
+	static const int e = 3;
+};
+
+int main()
+{
+	printf("%d %d %d ok\n", bs<char>::n, bs<char>::z, bs<char>::e);
+	return 0;
+}
