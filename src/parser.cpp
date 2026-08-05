@@ -35915,13 +35915,23 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    else
 	    {
 		pgm.user_typedef_names.insert(alias_name);
-		// A NAMESPACE-scope alias is visible only in its namespace
-		// (qualified use / using-directive import). Writing it into the
-		// flat global map here CLOBBERED the global name: parsing
-		// <string>'s `namespace pmr { using string = ...; }` replaced
+		// A NAMESPACE-scope alias gets the dialect's unqualified
+		// visibility (the same flat registration the TYPEDEF lane
+		// gives `namespace std { typedef basic_string<char> string; }`)
+		// ONLY when the flat name is still FREE. The no-clobber guard
+		// is load-bearing: an unconditional flat write let parsing
+		// <string>'s `namespace pmr { using string = ...; }` replace
 		// flat `string`, and the later `using namespace std` import
 		// skipped it as already-present — unqualified `string` became
-		// std::pmr::string (wrong allocator, wrong overloads).
+		// std::pmr::string (wrong allocator, wrong overloads). With
+		// the guard, the PRIMARY registers first and pmr's later
+		// same-name alias stays namespace-only. The flavored twin is
+		// why the free case must register at all: libc++ spells
+		// std::string as `using string = basic_string<char>;`
+		// (__fwd/string.h) where libstdc++ spells a typedef, so the
+		// alias lane's old never-flat rule left bare `string`
+		// unresolvable ONLY under -stdlib=libc++ (the
+		// testexterncstringptr/testforeachheaderbody pair).
 		// A BLOCK-scope alias (inside a function body — compounds
 		// non-empty) is a local typedef ([dcl.typedef]): register it
 		// flat exactly as TokenTYPEDEF does, even when the body parses
@@ -35930,7 +35940,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		// __alloc_on_swap declares `using __pocs = ...;` locally and
 		// then constructs `__pocs()` in expression position).
 		// Scoped registration: the flat entry is restored at block exit.
-		if ( pgm.current_namespace().empty() || !pgm.compounds.empty() )
+		if ( pgm.current_namespace().empty() || !pgm.compounds.empty()
+		  || pgm.datatype_map.find(alias_name) == pgm.datatype_map.end() )
 		    pgm.register_scoped_typedef(alias_name, alias_tdt);
 	    }
 	    // Namespace visibility is for NAMESPACE-scope aliases only — a
