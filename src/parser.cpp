@@ -59890,10 +59890,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     else if ( !qualified_owner_class && !is_c_mode()
 	   && current_linkage == LinkageSpec::Cpp
 	   && (source_id.compare(0, 8, "operator") == 0
-	    || fn_template_instantiation_depth > 0) )
+	    || fn_template_instantiation_depth > 0
+	    || (is_system_header_path(TokenBase::_parse_file)
+	     && (findVariable(source_id)
+	      || namespace_fn_overload_sets.count("::" + source_id)))) )
     {
-	// C++ free-function overloading at GLOBAL scope, for OPERATORS and
-	// fn-template INSTANTIATION PRODUCTS: the same per-overload
+	// C++ free-function overloading at GLOBAL scope, for OPERATORS,
+	// fn-template INSTANTIATION PRODUCTS, and SYSTEM-HEADER functions
+	// whose name is already taken: the same per-overload
 	// Variable/FuncDef model as namespace functions, registered under the
 	// empty-namespace key ("::name" / "::operatorX") — global scope IS the
 	// empty namespace. Operator-expression dispatch
@@ -59902,9 +59906,17 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	// re-entry (a SFINAE overload pair instantiates TWO same-name globals
 	// — width(int) / width(double) — which need distinct symbols and a set
 	// to rank, and whose display name lets a repeat call re-enter
-	// deduction). A PLAIN global function stays on the legacy path: its
+	// deduction). A PLAIN global function stays on the legacy path — its
 	// declaration-only form must import by SOURCE NAME for the dlsym
-	// fallback (libc declarations — tracking it would mangle the import).
+	// fallback (libc declarations — tracking it would mangle the import) —
+	// UNLESS it is a system-header declaration re-using an existing name:
+	// that is C++ overloading (libc++'s five global inline `abs` overloads
+	// after glibc's extern-C `int abs(int)`), and the legacy shared-id
+	// reuse spliced them into ONE FuncDef — the last body emitted as a
+	// plain-named linkonce `abs` clobbering the libc import, so
+	// `abs(-7)` ran the long-double body and read back 0. The FIRST
+	// declaration of a name still keeps the source name (import intact);
+	// only same-name successors mint per-overload symbols.
 	ns_overload_tracked = true;
 	ns_overload_spelling = peek_param_list_spelling();
 	// Same binding-identity fold as the namespace branch above.

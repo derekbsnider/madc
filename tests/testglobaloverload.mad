@@ -1,0 +1,16 @@
+// Global-scope C++ overloads of a libc function must register as DISTINCT
+// overloads of the extern-C import, not splice into its FuncDef. libc++'s
+// stdlib.h declares five inline `abs` overloads (long, long long, float,
+// double, long double) at GLOBAL scope after glibc's extern-C `int abs(int)`;
+// the legacy shared-id reuse emitted the LAST body as a plain-named linkonce
+// `abs` that clobbered the libc import, so abs(-7) ran the long-double body
+// and printed 0 under -stdlib=libc++. Oracle (g++ and clang++ -stdlib=libc++):
+// 7 9.
+#include <stdlib.h>
+#include <stdio.h>
+
+int main()
+{
+	printf("%d %ld\n", abs(-7), labs(-9L));
+	return 0;
+}
