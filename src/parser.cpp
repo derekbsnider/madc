@@ -1042,7 +1042,10 @@ static bool is_restrict_token(TokenBase *tb)
     return tb && tb->type() == TokenType::ttKeyword && tb->id() == TokenID::tkRESTRICT;
 }
 
-static bool is_post_pointer_qualifier_token(TokenBase *tb)
+// The ONE cv-qualifier predicate (const/volatile/restrict) — serves both the
+// post-pointer position (`char *const p`) and the leading/interstitial
+// positions (`operator const T&()`, `char const *p`).
+static bool is_cv_qualifier_token(TokenBase *tb)
 {
     return tb && tb->type() == TokenType::ttKeyword
         && (tb->id() == TokenID::tkRESTRICT
@@ -1059,7 +1062,7 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star)
     bool fnptr_base = (dynamic_cast<DataDefFPTR *>(dd) != NULL);
     bool const_after = false;
     while ( peekToken() && (peekToken()->id() == TokenID::tkMul
-			 || is_post_pointer_qualifier_token(peekToken())) )
+			 || is_cv_qualifier_token(peekToken())) )
     {
 	if ( peekToken()->id() == TokenID::tkMul )
 	{
@@ -1079,6 +1082,26 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star)
     if ( out_const_after_star )
 	*out_const_after_star = const_after;
     return stars;
+}
+
+// Shared cv-qualifier consumers — the one owner of "drop a run of
+// const/volatile/restrict in a committed type read" (madc does not model
+// cv-qualification beyond top-level const baking). Replaces the copy-pasted
+// `while (tkCONST || tkVOLATILE || tkRESTRICT) nextToken()` loops.
+// Held form: `held` was already taken from the stream; returns the first
+// non-qualifier token (consumed from the stream when `held` qualified).
+TokenBase *Program::skip_cv_qualifier_tokens(TokenBase *held)
+{
+    while ( held && is_cv_qualifier_token(held) )
+	held = nextToken();
+    return held;
+}
+
+// Peek form: consumes the qualifier run, leaves the following token unread.
+void Program::skip_cv_qualifier_tokens()
+{
+    while ( peekToken() && is_cv_qualifier_token(peekToken()) )
+	nextToken();
 }
 
 static bool is_type_qualifier_token(TokenBase *tb)
@@ -11635,12 +11658,8 @@ madc_wide_int Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
 	Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
     nextToken();
 
-    TokenBase *type_tb = nextToken();
+    TokenBase *type_tb = skip_cv_qualifier_tokens(nextToken());
     bool force_unsigned = false;
-    while ( type_tb && (type_tb->id() == TokenID::tkCONST
-	   || type_tb->id() == TokenID::tkVOLATILE
-	   || type_tb->id() == TokenID::tkRESTRICT) )
-	type_tb = nextToken();
     if ( type_tb && type_tb->type() == TokenType::ttIdentifier
       && ((TokenIdent *)type_tb)->spelling_is("unsigned") )
 	force_unsigned = true;
@@ -23711,11 +23730,7 @@ TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
     nextToken();
     skip_expression_whitespace();
 
-    TokenBase *type_tb = nextToken();
-    while ( type_tb && (type_tb->id() == TokenID::tkCONST
-	   || type_tb->id() == TokenID::tkVOLATILE
-	   || type_tb->id() == TokenID::tkRESTRICT) )
-	type_tb = nextToken();
+    TokenBase *type_tb = skip_cv_qualifier_tokens(nextToken());
 
     TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true);
     if ( !tdt )
@@ -35789,11 +35804,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	{
 	    std::string alias_name = using_declaration_name(tn);
 	    pgm.nextToken(); // consume '='
-	    TokenBase *type_tb = pgm.nextToken();
-	    while ( type_tb && (type_tb->id() == TokenID::tkCONST
-		   || type_tb->id() == TokenID::tkVOLATILE
-		   || type_tb->id() == TokenID::tkRESTRICT) )
-		type_tb = pgm.nextToken();
+	    TokenBase *type_tb = pgm.skip_cv_qualifier_tokens(pgm.nextToken());
 	    TokenDataType *target = pgm.resolve_declared_type_token(type_tb, true, true);
 	    if ( !target )
 		pgm.Throw(type_tb ? type_tb : tn) << "Expecting type in using alias" << flush;
@@ -37359,10 +37370,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    member_typedef_alias = mtype->spelling();
 		// skip const/restrict qualifiers between type and pointer stars
 		// e.g. `char const *p;`
-		while ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkCONST
-			|| pgm.peekToken()->id() == TokenID::tkVOLATILE
-			|| pgm.peekToken()->id() == TokenID::tkRESTRICT) )
-		    pgm.nextToken();
+		pgm.skip_cv_qualifier_tokens();
 		// consume __attribute__((...)) after type — extract aligned(N)
 		// for struct member alignment (e.g. `int __attribute__((aligned(8))) a;`)
 		size_t member_align = 0;
@@ -37387,10 +37395,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    }
 
 		    // skip trailing const/restrict qualifiers (e.g. `char const *p;`)
-		    while ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkCONST
-			    || pgm.peekToken()->id() == TokenID::tkVOLATILE
-			    || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
-			pgm.nextToken();
+		    pgm.skip_cv_qualifier_tokens();
 
 		    // expect member name
 		    tn = pgm.nextToken();
@@ -40718,26 +40723,31 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    tn = pgm.peekToken();
 	}
 
-	// --- conversion operator: operator T() [cv] { ... } ---
+	// --- conversion operator: operator [cv] T() [cv] { ... } ---
 	if ( tn->id() == TokenID::tkOPEROVER )
 	{
 	    pgm.nextToken(); // consume operator
-	    TokenBase *conv_tb = pgm.nextToken();
+	    // The conversion-type-id may lead with cv-qualifiers:
+	    // `operator const _Path&()` (libc++ directory_entry.h:92).
+	    TokenBase *conv_tb = pgm.skip_cv_qualifier_tokens(pgm.nextToken());
 	    TokenDataType *conv_type = pgm.resolve_declared_type_token(conv_tb, true, true);
 	    if ( !conv_type )
 		pgm.Throw(conv_tb ? conv_tb : tn) << "Expecting conversion type after operator" << flush;
 	    DataDef *conv_ret = &conv_type->definition;
-	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
-	    {
-		pgm.nextToken();
-		conv_ret = pgm.getPointerType(conv_ret);
-	    }
+	    // Stars + interstitial/east cv-qualifiers (`operator _Path const&()`,
+	    // `operator T* const()`): the shared declarator consumer owns both.
+	    pgm.consume_declarator_stars(conv_ret);
+	    // A reference conversion (`operator const T&()`) is a REFERENCE
+	    // return: hand the bare referent + return_ref to parseFunction so
+	    // returnDecl builds the DataDefREF (the pointer-wrap shortcut left
+	    // the body's `return member;` un-addressed — a check error).
+	    bool conv_ret_ref = false;
 	    if ( pgm.peekToken()
 	      && (pgm.peekToken()->id() == TokenID::tkBand
 	       || pgm.peekToken()->id() == TokenID::tkLand) )
 	    {
 		pgm.nextToken();
-		conv_ret = pgm.getPointerType(conv_ret);
+		conv_ret_ref = true;
 	    }
 	    TokenBase *open = pgm.peekToken();
 	    if ( !open || open->id() != TokenID::tkOpBrk )
@@ -40745,7 +40755,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    pgm.nextToken();
 	    std::string mname = std::string("operator ") + conv_type->spelling();
 	    std::string mangled = pgm.unique_overload_symbol(std::string(tag->spelling()) + "__operator_conv");
-	    pgm.parseFunction(*conv_ret, mangled, ddc);
+	    pgm.parseFunction(*conv_ret, mangled, ddc, NULL, conv_ret_ref);
 	    Variable *mvar;
 	    if ( (mvar=pgm.tkProgram->findVariable(pgm.strpool, mangled)) )
 	    {
@@ -40767,13 +40777,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// Optional leading cv-qualifiers on a data member / method return type:
 	// `const char *m;`, `volatile int v;`. madc does not enforce member
 	// const-correctness, so consume them (a const data member is an ordinary
-	// member). const/volatile/restrict are dedicated token ids, not identifiers
-	// (see the same idiom at parser.cpp:15942).
-	while ( pgm.peekToken()
-	     && ( pgm.peekToken()->id() == TokenID::tkCONST
-	       || pgm.peekToken()->id() == TokenID::tkVOLATILE
-	       || pgm.peekToken()->id() == TokenID::tkRESTRICT ) )
-	    pgm.nextToken();
+	// member).
+	pgm.skip_cv_qualifier_tokens();
 
 	if ( pgm.peekToken()
 	  && pgm.peekToken()->id() == TokenID::tkENUM
@@ -42107,7 +42112,7 @@ TokenBase *TokenIF::parse(Program &pgm)
 	 && (pgm.tokens[i]->id() == TokenID::tkMul
 	  || pgm.tokens[i]->id() == TokenID::tkBand
 	  || pgm.tokens[i]->id() == TokenID::tkLand
-	  || is_post_pointer_qualifier_token(pgm.tokens[i])) )
+	  || is_cv_qualifier_token(pgm.tokens[i])) )
 	    ++i;
 	return i < pgm.tokens.size() && pgm.tokens[i]
 	    && is_contextual_identifier_token(pgm.tokens[i]);
@@ -42902,7 +42907,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // the qualifier/star loop in parseDeclaration.
     while ( pgm.peekToken()
 	 && (pgm.peekToken()->id() == TokenID::tkMul
-	  || is_post_pointer_qualifier_token(pgm.peekToken())) )
+	  || is_cv_qualifier_token(pgm.peekToken())) )
     {
 	if ( pgm.peekToken()->id() == TokenID::tkMul )
 	    base_dd = pgm.getPointerType(base_dd);
@@ -55045,9 +55050,7 @@ void Program::parse_old_style_parameter_declaration(
 	    TokenBase *star = nextToken();
 	    if ( star && star->id() == TokenID::tkMul )
 	    {
-		TokenBase *name_tok = nextToken();
-		while ( name_tok && (is_post_pointer_qualifier_token(name_tok) || name_tok->id() == TokenID::tkCONST) )
-		    name_tok = nextToken();
+		TokenBase *name_tok = skip_cv_qualifier_tokens(nextToken());
 		if ( !name_tok || !is_contextual_identifier_token(name_tok) )
 		    Throw(name_tok ? name_tok : open) << "Expecting parameter name in K&R parameter declaration" << flush;
 
@@ -55080,7 +55083,7 @@ void Program::parse_old_style_parameter_declaration(
 	    if ( star )
 		pushToken(star);
 	}
-	while ( nt && (nt->id() == TokenID::tkMul || is_post_pointer_qualifier_token(nt)) )
+	while ( nt && (nt->id() == TokenID::tkMul || is_cv_qualifier_token(nt)) )
 	{
 	    if ( nt->id() == TokenID::tkMul )
 		decl_type = getPointerType(decl_type);

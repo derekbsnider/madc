@@ -4946,6 +4946,11 @@ public:
     // const pointer `T * const p`). One shared loop instead of the copy-pasted
     // `while(tkMul){...}` declarator loops.
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr);
+    // Shared cv-qualifier consumers (const/volatile/restrict) for committed
+    // type reads. Held form returns the first non-qualifier token; peek form
+    // consumes the run and leaves the following token unread.
+    TokenBase *skip_cv_qualifier_tokens(TokenBase *held);
+    void skip_cv_qualifier_tokens();
     // parse a `(params)` list after the opening '(' has been consumed; used by
     // function-pointer typedefs. Builds a FuncDef with the given return type.
     // Parameter names are accepted but discarded. Stops after consuming ')'.
