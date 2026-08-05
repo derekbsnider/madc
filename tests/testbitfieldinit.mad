@@ -1,17 +1,25 @@
-#!/../bin/madc
-// C++20 bit-field default member initializers: `unsigned m:1 = 0;` and
-// comma-separated `unsigned b:3 = 5, c:4 = 0;` (libstdc++ __max_size_type's
-// `unsigned _M_msb:1 = 0;`). madc parses+skips the initializer (does not apply it).
+// Regression: the C++20 bit-field brace-or-equal default member initializer's
+// BRACE form (`m : 1 {v}` — [class.mem]) was unconsumed by
+// skip_bitfield_default_init (only `= v` was), so the member walk died at the
+// '{'. Both forms are now skipped to the top-level ','/';' via the shared
+// DelimDepth scanner (the lambda's hand-rolled depth counter migrated per
+// delimiter-tracking.md). NOTE: madc does not APPLY bit-field initializers
+// (both spellings share that documented policy); this gate checks parse +
+// explicit assignment only. libc++ shape: __format/unicode.h:51.
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "9 6 ok".
 #include <cstdio>
-struct Flags {
-    unsigned a : 1 = 0;
-    unsigned b : 3 = 5, c : 4 = 0;
-    int payload;
+
+struct F {
+	unsigned a : 3 {2};
+	unsigned b : 5 = 7, b2 : 2 {1};
+	unsigned c : 8;
 };
+
 int main()
 {
-    Flags f;
-    f.payload = 42;
-    printf("bf: %d\n", f.payload);
-    return 0;
+	F f;
+	f.c = 9;
+	f.b = 6;
+	printf("%u %u ok\n", f.c, f.b);
+	return 0;
 }

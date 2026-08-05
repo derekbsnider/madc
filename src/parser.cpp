@@ -41558,24 +41558,31 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // validates the integer type and width.
 	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
 	    {
-		// C++20 bit-field default member initializer (`unsigned m:1 = 0;`):
-		// skip `= <init>` to the next top-level ',' or ';' (madc does not
-		// apply it). Returns the delimiter token. Used after each width.
+		// C++20 bit-field default member initializer (`unsigned m:1 = 0;`
+		// or the brace form `m:1 {v}` — [class.mem] brace-or-equal-init,
+		// libc++ unicode.h's `__status : 1 {__ok}`): skip to the next
+		// top-level ',' or ';' (madc does not apply it). Returns the
+		// delimiter token. Used after each width. Balanced tracking via
+		// the shared DelimDepth scanner (delimiter-tracking.md); the
+		// same two-rule terminator as capture_member_default_init:
+		// ',' only at FULL top() (a template-argument comma never
+		// splits), ';' at ()/[]/{}-top even with a phantom angle open.
 		auto skip_bitfield_default_init = [&](TokenBase *cur) -> TokenBase * {
-		    if ( !cur || cur->id() != TokenID::tkAssign )
+		    if ( !cur || (cur->id() != TokenID::tkAssign
+			       && cur->id() != TokenID::tkOpBrc) )
 			return cur;
-		    int d = 0;
+		    DelimDepth d;
+		    pgm.delimStepStream(cur, d, NULL);
 		    TokenBase *t;
 		    while ( (t = pgm.nextToken()) )
 		    {
 			TokenID id = t->id();
-			if ( d == 0 && (id == TokenID::tkSemi
-				     || id == TokenID::tkComma) )
+			bool shallow = !d.paren && !d.square && !d.brace;
+			if ( shallow && id == TokenID::tkSemi )
 			    return t;
-			if ( id == TokenID::tkOpBrk || id == TokenID::tkOpSqr
-			  || id == TokenID::tkOpBrc ) ++d;
-			else if ( id == TokenID::tkClBrk || id == TokenID::tkClSqr
-			       || id == TokenID::tkClBrc ) { if ( d > 0 ) --d; }
+			if ( d.top() && id == TokenID::tkComma )
+			    return t;
+			pgm.delimStepStream(t, d, NULL);
 		    }
 		    return t;
 		};
