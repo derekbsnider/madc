@@ -36312,30 +36312,96 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
     return false;
 }
 
+// Parse captured NSDMI initializer tokens into an expression in an ISOLATED
+// token stream (so the member-body parse does not desync) and record it under
+// member name `mname`. A scalar/pointer initializer is applied at default
+// construction as `recv.member = expr`; an expression that does not parse (a
+// dependent object value-init in a system header) is left unstored — object
+// members then take the existing value-init construction. Shared tail of the
+// `=` and brace forms in capture_member_default_init.
+static void store_member_default_init(Program &pgm, DataDefSTRUCT *dds,
+	const std::string &mname, const std::vector<TokenBase *> &init_toks)
+{
+    if ( init_toks.empty() )
+	return;
+    std::vector<TokenBase *> seq;
+    for ( TokenBase *t : init_toks )
+	seq.push_back(t->clone());
+    seq.push_back(new TokenSemi());
+    TokenStream::State saved_stream = pgm.tokens.swap_in(std::move(seq));
+    TokenBase *parsed = NULL;
+    try { parsed = pgm.parseExpression(pgm.nextToken(), true); }
+    catch ( ... ) { parsed = NULL; }
+    pgm.tokens.swap_back(std::move(saved_stream));
+    if ( parsed )
+	dds->member_default_inits[mname] = parsed;
+}
+
 // C++11 default member initializer (NSDMI): `int x = 5;`, `T m = T();`, or
-// brace-init `T m{...}`. `tn` is the token following a data-member declarator.
-// If it begins an initializer, capture the balanced init tokens, parse them in
-// an ISOLATED token stream (so the member-body parse does not desync), and record
-// the parsed expression under member name `mname` on `dds` (name-keyed, applied at
-// default construction as `recv.member = expr` for a scalar/pointer member). A
-// brace initializer, or an expression that does not parse (a dependent object
-// value-init in a system header), is left unstored — object members then take the
-// existing value-init construction. Returns the token following the initializer
-// (the `,`/`;`); returns `tn` unchanged when there is no initializer. Shared by
-// TokenSTRUCT::parse and TokenCLASS::parse.
+// brace-init `T m{...}` / `T m{}`. `tn` is the token following a data-member
+// declarator. If it begins an initializer, capture the balanced init tokens
+// and record the parsed expression via store_member_default_init above.
+// Returns the token following the initializer (the `,`/`;`); returns `tn`
+// unchanged when there is no initializer. Shared by TokenSTRUCT::parse and
+// TokenCLASS::parse.
 TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dds,
 						const std::string &mname)
 {
     if ( !tn || !dds )
 	return tn;
-    // Only equal-init (`= expr`) is captured. Brace-or-equal-init (`m{...}`) is
-    // NOT consumed here: faithfully applying it needs aggregate/value-init
-    // semantics this slice does not model, and silently dropping it would turn a
-    // scalar member into garbage. Leaving `tn` as `{` lets the caller raise the
-    // existing clean parse error rather than mis-initialize — see the brace-init
-    // follow-up noted in the NSDMI handoff.
-    if ( tn->id() != TokenID::tkAssign )
+    // Brace form (`m{expr}` / `m{}` — [class.mem] brace-or-equal-init,
+    // direct-list-init): the single-expression and empty lists map onto the
+    // same `recv.member = expr` application the `=` form uses ({expr} = the
+    // expression; {} = value-init, 0 for the scalar/pointer application —
+    // object members are SKIPPED at emit by emit_member_default_inits and
+    // keep their value-init construction, so the stored 0 is inert for them).
+    // A multi-element list ({a, b} — aggregate/ctor-arg init) has no faithful
+    // scalar application; throw rather than silently mis-initialize.
+    // libc++ shape that demanded this: __format/buffer.h `size_t __size_{0};`.
+    bool brace_form = tn->id() == TokenID::tkOpBrc;
+    if ( tn->id() != TokenID::tkAssign && !brace_form )
 	return tn;
+    if ( brace_form )
+    {
+	std::vector<TokenBase *> binit_toks;
+	DelimDepth bd;
+	bool bangle_comma = false;
+	{
+	    std::vector<TokenBase *> bopen_tail;
+	    delimStepStream(tn, bd, &bopen_tail); // step the opening '{'
+	}
+	for (;;)
+	{
+	    tn = nextToken();
+	    if ( !tn )
+		Throw << "Unexpected end in member initializer" << flush;
+	    TokenID id = tn->id();
+	    bool at_list_level = bd.brace == 1 && !bd.paren && !bd.square;
+	    if ( at_list_level && id == TokenID::tkClBrc )
+		break;                       // matching close — not recorded
+	    if ( at_list_level && id == TokenID::tkComma )
+	    {
+		if ( bd.angle == 0 )
+		    Throw(tn) << "Unsupported multi-element braced member"
+				 " initializer" << flush;
+		bangle_comma = true;         // maybe a template-arg comma —
+	    }				     // resolved at the close below
+	    std::vector<TokenBase *> optail;
+	    delimStepStream(tn, bd, &optail);
+	    binit_toks.push_back(tn->clone());
+	    for ( TokenBase *ot : optail )
+		if ( ot )
+		    binit_toks.push_back(ot->clone());
+	}
+	if ( bd.angle > 0 && bangle_comma )
+	    Throw(tn) << "Ambiguous '<' in braced member default initializer"
+		      << flush;
+	if ( binit_toks.empty() )
+	    binit_toks.push_back(new TokenInt(0)); // `m{}` — value-init
+	store_member_default_init(*this, dds, mname, binit_toks);
+	tn = nextToken();                    // the ','/';' after the group
+	return tn;
+    }
     // `= expr` up to the top-level ',' or ';'. Balanced (), [], {} AND <> via
     // the shared DelimDepth scanner (delimiter-tracking.md) — the old
     // paren/square/brace-only counter split `pair2<ptr, alloc>(...)` at the
@@ -36376,25 +36442,7 @@ TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dd
     if ( d.angle > 0 && angle_comma )
 	Throw(tn) << "Ambiguous '<' in member default initializer with"
 		     " comma-shared declarators" << flush;
-    if ( !init_toks.empty() )
-    {
-	// Parse the captured tokens into an expression in an ISOLATED stream so the
-	// member-body parse does not desync. A scalar/pointer initializer is stored
-	// and applied as `recv.member = expr`; an object value-init (`= T()`) that
-	// does not yield a usable scalar expression is left unstored — object members
-	// take the existing value-init construction.
-	std::vector<TokenBase *> seq;
-	for ( TokenBase *t : init_toks )
-	    seq.push_back(t->clone());
-	seq.push_back(new TokenSemi());
-	TokenStream::State saved_stream = tokens.swap_in(std::move(seq));
-	TokenBase *parsed = NULL;
-	try { parsed = parseExpression(nextToken(), true); }
-	catch ( ... ) { parsed = NULL; }
-	tokens.swap_back(std::move(saved_stream));
-	if ( parsed )
-	    dds->member_default_inits[mname] = parsed;
-    }
+    store_member_default_init(*this, dds, mname, init_toks);
     return tn;
 }
 
