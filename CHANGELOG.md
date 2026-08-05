@@ -5,9 +5,36 @@
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 954/6**: new gates plus the old-failure flips, with zero
+moved **891/28 → 960/4**: new gates plus the old-failure flips, with zero
 newly broken tests in every measured two-way failset diff. Fulltest is
-**963/0/0TO/9skip**; libc++-eligible EXE/OBJ are **938/0**.
+**968/0/0TO/9skip**.
+
+- **fix: `testifconstexpr` flips under `-stdlib=libc++` — five fixes close
+  the `<format>` chain (@80a66dd5, @8ab93aed, @13403250, @1509773f,
+  @bd6fed08).** The isolated NSDMI sub-stream parse resets its
+  expression-position context (the live stream's stale `}` judged the head
+  `-` of `int32_t __precision_{-1};` postfix-binary → "Missing operand";
+  gate `testnsdmineg`); namespace-qualified scoped-enum constants fold in
+  case labels (`case __format_spec::__type::__default:` spelled to bypass
+  a shadowing parameter — the enum arm adopts
+  `classify_qualifier_before_scope` + `canonical_nested_namespace`, and
+  `parser_std_format_spec.h` is THROUGH; gate `testenumqualcase`);
+  qualified-type descent hops inline namespaces (two literal probes
+  migrated onto `canonical_nested_namespace` — found via the new gate's
+  own `static_cast`, fixed per fix-what-you-find; gate `testinlinenstype`);
+  static data members accept the BRACE spelling of a brace-or-equal-init
+  ([class.mem] — `formatter_integral.h`'s `__bool_strings` statics were
+  the chain's last blocker; integral values fold, `{}` is value-init 0;
+  gate `teststaticbraceinit`); and namespace-qualified VARIABLE TEMPLATES
+  fold in constant expressions (`std::is_trivially_copyable_v<T>` in a
+  `static_assert`, both flavors): `fold_constant_qualified_member` is now
+  TRANSACTIONAL on decline, a qualified peel rebinds to the registry key,
+  and the new `inline_namespace_descendants()` owner consolidates the
+  inline-set walk two functions hand-rolled (gate `testvartemplatefold`).
+  Also `testinvocable` is reclassified `.libcxx_skip`: the real toolchain
+  rejects its source (`__is_invocable` is libstdc++-internal; clang++
+  -stdlib=libc++ "use of undeclared identifier"). Lane 954/6 → **960/4**
+  (remaining: testfreezerun, testmathheader, testsysobject, testtuple).
 
 - **fix: seven front-end gaps walling libc++'s `<format>` machinery
   (@b48ce4b2, @3e69ea2e, @303e0f86, @937b3c12, @7e1868d1, @da26118e,

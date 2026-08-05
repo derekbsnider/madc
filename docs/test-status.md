@@ -1,6 +1,18 @@
 # Test Status
 
-> **Current (2026-08-05, `feature/libcxx-parity7-claude` @1de7b430 —
+> **Current (2026-08-05, `feature/libcxx-parity7-claude` @bd6fed08 —
+> testifconstexpr FLIPPED; `<format>` chain THROUGH):** fulltest **968/0**;
+> lane **960/4/13skip** (+5 gates: testnsdmineg, testenumqualcase,
+> testinlinenstype, teststaticbraceinit, testvartemplatefold). Five fixes:
+> NSDMI isolated-parse context reset, ns-qualified scoped-enum case labels,
+> inline-namespace type descent, static brace-or-equal-init brace form
+> (the flip), ns-qualified variable-template constant fold (transactional
+> `fold_constant_qualified_member` + `inline_namespace_descendants`
+> consolidation). testinvocable reclassified `.libcxx_skip` (clang++
+> -stdlib=libc++ rejects its libstdc++-internal `__is_invocable` source).
+> Remaining 4: testfreezerun, testmathheader, testsysobject, testtuple.
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @1de7b430 —
 > fixes 8-11; parser_std_format_spec.h open to :339):** fulltest **963/0**;
 > lane **954/6** byte-identical failset (+4 gates: testparenctor,
 > testanonbitfield, testenumsize, testtraitcopyable); enum fixed bases now

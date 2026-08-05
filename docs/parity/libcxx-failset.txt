@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  1de7b430 (2026-08-05) on feature/libcxx-parity7-claude
-# Result:       954 passed / 6 failed / 0 timed out / 12 skipped
+# Measured at:  bd6fed08 (2026-08-05) on feature/libcxx-parity7-claude
+# Result:       960 passed / 4 failed / 0 timed out / 13 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -713,9 +713,32 @@
 #                         (tmp/r49d) — likely testinvocable's root.
 #                         fulltest 963/0. Session-end legs: EXE 938/0,
 #                         OBJ 938/0 (of 954 JIT-passing).
+#   bd6fed08  960 /   4   🏁 testifconstexpr FLIPPED (its five-header chain
+#                         is THROUGH) + testinvocable RECLASSIFIED
+#                         .libcxx_skip (clang++ -stdlib=libc++ rejects its
+#                         source: __is_invocable is libstdc++-internal —
+#                         testtraitassign precedent); +4 are the new gates
+#                         (testnsdmineg, testenumqualcase, testinlinenstype,
+#                         teststaticbraceinit; the fifth, testvartemplatefold,
+#                         landed with the same batch). FIVE fixes: (12) the
+#                         isolated NSDMI sub-stream parse resets the
+#                         expression-position context (stale '}' judged the
+#                         head '-' of `__precision_{-1}` binary — the :339
+#                         "Missing operand"); (13) ns-qualified scoped-enum
+#                         constants fold in case labels (:886
+#                         `case __format_spec::__type::__default:`) —
+#                         parser_std_format_spec.h THROUGH; (14) qualified-
+#                         type descent hops inline namespaces (two literal
+#                         probes migrated onto canonical_nested_namespace);
+#                         (15) static members accept brace-or-equal-init
+#                         BRACE form (formatter_integral.h __bool_strings —
+#                         the LAST blocker, the flip); (16) ns-qualified
+#                         VARIABLE TEMPLATES fold in constant exprs (the
+#                         tmp/r49 scout): fold_constant_qualified_member made
+#                         TRANSACTIONAL on decline + a qualified peel +
+#                         inline_namespace_descendants consolidation (two
+#                         hand-rolled BFS copies migrated). fulltest 968/0.
 testfreezerun.mad
-testifconstexpr.mad
-testinvocable.mad
 testmathheader.mad
 testsysobject.mad
 testtuple.mad
