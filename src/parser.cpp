@@ -38157,6 +38157,22 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		}
 		Throw(tn) << "Expecting member name in anonymous class aggregate" << flush;
 	    }
+	    // Unnamed bit-field padding (`int : 3;`) in the anonymous
+	    // aggregate: width only, no member name. Same dispatch tail.
+	    if ( tn && tn->id() == TokenID::tkColon )
+	    {
+		size_t pad_width = parse_bitfield_width(tn, member_dd, false, *agg);
+		agg->addBitField(std::string(), *member_dd, pad_width);
+		tn = nextToken();
+		if ( !tn )
+		    Throw(loc) << "Unexpected end of input in anonymous class aggregate" << flush;
+		if ( tn->id() == TokenID::tkComma )
+		    continue;
+		if ( tn->id() != TokenID::tkSemi )
+		    Throw(tn) << "Expecting ';' after anonymous class aggregate member" << flush;
+		done_members = true;
+		continue;
+	    }
 	    if ( !tn || !is_contextual_identifier_token(tn) )
 		Throw(tn ? tn : loc)
 		    << "Expecting member name in anonymous class aggregate" << flush;
@@ -38191,8 +38207,20 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		}
 		member_count *= (size_t)n;
 	    }
-	    agg->addMember(member_name, *member_dd, member_count, NULL,
-		member_is_array, member_is_array ? &member_dims : NULL);
+	    // C++ bit-field member (`__alignment __alignment_ : 3;` — the
+	    // libc++ parser_std_format_spec.h anonymous union): width via the
+	    // shared parse_bitfield_width + addBitField; the ','/';' dispatch
+	    // below is common. A bit-field is never an array.
+	    if ( !member_is_array && peekToken()
+	      && peekToken()->id() == TokenID::tkColon )
+	    {
+		nextToken(); // consume ':'
+		size_t bf_width = parse_bitfield_width(tn, member_dd, true, *agg);
+		agg->addBitField(member_name, *member_dd, bf_width);
+	    }
+	    else
+		agg->addMember(member_name, *member_dd, member_count, NULL,
+		    member_is_array, member_is_array ? &member_dims : NULL);
 
 	    tn = nextToken();
 	    if ( !tn )
