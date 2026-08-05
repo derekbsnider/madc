@@ -5356,6 +5356,12 @@ public:
 				  CppSymKind kind, const std::string &mname,
 				  bool is_operator);
     std::string unique_overload_symbol(std::string base);
+    // C++20 abbreviated function template ([dcl.fct]/18): token-level
+    // desugar — `auto` parameter placeholders become invented identifiers
+    // under a synthesized `template<...>` head pushed onto the stream, so
+    // the existing template machinery owns the declaration. Returns true
+    // when it desugared (the stream head is then tkTEMPLATE).
+    bool desugar_abbreviated_fn_template();
     std::vector<TokenBase *> collect_compound_body_tokens(TokenBase *open);
     void enqueue_deferred_function_body(Variable *var,
 					Method *method, TokenBase *open,

@@ -38247,6 +38247,165 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
     }
 }
 
+// C++20 abbreviated function template ([dcl.fct]/18): an `auto` placeholder
+// in a parameter-declaration makes the declaration a function TEMPLATE with
+// one INVENTED type parameter per placeholder, in order of appearance —
+// g++'s own synthesized-parameter model. Desugared at the TOKEN level: the
+// unconsumed declaration's placeholders are rewritten to invented
+// identifiers and a synthesized `template<class[...] __madc_iparamN, ...>`
+// head is pushed back, so the EXISTING template machinery (member-template
+// capture, namespace fn-template retention, tsubst instantiation) owns
+// everything downstream — no parallel abbreviated lane (parse-once rule).
+// An `auto` at parameter depth triggers; a `decltype(auto)` operand does
+// not. The motivating shape is libc++'s __ranges/dangling.h:29
+// `constexpr dangling(auto&&...) noexcept {}` under --std=c++20.
+// KNOWN non-covered edge: an `auto` inside a default-argument LAMBDA's own
+// parameter list belongs to the lambda and would mis-trigger here.
+// Returns true when it desugared — the stream head is then tkTEMPLATE.
+bool Program::desugar_abbreviated_fn_template()
+{
+    if ( !cpp_keyword_active(STD_CPP20) )
+	return false;
+    // A placeholder token spells `auto` — the lexer hands it over either as
+    // the registered datatype or as a bare identifier/keyword; all three
+    // derive TokenIdent, so one spelling probe covers them.
+    auto spells_auto = [](TokenBase *t) {
+	return t
+	    && (t->type() == TokenType::ttDataType
+	     || t->type() == TokenType::ttIdentifier
+	     || t->type() == TokenType::ttKeyword)
+	    && ((TokenIdent *)t)->spelling_is("auto");
+    };
+    // Pre-scan (indices only, nothing consumed): walk the upcoming
+    // declaration to its top-level terminator (`;`, or the body/aggregate
+    // `{`, or a stray `}`); remember whether an `auto` placeholder sits at
+    // parameter depth. The common no-placeholder case bails here for the
+    // cost of one bounded walk.
+    DelimDepth d;
+    size_t i = 0, guard = 0;
+    size_t end = tokens.size();
+    bool found = false;
+    while ( i < tokens.size() && ++guard < 4096 )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    return false;
+	if ( d.top() && (t->id() == TokenID::tkSemi
+		      || t->id() == TokenID::tkOpBrc
+		      || t->id() == TokenID::tkClBrc) )
+	{
+	    end = i;
+	    break;
+	}
+	if ( d.paren >= 1 && spells_auto(t) )
+	{
+	    bool decltype_operand = i >= 2 && tokens[i-1] && tokens[i-2]
+		&& tokens[i-1]->id() == TokenID::tkOpBrk
+		&& is_contextual_identifier_token(tokens[i-2])
+		&& is_decltype_identifier(
+			contextual_identifier_name(tokens[i-2]));
+	    if ( !decltype_operand )
+		found = true;
+	}
+	size_t n = delim_scan_step(tokens, i, d);
+	i += n ? n : 1;
+    }
+    if ( !found || end >= tokens.size() )
+	return false;
+    // Consume the declaration head [0, end] (terminator included; a `{`
+    // body stays in the stream) and rewrite each placeholder to an invented
+    // identifier, recording per-placeholder PACK-ness: [dcl.fct]/18 spells a
+    // pack as `auto...` / `auto&&...` — the ellipsis after the placeholder's
+    // ptr/ref/cv ops marks the invented parameter a pack, and the ellipsis
+    // itself STAYS (it is the pack-expansion spelling of the rewritten
+    // parameter-declaration).
+    std::vector<TokenBase *> decl;
+    decl.reserve(end + 1);
+    for ( size_t k = 0; k <= end && !tokens.empty(); ++k )
+	decl.push_back(nextToken());
+    struct Invented { std::string name; bool pack; };
+    std::vector<Invented> invented;
+    DelimDepth rd;
+    for ( size_t k = 0; k < decl.size(); )
+    {
+	TokenBase *t = decl[k];
+	if ( rd.paren >= 1 && spells_auto(t) )
+	{
+	    bool decltype_operand = k >= 2 && decl[k-1] && decl[k-2]
+		&& decl[k-1]->id() == TokenID::tkOpBrk
+		&& is_contextual_identifier_token(decl[k-2])
+		&& is_decltype_identifier(
+			contextual_identifier_name(decl[k-2]));
+	    if ( !decltype_operand )
+	    {
+		Invented inv;
+		inv.name = "__madc_iparam"
+			 + std::to_string(invented.size() + 1);
+		size_t j = k + 1;
+		while ( j < decl.size() && decl[j]
+		     && (decl[j]->id() == TokenID::tkMul
+		      || decl[j]->id() == TokenID::tkBand
+		      || decl[j]->id() == TokenID::tkLand
+		      || decl[j]->id() == TokenID::tkCONST
+		      || decl[j]->id() == TokenID::tkVOLATILE) )
+		    ++j;
+		inv.pack = j + 2 < decl.size()
+		    && decl[j]   && decl[j]->id()   == TokenID::tkDot
+		    && decl[j+1] && decl[j+1]->id() == TokenID::tkDot
+		    && decl[j+2] && decl[j+2]->id() == TokenID::tkDot;
+		TokenIdent *rep = new TokenIdent(inv.name);
+		rep->file = t->file;
+		rep->line = t->line;
+		rep->column = t->column;
+		decl[k] = rep;
+		invented.push_back(inv);
+	    }
+	}
+	size_t n = delim_scan_step(decl, k, rd);
+	k += n ? n : 1;
+    }
+    if ( invented.empty() )
+    {
+	// Pre-scan and rewrite disagreed (guarded operand only) — restore
+	// the stream untouched.
+	for ( size_t k = decl.size(); k-- > 0; )
+	    pushToken(decl[k]);
+	return false;
+    }
+    // Push back LIFO: the rewritten declaration first (reverse), then the
+    // synthesized head (reverse), so the stream reads
+    // `template < class[...] __madc_iparam1, ... > <declaration...>`.
+    for ( size_t k = decl.size(); k-- > 0; )
+	pushToken(decl[k]);
+    std::vector<TokenBase *> head;
+    TokenBase *site = decl[0];
+    auto stamp = [&](TokenBase *nt2) {
+	nt2->file = site->file;
+	nt2->line = site->line;
+	nt2->column = site->column;
+	head.push_back(nt2);
+    };
+    stamp(new TokenTEMPLATE());
+    stamp(new TokenLT());
+    for ( size_t p = 0; p < invented.size(); ++p )
+    {
+	if ( p )
+	    stamp(new TokenComma());
+	stamp(new TokenCLASS());
+	if ( invented[p].pack )
+	{
+	    stamp(new TokenDot());
+	    stamp(new TokenDot());
+	    stamp(new TokenDot());
+	}
+	stamp(new TokenIdent(invented[p].name));
+    }
+    stamp(new TokenGT());
+    for ( size_t k = head.size(); k-- > 0; )
+	pushToken(head[k]);
+    return true;
+}
+
 // Make an overload-unique internal symbol for a member/ctor: the canonical
 // `base` if it is still free, else base + "__oN" for the first free N >= 2.
 // Member methods and constructors that share a name AND arity but differ only by
@@ -40511,6 +40670,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    }
 	    continue;
 	}
+
+	// --- C++20 abbreviated function template ([dcl.fct]/18): an `auto`
+	// parameter placeholder makes the member a TEMPLATE with invented
+	// type parameters. Desugared at the token level (invented names +
+	// a synthesized template<...> head pushed back), so the member-
+	// template arm below owns the capture — no parallel lane.
+	if ( pgm.desugar_abbreviated_fn_template() )
+	    tn = pgm.peekToken();
 
 	// --- member template declaration: template<...> ...; ---
 	if ( tn->id() == TokenID::tkTEMPLATE )
