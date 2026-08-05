@@ -1,20 +1,19 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-05 (unreleased
-libc++ parity checkpoint @01d774fe on feature/libcxx-parity7-claude): SIX
-lane flips across two checkpoints. Bucket A fell (@41cbb2c5: braced-return
-ctor selection, cv conversion-type-ids + ONE cv-skip owner, specifier-first
-`friend`, east-cv alias targets, and the derived-to-base walk missing from
-the free-operator BODY deduction — `ofstream << "text"` wrote POINTER VALUES
-into files). Then the stringstream root (@01d774fe): secondary vtable groups
-now inherit TRANSITIVELY — the interior `basic_ostream` subobject kept its
-standalone vtable, so the virtual `basic_ios` resolved at +24 vs clang's
-+128 and every stringstream insert was silently lost (testsstream +
-testopinherit flip). Fulltest is **950/0/0TO/9skip**; the whole flavored
-measurement is **938/9** with zero timeouts and eligible EXE **922/0**.
-Next: the flavored `string`-in-C-decl-context pair (testexterncstringptr +
-testforeachheaderbody) or the testincludenext silent wrong. #114 remains
-blocked on the owner decision about mangling overloaded user free functions.
+libc++ parity checkpoint @075c7f81 on feature/libcxx-parity7-claude): the
+testincludenext SILENT WRONG fell — never `#include_next` itself: libc++'s
+`stdlib.h` declares five inline C++ `abs` overloads at GLOBAL scope after
+glibc's extern-C `int abs(int)`, and plain globals were excluded from the
+tracked-overload arm, so all five spliced into one shared-id FuncDef whose
+last body (long double, `fabsl`) emitted as a plain-named linkonce `abs`
+clobbering the libc import (`abs(-7)` → 0). System-header plain globals
+whose name is already taken now join the per-overload model; first/solo
+declarations keep the source name (dlsym imports intact). Lane **939/8**
+with zero timeouts, eligible EXE/OBJ **923/0**, fulltest **950/0/0TO/9skip**;
+gate `testglobaloverload`. Next: the flavored `string`-in-C-decl-context
+pair (testexterncstringptr + testforeachheaderbody). #114 remains blocked
+on the owner decision about mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The

@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  01d774fe (2026-08-05) on feature/libcxx-parity7-claude
-# Result:       938 passed / 9 failed / 0 timed out / 12 skipped
+# Measured at:  075c7f81 (2026-08-05) on feature/libcxx-parity7-claude
+# Result:       939 passed / 8 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -616,11 +616,26 @@
 #                         vtable_groups. Reducers r23-r25 (plain diamond OK,
 #                         plain depth-2 + template stream shape both broken,
 #                         flavor-INDEPENDENT). EXE 922/0, fulltest 950/0.
+#   075c7f81  939 /   8   testincludenext FIXED, ZERO newly broken (the 8 ==
+#                         the prior 9 minus it). THE SILENT WRONG ("42 0" vs
+#                         the oracle's "42 7") was never #include_next:
+#                         libc++'s stdlib.h declares five inline C++ `abs`
+#                         overloads at GLOBAL scope after glibc's extern-C
+#                         `int abs(int)`; plain globals were excluded from the
+#                         tracked-overload arm, so all five spliced into ONE
+#                         shared-id FuncDef and the LAST body (long double,
+#                         fabsl) emitted as a plain-named linkonce `abs`
+#                         clobbering the libc import. Fix: a system-header
+#                         plain global C++ fn whose name is already taken
+#                         joins the per-overload model (first/solo decls keep
+#                         the source name — dlsym imports intact). g++ never
+#                         hits it (libstdc++ puts abs overloads in std::).
+#                         Gate: testglobaloverload. EXE 923/0, OBJ 923/0,
+#                         fulltest 950/0.
 testexterncstringptr.mad
 testforeachheaderbody.mad
 testfreezerun.mad
 testifconstexpr.mad
-testincludenext.mad
 testinvocable.mad
 testmathheader.mad
 testsysobject.mad

@@ -5,9 +5,27 @@
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 938/9**: new gates plus nineteen old-failure flips, with
+moved **891/28 → 939/8**: new gates plus twenty old-failure flips, with
 zero newly broken tests in every measured two-way failset diff. Fulltest is
-**950/0/0TO/9skip**; libc++-eligible EXE is **922/0**.
+**950/0/0TO/9skip**; libc++-eligible EXE/OBJ are **923/0**.
+
+- **fix: system-header global C++ overloads register distinctly
+  (@075c7f81).** Under `-stdlib=libc++`, libc++'s `stdlib.h` declares five
+  inline C++ `abs` overloads at GLOBAL scope after glibc's extern-C
+  `int abs(int)`. Plain global functions were excluded from the
+  tracked-overload arm, so all five re-entered `parseFunction` under the
+  shared id `abs` and spliced into ONE FuncDef — the LAST body (long
+  double, `fabsl`) was emitted as a plain-named linkonce `abs` that
+  clobbered the libc import, so `abs(-7)` silently returned 0
+  (testincludenext printed "42 0" vs the oracle's "42 7"; the directive
+  itself was never the bug). A plain global C++ function declared in a
+  SYSTEM header whose name is already taken now joins the per-overload
+  Variable/FuncDef model (the same machinery namespace functions, global
+  operators, and instantiation products use); first/solo declarations keep
+  the source name, so dlsym imports and user forward-decl patterns are
+  untouched. g++ never hits the collision (libstdc++ puts the overloads in
+  `namespace std`). testincludenext flips (lane 938/9 → **939/8**, two-way
+  diffed, zero newly broken); new gate `testglobaloverload`.
 
 - **fix: secondary vtable groups inherit transitively (@01d774fe).** Itanium
   gives EVERY polymorphic base subobject off the primary chain its own

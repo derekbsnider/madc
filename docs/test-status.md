@@ -1,6 +1,23 @@
 # Test Status
 
-> **Current (2026-08-05, `feature/libcxx-parity7-claude` @01d774fe —
+> **Current (2026-08-05, `feature/libcxx-parity7-claude` @075c7f81 —
+> system-header global C++ overloads register distinctly):** fulltest
+> **950 passed, 0 failed, 0 timed out, 9 skipped** (rc=0) and default EXE
+> leg green. libc++'s `stdlib.h` declares five inline C++ `abs` overloads
+> at GLOBAL scope after glibc's extern-C `int abs(int)`; plain globals
+> were excluded from the tracked-overload arm, so all five spliced into
+> one shared-id FuncDef and the last body (long double, `fabsl`) emitted
+> as a plain-named linkonce `abs` clobbering the libc import — `abs(-7)`
+> silently returned 0 under `-stdlib=libc++` (testincludenext "42 0" vs
+> oracle "42 7"). A system-header plain global C++ function whose name is
+> already taken now joins the per-overload model; first/solo declarations
+> keep the source name (dlsym imports intact). testincludenext flips: the
+> whole flavored measurement is **939 passed / 8 failed / 0 timed out /
+> 12 skipped**, eligible EXE **923/0**, OBJ **923/0**, zero newly broken
+> (two-way name diff). New gate `testglobaloverload` (abs/labs values
+> against both oracles, validated in default JIT + libc++ JIT + EXE).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @01d774fe —
 > transitive secondary vtable groups):** fulltest **950 passed, 0 failed,
 > 0 timed out, 9 skipped** (rc=0, all forest gates green). Itanium gives
 > every polymorphic base subobject off the primary chain its own vtable
