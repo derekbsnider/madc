@@ -47411,6 +47411,11 @@ static void register_skipped_namespace_template_function(
 	    fd->declaration_only = true;
 	    fd->function_display_name = name;
 	    fd->namespace_name = pgm.current_namespace();
+	    // The identity-return deduce pattern (std::move/forward/declval —
+	    // apply_template_call_return_inference's writer). The noexcept
+	    // slice accidentally REPLACED this call with the spec mint below,
+	    // silently disabling the inference; both belong here.
+	    record_skipped_template_return_pattern(fd, tokens, typeparams, name);
 	    // The declaration's exception spec ([except.spec]) — what the
 	    // noexcept operator reads for an UNEVALUATED call that binds this
 	    // placeholder (declval's `T&& declval() noexcept;` never
