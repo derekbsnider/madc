@@ -58725,8 +58725,16 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    Variable *probe = findVariable(((TokenIdent *)rhs_tok)->spelling());
 	    bool followed_by_call = tokens.size() > 1 && tokens[1]
 				    && tokens[1]->id() == TokenID::tkOpBrk;
+	    // `id ::` — the identifier heads a nested-name-specifier, and
+	    // qualified lookup ignores functions ([basic.lookup.qual]): a
+	    // same-named function (libc++'s `namespace ranges::__destroy` vs
+	    // madc's global `__destroy` intrinsic) must not hijack
+	    // `auto x = ns::fn{};` onto the fn-ptr path — the whole qualified
+	    // expression belongs to general deduction below.
+	    bool followed_by_scope = tokens.size() > 1 && tokens[1]
+				    && tokens[1]->id() == TokenID::tkNS;
 	    rhs_is_func_name = probe && probe->type && probe->type->is_function()
-			       && !followed_by_call;
+			       && !followed_by_call && !followed_by_scope;
 	}
 
 	if ( rhs_is_lambda || rhs_is_func_name )

@@ -1,0 +1,22 @@
+// Regression: `auto x = ns::fn{};` where a FUNCTION with the same name as the
+// namespace head exists (libc++: `namespace ranges::__destroy` vs madc's global
+// `__destroy` intrinsic — ranges_construct_at.h:94). The auto fn-ptr shortcut's
+// findVariable probe ignored the following '::' — qualified lookup ignores
+// functions ([basic.lookup.qual]) — so it consumed only `ns` as a function name
+// and re-dispatched `::fn{};` as a bogus declaration ("Expecting identifier
+// after type"). The whole qualified expression belongs to general deduction.
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "42 ok".
+#include <cstdio>
+
+void dns(void *p) {}
+
+namespace outer {
+namespace dns { struct fn { int operator()(int x) const { return x + 1; } }; }
+namespace cpo { inline constexpr auto dvar = dns::fn{}; }
+}
+
+int main()
+{
+	printf("%d ok\n", outer::cpo::dvar(41));
+	return 0;
+}
