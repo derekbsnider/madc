@@ -1,7 +1,9 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-05 (unreleased
-libc++ parity checkpoint @aaee9009 on feature/libcxx-parity7-claude):
+libc++ parity checkpoint @1de7b430 on feature/libcxx-parity7-claude —
+fixes 8-11 extend the session to lane 954/6, fulltest 963/0; frontier
+parser_std_format_spec.h:339):
 session #60 landed SEVEN oracle-verified front-end fixes; testifconstexpr's
 include chain advanced five links (ranges_construct_at.h:94 → buffer.h:62 →
 unicode.h:51/:70/:302 → parser_std_format_spec.h:58): @b48ce4b2 the auto

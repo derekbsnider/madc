@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  4b47da8d (2026-08-05) on feature/libcxx-parity7-claude
-# Result:       950 passed / 6 failed / 0 timed out / 12 skipped
+# Measured at:  1de7b430 (2026-08-05) on feature/libcxx-parity7-claude
+# Result:       954 passed / 6 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -692,6 +692,27 @@
 #                         PARENTHESIZED string-concat temporary ("member
 #                         reference is not a structure or union"; reducer
 #                         tmp/r45.mad). EXE 934/0, OBJ 934/0, fulltest 959/0.
+#   1de7b430  954 /   6   failing set BYTE-IDENTICAL at every batch
+#                         checkpoint; +4 are the new gates (testparenctor,
+#                         testanonbitfield, testenumsize, testtraitcopyable).
+#                         FOUR more fixes, same session: (8) a parenthesized
+#                         FUNCTIONAL CONSTRUCTION is not a cast head — the
+#                         speculative (TYPE)expr probe consumed the type and
+#                         dropped it on the missing ')' (`(string(...) +
+#                         ...).c_str()`, :58); (9) anonymous-aggregate
+#                         BIT-FIELDS parse (:289); (10) an enum's FIXED base
+#                         drives its LAYOUT and lowered C type
+#                         ([dcl.enum]p8 — sizeof was 4 for every enum; the
+#                         16-byte __parsed_specifications assert at :323;
+#                         freeze carries the base in enum-defrec ref0);
+#                         (11) __is_trivially_copyable trait builtin (:324).
+#                         parser_std_format_spec.h is open to :339
+#                         (`class __parser` "Missing operand" — member
+#                         bisect next). Scouted: libstdc++ DEFAULT-lane
+#                         is_trivial_v/_copyable_v VAR-TEMPLATE fold gap
+#                         (tmp/r49d) — likely testinvocable's root.
+#                         fulltest 963/0. EXE/OBJ session-end legs running
+#                         at write time (last 934/0 @4b47da8d).
 testfreezerun.mad
 testifconstexpr.mad
 testinvocable.mad

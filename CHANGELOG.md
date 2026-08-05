@@ -5,9 +5,10 @@
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 950/6**: new gates plus the old-failure flips, with zero
+moved **891/28 → 954/6**: new gates plus the old-failure flips, with zero
 newly broken tests in every measured two-way failset diff. Fulltest is
-**959/0/0TO/9skip**; libc++-eligible EXE/OBJ are **934/0**.
+**963/0/0TO/9skip**; libc++-eligible EXE/OBJ are **934/0** (re-measure
+running at session end).
 
 - **fix: seven front-end gaps walling libc++'s `<format>` machinery
   (@b48ce4b2, @3e69ea2e, @303e0f86, @937b3c12, @7e1868d1, @da26118e,
@@ -36,6 +37,22 @@ newly broken tests in every measured two-way failset diff. Fulltest is
   `ranges_construct_at.h`, `__format/buffer.h`, and `__format/unicode.h`
   are THROUGH; the frontier is `parser_std_format_spec.h:58`. Lane 944/6 →
   **950/6** (byte-identical failing set), EXE/OBJ 934/0.
+
+- **fix: four more `<format>`-chain gaps — paren construction, anonymous
+  bit-fields, enum layout, trivially-copyable (@64610b2f, @8ea24022,
+  @9cba9517, @1de7b430).** A parenthesized functional construction
+  (`(C(41)).m()`, `(string(...) + p).c_str()`) no longer mis-enters the
+  C-style cast probe, which consumed the type token and dropped it on the
+  missing `)` (gate `testparenctor`); bit-field members parse inside
+  anonymous aggregates (gate `testanonbitfield`); an enum's FIXED
+  underlying base now drives its layout AND lowered C type per
+  [dcl.enum]p8 — `sizeof` was 4 for every enum — with the base carried
+  through the forest freeze in the enum defrec's `ref0` (gate
+  `testenumsize`, sizes byte-matched against both oracles); and
+  `__is_trivially_copyable` joins the trait-builtin registry with the
+  established conservative tri-state evaluator (gate
+  `testtraitcopyable`). `parser_std_format_spec.h` is open through :339.
+  Lane 950/6 → **954/6**, byte-identical failing set.
 
 - **build: `libcxxjit` remote-build stage (@aaee9009).** The lane-burndown
   test protocol per the owner's directive: per fix, targeted `TESTS=`

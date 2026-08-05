@@ -1,6 +1,13 @@
 # Test Status
 
-> **Current (2026-08-05, `feature/libcxx-parity7-claude` @aaee9009 —
+> **Current (2026-08-05, `feature/libcxx-parity7-claude` @1de7b430 —
+> fixes 8-11; parser_std_format_spec.h open to :339):** fulltest **963/0**;
+> lane **954/6** byte-identical failset (+4 gates: testparenctor,
+> testanonbitfield, testenumsize, testtraitcopyable); enum fixed bases now
+> drive layout ([dcl.enum]p8, freeze-carried); EXE/OBJ re-measure running
+> (last 934/0 @4b47da8d).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @aaee9009 —
 > seven front-end fixes; unicode.h through):** fulltest **959/0** (rc=0,
 > forest oracles green). Seven oracle-verified fixes advanced
 > testifconstexpr's chain five links (ranges_construct_at.h:94 →
