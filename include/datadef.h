@@ -1376,13 +1376,30 @@ public:
     // -> the 64-bit twin; scoped unfixed -> int). NULL only for an opaque
     // declaration — readers fall back to int. Serves __underlying_type,
     // which both libstdc++'s and libc++'s std::underlying_type are built
-    // on. NOTE the enum's own storage still LOWERS to int (I2); a fixed
-    // base narrower than int changes only what __underlying_type answers,
-    // not (yet) the enum's layout.
+    // on. A FIXED base also drives the enum's LAYOUT via set_underlying
+    // below; the computed base is recorded by direct assignment and keeps
+    // madc's historical int layout (gcc without -fshort-enums: unfixed
+    // enums are int-sized).
     DataDef *underlying = NULL;
 
     DataDefENUM(const std::string &name)
 	: DataDef(name, sizeof(int), DataType::dtINT), enum_name(name) {}
+
+    // [dcl.enum]p8: sizeof(E) == sizeof(its underlying type). Adopting the
+    // FIXED base's size AND raw type makes struct layout, bit-field
+    // windows, sizeof, and the CIR lowering (append_type_specs' rawtype
+    // switch) all follow with no per-consumer special case — libc++
+    // __format's `enum class : uint8_t` members inside
+    // __parsed_specifications' union assert sizeof == 16.
+    void set_underlying(DataDef *u)
+    {
+	underlying = u;
+	if ( u && u->size )
+	{
+	    size = u->size;
+	    _type = (uint32_t)u->rawtype();
+	}
+    }
 };
 
 class DataDefCOMPLEX : public DataDefSTRUCT

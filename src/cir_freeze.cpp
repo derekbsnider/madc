@@ -2244,6 +2244,13 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		DataDefENUM *edd = new DataDefENUM(std::string(nm));
 		if (r.size)
 			edd->size = r.size;
+		// v27: re-adopt the FIXED underlying base (ref0, a pinned
+		// primitive id) — set_underlying restores size AND raw type
+		// so the restored enum lowers to the same C type the live
+		// parse emitted ([dcl.enum]p8; libc++ `enum class : uint8_t`).
+		if (r.ref0)
+			if (DataDef *u = arena_swizzle(r.ref0, by_id))
+				edd->set_underlying(u);
 		if (r.canon_id)
 			if (const char *cn = a.c_str(r.canon_id))
 				edd->set_canonical_spelling(cn);

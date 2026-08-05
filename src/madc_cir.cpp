@@ -4550,6 +4550,12 @@ static void cir_forest_arena_refresh(Program *prog,
 			   : prog->forest_arena.strings.intern(
 				edd->canonical_cpp_spelling().c_str());
 		r.size    = (uint32_t)edd->size;
+		// A FIXED underlying base drives the enum's layout AND its
+		// lowered C type ([dcl.enum]p8, DataDefENUM::set_underlying);
+		// the restore must re-adopt both, so carry the base's type-id
+		// in ref0 (free for DK_ENUM; primitives are pinned ids).
+		r.ref0    = edd->underlying
+			  ? forest_serialize_type_id(edd->underlying) : 0u;
 		// Scoped enumerators: the pseudo-namespace key is the canonical
 		// spelling when namespaced (std::__cmp_cat::_Ord), else the tag.
 		const std::string &pk = edd->canonical_cpp_spelling().empty()

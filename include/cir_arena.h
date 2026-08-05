@@ -246,7 +246,7 @@ struct defrec {
 	uint32_t datatype;	// the originating DataType enum value (rawtype seed)
 	uint32_t flags;		// DefFlags
 	uint32_t ns_id;		// defining-namespace intern id (0 = global)
-	uint32_t ref0;		// PTR/REF/CONST: operand type-id; FUNC: return type-id; VAR: type type-id; else 0
+	uint32_t ref0;		// PTR/REF/CONST: operand type-id; FUNC: return type-id; VAR: type type-id; ENUM: fixed-underlying type-id; else 0
 	// struct/class members:
 	uint32_t members_begin;	// WORD offset of the memberrec run in payload
 	uint32_t members_count;

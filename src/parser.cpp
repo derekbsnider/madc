@@ -43872,7 +43872,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    if ( pgm.datatype_map.find(enum_tag) == pgm.datatype_map.end() )
 	    {
 		DataDefENUM *opaque_enum_dd = new DataDefENUM(enum_tag);
-		opaque_enum_dd->underlying = fixed_base;
+		opaque_enum_dd->set_underlying(fixed_base); // fixed base drives layout ([dcl.enum]p8)
 		DataDef *enum_dd = opaque_enum_dd;
 		if ( !pgm.class_scope_stack.empty() )
 		{
@@ -43925,7 +43925,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
     if ( !enum_tag.empty() && (scoped || !pgm.is_c_mode()) )
     {
 	DataDefENUM *def_enum_dd = new DataDefENUM(enum_tag);
-	def_enum_dd->underlying = fixed_base;
+	def_enum_dd->set_underlying(fixed_base); // fixed base drives layout ([dcl.enum]p8)
 	enum_dd = def_enum_dd;
 	if ( !pgm.class_scope_stack.empty() )
 	{
