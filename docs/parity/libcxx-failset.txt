@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  41cbb2c5 (2026-08-05) on feature/libcxx-parity7-claude
-# Result:       935 passed / 11 failed / 0 timed out / 12 skipped
+# Measured at:  01d774fe (2026-08-05) on feature/libcxx-parity7-claude
+# Result:       938 passed / 9 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -593,6 +593,29 @@
 #                         KG Gap libcxx_stringstream_construction_state, same
 #                         locale-copy-ctor SIGSEGV signature as testopinherit).
 #                         EXE 919/0, OBJ 919/0, fulltest 949/0/0TO/9skip.
+#   01d774fe  938 /   9   ⚡ TWO FIXED, ZERO newly broken (the 9 == the prior
+#                         11 minus testsstream/testopinherit); +1 is the new
+#                         testtranssecondary gate. THE ROOT: Itanium gives every
+#                         polymorphic base subobject off the primary chain its
+#                         own vtable group + ctor vptr stamp — TRANSITIVELY;
+#                         secondary_vptr_owners collected only DIRECT
+#                         non-primary bases, so `E : D` (D : A, B) left the
+#                         B-subobject on B's STANDALONE vtable, whose
+#                         vbase-offset slots describe B's own layout. Under
+#                         libc++ that was stringstream (basic_ostream =
+#                         basic_iostream's SECOND base): through any
+#                         basic_ostream view the virtual basic_ios resolved at
+#                         +24 vs clang's +128 — real libc++ code (exported
+#                         put()) and emitted bodies read an UNINITIALIZED
+#                         basic_ios: inserts silently lost, `<< 42` SIGSEGV in
+#                         the locale copy ctor (the shared testsstream +
+#                         testopinherit signature). ofstream was immune only
+#                         because ostream is its PRIMARY base. Fix: (owner,
+#                         offset) pairs + the transitive interior walk; groups,
+#                         fields, stamps and dispatch all derive from
+#                         vtable_groups. Reducers r23-r25 (plain diamond OK,
+#                         plain depth-2 + template stream shape both broken,
+#                         flavor-INDEPENDENT). EXE 922/0, fulltest 950/0.
 testexterncstringptr.mad
 testforeachheaderbody.mad
 testfreezerun.mad
@@ -600,7 +623,5 @@ testifconstexpr.mad
 testincludenext.mad
 testinvocable.mad
 testmathheader.mad
-testopinherit.mad
-testsstream.mad
 testsysobject.mad
 testtuple.mad

@@ -5,9 +5,31 @@
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 935/11**: new gates plus seventeen old-failure flips, with
+moved **891/28 → 938/9**: new gates plus nineteen old-failure flips, with
 zero newly broken tests in every measured two-way failset diff. Fulltest is
-**949/0/0TO/9skip**; libc++-eligible EXE and OBJ are each **919/0**.
+**950/0/0TO/9skip**; libc++-eligible EXE is **922/0**.
+
+- **fix: secondary vtable groups inherit transitively (@01d774fe).** Itanium
+  gives EVERY polymorphic base subobject off the primary chain its own
+  address point in the complete-object vtable, and the constructor stamps
+  its vptr — transitively. `secondary_vptr_owners` collected only DIRECT
+  non-primary bases, so `E : D` (D : A, B) left E's B-subobject on B's
+  STANDALONE vtable, whose vbase-offset slots describe B's own layout: a
+  virtual-base read through the B view landed mid-object. Under
+  `-stdlib=libc++` that was stringstream — `basic_ostream` is
+  `basic_iostream`'s SECOND base, so through any `basic_ostream` view the
+  virtual `basic_ios` resolved at +24 where clang says +128; real libc++
+  code (the exported `put()`) and madc-emitted inserter bodies alike read an
+  uninitialized `basic_ios`: every insert was silently LOST (`str()` empty)
+  and `ss << 42` crashed in the locale copy constructor — the shared
+  testsstream/testopinherit signature. `ofstream` was immune only because
+  `basic_ostream` is its PRIMARY base. `secondary_vptr_owners` now carries
+  (owner, offset) pairs and `compute_layout` walks each direct base's
+  interior secondaries transitively; groups, struct fields, ctor stamps and
+  dispatch all derive from `vtable_groups`, so the new groups ride through.
+  testsstream and testopinherit flip (lane 935/11 → **938/9**, two-way
+  diffed, zero newly broken); new gate `testtranssecondary` covers the plain
+  depth-2 and template stream shapes against both oracles.
 
 - **fix: the bucket-A filesystem/stream chain falls — four libc++ failures
   flip (@2dc5d5b9..@41cbb2c5).** The 15 remaining flavored failures were

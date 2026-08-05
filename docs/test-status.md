@@ -1,6 +1,23 @@
 # Test Status
 
-> **Current (2026-08-05, `feature/libcxx-parity7-claude` @41cbb2c5 — the
+> **Current (2026-08-05, `feature/libcxx-parity7-claude` @01d774fe —
+> transitive secondary vtable groups):** fulltest **950 passed, 0 failed,
+> 0 timed out, 9 skipped** (rc=0, all forest gates green). Itanium gives
+> every polymorphic base subobject off the primary chain its own vtable
+> group + ctor vptr stamp — TRANSITIVELY; madc collected only direct
+> non-primary bases, so `E : D` (D : A, B) left the B-subobject on B's
+> standalone vtable with wrong vbase-offset slots. Under libc++ that was
+> stringstream (`basic_ostream` = `basic_iostream`'s second base): the
+> virtual `basic_ios` resolved at +24 vs clang's +128 through any
+> `basic_ostream` view — real libc++ code and emitted bodies read an
+> uninitialized `basic_ios`, every insert silently lost, `<< 42` SIGSEGV
+> in the locale copy ctor. testsstream and testopinherit flip: the whole
+> flavored measurement is **938 passed / 9 failed / 0 timed out /
+> 12 skipped**, eligible EXE **922/0**, zero newly broken (two-way name
+> diff). New gate `testtranssecondary` (plain depth-2 + template stream
+> shapes, both oracles, both flavors).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @41cbb2c5 — the
 > bucket-A chain):** fulltest **949 passed, 0 failed, 0 timed out, 9 skipped**
 > (rc=0, all forest gates green). Session #58 bucketed the 15 remaining
 > flavored failures by first error and cleared the largest bucket in five

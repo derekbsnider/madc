@@ -1,19 +1,20 @@
 # madc Roadmap
 
 Master plan linking all workstreams. Updated 2026-08-05 (unreleased
-libc++ parity checkpoint @41cbb2c5 on feature/libcxx-parity7-claude): the
-bucket-A filesystem/stream chain fell — class-typed `return {...}` ctor
-selection, cv-qualified conversion-type-ids (+ ONE cv-skip owner), specifier-
-first `friend`, east-cv using-alias targets, and the silent-wrong headline:
-the free-operator BODY deduction lacked the derived-to-base receiver walk, so
-`ofstream << "text"` bound the member `operator<<(const void*)` and wrote
-POINTER VALUES into files. Four failures flip (testdefer, testfstream,
-testloop, testmanipview; two-way diffed, zero newly broken). Fulltest is
-**949/0/0TO/9skip**; the whole flavored measurement is **935/11** with zero
-timeouts and eligible EXE/OBJ **919/0**. Next: the stringstream-construction
-gap (testsstream + testopinherit share the locale-copy-ctor SIGSEGV
-signature). #114 remains blocked on the owner decision about mangling
-overloaded user free functions.
+libc++ parity checkpoint @01d774fe on feature/libcxx-parity7-claude): SIX
+lane flips across two checkpoints. Bucket A fell (@41cbb2c5: braced-return
+ctor selection, cv conversion-type-ids + ONE cv-skip owner, specifier-first
+`friend`, east-cv alias targets, and the derived-to-base walk missing from
+the free-operator BODY deduction — `ofstream << "text"` wrote POINTER VALUES
+into files). Then the stringstream root (@01d774fe): secondary vtable groups
+now inherit TRANSITIVELY — the interior `basic_ostream` subobject kept its
+standalone vtable, so the virtual `basic_ios` resolved at +24 vs clang's
++128 and every stringstream insert was silently lost (testsstream +
+testopinherit flip). Fulltest is **950/0/0TO/9skip**; the whole flavored
+measurement is **938/9** with zero timeouts and eligible EXE **922/0**.
+Next: the flavored `string`-in-C-decl-context pair (testexterncstringptr +
+testforeachheaderbody) or the testincludenext silent wrong. #114 remains
+blocked on the owner decision about mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
