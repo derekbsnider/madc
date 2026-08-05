@@ -17,6 +17,9 @@
 #   obj       bash scripts/run_tests.sh --obj  (single-object loader lane)
 #   libcxx    the whole suite under -stdlib=libc++, JIT + exe + obj (the
 #             stdlib-flavor PARITY lane; .libcxx_skip marks out-of-scope tests)
+#   libcxxjit the lane's JIT leg only — the per-batch checkpoint during lane
+#             burndown (owner 2026-08-05: don't run half a dozen full suites
+#             per change); EXE/OBJ legs run at session end / pre-merge
 #   release   make -C src release
 #   packed    MADC_BIN=bin/madc-release bash scripts/run_tests.sh
 #   pull      rsync container-built bin/madc (+ madc-release) back to
@@ -206,6 +209,12 @@ for stage in $stages; do
 		run_remote "libcxx jit" "cd /workspace/madc; bash scripts/run_tests.sh --stdlib=libc++"
 		run_remote "libcxx exe" "cd /workspace/madc; bash scripts/run_tests.sh --stdlib=libc++ --exe"
 		run_remote "libcxx obj" "cd /workspace/madc; bash scripts/run_tests.sh --stdlib=libc++ --obj"
+		;;
+	libcxxjit)
+		# JIT leg only — the per-batch lane checkpoint; the EXE/OBJ legs
+		# move to session end / pre-merge (they are ~2/3 of the lane's
+		# wall time and rarely flip for front-end work).
+		run_remote "libcxx jit" "cd /workspace/madc; bash scripts/run_tests.sh --stdlib=libc++"
 		;;
 	release)
 		run_remote "release" "make -C /workspace/madc/src -j20 release"
