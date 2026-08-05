@@ -41804,9 +41804,14 @@ TokenBase *TokenRETURN::parse(Program &pgm)
     // against a target type already exists on the compound-literal path
     // (`(T){...}` in parseExpression). Re-spell the stream as that form —
     // `( T ) { ... }` — so the ONE reader runs. pushToken is push_front, so the
-    // pieces go on in reverse. Plain aggregates only: for a class type the list
-    // selects a CONSTRUCTOR, which the compound-literal reader does not model,
-    // so that shape keeps its current handling.
+    // pieces go on in reverse. For a CLASS type the list selects a CONSTRUCTOR
+    // ([dcl.init.list]/3), which the compound-literal reader does not model —
+    // that shape re-spells to the functional form `T { ... }` instead, so the
+    // ONE expression owner (parse_functional_type_expression's TokenObjTemp
+    // arm) runs. A bare `{` must never reach parseExpression: it has no
+    // brace-head reading, and the stray braces unbalance the scope stack (the
+    // statement after `return {};` lost the FUNCTION PARAMETERS — libc++
+    // proximate(), operations.h:240 "use of undeclared identifier '__base'").
     if ( tn->id() == TokenID::tkOpBrc )
     {
 	TokenCpnd *rcode = pgm.compounds.empty() ? NULL : pgm.compounds.top();
@@ -41830,6 +41835,12 @@ TokenBase *TokenRETURN::parse(Program &pgm)
 	    pgm.pushToken(new TokenDataType(ragg->name.c_str(), *ragg));
 	    pgm.pushToken(new TokenOpBrk());
 	    tn = pgm.nextToken();			// now the synthetic '('
+	}
+	else if ( DataDefCLASS *rcls = dynamic_cast<DataDefCLASS *>(rdd) )
+	{
+	    pgm.pushToken(tn);				// '{' back on the stream
+	    pgm.pushToken(new TokenDataType(rcls->name.c_str(), *rcls));
+	    tn = pgm.nextToken();			// now the synthetic type head
 	}
     }
 
