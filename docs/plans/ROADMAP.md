@@ -1,18 +1,19 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-08-04 (unreleased
-libc++ parity checkpoint @7b63f8c6 on feature/libcxx-parity7-claude): the
-`noexcept` OPERATOR is implemented — madc presents as GCC, so libc++ compiles
-its noexcept-fallback nothrow-trait arm, which the lexer's context-free
-erasure destroyed (silent 0s plus a latent expression-context crash). With
-fn-template placeholder exception-spec capture, [temp.inst]/14 on-demand spec
-instantiation, and qualified-template-id pack expansion units, `testconstructible`
-leaves the failset with zero additions. Fulltest is **948/0/0TO/9skip**; the
-whole flavored measurement is **930/15** with zero timeouts and eligible
-EXE/OBJ **914/0**. The `T&` versus `T&&` result-identity gap was NOT this
-test's cause; it remains recorded for the ungated
-`is_nothrow_move_constructible<std::string>`. #114 remains blocked on the
-owner decision about mangling overloaded user free functions.
+Master plan linking all workstreams. Updated 2026-08-05 (unreleased
+libc++ parity checkpoint @41cbb2c5 on feature/libcxx-parity7-claude): the
+bucket-A filesystem/stream chain fell — class-typed `return {...}` ctor
+selection, cv-qualified conversion-type-ids (+ ONE cv-skip owner), specifier-
+first `friend`, east-cv using-alias targets, and the silent-wrong headline:
+the free-operator BODY deduction lacked the derived-to-base receiver walk, so
+`ofstream << "text"` bound the member `operator<<(const void*)` and wrote
+POINTER VALUES into files. Four failures flip (testdefer, testfstream,
+testloop, testmanipview; two-way diffed, zero newly broken). Fulltest is
+**949/0/0TO/9skip**; the whole flavored measurement is **935/11** with zero
+timeouts and eligible EXE/OBJ **919/0**. Next: the stringstream-construction
+gap (testsstream + testopinherit share the locale-copy-ctor SIGSEGV
+signature). #114 remains blocked on the owner decision about mangling
+overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The

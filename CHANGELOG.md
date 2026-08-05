@@ -5,9 +5,43 @@
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 930/15**: new gates plus thirteen old-failure flips, with
+moved **891/28 → 935/11**: new gates plus seventeen old-failure flips, with
 zero newly broken tests in every measured two-way failset diff. Fulltest is
-**948/0/0TO/9skip**; libc++-eligible EXE and OBJ are each **914/0**.
+**949/0/0TO/9skip**; libc++-eligible EXE and OBJ are each **919/0**.
+
+- **fix: the bucket-A filesystem/stream chain falls — four libc++ failures
+  flip (@2dc5d5b9..@41cbb2c5).** The 15 remaining flavored failures were
+  bucketed by first error; the largest bucket (testdefer, testfstream,
+  testloop, testmanipview) was a five-root chain. (1) A class-typed
+  `return {...}` now selects a constructor ([stmt.return]/2 +
+  [dcl.init.list]/3) by re-spelling to the functional form the ONE
+  expression owner reads — the bare `{` used to fall into parseExpression
+  and unbalance the scope stack, so libc++ `proximate()` lost its own
+  parameters. (2) Conversion-type-ids take cv-qualifiers and model
+  reference conversions through `returnDecl` (`operator const _Path&()
+  const noexcept`, directory_entry.h:92); the copy-pasted cv-skip loops
+  (six pure copies) consolidated into `Program::skip_cv_qualifier_tokens`
+  on the renamed `is_cv_qualifier_token` predicate, and ctor selection now
+  works through a ref-returning conversion. (3) `friend` may follow other
+  declaration-specifiers ([dcl.spec] — libc++'s `inline _LIBCPP_HIDE_FROM_ABI
+  friend bool operator==`); one friend-declaration owner serves both entry
+  arms. (4) A using-alias target takes east-cv declarator suffixes
+  (`using pointer = directory_entry const*;`) via `consume_declarator_stars`.
+  (5) THE SILENT-WRONG ROOT: the free-operator BODY-instantiation deduction
+  lacked the derived-to-base receiver walk its W2 signature twin has —
+  `outf << "hello"` under libc++ fell silently to the member
+  `operator<<(const void*)` and wrote the string literal's POINTER VALUE
+  into the file; testfstream/testloop were faithfully reading their own
+  poisoned writes back. Also restored the identity-return pattern recording
+  that @7b63f8c6 accidentally severed. New gate `testofstreamwrite`
+  round-trips ofstream writes; `testbracedreturn`, `testconvopclass`,
+  `testfriendkeyword`, and `testaliasptrtarget` extended — all match g++
+  AND clang++ in both stdlib flavors. Lane 930/15 → **935/11** (two-way
+  diffed, zero newly broken), EXE/OBJ 919/0, fulltest 949/0. Filed:
+  `libcxx_stringstream_construction_state` (stringstream inserts silently
+  lost; the locale-copy-ctor SIGSEGV signature testsstream and testopinherit
+  share), `init_context_conversion_selection`, and
+  `named_hidden_friend_definition_not_hoisted`.
 
 - **feat: the noexcept operator is implemented (@7b63f8c6).** madc's lexer
   erased `noexcept(...)` context-free — sound for ignoring exception

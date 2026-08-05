@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  7b63f8c6 (2026-08-04) on feature/libcxx-parity7-claude
-# Result:       930 passed / 15 failed / 0 timed out / 12 skipped
+# Measured at:  41cbb2c5 (2026-08-05) on feature/libcxx-parity7-claude
+# Result:       935 passed / 11 failed / 0 timed out / 12 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -567,16 +567,38 @@
 #                         instantiation, qualified-template-id pack units.
 #                         EXE 914/0, OBJ 914/0, fulltest 947/0/0TO/9skip
 #                         (pre-testqualpackelide count).
-testdefer.mad
+#   41cbb2c5  935 /  11   ⚡ FOUR FIXED, ZERO newly broken (the 11 == the prior
+#                         15 minus testdefer/testfstream/testloop/testmanipview);
+#                         +1 is the new testofstreamwrite gate. BUCKET-A chain
+#                         (recon: the 15 bucketed into six roots by first
+#                         error): (1) class-typed `return {...}` selects a ctor
+#                         — the bare `{` unbalanced the scope stack and libc++
+#                         proximate() lost its params (operations.h:240);
+#                         (2) cv-qualified conversion-type-ids `operator const
+#                         _Path&() const` + reference-conversion returns via
+#                         returnDecl + ONE cv-skip owner (6 inline copies
+#                         consolidated, predicate renamed is_cv_qualifier_token);
+#                         (3) `inline friend` — [dcl.spec] free specifier order,
+#                         one friend-decl owner for both entry arms
+#                         (directory_iterator.h:103); (4) using-alias EAST-cv
+#                         target `directory_entry const*` via
+#                         consume_declarator_stars; (5) THE SILENT-WRONG ROOT:
+#                         derived-to-base walk missing in the free-operator
+#                         BODY deduction — `outf << "hello"` fell to the member
+#                         operator<<(const void*) and wrote the POINTER into
+#                         the file (testfstream/testloop read their own poison
+#                         back). Also: restored the identity-return pattern
+#                         recording 7b63f8c6 accidentally severed. testsstream
+#                         advanced (inserts compile; str() empty = the NEW
+#                         KG Gap libcxx_stringstream_construction_state, same
+#                         locale-copy-ctor SIGSEGV signature as testopinherit).
+#                         EXE 919/0, OBJ 919/0, fulltest 949/0/0TO/9skip.
 testexterncstringptr.mad
 testforeachheaderbody.mad
 testfreezerun.mad
-testfstream.mad
 testifconstexpr.mad
 testincludenext.mad
 testinvocable.mad
-testloop.mad
-testmanipview.mad
 testmathheader.mad
 testopinherit.mad
 testsstream.mad

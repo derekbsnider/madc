@@ -1,6 +1,32 @@
 # Test Status
 
-> **Current (2026-08-04, `feature/libcxx-parity7-claude` @7b63f8c6 — the
+> **Current (2026-08-05, `feature/libcxx-parity7-claude` @41cbb2c5 — the
+> bucket-A chain):** fulltest **949 passed, 0 failed, 0 timed out, 9 skipped**
+> (rc=0, all forest gates green). Session #58 bucketed the 15 remaining
+> flavored failures by first error and cleared the largest bucket in five
+> commits: class-typed `return {...}` selects a constructor (the bare `{`
+> unbalanced the scope stack — libc++ `proximate()` lost its parameters);
+> conversion-type-ids take cv-qualifiers and reference conversions route
+> through `returnDecl` (six copy-pasted cv-skip loops consolidated into
+> `Program::skip_cv_qualifier_tokens`); `friend` may follow other
+> declaration-specifiers (one friend-decl owner, both entry arms); using-alias
+> targets take east-cv suffixes via `consume_declarator_stars`; and the
+> SILENT-WRONG headline — the free-operator body deduction lacked the
+> derived-to-base receiver walk, so `ofstream << "text"` bound the member
+> `operator<<(const void*)` and wrote pointer values into files. A sixth
+> commit restored the identity-return pattern recording @7b63f8c6 had
+> accidentally severed.
+>
+> The whole flavored measurement is **935 passed / 11 failed / 0 timed out /
+> 12 skipped**: testdefer, testfstream, testloop, testmanipview FIXED with
+> zero newly broken (two-way comm-diff against the 15-name set); eligible EXE
+> and OBJ each **919/0**. New gate `testofstreamwrite`; extended gates
+> `testbracedreturn`, `testconvopclass`, `testfriendkeyword`,
+> `testaliasptrtarget` — all match g++ AND clang++ in both stdlib flavors.
+> Next: `libcxx_stringstream_construction_state` (testsstream + testopinherit
+> share the locale-copy-ctor SIGSEGV; minimal reducer tmp/r19.cpp).
+>
+> **Previous (2026-08-04, `feature/libcxx-parity7-claude` @7b63f8c6 — the
 > noexcept operator):** fulltest **948 passed, 0 failed, 0 timed out,
 > 9 skipped** (rc=0, all forest gates green). The `[expr.unary.noexcept]`
 > operator is implemented: `noexcept` is a reserved C++11 keyword (the lexer
