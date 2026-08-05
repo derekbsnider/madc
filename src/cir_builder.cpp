@@ -8867,12 +8867,8 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 		std::vector<Field> fields;
 		if (cdd->has_vptr_slot)
 			fields.push_back(Field{0, 8, 0, 0, NULL}); // primary vptr @0
-		for (DataDefCLASS *o : cdd->secondary_vptr_owners)
-			for (size_t b = 0; b < cdd->bases.size(); b++)
-				if (cdd->bases[b].base == o) {
-					fields.push_back(Field{cdd->bases[b].offset, 8, 0, 0, NULL});
-					break;
-				}
+		for (const auto &o : cdd->secondary_vptr_owners)
+			fields.push_back(Field{o.second, 8, 0, 0, NULL});
 		// A polymorphic VIRTUAL base carries its own vptr at its hoisted
 		// position (Itanium: one vtable group per vbase subobject) — emit
 		// its __vptr_<off> field so ctor stamping and V*-receiver dispatch

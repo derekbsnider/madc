@@ -1,0 +1,50 @@
+#!/../bin/madc
+// Itanium: EVERY polymorphic base subobject off the primary chain gets its
+// own vtable group in the complete-object vtable and a ctor vptr stamp —
+// including the INTERIOR secondaries of a direct base, TRANSITIVELY.
+// secondary_vptr_owners only collected DIRECT non-primary bases, so
+// `E : D` (D : A, B) left E's B-subobject vptr on B's STANDALONE vtable,
+// whose vbase-offset slots describe B's own layout: a virtual-base read
+// through the B view landed mid-object (stack garbage). Under libc++ this
+// was stringstream — basic_ostream is basic_iostream's SECOND base, so every
+// insert was silently lost (str() empty) and `ss << 42` crashed in the
+// locale copy ctor (testsstream + testopinherit).
+//
+// Oracle: g++ and clang++ both print
+//	d1=48 d2=48 v=7 7
+//	t1=96 t2=96 sb=0x1 0x1
+#include <cstdio>
+
+struct VB { int v; VB() : v(7) {} virtual ~VB() {} };
+struct A : virtual VB { long a; A() : a(1) {} };
+struct B : virtual VB { long b; B() : b(2) {} };
+struct D : A, B { long d; D() : d(3) {} };
+struct E : D { long e; E() : e(4) {} };
+
+// The template twin, shaped like the iostream hierarchy.
+template <class C> struct bios { C *sb; int st; bios() : sb(0), st(0) {} virtual ~bios() {} };
+template <class C> struct istr : virtual bios<C> { long g; istr() : g(1) {} };
+template <class C> struct ostr : virtual bios<C> { long p; ostr() : p(2) {} };
+template <class C> struct iostr : public istr<C>, public ostr<C> { iostr() {} };
+template <class C> struct sstr : public iostr<C> { long buf[8]; sstr() { this->sb = (C *)1; } };
+
+int main()
+{
+	E x;
+	B &bv = x;		// secondary view inherited THROUGH D
+	VB *p1 = &x;
+	VB *p2 = &bv;		// dynamic vbase offset via the B-view vtable
+	printf("d1=%ld d2=%ld v=%d %d\n",
+	       (long)((char *)p1 - (char *)&x),
+	       (long)((char *)p2 - (char *)&x), p1->v, p2->v);
+
+	sstr<char> s;
+	ostr<char> &os = s;	// non-primary base view, template lane
+	bios<char> *t1 = &s;
+	bios<char> *t2 = &os;
+	printf("t1=%ld t2=%ld sb=%p %p\n",
+	       (long)((char *)t1 - (char *)&s),
+	       (long)((char *)t2 - (char *)&s),
+	       (void *)t1->sb, (void *)t2->sb);
+	return 0;
+}

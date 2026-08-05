@@ -1003,11 +1003,14 @@ public:
     // Multiple/virtual inheritance (Itanium layout). `bases` lists direct bases;
     // compute_layout() fills each BaseSpec.offset/is_primary, vbase_offset (each
     // shared virtual base -> its offset, appended once at the end),
-    // secondary_vptr_owners (non-primary polymorphic direct bases), and nvsize
-    // (size of the non-virtual portion, where virtual bases begin).
+    // secondary_vptr_owners (every polymorphic base SUBOBJECT off the primary
+    // chain, with its offset in THIS class — direct non-primary bases AND the
+    // interior secondaries of every direct base, transitively; each needs its
+    // own vtable group + ctor vptr stamp), and nvsize (size of the non-virtual
+    // portion, where virtual bases begin).
     std::vector<BaseSpec> bases;
     std::map<DataDefCLASS *, size_t> vbase_offset;
-    std::vector<DataDefCLASS *> secondary_vptr_owners;
+    std::vector<std::pair<DataDefCLASS *, size_t> > secondary_vptr_owners;
     size_t nvsize;
     size_t own_block_off; // offset where this class's own data members begin
     size_t class_align = 0; // TRUE class alignment (members + vptr + bases); set by compute_layout. 0 = not yet computed

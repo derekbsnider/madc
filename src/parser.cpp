@@ -17545,6 +17545,36 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 // Round `sz` up to alignment `a` (a is a power of two).
 static inline size_t mi_align_up(size_t sz, size_t a) { return (sz + a - 1) & ~(a - 1); }
 
+// Collect `base`'s interior polymorphic subobjects that are off the primary
+// chain, at offsets composed from `base_off` (base's own offset in the class
+// being laid out). Walks both the BaseSpec list and the legacy single
+// base_class chain (the collect_self_and_base_spellings idiom), deduping on
+// (class, offset) since the two can overlap. Feeds secondary_vptr_owners so
+// build_vtable_groups and the ctor stamps cover TRANSITIVE secondaries.
+static void collect_interior_secondary_vptrs(DataDefCLASS *base, size_t base_off,
+	std::vector<std::pair<DataDefCLASS *, size_t> > &out)
+{
+    if ( !base )
+	return;
+    for ( auto &bs : base->bases )
+    {
+	if ( bs.is_virtual || !bs.base )
+	    continue;
+	size_t off = base_off + bs.offset;
+	if ( !bs.is_primary && bs.base->has_vptr_slot )
+	{
+	    bool dup = false;
+	    for ( auto &e : out )
+		if ( e.first == bs.base && e.second == off ) { dup = true; break; }
+	    if ( !dup )
+		out.push_back({bs.base, off});
+	}
+	collect_interior_secondary_vptrs(bs.base, off, out);
+    }
+    if ( base->base_class )
+	collect_interior_secondary_vptrs(base->base_class, base_off, out);
+}
+
 // Itanium-faithful record layout. See
 // docs/superpowers/specs/2026-06-03-multiple-inheritance-design.md §2.
 // Precondition: `members`/`member_offsets` hold OWN data members from offset 0
@@ -17622,7 +17652,8 @@ void DataDefCLASS::compute_layout()
 		    ++eoff;
 	    }
 	    bs.offset = eoff;
-	    if ( bs.base->has_vptr_slot ) secondary_vptr_owners.push_back(bs.base);
+	    if ( bs.base->has_vptr_slot )
+		secondary_vptr_owners.push_back({bs.base, bs.offset});
 	    if ( balign > maxalign ) maxalign = balign;
 	    continue;
 	}
@@ -17632,12 +17663,26 @@ void DataDefCLASS::compute_layout()
 	    cur = empty_base ? cur : bs.base->nvsize; // shares vptr@0; empty bases use EBO
 	else
 	{
-	    if ( bs.base->has_vptr_slot ) secondary_vptr_owners.push_back(bs.base);
+	    if ( bs.base->has_vptr_slot )
+		secondary_vptr_owners.push_back({bs.base, bs.offset});
 	    if ( !empty_base )
 		cur += bs.base->nvsize;
 	}
 	if ( balign > maxalign ) maxalign = balign;
     }
+
+    // Itanium: EVERY polymorphic base subobject off the primary chain gets its
+    // own vtable group + ctor vptr stamp — including the INTERIOR secondaries
+    // of a direct base, transitively at composed offsets. Without the walk,
+    // `E : D` (D : A, B — B secondary at +16) left E's B-subobject vptr on B's
+    // STANDALONE vtable, whose vbase-offset slots are wrong for E's layout: a
+    // vbase read through the B view landed mid-object (libc++ stringstream —
+    // basic_ostream is basic_iostream's second base; every insert was silently
+    // lost and `<< int` crashed in the locale copy ctor).
+    for ( auto &bs : bases )
+	if ( !bs.is_virtual && bs.base )
+	    collect_interior_secondary_vptrs(bs.base, bs.offset,
+					     secondary_vptr_owners);
 
     // 3. own data members begin after the non-virtual bases. Record the boundary
     //    only; apply_member_layout() does the member_offsets rewrite (it knows each
@@ -17733,8 +17778,8 @@ void DataDefCLASS::build_vtable_groups()
     DataDefCLASS *prim = NULL;
     for ( auto &b : bases ) if ( b.is_primary ) { prim = b.base; break; }
     std::set<std::string> secondary_slots;
-    for ( DataDefCLASS *o : secondary_vptr_owners )
-	for ( auto &s : o->vtable_slots ) secondary_slots.insert(s);
+    for ( auto &o : secondary_vptr_owners )
+	for ( auto &s : o.first->vtable_slots ) secondary_slots.insert(s);
 
     VtableGroup primary{this, 0, std::vector<std::string>(), 0};
     if ( prim ) primary.slots = prim->vtable_slots;
@@ -17748,12 +17793,9 @@ void DataDefCLASS::build_vtable_groups()
     }
     vtable_groups.push_back(primary);
 
-    for ( DataDefCLASS *o : secondary_vptr_owners )
-    {
-	size_t off = 0;
-	for ( auto &b : bases ) if ( b.base == o ) { off = b.offset; break; }
-	vtable_groups.push_back(VtableGroup{o, off, o->vtable_slots, 0});
-    }
+    for ( auto &o : secondary_vptr_owners )
+	vtable_groups.push_back(VtableGroup{o.first, o.second,
+					    o.first->vtable_slots, 0});
 
     // Itanium: the complete-object vtable also carries one group per
     // POLYMORPHIC virtual base — the vbase subobject has its own vptr at its
