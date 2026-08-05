@@ -33388,6 +33388,104 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				}
 			    }
 			}
+			// Qualified member-TYPE cast target:
+			// `(typename __promote<_A1>::type)__x` (libc++
+			// __math/traits.h isinf — the instantiated body's cast)
+			// and the bare `(Tmpl<args>::type)x` spelling. Extent =
+			// optional `typename`, the name, an optional balanced
+			// <...> (DelimDepth owns the scan), then (:: name)+ —
+			// resolved NON-consumingly through
+			// resolve_type_token_range, whose completeness rule
+			// rejects a VALUE-member leaf
+			// (`(is_same<A,B>::value)` stays an expression).
+			// Consumption rides the cast_qualified_extra_tokens
+			// tail below, so the fix-#8 functional-construction
+			// decline still sees the un-consumed head.
+			if ( !cast_dd && cpp_keyword_active(Program::STD_CPP98)
+			  && (peek1->type() == TokenType::ttDataType
+			   || peek1->type() == TokenType::ttIdentifier) )
+			{
+			    size_t idx = 0;
+			    bool typename_head =
+				peek1->type() == TokenType::ttIdentifier
+				&& ((TokenIdent *)peek1)->spelling_is("typename");
+			    if ( typename_head )
+				idx = 1;
+			    size_t j = 0;
+			    bool saw_tid = false;
+			    if ( tokens.size() > idx && tokens[idx]
+			      && (is_contextual_identifier_token(tokens[idx])
+			       || tokens[idx]->type() == TokenType::ttDataType) )
+			    {
+				j = idx + 1;
+				if ( tokens.size() > j && tokens[j]
+				  && tokens[j]->id() == TokenID::tkLT )
+				{
+				    DelimDepth d;
+				    size_t k = j;
+				    while ( k < tokens.size() )
+				    {
+					k += delim_scan_step(tokens, k, d);
+					if ( d.angle == 0 )
+					{
+					    saw_tid = true;
+					    break;
+					}
+				    }
+				    j = saw_tid ? k : 0;
+				}
+			    }
+			    size_t chain = 0;
+			    while ( j && tokens.size() > j + 1 && tokens[j]
+			      && tokens[j]->id() == TokenID::tkNS
+			      && tokens[j + 1]
+			      && (is_contextual_identifier_token(tokens[j + 1])
+			       || tokens[j + 1]->type() == TokenType::ttDataType) )
+			    {
+				j += 2;
+				++chain;
+			    }
+			    bool shape_ok = j > 0;
+			    if ( shape_ok && !typename_head )
+			    {
+				// Bare spelling: only a registered template's
+				// id + a member chain — plain names stay with
+				// the sibling arms (and a non-template `<` is
+				// less-than, never scanned as a list).
+				std::string tid_name =
+				    peek1->type() == TokenType::ttDataType
+					? ((TokenDataType *)peek1)->spelling()
+					: ((TokenIdent *)peek1)->spelling();
+				shape_ok = saw_tid && chain > 0
+				    && (find_template(tid_name)
+				     || find_template_alias(tid_name));
+			    }
+			    if ( shape_ok )
+				shape_ok = tokens.size() > j && tokens[j]
+				    && (tokens[j]->id() == TokenID::tkClBrk
+				     || tokens[j]->id() == TokenID::tkMul);
+			    if ( shape_ok )
+			    {
+				std::vector<TokenBase *> slice;
+				for ( size_t si = 0; si < j; ++si )
+				    slice.push_back(tokens[si]);
+				if ( DataDef *qdd = resolve_type_token_range(
+						slice, 0, slice.size()) )
+				{
+				    cast_dd = qdd;
+				    cast_qualified_extra_tokens = j - 1;
+				    TokenBase *leaf_tb = tokens[j - 1];
+				    std::string leaf;
+				    if ( leaf_tb->type() == TokenType::ttDataType )
+					leaf = ((TokenDataType *)leaf_tb)->spelling();
+				    else if ( is_contextual_identifier_token(leaf_tb) )
+					leaf = contextual_identifier_name(leaf_tb);
+				    if ( !leaf.empty()
+				      && typedef_alias_matches_datadef(leaf, cast_dd) )
+					cast_typedef_name = leaf;
+				}
+			    }
+			}
 			if ( !cast_dd && peek1->type() == TokenType::ttDataType )
 			{
 			    cast_dd = &((TokenDataType *)peek1)->definition;

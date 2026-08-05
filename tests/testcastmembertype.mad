@@ -1,0 +1,28 @@
+// Regression: a C-style cast to a qualified member TYPE —
+// `(typename __promote<_A1>::type)__x`, the body of libc++
+// __math/traits.h's isinf — failed both ways: the `typename` head died
+// "Expecting identifier", and the bare `(Tmpl<args>::type)x` spelling
+// routed to the qualified-EXPRESSION path ("'type' is not a static member").
+// Under -stdlib=libc++ the swallowed instantiation failure left every
+// __math::isinf call an undefined MIR import (testmathheader). The cast
+// probe now scans the extent (optional typename, name, balanced <...> via
+// DelimDepth, :: chain) and resolves it NON-consumingly through
+// resolve_type_token_range — whose completeness rule keeps a VALUE-member
+// leaf (`prom<float>::value`) an expression, never a cast.
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "2.5 2.5 4 ok".
+#include <cstdio>
+
+template <class T> struct prom {
+	typedef double type;
+	static const int value = 3;
+};
+
+int main()
+{
+	float f = 2.5f;
+	double a = (typename prom<float>::type)f;
+	double b = (prom<float>::type)f;
+	int c = (prom<float>::value) + 1;
+	printf("%.1f %.1f %d ok\n", a, b, c);
+	return 0;
+}
