@@ -178,6 +178,27 @@ static uint32_t read_literal_escape_value(Source &source, char esc)
 	    }
 	    return val;
 	}
+	case 'u': case 'U': {
+	    // Universal-character-name ([lex.charset]): \uXXXX / \UXXXXXXXX.
+	    // Only the wide/prefixed-literal reader routes escapes here, so
+	    // narrow-string escape handling is untouched.
+	    int need = esc == 'u' ? 4 : 8;
+	    uint32_t val = 0;
+	    int dig = 0;
+	    while ( dig < need && source.good() )
+	    {
+		int c = source.peek();
+		int d = (c >= '0' && c <= '9') ? c - '0'
+		    : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+		    : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+		if ( d < 0 )
+		    break;
+		val = (val << 4) | (uint32_t)d;
+		source.get();
+		++dig;
+	    }
+	    return val;
+	}
 	case '0': case '1': case '2': case '3':
 	case '4': case '5': case '6': case '7': {
 	    uint32_t val = (uint32_t)(esc - '0');
@@ -213,6 +234,32 @@ static void append_narrow_string_as_wide(std::string &out,
 	append_wide_codepoint(out, (uint32_t)c);
 }
 
+// Encode one codepoint as UTF-8 bytes (u8"..." literal storage — madc narrow
+// strings are UTF-8 byte strings, so a u8 string IS a narrow string).
+static void append_utf8_codepoint(std::string &out, uint32_t cp)
+{
+    if ( cp < 0x80 )
+	out += (char)cp;
+    else if ( cp < 0x800 )
+    {
+	out += (char)(0xC0 | (cp >> 6));
+	out += (char)(0x80 | (cp & 0x3F));
+    }
+    else if ( cp < 0x10000 )
+    {
+	out += (char)(0xE0 | (cp >> 12));
+	out += (char)(0x80 | ((cp >> 6) & 0x3F));
+	out += (char)(0x80 | (cp & 0x3F));
+    }
+    else
+    {
+	out += (char)(0xF0 | (cp >> 18));
+	out += (char)(0x80 | ((cp >> 12) & 0x3F));
+	out += (char)(0x80 | ((cp >> 6) & 0x3F));
+	out += (char)(0x80 | (cp & 0x3F));
+    }
+}
+
 static std::string narrow_string_as_wide(const std::string &narrow)
 {
     std::string out;
@@ -220,13 +267,17 @@ static std::string narrow_string_as_wide(const std::string &narrow)
     return out;
 }
 
-TokenBase *Program::read_wide_literal()
+TokenBase *Program::read_wide_literal(const std::string &prefix)
 {
     char quote = source.get();
     int row = source.line();
     int col = source.column();
     if ( quote == '"' )
     {
+	// u"..." (UTF-16 units) has no faithful storage in the 4-byte-unit
+	// wide model or the narrow byte model — loud, not silently wrong.
+	if ( prefix == "u" )
+	    throw "UTF-16 string literals (u\"...\") are not supported";
 	std::string bytes;
 	while ( source.good() && source.peek() != '"' )
 	{
@@ -240,7 +291,13 @@ TokenBase *Program::read_wide_literal()
 	    }
 	    else
 		cp = read_utf8_codepoint(source, (unsigned char)source.get());
-	    append_wide_codepoint(bytes, cp);
+	    // u8"..." stores UTF-8 bytes (a narrow madc string IS UTF-8);
+	    // L"..." / U"..." store 4-byte units (wchar_t and char32_t share
+	    // the 32-bit layout on this ABI).
+	    if ( prefix == "u8" )
+		append_utf8_codepoint(bytes, cp);
+	    else
+		append_wide_codepoint(bytes, cp);
 	}
 	if ( !source.good() )
 	{
@@ -248,7 +305,7 @@ TokenBase *Program::read_wide_literal()
 	    throw "Unterminated wide string";
 	}
 	source.get();
-	return make_str(bytes, true);
+	return make_str(bytes, prefix != "u8");
     }
 
     uint32_t cp = 0;
@@ -271,7 +328,12 @@ TokenBase *Program::read_wide_literal()
     }
     source.get();
     TokenInt *ti = (TokenInt *)make_int((int64_t)cp);
-    ti->setDataType(&ddINT32);
+    // [lex.ccon] literal types: L'' -> wchar_t (int32 here), U'' -> char32_t
+    // (uint32), u'' -> char16_t (uint16), u8'' -> char8_t (uint8).
+    ti->setDataType(prefix == "U" ? static_cast<DataDef *>(&ddUINT32)
+		  : prefix == "u" ? static_cast<DataDef *>(&ddUINT16)
+		  : prefix == "u8" ? static_cast<DataDef *>(&ddUINT8)
+		  : static_cast<DataDef *>(&ddINT32));
     return ti;
 }
 
@@ -4696,9 +4758,17 @@ TokenBase *Program::_getToken()
 		    word += (char)wc;
 		    whash = madc::dis::intern_table::hash_step(whash, (unsigned char)wc);
 		}
-		if ( word == "L" && source.good()
-		  && (source.peek() == '"' || source.peek() == '\'') )
-		    return read_wide_literal();
+		// Prefixed literals ([lex.ccon]/[lex.string]): L / u / U / u8
+		// ahead of a quote — the same prefix set the preprocessor's
+		// is_prefixed_literal_token accepts (libc++ unicode.h:
+		// `U'�'`). Gate the C++11/20 prefixes on the dialect so a
+		// C89 identifier `u` before a string stays two tokens.
+		if ( source.good()
+		  && (source.peek() == '"' || source.peek() == '\'')
+		  && (word == "L"
+		   || ((word == "u" || word == "U") && cpp_keyword_active(STD_CPP11))
+		   || (word == "u8" && cpp_keyword_active(STD_CPP20))) )
+		    return read_wide_literal(word);
 		// Intern the spelling ONCE (with the pre-folded hash); reuse the id
 		// for every per-word map probe below (macro/define/keyword/cpp-operator)
 		// — a flat sid-indexed array access, no string compare, no tree.

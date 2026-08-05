@@ -2144,7 +2144,7 @@ protected:
     TokenBase *make_space(int cnt);                            // TokenSpace
     TokenBase *make_tab(int cnt);                              // TokenTab
     TokenBase *make_eol(int cnt);                              // TokenEOL
-    TokenBase *read_wide_literal();   // wide string/char literal -> pop-1 token
+    TokenBase *read_wide_literal(const std::string &prefix = "L");   // L/u/U/u8 string/char literal -> pop-1 token
     // Fill the immutable (ROM) TokenRec of a lexed pop-1 token from the formed
     // shell — kind/value/spelling/provenance — so a fresh mutable (RAM) shell
     // can later be rebuilt from the rec alone (the no-clone substitution split,
