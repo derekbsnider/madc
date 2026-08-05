@@ -11781,6 +11781,16 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		if (pp && pp->base_type)
 			pdc = pp->base_type;
 	}
+	// [expr]/5: an expression never has reference type — an ARGUMENT that
+	// arrives as a DataDefREF (a ref-returning call: `__test(declval<T>())`,
+	// libc++ promote.h) ranks as the referenced object. Without this the
+	// ref wrapper fell through every lane to the trailing neutral 0, and a
+	// varargs catch-all outranked the exact numeric candidate.
+	if (adc->is_reference()) {
+		const DataDefPTR *ar = dynamic_cast<const DataDefPTR *>(adc);
+		if (ar && ar->base_type)
+			adc = ar->base_type;
+	}
 	// A class-object parameter binds: an argument of the SAME class (identity
 	// / copy), or — via one user-defined conversion — an argument that one of
 	// the class's single-argument constructors accepts.

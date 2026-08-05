@@ -16047,9 +16047,17 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	{
 	    static const char *_ovl = ::getenv("MADC_OVL_PROBE");
 	    if ( _ovl && *_ovl && name.find(_ovl) != std::string::npos )
+	    {
+		std::string ats;
+		for ( size_t ai = 0; ai < argtypes.size(); ++ai )
+		{
+		    if ( ai )
+			ats += ',';
+		    ats += argtypes[ai] ? argtypes[ai]->name : "(null)";
+		}
 		fprintf(stderr, "OVLPROBE %s cand=%s disp=%s ret=%s ok=%d "
 			"total=%d parms=%zu hidden=%zu pn=%zu varargs=%d "
-			"fixed=%zu mt=%d spellings=%zu sp0=%s argc=%zu\n",
+			"fixed=%zu mt=%d spellings=%zu sp0=%s argc=%zu args=%s\n",
 			name.c_str(), mv->name.c_str(),
 			fd->method_display_name.c_str(),
 			fd->returns.name.c_str(), (int)ok, total,
@@ -16058,7 +16066,8 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 			fd->template_param_spellings.size(),
 			fd->template_param_spellings.empty()
 			    ? "-" : fd->template_param_spellings[0].c_str(),
-			argtypes.size());
+			argtypes.size(), ats.c_str());
+	    }
 	}
 	if ( ok && total > best_score )
 	{
@@ -17617,12 +17626,51 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
     if ( !tc || !owner || member.empty() )
 	return tc;
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
-    // Only member TEMPLATES need the post-arg reselection: a non-template static
-    // overload set is already disambiguated by find_method_by_callable_arity at
-    // resolution time. Narrowing here keeps the change surgical (the part-18
-    // partial-ordering lesson: touch selection only on a genuine relationship).
-    if ( !fd || !fd->is_member_template )
+    if ( !fd )
 	return tc;
+    if ( !fd->is_member_template )
+    {
+	// A NON-template same-arity static overload set is disambiguated by
+	// parameter TYPES, which the resolution-time arity pick cannot see:
+	// libc++ promote.h's `__numeric_type::__test(float/double/...)` — the
+	// arity pick answered the first-registered overload for EVERY argument
+	// and decltype read the wrong return type (__promote<double>::type came
+	// out long double; sizeof 16 vs g++/clang++ 8 — a silent wrong value).
+	// Rank through the one owner and rebind; an unscorable set keeps the
+	// arity pick (the old behavior).
+	std::vector<const DataDef *> at;
+	bool all_args_known = true;
+	for ( TokenBase *p : tc->parameters )
+	{
+	    const DataDef *ad = p ? operand_value_datadef(p) : NULL;
+	    if ( !ad || datadef_involves_placeholder(
+			    const_cast<DataDef *>(ad), true) )
+		all_args_known = false;
+	    at.push_back(ad);
+	}
+	// An UNKNOWN argument shape scores neutral in findMethodOverload, which
+	// would let a varargs catch-all outrank real candidates — and a
+	// DEPENDENT (template-param) argument at pattern-parse time must not
+	// concretize a selection at all (the dependent decltype defers to
+	// instantiation; reducer tmp/r58b.mad documents the pattern-freeze gap
+	// that stays with the arity pick). Rebind only on a fully-typed,
+	// concrete argument list.
+	if ( !all_args_known )
+	    return tc;
+	Variable *ov = owner->findMethodOverload(member, at);
+	if ( ov && (ov->flags & vfSTATIC) && ov != &tc->var )
+	{
+	    TokenCallFunc *sel = new TokenCallFunc(*ov);
+	    sel->parameters = tc->parameters;
+	    sel->explicit_template_args = tc->explicit_template_args;
+	    sel->auto_scope_context = tc->auto_scope_context;
+	    sel->file = tc->file;
+	    sel->line = tc->line;
+	    sel->column = tc->column;
+	    return sel;
+	}
+	return tc;
+    }
     std::vector<const DataDef *> at;
     for ( TokenBase *p : tc->parameters )
 	at.push_back(p ? p->datadef() : NULL);
