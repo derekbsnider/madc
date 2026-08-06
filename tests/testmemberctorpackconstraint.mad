@@ -1,0 +1,29 @@
+// The enclosing class pack folds while the constructor template's own pack
+// remains deferred until deduction. Its arity must be visible to the default
+// constraint before the constructor body is parsed. GCC and Clang print 1.
+#include <stdio.h>
+
+template<bool Enabled, class T = void>
+struct Enable {};
+
+template<class T>
+struct Enable<true, T> {
+	typedef T type;
+};
+
+template<class... Outer>
+struct Match {
+	int count;
+
+	template<class... Inner,
+		typename Enable<(sizeof...(Inner) == sizeof...(Outer)), int>::type = 0>
+	Match(Inner&&...) : count(sizeof...(Inner)) {}
+};
+
+int main()
+{
+	int value = 0;
+	Match<int&> matched(value);
+	printf("%d\n", matched.count);
+	return 0;
+}

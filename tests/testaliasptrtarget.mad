@@ -23,6 +23,15 @@ template <class NT> struct titer {
     pointer operator->() const { return (pointer)p; }
 };
 struct nd { int v; };
+// Plain (non-template) alias whose target carries EAST cv before the
+// declarator suffix — `using pointer = directory_entry const*;` (libc++
+// recursive_directory_iterator.h:44). The bare star loop never saw the
+// east `const` and threw "Expecting ';' after using alias". Both scopes:
+using ncp = nd const*;			// namespace/global scope
+struct nholder {
+    using cptr = nd const*;		// class scope (the libc++ shape)
+    cptr pick(nd *p) { return p; }
+};
 int main()
 {
     nd n; n.v = 9;
@@ -30,5 +39,8 @@ int main()
     ptraits<nd *>::rebind<int> rp = &n.v;
     titer<nodet<void *, nd> > it; it.p = &n;
     printf("%d %d %d\n", *ip, *rp, it->v);
+    ncp cp = &n;
+    nholder h;
+    printf("%d %d\n", cp->v, h.pick(&n)->v);
     return 0;
 }

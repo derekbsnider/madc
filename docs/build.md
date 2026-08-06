@@ -14,6 +14,9 @@
 - `libzstd-dev` (the packed forest's codec). `./configure --without-zstd`
   accepts a zlib fallback, which produces much larger packed binaries and
   slower binds — not recommended.
+- Optional: `libc++-dev` / `libc++abi-dev` (LLVM 18) to use and test the
+  second stdlib flavor (`-stdlib=libc++`); the default flavor is the
+  installed libstdc++.
 - `autoconf`, if you change `configure.ac` (`configure` itself is generated and
   not tracked).
 

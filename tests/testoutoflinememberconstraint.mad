@@ -1,0 +1,35 @@
+// An out-of-line member-template definition reuses the in-class declaration's
+// defaults and constraints even when its own type-parameter name differs.
+#include <stdio.h>
+
+template<bool B, class T = void>
+struct EnableIf {};
+
+template<class T>
+struct EnableIf<true, T> {
+	typedef T type;
+};
+
+template<bool B, class T = void>
+using EnableIfT = typename EnableIf<B, T>::type;
+
+template<class T>
+struct Box {
+	template<class U, EnableIfT<true, int> = 0>
+	int pick(const U&) const;
+};
+
+template<class T>
+template<class V, EnableIfT<true, int> >
+int Box<T>::pick(const V& value) const
+{
+	V copy = value;
+	return copy + 4;
+}
+
+int main()
+{
+	Box<int> box;
+	printf("%d\n", box.pick(1));
+	return 0;
+}

@@ -1,0 +1,27 @@
+// A using-declaration that imports a FUNCTION into a namespace makes it a
+// member of that namespace's OVERLOAD SET ([namespace.udecl]) — it must not
+// clobber the existing name binding. libstdc++'s `using __exception_ptr::swap;`
+// ("so that std::swap(exp1, exp2) finds it") overwrote the std::swap
+// fn-template placeholder in std's map, so EVERY qualified std::swap call —
+// whatever the argument types — bound the exception_ptr overload and died
+// with "no matching constructor for call to 'exception_ptr(int32_t)'".
+#include <memory>
+#include <exception>
+#include <cstdio>
+
+int main()
+{
+	int x = 3;
+	int y = 9;
+	std::swap(x, y);
+	printf("%d %d\n", x, y);
+	double a = 1.5;
+	double b = 2.5;
+	std::swap(a, b);
+	printf("%.1f %.1f\n", a, b);
+	std::exception_ptr e1;
+	std::exception_ptr e2;
+	std::swap(e1, e2);
+	printf("swapped\n");
+	return 0;
+}

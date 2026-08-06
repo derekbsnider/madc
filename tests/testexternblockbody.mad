@@ -1,0 +1,31 @@
+// A linkage-specification block applies extern to its DIRECTLY-contained
+// declarations only ([dcl.link]p7) — never to block-scope locals of a
+// function defined inside it. libstdc++ wraps <bits/exception_ptr.h> in
+// `extern "C++" { }`, and the leaked declaration-head flag stamped vfEXTERN
+// on exception_ptr::swap's local: `extern void *__tmp = ...` — a c2mir
+// check error ("initialization of __tmp in block scope with external
+// linkage") on every std::swap(exception_ptr, exception_ptr).
+#include <cstdio>
+
+extern "C++" {
+int addup(int a, int b)
+{
+	int t = a;
+	t = t + b;
+	return t;
+}
+}
+
+extern "C" {
+int cadd(int a, int b)
+{
+	int u = a + b;
+	return u;
+}
+}
+
+int main()
+{
+	printf("%d %d\n", addup(3, 4), cadd(5, 6));
+	return 0;
+}

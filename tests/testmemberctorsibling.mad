@@ -1,0 +1,23 @@
+// Constructor-template lookup must continue past a same-arity candidate whose
+// template parameter cannot be deduced. GCC and Clang both select the second
+// constructor and print 7.
+#include <stdio.h>
+
+template<class T>
+struct Choice {
+	int tag;
+
+	template<class Missing>
+	Choice(T& value) : tag(1) {}
+
+	template<class U>
+	Choice(U& value) : tag(value) {}
+};
+
+int main()
+{
+	int value = 7;
+	Choice<int> selected(value);
+	printf("%d\n", selected.tag);
+	return 0;
+}

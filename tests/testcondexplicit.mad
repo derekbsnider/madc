@@ -1,0 +1,16 @@
+#include <cstdio>
+
+template <class... _Tp>
+struct TT {
+	int v;
+	template <class... _Up>
+	explicit(false)
+	TT(_Up&&... u) : v(1) {}
+};
+
+int main()
+{
+	TT<int> t(5);
+	printf("v=%d\n", t.v);
+	return 0;
+}

@@ -1,6 +1,331 @@
 # Test Status
 
-> **Current (2026-08-01, v0.67.0 — the flavor-ABI release, pre-merge
+> **Current (2026-08-06, `feature/libcxx-parity7-claude` @429842b4 —
+> session #66 close):** fulltest **997/0/9skip**; lane
+> **993/0/13skip**; session-end native legs EXE **976/0**, OBJ
+> **976/0** (of 997 JIT-passing tests). Battery log:
+> `tmp/logs/rb-20260806-194726.log` (fulltest, libcxx jit, exe, obj
+> all rc=0). +13 fulltest tests over session #65: the multi-return
+> struct-transport gates (testmultiret double/ptr/string/hetero +
+> reject/exprpos/bare — class values, Go-style heterogeneous
+> `(int, string) f()` signatures, loud rejects; @a369cb17), the
+> zero-ceremony gates (testautoincludecpp/ns, testpreferdefault,
+> testautoceremonystd, testnsheaderfirst; @1fafe265 @0bc6ce07
+> @715fbadb), and testsizeofvaluepack (@b411715c). Also @429842b4:
+> the enum-constant parse-time slot heap overflow fixed
+> (Variable::slot_size owns the 64-bit ddINT slot contract;
+> valgrind-verified). Doc-example harness: **53/53** fenced examples
+> green at this HEAD. Ships as **v0.68.0**.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @520e77d6 —
+> session #65 close: 🏁 LANE ZERO):** fulltest **984/0**; lane
+> **980/0/13skip** — the `-stdlib=libc++` flavored lane's failing set
+> is **EMPTY** for the first time: full behavior-parity with the
+> default libstdc++ lane. testtuple (the #110 pack wall's last
+> standing test) FIXED; the other +4 passes are the four new session
+> gates (testctortemplatetrait, testusingfnoverload,
+> testexternblockbody, testctorttpdefault). Four fixes: (30)
+> `trait_class_constructible` no longer refuses same-class
+> constructibility when the ctor set contains a TEMPLATE (the -1
+> refusal laundered through a failed static-const capture into a
+> silent 0 — `is_move_constructible<allocator<T>>` folded false);
+> (31) a using-declared function JOINS the target namespace's
+> overload set ([namespace.udecl] — `std::swap(int,int)` with
+> `<memory>` bound the exception_ptr overload); (32) extern
+> linkage-block context no longer leaks into function bodies
+> ([dcl.link]p7 — "__tmp in block scope with external linkage");
+> (33) THE WALL: a template-template parameter defaulted to a
+> DIFFERENT named template binds as a template NAME ([temp.param]p11
+> — libc++ tuple()'s `_IsDefault = is_default_constructible` idiom
+> captured as a never-foldable non-type default, so the ctor never
+> instantiated and construction called the never-defined
+> placeholder). The 13 lane skips = the 9 baseline `.mir_skip` + the
+> 4 documented `.libcxx_skip`. `docs/parity/libcxx-failset.txt`
+> records the ZERO and becomes the P2.7 gate per its charter.
+> Battery log: `tmp/logs/rb-20260806-145634.log` (fulltest rc=0,
+> libcxx jit rc=0, total rc=0). Session-end native legs GREEN: EXE
+> **967/0**, OBJ **967/0** (of 984 JIT-passing tests;
+> `tmp/logs/rb-20260806-151939.log`, total rc=0).
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @01e0e7d7 —
+> session #64 close):** fulltest **980/0**; lane **975/1/13skip**
+> (+5 gates: testaggrdecl, teststructbraceexpr, testint128global,
+> testemptystructret, testcomplexretconv, testcastcallpostfix — the
+> last five landed after the 970/1 checkpoint). The only remaining lane
+> failure is **testtuple** (#110 pack wall). Six fixes: (24) DECL-lane
+> braced aggregate init of object-member aggregates; (25) `P{7, 3.5}`
+> braced functional construction of plain structs parses
+> (parse_compound_struct_lit — one brace reader for `(T){...}` and
+> `T{...}`); (26) const `__int128` file-scope initializers (fork:
+> gen_initializer int128 data arm — was the pack-freeze SEGV);
+> (27) empty-struct call results reserve a real call-arg slot (fork:
+> "undeclared func reg fp" at pack-thaw); (28) `_Complex` return-value
+> conversion (fork: `return 3.0;` loaded components from absolute
+> address 0); (29) cast operands continue the postfix chain
+> (`(int)getb().n`). Follow-ons recorded: swap<allocator> return-type
+> mistyping (tsubst), duration<double>::operator%= drain
+> instantiation (pack gate is check-only), dependent-decltype
+> pattern-freeze. Session-end native legs GREEN: EXE **963/0** and OBJ
+> **963/0** (of 980 JIT-passing tests).
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @8f8f4009 —
+> DECL-lane braced aggregate init):** fulltest **975/0**; lane
+> **970/1/13skip** (+1 gate: testaggrdecl). The only remaining lane
+> failure is **testtuple** (#110 pack wall). Residual (a) resolved:
+> braced aggregate init of OBJECT-member aggregates in the DECLARATION
+> lanes — var_decl's C INIT list bit-copied the class member and ordered
+> the materialized temp's decl after the SPEC_DECL ("undeclared
+> identifier __madc_objtmp_0"), and the decl copy-elision arm
+> `S v = S{a, b}` silently DROPPED the full list (garbage, exit 0).
+> Storage stays bare (braced_aggregate_needs_construction); the three
+> FULL-list declaration sites claim via decl_aggregate_claim →
+> class_aggregate_init; multi-element aggregate-shaped declines fail
+> loud.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @e658a5b8 —
+> testfreezerun FLIPPED):** fulltest **974/0**; lane **969/1/13skip**
+> (+1 gate: testaggrinit). The only remaining lane failure is
+> **testtuple** (#110 pack wall). Four fixes: the flavor-runtime dlopen
+> moved into `cir_translate_guarded` (the freeze lane's CIR-time dlsym
+> probes shaped a different tree — facet-id externs unrecorded); frozen
+> containers carry the flavor `link_libs` and the thaw reopens them (16
+> trap-bound imports → 0); nested-class ctor/dtor no longer false-match
+> the owner's out-of-line defs (sentry's Itanium bind restored); and
+> aggregate list-init of ctor-less classes stops DROPPING initializers
+> (class_aggregate_init, [dcl.init.aggr] — was silent garbage in the
+> PLAIN lane too, S{string,42} printed junk with exit 0).
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @588d9e73 —
+> one-key fix for typedef'd anon-aggregate template args):** fulltest
+> **973/0**; lane **967/2/13skip** (+1 gate: testanontypedefspec). The
+> fix removed a SILENT wrong value in plain JIT (explicit spec invisible
+> behind a typedef'd anon-struct key — 0 for 7, exit 0) and pushed the
+> testfreezerun libc++ frontier from the ClassPattern-base error to
+> thaw-time static-member facet imports (num_put/ctype `id`). Remaining
+> 2: testfreezerun, testtuple.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @4e1a4004 —
+> testsysobject FLIPPED):** fulltest **970/0**; lane **966/2/13skip**
+> (+2 gates: testfriendnonmember, testfreeoptemplate). Two fixes: a
+> class-body FRIEND template never registers as a MEMBER ([class.friend] —
+> libc++ string:1762's `bool friend operator==` poisoned
+> `method_map["operator=="]` with a basic_string return, so
+> `string == "lit"` typed as basic_string and `cout <<` bound the string
+> inserter over a bool rvalue), and GLOBAL-scope free operator templates
+> bind (retained-body key walk dropped the exact `"::operatorX"` key,
+> `<=` vs the sibling walk's `<`; plain C struct operands now engage the
+> lowering via operand_value_datadef + DataDefSTRUCT). Remaining 2:
+> testfreezerun, testtuple.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @022cbb3b —
+> testmathheader FLIPPED):** fulltest **968/0**; lane **963/3/13skip**
+> (+2 gates: testcastmembertype, teststaticoverload). Two fixes:
+> qualified member-TYPE casts (`(typename __promote<T>::type)x` — the
+> __math::isinf undefined-import root) and non-template static overload
+> ranking by argument types + [expr]/5 argument reference-collapse (the
+> silent `__promote<double>::type == long double` wrong value). Residual
+> filed: dependent-decltype pattern-freeze (tmp/r58b.mad). Remaining 3:
+> testfreezerun, testsysobject, testtuple.
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @bd6fed08 —
+> testifconstexpr FLIPPED; `<format>` chain THROUGH):** fulltest **968/0**;
+> lane **960/4/13skip** (+5 gates: testnsdmineg, testenumqualcase,
+> testinlinenstype, teststaticbraceinit, testvartemplatefold). Five fixes:
+> NSDMI isolated-parse context reset, ns-qualified scoped-enum case labels,
+> inline-namespace type descent, static brace-or-equal-init brace form
+> (the flip), ns-qualified variable-template constant fold (transactional
+> `fold_constant_qualified_member` + `inline_namespace_descendants`
+> consolidation). testinvocable reclassified `.libcxx_skip` (clang++
+> -stdlib=libc++ rejects its libstdc++-internal `__is_invocable` source).
+> Remaining 4: testfreezerun, testmathheader, testsysobject, testtuple.
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @1de7b430 —
+> fixes 8-11; parser_std_format_spec.h open to :339):** fulltest **963/0**;
+> lane **954/6** byte-identical failset (+4 gates: testparenctor,
+> testanonbitfield, testenumsize, testtraitcopyable); enum fixed bases now
+> drive layout ([dcl.enum]p8, freeze-carried); EXE **938/0**, OBJ **938/0**
+> (session-end legs, of 954 JIT-passing).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @aaee9009 —
+> seven front-end fixes; unicode.h through):** fulltest **959/0** (rc=0,
+> forest oracles green). Seven oracle-verified fixes advanced
+> testifconstexpr's chain five links (ranges_construct_at.h:94 →
+> buffer.h:62 → unicode.h:51/:70/:302 → parser_std_format_spec.h:58):
+> nested-name-specifier head vs the auto fn-ptr shortcut, concept-headed
+> template params, braced NSDMI, enum trailing declarator, bit-field
+> brace-init skip, u/U/u8 literal prefixes + UCNs, and the scoped-enum
+> pseudo-namespace bridge for using-declarations. The flavored
+> measurement is **950 passed / 6 failed / 0 timed out / 12 skipped**
+> (byte-identical failing set at every batch checkpoint; +6 = the new
+> gates testnsfncollide, testconceptparam, testbracensdmi, testenumdecl,
+> testbitfieldinit, testcharlit, testusingenum), eligible EXE **934/0**,
+> OBJ **934/0**. NEW TEST PROTOCOL (owner): per fix targeted globs + one
+> frontier test; per batch fulltest + `libcxxjit`; EXE/OBJ legs at
+> session end.
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @179d1ab0 —
+> C++20 abbreviated function templates, member form):** fulltest green
+> (rc=0) and default EXE leg green. [dcl.fct]/18 lands as a token-level
+> desugar: `auto` parameter placeholders become invented identifiers
+> under a synthesized `template<...>` head, so the member-template
+> capture + tsubst own the rest. libc++'s `dangling(auto&&...)`
+> (testifconstexpr's first blocker) is THROUGH; the chain moved to
+> ranges_construct_at.h:94, so zero flips: the whole flavored
+> measurement is **944 passed / 6 failed / 0 timed out / 12 skipped**
+> (byte-identical failing set; +2 = gates testbarestring +
+> testabbrevtpl), eligible EXE **928/0**, OBJ **928/0**. New gate
+> `testabbrevtpl` (pack ctor + bodied auto ctor, both oracles, both
+> flavors).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @bb435bfd —
+> namespace-scope using-aliases flat-register when free):** fulltest
+> **950 passed, 0 failed, 0 timed out, 9 skipped** (rc=0) and default EXE
+> leg green (freeze/forest gates included). The dialect's unqualified
+> visibility for namespace-scope type names is a flat `datatype_map`
+> write that only the TYPEDEF lane performed; the USING-ALIAS lane was
+> cut from the flat map after `std::pmr::string`'s alias clobbered the
+> real `string`. libc++ spells `std::string` as a using-alias
+> (`__fwd/string.h`) where libstdc++ uses a typedef, so bare `string`
+> was unresolvable in every declaration context only under
+> `-stdlib=libc++`. The alias arm now flat-registers only when the name
+> is FREE (primary wins; pmr stays namespace-only). testexterncstringptr
+> and testforeachheaderbody flip: the whole flavored measurement is
+> **942 passed / 6 failed / 0 timed out / 12 skipped**, eligible EXE
+> **926/0**, OBJ **926/0**, zero newly broken (two-way name diff). New
+> gate `testbarestring` (file-scope var + fn decl/def + block local,
+> both flavors).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @075c7f81 —
+> system-header global C++ overloads register distinctly):** fulltest
+> **950 passed, 0 failed, 0 timed out, 9 skipped** (rc=0) and default EXE
+> leg green. libc++'s `stdlib.h` declares five inline C++ `abs` overloads
+> at GLOBAL scope after glibc's extern-C `int abs(int)`; plain globals
+> were excluded from the tracked-overload arm, so all five spliced into
+> one shared-id FuncDef and the last body (long double, `fabsl`) emitted
+> as a plain-named linkonce `abs` clobbering the libc import — `abs(-7)`
+> silently returned 0 under `-stdlib=libc++` (testincludenext "42 0" vs
+> oracle "42 7"). A system-header plain global C++ function whose name is
+> already taken now joins the per-overload model; first/solo declarations
+> keep the source name (dlsym imports intact). testincludenext flips: the
+> whole flavored measurement is **939 passed / 8 failed / 0 timed out /
+> 12 skipped**, eligible EXE **923/0**, OBJ **923/0**, zero newly broken
+> (two-way name diff). New gate `testglobaloverload` (abs/labs values
+> against both oracles, validated in default JIT + libc++ JIT + EXE).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @01d774fe —
+> transitive secondary vtable groups):** fulltest **950 passed, 0 failed,
+> 0 timed out, 9 skipped** (rc=0, all forest gates green). Itanium gives
+> every polymorphic base subobject off the primary chain its own vtable
+> group + ctor vptr stamp — TRANSITIVELY; madc collected only direct
+> non-primary bases, so `E : D` (D : A, B) left the B-subobject on B's
+> standalone vtable with wrong vbase-offset slots. Under libc++ that was
+> stringstream (`basic_ostream` = `basic_iostream`'s second base): the
+> virtual `basic_ios` resolved at +24 vs clang's +128 through any
+> `basic_ostream` view — real libc++ code and emitted bodies read an
+> uninitialized `basic_ios`, every insert silently lost, `<< 42` SIGSEGV
+> in the locale copy ctor. testsstream and testopinherit flip: the whole
+> flavored measurement is **938 passed / 9 failed / 0 timed out /
+> 12 skipped**, eligible EXE **922/0**, zero newly broken (two-way name
+> diff). New gate `testtranssecondary` (plain depth-2 + template stream
+> shapes, both oracles, both flavors).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @41cbb2c5 — the
+> bucket-A chain):** fulltest **949 passed, 0 failed, 0 timed out, 9 skipped**
+> (rc=0, all forest gates green). Session #58 bucketed the 15 remaining
+> flavored failures by first error and cleared the largest bucket in five
+> commits: class-typed `return {...}` selects a constructor (the bare `{`
+> unbalanced the scope stack — libc++ `proximate()` lost its parameters);
+> conversion-type-ids take cv-qualifiers and reference conversions route
+> through `returnDecl` (six copy-pasted cv-skip loops consolidated into
+> `Program::skip_cv_qualifier_tokens`); `friend` may follow other
+> declaration-specifiers (one friend-decl owner, both entry arms); using-alias
+> targets take east-cv suffixes via `consume_declarator_stars`; and the
+> SILENT-WRONG headline — the free-operator body deduction lacked the
+> derived-to-base receiver walk, so `ofstream << "text"` bound the member
+> `operator<<(const void*)` and wrote pointer values into files. A sixth
+> commit restored the identity-return pattern recording @7b63f8c6 had
+> accidentally severed.
+>
+> The whole flavored measurement is **935 passed / 11 failed / 0 timed out /
+> 12 skipped**: testdefer, testfstream, testloop, testmanipview FIXED with
+> zero newly broken (two-way comm-diff against the 15-name set); eligible EXE
+> and OBJ each **919/0**. New gate `testofstreamwrite`; extended gates
+> `testbracedreturn`, `testconvopclass`, `testfriendkeyword`,
+> `testaliasptrtarget` — all match g++ AND clang++ in both stdlib flavors.
+> Next: `libcxx_stringstream_construction_state` (testsstream + testopinherit
+> share the locale-copy-ctor SIGSEGV; minimal reducer tmp/r19.cpp).
+>
+> **Previous (2026-08-04, `feature/libcxx-parity7-claude` @7b63f8c6 — the
+> noexcept operator):** fulltest **948 passed, 0 failed, 0 timed out,
+> 9 skipped** (rc=0, all forest gates green). The `[expr.unary.noexcept]`
+> operator is implemented: `noexcept` is a reserved C++11 keyword (the lexer
+> erasure destroyed the operator — an expression-context `noexcept(e)`
+> SIGSEGV'd and a template-argument `BC<noexcept(e)>` lost the argument);
+> `evaluate_noexcept_operator` folds the noexcept-spec conjunction over the
+> unevaluated operand's parsed tree, instantiating conditional-spec callees on
+> demand ([temp.inst]/14 — caught by `forest_selfexe_gate` when the refusal
+> dropped `_S_nothrow_relocate`'s body). Registration placeholders capture
+> declaration exception specs; a qualified template-id pack expansion
+> (`std::declval<_Args>()...`) is one unit including its qualifier chain.
+> New gates: `testnoexceptop`, `testqualpackelide`.
+>
+> The whole flavored measurement is **930 passed / 15 failed / 0 timed out /
+> 12 skipped**: `testconstructible` FIXED with zero additions (two-way
+> comm-diff), eligible EXE and OBJ each **914/0**. madc-as-GCC compiles
+> libc++'s non-builtin nothrow-trait arm (`_LIBCPP_COMPILER_GCC` at
+> `__config:38`), whose `integral_constant` base is exactly the noexcept
+> operator over a ctor call — the whole family escaped as silent 0s before.
+> The recorded DataDefREF `T&`/`T&&` gap was NOT this test's cause and stays
+> open only for the ungated `is_nothrow_move_constructible<std::string>`.
+>
+> **Previous (2026-08-04, `feature/libcxx-parity6-codex` @672a0966 —
+> forwarding-reference deduction owners):** fulltest **946 passed, 0 failed,
+> 0 timed out, 9 skipped**, warning census **0**, tsubst fallback **0**;
+> `forest_index_oracle` is **5227 indexed names / 3521 registered lookups**.
+> `testfwdpackvaluecategory` proves a named lvalue and a value-returning call
+> with the same value type deduce `T=int&` and `T=int`: GCC, Clang, and madc
+> print `1 0`. Its focused ten-test blast radius passes **10/0** in JIT, EXE,
+> and OBJ. `testmembertmplctor` remains `10 400`, proving dependent `sizeof(U)`
+> measures the referent when forwarding deduction binds `U=tag&`. The function-
+> template and dependent-type-query ownership gates are green alongside the
+> existing reference-argument gate.
+>
+> Real libc++ `testcontainerdtor` now completes in production: vector size 4,
+> integer vector size 3, set size 2, map size 2, then `done`; the experimental
+> `MADC_FWDREF_ARM` is deleted. The whole flavored measurement is **927 passed /
+> 16 failed / 0 timed out / 12 skipped**. Eight prior failures cleared with zero
+> additions: `testcastarrow`, `testcontainerdtor`, `testforinitscope`,
+> `testmadc_ns`, `testmap`, `testmapiter`, `teststdmapint`, and `testsubscript`.
+> Eligible EXE and OBJ are each **911/0**. Logs:
+> `tmp/logs/rb-20260804-193248.log` (fulltest),
+> `tmp/logs/rb-20260804-194241.log` (whole libc++ battery), and
+> `tmp/logs/rb-20260804-193158.log` (focused JIT/EXE/OBJ).
+>
+> **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —
+> pack/variadic correctness, unreleased):** fulltest **922 passed, 0
+> failed, 0 timed out, 9 skipped**, unittest rc=0, `--exe` **875/0** and
+> `--obj` **875/0** (of the 891 JIT-passing). All gates green (delimiter
+> ratchet 0, rule-trailer gate 207/0 since epoch, tsubst fallback 0,
+> warning ratchet 0). Three new gates: `testvariadicmember`,
+> `testbasepacktwo`, `testsizeofpack` — each carries at least TWO pack
+> elements with DIFFERENT values, because at arity 1 splice and
+> replicate are indistinguishable and three real defects shipped green
+> behind arity-1 gates.
+>
+> The flavored parity lane was unchanged at 891 passed / 28 failed / 0
+> timed out / 12 skipped** (`run_tests.sh --stdlib=libc++`, measured at
+> @ba7517b4; the failing set is comm-diffed BOTH WAYS against
+> `docs/parity/libcxx-failset.txt` — 28 vs 28, no new, no fixed). All
+> three commits this session are default-lane correctness; none of them
+> moved the lane. The 28 are now bucketed into named roots (see
+> `claude_status.json`): `__tree` tsubst (5), the retbuf-ABI predicate
+> disagreement pinned to `cir_builder.cpp:5074` (best next target),
+> free functions not overloading, C++20 abbreviated templates (2),
+> `basic_string_view(__long**)` (3, untriaged), the
+> `filesystem/operations.h:240` group (4, mechanism unconfirmed), and
+> ~9 singles including a SIGSEGV and a silent wrong answer.
+
+> **Previous (2026-08-01, v0.67.0 — the flavor-ABI release, pre-merge
 > battery on `feature/libcxx-parity5-claude` @190ff9d2 + release
 > files):** fulltest **911 passed, 0 failed, 0 timed out, 9 skipped**,
 > `--exe` **894/0**, `--obj` **894/0**, and the packed release arbiter

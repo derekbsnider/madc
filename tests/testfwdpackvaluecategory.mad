@@ -1,0 +1,42 @@
+// A forwarding-reference pack must deduce and memoize its element from the
+// argument expression's value category. A named variable binds T = int&, while
+// a value-returning call binds T = int. The two calls have the same value type,
+// so a type-only member-template call-shape key silently reuses the first.
+#include <cstdio>
+
+int make_value()
+{
+	return 9;
+}
+
+int identity(int value)
+{
+	return value;
+}
+
+template <class T>
+struct Category {
+	static int get() { return 0; }
+};
+
+template <class T>
+struct Category<T&> {
+	static int get() { return 1; }
+};
+
+struct Probe {
+	template <class... T>
+	static int binds_lvalue(int, T&&... args)
+	{
+		(void)identity(args...);
+		return Category<T...>::get();
+	}
+};
+
+int main()
+{
+	int value = 7;
+	printf("%d %d\n", Probe::binds_lvalue(0, value),
+		Probe::binds_lvalue(0, make_value()));
+	return 0;
+}

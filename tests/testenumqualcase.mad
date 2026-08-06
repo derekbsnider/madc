@@ -1,0 +1,35 @@
+// Regression: resolve_integer_constant's scoped-enum arm only resolved the
+// two-segment `Tag::Value` spelling — a case label spelled with the declaring
+// namespace (`ns::Tag::Value`, as libc++ writes it inside namespace
+// __format_spec to bypass a parameter shadowing the tag name:
+// parser_std_format_spec.h:886 `case __format_spec::__type::__default:`)
+// fell through every constant arm to "Expecting integer constant
+// expression". Fixed by adopting the owners the cast-operand arm already
+// uses: classify_qualifier_before_scope (scope-relative + inline-namespace
+// alias resolution) and canonical_nested_namespace (qualifier descent).
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "1 0 2 ok".
+#include <cstdio>
+
+namespace outer { inline namespace v1 { namespace inner {
+enum class ty : unsigned char { a, b, c, d };
+constexpr int f(ty ty) {
+	switch (ty) {
+	case inner::ty::a:
+	case inner::ty::b:
+		return 1;
+	case outer::inner::ty::c:
+		return 2;
+	default:
+		return 0;
+	}
+}
+} } }
+
+int main()
+{
+	printf("%d %d %d ok\n",
+	       outer::inner::f(outer::inner::ty::b),
+	       outer::inner::f(outer::inner::ty::d),
+	       outer::inner::f(outer::v1::inner::ty::c));
+	return 0;
+}

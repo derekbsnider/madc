@@ -1,0 +1,37 @@
+// Regression: an enum's FIXED underlying base did not drive its layout —
+// sizeof(any enum) was 4 and every enum lowered to int, so libc++'s
+// `enum class __alignment : uint8_t` bit-fields inside
+// __parsed_specifications' union broke its asserted 16-byte layout
+// (parser_std_format_spec.h:323). [dcl.enum]p8: sizeof(E) ==
+// sizeof(underlying); DataDefENUM::set_underlying adopts the fixed base's
+// size AND raw type, so struct layout, bit-field windows, sizeof, and the
+// CIR lowering all follow. Unfixed enums keep the historical int layout.
+// The union/bit-field shape below mirrors the libc++ struct; g++ sizes:
+// s1=2 s2=2 ps=16.
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "1 8 4 2 2 16 ok".
+#include <cstdio>
+
+enum class al : unsigned char { a0, a1 };
+enum class ty : unsigned char { t0 };
+enum class big : long { b0 };
+enum plain { p0 };
+
+struct s1 { al a_ : 3; bool b1 : 1; bool b2 : 1; ty t_; };
+struct s2 { al a_ : 3; bool b1 : 1; bool b2 : 1; bool b3 : 1; bool b4 : 1; bool b5 : 1; bool b6 : 1; bool b7 : 1; };
+struct ps {
+	union {
+		al a_ : 3;
+		s1 s_;
+		s2 c_;
+	};
+	int w_;
+	int p_;
+	char f_[4];
+};
+
+int main()
+{
+	printf("%zu %zu %zu %zu %zu %zu ok\n", sizeof(al), sizeof(big),
+	       sizeof(plain), sizeof(s1), sizeof(s2), sizeof(ps));
+	return 0;
+}

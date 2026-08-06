@@ -1,0 +1,83 @@
+// A member-template default is resolved in the CALLEE's definition class,
+// not the ambient caller method's class. Both deliberately expose an
+// `allocator_type` alias with different meanings: traits<node_allocator>'s
+// detector must see node_allocator, reject its first destroy candidate, and
+// select the fallback. Looking in outer<int_allocator> first instead selects
+// an invalid body whose node_allocator.destroy(int*) call cannot resolve.
+// This is libc++ allocator_traits::destroy as called from __tree.
+// Oracle: g++ 13 and clang++-18 at -O0 both print "destroy=2".
+#include <cstdio>
+
+template <class...>
+using void_t = void;
+
+template <class Alloc, class Pointer, class = void>
+struct has_destroy {
+	static const bool value = false;
+};
+
+template <class Alloc, class Pointer>
+struct has_destroy<Alloc, Pointer,
+	void_t<decltype(((Alloc*)0)->destroy((Pointer)0))> > {
+	static const bool value = true;
+};
+
+template <bool, class T = void>
+struct enable_if {};
+
+template <class T>
+struct enable_if<true, T> {
+	using type = T;
+};
+
+template <bool B, class T = void>
+using enable_if_t = typename enable_if<B, T>::type;
+
+struct value_node {};
+
+struct int_allocator {
+	void destroy(int*) {}
+};
+
+struct node_allocator {
+	void destroy(value_node*) {}
+};
+
+template <class Alloc>
+struct traits {
+	typedef Alloc allocator_type;
+
+	template <class T,
+		class = enable_if_t<has_destroy<allocator_type, T*>::value> >
+	static int destroy(allocator_type& alloc, T* value)
+	{
+		alloc.destroy(value);
+		return 1;
+	}
+
+	template <class T, class = void,
+		class = enable_if_t<!has_destroy<allocator_type, T*>::value> >
+	static int destroy(allocator_type&, T*)
+	{
+		return 2;
+	}
+};
+
+template <class OuterAlloc>
+struct outer {
+	typedef OuterAlloc allocator_type;
+
+	static int run(node_allocator& alloc, int* value)
+	{
+		return traits<node_allocator>::destroy(alloc, value);
+	}
+};
+
+int main()
+{
+	node_allocator alloc;
+	int value = 7;
+	int result = outer<int_allocator>::run(alloc, &value);
+	std::printf("destroy=%d\n", result);
+	return 0;
+}

@@ -1,0 +1,42 @@
+// gcc and clang make the __has_* operators they implement VISIBLE to #ifdef.
+// libstdc++ wraps its whole _GLIBCXX_HAS_BUILTIN family in `#ifdef
+// __has_builtin` (c++config.h:830), so a false answer there silently drops
+// LAUNDER / IS_SAME / HAS_UNIQ_OBJ_REP and siblings — no error, just missing
+// features. Asserts only what madc and BOTH oracles agree on.
+#include <new>
+#include <cstdio>
+
+#ifdef __has_builtin
+#define VIS_BUILTIN 1
+#else
+#define VIS_BUILTIN 0
+#endif
+
+#ifdef __has_include
+#define VIS_INCLUDE 1
+#else
+#define VIS_INCLUDE 0
+#endif
+
+#if __has_builtin(__builtin_launder)
+#define ANS_LAUNDER 1
+#else
+#define ANS_LAUNDER 0
+#endif
+
+#if __has_include(<new>)
+#define ANS_INCLUDE 1
+#else
+#define ANS_INCLUDE 0
+#endif
+
+int main()
+{
+	// The payoff: a _GLIBCXX_HAS_BUILTIN-guarded declaration resolves.
+	int x = 3;
+	int *p = std::launder(&x);
+
+	printf("vis=%d%d ans=%d%d launder=%d\n",
+	       VIS_BUILTIN, VIS_INCLUDE, ANS_LAUNDER, ANS_INCLUDE, *p);
+	return 0;
+}

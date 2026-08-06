@@ -1,4 +1,11 @@
-# Transpiler Test Triage — 2026-05-27
+# Transpiler Test Triage — 2026-05-27 (HISTORICAL)
+
+> **Historical work record** from the old text-transpiler era; kept for
+> provenance, not maintained. Several "c2mir lacks X" claims are
+> superseded: the madc MIR fork now has **native `_Complex`**, wide
+> strings/`wchar_t` work, and ≤16-byte SIMD/vector support landed in the
+> fork (see `.claude/rules/c11-transpiler.md` for the verified current
+> list). Current test state lives in `docs/test-status.md`.
 
 Baseline: 400/475 pass, 60 fail, 15 skipped.
 After Group B fix: 404/475 pass, 56 fail, 15 skipped (+4).

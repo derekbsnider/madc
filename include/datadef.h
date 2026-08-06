@@ -1003,11 +1003,14 @@ public:
     // Multiple/virtual inheritance (Itanium layout). `bases` lists direct bases;
     // compute_layout() fills each BaseSpec.offset/is_primary, vbase_offset (each
     // shared virtual base -> its offset, appended once at the end),
-    // secondary_vptr_owners (non-primary polymorphic direct bases), and nvsize
-    // (size of the non-virtual portion, where virtual bases begin).
+    // secondary_vptr_owners (every polymorphic base SUBOBJECT off the primary
+    // chain, with its offset in THIS class — direct non-primary bases AND the
+    // interior secondaries of every direct base, transitively; each needs its
+    // own vtable group + ctor vptr stamp), and nvsize (size of the non-virtual
+    // portion, where virtual bases begin).
     std::vector<BaseSpec> bases;
     std::map<DataDefCLASS *, size_t> vbase_offset;
-    std::vector<DataDefCLASS *> secondary_vptr_owners;
+    std::vector<std::pair<DataDefCLASS *, size_t> > secondary_vptr_owners;
     size_t nvsize;
     size_t own_block_off; // offset where this class's own data members begin
     size_t class_align = 0; // TRUE class alignment (members + vptr + bases); set by compute_layout. 0 = not yet computed
@@ -1159,6 +1162,11 @@ public:
 };
 
 typedef DataDefCLASS DDClass;
+
+// Canonical [meta.unary.prop] empty-class predicate. The parser uses it for
+// __is_empty and EBO layout; CIR uses the same semantic answer when lowering
+// implicit copies so the C carrier's synthetic one-byte pad is never copied.
+bool trait_is_empty(DataDef *dd);
 
 // data definitions of default base types
 class DataDefVOID:      public DataDef { public: DataDefVOID() :   DataDef("void", 0,     DataType::dtVOID) {} };
@@ -1368,13 +1376,30 @@ public:
     // -> the 64-bit twin; scoped unfixed -> int). NULL only for an opaque
     // declaration — readers fall back to int. Serves __underlying_type,
     // which both libstdc++'s and libc++'s std::underlying_type are built
-    // on. NOTE the enum's own storage still LOWERS to int (I2); a fixed
-    // base narrower than int changes only what __underlying_type answers,
-    // not (yet) the enum's layout.
+    // on. A FIXED base also drives the enum's LAYOUT via set_underlying
+    // below; the computed base is recorded by direct assignment and keeps
+    // madc's historical int layout (gcc without -fshort-enums: unfixed
+    // enums are int-sized).
     DataDef *underlying = NULL;
 
     DataDefENUM(const std::string &name)
 	: DataDef(name, sizeof(int), DataType::dtINT), enum_name(name) {}
+
+    // [dcl.enum]p8: sizeof(E) == sizeof(its underlying type). Adopting the
+    // FIXED base's size AND raw type makes struct layout, bit-field
+    // windows, sizeof, and the CIR lowering (append_type_specs' rawtype
+    // switch) all follow with no per-consumer special case — libc++
+    // __format's `enum class : uint8_t` members inside
+    // __parsed_specifications' union assert sizeof == 16.
+    void set_underlying(DataDef *u)
+    {
+	underlying = u;
+	if ( u && u->size )
+	{
+	    size = u->size;
+	    _type = (uint32_t)u->rawtype();
+	}
+    }
 };
 
 class DataDefCOMPLEX : public DataDefSTRUCT

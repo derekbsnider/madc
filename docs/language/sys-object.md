@@ -2,15 +2,18 @@
 
 `madc::sys` follows the Python `sys` convention: one typed object with
 dot members holding the program's runtime facts and argument lists.
-Include the `<ns_madc>` embedded header to use it (the same way Python
-requires `import sys`):
+It lives in the `<ns_madc>` embedded header — auto-included on first
+`madc::` use in the default dialect; standards modes (`--std=c*` /
+`--std=c++*`) need the explicit `#include <ns_madc>` (the same way
+Python requires `import sys`). The same header carries the runtime
+eval API — see [eval.md](eval.md).
 
 ```cpp
 #include <ns_madc>
 #include <iostream>
 using namespace std;
 
-int main()
+int main(int argc, char **argv)
 {
     cout << "running " << madc::sys.argv[0]
          << " on " << madc::sys.platform
@@ -19,6 +22,10 @@ int main()
     return 0;
 }
 ```
+
+(Declare `main` with parameters to receive arguments — see
+[All lanes](#all-lanes); script-mode programs get the script path as
+`argv[0]` automatically.)
 
 ## Members (v1)
 

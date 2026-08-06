@@ -1,21 +1,26 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-08-01 (v0.67.0: the
-FLAVOR-ABI release — the libc++ parity lane went 859/40 →
-**880/26+2**. The biggest remaining dam fell: a libc++ script now
-passes `std::string` into the host's libstdc++-built namespace
-functions through compiler-generated marshalling thunks (task #69,
-dladdr-origin boundary detection, host-flavor temps + copy-back +
-alias-mapped returns). #93 typedef template-arg identity LANDED
-(`cin >> string` works under libc++); deduction guides declare no name
-(#98); declaration-only Itanium callees get typed protos (#92);
-const-overload selection honors the implicit object parameter
-([over.match.funcs]/4); two [dcl.ambig.res] declaration readings +
-access control judges the SELECTED overload. 21 net flips, zero broken
-at every comm-diffed step. Every remaining failure carries a named
-root (task #34): #102 non-type packs (map/set/tuple family) → #72
-skipped-body → #66 placeholder-vs-template → singles — P2.7
-continues).
+Master plan linking all workstreams. Updated 2026-08-06 (v0.68.0 — the
+libc++ LANE-ZERO release, ships @429842b4 on feature/libcxx-parity7-claude):
+🏁 **P2.7 IS COMPLETE.** The `-stdlib=libc++` flavored lane reached an
+EMPTY failing set — full behavior-parity with the default libstdc++
+flavor. At the release HEAD: fulltest **997/0/9skip**, lane
+**993/0/13skip**, EXE/OBJ **976/0** (the lane's 13 skips = the 9
+baseline `.mir_skip` + 4 documented `.libcxx_skip`).
+`docs/parity/libcxx-failset.txt` recorded the zero its charter defined
+and is now the lane's regression gate (the `libcxxjit` battery stage
+holds it there). The final session (#65, wall-grind mode) took the #110
+pack wall: a template-template parameter defaulted to a DIFFERENT named
+template binds as a template NAME ([temp.param]p11 — libc++ `tuple()`'s
+`_IsDefault = is_default_constructible` idiom; gate `testctorttpdefault`),
+plus ctor-template constructibility traits (`testctortemplatetrait`),
+[namespace.udecl] overload-set joins (`testusingfnoverload`), and
+[dcl.link]p7 extern-block scoping (`testexternblockbody`). Residual
+follow-ups carried in `claude_status.json` live_handoff (n1-n5: the
+swap<allocator> return mistyping, pack-drain gen-only defects,
+dependent-decltype pattern-freeze, the trait-laundering sibling, C-style
+cast through explicit operator bool). #114 remains blocked on the owner
+decision about mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -40,6 +45,123 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **v0.68.0 (2026-08-06): the libc++ LANE-ZERO release — P2.7 COMPLETE.**
+  The flavored lane finished the burn-down begun at v0.61.0: 891/28 →
+  980/0 at @520e77d6 across the parity6/parity7 branches, zero newly
+  broken tests at every comm-diffed measurement, and the failing set is
+  EMPTY — full behavior-parity between `-stdlib=libc++` and the default
+  libstdc++ flavor. Release-HEAD battery (@429842b4): fulltest
+  **997/0/0TO/9skip**, lane **993/0/13skip**, EXE/OBJ **976/0**. The
+  release also lands the multi-return struct transport (class values,
+  Go-style heterogeneous `(T0, T1) f()` signatures, loud rejects;
+  @a369cb17), restored zero-ceremony madc mode (auto-include + default
+  namespace preference; @1fafe265 @0bc6ce07), the `sizeof...`
+  function-pack fold (@b411715c), the enum-constant slot heap-overflow
+  fix (@429842b4), and the machine-verified docs overhaul (53/53
+  examples green). The parity campaign's concluding session's four
+  roots: TTP defaults bind as template NAMES ([temp.param]p11 — the #110
+  pack wall, libc++ `tuple()`; gate `testctorttpdefault`), ctor-template
+  same-class constructibility (trait refusal laundered to a silent 0;
+  gate `testctortemplatetrait`), using-declared functions join the target
+  overload set ([namespace.udecl]; gate `testusingfnoverload`), and
+  extern linkage-block context confined to directly-contained
+  declarations ([dcl.link]p7; gate `testexternblockbody`).
+  `docs/parity/libcxx-failset.txt` is now the lane's regression gate,
+  enforced by the `libcxxjit` battery stage. Fork release
+  **1.0-madc.0.68.0** @4573a0f3 (const `__int128` file-scope
+  initializers, empty-struct call-result slots, `_Complex` return
+  conversion — the three session-#64 raises v0.67.0 did not ship).
+
+- **Previous parity checkpoint (2026-08-04, forwarding-reference owner
+  consolidation, P2.7 in progress).** Scalar and direct-pack template call
+  parameters now share `FnTemplateParamShape` and `fn_template_deduce_param`;
+  member-template recursion and lookup share one value-category-aware call
+  shape before the canonical binding memo; dependent `sizeof`/`alignof` folds
+  through the same `query_datadef_measure` owner as eager parsing (@672a0966).
+  `testfwdpackvaluecategory` matches GCC and Clang at `1 0`; two executable
+  drift gates prevent the weaker deduction/key and type-query paths from
+  returning. Retained member-template overload scoring delegates to the shared
+  structural deducer; template parameter lists and member-template
+  instantiation heads each have one parser/transfer owner (@fce67bf8).
+  Class-pattern hydration preserves declaration defaults and constraints,
+  trailing member `const` survives, and out-of-line definitions rename their
+  parameter tokens positionally without replacing declaration identity. New
+  `testmembertemplateconstoverload`, `testoutoflinememberconstraint`, and
+  `teststringcompare_libcxx` match GCC and Clang and pass JIT/EXE/OBJ. Class
+  construction now selects a zero-argument conversion
+  method on the source by semantic target class and object cv, honors hiding
+  and ambiguous bases, and shares stack/address destination writeback for
+  trivially-copyable native results (@6209e622). New `testconvopclass` matches
+  GCC and Clang at `41 42 42` and passes madc JIT/EXE/OBJ. Implicit copies of
+  empty classes now preserve the object address without manufacturing a
+  one-byte write (@fda0e15d), and `testeboemptycopy` passes all three lanes.
+  Direct reference parameters preserve every referent pointer layer, so
+  `T *&` lowers to the required `T **` ABI (@9013b492); `testrefptrparam`
+  matches GCC and Clang at `42 1 43 1` and passes all three lanes. Copied
+  dependent calls, deferred construction, and operator lowering now delegate
+  reference-formal adaptation to `ref_param_arg_addr_from_value`, the same
+  policy owner used by ordinary calls (@40cb8766). The
+  `testcopiedrefptrparam` reducer catches the former `T *`-to-`T **` cast and
+  the executable `check-ref-arg-lowering-owner.sh` gate prevents another
+  partial owner. Both pass JIT/EXE/OBJ and fulltest. Out-of-line
+  class-template member definition attachment now
+  distinguishes plain declarations from member templates and finds trailing
+  cv qualifiers from the declarator parameter-list boundary even when
+  `throw()` follows (@5c3a8510). New
+  `testoutoflinemembertemplateoverload` matches GCC and Clang at `1 2` and
+  passes madc JIT/EXE/OBJ. Native aggregate-return and hidden-retbuf
+  copy-initialization
+  now use the existing instantiating constructor selector (@84713d03), so
+  retained converting constructor templates materialize the target class
+  before c2mir. New `testreturnconvctortemplate` and
+  `testreturnconvctortemplateretbuf` match GCC and Clang at `73 1` and `91 1`
+  and pass madc JIT/EXE/OBJ. Copied member pack calls rebuild their arguments
+  against concrete winner formals, including hidden sret/receiver accounting
+  and per-element reference adaptation (@2dd53e47). Reference-returning pack IDs
+  already store referent addresses and are no longer addressed twice. New
+  `testmemberpackrefcall` and `testmemberpackrefsret` match GCC and Clang at
+  `34`, pass madc JIT/EXE/OBJ, and cover receiver-only and non-trivial-return
+  shapes. Retained constructor-template lookup continues past failed
+  same-arity siblings; omitted non-type defaults substitute earlier values
+  before partial-specialization matching; winning specializations preserve
+  non-type packs; nested expansions distinguish inner and outer packs; and
+  member-template `sizeof...` sees both enclosing and deduced pack arities
+  (@0fc1abf8). New gates `testmemberctorsibling`,
+  `testpartialdefaultnontype`, `testmemberaliasnestedpack`, and
+  `testmemberctorpackconstraint` match GCC and Clang at `7`, `1 1 1`,
+  `0 1 0 1`, and `1`, and pass madc JIT/EXE/OBJ. The exact libc++
+  `tuple<string&>` reducer prints `Alice`. Nested partial-specialization packs
+  also resolve
+  namespace-qualified aliases through the namespace type map and serialize
+  resolved references with source-level reference spelling across cloned
+  template bodies (@e34a06f6). New `testnestedpackref` follows two nested
+  specialization hops; GCC 13, Clang 18, and madc agree at `9`, the exact
+  libc++ `tuple_element` reducer prints `Alice!`, and focused default
+  JIT/EXE/OBJ controls pass 6/6 in each lane. Plain aggregates nested in
+  class-template instantiations receive owner-derived store keys, emitted
+  names, and canonical spellings from their first declaration (@9debe778);
+  isolated class-pattern capture
+  remains pattern-owned and the forest lookup oracle filters every canonical
+  instantiation product. New real-header gate `testnestedaggregateidentity`
+  agrees with GCC and Clang and passes madc JIT/EXE/OBJ. Dependent template-id
+  shells retain structural origin and typed argument-slot provenance
+  (@c4828adb); definition-context class alias
+  lookup overrides the ambient caller owner (@2e70fbbf), which fixes
+  `testlateinstproto`; and direct-slot non-trivial return initialization keeps
+  its `TokenCallFunc` origin through CIR copying (@518412e2); and concrete
+  member-template return tokens resolve under the definition owner
+  (@ef168838). GCC 13 and Clang 18 agree with all reducers. Fulltest is
+  **946/0/0TO/9skip**. The measured whole libc++ lane is **927/16**, with eight
+  old failures fixed and zero additions in its two-way failset diff; eligible
+  lanes are **EXE 911/0** and **OBJ 911/0**. `testcontainerdtor` now runs through
+  vector, set, and map destruction in production; the experimental
+  `MADC_FWDREF_ARM` is deleted. Remaining failures are recorded in
+  `docs/parity/libcxx-failset.txt`. NEXT: diagnose `testconstructible` against
+  the value-category/trait boundary before changing `DataDefREF`; madc still
+  collapses source `T&` and `T&&` into one reference type, but that broader gap
+  is not yet attributed to a failing test. Keep #114 parked until its ABI/API
+  decision is answered.
 
 - **v0.67.0 (2026-08-01): the flavor-ABI release (tasks
   #69/#92/#93/#98, P2.7 in progress).** The flavored lane went 859/40

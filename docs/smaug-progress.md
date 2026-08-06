@@ -14,9 +14,11 @@ Upstream total: **158,537 lines** across
 `MadSMAUG/upstream/smaug1.8/src/*.{c,h}` (including IMC sources, which
 are guarded under `#ifdef IMC`).
 
-## Current state — 2026-05-20
+## Status snapshot — 2026-05-20 (milestone record)
 
 **SMAUG runs end-to-end on madc** — both JIT and as a native executable.
+(That remains true; this document is the milestone record. Ongoing SMAUG
+work is tracked in the MadSMAUG repo.)
 
 | Phase       |   % | Notes |
 |-------------|----:|-------|

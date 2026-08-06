@@ -994,9 +994,39 @@ std::string op_special(const std::string &op)
 
 std::string itanium_encode_type_sub(const std::string &cpp_type)
 {
+	// MEMOIZED. Encoding a type means parsing it back out of its C++ spelling
+	// character by character (parse_type -> parse_component ->
+	// SpellingDelimDepth) and then mangling the resulting tree — cheap once,
+	// ruinous repeated. DataDef::marshals_value_text() calls this to answer a
+	// yes/no question ("is this the flavor's std::string?") for EVERY parameter
+	// and return of EVERY emitted symbol, and callers re-ask for the same
+	// handful of types constantly. Under -stdlib=libc++ each spelling also
+	// carries the std::__1:: inline-namespace tag on every nested component, so
+	// the strings are several times longer than the libstdc++ ones and the same
+	// call count costs far more: this chain measured 88.7% of a 19.9 s
+	// front-end run (tests/testsubscript.mad, 2026-08-02) against 1.2 s for the
+	// same file on the default flavor.
+	//
+	// The result is NOT a pure function of the input: std_entity_scope() reads
+	// the flavor globals (g_std_stdlib / g_std_abi_ns), so a spelling encodes
+	// differently after an ABI switch — which --project performs per TU. The
+	// generation stamp is therefore part of the key, the convention g_std_abi_gen
+	// is declared for ("bumped on change; caches key on it") and the one
+	// marshals_value_text's carrier cache already follows.
+	static unsigned memo_gen = ~0u;
+	static std::map<std::string, std::string> memo;
+	if (memo_gen != g_std_abi_gen) {
+		memo.clear();
+		memo_gen = g_std_abi_gen;
+	}
+	std::map<std::string, std::string>::const_iterator hit = memo.find(cpp_type);
+	if (hit != memo.end())
+		return hit->second;
 	ItaniumMangler m;
 	m.reset();
-	return m.encode_type(parse_type(cpp_type));
+	std::string encoded = m.encode_type(parse_type(cpp_type));
+	memo[cpp_type] = encoded;
+	return encoded;
 }
 
 std::string itanium_mangle_member_sub(const std::string &qualified_class,

@@ -1,0 +1,28 @@
+// An omitted non-type default may depend on an earlier non-type argument. It
+// must be folded before partial-specialization matching. GCC and Clang print
+// 1 1 1 for the implicit and explicit forms below.
+#include <stdio.h>
+#include <stddef.h>
+
+template<class... Ts>
+struct Tuple {};
+
+template<class TupleType, size_t End = 1, size_t Start = 0,
+	bool Same = (End == 1)>
+struct MakeTypes {
+	static const int value = 0;
+};
+
+template<class... Ts, size_t End>
+struct MakeTypes<Tuple<Ts...>, End, 0, true> {
+	static const int value = 1;
+};
+
+int main()
+{
+	printf("%d %d %d\n",
+		MakeTypes<Tuple<int>, 1>::value,
+		MakeTypes<Tuple<int&>, 1>::value,
+		MakeTypes<Tuple<int&>, 1, 0, true>::value);
+	return 0;
+}

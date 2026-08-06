@@ -1,3 +1,4 @@
+#include <string>
 extern "C" {
     long __perl_chop(std::string *);
     long __perl_chomp(std::string *);

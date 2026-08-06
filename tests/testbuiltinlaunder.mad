@@ -1,0 +1,21 @@
+// __builtin_launder(p) IS p ([ptr.launder]/2) — a pointer-provenance barrier,
+// not a value change. Flavour-independent: exercises the builtin directly so
+// both stdlib lanes run it. Without the builtin madc emitted an undefined
+// __builtin_launder import (and libc++'s std::__launder never instantiated).
+#include <cstdio>
+
+struct box { int v; };
+
+int main()
+{
+	int x = 5;
+	int *p = __builtin_launder(&x);
+	*p = 7;
+
+	box b;
+	b.v = 11;
+	box *q = __builtin_launder(&b);
+
+	printf("x=%d same=%d v=%d\n", x, (p == &x) ? 1 : 0, q->v);
+	return 0;
+}

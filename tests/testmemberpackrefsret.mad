@@ -1,0 +1,40 @@
+// A non-trivial member return adds a hidden result slot before the receiver.
+// The following reference pack must still map to the concrete winner's
+// pointer formals. GCC and Clang preserve all three hidden/explicit positions.
+#include <stdio.h>
+
+int combine(int a, int b)
+{
+	return a * 10 + b;
+}
+
+struct Result {
+	int value;
+	~Result() {}
+};
+
+struct Relay {
+	template<class... Values>
+	Result consume(Values&... values)
+	{
+		Result result;
+		result.value = combine(values...);
+		return result;
+	}
+
+	template<class... Args>
+	Result relay(Args&... args)
+	{
+		return consume(args...);
+	}
+};
+
+int main()
+{
+	int a = 3;
+	int b = 4;
+	Relay relay;
+	Result result = relay.relay(a, b);
+	printf("%d\n", result.value);
+	return 0;
+}

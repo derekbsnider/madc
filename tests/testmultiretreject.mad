@@ -1,0 +1,13 @@
+// Multi-return loud-reject gate: receiver arity must match the callee's
+// value count (the old machinery silently read garbage slots).
+int divide(int a, int b)
+{
+	int q = a / b;
+	return q, a - q * b;
+}
+
+int main()
+{
+	q, r, s := divide(17, 5);
+	return 0;
+}

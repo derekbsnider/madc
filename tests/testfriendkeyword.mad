@@ -2,6 +2,13 @@
 // `friend` is a real keyword (tkFRIEND), not a string-matched identifier.
 // Exercises a friend class declaration and a friend function declaration,
 // both granting access to a private member.
+//
+// [dcl.spec] leaves declaration-specifier order free: `friend` may follow
+// other specifiers. libc++ spells its hidden-friend declarations
+// `inline _LIBCPP_HIDE_FROM_ABI friend bool operator==(...)` (the macro
+// expands empty under madc's predefines, leaving `inline friend`,
+// directory_iterator.h:103) — the inline-first spelling used to fall out of
+// the friend arm into the member parse ("Expecting type in class definition").
 #include <iostream>
 using namespace std;
 
@@ -11,6 +18,15 @@ public:
 	Secret(int v) : val(v) {}
 	friend class Reader;             // friend class declaration
 	friend int peek(const Secret &); // friend function declaration
+	inline friend int peek2(const Secret &);  // specifier-first declaration
+	// specifier-first hidden-friend operator DEFINITION (the exact libc++
+	// shape; hoisted to namespace scope at class close)
+	inline friend bool operator==(const Secret &a, const Secret &b)
+	{ return a.val == b.val; }
+	// NOT covered: a NAMED hidden-friend function DEFINITION
+	// (`friend int twice(const Secret &s) { ... }`) is not hoisted in
+	// EITHER specifier order — the hoisting classifier is operator-only.
+	// Tracked as its own gap.
 };
 
 class Reader {
@@ -19,11 +35,13 @@ public:
 };
 
 int peek(const Secret &s) { return s.val; }      // private access via friendship
+int peek2(const Secret &s) { return s.val + 1; } // via the inline-first grant
 
 int main()
 {
 	Secret s(42);
+	Secret t(42);
 	Reader r;
-	cout << r.read(s) << " " << peek(s) << endl;
+	cout << r.read(s) << " " << peek(s) << " " << peek2(s) << " " << (s == t) << endl;
 	return 0;
 }

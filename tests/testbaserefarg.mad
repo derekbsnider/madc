@@ -1,0 +1,43 @@
+// A REFERENCE template argument keeps its reference identity when forwarded into
+// a BASE class template's argument list, so the base's `H&` collapses to one
+// reference ([dcl.ref]p6) instead of double-wrapping to a reference-to-pointer.
+//
+// madc lowers `T&` to a pointer and DataDefREF IS-A DataDefPTR, so a reference's
+// name is the `*`-form — identical to a real pointer's. Any path that rebuilds a
+// template argument from its spelling therefore risks handing the base a PLAIN
+// POINTER: `leaf<int32_t*>` instead of `leaf<int32_t&>`, whose get() then returns
+// `int32_t*&` (`int **`) rather than `int32_t&`. That is silent — the program
+// still compiles — until a caller's overload resolution needs the real type.
+//
+// This is the non-variadic control for the libc++ tuple shape
+// (`__tuple_impl<...> : __tuple_leaf<_Indx, _Tp>...`, task #109): there the
+// emitted base tag is `__tuple_leaf_0_int32_tP_0` — a pointer — while the outer
+// `tuple_int32_tR` correctly kept its `R`.
+//
+// Oracle: g++-13 and clang++-18 both print "x=7 get=7". The write through get()
+// is the real assertion — if the base held a copy, or a reference to the wrong
+// thing, x would stay 5.
+#include <cstdio>
+
+template <class H>
+struct leaf
+{
+	H v;
+	H &get() { return v; }
+	leaf(H h) : v(h) {}
+};
+
+template <class T>
+struct box : leaf<T>
+{
+	box(T t) : leaf<T>(t) {}
+};
+
+int main()
+{
+	int x = 5;
+	box<int &> b(x);
+	b.get() = 7;			// must write THROUGH the reference, into x
+	printf("x=%d get=%d\n", x, b.get());
+	return 0;
+}

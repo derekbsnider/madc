@@ -178,6 +178,27 @@ static uint32_t read_literal_escape_value(Source &source, char esc)
 	    }
 	    return val;
 	}
+	case 'u': case 'U': {
+	    // Universal-character-name ([lex.charset]): \uXXXX / \UXXXXXXXX.
+	    // Only the wide/prefixed-literal reader routes escapes here, so
+	    // narrow-string escape handling is untouched.
+	    int need = esc == 'u' ? 4 : 8;
+	    uint32_t val = 0;
+	    int dig = 0;
+	    while ( dig < need && source.good() )
+	    {
+		int c = source.peek();
+		int d = (c >= '0' && c <= '9') ? c - '0'
+		    : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+		    : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+		if ( d < 0 )
+		    break;
+		val = (val << 4) | (uint32_t)d;
+		source.get();
+		++dig;
+	    }
+	    return val;
+	}
 	case '0': case '1': case '2': case '3':
 	case '4': case '5': case '6': case '7': {
 	    uint32_t val = (uint32_t)(esc - '0');
@@ -213,6 +234,32 @@ static void append_narrow_string_as_wide(std::string &out,
 	append_wide_codepoint(out, (uint32_t)c);
 }
 
+// Encode one codepoint as UTF-8 bytes (u8"..." literal storage — madc narrow
+// strings are UTF-8 byte strings, so a u8 string IS a narrow string).
+static void append_utf8_codepoint(std::string &out, uint32_t cp)
+{
+    if ( cp < 0x80 )
+	out += (char)cp;
+    else if ( cp < 0x800 )
+    {
+	out += (char)(0xC0 | (cp >> 6));
+	out += (char)(0x80 | (cp & 0x3F));
+    }
+    else if ( cp < 0x10000 )
+    {
+	out += (char)(0xE0 | (cp >> 12));
+	out += (char)(0x80 | ((cp >> 6) & 0x3F));
+	out += (char)(0x80 | (cp & 0x3F));
+    }
+    else
+    {
+	out += (char)(0xF0 | (cp >> 18));
+	out += (char)(0x80 | ((cp >> 12) & 0x3F));
+	out += (char)(0x80 | ((cp >> 6) & 0x3F));
+	out += (char)(0x80 | (cp & 0x3F));
+    }
+}
+
 static std::string narrow_string_as_wide(const std::string &narrow)
 {
     std::string out;
@@ -220,13 +267,17 @@ static std::string narrow_string_as_wide(const std::string &narrow)
     return out;
 }
 
-TokenBase *Program::read_wide_literal()
+TokenBase *Program::read_wide_literal(const std::string &prefix)
 {
     char quote = source.get();
     int row = source.line();
     int col = source.column();
     if ( quote == '"' )
     {
+	// u"..." (UTF-16 units) has no faithful storage in the 4-byte-unit
+	// wide model or the narrow byte model — loud, not silently wrong.
+	if ( prefix == "u" )
+	    throw "UTF-16 string literals (u\"...\") are not supported";
 	std::string bytes;
 	while ( source.good() && source.peek() != '"' )
 	{
@@ -240,7 +291,13 @@ TokenBase *Program::read_wide_literal()
 	    }
 	    else
 		cp = read_utf8_codepoint(source, (unsigned char)source.get());
-	    append_wide_codepoint(bytes, cp);
+	    // u8"..." stores UTF-8 bytes (a narrow madc string IS UTF-8);
+	    // L"..." / U"..." store 4-byte units (wchar_t and char32_t share
+	    // the 32-bit layout on this ABI).
+	    if ( prefix == "u8" )
+		append_utf8_codepoint(bytes, cp);
+	    else
+		append_wide_codepoint(bytes, cp);
 	}
 	if ( !source.good() )
 	{
@@ -248,7 +305,7 @@ TokenBase *Program::read_wide_literal()
 	    throw "Unterminated wide string";
 	}
 	source.get();
-	return make_str(bytes, true);
+	return make_str(bytes, prefix != "u8");
     }
 
     uint32_t cp = 0;
@@ -271,7 +328,12 @@ TokenBase *Program::read_wide_literal()
     }
     source.get();
     TokenInt *ti = (TokenInt *)make_int((int64_t)cp);
-    ti->setDataType(&ddINT32);
+    // [lex.ccon] literal types: L'' -> wchar_t (int32 here), U'' -> char32_t
+    // (uint32), u'' -> char16_t (uint16), u8'' -> char8_t (uint8).
+    ti->setDataType(prefix == "U" ? static_cast<DataDef *>(&ddUINT32)
+		  : prefix == "u" ? static_cast<DataDef *>(&ddUINT16)
+		  : prefix == "u8" ? static_cast<DataDef *>(&ddUINT8)
+		  : static_cast<DataDef *>(&ddINT32));
     return ti;
 }
 
@@ -424,11 +486,39 @@ static bool expansion_is_compound_type_specifiers(const std::string &text, int &
     return saw_any;
 }
 
-static const char *auto_include_embedded_header_for_identifier(const std::string &word)
+static const char *auto_include_header_for_identifier(const std::string &word)
 {
     static const std::map<std::string, std::string> identifier_headers = {
 	{"string", "string"},
 	{"stringstream", "sstream"},
+
+	{"cout", "iostream"},
+	{"cin", "iostream"},
+	{"cerr", "iostream"},
+	{"clog", "iostream"},
+	{"endl", "iostream"},
+
+	{"ifstream", "fstream"},
+	{"ofstream", "fstream"},
+	{"fstream", "fstream"},
+
+	{"getline", "string"},
+	{"to_string", "string"},
+	{"stoi", "string"},
+	{"stol", "string"},
+	{"stod", "string"},
+
+	{"vector", "vector"},
+	{"map", "map"},
+	{"set", "set"},
+
+	{"php", "ns_php"},
+	{"perl", "ns_perl"},
+	{"python", "ns_python"},
+	{"ruby", "ns_ruby"},
+	{"js", "ns_js"},
+	{"rust", "ns_rust"},
+	{"madc", "ns_madc"},
 
 	{"size_t", "stddef.h"},
 	{"ptrdiff_t", "stddef.h"},
@@ -507,9 +597,17 @@ static std::vector<std::string> ordered_auto_include_headers(const std::set<std:
 	"string",
 	"sstream",
 	"iostream",
+	"fstream",
 	"vector",
 	"map",
 	"set",
+	"ns_php",
+	"ns_perl",
+	"ns_python",
+	"ns_ruby",
+	"ns_js",
+	"ns_rust",
+	"ns_madc",
 	NULL
     };
 
@@ -595,8 +693,25 @@ bool Program::auto_include_standard_identifier(const std::string &word)
 	break;
     }
 
-    const char *header = auto_include_embedded_header_for_identifier(word);
+    const char *header = auto_include_header_for_identifier(word);
     if ( !header )
+	return false;
+
+    // Host policy must not be bypassed by the auto-include convenience: the
+    // literal-include path deliberately falls through to the filesystem when
+    // an embedded stub is policy-disallowed (explicit includes resolve or
+    // error, gcc canon), and include/madc/ can exist on disk — so a QUEUED
+    // disallowed header would serve anyway. An identifier match never queues
+    // one; the name stays unknown and the parse-time diagnostic ("Unknown
+    // namespace or class 'php'") is the host's contract
+    // (test_libmadc_program security_policy case).
+    if ( find_embedded_header(header) && !is_embedded_header_allowed(header) )
+	return false;
+    // The namespace-head table entries additionally respect the per-namespace
+    // registration policy (security_policy.allow_*_namespace) — the check
+    // answers true for every non-namespace word, so the std-surface entries
+    // are unaffected.
+    if ( !is_namespace_registration_enabled(word) )
 	return false;
 
     pending_auto_include_headers.insert(header);
@@ -704,57 +819,24 @@ void Program::inject_pending_auto_includes()
 	      hi != ordered.end(); ++hi )
 	{
 	    const std::string &header = *hi;
-	    std::string include_key = std::string("<") + header + ">";
-	    if ( !should_tokenize_include(include_key) )
-		continue;
-
-	    std::string pch_path;
-	    if ( find_filesystem_precompiled_header(*this, header, true, pch_path) )
-	    {
-		std::deque<TokenBase *> pch_tokens;
-		if ( load_precompiled_header_file(pch_path, pch_tokens) )
-		{
-		    push_precompiled_header_tokens(*this, pch_path, pch_tokens);
-		    continue;
-		}
-	    }
-	    const PrecompiledHeader *pch = find_precompiled_header(header);
-	    if ( pch )
-	    {
-		std::deque<TokenBase *> pch_tokens;
-		if ( madc_pch::read_madh(pch->data, pch->size, pch_tokens) )
-		{
-		    push_precompiled_header_tokens(*this, header, pch_tokens);
-		    continue;
-		}
-	    }
-
-	    const std::string *embedded = find_embedded_header(header);
-	    if ( !embedded )
-		continue;
-	    if ( !is_embedded_header_allowed(header) )
-		Throw << "embedded header '" << header
-		      << "' is not allowed by registration policy" << flush;
-
-	    pack_record_edge(header);	// B4a: auto-include edge, pre-swap
+	    // Delegate to the LITERAL include owner: feed a synthetic
+	    // `#include <hdr>` line through the real directive handler, so
+	    // forest bind, PCH discovery, embedded text, the filesystem
+	    // walk, once-only dedup, pack edges and include flags all apply
+	    // identically to an include the user wrote. The injector keeps
+	    // NO private serving copy of that chain: its old PCH+embedded
+	    // arms silently dropped every header without a named provider,
+	    // which is how retiring the embedded <string>/<sstream> twins
+	    // broke the C++ arm of auto-include unnoticed.
 	    Source saved = std::move(source);
-	    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
-	    suppress_auto_include_scan = true;
 	    source = Source();
-	    source.fname(header.c_str());
-	    { ReadTimer _rt(_read_seconds); source.str(*embedded); }
-	    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
+	    source.fname("<auto-include>");
+	    std::string directive = std::string("#include <") + header + ">\n";
+	    { ReadTimer _rt(_read_seconds); source.str(directive); }
 	    TokenBase *itb;
-	    const char *interned = intern_file(header);
-	    pack_note_unit(interned);
 	    while ( (itb = getRealToken()) )
-	    {
-		itb->file = interned;
 		push_token_with_literal_concat(itb);
-	    }
 	    source = std::move(saved);
-	    suppress_auto_include_scan = saved_suppress_auto_include_scan;
-	    mark_embedded_include_flag(header);
 	}
     }
 
@@ -1438,6 +1520,21 @@ void Program::_tokenizer_init()
 	m.params = {"__addr", "__rw", "__loc"};
 	m.body = "((void)(__addr))";
 	macro_map["__builtin_prefetch"] = m;
+    }
+    // __builtin_launder(p) IS p ([ptr.launder]/2 — same address, same type).
+    // It exists only to stop the optimizer assuming a pointer still refers to
+    // the object it was formed from; madc's IR makes no such provenance
+    // assumption, so the identity is the whole implementation. The macro keeps
+    // the operand's TYPE (a function would need the template), and evaluates it
+    // once. has_builtin() reads macro_map, so this also answers libc++'s
+    // __has_builtin query truthfully. Without it std::__launder's body called
+    // an undefined __builtin_launder, its instantiation never registered, and
+    // every std::launder<T> left an undefined __launder import (task #103).
+    {
+	MacroDef m;
+	m.params = {"__p"};
+	m.body = "(__p)";
+	macro_map["__builtin_launder"] = m;
     }
     // FP classification builtins (type-generic compiler magic; real <math.h>
     // C++ regions call them directly). Lowered Tier-1 onto the REAL glibc
@@ -3002,10 +3099,11 @@ void Program::add_keywords()
     // ONLY genuine reserved keywords appear here. Contextual identifiers
     // (`override`, `final`, `module`, `import`, `audit`) are deliberately NOT
     // reserved (a hard reservation broke 49 tests — see the KG lesson). The
-    // pervasive ignored specifiers `inline` (erased), `noexcept` and `alignas`
-    // (special lexer handling) keep their existing treatment. The erased
-    // specifiers `constexpr`/`consteval`/`constinit` are registered below AFTER
-    // being removed from the erase map, and need decl-specifier consume handling.
+    // pervasive ignored specifier `alignas` (special lexer handling) keeps its
+    // existing treatment. The erased specifiers `constexpr`/`consteval`/
+    // `constinit` are registered below AFTER being removed from the erase map,
+    // and need decl-specifier consume handling; `inline` and `noexcept` keep
+    // their erasure in NON-C++ modes only.
     struct CppReservedKw { const char *kw; LanguageStd min_std; };
     static const CppReservedKw cpp_reserved[] = {
 	// STAGED — see DESIGN NOTE / the plan. The complete reserved set (below,
@@ -3093,6 +3191,13 @@ void Program::add_keywords()
 	{ "typeid",           STD_CPP98 },
 	{ "decltype",         STD_CPP11 },
 	{ "alignof",          STD_CPP11 },
+	// noexcept — BOTH surfaces ([expr.unary.noexcept] operator and the
+	// [except.spec] specifier — un-erased 2026-08-04): the operator folds by
+	// spelling in parse_constant_primary and the expression parser (like
+	// sizeof/alignof); the specifier is captured by parseFunction's
+	// trailing-qualifier walk (NxTrue/NxNone/NxUnknown). Non-C++ modes keep
+	// the getToken() balanced-paren erasure (mirror of inline's C-mode split).
+	{ "noexcept",         STD_CPP11 },
 	// Slice 4b: boolean / pointer literals.
 	{ "true",             STD_CPP98 },
 	{ "false",            STD_CPP98 },
@@ -3948,7 +4053,7 @@ TokenBase *Program::_getToken()
 		    std::string name;
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
-		    bool defined = define_map.count(name) > 0 || macro_map.count(name) > 0;
+		    bool defined = macro_name_defined(name);
 		    pack_record_branch_macro(name);
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    ifdef_stack.push(active);
@@ -4673,9 +4778,17 @@ TokenBase *Program::_getToken()
 		    word += (char)wc;
 		    whash = madc::dis::intern_table::hash_step(whash, (unsigned char)wc);
 		}
-		if ( word == "L" && source.good()
-		  && (source.peek() == '"' || source.peek() == '\'') )
-		    return read_wide_literal();
+		// Prefixed literals ([lex.ccon]/[lex.string]): L / u / U / u8
+		// ahead of a quote — the same prefix set the preprocessor's
+		// is_prefixed_literal_token accepts (libc++ unicode.h:
+		// `U'�'`). Gate the C++11/20 prefixes on the dialect so a
+		// C89 identifier `u` before a string stays two tokens.
+		if ( source.good()
+		  && (source.peek() == '"' || source.peek() == '\'')
+		  && (word == "L"
+		   || ((word == "u" || word == "U") && cpp_keyword_active(STD_CPP11))
+		   || (word == "u8" && cpp_keyword_active(STD_CPP20))) )
+		    return read_wide_literal(word);
 		// Intern the spelling ONCE (with the pre-folded hash); reuse the id
 		// for every per-word map probe below (macro/define/keyword/cpp-operator)
 		// — a flat sid-indexed array access, no string compare, no tree.
@@ -4715,7 +4828,7 @@ TokenBase *Program::_getToken()
 				std::string name;
 				while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 				    name += source.get();
-				bool defined = define_map.count(name) > 0 || macro_map.count(name) > 0;
+				bool defined = macro_name_defined(name);
 				bool active = (dir == "ifdef") ? defined : !defined;
 				++macro_ifdef_depth;
 				if ( !active )
@@ -5197,13 +5310,16 @@ TokenBase *Program::_getToken()
 		if ( word == "__FUNCTION__" || word == "__func__"
 		  || word == "__PRETTY_FUNCTION__" )
 		    return make_ident(word);
-		// noexcept / noexcept(expr): madc ignores exception
-		// specifications. Strip the optional (...) by BALANCED parens
-		// — NOT via a function-like macro, whose comma-splitting breaks
-		// on a template-id condition such as
+		// noexcept in NON-C++ modes only: strip the optional (...) by
+		// BALANCED parens — NOT via a function-like macro, whose
+		// comma-splitting breaks on a template-id condition such as
 		// noexcept(is_nothrow_constructible<T, Args...>::value) (the
-		// preprocessor does not treat <...> as grouping).
-		if ( word == "noexcept" )
+		// preprocessor does not treat <...> as grouping). In C++ modes /
+		// the madc dialect, noexcept is a reserved TokenCppKeyword
+		// (cpp_reserved) serving both the [except.spec] specifier and the
+		// [expr.unary.noexcept] operator, so it falls through to the
+		// keyword_map lookup below.
+		if ( word == "noexcept" && !cpp_keyword_active(STD_CPP11) )
 		{
 		    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t' || source.peek() == '\n' || source.peek() == '\r') )
 			source.get();
@@ -5789,6 +5905,18 @@ bool Program::has_builtin(const std::string &name)
     // what made libc++ #error on a trait madc had all along.
     if ( is_type_trait_builtin(name) )
 	return true;
+    // Builtin TEMPLATES madc implements natively — same "answer from madc's
+    // own state" contract (instantiate_make_integer_seq is the state). libc++
+    // takes its integer_sequence BUILTIN branch on this answer.
+    if ( name.compare("__make_integer_seq") == 0 )
+	return true;
+    // __type_pack_element<I, Types...> — folded natively at
+    // instantiate_template_use (the I-th type IS the result; no
+    // instantiation). libc++'s tuple_element takes its builtin branch on
+    // this answer instead of the decltype-indexer fallback, whose
+    // resolution minted an opaque dependent shell (task #103).
+    if ( name.compare("__type_pack_element") == 0 )
+	return true;
     if ( name.compare(0, 10, "__builtin_") != 0 )
 	return false;	// trait intrinsics madc does NOT implement
 			// (__remove_reference_t and the rest of libc++'s 41)
@@ -5802,9 +5930,34 @@ bool Program::has_builtin(const std::string &name)
     return define_map.count(name) > 0 || macro_map.count(name) > 0;
 }
 
+// The `__has_*` operators madc ANSWERS from its own state. This is the single
+// list behind two questions that must never disagree: what evaluateHasQuery
+// will answer, and what `#ifdef` can see. madc previously answered
+// __has_builtin correctly while `#ifdef __has_builtin` said NO — and
+// libstdc++ wraps its whole _GLIBCXX_HAS_BUILTIN family in exactly that ifdef
+// (c++config.h:830), so every guard below it silently evaluated to 0 and the
+// default lane quietly lost LAUNDER / IS_SAME / HAS_UNIQ_OBJ_REP and their
+// siblings. The operators madc cannot back (__has_attribute, __has_feature,
+// …) stay OFF this list and thus invisible: claiming them would be the
+// unbacked yes this file refuses.
+bool Program::has_query_operator_implemented(const std::string &op)
+{
+    return op == "__has_builtin"
+	|| op == "__has_include"
+	|| op == "__has_include_next";
+}
+
+bool Program::macro_name_defined(const std::string &name)
+{
+    return define_map.count(name) > 0 || macro_map.count(name) > 0
+	|| has_query_operator_implemented(name);
+}
+
 int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr,
 				  size_t &pos)
 {
+    if ( !has_query_operator_implemented(op) )
+	return 0;	// see has_query_operator_implemented — deliberate 0
     while ( pos < expr.size() && (expr[pos] == ' ' || expr[pos] == '\t') )
 	++pos;
     if ( pos >= expr.size() || expr[pos] != '(' )
@@ -6047,7 +6200,7 @@ bool Program::evaluateIfCondition()
 		skip_ws();
 		if ( has_paren && pos < expr.size() && expr[pos] == ')' )
 		    ++pos;
-		return (define_map.count(name) > 0 || macro_map.count(name) > 0) ? 1 : 0;
+		return macro_name_defined(name) ? 1 : 0;
 	    }
 
 	    // The clang __has_* family. Modern standard libraries gate whole
@@ -6488,7 +6641,15 @@ void Program::handle_pragma_body()
 	    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 		name += source.get();
 	    if ( !name.empty() )
+	    {
 		order.push_back(name);
+		// The pragma reads its names char-by-char, so they bypass the
+		// identifier lexer's auto-include scan — feed them to the same
+		// hook the statement form gets for free, or `#pragma prefer
+		// rust, ...` fails "Unknown namespace" while `prefer rust, ...;`
+		// works (the ns_* header injects before parse-time validation).
+		auto_include_standard_identifier(name);
+	    }
 	    while ( source.peek() == ' ' || source.peek() == '\t' )
 		source.get();
 	}

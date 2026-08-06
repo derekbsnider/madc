@@ -46,6 +46,11 @@ class TokenFunc;
 class TokenCpnd;
 class DataDefTemplateParam;	// typed template-parameter placeholder (datadef.h)
 
+// The semantic measure of a C/C++ type query. References measure their
+// referent, not madc's pointer-sized reference storage. Both eager parsing and
+// parse-once tsubst use this owner so dependent and concrete queries agree.
+size_t query_datadef_measure(const DataDef *dd, bool want_alignof);
+
 class MadcTeeBuf : public std::streambuf
 {
 public:
@@ -112,6 +117,12 @@ public:
     std::string local_emit_name;
     // multiple return values (empty = single return via `returns`)
     std::vector<DataDef *> return_types;
+    // Multi-return transport: the synthesized `struct { T0 v0; ... }` this
+    // function's values travel through — the function's C-level return type.
+    // Set alongside return_types (Program::multi_return_transport_struct);
+    // NULL for single-return functions. `returns` is a reference member and
+    // cannot be re-seated, so the CIR consults this for multi-return fns.
+    DataDefSTRUCT *multi_ret_struct = NULL;
     // Reference-ness of parameter i, derived from its type: a reference parameter
     // is a DataDefREF (is_reference() true). This is the SINGLE source of truth —
     // the old parallel `ref_params` flag vector was retired (first-class-references
@@ -2139,7 +2150,7 @@ protected:
     TokenBase *make_space(int cnt);                            // TokenSpace
     TokenBase *make_tab(int cnt);                              // TokenTab
     TokenBase *make_eol(int cnt);                              // TokenEOL
-    TokenBase *read_wide_literal();   // wide string/char literal -> pop-1 token
+    TokenBase *read_wide_literal(const std::string &prefix = "L");   // L/u/U/u8 string/char literal -> pop-1 token
     // Fill the immutable (ROM) TokenRec of a lexed pop-1 token from the formed
     // shell — kind/value/spelling/provenance — so a fresh mutable (RAM) shell
     // can later be rebuilt from the rec alone (the no-clone substitution split,
@@ -2159,6 +2170,17 @@ protected:
     // question the parser answers when it sees the call.)
     // (not const: intern_keyed_map::count() is not const-qualified)
     bool has_builtin(const std::string &name);
+    // Is this `__has_*` operator one madc ANSWERS from its own state? The ONE
+    // list: evaluateHasQuery declines everything else, and macro_name_defined
+    // makes exactly these visible to `#ifdef` — so an operator can never be
+    // answerable but invisible, or visible but unanswerable.
+    static bool has_query_operator_implemented(const std::string &op);
+    // Is this name DEFINED for `#ifdef` / `#ifndef` / `defined()`? A macro in
+    // either table, or an implemented `__has_*` operator (gcc and clang both
+    // make those visible to #ifdef, and libstdc++ gates whole feature families
+    // on it).
+    // (not const: intern_keyed_map::count() is not const-qualified)
+    bool macro_name_defined(const std::string &name);
     void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
 //  inline int get(std::istream &is) { ++_column; return is.get(); }
     // initializers / finalizers
@@ -2207,6 +2229,7 @@ public:
     // Consumers: TokenSTRUCT::parse's two forward-declaration arms and
     // resolve_declared_type_token's elaborated-type-specifier miss
     // ([basic.scope.pdecl]/7 — `wp<struct nat>` first-declares `nat`).
+    DataDefCLASS *nested_aggregate_owner() const;
     std::string scoped_struct_tag(const std::string &name);
     TokenDataType *register_cpp_aggregate_name(const std::string &name,
 					       DataDefSTRUCT *sdd);
@@ -2223,6 +2246,12 @@ public:
     StructRegistry struct_map;		// data definitions defined by struct
 					// (writes via .set() ONLY — despaced index)
     std::map<std::string, DataDefSTRUCT *> tsubst_local_aggregate_map;
+    // Multi-return transport structs, memoized per slot-type vector (pointer
+    // identity) so every function with the same signature shares one struct.
+    std::map<std::vector<DataDef *>, DataDefSTRUCT *> multi_ret_transport_map;
+    size_t multi_ret_transport_counter = 0;
+    DataDefSTRUCT *multi_return_transport_struct(
+	const std::vector<DataDef *> &types, TokenBase *where);
     // Type table identity layer — project segment (madc_typeid.h; design
     // docs/plans/2026-06-12-type-table-value-abi-design.md §2). Holds every
     // non-primitive DataDef this Program has been asked an id for; index i
@@ -3098,6 +3127,17 @@ public:
     // recursive variadic body (`__and_`, `tuple`) would otherwise re-instantiate
     // unboundedly. Scoped-set around the member-type instantiate_template_id calls.
     bool allow_variadic_real_inst = false;
+    // VALUE-pack (trailing NON-TYPE pack) real instantiation is gated by its OWN
+    // demand flag (task #102). The expansion machinery (token_pack_subst splice /
+    // replicate in the legacy body clone) is live, but the caller-side spellings
+    // are not yet folded (`sizeof...(_Args)` in template-arg position, the
+    // `__integer_pack` / `__make_integer_seq` index-pack builtins) — so admitting
+    // the shape under the GENERAL vri arming types one entity through two routes
+    // (params via the real instance, caller temps via a raw-spelling flatten:
+    // the _Index_tuple by-value incompatibility that broke 8 default-lane tests).
+    // Armed only by a demand site that also folds those spellings; consumed and
+    // cleared alongside allow_variadic_real_inst at each instantiate entry.
+    bool allow_valuepack_real_inst = false;
     // STICKY variant of the above: stays on through a real-instantiation SUBTREE
     // whose root template forwards its meaning through a dependent-member base
     // (`__invoke_result : __result_of_impl<...>::type`). Unlike allow_variadic_real_inst
@@ -3159,21 +3199,20 @@ public:
     // (register_skipped_class_template_function). When such a callee is called,
     // deduce its template params from the call's args, instantiate the retained
     // body via the shared free-fn-template machinery, and bind the call to the
-    // instantiated definition. Instantiations are PER TYPE-SHAPE (arg types +
-    // explicit template args, memoized in member_fn_inst_names): each distinct
-    // shape gets its own unique instance symbol (unique_overload_symbol over
-    // `<placeholder>__mti`, mirroring the ctor lane), so a member template used
-    // at two types yields two definitions — not a colliding single `__mti` item.
+    // instantiated definition. Instantiations are PER CALL SHAPE (arg types +
+    // value categories + explicit template args, memoized in
+    // member_fn_inst_names): each distinct shape reaches deduction independently;
+    // the binding memo then gives equal deductions one shared specialization.
     // Returns the concrete instance Variable for THIS call's shape (NULL when
     // not a member-template call / instantiation failed) and records it on
     // tc->mti_instance; the placeholder's local_emit_name alias stays FIRST-wins
     // for consumers without a call token. libstdc++-EXPORTED member templates
     // keep the mangled-direct path (member_template_method_call).
     Variable *instantiate_member_fn_template_for_call(TokenCallFunc *tc);
-    // Per type-shape member-template instantiation memo: shape key (the
-    // placeholder's unique var.name + arg-type + explicit-arg spellings —
-    // placeholder IDENTITY, unlike the display-name cycle key, which
-    // deliberately blurs sibling placeholders) -> instance symbol. The
+    // Per-call-shape member-template instantiation memo: shape key (the
+    // placeholder's unique var.name + arg type/value-category + explicit-arg
+    // spellings — placeholder IDENTITY, unlike the display-name cycle key,
+    // which deliberately blurs sibling placeholders) -> instance symbol. The
     // call-lane twin of member_ctor_inst_done (which memoizes but needs no
     // symbol map — ctor instances register into cdd->ctors and re-select per
     // construction).
@@ -3191,6 +3230,9 @@ public:
     // types). No-op when `cdd` has no member-template ctor.
     void instantiate_member_ctor_template_for_construction(
 		DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args);
+    bool instantiate_member_ctor_template_candidate(
+		DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args,
+		size_t candidate_skip);
     // Resolve the CONCRETE return type of a member-function-template call by
     // substituting the call's explicit/deduced template args into the retained
     // DEPENDENT return-type tokens (FuncDef::member_template_return_tokens) and
@@ -3254,11 +3296,12 @@ public:
 	pending_template_instantiations;
     // Template-origin structure for a DEPENDENT template-id placeholder shell
     // (`tuple<_Args1...>`, `_Index_tuple<__integer_pack(sizeof...(_Args1))...>`),
-    // recorded at the shell's creation (instantiate_opaque_template_use) so
-    // tsubst can later rebuild the CONCRETE instantiation structurally from the
-    // binding (g++ tsubst on a dependent template-id) instead of being stuck
-    // with an opaque name. Keyed by the shell DataDef; arg token runs are
-    // clones (structural type tokens, not source text).
+    // recorded at every dependent-shell creation/reuse seam (both class-
+    // template instantiation lanes) so tsubst can later rebuild the CONCRETE
+    // instantiation structurally from the binding (g++ tsubst on a dependent
+    // template-id) instead of being stuck with an opaque name. Keyed by the
+    // shell DataDef; arg token runs are clones (structural type tokens, not
+    // source text).
     struct DependentShellOrigin {
 	std::string tname;			// class-template name (template map key)
 	uint32_t registry_name_id = 0;
@@ -3291,6 +3334,25 @@ public:
     registration_set<std::string> template_completion_requested; // mangled aliases awaiting completion
     std::set<std::string> template_instantiated;           // mangled names done
     std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup
+    // An isolated definition-context type resolve (member-template defaults /
+    // constraints) must outrank the ambient method owner. Both remain live
+    // while a callee's SFINAE is evaluated from inside a caller method, so a
+    // dedicated stack distinguishes the explicit definition owner from the
+    // ordinary class_scope_stack.
+    std::vector<DataDefCLASS *> class_type_lookup_override_stack;
+    class ClassTypeLookupScope
+    {
+	Program &pgm;
+	bool pushed;
+	ClassTypeLookupScope(const ClassTypeLookupScope &);
+	ClassTypeLookupScope &operator=(const ClassTypeLookupScope &);
+    public:
+	ClassTypeLookupScope(Program &p, DataDefCLASS *owner)
+	    : pgm(p), pushed(owner != NULL)
+	{ if ( pushed ) pgm.class_type_lookup_override_stack.push_back(owner); }
+	~ClassTypeLookupScope()
+	{ if ( pushed ) pgm.class_type_lookup_override_stack.pop_back(); }
+    };
     // Function-local class identities are parse-session metadata. The class's
     // emitted name carries the durable identity; this side table lets tsubst
     // map a Tree-1 pattern local class to the matching concrete instantiation
@@ -3360,6 +3422,33 @@ public:
     // no pack, NON-DEPENDENT return, body uses `T` only in scalar positions). False
     // routes to the existing re-parse instantiation (no behavior change).
     bool tsubst_eligible(FuncDef *fd, const char **why = NULL);
+    // [expr.sizeof]/5 — `sizeof ... ( identifier )` yields a parameter pack's
+    // ARITY. The operator is parsed by evaluate_type_query; it needs the arity of
+    // a pack NAME that is only known to whichever instantiation is in flight, so
+    // each instantiation PUBLISHES its pack arities here for the duration of the
+    // body parse and the operator resolves against them. Publishing data beats
+    // every substitution path re-implementing the operator (which is what the
+    // deleted token-level folds did, and one of them was missing, so `sizeof...`
+    // silently mis-parsed at arity >= 2).
+    // A STACK because instantiations nest; lookup runs innermost -> outermost so
+    // an inner template's own pack shadows an enclosing one of the same name.
+    std::vector<std::map<std::string, size_t> > pack_arity_scopes;
+    void push_pack_arity_scope()
+	{ pack_arity_scopes.push_back(std::map<std::string, size_t>()); }
+    void pop_pack_arity_scope()
+	{ if ( !pack_arity_scopes.empty() ) pack_arity_scopes.pop_back(); }
+    void publish_pack_arity(const std::string &n, size_t c)
+	{ if ( !pack_arity_scopes.empty() ) pack_arity_scopes.back()[n] = c; }
+    bool lookup_pack_arity(const std::string &n, size_t &out) const;
+    // RAII: an instantiation body parse can throw (SFINAE probes do it routinely),
+    // and a leaked scope would make a later sizeof...(P) resolve against a dead
+    // binding instead of failing.
+    struct PackArityScope
+    {
+	Program &p;
+	PackArityScope(Program &pp) : p(pp) { p.push_pack_arity_scope(); }
+	~PackArityScope() { p.pop_pack_arity_scope(); }
+    };
     // Two-tree Phase 2: parse a member function template's retained body ONCE with
     // its param bound to a DataDefTemplateParam placeholder (a TemplateParamScope
     // pushed for the parse + eager instantiation suppressed via
@@ -4399,6 +4488,7 @@ public:
     void set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb = NULL);
     Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name);
     std::string canonical_nested_namespace(const std::string &parent, const std::string &comp);
+    std::vector<std::string> inline_namespace_descendants(const std::string &ns) const;
     std::string canonical_namespace_path(const std::string &base, const std::string &dotted);
     Variable *resolve_preferred_identifier(class TokenIdent *ident_tb, bool expression_head);
     void set_expression_context_root(const madc::value *root);
@@ -4727,7 +4817,8 @@ public:
     // Speculatively fold a static-member initializer ('=' already consumed) to a
     // constant int, expecting ';'. Consumes the initializer on success, restores
     // and returns false otherwise. See parser.cpp.
-    bool capture_constant_initializer_value(int64_t &out);
+    bool capture_constant_initializer_value(int64_t &out,
+					    bool brace_form = false);
     // Parse a bit-field width `: N` (the ':' already consumed) for a member of
     // integer type `member_dd`; `named` rejects a zero width; `target` supplies
     // the storage-size rule. Shared by the struct and class body parsers.
@@ -4869,6 +4960,11 @@ public:
     // const pointer `T * const p`). One shared loop instead of the copy-pasted
     // `while(tkMul){...}` declarator loops.
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr);
+    // Shared cv-qualifier consumers (const/volatile/restrict) for committed
+    // type reads. Held form returns the first non-qualifier token; peek form
+    // consumes the run and leaves the following token unread.
+    TokenBase *skip_cv_qualifier_tokens(TokenBase *held);
+    void skip_cv_qualifier_tokens();
     // parse a `(params)` list after the opening '(' has been consumed; used by
     // function-pointer typedefs. Builds a FuncDef with the given return type.
     // Parameter names are accepted but discarded. Stops after consuming ')'.
@@ -4986,6 +5082,12 @@ public:
 					const std::string &op_name,
 					bool &have_value, size_t &query_value);
     size_t evaluate_type_query(TokenBase *op_tb, const std::string &op_name);
+    // [expr.unary.noexcept]: parse `( expression )` UNEVALUATED (decltype's
+    // twin) and fold to 0/1 — the noexcept-spec conjunction over the operand's
+    // parsed tree. Throws when the answer cannot be derived faithfully; a
+    // constant-fold caller's isolated-stream try records that as "unfoldable"
+    // rather than a silently wrong bool. See parser.cpp noexcept_eval_expr.
+    size_t evaluate_noexcept_operator(TokenBase *op_tb);
     // Type-trait builtins (__is_class/__is_base_of/…): parse `( type-list )` and
     // fold to a bool constant token. See parser.cpp for the supported (faithful)
     // set; unsupported traits are not recognized (clear error, never a wrong bool).
@@ -5104,6 +5206,13 @@ public:
     TokenDataType *instantiate_shell_origin_replay(
 			const struct DependentShellOrigin &org,
 			const std::vector<std::vector<TokenBase *> > &arg_runs);
+    // COMPLETE an opaque template shell in place of a completeness demand:
+    // look up the shell's recorded origin and replay it (above). A shell minted
+    // during a dependent parse may by now hold fully CONCRETE args, in which
+    // case the replay yields the real instantiation. SILENT — cerr muted and
+    // diagnostics rewound, so a replay that cannot re-enter cleanly leaves the
+    // caller exactly as it was. Returns NULL when the shell stays opaque.
+    DataDefCLASS *complete_shell_class_type(DataDefCLASS *cls);
     // GCC's __integer_pack(N) builtin (libstdc++-13 GCC-path index-sequence
     // primitive): valid only as the entire pattern of a template-argument pack
     // expansion `X<... __integer_pack(N)... ...>`; at substitution time (N a
@@ -5112,6 +5221,23 @@ public:
     // splicing each occurrence into literal integer args so the ordinary
     // template-argument loops then collect plain non-type args.
     void expand_integer_pack_template_args();
+    // clang's __make_integer_seq builtin template (the libc++ index-sequence
+    // primitive): `__make_integer_seq<S, T, N>` (N a concrete non-negative
+    // constant) IS `S<T, 0, 1, ..., N-1>`. Rewrites the live stream's
+    // `< S , T , N >` region in place and delegates instantiation to S;
+    // returns NULL (ordinary path) when N is dependent/non-constant. Only
+    // called for a namespace-level lookup (never owner-scoped — the stream
+    // rewrite must not fire on a speculative member probe).
+    TokenDataType *instantiate_make_integer_seq(TokenBase *tb,
+						const std::string &ns_hint);
+    // clang's __type_pack_element builtin template:
+    // `__type_pack_element<I, T0, ..., Tn>` (I a concrete constant) IS the
+    // I-th type argument. Consumes the live stream's `< I , T... >` region
+    // and returns the selected type directly (no instantiation — the result
+    // is one of the given args); NULL (ordinary path) when I is dependent /
+    // non-constant / out of range. Same owner gating as the sibling above.
+    TokenDataType *instantiate_type_pack_element(TokenBase *tb,
+						 const std::string &ns_hint);
     TemplateAliasDef *find_template_alias(const std::string &name,
 					  const std::string &ns_hint = std::string(),
 					  DataDefCLASS *owner_hint = NULL);
@@ -5135,6 +5261,9 @@ public:
     DataDef *dependent_deref_result_type(DataDef *dd);
     void complete_pending_template_instantiations(const std::string &class_name);
     bool request_template_instantiation_completion(const std::string &mangled_name);
+    // Is a lazy completion RECORDED for this mangled instance (the
+    // :7776-arm's pending record)? Read-only twin of the request above.
+    bool has_pending_template_instantiation(const std::string &mangled_name) const;
     DataDef *complete_class_type_on_demand(DataDef *dd);
     bool template_declared_in_namespace(const std::string &name,
 					const std::string &ns_name);
@@ -5187,6 +5316,8 @@ public:
     DataDef *resolve_current_class_type_alias(const std::string &name);
     bool resolve_current_class_static_member_const_value(const std::string &name, int64_t &out);
     bool fold_constant_qualified_member(TokenBase *first, madc_wide_int &out);
+    bool fold_constant_qualified_member_walk(TokenBase *first,
+					     madc_wide_int &out);
     Variable *find_variable_for_contextual_type_name(const std::string &name);
     DataDefCLASS *resolve_expression_class_scope(const std::string &name);
     // What a qualifier names before `::` in an expression — THE one classify
@@ -5241,6 +5372,12 @@ public:
 				  CppSymKind kind, const std::string &mname,
 				  bool is_operator);
     std::string unique_overload_symbol(std::string base);
+    // C++20 abbreviated function template ([dcl.fct]/18): token-level
+    // desugar — `auto` parameter placeholders become invented identifiers
+    // under a synthesized `template<...>` head pushed onto the stream, so
+    // the existing template machinery owns the declaration. Returns true
+    // when it desugared (the stream head is then tkTEMPLATE).
+    bool desugar_abbreviated_fn_template();
     std::vector<TokenBase *> collect_compound_body_tokens(TokenBase *open);
     void enqueue_deferred_function_body(Variable *var,
 					Method *method, TokenBase *open,
@@ -5333,6 +5470,14 @@ public:
 					size_t after_ix);
     TokenBase *parse_functional_type_expression(TokenBase *type_tb,
 						DataDef *type_dd);
+    // The ONE brace-list reader for compound-literal-shaped initializers in
+    // EXPRESSION position: `(T){...}` (C99 cast arm) and `T{...}` on a plain
+    // struct ([expr.type.conv] list-init of an aggregate prvalue — same C11
+    // lowering). Consumes from the opening '{' through its '}'. Handles
+    // nested braces and `.field =` / `field:` designators. `current_sdd` may
+    // be NULL (element type unknown); `origin` anchors diagnostics.
+    TokenStructLit *parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
+					      TokenBase *origin);
     TokenBase *parse_namespace_block(bool inline_namespace);
     TokenBase *parse_parenthesized_expression(const char *context,
 					      bool stop_on_closing_paren);

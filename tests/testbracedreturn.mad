@@ -9,9 +9,20 @@
 // returning a scalar from a function returning a struct. A wrong answer with
 // no diagnostic, not a parse error.
 //
+// CLASS return type: the list selects a CONSTRUCTOR ([dcl.init.list]/3) —
+// libc++'s proximate() (<__filesystem/operations.h>) hits this with
+//	path __tmp_base = __weakly_canonical(__base, &__ec);   // after:
+//	if (__ec) return {};
+// The old handling let the bare `{` reach parseExpression, which has no
+// brace-head reading; the stray braces unbalanced the scope stack and the
+// NEXT statement lost the function PARAMETERS ("use of undeclared
+// identifier '__base'").
+//
 // Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
 //	ab 7
 //	0 0 9 0 1 2 77
+//	5 3
+//	1 7 3
 #include <cstdio>
 
 struct pair2 { char *p; unsigned long n; };
@@ -23,6 +34,19 @@ static pt zero() { return {}; }			// value-init: all zeroes
 static pt partial(int a) { return {a}; }	// y zero-init'd
 static nest deep(int a, int b, unsigned long n) { return {{a, b}, n}; }
 
+struct path2 { int v; path2() : v(7) {} path2(int x) : v(x) {} };
+static path2 wc(const path2 &p) { return path2(p.v + 1); }
+static path2 proximate_like(const path2 &p, const path2 &base, int &ec)
+{
+	path2 tmp = wc(p);
+	if (ec)
+		return {};		// class: default-ctor via list
+	path2 tmp_base = wc(base);	// `base` must still be in scope
+	ec = tmp.v + tmp_base.v;
+	return tmp_base;
+}
+static path2 one() { return {3}; }	// non-empty list -> ctor(int)
+
 int main()
 {
 	char buf[4] = "ab";
@@ -33,5 +57,13 @@ int main()
 
 	printf("%s %lu\n", r.p, r.n);
 	printf("%d %d %d %d %d %d %lu\n", z.x, z.y, p.x, p.y, d.a.x, d.a.y, d.n);
+
+	path2 pa(1), pb(2);
+	int ec = 0;
+	path2 pr = proximate_like(pa, pb, ec);
+	printf("%d %d\n", ec, pr.v);
+	ec = 1;
+	path2 pr2 = proximate_like(pa, pb, ec);
+	printf("%d %d %d\n", ec, pr2.v, one().v);
 	return 0;
 }

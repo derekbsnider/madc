@@ -1,0 +1,32 @@
+// [expr.sizeof]/5: sizeof... may name the FUNCTION parameter pack, not only
+// the template pack. `sizeof...(vals)` in a free fn template body previously
+// left the operator unfolded at instantiation: the body parse failed
+// SILENTLY and the call kept its body-less placeholder — undefined MIR
+// import at link, NO compile diagnostic (found by the cpp-features.md
+// doc-example harness; reducer family r90a-j). The value-pack name now
+// publishes into the same pack-arity scope as the template pack. Arity >= 2
+// with distinct values per the pack-gate rule; both spellings; member twin.
+#include <cstdio>
+
+template <class... Ts>
+int count_vals(Ts... vals) { return sizeof...(vals); }
+
+template <class... Ts>
+int count_types(Ts... vals) { return sizeof...(Ts); }
+
+template <class T, class... Rest>
+int count_rest(T first, Rest... rest) { return sizeof...(rest); }
+
+struct Box {
+	template <class... Us>
+	int mcount(Us... vals) { return sizeof...(vals); }
+};
+
+int main()
+{
+	printf("%d %d %d\n",
+	       count_vals(1, 2.5, 'c'), count_types(7, 8), count_rest(1, 2, 3));
+	Box b;
+	printf("%d %d\n", b.mcount(4, 5, 6.5), count_vals());
+	return 0;
+}

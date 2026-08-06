@@ -1,0 +1,30 @@
+// A call returning a zero-sized (GNU empty) struct, in a function with no
+// other frame needs. c2mir reserved round_size(0, 16) == 0 call-arg bytes for
+// the memory-class result, so the caller got NO frame and gen's
+// return-by-reference arm died on the missing frame-pointer reg ("MIR fatal
+// error: undeclared func reg fp"). Fixed in the MIR fork (a memory-class
+// result reserves at least MAX_ALIGNMENT). The local-receiver variant only
+// survived because the empty LOCAL set stack_var_p. Found via the libc++
+// pack-freeze lane (__compressed_pair::swap calling a mistyped
+// empty-struct-returning std::swap instantiation).
+// Oracle: gcc 13 and clang 18 print "3 3".
+struct E {};
+
+struct E get(void) { struct E e; return e; }
+
+int bare(void) { get(); return 3; }
+
+int recv(void)
+{
+    struct E e = get();
+    (void)e;
+    return 3;
+}
+
+int printf(const char *, ...);
+
+int main()
+{
+    printf("%d %d\n", bare(), recv());
+    return 0;
+}

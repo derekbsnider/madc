@@ -1,0 +1,21 @@
+// [dcl.init.aggr]: braced memberwise initialization of a CTOR-LESS class
+// through the construction lanes. S/T are class-promoted (std::string object
+// member), so `T{...}` routes through class_ctor_call's aggregate leg — which
+// previously DROPPED the initializers and returned an uninitialized temp (a
+// silent wrong value: this reducer printed garbage where g++ prints 42, and
+// the frozen-libc++ lane trapped on __allocate_at_least's garbage pointer).
+// T exercises the trailing-member value-init rule ([dcl.init.aggr]p8: y = 0).
+// Oracle: g++ and clang++ both print "42 hi 0 tail".
+#include <string>
+#include <cstdio>
+struct S { std::string s; int y; };
+struct T { std::string s; int y; };
+S make() { return S{std::string("hi"), 42}; }
+T maket() { return T{std::string("tail")}; }
+int main()
+{
+    S v = make();
+    T t = maket();
+    printf("%d %s %d %s\n", v.y, v.s.c_str(), t.y, t.s.c_str());
+    return 0;
+}

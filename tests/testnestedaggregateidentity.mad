@@ -1,0 +1,29 @@
+// A plain struct nested in a class-template instantiation has its own
+// owner-qualified identity.  It must not inherit the enclosing template's
+// canonical spelling and later win canonical lookup in place of the owner.
+// The partial-specialization round trip exposes libc++ basic_string::__long
+// replacing basic_string itself.
+// Oracle: g++ 13 and clang++-18 at -O0 both print "value=forty-two".
+#include <cstdio>
+#include <string>
+
+template <class T>
+struct node {};
+
+template <class P, class N>
+struct node_types;
+
+template <class P, class T>
+struct node_types<P, node<T> > {
+	typedef T selected;
+	static const char *get_text(selected *p) { return p->c_str(); }
+};
+
+int main()
+{
+	std::string value("forty-two");
+	const char *text =
+		node_types<node<std::string> *, node<std::string> >::get_text(&value);
+	std::printf("value=%s\n", text);
+	return 0;
+}

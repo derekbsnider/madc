@@ -1,0 +1,42 @@
+// A member-template return type is resolved in the defining class even when
+// its concrete instantiation is triggered from another class's method.  The
+// second return scan must retain result_pair<producer::owner_alias, bool>;
+// falling back to the last template argument changes the return to bool.
+// Oracle: g++ 13 and clang++-18 at -O0 both print "value=42".
+#include <cstdio>
+
+template <class A, class B>
+struct result_pair {
+	A first;
+	B second;
+};
+
+struct producer {
+	typedef int owner_alias;
+
+	template <class U>
+	result_pair<owner_alias, bool> make(U value)
+	{
+		result_pair<owner_alias, bool> out;
+		out.first = value;
+		out.second = true;
+		return out;
+	}
+};
+
+struct consumer {
+	producer source;
+
+	int run()
+	{
+		result_pair<int, bool> out = source.make(41);
+		return out.first + (out.second ? 1 : 0);
+	}
+};
+
+int main()
+{
+	consumer value;
+	std::printf("value=%d\n", value.run());
+	return 0;
+}

@@ -1,0 +1,37 @@
+// An out-of-line member-template definition must attach to the retained
+// member-template declaration, not a same-name plain overload that appears
+// first. The later plain definition must remain non-template and body-served,
+// including when a trailing throw() follows its const qualifier.
+#include <stdio.h>
+
+template<class T>
+struct Box {
+	T value;
+	int compare(const Box& other) const throw();
+
+	template<class U>
+	int compare(const U& other) const throw();
+};
+
+template<class T>
+template<class U>
+int Box<T>::compare(const U& other) const throw()
+{
+	return value == (T)other ? 2 : -2;
+}
+
+template<class T>
+int Box<T>::compare(const Box& other) const throw()
+{
+	return value == other.value ? 1 : -1;
+}
+
+int main()
+{
+	Box<int> a;
+	Box<int> b;
+	a.value = 7;
+	b.value = 7;
+	printf("%d %d\n", a.compare(b), a.compare(7));
+	return 0;
+}
