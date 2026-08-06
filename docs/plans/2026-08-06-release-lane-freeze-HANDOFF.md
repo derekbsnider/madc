@@ -76,17 +76,26 @@ and is independent of `feature/script-toplevel-claude` (#16/#18).
 
 ## HYPOTHESES TO TEST FIRST (in order)
 
-1. Add the ovset join to the nsbind thaw replay (mirror the live
-   using-arm's two registrations) → does the full-corpus testfreezerun
-   flip green at HEAD? (`MADC_DEBUG_FNTPL=1` builds print rank
-   decisions — compare freeze-side vs consumer-side winners for
-   `std::__check_constructible` / the stl_vector.h:428 members.)
-2. If the split persists: the deep fix per [temp.type] — the identity
-   spelling must desugar scalar typedef aliases (route EVERY identity
-   former through `scalar_alias_of` / `mangle_scalar_spelling`, cf.
-   588d9e73 "one instantiation key for typedef'd anonymous-aggregate
-   args"). That likely also fixes defect P's family. Do NOT key on
-   names (enum-over-strings); desugar at the dd level.
+1. ~~Add the ovset join to the nsbind thaw replay~~ **DONE, INSUFFICIENT
+   ALONE (@8b77c972, same session):** the recorder now writes
+   overload-set membership (flagged `DF_NSBIND_OVERLOAD_MEMBER`, incl.
+   imports that lost the first-wins map slot and previously left NO
+   record) and the flush joins flagged records back into
+   `namespace_fn_overload_sets`. A proven live==thaw state divergence,
+   landed with a 5/5 targeted net — but the full-corpus testfreezerun
+   STILL fails with the identical `stl_vector.h:428:54` pair. The
+   identity split has a second driver.
+2. **START HERE — find the second driver.** Build with
+   `-DMADC_DEBUG_FNTPL=1` (it is a compile-time `#if`, not an env) and
+   compare the RANK decisions freeze-side vs consumer-side for the
+   `std::__check_constructible` call chain and the stl_vector.h:428
+   members; the boundary tree diff (tmp/fp_treediff.txt) names the
+   split keys. Then the deep fix per [temp.type]: the identity spelling
+   must desugar scalar typedef aliases (route EVERY identity former
+   through `scalar_alias_of` / `mangle_scalar_spelling`, cf. 588d9e73
+   "one instantiation key for typedef'd anonymous-aggregate args").
+   That likely also fixes defect P's family. Do NOT key on names
+   (enum-over-strings); desugar at the dd level.
 3. Defect P separately: the consumer module must emit (or desugar away)
    the `int32_t` typedef its thawed-pattern instantiations spell.
 
