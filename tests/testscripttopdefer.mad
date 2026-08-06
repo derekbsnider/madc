@@ -1,0 +1,7 @@
+// #16 gate: top-level `defer` joins the synthesized script-mode main —
+// deferred statements run LIFO at the end of the synthesized main.
+// Regression was the loud reject "'defer' must be inside a function or
+// block" (which standards modes and include-origin files keep).
+defer __builtin_printf("cleanup-1\n");
+defer __builtin_printf("cleanup-2\n");
+__builtin_printf("body\n");

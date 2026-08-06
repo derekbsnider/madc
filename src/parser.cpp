@@ -45129,7 +45129,10 @@ TokenBase *TokenDEFER::parse(Program &pgm)
 {
     DBG(std::cout << "TokenDEFER::parse()" << std::endl);
 
-    TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+    // File-scope in script mode: the defer registers on the synthesized
+    // main's compound (script_statement_scope) — scope exit is the end of
+    // the synthesized main. Standards modes keep the loud reject.
+    TokenCpnd *code = pgm.script_statement_scope(this);
     if ( !code )
 	pgm.Throw(this) << "'defer' must be inside a function or block" << flush;
 
