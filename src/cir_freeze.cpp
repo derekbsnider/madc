@@ -2367,8 +2367,22 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		uint32_t      func_id;
 		std::string   disp;
 		uint32_t      mflags;
+		uint32_t      rec_index;	// methodrec position — order parity
 	};
 	std::vector<PendingMethodImport> pending_method_imports;
+	// Live ORDER parity for using-decl imports: `using _Base_type::construct;`
+	// precedes the class's OWN same-name overloads in the header, so live's
+	// methods vector and first-wins method_map slot hold the IMPORT first.
+	// The restore stages imports for a post-pass (the definer may build
+	// later), which appended them AFTER the own overloads — resolution then
+	// tried the own overload first (LOADED != PARSED; the __alloc_traits
+	// custom-pointer construct shadowing the imported allocator_traits one —
+	// the v0.68 release-lane undefined `__alloc_traits...__construct`).
+	// Track each restored method's methodrec index so the post-pass can
+	// re-insert the import at its recorded position.
+	std::map<DataDefCLASS *, std::vector<uint32_t> > method_rec_indices;
+	std::map<std::pair<DataDefCLASS *, std::string>, uint32_t>
+		method_disp_first_rec;
 
 	// Pass 2: fill each aggregate VERBATIM (offsets / counts / access /
 	// origin / bitfields as stored, no finalize, no re-derivation) — then
@@ -2566,10 +2580,11 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					    && strncmp(mnm0, (cdd->name + "__").c_str(),
 						       cdd->name.size() + 2) != 0) {
 						PendingMethodImport pi;
-						pi.cdd     = cdd;
-						pi.func_id = md.func_id;
-						pi.disp    = dispkey ? dispkey : "";
-						pi.mflags  = md.flags;
+						pi.cdd       = cdd;
+						pi.func_id   = md.func_id;
+						pi.disp      = dispkey ? dispkey : "";
+						pi.mflags    = md.flags;
+						pi.rec_index = mi;
 						pending_method_imports.push_back(pi);
 						continue;
 					}
@@ -2769,7 +2784,13 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				}
 				_mat_vars.push_back(mv);
 				cdd->methods.push_back(mv);
+				method_rec_indices[cdd].push_back(mi);
 				method_by_func_id[md.func_id] = mv;
+				if (!dispname.empty()
+				    && cdd->method_map.find(dispname)
+				       == cdd->method_map.end())
+					method_disp_first_rec[std::make_pair(
+						cdd, dispname)] = mi;
 				if (!dispname.empty())
 					cdd->method_map[dispname] = mv;
 				if (is_ctor)
@@ -2875,11 +2896,38 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		bool present = false;
 		for (size_t j = 0; j < pi.cdd->methods.size(); ++j)
 			if (pi.cdd->methods[j] == mv) { present = true; break; }
-		if (!present)
-			pi.cdd->methods.push_back(mv);
-		if (!pi.disp.empty()
-		    && pi.cdd->method_map.find(pi.disp) == pi.cdd->method_map.end())
-			pi.cdd->method_map[pi.disp] = mv;
+		if (!present) {
+			// Order parity: insert at the import's methodrec position
+			// among this class's restored methods, exactly where the
+			// live class-body parse placed it (using-decl first).
+			std::vector<uint32_t> &recs = method_rec_indices[pi.cdd];
+			size_t pos = 0;
+			while (pos < recs.size() && recs[pos] < pi.rec_index)
+				++pos;
+			if (pos > pi.cdd->methods.size())
+				pos = pi.cdd->methods.size();
+			pi.cdd->methods.insert(pi.cdd->methods.begin() + pos, mv);
+			recs.insert(recs.begin() + pos, pi.rec_index);
+		}
+		if (!pi.disp.empty()) {
+			std::map<std::pair<DataDefCLASS *, std::string>,
+				 uint32_t>::iterator fr =
+				method_disp_first_rec.find(
+					std::make_pair(pi.cdd, pi.disp));
+			// First-wins parity: the import owns the method_map slot
+			// when its methodrec precedes every own claimant's (live:
+			// the using-decl came first in the class body).
+			if (pi.cdd->method_map.find(pi.disp)
+			    == pi.cdd->method_map.end()
+			    || (fr != method_disp_first_rec.end()
+				&& pi.rec_index < fr->second)
+			    || fr == method_disp_first_rec.end())
+				pi.cdd->method_map[pi.disp] = mv;
+			if (fr == method_disp_first_rec.end()
+			    || pi.rec_index < fr->second)
+				method_disp_first_rec[std::make_pair(
+					pi.cdd, pi.disp)] = pi.rec_index;
+		}
 		if (pi.mflags & madc::dis::MF_CTOR)
 			pi.cdd->ctors.push_back(mv);
 	}
