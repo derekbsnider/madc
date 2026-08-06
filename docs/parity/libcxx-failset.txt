@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  022cbb3b (2026-08-06) on feature/libcxx-parity7-claude
-# Result:       963 passed / 3 failed / 0 timed out / 13 skipped
+# Measured at:  4e1a4004 (2026-08-06) on feature/libcxx-parity7-claude
+# Result:       966 passed / 2 failed / 0 timed out / 13 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -760,6 +760,24 @@
 #                         (tmp/r58b.mad) — parse-once dependent-member-type
 #                         KIND slice; concrete-args-only gate keeps it at
 #                         pre-session behavior. fulltest 968/0.
+#   4e1a4004  966 /   2   🏁 testsysobject FLIPPED; +2 are the new gates
+#                         (testfriendnonmember, testfreeoptemplate). TWO
+#                         fixes: (19) a class-body FRIEND template never
+#                         registers as a MEMBER ([class.friend]) — libc++
+#                         string:1762's template-head hidden friend spelled
+#                         `bool friend operator==` planted a bogus member
+#                         operator== returning basic_string; every
+#                         `string == "lit"` typed as basic_string and
+#                         `cout << (v == MADC_VERSION)` bound the string
+#                         inserter over a bool rvalue (:17:37 "lvalue
+#                         required as unary & operand"). The member-template
+#                         arm's existing friend scan now gates registration.
+#                         (20) GLOBAL-scope free operator templates bind
+#                         (found by the gate test): the retained-body key
+#                         walk dropped the exact "::operatorX" key (`<=` vs
+#                         the sibling walk's `<`), and a plain C struct
+#                         operand never engaged the lowering at all
+#                         (engage gate widened via operand_value_datadef +
+#                         DataDefSTRUCT). fulltest 970/0.
 testfreezerun.mad
-testsysobject.mad
 testtuple.mad

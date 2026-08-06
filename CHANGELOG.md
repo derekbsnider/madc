@@ -5,9 +5,33 @@
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 963/3**: new gates plus the old-failure flips, with zero
+moved **891/28 → 966/2**: new gates plus the old-failure flips, with zero
 newly broken tests in every measured two-way failset diff. Fulltest is
-**968/0/0TO/9skip**.
+**970/0/0TO/9skip**.
+
+- **fix: `testsysobject` flips under `-stdlib=libc++` — a class-body friend
+  never registers as a member, and global free operator templates bind
+  (@4c71afe9, @4e1a4004).** libc++ `<string>` declares a template-head
+  hidden friend with the specifier after the return type (`inline bool
+  friend operator==(...)`, string:1762); the class-body member-template arm
+  granted friendship but ALSO registered the declarator as a member of
+  `basic_string` — a bogus `method_map["operator=="]` whose placeholder
+  return type resolved to basic_string, so every `string == "lit"` typed
+  as basic_string and `cout << (v == MADC_VERSION)` deduced the string
+  inserter over a bool rvalue ("lvalue required as unary & operand",
+  testsysobject:17:37). A friend never declares a member ([class.friend]);
+  the arm's existing friend scan now gates member registration (gate
+  `testfriendnonmember`, exercised in both flavors). The gate test itself
+  exposed a second defect (fix-what-you-find): a free operator template at
+  GLOBAL scope never bound — `instantiate_free_operator_template`'s
+  key-suffix walk rejected the global scope's exact `"::operatorX"` key
+  (`<=` where the sibling walk in `find_free_operator_function` uses `<`),
+  and a plain C struct operand (not class-promoted) never engaged
+  `lower_free_operator_to_call` at all (engage gate widened through the
+  existing `operand_value_datadef` owner + `DataDefSTRUCT`, which
+  DataDefCLASS derives from). Gate `testfreeoptemplate` covers the plain
+  struct and promoted-class lanes against g++/clang++ oracles. Lane
+  963/3 → **966/2** (remaining: testfreezerun, testtuple).
 
 - **fix: `testmathheader` flips under `-stdlib=libc++` — qualified
   member-type casts and static-overload ranking (@74d0e472, @022cbb3b).**

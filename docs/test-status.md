@@ -1,6 +1,19 @@
 # Test Status
 
-> **Current (2026-08-06, `feature/libcxx-parity7-claude` @022cbb3b —
+> **Current (2026-08-06, `feature/libcxx-parity7-claude` @4e1a4004 —
+> testsysobject FLIPPED):** fulltest **970/0**; lane **966/2/13skip**
+> (+2 gates: testfriendnonmember, testfreeoptemplate). Two fixes: a
+> class-body FRIEND template never registers as a MEMBER ([class.friend] —
+> libc++ string:1762's `bool friend operator==` poisoned
+> `method_map["operator=="]` with a basic_string return, so
+> `string == "lit"` typed as basic_string and `cout <<` bound the string
+> inserter over a bool rvalue), and GLOBAL-scope free operator templates
+> bind (retained-body key walk dropped the exact `"::operatorX"` key,
+> `<=` vs the sibling walk's `<`; plain C struct operands now engage the
+> lowering via operand_value_datadef + DataDefSTRUCT). Remaining 2:
+> testfreezerun, testtuple.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @022cbb3b —
 > testmathheader FLIPPED):** fulltest **968/0**; lane **963/3/13skip**
 > (+2 gates: testcastmembertype, teststaticoverload). Two fixes:
 > qualified member-TYPE casts (`(typename __promote<T>::type)x` — the
