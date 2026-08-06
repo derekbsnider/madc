@@ -1094,6 +1094,12 @@ struct CirRestoredNsBind
 	const char *ns;			// the importing namespace
 	const char *name;		// the visible name
 	const char *key;		// the imported fn's funcdef_map key
+	// True = the import is a MEMBER of ns::name's overload set on the
+	// live side ([namespace.udecl] join; DF_NSBIND_OVERLOAD_MEMBER) —
+	// the flush joins it back so a bound consumer ranks the SAME set
+	// the freezing parse ranked. Plain map rebinds (inline-ns mirror
+	// redundancy) stay bind-only: the live mirror grows no sets.
+	bool ov_member;
 };
 
 // A restored file-scope FREE-FUNCTION declaration (RC2): the reconstructed

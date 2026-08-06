@@ -2931,6 +2931,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			b.ns   = r.ns_id ? a.c_str(r.ns_id) : NULL;
 			b.name = r.name_id ? a.c_str(r.name_id) : NULL;
 			b.key  = r.disp_id ? a.c_str(r.disp_id) : NULL;
+			b.ov_member =
+				(r.flags & madc::dis::DF_NSBIND_OVERLOAD_MEMBER) != 0;
 			if (b.ns && *b.ns && b.name && *b.name && b.key && *b.key)
 				_restored_nsbinds.push_back(b);
 		} else if (r.kind == madc::dis::DK_DEFBODY) {

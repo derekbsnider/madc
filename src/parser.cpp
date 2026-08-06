@@ -21676,6 +21676,31 @@ void Program::flush_forest_pending_globals()
 		DBG(std::cout << "flush_forest_pending_globals: ns import "
 		    << b.ns << "::" << b.name << " -> " << b.key << std::endl);
 	    }
+	    // [namespace.udecl] twin of the live using-arm (TokenUSING::parse):
+	    // a FLAGGED record's import ALSO joins the target's overload set —
+	    // the SAME two registrations a declaration written in that
+	    // namespace gets, join unconditional even when the map binding
+	    // already exists. Without it a bound consumer ranks against a
+	    // SMALLER set than the freezing parse and mints a DIFFERENT
+	    // instantiation identity (LOADED == parsed violation;
+	    // stl_vector.h:428 "conversion of non-scalar value requested" in
+	    // the release pack's verify). Bind-only records (the inline-ns
+	    // mirror's redundant entries) must NOT join: the live mirror
+	    // grows no sets.
+	    if ( !b.ov_member )
+		continue;
+	    std::vector<NamespaceFnOverload> &ovset =
+		namespace_fn_overload_sets[std::string(b.ns) + "::" + b.name];
+	    bool known = false;
+	    for ( size_t oi = 0; oi < ovset.size(); ++oi )
+		if ( ovset[oi].var == v )
+		    known = true;
+	    if ( !known )
+	    {
+		NamespaceFnOverload e;
+		e.var = v;
+		ovset.push_back(e);
+	    }
 	}
 	// Inline-namespace links: restore inline_namespace_children VERBATIM,
 	// then RE-RUN the one live derivation (mirror_inline_namespace_into_

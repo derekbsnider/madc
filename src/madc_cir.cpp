@@ -4220,20 +4220,62 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 	}
 
 	// 5 (v25): USING-DECLARATION function imports — `namespace std {
-	// using ::abort; }` binds namespace_map["std"]["abort"] to the GLOBAL
-	// fn's Variable; that binding is the only record of the import. Reverse-
-	// walk namespace_map for fn entries that are NOT the defining
-	// registration (ns == namespace_name && name == display — the flush
-	// already reproduces those) and record (ns, name, funcdef key); a
-	// mirrored inline-ns entry records redundantly and rebinds the same
-	// Variable first-wins at flush (harmless). A TU-root target's record is
-	// fenced at restore, so its bind cleanly lacks.
+	// using ::abort; }` registers TWO surfaces ([namespace.udecl]): the
+	// namespace_map[ns][name] binding (first-wins) AND membership in
+	// ns::name's overload set. Both must round-trip: a bound consumer
+	// ranking a SMALLER set than the freezing parse resolves a different
+	// winner and mints a DIFFERENT instantiation identity (LOADED==parsed
+	// violation — the release pack's stl_vector.h:428 verify failure).
+	// 5a walks the overload sets for cross-home members (the using-arm is
+	// the only writer of those) and records them FLAGGED; 5b reverse-walks
+	// namespace_map for any remaining fn binding (an import that WON the
+	// map slot is already covered by 5a; a mirrored inline-ns entry
+	// records bind-only and rebinds the same Variable first-wins at flush
+	// — the live mirror grows no sets, so its record must not either). A
+	// TU-root target's record is fenced at restore, so its bind cleanly
+	// lacks.
 	{
 		std::map<FuncDef *, std::string> fd_keys;
 		for (funcdef_map_iter fit = prog->funcdef_map.begin();
 		     fit != prog->funcdef_map.end(); ++fit)
 			if (fit->second)
 				fd_keys[fit->second] = fit->first;
+		std::set<std::string> recorded;	// ns \x01 name \x01 key
+		// 5a: overload-set MEMBERSHIP (flagged records).
+		for (const auto &osi : prog->namespace_fn_overload_sets) {
+			size_t sep = osi.first.rfind("::");
+			if (sep == std::string::npos || sep == 0)
+				continue;	// global-scope key ("::name"): no ns to rebind
+			std::string ns   = osi.first.substr(0, sep);
+			std::string name = osi.first.substr(sep + 2);
+			for (size_t ei = 0; ei < osi.second.size(); ++ei) {
+				const Program::NamespaceFnOverload &e = osi.second[ei];
+				if (!e.var || !e.var->type
+				    || (!e.param_spelling.empty()
+					&& e.param_spelling[0] == '\x01'))
+					continue;	// the fn-template placeholder seed
+				FuncDef *fd = dynamic_cast<FuncDef *>(e.var->type);
+				if (!fd)
+					continue;
+				if (fd->namespace_name == ns
+				    && fd->function_display_name == name)
+					continue;	// home registration: funcs-flush reproduces it
+				std::map<FuncDef *, std::string>::const_iterator
+					ki = fd_keys.find(fd);
+				if (ki == fd_keys.end())
+					continue;
+				recorded.insert(ns + "\x01" + name + "\x01" + ki->second);
+				madc::dis::defrec r;
+				memset(&r, 0, sizeof(r));
+				r.kind    = madc::dis::DK_NSBIND;
+				r.flags   = madc::dis::DF_NSBIND_OVERLOAD_MEMBER;
+				r.ns_id   = a.strings.intern(ns.c_str());
+				r.name_id = a.strings.intern(name.c_str());
+				r.disp_id = a.strings.intern(ki->second.c_str());
+				a.set_def_at(next++, r);
+			}
+		}
+		// 5b: remaining map bindings (bind-only records).
 		for (namespace_map_t::iterator ni = prog->namespace_map.begin();
 		     ni != prog->namespace_map.end(); ++ni) {
 			if (ni->first.empty())
@@ -4253,6 +4295,9 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 					ki = fd_keys.find(fd);
 				if (ki == fd_keys.end())
 					continue;
+				if (recorded.count(ni->first + "\x01" + vi->first
+						   + "\x01" + ki->second))
+					continue;	// 5a already carries bind + join
 				madc::dis::defrec r;
 				memset(&r, 0, sizeof(r));
 				r.kind    = madc::dis::DK_NSBIND;
