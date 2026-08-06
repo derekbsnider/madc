@@ -36506,8 +36506,39 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    {
 		pgm.pack_tap_name(pgm.current_namespace() + "::" + name,
 				  Program::pdkVariable);	// B4a tap
-		pgm.namespace_variables_for_write(
-		    pgm.current_namespace())[name] = use_var;
+		variable_map_t &dst_map = pgm.namespace_variables_for_write(
+		    pgm.current_namespace());
+		FuncDef *use_fd = use_var->type
+		    ? dynamic_cast<FuncDef *>(use_var->type) : NULL;
+		if ( use_fd )
+		{
+		    // [namespace.udecl]: an imported FUNCTION becomes a member
+		    // of the target namespace's OVERLOAD SET — the same two
+		    // registrations a declaration written in this namespace
+		    // gets. It must NOT clobber an existing name binding: the
+		    // map entry is first-wins (the fn-template placeholder is
+		    // the qualified-call resolution chokepoint; libstdc++'s
+		    // `using __exception_ptr::swap;` overwrote it and every
+		    // `std::swap(a, b)` bound the exception_ptr overload —
+		    // 'no matching constructor for exception_ptr(int32_t)').
+		    if ( dst_map.find(name) == dst_map.end() )
+			dst_map[name] = use_var;
+		    std::vector<Program::NamespaceFnOverload> &ovset =
+			pgm.namespace_fn_overload_sets[
+			    pgm.current_namespace() + "::" + name];
+		    bool known = false;
+		    for ( size_t oi = 0; oi < ovset.size(); ++oi )
+			if ( ovset[oi].var == use_var )
+			    known = true;
+		    if ( !known )
+		    {
+			Program::NamespaceFnOverload e;
+			e.var = use_var;
+			ovset.push_back(e);
+		    }
+		}
+		else
+		    dst_map[name] = use_var;
 	    }
 	    if ( have_type )
 	    {
