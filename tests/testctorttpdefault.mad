@@ -1,0 +1,38 @@
+// A member ctor template whose TEMPLATE-TEMPLATE parameter is defaulted to a
+// DIFFERENT named template ([temp.param]p11 — the default IS a template) must
+// instantiate: libc++'s tuple() spells exactly this
+// (`template <template<class...> class _IsDefault = is_default_constructible,
+//   __enable_if_t<_And<_IsDefault<_Tp>...>::value, int> = 0>`), plus C++20
+// conditional explicit(...) and a pack-expanded noexcept clause. The TTP
+// default captured as a non-type param whose default could never fold as a
+// value, so the instantiation bailed and the construction emitted a call to
+// the never-defined placeholder symbol (undefined MIR import
+// tuple_int32_t__tuple_int32_t — the testtuple #110 wall's final layer).
+#include <cstdio>
+
+template <bool B, class T = void> struct en_if {};
+template <class T> struct en_if<true, T> { typedef T type; };
+template <bool B, class T = void> using en_if_t = typename en_if<B, T>::type;
+template <class... T> struct AndT { static const bool value = true; };
+template <class T> struct NotT { static const bool value = false; };
+template <class T> struct isdef { static const bool value = true; };
+template <class T> struct isimp { static const bool value = true; };
+
+template <class... Tp>
+struct tup
+{
+	int x;
+	template <template <class...> class IsImp = isimp,
+	          template <class...> class IsDef = isdef,
+	          en_if_t<AndT<IsDef<Tp>...>::value, int> = 0>
+	explicit(NotT<AndT<IsImp<Tp>...> >::value) tup()
+	    noexcept(AndT<isdef<Tp>...>::value) : x(42) {}
+};
+
+int main()
+{
+	tup<int> a;
+	tup<int, long> b;
+	printf("%d %d\n", a.x, b.x);
+	return 0;
+}

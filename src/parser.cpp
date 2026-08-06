@@ -49987,6 +49987,39 @@ static std::vector<TokenBase *> tsubst_elide_empty_pack_expansions(
     return ej;
 }
 
+// Clone a token run substituting TEMPLATE-TEMPLATE parameter names with their
+// bound template names — the fn-template twin of the class-partial-spec
+// lane's tmpl_ded -> token_subst routing (match_partial_specialization's
+// consumer). A TTP binds to a TEMPLATE NAME, not a type, so its occurrences
+// (`_IsDefault<_Tp>` in a head constraint) rewrite to the bound name and
+// re-resolve as a template-id. Caller frees the returned clones.
+static std::vector<TokenBase *> clone_run_with_template_names(
+	const std::vector<TokenBase *> &toks,
+	const std::map<std::string, std::string> &tmpl_names)
+{
+    std::vector<TokenBase *> out;
+    out.reserve(toks.size());
+    for ( TokenBase *t : toks )
+    {
+	if ( t && t->type() == TokenType::ttIdentifier )
+	{
+	    std::map<std::string, std::string>::const_iterator mi =
+		tmpl_names.find(((TokenIdent *)t)->spelling());
+	    if ( mi != tmpl_names.end() )
+	    {
+		TokenBase *rn = new TokenIdent(mi->second.c_str());
+		rn->file = t->file;
+		rn->line = t->line;
+		rn->column = t->column;
+		out.push_back(rn);
+		continue;
+	    }
+	}
+	out.push_back(t ? t->clone() : NULL);
+    }
+    return out;
+}
+
 static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft_in, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
@@ -50089,6 +50122,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
     // import (e.g. __make_move_if_noexcept_iterator's iterator return).
     // A trait-expression default (`__conditional_t<...>`) has no resolvable
     // single base token -> still bails (the layer-(b) follow-on).
+    // TEMPLATE-TEMPLATE parameter bindings: param name -> bound template NAME
+    // (never a type). Applied to constraint/default resolution and the body
+    // substitution loops below (the class lane's tmpl_ded precedent).
+    std::map<std::string, std::string> tmpl_name_subst;
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
     {
 	if ( binding.count(ft.typeparams[i]) )
@@ -50148,6 +50185,34 @@ static bool instantiate_fn_template_binding(Program &pgm,
 				key.c_str(), ft.typeparams[i].c_str());
 		    continue;
 		}
+		// A TEMPLATE-TEMPLATE parameter defaulted to a DIFFERENT named
+		// template (`template<class...> class _IsDefault =
+		// is_default_constructible` — libc++ tuple's ctor idiom,
+		// [temp.param]p11: the default IS the template). It captures
+		// as a non-type param and can never fold as a value; bind it
+		// as a NAME substitution so its occurrences (`_IsDefault<_Tp>`
+		// in the head constraint) rewrite to the real template and
+		// resolve. The default names its neighbor unqualified in the
+		// DEFINING namespace, same rule as the constraint block below.
+		if ( ft.typeparam_defaults[i].size() == 1
+		  && ft.typeparam_defaults[i][0] )
+		{
+		    const std::string dn = contextual_identifier_name(
+			ft.typeparam_defaults[i][0]);
+		    const uint32_t dn_id = dn.empty()
+			? 0 : pgm.template_name_pool.intern(dn);
+		    if ( !dn.empty()
+		      && (pgm.find_template(dn_id, ft.ns, NULL)
+		       || pgm.find_template_alias(dn_id, ft.ns, NULL)) )
+		    {
+			if ( mtb_on )
+			    fprintf(stderr, "MTBPROBE fill %s tpl-tpl %s = %s\n",
+				    key.c_str(), ft.typeparams[i].c_str(),
+				    dn.c_str());
+			tmpl_name_subst[ft.typeparams[i]] = dn;
+			continue;
+		    }
+		}
 		if ( mtb_on )
 		    fprintf(stderr, "MTBPROBE FAIL %s nontype %s: default"
 			    " does not fold\n",
@@ -50195,15 +50260,28 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    // unqualified (`__enable_if_t` in std::__1). Empty-ns callers keep the
 	    // ambient context they always had.
 	    DataDef *rd = NULL;
-	    if ( !ft.ns.empty() )
 	    {
-		Program::NamespaceScope ns_scope(pgm, ft.ns);
-		rd = pgm.resolve_template_param_default_type(
-			ft.typeparam_defaults[i], binding, ft.owner_class);
+		// A default naming a bound TEMPLATE-TEMPLATE param rewrites to
+		// the bound template name first (same map the body loops use).
+		std::vector<TokenBase *> mapped;
+		const std::vector<TokenBase *> *dt = &ft.typeparam_defaults[i];
+		if ( !tmpl_name_subst.empty() )
+		{
+		    mapped = clone_run_with_template_names(*dt, tmpl_name_subst);
+		    dt = &mapped;
+		}
+		if ( !ft.ns.empty() )
+		{
+		    Program::NamespaceScope ns_scope(pgm, ft.ns);
+		    rd = pgm.resolve_template_param_default_type(
+			    *dt, binding, ft.owner_class);
+		}
+		else
+		    rd = pgm.resolve_template_param_default_type(
+			    *dt, binding, ft.owner_class);
+		for ( TokenBase *mt2 : mapped )
+		    delete mt2;
 	    }
-	    else
-		rd = pgm.resolve_template_param_default_type(
-			ft.typeparam_defaults[i], binding, ft.owner_class);
 	    if ( rd )
 	    { binding[ft.typeparams[i]] = rd; continue; }
 	}
@@ -50233,9 +50311,22 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	{
 	    if ( ft.typeparam_constraints[i].empty() )
 		continue;
-	    if ( !pgm.resolve_template_param_default_type(
-		    ft.typeparam_constraints[i], binding, ft.owner_class,
-		    /*require_full_parse=*/true) )
+	    // A constraint naming a bound TEMPLATE-TEMPLATE param
+	    // (`_And<_IsDefault<_Tp>...>` — libc++ tuple's ctor head)
+	    // rewrites to the bound template name before resolving.
+	    std::vector<TokenBase *> mapped;
+	    const std::vector<TokenBase *> *ct = &ft.typeparam_constraints[i];
+	    if ( !tmpl_name_subst.empty() )
+	    {
+		mapped = clone_run_with_template_names(*ct, tmpl_name_subst);
+		ct = &mapped;
+	    }
+	    DataDef *crd = pgm.resolve_template_param_default_type(
+		    *ct, binding, ft.owner_class,
+		    /*require_full_parse=*/true);
+	    for ( TokenBase *mt2 : mapped )
+		delete mt2;
+	    if ( !crd )
 	    {
 		if ( mtb_on )
 		    fprintf(stderr, "MTBPROBE FAIL %s constraint[%zu] %s:"
@@ -50255,7 +50346,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 			   + "<";
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
 	inst_key += (binding.count(ft.typeparams[i])
-		     ? binding[ft.typeparams[i]]->name : std::string()) + ",";
+		     ? binding[ft.typeparams[i]]->name
+		     : tmpl_name_subst.count(ft.typeparams[i])
+		       ? tmpl_name_subst[ft.typeparams[i]] : std::string()) + ",";
     // A multi-element pack contributes no `binding[pack_param]` entry, so fold its
     // element types into the key — distinct packs (`<int,int>` vs `<int,char>`)
     // must NOT collide on the same instantiation.
@@ -50564,6 +50657,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		std::map<std::string, int64_t>::iterator nsi = nontype_subst.find(idname);
 		if ( nsi != nontype_subst.end() )
 		{ inj.push_back(new TokenInt(nsi->second)); continue; }
+		std::map<std::string, std::string>::iterator tni =
+		    tmpl_name_subst.find(idname);
+		if ( tni != tmpl_name_subst.end() )
+		{ inj.push_back(new TokenIdent(tni->second.c_str())); continue; }
 		std::map<std::string, TokenDataType *>::iterator si = subst.find(idname);
 		if ( si != subst.end() && idname != pack_param )
 		{ inj.push_back(si->second->clone()); continue; }
@@ -50769,6 +50866,12 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		nontype_subst.find(idname);
 	    if ( nsi != nontype_subst.end() )
 	    { inj.push_back(new TokenInt(nsi->second)); continue; }
+	    {
+		std::map<std::string, std::string>::iterator tni =
+		    tmpl_name_subst.find(idname);
+		if ( tni != tmpl_name_subst.end() )
+		{ inj.push_back(new TokenIdent(tni->second.c_str())); continue; }
+	    }
 	    std::map<std::string, TokenDataType *>::iterator si =
 		subst.find(idname);
 	    if ( si != subst.end() )
