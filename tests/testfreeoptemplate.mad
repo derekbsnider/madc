@@ -1,0 +1,35 @@
+// Gate: a user-written free operator TEMPLATE at GLOBAL scope binds like one
+// in a named namespace. Two regressions covered:
+//  1. instantiate_free_operator_template's key-suffix walk dropped the global
+//     scope's exact "::operatorX" key (`<=` vs `<`) — the template was
+//     retained but never enumerated ("invalid types of comparison operands").
+//  2. A plain C struct operand (not class-promoted) never engaged the
+//     free-operator lowering at all — operand_object_class is class-only.
+// cls (object member) gates the class-promoted lane; box gates the plain
+// struct lane; U deduces from the scalar rhs in both.
+#include <iostream>
+#include <string>
+using namespace std;
+
+struct box { int v; };
+
+struct cls { int v; string tag; };
+
+template <class U>
+inline bool operator==(const box &a, U b) { return a.v == (int)b; }
+
+template <class U>
+inline bool operator==(const cls &a, U b) { return a.v == (int)b; }
+
+int main()
+{
+	box p;
+	p.v = 7;
+	cout << (p == 7) << endl;
+	cout << (p == 8) << endl;
+	cls c;
+	c.v = 5;
+	cout << (c == 5) << endl;
+	cout << (c == 6L) << endl;
+	return 0;
+}

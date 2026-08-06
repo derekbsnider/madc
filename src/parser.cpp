@@ -16613,7 +16613,14 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
 	return NULL;
     DataDefCLASS *lc = operand_object_class(to->left);
     DataDefCLASS *rc = operand_object_class(to->right);
-    if ( !lc && !rc )
+    // A plain C struct (not class-promoted, so operand_object_class is NULL)
+    // is still a valid operand of a user-written free operator template
+    // ([over.match.oper] — `box == 7`). Engage the free/retained lanes below;
+    // the member arms stay lc-gated and no-op for it. DataDefCLASS derives
+    // from DataDefSTRUCT, so this only widens, never re-routes, class operands.
+    if ( !lc && !rc
+      && !dynamic_cast<DataDefSTRUCT *>(operand_value_datadef(to->left))
+      && !dynamic_cast<DataDefSTRUCT *>(operand_value_datadef(to->right)) )
 	return NULL;
     std::string opname = std::string("operator") + opsym;
     // Env-gated probe (MADC_FREEOP_PROBE=<opname substring>): which arm of this
@@ -51551,7 +51558,10 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
     fn_template_map.for_each(
 	[&]( const char *key_c, std::vector<FnTemplateDef> &vec ) -> bool {
 	    std::string key(key_c);
-	    if ( key.size() <= suffix.size()
+	    // `<`, not `<=`: the GLOBAL scope's key is exactly "::" + opname
+	    // (empty namespace) — the same suffix walk find_free_operator_function
+	    // uses. `<=` silently dropped every global-namespace operator template.
+	    if ( key.size() < suffix.size()
 	      || key.compare(key.size() - suffix.size(), suffix.size(), suffix) )
 		return false;
 	    if ( _fop_on )
