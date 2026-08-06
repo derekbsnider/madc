@@ -2498,6 +2498,15 @@ bool Program::typedef_alias_matches_datadef(const std::string &alias, DataDef *d
 {
     if ( alias.empty() || !dd || !user_typedef_names.count(alias) )
 	return false;
+    // A spelling that IS the dd's own name is the NAME, not an alias. A thawed
+    // token rebuilt from a restored dd spells its name ("int32_t" for the
+    // canonical ddINT32), and the restored typedef registry contains it —
+    // recording it as a param/cast typedef made the emitter render
+    // `int32_t *__p` in a module that never emits that typedef (c2mir
+    // "unknown type int32_t"). Live never records these: its tokens spell the
+    // keyword ("int"). Rendering from the DataDef is always equivalent.
+    if ( alias == dd->name )
+	return false;
     if ( resolve_named_datadef(alias) == dd )
 	return true;
 
