@@ -8997,12 +8997,31 @@ node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 	// forest iobind gate fail on "incompatible types of ... declarations".
 	// dlsym is the same probe the MIR import resolver uses, so a recorded
 	// extern here always resolves at link.
+	// Env-gated probe (MADC_XTEST_FACET=<substr>): the per-member record
+	// decision for a matching emitted class — separates "class never
+	// emitted / no statics" from "Variable lookup failed" from "alias or
+	// dlsym declined" when an alias-bound static goes undeclared.
+	static const char *facet_probe = ::getenv("MADC_XTEST_FACET");
+	if (facet_probe && *facet_probe
+	    && cdd->name.find(facet_probe) != std::string::npos)
+		fprintf(stderr, "[FACET] class=%s prog=%d nstatics=%zu\n",
+			cdd->name.c_str(), m_prog ? 1 : 0,
+			cdd->static_member_types.size());
 	if (m_prog)
 		for (std::map<std::string, DataDef *>::const_iterator smi =
 			     cdd->static_member_types.begin();
 		     smi != cdd->static_member_types.end(); ++smi) {
 			Variable *sv = m_prog->findVariable(
 				cdd->name + "__" + smi->first);  // allowed-exception: lookup key, not symbol build
+			if (facet_probe && *facet_probe
+			    && cdd->name.find(facet_probe) != std::string::npos)
+				fprintf(stderr, "[FACET]   member=%s sv=%d flags=%x alias=%s avail=%d\n",
+					smi->first.c_str(), sv ? 1 : 0,
+					sv ? sv->flags : 0,
+					sv ? sv->storage_alias_name.c_str() : "",
+					(sv && !sv->storage_alias_name.empty())
+					    ? (int)external_symbol_available(sv->storage_alias_name)
+					    : -1);
 			if (sv && (sv->flags & vfEXTERN)
 			    && !sv->storage_alias_name.empty()
 			    && external_symbol_available(sv->storage_alias_name))

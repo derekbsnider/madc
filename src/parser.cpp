@@ -38675,15 +38675,43 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 {
     if ( !ddc || !mvar )
 	return;
+    // MADC_BIND_PROBE also reports DECLINES: "no bind event" alone cannot
+    // separate "never called" from "early-out fired" (task #62's frozen
+    // sentry hunt).
+    static const char *bind_probe = ::getenv("MADC_BIND_PROBE");
+    bool probe_this = bind_probe && *bind_probe
+	&& ddc->name.find(bind_probe) != std::string::npos;
     FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
     if ( !fd || !fd->declaration_only || ddc->canonical_cpp_spelling().empty() )
+    {
+	if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: %s\n", ddc->name.c_str(),
+		    mname.c_str(),
+		    !fd ? "no-fd" : !fd->declaration_only
+			? "not-declaration-only" : "no-canonical-spelling");
 	return;
+    }
     if ( fd->defaulted_or_deleted )
+    {
+	if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: defaulted-or-deleted\n",
+		    ddc->name.c_str(), mname.c_str());
 	return;
+    }
     if ( fd->pure_virtual )
+    {
+	if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: pure-virtual\n",
+		    ddc->name.c_str(), mname.c_str());
 	return;
+    }
     if ( !fd->emit_symbol.empty() )
+    {
+	if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: already-bound %s\n",
+		    ddc->name.c_str(), mname.c_str(), fd->emit_symbol.c_str());
 	return;
+    }
     // A member madc will INSTANTIATE from a captured out-of-line definition
     // (`Class<T>::member(...) {...}` in the header — e.g. _Rb_tree::_M_lower_bound,
     // defined out-of-line in stl_tree.h) must NOT bind to the external Itanium
@@ -38694,7 +38722,16 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
     // for a class madc instantiates itself — a genuinely library-provided class
     // (extern-template-declared, or vtable-owned externally-defined) keeps the
     // Itanium binding so it links against libstdc++.
-    if ( !ddc->is_extern_template_instantiated && !ddc->is_externally_defined() )
+    // The map's domain is DIRECT members of a registered class TEMPLATE (the
+    // producer requires find_template(cls)); a NESTED class's members are never
+    // recorded there, and deriving the ctor/dtor probe name from tmpl_key made a
+    // nested class's ctor match its OWNER's out-of-line ctor entry
+    // (basic_ostream<...>::sentry's ctor vs basic_ostream's own — the frozen
+    // libc++ sentry trap), suppressing an Itanium bind the library genuinely
+    // exports ([temp.explicit] covers member classes). A nested class
+    // (enclosing_class set) skips the check.
+    if ( !ddc->enclosing_class
+      && !ddc->is_extern_template_instantiated && !ddc->is_externally_defined() )
     {
 	size_t lt = ddc->canonical_cpp_spelling().find('<');
 	std::string tmpl_key = lt == std::string::npos
@@ -38723,14 +38760,28 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 	    }
 	    for ( size_t oi = 0; oi < oit->second.size(); ++oi )
 		if ( oit->second[oi].member_name == want )
+		{
+		    if ( probe_this )
+			fprintf(stderr, "[bind] MISS %s::%s: ool-match key='%s'"
+				" want='%s' entries=%zu\n",
+				ddc->name.c_str(), mname.c_str(),
+				tmpl_key.c_str(), want.c_str(),
+				oit->second.size());
 		    return;   // madc-instantiated out-of-line; leave emit_symbol unset
+		}
 	}
     }
     // A signature whose spelling array is absent or misaligned (a restore or
     // serve gap) must not mangle: the fabricated name drops parameters and can
     // collide with a genuinely exported symbol (a 3-arg ctor mangling C1Ev).
     if ( fd->param_cpp_spellings.size() != fd->parameters.size() )
+    {
+	if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: spelling-misalign %zu/%zu\n",
+		    ddc->name.c_str(), mname.c_str(),
+		    fd->param_cpp_spellings.size(), fd->parameters.size());
 	return;
+    }
     // Parameter spellings, captured at parse time, excluding slot 0 only when
     // it is the hidden __this. A static method has no hidden slot, so all of its
     // parameters participate in the ABI name.
@@ -40341,6 +40392,16 @@ void Program::register_class_method_signature(DataDefCLASS *ddc, Variable *mvar,
 {
     if ( !ddc || !mvar )
 	return;
+    // MADC_BIND_PROBE also traces registration ENTRY: whether a member ever
+    // reaches this registrar, and with which bind_cpp_symbol, is the question
+    // a silent downstream "no bind event" cannot answer.
+    {
+	static const char *bp = ::getenv("MADC_BIND_PROBE");
+	if ( bp && *bp && ddc->name.find(bp) != std::string::npos )
+	    fprintf(stderr, "[reg] %s::%s kind=%d bind=%d\n",
+		    ddc->name.c_str(), spec.display_name.c_str(),
+		    (int)spec.kind, (int)spec.bind_cpp_symbol);
+    }
     FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
     if ( fd )
 	fd->method_display_name = spec.display_name;
