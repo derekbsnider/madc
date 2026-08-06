@@ -4060,6 +4060,15 @@ public:
     void finalize_script_main();
     Variable *script_param_var(const std::string &id);
     Variable *script_param_lookup(const std::string &id);
+    TokenCpnd *script_statement_scope(TokenBase *loc);
+    // Lookup-side twin of script_statement_scope: the synthesized main as
+    // the active scope WHILE a file-scope script statement parses (never
+    // creates it — creation belongs to the statement-parse sites).
+    TokenCpnd *script_lookup_scope() const
+    {
+	return parsing_script_statement && language_std == STD_MADC
+	     ? (TokenCpnd *)script_main_tf : NULL;
+    }
     bool token_is_tu_origin(TokenBase *tb) const;
 
     // #pragma pack state, GCC semantics: `pack(N)` sets the current value,

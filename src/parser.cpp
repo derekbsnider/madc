@@ -11588,6 +11588,11 @@ Variable *Program::resolve_c_identifier(TokenIdent *ident_tb, bool expression_he
 	    // shadowed by a local.
 	    TokenCpnd *code = stmt_callee_namespace.empty() && !compounds.empty()
 			    ? compounds.top() : NULL;
+	    // Script mode: a file-scope script statement's locals live on the
+	    // synthesized main — they shadow namespace members exactly like a
+	    // written main's locals (same qualifier exemption as above).
+	    if ( !code && stmt_callee_namespace.empty() )
+		code = script_lookup_scope();
 	    if ( code )
 		var = code->findVariableLocal(strpool, ident_tb->spelling());
 	    if ( !var )
@@ -22410,6 +22415,13 @@ Variable *Program::findVariable(TokenCpnd *code, const std::string &id)
     // global) without re-hashing the std::string per level (C2).
     uint32_t qsid = strpool.intern(id);
 
+    // Script mode: while a file-scope script statement is being parsed, the
+    // scope IS the synthesized main — its locals (`:=` receivers) resolve
+    // and shadow globals exactly as inside a written main. Mirrors
+    // script_param_lookup (argc/argv), which stays for the pre-main case.
+    if ( !code )
+	code = script_lookup_scope();
+
     if ( code )
     {
 	if ( (var=code->findVariable(strpool, qsid, id)) )
@@ -22450,25 +22462,10 @@ Variable *Program::findVariable(TokenCpnd *code, const std::string &id)
 
 Variable *Program::findVariable(const std::string &s)
 {
-    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
-    variable_map_iter vmi;
-    Variable *var;
-
-    if ( code /*&& code->type() != TokenType::ttProgram*/ )
-	return findVariable(code, s);
-
-    if ( !(var=tkProgram->findVariable(strpool, s)) )
-    {
-	// Script mode: see the (code, id) overload above.
-	if ( (var = script_param_lookup(s)) )
-	    return var;
-	DBG(std::cout << "Program::findVariable(" << s << ") not found" << std::endl);
-	return NULL;
-    }
-
-    DBG(std::cout << "Program::findVariable(" << s << ") found ptr: " << var << std::endl);
-
-    return var;
+    // Delegate to the (code, id) overload — ONE lookup chain (it owns the
+    // script-mode synthesized-main scope, the tkProgram probe, and the
+    // script-param fallback; a NULL code just skips the local probe).
+    return findVariable(compounds.empty() ? NULL : compounds.top(), s);
 }
 
 bool Program::is_known_namespace(const std::string &name) const
@@ -61968,7 +61965,10 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 			    << func->return_types.size() << " values, but "
 			    << ids.size() << " receivers given" << flush;
 
-		    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+		    // File-scope in script mode: the receivers bind to the
+		    // synthesized main (script_statement_scope) — main-locals,
+		    // exactly what receivers inside a written main are.
+		    TokenCpnd *code = script_statement_scope(tb);
 
 		    // Receivers are ordinary scope variables typed by the
 		    // callee's slot types (block-top declaration gives class
@@ -62005,21 +62005,28 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		DataDef *inferred = rhs->datadef();
 		if ( !inferred || inferred == &ddVOID )
 		    inferred = &ddINT64;
-		TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+		// File-scope in script mode: the receiver binds to the
+		// synthesized main (script_statement_scope) — a main-local,
+		// block-top declared by translate_block like the multi
+		// form's receivers; the statement is the bare assignment.
+		bool file_scope = compounds.empty();
+		TokenCpnd *code = script_statement_scope(tb);
 		bool alloc = (!code) ? true : false;
 		Variable *var = addVariable(code, *inferred, first_id, 1, NULL, alloc);
-		TokenDecl *td = new TokenDecl(*var);
-		td->file = tb->file;
-		td->line = tb->line;
-		td->column = tb->column;
 		TokenAssign *assign = new TokenAssign();
 		assign->file = tb->file;
 		assign->line = tb->line;
 		assign->column = tb->column;
 		assign->left  = new TokenVar(*var);
 		assign->right = rhs;
-		td->initialize = assign;
 		DBG(std::cout << "parseStatement() ':=' declared '" << first_id << "' type=" << inferred->name << std::endl);
+		if ( file_scope && code )
+		    return assign;
+		TokenDecl *td = new TokenDecl(*var);
+		td->file = tb->file;
+		td->line = tb->line;
+		td->column = tb->column;
+		td->initialize = assign;
 		return td;
 	    }
 	// C89 implicit-int function definition: `name(params) { body }`
@@ -62598,6 +62605,10 @@ bool Program::file_scope_statement_starter(TokenBase *tb)
 		// identifier of a declaration).
 		case TokenID::tkBSL:    case TokenID::tkBSR:
 		case TokenID::tkTerC:	// label definition `name:`
+		// `:=` short declarations (`x := e;` / `a, b := f();`): a
+		// declaration's FIRST identifier resolves as a type token,
+		// never a bare identifier directly followed by `:=` or `,`.
+		case TokenID::tkColEq:  case TokenID::tkComma:
 		    return true;
 		default:
 		    return false;	// tkNS-qualified etc.: result-classified
@@ -62722,6 +62733,22 @@ void Program::ensure_script_main(TokenBase *loc)
 	script_main_tf->column = loc->column;
 	func->decl_file = loc->file;
     }
+}
+
+// The compound a statement-scoped binding (a `:=` receiver, a `defer`
+// registration) belongs to: the innermost open compound, or — for a
+// file-scope statement in script mode — the synthesized main itself
+// (TokenFunc IS the body compound translate_block walks). NULL means
+// "no scope": standards modes and include-origin files keep their
+// existing file-scope handling / rejects.
+TokenCpnd *Program::script_statement_scope(TokenBase *loc)
+{
+    if ( !compounds.empty() )
+	return compounds.top();
+    if ( language_std != STD_MADC || !token_is_tu_origin(loc) )
+	return NULL;
+    ensure_script_main(loc);
+    return script_main_tf;
 }
 
 // Route a classified file-scope statement into the synthesized main.
