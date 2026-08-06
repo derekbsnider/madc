@@ -24873,7 +24873,11 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	    }
 	    parseCallFunc(tc);
 	    result = tc;
-	    var = &tc->var;
+	    // A call result is not a named variable: the member arms must
+	    // synthesize their proxy from the result TYPE (the callee var is
+	    // function-typed, which mis-selects `.` vs `->`). Same rule as
+	    // the arrow_operator_call arm above.
+	    var = NULL;
 	    continue;
 	}
 	break;
@@ -25029,7 +25033,17 @@ TokenBase *Program::parse_cast_function_call_operand(TokenBase *head)
     tc->line = open->line;
     tc->column = open->column;
     parseCallFunc(tc);
-    return tc;
+    // Postfix binds tighter than the cast ([expr.post] vs [expr.cast]):
+    // `(int)getb().n` casts the MEMBER, not the call. Continue the postfix
+    // chain (`.` `->` `[` chained calls) from the call result — stopping
+    // here applied the cast to the call and the trailing `.n` dereferenced
+    // an int ("member reference is not a structure or union"). The
+    // qualified operand paths already flow through this same owner.
+    // var = NULL: a call result is not a named variable — the chain must
+    // synthesize its member proxy from the result TYPE (passing the callee's
+    // function-typed var made the arrow arm's proxy non-pointer, emitting
+    // N_FIELD on a pointer value).
+    return parsePostfixChainFrom(tc, NULL);
 }
 
 TokenFunc *Program::build_expression_function(TokenProgram *tp,
