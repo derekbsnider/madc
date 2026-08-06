@@ -16366,8 +16366,10 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
       struct expr *init_expr = init_el.init->attr;
       MIR_op_t init_val;
 
-      init_val.mode = MIR_OP_UNDEF; /* unused for const-addr / complex-const elements */
-      if (!(complex_type_p (init_el.el_type) && init_expr->const_p) && !init_expr->const_addr_p) {
+      init_val.mode = MIR_OP_UNDEF; /* unused for const-addr / complex-const / int128-const els */
+      if (!(complex_type_p (init_el.el_type) && init_expr->const_p)
+          && !(int128_type_p (init_el.el_type) && init_expr->const_p)
+          && !init_expr->const_addr_p) {
         if (init_expr->const_p) {
           convert_value (init_expr, init_el.el_type);
           init_expr->type = init_el.el_type; /* right value in the gen below */
@@ -16402,6 +16404,31 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
           global_name = NULL;
           MIR_new_data (ctx, NULL, ct, 1, &im_u);
         }
+        data_size = type_size (c2m_ctx, init_el.el_type);
+        rel_offset = init_el.offset + data_size;
+        continue;
+      }
+      if (int128_type_p (init_el.el_type) && e->const_p) {
+        /* __int128 constant global initializer: two 64-bit data halves in the
+           runtime layout store_int128_halves uses (low at offset 0, high at 8).
+           The val_gen route the pre-pass takes for other scalars is unusable
+           here: an int128 value materializes through function temps
+           (int128_temp's ALLOCA + get_reg_var) and file scope has no
+           curr_func (SEGV -- libc++'s __pow10_128 table); a plain const leaf
+           died in MIR_new_data ("wrong type in data") because int128 has no
+           MIR data type. */
+        mir_ullong halves[2];
+        convert_value (e, init_el.el_type);
+        if (rel_offset < init_el.offset) { /* fill the gap: */
+          data = MIR_new_bss (ctx, global_name, init_el.offset - rel_offset);
+          if (global_name != NULL) var.decl->u.item = data;
+          global_name = NULL;
+        }
+        halves[0] = int128_const_low (e);
+        halves[1] = e->c_u_hi_val;
+        data = MIR_new_data (ctx, global_name, MIR_T_U64, 2, halves);
+        if (global_name != NULL) var.decl->u.item = data;
+        global_name = NULL;
         data_size = type_size (c2m_ctx, init_el.el_type);
         rel_offset = init_el.offset + data_size;
         continue;
