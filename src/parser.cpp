@@ -42775,6 +42775,60 @@ TokenBase *TokenGOTO::parse(Program &pgm)
     return this;
 }
 
+// Multi-return transport struct: the synthesized `struct { T0 v0; ... }` a
+// multi-return function's values travel through — its C-level return type.
+// The values ride the ONE class/struct-return path (native c2mir struct
+// return when trivially copyable, the __retbuf copy-construct/dtor ABI when
+// any slot is an object) instead of a parallel slot ABI. Memoized per
+// slot-type vector so every same-signature function shares one struct.
+// Validates the slot types and throws at `where` on an unsupportable slot.
+DataDefSTRUCT *Program::multi_return_transport_struct(
+	const std::vector<DataDef *> &types, TokenBase *where)
+{
+    for ( DataDef *t : types )
+    {
+	if ( !t || t->rawtype() == DataType::dtVOID )
+	    Throw(where) << "multi-return values cannot be 'void'" << flush;
+	if ( t->is_reference() )
+	    Throw(where) << "multi-return cannot carry reference values ('"
+			 << t->name << "')" << flush;
+	if ( dynamic_cast<FuncDef *>(t) )
+	    Throw(where) << "multi-return cannot carry a function type ('"
+			 << t->name << "')" << flush;
+    }
+    auto hit = multi_ret_transport_map.find(types);
+    if ( hit != multi_ret_transport_map.end() )
+	return hit->second;
+
+    bool has_object_slot = false;
+    for ( DataDef *t : types )
+	if ( !t->is_pointer() && t->is_object() )
+	    has_object_slot = true;
+    char sname[48];
+    snprintf(sname, sizeof sname, "__madc_mret_s%zu",
+	     multi_ret_transport_counter++);
+    // An object slot makes the transport a non-trivial CLASS (its members
+    // must be constructed/destructed) — same criterion by which a parsed
+    // struct earns class-hood from an object member. All-scalar transports
+    // stay plain structs (trivially copyable => native c2mir struct return).
+    DataDefSTRUCT *s = has_object_slot
+	? new DataDefCLASS(sname, 0, DataType::dtRESERVED)
+	: new DataDefSTRUCT(sname, 0, DataType::dtRESERVED);
+    for ( size_t i = 0; i < types.size(); ++i )
+    {
+	char mname[16];
+	snprintf(mname, sizeof mname, "v%zu", i);
+	s->addMember(mname, *types[i], 1);
+    }
+    s->is_complete = true;
+    s->finalize(presents_as_cpp());
+    struct_map.set(sname, s);
+    multi_ret_transport_map[types] = s;
+    DBG(std::cout << "multi_return_transport_struct() synthesized " << sname
+	<< " with " << types.size() << " slots" << std::endl);
+    return s;
+}
+
 TokenBase *TokenRETURN::parse(Program &pgm)
 {
     TokenBase *tn;
@@ -42911,16 +42965,35 @@ TokenBase *TokenRETURN::parse(Program &pgm)
 	}
 	returns = NULL; // multi-return uses return_exprs instead
 
-	// mark the enclosing function as multi-return so it gets __retbuf at compile time
+	// Mark the enclosing function as multi-return. Every slot carries the
+	// function's DECLARED return type (C semantics: a return expression
+	// coerces to the declared type — applied per slot); the values travel
+	// through the synthesized transport struct. A `(T0, T1) f(...)`
+	// declaration already populated heterogeneous return_types at the
+	// signature — this statement must then match its arity.
 	TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
 	if ( code && code->method )
 	{
 	    FuncDef *fdef = (FuncDef *)code->method->returns.type;
-	    if ( fdef && fdef->return_types.empty() )
+	    if ( fdef )
 	    {
-		// populate return_types with int64 for each value (inferred)
-		for ( size_t i = 0; i < return_exprs.size(); ++i )
-		    fdef->return_types.push_back(&ddINT64);
+		if ( code->method->owner_class )
+		    pgm.Throw(this) << "multi-return is not supported in class"
+			" methods" << flush;
+		if ( fdef->return_types.empty() )
+		{
+		    DataDef *rdd = &fdef->return_value_type();
+		    for ( size_t i = 0; i < return_exprs.size(); ++i )
+			fdef->return_types.push_back(rdd);
+		}
+		else if ( fdef->return_types.size() != return_exprs.size() )
+		    pgm.Throw(this) << "function returns "
+			<< fdef->return_types.size() << " values; this return"
+			" statement has " << return_exprs.size() << flush;
+		if ( !fdef->multi_ret_struct )
+		    fdef->multi_ret_struct =
+			pgm.multi_return_transport_struct(fdef->return_types,
+							  this);
 	    }
 	}
 	DBG(std::cout << "TokenRETURN::parse() multi-return with " << return_exprs.size() << " values" << std::endl);
@@ -56578,6 +56651,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->captured_vars = src->captured_vars;
     f->local_emit_name = src->local_emit_name;  // allowed-exception: field copy (clone), not symbol build
     f->return_types = src->return_types;
+    f->multi_ret_struct = src->multi_ret_struct;
     f->const_params = src->const_params;
     f->param_cpp_spellings = src->param_cpp_spellings;
     f->param_typedef_names = src->param_typedef_names;
@@ -56861,6 +56935,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	{
 	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref));
 	    fresh->return_types = func->return_types;
+	    fresh->multi_ret_struct = func->multi_ret_struct;
 	    fresh->return_typedef_name = func->return_typedef_name;
 	    fresh->param_typedef_names = func->param_typedef_names;
 	    fresh->param_template_param_spelled_directly =
@@ -56888,6 +56963,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->is_varargs   = func->is_varargs;
 	    fresh->is_void_params = func->is_void_params;
 	    fresh->return_types = func->return_types;
+	    fresh->multi_ret_struct = func->multi_ret_struct;
 	    fresh->return_typedef_name = func->return_typedef_name;
 	    fresh->param_typedef_names = func->param_typedef_names;
 	    fresh->param_template_param_spelled_directly =
@@ -56938,21 +57014,22 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     else if ( inline_specified )
 	func->vague_linkage = true;
 
-    // for multi-return functions, inject hidden __retbuf parameter as first arg
+    // Declared-form multi-return `(T0, T1) f(...)`: record the per-slot types
+    // and synthesize the transport struct. NO hidden parameter is injected
+    // into FuncDef::parameters — the transport is the function's C-level
+    // RETURN type; the CIR emits the hidden `S *__retbuf` itself when the
+    // struct is non-trivial (exactly as for any by-value class return). The
+    // old ddINT64 param injection corrupted call-site arity checks
+    // ("expected 3 got 2"), which left this form uncallable.
     if ( multi_ret && multi_ret->size() > 1 )
     {
 	func->return_types = *multi_ret;
-	if ( !func_already_declared )
-	{
-	    func->parameters.push_back(&ddINT64); // void* as int64
-	    func->param_cpp_spellings.push_back(""); // hidden — excluded from mangling
-	    func->param_typedef_names.push_back("");
-	    func->param_template_param_spelled_directly.push_back(false);
-	    func->param_defaults.push_back(NULL);    // keep aligned with parameters
-	}
-	ids.push_back("__retbuf");
-	param_aliases.push_back("");
-	DBG(cout << "parseFunction() injected hidden __retbuf for multi-return (" << multi_ret->size() << " types)" << endl);
+	if ( !func->multi_ret_struct )
+	    func->multi_ret_struct =
+		multi_return_transport_struct(func->return_types, nt);
+	DBG(cout << "parseFunction() multi-return transport "
+	    << func->multi_ret_struct->name << " ("
+	    << multi_ret->size() << " types)" << endl);
     }
 
     // for class methods, inject hidden __this parameter as first arg.
@@ -58657,6 +58734,7 @@ TokenBase *Program::parseLambda()
 	    fresh->potential_captures	 = func->potential_captures;
 	    fresh->captures		 = func->captures;
 	    fresh->return_types		 = func->return_types;
+	    fresh->multi_ret_struct	 = func->multi_ret_struct;
 	    fresh->const_params		 = func->const_params;
 	    fresh->is_varargs		 = func->is_varargs;
 	    fresh->is_void_params	 = func->is_void_params;
@@ -61860,42 +61938,53 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    // parse the RHS function call
 		    TokenBase *rhs = parseExpression(nextToken());
 
-		    // look up the function's return_types to infer variable types
+		    // The receivers' types are the callee's per-slot return
+		    // types, so the callee must be a known DIRECT function
+		    // call — anything else (unknown name, function pointer,
+		    // method) rejects HERE, where the receivers bind; the old
+		    // int64-receiver default turned those into silent wrong
+		    // answers (pointer bits, truncated doubles).
 		    FuncDef *func = NULL;
+		    std::string callee_name;
 		    if ( rhs->type() == TokenType::ttCallFunc )
 		    {
 			TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(rhs);
+			callee_name = tcf->var.name;
 			if ( tcf->var.type->basetype() == BaseType::btFunct )
 			    func = (FuncDef *)tcf->var.type;
 		    }
+		    if ( !func )
+			Throw(tb) << "':=' with " << ids.size() << " receivers"
+			    " requires a direct call to a known function" << flush;
+		    // Arity is checkable now only if the callee's defining
+		    // `return a, b;` (or `(T0, T1)` signature) has been
+		    // parsed; a callee defined LATER in the file is checked
+		    // at compile time instead (multi_return_unpack).
+		    if ( !func->return_types.empty()
+		      && func->return_types.size() != ids.size() )
+			Throw(tb) << "'" << callee_name << "' returns "
+			    << func->return_types.size() << " values, but "
+			    << ids.size() << " receivers given" << flush;
 
-		    // create a TokenCpnd-like wrapper that declares all variables
-		    // and generates the multi-return unpack
 		    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
 
-		    // create variables with inferred types from return_types
+		    // Receivers are ordinary scope variables typed by the
+		    // callee's slot types (block-top declaration gives class
+		    // receivers their default construction and scope-exit
+		    // destruction through the normal local machinery); the
+		    // statement itself is the multi-target assignment, which
+		    // the CIR lowers via the transport struct.
 		    std::vector<Variable *> vars;
 		    for ( size_t i = 0; i < ids.size(); ++i )
 		    {
-			DataDef *vtype = &ddINT64; // default
-			if ( func && i < func->return_types.size() )
+			DataDef *vtype = &func->return_value_type();
+			if ( i < func->return_types.size() )
 			    vtype = func->return_types[i];
-			else if ( func && i == 0 )
-			    vtype = &func->return_value_type();
 			bool alloc = (!code) ? true : false;
 			Variable *v = addVariable(code, *vtype, ids[i], 1, NULL, alloc);
 			vars.push_back(v);
 		    }
 
-		    // build a TokenDecl for the first variable with the call as initializer
-		    // The multi-return unpack will be handled at compile time
-		    TokenDecl *td = new TokenDecl(*vars[0]);
-		    td->file = tb->file;
-		    td->line = tb->line;
-		    td->column = tb->column;
-
-		    // store extra info for multi-return compile
-		    // We use a TokenMultiReturn node that wraps the call and target variables
 		    TokenAssign *assign = new TokenAssign();
 		    assign->file = tb->file;
 		    assign->line = tb->line;
@@ -61903,10 +61992,9 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    assign->left = new TokenVar(*vars[0]);
 		    assign->right = rhs;
 		    assign->multi_vars = vars; // store all target variables
-		    td->initialize = assign;
 
 		    DBG(std::cout << "parseStatement() multi-return ':=' with " << ids.size() << " variables" << std::endl);
-		    return td;
+		    return assign;
 		}
 
 		// single := declaration (existing behavior)
@@ -61939,25 +62027,78 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	case TokenType::ttOperator:
 	case TokenType::ttMultiOp:
 	    // multi-return function declaration: (type, type) funcname(...)
+	    // Entries may be builtin types OR registered class/typedef names
+	    // (`(int, string) f()`), each with optional `*` suffixes. An
+	    // identifier head is tentative — a non-type first entry restores
+	    // the stream and falls through to the expression lane.
 	    if ( tb->id() == TokenID::tkOpBrk && peekToken()
-		 && peekToken()->type() == TokenType::ttDataType )
+		 && (peekToken()->type() == TokenType::ttDataType
+		     || peekToken()->type() == TokenType::ttIdentifier) )
 	    {
 		std::vector<DataDef *> rtypes;
 		std::vector<TokenBase *> saved;
 		bool saw_multi_return_comma = false;
+		bool not_a_type_list = false;
 		while ( true )
 		{
 		    TokenBase *rt = nextToken();
 		    saved.push_back(rt);
-		    if ( rt->type() != TokenType::ttDataType )
-			Throw(rt) << "Expecting type in multi-return declaration" << flush;
-		    rtypes.push_back(&((TokenDataType *)rt)->definition);
+		    // Leading `const` qualifier (`(double, const char *)`) —
+		    // consume it and qualify the resolved base type.
+		    bool entry_const = false;
+		    while ( rt && rt->id() == TokenID::tkCONST )
+		    {
+			entry_const = true;
+			rt = nextToken();
+			saved.push_back(rt);
+		    }
+		    TokenDataType *tdt = NULL;
+		    if ( rt->type() == TokenType::ttDataType )
+			tdt = (TokenDataType *)rt;
+		    else if ( rt->type() == TokenType::ttIdentifier )
+			tdt = resolve_declared_type_token(rt, true, true);
+		    if ( !tdt )
+		    {
+			// A committed list (past a comma) with a non-type
+			// entry is an error; an uncommitted head is just an
+			// ordinary parenthesized expression.
+			if ( saw_multi_return_comma )
+			    Throw(rt) << "Expecting type in multi-return declaration" << flush;
+			not_a_type_list = true;
+			break;
+		    }
+		    DataDef *entry = &tdt->definition;
+		    if ( entry_const )
+			entry = getConstType(entry);
 		    TokenBase *sep = nextToken();
 		    saved.push_back(sep);
+		    while ( sep && sep->id() == TokenID::tkMul )
+		    {
+			entry = getPointerType(entry);
+			sep = nextToken();
+			saved.push_back(sep);
+		    }
+		    rtypes.push_back(entry);
+		    if ( !sep )
+			Throw(rt) << "Expecting , or ) in multi-return type list" << flush;
 		    if ( sep->id() == TokenID::tkClBrk ) break;
 		    if ( sep->id() != TokenID::tkComma )
-			Throw(sep) << "Expecting , or ) in multi-return type list" << flush;
+		    {
+			if ( saw_multi_return_comma )
+			    Throw(sep) << "Expecting , or ) in multi-return type list" << flush;
+			not_a_type_list = true;
+			break;
+		    }
 		    saw_multi_return_comma = true;
+		}
+		if ( not_a_type_list )
+		{
+		    for ( std::vector<TokenBase *>::reverse_iterator it = saved.rbegin();
+			  it != saved.rend(); ++it )
+			if ( *it )
+			    pushToken(*it);
+		    resetPrevToken();
+		    return parseExprStmt(tb);
 		}
 		if ( !saw_multi_return_comma )
 		{

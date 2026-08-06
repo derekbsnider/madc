@@ -6510,13 +6510,18 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 }
 
 // Single function-signature owner for the __retbuf ABI decision. A by-value
-// non-trivial class return (not pointer/reference/multi) uses `void` plus a
-// hidden leading result pointer in definitions, prototypes, and every call lane.
+// non-trivial class return (not pointer/reference) uses `void` plus a hidden
+// leading result pointer in definitions, prototypes, and every call lane.
+// A multi-return function's C-level return type is its transport struct:
+// a CLASS transport (some slot is an object) takes the same __retbuf path;
+// an all-scalar transport is trivially copyable and returns natively.
 DataDefCLASS *CirBuilder::function_retbuf_class(FuncDef *fd)
 {
 	if (!fd) return NULL;
+	if (fd->is_multi_return())
+		return as_user_class(fd->multi_ret_struct);
 	DataDef *ret_dd = &fd->return_value_type();
-	if (ret_dd->is_pointer() || fd->returns_reference() || fd->is_multi_return())
+	if (ret_dd->is_pointer() || fd->returns_reference())
 		return NULL;
 	return class_return_via_retbuf(ret_dd);
 }
@@ -6793,56 +6798,127 @@ node_t CirBuilder::retbuf_param(DataDef *retdd, TokenBase *origin)
 	return sd;
 }
 
+// Defined below (operator= selection for a class, shared with the
+// copy-assign lowerings).
+static FuncDef *class_assign_operator_def(DataDefCLASS *cdd);
+
 node_t CirBuilder::multi_return_unpack(TokenAssign *as, TokenBase *origin)
 {
-	// `a, b, ... := f(args)` — f uses the multi-return __retbuf ABI (void return +
-	// leading `long *__retbuf`; values written to __retbuf[0..N-1]). Emit a caller
-	// buffer `long __mret_K[N]`, the call `f(__mret_K, args)` (the array decays to
-	// the long* __retbuf), and `multi_vars[i] = __mret_K[i]` for i>=1 — all into
-	// m_pending_stmts (the block loop flushes them BEFORE this decl statement; the
-	// i>=1 targets are scope vars auto-declared at block top, so assigning them
-	// before this decl is well-formed). Return __mret_K[0] as multi_vars[0]'s init.
+	// `a, b, ... := f(args)` — f's C-level return type is its transport
+	// struct S. Emit `struct S __mret_K` (var_decl attaches the cleanup
+	// dtor when S is a class — the transport's object slots are destroyed
+	// at scope exit), then the call — `__mret_K = f(args)` for a trivially
+	// copyable S (native struct return), `f(&__mret_K, args)` for a class
+	// S (__retbuf ABI; the callee copy-constructs the slots into the raw
+	// temp) — then one fill per receiver: a scalar slot plain-assigns, an
+	// object slot member-wise copy-assigns into the (block-top declared,
+	// default-constructed) receiver. Everything lands in m_pending_stmts;
+	// the returned `(void)0` is the enclosing expression statement's value.
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(as->right);
-	if (!tcf)
-		return as->right ? translate_expr(as->right) : ignore();
-	size_t n = as->multi_vars.size();
-	char nm[32];
-	snprintf(nm, sizeof nm, "__mret_%d", m_mret_counter++);
-
-	// long __mret_K[n];
-	node_t decl_list = list();
-	append(decl_list, node3(N_ARR, ignore(), list(), integer((int64_t)n, origin)));
-	node_t bufdecl = simple(N_SPEC_DECL, origin);
-	append(bufdecl, type_list(&ddINT64));
-	append(bufdecl, node2(N_DECL, id(nm, origin), decl_list));
-	append(bufdecl, ignore());
-	append(bufdecl, ignore());
-	append(bufdecl, ignore());
-	m_pending_stmts.push_back(bufdecl);
-
-	// f(__mret_K, args...);  — __retbuf passed first. build_call_args may queue
-	// arg temps to m_pending_stmts; they land after bufdecl and before the call.
 	FuncDef *cdf = NULL;
-	std::string sym = call_target_emit_name(tcf, &cdf);
+	std::string sym = tcf ? call_target_emit_name(tcf, &cdf) : std::string();
+	size_t n = as->multi_vars.size();
+	// The parse-time gate passes a callee whose defining `return a, b;`
+	// hadn't been seen yet; by now the whole program is parsed, so this
+	// is the authoritative check.
+	if (!tcf || !cdf || !cdf->is_multi_return() || !cdf->multi_ret_struct) {
+		if (m_prog)
+			m_prog->Throw(origin) << "':=' with " << n << " receivers"
+				" requires a multi-return function call on the"
+				" right" << std::flush;
+		return ignore();
+	}
+	DataDefSTRUCT *sdd = cdf->multi_ret_struct;
+	if (sdd->members.size() != n && m_prog)
+		m_prog->Throw(origin) << "'" << tcf->var.name << "' returns "
+			<< sdd->members.size() << " values, but " << n
+			<< " receivers given" << std::flush;
+	bool via_retbuf = function_retbuf_class(cdf) != NULL;
 	referenced_funcs.insert(sym);
+
+	// struct S __mret_K;  (cleanup-tagged when S is a class)
+	char nm[40];
+	snprintf(nm, sizeof nm, "__mret_%d", m_mret_counter++);
+	Variable *tmp = new Variable(nm, *sdd, 1, NULL, false);
+	tmp->flags |= vfLOCAL;
+	m_pending_stmts.push_back(var_decl(tmp, origin));
+
+	// The call. build_call_args may queue arg temps to m_pending_stmts;
+	// they land after the temp decl and before the call statement.
 	node_t cargs = list();
-	append(cargs, id(nm, origin));
+	if (via_retbuf)
+		append(cargs, node1(N_ADDR, id(nm, origin), origin));
 	build_call_args(tcf, cargs);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), cargs, origin);
 	CIR_NODE(call)->synth_from_origin = true;
-	m_pending_stmts.push_back(node2(N_EXPR, list(), call, origin));
+	m_pending_stmts.push_back(node2(N_EXPR, list(),
+		via_retbuf ? call
+			   : node2(N_ASSIGN, id(nm, origin), call, origin),
+		origin));
 
-	// multi_vars[i] = __mret_K[i];  for i >= 1
-	for (size_t i = 1; i < n; i++) {
-		node_t lhs = id(as->multi_vars[i]->name.c_str(), origin);
-		node_t rhs = node2(N_IND, id(nm, origin),
-				   integer((int64_t)i, origin), origin);
+	// Receiver fills.
+	for (size_t i = 0; i < n && i < sdd->members.size(); i++) {
+		const char *mname = sdd->members[i].first.c_str();
+		const char *rname = as->multi_vars[i]->name.c_str();
+		DataDefCLASS *mc = as_class_instance(sdd->members[i].second);
+		if (mc) {
+			// Object slot into the (block-top default-constructed)
+			// receiver: the class's own operator= when it has one
+			// (free-old + deep-copy — a bit-copy would alias the
+			// slot's buffers against the temp's cleanup dtor);
+			// member-wise copy-assign otherwise (the implicit
+			// operator=, same as class_copy_assign).
+			node_t rfld = node2(N_FIELD, id(nm, origin),
+					    id(mname, origin));
+			if (FuncDef *op = class_assign_operator_def(mc)) {
+				std::string osym =
+					class_method_call_symbol(mc, op, "operator=");
+				bool external = !op->emit_symbol.empty();
+				if (external)
+					need_output_extern(osym.c_str(), true,
+						{ { {N_VOID}, true }, { {N_VOID}, true } });
+				else
+					referenced_funcs.insert(osym);
+				node_t ld = node1(N_ADDR, id(rname, origin), origin);
+				node_t rd = node1(N_ADDR, rfld, origin);
+				if (external) {
+					ld = node2(N_CAST, void_ptr_type(), ld, origin);
+					rd = node2(N_CAST, void_ptr_type(), rd, origin);
+				}
+				node_t a = list();
+				append(a, ld);
+				append(a, rd);
+				node_t ocall = node2(N_CALL, id(osym.c_str(), origin),
+						     a, origin);
+				CIR_NODE(ocall)->synth_from_origin = true;
+				m_pending_stmts.push_back(node2(N_EXPR, list(),
+								ocall, origin));
+				continue;
+			}
+			std::vector<node_t> fills;
+			char lnm[40], rnm[40];
+			snprintf(lnm, sizeof lnm, "__ca_l_%d", m_strtmp_counter++);
+			snprintf(rnm, sizeof rnm, "__ca_r_%d", m_strtmp_counter++);
+			fills.push_back(class_ptr_bind(mc, lnm,
+				node1(N_ADDR, id(rname, origin), origin), origin));
+			fills.push_back(class_ptr_bind(mc, rnm,
+				node1(N_ADDR, rfld, origin), origin));
+			class_copy_assign_members(mc, lnm, rnm, fills, origin);
+			for (node_t f : fills)
+				m_pending_stmts.push_back(f);
+			continue;
+		}
+		// Scalar slot (or trivially-copyable object: struct assign).
+		node_t rhs = node2(N_FIELD, id(nm, origin), id(mname, origin));
 		m_pending_stmts.push_back(node2(N_EXPR, list(),
-					  node2(N_ASSIGN, lhs, rhs, origin), origin));
+			node2(N_ASSIGN, id(rname, origin), rhs, origin), origin));
 	}
 
-	// multi_vars[0]'s initializer = __mret_K[0]
-	return node2(N_IND, id(nm, origin), integer((int64_t)0, origin), origin);
+	// The enclosing expression statement's value: an effect-free (void)0.
+	return node2(N_CAST,
+		     node2(N_TYPE, type_list(&ddVOID),
+			   node2(N_DECL, ignore(), list())),
+		     integer(0, origin), origin);
 }
 
 node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
@@ -7821,13 +7897,11 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// SPEC_DECL initializer is the bare value, not an ASSIGN. Unwrap
 		// to the RHS so the 5th operand matches c2m (e.g. `I 7`).
 		TokenBase *init_expr = tdecl->initialize;
+		// (A multi-receiver `a, b := f()` is no longer a TokenDecl — it
+		// parses as a TokenAssign statement; translate_expr routes it to
+		// multi_return_unpack.)
 		TokenAssign *as = dynamic_cast<TokenAssign *>(init_expr);
-		if (as && as->multi_vars.size() > 1) {
-			// Multi-return unpack `a, b, ... := f(args)`: this decl is for
-			// multi_vars[0]; its initializer becomes __mret[0]. The buffer,
-			// the call, and the assigns for multi_vars[1..] go to m_pending_stmts.
-			init_node = multi_return_unpack(as, origin);
-		} else {
+		{
 		if (as && as->right)
 			init_expr = as->right;
 		long fre, fim;
@@ -16703,7 +16777,13 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
 	if (!fd) return NULL;
 
-	DataDef *ret_dd = main_ret_normalized(tf, &fd->return_value_type());
+	// A multi-return function's C-level return type is its transport struct
+	// (`struct { T0 v0; ... }`) — from here on it IS a struct-returning
+	// function: native c2mir struct return when trivially copyable, the
+	// __retbuf ABI (via function_retbuf_class) when a slot is an object.
+	DataDef *ret_dd = fd->is_multi_return() && fd->multi_ret_struct
+			  ? (DataDef *)fd->multi_ret_struct
+			  : main_ret_normalized(tf, &fd->return_value_type());
 	bool ret_is_ref = fd->returns_reference();   // T& -> returned by address (one more *)
 	int ret_star_depth = dd_peel_pointers(ret_dd);
 
@@ -16714,24 +16794,23 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	DataDefCLASS *ret_obj = function_retbuf_class(fd);
 	bool ret_via_retbuf = ret_obj != NULL;
 	DataDef *retbuf_dd = (DataDef *)ret_obj;
-	bool ret_is_multi = fd->is_multi_return();   // void ret + `long *__retbuf` first param
 
 	// Function returning a function pointer — `RET (*f(params))(fp-params)`.
 	// Mirror func_def (see the comment there): type_list would render the
 	// DataDefFPTR return as a bare `long`. Kept in lock-step with func_def.
-	DataDefFPTR *ret_fnptr = (!ret_via_retbuf && !ret_is_multi && !ret_is_ref
+	DataDefFPTR *ret_fnptr = (!ret_via_retbuf && !ret_is_ref
 				 && fd->return_typedef_name.empty())
 				? dynamic_cast<DataDefFPTR *>(ret_dd) : NULL;
 
 	int ret_decl_stars = ret_star_depth;
 	node_t ret_type = NULL;
-	if (ret_via_retbuf || ret_is_multi) {
+	if (ret_via_retbuf) {
 		ret_type = type_list(&ddVOID);
 		ret_decl_stars = 0;
 	} else if (ret_fnptr) {
 		ret_type = list();   // spec filled by fnptr_decl_pieces at decl_list
 		ret_decl_stars = 0;
-	} else if (!fd->return_typedef_name.empty()) {
+	} else if (!fd->return_typedef_name.empty() && !fd->is_multi_return()) {
 		ret_type = type_list(&fd->return_value_type(), fd->return_typedef_name);
 		ret_decl_stars = explicit_star_count(&fd->return_value_type(),
 						     fd->return_typedef_name);
@@ -16746,8 +16825,6 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	node_t param_list = list();
 	if (ret_via_retbuf)
 		append(param_list, retbuf_param(retbuf_dd, tf));
-	else if (ret_is_multi)
-		append(param_list, retbuf_param(&ddINT64, tf));   // long *__retbuf
 	size_t nparam = fd->parameters.size();
 	if (fd->is_varargs && nparam > 0) nparam--;
 	// A capturing nested fn / [&] lambda gains hidden `T *name` capture params
@@ -16760,7 +16837,7 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	// (is_void_params). A bare K&R `()` is unprototyped: leave the param list
 	// empty so c2mir imposes no arg-count check at call sites, matching gcc's
 	// gnu89 behavior. Kept in lock-step with func_def and fnptr_func_node.
-	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf && !ret_is_multi
+	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf
 	    && !has_capture_params) {
 		if (fd->is_void_params) {
 			node_t void_spec = node1(N_LIST, simple(N_VOID));
@@ -17108,6 +17185,15 @@ node_t CirBuilder::vla_flat_subscript(Variable *root,
 node_t CirBuilder::translate_expr(TokenBase *tb)
 {
 	if (!tb) return ignore();
+
+	// Multi-return receive statement `a, b, ... := f(args)` — a TokenAssign
+	// carrying the receiver list. All the work (transport temp, call,
+	// per-receiver fills) is emitted via m_pending_stmts by the unpack.
+	// tkAssign gate first: no dynamic_cast on the hot non-assign path.
+	if (tb->id() == TokenID::tkAssign)
+		if (TokenAssign *mras = dynamic_cast<TokenAssign *>(tb))
+			if (mras->multi_vars.size() > 1)
+				return multi_return_unpack(mras, tb);
 
 	// Imaginary literal (`1.0i`, `3i`, `2.0iF`) — the lexer types the constant
 	// as a DataDefCOMPLEX. It must lower to c2mir's imaginary-constant node
@@ -18883,6 +18969,16 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (is_constant_evaluated_call(tcf))
 				return integer(0, tb);
 			FuncDef *inline_fd = call_target_funcdef(tcf);
+			// A multi-return function's values are consumable ONLY
+			// by an N-receiver `:=` (multi_return_unpack builds its
+			// call directly, not through this arm). Anywhere else
+			// the call has no single value — reject loudly rather
+			// than emit an ABI-mismatched call.
+			if (inline_fd && inline_fd->is_multi_return() && m_prog)
+				m_prog->Throw(tb) << "'" << tcf->var.name
+					<< "' returns multiple values; receive"
+					" them with 'a, b := " << tcf->var.name
+					<< "(...)'" << std::flush;
 			if (((inline_fd && inline_fd->inline_builtin_kind == "addressof")
 			     || tcf->var.name == "__builtin_addressof")
 			    && tcf->parameters.size() == 1) {
@@ -19386,23 +19482,82 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 			return node2(N_BLOCK, list(), items);
 		}
 	}
-	// Multi-return (`return a, b, ...;`): store each value into __retbuf[i]
-	// (the hidden `long *__retbuf` first param), then `return;` (void). The
-	// function was lowered to the multi-return __retbuf ABI by func_def/func_proto.
-	if (m_cur_func_multi_return && !tr->return_exprs.empty()) {
+	// Multi-return: every return statement in such a function must supply
+	// all the values — a bare `return;` (or single-value `return x;`) would
+	// leave transport slots indeterminate, a silent wrong answer.
+	if (m_cur_func_multi_return && tr->return_exprs.empty() && m_prog)
+		m_prog->Throw(tr) << "function returns "
+			<< (m_cur_func_multi_struct
+			    ? m_cur_func_multi_struct->members.size() : 2)
+			<< " values; every return statement must supply all of"
+			" them" << std::flush;
+	// Multi-return (`return a, b, ...;`): fill the transport struct's slots
+	// (struct { T0 v0; ... } — the function's C-level return type).
+	// CLASS transport (__retbuf ABI): an object slot COPY-CONSTRUCTS into
+	// the caller's raw storage at &__retbuf->vN, a scalar slot
+	// plain-assigns; then `return;`. TRIVIAL transport (native struct
+	// return): fill a local `struct S` and return it by value. Slot arity
+	// was validated at parse (TokenRETURN::parse).
+	if (m_cur_func_multi_return && !tr->return_exprs.empty()
+	    && m_cur_func_multi_struct) {
+		DataDefSTRUCT *sdd = m_cur_func_multi_struct;
 		node_t items = list();
-		for (size_t i = 0; i < tr->return_exprs.size(); i++) {
+		bool via_retbuf = m_cur_func_returns_object != NULL;
+		char rname[40];
+		if (!via_retbuf) {
+			snprintf(rname, sizeof rname, "__madc_mret_%d",
+				 m_mret_counter++);
+			Variable *tmp = new Variable(rname, *sdd, 1, NULL, false);
+			tmp->flags |= vfLOCAL;
+			append(items, var_decl(tmp, tr));
+		}
+		size_t nslots = tr->return_exprs.size() < sdd->members.size()
+				? tr->return_exprs.size() : sdd->members.size();
+		for (size_t i = 0; i < nslots; i++) {
+			const char *mname = sdd->members[i].first.c_str();
+			DataDefCLASS *mc = via_retbuf
+				? as_class_instance(sdd->members[i].second) : NULL;
+			FuncDef *cctor = mc ? class_copy_ctor_def(mc) : NULL;
+			if (cctor) {
+				// Object slot: copy-construct &__retbuf->vN from
+				// the value (the caller's storage is raw memory).
+				std::string sym = ctor_call_symbol(mc, cctor);
+				bool external = !cctor->emit_symbol.empty();
+				node_t dst = node1(N_ADDR,
+					node2(N_DEREF_FIELD, id(RETBUF_NAME, tr),
+					      id(mname, tr)), tr);
+				if (external) {
+					need_output_extern(sym.c_str(), false,
+						{ { {N_VOID}, true }, { {N_VOID}, true } });
+					dst = node2(N_CAST, void_ptr_type(), dst, tr);
+				} else
+					referenced_funcs.insert(sym);
+				node_t args = list();
+				append(args, dst);
+				append(args, object_arg_addr(tr->return_exprs[i], mc));
+				for (node_t p : m_pending_stmts) append(items, p);
+				m_pending_stmts.clear();
+				node_t call = node2(N_CALL, id(sym.c_str(), tr),
+						    args, tr);
+				CIR_NODE(call)->synth_from_origin = true;
+				append(items, node2(N_EXPR, list(), call, tr));
+				continue;
+			}
+			// Scalar slot (or trivially-copyable object: struct
+			// assignment bit-copies, same as a by-value member).
 			node_t val = translate_expr(tr->return_exprs[i]);
-			// flush any temps a value expression materialized
 			for (node_t p : m_pending_stmts) append(items, p);
 			m_pending_stmts.clear();
-			node_t slot = node2(N_IND, id(RETBUF_NAME, tr),
-					    integer((int64_t)i, tr), tr);
+			node_t slot = via_retbuf
+				? node2(N_DEREF_FIELD, id(RETBUF_NAME, tr),
+					id(mname, tr))
+				: node2(N_FIELD, id(rname, tr), id(mname, tr));
 			append(items, node2(N_EXPR, list(),
 					    node2(N_ASSIGN, slot, val, tr), tr));
 		}
 		append_deferred_stmts(items, 0);
-		append(items, node2(N_RETURN, list(), ignore(), tr));
+		append(items, node2(N_RETURN, list(),
+				    via_retbuf ? ignore() : id(rname, tr), tr));
 		return node2(N_BLOCK, list(), items, tr);
 	}
 	// A by-value NON-TRIVIAL class return uses the __retbuf ABI: deep-copy
@@ -22918,7 +23073,13 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	std::vector<TokenCpnd *> saved_defer_scopes;
 	saved_defer_scopes.swap(m_defer_scopes);
 
-	DataDef *ret_dd = main_ret_normalized(tf, &fd->return_value_type());
+	// A multi-return function's C-level return type is its transport struct
+	// (`struct { T0 v0; ... }`) — from here on it IS a struct-returning
+	// function: native c2mir struct return when trivially copyable, the
+	// __retbuf ABI (via function_retbuf_class) when a slot is an object.
+	DataDef *ret_dd = fd->is_multi_return() && fd->multi_ret_struct
+			  ? (DataDef *)fd->multi_ret_struct
+			  : main_ret_normalized(tf, &fd->return_value_type());
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
 	bool ret_is_ref = fd->returns_reference();   // T& -> returned by address (one more *)
 	int ret_star_depth = dd_peel_pointers(ret_dd);
@@ -22935,22 +23096,21 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// converting constructor when `return expr;`'s class differs from the return
 	// class (return-value copy-initialization). The retbuf path handles the
 	// non-trivial case; this covers the trivially-copyable one.
-	m_cur_func_returns_value_class = (!ret_is_ptr && !ret_is_ref
-					  && !fd->is_multi_return() && !ret_via_retbuf)
+	m_cur_func_returns_value_class = (!ret_is_ptr && !ret_is_ref && !ret_via_retbuf)
 					 ? as_class_instance(ret_dd) : NULL;
 	DataDef *retbuf_dd = (DataDef *)ret_obj;
-	// Multi-return (`return a, b;`): C return type void + a hidden `long *__retbuf`
-	// first param; translate_return stores each value to __retbuf[i].
+	// Multi-return (`return a, b;`): translate_return fills the transport
+	// struct's fields (see its multi arm) instead of a single return value.
 	bool ret_is_multi = fd->is_multi_return();
 	m_cur_func_multi_return = ret_is_multi;
+	m_cur_func_multi_struct = ret_is_multi ? fd->multi_ret_struct : NULL;
 
 	// Track whether this function returns void, so translate_return can lower
 	// a gcc-accepted `return <expr>;` (void function) to `<expr>; return;`.
 	// A retbuf-returning fn also has a `void` C return type but goes through the
 	// __retbuf path, so keep it out of the plain-void lowering.
 	m_cur_func_returns_void = !ret_is_ptr && !ret_is_ref && !ret_via_retbuf && ret_dd
-				  && ret_dd->rawtype() == DataType::dtVOID
-				  && !fd->is_multi_return();
+				  && ret_dd->rawtype() == DataType::dtVOID;
 	// Track reference return so translate_return emits `return &<expr>`.
 	m_cur_func_returns_ref = ret_is_ref;
 	// Track a `Cls *` or `Cls&` return so translate_return can emit a
@@ -22973,24 +23133,24 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// cast for integer result"). Emit the real declarator instead: the spec is
 	// the pointed-to function's RETURN type and the `(*)(fp-params)` suffix wraps
 	// the function declarator (built by fnptr_decl_pieces at the decl_list below).
-	DataDefFPTR *ret_fnptr = (!ret_via_retbuf && !ret_is_multi && !ret_is_ref
+	DataDefFPTR *ret_fnptr = (!ret_via_retbuf && !ret_is_ref
 				 && fd->return_typedef_name.empty())
 				? dynamic_cast<DataDefFPTR *>(ret_dd) : NULL;
 
-	// Retbuf-returning OR multi-return fn: C return type is `void`.
+	// Retbuf-returning fn: C return type is `void`.
 	int ret_decl_stars = ret_star_depth;
 	node_t ret_type = NULL;
 	m_cur_func_ret_spec_dd = NULL;
 	m_cur_func_ret_spec_alias.clear();
 	m_cur_func_ret_stars = 0;
-	if (ret_via_retbuf || ret_is_multi) {
+	if (ret_via_retbuf) {
 		ret_type = type_list(&ddVOID);
 		ret_decl_stars = 0;
 	} else if (ret_fnptr) {
 		// Spec filled by fnptr_decl_pieces (with the suffix) at decl_list build.
 		ret_type = list();
 		ret_decl_stars = 0;
-	} else if (!fd->return_typedef_name.empty()) {
+	} else if (!fd->return_typedef_name.empty() && !ret_is_multi) {
 		ret_type = type_list(&fd->return_value_type(), fd->return_typedef_name);
 		ret_decl_stars = explicit_star_count(&fd->return_value_type(),
 						     fd->return_typedef_name);
@@ -23057,20 +23217,18 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// param_decl's wrap() for a named pointer parameter.
 	if (ret_via_retbuf)
 		append(param_list, retbuf_param(retbuf_dd, tf));
-	else if (ret_is_multi)
-		append(param_list, retbuf_param(&ddINT64, tf));   // long *__retbuf
 	size_t nparam = fd->parameters.size();
 	if (fd->is_varargs && nparam > 0) nparam--;
 	// A capturing function with zero user params must NOT emit `(void)`: its
 	// capture params (appended after the body translates) make it non-void.
 	// Defer the empty-param `(void)` to after body translation in that case.
 	bool defer_void_params = (nparam == 0 && !fd->is_varargs && !ret_via_retbuf
-				  && !ret_is_multi && fd->has_captures);
+				  && fd->has_captures);
 	// `(void)` ONLY for an explicit `(void)` declaration (is_void_params); a
 	// bare K&R `()` stays unprototyped (empty param list) so c2mir accepts any
 	// call-site arg count, matching gcc's gnu89 behavior. Kept in lock-step
 	// with func_proto and fnptr_func_node.
-	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf && !ret_is_multi
+	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf
 	    && !defer_void_params) {
 		if (fd->is_void_params) {
 			node_t void_spec = node1(N_LIST, simple(N_VOID));

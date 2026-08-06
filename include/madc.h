@@ -117,6 +117,12 @@ public:
     std::string local_emit_name;
     // multiple return values (empty = single return via `returns`)
     std::vector<DataDef *> return_types;
+    // Multi-return transport: the synthesized `struct { T0 v0; ... }` this
+    // function's values travel through — the function's C-level return type.
+    // Set alongside return_types (Program::multi_return_transport_struct);
+    // NULL for single-return functions. `returns` is a reference member and
+    // cannot be re-seated, so the CIR consults this for multi-return fns.
+    DataDefSTRUCT *multi_ret_struct = NULL;
     // Reference-ness of parameter i, derived from its type: a reference parameter
     // is a DataDefREF (is_reference() true). This is the SINGLE source of truth —
     // the old parallel `ref_params` flag vector was retired (first-class-references
@@ -2240,6 +2246,12 @@ public:
     StructRegistry struct_map;		// data definitions defined by struct
 					// (writes via .set() ONLY — despaced index)
     std::map<std::string, DataDefSTRUCT *> tsubst_local_aggregate_map;
+    // Multi-return transport structs, memoized per slot-type vector (pointer
+    // identity) so every function with the same signature shares one struct.
+    std::map<std::vector<DataDef *>, DataDefSTRUCT *> multi_ret_transport_map;
+    size_t multi_ret_transport_counter = 0;
+    DataDefSTRUCT *multi_return_transport_struct(
+	const std::vector<DataDef *> &types, TokenBase *where);
     // Type table identity layer — project segment (madc_typeid.h; design
     // docs/plans/2026-06-12-type-table-value-abi-design.md §2). Holds every
     // non-primitive DataDef this Program has been asked an id for; index i

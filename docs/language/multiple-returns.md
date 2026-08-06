@@ -1,6 +1,9 @@
 # Multiple Return Values
 
 Go-style multiple return values using `return a, b;` and `a, b := func();` syntax.
+Values of any copyable type travel — integers, doubles, pointers, and real
+class objects (`std::string`) — and a Go-style signature declares
+heterogeneous types: `(int, string) lookup();`.
 
 ## Syntax
 
@@ -55,13 +58,47 @@ int main()
 }
 ```
 
+## Declared Types
+
+With the bare form (`int divide(...)` + `return q, r;`), **every value
+carries the function's declared return type** — exactly C's rule that a
+return expression coerces to the declared type, applied per slot. So
+`double stats()` returns two doubles and `const char *labels()` returns two
+C strings.
+
+The **declared form** gives each slot its own type, class types included:
+
+```c
+#include <iostream>
+#include <string>
+using namespace std;
+
+(int, string) lookup()
+{
+    string name = "echo";
+    return 42, name;
+}
+
+int main()
+{
+    n, who := lookup();
+    cout << n << " " << who << endl;   // 42 echo
+    return 0;
+}
+```
+
+Class values are copied with real C++ semantics — the callee's locals are
+destroyed, the receivers own their own buffers.
+
 ## How It Works
 
-**Hidden return buffer:** The compiler adds a hidden `__retbuf` parameter to functions that return multiple values. The caller allocates stack space and passes a pointer.
-
-**Return statement:** `return q, r;` writes each value to `[retbuf + i*8]` (int64-sized slots), then returns the first value normally.
-
-**Unpacking:** `a, b := func();` calls the function with the return buffer, then loads each value from the buffer into the declared variables. Types are inferred from the return expressions.
+The compiler synthesizes a **transport struct** — `struct { T0 v0; T1 v1; }`
+— per slot-type signature; at the C level the function returns that struct.
+A trivially-copyable transport (all scalar slots) uses the native struct
+return; a transport with class slots takes the same hidden-`__retbuf`
+copy-construct/destructor path as any by-value class return. The `:=`
+receivers are ordinary locals typed by the slots, filled by plain assignment
+(scalars) or the class's real `operator=` (objects).
 
 ## Conditional Returns
 
@@ -83,11 +120,20 @@ int main()
 }
 ```
 
+## Loud Rejects
+
+Misuse is a compile error, never a silent wrong answer:
+
+- wrong receiver count — `'divide' returns 2 values, but 3 receivers given`
+- a multi-return call anywhere but an N-receiver `:=` —
+  `'divide' returns multiple values; receive them with 'a, b := divide(...)'`
+- a `return;` (or single-value return) inside a multi-return function
+- `:=` receiving from a non-multi-return callee, a function pointer, or an
+  unknown name
+- reference or `void` slot types, and multi-return in class methods
+
 ## Known Limitations
 
-- Numeric value types only (int, double). Class-typed values (e.g.
-  `std::string`) are not yet supported — the receivers bind as integers,
-  so member access on them fails to compile.
 - The receive form is `a, b := f();` only — a plain `a, b = f();` on
   pre-declared variables is rejected ("Expecting := after identifier
   list").
@@ -97,5 +143,8 @@ int main()
 
 ## Files
 
-- `src/parser.cpp` -- multi-return parsing, `:=` unpacking
-- `src/cir_builder.cpp` -- `__retbuf` parameter injection, return buffer writes, unpacking loads
+- `src/parser.cpp` — multi-return parsing, transport-struct synthesis
+  (`multi_return_transport_struct`), `:=` receiver binding + arity gates
+- `src/cir_builder.cpp` — return-side slot fills (`translate_return`),
+  call-side unpack (`multi_return_unpack`), expression-position gate
+- `tests/testmultiret*.mad` — the gates (values + rejects)

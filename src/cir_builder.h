@@ -166,14 +166,18 @@ class CirBuilder {
 	// beside m_cur_method.
 	DataDefCLASS *m_cur_ctor_vbase_owner = NULL;
 	// True while translating the body of a multi-return function (`return a, b;`,
-	// Go-style). Such a function uses the multi-return __retbuf ABI: C return type
-	// `void`, a hidden `long *__retbuf` first parameter, and `return a, b;` becomes
-	// "__retbuf[0]=a; __retbuf[1]=b; return;". The call site `x, y := f()` allocates
-	// a `long __mret[N]` buffer, passes it as __retbuf, then reads x=__mret[0] etc.
-	// (Ported to cir_builder 2026-06-02; it was an asmjit-only feature dropped when
-	// that backend was removed in 64f44b3 and never reimplemented on CIR.)
+	// Go-style). Such a function's C-level return type is its transport struct
+	// (`struct { T0 v0; ... }`, m_cur_func_multi_struct): a CLASS transport
+	// (some slot is an object) takes the __retbuf ABI and `return a, b;`
+	// constructs/assigns each slot directly into *__retbuf; a TRIVIAL
+	// transport returns natively and `return a, b;` fills a local `struct S`
+	// and returns it. The call site `x, y := f()` receives the struct and
+	// unpacks its fields (multi_return_unpack).
 	bool m_cur_func_multi_return = false;
-	// Per-translation counter for unique multi-return buffer names (__mret_K).
+	// The current multi-return function's transport struct (FuncDef::
+	// multi_ret_struct), NULL otherwise. Set beside m_cur_func_multi_return.
+	DataDefSTRUCT *m_cur_func_multi_struct = NULL;
+	// Per-translation counter for unique multi-return temp names (__mret_K).
 	int m_mret_counter = 0;
 	// Active `defer` scopes while translating the current function's body:
 	// each entry is a compound whose `deferred` vector is non-empty, innermost
@@ -206,11 +210,14 @@ class CirBuilder {
 	// the returned class/struct type.
 	node_t retbuf_param(DataDef *retdd, TokenBase *origin);
 
-	// Lower a multi-return call-site `a, b, ... := f(args)` (a TokenAssign whose
-	// multi_vars holds the N target variables). Pushes the `long __mret_K[N]`
-	// buffer decl, the `f(__mret_K, args)` call, and the assigns for multi_vars[1..]
-	// to m_pending_stmts (flushed before this decl statement); returns __mret_K[0]
-	// as multi_vars[0]'s initializer. See m_cur_func_multi_return.
+	// Lower a multi-return call-site `a, b, ... := f(args)` (a TokenAssign
+	// statement whose multi_vars holds the N receiver variables, all plain
+	// block-top scope vars). Emits the transport-struct temp, the call
+	// (native-return assign, or `f(&__t, args)` for a class transport), and
+	// one fill per receiver (plain assign for a scalar slot, member-wise
+	// copy-assign for an object slot) via m_pending_stmts; returns the last
+	// fill's value node for the enclosing expression statement. See
+	// m_cur_func_multi_return.
 	node_t multi_return_unpack(class TokenAssign *as, TokenBase *origin);
 
 	// Statements that must be emitted in the enclosing block immediately
