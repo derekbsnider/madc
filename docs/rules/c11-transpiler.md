@@ -2,11 +2,13 @@
 
 ## Why strict C11
 
-The transpiler pipeline is: madc source → Gecko parser → semantic
-walk → C11 emitter → c2mir → MIR → machine code. c2mir is a strict
-C11 compiler (14K lines). It does not support GCC extensions, C++
-features, or GNU statement expressions. Everything the emitter
-produces must be valid C11 that c2mir accepts without modification.
+The pipeline is: madc source → parser → `cir_node` tree (MC11-IR) →
+c2mir → MIR → machine code; `--emit=c11` renders the same tree as
+portable C11 text. c2mir is a strict C11 compiler (14K lines) with a
+short list of GNU extensions (statement expressions, labels-as-values —
+see the rule file's verified list). Everything the builder produces
+must be C11 that c2mir accepts without modification, and the emitted
+text must also compile under any external C11 toolchain.
 
 ## c2mir rejection examples
 
