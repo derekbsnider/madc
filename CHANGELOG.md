@@ -5,10 +5,10 @@
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 969/1**: new gates plus the old-failure flips, with zero
+moved **891/28 → 970/1**: new gates plus the old-failure flips, with zero
 newly broken tests in every measured two-way failset diff. The only
 remaining lane failure is `testtuple` (#110 pack wall). Fulltest is
-**974/0/0TO/9skip**.
+**975/0/0TO/9skip**.
 
 - **fix: `testfreezerun` flips under `-stdlib=libc++ --freeze-run` — the
   flavor runtime is part of BOTH sides of the freeze boundary, nested
@@ -50,6 +50,29 @@ remaining lane failure is `testtuple` (#110 pack wall). Fulltest is
   initializer, so claiming from inside those owners regressed
   `testaggrclassinit` and ten libc++ tests in two intermediate shapes,
   both caught by the suite gates and reverted before push.
+
+- **fix: braced aggregate init of OBJECT-member aggregates in the
+  DECLARATION lanes (@8f8f4009).** Every declaration form of
+  `S v = {std::string("hi"), 42}` (S class-promoted by its string member)
+  mis-served: `var_decl`'s C INIT list bit-copied the class member and
+  ordered the materialized initializer temp's declaration AFTER the
+  SPEC_DECL that uses it ("undeclared identifier `__madc_objtmp_0`" for
+  the `=`-braced local, the direct-list local, and the file-scope
+  global), the partial-arg ctor probe then default-constructed over the
+  member — and the decl copy-elision arm `S v = S{a, b}` was a SILENT
+  wrong answer: the full TokenObjTemp list went to `class_ctor_call`,
+  which has no aggregate leg, so the initializers were dropped (garbage
+  scalars, exit 0; found while reducing, fixed in the same family).
+  Storage for such aggregates now stays BARE —
+  `braced_aggregate_needs_construction` is the one predicate shared by
+  the emitter and the construction lanes — and the three declaration
+  sites that hold the FULL braced list claim it through
+  `class_aggregate_init` via `decl_aggregate_claim` (local braced decl,
+  decl copy-elision arm, `global_ctor_call` into `__madc_global_init`).
+  Copy-shape declines fall to the implicit-copy lane; multi-element
+  aggregate-shaped declines fail LOUD. `= {}`, statics, arrays, and
+  scalar-member aggregates keep their existing paths (gate
+  `testaggrdecl`, g++/clang++ oracles, default + libc++ lanes).
 
 - **fix: one instantiation key for typedef'd anonymous-aggregate template
   arguments (@588d9e73).** `canonical_arg_key_fragment` canonicalized a

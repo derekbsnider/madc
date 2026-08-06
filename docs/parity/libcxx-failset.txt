@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  e658a5b8 (2026-08-06) on feature/libcxx-parity7-claude
-# Result:       969 passed / 1 failed / 0 timed out / 13 skipped
+# Measured at:  8f8f4009 (2026-08-06) on feature/libcxx-parity7-claude
+# Result:       970 passed / 1 failed / 0 timed out / 13 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -832,4 +832,23 @@
 #                         shapes that claimed wider broke testaggrclassinit
 #                         and 10 libc++ tests — caught by the gates,
 #                         reverted before push). fulltest 974/0.
+#   8f8f4009  970 /   1   +1 is the new gate testaggrdecl; failing set
+#                         still testtuple ONLY (zero flips, zero
+#                         regressions). Residual (a) RESOLVED: braced
+#                         aggregate init of OBJECT-member aggregates in
+#                         the DECLARATION lanes. var_decl's C INIT list
+#                         bit-copied the class member and ordered the
+#                         materialized temp's decl AFTER the SPEC_DECL
+#                         ("undeclared identifier __madc_objtmp_0" —
+#                         tmp/r70b), and the decl copy-elision arm
+#                         `S v = S{a, b}` silently DROPPED the full
+#                         list (garbage, exit 0 — found while reducing).
+#                         Storage stays bare
+#                         (braced_aggregate_needs_construction, the ONE
+#                         emitter/lanes predicate); the three FULL-list
+#                         declaration sites (local braced decl, decl
+#                         copy-elision arm, global_ctor_call) claim via
+#                         decl_aggregate_claim -> class_aggregate_init;
+#                         multi-element aggregate-shaped declines fail
+#                         LOUD. fulltest 975/0.
 testtuple.mad

@@ -1,6 +1,20 @@
 # Test Status
 
-> **Current (2026-08-06, `feature/libcxx-parity7-claude` @e658a5b8 —
+> **Current (2026-08-06, `feature/libcxx-parity7-claude` @8f8f4009 —
+> DECL-lane braced aggregate init):** fulltest **975/0**; lane
+> **970/1/13skip** (+1 gate: testaggrdecl). The only remaining lane
+> failure is **testtuple** (#110 pack wall). Residual (a) resolved:
+> braced aggregate init of OBJECT-member aggregates in the DECLARATION
+> lanes — var_decl's C INIT list bit-copied the class member and ordered
+> the materialized temp's decl after the SPEC_DECL ("undeclared
+> identifier __madc_objtmp_0"), and the decl copy-elision arm
+> `S v = S{a, b}` silently DROPPED the full list (garbage, exit 0).
+> Storage stays bare (braced_aggregate_needs_construction); the three
+> FULL-list declaration sites claim via decl_aggregate_claim →
+> class_aggregate_init; multi-element aggregate-shaped declines fail
+> loud. EXE/OBJ legs deferred to session end.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @e658a5b8 —
 > testfreezerun FLIPPED):** fulltest **974/0**; lane **969/1/13skip**
 > (+1 gate: testaggrinit). The only remaining lane failure is
 > **testtuple** (#110 pack wall). Four fixes: the flavor-runtime dlopen
