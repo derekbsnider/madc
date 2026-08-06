@@ -1,6 +1,16 @@
 # Test Status
 
-> **Current (2026-08-05, `feature/libcxx-parity7-claude` @bd6fed08 —
+> **Current (2026-08-06, `feature/libcxx-parity7-claude` @022cbb3b —
+> testmathheader FLIPPED):** fulltest **968/0**; lane **963/3/13skip**
+> (+2 gates: testcastmembertype, teststaticoverload). Two fixes:
+> qualified member-TYPE casts (`(typename __promote<T>::type)x` — the
+> __math::isinf undefined-import root) and non-template static overload
+> ranking by argument types + [expr]/5 argument reference-collapse (the
+> silent `__promote<double>::type == long double` wrong value). Residual
+> filed: dependent-decltype pattern-freeze (tmp/r58b.mad). Remaining 3:
+> testfreezerun, testsysobject, testtuple.
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @bd6fed08 —
 > testifconstexpr FLIPPED; `<format>` chain THROUGH):** fulltest **968/0**;
 > lane **960/4/13skip** (+5 gates: testnsdmineg, testenumqualcase,
 > testinlinenstype, teststaticbraceinit, testvartemplatefold). Five fixes:

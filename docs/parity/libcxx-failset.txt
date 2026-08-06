@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  bd6fed08 (2026-08-05) on feature/libcxx-parity7-claude
-# Result:       960 passed / 4 failed / 0 timed out / 13 skipped
+# Measured at:  022cbb3b (2026-08-06) on feature/libcxx-parity7-claude
+# Result:       963 passed / 3 failed / 0 timed out / 13 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -738,7 +738,28 @@
 #                         TRANSACTIONAL on decline + a qualified peel +
 #                         inline_namespace_descendants consolidation (two
 #                         hand-rolled BFS copies migrated). fulltest 968/0.
+#   022cbb3b  963 /   3   🏁 testmathheader FLIPPED (output + quiet-stderr
+#                         both green); +2 are the new gates
+#                         (testcastmembertype, teststaticoverload). TWO
+#                         fixes: (17) C-style cast to a qualified member
+#                         TYPE — `(typename __promote<_A1>::type)__x`
+#                         (__math/traits.h isinf's instantiated body) died
+#                         both spellings in the expression cast probe; the
+#                         swallowed instantiation failure left every
+#                         __math::isinf call an undefined MIR import. New
+#                         probe arm resolves the extent NON-consumingly via
+#                         resolve_type_token_range (completeness rule keeps
+#                         a ::value leaf an expression). (18) non-template
+#                         static overload sets now rank by ARGUMENT TYPES
+#                         (the arity pick answered first-registered for
+#                         every arg: __promote<double>::type folded LONG
+#                         DOUBLE, sizeof 16 vs oracle 8 — a SILENT wrong
+#                         value found chasing (17)); + [expr]/5 argument
+#                         reference-collapse in score_arg_to_param.
+#                         Residual filed: dependent-decltype pattern-freeze
+#                         (tmp/r58b.mad) — parse-once dependent-member-type
+#                         KIND slice; concrete-args-only gate keeps it at
+#                         pre-session behavior. fulltest 968/0.
 testfreezerun.mad
-testmathheader.mad
 testsysobject.mad
 testtuple.mad

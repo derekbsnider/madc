@@ -5,9 +5,33 @@
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 960/4**: new gates plus the old-failure flips, with zero
+moved **891/28 → 963/3**: new gates plus the old-failure flips, with zero
 newly broken tests in every measured two-way failset diff. Fulltest is
 **968/0/0TO/9skip**.
+
+- **fix: `testmathheader` flips under `-stdlib=libc++` — qualified
+  member-type casts and static-overload ranking (@74d0e472, @022cbb3b).**
+  A C-style cast to a qualified member TYPE (`(typename
+  __promote<_A1>::type)__x`, the instantiated body of libc++
+  `__math/traits.h`'s isinf) failed both spellings in the expression cast
+  probe, and the swallowed instantiation failure left every
+  `__math::isinf` call an undefined MIR import; a new probe arm scans the
+  extent (optional `typename`, balanced `<...>` via `delim_scan_step`, the
+  `::` chain) and resolves it NON-consumingly through
+  `resolve_type_token_range`, whose completeness rule keeps a
+  `::value`-leaf an expression (gate `testcastmembertype`). Verifying the
+  flip exposed a SILENT wrong value: non-template static-member overload
+  sets bound the arity pick (first registered) forever —
+  `__numeric_type::__test(float/double/long double)` answered
+  first-registered for every argument, so `__promote<double>::type` folded
+  long double (sizeof 16; g++/clang++ say 8).
+  `reselect_static_member_overload` now ranks non-template sets through
+  `findMethodOverload` (concrete fully-typed args only), and
+  `score_arg_to_param` collapses a reference-typed ARGUMENT to its
+  referent ([expr]/5) (gate `teststaticoverload`). Residual filed with
+  reducer: dependent-decltype pattern-freeze (parse-once
+  dependent-member-type KIND). Lane 960/4 → **963/3** (remaining:
+  testfreezerun, testsysobject, testtuple).
 
 - **fix: `testifconstexpr` flips under `-stdlib=libc++` — five fixes close
   the `<format>` chain (@80a66dd5, @8ab93aed, @13403250, @1509773f,
