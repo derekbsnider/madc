@@ -1,5 +1,13 @@
 # HANDOFF — top-level `defer` (#16) and top-level `:=` (#18) join the synthesized script-mode main
 
+> **✅ EXECUTED 2026-08-06 (same day):** both fixes landed on
+> `feature/script-toplevel-claude` — #18 @11c983a6, #16 @126f03eb, gates
+> testscripttopmultiret/testscripttopdefer, doc limitations removed. The
+> single `x := 42;` probe WAS broken and joined #18's fix as predicted.
+> The branch's merge to develop is HELD behind the release-lane red —
+> see docs/plans/2026-08-06-release-lane-freeze-HANDOFF.md (the next
+> mission). This document is historical.
+
 Written 2026-08-06 at the v0.68.0 release (develop @beadfe22, release
 commit @1501a2e3, feature work through @429842b4). This is the next
 session's mission. Follow it as written; the SETTLED section is not
