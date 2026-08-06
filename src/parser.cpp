@@ -3660,6 +3660,37 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
     return cv_spelling + (cs.empty() ? adt->definition.name : cs);
 }
 
+// [temp.type]: ONE canonical DataDef per fundamental type in a template-
+// argument BINDING — the dd-level twin of template_type_arg_spelling's
+// spelling rule above. Deduction hands back whatever dd the argument
+// expression carried: the non-canonical builtin flavor twin (an integer
+// literal types as ddINT "int"; the declared-type path emits the lexer's
+// canonical ddINT32 "int32_t" — resolve_builtin_type_spelling is the one
+// table), or a namespace-scope scalar typedef alias dd (std::streamsize).
+// Every identity former downstream spells the binding dd's NAME (inst_key,
+// the substituted parameter spelling, overload_spelling_symbol_suffix), so
+// two flavors of one type mint TWO identities for one instantiation — and a
+// frozen corpus' drained products then disagree with a bound consumer's
+// fresh mints (the v0.68 release-lane freeze split: __check_constructible /
+// _Construct spelled int32_t* by the pack, int* by the consumer, stl_vector
+// 428 "conversion of non-scalar value"). Map plain scalars through THE
+// canonical table BY THEIR OWN NAME only. Deliberately NO scalar_alias_of
+// chain walk: a block-scope typedef inside a template body ("typedef ...
+// value_type _ValueType2") mints an alias dd carrying ONE instantiation's
+// resolution — walking it here collapsed a dependent name into a concrete
+// type and crossed instantiations (the same hazard template_type_arg_spelling
+// documents for DataType-based desugar). Alias dds, enums, classes,
+// pointers, references, function types, and value-constant dds keep their
+// own identity (the table returns NULL for their names).
+static DataDef *canonical_template_binding_dd(DataDef *dd)
+{
+    if ( !dd || dd->basetype() != BaseType::btSimple || dd->is_pointer()
+      || dynamic_cast<DataDefENUM *>(dd) )
+	return dd;
+    DataDef *canon = Program::resolve_builtin_type_spelling(dd->name);
+    return canon ? canon : dd;
+}
+
 static std::string sanitize_template_fragment(const std::string &s)
 {
     std::string out;
@@ -48929,7 +48960,11 @@ static int fn_template_deduce_param(const std::string &spelling,
 	    is_tp = true;
     if ( !is_tp || !arg_dd )
 	return -1;
-    DataDef *dd = arg_dd;
+    // Canonicalize BEFORE the reference wrap so a deduced `_Tp = A&` keys the
+    // canonical base, and again after the star/ref peel below — the peeled
+    // pointee is a declared type but the direct scalar arm sees the raw
+    // expression dd (integer literals carry the ddINT flavor twin).
+    DataDef *dd = canonical_template_binding_dd(arg_dd);
     if ( pgm && arg_expr && shape.amps == 2 && shape.stars == 0
       && !shape.cv && !dd->is_reference()
       && fn_template_call_arg_is_lvalue(arg_expr) )
@@ -48952,7 +48987,7 @@ static int fn_template_deduce_param(const std::string &spelling,
 	dd = p->base_type;
     }
     tp_out = shape.core;
-    dd_out = dd;
+    dd_out = canonical_template_binding_dd(dd);
     return 1;
 }
 
@@ -49096,8 +49131,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
 	const std::string &pack_param, bool pack_empty, Variable **var_out,
-	const std::vector<DataDef *> &pack_elems = std::vector<DataDef *>(),
-	const std::map<std::string, std::vector<DataDef *> > &tid_packs
+	std::vector<DataDef *> pack_elems = std::vector<DataDef *>(),
+	std::map<std::string, std::vector<DataDef *> > tid_packs
 	    = std::map<std::string, std::vector<DataDef *> >(),
 	const std::map<std::string, std::vector<std::string> > &tid_pack_spellings
 	    = std::map<std::string, std::vector<std::string> >(),
@@ -50169,13 +50204,28 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft_in, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
 	const std::string &pack_param, bool pack_empty, Variable **var_out,
-	const std::vector<DataDef *> &pack_elems,
-	const std::map<std::string, std::vector<DataDef *> > &tid_packs,
+	std::vector<DataDef *> pack_elems,
+	std::map<std::string, std::vector<DataDef *> > tid_packs,
 	const std::map<std::string, std::vector<std::string> > &tid_pack_spellings,
 	const std::map<std::string, std::vector<int64_t> > &tid_packs_nontype,
 	std::vector<DataDef *> *type_args_out,
 	std::vector<std::vector<DataDef *> > *type_arg_packs_out)
 {
+    // [temp.type] identity canonicalization at THE choke point every binding
+    // route passes through (deduced, explicit, unified, text): the values in
+    // these containers become the instantiation's identity (inst_key, the
+    // substituted spelling, the memo, the overload symbol) — fold flavor
+    // twins and scalar typedef aliases to the one canonical dd before any of
+    // that mints. See canonical_template_binding_dd.
+    for ( std::map<std::string, DataDef *>::iterator
+	    cb = binding.begin(); cb != binding.end(); ++cb )
+	cb->second = canonical_template_binding_dd(cb->second);
+    for ( size_t ce = 0; ce < pack_elems.size(); ++ce )
+	pack_elems[ce] = canonical_template_binding_dd(pack_elems[ce]);
+    for ( std::map<std::string, std::vector<DataDef *> >::iterator
+	    ct = tid_packs.begin(); ct != tid_packs.end(); ++ct )
+	for ( size_t ce = 0; ce < ct->second.size(); ++ce )
+	    ct->second[ce] = canonical_template_binding_dd(ct->second[ce]);
     // [temp.variadic] empty-pack elision on the RAW decl (dots intact) —
     // see tsubst_elide_empty_pack_expansions. A LOCAL copy: the shared
     // fn_template_map pattern must keep its dots for later non-empty
@@ -50606,6 +50656,31 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	char sigbuf[20];
 	snprintf(sigbuf, sizeof(sigbuf), "|%016llx", (unsigned long long)sig);
 	inst_key += sigbuf;
+    }
+    {
+	// Env-gated probe (MADC_DEBUG_INTSPLIT=1): report any binding arg whose
+	// dd NAME is the non-canonical bare "int" (canonical 4-byte signed int
+	// is ddINT32/"int32_t" — resolve_builtin_type_spelling), with the dd
+	// address vs &ddINT and its dynamic kind. Guards the invariant
+	// canonical_template_binding_dd establishes; a hit names the producer
+	// route that leaked a flavor twin into an instantiation identity.
+	static const char *isplit = ::getenv("MADC_DEBUG_INTSPLIT");
+	if ( isplit )
+	{
+	    for ( std::map<std::string, DataDef *>::const_iterator
+		    b = binding.begin(); b != binding.end(); ++b )
+		if ( b->second && b->second->name == "int" )
+		    fprintf(stderr, "[INTSPLIT] %s param=%s dd=%p ddINT=%p kind=%s canon='%s'\n",
+			    inst_key.c_str(), b->first.c_str(), (void*)b->second,
+			    (void*)&ddINT, typeid(*b->second).name(),
+			    b->second->canonical_cpp_spelling().c_str());
+	    for ( size_t e = 0; e < pack_elems.size(); ++e )
+		if ( pack_elems[e] && pack_elems[e]->name == "int" )
+		    fprintf(stderr, "[INTSPLIT] %s pack[%zu] dd=%p ddINT=%p kind=%s canon='%s'\n",
+			    inst_key.c_str(), e, (void*)pack_elems[e],
+			    (void*)&ddINT, typeid(*pack_elems[e]).name(),
+			    pack_elems[e]->canonical_cpp_spelling().c_str());
+	}
     }
     DBG_PACK("inst_key %s memo=%d vars=%d var_out=%d\n", inst_key.c_str(),
 	     (int)pgm.fn_template_instantiated.count(inst_key),
