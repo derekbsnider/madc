@@ -9838,8 +9838,17 @@ static void update_call_arg_area_offset (c2m_ctx_t c2m_ctx, struct type *type, i
   check_ctx_t check_ctx = c2m_ctx->check_ctx;
   node_t block = NL_EL (curr_func_def->u.ops, 3);
   struct node_scope *ns = block->attr;
+  mir_size_t slot = round_size (type_size (c2m_ctx, type), MAX_ALIGNMENT);
 
-  curr_call_arg_area_offset += round_size (type_size (c2m_ctx, type), MAX_ALIGNMENT);
+  /* A memory-class call result still needs a real fp-relative slot when the
+     type is a zero-sized (GNU empty) struct: reserving 0 bytes left
+     ns->call_arg_area_size at 0, so a function whose ONLY frame need is such
+     a call got no frame and gen's return-by-reference arm died on the
+     missing fp reg ("undeclared func reg fp").  Check and gen both step
+     offsets through this one function, so the minimum keeps them in
+     lockstep. */
+  if (slot == 0) slot = MAX_ALIGNMENT;
+  curr_call_arg_area_offset += slot;
   if (update_scope_p && ns->call_arg_area_size < curr_call_arg_area_offset)
     ns->call_arg_area_size = curr_call_arg_area_offset;
 }
