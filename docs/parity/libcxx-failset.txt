@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  8f8f4009 (2026-08-06) on feature/libcxx-parity7-claude
-# Result:       970 passed / 1 failed / 0 timed out / 13 skipped
+# Measured at:  01e0e7d7 (2026-08-06) on feature/libcxx-parity7-claude
+# Result:       975 passed / 1 failed / 0 timed out / 13 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -851,4 +851,44 @@
 #                         decl_aggregate_claim -> class_aggregate_init;
 #                         multi-element aggregate-shaped declines fail
 #                         LOUD. fulltest 975/0.
+#   01e0e7d7  975 /   1   +5 are ALL NEW GATES (zero flips, zero
+#                         regressions; failing set still testtuple
+#                         ONLY). FIVE fixes, four found under residual
+#                         (c)'s onion + the r74 probe matrix:
+#                         cb3bb84a residual (b) — P{7,3.5} braced
+#                         functional construction of PLAIN structs now
+#                         PARSES (cast arm's compound-literal reader
+#                         extracted into parse_compound_struct_lit, one
+#                         owner for `(T){...}` and `T{...}`; scalar
+#                         int{3}/int{} via the cast arms; gate
+#                         teststructbraceexpr). a50e6812 + fork
+#                         adc55808 — const __int128 FILE-SCOPE
+#                         initializers crashed c2mir (no int128 data
+#                         arm in gen_initializer: op-shaped SEGV via
+#                         file-scope temps, const leaf "wrong type in
+#                         data"); emits two U64 halves now (gate
+#                         testint128global; this was the pack-freeze
+#                         SEGV — the drain materializes __pow10_128).
+#                         855fb8cd + fork 3582b48e — a call returning
+#                         an EMPTY struct reserved 0 call-arg bytes;
+#                         a function whose only frame need is such a
+#                         call got NO fp ("undeclared func reg fp" at
+#                         pack-thaw on __compressed_pair::swap; NOTE
+#                         madc separately mistypes swap<allocator>'s
+#                         __swap_result_t return as the enable_if
+#                         STRUCT — recorded residual). c1e7cf14 + fork
+#                         4573a0f3 — a _Complex-returning function
+#                         never CONVERTED its return value: `return
+#                         3.0;` emitted component loads from ABSOLUTE
+#                         address 0 (SIGSEGV, gate testcomplexretconv).
+#                         01e0e7d7 — cast operands stop at a call:
+#                         `(int)getb().n` read as `((int)getb()).n`;
+#                         now continues parsePostfixChainFrom (gate
+#                         testcastcallpostfix). fulltest 980/0.
+#                         Pack-thaw's NEXT defect (recorded): the drain
+#                         force-instantiates duration<double>::
+#                         operator%= (ill-formed for floating reps) and
+#                         gen dies on umods-with-ldouble — the
+#                         freeze-side check gate cannot see gen-only
+#                         defects.
 testtuple.mad

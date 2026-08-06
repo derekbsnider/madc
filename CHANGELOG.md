@@ -5,10 +5,10 @@
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 970/1**: new gates plus the old-failure flips, with zero
+moved **891/28 → 975/1**: new gates plus the old-failure flips, with zero
 newly broken tests in every measured two-way failset diff. The only
 remaining lane failure is `testtuple` (#110 pack wall). Fulltest is
-**975/0/0TO/9skip**.
+**980/0/0TO/9skip**.
 
 - **fix: `testfreezerun` flips under `-stdlib=libc++ --freeze-run` — the
   flavor runtime is part of BOTH sides of the freeze boundary, nested
@@ -73,6 +73,61 @@ remaining lane failure is `testtuple` (#110 pack wall). Fulltest is
   aggregate-shaped declines fail LOUD. `= {}`, statics, arrays, and
   scalar-member aggregates keep their existing paths (gate
   `testaggrdecl`, g++/clang++ oracles, default + libc++ lanes).
+
+- **fix: braced functional construction of PLAIN structs parses —
+  `P{7, 3.5}` (@cb3bb84a).** Both functional-construction owners were
+  DataDefCLASS-only and the expression identifier arm keyed on `(` alone,
+  so the list form on a non-promoted struct died with "Expecting
+  identifier". [expr.type.conv]'s C11 lowering is exactly the C99
+  compound literal, machinery madc already had end-to-end: the cast arm's
+  brace-list reader (a local lambda) is extracted into the one owner
+  `parse_compound_struct_lit`, and both `(T){...}` and `T{...}` delegate
+  to it (designators, nesting, typedef'd anonymous structs). Scalar list
+  forms (`int{3}`, `int{}`) reuse the existing cast/value-init arms (gate
+  `teststructbraceexpr`).
+
+- **fix: const `__int128` file-scope initializers — fork @adc55808, pin
+  @a50e6812.** c2mir's `gen_initializer` had no int128 DATA arm: an
+  op-shaped constant initializer SEGFAULTED (the val_gen pre-pass
+  materializes int128 through function temps; file scope has no
+  `curr_func`) and a plain constant leaf died with "wrong type in data".
+  Const int128 elements now emit two `MIR_T_U64` data halves in the
+  `store_int128_halves` layout. This was the pack-freeze lane's SEGV —
+  the drain materializes libc++ `<charconv>`'s `__pow10_128` table, the
+  only path that gen'd such an initializer (gate `testint128global`;
+  reproduced and verified in standalone `c2m`).
+
+- **fix: empty-struct call results get a frame — fork @3582b48e, pin
+  @855fb8cd.** A call returning a zero-sized (GNU empty) struct reserved
+  0 call-arg bytes, so a function whose ONLY frame need is such a call
+  got no frame-pointer reg and gen's return-by-reference arm died with
+  "MIR fatal error: undeclared func reg fp" (pack-thaw on
+  `__compressed_pair<int*, allocator&>::swap`; reduced to 4 lines of
+  plain C). A memory-class result now reserves at least MAX_ALIGNMENT
+  (gate `testemptystructret`). madc's separate mistyping of
+  `std::swap<allocator>`'s `__swap_result_t` return (the empty
+  `enable_if` STRUCT where C++ says void) is recorded as a follow-on.
+
+- **fix: `_Complex` return-value conversion — fork @4573a0f3, pin
+  @c1e7cf14.** `double _Complex f(void) { return 3.0; }` emitted
+  component loads from ABSOLUTE address 0 (`dmov d_0, d:0`) — SIGSEGV in
+  madc's JIT and standalone c2m alike: the N_RETURN arm never converted
+  the scalar to the complex return type, and `target_add_ret_ops` read
+  the scalar op's nonexistent mem fields. Differing component widths
+  (`float _Complex` returned as `double _Complex`) had the sibling
+  defect. The return arm now routes through the existing
+  `scalar_to_complex` / `complex_to_complex` owners (gate
+  `testcomplexretconv`).
+
+- **fix: cast operands continue the postfix chain — `(int)getb().n`
+  (@01e0e7d7).** The cast-operand arm claimed an unqualified call and
+  stopped, so trailing postfix applied to the cast result
+  (`((int)getb()).n` — "member reference is not a structure or union");
+  postfix binds tighter than a cast. The operand now continues through
+  `parsePostfixChainFrom` (the qualified paths' owner), and that chain's
+  call arm no longer carries the callee's function-typed var as the
+  member proxy (it mis-selected `.` vs `->` after a call). `(T)f() << k`
+  keeps the tight cast binding (gate `testcastcallpostfix`).
 
 - **fix: one instantiation key for typedef'd anonymous-aggregate template
   arguments (@588d9e73).** `canonical_arg_key_fragment` canonicalized a

@@ -1,6 +1,26 @@
 # Test Status
 
-> **Current (2026-08-06, `feature/libcxx-parity7-claude` @8f8f4009 —
+> **Current (2026-08-06, `feature/libcxx-parity7-claude` @01e0e7d7 —
+> session #64 close):** fulltest **980/0**; lane **975/1/13skip**
+> (+5 gates: testaggrdecl, teststructbraceexpr, testint128global,
+> testemptystructret, testcomplexretconv, testcastcallpostfix — the
+> last five landed after the 970/1 checkpoint). The only remaining lane
+> failure is **testtuple** (#110 pack wall). Six fixes: (24) DECL-lane
+> braced aggregate init of object-member aggregates; (25) `P{7, 3.5}`
+> braced functional construction of plain structs parses
+> (parse_compound_struct_lit — one brace reader for `(T){...}` and
+> `T{...}`); (26) const `__int128` file-scope initializers (fork:
+> gen_initializer int128 data arm — was the pack-freeze SEGV);
+> (27) empty-struct call results reserve a real call-arg slot (fork:
+> "undeclared func reg fp" at pack-thaw); (28) `_Complex` return-value
+> conversion (fork: `return 3.0;` loaded components from absolute
+> address 0); (29) cast operands continue the postfix chain
+> (`(int)getb().n`). Follow-ons recorded: swap<allocator> return-type
+> mistyping (tsubst), duration<double>::operator%= drain
+> instantiation (pack gate is check-only), dependent-decltype
+> pattern-freeze. EXE/OBJ legs at session end.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @8f8f4009 —
 > DECL-lane braced aggregate init):** fulltest **975/0**; lane
 > **970/1/13skip** (+1 gate: testaggrdecl). The only remaining lane
 > failure is **testtuple** (#110 pack wall). Residual (a) resolved:
@@ -12,7 +32,7 @@
 > Storage stays bare (braced_aggregate_needs_construction); the three
 > FULL-list declaration sites claim via decl_aggregate_claim →
 > class_aggregate_init; multi-element aggregate-shaped declines fail
-> loud. EXE/OBJ legs deferred to session end.
+> loud.
 >
 > **Previous (2026-08-06, `feature/libcxx-parity7-claude` @e658a5b8 —
 > testfreezerun FLIPPED):** fulltest **974/0**; lane **969/1/13skip**
