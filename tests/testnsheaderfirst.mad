@@ -1,0 +1,26 @@
+// Embedded namespace headers are SELF-CONTAINED: including <ns_php> /
+// <ns_rust> FIRST — before any <string>/<iostream> — must compile and run.
+// The script-facing ns_* headers declare their publics over std::string but
+// carried no #include <string>, so `#include <ns_php>` as the first line
+// errored INSIDE the embedded header ("ns_php:2:15: use of undeclared
+// identifier 'string'"). g++ canon: a header includes what it uses.
+#include <ns_php>
+#include <ns_rust>
+#include <cstdio>
+
+int main()
+{
+	std::string s = "  hello  ";
+	php::trim(s);
+	printf("[%s]\n", s.c_str());
+
+	std::string r = "  world  ";
+	rust::trim(r);
+	printf("[%s]\n", r.c_str());
+
+	array a;
+	php::array_push(a, "one");
+	php::array_push(a, "two");
+	printf("%ld\n", php::count(a));
+	return 0;
+}
