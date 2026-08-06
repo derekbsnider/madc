@@ -1,6 +1,15 @@
 # Test Status
 
-> **Current (2026-08-06, `feature/libcxx-parity7-claude` @4e1a4004 —
+> **Current (2026-08-06, `feature/libcxx-parity7-claude` @588d9e73 —
+> one-key fix for typedef'd anon-aggregate template args):** fulltest
+> **973/0**; lane **967/2/13skip** (+1 gate: testanontypedefspec). The
+> fix removed a SILENT wrong value in plain JIT (explicit spec invisible
+> behind a typedef'd anon-struct key — 0 for 7, exit 0) and pushed the
+> testfreezerun libc++ frontier from the ClassPattern-base error to
+> thaw-time static-member facet imports (num_put/ctype `id`). Remaining
+> 2: testfreezerun, testtuple.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @4e1a4004 —
 > testsysobject FLIPPED):** fulltest **970/0**; lane **966/2/13skip**
 > (+2 gates: testfriendnonmember, testfreeoptemplate). Two fixes: a
 > class-body FRIEND template never registers as a MEMBER ([class.friend] —

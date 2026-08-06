@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  4e1a4004 (2026-08-06) on feature/libcxx-parity7-claude
-# Result:       966 passed / 2 failed / 0 timed out / 13 skipped
+# Measured at:  588d9e73 (2026-08-06) on feature/libcxx-parity7-claude
+# Result:       967 passed / 2 failed / 0 timed out / 13 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -779,5 +779,24 @@
 #                         operand never engaged the lowering at all
 #                         (engage gate widened via operand_value_datadef +
 #                         DataDefSTRUCT). fulltest 970/0.
+#   588d9e73  967 /   2   +1 is the new gate (testanontypedefspec); the
+#                         failing set is unchanged. Fix (21): ONE
+#                         instantiation key for a template arg spelled
+#                         through a typedef of an ANONYMOUS aggregate
+#                         (canonical_arg_key_fragment: empty canonical
+#                         spelling now keys by the resolved DataDef's
+#                         NAME — mbstate_t == __anon_N). Pre-fix this was
+#                         a SILENT wrong value in plain JIT (explicit spec
+#                         invisible, primary answered 0 for 7, exit 0) AND
+#                         the testfreezerun ClassPattern-base error under
+#                         libc++ --freeze-run. That error is THROUGH; the
+#                         testfreezerun frontier moved to THAW-time
+#                         static-member facet imports (ostream:208
+#                         undeclared _ZNSt3__17num_putIc...E2idE,
+#                         ios:520 _ZNSt3__15ctypeIcE2idE — the static
+#                         member's global Variable + storage_alias_name
+#                         does not round-trip the freeze; classes restore
+#                         static_member_types only, cir_freeze.cpp:2822).
+#                         fulltest 973/0.
 testfreezerun.mad
 testtuple.mad

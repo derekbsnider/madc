@@ -5,9 +5,26 @@
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 966/2**: new gates plus the old-failure flips, with zero
+moved **891/28 → 967/2**: new gates plus the old-failure flips, with zero
 newly broken tests in every measured two-way failset diff. Fulltest is
-**970/0/0TO/9skip**.
+**973/0/0TO/9skip**.
+
+- **fix: one instantiation key for typedef'd anonymous-aggregate template
+  arguments (@588d9e73).** `canonical_arg_key_fragment` canonicalized a
+  user-type argument only when the resolved DataDef carried a canonical
+  C++ spelling; a typedef of an anonymous aggregate (`typedef struct
+  { ... } mbstate_t` → synthetic tag `__anon_N`) has none, so the parse
+  lane kept the raw typedef spelling while every DataDef-driven lane (the
+  ClassPattern replay, base-clause substitution) spells the same argument
+  by the resolved name — one type split across two keys. Pre-fix this was
+  a SILENT wrong value in the plain JIT lane (an explicit specialization
+  keyed by such an argument went invisible and the primary answered — 0
+  for 7 with exit 0, negative-control verified) and the
+  `testfreezerun` libc++ `--freeze-run` "ClassPattern base did not
+  resolve complete" error (`codecvt_byname<char,char,mbstate_t>`'s base).
+  Empty canonical spelling now keys by the resolved DataDef's registered
+  name (gate `testanontypedefspec`, g++/clang++ oracles). The
+  testfreezerun frontier moved to thaw-time static-member facet imports.
 
 - **fix: `testsysobject` flips under `-stdlib=libc++` — a class-body friend
   never registers as a member, and global free operator templates bind
