@@ -30235,6 +30235,16 @@ std::string Program::canonical_arg_key_fragment(
 		const std::string &cs = cdd->canonical_cpp_spelling();
 		if ( !cs.empty() && cs != core )
 		    return sanitize_template_arg_fragment(cs + sfx);
+		// No canonical C++ spelling: the resolved DataDef's registered
+		// NAME is the identity. A typedef of an ANONYMOUS aggregate
+		// (`typedef struct {...} mbstate_t` -> __anon_N) otherwise
+		// keeps the raw typedef here while every DataDef-driven lane
+		// (the ClassPattern replay) spells the same argument by name —
+		// one type split across two keys, so the
+		// codecvt<char,char,mbstate_t> explicit spec went invisible to
+		// the pattern materializer's base resolve under --freeze-run.
+		if ( cs.empty() && !cdd->name.empty() && cdd->name != core )
+		    return sanitize_template_arg_fragment(cdd->name + sfx);
 	    }
 	// A TEMPLATE-ID core (`alloc9<int>`) follows the same one-key rule:
 	// a use site spells the RESOLVED type canonically
