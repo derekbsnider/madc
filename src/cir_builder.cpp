@@ -6399,7 +6399,17 @@ node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 		// (class_ctor_call emits the ctor on &__t with the parsed args).
 		Variable tmpv(name, *cdd, 1, NULL, false);
 		tmpv.flags |= vfLOCAL;
-		node_t cc = class_ctor_call(&tmpv, cdd, ot->ctor_args, origin);
+		// Aggregate list-init FIRST — same rule and reasoning as the
+		// translate_expr TokenObjTemp arm: a full-list site where the
+		// ctor path's default-construction block DROPS the initializers.
+		node_t cc = ot->ctor_args.empty() ? NULL
+			: class_aggregate_init(
+				[&](const std::string &m) -> node_t {
+					return node2(N_FIELD, id(name, origin),
+						     id(m.c_str(), origin));
+				}, cdd, ot->ctor_args, origin);
+		if (!cc)
+			cc = class_ctor_call(&tmpv, cdd, ot->ctor_args, origin);
 		if (cc) m_pending_stmts.push_back(cc);
 	}
 
@@ -12617,6 +12627,11 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 								    ctor_args, origin))
 				return cc;
 		}
+		// NO aggregate leg here either (class_ctor_call's twin rule):
+		// the declaration/global lanes probe this variant with a
+		// PARTIAL argument view too, and claiming it zeroed the members
+		// the probe omitted. The aggregate owner is wired only at the
+		// TokenObjTemp construction sites, which pass the full list.
 		bool members = class_needs_member_construction(cdd);
 		bool bases = class_needs_base_construction(cdd);
 		if (!cdd->has_any_vptr() && !members && !bases) return NULL;
@@ -12998,6 +13013,145 @@ node_t CirBuilder::class_array_construct_loop(
 	return node5(N_FOR, list(), init, cond, incr, body, origin);
 }
 
+node_t CirBuilder::class_aggregate_init(
+		const std::function<node_t(const std::string &)> &member_lvalue,
+		DataDefCLASS *cdd,
+		const std::vector<TokenBase *> &ctor_args,
+		TokenBase *origin)
+{
+	if (!cdd || cdd->has_user_ctor || ctor_args.empty())
+		return NULL;
+	// Not aggregates ([dcl.init.aggr]p1): polymorphic, based, or
+	// union-layout classes DECLINE — their braced lists were always served
+	// by the legacy construction lanes (inherited ctors, copy shapes), and
+	// refusing loudly here broke exactly those (libc++ __node_handle's
+	// based construction). Declining keeps them on the path that served
+	// them; the claim below covers only the clean aggregate case.
+	if (cdd->has_any_vptr() || !cdd->bases.empty() || cdd->union_layout)
+		return NULL;
+	if (ctor_args.size() > cdd->members.size())
+		return NULL;
+	// T{t} with a same-class (or derived) t is a COPY ([over.match.list]),
+	// not a member fill — decline to the copy lane.
+	if (ctor_args.size() == 1 && ctor_args[0]) {
+		DataDef *ad = operand_value_datadef(ctor_args[0]);
+		while (DataDefCONST *ac = dynamic_cast<DataDefCONST *>(ad))
+			ad = ac->base_type;
+		DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(ad);
+		if (acls && acls->is_or_derives_from(cdd))
+			return NULL;
+	}
+	// The flush calls below must drain ONLY the pendings this helper's own
+	// translate_expr calls generate — the caller's pending list already
+	// holds the receiver temp's declaration, and draining it into this
+	// (scoped) block moves the declaration out of the consumer's scope
+	// ("undeclared identifier __madc_objtmp_N" one statement later). On a
+	// DECLINE the new pendings are discarded (arena-owned; nothing
+	// references them) so the caller's list comes back untouched.
+	struct PendingScope {
+		std::vector<node_t> &live;
+		std::vector<node_t> saved;
+		bool discard_new = false;
+		PendingScope(std::vector<node_t> &p) : live(p) { saved.swap(live); }
+		~PendingScope() {
+			if (discard_new)
+				live.clear();
+			saved.insert(saved.end(), live.begin(), live.end());
+			live.swap(saved);
+		}
+	} pending_scope(m_pending_stmts);
+	std::vector<node_t> stmts;
+	// Any shape this lowering cannot serve DECLINES (NULL) back to the
+	// legacy lanes rather than half-claiming: nothing below is emitted
+	// until the whole walk succeeds (stmts is local; pendings discard).
+	auto decline = [&]() -> node_t {
+		pending_scope.discard_new = true;
+		return NULL;
+	};
+	for (size_t i = 0; i < cdd->members.size(); ++i) {
+		const std::string &mn = cdd->members[i].first;
+		DataDef *mt = cdd->members[i].second;
+		if (mn.empty() || mn.compare(0, 6, "__anon") == 0)
+			return decline();
+		if (i < ctor_args.size()) {
+			TokenBase *arg = ctor_args[i];
+			if (!arg)
+				return decline();
+			if (DataDefCLASS *mc = as_class_instance(mt)) {
+				std::vector<TokenBase *> one(1, arg);
+				node_t cc = class_ctor_call_addr(
+					node1(N_ADDR, member_lvalue(mn), origin),
+					mc, one, origin);
+				if (!cc)
+					return decline();
+				flush_pending_stmts(stmts);
+				stmts.push_back(cc);
+				continue;
+			}
+			node_t init = translate_expr(arg);
+			if (!init)
+				return decline();
+			// A reference member (pointer slot) BINDS to the
+			// initializer's address (same rule as the ctor
+			// member-init lane).
+			if (mt && mt->is_reference())
+				init = node1(N_ADDR, init, origin);
+			node_t asgn = node2(N_ASSIGN, member_lvalue(mn), init,
+					    origin);
+			flush_pending_stmts(stmts);
+			stmts.push_back(node2(N_EXPR, list(), asgn, origin));
+			continue;
+		}
+		// Trailing member: NSDMI when present, else value-initialize
+		// ([dcl.init.aggr]p8).
+		{
+			std::map<std::string, TokenBase *>::const_iterator di =
+				cdd->member_default_inits.find(mn);
+			if (di != cdd->member_default_inits.end() && di->second
+			    && !as_class_instance(mt)) {
+				node_t init = translate_expr(di->second);
+				node_t asgn = node2(N_ASSIGN, member_lvalue(mn),
+						    init, origin);
+				flush_pending_stmts(stmts);
+				stmts.push_back(node2(N_EXPR, list(), asgn,
+						      origin));
+				continue;
+			}
+		}
+		if (DataDefCLASS *mc = as_class_instance(mt)) {
+			node_t cc = class_ctor_call_addr(
+				node1(N_ADDR, member_lvalue(mn), origin), mc,
+				std::vector<TokenBase *>(), origin);
+			if (cc) {
+				flush_pending_stmts(stmts);
+				stmts.push_back(cc);
+			}
+			continue;
+		}
+		if (mt && (mt->is_numeric() || mt->is_pointer())) {
+			node_t z = node2(N_ASSIGN, member_lvalue(mn),
+					 integer(0L, origin), origin);
+			stmts.push_back(node2(N_EXPR, list(), z, origin));
+			continue;
+		}
+		if (const DataDefSTRUCT *cst = as_plain_struct(mt)) {
+			node_t z = node2(N_ASSIGN, member_lvalue(mn),
+					 zero_struct_compound(cst, origin),
+					 origin);
+			stmts.push_back(node2(N_EXPR, list(), z, origin));
+			continue;
+		}
+		return decline();
+	}
+	if (stmts.empty())
+		return NULL;
+	if (stmts.size() == 1)
+		return stmts[0];
+	node_t blk = list();
+	for (node_t s : stmts) append(blk, s);
+	return node2(N_BLOCK, list(), blk, origin);
+}
+
 node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 				   const std::vector<TokenBase *> &ctor_args,
 				   TokenBase *origin)
@@ -13058,6 +13212,14 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 					id(vname.c_str(), origin), cdd, ctor_args,
 					origin))
 				return cc;
+		// NO aggregate leg here: the DECLARATION lane calls this with a
+		// PARTIAL argument view (a copy/conversion probe) and owns the
+		// full braced list itself via its C initializer emission —
+		// claiming it from here zeroed the members the probe omitted
+		// (testaggrclassinit's `SV s = {"hi", 7}` lost the 7). The
+		// aggregate owner (class_aggregate_init) is wired at the
+		// TokenObjTemp construction sites, which pass the full list and
+		// had no aggregate service at all.
 		std::vector<node_t> stmts;
 		complete_object_construct_stmts([&]() -> node_t {
 			return node1(N_ADDR, id(vname.c_str(), origin), origin);
@@ -17066,7 +17228,22 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		Variable *otmp = new Variable(otname, *ocdd, 1, NULL, false);
 		otmp->flags |= vfLOCAL;
 		m_pending_stmts.push_back(var_decl(otmp, tb));
-		node_t occ = class_ctor_call(otmp, ocdd, ot->ctor_args, tb);
+		// Aggregate list-init FIRST ([dcl.init.aggr]): this construction
+		// site passes the FULL braced list, and for a ctor-less clean
+		// aggregate the list IS memberwise init — the ctor path would
+		// return the default-construction block with the initializers
+		// DROPPED (a silent wrong value: S{std::string("hi"), 42}
+		// printed garbage; the frozen libc++ lane returned a garbage
+		// __allocation_result). Copy shapes and every non-aggregate
+		// decline inside the helper and take the ctor path as before.
+		node_t occ = ot->ctor_args.empty() ? NULL
+			: class_aggregate_init(
+				[&](const std::string &m) -> node_t {
+					return node2(N_FIELD, id(otname, tb),
+						     id(m.c_str(), tb));
+				}, ocdd, ot->ctor_args, tb);
+		if (!occ)
+			occ = class_ctor_call(otmp, ocdd, ot->ctor_args, tb);
 		if (occ) m_pending_stmts.push_back(occ);
 		return id(otname, tb);
 	}

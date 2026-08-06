@@ -1126,6 +1126,24 @@ public:
 	node_t class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin, bool vbase_forward = false);
+	// [dcl.init.aggr]: memberwise copy-initialization of a CTOR-LESS class
+	// from an explicit initializer list (brace form, and the C++20 P0960
+	// paren form), declaration order; trailing members value-initialize
+	// (NSDMI first). `member_lvalue` mints a FRESH member-access lvalue per
+	// call (c2mir single parent link). Claims ONLY the clean aggregate case
+	// (no vptr/bases/union, servable members); every other shape DECLINES
+	// (NULL, nothing emitted) back to the legacy construction lanes that
+	// already serve it. Callers are the FULL-list construction sites (the
+	// TokenObjTemp arms, class_ctor_call_addr) — never class_ctor_call
+	// itself: the declaration lane probes it with a PARTIAL argument view
+	// and owns the braced list via its C initializer emission. Motivating
+	// defects: the frozen-libc++ __allocate_at_least garbage-pointer trap,
+	// and S{string, int} printing garbage in the plain lane.
+	node_t class_aggregate_init(
+			       const std::function<node_t(const std::string &)> &member_lvalue,
+			       DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin);
 	// Complete-object (Itanium C1-flavor) construction at a minted address:
 	// user-ctor virtual bases first (base-most order), then the C2-flavor
 	// construction (class_ctor_call_addr). `mint_addr` returns a FRESH typed
