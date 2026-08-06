@@ -19457,8 +19457,26 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       val = materialize_int128_vector_node (c2m_ctx, NL_EL (r->u.ops, 1),
                                             ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type);
     } else {
-      val = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, !ret_by_addr_p && scalar_p,
-                 !ret_by_addr_p || scalar_p ? NULL : &var, NULL);
+      struct type *ret_expr_type = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
+      /* A complex-returning function may return a SCALAR (implicit re=x, im=0,
+         C99 6.3.1.7) or a complex of a DIFFERENT component width; both need a
+         real conversion HERE — target_add_ret_ops reads the result as complex
+         MEMORY, and a scalar value op has no mem fields (the emitted component
+         loads had base 0: `dmov d_0, d:0` — SIGSEGV at run for
+         `double _Complex f(void) { return 3.0; }`). */
+      int complex_conv_p = complex_type_p (ret_type)
+                           && (!complex_type_p (ret_expr_type)
+                               || ret_expr_type->u.basic_type != ret_type->u.basic_type);
+      val = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL,
+                 (!ret_by_addr_p && scalar_p)
+                   || (complex_conv_p && !complex_type_p (ret_expr_type)),
+                 !ret_by_addr_p || scalar_p || complex_conv_p ? NULL : &var, NULL);
+      if (complex_conv_p)
+        val = !complex_type_p (ret_expr_type)
+                ? scalar_to_complex (c2m_ctx, val, get_mir_type (c2m_ctx, ret_expr_type),
+                                     ret_type->u.basic_type)
+                : complex_to_complex (c2m_ctx, val, ret_expr_type->u.basic_type,
+                                      ret_type->u.basic_type);
       if (!ret_by_addr_p && scalar_p) {
         if (int128_type_p (((struct expr *) NL_EL (r->u.ops, 1)->attr)->type)
             && val.mir_op.mode == MIR_OP_MEM) {
