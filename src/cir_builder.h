@@ -1134,15 +1134,36 @@ public:
 	// (no vptr/bases/union, servable members); every other shape DECLINES
 	// (NULL, nothing emitted) back to the legacy construction lanes that
 	// already serve it. Callers are the FULL-list construction sites (the
-	// TokenObjTemp arms, class_ctor_call_addr) — never class_ctor_call
-	// itself: the declaration lane probes it with a PARTIAL argument view
-	// and owns the braced list via its C initializer emission. Motivating
+	// TokenObjTemp arms, class_ctor_call_addr, and the declaration lanes
+	// via decl_aggregate_claim) — never class_ctor_call itself: the
+	// declaration lanes probe THAT with a PARTIAL argument view. Motivating
 	// defects: the frozen-libc++ __allocate_at_least garbage-pointer trap,
 	// and S{string, int} printing garbage in the plain lane.
 	node_t class_aggregate_init(
 			       const std::function<node_t(const std::string &)> &member_lvalue,
 			       DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin);
+	// TRUE when a braced-init class instance's storage declaration must stay
+	// BARE (no C INIT list from var_decl): an OBJECT member needs
+	// copy-construction — bit-copying its representation is wrong, and a
+	// materialized initializer temp's declaration would order AFTER the
+	// SPEC_DECL that uses it. The declaration lanes then own the full list
+	// via decl_aggregate_claim. Consulted by var_decl's aggregate demotion
+	// and by the claim sites — one predicate, or the emitter and the
+	// construction lanes drift (double-init or dropped list).
+	bool braced_aggregate_needs_construction(Variable *v, TokenDecl *tdecl,
+			       DataDefCLASS *cdd);
+	// Aggregate claim for a DECLARATION site that holds the FULL braced
+	// list (`S v = {a, b}`, the decl copy-elision arm, a file-scope
+	// global). Returns the claimed construction; a LOUD error node when the
+	// list is aggregate-shaped but unservable (a silent fall-through would
+	// drop initializers — `S v = S{a, b}` default-constructed members and
+	// read garbage, exit 0); NULL to decline to the ctor lanes (copy shape,
+	// user-ctor list-init).
+	node_t decl_aggregate_claim(const std::string &vname,
+			       DataDefCLASS *cdcl,
+			       const std::vector<TokenBase *> &args,
 			       TokenBase *origin);
 	// Complete-object (Itanium C1-flavor) construction at a minted address:
 	// user-ctor virtual bases first (base-most order), then the C2-flavor

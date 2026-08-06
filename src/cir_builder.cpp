@@ -7740,8 +7740,13 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	if (class_instance && tdecl
 	    && (tdecl->has_brace_init || !tdecl->init_list.empty())) {
 		DataDefCLASS *aggc = as_class_instance(base_dd);
+		// An OBJECT-member aggregate stays class_instance (bare
+		// storage): its braced list needs real construction —
+		// braced_aggregate_needs_construction, served by the
+		// declaration lanes' decl_aggregate_claim.
 		if (aggc && !aggc->has_user_ctor && !aggc->has_any_vptr()
-		    && aggc->bases.empty() && !aggc->base_class)
+		    && aggc->bases.empty() && !aggc->base_class
+		    && !braced_aggregate_needs_construction(v, tdecl, aggc))
 			class_instance = false;
 	}
 	// A static/global fixed array whose constant initializer the parser baked
@@ -13152,6 +13157,46 @@ node_t CirBuilder::class_aggregate_init(
 	return node2(N_BLOCK, list(), blk, origin);
 }
 
+bool CirBuilder::braced_aggregate_needs_construction(Variable *v,
+						     TokenDecl *tdecl,
+						     DataDefCLASS *cdd)
+{
+	// `= {}` (empty list) keeps var_decl's C zero-init + the default
+	// construction pair; statics stay in the constant-initializer C
+	// domain; arrays keep their element paths.
+	return v && tdecl && cdd
+	    && !tdecl->init_list.empty()
+	    && !(v->flags & vfSTATIC)
+	    && !v->is_fixed_array()
+	    && class_has_object_members(cdd);
+}
+
+node_t CirBuilder::decl_aggregate_claim(const std::string &vname,
+					DataDefCLASS *cdcl,
+					const std::vector<TokenBase *> &args,
+					TokenBase *origin)
+{
+	node_t agg = class_aggregate_init(
+		[&](const std::string &m) -> node_t {
+			return node2(N_FIELD, id(vname.c_str(), origin),
+				     id(m.c_str(), origin));
+		}, cdcl, args, origin);
+	if (agg)
+		return agg;
+	// Aggregate-shaped ([dcl.init.aggr]p1) but the owner could not serve
+	// the whole list: no lane downstream can either (they see partial
+	// argument views), so a fall-through silently drops initializers.
+	// The single-arg shape falls through on purpose — it is the
+	// copy/conversion domain of the ctor lanes.
+	if (args.size() > 1 && !cdcl->has_user_ctor && !cdcl->has_any_vptr()
+	    && cdcl->bases.empty() && !cdcl->union_layout) {
+		std::string msg = "unsupported aggregate initializer shape for '"
+			+ cdcl->name + "'";
+		return error_node(msg.c_str(), origin);
+	}
+	return NULL;
+}
+
 node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 				   const std::vector<TokenBase *> &ctor_args,
 				   TokenBase *origin)
@@ -13212,14 +13257,15 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 					id(vname.c_str(), origin), cdd, ctor_args,
 					origin))
 				return cc;
-		// NO aggregate leg here: the DECLARATION lane calls this with a
-		// PARTIAL argument view (a copy/conversion probe) and owns the
-		// full braced list itself via its C initializer emission —
-		// claiming it from here zeroed the members the probe omitted
-		// (testaggrclassinit's `SV s = {"hi", 7}` lost the 7). The
-		// aggregate owner (class_aggregate_init) is wired at the
-		// TokenObjTemp construction sites, which pass the full list and
-		// had no aggregate service at all.
+		// NO aggregate leg here: the DECLARATION lanes call this with a
+		// PARTIAL argument view (a copy/conversion probe) and own the
+		// full braced list themselves — C initializer emission for
+		// scalar aggregates, decl_aggregate_claim for object-member
+		// aggregates. Claiming it from here zeroed the members the
+		// probe omitted (testaggrclassinit's `SV s = {"hi", 7}` lost
+		// the 7). The aggregate owner (class_aggregate_init) is wired
+		// at the FULL-list sites only: the TokenObjTemp construction
+		// arms and decl_aggregate_claim.
 		std::vector<node_t> stmts;
 		complete_object_construct_stmts([&]() -> node_t {
 			return node1(N_ADDR, id(vname.c_str(), origin), origin);
@@ -21026,6 +21072,27 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		append(items, marker->as_node());
 		return;
 	}
+	// [dcl.init.aggr] braced list on an OBJECT-member aggregate
+	// (`S v = {string("hi"), 42}`, `S v{...}`): var_decl left the storage
+	// BARE (braced_aggregate_needs_construction — its C INIT list
+	// bit-copies a class member and orders a materialized temp's decl
+	// AFTER the SPEC_DECL that uses it). This declaration holds the FULL
+	// list; the ctor lanes below see only init_list[0]. A decline on the
+	// copy shape (single same-class arg) falls to the implicit-copy lane.
+	if (sdcl->ctor_args.empty()
+	    && braced_aggregate_needs_construction(&sdcl->var, sdcl, cdcl)) {
+		node_t agg = decl_aggregate_claim(sdcl->var.name, cdcl,	// allowed-exception: guarded !file_global
+						  sdcl->init_list, sdcl);
+		if (agg) {
+			for (node_t p : m_pending_stmts)
+				append(items, p);
+			m_pending_stmts.clear();
+			append(items, agg);
+			emit_try_body_cleanup_push(sdcl->var.name.c_str(),
+						   cdcl, items, sdcl, 0);
+			return;
+		}
+	}
 	// An `=`-style initializer (`string s = "x"`) is not in ctor_args;
 	// thread it as the single ctor argument so select_ctor_overload
 	// chooses const-char*/copy by its type. (An explicit `Foo f(a,b)`
@@ -21056,8 +21123,31 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 	if (ctor_args.size() == 1) {
 		if (TokenObjTemp *iot =
 		    dynamic_cast<TokenObjTemp *>(ctor_args[0]))
-			if (as_class_instance(iot->obj_class) == cdcl)
+			if (as_class_instance(iot->obj_class) == cdcl) {
 				ctor_args = iot->ctor_args;
+				// The elided temp's braced list is a FULL list
+				// this declaration now owns — the same
+				// aggregate claim as the TokenObjTemp
+				// construction sites. class_ctor_call below
+				// has no aggregate leg, so without the claim
+				// `S v = S{a, b}` DROPPED the initializers:
+				// default-constructed members, garbage
+				// scalars, exit 0.
+				node_t agg = ctor_args.empty() ? NULL
+					: decl_aggregate_claim(sdcl->var.name,	// allowed-exception: guarded !file_global
+							       cdcl, ctor_args,
+							       sdcl);
+				if (agg) {
+					for (node_t p : m_pending_stmts)
+						append(items, p);
+					m_pending_stmts.clear();
+					append(items, agg);
+					emit_try_body_cleanup_push(
+						sdcl->var.name.c_str(),
+						cdcl, items, sdcl, 0);
+					return;
+				}
+			}
 	}
 	if (ctor_args.size() == 1
 	    && dynamic_cast<TokenCallFunc *>(ctor_args[0])
@@ -23492,6 +23582,20 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 	std::vector<TokenBase *> ctor_args;
 	if (decl) {
 		ctor_args = decl->ctor_args;
+		// Braced OBJECT-member aggregate global (`S gs = {string("gg"),
+		// 3};`): var_decl left the storage bare
+		// (braced_aggregate_needs_construction); this is the
+		// file-scope FULL-list owner — the threading below sees
+		// init_list[0] only. The claimed statements run inside
+		// __madc_global_init in declaration order.
+		if (ctor_args.empty()
+		    && braced_aggregate_needs_construction(v, decl, cdd)) {
+			node_t agg = decl_aggregate_claim(var_emit_name(*v),
+							  cdd, decl->init_list,
+							  decl);
+			if (agg)
+				return agg;
+		}
 		if (ctor_args.empty()) {
 			TokenBase *initexpr = decl->initialize;
 			if (TokenAssign *as = dynamic_cast<TokenAssign *>(initexpr))
