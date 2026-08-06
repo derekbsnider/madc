@@ -38509,8 +38509,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	if ( tn->id() == TokenID::tkEXTERN )
 	{
 	    pgm.nextToken(); // consume extern before declarator
+	    // Scoped to THIS declaration — an unrestored set here leaked
+	    // extern-ness onto every later declaration in the TU.
+	    bool saved_extern = pgm.parsing_extern_decl;
 	    pgm.parsing_extern_decl = true;
-	    return pgm.parseDeclaration(tdt);
+	    TokenBase *decl;
+	    try { decl = pgm.parseDeclaration(tdt); }
+	    catch ( ... ) { pgm.parsing_extern_decl = saved_extern; throw; }
+	    pgm.parsing_extern_decl = saved_extern;
+	    return decl;
 	}
 	return pgm.parseDeclaration(tdt);
     }
@@ -55931,6 +55938,22 @@ TokenBase *TokenCppKeyword::parse(Program &pgm)
 TokenBase *Program::parseCompound()
 {
     if ( compounds.empty() ) { throw "Internal error -- compound stack empty"; }
+    // A compound is its own declarative region: the declaration-HEAD extern
+    // context must not leak onto block-scope locals. The reachable leak is a
+    // linkage block ([dcl.link]p7 makes extern apply to the block's DIRECTLY
+    // contained declarations, so TokenEXTERN holds the flag across its whole
+    // statement loop): libstdc++ wraps <bits/exception_ptr.h> in
+    // `extern "C++" { }`, and exception_ptr::swap's local `void *__tmp`
+    // emitted as `extern void *__tmp = ...` — a c2mir check error.
+    // Namespace bodies parse via parse_namespace_block's own loop, never
+    // through here, so their members correctly keep the linkage-block flag.
+    struct ExternDeclScope {
+	Program &p; bool saved;
+	ExternDeclScope(Program &pg)
+	    : p(pg), saved(pg.parsing_extern_decl)
+	{ pg.parsing_extern_decl = false; }
+	~ExternDeclScope() { p.parsing_extern_decl = saved; }
+    } extern_scope(*this);
     TokenCpnd *code = compounds.top();
     TokenBase *tb = NULL;
 
