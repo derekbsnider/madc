@@ -5458,6 +5458,14 @@ public:
 					size_t after_ix);
     TokenBase *parse_functional_type_expression(TokenBase *type_tb,
 						DataDef *type_dd);
+    // The ONE brace-list reader for compound-literal-shaped initializers in
+    // EXPRESSION position: `(T){...}` (C99 cast arm) and `T{...}` on a plain
+    // struct ([expr.type.conv] list-init of an aggregate prvalue — same C11
+    // lowering). Consumes from the opening '{' through its '}'. Handles
+    // nested braces and `.field =` / `field:` designators. `current_sdd` may
+    // be NULL (element type unknown); `origin` anchors diagnostics.
+    TokenStructLit *parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
+					      TokenBase *origin);
     TokenBase *parse_namespace_block(bool inline_namespace);
     TokenBase *parse_parenthesized_expression(const char *context,
 					      bool stop_on_closing_paren);

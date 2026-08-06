@@ -11077,6 +11077,116 @@ bool Program::paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack)
 	return false;
 }
 
+// The one brace-list reader for compound-literal-shaped initializers in
+// expression position: the C99 cast arm `(T){...}` and the C++ functional
+// list form `T{...}` on a plain struct both delegate here. Consumes from
+// the opening '{' through its '}'.
+TokenStructLit *Program::parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
+						    TokenBase *origin)
+{
+	    nextToken(); // consume '{'
+	    TokenStructLit *slit = new TokenStructLit();
+	    while ( true )
+	    {
+		TokenBase *look = peekToken();
+		if ( !look )
+		    Throw(origin) << "Unexpected end of data in compound literal" << flush;
+		if ( look->id() == TokenID::tkClBrc )
+		{
+		    nextToken();
+		    break;
+		}
+		if ( look->id() == TokenID::tkOpBrc )
+		{
+		    DataDefSTRUCT *elem_sdd = NULL;
+		    if ( current_sdd )
+		    {
+			size_t idx = slit->inits.size();
+			if ( idx < current_sdd->members.size() )
+			    elem_sdd = dynamic_cast<DataDefSTRUCT *>(current_sdd->members[idx].second);
+		    }
+		    slit->inits.push_back(parse_compound_struct_lit(elem_sdd,
+								    origin));
+		}
+		else
+		{
+		TokenBase *elem = nextToken();
+		if ( elem->id() == TokenID::tkDot
+		  || (current_sdd && is_contextual_identifier_token(elem)
+		   && peekToken() && peekToken()->id() == TokenID::tkTerC) )
+		{
+		    std::vector<std::string> field_path;
+		    TokenBase *field_tok = elem;
+		    if ( elem->id() == TokenID::tkDot )
+		    {
+			field_tok = nextToken();
+			if ( !is_contextual_identifier_token(field_tok) )
+			    Throw(field_tok) << "Expecting field name in compound literal designator" << flush;
+			field_path.push_back(contextual_identifier_name(field_tok));
+			while ( peekToken() && peekToken()->id() == TokenID::tkDot )
+			{
+			    nextToken();
+			    TokenBase *nested_field = nextToken();
+			    if ( !is_contextual_identifier_token(nested_field) )
+				Throw(nested_field) << "Expecting field name in compound literal designator" << flush;
+			    field_path.push_back(contextual_identifier_name(nested_field));
+			}
+			TokenBase *eq = nextToken();
+			if ( !eq || eq->id() != TokenID::tkAssign )
+			    Throw(eq ? eq : field_tok) << "Expecting '=' after compound literal designator" << flush;
+		    }
+		    else
+		    {
+			field_path.push_back(contextual_identifier_name(field_tok));
+			nextToken(); // consume ':'
+		    }
+		    TokenBase *value_tok = nextToken();
+		    std::vector<TokenBase *> *target_inits = &slit->inits;
+		    DataDefSTRUCT *target_sdd = current_sdd;
+			size_t field_index = 0;
+			for ( size_t pi = 0; pi < field_path.size(); ++pi )
+			{
+			    const std::string &field_name = field_path[pi];
+			    field_index = find_struct_member_index(target_sdd, field_name);
+			    if ( !target_sdd || field_index >= target_sdd->members.size() )
+				Throw(field_tok) << "Unknown field '" << field_name << "' in compound literal designator" << flush;
+			    if ( target_inits->size() <= field_index )
+				target_inits->resize(field_index + 1, NULL);
+			    if ( pi + 1 == field_path.size() )
+				break;
+			    DataDefSTRUCT *nested_sdd = dynamic_cast<DataDefSTRUCT *>(target_sdd->members[field_index].second);
+			    if ( !nested_sdd )
+				Throw(field_tok) << "Field '" << field_name << "' is not a struct in compound literal designator" << flush;
+			    TokenStructLit *nested_lit = dynamic_cast<TokenStructLit *>((*target_inits)[field_index]);
+			    if ( !nested_lit )
+			    {
+				nested_lit = new TokenStructLit();
+				(*target_inits)[field_index] = nested_lit;
+			    }
+			    target_inits = &nested_lit->inits;
+			    target_sdd = nested_sdd;
+			}
+			if ( value_tok && value_tok->id() == TokenID::tkOpBrc )
+			{
+			    pushToken(value_tok);
+			    DataDefSTRUCT *nested_sdd = target_sdd
+				? dynamic_cast<DataDefSTRUCT *>(target_sdd->members[field_index].second)
+				: NULL;
+			    (*target_inits)[field_index] =
+				parse_compound_struct_lit(nested_sdd, origin);
+			}
+			else
+			    (*target_inits)[field_index] = parseExpression(value_tok);
+		    }
+		    else
+			slit->inits.push_back(parseExpression(elem));
+		}
+		if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+		    nextToken();
+	    }
+	    return slit;
+}
+
 TokenObjTemp *Program::try_parse_functional_ctor(TokenBase *name_tb)
 {
 	std::string name = contextual_identifier_name(name_tb);
@@ -11138,7 +11248,26 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
     const char *close_spelling = open_id == TokenID::tkOpBrc ? "}" : ")";
     if ( open_id == TokenID::tkOpBrc
       && dynamic_cast<DataDefCLASS *>(type_dd) == NULL )
-	return NULL;
+    {
+	// [expr.type.conv] list form on a PLAIN struct (`P{7, 3.5}`): an
+	// aggregate prvalue — exactly the C99 compound literal `(P){7, 3.5}`,
+	// so it delegates to the one brace-list reader the cast arm uses
+	// (parse_compound_struct_lit consumes from '{' through '}').
+	if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(type_dd) )
+	{
+	    TokenStructLit *slit = parse_compound_struct_lit(sdd, type_tb);
+	    slit->setDataType(type_dd);
+	    if ( typedef_alias_matches_datadef(
+		    contextual_identifier_name(type_tb), type_dd) )
+		slit->typedef_name = contextual_identifier_name(type_tb);
+	    slit->file = type_tb->file;
+	    slit->line = type_tb->line;
+	    slit->column = type_tb->column;
+	    return slit;
+	}
+	// A scalar/pointer takes the value-init and single-expression arms
+	// below (`int{}`, `int{3}`), which close on close_id either way.
+    }
     nextToken(); // consume '(' or '{'
     if ( DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(type_dd) )
     {
@@ -11152,9 +11281,9 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
     }
 
     TokenBase *expr = NULL;
-    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+    if ( peekToken() && peekToken()->id() == close_id )
     {
-	nextToken(); // value-initialization: T()
+	nextToken(); // value-initialization: T() / T{}
 	if ( type_dd->is_pointer() )
 	{
 	    TokenNullptr *np = new TokenNullptr();
@@ -11180,9 +11309,10 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
 	if ( !expr_head )
 	    Throw(type_tb) << "Expecting expression in functional cast" << flush;
 	expr = parseExpression(expr_head, true, false, false, 0, true);
-	if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
-	    Throw(type_tb) << "Expected ')' after functional cast expression" << flush;
-	nextToken(); // consume ')'
+	if ( !peekToken() || peekToken()->id() != close_id )
+	    Throw(type_tb) << "Expected '" << close_spelling
+			   << "' after functional cast expression" << flush;
+	nextToken(); // consume ')' or '}'
     }
 
     TokenCast *tc = new TokenCast(type_dd, expr);
@@ -30939,9 +31069,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// i.e. a method named for class `mutex`, and taking it as a type
 		// yielded an object where `->` needed a pointer
 		// (condition_variable.h:225). A member VARIABLE of a type's name
-		// already resolved correctly; only the `name (` form was caught,
-		// because that is exactly what this arm keys on.
-		if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
+		// already resolved correctly; only the `name (` and `name {`
+		// forms are caught, because those are what this arm keys on.
+		// The brace form ([expr.type.conv] list-init, `P{7, 3.5}`) is
+		// unambiguous — a declaration always has a declarator name
+		// before its brace — and covers plain structs via
+		// parse_functional_type_expression's compound-literal arm.
+		if ( peekToken() && (peekToken()->id() == TokenID::tkOpBrk
+				  || peekToken()->id() == TokenID::tkOpBrc)
 		  && !ordinary_call_name && !isMemberAccessPosition() )
 		{
 		    if ( TokenDataType *resolved_type =
@@ -33850,109 +33985,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    // struct/array initialization rather than a cast.
 				    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrc )
 				    {
-					std::function<TokenStructLit *(DataDefSTRUCT *)> read_compound_struct_lit;
-					read_compound_struct_lit = [&](DataDefSTRUCT *current_sdd) -> TokenStructLit * {
-					    nextToken(); // consume '{'
-					    TokenStructLit *slit = new TokenStructLit();
-					    while ( true )
-					    {
-						TokenBase *look = peekToken();
-						if ( !look )
-						    Throw(tb) << "Unexpected end of data in compound literal" << flush;
-						if ( look->id() == TokenID::tkClBrc )
-						{
-						    nextToken();
-						    break;
-						}
-						if ( look->id() == TokenID::tkOpBrc )
-						{
-						    DataDefSTRUCT *elem_sdd = NULL;
-						    if ( current_sdd )
-						    {
-							size_t idx = slit->inits.size();
-							if ( idx < current_sdd->members.size() )
-							    elem_sdd = dynamic_cast<DataDefSTRUCT *>(current_sdd->members[idx].second);
-						    }
-						    slit->inits.push_back(read_compound_struct_lit(elem_sdd));
-						}
-						else
-						{
-						TokenBase *elem = nextToken();
-						if ( elem->id() == TokenID::tkDot
-						  || (current_sdd && is_contextual_identifier_token(elem)
-						   && peekToken() && peekToken()->id() == TokenID::tkTerC) )
-						{
-						    std::vector<std::string> field_path;
-						    TokenBase *field_tok = elem;
-						    if ( elem->id() == TokenID::tkDot )
-						    {
-							field_tok = nextToken();
-							if ( !is_contextual_identifier_token(field_tok) )
-							    Throw(field_tok) << "Expecting field name in compound literal designator" << flush;
-							field_path.push_back(contextual_identifier_name(field_tok));
-							while ( peekToken() && peekToken()->id() == TokenID::tkDot )
-							{
-							    nextToken();
-							    TokenBase *nested_field = nextToken();
-							    if ( !is_contextual_identifier_token(nested_field) )
-								Throw(nested_field) << "Expecting field name in compound literal designator" << flush;
-							    field_path.push_back(contextual_identifier_name(nested_field));
-							}
-							TokenBase *eq = nextToken();
-							if ( !eq || eq->id() != TokenID::tkAssign )
-							    Throw(eq ? eq : field_tok) << "Expecting '=' after compound literal designator" << flush;
-						    }
-						    else
-						    {
-							field_path.push_back(contextual_identifier_name(field_tok));
-							nextToken(); // consume ':'
-						    }
-						    TokenBase *value_tok = nextToken();
-						    std::vector<TokenBase *> *target_inits = &slit->inits;
-						    DataDefSTRUCT *target_sdd = current_sdd;
-							size_t field_index = 0;
-							for ( size_t pi = 0; pi < field_path.size(); ++pi )
-							{
-							    const std::string &field_name = field_path[pi];
-							    field_index = find_struct_member_index(target_sdd, field_name);
-							    if ( !target_sdd || field_index >= target_sdd->members.size() )
-								Throw(field_tok) << "Unknown field '" << field_name << "' in compound literal designator" << flush;
-							    if ( target_inits->size() <= field_index )
-								target_inits->resize(field_index + 1, NULL);
-							    if ( pi + 1 == field_path.size() )
-								break;
-							    DataDefSTRUCT *nested_sdd = dynamic_cast<DataDefSTRUCT *>(target_sdd->members[field_index].second);
-							    if ( !nested_sdd )
-								Throw(field_tok) << "Field '" << field_name << "' is not a struct in compound literal designator" << flush;
-							    TokenStructLit *nested_lit = dynamic_cast<TokenStructLit *>((*target_inits)[field_index]);
-							    if ( !nested_lit )
-							    {
-								nested_lit = new TokenStructLit();
-								(*target_inits)[field_index] = nested_lit;
-							    }
-							    target_inits = &nested_lit->inits;
-							    target_sdd = nested_sdd;
-							}
-							if ( value_tok && value_tok->id() == TokenID::tkOpBrc )
-							{
-							    pushToken(value_tok);
-							    DataDefSTRUCT *nested_sdd = target_sdd
-								? dynamic_cast<DataDefSTRUCT *>(target_sdd->members[field_index].second)
-								: NULL;
-							    (*target_inits)[field_index] = read_compound_struct_lit(nested_sdd);
-							}
-							else
-							    (*target_inits)[field_index] = parseExpression(value_tok);
-						    }
-						    else
-							slit->inits.push_back(parseExpression(elem));
-						}
-						if ( peekToken() && peekToken()->id() == TokenID::tkComma )
-						    nextToken();
-					    }
-					    return slit;
-					};
-					TokenStructLit *slit = read_compound_struct_lit(dynamic_cast<DataDefSTRUCT *>(cast_dd));
+					TokenStructLit *slit = parse_compound_struct_lit(dynamic_cast<DataDefSTRUCT *>(cast_dd), tb);
 					slit->setDataType(cast_dd);
 					if ( !array_elem_dd )
 					    slit->typedef_name = cast_typedef_name;

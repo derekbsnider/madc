@@ -1,0 +1,33 @@
+// [expr.type.conv] braced functional construction of a PLAIN (non-promoted)
+// struct in expression position: `P{7, 3.5}` is an aggregate prvalue — the
+// C11 lowering is exactly the C99 compound literal `(struct P){7, 3.5}`, so
+// the parse delegates to the one brace-list reader the cast arm uses
+// (parse_compound_struct_lit; previously a hand-rolled lambda inside the
+// cast arm, and the functional form did not PARSE at all: "Expecting
+// identifier" at the '{' — try_parse_functional_ctor and
+// parse_functional_type_expression were DataDefCLASS-only).
+// Covers: argument position, decl-init, value-init `P{}`, nested aggregate,
+// typedef'd anonymous struct, designated initializers, and the scalar list
+// forms `int{3}` / `int{}`.
+// Oracle: g++ 13 and clang++ 18 print "10 10 0 12 9 3 0 3".
+#include <cstdio>
+
+struct P { int a; double b; };
+struct Q { P p; int n; };
+typedef struct { int x; int y; } TD;
+
+int use(P p) { return p.a + (int)p.b; }
+
+int main()
+{
+    P v = P{7, 3.5};
+    P z = P{};
+    Q q = Q{{1, 2.5}, 9};
+    TD t = TD{4, 5};
+    int i = int{3};
+    int j = int{};
+    printf("%d %d %d %d %d %d %d %d\n", use(P{7, 3.5}), v.a + (int)v.b,
+	   z.a + (int)z.b, q.p.a + (int)q.p.b + q.n, t.x + t.y, i, j,
+	   use(P{.a = 2, .b = 1.5}));
+    return 0;
+}
