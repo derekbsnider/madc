@@ -1980,6 +1980,26 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 				vdd = subst_datadef_active(vdd, *subst);
 			if (vdd && as_class_instance(vdd))
 				out = node1(N_ADDR, out, arg);
+		} else if (on && (on->base.code == N_FIELD
+				  || on->base.code == N_DEREF_FIELD)
+			   && on->origin_id) {
+			// A MEMBER-ACCESS value (`this->_M_impl` into a `_Tp_alloc_type&`
+			// formal) whose pattern datadef is still DEPENDENT (so the
+			// concrete-class arm above missed): recover the declared member
+			// type from the origin token and substitute, the TokenVar arm's
+			// member twin. Field-access codes ONLY — a resolved pattern arg
+			// (the `(void*)(&member)` N_CAST shape) carries the same origin
+			// token and is already an address. A REFERENCE member's stored
+			// value already IS the referent's address ([expr.ref] —
+			// object_arg_addr's reference_member arm): leave it untaken.
+			TokenMember *tmo = dynamic_cast<TokenMember *>(
+				madc_token_for_slot(on->origin_id));
+			DataDef *mdd = (tmo && !tmo->var.is_reference())
+				     ? tmo->var.type : NULL;
+			if (mdd && subst)
+				mdd = subst_datadef_active(mdd, *subst);
+			if (mdd && as_class_instance(mdd))
+				out = node1(N_ADDR, out, arg);
 		}
 		return node2(N_CAST, ptr_type_node(formal), out, arg);
 	}
@@ -6231,6 +6251,22 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 		DataDef *pt = (callee && pi < callee->parameters.size())
 				? callee->parameters[pi] : NULL;
 		bool is_ref_param = callee && callee->is_ref_param(pi);
+		{
+			// Env-gated probe (MADC_DEBUG_ARGBIND=<name substr>): the
+			// bound callee's formal state per argument — which FuncDef a
+			// call actually bound and whether each formal ranks as
+			// ref/pointer (the MTB/FNTPL probe family's call-lowering
+			// twin; the hollow-placeholder-bound-call diagnostic).
+			static const char *ab = getenv("MADC_DEBUG_ARGBIND");
+			if (ab && *ab && tcf->var.name.find(ab) != std::string::npos)
+				fprintf(stderr, "[ARGBIND] %s pi=%zu pt=%s kind=%s ref=%d ptr=%d fd=%p\n",
+					tcf->var.name.c_str(), pi,
+					pt ? pt->name.c_str() : "(null)",
+					pt ? typeid(*pt).name() : "-",
+					(int)is_ref_param,
+					pt ? (int)pt->is_pointer() : -1,
+					(void *)callee);
+		}
 		int vla_stars = 0;
 		DataDef *velem = NULL;
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
