@@ -697,6 +697,23 @@ bool Program::auto_include_standard_identifier(const std::string &word)
     if ( !header )
 	return false;
 
+    // Host policy must not be bypassed by the auto-include convenience: the
+    // literal-include path deliberately falls through to the filesystem when
+    // an embedded stub is policy-disallowed (explicit includes resolve or
+    // error, gcc canon), and include/madc/ can exist on disk — so a QUEUED
+    // disallowed header would serve anyway. An identifier match never queues
+    // one; the name stays unknown and the parse-time diagnostic ("Unknown
+    // namespace or class 'php'") is the host's contract
+    // (test_libmadc_program security_policy case).
+    if ( find_embedded_header(header) && !is_embedded_header_allowed(header) )
+	return false;
+    // The namespace-head table entries additionally respect the per-namespace
+    // registration policy (security_policy.allow_*_namespace) — the check
+    // answers true for every non-namespace word, so the std-surface entries
+    // are unaffected.
+    if ( !is_namespace_registration_enabled(word) )
+	return false;
+
     pending_auto_include_headers.insert(header);
     pending_auto_include_identifiers.insert(word);
     return false;
