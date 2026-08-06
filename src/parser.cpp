@@ -48952,6 +48952,36 @@ static bool fn_template_deduce_fnptr_param(const std::string &spelling,
     return fd->parameters.size() == subs.size();
 }
 
+static bool tsubst_pack_decl_suffix_token(TokenBase *t);
+
+// The declarator's VALUE-pack name: scan `decl` for the pack's TYPE name
+// followed by optional declarator-suffix tokens, the `...` ellipsis, and an
+// identifier — `_Args [suffix] ... __args` -> "__args"; empty when the pack
+// never takes value position. ONE owner for the shape: the pack-arity
+// publication and the N>=2 monomorphization both read it.
+static std::string fn_template_value_pack_name(
+	const std::vector<TokenBase *> &decl, const std::string &pack_param)
+{
+    for ( size_t i = 0; i + 1 < decl.size(); ++i )
+    {
+	if ( !decl[i] || decl[i]->type() != TokenType::ttIdentifier
+	  || ((TokenIdent *)decl[i])->spelling() != pack_param )
+	    continue;
+	size_t k = i + 1;
+	while ( k < decl.size() && decl[k]
+	     && tsubst_pack_decl_suffix_token(decl[k]) )
+	    ++k;
+	if ( k + 3 < decl.size()
+	  && decl[k] && decl[k]->id() == TokenID::tkDot
+	  && decl[k+1] && decl[k+1]->id() == TokenID::tkDot
+	  && decl[k+2] && decl[k+2]->id() == TokenID::tkDot
+	  && decl[k+3]
+	  && decl[k+3]->type() == TokenType::ttIdentifier )
+	    return ((TokenIdent *)decl[k+3])->spelling();
+    }
+    return std::string();
+}
+
 // Instantiate one retained namespace function template for a call: deduce the
 // type parameters from the call's argument types, substitute them into a clone
 // of the retained declaration tokens, and re-parse the result as a concrete
@@ -50116,9 +50146,67 @@ static bool instantiate_fn_template_binding(Program &pgm,
     // Constraints and defaults may contain sizeof...(PACK), so publish arity
     // before either is resolved. The scope remains live through the body parse.
     Program::PackArityScope _pack_arity_scope(pgm);
-    if ( !pack_param.empty() )
-	pgm.publish_pack_arity(pack_param,
-		pack_empty ? 0 : (pack_elems.empty() ? 1 : pack_elems.size()));
+    {
+	const size_t pack_arity =
+	    pack_empty ? 0 : (pack_elems.empty() ? 1 : pack_elems.size());
+	// Publish every pack the TEMPLATE HEAD declares, not just the
+	// call-detected pack_param: a ZERO-ARGUMENT call never sets
+	// pack_param (detection keys off matching arguments), yet the body's
+	// sizeof...(P) still needs its arity — 0. [expr.sizeof]/5 also
+	// admits the FUNCTION parameter pack's name (`Ts... vals` —
+	// sizeof...(vals)); the declarator's value-pack name publishes at
+	// the same arity. A miss on either name left the operator unfolded
+	// and the instantiation silently kept its placeholder (undefined
+	// MIR import; found by the cpp-features.md doc example).
+	for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+	{
+	    if ( i >= ft.typeparam_is_pack.size() || !ft.typeparam_is_pack[i] )
+		continue;
+	    const std::string &head_pack = ft.typeparams[i];
+	    const size_t arity = head_pack == pack_param ? pack_arity : 0;
+	    pgm.publish_pack_arity(head_pack, arity);
+	    const std::string vpn =
+		fn_template_value_pack_name(ft.decl, head_pack);
+	    if ( !vpn.empty() )
+		pgm.publish_pack_arity(vpn, arity);
+	    if ( mtb_on )
+	    {
+		fprintf(stderr,
+			"MTBPROBE packpub %s head=%s arity=%zu vpn=%s decl=%zu:",
+			key.c_str(), head_pack.c_str(), arity,
+			vpn.empty() ? "<none>" : vpn.c_str(), ft.decl.size());
+		for ( size_t d = 0; d < ft.decl.size() && d < 16; ++d )
+		    fprintf(stderr, " %s",
+			    ft.decl[d] && ft.decl[d]->type() == TokenType::ttIdentifier
+				? ((TokenIdent *)ft.decl[d])->spelling()
+				: ft.decl[d] ? "·" : "0");
+		fprintf(stderr, "\n");
+	    }
+	}
+	if ( !pack_param.empty() )
+	{
+	    pgm.publish_pack_arity(pack_param, pack_arity);
+	    const std::string vpn =
+		fn_template_value_pack_name(ft.decl, pack_param);
+	    if ( !vpn.empty() )
+		pgm.publish_pack_arity(vpn, pack_arity);
+	}
+	// PRE-ELIDED declarators: the empty-pack path strips `P... name`
+	// from its decl clone BEFORE binding, so the value-pack name scan
+	// above cannot see the declarator — but the body still spells
+	// sizeof...(name). Any sizeof-pack operand in the decl names one of
+	// THIS template's packs (the capture validated it), so an
+	// unpublished operand folds at the pack arity — 0 on the only path
+	// that pre-elides.
+	{
+	    std::string sop;
+	    size_t have;
+	    for ( size_t i = 0; i < ft.decl.size(); ++i )
+		if ( sizeof_pack_operand_name(ft.decl, i, sop)
+		  && !pgm.lookup_pack_arity(sop, have) )
+		    pgm.publish_pack_arity(sop, pack_arity);
+	}
+    }
     for ( std::map<std::string, std::vector<DataDef *> >::const_iterator
 	    tp = tid_packs.begin(); tp != tid_packs.end(); ++tp )
 	pgm.publish_pack_arity(tp->first, tp->second.size());
@@ -50528,28 +50616,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
     if ( pack_elems.size() >= 2 )
     {
 	const size_t N = pack_elems.size();
-	// Discover the value-pack name: `_Args [decl-suffix] ... __args`.
-	std::string value_pack_name;
-	for ( size_t i = 0; i + 1 < ft.decl.size(); ++i )
-	{
-	    if ( !ft.decl[i] || ft.decl[i]->type() != TokenType::ttIdentifier
-	      || ((TokenIdent *)ft.decl[i])->spelling() != pack_param )
-		continue;
-	    size_t k = i + 1;
-	    while ( k < ft.decl.size() && ft.decl[k]
-		 && tsubst_pack_decl_suffix_token(ft.decl[k]) )
-		++k;
-	    if ( k + 3 < ft.decl.size()
-	      && ft.decl[k] && ft.decl[k]->id() == TokenID::tkDot
-	      && ft.decl[k+1] && ft.decl[k+1]->id() == TokenID::tkDot
-	      && ft.decl[k+2] && ft.decl[k+2]->id() == TokenID::tkDot
-	      && ft.decl[k+3]
-	      && ft.decl[k+3]->type() == TokenType::ttIdentifier )
-	    {
-		value_pack_name = ((TokenIdent *)ft.decl[k+3])->spelling();
-		break;
-	    }
-	}
+	// Discover the value-pack name: `_Args [decl-suffix] ... __args`
+	// (the ONE owner also feeds the pack-arity publication above).
+	std::string value_pack_name =
+	    fn_template_value_pack_name(ft.decl, pack_param);
 	// Per-element value name `__args__k`.
 	auto elem_value_name = [&](size_t e) {
 	    return value_pack_name + "__" + std::to_string(e);
