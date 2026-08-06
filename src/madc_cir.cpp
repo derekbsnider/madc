@@ -2432,13 +2432,26 @@ static uint32_t forest_pinned_primitive_id(DataDef *dd)
 		return 0;
 	if (!(dd->is_integer() || dd->is_real()))
 		return 0;
+	// Emission is rawtype-driven, but the restored dd's NAME feeds identity
+	// formers (template-binding inst keys, substituted spellings). Flavor
+	// TWINS share a rawtype (dtINT == dtINT32: ddINT "int" at slot 5 shadows
+	// the canonical ddINT32 "int32_t" at slot 9), so "first match" restored
+	// the NON-canonical name and a bound consumer's fresh mints split from
+	// the pack's (the v0.68 release-lane freeze failure). Prefer the twin
+	// THE one builtin table maps to itself; a table-unknown primitive
+	// (int24) keeps the first-match pinning.
+	uint32_t first_match = 0;
 	for (uint32_t slot = 1; slot < MADC_TYPEID_PRIMITIVE_END; ++slot) {
 		DataDef *p = madc_primitive_for_slot(slot);
-		if (p && p->basetype() == BaseType::btSimple
-		      && p->rawtype() == dd->rawtype())
-			return slot;			// first (== canonical) match; emission is rawtype-driven
+		if (!(p && p->basetype() == BaseType::btSimple
+		      && p->rawtype() == dd->rawtype()))
+			continue;
+		if (Program::resolve_builtin_type_spelling(p->name) == p)
+			return slot;			// the canonical flavor
+		if (!first_match)
+			first_match = slot;
 	}
-	return 0;
+	return first_match;
 }
 
 // The typeid to SERIALIZE for a type reached as a member / operand / param /
