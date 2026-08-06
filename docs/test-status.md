@@ -18,7 +18,8 @@
 > (`(int)getb().n`). Follow-ons recorded: swap<allocator> return-type
 > mistyping (tsubst), duration<double>::operator%= drain
 > instantiation (pack gate is check-only), dependent-decltype
-> pattern-freeze. EXE/OBJ legs at session end.
+> pattern-freeze. Session-end native legs GREEN: EXE **963/0** and OBJ
+> **963/0** (of 980 JIT-passing tests).
 >
 > **Previous (2026-08-06, `feature/libcxx-parity7-claude` @8f8f4009 —
 > DECL-lane braced aggregate init):** fulltest **975/0**; lane
