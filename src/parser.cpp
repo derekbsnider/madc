@@ -41246,7 +41246,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    // this shape (ostreambuf_iterator.h:66); without the grant
 		    // its instantiated body cannot read the private member it
 		    // was befriended for. The `friend` specifier precedes the
-		    // declarator, so the scan stops at the parameter list.
+		    // declarator (decl-specifiers commute, so it may follow the
+		    // return type — libc++ string's `bool friend operator==`),
+		    // and the scan stops at the parameter list.
+		    bool is_friend_decl = false;
 		    for ( size_t fi = 0; fi < skipped_decl.size(); ++fi )
 		    {
 			if ( !skipped_decl[fi] )
@@ -41255,6 +41258,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			    break;
 			if ( skipped_decl[fi]->id() != TokenID::tkFRIEND )
 			    continue;
+			is_friend_decl = true;
 			std::string friend_fname =
 			    skipped_template_function_declarator_name(skipped_decl);
 			if ( !friend_fname.empty() )
@@ -41265,10 +41269,18 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			}
 			break;
 		    }
-		    register_skipped_class_template_function(
-			pgm, ddc, skipped_decl,
-			pgm.last_skipped_template_typeparams, access_flags,
-			constructor_source_name);
+		    // A friend never declares a member ([class.friend]): the
+		    // grant is the whole effect here. Registering it as a member
+		    // template plants a bogus entry in method_map — a friend
+		    // `operator==` then poisons binary_operator_return_type and
+		    // every `obj == x` expression types as the member's fake
+		    // return (libc++ `string == "lit"` became basic_string and
+		    // bound the string inserter over a bool rvalue).
+		    if ( !is_friend_decl )
+			register_skipped_class_template_function(
+			    pgm, ddc, skipped_decl,
+			    pgm.last_skipped_template_typeparams, access_flags,
+			    constructor_source_name);
 		}
 		pgm.last_skipped_template_decl.clear();
 		pgm.last_skipped_template_typeparams.clear();

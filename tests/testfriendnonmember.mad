@@ -1,0 +1,36 @@
+// Gate: a friend declaration inside a class body never registers a MEMBER
+// ([class.friend]/[temp.friend]) — including the template-head form with the
+// specifier after the return type (libc++ string's `bool friend operator==`).
+// The regression shape: a poisoned member operator== makes `s == "lit"` type
+// as the class, so `cout << (s == "lit")` binds the string inserter over a
+// bool rvalue ("lvalue required as unary & operand" under -stdlib=libc++).
+// The box probe gates the parser arm directly in BOTH lanes: if the friend
+// template-head decl claimed method_map["operator=="], `p == q` would type
+// as box (the fake member return) and the insert below would fail the same way.
+#include <iostream>
+#include <string>
+using namespace std;
+
+struct box {
+	int v;
+	template <class U>
+	inline bool friend operator==(const box &a, const box &b);
+};
+
+inline bool operator==(const box &a, const box &b) { return a.v == b.v; }
+
+int main()
+{
+	string s = "abc";
+	cout << (s == "abc") << endl;
+	cout << (s == "xyz") << endl;
+	bool b = (s == "abc");
+	cout << b << endl;
+	box p, q;
+	p.v = 7;
+	q.v = 7;
+	cout << (p == q) << endl;
+	q.v = 8;
+	cout << (p == q) << endl;
+	return 0;
+}
