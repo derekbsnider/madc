@@ -1,31 +1,26 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-08-05 (unreleased
-libc++ parity checkpoint @1de7b430 on feature/libcxx-parity7-claude —
-fixes 8-11 extend the session to lane 954/6, fulltest 963/0; frontier
-parser_std_format_spec.h:339):
-session #60 landed SEVEN oracle-verified front-end fixes; testifconstexpr's
-include chain advanced five links (ranges_construct_at.h:94 → buffer.h:62 →
-unicode.h:51/:70/:302 → parser_std_format_spec.h:58): @b48ce4b2 the auto
-fn-ptr shortcut no longer hijacks a nested-name-specifier head
-([basic.lookup.qual], `ranges::__destroy` vs the `__destroy` intrinsic;
-gate `testnsfncollide`); @3e69ea2e `template <Concept Name>` classifies as
-a constrained TYPE parameter (gate `testconceptparam`); @303e0f86 braced
-NSDMI capture/application (gate `testbracensdmi`); @7e1868d1 enum
-definitions take trailing declarators at every scope (gate `testenumdecl`);
-@937b3c12 bit-field brace-or-equal init skips (DelimDepth-migrated; gate
-`testbitfieldinit`); @da26118e u/U/u8 literal prefixes + \u/\U UCNs in
-the lexer (gate `testcharlit`); @4b47da8d using-declarations of scoped
-enums bridge the enumerator pseudo-namespace (gate `testusingenum`). Lane
-**950/6** (byte-identical failing set), eligible EXE/OBJ **934/0**,
-fulltest **959/0**. NEW TEST PROTOCOL (@aaee9009, owner directive): per
-fix targeted globs + one frontier test; per batch of ~3-5 fulltest +
-`libcxxjit` gate the push; lane EXE/OBJ at session end. Next: the
-parser_std_format_spec.h:58 link (`.c_str()` on a parenthesized
-string-concat temporary, reducer tmp/r45.mad), testinvocable's
-static_assert constant-fold, or testmathheader (re-reduce first). #114
-remains blocked on the owner decision about mangling overloaded user free
-functions.
+Master plan linking all workstreams. Updated 2026-08-06 (v0.68.0 — the
+libc++ LANE-ZERO release, ships @429842b4 on feature/libcxx-parity7-claude):
+🏁 **P2.7 IS COMPLETE.** The `-stdlib=libc++` flavored lane reached an
+EMPTY failing set — full behavior-parity with the default libstdc++
+flavor. At the release HEAD: fulltest **997/0/9skip**, lane
+**993/0/13skip**, EXE/OBJ **976/0** (the lane's 13 skips = the 9
+baseline `.mir_skip` + 4 documented `.libcxx_skip`).
+`docs/parity/libcxx-failset.txt` recorded the zero its charter defined
+and is now the lane's regression gate (the `libcxxjit` battery stage
+holds it there). The final session (#65, wall-grind mode) took the #110
+pack wall: a template-template parameter defaulted to a DIFFERENT named
+template binds as a template NAME ([temp.param]p11 — libc++ `tuple()`'s
+`_IsDefault = is_default_constructible` idiom; gate `testctorttpdefault`),
+plus ctor-template constructibility traits (`testctortemplatetrait`),
+[namespace.udecl] overload-set joins (`testusingfnoverload`), and
+[dcl.link]p7 extern-block scoping (`testexternblockbody`). Residual
+follow-ups carried in `claude_status.json` live_handoff (n1-n5: the
+swap<allocator> return mistyping, pack-drain gen-only defects,
+dependent-decltype pattern-freeze, the trait-laundering sibling, C-style
+cast through explicit operator bool). #114 remains blocked on the owner
+decision about mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -51,7 +46,34 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Unreleased parity checkpoint (2026-08-04, forwarding-reference owner
+- **v0.68.0 (2026-08-06): the libc++ LANE-ZERO release — P2.7 COMPLETE.**
+  The flavored lane finished the burn-down begun at v0.61.0: 891/28 →
+  980/0 at @520e77d6 across the parity6/parity7 branches, zero newly
+  broken tests at every comm-diffed measurement, and the failing set is
+  EMPTY — full behavior-parity between `-stdlib=libc++` and the default
+  libstdc++ flavor. Release-HEAD battery (@429842b4): fulltest
+  **997/0/0TO/9skip**, lane **993/0/13skip**, EXE/OBJ **976/0**. The
+  release also lands the multi-return struct transport (class values,
+  Go-style heterogeneous `(T0, T1) f()` signatures, loud rejects;
+  @a369cb17), restored zero-ceremony madc mode (auto-include + default
+  namespace preference; @1fafe265 @0bc6ce07), the `sizeof...`
+  function-pack fold (@b411715c), the enum-constant slot heap-overflow
+  fix (@429842b4), and the machine-verified docs overhaul (53/53
+  examples green). The parity campaign's concluding session's four
+  roots: TTP defaults bind as template NAMES ([temp.param]p11 — the #110
+  pack wall, libc++ `tuple()`; gate `testctorttpdefault`), ctor-template
+  same-class constructibility (trait refusal laundered to a silent 0;
+  gate `testctortemplatetrait`), using-declared functions join the target
+  overload set ([namespace.udecl]; gate `testusingfnoverload`), and
+  extern linkage-block context confined to directly-contained
+  declarations ([dcl.link]p7; gate `testexternblockbody`).
+  `docs/parity/libcxx-failset.txt` is now the lane's regression gate,
+  enforced by the `libcxxjit` battery stage. Fork release
+  **1.0-madc.0.68.0** @4573a0f3 (const `__int128` file-scope
+  initializers, empty-struct call-result slots, `_Complex` return
+  conversion — the three session-#64 raises v0.67.0 did not ship).
+
+- **Previous parity checkpoint (2026-08-04, forwarding-reference owner
   consolidation, P2.7 in progress).** Scalar and direct-pack template call
   parameters now share `FnTemplateParamShape` and `fn_template_deduce_param`;
   member-template recursion and lookup share one value-category-aware call

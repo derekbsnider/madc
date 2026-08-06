@@ -1,328 +1,280 @@
-# madc — Mad-C Programming Language
+# madc — C and C++ without the ceremony
 
-**My Advanced Dialect of C** — a C-like scripting language built around the **MC11-IR**: a `cir_node` AST tree that *derives from* [c2mir](https://github.com/vnmakarov/mir)'s `node_t`, so it feeds c2mir → MIR and executes in-process — no bytecode, no separate compilation step. The same tree also carries its originating tokens, so it renders back to source (`.c` / `.mc11`) and forward to other targets from one representation.
+**My Advanced Dialect of C** is a self-contained native utility language for a
+zero-toolchain workflow: run C/C++-style code like a script without giving up
+access to native C/C++ code and libraries. Use it for shell-style automation,
+embed it in another application, or emit object files and executables from the
+same source.
 
-The "Mad" in Mad-C: mix functions from multiple programming languages in a single program.
+A basic madc program needs no project scaffolding, no separate compiler
+invocation, and—under the default madc dialect—no explicit `main()`.
 
-> **Contributing / using an AI agent?** Start with [`AGENTS.md`](AGENTS.md)
-> — it's the canonical briefing for every agent (Claude Code, Codex CLI,
-> Gemini CLI, Copilot, Cursor, Aider, Windsurf). Rules are in
-> [`.claude/rules/`](.claude/rules/), with reasoning in
-> [`docs/rules/`](docs/rules/). Cross-agent session flow lives in
-> [`docs/agent-handoff.md`](docs/agent-handoff.md).
+[Usage](docs/usage.md) · [Build](docs/build.md) ·
+[Architecture](docs/architecture.md) · [Test status](docs/test-status.md) ·
+[Changelog](CHANGELOG.md) · [Contributing](AGENTS.md)
 
----
+## Why madc?
 
-## Quick Start
+- **C/C++ as a scripting language.** Write top-level statements, add a shebang,
+  and run the file directly. madc synthesizes `main()` when you do not provide
+  one.
+- **One tool from script to binary.** JIT-run a one-off utility, compile a
+  multi-file project, or emit a native executable without moving to another
+  language.
+- **Direct native interoperability.** Call the C and C++ runtime directly.
+  Add other installed libraries with familiar `-l` options, or load them
+  dynamically when runtime selection is useful.
+- **A built-in utility toolkit.** Mix familiar functions from PHP, Perl,
+  Python, Ruby, JavaScript, and Rust through explicit namespaces.
+- **Embeddable.** `libmadc` can compile files or strings, execute code, evaluate
+  expressions, call madc functions, register native callbacks, and control
+  access through host policies and allowlists.
 
-```bash
-# Build
-make -C src
+Once installed, a basic script needs only the `madc` command—no external C/C++
+compiler, build system, bytecode VM, or separate language runtime. Core utility
+functions need no boilerplate headers; real system headers and native libraries
+remain available whenever a program needs them.
 
-# Run a program
-bin/madc tests/testint.mad
+## Quick start
 
-# Run with debug trace
-bin/madc -v tests/testint.mad
-
-# Build first, then run a command against the fresh binary
-scripts/build_then.sh bin/madc tests/testint.mad
-```
-
-Optional storage backends are now being wired for configure-time
-feature detection. When Autotools is installed, the intended flow is:
-
-```bash
-autoreconf -fi
-./configure --with-bdb --with-gdbm --with-qdbm --with-sqlite3
-make
-```
-
-`--with-qdbm` is intended for the Villa API layer, and each backend is
-optional rather than required for a core `madc` build.
-
-## Multi-file Projects
-
-madc builds multi-file projects from a standard **`compile_commands.json`**
-compilation database (the format CMake emits with
-`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, or `bear -- make` generates from any
-Makefile build): each translation unit compiles separately, the modules are
-linked in-process, and the entry point runs.
-
-```bash
-bin/madc --project compile_commands.json          # compile all TUs, link, run
-bin/madc compile_commands.json                    # .json implies --project
-bin/madc --project compile_commands.json -lcrypt  # resolve libs at link time
-bin/madc --project compile_commands.json -o app   # single native ELF from all TUs
-```
-
-This is how the flagship test case runs: SMAUG 1.8 (~158k lines of C89,
-51 translation units) boots both as a multi-TU JIT run and as a single
-~5 MB native executable.
-
-For small projects, `#include` composition still works — one top-level file
-that `#include`s the rest, with `int main()` last, run as a single
-translation unit. Filenames resolve relative to the including file, nested
-includes are supported, and repeated includes are skipped within the same
-compile.
-
----
-
-## Language Features
-
-- **Data types:** `int8_t`–`int64_t`, `uint8_t`–`uint64_t`, `float`, `double`, `char`, `std::string`, `array`
-- **Typed containers:** `vector<T>`, `map<K,V>`, `set<T>`, `list<T>` — real template instantiations (also as `std::vector<T>` etc.)
-- **Streams:** `std::cout`, `std::cerr`, `std::cin`, `std::stringstream`, `std::ifstream`, `std::ofstream`, `std::fstream`
-- **Control flow:** `if`/`else`, `for`, `while`, `do`/`while`, `switch`/`case`/`default`, `rust::match`
-- **Range-based for:** `for (string name : names) { ... }` — works with array and vector
-- **Ternary operator:** `condition ? true_expr : false_expr`
-- **Functions:** user-defined with return values and parameters
-- **Multiple return values:** `return q, r;` and `q, r := divide(17, 5);` (Go-style)
-- **Function pointers:** `auto fn = my_func; fn(args);`
-- **Lambdas:** `[](int a, int b) { return a + b; }` with `[&]` capture by reference
-- **`defer`:** Go-style deferred execution at scope exit (LIFO order)
-- **`auto` keyword:** type inference for function pointer and lambda declarations
-- **`:=` short declaration:** `x := 42;` with type inference from RHS
-- **`register` keyword:** explicitly register-only variables (never written to memory)
-- **User-defined structs:** `struct Point { int x; int y; };`
-- **Classes:** the full C++ class model — see **C++ support** below
-- **Namespaces:** `std::cout`, `madc::regex_match()`, `php::explode()`, `perl::grep()`, `python::title()`, `ruby::tr()`, `js::btoa()`, `rust::trim()`
-- **Dialect precedence:** `prefer rust, php, c;` or `#pragma prefer rust, php, c`
-- **Regex:** `madc::regex_match()`, `madc::regex_search()`, `madc::regex_replace()`
-- **Input:** `std::cin >> name >> age;` reads from stdin
-- **`#include`:** `#include "file.mad"` for source inclusion
-- **`using`:** `using namespace std;` or `using std::cout;` imports std names into the unqualified surface
-- **`#load`:** `#load "libfoo.so" as foo;` for dynamic library loading
-- **`dlopen`/`dlsym`/`dlcall`:** first-class dynamic linking
-- **File I/O:** `ifstream`/`ofstream` with `open`, `close`, `good`, `eof`, `getline`
-- **Subscript operator:** `a[0]`, `nums[i]`, `ages["key"]`
-- **Escape sequences:** `\n`, `\t`, `\r`, `\\`, `\"`, `\0`
-- **C23 coverage (early wave):** `_Bool`, `0b...`, `_Static_assert` / `static_assert`, `alignof` / `_Alignof`, `typeof` / `typeof_unqual`, `nullptr`, digit separators (`1'000'000`)
-
-### C++ support
-
-madc is a C/C++ dialect: C++ lowers Cfront-style to strict C11 on the
-one `cir_node` IR (`--emit=c11` is a first-class output), and madc
-parses the **real glibc/libstdc++ headers** — `#include <vector>`,
-`<string>`, `<iostream>` read the actual installed headers, not
-embedded shims. The current model (all suite-tested):
-
-- **Classes:** constructors/destructors with RAII (destructor injection
-  at every scope exit, return, and unwind path), const methods, static
-  members, access control, `friend`, conversion operators, and operator
-  overloading — including `<=>` three-way comparison with the standard
-  synthesis of the relational operators
-- **Inheritance:** single, multiple, and virtual inheritance on the
-  Itanium model (vtables, vtable thunks, virtual bases constructed
-  once), virtual and pure-virtual methods, virtual destructors, RTTI —
-  `typeid` and `dynamic_cast`, including cross-casts in MI hierarchies
-- **Templates:** class, function, member, and variable templates via
-  real monomorphization on the parse-once spine (the g++ tsubst model:
-  the pattern parses once, instantiations substitute over the saved
-  tree — never re-parsed); `std::move`/`std::forward` instantiate from
-  the real headers
-- **`std::string` and streams are real libstdc++ objects**, called
-  mangled-direct through Itanium symbols — no wrapper layer
-- **Exceptions:** `try`/`catch`/`throw` lowered to setjmp/longjmp with
-  type-dispatched catch; destructors run during unwinding
-- **Lambdas** with `[&]` capture; references (including rvalue
-  references in template instantiation)
-- **Specifiers:** `constexpr` (folded; `if constexpr` discards the dead
-  branch), `consteval`/`constinit` (accepted), `inline` with real C++
-  vague linkage — identical per-TU copies (template instantiations,
-  inline/in-class bodies, vtables, typeinfo, C++17 inline variables)
-  emit `STB_WEAK` and merge at native or external links, with inline
-  variables' dynamic inits once-guarded — plus `inline namespace`,
-  `alignas`, `noexcept`, `auto` return deduction
-- Version-gated via `--std=`: each keyword activates at its introducing
-  standard through the language-standard registry
-
-### Multi-Language Namespaces
-
-The signature feature of madc — use the best functions from each language:
+After [building madc](docs/build.md), create `hello.mad`:
 
 ```c
 #!/usr/bin/env madc
-#include <iostream>
-#include <string>
-using namespace std;
 
-int main()
-{
-    // PHP-style string splitting and joining
-    string csv = "alice,bob,charlie";
-    string delim = ",";
-    array names;
-    php::explode(names, delim, csv);
-    php::sort(names);
-    string sorted;
-    php::implode(sorted, delim, names);
-    cout << sorted << endl;             // alice,bob,charlie
-
-    // Perl-style regex grep
-    array matches;
-    string pat = "^a";
-    perl::grep(matches, pat, names);    // apple, avocado
-
-    // Python-style string formatting
-    string title = "hello world";
-    python::title(title);
-    cout << title << endl;              // Hello World
-
-    // Ruby-style string transforms
-    string s = "aabbccdd";
-    ruby::squeeze(s);                   // "abcd"
-
-    // JavaScript base64
-    string encoded;
-    js::btoa(encoded, s);
-    cout << encoded << endl;            // YWJjZA==
-
-    // Regex
-    int m = madc::regex_match(s, "[a-d]+");
-    cout << m << endl;                  // 1
-
-    return 0;
-}
+puts("Hello from madc");
 ```
 
-### Available Namespaces
-
-| Namespace | Functions | Focus |
-|-----------|-----------|-------|
-| [`php::`](docs/language/ns-php.md) | 36 | String manipulation, array operations (explode, implode, sort) |
-| [`perl::`](docs/language/ns-perl.md) | 21 | chop/chomp, grep (regex), glob, split (regex)/join, array ops |
-| [`python::`](docs/language/ns-python.md) | 16 | Title case, alignment (center/ljust/rjust/zfill), format |
-| [`ruby::`](docs/language/ns-ruby.md) | 12 | squeeze, tr (transliterate), chars, rotate, compact |
-| [`js::`](docs/language/ns-js.md) | 6 | Base64 (btoa/atob), URL encoding, parseInt, JSON stringify |
-| [`rust::`](docs/language/ns-rust.md) | 18 | trim/contains/replace, split/join, first/last/get, push/pop |
-| `std::` | 9 + types | cin, cout, cerr, endl, getline, string conversions, for_each, stream/string types |
-| `madc::` | 4 | array, regex_match, regex_search, regex_replace |
-
-Plus `#load` for any shared library via dlopen.
-
----
-
-## Building
-
-Requires:
-- `clang++` (or `g++`) with C++11 support
-- The **madc MIR fork** — [github.com/derekbsnider/mir](https://github.com/derekbsnider/mir)
-  (branch **`develop`**, pinned at the commit in [`MIR_COMMIT`](MIR_COMMIT) —
-  that file is the single source of truth), built at `/workspace/mir`. madc
-  links `libmir.a` + c2mir from there. This is **not** upstream MIR: the fork
-  carries native C99 `_Complex`, `__attribute__((cleanup))`, ≤16-byte
-  SIMD/vector support, direct ELF emission + DWARF + PIC, and the ABI/codegen
-  fixes the CIR backend depends on. The fork's `develop` tracks madc's
-  `develop` and its `master` tracks madc's `master`; fork releases are tagged
-  `v<upstream-base>-madc.<madc-version>` (the release madc depends on is named
-  in [`MIR_VERSION`](MIR_VERSION)).
+Run it immediately:
 
 ```bash
-# Build the MIR fork first (libmir + c2mir):
+bin/madc hello.mad
+```
+
+Or make it an executable script (with `madc` installed on your `PATH`):
+
+```bash
+chmod +x hello.mad
+./hello.mad
+```
+
+The same source can become a native executable:
+
+```bash
+bin/madc -o hello hello.mad
+./hello
+```
+
+Top-level statements are a madc dialect feature. Explicit `--std=c*` and
+`--std=c++*` modes retain their standard language rules.
+
+## Native access without bindings
+
+The C runtime and active C++ standard library are already part of the madc
+process. madc automatically supplies declarations for common library
+functions, so there is no reason to load libc explicitly:
+
+```c
+puts("Hello from libc");
+```
+
+For another installed library, use the familiar linker-style `-l` option:
+
+```bash
+bin/madc -lfoo tool.mad             # load libfoo and run
+bin/madc -lfoo -o tool tool.mad     # emit an executable linked to libfoo
+```
+
+For JIT execution, `-lfoo` loads the named shared library globally so its
+symbols resolve normally. For native output, it becomes a library dependency
+of the emitted program. The source can include the library's normal header and
+call its API directly.
+
+For cases that genuinely require runtime loading or an isolated namespace,
+madc also provides `#load`, `dlopen`, `dlsym`, and `dlcall`:
+
+```c
+#load "libfoo.so" as foo;
+
+foo::some_function();
+```
+
+This makes madc useful for native API exploration, systems utilities,
+automation, and small tools without generated bindings or a separate wrapper.
+When headers are included, madc parses the **real installed headers**. Its
+`std::string` and stream objects are real standard-library objects, not
+replacement shims. Both stdlib flavors are first-class: the full test suite
+passes under libstdc++ and, via `-stdlib=libc++`, under libc++.
+
+## From one file to a native project
+
+Single-file scripts are the smallest madc program, but they are not a separate
+execution model. The same compiler pipeline supports:
+
+- JIT execution in the current process
+- source inclusion with `#include`
+- multi-translation-unit projects
+- native object and executable output
+- external library resolution at link time
+- C11 source emission with `--emit=c11`
+
+Multi-file projects use the standard `compile_commands.json` format produced by
+CMake or tools such as `bear`:
+
+```bash
+bin/madc --project compile_commands.json          # compile, link, and run
+bin/madc --project compile_commands.json -lfoo    # add an installed library
+bin/madc --project compile_commands.json -o app   # emit one native executable
+```
+
+The flagship compatibility case is **SMAUG 1.8**: approximately 158,000 lines
+of C89 across 51 translation units, running both as an in-process JIT program
+and as a native executable.
+
+## C and C++ language support
+
+madc is designed for substantial source compatibility with real-world C and
+C++, while adding optional utility-language features in its own dialect.
+Current coverage includes:
+
+- C integer and floating-point types, structs, pointers, functions, control
+  flow, preprocessor inclusion, and early C23 features
+- C++ classes, constructors and destructors, RAII, access control, inheritance,
+  virtual dispatch, RTTI, exceptions, operator overloading, and templates
+- real `std::string`, streams, containers, references, lambdas, `constexpr`,
+  `noexcept`, and standard-gated language features
+- range-based `for`, function pointers, `auto`, `:=`, `defer`, multiple return
+  values, and `rust::match`
+
+See the [usage guide](docs/usage.md) for the language surface and
+[architecture guide](docs/architecture.md) for lowering, ABI, and compiler
+implementation details.
+
+## Multi-language utility namespaces
+
+The “Mad” in Mad-C also reflects its ability to combine familiar utility
+functions from several language ecosystems in one program.
+
+| Namespace | Focus |
+|---|---|
+| [`php::`](docs/language/ns-php.md) | String and array utilities, including split, join, and sort |
+| [`perl::`](docs/language/ns-perl.md) | Regex-oriented grep, glob, split, join, chop, and chomp |
+| [`python::`](docs/language/ns-python.md) | String formatting, alignment, title case, and zero fill |
+| [`ruby::`](docs/language/ns-ruby.md) | Transliteration, squeeze, character, rotation, and compact operations |
+| [`js::`](docs/language/ns-js.md) | Base64, URL encoding, integer parsing, and JSON utilities |
+| [`rust::`](docs/language/ns-rust.md) | String, collection, option-like, and `match` utilities |
+| `std::` | C++ strings, streams, containers, conversions, and algorithms |
+| `madc::` | Native madc types and services, including regular expressions |
+
+Namespace precedence can be selected explicitly with `prefer` or
+`#pragma prefer`; see [namespace precedence](docs/language/prefer.md).
+
+## Embedding with libmadc
+
+The public C API in [`include/madc_api.h`](include/madc_api.h) exposes a
+reusable engine and program model. A host application can:
+
+- compile or execute a file or source string
+- evaluate a translation unit, function body, or expression
+- invoke compiled functions and inspect or update globals
+- register native host functions
+- save or load object files and emit executables
+- configure namespaces, process access, dynamic linking, execution limits,
+  diagnostics, and allowlists
+
+Install the embedding library and public headers with:
+
+```bash
+sudo make -C src install-libmadc
+```
+
+See the [libmadc unit tests](tests/unit/test_libmadc_program.cpp) for working
+API examples.
+
+## Architecture
+
+madc uses one source-preserving compiler representation:
+
+```text
+source → cir_node / MC11-IR → c2mir → MIR → JIT or native output
+```
+
+The `cir_node` tree derives from c2mir's `node_t` and retains its originating
+tokens. The same representation can execute in-process, render C11, and feed
+object or executable generation. There is no bytecode interpreter or parallel
+second compiler backend.
+
+See [docs/architecture.md](docs/architecture.md) and the pinned
+[madc MIR fork](https://github.com/derekbsnider/mir) for deeper implementation
+details.
+
+## Project status
+
+The current release is **v0.68.0** (2026-08-06) — see the
+[changelog](CHANGELOG.md) for what each release added. Headline results:
+
+- **997** integration tests passing, with 0 failures and 0 timeouts
+- **993/0** in the libc++ lane — the full suite passes under both stdlib
+  flavors (behavior parity, zero failing tests)
+- **1614/1685** GCC C torture tests passing, with no remaining standard-C
+  failures; the remaining cases are classified GNU extensions
+- working native ELF output, Mach-O object output, multi-file linking, and a
+  statically packaged madc runtime option for emitted programs
+- SMAUG 1.8 booting as a live, playable server in both JIT and native modes
+
+See [test status](docs/test-status.md) and the
+[libc++ parity history](docs/parity/libcxx-failset.txt) for current results
+and known gaps.
+
+## Building from source
+
+madc currently builds against its own pinned MIR fork. The exact compatible
+revision is recorded in [`MIR_COMMIT`](MIR_COMMIT) and [`MIR_VERSION`](MIR_VERSION).
+
+```bash
+# Build the pinned MIR fork.
 git clone -b develop https://github.com/derekbsnider/mir /workspace/mir
-git -C /workspace/mir checkout "$(cat MIR_COMMIT)"   # pin to the verified commit
+git -C /workspace/mir checkout "$(cat MIR_COMMIT)"
 make -C /workspace/mir
 
-make -C src           # build bin/madc
-make -C src clean     # clean objects
-make -C src test      # run unit tests
+# Configure and build madc.
+autoreconf -fi
+./configure
+make -C src
 ```
 
----
-
-## Testing
+Useful targets:
 
 ```bash
-# Run unit + integration tests
-make -C src fulltest
-
-# Build first, then run one integration test through the batch runner
-scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
+make -C src release     # optimized, stripped, packed CLI
+make -C src fulltest    # unit, integration, and release gates
+sudo make -C src install
 ```
 
-**Current status (v0.67.0 plus unreleased parity work): 946 integration tests pass (0 failing, 0 timed out, 9 skipped) through the live binary. A second stdlib flavor is a first-class test lane: `run_tests.sh --stdlib=libc++` runs the whole suite under libc++, with the failing set banked in [`docs/parity/libcxx-failset.txt`](docs/parity/libcxx-failset.txt) (927 passed / 16 failed / 0 timed out at the last whole-lane measurement and burning down; eligible `--exe` and `--obj` cases are each 911/0 — behavior-parity with libstdc++ is the goal, and every remaining failure carries a named root cause). Mach-O targets have a full `.o` lane: `madc -c` writes a real `MH_OBJECT` that `ld64` links and madc reads back. With `-static-libmadc` an emitted binary carries the madc runtime it needs and runs with no madc library installed. gcc.c-torture stands at 1614/1685 with zero standard-C failures — every remaining failure is a classified GNU-extension roadmap item ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)). SMAUG 1.8 boots, runs as a live server, and is playable — both as a multi-TU JIT run and as a single native ELF. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
-
-(`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
-feeds them stdin and argv respectively and asserts on their output.)
-
----
+See [docs/build.md](docs/build.md) for dependencies, build modes, optional
+features, installation paths, and release packaging.
 
 ## Documentation
 
-| Doc | Contents |
-|-----|----------|
-| [`docs/usage.md`](docs/usage.md) | Language reference, CLI flags |
-| [`docs/language/ns-php.md`](docs/language/ns-php.md) | php:: namespace reference |
-| [`docs/language/ns-perl.md`](docs/language/ns-perl.md) | perl:: namespace reference |
-| [`docs/language/ns-python.md`](docs/language/ns-python.md) | python:: namespace reference |
-| [`docs/language/ns-ruby.md`](docs/language/ns-ruby.md) | ruby:: namespace reference |
-| [`docs/language/ns-js.md`](docs/language/ns-js.md) | js:: namespace reference |
-| [`docs/language/ns-rust.md`](docs/language/ns-rust.md) | rust:: namespace reference |
-| [`docs/language/prefer.md`](docs/language/prefer.md) | Namespace precedence directive |
-| [`docs/language/modern/`](docs/language/modern/) | Range-for, function pointers, lambdas, defer |
-| [`docs/language/switch.md`](docs/language/switch.md) | Switch/case/default statement |
-| [`docs/language/rust-match.md`](docs/language/rust-match.md) | `rust::match` (integer patterns, OR-arms, `_` wildcard) |
-| [`docs/language/input-operator.md`](docs/language/input-operator.md) | cin >> input operator |
-| [`docs/language/class-methods.md`](docs/language/class-methods.md) | Class methods with this pointer |
-| [`docs/language/regex.md`](docs/language/regex.md) | Regex functions |
-| [`docs/language/multiple-returns.md`](docs/language/multiple-returns.md) | Go-style multiple return values |
-| [`docs/language/ternary-operator.md`](docs/language/ternary-operator.md) | Ternary operator |
-| [`docs/build.md`](docs/build.md) | Build requirements + the madc MIR fork |
-| [`docs/plans/data-storage-federation.md`](docs/plans/data-storage-federation.md) | Exploratory `madcdat` storage/federation design (`madc::DataSource` stays core, `DataSet<T>`, `Relation<A,B>`, automatic mapping, SQL/GQL front-ends, current `--enable-madcdat` build gate, future separate `libmadcdat` boundary) |
-| [`docs/architecture.md`](docs/architecture.md) | Compiler internals |
-| [`docs/testing.md`](docs/testing.md) | Test guide |
-| [`docs/test-status.md`](docs/test-status.md) | Per-test results |
-| [`docs/agent-handoff.md`](docs/agent-handoff.md) | Cross-agent hand-off workflow and source-of-truth rules |
-| [`AGENTS.md`](AGENTS.md) | Agent briefing — project rules, architecture, multi-tool setup |
-| [`docs/rules/`](docs/rules/) | Reasoning behind each rule in `.claude/rules/` |
-| [`CHANGELOG.md`](CHANGELOG.md) | Change history |
+- [Usage and CLI](docs/usage.md)
+- [Build and installation](docs/build.md)
+- [Compiler architecture](docs/architecture.md)
+- [Testing guide](docs/testing.md)
+- [Current test status](docs/test-status.md)
+- [Modern language features](docs/language/modern/)
+- [Regular expressions](docs/language/regex.md)
+- [Multiple return values](docs/language/multiple-returns.md)
+- [Data storage and federation plan](docs/plans/data-storage-federation.md)
+- [Change history](CHANGELOG.md)
 
----
+## Contributing
 
-## Current Release
+Start with [`AGENTS.md`](AGENTS.md). It is the canonical project briefing for
+human contributors and coding agents. Repository rules live in
+[`.claude/rules/`](.claude/rules/), with supporting reasoning in
+[`docs/rules/`](docs/rules/) and cross-agent handoff guidance in
+[`docs/agent-handoff.md`](docs/agent-handoff.md).
 
-**v0.67.0** — **the flavor-ABI release.** The libc++ behavior-parity
-lane went 859/40 → **880/26+2**, zero broken at every comm-diffed
-step, and the biggest remaining dam fell: a libc++ script now passes
-`std::string` into the host's libstdc++-built namespace functions
-(php::, perl::, madc:: eval) through compiler-generated marshalling
-thunks (task #69) — host-flavor temps built via the exported string
-ctor from the script string's `c_str()`/`size()`, copy-back via the
-script flavor's `assign`, alias-mapped reference returns, and honest
-boundary detection (dladdr module-origin equality: a symbol
-implemented by libc++ itself never marshals). That closed a SILENT
-corruption class too — extern-C twins taking `std::string*` had been
-fed raw libc++ string bytes and exited 0 with wrong values. Also:
-declaration-only Itanium callees get typed protos (#92); a deduction
-guide declares NO name ([temp.deduct.guide], #98); #93 typedef
-template-arg identity LANDED (`cin >> string` works under libc++);
-const-overload selection honors the implicit object parameter
-([over.match.funcs]/4 — was silently wrong in BOTH flavors); two
-[dcl.ambig.res] declaration readings; access control judges the
-SELECTED overload. Suite 902 → 911 (fulltest **911/0/0/9**, `--exe`
-**894/0**, `--obj` **894/0**). Fork unchanged (**1.0-madc.0.63.0**).
+## License
 
-Previous (v0.66.0) — **the recon-then-strike release.** The lane went
-811/77 → 859/40: the 28-test `cout << std::string` bucket fell to ONE
-two-commit root (task #88); two-layer SFINAE viability felled the
-`allocator_traits::destroy` wall; EIGHT parallel recon agents bucketed
-every remaining failure against three-way madc/g++/clang++ reducers
-and a five-fix strike batch took 19 more out. Trait-fold silent wrong
-answers fixed in BOTH flavors. Suite 889 → 902. Fork unchanged
-(**1.0-madc.0.63.0**).
-
-**Branch state:** `develop` is at v0.67.0; `master` is at v0.48.0
-(promoted 2026-07-25 — the Mach-O milestone promote, per the owner's
-ride-with-S3 decision). The
-[MIR fork](https://github.com/derekbsnider/mir)'s `master` tracks
-madc's `master` in lockstep (still at the `1.0-madc.0.47.0` pin);
-fork releases pair with madc's (see [`MIR_VERSION`](MIR_VERSION)).
-
-### Recent Releases
-
-- **v0.67.0** — the flavor-ABI release: flavored lane 859/40 → 880/26+2 (21 net flips, zero broken at every comm-diffed step); the biggest dam fell — compiler-generated marshalling thunks let a libc++ script call the host's libstdc++-built namespace publics (task #69: thunk per boundary callee at `call_emit_symbol`, dladdr-origin boundary detection, host-flavor temps + `assign` copy-back + alias-mapped returns, `MADC_FLVMAR=0` escape hatch), killing both the loud `NSt3__1` undefined imports AND the silent extern-C `std::string*` corruption; #92 typed protos for declaration-only Itanium callees (the `_Znwm` implicit-int family); #98 a deduction guide declares NO name ([temp.deduct.guide]; gate `testdeductionguide`); #93 typedef template-arg identity landed ([temp.type] — `cin >> string` under libc++; gates `testtypedefarg` + `testcinstr_libcxx`); const-overload selection joins the implicit object parameter ([over.match.funcs]/4; gate `testconstovl`); #94 half (slot arm dark; gate `testpacktypedef`); session #44's [dcl.ambig.res] pair + SELECTED-overload access control (gates `testarrayparam`, `testclassproto`, `testconstaccess`, `testprivmethod`); suite 902 → 911; fork unchanged (1.0-madc.0.63.0)
-- **v0.66.0** — the recon-then-strike release: flavored lane 811/77 → 859/40, zero broken at every comm-diffed step; the 28-test `cout << std::string` bucket fell to one two-commit root (a fn-template instantiation outranks ITS OWN varargs placeholder, task #88; gates `testpatcollateral` + `testcoutstr_libcxx`); two-layer SFINAE viability ([conv.ptr] pointer-argument scoring + unevaluated-operand miss is a SFINAE failure; gate `testptrviab`) felled the `allocator_traits::destroy` wall; eight parallel recon agents bucketed all 59 then-remaining failures with three-way madc/g++/clang++ reducers, and the five-fix strike batch took 19 out ([dcl.enum]p11 `testenumqual`, `<=>` payload discovery `testspaceship_libcxx`, per-OVERLOAD memo keys `testosmixed_libcxx`, pointer-param viability/#90 `teststrret_libcxx`, [expr.ref]p4 `testdotstatic`); trait-fold silent wrong answers fixed both flavors (`__has_trivial_destructor(T&)` inverted); the battery caught + fixed its own memo-key regression ([vecbind]); all 40 remaining failures carry named roots; suite 889 → 902 (fulltest 902/0/0/9, `--exe` 886/0, `--obj` 886/0, packed 902/0/0/9); fork unchanged (1.0-madc.0.63.0)
-- **v0.65.0** — the VTT wall fell: libc++ `istringstream` RUNS — hidden `__madc_vb<i>` ctor params carry the TRUE virtual-base addresses (madc's construction-vtables equivalent; ONE predicate keys all four signature surfaces; gate `testvttinit`); the three-link stream chain (declaration shells no longer shadow attached out-of-line definitions — `basic_ios::init` had emitted EMPTY; base-subobject destruction uses the D2 flavor via the new `class_base_dtor_symbol` resolver — the external D1 double-destroyed vbases; base-subobject construction demotes the external C1 to the madc C2 body — the library C1 built a standalone layout; gate `testistream_libcxx`); dtor synthesis gates per-symbol on library D1 availability; flavored lane 803/80 → 811/77 (3 fixed, zero broken; `teststreambool` byte-identical under both flavors); suite 887 → 889; fork unchanged (1.0-madc.0.63.0)
-- **v0.64.1** — patch: virtual-base default-construction selects its ctor by overload resolution (flavor-independent wrong-codegen in v0.64.0: an unnamed vbase whose class declares a non-default ctor first called the wrong overload with no args; broke every libc++ istringstream default-construction; gate `testvbasedefault`); completeness-on-demand for pending forward instantiations (libc++ `<iosfwd>` stream typedefs: declarations mis-parsed as function decls, `sizeof(istringstream)` silently 0; new `complete_class_type_on_demand` at [basic.def]p5 + [expr.sizeof]p1 consumers; gate `teststreamdecl_libcxx`); suite 885 → 887; fork unchanged (1.0-madc.0.63.0)
-- **v0.64.0** — the four-root string/stream breakthrough: flavored lane 747/108 → 803/80 (23 flips in ONE commit, zero regressions at every set-diffed step); the `testclass` SIGSEGV = four stacked defects (unadjusted vbase reference args poisoning every stream test, cast-to-reference ctor args scored as `Tag*` + the binding twin, value-init mem-init on plain-struct members emitted nothing, untyped facet downcast); the 12-link detect-idiom chain (`iterator_traits<CLASS>` resolves, `__is_convertible`, east-specifiers, `__libcpp_datasizeof`, **`vector<int>::push_back` RUNS**); the `__tree`/`<map>` frontier stack (full-spec instantiation keys, `->` through reference-to-pointer, injected-class-name in struct bodies, templated converting ctors); [temp.param]p10 default accumulation both orders (input-stream gateway open); object mode builds the JIT's tree (flavor runtime pre-tree-build); 15 new gates + the probe battery; suite 856 → 885; fulltest 885/0/0/9, `--exe` 869/0, `--obj` 869/0, packed 885/0/0/9; fork unchanged (1.0-madc.0.63.0)
+madc is licensed under the [Mozilla Public License 2.0](LICENSE).

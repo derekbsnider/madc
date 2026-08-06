@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  01e0e7d7 (2026-08-06) on feature/libcxx-parity7-claude
-# Result:       975 passed / 1 failed / 0 timed out / 13 skipped
+# Measured at:  429842b4 (2026-08-06) on feature/libcxx-parity7-claude
+# Result:       993 passed / 0 failed / 0 timed out / 13 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -891,4 +891,50 @@
 #                         gen dies on umods-with-ldouble — the
 #                         freeze-side check gate cannot see gen-only
 #                         defects.
-testtuple.mad
+#   520e77d6  980 /   0   🏁🏁 ZERO. testtuple FIXED (#110's last layer),
+#                         ZERO newly broken (the failing set is EMPTY;
+#                         the other +4 are the four new session gates).
+#                         FOUR roots: @ff79e5a2 a ctor TEMPLATE no longer
+#                         refuses same-class constructibility (the trait
+#                         refusal laundered through a failed static-const
+#                         capture into a silent 0 —
+#                         is_move_constructible<allocator<T>> folded
+#                         false); @6a24cffa a using-declared function
+#                         JOINS the target namespace's overload set
+#                         ([namespace.udecl] — std::swap(int,int) had
+#                         bound the exception_ptr overload); @264ff910
+#                         extern linkage-block context no longer leaks
+#                         into function bodies ([dcl.link]p7 — "__tmp in
+#                         block scope with external linkage"); @520e77d6
+#                         THE WALL: a template-template parameter
+#                         defaulted to a DIFFERENT named template binds
+#                         as a template NAME ([temp.param]p11) — libc++
+#                         tuple()'s exact ctor idiom (_IsDefault =
+#                         is_default_constructible). The TTP captured as
+#                         a non-type param whose default could never
+#                         fold as a value, so instantiation bailed and
+#                         construction emitted a call to the
+#                         never-defined placeholder (undefined MIR
+#                         import tuple_int32_t__tuple_int32_t). Gates:
+#                         testctortemplatetrait, testusingfnoverload,
+#                         testexternblockbody, testctorttpdefault.
+#                         fulltest 984/0/9skip; lane 980/0/13skip (the
+#                         13 = the 9 baseline .mir_skip + the 4
+#                         documented .libcxx_skip). THE COUNT IS 0: per
+#                         the charter above, this file is now the P2.7
+#                         gate — the libcxxjit battery stage holds the
+#                         lane at zero from here on.
+#   429842b4  993 /   0   ZERO HELD through the session-#66 work: +13 are
+#                         all NEW GATES (multi-return struct transport
+#                         testmultiret double/ptr/string/hetero +
+#                         reject/exprpos/bare @a369cb17; zero-ceremony
+#                         testautoincludecpp/ns, testpreferdefault,
+#                         testautoceremonystd, testnsheaderfirst
+#                         @1fafe265 @0bc6ce07 @715fbadb;
+#                         testsizeofvaluepack @b411715c), zero flips.
+#                         Also @429842b4 the enum-constant slot heap
+#                         overflow fixed (Variable::slot_size).
+#                         fulltest 997/0/9skip; EXE/OBJ 976/0. This is
+#                         the v0.68.0 release HEAD.
+#
+# (failing set: EMPTY as of 520e77d6, held at 429842b4)

@@ -2,13 +2,137 @@
 
 ## [Unreleased]
 
+## [v0.68.0] — 2026-08-06
+
+**The libc++ LANE-ZERO release: the flavored parity burn-down completes —
+`-stdlib=libc++` runs the whole suite with ZERO failing tests.**
+
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 975/1**: new gates plus the old-failure flips, with zero
-newly broken tests in every measured two-way failset diff. The only
-remaining lane failure is `testtuple` (#110 pack wall). Fulltest is
-**980/0/0TO/9skip**.
+moved **891/28 → 980/0** — 🏁 **the libc++ failing set is EMPTY**: the
+`-stdlib=libc++` lane now has full behavior-parity with the default
+libstdc++ lane (testtuple, the #110 pack wall's last standing test, fixed;
+zero newly broken tests in every measured two-way failset diff; the lane's
+13 skips = the 9 baseline `.mir_skip` + 4 documented `.libcxx_skip`).
+At the release HEAD the batteries measure fulltest **997/0/0TO/9skip**,
+lane **993/0/13skip**, and native EXE/OBJ **976/0**.
+
+The release also restores **zero-ceremony madc mode** (auto-include serves
+the real headers again; a default namespace-preference order ships), gives
+**multi-return real types** — class values and Go-style heterogeneous
+`(int, string) f()` signatures travel a struct transport, misuse rejects
+loudly — and lands a **full documentation overhaul** (CLI-centered usage,
+new language overview / C++-feature catalog / runtime-eval docs, every
+example machine-verified against the live compiler).
+
+- **feat: multi-return grows up — values of any copyable type, Go-style
+  heterogeneous signatures, one struct-transport lowering, loud rejects
+  (@a369cb17).** Multi-return values now travel a synthesized transport
+  struct that IS the function's C-level return type (native c2mir struct
+  return when trivial, the existing by-value class-return `__retbuf` path
+  when a slot is an object); the parallel `long*`-slot ABI is deleted.
+  Fixes three defects sharing one root (`return_types` hardcoded int64):
+  `double` multi-return silently TRUNCATED (1.5, 2.25 → 1, 2; exit 0),
+  `const char*` silently printed pointer bits, `std::string` died as raw
+  c2mir check noise — and the declared form `(T0, T1) f(...)` was
+  UNCALLABLE (a parser-injected hidden param corrupted arity checks).
+  Now `(int, string) lookup()` returns an int and a real std::string with
+  correct copy/destructor semantics (operator= receiver fills, cleanup-
+  dtor'd transport temp; valgrind-clean vs control). Every slot of the
+  bare form carries the DECLARED return type (C's return coercion, per
+  slot). Loud rejects everywhere else: receiver-arity mismatch, a multi-
+  return call outside an N-receiver `:=`, bare/single `return;` inside a
+  multi-return function, `:=` from a non-multi-return callee, reference/
+  void slots, class methods. Gates: `testmultiret{,double,ptr,string,
+  hetero}` + three `.expect_err` rejects; `--emit=c11` output of the new
+  shapes compiles under `gcc -std=c11` with identical results.
+
+- **feat: zero-ceremony madc mode restored — auto-include serves the real
+  headers; a default namespace preference ships (@1fafe265, @0bc6ce07,
+  @715fbadb).** `string s = "hi"; cout << s << endl;` and bare
+  `php::trim(s)` are complete programs again in the default dialect: the
+  auto-include injector's private serving copy had died with the retired
+  embedded shims — it now DELEGATES to the literal `#include` handler
+  (real headers, frozen-forest fast path, official include order), the
+  identifier→header table grew the C++ heads (iostream/fstream/string
+  containers) and the namespace heads (`php::`…`madc::`), and `#pragma
+  prefer` names feed the same hook. Unqualified names get a default
+  preference order — `c, std, php, perl, python, ruby, js, rust, madc` —
+  an explicit `prefer` replaces it wholly. Auto-include honors embedding
+  hosts' security policies (a disabled namespace is never auto-served;
+  unit-gated). Standards modes are untouched — `--std=c++17` still
+  requires explicit includes (negative-control gate `testautoceremonystd`).
+  The script-facing `ns_*` embedded headers are self-contained (`#include
+  <string>`), so `#include <ns_php>` works as the FIRST line of a file.
+  Gates: `testautoincludecpp/ns`, `testpreferdefault`, `testnsheaderfirst`.
+
+- **fix: `sizeof...` folds the FUNCTION parameter pack's name
+  (@b411715c).** [expr.sizeof]/5 admits function parameter packs, but the
+  publication step only knew the template head's packs — `sizeof...(vals)`
+  over `Ts... vals` never resolved, silently dropping the instantiation.
+  Three publication arms in `instantiate_fn_template_binding` (head-pack
+  walk, value-pack name, and the pre-elided empty-pack decl clone) fold
+  it for N-ary and EMPTY packs. Gate: `testsizeofvaluepack` (3 2 2 / 3 0).
+
+- **fix: enum-constant parse-time slots are allocated at their 64-bit
+  access width.** `Variable::set()` deliberately writes madc's `int`
+  values 64-bit (the WEAR_NONE sign-extension contract) while `ddINT.size`
+  stays 4 for C layout — but the scalar `data` allocations used
+  `type->size`, a 4-byte heap overflow on EVERY enum-constant parse
+  (valgrind-caught during the multi-return work). `Variable::slot_size()`
+  now owns the slot-width contract; all three scalar allocation sites use
+  it.
+
+- **docs: full documentation overhaul, machine-verified (@c949db1b,
+  @aecb6377, @68b92907).** CLI-centered `usage.md`; new
+  `language/overview.md`, `language/cpp-features.md` (what C++ works
+  today), and `language/eval.md` (the `madc::eval_*` runtime-eval API —
+  expression/unit families, call-site scope capture, context objects,
+  host security gates); namespace docs audited against the real
+  `ns_*.cpp` exports (three undocumented `php::` functions surfaced;
+  `rust::match` un-marked "planned"); `multiple-returns.md` documents the
+  transport model; a doc-example harness extracts every fenced example
+  and runs it — **52/52 blocks green** with outputs matched against the
+  commented expectations. Stale present-tense claims about removed
+  machinery (Gecko pipeline, asmjit objects, dtSTRING) retired; AGENTS.md
+  architecture table corrected (real per-namespace function counts,
+  `ns_rust.cpp`/`ns_madc.cpp` rows).
+
+- **fix: the #110 pack wall falls — a template-template parameter
+  defaulted to a DIFFERENT named template binds as a template NAME
+  (@520e77d6).** [temp.param]p11: a TTP default IS a template. libc++
+  `tuple()`'s exact ctor idiom (`template <template <class...> class
+  _IsDefault = is_default_constructible, __enable_if_t<_And<_IsDefault<
+  _Tp>...>::value, int> = 0>`) captured the TTP as a NON-type parameter
+  whose default could never fold as a value, so
+  `instantiate_fn_template_binding` bailed at the fill step and every
+  `tuple<...>()` construction emitted a call to the never-defined
+  placeholder (undefined MIR import `tuple_int32_t__tuple_int32_t`).
+  The fill arm now recognizes a defaulted name that resolves to a
+  template (or template alias) and binds it as a NAME substitution —
+  the same mechanism the class-partial-spec lane already uses
+  (`tmpl_ded` → `token_subst`) — applied through constraint/default
+  resolution, both body substitution loops, and the memo key. Gate:
+  `testctorttpdefault` (the full libc++ ctor shape: two TTP defaults +
+  C++20 conditional `explicit(...)` + pack-expanded `noexcept` +
+  alias-spelled constraint; g++ and clang++ oracles, both flavors).
+
+- **fix: three more parity roots — ctor-template trait refusal,
+  using-declaration overload sets, extern-block context leak
+  (@ff79e5a2, @6a24cffa, @264ff910).** (a) `trait_class_constructible`
+  refused (-1) any class whose ctor set contained a template, and the
+  refusal LAUNDERED through a failed static-const capture into a
+  silent 0 — `is_move_constructible<std::allocator<T>>` folded false
+  (gate `testctortemplatetrait`). (b) A using-declared function now
+  JOINS the target namespace's overload set ([namespace.udecl]) instead
+  of clobbering the fn-template placeholder — `std::swap(int, int)`
+  with `<memory>` included bound the `exception_ptr` overload (gate
+  `testusingfnoverload`). (c) `parsing_extern_decl` leaked from
+  `extern "C++" { ... }` blocks into function BODIES parsed inside
+  them, mis-marking block-scope locals as externally-linked
+  ([dcl.link]p7 — "initialization of __tmp in block scope with
+  external linkage"; gate `testexternblockbody`).
 
 - **fix: `testfreezerun` flips under `-stdlib=libc++ --freeze-run` — the
   flavor runtime is part of BOTH sides of the freeze boundary, nested

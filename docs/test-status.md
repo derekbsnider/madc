@@ -1,6 +1,53 @@
 # Test Status
 
-> **Current (2026-08-06, `feature/libcxx-parity7-claude` @01e0e7d7 —
+> **Current (2026-08-06, `feature/libcxx-parity7-claude` @429842b4 —
+> session #66 close):** fulltest **997/0/9skip**; lane
+> **993/0/13skip**; session-end native legs EXE **976/0**, OBJ
+> **976/0** (of 997 JIT-passing tests). Battery log:
+> `tmp/logs/rb-20260806-194726.log` (fulltest, libcxx jit, exe, obj
+> all rc=0). +13 fulltest tests over session #65: the multi-return
+> struct-transport gates (testmultiret double/ptr/string/hetero +
+> reject/exprpos/bare — class values, Go-style heterogeneous
+> `(int, string) f()` signatures, loud rejects; @a369cb17), the
+> zero-ceremony gates (testautoincludecpp/ns, testpreferdefault,
+> testautoceremonystd, testnsheaderfirst; @1fafe265 @0bc6ce07
+> @715fbadb), and testsizeofvaluepack (@b411715c). Also @429842b4:
+> the enum-constant parse-time slot heap overflow fixed
+> (Variable::slot_size owns the 64-bit ddINT slot contract;
+> valgrind-verified). Doc-example harness: **53/53** fenced examples
+> green at this HEAD. Ships as **v0.68.0**.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @520e77d6 —
+> session #65 close: 🏁 LANE ZERO):** fulltest **984/0**; lane
+> **980/0/13skip** — the `-stdlib=libc++` flavored lane's failing set
+> is **EMPTY** for the first time: full behavior-parity with the
+> default libstdc++ lane. testtuple (the #110 pack wall's last
+> standing test) FIXED; the other +4 passes are the four new session
+> gates (testctortemplatetrait, testusingfnoverload,
+> testexternblockbody, testctorttpdefault). Four fixes: (30)
+> `trait_class_constructible` no longer refuses same-class
+> constructibility when the ctor set contains a TEMPLATE (the -1
+> refusal laundered through a failed static-const capture into a
+> silent 0 — `is_move_constructible<allocator<T>>` folded false);
+> (31) a using-declared function JOINS the target namespace's
+> overload set ([namespace.udecl] — `std::swap(int,int)` with
+> `<memory>` bound the exception_ptr overload); (32) extern
+> linkage-block context no longer leaks into function bodies
+> ([dcl.link]p7 — "__tmp in block scope with external linkage");
+> (33) THE WALL: a template-template parameter defaulted to a
+> DIFFERENT named template binds as a template NAME ([temp.param]p11
+> — libc++ tuple()'s `_IsDefault = is_default_constructible` idiom
+> captured as a never-foldable non-type default, so the ctor never
+> instantiated and construction called the never-defined
+> placeholder). The 13 lane skips = the 9 baseline `.mir_skip` + the
+> 4 documented `.libcxx_skip`. `docs/parity/libcxx-failset.txt`
+> records the ZERO and becomes the P2.7 gate per its charter.
+> Battery log: `tmp/logs/rb-20260806-145634.log` (fulltest rc=0,
+> libcxx jit rc=0, total rc=0). Session-end native legs GREEN: EXE
+> **967/0**, OBJ **967/0** (of 984 JIT-passing tests;
+> `tmp/logs/rb-20260806-151939.log`, total rc=0).
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @01e0e7d7 —
 > session #64 close):** fulltest **980/0**; lane **975/1/13skip**
 > (+5 gates: testaggrdecl, teststructbraceexpr, testint128global,
 > testemptystructret, testcomplexretconv, testcastcallpostfix — the
