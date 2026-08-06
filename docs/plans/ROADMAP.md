@@ -1,5 +1,16 @@
 # madc Roadmap
 
+**⚠️ CURRENT BLOCKER (2026-08-06, session #67): the RELEASE LANE is red**
+— the first `release packed` since Aug 1 fails (`make release` dies at
+the forest-pack verify; packed suite 982/15; **no v0.68.0
+`madc-release` binary exists**). Bisected to 6a24cffa (the
+[namespace.udecl] overload join, shipped in v0.68.0): frozen-corpus
+instantiation identities split between `int`/`int32_t` spellings.
+Mission doc: `docs/plans/2026-08-06-release-lane-freeze-HANDOFF.md`.
+Behind it: `feature/script-toplevel-claude` (#16 top-level `defer` +
+#18 top-level `:=` — DONE, fulltest 999/0) waits to merge with the
+release cadence.
+
 Master plan linking all workstreams. Updated 2026-08-06 (v0.68.0 — the
 libc++ LANE-ZERO release, ships @429842b4 on feature/libcxx-parity7-claude):
 🏁 **P2.7 IS COMPLETE.** The `-stdlib=libc++` flavored lane reached an
