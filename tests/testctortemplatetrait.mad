@@ -1,0 +1,40 @@
+// A constructor TEMPLATE must not make constructibility traits refuse:
+// a ctor template is never a copy/move ctor ([class.copy.ctor]p2) and the
+// non-template exact match outranks it ([over.match.best]), so the implicit
+// memberwise answer decides __is_constructible(T, T&&) — and a `= default`
+// default ctor decides the 0-arg form. Root of the wider bug: libc++'s
+// std::allocator carries `template<class U> allocator(const allocator<U>&)`,
+// the refusal fell through a failed static-const capture to a 0-placeholder
+// `::value`, is_move_constructible<allocator<T>> silently read FALSE, and
+// std::swap's __swap_result_t return collapsed to an opaque enable_if struct
+// (wrong call ABI) instead of void.
+#include <memory>
+#include <utility>
+#include <type_traits>
+#include <cstdio>
+
+struct A
+{
+	int n;
+	A() = default;
+	template <class U> A(const U &u) {}
+};
+
+int main()
+{
+	printf("%d %d %d\n",
+		(int)__is_constructible(A, A&&),
+		(int)__is_constructible(A),
+		(int)std::is_move_constructible<A>::value);
+	printf("%d %d\n",
+		(int)std::is_move_constructible<std::allocator<int> >::value,
+		(int)std::is_move_assignable<std::allocator<int> >::value);
+	std::allocator<int> a;
+	std::allocator<int> b;
+	std::swap(a, b);
+	int x = 3;
+	int y = 9;
+	std::swap(x, y);
+	printf("%d %d\n", x, y);
+	return 0;
+}

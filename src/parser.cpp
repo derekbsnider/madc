@@ -13215,16 +13215,32 @@ static int trait_class_constructible(DataDefCLASS *c,
     }
     if ( matched_deleted )
 	return 0;
+    // A SAME-CLASS argument is decided by the copy/move ctor. A ctor
+    // TEMPLATE is never a copy/move ctor ([class.copy.ctor]p2), and against
+    // a same-class argument the implicit/user copy/move is an exact match a
+    // template candidate cannot outrank ([over.match.best]p2 — non-template
+    // wins the tie). So an unmodelable template must not refuse this shape:
+    // with no explicit candidate matched (and the deleted trace gated at
+    // entry), the implicit memberwise walk is decisive. This is libc++'s
+    // std::allocator (ctor template `allocator(const allocator<_Up>&)`) —
+    // the refusal fell through capture-fail to a 0-placeholder `::value`,
+    // so is_move_constructible<allocator<T>> read FALSE and swap's
+    // __swap_result_t collapsed to an opaque struct return (wrong ABI).
+    if ( same_class_arg )
+	return trait_class_memberwise_ctor(c, true, need_nothrow, depth);
+    // VALUE-INIT with a DEFAULTED default ctor: the `= default` member is
+    // selected over any 0-arg-viable ctor template by the same non-template
+    // preference, so unmodelable templates cannot change this answer either.
+    if ( args.empty() && defaulted_default )
+	return trait_class_memberwise_ctor(c, false, need_nothrow, depth);
     if ( saw_unmodelable )
 	return -1;
     // No explicit candidate: the implicit/defaulted special members remain.
     // Any user-declared ctor suppresses the implicit DEFAULT ctor
     // ([class.default.ctor]p1); the implicit copy/move survives.
     if ( args.empty() )
-	return (saw_user_ctor && !defaulted_default)
+	return saw_user_ctor
 	     ? 0 : trait_class_memberwise_ctor(c, false, need_nothrow, depth);
-    if ( same_class_arg )
-	return trait_class_memberwise_ctor(c, true, need_nothrow, depth);
     return 0;                        // no converting ctor takes these args
 }
 
