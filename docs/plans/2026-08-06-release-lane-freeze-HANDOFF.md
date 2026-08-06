@@ -6,6 +6,109 @@ had been built since Aug 1. First `release packed` run since then
 forest-pack verify and the packed suite is 982/15. The failure predates
 and is independent of `feature/script-toplevel-claude` (#16/#18).
 
+## SESSION #68 STATE (2026-08-06 late) — WALL MOSTLY DOWN: 7-8/15 flipped
+
+FOUR fixes banked (each own commit, trailers, all verified live-green —
+live 18-test spot check incl. testfreezerun + script-mode gates 18/18):
+
+1. **fix(parser) canonical binding dds** — TWO builtin dds for one type
+   (ddINT "int" ← integer literals; ddINT32 "int32_t" ← the lexer/THE
+   table `resolve_builtin_type_spelling`). Identity formers spell binding
+   dd NAMES → one entity minted two identities (forward<int> vs
+   <int32_t>) → pack/consumer split. New `canonical_template_binding_dd`
+   (NO alias-chain walk — block-scope typedef aliases like _ValueType2
+   carry one instantiation's resolution; walking them crossed
+   instantiations, caught by FNTPLPROBE) at fn_template_deduce_param's
+   output + instantiate_fn_template_binding entry. Probe:
+   MADC_DEBUG_INTSPLIT=1 (10 corpus hits → 0).
+2. **fix(freeze) recorder canonical slot** — forest_pinned_primitive_id's
+   rawtype scan let slot 5 (ddINT) shadow slot 9 (ddINT32); restored
+   refs/params spelled "int" where live spelled "int32_t". Prefer the
+   twin the one table maps to itself.
+3. **fix(cir) copied-call member-access recovery** —
+   copied_call_arg_for_formal had no arm for a MEMBER-ACCESS value with
+   a dependent pattern dd (this->_M_impl into _Tp_alloc_type&): struct
+   value fell to the pointer-cast tail = the stl_vector.h:428
+   "conversion of non-scalar value" ×2. Added the TokenMember twin of
+   the N_ID recovery, gated to N_FIELD/N_DEREF_FIELD (a resolved
+   (void*)(&member) cast carries the same origin token — first attempt
+   over-fired and broke the string flavor). Probe: MADC_DEBUG_ARGBIND.
+4. **fix(freeze) using-decl import ORDER** — restore staged imports to a
+   post-pass and APPENDED them; live parses `using _Base_type::construct;`
+   BEFORE the own overloads. Thaw resolution tried __alloc_traits' OWN
+   custom-pointer construct (pattern polluted with the first
+   materialization's use-site spelling `_Char_alloc_type` — dormant
+   live!), instantiation failed, call stayed placeholder-bound →
+   undefined `__alloc_traits...__construct` MIR import = most of the 15.
+   Post-pass now inserts at the recorded methodrec position + first-wins
+   method_map arbitration. Subset 1→7 passed on this fix alone.
+
+UNCOMMITTED (in flight): predicate guard in typedef_alias_matches_datadef
+(`alias == dd->name` → not an alias) — defect P's mechanism: thawed
+tokens spell the restored dd's NAME ("int32_t"), the restored typedef
+registry matches it, param typedef recording made the emitter render
+`int32_t *__p` in a module that never emits that typedef (fmin_use
+"unknown type int32_t"; first fix attempt at
+basic_class_pattern_bound_typedef alone was insufficient — the deferred
+BODY re-parse lane records through the same predicate).
+
+DEFECT P: **FIXED** — fmin_use prints "7 1" rc=0 vs the frozen corpus
+(fix 5, the typedef-alias predicate guard).
+
+REMAINING failing subset (8; likely ONE root + one separate family):
+- **START HERE — the multi-namespace same-name template chooser under
+  thaw.** The thawed consumer materializes WRONG-NAMESPACE flavors that
+  live never mints (live module: 0 gnu_cxx hits):
+  - `basic_ofstream<char>`'s default `_Traits = char_traits<_CharT>`
+    resolves to `__gnu_cxx::char_traits` → an entire parallel
+    basic_ios/istream/ostream/iostream gnu_cxx family materializes
+    (63 refs in tmp/manip.c) → its iostream trips the DOWNSTREAM
+    `repeated declaration __vptr_8` (the vbase-vptr loop at
+    cir_builder ~9005 and secondary_vptr_owners both land offset 8 on
+    that malformed flavor — fix the flavor choice first; the layout
+    dup is probably moot). Covers testmanipview + testofstreamwrite.
+  - `basic_string` resolving to std::pmr::basic_string's alias family
+    (`polymorphic_allocator_char` undeclared at basic_string.h:87) —
+    same bare name, two namespaces. Covers testusingfnoverload +
+    testctortemplatetrait, likely the autoinclude 'string' failures too.
+  - EVIDENCE BANKED: both char_traits variants RESTORE (verdict 1,
+    std first — so the registry is complete and ordered); the gdb
+    backtrace at MADC_RRTRAP='__gnu_cxx::char_traits<char>' (container,
+    gdb -batch works on tmp/fb_madc) mints the spelling inside
+    instantiate_fn_template_binding -> resolve_declared_type_token ->
+    instantiate_template_id -> canonical_arg_key_fragment — i.e. the
+    default-arg fill built a __gnu_cxx-qualified SPELLING before the
+    trap. find_template's unqualified fallback (parser.cpp ~26046):
+    current_namespace() match, then global, then variants[0] — find
+    which route the thawed default fill takes and why the std variant
+    loses (ns context empty? a different resolver — despaced-canonical
+    index / resolve_arg_spelling_datadef — consulted first?).
+    PRIME SUSPECT: restored canonical spellings are DESPACED and their
+    ARG fragments may drop namespace qualifiers; a thawed re-derivation
+    (split_template_id_spelling -> resolve_arg_spelling_datadef on the
+    bare "char_traits<char>") re-resolves the name where live still held
+    the dd link and never re-derived. Reproduce with the RRTRAP gdb
+    recipe, walk one frame past instantiate_template_use to name the
+    resolver that produced the __gnu_cxx-qualified arg spelling.
+- auto-include surfaces under thaw: `cout` (testpreferdefault),
+  `intptr_t` (testautoincludestdheaders), `string` in ns_php
+  (testautoincludens/testautoincludecpp — flickered across runs) —
+  possibly downstream of the same chooser, verify after.
+- FIXED ✓: testcontainerdtor, testcommontype, testsubscript, testvector,
+  testforeachref/scope, testmadc_ns (7/15 + defect P).
+
+FILED (fix-after-wall, dormant-live defects found this session):
+- The __alloc_traits OWN construct pattern captures the FIRST
+  materialization's use-site arg spelling (`_Char_alloc_type`) — a
+  parse-once capture bug, dormant because resolution never picks it
+  live; trips under any resolution-order change.
+- The SFINAE-failed instantiation leaves the CALL bound to the hollow
+  placeholder instead of recovering to the next candidate (the
+  undefined-import shape instead of overload-resolution recovery).
+- 51962 free-operator conflict compare uses dd NAME equality; flavor
+  twins now canonicalized at the deducer, but the compare itself is
+  name-keyed.
+
 ## STATE AT COMPACTION (2026-08-06 end of session #67)
 
 - Branch `feature/script-toplevel-claude`, PUSHED through @67c47f9d
