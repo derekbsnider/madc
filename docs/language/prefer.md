@@ -23,11 +23,11 @@ namespace in a `prefer` directive) is enough to load it.
 
 Two equivalent spellings update the order from that point forward:
 
-```c
+```text
 prefer rust, std, c;
 ```
 
-```c
+```text
 #pragma prefer rust, std, c
 ```
 

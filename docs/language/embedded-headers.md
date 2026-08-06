@@ -2,7 +2,7 @@
 
 madc's `#include` reaches three kinds of headers:
 
-```c
+```text
 #include <iostream>    // the REAL installed system header
 #include <ns_php>      // a madc embedded header (baked into the binary)
 #include "myfile.mad"  // project file, filesystem relative to the includer

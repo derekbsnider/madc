@@ -13,13 +13,25 @@ int divide(int a, int b)
     return q, r;
 }
 
-// caller unpacks with :=
-q, r := divide(17, 5);
+int main()
+{
+    // caller unpacks with :=
+    q, r := divide(17, 5);
+    cout << q << " " << r << endl;   // 3 2
+    return 0;
+}
 ```
 
 ## Example
 
 ```c
+int divide(int a, int b)
+{
+    int q = a / b;
+    int r = a - (q * b);
+    return q, r;
+}
+
 int minmax(int a, int b)
 {
     if (a < b)
@@ -62,6 +74,13 @@ int minmax(int a, int b)
     if (a < b) return a, b;
     return b, a;
 }
+
+int main()
+{
+    lo, hi := minmax(9, 4);
+    cout << lo << " " << hi << endl;   // 4 9
+    return 0;
+}
 ```
 
 ## Known Limitations
@@ -72,6 +91,9 @@ int minmax(int a, int b)
 - The receive form is `a, b := f();` only — a plain `a, b = f();` on
   pre-declared variables is rejected ("Expecting := after identifier
   list").
+- Top-level `a, b := f();` in script mode does not yet join the
+  synthesized `main` (the receivers surface as undefined imports) —
+  unpack inside a function for now.
 
 ## Files
 

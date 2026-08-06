@@ -42,9 +42,14 @@ rust::join(out, parts, "-");
 cout << rust::contains(out, "rust") << endl;
 ```
 
+## `rust::match`
+
+The `rust::match` statement form (multi-pattern, no-fall-through
+`switch` with a `_` wildcard arm) is implemented — see
+[rust-match.md](rust-match.md).
+
 ## Planned, Not Yet Implemented
 
-- `rust::match` syntax
 - `rust::if let` syntax
 - ownership / borrowing / lifetimes
 - `Option<T>` / `Result<T, E>` as first-class types
