@@ -1,8 +1,8 @@
 # libc++ parity lane — the failing set
 #
 # Produced by:  bash scripts/run_tests.sh --stdlib=libc++
-# Measured at:  588d9e73 (2026-08-06) on feature/libcxx-parity7-claude
-# Result:       967 passed / 2 failed / 0 timed out / 13 skipped
+# Measured at:  e658a5b8 (2026-08-06) on feature/libcxx-parity7-claude
+# Result:       969 passed / 1 failed / 0 timed out / 13 skipped
 #
 # HISTORY (diff this file, never compare bare totals — a total cannot tell
 # "N fixed, N newly broken" from "nothing changed"):
@@ -798,5 +798,38 @@
 #                         does not round-trip the freeze; classes restore
 #                         static_member_types only, cir_freeze.cpp:2822).
 #                         fulltest 973/0.
-testfreezerun.mad
+#   e658a5b8  969 /   1   testfreezerun FLIPPED (+1 is the new gate
+#                         testaggrinit; failing set = testtuple ONLY).
+#                         FOUR fixes. (22a) the flavor-runtime dlopen now
+#                         lives in cir_translate_guarded — the ONE
+#                         translate entry — so the freeze lane's CIR-time
+#                         dlsym probes see libc++ and the facet-id extern
+#                         decls are recorded (the thaw's "undeclared
+#                         _ZNSt3__15ctypeIcE2idE" was the freeze BUILD
+#                         shaping a different tree, NOT a serialization
+#                         gap — tree-dump diff via the new
+#                         MADC_FREEZE_DUMP_TREE / MADC_THAW_DUMP_TREE).
+#                         (22b) frozen containers carry the flavor's
+#                         link_libs sonames; the thaw reopens them (16
+#                         trap-bound imports -> 0). (22c) a NESTED class's
+#                         ctor/dtor no longer false-matches its OWNER's
+#                         out-of-line defs (want derived from tmpl_key
+#                         matched basic_ostream's OOL ctor when binding
+#                         sentry's — the sentry ctor lost its Itanium
+#                         bind and trapped at run; nested classes are
+#                         outside the OOL map's producer domain). (23)
+#                         aggregate list-init of ctor-less classes
+#                         ([dcl.init.aggr], class_aggregate_init): braced
+#                         construction of a class-promoted struct DROPPED
+#                         its initializers — silent garbage in the PLAIN
+#                         lane (S{string, 42} printed junk, exit 0) and
+#                         the frozen __allocate_at_least returned an
+#                         uninitialized __allocation_result (garbage
+#                         vector data -> wrong sum + traits crash).
+#                         Claims only the clean aggregate case at the
+#                         FULL-list TokenObjTemp sites; everything else
+#                         declines to the legacy lanes (two intermediate
+#                         shapes that claimed wider broke testaggrclassinit
+#                         and 10 libc++ tests — caught by the gates,
+#                         reverted before push). fulltest 974/0.
 testtuple.mad

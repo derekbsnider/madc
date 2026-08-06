@@ -5,9 +5,51 @@
 Variadic-pack correctness, `sizeof...` and `noexcept` become real operators,
 and generic class-template, construction, reference-binding, and
 member-template fixes join the libc++ parity burn-down. The flavored lane
-moved **891/28 → 967/2**: new gates plus the old-failure flips, with zero
-newly broken tests in every measured two-way failset diff. Fulltest is
-**973/0/0TO/9skip**.
+moved **891/28 → 969/1**: new gates plus the old-failure flips, with zero
+newly broken tests in every measured two-way failset diff. The only
+remaining lane failure is `testtuple` (#110 pack wall). Fulltest is
+**974/0/0TO/9skip**.
+
+- **fix: `testfreezerun` flips under `-stdlib=libc++ --freeze-run` — the
+  flavor runtime is part of BOTH sides of the freeze boundary, nested
+  classes stop matching their owner's out-of-line defs, and aggregate
+  list-init stops dropping initializers (@fddba9d4, @387c1e2a,
+  @e658a5b8).** Three layers, each one deeper: (1) the freeze lane
+  translated WITHOUT the flavor-runtime dlopen, so the builder's CIR-time
+  dlsym probes shaped a DIFFERENT tree than the live lane — the
+  [locale.id] facet-id extern decls were never recorded and the thaw died
+  on undeclared `_ZNSt3__15ctypeIcE2idE`-family identifiers (the open now
+  lives in `cir_translate_guarded`, the one translate entry every lane
+  flows through; new `MADC_FREEZE_DUMP_TREE`/`MADC_THAW_DUMP_TREE` dumps
+  are the round-trip diff instruments that disproved the serialization-gap
+  hypothesis). (2) Frozen containers now carry the flavor's `link_libs`
+  sonames and the thaw reopens them — 16 trap-bound imports (std::cout,
+  use_facet, the ostream methods) dropped to zero. (3) A NESTED class's
+  ctor/dtor false-matched its OWNER template's out-of-line defs
+  (`basic_ostream<char>::sentry`'s ctor compared under the owner's name
+  matched basic_ostream's own OOL ctor entry), suppressing an Itanium
+  bind libc++ genuinely exports — the sentry then trapped at run under
+  its madc-emitted name. Nested classes are outside the OOL map's
+  producer domain and now skip the check.
+
+- **fix: aggregate list-init of ctor-less classes — a braced construction
+  no longer DROPS its initializers (@e658a5b8).** The construction path
+  served implicit copy and default construction only; `S{std::string("hi"),
+  42}` on a class-promoted struct returned a default-constructed temp with
+  the initializers silently gone — garbage with exit 0 in the PLAIN
+  default lane (gate `testaggrinit`, g++/clang++ oracles), and the frozen
+  libc++ lane returned an uninitialized `__allocation_result` from
+  `__allocate_at_least` (garbage vector data → wrong sum, traits-copy
+  crash). The new `class_aggregate_init` is the one memberwise owner
+  ([dcl.init.aggr]: class members construct, scalars assign, references
+  bind, trailing members value-initialize) with a strict CLAIM/DECLINE
+  contract: it claims only the clean aggregate case at the full-list
+  TokenObjTemp construction sites and declines everything else to the
+  legacy lanes — the declaration and global lanes probe `class_ctor_call`
+  with a PARTIAL argument view and own their braced lists via the C
+  initializer, so claiming from inside those owners regressed
+  `testaggrclassinit` and ten libc++ tests in two intermediate shapes,
+  both caught by the suite gates and reverted before push.
 
 - **fix: one instantiation key for typedef'd anonymous-aggregate template
   arguments (@588d9e73).** `canonical_arg_key_fragment` canonicalized a

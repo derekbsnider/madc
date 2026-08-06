@@ -1,6 +1,19 @@
 # Test Status
 
-> **Current (2026-08-06, `feature/libcxx-parity7-claude` @588d9e73 —
+> **Current (2026-08-06, `feature/libcxx-parity7-claude` @e658a5b8 —
+> testfreezerun FLIPPED):** fulltest **974/0**; lane **969/1/13skip**
+> (+1 gate: testaggrinit). The only remaining lane failure is
+> **testtuple** (#110 pack wall). Four fixes: the flavor-runtime dlopen
+> moved into `cir_translate_guarded` (the freeze lane's CIR-time dlsym
+> probes shaped a different tree — facet-id externs unrecorded); frozen
+> containers carry the flavor `link_libs` and the thaw reopens them (16
+> trap-bound imports → 0); nested-class ctor/dtor no longer false-match
+> the owner's out-of-line defs (sentry's Itanium bind restored); and
+> aggregate list-init of ctor-less classes stops DROPPING initializers
+> (class_aggregate_init, [dcl.init.aggr] — was silent garbage in the
+> PLAIN lane too, S{string,42} printed junk with exit 0).
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @588d9e73 —
 > one-key fix for typedef'd anon-aggregate template args):** fulltest
 > **973/0**; lane **967/2/13skip** (+1 gate: testanontypedefspec). The
 > fix removed a SILENT wrong value in plain JIT (explicit spec invisible
