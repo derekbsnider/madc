@@ -15862,9 +15862,11 @@ Variable::Variable(std::string n, DataDef &d, uint32_t c, void *init, bool alloc
       && ((type->basetype() != BaseType::btFunct && type->size > 0)
 	|| dynamic_cast<DataDefFPTR *>(type) != NULL) )
     {
-	data = calloc(count, d.size);
+	// Scalar slot: slot_size, not d.size — ddINT slots are read and
+	// written 64-bit (see Variable::slot_size).
+	data = calloc(count, slot_size(d));
 	flags |= vfALLOC;
-	DBG(std::cout << "Variable::Variable data = calloc(" << count << ", " << d.size << ") for " << n << std::endl);
+	DBG(std::cout << "Variable::Variable data = calloc(" << count << ", " << slot_size(d) << ") for " << n << std::endl);
 	DBG(std::cout << "Data address: " << (uint64_t)data << std::endl);
     }
 }
@@ -60797,7 +60799,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	      && decl_type->size > 0 && elem_count == 1
 	      && decl_type->basetype() != BaseType::btFunct )
 	    {
-		var->data = calloc(1, decl_type->size);
+		var->data = calloc(1, Variable::slot_size(*decl_type));
 		var->flags |= vfALLOC;
 		var->flags &= ~vfSTACK;
 	    }
@@ -61039,7 +61041,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		{
 		    if ( !var->data && var->type->size > 0 )
 		    {
-			var->data = calloc(1, var->type->size);
+			var->data = calloc(1, Variable::slot_size(*var->type));
 			if ( var->data )
 			    var->flags |= vfALLOC;
 		    }
