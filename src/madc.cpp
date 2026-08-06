@@ -1730,6 +1730,10 @@ int main(int argc, char **argv)
 	    std::string selfexe = madc_self_exe_path();   // resolved pre-fork
 	    std::vector<char *> cargv;
 	    cargv.push_back(argv[0]);
+	    // Verbosity crosses the re-exec: the thaw side's diagnostics
+	    // (trap-bind list, link trace) are DBG-gated in the CHILD.
+	    if ( madc_verbose )
+		cargv.push_back((char *)"-v");
 	    cargv.push_back((char *)opt.c_str());
 	    for ( int i = filearg + 1; i < argc; ++i )   // program args after the source
 		cargv.push_back(argv[i]);

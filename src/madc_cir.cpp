@@ -771,6 +771,19 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
 				    CirBuilder *&out_builder)
 {
     out_builder = NULL;
+    // Open the flavor's runtime BEFORE the tree build, not only at MIR link:
+    // the builder's mangled-direct link tests (extern_symbol_can_link, the
+    // facet-id extern recording) probe dlsym at CIR time, and under
+    // -stdlib=libc++ the flavor library is not among bin/madc's own
+    // DT_NEEDED — probing before the dlopen answers "unlinkable" for
+    // symbols the link would in fact resolve, so the tree is SHAPED
+    // differently (unrecorded facet-id externs, undeclared
+    // _ZNSt3__15ctypeIcE2idE family). That bit the object lane first, then
+    // the freeze lane the same way — which is why the open lives HERE, on
+    // the one translate entry every lane (run, object, project, freeze)
+    // flows through, not per caller. Idempotent; the MIR-link call site
+    // keeps its open for lanes that skip translation entirely.
+    cir_open_stdlib_runtime(prog ? prog->active_stdlib_flavor() : NULL);
     CirBuilder *builder = new CirBuilder(c2m);
     // TU identity for the object-mode per-TU init symbol (S3 init-array).
     builder->set_tu_name(source_name);
@@ -834,23 +847,9 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     // by the time this TU builds, another Program's pools are active.
     prog->activate_token_pools();
 
-    // Open the flavor's runtime BEFORE the tree build, not only at MIR link:
-    // the builder's mangled-direct link tests (extern_symbol_can_link, the
-    // facet-id extern recording) probe dlsym at CIR time, and under
-    // -stdlib=libc++ the flavor library is not among bin/madc's own
-    // DT_NEEDED — probing before the dlopen answered "unlinkable" for
-    // symbols the link would in fact resolve (the facet ids came back
-    // undeclared the moment the availability gate landed). Idempotent; the
-    // MIR-link call site keeps its open for lanes that skip this one.
-    //
-    // Unconditional — object mode included. The MIR-link open IS rightly
-    // object-mode-skipped (imports become undefined ELF symbols; addresses
-    // are never read), but the CIR-time probes above run in EVERY output
-    // mode and SHAPE THE TREE. Skipping the open here made -o/-c build a
-    // different tree than the JIT for the same source+flags: the flavored
-    // exe lane died at c2mir check on the unrecorded facet-id externs
-    // (undeclared _ZNSt3__15ctypeIcE2idE family) that the JIT lane declared.
-    cir_open_stdlib_runtime(prog->active_stdlib_flavor());
+    // The flavor-runtime open (CIR-time dlsym probes shape the tree — object
+    // mode included) lives in cir_translate_guarded, the one translate entry
+    // every lane flows through.
 
     // CirBuilder (cir_node) is the sole backend. The builder owns its node
     // arena and must outlive cir_compile()/MIR_gen() — hence it is returned to
@@ -1305,6 +1304,14 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
 	    fprintf(stderr, "%s: forest root failed to materialize\n", module_name);
 	    teardown();
 	    return false;
+	}
+
+	// MADC_THAW_DUMP_TREE=<path>: dump the materialized tree AS THAWED —
+	// side B of the freeze/thaw round-trip diff (side A is
+	// MADC_FREEZE_DUMP_TREE in madc_cir_freeze).
+	if (const char *dp = getenv("MADC_THAW_DUMP_TREE")) {
+	    FILE *df = fopen(dp, "w");
+	    if (df) { c2mir_dump_tree(c2m, df, root->as_node()); fclose(df); }
 	}
 
 	// The same validity gate as a live build: never hand c2mir a tree
@@ -4968,6 +4975,14 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 	    fprintf(stderr, "%s: pack drain: %zu deferred bodies evaluated, "
 		    "%zu left deferred\n", source_name,
 		    db_before > db_after ? db_before - db_after : 0, db_after);
+	// MADC_FREEZE_DUMP_TREE=<path>: dump the translated tree AS FROZEN —
+	// side A of the freeze/thaw round-trip diff (side B is
+	// MADC_THAW_DUMP_TREE in build_frozen).
+	if (tree)
+	    if (const char *dp = getenv("MADC_FREEZE_DUMP_TREE")) {
+		FILE *df = fopen(dp, "w");
+		if (df) { c2mir_dump_tree(c2m, df, tree); fclose(df); }
+	    }
 	int nerr = tree ? cir_report_errors(stderr, tree) : 0;
 	// Rung 1, layer 4 — pack-side c2mir check gate. The drain evaluates
 	// bodies live never compiles, so a defective drained lowering would
@@ -5041,6 +5056,25 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		fprintf(stderr, "%s: forest freeze failed\n", source_name);
 	    } else {
 		f.libs = prog->loaded_lib_paths;
+		// The flavor runtime the freezing process opened
+		// (cir_open_stdlib_runtime, before the tree build) is part of
+		// the link environment the thaw must recreate: under a
+		// non-default flavor its exports (std::__1::cout, the facet
+		// ids) are not among bin/madc's DT_NEEDED, so a thaw that
+		// reopens only the #load/-l libs leaves every flavor-library
+		// import unresolved (trap-bound). Sonames, so the container
+		// stays machine-portable; dlopen of an already-loaded soname
+		// is a no-op for the default flavor.
+		{
+		    const madc_stdlib_flavor *flavor = prog->active_stdlib_flavor();
+		    if (!flavor)
+			flavor = &madc_stdlib_flavors[0];
+		    if (flavor->link_libs)
+			for (int li = 0; flavor->link_libs[li]; li++)
+			    if (std::find(f.libs.begin(), f.libs.end(),
+					  flavor->link_libs[li]) == f.libs.end())
+				f.libs.push_back(flavor->link_libs[li]);
+		}
 		f.language_std = madc_forest_config_word(prog);	// v27 producer-config gate
 		f.defines_hash = madc_forest_defines_hash(prog);
 		cir_forest_fill_pack_payloads(prog, f);	// grove payload v2 (B4a)
