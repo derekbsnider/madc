@@ -6,6 +6,39 @@ had been built since Aug 1. First `release packed` run since then
 forest-pack verify and the packed suite is 982/15. The failure predates
 and is independent of `feature/script-toplevel-claude` (#16/#18).
 
+## STATE AT COMPACTION (2026-08-06 end of session #67)
+
+- Branch `feature/script-toplevel-claude`, PUSHED through @67c47f9d
+  (#16/#18 + docs; batch-gated: fulltest 999/0/9skip, libc++ lane
+  995/0/13skip). BANKED LOCAL-ONLY (unpushed, per owner mid-repair
+  directive): @8b77c972 (hypothesis 1, the ovset round-trip) +
+  @85cd4d9b + this handoff commit. Push them WITH the wall-fall
+  battery, not before.
+- **OWNER DIRECTIVE (repair protocol):** mid-repair, run ONLY the
+  failing subset — no full suites per step; the ONE battery
+  (fulltest + libcxxjit + exe + obj + release + packed) runs AFTER the
+  15 flip. A closing battery I had launched was killed on this
+  directive (its partial log is void; kill leftovers — an orphaned
+  `warn_census.sh --check` kept spawning tests after run_tests/make
+  died; find spawners via the test PID's PPID chain).
+- **THE REPAIR INNER LOOP (~7 min/iteration, container):**
+  1. `scripts/remote_build.sh sync build` (incremental)
+  2. `ssh -p 2299 dev@localhost` →
+     `cd /workspace/madc; bash tmp/fbisect.sh cstddef climits cctype
+     cstring cstdio cstdlib ctime cerrno string vector list map set
+     utility memory sstream iostream fstream algorithm`
+     (re-freezes the full corpus into tmp/fb_madc + tmp/fb_madc.forest
+     with the CURRENT binary, ~4.5 min at -O0)
+  3. `MADC_BIN=tmp/fb_madc bash scripts/run_tests.sh testautoincludecpp
+     testautoincludens testautoincludestdheaders testcommontype
+     testcontainerdtor testctortemplatetrait testforeachref
+     testforeachscope testmadc_ns testmanipview testofstreamwrite
+     testpreferdefault testsubscript testusingfnoverload testvector`
+     (~30 s — the 15 packed failures reproduce EXACTLY through this
+     sidecar harness; verified 0/15 at the banked HEAD)
+- Subset baseline WITH hypothesis 1 in place: **0/15** — H1 flips none
+  of them; the second driver dominates.
+
 ## THE VERDICT (bisected, verified)
 
 - **Defect R (the regression):** first bad commit **6a24cffa**
