@@ -53,22 +53,27 @@ int main()
 
 ## Conditional Returns
 
-Multiple return values work inside braced if/else blocks:
+Multiple return values work in any return position, including brace-less
+`if` arms:
 
 ```c
-if (a < b)
+int minmax(int a, int b)
 {
-    return a, b;
+    if (a < b) return a, b;
+    return b, a;
 }
-return b, a;
 ```
 
 ## Known Limitations
 
-- Brace-less `if` with multi-return does not parse correctly -- always use braces
-- String return types are not yet supported -- numeric types only (int, double)
+- Numeric value types only (int, double). Class-typed values (e.g.
+  `std::string`) are not yet supported — the receivers bind as integers,
+  so member access on them fails to compile.
+- The receive form is `a, b := f();` only — a plain `a, b = f();` on
+  pre-declared variables is rejected ("Expecting := after identifier
+  list").
 
 ## Files
 
 - `src/parser.cpp` -- multi-return parsing, `:=` unpacking
-- `src/compiler.cpp` -- `__retbuf` parameter injection, return buffer writes, unpacking loads
+- `src/cir_builder.cpp` -- `__retbuf` parameter injection, return buffer writes, unpacking loads

@@ -4,7 +4,7 @@ Conditional expressions using `condition ? true_expr : false_expr`.
 
 ## Syntax
 
-```c
+```text
 type var = condition ? true_expr : false_expr;
 ```
 
@@ -36,16 +36,25 @@ cout << c << endl;         // 42
 - Variable initialization: `int y = x > 3 ? 100 : 200;`
 - Return statements: `return x > 0 ? 1 : 0;`
 - Expressions with arithmetic in branches: `a > 5 ? a + 1 : a - 1`
+- C++ lvalue conditionals: when both arms are lvalues of one type, the
+  result is an lvalue (`(flag ? a : b) = v;` assigns through), matching
+  g++/clang++
 
 ## Precedence
 
-The ternary operator has precedence level 13 -- lower than comparison operators, higher than assignment. This means `x > 3 ? 100 : 200` parses as `(x > 3) ? 100 : 200` without needing parentheses.
+Standard C placement — lower than comparison operators, higher than
+assignment: `x > 3 ? 100 : 200` parses as `(x > 3) ? 100 : 200` without
+parentheses.
 
 ## Implementation
 
-The compiler uses a stack-slot merge strategy: both branches write their result to the same stack memory location, and the final value is loaded from that slot after the conditional. This avoids asmjit register convergence issues where two code paths would need to produce a value in the same virtual register.
+The ternary lowers to a C11 conditional expression in the `cir_node`
+tree; c2mir/MIR own the branch and merge codegen. The C++
+lvalue-conditional case distributes the address-of into the arms during
+lowering.
 
 ## Files
 
-- `src/parser.cpp` -- ternary detection and parsing in expression handler
-- `src/compiler.cpp` -- conditional jump emission, stack-slot merge
+- `src/parser.cpp` — ternary parsing in the expression handler
+- `src/cir_builder.cpp` — conditional lowering (including the lvalue
+  form)

@@ -4,7 +4,7 @@ Read from stdin using `cin` and the `>>` extraction operator.
 
 ## Syntax
 
-```c
+```text
 cin >> variable;
 cin >> a >> b;       // chained input
 ```
@@ -48,6 +48,13 @@ cout << a << " " << b << endl;
 echo -e "Alice\n30\nhello world" | bin/madc tests/testcin.mad
 ```
 
+`cin` and the extraction operators are the REAL `std::cin` /
+`operator>>` from the active standard library, resolved mangled-direct —
+formatted extraction behaves exactly as compiled C++ does under either
+stdlib flavor.
+
 ## Files
 
-- `src/compiler.cpp` -- `>>` operator handling for istream types
+- `src/parser.cpp` — `>>` operator resolution against the real istream
+  overload set
+- `src/cir_builder.cpp` — call lowering

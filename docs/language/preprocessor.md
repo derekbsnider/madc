@@ -1,6 +1,6 @@
 # C Preprocessor Directives
 
-madc implements a subset of the C preprocessor at the lexer level.
+madc implements the C preprocessor at the lexer level.
 
 ## `#define` / `#undef`
 
@@ -9,58 +9,39 @@ madc implements a subset of the C preprocessor at the lexer level.
 #define PI 3.14159
 #define MSG "hello"
 
-cout << MAX << endl;    // 100
-cout << PI << endl;     // 3.14159
-
-#undef MAX
-// MAX is no longer defined
+cout << MAX << endl;
+cout << MSG << endl;
 ```
 
-Substitution works by pushing the define value back into the source stream for
-re-tokenization. This means defines can expand to any valid token sequence, not
-just simple values.
+Output: `100` then `hello`.
+
+Substitution pushes the define's value back into the source stream for
+re-tokenization, so defines can expand to any valid token sequence —
+including function-like macros with arguments, `#`/`##` operators, and
+variadic `__VA_ARGS__` forms found in real system headers.
 
 ## Conditional Compilation
 
+`#ifdef` / `#ifndef` / `#if` / `#elif` / `#else` / `#endif`, with full
+`defined(...)` and constant-expression evaluation (the same evaluator
+that serves real system headers, including `?:` and arithmetic). Nested
+conditionals are fully supported.
+
 ```c
+#define FEATURE_X 1
+
 #ifdef FEATURE_X
-    // compiled only if FEATURE_X is defined
-#endif
-
-#ifndef FEATURE_Y
-    // compiled only if FEATURE_Y is NOT defined
-#endif
-
-#if defined(FEATURE_X)
-    // same as #ifdef
-#endif
-
-#if !defined(FEATURE_X)
-    // same as #ifndef
-#endif
-
-#if 1
-    // always compiled
-#endif
-
-#if 0
-    // never compiled
-#endif
-```
-
-### `#elif` / `#else`
-
-```c
-#ifdef LINUX
-    // Linux-specific code
-#elif defined(MACOS)
-    // macOS-specific code
+cout << "X on" << endl;
 #else
-    // fallback code
+cout << "X off" << endl;
+#endif
+
+#if !defined(FEATURE_Y)
+cout << "no Y" << endl;
 #endif
 ```
 
-Nested conditionals are fully supported.
+Output: `X on` then `no Y`.
 
 ## `#pragma pack`
 
@@ -69,28 +50,42 @@ Controls struct field alignment:
 ```c
 #pragma pack(push, 1)
 struct packed_header {
-    char magic;
-    int32_t size;
-};  // 5 bytes, no padding
+	char magic;
+	int32_t size;
+};
 #pragma pack(pop)
 
 struct normal {
-    char magic;
-    int32_t size;
-};  // 8 bytes, with 3 bytes padding after magic
+	char magic;
+	int32_t size;
+};
+
+cout << sizeof(struct packed_header) << " " << sizeof(struct normal) << endl;
 ```
+
+Output: `5 8` (packed: no padding; natural: 3 pad bytes after `magic`).
+
+See [struct-alignment.md](struct-alignment.md) for the full layout rules.
 
 ## `#include`
 
-See [embedded-headers.md](embedded-headers.md).
+`#include <...>` reaches the real installed system headers (and madc's
+embedded headers where those exist); `#include "..."` includes project
+files, any extension. In the default madc dialect, common standard
+identifiers auto-include their headers — see
+[the language overview](overview.md). CLI: `-I<dir>` adds search
+directories, `-D<name>[=v]` defines macros, `-E` preprocesses only, and
+`-dM` prints the effective macro table.
 
 ## `#load`
 
-```c
+```text
 #load "libfoo.so" as foo;
 // foo::function_name() now available via dlsym
 ```
 
-Loads a shared library via `dlopen` with `RTLD_LAZY | RTLD_GLOBAL`. The `RTLD_GLOBAL`
-flag makes all symbols globally visible, so after loading you can also call functions
-without the namespace prefix via the dlsym fallback.
+Loads a shared library via `dlopen` with `RTLD_LAZY | RTLD_GLOBAL`. The
+`RTLD_GLOBAL` flag makes all symbols globally visible, so loaded
+functions are also callable without the namespace prefix through the
+dlsym fallback. `--no-auto-load` disables `#load` processing (link
+explicitly with `-l` instead).

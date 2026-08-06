@@ -4,7 +4,7 @@ A namespaced statement form modeled after Rust's `match`. v1 is a
 no-fall-through, multi-pattern `switch` over integer constants, with
 `_` as the wildcard arm.
 
-```c
+```text
 rust::match (expression)
 {
     pattern => statement;
@@ -12,6 +12,20 @@ rust::match (expression)
     _ => default_statement;
 }
 ```
+
+```c
+int n = 3;
+string kind;
+rust::match (n)
+{
+	1 | 2      => kind = "small";
+	3 | 4 | 5  => { kind = "medium"; }
+	_          => kind = "large";
+}
+cout << kind << endl;
+```
+
+Output: `medium`
 
 The `rust::` prefix is required — `match` outside this namespace
 remains a usable identifier in user code.
@@ -38,11 +52,14 @@ patterns always take precedence over the wildcard, even when they
 appear after it:
 
 ```c
+int n = 10;
+int result = 0;
 rust::match (n)
 {
-    _  => result = -1;     // wildcard listed first
-    10 => result = 999;    // still wins for n == 10
+	_  => result = -1;     // wildcard listed first
+	10 => result = 999;    // still wins for n == 10
 }
+cout << result << endl;   // 999
 ```
 
 If no arm matches and there is no `_`, control falls through past the
