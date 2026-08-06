@@ -22786,12 +22786,27 @@ Variable *Program::resolve_preferred_identifier(TokenIdent *ident_tb, bool expre
 	}
     }
 
-    if ( namespace_preference.empty() )
+    // The madc dialect ships a DEFAULT preference so unqualified names fall
+    // through to the standard library and the included utility namespaces in
+    // a documented canonical order — "c" first, so every previously
+    // resolvable C name resolves exactly as before. An explicit `prefer`
+    // REPLACES the default wholly (set_namespace_preference). Standards
+    // modes (--std=c*/c++*) get no default: full ceremony applies. Only
+    // namespaces actually in namespace_map (i.e. whose header is included)
+    // can ever match, so the default is a ranking, not an import.
+    static const std::vector<std::string> madc_default_preference = {
+	"c", "std", "php", "perl", "python", "ruby", "js", "rust", "madc"
+    };
+    const std::vector<std::string> &pref_order =
+	!namespace_preference.empty() ? namespace_preference
+	: auto_includes_enabled()     ? madc_default_preference
+				      : namespace_preference;
+    if ( pref_order.empty() )
 	return resolve_c_identifier(ident_tb, expression_head);
 
-    for ( size_t i = 0; i < namespace_preference.size(); ++i )
+    for ( size_t i = 0; i < pref_order.size(); ++i )
     {
-	const std::string &pref = namespace_preference[i];
+	const std::string &pref = pref_order[i];
 	if ( pref == "c" )
 	{
 	    Variable *var = resolve_c_identifier(ident_tb, expression_head);

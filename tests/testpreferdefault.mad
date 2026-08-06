@@ -1,0 +1,10 @@
+// The madc dialect's DEFAULT namespace preference (c, std, php, perl,
+// python, ruby, js, rust, madc): an UNQUALIFIED utility call resolves with
+// NO `prefer` directive once the namespace's header is in — here `trim`
+// finds php::trim. An explicit `prefer` still REPLACES the default wholly;
+// standards modes get no default (see testautoceremonystd).
+#include <ns_php>
+
+string s = "  pad  ";
+trim(s);
+cout << "[" << s << "]" << endl;

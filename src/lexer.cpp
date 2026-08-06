@@ -486,11 +486,39 @@ static bool expansion_is_compound_type_specifiers(const std::string &text, int &
     return saw_any;
 }
 
-static const char *auto_include_embedded_header_for_identifier(const std::string &word)
+static const char *auto_include_header_for_identifier(const std::string &word)
 {
     static const std::map<std::string, std::string> identifier_headers = {
 	{"string", "string"},
 	{"stringstream", "sstream"},
+
+	{"cout", "iostream"},
+	{"cin", "iostream"},
+	{"cerr", "iostream"},
+	{"clog", "iostream"},
+	{"endl", "iostream"},
+
+	{"ifstream", "fstream"},
+	{"ofstream", "fstream"},
+	{"fstream", "fstream"},
+
+	{"getline", "string"},
+	{"to_string", "string"},
+	{"stoi", "string"},
+	{"stol", "string"},
+	{"stod", "string"},
+
+	{"vector", "vector"},
+	{"map", "map"},
+	{"set", "set"},
+
+	{"php", "ns_php"},
+	{"perl", "ns_perl"},
+	{"python", "ns_python"},
+	{"ruby", "ns_ruby"},
+	{"js", "ns_js"},
+	{"rust", "ns_rust"},
+	{"madc", "ns_madc"},
 
 	{"size_t", "stddef.h"},
 	{"ptrdiff_t", "stddef.h"},
@@ -569,9 +597,17 @@ static std::vector<std::string> ordered_auto_include_headers(const std::set<std:
 	"string",
 	"sstream",
 	"iostream",
+	"fstream",
 	"vector",
 	"map",
 	"set",
+	"ns_php",
+	"ns_perl",
+	"ns_python",
+	"ns_ruby",
+	"ns_js",
+	"ns_rust",
+	"ns_madc",
 	NULL
     };
 
@@ -657,7 +693,7 @@ bool Program::auto_include_standard_identifier(const std::string &word)
 	break;
     }
 
-    const char *header = auto_include_embedded_header_for_identifier(word);
+    const char *header = auto_include_header_for_identifier(word);
     if ( !header )
 	return false;
 
@@ -766,57 +802,24 @@ void Program::inject_pending_auto_includes()
 	      hi != ordered.end(); ++hi )
 	{
 	    const std::string &header = *hi;
-	    std::string include_key = std::string("<") + header + ">";
-	    if ( !should_tokenize_include(include_key) )
-		continue;
-
-	    std::string pch_path;
-	    if ( find_filesystem_precompiled_header(*this, header, true, pch_path) )
-	    {
-		std::deque<TokenBase *> pch_tokens;
-		if ( load_precompiled_header_file(pch_path, pch_tokens) )
-		{
-		    push_precompiled_header_tokens(*this, pch_path, pch_tokens);
-		    continue;
-		}
-	    }
-	    const PrecompiledHeader *pch = find_precompiled_header(header);
-	    if ( pch )
-	    {
-		std::deque<TokenBase *> pch_tokens;
-		if ( madc_pch::read_madh(pch->data, pch->size, pch_tokens) )
-		{
-		    push_precompiled_header_tokens(*this, header, pch_tokens);
-		    continue;
-		}
-	    }
-
-	    const std::string *embedded = find_embedded_header(header);
-	    if ( !embedded )
-		continue;
-	    if ( !is_embedded_header_allowed(header) )
-		Throw << "embedded header '" << header
-		      << "' is not allowed by registration policy" << flush;
-
-	    pack_record_edge(header);	// B4a: auto-include edge, pre-swap
+	    // Delegate to the LITERAL include owner: feed a synthetic
+	    // `#include <hdr>` line through the real directive handler, so
+	    // forest bind, PCH discovery, embedded text, the filesystem
+	    // walk, once-only dedup, pack edges and include flags all apply
+	    // identically to an include the user wrote. The injector keeps
+	    // NO private serving copy of that chain: its old PCH+embedded
+	    // arms silently dropped every header without a named provider,
+	    // which is how retiring the embedded <string>/<sstream> twins
+	    // broke the C++ arm of auto-include unnoticed.
 	    Source saved = std::move(source);
-	    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
-	    suppress_auto_include_scan = true;
 	    source = Source();
-	    source.fname(header.c_str());
-	    { ReadTimer _rt(_read_seconds); source.str(*embedded); }
-	    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
+	    source.fname("<auto-include>");
+	    std::string directive = std::string("#include <") + header + ">\n";
+	    { ReadTimer _rt(_read_seconds); source.str(directive); }
 	    TokenBase *itb;
-	    const char *interned = intern_file(header);
-	    pack_note_unit(interned);
 	    while ( (itb = getRealToken()) )
-	    {
-		itb->file = interned;
 		push_token_with_literal_concat(itb);
-	    }
 	    source = std::move(saved);
-	    suppress_auto_include_scan = saved_suppress_auto_include_scan;
-	    mark_embedded_include_flag(header);
 	}
     }
 
@@ -6621,7 +6624,15 @@ void Program::handle_pragma_body()
 	    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 		name += source.get();
 	    if ( !name.empty() )
+	    {
 		order.push_back(name);
+		// The pragma reads its names char-by-char, so they bypass the
+		// identifier lexer's auto-include scan — feed them to the same
+		// hook the statement form gets for free, or `#pragma prefer
+		// rust, ...` fails "Unknown namespace" while `prefer rust, ...;`
+		// works (the ns_* header injects before parse-time validation).
+		auto_include_standard_identifier(name);
+	    }
 	    while ( source.peek() == ' ' || source.peek() == '\t' )
 		source.get();
 	}
