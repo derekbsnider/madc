@@ -7,6 +7,7 @@
 #include "madcdis/process.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <dirent.h>
 #include <string>
 #include <unistd.h>
@@ -217,4 +218,31 @@ TEST_CASE("completed processes release their owned descriptors")
 		REQUIRE(process.wait(&err));
 	}
 	CHECK(open_fd_count() == before);
+}
+
+TEST_CASE("process exec does not inherit unrelated data channels")
+{
+	const std::string path = "/tmp/madc_process_cloexec_"
+		+ std::to_string(static_cast<long long>(getpid()));
+	madc::error err;
+	std::unique_ptr<madc::DataChannel> unrelated =
+		madc::DataChannelRegistry::instance().open(
+			madc::DataSource(std::string("file://") + path),
+			madc::ChannelOpenMode::write, &err);
+	REQUIRE(unrelated.get() != nullptr);
+
+	madc::ProcessOptions options;
+	options.args.push_back("fd-count");
+	madc::Process process(madc::DataSource("exec://" + fixture_path()), options);
+	REQUIRE(process.start(&err));
+	REQUIRE(process.close_stdin(&err));
+	std::vector<unsigned char> stdout_bytes =
+		read_channel(process.stdout_channel(), &err);
+	CHECK(read_channel(process.stderr_channel(), &err).empty());
+	REQUIRE(process.wait(&err));
+	CHECK(as_string(stdout_bytes) == "0\n");
+	CHECK(process.exit_status() == 0);
+
+	unrelated->close();
+	std::remove(path.c_str());
 }

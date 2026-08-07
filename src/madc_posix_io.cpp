@@ -2,11 +2,18 @@
 
 #include <cerrno>
 #include <csignal>
+#include <fcntl.h>
 #include <pthread.h>
 #include <unistd.h>
 
 namespace madc {
 namespace detail {
+
+bool set_fd_close_on_exec(int fd)
+{
+	int flags = ::fcntl(fd, F_GETFD);
+	return flags >= 0 && ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0;
+}
 
 ssize_t write_fd_without_sigpipe(int fd, const void *buffer, std::size_t size)
 {

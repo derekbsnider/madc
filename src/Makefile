@@ -618,6 +618,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-fn-template-deduction-owner.sh
 	@cd .. && bash scripts/check-dependent-type-query-owner.sh
 	@cd .. && bash scripts/check-datachannel-write-owner.sh
+	@cd .. && bash scripts/check-datachannel-cloexec-owner.sh
 	@cd .. && bash scripts/check-rule-trailers.sh
 	@cd .. && bash scripts/warn_census.sh --check
 	@cd .. && bash scripts/tag_arith_burndown.sh --check

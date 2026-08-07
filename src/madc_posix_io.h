@@ -7,6 +7,7 @@
 namespace madc {
 namespace detail {
 
+bool set_fd_close_on_exec(int fd);
 ssize_t write_fd_without_sigpipe(int fd, const void *buffer, std::size_t size);
 
 } // namespace detail

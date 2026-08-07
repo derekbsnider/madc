@@ -139,6 +139,15 @@ public:
 			set_channel_errno(err, "file channel open failed", source.path());
 			return std::unique_ptr<DataChannel>();
 		}
+		if ( !detail::set_fd_close_on_exec(fd) )
+		{
+			int number = errno;
+			::close(fd);
+			errno = number;
+			set_channel_errno(
+				err, "file channel close-on-exec setup failed", source.path());
+			return std::unique_ptr<DataChannel>();
+		}
 		return std::unique_ptr<DataChannel>(
 			new FileDataChannel(fd, source.path(), capabilities));
 	}

@@ -4,7 +4,6 @@
 #include <cerrno>
 #include <csignal>
 #include <cstring>
-#include <fcntl.h>
 #include <map>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -43,8 +42,7 @@ bool make_cloexec_pipe(int fds[2], error *err)
 	}
 	for ( int i = 0; i < 2; ++i )
 	{
-		int flags = ::fcntl(fds[i], F_GETFD);
-		if ( flags < 0 || ::fcntl(fds[i], F_SETFD, flags | FD_CLOEXEC) != 0 )
+		if ( !detail::set_fd_close_on_exec(fds[i]) )
 		{
 			int number = errno;
 			close_fd(fds[0]);

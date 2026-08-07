@@ -20,6 +20,19 @@ enum class SocketSemantics
 	datagram
 };
 
+int create_socket(int domain, int socket_type, int protocol)
+{
+	int fd = ::socket(domain, socket_type, protocol);
+	if ( fd < 0 )
+		return -1;
+	if ( detail::set_fd_close_on_exec(fd) )
+		return fd;
+	int number = errno;
+	::close(fd);
+	errno = number;
+	return -1;
+}
+
 bool socket_capabilities(ChannelOpenMode mode, SocketSemantics semantics,
 			 ChannelCapabilities &capabilities, error *err)
 {
@@ -123,8 +136,8 @@ int connect_network_socket(const DataSource &source, int socket_type,
 	int last_error = ECONNREFUSED;
 	for ( addrinfo *address = addresses; address; address = address->ai_next )
 	{
-		fd = ::socket(address->ai_family, address->ai_socktype,
-			      address->ai_protocol);
+		fd = create_socket(address->ai_family, address->ai_socktype,
+				   address->ai_protocol);
 		if ( fd < 0 )
 		{
 			last_error = errno;
@@ -166,7 +179,7 @@ int connect_unix_socket(const DataSource &source, error *err)
 	address.sun_family = AF_UNIX;
 	std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
 
-	int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+	int fd = create_socket(AF_UNIX, SOCK_STREAM, 0);
 	if ( fd < 0 )
 	{
 		detail::set_channel_errno(err, "unix socket creation failed", path);

@@ -1,6 +1,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <string>
 #include <unistd.h>
 
@@ -42,6 +43,19 @@ int echo_input(bool copy_to_stderr)
 	}
 }
 
+int report_open_descriptor_count()
+{
+	int count = 0;
+	for ( int fd = 3; fd < 256; ++fd )
+	{
+		errno = 0;
+		if ( ::fcntl(fd, F_GETFD) >= 0 || errno != EBADF )
+			++count;
+	}
+	std::string result = std::to_string(count) + "\n";
+	return write_all(STDOUT_FILENO, result.data(), result.size()) ? 0 : 95;
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -71,5 +85,7 @@ int main(int argc, char **argv)
 	}
 	if ( mode == "pump" )
 		return echo_input(true);
+	if ( mode == "fd-count" )
+		return report_open_descriptor_count();
 	return 65;
 }
