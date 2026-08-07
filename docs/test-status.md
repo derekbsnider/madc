@@ -10,7 +10,15 @@
 > proved the dependency-free DSV/FLR/VLR and memory/file/FIFO/TCP/UDP/UDS
 > core. GCC 13.3 and Clang 18 reducers both reported
 > `tcp=ok uds=ok udp_trunc=ok` and `cloexec=ok`. Battery log:
-> `tmp/logs/rb-20260807-205332.log`.
+> `tmp/logs/rb-20260807-205332.log`. Release follow-up at documentation HEAD
+> @ff68c1d5: `make -C src release` rebuilt the stripped `-O2`
+> `bin/madc-release`, appended a compressed frozen forest containing
+> **242 units, 872066 records, and 276510 tokens**, and passed bind-cache
+> parity. The full suite against that exact packed binary passed
+> **999/0/0TO/9skip**; release rc=0, packed rc=0, total rc=0. Log:
+> `tmp/logs/rb-20260807-225834.log`. The pulled local release binary is
+> byte-identical to the tested remote artifact (SHA-256
+> `8e2b29990effcc06c38afe394d58a248a43491079838a1f96ef74c29ce176c0f`).
 >
 > **Previous (2026-08-06, `feature/libcxx-parity7-claude` @429842b4 —
 > session #66 close):** fulltest **997/0/9skip**; lane
