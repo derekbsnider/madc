@@ -47,6 +47,7 @@ struct DataDriverRegistry::impl
 DataDriverRegistry::DataDriverRegistry()
 	: _(new impl())
 {
+	register_core_storage_drivers(*this);
 #ifdef HAVE_MADCDAT
 	register_optional_storage_drivers(*this);
 #endif

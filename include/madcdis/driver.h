@@ -188,6 +188,7 @@ private:
     std::unique_ptr<impl> _;
 };
 
+void register_core_storage_drivers(DataDriverRegistry &registry);
 void register_optional_storage_drivers(DataDriverRegistry &registry);
 
 } // namespace madc
