@@ -48,6 +48,21 @@ public:
 	virtual void close() = 0;
 };
 
+// Optional extension for message-oriented channels. Each call transfers one
+// complete datagram; a zero-byte datagram is data, not stream EOF.
+class DatagramDataChannel
+{
+public:
+	virtual ~DatagramDataChannel() {}
+
+	virtual bool receive_datagram(
+		void *buffer, std::size_t capacity, std::size_t &bytes_read,
+		error *err = nullptr) = 0;
+	virtual bool send_datagram(
+		const void *buffer, std::size_t size, std::size_t &bytes_written,
+		error *err = nullptr) = 0;
+};
+
 bool write_all(DataChannel &channel, const void *buffer, std::size_t size,
 	       error *err = nullptr);
 bool copy_channel(DataChannel &source, DataChannel &destination,

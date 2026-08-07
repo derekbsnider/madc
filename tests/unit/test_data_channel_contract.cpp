@@ -13,11 +13,15 @@
 #include "madcdis/query.h"
 #include "madcdis/source_adapter.h"
 
+#include <arpa/inet.h>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <string>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 #include <vector>
 
@@ -360,6 +364,37 @@ public:
 	mutable bool streamed;
 };
 
+int make_loopback_socket(int socket_type, uint16_t &port)
+{
+	int fd = ::socket(AF_INET, socket_type, 0);
+	if ( fd < 0 )
+		return -1;
+	sockaddr_in address;
+	std::memset(&address, 0, sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if ( ::bind(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 )
+	{
+		::close(fd);
+		return -1;
+	}
+	socklen_t address_size = sizeof(address);
+	if ( ::getsockname(fd, reinterpret_cast<sockaddr *>(&address),
+			    &address_size) != 0 )
+	{
+		::close(fd);
+		return -1;
+	}
+	port = ntohs(address.sin_port);
+	return fd;
+}
+
+std::string loopback_uri(const char *scheme, uint16_t port)
+{
+	return std::string(scheme) + "://127.0.0.1:"
+		+ std::to_string(static_cast<unsigned long long>(port));
+}
+
 } // namespace
 
 TEST_CASE("legacy cursor ABI remains source compatible")
@@ -642,6 +677,151 @@ TEST_CASE("FIFO channel reports a closed reader without SIGPIPE termination")
 	CHECK(err.message.find("Broken pipe") != std::string::npos);
 
 	output->close();
+	std::remove(path.c_str());
+}
+
+TEST_CASE("TCP channel connects and preserves byte-stream half-close semantics")
+{
+	uint16_t port = 0;
+	int listener = make_loopback_socket(SOCK_STREAM, port);
+	REQUIRE(listener >= 0);
+	REQUIRE(::listen(listener, 1) == 0);
+	madc::error err;
+	std::unique_ptr<madc::DataChannel> channel =
+		madc::DataChannelRegistry::instance().open(
+			madc::DataSource(loopback_uri("tcp", port)),
+			madc::ChannelOpenMode::read_write, &err);
+	REQUIRE(channel.get() != nullptr);
+	CHECK(channel->capabilities().read);
+	CHECK(channel->capabilities().write);
+	CHECK(channel->capabilities().half_close);
+	CHECK(dynamic_cast<madc::DatagramDataChannel *>(channel.get()) == nullptr);
+
+	const char request[] = "tcp-request";
+	REQUIRE(madc::write_all(*channel, request, sizeof(request) - 1, &err));
+	channel->close_write();
+	CHECK_FALSE(channel->capabilities().write);
+	CHECK(channel->capabilities().read);
+
+	int peer = ::accept(listener, nullptr, nullptr);
+	REQUIRE(peer >= 0);
+	char peer_buffer[32] = {};
+	CHECK(::recv(peer, peer_buffer, sizeof(peer_buffer), 0)
+		== static_cast<ssize_t>(sizeof(request) - 1));
+	CHECK(std::memcmp(peer_buffer, request, sizeof(request) - 1) == 0);
+	const char response[] = "tcp-response";
+	CHECK(::send(peer, response, sizeof(response) - 1, 0)
+		== static_cast<ssize_t>(sizeof(response) - 1));
+	::close(peer);
+	::close(listener);
+
+	char response_buffer[32] = {};
+	std::size_t count = 0;
+	CHECK(channel->read(response_buffer, sizeof(response_buffer), count, &err));
+	CHECK(count == sizeof(response) - 1);
+	CHECK(std::memcmp(response_buffer, response, count) == 0);
+	CHECK(channel->read(response_buffer, sizeof(response_buffer), count, &err));
+	CHECK(count == 0);
+	channel->close();
+}
+
+TEST_CASE("UDP channel exposes datagrams without silent truncation")
+{
+	uint16_t port = 0;
+	int peer = make_loopback_socket(SOCK_DGRAM, port);
+	REQUIRE(peer >= 0);
+	madc::error err;
+	std::unique_ptr<madc::DataChannel> channel =
+		madc::DataChannelRegistry::instance().open(
+			madc::DataSource(loopback_uri("udp", port)),
+			madc::ChannelOpenMode::read_write, &err);
+	REQUIRE(channel.get() != nullptr);
+	CHECK_FALSE(channel->capabilities().half_close);
+	madc::DatagramDataChannel *datagrams =
+		dynamic_cast<madc::DatagramDataChannel *>(channel.get());
+	REQUIRE(datagrams != nullptr);
+
+	const char request[] = "udp-request";
+	std::size_t count = 0;
+	REQUIRE(datagrams->send_datagram(
+		request, sizeof(request) - 1, count, &err));
+	CHECK(count == sizeof(request) - 1);
+	sockaddr_storage client_address;
+	socklen_t client_size = sizeof(client_address);
+	char peer_buffer[32] = {};
+	CHECK(::recvfrom(peer, peer_buffer, sizeof(peer_buffer), 0,
+			 reinterpret_cast<sockaddr *>(&client_address), &client_size)
+		== static_cast<ssize_t>(sizeof(request) - 1));
+
+	const char response[] = "udp-response";
+	CHECK(::sendto(peer, response, sizeof(response) - 1, 0,
+		       reinterpret_cast<sockaddr *>(&client_address), client_size)
+		== static_cast<ssize_t>(sizeof(response) - 1));
+	char response_buffer[32] = {};
+	REQUIRE(datagrams->receive_datagram(
+		response_buffer, sizeof(response_buffer), count, &err));
+	CHECK(count == sizeof(response) - 1);
+	CHECK(std::memcmp(response_buffer, response, count) == 0);
+
+	CHECK(::sendto(peer, response, sizeof(response) - 1, 0,
+		       reinterpret_cast<sockaddr *>(&client_address), client_size)
+		== static_cast<ssize_t>(sizeof(response) - 1));
+	CHECK_FALSE(datagrams->receive_datagram(response_buffer, 3, count, &err));
+	CHECK(count == 0);
+	CHECK(err.message.find("datagram exceeds receive buffer") != std::string::npos);
+
+	CHECK(::sendto(peer, "", 0, 0,
+		       reinterpret_cast<sockaddr *>(&client_address), client_size) == 0);
+	REQUIRE(datagrams->receive_datagram(
+		response_buffer, sizeof(response_buffer), count, &err));
+	CHECK(count == 0);
+	::close(peer);
+	channel->close();
+}
+
+TEST_CASE("UDS channel connects through the dependency-free core registry")
+{
+	const std::string path = "/tmp/madc_data_channel_uds_"
+		+ std::to_string(static_cast<long long>(getpid()));
+	int listener = ::socket(AF_UNIX, SOCK_STREAM, 0);
+	REQUIRE(listener >= 0);
+	sockaddr_un address;
+	std::memset(&address, 0, sizeof(address));
+	address.sun_family = AF_UNIX;
+	REQUIRE(path.size() < sizeof(address.sun_path));
+	std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
+	std::remove(path.c_str());
+	REQUIRE(::bind(listener, reinterpret_cast<sockaddr *>(&address),
+		       sizeof(address)) == 0);
+	REQUIRE(::listen(listener, 1) == 0);
+
+	madc::error err;
+	std::unique_ptr<madc::DataChannel> channel =
+		madc::DataChannelRegistry::instance().open(
+			madc::DataSource(std::string("uds://") + path),
+			madc::ChannelOpenMode::read_write, &err);
+	REQUIRE(channel.get() != nullptr);
+	const char request[] = "uds-request";
+	REQUIRE(madc::write_all(*channel, request, sizeof(request) - 1, &err));
+
+	int peer = ::accept(listener, nullptr, nullptr);
+	REQUIRE(peer >= 0);
+	char peer_buffer[32] = {};
+	CHECK(::recv(peer, peer_buffer, sizeof(peer_buffer), 0)
+		== static_cast<ssize_t>(sizeof(request) - 1));
+	CHECK(std::memcmp(peer_buffer, request, sizeof(request) - 1) == 0);
+	const char response[] = "uds-response";
+	CHECK(::send(peer, response, sizeof(response) - 1, 0)
+		== static_cast<ssize_t>(sizeof(response) - 1));
+	::close(peer);
+	::close(listener);
+
+	char response_buffer[32] = {};
+	std::size_t count = 0;
+	CHECK(channel->read(response_buffer, sizeof(response_buffer), count, &err));
+	CHECK(count == sizeof(response) - 1);
+	CHECK(std::memcmp(response_buffer, response, count) == 0);
+	channel->close();
 	std::remove(path.c_str());
 }
 

@@ -1,4 +1,5 @@
 #include "madcdis/datachannel.h"
+#include "madc_datachannel_internal.h"
 #include "madc_posix_io.h"
 
 #include <algorithm>
@@ -10,7 +11,7 @@
 #include <utility>
 
 namespace madc {
-namespace {
+namespace detail {
 
 void set_channel_error(error *err, const std::string &operation,
 		       const std::string &detail)
@@ -20,12 +21,18 @@ void set_channel_error(error *err, const std::string &operation,
 			     operation + ": " + detail);
 }
 
-void set_errno_error(error *err, const std::string &operation,
-		     const std::string &path)
+void set_channel_errno(error *err, const std::string &operation,
+		       const std::string &path)
 {
 	set_channel_error(err, operation,
 			  path + ": " + std::string(std::strerror(errno)));
 }
+
+} // namespace detail
+namespace {
+
+using detail::set_channel_errno;
+using detail::set_channel_error;
 
 class FileDataChannel : public DataChannel
 {
@@ -55,7 +62,7 @@ public:
 		while ( result < 0 && errno == EINTR );
 		if ( result < 0 )
 		{
-			set_errno_error(err, "file read failed", path_);
+			set_channel_errno(err, "file read failed", path_);
 			return false;
 		}
 		bytes_read = static_cast<std::size_t>(result);
@@ -74,7 +81,7 @@ public:
 		ssize_t result = detail::write_fd_without_sigpipe(fd_, buffer, size);
 		if ( result < 0 )
 		{
-			set_errno_error(err, "file write failed", path_);
+			set_channel_errno(err, "file write failed", path_);
 			return false;
 		}
 		bytes_written = static_cast<std::size_t>(result);
@@ -129,7 +136,7 @@ public:
 		while ( fd < 0 && errno == EINTR );
 		if ( fd < 0 )
 		{
-			set_errno_error(err, "file channel open failed", source.path());
+			set_channel_errno(err, "file channel open failed", source.path());
 			return std::unique_ptr<DataChannel>();
 		}
 		return std::unique_ptr<DataChannel>(
@@ -266,6 +273,7 @@ DataChannelRegistry::DataChannelRegistry()
 {
 	register_factory("file", std::unique_ptr<Factory>(new FileChannelFactory()));
 	register_factory("pipe", std::unique_ptr<Factory>(new FileChannelFactory()));
+	detail::register_socket_channel_factories(*this);
 }
 
 DataChannelRegistry &DataChannelRegistry::instance()

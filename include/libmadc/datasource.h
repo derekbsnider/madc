@@ -32,7 +32,9 @@ public:
 	pipe,
 	shared_memory,
 	generic_ipc,
-	process
+	process,
+	network_stream,
+	network_datagram
     };
 
     DataSource() {}
@@ -76,6 +78,8 @@ public:
     bool is_keyed_database() const { return source_family() == family::keyed_database; }
     bool is_graph_database() const { return source_family() == family::graph_database; }
     bool is_service_api() const { return source_family() == family::service_api; }
+    bool is_network_stream() const { return source_family() == family::network_stream; }
+    bool is_network_datagram() const { return source_family() == family::network_datagram; }
     bool is_unix_socket() const { return source_family() == family::unix_socket; }
     bool is_pipe() const { return source_family() == family::pipe; }
     bool is_shared_memory() const { return source_family() == family::shared_memory; }
@@ -130,6 +134,9 @@ private:
 	    { "smtps", domain::service, family::service_api, false, false },
 	    { "imap", domain::service, family::service_api, false, false },
 	    { "imaps", domain::service, family::service_api, false, false },
+	    { "tcp", domain::ipc, family::network_stream, false, false },
+	    { "udp", domain::ipc, family::network_datagram, false, false },
+	    { "uds", domain::ipc, family::unix_socket, true, true },
 	    { "unix", domain::ipc, family::unix_socket, true, true },
 	    { "pipe", domain::ipc, family::pipe, true, true },
 	    { "shm", domain::ipc, family::shared_memory, true, true },
