@@ -2,6 +2,7 @@
 #define __LIBMADCDIS_DATASET_H 1
 
 #include "libmadc/datasource.h"
+#include "madcdis/cursor.h"
 #include "madcdis/driver.h"
 #include "libmadc/error.h"
 #include "madcdis/mapper.h"
@@ -18,46 +19,7 @@
 
 namespace madc {
 
-template <typename T>
-class Cursor
-{
-public:
-    virtual ~Cursor() {}
-
-    virtual bool next(T &out) = 0;
-    virtual void close() = 0;
-};
-
 namespace detail {
-
-template <typename T>
-class VectorCursor : public Cursor<T>
-{
-public:
-    explicit VectorCursor(std::vector<T> rows)
-	: _rows(std::move(rows)), _index(0), _closed(false)
-    {}
-
-    bool next(T &out)
-    {
-	if ( _closed || _index >= _rows.size() )
-	    return false;
-	out = _rows[_index++];
-	return true;
-    }
-
-    void close()
-    {
-	_closed = true;
-	_rows.clear();
-	_index = 0;
-    }
-
-private:
-    std::vector<T> _rows;
-    std::size_t _index;
-    bool _closed;
-};
 
 template <typename T>
 std::string logical_name_for_storage(const MappingSpec<T> &spec,
@@ -186,6 +148,289 @@ value storage_to_logical_record(const value &storage_record,
     }
     return logical_record;
 }
+
+inline int compare_query_values(const value &lhs, const value &rhs)
+{
+    if ( lhs.is_integer() || rhs.is_integer() )
+    {
+	int64_t a = lhs.as_integer();
+	int64_t b = rhs.as_integer();
+	if ( a > b )
+	    return 1;
+	if ( a == b )
+	    return 0;
+	return -1;
+    }
+    if ( lhs.is_real() || rhs.is_real() )
+    {
+	double a = lhs.as_real();
+	double b = rhs.as_real();
+	if ( a > b )
+	    return 1;
+	if ( a == b )
+	    return 0;
+	return -1;
+    }
+    const std::string &a = lhs.as_string();
+    const std::string &b = rhs.as_string();
+    if ( a > b )
+	return 1;
+    if ( a == b )
+	return 0;
+    return -1;
+}
+
+inline bool match_like_pattern_from(const std::string &input,
+				    std::size_t input_pos,
+				    const std::string &pattern,
+				    std::size_t pattern_pos)
+{
+    while ( pattern_pos < pattern.size() )
+    {
+	char p = pattern[pattern_pos];
+	if ( p == '%' )
+	{
+	    while ( pattern_pos < pattern.size() && pattern[pattern_pos] == '%' )
+		++pattern_pos;
+	    if ( pattern_pos == pattern.size() )
+		return true;
+	    for ( std::size_t i = input_pos; i <= input.size(); ++i )
+	    {
+		if ( match_like_pattern_from(input, i, pattern, pattern_pos) )
+		    return true;
+	    }
+	    return false;
+	}
+	if ( input_pos >= input.size() )
+	    return false;
+	if ( p == '_' )
+	{
+	    ++input_pos;
+	    ++pattern_pos;
+	    continue;
+	}
+	if ( input[input_pos] != p )
+	    return false;
+	++input_pos;
+	++pattern_pos;
+    }
+    return input_pos == input.size();
+}
+
+inline bool record_matches_query(const value &logical, const Query &query_spec)
+{
+    if ( query_spec.has_where_equality() )
+    {
+	if ( !logical.is_object() )
+	    return false;
+	std::map<std::string, value>::const_iterator it =
+	    logical.as_object().find(query_spec.where_field());
+	if ( it == logical.as_object().end() || it->second != query_spec.where_value() )
+	    return false;
+    }
+    if ( query_spec.has_where_inequality() )
+    {
+	if ( !logical.is_object() )
+	    return false;
+	std::map<std::string, value>::const_iterator it =
+	    logical.as_object().find(query_spec.where_ne_field());
+	if ( it == logical.as_object().end() || it->second == query_spec.where_ne_value() )
+	    return false;
+    }
+    if ( query_spec.has_where_in() )
+    {
+	if ( !logical.is_object() )
+	    return false;
+	std::map<std::string, value>::const_iterator it =
+	    logical.as_object().find(query_spec.where_in_field());
+	if ( it == logical.as_object().end() )
+	    return false;
+	bool matched = false;
+	for ( std::size_t i = 0; i < query_spec.where_in_values().size(); ++i )
+	{
+	    if ( it->second == query_spec.where_in_values()[i] )
+	    {
+		matched = true;
+		break;
+	    }
+	}
+	if ( !matched )
+	    return false;
+    }
+    if ( query_spec.has_where_not_in() )
+    {
+	if ( !logical.is_object() )
+	    return false;
+	std::map<std::string, value>::const_iterator it =
+	    logical.as_object().find(query_spec.where_not_in_field());
+	if ( it == logical.as_object().end() )
+	    return false;
+	for ( std::size_t i = 0; i < query_spec.where_not_in_values().size(); ++i )
+	{
+	    if ( it->second == query_spec.where_not_in_values()[i] )
+		return false;
+	}
+    }
+    if ( query_spec.has_where_like() )
+    {
+	if ( !logical.is_object() )
+	    return false;
+	std::map<std::string, value>::const_iterator it =
+	    logical.as_object().find(query_spec.where_like_field());
+	if ( it == logical.as_object().end() )
+	    return false;
+	if ( !it->second.is_string() || !query_spec.where_like_value().is_string() )
+	    return false;
+	if ( !match_like_pattern_from(it->second.as_string(), 0,
+				      query_spec.where_like_value().as_string(), 0) )
+	    return false;
+    }
+    if ( query_spec.has_lower_bound() )
+    {
+	if ( !logical.is_object() )
+	    return false;
+	std::map<std::string, value>::const_iterator it =
+	    logical.as_object().find(query_spec.lower_bound_field());
+	if ( it == logical.as_object().end() )
+	    return false;
+	int compared = compare_query_values(it->second, query_spec.lower_bound_value());
+	if ( compared < 0 || (!query_spec.lower_bound_inclusive() && compared == 0) )
+	    return false;
+    }
+    if ( query_spec.has_upper_bound() )
+    {
+	if ( !logical.is_object() )
+	    return false;
+	std::map<std::string, value>::const_iterator it =
+	    logical.as_object().find(query_spec.upper_bound_field());
+	if ( it == logical.as_object().end() )
+	    return false;
+	int compared = compare_query_values(it->second, query_spec.upper_bound_value());
+	if ( compared > 0 || (!query_spec.upper_bound_inclusive() && compared == 0) )
+	    return false;
+    }
+    return true;
+}
+
+inline value project_logical_record(const value &logical, const Query &query_spec)
+{
+    if ( query_spec.selected_fields().empty() || !logical.is_object() )
+	return logical;
+
+    value projected = value::make_object();
+    for ( std::size_t i = 0; i < query_spec.selected_fields().size(); ++i )
+    {
+	const std::string &field = query_spec.selected_fields()[i];
+	std::map<std::string, value>::const_iterator it = logical.as_object().find(field);
+	if ( it != logical.as_object().end() )
+	    projected.object()[field] = it->second;
+    }
+    return projected;
+}
+
+template <typename T>
+class LogicalCursor : public Cursor<value>, public ErrorAwareCursor<value> {
+public:
+    LogicalCursor(std::unique_ptr<Cursor<value> > upstream,
+		  const MappingSpec<T> &mapping)
+	: upstream_(std::move(upstream)), mapping_(mapping), apply_query_(false),
+	  emitted_(0), closed_(false)
+    {}
+
+    LogicalCursor(std::unique_ptr<Cursor<value> > upstream,
+		  const MappingSpec<T> &mapping,
+		  const Query &query)
+	: upstream_(std::move(upstream)), mapping_(mapping), query_(query),
+	  apply_query_(true), emitted_(0), closed_(false)
+    {}
+
+    ~LogicalCursor() override { close(); }
+
+    bool next(value &out) override
+    {
+	return next_status(out, nullptr) == CursorStatus::item;
+    }
+
+    CursorStatus next_status(value &out, error *err) override
+    {
+	if ( closed_ || !upstream_.get() )
+	    return CursorStatus::end;
+	if ( apply_query_ && query_.has_limit() && emitted_ >= query_.row_limit() )
+	    return CursorStatus::end;
+
+	value storage;
+	for ( ;; )
+	{
+	    CursorStatus status = cursor_next(*upstream_, storage, err);
+	    if ( status != CursorStatus::item )
+		return status;
+	    value logical = storage_to_logical_record<T>(storage, mapping_);
+	    if ( apply_query_ && !record_matches_query(logical, query_) )
+		continue;
+	    out = apply_query_ ? project_logical_record(logical, query_) : logical;
+	    ++emitted_;
+	    return CursorStatus::item;
+	}
+    }
+
+    void close() override
+    {
+	if ( closed_ )
+	    return;
+	if ( upstream_.get() )
+	    upstream_->close();
+	closed_ = true;
+    }
+
+private:
+    std::unique_ptr<Cursor<value> > upstream_;
+    MappingSpec<T> mapping_;
+    Query query_;
+    bool apply_query_;
+    std::size_t emitted_;
+    bool closed_;
+};
+
+template <typename T>
+class DecodingCursor : public Cursor<T>, public ErrorAwareCursor<T> {
+public:
+    DecodingCursor(std::unique_ptr<Cursor<value> > upstream,
+		   std::shared_ptr<DataMapper<T> > mapper)
+	: upstream_(std::move(upstream)), mapper_(mapper), closed_(false)
+    {}
+
+    ~DecodingCursor() override { close(); }
+
+    bool next(T &out) override
+    {
+	return next_status(out, nullptr) == CursorStatus::item;
+    }
+
+    CursorStatus next_status(T &out, error *err) override
+    {
+	if ( closed_ || !upstream_.get() )
+	    return CursorStatus::end;
+	value logical;
+	CursorStatus status = cursor_next(*upstream_, logical, err);
+	if ( status == CursorStatus::item )
+	    out = mapper_->decode(logical);
+	return status;
+    }
+
+    void close() override
+    {
+	if ( closed_ )
+	    return;
+	if ( upstream_.get() )
+	    upstream_->close();
+	closed_ = true;
+    }
+
+private:
+    std::unique_ptr<Cursor<value> > upstream_;
+    std::shared_ptr<DataMapper<T> > mapper_;
+    bool closed_;
+};
 
 } // namespace detail
 
@@ -599,7 +844,7 @@ public:
 			     "DataSet row_matches_query failed: record is not an object");
 	    return false;
 	}
-	return record_matches_query(logical, query_spec);
+	return detail::record_matches_query(logical, query_spec);
     }
 
     bool project_row(const T &row,
@@ -616,7 +861,7 @@ public:
 			     "DataSet project_row failed: record is not an object");
 	    return false;
 	}
-	out = project_logical_record(logical, query_spec);
+	out = detail::project_logical_record(logical, query_spec);
 	return true;
     }
 
@@ -638,9 +883,16 @@ public:
 
     std::unique_ptr<Cursor<T>> scan(error *err = nullptr) const
     {
-	if ( !const_cast<DataSet<T> *>(this)->refresh_snapshot(err) )
+	const_cast<DataSet<T> *>(this)->open(err);
+	if ( !is_open() )
 	    return std::unique_ptr<Cursor<T>>();
-	return std::unique_ptr<Cursor<T> >(new detail::VectorCursor<T>(*_iteration_rows));
+	std::unique_ptr<Cursor<value> > storage = scan_driver_cursor(*_driver, err);
+	if ( !storage.get() )
+	    return std::unique_ptr<Cursor<T> >();
+	std::unique_ptr<Cursor<value> > logical(
+	    new detail::LogicalCursor<T>(std::move(storage), _mapping));
+	return std::unique_ptr<Cursor<T> >(
+	    new detail::DecodingCursor<T>(std::move(logical), _mapper));
     }
 
     std::unique_ptr<Cursor<T>> query(const Query &query_spec,
@@ -686,13 +938,19 @@ public:
 	    return std::unique_ptr<Cursor<T>>();
 	}
 
-	std::vector<value> rows;
 	Query storage_query = translate_query_for_storage(query_spec);
 	if ( _driver->can_execute(storage_query) )
 	{
 	    error pushdown_err;
-	    if ( _driver->execute_query(storage_query, rows, &pushdown_err) )
-		return decode_rows(std::move(rows));
+	    std::unique_ptr<Cursor<value> > storage =
+		query_driver_cursor(*_driver, storage_query, &pushdown_err);
+	    if ( storage.get() )
+	    {
+		std::unique_ptr<Cursor<value> > logical(
+		    new detail::LogicalCursor<T>(std::move(storage), _mapping));
+		return std::unique_ptr<Cursor<T> >(
+		    new detail::DecodingCursor<T>(std::move(logical), _mapper));
+	    }
 	}
 
 	return execute_query_locally(query_spec, err);
@@ -731,13 +989,15 @@ public:
 	    return std::unique_ptr<Cursor<value> >();
 	}
 
-	std::vector<value> rows;
 	Query storage_query = translate_query_for_storage(query_spec);
 	if ( _driver->can_execute(storage_query) )
 	{
 	    error pushdown_err;
-	    if ( _driver->execute_query(storage_query, rows, &pushdown_err) )
-		return decode_raw_rows(std::move(rows));
+	    std::unique_ptr<Cursor<value> > storage =
+		query_driver_cursor(*_driver, storage_query, &pushdown_err);
+	    if ( storage.get() )
+		return std::unique_ptr<Cursor<value> >(
+		    new detail::LogicalCursor<T>(std::move(storage), _mapping));
 	}
 
 	return execute_query_locally_raw(query_spec, err);
@@ -862,30 +1122,6 @@ private:
 	return true;
     }
 
-    std::unique_ptr<Cursor<T>> decode_rows(std::vector<value> rows) const
-    {
-	std::vector<T> decoded;
-	decoded.reserve(rows.size());
-	for ( std::size_t i = 0; i < rows.size(); ++i )
-	{
-	    value logical = detail::storage_to_logical_record<T>(rows[i], _mapping);
-	    decoded.push_back(_mapper->decode(logical));
-	}
-	return std::unique_ptr<Cursor<T> >(new detail::VectorCursor<T>(std::move(decoded)));
-    }
-
-    std::unique_ptr<Cursor<value>> decode_raw_rows(std::vector<value> rows) const
-    {
-	std::vector<value> decoded;
-	decoded.reserve(rows.size());
-	for ( std::size_t i = 0; i < rows.size(); ++i )
-	{
-	    value logical = detail::storage_to_logical_record<T>(rows[i], _mapping);
-	    decoded.push_back(logical);
-	}
-	return std::unique_ptr<Cursor<value> >(new detail::VectorCursor<value>(std::move(decoded)));
-    }
-
     Query translate_query_for_storage(const Query &logical_query) const
     {
 	Query storage_query = logical_query;
@@ -951,238 +1187,23 @@ private:
     std::unique_ptr<Cursor<T>> execute_query_locally(const Query &query_spec,
 						     error *err) const
     {
-	std::vector<value> rows;
-	if ( !_driver->scan_records(rows, err) )
+	std::unique_ptr<Cursor<value> > storage = scan_driver_cursor(*_driver, err);
+	if ( !storage.get() )
 	    return std::unique_ptr<Cursor<T>>();
-
-	std::vector<value> filtered;
-	filtered.reserve(rows.size());
-	for ( std::size_t i = 0; i < rows.size(); ++i )
-	{
-	    value logical = detail::storage_to_logical_record<T>(rows[i], _mapping);
-	    if ( !record_matches_query(logical, query_spec) )
-		continue;
-	    filtered.push_back(rows[i]);
-	    if ( query_spec.has_limit() && filtered.size() >= query_spec.row_limit() )
-		break;
-	}
-	return decode_rows(std::move(filtered));
+	std::unique_ptr<Cursor<value> > logical(
+	    new detail::LogicalCursor<T>(std::move(storage), _mapping, query_spec));
+	return std::unique_ptr<Cursor<T> >(
+	    new detail::DecodingCursor<T>(std::move(logical), _mapper));
     }
 
     std::unique_ptr<Cursor<value>> execute_query_locally_raw(const Query &query_spec,
 							     error *err) const
     {
-	std::vector<value> rows;
-	if ( !_driver->scan_records(rows, err) )
+	std::unique_ptr<Cursor<value> > storage = scan_driver_cursor(*_driver, err);
+	if ( !storage.get() )
 	    return std::unique_ptr<Cursor<value> >();
-
-	std::vector<value> filtered;
-	filtered.reserve(rows.size());
-	for ( std::size_t i = 0; i < rows.size(); ++i )
-	{
-	    value logical = detail::storage_to_logical_record<T>(rows[i], _mapping);
-	    if ( !record_matches_query(logical, query_spec) )
-		continue;
-	    filtered.push_back(project_logical_record(logical, query_spec));
-	    if ( query_spec.has_limit() && filtered.size() >= query_spec.row_limit() )
-		break;
-	}
-	return std::unique_ptr<Cursor<value> >(new detail::VectorCursor<value>(std::move(filtered)));
-    }
-
-    bool record_matches_query(const value &logical, const Query &query_spec) const
-    {
-	if ( query_spec.has_where_equality() )
-	{
-	    if ( !logical.is_object() )
-		return false;
-	    std::map<std::string, value>::const_iterator it =
-		logical.as_object().find(query_spec.where_field());
-	    if ( it == logical.as_object().end() || it->second != query_spec.where_value() )
-		return false;
-	}
-	if ( query_spec.has_where_inequality() )
-	{
-	    if ( !logical.is_object() )
-		return false;
-	    std::map<std::string, value>::const_iterator it =
-		logical.as_object().find(query_spec.where_ne_field());
-	    if ( it == logical.as_object().end() )
-		return false;
-	    if ( it->second == query_spec.where_ne_value() )
-		return false;
-	}
-	if ( query_spec.has_where_in() )
-	{
-	    if ( !logical.is_object() )
-		return false;
-	    std::map<std::string, value>::const_iterator it =
-		logical.as_object().find(query_spec.where_in_field());
-	    if ( it == logical.as_object().end() )
-		return false;
-	    bool matched = false;
-	    for ( std::size_t i = 0; i < query_spec.where_in_values().size(); ++i )
-	    {
-		if ( it->second == query_spec.where_in_values()[i] )
-		{
-		    matched = true;
-		    break;
-		}
-	    }
-	    if ( !matched )
-		return false;
-	}
-	if ( query_spec.has_where_not_in() )
-	{
-	    if ( !logical.is_object() )
-		return false;
-	    std::map<std::string, value>::const_iterator it =
-		logical.as_object().find(query_spec.where_not_in_field());
-	    if ( it == logical.as_object().end() )
-		return false;
-	    for ( std::size_t i = 0; i < query_spec.where_not_in_values().size(); ++i )
-	    {
-		if ( it->second == query_spec.where_not_in_values()[i] )
-		    return false;
-	    }
-	}
-	if ( query_spec.has_where_like() )
-	{
-	    if ( !logical.is_object() )
-		return false;
-	    std::map<std::string, value>::const_iterator it =
-		logical.as_object().find(query_spec.where_like_field());
-	    if ( it == logical.as_object().end() )
-		return false;
-	    if ( !it->second.is_string() || !query_spec.where_like_value().is_string() )
-		return false;
-	    if ( !match_like_pattern(it->second.as_string(),
-				     query_spec.where_like_value().as_string()) )
-		return false;
-	}
-	if ( query_spec.has_lower_bound() )
-	{
-	    if ( !logical.is_object() )
-		return false;
-	    std::map<std::string, value>::const_iterator it =
-		logical.as_object().find(query_spec.lower_bound_field());
-	    if ( it == logical.as_object().end() )
-		return false;
-	    if ( compare_query_values(it->second,
-				     query_spec.lower_bound_value()) < 0 )
-		return false;
-	    if ( !query_spec.lower_bound_inclusive()
-	      && compare_query_values(it->second, query_spec.lower_bound_value()) == 0 )
-		return false;
-	}
-	if ( query_spec.has_upper_bound() )
-	{
-	    if ( !logical.is_object() )
-		return false;
-	    std::map<std::string, value>::const_iterator it =
-		logical.as_object().find(query_spec.upper_bound_field());
-	    if ( it == logical.as_object().end() )
-		return false;
-	    if ( compare_query_values(it->second,
-				     query_spec.upper_bound_value()) > 0 )
-		return false;
-	    if ( !query_spec.upper_bound_inclusive()
-	      && compare_query_values(it->second, query_spec.upper_bound_value()) == 0 )
-		return false;
-	}
-	return true;
-    }
-
-    value project_logical_record(const value &logical,
-				 const Query &query_spec) const
-    {
-	if ( query_spec.selected_fields().empty() || !logical.is_object() )
-	    return logical;
-
-	value projected = value::make_object();
-	for ( std::size_t i = 0; i < query_spec.selected_fields().size(); ++i )
-	{
-	    const std::string &field = query_spec.selected_fields()[i];
-	    std::map<std::string, value>::const_iterator it = logical.as_object().find(field);
-	    if ( it != logical.as_object().end() )
-		projected.object()[field] = it->second;
-	}
-	return projected;
-    }
-
-    int compare_query_values(const value &lhs,
-			     const value &rhs) const
-    {
-	if ( lhs.is_integer() || rhs.is_integer() )
-	{
-	    int64_t a = lhs.as_integer();
-	    int64_t b = rhs.as_integer();
-	    if ( a > b )
-		return 1;
-	    if ( a == b )
-		return 0;
-	    return -1;
-	}
-	if ( lhs.is_real() || rhs.is_real() )
-	{
-	    double a = lhs.as_real();
-	    double b = rhs.as_real();
-	    if ( a > b )
-		return 1;
-	    if ( a == b )
-		return 0;
-	    return -1;
-	}
-	const std::string &a = lhs.as_string();
-	const std::string &b = rhs.as_string();
-	if ( a > b )
-	    return 1;
-	if ( a == b )
-	    return 0;
-	return -1;
-    }
-
-    bool match_like_pattern(const std::string &input,
-			    const std::string &pattern) const
-    {
-	return match_like_pattern_from(input, 0, pattern, 0);
-    }
-
-    bool match_like_pattern_from(const std::string &input,
-				 std::size_t input_pos,
-				 const std::string &pattern,
-				 std::size_t pattern_pos) const
-    {
-	while ( pattern_pos < pattern.size() )
-	{
-	    char p = pattern[pattern_pos];
-	    if ( p == '%' )
-	    {
-		while ( pattern_pos < pattern.size() && pattern[pattern_pos] == '%' )
-		    ++pattern_pos;
-		if ( pattern_pos == pattern.size() )
-		    return true;
-		for ( std::size_t i = input_pos; i <= input.size(); ++i )
-		{
-		    if ( match_like_pattern_from(input, i, pattern, pattern_pos) )
-			return true;
-		}
-		return false;
-	    }
-	    if ( input_pos >= input.size() )
-		return false;
-	    if ( p == '_' )
-	    {
-		++input_pos;
-		++pattern_pos;
-		continue;
-	    }
-	    if ( input[input_pos] != p )
-		return false;
-	    ++input_pos;
-	    ++pattern_pos;
-	}
-	return input_pos == input.size();
+	return std::unique_ptr<Cursor<value> >(
+	    new detail::LogicalCursor<T>(std::move(storage), _mapping, query_spec));
     }
 
     value record_key(const T &input) const
