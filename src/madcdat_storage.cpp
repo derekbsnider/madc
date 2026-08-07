@@ -343,11 +343,130 @@ bool text_to_typed_value(const std::string &text,
     }
 }
 
-class DsvDriver : public DataDriver
+const SchemaField *find_schema_field(const SchemaInfo &schema,
+				     const std::string &name)
+{
+    for ( std::size_t i = 0; i < schema.fields().size(); ++i )
+    {
+	if ( schema.fields()[i].name == name )
+	    return &schema.fields()[i];
+    }
+    return nullptr;
+}
+
+bool decode_dsv_record(const std::string &line,
+		       const std::vector<std::string> &header,
+		       const SchemaInfo &schema,
+		       value &out,
+		       error *err)
+{
+    std::vector<std::string> cols = csv_split(line);
+    if ( cols.size() != header.size() )
+    {
+	if ( err )
+	    *err = error(error::severity::error,
+			 error::phase::runtime,
+			 "dsv row column count does not match header");
+	return false;
+    }
+
+    value record = value::make_object();
+    for ( std::size_t i = 0; i < header.size(); ++i )
+    {
+	const SchemaField *field = find_schema_field(schema, header[i]);
+	if ( !field )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "dsv header field `" + header[i]
+			     + "` is not present in bound schema");
+	    return false;
+	}
+
+	value typed;
+	std::string why;
+	if ( !text_to_typed_value(cols[i], *field, typed, why) )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "dsv parse failed for field `" + field->name
+			     + "`: " + why);
+	    return false;
+	}
+	record.object()[field->name] = typed;
+    }
+    out = record;
+    return true;
+}
+
+class DsvCursor : public Cursor<value>, public ErrorAwareCursor<value>
+{
+public:
+    DsvCursor(const std::string &path,
+	      const std::vector<std::string> &header,
+	      const SchemaInfo &schema)
+	: _input(path.c_str()), _header(header), _schema(schema), _closed(false),
+	  _ready(false)
+    {
+	std::string line;
+	if ( _input.good() && std::getline(_input, line)
+	  && csv_split(line) == _header )
+	    _ready = true;
+    }
+
+    ~DsvCursor() override { close(); }
+
+    bool ready() const { return _ready; }
+
+    bool next(value &out) override
+    {
+	return next_status(out, nullptr) == CursorStatus::item;
+    }
+
+    CursorStatus next_status(value &out, error *err) override
+    {
+	if ( _closed || !_ready )
+	    return CursorStatus::end;
+
+	std::string line;
+	if ( !std::getline(_input, line) )
+	{
+	    if ( _input.eof() )
+		return CursorStatus::end;
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "dsv stream read failed");
+	    return CursorStatus::failure;
+	}
+	if ( !decode_dsv_record(line, _header, _schema, out, err) )
+	    return CursorStatus::failure;
+	return CursorStatus::item;
+    }
+
+    void close() override
+    {
+	if ( _closed )
+	    return;
+	_input.close();
+	_closed = true;
+    }
+
+private:
+    std::ifstream _input;
+    std::vector<std::string> _header;
+    SchemaInfo _schema;
+    bool _closed;
+    bool _ready;
+};
+
+class DsvDriver : public DataDriver, public StreamingDataDriver
 {
 public:
     DsvDriver()
-	: _opened(false)
+	: _rows_loaded(false), _opened(false)
     {}
 
     const char *name() const { return "dsv"; }
@@ -390,10 +509,12 @@ public:
 	_path = source.path();
 	_rows.clear();
 	_header.clear();
+	_rows_loaded = false;
 
 	std::ifstream is(_path.c_str());
 	if ( !is.good() )
 	{
+	    _rows_loaded = true;
 	    _opened = true;
 	    return true;
 	}
@@ -401,6 +522,7 @@ public:
 	std::string line;
 	if ( !std::getline(is, line) )
 	{
+	    _rows_loaded = true;
 	    _opened = true;
 	    return true;
 	}
@@ -415,44 +537,17 @@ public:
 	    return false;
 	}
 
-	while ( std::getline(is, line) )
+	for ( std::size_t i = 0; i < _header.size(); ++i )
 	{
-	    std::vector<std::string> cols = csv_split(line);
-	    if ( cols.size() != _header.size() )
+	    if ( !find_schema_field(_schema, _header[i]) )
 	    {
 		if ( err )
 		    *err = error(error::severity::error,
 				 error::phase::runtime,
-				 "dsv row column count does not match header");
+				 "dsv header field `" + _header[i]
+				 + "` is not present in bound schema");
 		return false;
 	    }
-
-	    value record = value::make_object();
-	    for ( std::size_t i = 0; i < _header.size(); ++i )
-	    {
-		const SchemaField *field = find_field(_header[i]);
-		if ( !field )
-		{
-		    if ( err )
-			*err = error(error::severity::error,
-				     error::phase::runtime,
-				     "dsv header field `" + _header[i] + "` is not present in bound schema");
-		    return false;
-		}
-
-		value typed;
-		std::string why;
-		if ( !text_to_typed_value(cols[i], *field, typed, why) )
-		{
-		    if ( err )
-			*err = error(error::severity::error,
-				     error::phase::runtime,
-				     "dsv parse failed for field `" + field->name + "`: " + why);
-		    return false;
-		}
-		record.object()[field->name] = typed;
-	    }
-	    _rows.push_back(record);
 	}
 
 	_opened = true;
@@ -464,6 +559,7 @@ public:
 	_rows.clear();
 	_header.clear();
 	_path.clear();
+	_rows_loaded = false;
 	_opened = false;
     }
 
@@ -492,6 +588,8 @@ public:
     {
 	if ( !ensure_record_shape(record, err) )
 	    return false;
+	if ( !ensure_rows_loaded(err) )
+	    return false;
 	if ( _header.empty() )
 	    build_header_from_schema();
 	_rows.push_back(record);
@@ -507,6 +605,8 @@ public:
 		       error *err = nullptr)
     {
 	if ( !ensure_record_shape(record, err) )
+	    return false;
+	if ( !ensure_rows_loaded(err) )
 	    return false;
 	int idx = find_row_index(key_field, key);
 	if ( idx < 0 )
@@ -529,6 +629,8 @@ public:
 		      const value &key,
 		      error *err = nullptr)
     {
+	if ( !ensure_rows_loaded(err) )
+	    return false;
 	int idx = find_row_index(key_field, key);
 	if ( idx < 0 )
 	{
@@ -573,7 +675,8 @@ public:
 		    value &out,
 		    error *err = nullptr) const
     {
-	(void)err;
+	if ( !ensure_rows_loaded(err) )
+	    return false;
 	int idx = find_row_index(key_field, key);
 	if ( idx < 0 )
 	    return false;
@@ -584,20 +687,81 @@ public:
     bool scan_records(std::vector<value> &out,
 		      error *err = nullptr) const
     {
-	(void)err;
-	out = _rows;
+	out.clear();
+	std::unique_ptr<Cursor<value> > cursor = scan_stream(err);
+	if ( !cursor.get() )
+	    return false;
+
+	value record;
+	for ( ;; )
+	{
+	    CursorStatus status = cursor_next(*cursor, record, err);
+	    if ( status == CursorStatus::end )
+		break;
+	    if ( status == CursorStatus::failure )
+	    {
+		cursor->close();
+		return false;
+	    }
+	    out.push_back(record);
+	}
+	cursor->close();
 	return true;
     }
 
-private:
-    const SchemaField *find_field(const std::string &name) const
+    std::unique_ptr<Cursor<value> > scan_stream(error *err = nullptr) const override
     {
-	for ( std::size_t i = 0; i < _schema.fields().size(); ++i )
+	if ( !_opened )
 	{
-	    if ( _schema.fields()[i].name == name )
-		return &_schema.fields()[i];
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "dsv scan requires an open driver");
+	    return std::unique_ptr<Cursor<value> >();
 	}
-	return nullptr;
+	if ( _header.empty() )
+	    return std::unique_ptr<Cursor<value> >(
+		new detail::VectorCursor<value>(std::vector<value>()));
+
+	std::unique_ptr<DsvCursor> cursor(new DsvCursor(_path, _header, _schema));
+	if ( !cursor->ready() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "dsv stream could not reopen a matching header: " + _path);
+	    return std::unique_ptr<Cursor<value> >();
+	}
+	return std::unique_ptr<Cursor<value> >(cursor.release());
+    }
+
+private:
+    bool ensure_rows_loaded(error *err) const
+    {
+	if ( _rows_loaded )
+	    return true;
+
+	std::vector<value> rows;
+	std::unique_ptr<Cursor<value> > cursor = scan_stream(err);
+	if ( !cursor.get() )
+	    return false;
+	value record;
+	for ( ;; )
+	{
+	    CursorStatus status = cursor_next(*cursor, record, err);
+	    if ( status == CursorStatus::end )
+		break;
+	    if ( status == CursorStatus::failure )
+	    {
+		cursor->close();
+		return false;
+	    }
+	    rows.push_back(record);
+	}
+	cursor->close();
+	_rows.swap(rows);
+	_rows_loaded = true;
+	return true;
     }
 
     bool ensure_record_shape(const value &record, error *err) const
@@ -674,13 +838,23 @@ private:
 	    }
 	    os << '\n';
 	}
+	if ( !os.good() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "failed to write dsv path: " + _path);
+	    return false;
+	}
+	_rows_loaded = true;
 	return true;
     }
 
     SchemaInfo _schema;
     std::string _path;
     std::vector<std::string> _header;
-    std::vector<value> _rows;
+    mutable std::vector<value> _rows;
+    mutable bool _rows_loaded;
     bool _opened;
 };
 

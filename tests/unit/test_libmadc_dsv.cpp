@@ -259,4 +259,37 @@ TEST_SUITE("libmadc dsv backend") {
 
 	std::remove(path.c_str());
     }
+
+    TEST_CASE("dsv scans own their file and report row failures during pull") {
+	const std::string path =
+	    "/tmp/madc_dsv_stream_" + std::to_string(static_cast<long long>(getpid())) + ".csv";
+	std::remove(path.c_str());
+
+	{
+	    std::ofstream os(path.c_str());
+	    os << "id,score,flags,enabled,status,tag,short_name,title,ratio\n";
+	    os << "1,10,7,true,1,A,ALPHA,Alice,1.25\n";
+	    os << "2,42\n";
+	}
+
+	madc::MappingSpec<StorageProbe> spec;
+	spec.key("id");
+	madc::DataSet<StorageProbe> ds("dsv://" + path);
+	ds.mapping(spec).name("users");
+
+	madc::error err;
+	REQUIRE(ds.open(&err));
+	std::unique_ptr<madc::Cursor<StorageProbe> > cursor = ds.scan(&err);
+	REQUIRE(cursor.get() != nullptr);
+	ds.close();
+
+	StorageProbe row;
+	CHECK(madc::cursor_next(*cursor, row, &err) == madc::CursorStatus::item);
+	CHECK(row.id == 1);
+	CHECK(madc::cursor_next(*cursor, row, &err) == madc::CursorStatus::failure);
+	CHECK(err.message == "dsv row column count does not match header");
+	cursor->close();
+
+	std::remove(path.c_str());
+    }
 }
