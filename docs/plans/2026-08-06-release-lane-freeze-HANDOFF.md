@@ -60,6 +60,24 @@ tests/" is satisfied by leg A — a live tests/*.mad copy would only
 duplicate testvector; the defect only ever manifested against a frozen
 corpus, which is exactly where the gate compiles it.
 
+**Battery catch + fix 9 (@57a5f7a9):** the first wall-fall battery run
+FAILED at forest_ledger_gate — every `-static-libmadc` try/catch image
+SIGSEGVed at setjmp. Bisected in four container-worktree builds
+(/workspace/madc-bis) to **@75c99d6f** (fix 5, the defect-P dd-own-name
+guard): the guard's premise ("rendering from the DataDef is always
+equivalent") holds only for BUILTINS. glibc's `typedef struct
+__jmp_buf_tag jmp_buf[1]` registers a dd NAMED BY the typedef, so the
+name-equal spelling IS the load-bearing alias; rejecting it dropped the
+struct member's ID("jmp_buf") emission and c2mir laid MadcTryContext out
+without the 200-byte array (inlined push stored prev at ctx+8; setjmp
+wrote through `(long)*(int*)ctx`). Fix: the guard rejects name-equal
+spellings ONLY when `resolve_builtin_type_spelling(alias) == dd`.
+Verified jointly: ledger gate OK + defect-P "7 1" + subset 15/15 against
+a re-frozen corpus. RESIDUAL (filed): the alias-less member-emission
+fallback SILENTLY produced the collapsed layout — c2mir accepted a
+wrong-sized member with no diagnostic; that lane deserves a loud refuse
+or a correct structural emission (probe after the battery).
+
 Probes added (all env-gated, in-tree): MADC_TMPL_CHOOSE (multi-variant
 unqualified chooser route), MADC_ARGSPELL (despaced-index resolutions),
 MADC_CANONTRAP (abort at a class-instantiation canon composition — names
