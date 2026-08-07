@@ -6,7 +6,58 @@ had been built since Aug 1. First `release packed` run since then
 forest-pack verify and the packed suite is 982/15. The failure predates
 and is independent of `feature/script-toplevel-claude` (#16/#18).
 
-## SESSION #68 STATE (2026-08-06 late) — WALL MOSTLY DOWN: 7-8/15 flipped
+## STATE AT COMPACTION #2 (2026-08-07) — READ THIS FIRST, THEN FINISH IT
+
+**OWNER DIRECTIVE: resolve ALL of #20 next session.** That means: the
+remaining 8 subset failures -> 0, then the full finish line (below).
+No re-derivation — the five landed fixes and the two-defect verdict are
+SETTLED; resume at "START HERE" under REMAINING.
+
+- Branch `feature/script-toplevel-claude`, tree CLEAN, **ahead 9,
+  ALL UNPUSHED** (owner wall-grind protocol — push only with the
+  wall-fall battery): @8b77c972 ovset round-trip (H1) + @85cd4d9b
+  @7b31135a docs + **session #68's five fixes**: @3e8605f1 canonical
+  binding dds, @ea49eeb8 recorder slot pinning, @8c60b61d relower
+  member recovery, @4fdbffd7 using-import order parity, @75c99d6f
+  dd-own-name != typedef-alias, + @760de816 docs.
+- **Subset: 15 failing -> 8 failing.** Defect P (fmin_use) FIXED
+  (prints "7 1" rc=0). Live lanes verified green: 18-test spot check
+  incl. testfreezerun + testscripttopdefer/multiret, 18/18.
+- **CONTAINER STATE (current, reusable):** tmp/fb_madc = current
+  bin/madc copy; tmp/fb_madc.forest = fresh 19-header freeze at the
+  banked HEAD (re-freeze ONLY after parser/recorder-side edits;
+  cir_builder/cir_freeze restore-side edits just need
+  `cp bin/madc tmp/fb_madc`). The debug parser.o (-DMADC_DEBUG_FNTPL)
+  was CLEANED (rebuilt without); rebuild it via
+  `find obj -name parser.o -delete; CXXFLAGS='-std=c++11 -Wall -O0 -g
+  -DMADC_DEBUG_FNTPL=1' make -C src -j8` when the inj-dump is needed
+  (spews unconditionally — never run the suite with it linked).
+- **PROBES (all env-gated, in-tree):** MADC_DEBUG_INTSPLIT=1 (flavor
+  twins in bindings), MADC_DEBUG_ARGBIND=<substr> (bound callee formals
+  per call arg), MADC_MTI_PROBE=<substr> (methodrec materializations),
+  MADC_MTB_PROBE / MADC_FNTPL_PROBE (instantiation attempts),
+  MADC_RRTRAP='<exact arg spelling>' + `gdb -batch -ex run -ex 'bt 18'
+  --args ./tmp/fb_madc <test>` (names the route that minted a
+  template-arg spelling; gdb works on the container).
+- **FINISH LINE (in order, after the subset is 15/15):**
+  1. Full re-freeze + subset confirm through the sidecar.
+  2. THE ONE BATTERY: `make -C src fulltest` + libcxxjit stage +
+     `bash scripts/run_tests.sh --exe` + `--obj` +
+     `scripts/remote_build.sh release packed` (ALL of it green —
+     release rc=0 incl. forest_pack.sh verify; packed ~997/0).
+  3. Ship the gates: promote tmp/fmin_use.mad -> tests/ as the
+     defect-P reducer (fixture: expect "7 1"), and add the cheap
+     fulltest-wired cross-TU freeze-consumer gate (freeze a SMALL
+     corpus, e.g. {memory,string,vector}, compile a consumer against
+     it — the existing forest gates freeze the test's OWN TU and
+     missed this entire class).
+  4. PUSH all banked commits.
+  5. The held #16/#18 merge to develop rides the release cadence
+     (merge => release, needs the green `make release` from step 2).
+  6. Sync mirrors (claude_status.json, ROADMAP, CHANGELOG, KG) + close
+     #20.
+
+## SESSION #68 LOG (2026-08-06 late) — WALL MOSTLY DOWN: 7-8/15 flipped
 
 FOUR fixes banked (each own commit, trailers, all verified live-green —
 live 18-test spot check incl. testfreezerun + script-mode gates 18/18):
@@ -57,7 +108,21 @@ DEFECT P: **FIXED** — fmin_use prints "7 1" rc=0 vs the frozen corpus
 
 REMAINING failing subset (8; likely ONE root + one separate family):
 - **START HERE — the multi-namespace same-name template chooser under
-  thaw.** The thawed consumer materializes WRONG-NAMESPACE flavors that
+  thaw.** FIRST COMMANDS on a cold start (container, ssh -p 2299
+  dev@localhost, cd /workspace/madc — no rebuild needed, the harness is
+  current):
+  1. `MADC_BIN=tmp/fb_madc bash scripts/run_tests.sh testautoincludecpp
+     testautoincludens testautoincludestdheaders testcommontype
+     testcontainerdtor testctortemplatetrait testforeachref
+     testforeachscope testmadc_ns testmanipview testofstreamwrite
+     testpreferdefault testsubscript testusingfnoverload testvector`
+     — confirm the 7-passed/8-failed baseline.
+  2. `MADC_RRTRAP='__gnu_cxx::char_traits<char>' gdb -batch -ex run
+     -ex 'bt 18' --args ./tmp/fb_madc tests/testofstreamwrite.mad`
+     — the minting route; walk frames INSIDE
+     instantiate_template_use/instantiate_template_id to the resolver
+     that CHOSE __gnu_cxx (see PRIME SUSPECT below).
+  The thawed consumer materializes WRONG-NAMESPACE flavors that
   live never mints (live module: 0 gnu_cxx hits):
   - `basic_ofstream<char>`'s default `_Traits = char_traits<_CharT>`
     resolves to `__gnu_cxx::char_traits` → an entire parallel
@@ -109,7 +174,7 @@ FILED (fix-after-wall, dormant-live defects found this session):
   twins now canonicalized at the deducer, but the compare itself is
   name-keyed.
 
-## STATE AT COMPACTION (2026-08-06 end of session #67)
+## STATE AT COMPACTION #1 (2026-08-06 end of session #67) — SUPERSEDED by #2 above; kept for the protocol notes
 
 - Branch `feature/script-toplevel-claude`, PUSHED through @67c47f9d
   (#16/#18 + docs; batch-gated: fulltest 999/0/9skip, libc++ lane
