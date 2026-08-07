@@ -2969,6 +2969,20 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 		if (p < fd->param_default_tokens.size()
 		    && !fd->param_default_tokens[p].empty()) {
 			const std::vector<TokenBase *> &toks = fd->param_default_tokens[p];
+			// Env-gated probe (MADC_DEFARG_PROBE=<substr>): print every
+			// serialized default-arg run containing a matching identifier
+			// token — the cross-flavor capture diagnostic (which FuncDef
+			// froze whose substitution). Diagnostic only.
+			{
+				static const char *dap = ::getenv("MADC_DEFARG_PROBE");
+				if (dap && *dap)
+					for (TokenBase *t : toks)
+						if (t && t->type() == TokenType::ttIdentifier
+						    && strstr(((TokenIdent *)t)->spelling(), dap))
+							fprintf(stderr, "DEFARGPROBE fd=%s param=%zu tok=%s\n",
+								fd->name.c_str(), p,
+								((TokenIdent *)t)->spelling());
+			}
 			std::vector<uint8_t> bytes;
 			if (madc_pch::serialize_token_seq(toks, bytes) && !bytes.empty()) {
 				uint32_t cnt = 0;
