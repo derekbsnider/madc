@@ -1,7 +1,16 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-08-06 (v0.68.0 — the
-libc++ LANE-ZERO release, ships @429842b4 on feature/libcxx-parity7-claude):
+**✅ RELEASE LANE RESTORED (2026-08-07, v0.69.0):** the frozen-corpus
+instantiation-identity split (#20) is repaired — nine fixes took the
+packed suite 982/15 → **999/0** and `make release` is green again
+(forest-pack verify: bind cache == no-cache). A cross-TU
+freeze-consumer gate now holds the class in `fulltest`. Script mode
+completed in the same release (#16 top-level `defer` + #18 top-level
+`:=`). Post-mortem: `docs/plans/2026-08-06-release-lane-freeze-HANDOFF.md`.
+
+Master plan linking all workstreams. Updated 2026-08-07 (v0.69.0 — the
+release-lane restoration + script-mode completion; previous: v0.68.0 —
+the libc++ LANE-ZERO release, @429842b4 on feature/libcxx-parity7-claude):
 🏁 **P2.7 IS COMPLETE.** The `-stdlib=libc++` flavored lane reached an
 EMPTY failing set — full behavior-parity with the default libstdc++
 flavor. At the release HEAD: fulltest **997/0/9skip**, lane
@@ -45,6 +54,26 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **v0.69.0 (2026-08-07): the release-lane restoration + script-mode
+  completion.** `make release` had been red since Aug 1 (the packed
+  suite at 982/15; no v0.68.0 release binary ever existed): the packed
+  19-header forest split template instantiation identities between the
+  freezing parse and bound consumers. Nine root-cause fixes across
+  parser / freeze recorder / restore / CIR / lexer (canonical scalar
+  dds, recorder flavor-twin pinning, thaw ovset rejoin, using-import
+  order parity, the builtin-only typedef-alias guard — narrowed after
+  the battery itself caught the first cut collapsing glibc's `jmp_buf`,
+  namespace-faithful despaced lookup, best-effort default-arg
+  re-derivation, copied-call member-access recovery, auto-include
+  inside the restore window) took packed to **999/0**, identical to the
+  live lane. A cross-TU freeze-consumer gate joined `fulltest` (prior
+  forest gates froze only each test's OWN TU — this class was
+  invisible). Script mode completed: top-level `defer` (#16) and
+  top-level `:=` multi-return receivers (#18) join the synthesized
+  main. Release-HEAD battery: fulltest **999/0/0TO/9skip**, lane
+  **995/0/13skip**, EXE/OBJ **978/0**, release rc=0, packed
+  **999/0/9skip**. Fork unchanged (1.0-madc.0.68.0 @4573a0f3 carries).
 
 - **v0.68.0 (2026-08-06): the libc++ LANE-ZERO release — P2.7 COMPLETE.**
   The flavored lane finished the burn-down begun at v0.61.0: 891/28 →

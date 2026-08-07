@@ -624,6 +624,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/forest_bind_gate.sh
 	@cd .. && bash scripts/forest_emitpack_gate.sh
 	@cd .. && bash scripts/forest_sidecar_gate.sh
+	@cd .. && bash scripts/forest_crosstu_gate.sh
 	@cd .. && bash scripts/forest_library_gate.sh
 	@cd .. && bash scripts/forest_ledger_gate.sh
 	@cd .. && bash scripts/forest_config_gate.sh

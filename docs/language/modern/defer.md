@@ -8,10 +8,10 @@ Go-style deferred execution — register a statement to run at scope exit in LIF
 defer statement;
 ```
 
-`defer` attaches to the enclosing function or block scope, so it is
-written inside a function body. (Top-level `defer` in script mode —
-attaching to the synthesized `main` — is a recorded follow-up, not yet
-supported.)
+`defer` attaches to the enclosing function or block scope. In script
+mode a top-level `defer` attaches to the synthesized `main`, so its
+statement runs at the end of the script (LIFO with any other top-level
+defers). Standards modes (`--std=c*`/`c++*`) reject file-scope `defer`.
 
 ## How It Works
 

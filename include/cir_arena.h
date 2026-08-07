@@ -215,6 +215,13 @@ enum DefFlags : uint32_t {
 						// (neither bit -> NxNone); consumed by the
 						// __is_nothrow_constructible trait so a thawed
 						// class folds it exactly as live (LOADED==PARSED)
+	DF_NSBIND_OVERLOAD_MEMBER = 1u << 0,	// DK_NSBIND-scoped: the imported fn is a MEMBER
+						// of ns::name's overload set ([namespace.udecl]
+						// join — the using-arm's second registration);
+						// the flush joins it back so a bound consumer
+						// ranks the SAME set the freezing parse ranked
+						// (LOADED==PARSED; a smaller thaw-side set split
+						// instantiation identities — stl_vector.h:428)
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live

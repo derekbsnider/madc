@@ -1416,11 +1416,21 @@ public:
     // First entry (in key order) whose despaced, namespace-stripped canonical
     // spelling equals `want` — exactly the old linear scan's answer.
     DataDef *find_despaced(const std::string &want);
+    // Namespace-faithful lookup: among the entries whose despaced,
+    // namespace-stripped canonical spelling equals `want`, the first (in key
+    // order) whose canonical spelling's namespace qualifier is compatible
+    // with `want_ns` — equal, or related through the inline-namespace
+    // closure (`std` matches `std::__cxx11`). NULL when no flavor matches
+    // the qualifier: a qualified query must never receive a same-named
+    // entity from a DIFFERENT namespace just because it despaces alike.
+    DataDef *find_despaced(const std::string &want, const std::string &want_ns,
+			   Program &pgm);
 private:
     struct Hit { const std::string *key; DataDef *dd; };
+    void topup_index_();	// (re)build + top up the despaced index
     datadef_map_t map_;
     transaction_state *transaction_ = NULL;
-    std::unordered_map<std::string, Hit> index_;
+    std::unordered_map<std::string, std::vector<Hit>> index_;
     std::unordered_set<const void *> seen_;	// map-node key addrs (map never erases)
     size_t size_stamp_ = 0;
     uint64_t gen_stamp_ = 0;
@@ -2766,6 +2776,12 @@ public:
     TemplateDef *find_template(uint32_t name_id,
 			       const std::string &ns_hint,
 			       DataDefCLASS *owner_hint);
+    // The inline-namespace closure of `parent`: parent first, then every
+    // inline descendant in BFS order. The ONE enumeration behind
+    // find_template's / find_template_alias's qualified variant scans and
+    // StructRegistry::find_despaced's namespace filter.
+    void namespace_inline_closure(const std::string &parent,
+				  std::vector<std::string> &out);
     // The variant carrying a parsed body, if any (for completion gating).
     TemplateDef *template_with_body(const std::string &name);
     // Replace the same-namespace variant (merging template-default args from the
@@ -4060,6 +4076,15 @@ public:
     void finalize_script_main();
     Variable *script_param_var(const std::string &id);
     Variable *script_param_lookup(const std::string &id);
+    TokenCpnd *script_statement_scope(TokenBase *loc);
+    // Lookup-side twin of script_statement_scope: the synthesized main as
+    // the active scope WHILE a file-scope script statement parses (never
+    // creates it — creation belongs to the statement-parse sites).
+    TokenCpnd *script_lookup_scope() const
+    {
+	return parsing_script_statement && language_std == STD_MADC
+	     ? (TokenCpnd *)script_main_tf : NULL;
+    }
     bool token_is_tu_origin(TokenBase *tb) const;
 
     // #pragma pack state, GCC semantics: `pack(N)` sets the current value,

@@ -132,14 +132,15 @@ Misuse is a compile error, never a silent wrong answer:
   unknown name
 - reference or `void` slot types, and multi-return in class methods
 
+Top-level `a, b := f();` (and single `x := v;`) in script mode bind
+their receivers as locals of the synthesized `main` — the same scoping
+they get inside a written `main`.
+
 ## Known Limitations
 
 - The receive form is `a, b := f();` only — a plain `a, b = f();` on
   pre-declared variables is rejected ("Expecting := after identifier
   list").
-- Top-level `a, b := f();` in script mode does not yet join the
-  synthesized `main` (the receivers surface as undefined imports) —
-  unpack inside a function for now.
 
 ## Files
 

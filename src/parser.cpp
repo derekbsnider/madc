@@ -2498,6 +2498,22 @@ bool Program::typedef_alias_matches_datadef(const std::string &alias, DataDef *d
 {
     if ( alias.empty() || !dd || !user_typedef_names.count(alias) )
 	return false;
+    // A spelling that IS a BUILTIN dd's own name is the NAME, not an alias. A
+    // thawed token rebuilt from a restored dd spells its name ("int32_t" for
+    // the canonical ddINT32), and the restored typedef registry contains it —
+    // recording it as a param/cast typedef made the emitter render
+    // `int32_t *__p` in a module that never emits that typedef (c2mir
+    // "unknown type int32_t"; defect P). Live never records these: its tokens
+    // spell the keyword ("int"), and the emitter renders the C keyword from
+    // the DataDef alone. That equivalence holds ONLY for builtins: a
+    // CONSTRUCTED typedef type (glibc's `typedef struct __jmp_buf_tag
+    // jmp_buf[1]`) registers a dd NAMED BY the typedef, so the name-equal
+    // spelling IS the load-bearing alias — rejecting it dropped the member's
+    // ID("jmp_buf") emission, c2mir sized MadcTryContext without the 200-byte
+    // array, and the ledger try/catch setjmp wrote through garbage
+    // (forest_ledger_gate SIGSEGV).
+    if ( alias == dd->name && resolve_builtin_type_spelling(alias) == dd )
+	return false;
     if ( resolve_named_datadef(alias) == dd )
 	return true;
 
@@ -3658,6 +3674,37 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
     }
     const std::string &cs = adt->definition.canonical_cpp_spelling();
     return cv_spelling + (cs.empty() ? adt->definition.name : cs);
+}
+
+// [temp.type]: ONE canonical DataDef per fundamental type in a template-
+// argument BINDING — the dd-level twin of template_type_arg_spelling's
+// spelling rule above. Deduction hands back whatever dd the argument
+// expression carried: the non-canonical builtin flavor twin (an integer
+// literal types as ddINT "int"; the declared-type path emits the lexer's
+// canonical ddINT32 "int32_t" — resolve_builtin_type_spelling is the one
+// table), or a namespace-scope scalar typedef alias dd (std::streamsize).
+// Every identity former downstream spells the binding dd's NAME (inst_key,
+// the substituted parameter spelling, overload_spelling_symbol_suffix), so
+// two flavors of one type mint TWO identities for one instantiation — and a
+// frozen corpus' drained products then disagree with a bound consumer's
+// fresh mints (the v0.68 release-lane freeze split: __check_constructible /
+// _Construct spelled int32_t* by the pack, int* by the consumer, stl_vector
+// 428 "conversion of non-scalar value"). Map plain scalars through THE
+// canonical table BY THEIR OWN NAME only. Deliberately NO scalar_alias_of
+// chain walk: a block-scope typedef inside a template body ("typedef ...
+// value_type _ValueType2") mints an alias dd carrying ONE instantiation's
+// resolution — walking it here collapsed a dependent name into a concrete
+// type and crossed instantiations (the same hazard template_type_arg_spelling
+// documents for DataType-based desugar). Alias dds, enums, classes,
+// pointers, references, function types, and value-constant dds keep their
+// own identity (the table returns NULL for their names).
+static DataDef *canonical_template_binding_dd(DataDef *dd)
+{
+    if ( !dd || dd->basetype() != BaseType::btSimple || dd->is_pointer()
+      || dynamic_cast<DataDefENUM *>(dd) )
+	return dd;
+    DataDef *canon = Program::resolve_builtin_type_spelling(dd->name);
+    return canon ? canon : dd;
 }
 
 static std::string sanitize_template_fragment(const std::string &s)
@@ -7812,6 +7859,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	canon += arg_spellings[i];
     }
     canon += ">";
+    // Env-gated trap (MADC_CANONTRAP=<exact canon spelling>): abort at the
+    // moment a class-template instantiation composes this canonical spelling,
+    // so a gdb backtrace names WHO instantiated it. Diagnostic only.
+    {
+	static const char *ctr = ::getenv("MADC_CANONTRAP");
+	if ( ctr && *ctr && canon == ctr )
+	    abort();
+    }
 
     // The real class-template lane resolves TYPE arguments immediately and
     // intentionally leaves their arg_tokens_by_slot entry empty (non-type
@@ -11588,6 +11643,11 @@ Variable *Program::resolve_c_identifier(TokenIdent *ident_tb, bool expression_he
 	    // shadowed by a local.
 	    TokenCpnd *code = stmt_callee_namespace.empty() && !compounds.empty()
 			    ? compounds.top() : NULL;
+	    // Script mode: a file-scope script statement's locals live on the
+	    // synthesized main — they shadow namespace members exactly like a
+	    // written main's locals (same qualifier exemption as above).
+	    if ( !code && stmt_callee_namespace.empty() )
+		code = script_lookup_scope();
 	    if ( code )
 		var = code->findVariableLocal(strpool, ident_tb->spelling());
 	    if ( !var )
@@ -20502,6 +20562,14 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		const char *nm = forest.pool_str(ents[e].name_id);
 		if ( !nm || !*nm )
 		    continue;
+		// Env-gated probe (MADC_DECLIDX_PROBE=<substr>): dump matching
+		// declared-name index entries with their unit + bound verdict.
+		{
+		    static const char *dip = ::getenv("MADC_DECLIDX_PROBE");
+		    if ( dip && *dip && strstr(nm, dip) )
+			fprintf(stderr, "DECLIDX %s unit=%s bound=%d\n",
+				nm, upath ? upath : "?", (int)bound);
+		}
 		std::unordered_map<std::string, bool>::iterator di =
 		    forest_declared_bound.find(nm);
 		if ( di == forest_declared_bound.end() )
@@ -20604,7 +20672,11 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // declaring template, which IS indexed. Judge the product by that head so
     // <iostream>'s pre-instantiated stream products don't leak into a
     // stdio-only TU (their secondary derivations — method default-args —
-    // reference names only their own closure declares).
+    // reference names only their own closure declares). The complement — an
+    // ADMITTED record whose default-arg run names a type this gate dropped
+    // (pmr _Alloc_hider's `= _Alloc()` naming polymorphic_allocator_char) —
+    // is handled where the run re-derives: the flush's default re-parse is
+    // best-effort and skips a default whose referents the closure dropped.
     auto forest_product_permitted = [&](DataDef *dd) -> bool {
 	if ( !forest_closure_filter || !dd
 	  || dd->canonical_cpp_spelling().empty() )
@@ -21671,6 +21743,31 @@ void Program::flush_forest_pending_globals()
 		DBG(std::cout << "flush_forest_pending_globals: ns import "
 		    << b.ns << "::" << b.name << " -> " << b.key << std::endl);
 	    }
+	    // [namespace.udecl] twin of the live using-arm (TokenUSING::parse):
+	    // a FLAGGED record's import ALSO joins the target's overload set —
+	    // the SAME two registrations a declaration written in that
+	    // namespace gets, join unconditional even when the map binding
+	    // already exists. Without it a bound consumer ranks against a
+	    // SMALLER set than the freezing parse and mints a DIFFERENT
+	    // instantiation identity (LOADED == parsed violation;
+	    // stl_vector.h:428 "conversion of non-scalar value requested" in
+	    // the release pack's verify). Bind-only records (the inline-ns
+	    // mirror's redundant entries) must NOT join: the live mirror
+	    // grows no sets.
+	    if ( !b.ov_member )
+		continue;
+	    std::vector<NamespaceFnOverload> &ovset =
+		namespace_fn_overload_sets[std::string(b.ns) + "::" + b.name];
+	    bool known = false;
+	    for ( size_t oi = 0; oi < ovset.size(); ++oi )
+		if ( ovset[oi].var == v )
+		    known = true;
+	    if ( !known )
+	    {
+		NamespaceFnOverload e;
+		e.var = v;
+		ovset.push_back(e);
+	    }
 	}
 	// Inline-namespace links: restore inline_namespace_children VERBATIM,
 	// then RE-RUN the one live derivation (mirror_inline_namespace_into_
@@ -21842,6 +21939,7 @@ void Program::flush_forest_pending_globals()
 		Variable temp_fn(rd.fd->name, *rd.fd, 1, NULL, false);
 		Method temp_method(temp_fn);
 		temp_method.owner_class = rd.owner;
+		size_t saved_css = class_scope_stack.size();
 		pushCompound();
 		TokenCpnd *pscope = compounds.empty() ? NULL : compounds.top();
 		if ( pscope )
@@ -21850,16 +21948,41 @@ void Program::flush_forest_pending_globals()
 		    class_scope_stack.push_back(rd.owner);
 		// Live also parsed inside `namespace NS {}` — unqualified names
 		// (io_errc) resolve through the namespace chain.
-		TokenBase *expr;
-		if ( rd.ns && *rd.ns )
+		// BEST-EFFORT: a default whose referents the closure filter
+		// dropped must not re-derive — same live-parity principle as
+		// the owner gate above, one reference deeper. The registration
+		// gates judge by NAME/HEAD verdicts, but a run's tokens spell
+		// referents by NAME (pmr _Alloc_hider's `= _Alloc()` names
+		// polymorphic_allocator_char — a product the head gate
+		// dropped), so the mismatch surfaces only here. Skip leaves
+		// the param defaultless: a later call that genuinely demands
+		// it fails LOUD on arity — never a silent wrong value.
+		TokenBase *expr = NULL;
+		try
 		{
-		    NamespaceScope nsg(*this, rd.ns);
-		    expr = parseExpression(nextToken(), true);
+		    if ( rd.ns && *rd.ns )
+		    {
+			NamespaceScope nsg(*this, rd.ns);
+			expr = parseExpression(nextToken(), true);
+		    }
+		    else
+			expr = parseExpression(nextToken(), true);
 		}
-		else
-		    expr = parseExpression(nextToken(), true);
-		if ( rd.owner )
+		catch ( ... )
+		{
+		    expr = NULL;
+		    DBG(std::cout << "flush_forest_pending_globals: default arg "
+			<< (rd.owner ? rd.owner->name + "::" : std::string())
+			<< rd.fd->name << " param " << pidx
+			<< " SKIPPED (referent outside the bound closure)"
+			<< std::endl);
+		}
+		// Unwind to the saved marks: a mid-parse throw can leave extra
+		// compound / class-scope frames behind.
+		while ( class_scope_stack.size() > saved_css )
 		    class_scope_stack.pop_back();
+		while ( pscope && !compounds.empty() && compounds.top() != pscope )
+		    popCompound();
 		if ( pscope && !compounds.empty() && compounds.top() == pscope )
 		    popCompound();
 		_cur_token = saved_cur;
@@ -22410,6 +22533,13 @@ Variable *Program::findVariable(TokenCpnd *code, const std::string &id)
     // global) without re-hashing the std::string per level (C2).
     uint32_t qsid = strpool.intern(id);
 
+    // Script mode: while a file-scope script statement is being parsed, the
+    // scope IS the synthesized main — its locals (`:=` receivers) resolve
+    // and shadow globals exactly as inside a written main. Mirrors
+    // script_param_lookup (argc/argv), which stays for the pre-main case.
+    if ( !code )
+	code = script_lookup_scope();
+
     if ( code )
     {
 	if ( (var=code->findVariable(strpool, qsid, id)) )
@@ -22450,25 +22580,10 @@ Variable *Program::findVariable(TokenCpnd *code, const std::string &id)
 
 Variable *Program::findVariable(const std::string &s)
 {
-    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
-    variable_map_iter vmi;
-    Variable *var;
-
-    if ( code /*&& code->type() != TokenType::ttProgram*/ )
-	return findVariable(code, s);
-
-    if ( !(var=tkProgram->findVariable(strpool, s)) )
-    {
-	// Script mode: see the (code, id) overload above.
-	if ( (var = script_param_lookup(s)) )
-	    return var;
-	DBG(std::cout << "Program::findVariable(" << s << ") not found" << std::endl);
-	return NULL;
-    }
-
-    DBG(std::cout << "Program::findVariable(" << s << ") found ptr: " << var << std::endl);
-
-    return var;
+    // Delegate to the (code, id) overload — ONE lookup chain (it owns the
+    // script-mode synthesized-main scope, the tkProgram probe, and the
+    // script-param fallback; a NULL code just skips the local probe).
+    return findVariable(compounds.empty() ? NULL : compounds.top(), s);
 }
 
 bool Program::is_known_namespace(const std::string &name) const
@@ -25926,6 +26041,23 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
     }
 }
 
+// The inline-namespace closure of `parent`, parent first, then every inline
+// descendant in BFS order — the one enumeration behind the qualified variant
+// scans below and StructRegistry::find_despaced's namespace filter.
+void Program::namespace_inline_closure(const std::string &parent,
+				       std::vector<std::string> &out)
+{
+    out.push_back(parent);
+    for ( size_t pi = 0; pi < out.size(); ++pi )
+    {
+	std::map<std::string, std::vector<std::string>>::iterator ci =
+	    inline_namespace_children.find(out[pi]);
+	if ( ci != inline_namespace_children.end() )
+	    for ( size_t k = 0; k < ci->second.size(); ++k )
+		out.push_back(ci->second[k]);
+    }
+}
+
 Program::TemplateDef *Program::find_template(const std::string &name,
 					     const std::string &ns_hint,
 					     DataDefCLASS *owner_hint)
@@ -25951,27 +26083,15 @@ Program::TemplateDef *Program::find_template(uint32_t name_id,
     {
 	// Exact namespace match only — used both as a declared-in check and to
 	// instantiate the correct same-named template under a qualified use.
-	for ( size_t i = 0; i < variants.size(); ++i )
-	    if ( variants[i].defining_namespace == ns_hint
-	      && variants[i].owner_class == owner_hint )
-		return &variants[i];
-	std::map<std::string, std::vector<std::string>>::iterator ci =
-	    inline_namespace_children.find(ns_hint);
-	std::vector<std::string> pending =
-	    ci == inline_namespace_children.end()
-	    ? std::vector<std::string>() : ci->second;
-	for ( size_t pi = 0; pi < pending.size(); ++pi )
-	{
-	    const std::string &child = pending[pi];
+	// The hint's inline descendants (std -> std::__cxx11) match too,
+	// parent first.
+	std::vector<std::string> closure;
+	namespace_inline_closure(ns_hint, closure);
+	for ( size_t ci = 0; ci < closure.size(); ++ci )
 	    for ( size_t i = 0; i < variants.size(); ++i )
-		if ( variants[i].defining_namespace == child
+		if ( variants[i].defining_namespace == closure[ci]
 		  && variants[i].owner_class == owner_hint )
 		    return &variants[i];
-	    ci = inline_namespace_children.find(child);
-	    if ( ci != inline_namespace_children.end() )
-		for ( size_t k = 0; k < ci->second.size(); ++k )
-		    pending.push_back(ci->second[k]);
-	}
 	return NULL;
     }
 
@@ -25983,12 +26103,37 @@ Program::TemplateDef *Program::find_template(uint32_t name_id,
     // allocation and does not need to filter the variants a second time.
     if ( variants.size() == 1 )
 	return &variants[0];
+    // Env-gated probe (MADC_TMPL_CHOOSE=<name substr>): print every
+    // multi-variant unqualified choice — the route (curns/global/first),
+    // the active namespace, and the variant list. Diagnostic only.
+    static const char *tcp = ::getenv("MADC_TMPL_CHOOSE");
+    const char *tcp_name = NULL;
+    if ( tcp && *tcp )
+    {
+	const char *nm = template_name_pool.c_str(name_id);
+	if ( strstr(nm, tcp) )
+	    tcp_name = nm;
+    }
     for ( size_t i = 0; i < variants.size(); ++i )
 	if ( variants[i].defining_namespace == current_namespace() )
+	{
+	    if ( tcp_name )
+		fprintf(stderr, "[tmplchoose] %s curns='%s' -> curns variant\n",
+			tcp_name, current_namespace().c_str());
 	    return &variants[i];
+	}
     for ( size_t i = 0; i < variants.size(); ++i )
 	if ( variants[i].defining_namespace.empty() )
+	{
+	    if ( tcp_name )
+		fprintf(stderr, "[tmplchoose] %s curns='%s' -> global variant\n",
+			tcp_name, current_namespace().c_str());
 	    return &variants[i];
+	}
+    if ( tcp_name )
+	fprintf(stderr, "[tmplchoose] %s curns='%s' -> first variant ns='%s'\n",
+		tcp_name, current_namespace().c_str(),
+		variants[0].defining_namespace.c_str());
     return &variants[0];
 }
 
@@ -26040,27 +26185,15 @@ Program::TemplateAliasDef *Program::find_template_alias(
 
     if ( !ns_hint.empty() )
     {
-	for ( size_t i = 0; i < variants.size(); ++i )
-	    if ( variants[i].defining_namespace == ns_hint
-	      && variants[i].owner_class == owner_hint )
-		return &variants[i];
-	std::map<std::string, std::vector<std::string>>::iterator ci =
-	    inline_namespace_children.find(ns_hint);
-	std::vector<std::string> pending =
-	    ci == inline_namespace_children.end()
-	    ? std::vector<std::string>() : ci->second;
-	for ( size_t pi = 0; pi < pending.size(); ++pi )
-	{
-	    const std::string &child = pending[pi];
+	// Same qualified scan as find_template: the hint and its inline
+	// descendants, parent first, via the one closure enumeration.
+	std::vector<std::string> closure;
+	namespace_inline_closure(ns_hint, closure);
+	for ( size_t ci = 0; ci < closure.size(); ++ci )
 	    for ( size_t i = 0; i < variants.size(); ++i )
-		if ( variants[i].defining_namespace == child
+		if ( variants[i].defining_namespace == closure[ci]
 		  && variants[i].owner_class == owner_hint )
 		    return &variants[i];
-	    ci = inline_namespace_children.find(child);
-	    if ( ci != inline_namespace_children.end() )
-		for ( size_t k = 0; k < ci->second.size(); ++k )
-		    pending.push_back(ci->second[k]);
-	}
 	return NULL;
     }
 
@@ -26375,6 +26508,30 @@ static std::string strip_type_namespace(const std::string &s)
 	if ( s[i] == ':' && s[i + 1] == ':' ) last = i;
     if ( last == std::string::npos ) return s;
     return s.substr(last + 2);
+}
+
+// Twin of strip_type_namespace: the namespace qualifier it strips — everything
+// before the last "::" that precedes the first '<' (empty if unqualified).
+// "std::allocator<char>" -> "std", "std::__cxx11::basic_string<...>" ->
+// "std::__cxx11". A cv-prefixed spelling ("const std::X<y>") keeps only the
+// word after the last space, and an explicit global qualifier ("::X<y>")
+// reduces to the empty (global) namespace — both mirroring what
+// strip_type_namespace leaves in its tail.
+static std::string type_namespace_of(const std::string &s)
+{
+    size_t lt = s.find('<');
+    size_t scan_end = (lt == std::string::npos) ? s.size() : lt;
+    size_t last = std::string::npos;
+    for ( size_t i = 0; i + 1 < scan_end; ++i )
+	if ( s[i] == ':' && s[i + 1] == ':' ) last = i;
+    if ( last == std::string::npos ) return std::string();
+    std::string ns = s.substr(0, last);
+    size_t sp = ns.rfind(' ');
+    if ( sp != std::string::npos )
+	ns = ns.substr(sp + 1);
+    if ( ns.compare(0, 2, "::") == 0 )
+	ns.erase(0, 2);
+    return ns;
 }
 
 static std::string trim_spelling(const std::string &s)
@@ -28772,9 +28929,8 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     return td.class_pattern_id;
 }
 
-DataDef *StructRegistry::find_despaced(const std::string &want)
+void StructRegistry::topup_index_()
 {
-    ++probe_lookups_;
     if ( gen_stamp_ != DataDef::canonical_spelling_gen )
     {
 	index_.clear();
@@ -28783,35 +28939,81 @@ DataDef *StructRegistry::find_despaced(const std::string &want)
 	gen_stamp_ = DataDef::canonical_spelling_gen;
 	++probe_rebuilds_;
     }
-    if ( map_.size() != size_stamp_ )
+    if ( map_.size() == size_stamp_ )
+	return;
+    size_stamp_ = map_.size();
+    for ( datadef_map_citer it = map_.begin(); it != map_.end(); ++it )
     {
-	size_stamp_ = map_.size();
-	for ( datadef_map_citer it = map_.begin(); it != map_.end(); ++it )
-	{
-	    if ( !seen_.insert(&it->first).second )
-		continue;
-	    ++probe_swept_;
-	    DataDef *dd = it->second;
-	    if ( !dd )
-		continue;
-	    dd->canonical_swept = true;	// its rewrites must bump the gen from now on
-	    if ( dd->canonical_cpp_spelling().empty() )
-		continue;
-	    std::string d = despace_spelling(strip_type_namespace(dd->canonical_cpp_spelling()));
-	    std::pair<std::unordered_map<std::string, Hit>::iterator, bool> ins =
-		index_.emplace(d, Hit{ &it->first, dd });
-	    // Keep the smallest map key per despaced spelling: a top-up can visit
-	    // a later-inserted node whose key sorts BEFORE the current winner, and
-	    // the linear scan this replaces answered in key order.
-	    if ( !ins.second && it->first < *ins.first->second.key )
-	    {
-		ins.first->second.key = &it->first;
-		ins.first->second.dd = dd;
-	    }
-	}
+	if ( !seen_.insert(&it->first).second )
+	    continue;
+	++probe_swept_;
+	DataDef *dd = it->second;
+	if ( !dd )
+	    continue;
+	dd->canonical_swept = true;	// its rewrites must bump the gen from now on
+	if ( dd->canonical_cpp_spelling().empty() )
+	    continue;
+	std::string d = despace_spelling(strip_type_namespace(dd->canonical_cpp_spelling()));
+	std::vector<Hit> &hits = index_[d];
+	// Keep map-key order within a despaced key: a top-up can visit a
+	// later-inserted node whose key sorts BEFORE the current entries, and
+	// the linear scan this index replaces answered in key order (the
+	// bare lookup serves hits[0]). Collisions are rare; hits stay tiny.
+	size_t pos = 0;
+	while ( pos < hits.size() && *hits[pos].key < it->first )
+	    ++pos;
+	hits.insert(hits.begin() + pos, Hit{ &it->first, dd });
     }
-    std::unordered_map<std::string, Hit>::iterator hit = index_.find(want);
-    return hit == index_.end() ? NULL : hit->second.dd;
+}
+
+DataDef *StructRegistry::find_despaced(const std::string &want)
+{
+    ++probe_lookups_;
+    topup_index_();
+    std::unordered_map<std::string, std::vector<Hit>>::iterator hit =
+	index_.find(want);
+    return hit == index_.end() || hit->second.empty()
+	 ? NULL : hit->second[0].dd;
+}
+
+DataDef *StructRegistry::find_despaced(const std::string &want,
+				       const std::string &want_ns,
+				       Program &pgm)
+{
+    if ( want_ns.empty() )
+	return find_despaced(want);
+    ++probe_lookups_;
+    topup_index_();
+    std::unordered_map<std::string, std::vector<Hit>>::iterator hi =
+	index_.find(want);
+    if ( hi == index_.end() )
+	return NULL;
+    // Honor the query's namespace qualifier: two same-named templates in
+    // different namespaces despace to ONE index key (std::char_traits<char>
+    // vs __gnu_cxx::char_traits<char>), and map-key order must never decide
+    // between namespaces the query distinguishes. `std` matches a canonical
+    // `std::__cxx11::…` through the inline-namespace closure — and the
+    // reverse, for a query derived from an inline-qualified spelling.
+    std::vector<std::string> closure;
+    pgm.namespace_inline_closure(want_ns, closure);
+    for ( size_t i = 0; i < hi->second.size(); ++i )
+    {
+	const std::string hit_ns =
+	    type_namespace_of(hi->second[i].dd->canonical_cpp_spelling());
+	bool ok = false;
+	for ( size_t c = 0; !ok && c < closure.size(); ++c )
+	    ok = hit_ns == closure[c];
+	if ( !ok && !hit_ns.empty() )
+	{
+	    std::vector<std::string> rev;
+	    pgm.namespace_inline_closure(hit_ns, rev);
+	    for ( size_t c = 0; !ok && c < rev.size(); ++c )
+		ok = want_ns == rev[c];
+	}
+	if ( ok )
+	    return hi->second[i].dd;
+    }
+    return NULL;
 }
 
 // Resolve a type-argument SPELLING to its DataDef. resolve_named_datadef handles
@@ -28916,8 +29118,22 @@ static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &sp
     }
     if ( spelling.find('<') == std::string::npos )
 	return NULL;
-    std::string want = despace_spelling(strip_type_namespace(trim_spelling(spelling)));
-    return pgm.struct_map.find_despaced(want);
+    std::string trimmed = trim_spelling(spelling);
+    std::string want_ns = type_namespace_of(trimmed);
+    std::string want = despace_spelling(strip_type_namespace(trimmed));
+    // A qualified template-id query resolves namespace-faithfully; only a
+    // genuinely bare spelling falls back to the key-order winner.
+    DataDef *hit = want_ns.empty()
+		 ? pgm.struct_map.find_despaced(want)
+		 : pgm.struct_map.find_despaced(want, want_ns, pgm);
+    // Env-gated probe (MADC_ARGSPELL=<substr>): print every despaced-index
+    // resolution whose query matches. Diagnostic only.
+    static const char *asp = ::getenv("MADC_ARGSPELL");
+    if ( asp && *asp && want.find(asp) != std::string::npos )
+	fprintf(stderr, "[argspell] q='%s' ns='%s' want='%s' -> '%s'\n",
+		spelling.c_str(), want_ns.c_str(), want.c_str(),
+		hit ? hit->canonical_cpp_spelling().c_str() : "(null)");
+    return hit;
 }
 
 // [temp.deduct.call]/4 derived-to-base: when a template-id PARAMETER pattern
@@ -45132,7 +45348,10 @@ TokenBase *TokenDEFER::parse(Program &pgm)
 {
     DBG(std::cout << "TokenDEFER::parse()" << std::endl);
 
-    TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+    // File-scope in script mode: the defer registers on the synthesized
+    // main's compound (script_statement_scope) — scope exit is the end of
+    // the synthesized main. Standards modes keep the loud reject.
+    TokenCpnd *code = pgm.script_statement_scope(this);
     if ( !code )
 	pgm.Throw(this) << "'defer' must be inside a function or block" << flush;
 
@@ -48904,7 +49123,11 @@ static int fn_template_deduce_param(const std::string &spelling,
 	    is_tp = true;
     if ( !is_tp || !arg_dd )
 	return -1;
-    DataDef *dd = arg_dd;
+    // Canonicalize BEFORE the reference wrap so a deduced `_Tp = A&` keys the
+    // canonical base, and again after the star/ref peel below — the peeled
+    // pointee is a declared type but the direct scalar arm sees the raw
+    // expression dd (integer literals carry the ddINT flavor twin).
+    DataDef *dd = canonical_template_binding_dd(arg_dd);
     if ( pgm && arg_expr && shape.amps == 2 && shape.stars == 0
       && !shape.cv && !dd->is_reference()
       && fn_template_call_arg_is_lvalue(arg_expr) )
@@ -48927,7 +49150,7 @@ static int fn_template_deduce_param(const std::string &spelling,
 	dd = p->base_type;
     }
     tp_out = shape.core;
-    dd_out = dd;
+    dd_out = canonical_template_binding_dd(dd);
     return 1;
 }
 
@@ -49071,8 +49294,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
 	const std::string &pack_param, bool pack_empty, Variable **var_out,
-	const std::vector<DataDef *> &pack_elems = std::vector<DataDef *>(),
-	const std::map<std::string, std::vector<DataDef *> > &tid_packs
+	std::vector<DataDef *> pack_elems = std::vector<DataDef *>(),
+	std::map<std::string, std::vector<DataDef *> > tid_packs
 	    = std::map<std::string, std::vector<DataDef *> >(),
 	const std::map<std::string, std::vector<std::string> > &tid_pack_spellings
 	    = std::map<std::string, std::vector<std::string> >(),
@@ -50144,13 +50367,28 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft_in, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
 	const std::string &pack_param, bool pack_empty, Variable **var_out,
-	const std::vector<DataDef *> &pack_elems,
-	const std::map<std::string, std::vector<DataDef *> > &tid_packs,
+	std::vector<DataDef *> pack_elems,
+	std::map<std::string, std::vector<DataDef *> > tid_packs,
 	const std::map<std::string, std::vector<std::string> > &tid_pack_spellings,
 	const std::map<std::string, std::vector<int64_t> > &tid_packs_nontype,
 	std::vector<DataDef *> *type_args_out,
 	std::vector<std::vector<DataDef *> > *type_arg_packs_out)
 {
+    // [temp.type] identity canonicalization at THE choke point every binding
+    // route passes through (deduced, explicit, unified, text): the values in
+    // these containers become the instantiation's identity (inst_key, the
+    // substituted spelling, the memo, the overload symbol) — fold flavor
+    // twins and scalar typedef aliases to the one canonical dd before any of
+    // that mints. See canonical_template_binding_dd.
+    for ( std::map<std::string, DataDef *>::iterator
+	    cb = binding.begin(); cb != binding.end(); ++cb )
+	cb->second = canonical_template_binding_dd(cb->second);
+    for ( size_t ce = 0; ce < pack_elems.size(); ++ce )
+	pack_elems[ce] = canonical_template_binding_dd(pack_elems[ce]);
+    for ( std::map<std::string, std::vector<DataDef *> >::iterator
+	    ct = tid_packs.begin(); ct != tid_packs.end(); ++ct )
+	for ( size_t ce = 0; ce < ct->second.size(); ++ce )
+	    ct->second[ce] = canonical_template_binding_dd(ct->second[ce]);
     // [temp.variadic] empty-pack elision on the RAW decl (dots intact) —
     // see tsubst_elide_empty_pack_expansions. A LOCAL copy: the shared
     // fn_template_map pattern must keep its dots for later non-empty
@@ -50581,6 +50819,31 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	char sigbuf[20];
 	snprintf(sigbuf, sizeof(sigbuf), "|%016llx", (unsigned long long)sig);
 	inst_key += sigbuf;
+    }
+    {
+	// Env-gated probe (MADC_DEBUG_INTSPLIT=1): report any binding arg whose
+	// dd NAME is the non-canonical bare "int" (canonical 4-byte signed int
+	// is ddINT32/"int32_t" — resolve_builtin_type_spelling), with the dd
+	// address vs &ddINT and its dynamic kind. Guards the invariant
+	// canonical_template_binding_dd establishes; a hit names the producer
+	// route that leaked a flavor twin into an instantiation identity.
+	static const char *isplit = ::getenv("MADC_DEBUG_INTSPLIT");
+	if ( isplit )
+	{
+	    for ( std::map<std::string, DataDef *>::const_iterator
+		    b = binding.begin(); b != binding.end(); ++b )
+		if ( b->second && b->second->name == "int" )
+		    fprintf(stderr, "[INTSPLIT] %s param=%s dd=%p ddINT=%p kind=%s canon='%s'\n",
+			    inst_key.c_str(), b->first.c_str(), (void*)b->second,
+			    (void*)&ddINT, typeid(*b->second).name(),
+			    b->second->canonical_cpp_spelling().c_str());
+	    for ( size_t e = 0; e < pack_elems.size(); ++e )
+		if ( pack_elems[e] && pack_elems[e]->name == "int" )
+		    fprintf(stderr, "[INTSPLIT] %s pack[%zu] dd=%p ddINT=%p kind=%s canon='%s'\n",
+			    inst_key.c_str(), e, (void*)pack_elems[e],
+			    (void*)&ddINT, typeid(*pack_elems[e]).name(),
+			    pack_elems[e]->canonical_cpp_spelling().c_str());
+	}
     }
     DBG_PACK("inst_key %s memo=%d vars=%d var_out=%d\n", inst_key.c_str(),
 	     (int)pgm.fn_template_instantiated.count(inst_key),
@@ -61968,7 +62231,10 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 			    << func->return_types.size() << " values, but "
 			    << ids.size() << " receivers given" << flush;
 
-		    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+		    // File-scope in script mode: the receivers bind to the
+		    // synthesized main (script_statement_scope) — main-locals,
+		    // exactly what receivers inside a written main are.
+		    TokenCpnd *code = script_statement_scope(tb);
 
 		    // Receivers are ordinary scope variables typed by the
 		    // callee's slot types (block-top declaration gives class
@@ -62005,21 +62271,28 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		DataDef *inferred = rhs->datadef();
 		if ( !inferred || inferred == &ddVOID )
 		    inferred = &ddINT64;
-		TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+		// File-scope in script mode: the receiver binds to the
+		// synthesized main (script_statement_scope) — a main-local,
+		// block-top declared by translate_block like the multi
+		// form's receivers; the statement is the bare assignment.
+		bool file_scope = compounds.empty();
+		TokenCpnd *code = script_statement_scope(tb);
 		bool alloc = (!code) ? true : false;
 		Variable *var = addVariable(code, *inferred, first_id, 1, NULL, alloc);
-		TokenDecl *td = new TokenDecl(*var);
-		td->file = tb->file;
-		td->line = tb->line;
-		td->column = tb->column;
 		TokenAssign *assign = new TokenAssign();
 		assign->file = tb->file;
 		assign->line = tb->line;
 		assign->column = tb->column;
 		assign->left  = new TokenVar(*var);
 		assign->right = rhs;
-		td->initialize = assign;
 		DBG(std::cout << "parseStatement() ':=' declared '" << first_id << "' type=" << inferred->name << std::endl);
+		if ( file_scope && code )
+		    return assign;
+		TokenDecl *td = new TokenDecl(*var);
+		td->file = tb->file;
+		td->line = tb->line;
+		td->column = tb->column;
+		td->initialize = assign;
 		return td;
 	    }
 	// C89 implicit-int function definition: `name(params) { body }`
@@ -62598,6 +62871,10 @@ bool Program::file_scope_statement_starter(TokenBase *tb)
 		// identifier of a declaration).
 		case TokenID::tkBSL:    case TokenID::tkBSR:
 		case TokenID::tkTerC:	// label definition `name:`
+		// `:=` short declarations (`x := e;` / `a, b := f();`): a
+		// declaration's FIRST identifier resolves as a type token,
+		// never a bare identifier directly followed by `:=` or `,`.
+		case TokenID::tkColEq:  case TokenID::tkComma:
 		    return true;
 		default:
 		    return false;	// tkNS-qualified etc.: result-classified
@@ -62722,6 +62999,22 @@ void Program::ensure_script_main(TokenBase *loc)
 	script_main_tf->column = loc->column;
 	func->decl_file = loc->file;
     }
+}
+
+// The compound a statement-scoped binding (a `:=` receiver, a `defer`
+// registration) belongs to: the innermost open compound, or — for a
+// file-scope statement in script mode — the synthesized main itself
+// (TokenFunc IS the body compound translate_block walks). NULL means
+// "no scope": standards modes and include-origin files keep their
+// existing file-scope handling / rejects.
+TokenCpnd *Program::script_statement_scope(TokenBase *loc)
+{
+    if ( !compounds.empty() )
+	return compounds.top();
+    if ( language_std != STD_MADC || !token_is_tu_origin(loc) )
+	return NULL;
+    ensure_script_main(loc);
+    return script_main_tf;
 }
 
 // Route a classified file-scope statement into the synthesized main.
