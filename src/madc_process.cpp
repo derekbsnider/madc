@@ -1,11 +1,11 @@
 #include "madcdis/process.h"
+#include "madc_posix_io.h"
 
 #include <cerrno>
 #include <csignal>
 #include <cstring>
 #include <fcntl.h>
 #include <map>
-#include <pthread.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <thread>
@@ -54,33 +54,6 @@ bool make_cloexec_pipe(int fds[2], error *err)
 		}
 	}
 	return true;
-}
-
-ssize_t write_without_sigpipe(int fd, const void *buffer, std::size_t size)
-{
-	sigset_t blocked;
-	sigset_t previous;
-	sigset_t pending;
-	sigemptyset(&blocked);
-	sigaddset(&blocked, SIGPIPE);
-	pthread_sigmask(SIG_BLOCK, &blocked, &previous);
-	sigpending(&pending);
-	bool already_pending = sigismember(&pending, SIGPIPE) == 1;
-
-	ssize_t result;
-	do
-		result = ::write(fd, buffer, size);
-	while ( result < 0 && errno == EINTR );
-	int number = errno;
-
-	if ( result < 0 && number == EPIPE && !already_pending )
-	{
-		int signal_number = 0;
-		sigwait(&blocked, &signal_number);
-	}
-	pthread_sigmask(SIG_SETMASK, &previous, nullptr);
-	errno = number;
-	return result;
 }
 
 class ProcessPipeChannel : public DataChannel
@@ -139,7 +112,7 @@ public:
 			set_process_error(err, name_ + " is not writable");
 			return false;
 		}
-		ssize_t result = write_without_sigpipe(fd_, buffer, size);
+		ssize_t result = detail::write_fd_without_sigpipe(fd_, buffer, size);
 		if ( result < 0 )
 		{
 			set_process_errno(err, name_ + " write failed", errno);
@@ -203,7 +176,7 @@ void report_child_error(int fd, int number)
 	std::size_t remaining = sizeof(number);
 	while ( remaining )
 	{
-		ssize_t count = ::write(fd, next, remaining);
+		ssize_t count = ::write(fd, next, remaining); // ASYNC-CHILD-WRITE
 		if ( count < 0 && errno == EINTR )
 			continue;
 		if ( count <= 0 )

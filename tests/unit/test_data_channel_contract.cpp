@@ -15,7 +15,9 @@
 
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
 
@@ -580,6 +582,33 @@ TEST_CASE("file channel roundtrips bytes through the core registry")
 	REQUIRE(collected.output.size() == sizeof(input));
 	CHECK(std::memcmp(&collected.output[0], input, sizeof(input)) == 0);
 	input_channel->close();
+	std::remove(path.c_str());
+}
+
+TEST_CASE("FIFO channel reports a closed reader without SIGPIPE termination")
+{
+	const std::string path = "/tmp/madc_data_channel_fifo_"
+		+ std::to_string(static_cast<long long>(getpid()));
+	const std::string uri = std::string("pipe://") + path;
+	madc::error err;
+
+	REQUIRE(::mkfifo(path.c_str(), 0600) == 0);
+	int reader = ::open(path.c_str(), O_RDONLY | O_NONBLOCK);
+	REQUIRE(reader >= 0);
+	std::unique_ptr<madc::DataChannel> output =
+		madc::DataChannelRegistry::instance().open(
+			madc::DataSource(uri), madc::ChannelOpenMode::write, &err);
+	REQUIRE(output.get() != nullptr);
+	::close(reader);
+
+	const unsigned char byte = 'x';
+	std::size_t written = 1;
+	CHECK_FALSE(output->write(&byte, 1, written, &err));
+	CHECK(written == 0);
+	CHECK(err.stage == madc::error::phase::runtime);
+	CHECK(err.message.find("Broken pipe") != std::string::npos);
+
+	output->close();
 	std::remove(path.c_str());
 }
 

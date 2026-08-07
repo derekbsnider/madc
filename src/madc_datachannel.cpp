@@ -1,4 +1,5 @@
 #include "madcdis/datachannel.h"
+#include "madc_posix_io.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -70,10 +71,7 @@ public:
 			set_channel_error(err, "file write failed", "channel is not writable");
 			return false;
 		}
-		ssize_t result;
-		do
-			result = ::write(fd_, buffer, size);
-		while ( result < 0 && errno == EINTR );
+		ssize_t result = detail::write_fd_without_sigpipe(fd_, buffer, size);
 		if ( result < 0 )
 		{
 			set_errno_error(err, "file write failed", path_);
