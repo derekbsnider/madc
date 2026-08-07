@@ -7201,6 +7201,16 @@ TokenProgram *Program::tokenize(const char *fname)
 
     DBG(std::cout << "Program::tokenize() finished tokenizing" << std::endl);
 
+    // Auto-includes inject BEFORE the forest flush: the synthetic #include
+    // must bind its frozen unit while the one-shot decl restore (item 5,
+    // inside the flush) can still see it in forest_chain_set. The parse()-
+    // start injection stays as the live/eval fallback (pending set is empty
+    // here after this call), but under a forest bind it ran too late — the
+    // restore window had closed and the auto-included header's names never
+    // registered (`string s` in a bare script: "use of undeclared
+    // identifier 'string'" only when packed).
+    inject_pending_auto_includes();
+
     tkProgram = new TokenProgram();
     tkFunction = tkProgram;
     flush_forest_pending_globals();	// v13: globals staged during #include bind
@@ -7277,6 +7287,9 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
     }
 
     DBG(std::cout << "Program::tokenize_buffer() finished tokenizing" << std::endl);
+
+    // Auto-includes inject BEFORE the forest flush — see tokenize()'s tail.
+    inject_pending_auto_includes();
 
     tkProgram = new TokenProgram();
     tkFunction = tkProgram;
