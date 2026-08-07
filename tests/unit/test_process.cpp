@@ -2,6 +2,8 @@
 #define MADC_UNIT_TEST
 #include "doctest.h"
 
+#include "madcdis/channel_stream.h"
+#include "madcdis/format_flow.h"
 #include "madcdis/process.h"
 
 #include <algorithm>
@@ -14,6 +16,24 @@ thread_local bool madc_verbose = false;
 #define DBG(x) do { } while (0)
 
 namespace {
+
+class LineFormat : public madc::FormatAdapter<std::string> {
+public:
+	const char *name() const override { return "line"; }
+
+	bool read_one(std::istream &input, std::string &out,
+		      madc::error *) const override
+	{
+		return static_cast<bool>(std::getline(input, out));
+	}
+
+	bool write_one(std::ostream &output, const std::string &input,
+		       madc::error *) const override
+	{
+		output << input << '\n';
+		return output.good();
+	}
+};
 
 std::string fixture_path()
 {
@@ -149,6 +169,35 @@ TEST_CASE("process pump concurrently drains large stdout and stderr")
 	CHECK(result.exit_status == 0);
 	CHECK(output.bytes() == input_bytes);
 	CHECK(stderr_output.bytes() == input_bytes);
+}
+
+TEST_CASE("format adapters stream typed records through process channels")
+{
+	madc::ProcessOptions options;
+	options.args.push_back("echo");
+	madc::Process process(madc::DataSource("exec://" + fixture_path()), options);
+	madc::error err;
+	LineFormat format;
+
+	REQUIRE(process.start(&err));
+	madc::ChannelOutputStream process_input(process.stdin_channel());
+	madc::FormatSink<std::string> input(process_input, format);
+	REQUIRE(input.put("first record", &err));
+	REQUIRE(input.put("second record", &err));
+	REQUIRE(input.close(&err));
+	REQUIRE(process.close_stdin(&err));
+
+	madc::ChannelInputStream process_output(process.stdout_channel());
+	madc::FormatCursor<std::string> output(process_output, format);
+	std::string record;
+	REQUIRE(output.next(record));
+	CHECK(record == "first record");
+	REQUIRE(output.next(record));
+	CHECK(record == "second record");
+	CHECK_FALSE(output.next(record));
+	CHECK(read_channel(process.stderr_channel(), &err).empty());
+	REQUIRE(process.wait(&err));
+	CHECK(process.exit_status() == 0);
 }
 
 TEST_CASE("completed processes release their owned descriptors")
